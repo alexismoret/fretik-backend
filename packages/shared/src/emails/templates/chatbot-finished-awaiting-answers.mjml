@@ -1,0 +1,126 @@
+<mj-column width="100%">
+  <mj-text font-size="15px" color="#374151">
+    {{ greeting }}
+  </mj-text>
+
+  <mj-text font-size="15px" color="#374151" padding-top="16px">
+    {{ intro }}
+  </mj-text>
+
+  <mj-button
+    href="{{conversationUrl}}"
+    align="center"
+    padding-top="20px"
+    padding-bottom="24px"
+  >
+    {{ cta }}
+  </mj-button>
+
+  <mj-text padding="0">
+    <table
+      role="presentation"
+      cellpadding="0"
+      cellspacing="0"
+      border="0"
+      width="100%"
+      style="
+        border-collapse: separate;
+        border-spacing: 0;
+        border-radius: 12px;
+        background-color: #ffffff;
+        border: 1px solid #e5e7eb;
+        overflow: hidden;
+      "
+    >
+      <tr>
+        <td
+          style="
+            padding: 12px 22px;
+            background-color: #f9fafb;
+            border-bottom: 1px solid #e5e7eb;
+            font-family:
+              &quot;Inter&quot;, &quot;Helvetica Neue&quot;, Helvetica, Arial,
+              sans-serif;
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 0.1em;
+            color: #0d9488;
+            text-transform: uppercase;
+            line-height: 1.5;
+          "
+        >
+          {{ questionsHeader }}
+        </td>
+      </tr>
+      <tr>
+        <td style="padding: 18px 22px; background-color: #ffffff">
+          {{#each questions}}
+          <div style="margin-bottom: 18px">
+            <div
+              style="
+                font-family:
+                  &quot;Inter&quot;, &quot;Helvetica Neue&quot;, Helvetica,
+                  Arial, sans-serif;
+                font-size: 15px;
+                font-weight: 600;
+                color: #111827;
+                line-height: 1.45;
+                margin-bottom: 4px;
+              "
+            >
+              {{ question }}
+            </div>
+            {{#if multiSelect}}
+            <div
+              style="
+                font-family:
+                  &quot;Inter&quot;, &quot;Helvetica Neue&quot;, Helvetica,
+                  Arial, sans-serif;
+                font-size: 12px;
+                font-style: italic;
+                color: #6b7280;
+                margin-bottom: 8px;
+              "
+            >
+              {{../multiSelectHint}}
+            </div>
+            {{/if}}
+            <ul
+              style="
+                margin: 6px 0 0 0;
+                padding-left: 20px;
+                font-family:
+                  &quot;Inter&quot;, &quot;Helvetica Neue&quot;, Helvetica,
+                  Arial, sans-serif;
+                font-size: 14px;
+                color: #374151;
+                line-height: 1.55;
+              "
+            >
+              {{#each options}}
+              <li style="margin-bottom: 4px">
+                <strong style="color: #111827">{{ label }}</strong>
+                {{#if description}} — {{ description }}{{/if}}
+              </li>
+              {{/each}}
+            </ul>
+          </div>
+          {{/each}}
+          <div
+            style="
+              font-family:
+                &quot;Inter&quot;, &quot;Helvetica Neue&quot;, Helvetica, Arial,
+                sans-serif;
+              font-size: 12px;
+              color: #9ca3af;
+              font-style: italic;
+              margin-top: 6px;
+            "
+          >
+            {{ freeTextHint }}
+          </div>
+        </td>
+      </tr>
+    </table>
+  </mj-text>
+</mj-column>

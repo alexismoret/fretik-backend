@@ -1,0 +1,55 @@
+{
+  "name": "@fretik/ai",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun run --hot src/index.ts",
+    "typecheck": "tsgo --noEmit",
+    "lint": "oxlint --type-aware",
+    "lint:fix": "oxlint --type-aware --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "bun test tests/unit",
+    "test:integration": "bun test tests/integration",
+    "evals": "bun run evals/run.ts",
+    "check": "bun run typecheck && bun run lint && bun run format:check",
+    "measure:tokens": "bun run scripts/measure-system-prompt-tokens.ts",
+    "measure:rag": "bun run scripts/measure-rag-metrics.ts",
+    "dump:conversation": "bun run scripts/dump-conversation.ts",
+    "replay:conversations": "bun run scripts/replay-conversations.ts"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "@ai-sdk/provider": "^3.0.10",
+    "@fretik/shared": "workspace:*",
+    "@hono/zod-openapi": "^1.2.4",
+    "@mistralai/mistralai": "^2.2.1",
+    "@openrouter/ai-sdk-provider": "^2.9.0",
+    "@tavily/core": "^0.7.3",
+    "ai": "^6.0.176",
+    "bullmq": "^5.71.1",
+    "drizzle-orm": "^1.0.0-beta.16-ea816b6",
+    "e2b": "^2.19.5",
+    "figlet": "^1.11.0",
+    "gpt-tokenizer": "^3.4.0",
+    "hono": "^4.12.18",
+    "ioredis": "^5.10.1",
+    "node-sql-parser": "^5.4.0",
+    "pg": "^8.20.0",
+    "resumable-stream": "^2.2.12",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/figlet": "^1.7.0",
+    "@types/pg": "^8.20.0",
+    "@typescript/native-preview": "^7.0.0-dev.20260508.1",
+    "oxlint": "^1.63.0",
+    "oxlint-tsgolint": "^0.22.1",
+    "prettier": "^3.8.3",
+    "prettier-plugin-organize-imports": "^4.3.0"
+  }
+}

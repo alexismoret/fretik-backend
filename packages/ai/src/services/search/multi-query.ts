@@ -1,0 +1,128 @@
+import { generateText } from "ai";
+import { CHEAP_MODEL } from "../../lib/models";
+import { openrouter } from "../../lib/openrouter";
+import { withSlot } from "../../lib/rate-limit";
+
+/**
+ * Multi-query reformulation for hybrid RAG search.
+ *
+ * Generates 2 additional rephrasings of the user's query through the
+ * cheap model (`openai/gpt-oss-20b` via OpenRouter — same `CHEAP_MODEL`
+ * constant used by Phase 7b contextual enrichment and Phase 8 compaction)
+ * and returns `[original, variant1, variant2]`. The original query is
+ * ALWAYS kept as variant #1 so a single weak reformulation can never
+ * wipe the intent.
+ *
+ * Why: the Anthropic Contextual Retrieval cookbook recommends running
+ * several diverse queries through the hybrid retriever and merging the
+ * results via RRF. Vocabulary diversity recovers recall on content that
+ * uses synonyms, trade names, or acronyms the original query didn't.
+ *
+ * Concurrency: routed through the same Redis distributed semaphore as
+ * enrichment (`openrouter:cheap`) so a burst of concurrent chatbot
+ * turns can't blow OpenRouter's account-wide limit for the cheap model.
+ *
+ * Failure policy: the whole step is soft — if the LLM rejects, times
+ * out, or returns garbage, we fall back to `[originalQuery]` and the
+ * caller still gets a working hybrid search (just no recall bump from
+ * reformulation). Never throws.
+ */
+
+const MULTI_QUERY_TEMPERATURE = 0.3;
+const MULTI_QUERY_MAX_TOKENS = 300;
+const TARGET_VARIANT_COUNT = 2;
+
+const CHEAP_MODEL_MAX_CONCURRENT = Number(
+  process.env.AI_CHEAP_MODEL_MAX_CONCURRENT ?? "20",
+);
+
+const CHEAP_MODEL_HOLD_TIMEOUT_MS = 30_000;
+
+/**
+ * Hard wall-clock cap on a single `generateText` call. The `withSlot`
+ * hold timeout is the per-slot reclaim timer (what Redis considers a
+ * "stuck" replica) — NOT a per-request execution cap. Without this
+ * AbortSignal, a slow OpenRouter response could block the slot plus
+ * burn the agent's step budget for the full 30s hold window. 8s is
+ * comfortable for gpt-oss-20b on a 300-token completion (<2s p95 in
+ * practice) and short enough that a lagging call doesn't dominate a
+ * RAG turn.
+ */
+const MULTI_QUERY_TIMEOUT_MS = 8_000;
+
+const cheapModel = openrouter.chat(CHEAP_MODEL);
+
+const buildPrompt = (query: string): string =>
+  `You are a search query rewriter for a multilingual transport and logistics knowledge base (shipping documents, bills of lading, invoices).
+
+Rewrite the user's query as ${TARGET_VARIANT_COUNT} ALTERNATE phrasings that preserve the exact intent but use different vocabulary, synonyms, or trade terms. The goal is to improve recall in a hybrid vector + BM25 retriever.
+
+Rules:
+- Return EXACTLY ${TARGET_VARIANT_COUNT} alternate phrasings, one per line.
+- Do NOT number them, do NOT add quotes, do NOT add explanations.
+- Keep the original language of the query (do not translate).
+- Keep proper nouns, codes, IDs, and numbers verbatim when present.
+- Each phrasing must be a complete, standalone search query.
+
+User query:
+${query}`;
+
+const parseVariants = (raw: string): string[] =>
+  raw
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    // Strip common LLM decorations (numbered lists, bullet markers, quotes).
+    .map((line) => line.replace(/^[-*•]\s+|^\d+[.)]\s+/u, "").trim())
+    .map((line) => line.replace(/^["'`](.*)["'`]$/u, "$1").trim())
+    .filter((line) => line.length > 0);
+
+/**
+ * Returns `[originalQuery, ...variants]`, where `variants.length` is at
+ * most `TARGET_VARIANT_COUNT`. The original is always first and always
+ * present — even if reformulation fails entirely.
+ */
+export const generateQueryVariants = async (
+  originalQuery: string,
+): Promise<string[]> => {
+  const trimmed = originalQuery.trim();
+  if (trimmed.length === 0) return [];
+
+  let rawText: string;
+  try {
+    const { text } = await withSlot(
+      "openrouter:cheap",
+      CHEAP_MODEL_MAX_CONCURRENT,
+      CHEAP_MODEL_HOLD_TIMEOUT_MS,
+      () =>
+        generateText({
+          model: cheapModel,
+          prompt: buildPrompt(trimmed),
+          temperature: MULTI_QUERY_TEMPERATURE,
+          maxOutputTokens: MULTI_QUERY_MAX_TOKENS,
+          abortSignal: AbortSignal.timeout(MULTI_QUERY_TIMEOUT_MS),
+        }),
+    );
+    rawText = text;
+  } catch (err) {
+    console.warn(
+      "[multi-query] reformulation failed, falling back to original:",
+      err instanceof Error ? err.message : err,
+    );
+    return [trimmed];
+  }
+
+  const parsed = parseVariants(rawText);
+  const unique: string[] = [];
+  const seen = new Set<string>();
+  seen.add(trimmed.toLowerCase());
+  for (const variant of parsed) {
+    const key = variant.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(variant);
+    if (unique.length >= TARGET_VARIANT_COUNT) break;
+  }
+
+  return [trimmed, ...unique];
+};

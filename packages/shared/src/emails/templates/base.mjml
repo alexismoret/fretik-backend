@@ -1,0 +1,81 @@
+<mjml>
+  <mj-head>
+    <mj-title>{{ appName }}</mj-title>
+    <mj-attributes>
+      <mj-all
+        font-family="'Inter', 'Helvetica Neue', Helvetica, Arial, sans-serif"
+      />
+      <mj-text
+        font-weight="400"
+        font-size="15px"
+        color="#374151"
+        line-height="24px"
+      />
+      <mj-button
+        background-color="#0d9488"
+        color="#ffffff"
+        font-size="15px"
+        font-weight="600"
+        border-radius="6px"
+        inner-padding="12px 24px"
+      />
+    </mj-attributes>
+    <mj-style>
+      a {
+        color: #0d9488;
+        text-decoration: none;
+      }
+    </mj-style>
+  </mj-head>
+  <mj-body background-color="#f4f5f7" width="600px">
+    <!-- Header -->
+    <mj-section background-color="#0f766e" padding="24px 0">
+      <mj-column width="100%">
+        <mj-image
+          src="{{logoUrl}}"
+          alt="{{appName}}"
+          align="center"
+          width="80px"
+          padding-bottom="8px"
+        />
+        <mj-text
+          align="center"
+          color="#ffffff"
+          font-size="20px"
+          font-weight="700"
+          padding="0"
+        >
+          {{ appName }}
+        </mj-text>
+      </mj-column>
+    </mj-section>
+
+    <!-- Content -->
+    <mj-section background-color="#ffffff" padding="32px 24px">
+      {{{content}}}
+    </mj-section>
+
+    <!-- Footer -->
+    <mj-section padding="24px 0">
+      <mj-column width="100%">
+        <mj-text
+          align="center"
+          color="#9ca3af"
+          font-size="12px"
+          line-height="18px"
+        >
+          {{ footerSentBy }}
+        </mj-text>
+        <mj-text
+          align="center"
+          color="#9ca3af"
+          font-size="12px"
+          line-height="18px"
+          padding-top="4px"
+        >
+          {{ footerCopyright }}
+        </mj-text>
+      </mj-column>
+    </mj-section>
+  </mj-body>
+</mjml>

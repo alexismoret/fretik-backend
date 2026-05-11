@@ -1,0 +1,36 @@
+{
+  "$schema": "https://raw.githubusercontent.com/oxc-project/oxc/main/npm/oxlint/configuration_schema.json",
+  "plugins": ["typescript", "import"],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "warn",
+    "pedantic": "off",
+    "perf": "warn"
+  },
+  "rules": {
+    // Type-aware rules (require --type-aware flag)
+    "typescript/no-floating-promises": "error",
+    "typescript/no-misused-promises": "error",
+    "typescript/await-thenable": "error",
+    "typescript/no-unnecessary-type-assertion": "warn",
+    "typescript/no-unsafe-assignment": "warn",
+    "typescript/no-unsafe-call": "warn",
+    "typescript/no-unsafe-member-access": "warn",
+    "typescript/no-unsafe-return": "warn",
+    "typescript/no-unsafe-argument": "warn",
+    "typescript/restrict-template-expressions": "warn",
+
+    // Non-type-aware typescript rules
+    "typescript/no-explicit-any": "warn",
+    "typescript/consistent-type-imports": "warn",
+    "typescript/no-non-null-assertion": "warn",
+
+    // Import rules
+    "import/no-duplicates": "error",
+
+    // Disabled - handled by TypeScript
+    "no-undef": "off",
+    "no-redeclare": "off"
+  },
+  "ignorePatterns": ["node_modules", "dist", "*.d.ts"]
+}

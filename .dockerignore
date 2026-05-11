@@ -1,0 +1,54 @@
+# Dependencies (re-installed in the install stage)
+node_modules
+**/node_modules
+
+# Git + VCS noise
+.git
+.gitignore
+.gitattributes
+
+# Husky (skipped in CI/production via .husky/install.mjs anyway)
+.husky
+
+# Tooling local state
+.claude
+.claude-flow
+.idea
+.vscode
+.DS_Store
+**/.DS_Store
+
+# Tests + evals never ship in production images
+**/tests
+**/evals
+**/*.test.ts
+.eval-runs
+**/.eval-runs
+
+# Env files (Dokploy injects them at runtime)
+.env
+.env.*
+!**/.env.example
+
+# Docs not needed at runtime
+README.md
+**/CLAUDE.md
+docs
+
+# Build artefacts / caches
+**/dist
+**/coverage
+*.tsbuildinfo
+**/*.tsbuildinfo
+**/.cache
+*.log
+logs
+
+# Lint/format configs not needed at runtime
+.oxlintrc.json
+prettier.config.js
+.prettierignore
+.prettierrc*
+
+# CI configs not needed at runtime
+.github

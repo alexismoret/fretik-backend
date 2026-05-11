@@ -1,0 +1,158 @@
+/**
+ * Assertion engine for the eval harness. Not a test file.
+ *
+ * Takes an `InvokeResult` (from `http-client.ts`) and an ordered list
+ * of `Assertion`s (from `types.ts`), returning one `AssertionResult`
+ * per assertion. Each assertion is independent — a failing assertion
+ * never short-circuits the rest, so the report always shows every
+ * expectation's state.
+ *
+ * The only assertion that fires an LLM call is `judge` (delegated to
+ * `./judge.ts`). Every other type is pure, deterministic, local.
+ */
+
+import { judge } from "./judge";
+import type {
+  Assertion,
+  AssertionResult,
+  EvalCaseContext,
+  InvokeResult,
+} from "./types";
+
+const runOne = async (
+  assertion: Assertion,
+  result: InvokeResult,
+  prompt: string,
+  ctx: EvalCaseContext,
+): Promise<AssertionResult> => {
+  switch (assertion.type) {
+    case "contains": {
+      const hay = assertion.caseInsensitive
+        ? result.text.toLowerCase()
+        : result.text;
+      const needle = assertion.caseInsensitive
+        ? assertion.value.toLowerCase()
+        : assertion.value;
+      const passed = hay.includes(needle);
+      return {
+        type: "contains",
+        label: `contains "${assertion.value}"${assertion.caseInsensitive ? " (ci)" : ""}`,
+        passed,
+        message: passed
+          ? undefined
+          : `text did not contain the expected fragment`,
+      };
+    }
+    case "regex": {
+      const re = new RegExp(assertion.value, assertion.flags);
+      const passed = re.test(result.text);
+      return {
+        type: "regex",
+        label: `matches /${assertion.value}/${assertion.flags ?? ""}`,
+        passed,
+        message: passed ? undefined : `regex did not match assistant text`,
+      };
+    }
+    case "toolUsed": {
+      const toolsUsed = new Set(result.toolCalls.map((c) => c.name));
+      const mode = assertion.mode ?? "any";
+      const passed =
+        mode === "all"
+          ? assertion.tools.every((t) => toolsUsed.has(t))
+          : assertion.tools.some((t) => toolsUsed.has(t));
+      return {
+        type: "toolUsed",
+        label: `${mode === "all" ? "all of" : "any of"} [${assertion.tools.join(", ")}]`,
+        passed,
+        message: passed
+          ? undefined
+          : `tools used: [${[...toolsUsed].join(", ") || "none"}]`,
+      };
+    }
+    case "toolNotUsed": {
+      const toolsUsed = new Set(result.toolCalls.map((c) => c.name));
+      const leaked = assertion.tools.filter((t) => toolsUsed.has(t));
+      const passed = leaked.length === 0;
+      return {
+        type: "toolNotUsed",
+        label: `none of [${assertion.tools.join(", ")}]`,
+        passed,
+        message: passed
+          ? undefined
+          : `unexpected tools called: [${leaked.join(", ")}]`,
+      };
+    }
+    case "latencyUnder": {
+      const passed = result.latencyMs < assertion.ms;
+      return {
+        type: "latencyUnder",
+        label: `latency < ${assertion.ms}ms`,
+        passed,
+        message: passed ? undefined : `latency was ${result.latencyMs}ms`,
+      };
+    }
+    case "noError": {
+      const errorish =
+        Boolean(result.error) ||
+        result.finishReason === "error" ||
+        (result.httpStatus !== undefined && result.httpStatus >= 400);
+      return {
+        type: "noError",
+        label: "no error",
+        passed: !errorish,
+        message: errorish
+          ? `error=${result.error ?? "(none)"} finish=${result.finishReason ?? "?"} status=${result.httpStatus ?? "?"}`
+          : undefined,
+      };
+    }
+    case "judge": {
+      const verdict = await judge({
+        rubric: assertion.rubric,
+        userPrompt: prompt,
+        assistantOutput: result.text,
+        toolCalls: result.toolCalls.map((c) => ({
+          name: c.name,
+          output: c.output,
+        })),
+      });
+      const expected = assertion.expectPass ?? true;
+      const passed = verdict.passed === expected;
+      return {
+        type: "judge",
+        label: `llm-judge: "${assertion.rubric.slice(0, 60)}${assertion.rubric.length > 60 ? "…" : ""}"`,
+        passed,
+        message: verdict.rationale,
+      };
+    }
+    case "custom": {
+      // `custom.fn` may be sync or async — `await` accepts both.
+      const verdict = await assertion.fn(result, ctx);
+      const passed = verdict === true;
+      return {
+        type: "custom",
+        label: `custom: ${assertion.name}`,
+        passed,
+        message:
+          typeof verdict === "string" && !passed
+            ? verdict
+            : passed
+              ? undefined
+              : "custom assertion returned false",
+      };
+    }
+  }
+  // Unreachable — the switch above is exhaustive over the `Assertion`
+  // discriminated union. Kept as an explicit `never` return so the
+  // linter sees every path producing an `AssertionResult`.
+  throw new Error(
+    `Unhandled assertion type: ${(assertion as { type: string }).type}`,
+  );
+};
+
+export const runAssertions = async (
+  assertions: Assertion[],
+  result: InvokeResult,
+  prompt: string,
+  ctx: EvalCaseContext,
+): Promise<AssertionResult[]> =>
+  Promise.all(assertions.map((a) => runOne(a, result, prompt, ctx)));

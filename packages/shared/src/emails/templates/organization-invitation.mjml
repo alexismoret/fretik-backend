@@ -1,0 +1,38 @@
+<mj-column width="100%">
+  <mj-text font-size="15px" color="#374151">
+    {{ greeting }}
+  </mj-text>
+
+  <mj-text font-size="15px" color="#374151" padding-top="16px">
+    {{ message }}
+  </mj-text>
+
+  <mj-text font-size="14px" color="#6b7280" padding-top="16px">
+    {{ organizationLabel }}
+  </mj-text>
+  {{#if teamLabel}}
+  <mj-text font-size="14px" color="#6b7280" padding-top="4px">
+    {{ teamLabel }}
+  </mj-text>
+  {{/if}}
+  <mj-text font-size="14px" color="#6b7280" padding-top="4px">
+    {{ roleLabel }}
+  </mj-text>
+
+  <mj-button
+    href="{{acceptUrl}}"
+    align="center"
+    padding-top="32px"
+    padding-bottom="32px"
+  >
+    {{ cta }}
+  </mj-button>
+
+  <mj-text font-size="13px" color="#9ca3af" padding-top="0">
+    {{ expiration }}
+  </mj-text>
+
+  <mj-text font-size="13px" color="#9ca3af" padding-top="8px">
+    {{ ignore }}
+  </mj-text>
+</mj-column>

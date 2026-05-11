@@ -1,0 +1,6 @@
+# Keep this directory tracked (README + .gitignore) but ignore all
+# binary/large fixture files. Each operator provisions these locally —
+# see README.md for the list + shape.
+*
+!.gitignore
+!README.md

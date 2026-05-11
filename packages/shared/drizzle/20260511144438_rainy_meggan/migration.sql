@@ -1,3 +1,27 @@
+CREATE EXTENSION IF NOT EXISTS vector;--> statement-breakpoint
+CREATE EXTENSION IF NOT EXISTS pg_trgm;--> statement-breakpoint
+CREATE EXTENSION IF NOT EXISTS pgcrypto;--> statement-breakpoint
+CREATE OR REPLACE FUNCTION public.uuid_generate_v7()
+ RETURNS uuid
+ LANGUAGE plpgsql
+ PARALLEL SAFE
+AS $function$
+DECLARE
+  unix_time_ms bytea;
+  buffer bytea;
+BEGIN
+  unix_time_ms := substring(int8send((extract(epoch FROM clock_timestamp()) * 1000)::bigint) FROM 3);
+  buffer := unix_time_ms || gen_random_bytes(10);
+
+  -- Version 7 (0111 dans les 4 bits de poids fort de l'octet 6)
+  buffer := set_byte(buffer, 6, (b'0111' || get_byte(buffer, 6)::bit(4))::bit(8)::int);
+
+  -- Variant RFC 4122 (10 dans les 2 bits de poids fort de l'octet 8)
+  buffer := set_byte(buffer, 8, (b'10' || get_byte(buffer, 8)::bit(6))::bit(8)::int);
+
+  RETURN encode(buffer, 'hex')::uuid;
+END
+$function$;--> statement-breakpoint
 CREATE TYPE "document_status" AS ENUM('converting', 'uploading', 'processing', 'ready', 'error');--> statement-breakpoint
 CREATE TYPE "document_type" AS ENUM('invoice', 'credit_note', 'receipt', 'statement', 'contract', 'order', 'quotation', 'certificate', 'permit', 'declaration', 'report', 'letter', 'form', 'list', 'instruction', 'specification', 'plan', 'notice', 'record', 'unknown');--> statement-breakpoint
 CREATE TYPE "transport_mode" AS ENUM('sea', 'air', 'road', 'rail', 'inland_waterway', 'multimodal');--> statement-breakpoint

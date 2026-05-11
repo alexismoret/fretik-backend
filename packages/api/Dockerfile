@@ -22,8 +22,11 @@ COPY package.json bun.lock tsconfig.base.json ./
 COPY packages/shared/package.json packages/shared/
 COPY packages/api/package.json packages/api/
 COPY packages/ai/package.json packages/ai/
-# .husky/install.mjs exits 0 when CI=true — neutralises the `prepare`
-# script during install.
+# The root `prepare` script runs `node .husky/install.mjs` — copy the
+# folder so node can resolve it. The script self-exits on CI=true, so
+# husky binaries are NOT installed. .husky stays inside this install
+# stage and never gets copied to the release stage below.
+COPY .husky .husky
 ENV CI=true
 RUN bun install --frozen-lockfile --production
 

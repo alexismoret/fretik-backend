@@ -7,8 +7,10 @@ node_modules
 .gitignore
 .gitattributes
 
-# Husky (skipped in CI/production via .husky/install.mjs anyway)
-.husky
+# Husky is copied into the install stage so the root `prepare` script
+# can resolve .husky/install.mjs — the script then self-exits on
+# CI=true. The release stage doesn't COPY .husky, so it never reaches
+# the final image. Do NOT add .husky here.
 
 # Tooling local state
 .claude

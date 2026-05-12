@@ -14,6 +14,13 @@ if (!appUrl) {
   throw "Missing APP_URL env";
 }
 
+// When the API and AI services run on distinct subdomains of the same
+// parent domain (e.g. api.fretik.com + ai.fretik.com), the session
+// cookie must be scoped to the parent so the browser sends it to both.
+// Set `COOKIE_DOMAIN=.fretik.com` (leading dot) in production. In dev,
+// leave it unset — localhost cookies work across ports without this.
+const cookieDomain = process.env.BETTER_AUTH_COOKIE_DOMAIN;
+
 export const auth = betterAuth({
   appName: "fretik",
 
@@ -33,6 +40,12 @@ export const auth = betterAuth({
       generateId: () => Bun.randomUUIDv7(),
     },
     cookiePrefix: "fretik-",
+    ...(cookieDomain && {
+      crossSubDomainCookies: {
+        enabled: true,
+        domain: cookieDomain,
+      },
+    }),
   },
 
   basePath: "/auth",

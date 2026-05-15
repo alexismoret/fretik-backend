@@ -6,14 +6,12 @@ import { teamRequired, throwHttpError } from "@fretik/shared/lib/errors";
 import {
   bodyIdListSchema,
   CreateFolderSchema,
+  driveListParamsSchema,
   FolderDriveResponseSchema,
   FolderResponseSchema,
   UpdateFolderSchema,
 } from "@fretik/shared/schemas";
-import {
-  paramsIdSchema,
-  paramsListSchema,
-} from "@fretik/shared/schemas/common/params";
+import { paramsIdSchema } from "@fretik/shared/schemas/common/params";
 import {
   responseBadRequestSchema,
   responseCreatedSchemaBuilder,
@@ -77,7 +75,7 @@ const getRootDriveRoute = createRoute({
   description: "Get root folder details and its children",
   tags: ["Folders"],
   request: {
-    query: paramsListSchema,
+    query: driveListParamsSchema,
   },
   responses: {
     200: {
@@ -101,7 +99,7 @@ const getFolderExplorerRoute = createRoute({
   tags: ["Folders"],
   request: {
     params: paramsIdSchema,
-    query: paramsListSchema,
+    query: driveListParamsSchema,
   },
   responses: {
     200: {

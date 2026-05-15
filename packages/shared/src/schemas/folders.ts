@@ -1,10 +1,64 @@
 import { z } from "zod";
+import { paramsListSchema } from "./common/params";
 import { responseListSchema } from "./common/responses";
 import {
   documentStatusSchema,
   documentTransportType,
   documentTypeSchema,
+  transportModeSchema,
 } from "./documents";
+
+/**
+ * Drive list params: pagination + search + advanced filters.
+ *
+ * All advanced filters accept multiple values. They can be passed either as
+ * repeated query params (`?documentType=invoice&documentType=receipt`) or as
+ * a single value (`?documentType=invoice`) — both are normalized to arrays.
+ *
+ * When any advanced filter array is non-empty the listing switches to a flat,
+ * cross-folder, document-only mode (folders are hidden, folderId scope ignored).
+ */
+const toArray = <T>(val: unknown): T[] | undefined => {
+  if (val === undefined || val === null || val === "") return undefined;
+  return (Array.isArray(val) ? val : [val]) as T[];
+};
+
+export const driveListParamsSchema = paramsListSchema.extend({
+  documentType: z
+    .preprocess(
+      toArray,
+      z
+        .array(z.lazy(() => documentTypeSchema))
+        .optional(),
+    )
+    .openapi({
+      description:
+        "Filter by one or more document types (OR semantics within the filter).",
+    }),
+  transportMode: z
+    .preprocess(
+      toArray,
+      z
+        .array(z.lazy(() => transportModeSchema))
+        .optional(),
+    )
+    .openapi({
+      description:
+        "Filter by one or more transport modes (OR semantics within the filter).",
+    }),
+  documentTransportType: z
+    .preprocess(toArray, z.array(z.string()).optional())
+    .openapi({
+      description:
+        "Filter by one or more transport document type codes (e.g. cmr, bl).",
+    }),
+  entityId: z.preprocess(toArray, z.array(z.uuid()).optional()).openapi({
+    description:
+      "Filter to documents linked to one or more entities (any role). OR semantics within the filter.",
+  }),
+});
+
+export type DriveListParams = z.infer<typeof driveListParamsSchema>;
 
 /**
  * Schéma de validation pour la création d'un dossier

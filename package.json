@@ -1,9 +1,14 @@
 {
   "name": "fretik-monorepo",
   "private": true,
-  "workspaces": ["packages/shared", "packages/api", "packages/ai"],
+  "workspaces": [
+    "packages/shared",
+    "packages/api",
+    "packages/ai"
+  ],
   "scripts": {
-    "prepare": "node .husky/install.mjs"
+    "prepare": "husky",
+    "postinstall": "node .husky/verify.mjs"
   },
   "lint-staged": {
     "*.{ts,tsx,js,jsx}": [
@@ -18,6 +23,7 @@
     "husky": "^9.1.7",
     "lint-staged": "^17.0.3",
     "oxlint": "^1.63.0",
+    "oxlint-tsgolint": "^0.22.1",
     "prettier": "^3.8.3",
     "prettier-plugin-organize-imports": "^4.3.0"
   }

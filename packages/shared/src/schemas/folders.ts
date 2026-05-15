@@ -25,23 +25,13 @@ const toArray = <T>(val: unknown): T[] | undefined => {
 
 export const driveListParamsSchema = paramsListSchema.extend({
   documentType: z
-    .preprocess(
-      toArray,
-      z
-        .array(z.lazy(() => documentTypeSchema))
-        .optional(),
-    )
+    .preprocess(toArray, z.array(z.lazy(() => documentTypeSchema)).optional())
     .openapi({
       description:
         "Filter by one or more document types (OR semantics within the filter).",
     }),
   transportMode: z
-    .preprocess(
-      toArray,
-      z
-        .array(z.lazy(() => transportModeSchema))
-        .optional(),
-    )
+    .preprocess(toArray, z.array(z.lazy(() => transportModeSchema)).optional())
     .openapi({
       description:
         "Filter by one or more transport modes (OR semantics within the filter).",

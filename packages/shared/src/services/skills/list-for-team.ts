@@ -1,6 +1,7 @@
 import { and, asc, eq, isNull, or } from "drizzle-orm";
 import db from "../../db";
 import { skills, teamSkills } from "../../db/schema";
+import { computeEffectiveEnabled } from "./compute-effective-enabled";
 
 /**
  * Effective skill state for a given team.
@@ -24,30 +25,6 @@ export interface EffectiveSkill {
   version: string;
   source: "bundled" | "team_uploaded";
 }
-
-/**
- * Pure rule for "is this skill enabled for this team right now?".
- * Exported so tests can pin the contract without spinning up Postgres,
- * and so the upsert handler / API layer can apply the same rule when
- * shaping a single-skill response.
- *
- * Contract:
- *   - Always-on skills (`isDefault = true`) are enabled forever; any
- *     stale row in `team_skills` for them is intentionally ignored
- *     here (the upsert service refuses to write one in the first
- *     place, but defence-in-depth: the rule wins even if a row exists).
- *   - Configurable skills follow the team's explicit override when
- *     present, otherwise default-on (today every configurable skill
- *     ships enabled — flipping the default to off later is a one-line
- *     change here without schema churn).
- */
-export const computeEffectiveEnabled = (
-  isDefault: boolean,
-  overrideEnabled: boolean | null,
-): boolean => {
-  if (isDefault) return true;
-  return overrideEnabled ?? true;
-};
 
 /**
  * List every skill visible to a given team — both the global

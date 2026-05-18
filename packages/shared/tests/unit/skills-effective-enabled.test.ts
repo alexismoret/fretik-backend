@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { computeEffectiveEnabled } from "../../src/services/skills/list-for-team";
+import { computeEffectiveEnabled } from "../../src/services/skills/compute-effective-enabled";
 
 /**
  * Pure-logic contract for the effective `enabled` state of a skill

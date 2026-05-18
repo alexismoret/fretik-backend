@@ -1,0 +1,150 @@
+import { and, eq, isNull, ne } from "drizzle-orm";
+import db from "../../db";
+import type {
+  FieldDefinition,
+  FieldDefinitionConfig,
+  FieldDefinitionType,
+} from "../../db/schema";
+import { fieldDefinitions } from "../../db/schema";
+import { badRequest, throwHttpError } from "../../lib/errors";
+import {
+  FIELD_DEFINITION_KEY_REGEX,
+  FIELD_DEFINITION_LIMITS,
+} from "./constants";
+
+export type FieldDefinitionPatch = {
+  key?: string;
+  label?: string;
+  description?: string | null;
+  type?: FieldDefinitionType;
+  config?: FieldDefinitionConfig;
+  aiExtractionEnabled?: boolean;
+  vectorizeInclude?: boolean;
+  displayInPanel?: boolean;
+  displayInFilters?: boolean;
+  enabled?: boolean;
+  displayOrder?: number;
+};
+
+/**
+ * Validate a single field's intrinsic shape (label/description length,
+ * options cap, slug grammar). Throws 400 on the first failure.
+ */
+export const validateFieldDefinitionShape = (
+  patch: FieldDefinitionPatch & { key?: string },
+): void => {
+  if (patch.key !== undefined && !FIELD_DEFINITION_KEY_REGEX.test(patch.key)) {
+    return throwHttpError(
+      400,
+      badRequest(
+        `Field key '${patch.key}' must match ${FIELD_DEFINITION_KEY_REGEX} (lowercase, alphanum + underscore, 1-60 chars).`,
+      ),
+    );
+  }
+  if (
+    patch.label !== undefined &&
+    patch.label.length > FIELD_DEFINITION_LIMITS.MAX_LABEL_CHARS
+  ) {
+    return throwHttpError(
+      400,
+      badRequest(
+        `Label exceeds ${FIELD_DEFINITION_LIMITS.MAX_LABEL_CHARS} chars.`,
+      ),
+    );
+  }
+  if (
+    patch.description != null &&
+    patch.description.length > FIELD_DEFINITION_LIMITS.MAX_DESCRIPTION_CHARS
+  ) {
+    return throwHttpError(
+      400,
+      badRequest(
+        `Description exceeds ${FIELD_DEFINITION_LIMITS.MAX_DESCRIPTION_CHARS} chars.`,
+      ),
+    );
+  }
+  const options = patch.config?.options;
+  if (
+    options !== undefined &&
+    options.length > FIELD_DEFINITION_LIMITS.MAX_OPTIONS_PER_FIELD
+  ) {
+    return throwHttpError(
+      400,
+      badRequest(
+        `Too many options (${options.length}); max ${FIELD_DEFINITION_LIMITS.MAX_OPTIONS_PER_FIELD}.`,
+      ),
+    );
+  }
+  if (
+    (patch.type === "select" || patch.type === "multi_select") &&
+    (options === undefined || options.length === 0)
+  ) {
+    return throwHttpError(
+      400,
+      badRequest(
+        "Select / multi_select fields require at least one option in config.options.",
+      ),
+    );
+  }
+};
+
+/**
+ * Count enabled definitions in a scope, optionally excluding one id (used
+ * during create/update to forecast the post-operation count). Returns the
+ * count so callers can compare against
+ * `FIELD_DEFINITION_LIMITS.MAX_ENABLED_PER_SCOPE`.
+ */
+export const countEnabledForScope = async (data: {
+  organizationId: string;
+  teamId: string | null;
+  resourceType: FieldDefinition["resourceType"];
+  excludeId?: string;
+}): Promise<number> => {
+  const { organizationId, teamId, resourceType, excludeId } = data;
+  const conditions = [
+    eq(fieldDefinitions.organizationId, organizationId),
+    eq(fieldDefinitions.resourceType, resourceType),
+    eq(fieldDefinitions.enabled, true),
+    teamId === null
+      ? isNull(fieldDefinitions.teamId)
+      : eq(fieldDefinitions.teamId, teamId),
+  ];
+  if (excludeId) {
+    conditions.push(ne(fieldDefinitions.id, excludeId));
+  }
+  const rows = await db
+    .select({ id: fieldDefinitions.id })
+    .from(fieldDefinitions)
+    .where(and(...conditions));
+  return rows.length;
+};
+
+/**
+ * Assert the scope is below the enabled-cap. Pass `addEnabled=1` when
+ * inserting a new enabled row, `0` when updating an existing one.
+ */
+export const assertScopeEnabledCap = async (data: {
+  organizationId: string;
+  teamId: string | null;
+  resourceType: FieldDefinition["resourceType"];
+  addEnabled: number;
+  excludeId?: string;
+}): Promise<void> => {
+  const current = await countEnabledForScope({
+    organizationId: data.organizationId,
+    teamId: data.teamId,
+    resourceType: data.resourceType,
+    excludeId: data.excludeId,
+  });
+  if (
+    current + data.addEnabled >
+    FIELD_DEFINITION_LIMITS.MAX_ENABLED_PER_SCOPE
+  ) {
+    return throwHttpError(
+      400,
+      badRequest(
+        `Cannot exceed ${FIELD_DEFINITION_LIMITS.MAX_ENABLED_PER_SCOPE} enabled fields per scope (current: ${current}).`,
+      ),
+    );
+  }
+};

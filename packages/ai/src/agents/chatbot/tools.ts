@@ -1,9 +1,12 @@
 import { createAskUserQuestionTool } from "../../tools/ask-user";
 import { createBashTool } from "../../tools/bash";
+import type { createDispatchAgentTool } from "../../tools/dispatch-agent";
 import { createDownloadDriveDocumentTool } from "../../tools/download-drive-document";
 import { createGetEntityDetailsTool } from "../../tools/get-entity-details";
 import { createListDocumentsTool } from "../../tools/list-documents";
 import { createListEntitiesTool } from "../../tools/list-entities";
+import { createListFieldDefinitionsTool } from "../../tools/list-field-definitions";
+import { createListLabelsTool } from "../../tools/list-labels";
 import { createManageTasksTool } from "../../tools/manage-tasks";
 import { createMemoryTool } from "../../tools/memory";
 import { createPresentFilesTool } from "../../tools/present-files";
@@ -237,6 +240,20 @@ export const buildDomainTools = () => ({
       "search filter list entities carriers clients companies by type country",
     maxResultSizeChars: 16_000,
   }),
+  listLabels: buildChatbotTool({
+    ...createListLabelsTool(),
+    category: "domain",
+    searchHint:
+      "search list labels tags categories team filter documents by label",
+    maxResultSizeChars: 16_000,
+  }),
+  listFieldDefinitions: buildChatbotTool({
+    ...createListFieldDefinitionsTool(),
+    category: "domain",
+    searchHint:
+      "field definitions custom dynamic schema metadata attributes properties key label type description config options enum allowed values choices select multi_select bounds min max what fields does the team have configured",
+    maxResultSizeChars: 16_000,
+  }),
   getEntityDetails: buildChatbotTool({
     ...createGetEntityDetailsTool(),
     category: "domain",
@@ -265,17 +282,67 @@ export const buildDomainTools = () => ({
 });
 
 /**
- * Full chatbot tool set (core + domain). Both halves are passed to
- * `ToolLoopAgent` upfront; the `prepareStep` hook in `./index.ts` is
- * what gates which ones the model sees on each step. Passing the
- * full set upfront is what the AI SDK requires — `activeTools` can
- * only subset a known registry, it cannot introduce new tools
- * mid-run.
+ * `dispatchAgent` is built outside this module (in `./index.ts`,
+ * after the sub-agent sets it routes to are constructed). We accept
+ * it as a parameter so this module never imports the sub-agent
+ * factory directly — that pattern keeps `tools.ts` a pure tool
+ * registry and avoids a circular import between `tools.ts`,
+ * `tools/dispatch-agent.ts`, and `./index.ts` (the latter would
+ * otherwise import from this file AND inject `dispatchAgent` back).
+ *
+ * The static `import { createDispatchAgentTool }` above is used only
+ * to derive the slot's return type; the function itself is invoked
+ * by `./index.ts`, never here. `tsgo`'s unused-value check is happy
+ * because the symbol is consumed by the `typeof` below.
  */
-export const buildChatbotTools = () => {
+export type DispatchAgentTool = ReturnType<typeof createDispatchAgentTool>;
+
+/**
+ * Full chatbot tool set (core + domain + dispatchAgent). Both halves
+ * are passed to `ToolLoopAgent` upfront; the `prepareStep` hook in
+ * `./index.ts` is what gates which ones the model sees on each step.
+ * Passing the full set upfront is what the AI SDK requires —
+ * `activeTools` can only subset a known registry, it cannot
+ * introduce new tools mid-run.
+ *
+ * `dispatchAgent` is registered with the rest of the core tools so
+ * the parent agent can delegate at any step without first calling
+ * `searchTools`.
+ */
+export const buildChatbotTools = (extras: {
+  dispatchAgent: DispatchAgentTool;
+}) => {
   const domainTools = buildDomainTools();
   const coreTools = buildCoreTools(domainTools);
-  return { ...coreTools, ...domainTools };
+  return {
+    ...coreTools,
+    ...domainTools,
+    dispatchAgent: extras.dispatchAgent,
+  };
 };
 
 export type ChatbotTools = ReturnType<typeof buildChatbotTools>;
+
+/**
+ * Sub-agent tool set — same as the chatbot tool set MINUS:
+ *   - `dispatchAgent`: prevents recursion. A sub-agent cannot spawn
+ *     another sub-agent.
+ *   - `searchTools`: Progressive Disclosure is unnecessary inside a
+ *     sub-agent run because every domain tool is loaded directly
+ *     into the registry; the sub-agent calls them by name without
+ *     having to "activate" anything first.
+ *
+ * Domain tools are still registered as `category: "domain"` here,
+ * but the sub-agent's `buildAgentSet` config does NOT install a
+ * `prepareStep` hook — so the framework's default applies (= every
+ * tool name in the registry is active on every step). Net effect:
+ * the sub-agent has direct access to every tool from the start.
+ */
+export const buildSubAgentTools = () => {
+  const domainTools = buildDomainTools();
+  const allCoreTools = buildCoreTools(domainTools);
+  const { searchTools: _searchTools, ...coreWithoutSearch } = allCoreTools;
+  return { ...coreWithoutSearch, ...domainTools };
+};
+
+export type SubAgentTools = ReturnType<typeof buildSubAgentTools>;

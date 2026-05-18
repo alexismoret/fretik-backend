@@ -1,316 +1,246 @@
 ---
 name: pptx
-description: Generate or edit PowerPoint decks (.pptx) with proper layouts, bullet lists, tables, images, and basic charts. Use when the deliverable is a slide presentation the user will open in a PowerPoint-compatible tool.
+description: 'Use this skill any time a .pptx file is involved in any way — as input, output, or both. This includes: creating slide decks, pitch decks, or presentations; reading, parsing, or extracting text from any .pptx file (even if the extracted content will be used elsewhere, like in an email or summary); editing, modifying, or updating existing presentations; combining or splitting slide files; working with templates, layouts, speaker notes, or comments. Trigger whenever the user mentions "deck," "slides," "presentation," or references a .pptx filename, regardless of what they plan to do with the content afterward. If a .pptx file needs to be opened, created, or touched, use this skill.'
 ---
 
-# pptx skill
+> **Fretik sandbox conventions.** Helper script paths in this guide
+> are relative to the skill folder. From your `/workspace/` working
+> directory, prefix them with `skills/pptx/` — e.g.
+> `python skills/pptx/scripts/thumbnail.py …` — or `cd skills/pptx/`
+> first. For Python imports, prefer the loader:
+> `from skill_loader import load_skill; load_skill("pptx")`. Deeper
+> references live next to this file as `editing.md` (modifying
+> existing decks) and `pptxgenjs.md` (Node-based creation) — read on
+> demand via `read("skills/pptx/editing.md")`. Write every deliverable
+> under `outputs/` (e.g. `outputs/deck.pptx`) and surface it with
+> `presentFiles({ paths: ["outputs/deck.pptx"] })`.
 
-Deliver a deck that opens cleanly, uses real layouts (so the user can edit every slide from the Outline view), and respects the "one idea per slide" discipline.
+# PPTX Skill
 
-## When to use this skill
+## Quick Reference
 
-Trigger on: "PowerPoint", "pptx", "slides", "diapos", "présentation", "pitch", "deck", "briefing", "support de réunion", "kickoff", "quarterly review", and similar asks that imply a sequence of talking points.
+| Task                         | Guide                                    |
+| ---------------------------- | ---------------------------------------- |
+| Read/analyze content         | `python -m markitdown presentation.pptx` |
+| Edit or create from template | Read [editing.md](editing.md)            |
+| Create from scratch          | Read [pptxgenjs.md](pptxgenjs.md)        |
 
-Don't use for: a single-page visual summary (→ `data-viz` PNG is usually enough), a printable document (→ `pdf`), or dense data tables the user will pivot (→ `xlsx`).
+---
 
-## Tool: python-pptx
+## Reading Content
 
-`from pptx import Presentation`. python-pptx builds decks on top of PowerPoint's built-in slide layouts, which means the user can restyle the whole deck from the Design tab in PowerPoint.
+```bash
+# Text extraction
+python -m markitdown presentation.pptx
 
-```python
-from pptx import Presentation
-from pptx.util import Inches, Pt
+# Visual overview
+python scripts/thumbnail.py presentation.pptx
 
-prs = Presentation()                 # empty deck with the "Office" theme
-
-title_slide_layout = prs.slide_layouts[0]       # Title
-title_slide = prs.slides.add_slide(title_slide_layout)
-title_slide.shapes.title.text = "Monthly carrier review"
-title_slide.placeholders[1].text = "March 2026 — Fretik ops"
-
-prs.save("monthly-carrier-review-2026-03.pptx")
-print("saved monthly-carrier-review-2026-03.pptx")
+# Raw XML
+python scripts/office/unpack.py presentation.pptx unpacked/
 ```
 
-Then:
+---
 
-```
-presentFiles({ paths: ["monthly-carrier-review-2026-03.pptx"], message: "Support du point mensuel transporteurs." })
-```
+## Editing Workflow
 
-## The slide layout catalogue
+**Read [editing.md](editing.md) for full details.**
 
-`prs.slide_layouts` is an ordered collection of the deck's built-in layouts. With the default blank `Presentation()`, you get:
+1. Analyze template with `thumbnail.py`
+2. Unpack → manipulate slides → edit content → clean → pack
 
-| Index | Layout name          | Use for                                                         |
-| ----- | -------------------- | --------------------------------------------------------------- |
-| 0     | Title Slide          | Deck cover                                                      |
-| 1     | Title and Content    | Headline + bullets/table/image                                  |
-| 2     | Section Header       | Dividers between parts of the deck                              |
-| 3     | Two Content          | Side-by-side comparison                                         |
-| 4     | Comparison           | Two columns with sub-headings                                   |
-| 5     | Title Only           | Big title, empty body (for a chart occupying most of the slide) |
-| 6     | Blank                | Pixel-free canvas                                               |
-| 7     | Content with Caption | Main body with a captioned sidebar                              |
-| 8     | Picture with Caption | Large image + caption                                           |
+---
 
-Pick a layout deliberately. Default to `1` (Title and Content) for 80% of body slides.
+## Creating from Scratch
 
-## Workflow
+**Read [pptxgenjs.md](pptxgenjs.md) for full details.**
 
-### Create a fresh deck
+Use when no template or reference presentation is available.
 
-```python
-prs = Presentation()            # default theme
-# …add slides…
-prs.save("<filename>.pptx")
-```
+---
 
-### Edit a deck the user uploaded
+## Design Ideas
 
-```python
-prs = Presentation("existing-deck.pptx")
-slide = prs.slides[2]                  # indexed from 0
-# …mutate shapes on the slide…
-prs.save("existing-deck-v2.pptx")      # never overwrite the source
-```
+**Don't create boring slides.** Plain bullets on a white background won't impress anyone. Consider ideas from this list for each slide.
 
-Rules for edits:
+### Before Starting
 
-- Preserve the user's theme. Don't call `Presentation()` without a filename when editing — that replaces the theme.
-- To swap a slide's text, walk its `shapes`, find shape(s) with `has_text_frame`, iterate `paragraphs` and their `runs`, replace text at the run level (preserves font/color/size).
-- To replace an image placeholder, replace the `Picture` shape's `image` via `shape.image` replacement pattern or delete+insert.
+- **Pick a bold, content-informed color palette**: The palette should feel designed for THIS topic. If swapping your colors into a completely different presentation would still "work," you haven't made specific enough choices.
+- **Dominance over equality**: One color should dominate (60-70% visual weight), with 1-2 supporting tones and one sharp accent. Never give all colors equal weight.
+- **Dark/light contrast**: Dark backgrounds for title + conclusion slides, light for content ("sandwich" structure). Or commit to dark throughout for a premium feel.
+- **Commit to a visual motif**: Pick ONE distinctive element and repeat it — rounded image frames, icons in colored circles, thick single-side borders. Carry it across every slide.
 
-### Start from a branded template
+### Color Palettes
 
-If the user attaches `template.pptx`:
+Choose colors that match your topic — don't default to generic blue. Use these palettes as inspiration:
 
-```python
-prs = Presentation("template.pptx")          # inherits theme, fonts, colors
-# add slides using prs.slide_layouts from the template, not the default ones
-```
+| Theme                  | Primary               | Secondary             | Accent              |
+| ---------------------- | --------------------- | --------------------- | ------------------- |
+| **Midnight Executive** | `1E2761` (navy)       | `CADCFC` (ice blue)   | `FFFFFF` (white)    |
+| **Forest & Moss**      | `2C5F2D` (forest)     | `97BC62` (moss)       | `F5F5F5` (cream)    |
+| **Coral Energy**       | `F96167` (coral)      | `F9E795` (gold)       | `2F3C7E` (navy)     |
+| **Warm Terracotta**    | `B85042` (terracotta) | `E7E8D1` (sand)       | `A7BEAE` (sage)     |
+| **Ocean Gradient**     | `065A82` (deep blue)  | `1C7293` (teal)       | `21295C` (midnight) |
+| **Charcoal Minimal**   | `36454F` (charcoal)   | `F2F2F2` (off-white)  | `212121` (black)    |
+| **Teal Trust**         | `028090` (teal)       | `00A896` (seafoam)    | `02C39A` (mint)     |
+| **Berry & Cream**      | `6D2E46` (berry)      | `A26769` (dusty rose) | `ECE2D0` (cream)    |
+| **Sage Calm**          | `84B59F` (sage)       | `69A297` (eucalyptus) | `50808E` (slate)    |
+| **Cherry Bold**        | `990011` (cherry)     | `FCF6F5` (off-white)  | `2F3C7E` (navy)     |
 
-The user's layout catalogue may differ from the default one. Inspect:
+### For Each Slide
 
-```python
-for i, layout in enumerate(prs.slide_layouts):
-    print(i, layout.name)
-```
+**Every slide needs a visual element** — image, chart, icon, or shape. Text-only slides are forgettable.
 
-## Common slide recipes
+**Layout options:**
 
-### Title + bullets
+- Two-column (text left, illustration on right)
+- Icon + text rows (icon in colored circle, bold header, description below)
+- 2x2 or 2x3 grid (image on one side, grid of content blocks on other)
+- Half-bleed image (full left or right side) with content overlay
 
-```python
-from pptx.util import Pt
+**Data display:**
 
-slide = prs.slides.add_slide(prs.slide_layouts[1])   # Title and Content
-slide.shapes.title.text = "Headline numbers — March 2026"
+- Large stat callouts (big numbers 60-72pt with small labels below)
+- Comparison columns (before/after, pros/cons, side-by-side options)
+- Timeline or process flow (numbered steps, arrows)
 
-body = slide.placeholders[1]
-tf = body.text_frame
-tf.text = "Volume: 5,487 TEU (+4.1% MoM)"        # first bullet
+**Visual polish:**
 
-for line in [
-    "On-time rate: 91.2% (+0.8 pts MoM)",
-    "Average transit time: 18.2 days (-0.5 d MoM)",
-    "Cost variance vs. contract: +1.9%",
-]:
-    p = tf.add_paragraph()
-    p.text = line
-    p.level = 0          # bullet level (0 = top, 1 = sub, …)
-    p.font.size = Pt(18)
-```
+- Icons in small colored circles next to section headers
+- Italic accent text for key stats or taglines
 
-Rule: **one headline per slide, four bullets maximum, one idea per bullet.** If you need more, split into two slides.
+### Typography
 
-### Section divider
+**Choose an interesting font pairing** — don't default to Arial. Pick a header font with personality and pair it with a clean body font.
 
-```python
-slide = prs.slides.add_slide(prs.slide_layouts[2])   # Section Header
-slide.shapes.title.text = "Part II — Carrier performance"
-slide.placeholders[1].text = "Volumes, on-time, and cost deltas across the top 10 carriers."
-```
+| Header Font  | Body Font     |
+| ------------ | ------------- |
+| Georgia      | Calibri       |
+| Arial Black  | Arial         |
+| Calibri      | Calibri Light |
+| Cambria      | Calibri       |
+| Trebuchet MS | Calibri       |
+| Impact       | Arial         |
+| Palatino     | Garamond      |
+| Consolas     | Calibri       |
 
-### Two-column comparison
+| Element        | Size          |
+| -------------- | ------------- |
+| Slide title    | 36-44pt bold  |
+| Section header | 20-24pt bold  |
+| Body text      | 14-16pt       |
+| Captions       | 10-12pt muted |
 
-```python
-slide = prs.slides.add_slide(prs.slide_layouts[3])   # Two Content
-slide.shapes.title.text = "CMA CGM vs. Maersk — March 2026"
+### Spacing
 
-left, right = slide.placeholders[1], slide.placeholders[2]
-left.text_frame.text = "CMA CGM"
-for b in ["Volume: 1,240 TEU", "On-time: 92.4%", "Cost: +3.1% vs. contract"]:
-    left.text_frame.add_paragraph().text = b
+- 0.5" minimum margins
+- 0.3-0.5" between content blocks
+- Leave breathing room—don't fill every inch
 
-right.text_frame.text = "Maersk"
-for b in ["Volume: 1,102 TEU", "On-time: 89.7%", "Cost: -1.4% vs. contract"]:
-    right.text_frame.add_paragraph().text = b
-```
+### Avoid (Common Mistakes)
 
-### Table slide
+- **Don't repeat the same layout** — vary columns, cards, and callouts across slides
+- **Don't center body text** — left-align paragraphs and lists; center only titles
+- **Don't skimp on size contrast** — titles need 36pt+ to stand out from 14-16pt body
+- **Don't default to blue** — pick colors that reflect the specific topic
+- **Don't mix spacing randomly** — choose 0.3" or 0.5" gaps and use consistently
+- **Don't style one slide and leave the rest plain** — commit fully or keep it simple throughout
+- **Don't create text-only slides** — add images, icons, charts, or visual elements; avoid plain title + bullets
+- **Don't forget text box padding** — when aligning lines or shapes with text edges, set `margin: 0` on the text box or offset the shape to account for padding
+- **Don't use low-contrast elements** — icons AND text need strong contrast against the background; avoid light text on light backgrounds or dark text on dark backgrounds
+- **NEVER use accent lines under titles** — these are a hallmark of AI-generated slides; use whitespace or background color instead
 
-```python
-from pptx.util import Inches
-slide = prs.slides.add_slide(prs.slide_layouts[5])   # Title Only
-slide.shapes.title.text = "Top 5 carriers — March 2026"
+---
 
-rows, cols = 6, 4                    # header + 5 data rows
-left, top, width, height = Inches(0.5), Inches(1.5), Inches(9), Inches(4)
-table = slide.shapes.add_table(rows, cols, left, top, width, height).table
+## QA (Required)
 
-headers = ["Carrier", "Volume (TEU)", "On-time rate", "Cost variance"]
-for i, h in enumerate(headers):
-    cell = table.cell(0, i)
-    cell.text = h
-    for run in cell.text_frame.paragraphs[0].runs:
-        run.font.bold = True
+**Assume there are problems. Your job is to find them.**
 
-data = [
-    ("CMA CGM", "1,240", "92.4%", "+3.1%"),
-    ("Maersk",  "1,102", "89.7%", "-1.4%"),
-    ("MSC",     "985",   "94.2%", "+0.8%"),
-    ("Hapag-Lloyd", "812", "88.1%", "+2.9%"),
-    ("ONE",     "734",   "90.5%", "+0.3%"),
-]
-for r, row in enumerate(data, start=1):
-    for c, v in enumerate(row):
-        table.cell(r, c).text = v
+Your first render is almost never correct. Approach QA as a bug hunt, not a confirmation step. If you found zero issues on first inspection, you weren't looking hard enough.
+
+### Content QA
+
+```bash
+python -m markitdown output.pptx
 ```
 
-### Image slide (e.g. a chart produced by `data-viz`)
+Check for missing content, typos, wrong order.
 
-```python
-from pptx.util import Inches
-slide = prs.slides.add_slide(prs.slide_layouts[5])   # Title Only
-slide.shapes.title.text = "Volume by carrier — March 2026"
-slide.shapes.add_picture(
-    "volume-by-carrier.png",
-    Inches(0.5), Inches(1.5),
-    width=Inches(9),
-)
+**When using templates, check for leftover placeholder text:**
+
+```bash
+python -m markitdown output.pptx | grep -iE "xxxx|lorem|ipsum|this.*(page|slide).*layout"
 ```
 
-When the chart is wider than tall, center it horizontally and use full width; when taller than wide, set `height=Inches(5.5)` instead of width.
+If grep returns results, fix them before declaring success.
 
-### Charts native to python-pptx
+### Visual QA
 
-python-pptx can create native PowerPoint charts (bar / line / pie). Use them when the user will want to tweak the chart inside PowerPoint (change colors, re-order series). Otherwise prefer a generated PNG via `data-viz` — it renders identically everywhere and is simpler to style.
+**⚠️ USE SUBAGENTS** — even for 2-3 slides. You've been staring at the code and will see what you expect, not what's there. Subagents have fresh eyes.
 
-```python
-from pptx.chart.data import CategoryChartData
-from pptx.enum.chart import XL_CHART_TYPE
-from pptx.util import Inches
+Convert slides to images (see [Converting to Images](#converting-to-images)), then use this prompt:
 
-chart_data = CategoryChartData()
-chart_data.categories = ["CMA CGM", "Maersk", "MSC", "Hapag-Lloyd", "ONE"]
-chart_data.add_series("TEU", (1240, 1102, 985, 812, 734))
+```
+Visually inspect these slides. Assume there are issues — find them.
 
-slide = prs.slides.add_slide(prs.slide_layouts[5])
-slide.shapes.title.text = "Volumes by carrier"
-chart_shape = slide.shapes.add_chart(
-    XL_CHART_TYPE.COLUMN_CLUSTERED,
-    Inches(0.5), Inches(1.5), Inches(9), Inches(5),
-    chart_data,
-)
+Look for:
+- Overlapping elements (text through shapes, lines through words, stacked elements)
+- Text overflow or cut off at edges/box boundaries
+- Decorative lines positioned for single-line text but title wrapped to two lines
+- Source citations or footers colliding with content above
+- Elements too close (< 0.3" gaps) or cards/sections nearly touching
+- Uneven gaps (large empty area in one place, cramped in another)
+- Insufficient margin from slide edges (< 0.5")
+- Columns or similar elements not aligned consistently
+- Low-contrast text (e.g., light gray text on cream-colored background)
+- Low-contrast icons (e.g., dark icons on dark backgrounds without a contrasting circle)
+- Text boxes too narrow causing excessive wrapping
+- Leftover placeholder content
+
+For each slide, list issues or areas of concern, even if minor.
+
+Read and analyze these images:
+1. /path/to/slide-01.jpg (Expected: [brief description])
+2. /path/to/slide-02.jpg (Expected: [brief description])
+
+Report ALL issues found, including minor ones.
 ```
 
-## Styling
+### Verification Loop
 
-### Colors — default palette
+1. Generate slides → Convert to images → Inspect
+2. **List issues found** (if none found, look again more critically)
+3. Fix issues
+4. **Re-verify affected slides** — one fix often creates another problem
+5. Repeat until a full pass reveals no new issues
 
-| Role              | Hex      | Notes                            |
-| ----------------- | -------- | -------------------------------- |
-| Title text        | `1F4E78` | Deep blue, matches xlsx and docx |
-| Body text         | `222222` | Near-black                       |
-| Accent            | `2E75B6` | Lighter blue for callouts        |
-| Positive          | `548235` | Muted green                      |
-| Negative          | `C0504D` | Muted red                        |
-| Muted / secondary | `808080` | Gray for captions and sources    |
+**Do not declare success until you've completed at least one fix-and-verify cycle.**
 
-```python
-from pptx.dml.color import RGBColor
-run.font.color.rgb = RGBColor(0x1F, 0x4E, 0x78)
+---
+
+## Converting to Images
+
+Convert presentations to individual slide images for visual inspection:
+
+```bash
+python scripts/office/soffice.py --headless --convert-to pdf output.pptx
+pdftoppm -jpeg -r 150 output.pdf slide
 ```
 
-### Fonts
+This creates `slide-01.jpg`, `slide-02.jpg`, etc.
 
-Default to `Calibri` for everything. Title size 32–40, body 18–24, captions 12–14. Don't mix more than two type sizes on the same slide.
+To re-render specific slides after fixes:
 
-### Layout discipline
-
-- Pick one layout per section of the deck and stick with it. Switching layouts every slide produces visual noise.
-- Keep at least 1 inch of whitespace on the top, bottom, left, and right. Text hitting the edges signals overflow.
-- Never shrink the default title box to cram more content — split the slide.
-
-## Sources
-
-Place the source on the lower-right of the slide that presents the data, in 10pt italic gray:
-
-```python
-from pptx.util import Inches, Pt
-from pptx.dml.color import RGBColor
-
-src_box = slide.shapes.add_textbox(Inches(0.3), Inches(6.8), Inches(9.4), Inches(0.4))
-tf = src_box.text_frame
-tf.text = "Source: querySql — shipments, 2026-04-21. Filter: team_id, status='confirmed'."
-p = tf.paragraphs[0]
-p.alignment = 3          # right
-run = p.runs[0]
-run.italic = True
-run.font.size = Pt(10)
-run.font.color.rgb = RGBColor(0x80, 0x80, 0x80)
+```bash
+pdftoppm -jpeg -r 150 -f N -l N output.pdf slide-fixed
 ```
 
-For a multi-source slide (e.g. a chart combining querySql + webFetch), use two lines stacked.
+---
 
-## Code style
+## Dependencies
 
-- Top-down: title slide → section dividers → content slides → closing slide. Insert slides in the order they appear.
-- Use `prs.slide_layouts[N]` with the index, not `.get()` by name — the catalogue order is stable for the default theme and for any template worth its salt.
-- Keep `add_slide` → mutate → next slide. Don't batch all `add_slide` calls first and then loop to set titles; it's harder to read.
-- One `Presentation()` per file.
-- Filename: kebab-case, dated, descriptive.
-
-## Reusable helpers
-
-`scripts/pptx_helpers.py` ships:
-
-- `add_title_slide(prs, title, subtitle)` — one-liner for the cover.
-- `add_bullets_slide(prs, title, bullets, subtitle=None)` — Title and Content layout with a list of strings.
-- `add_source_box(slide, text)` — italic-gray source textbox in the bottom band.
-
-Import:
-
-```python
-import sys; sys.path.insert(0, "skills/pptx/scripts")
-import pptx_helpers as ph
-
-ph.add_title_slide(prs, "Monthly carrier review", "March 2026 — Fretik ops")
-ph.add_bullets_slide(
-    prs,
-    "Headline numbers",
-    [
-        "Volume: 5,487 TEU (+4.1% MoM)",
-        "On-time rate: 91.2% (+0.8 pts MoM)",
-        "Cost variance: +1.9% vs. contract",
-    ],
-)
-```
-
-## Common pitfalls
-
-- **Text frame auto-shrinks and your 6 bullets become unreadable.** Split the slide. Don't fight with `text_frame.auto_size`.
-- **Title box disappears.** You added a slide from `slide_layouts[6]` (Blank). Pick a layout with a title placeholder.
-- **Font changes on only the first run of a paragraph.** Paragraph-level font changes don't cascade to runs that were added later. Set the font on each run.
-- **Image stretched.** You specified both `width` and `height` on `add_picture`. Pass only one — python-pptx preserves the aspect ratio.
-- **Table columns all the same width.** `add_table` splits width equally; adjust `table.columns[i].width = Inches(…)` per column afterwards.
-- **Slide renders fine in LibreOffice Impress but fonts are wrong in PowerPoint.** You used a font that isn't installed on Windows. Stick to Calibri / Arial / Times New Roman for portability.
-- **Saving to `.ppt` (legacy) instead of `.pptx`.** python-pptx only writes `.pptx`. Refuse the request politely.
-
-## Further reading
-
-- `references/chart-recipes.md` — native python-pptx chart recipes (when to embed vs. when to drop in a PNG from `data-viz`).
-- `references/slide-patterns.md` — 10 reusable slide patterns for ops reviews (KPI row, RAG status, risk register, milestone timeline, …).
-
-Load via `read("skills/pptx/references/<name>.md")` when needed.
+- `pip install "markitdown[pptx]"` - text extraction
+- `pip install Pillow` - thumbnail grids
+- `npm install -g pptxgenjs` - creating from scratch
+- LibreOffice (`soffice`) - PDF conversion (auto-configured for sandboxed environments via `scripts/office/soffice.py`)
+- Poppler (`pdftoppm`) - PDF to images

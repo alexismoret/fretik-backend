@@ -1,307 +1,745 @@
 ---
 name: docx
-description: Generate or edit Microsoft Word documents (.docx) with native styles, headings, tables, lists, images, and headers/footers. Use when the deliverable is a text-heavy document the user will open in a Word-compatible editor.
+description: "Use this skill whenever the user wants to create, read, edit, or manipulate Word documents (.docx files). Triggers include: any mention of 'Word doc', 'word document', '.docx', or requests to produce professional documents with formatting like tables of contents, headings, page numbers, or letterheads. Also use when extracting or reorganizing content from .docx files, inserting or replacing images in documents, performing find-and-replace in Word files, working with tracked changes or comments, or converting content into a polished Word document. If the user asks for a 'report', 'memo', 'letter', 'template', or similar deliverable as a Word or .docx file, use this skill. Do NOT use for PDFs, spreadsheets, Google Docs, or general coding tasks unrelated to document generation."
 ---
 
-# docx skill
+> **Fretik sandbox conventions.** Script paths in this guide (e.g.
+> `python scripts/office/soffice.py …`) are relative to the skill
+> folder. From your `/workspace/` working directory, prefix them with
+> `skills/docx/` — `python skills/docx/scripts/office/soffice.py …` —
+> or `cd skills/docx/` first. For Python imports, prefer the loader:
+> `from skill_loader import load_skill; load_skill("docx")`
+> (it adds `/workspace/skills/docx/scripts` to `sys.path`). Write every
+> deliverable under `outputs/` (e.g. `outputs/report.docx`) and surface
+> it to the user with `presentFiles({ paths: ["outputs/report.docx"] })`.
 
-Deliver a Word document that opens cleanly, uses native Word styles (so the user can restyle everything from the Home ribbon), and carries real structure (headings, tables, lists) rather than visual fakes.
+# DOCX creation, editing, and analysis
 
-## When to use this skill
+## Overview
 
-Trigger on: "Word", "docx", "document", "rapport", "memo", "lettre", "contrat", "compte-rendu", "note", "proposition", "procédure", "politique", and similar asks that imply a multi-section text deliverable the user will edit further.
+A .docx file is a ZIP archive containing XML files.
 
-Don't use for: a reply that only needs Markdown in the chat, a single-page pixel-perfect invoice (→ `pdf`), slides (→ `pptx`), or numeric tables the user will pivot (→ `xlsx`).
+## Quick Reference
 
-## Tool: python-docx
+| Task                   | Approach                                                          |
+| ---------------------- | ----------------------------------------------------------------- |
+| Read/analyze content   | `pandoc` or unpack for raw XML                                    |
+| Create new document    | Use `docx-js` - see Creating New Documents below                  |
+| Edit existing document | Unpack → edit XML → repack - see Editing Existing Documents below |
 
-Always use `python-docx` (`from docx import Document`). It ships with Word's built-in style set, so setting `paragraph.style = "Heading 1"` produces a heading the user can restyle globally — the right way to build documents.
+### Converting .doc to .docx
 
-```python
-from docx import Document
+Legacy `.doc` files must be converted before editing:
 
-doc = Document()
-doc.add_heading("Monthly carrier review — March 2026", level=0)
-doc.add_paragraph(
-    "This report summarises shipment volumes, on-time performance, "
-    "and cost variance across the top ten carriers for March 2026."
-)
-doc.add_heading("Headline numbers", level=1)
-# …
-doc.save("monthly-carrier-review-2026-03.docx")
-print("saved monthly-carrier-review-2026-03.docx")
+```bash
+python scripts/office/soffice.py --headless --convert-to docx document.doc
 ```
 
-Then:
+### Reading Content
 
-```
-presentFiles({ paths: ["monthly-carrier-review-2026-03.docx"], message: "Rapport mensuel transporteurs, mars 2026." })
-```
+```bash
+# Text extraction with tracked changes
+pandoc --track-changes=all document.docx -o output.md
 
-## Workflow
-
-### Create a new document
-
-```python
-from docx import Document
-doc = Document()          # empty, default styles
-# add content…
-doc.save("<filename>.docx")
+# Raw XML access
+python scripts/office/unpack.py document.docx unpacked/
 ```
 
-### Edit a document the user uploaded
+### Converting to Images
 
-```python
-from docx import Document
-doc = Document("draft-contract.docx")     # attached to the message
-# …mutate paragraphs, tables, replace placeholders…
-doc.save("draft-contract-edited.docx")    # save under a new filename
+```bash
+python scripts/office/soffice.py --headless --convert-to pdf document.docx
+pdftoppm -jpeg -r 150 document.pdf page
 ```
 
-Rules for edits:
+### Accepting Tracked Changes
 
-- Never overwrite the source file. Save as `…-edited.docx` or `…-v2.docx`.
-- Prefer in-place text edits on existing paragraphs over adding new ones when the user asks for a rewrite — it preserves formatting the original applied.
-- To replace a placeholder (`{{client_name}}`) across the whole document, walk every run of every paragraph and every cell's paragraphs.
+To produce a clean document with all tracked changes accepted (requires LibreOffice):
 
-### Use a template
-
-If the user attaches `template.docx` and asks you to fill it:
-
-```python
-doc = Document("template.docx")
-for p in doc.paragraphs:
-    for run in p.runs:
-        run.text = run.text.replace("{{client}}", "ACME SA").replace(
-            "{{date}}", "2026-04-21"
-        )
-doc.save("acme-proposal-2026-04-21.docx")
+```bash
+python scripts/accept_changes.py input.docx output.docx
 ```
 
-Run-level replacement preserves font / bold / italic; paragraph-level replacement loses run boundaries.
+---
 
-## Structure: use real Word styles
+## Creating New Documents
 
-Every heading goes through `doc.add_heading(text, level=N)` (N ∈ {0..9}). The zero level is the title; 1–3 are section levels.
+Generate .docx files with JavaScript, then validate. Install: `npm install -g docx`
 
-```python
-doc.add_heading("Monthly carrier review", level=0)     # title
-doc.add_heading("Summary", level=1)                    # section
-doc.add_heading("By carrier", level=2)                 # subsection
-doc.add_heading("CMA CGM", level=3)                    # sub-subsection
+### Setup
+
+```javascript
+const {
+  Document,
+  Packer,
+  Paragraph,
+  TextRun,
+  Table,
+  TableRow,
+  TableCell,
+  ImageRun,
+  Header,
+  Footer,
+  AlignmentType,
+  PageOrientation,
+  LevelFormat,
+  ExternalHyperlink,
+  InternalHyperlink,
+  Bookmark,
+  FootnoteReferenceRun,
+  PositionalTab,
+  PositionalTabAlignment,
+  PositionalTabRelativeTo,
+  PositionalTabLeader,
+  TabStopType,
+  TabStopPosition,
+  Column,
+  SectionType,
+  TableOfContents,
+  HeadingLevel,
+  BorderStyle,
+  WidthType,
+  ShadingType,
+  VerticalAlign,
+  PageNumber,
+  PageBreak,
+} = require("docx");
+
+const doc = new Document({
+  sections: [
+    {
+      children: [
+        /* content */
+      ],
+    },
+  ],
+});
+Packer.toBuffer(doc).then((buffer) => fs.writeFileSync("doc.docx", buffer));
 ```
 
-Paragraphs use `doc.add_paragraph(text, style=None)`. Use built-in styles rather than hand-rolling bold/italic on every run:
+### Validation
 
-- `"Normal"` — body text (default)
-- `"Intense Quote"` — pullquote block
-- `"Quote"` — simple indented quote
-- `"List Bullet"` — bulleted item
-- `"List Number"` — numbered item
-- `"Caption"` — figure/table caption
+After creating the file, validate it. If validation fails, unpack, fix the XML, and repack.
 
-Lists:
-
-```python
-for item in ["On-time rate", "Volume (TEU)", "Average transit time"]:
-    doc.add_paragraph(item, style="List Bullet")
-
-for item in ["Audit invoices", "Reconcile with contracts", "Prepare dispute file"]:
-    doc.add_paragraph(item, style="List Number")
+```bash
+python scripts/office/validate.py doc.docx
 ```
 
-Nested lists: python-docx doesn't expose nesting directly. For a shallow nested structure, fall back to `docx`'s run-level indent:
+### Page Size
 
-```python
-p = doc.add_paragraph(style="List Bullet")
-p.paragraph_format.left_indent = Pt(36)       # deeper indent = nested
-p.add_run("Sub-item under the previous bullet.")
+```javascript
+// CRITICAL: docx-js defaults to A4, not US Letter
+// Always set page size explicitly for consistent results
+sections: [
+  {
+    properties: {
+      page: {
+        size: {
+          width: 12240, // 8.5 inches in DXA
+          height: 15840, // 11 inches in DXA
+        },
+        margin: { top: 1440, right: 1440, bottom: 1440, left: 1440 }, // 1 inch margins
+      },
+    },
+    children: [
+      /* content */
+    ],
+  },
+];
 ```
 
-Page breaks:
+**Common page sizes (DXA units, 1440 DXA = 1 inch):**
 
-```python
-doc.add_page_break()
+| Paper        | Width  | Height | Content Width (1" margins) |
+| ------------ | ------ | ------ | -------------------------- |
+| US Letter    | 12,240 | 15,840 | 9,360                      |
+| A4 (default) | 11,906 | 16,838 | 9,026                      |
+
+**Landscape orientation:** docx-js swaps width/height internally, so pass portrait dimensions and let it handle the swap:
+
+```javascript
+size: {
+  width: 12240,   // Pass SHORT edge as width
+  height: 15840,  // Pass LONG edge as height
+  orientation: PageOrientation.LANDSCAPE  // docx-js swaps them in the XML
+},
+// Content width = 15840 - left margin - right margin (uses the long edge)
 ```
 
-Section breaks (odd-page / continuous / next-page):
+### Styles (Override Built-in Headings)
 
-```python
-from docx.enum.section import WD_SECTION
-new_section = doc.add_section(WD_SECTION.NEW_PAGE)
+Use Arial as the default font (universally supported). Keep titles black for readability.
+
+```javascript
+const doc = new Document({
+  styles: {
+    default: { document: { run: { font: "Arial", size: 24 } } }, // 12pt default
+    paragraphStyles: [
+      // IMPORTANT: Use exact IDs to override built-in styles
+      {
+        id: "Heading1",
+        name: "Heading 1",
+        basedOn: "Normal",
+        next: "Normal",
+        quickFormat: true,
+        run: { size: 32, bold: true, font: "Arial" },
+        paragraph: { spacing: { before: 240, after: 240 }, outlineLevel: 0 },
+      }, // outlineLevel required for TOC
+      {
+        id: "Heading2",
+        name: "Heading 2",
+        basedOn: "Normal",
+        next: "Normal",
+        quickFormat: true,
+        run: { size: 28, bold: true, font: "Arial" },
+        paragraph: { spacing: { before: 180, after: 180 }, outlineLevel: 1 },
+      },
+    ],
+  },
+  sections: [
+    {
+      children: [
+        new Paragraph({
+          heading: HeadingLevel.HEADING_1,
+          children: [new TextRun("Title")],
+        }),
+      ],
+    },
+  ],
+});
 ```
 
-## Tables
+### Lists (NEVER use unicode bullets)
 
-Tables anchor every report. Use them for any two-or-more-column data.
+```javascript
+// ❌ WRONG - never manually insert bullet characters
+new Paragraph({ children: [new TextRun("• Item")] }); // BAD
+new Paragraph({ children: [new TextRun("\u2022 Item")] }); // BAD
 
-```python
-table = doc.add_table(rows=1, cols=4)
-table.style = "Light Grid Accent 1"    # built-in — safe to pick any "Light *" or "Medium *"
-hdr = table.rows[0].cells
-hdr[0].text = "Carrier"
-hdr[1].text = "Volume (TEU)"
-hdr[2].text = "On-time rate"
-hdr[3].text = "Cost variance"
+// ✅ CORRECT - use numbering config with LevelFormat.BULLET
+const doc = new Document({
+  numbering: {
+    config: [
+      {
+        reference: "bullets",
+        levels: [
+          {
+            level: 0,
+            format: LevelFormat.BULLET,
+            text: "•",
+            alignment: AlignmentType.LEFT,
+            style: { paragraph: { indent: { left: 720, hanging: 360 } } },
+          },
+        ],
+      },
+      {
+        reference: "numbers",
+        levels: [
+          {
+            level: 0,
+            format: LevelFormat.DECIMAL,
+            text: "%1.",
+            alignment: AlignmentType.LEFT,
+            style: { paragraph: { indent: { left: 720, hanging: 360 } } },
+          },
+        ],
+      },
+    ],
+  },
+  sections: [
+    {
+      children: [
+        new Paragraph({
+          numbering: { reference: "bullets", level: 0 },
+          children: [new TextRun("Bullet item")],
+        }),
+        new Paragraph({
+          numbering: { reference: "numbers", level: 0 },
+          children: [new TextRun("Numbered item")],
+        }),
+      ],
+    },
+  ],
+});
 
-rows = [
-    ("CMA CGM", "1,240", "92.4%", "+3.1%"),
-    ("Maersk",  "1,102", "89.7%", "-1.4%"),
-    ("MSC",     "   985", "94.2%", "+0.8%"),
-]
-for carrier, volume, otp, cost in rows:
-    cells = table.add_row().cells
-    cells[0].text = carrier
-    cells[1].text = volume
-    cells[2].text = otp
-    cells[3].text = cost
+// ⚠️ Each reference creates INDEPENDENT numbering
+// Same reference = continues (1,2,3 then 4,5,6)
+// Different reference = restarts (1,2,3 then 1,2,3)
 ```
 
-Table styles to know (all ship with Word):
+### Tables
 
-- `"Light Grid Accent 1..6"` — clean bordered grid, various accent colors.
-- `"Light List Accent 1..6"` — bold header, alternating rows.
-- `"Medium Shading 1 Accent 1..6"` — dark header row, subtle body.
-- `"Table Grid"` — plain bordered grid, no accent.
+**CRITICAL: Tables need dual widths** - set both `columnWidths` on the table AND `width` on each cell. Without both, tables render incorrectly on some platforms.
 
-Column widths (set after the rows are added):
+```javascript
+// CRITICAL: Always set table width for consistent rendering
+// CRITICAL: Use ShadingType.CLEAR (not SOLID) to prevent black backgrounds
+const border = { style: BorderStyle.SINGLE, size: 1, color: "CCCCCC" };
+const borders = { top: border, bottom: border, left: border, right: border };
 
-```python
-from docx.shared import Inches
-for cell in table.columns[0].cells:
-    cell.width = Inches(1.6)
+new Table({
+  width: { size: 9360, type: WidthType.DXA }, // Always use DXA (percentages break in Google Docs)
+  columnWidths: [4680, 4680], // Must sum to table width (DXA: 1440 = 1 inch)
+  rows: [
+    new TableRow({
+      children: [
+        new TableCell({
+          borders,
+          width: { size: 4680, type: WidthType.DXA }, // Also set on each cell
+          shading: { fill: "D5E8F0", type: ShadingType.CLEAR }, // CLEAR not SOLID
+          margins: { top: 80, bottom: 80, left: 120, right: 120 }, // Cell padding (internal, not added to width)
+          children: [new Paragraph({ children: [new TextRun("Cell")] })],
+        }),
+      ],
+    }),
+  ],
+});
 ```
 
-Alignment inside cells:
+**Table width calculation:**
 
-```python
-from docx.enum.text import WD_ALIGN_PARAGRAPH
-cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.RIGHT
+Always use `WidthType.DXA` — `WidthType.PERCENTAGE` breaks in Google Docs.
+
+```javascript
+// Table width = sum of columnWidths = content width
+// US Letter with 1" margins: 12240 - 2880 = 9360 DXA
+width: { size: 9360, type: WidthType.DXA },
+columnWidths: [7000, 2360]  // Must sum to table width
 ```
 
-Right-align every numeric column in a loop; keep text columns left-aligned.
+**Width rules:**
 
-## Images
+- **Always use `WidthType.DXA`** — never `WidthType.PERCENTAGE` (incompatible with Google Docs)
+- Table width must equal the sum of `columnWidths`
+- Cell `width` must match corresponding `columnWidth`
+- Cell `margins` are internal padding - they reduce content area, not add to cell width
+- For full-width tables: use content width (page width minus left and right margins)
 
-```python
-from docx.shared import Inches
-doc.add_picture("chart.png", width=Inches(5.5))    # width keyword keeps aspect ratio
-doc.add_paragraph("Figure 1 — Monthly volume by carrier.", style="Caption")
+### Images
+
+```javascript
+// CRITICAL: type parameter is REQUIRED
+new Paragraph({
+  children: [
+    new ImageRun({
+      type: "png", // Required: png, jpg, jpeg, gif, bmp, svg
+      data: fs.readFileSync("image.png"),
+      transformation: { width: 200, height: 150 },
+      altText: { title: "Title", description: "Desc", name: "Name" }, // All three required
+    }),
+  ],
+});
 ```
 
-Images must live in the conversation sandbox. If the user needs a generated chart, produce it via the `data-viz` skill first, then embed the resulting PNG.
+### Page Breaks
 
-## Headers, footers, and page numbers
+```javascript
+// CRITICAL: PageBreak must be inside a Paragraph
+new Paragraph({ children: [new PageBreak()] });
 
-```python
-section = doc.sections[0]
-header = section.header.paragraphs[0]
-header.text = "Fretik — Monthly carrier review"
-footer = section.footer.paragraphs[0]
-footer.text = "Confidential — 2026-04-21"
+// Or use pageBreakBefore
+new Paragraph({ pageBreakBefore: true, children: [new TextRun("New page")] });
 ```
 
-For live page numbers, insert a run with an `XML` field. That gets into OOXML territory — if the user explicitly needs automatic pagination, produce a PDF instead (`pdf` skill) where pagination is trivial, or document the limitation.
+### Hyperlinks
 
-## Styling: colors, fonts, spacing
+```javascript
+// External link
+new Paragraph({
+  children: [
+    new ExternalHyperlink({
+      children: [new TextRun({ text: "Click here", style: "Hyperlink" })],
+      link: "https://example.com",
+    }),
+  ],
+});
 
-### Colors — accessible defaults
-
-| Role      | Hex      | Notes                               |
-| --------- | -------- | ----------------------------------- |
-| Body text | `222222` | Near-black, softer than pure black  |
-| Headings  | `1F4E78` | Deep blue, matches xlsx header fill |
-| Accent    | `548235` | Muted green for positive emphasis   |
-| Warning   | `C0504D` | Muted red for risk / breach         |
-| Caption   | `595959` | Medium gray                         |
-| Link      | `2E75B6` | Standard Word link blue             |
-
-Applied on a run:
-
-```python
-from docx.shared import RGBColor, Pt
-run = doc.add_paragraph().add_run("Key finding")
-run.bold = True
-run.font.color.rgb = RGBColor(0x1F, 0x4E, 0x78)
-run.font.size = Pt(12)
+// Internal link (bookmark + reference)
+// 1. Create bookmark at destination
+new Paragraph({
+  heading: HeadingLevel.HEADING_1,
+  children: [
+    new Bookmark({ id: "chapter1", children: [new TextRun("Chapter 1")] }),
+  ],
+});
+// 2. Link to it
+new Paragraph({
+  children: [
+    new InternalHyperlink({
+      children: [new TextRun({ text: "See Chapter 1", style: "Hyperlink" })],
+      anchor: "chapter1",
+    }),
+  ],
+});
 ```
 
-### Fonts
+### Footnotes
 
-Default to `Calibri` 11pt for body and 16pt bold for title — Word's out-of-the-box look. Override only when the user asks for a brand font.
-
-### Paragraph spacing
-
-- Body paragraphs: 6pt after.
-- Headings: 12pt before, 6pt after.
-- Tables: 6pt after the caption paragraph, 12pt after the last row.
-
-```python
-from docx.shared import Pt
-p = doc.add_paragraph("…")
-p.paragraph_format.space_after = Pt(6)
-p.paragraph_format.line_spacing = 1.15
+```javascript
+const doc = new Document({
+  footnotes: {
+    1: { children: [new Paragraph("Source: Annual Report 2024")] },
+    2: { children: [new Paragraph("See appendix for methodology")] },
+  },
+  sections: [
+    {
+      children: [
+        new Paragraph({
+          children: [
+            new TextRun("Revenue grew 15%"),
+            new FootnoteReferenceRun(1),
+            new TextRun(" using adjusted metrics"),
+            new FootnoteReferenceRun(2),
+          ],
+        }),
+      ],
+    },
+  ],
+});
 ```
 
-## Sources — cite inline or in a footer section
+### Tab Stops
 
-Two acceptable patterns:
+```javascript
+// Right-align text on same line (e.g., date opposite a title)
+new Paragraph({
+  children: [new TextRun("Company Name"), new TextRun("\tJanuary 2025")],
+  tabStops: [{ type: TabStopType.RIGHT, position: TabStopPosition.MAX }],
+});
 
-1. **Inline citation at the end of a claim** — a single italic gray run after the last sentence of the paragraph. Best for shorter documents.
-
-   ```python
-   p = doc.add_paragraph("The average transit time in March was 18.2 days. ")
-   cite = p.add_run("Source: querySql — shipments, 2026-04-21.")
-   cite.italic = True
-   cite.font.color.rgb = RGBColor(0x80, 0x80, 0x80)
-   cite.font.size = Pt(9)
-   ```
-
-2. **Sources section at the end** — a short "Sources" H2 with one bullet per source line. Best for longer reports with many datapoints.
-
-   ```
-   Source: [System/Document], [Date], [Specific Reference], [URL if applicable]
-   ```
-
-Fill with actual references (no invention): extraction IDs, table names, filenames with timestamps, document IDs from the Fretik app with `/document/<id>` links.
-
-## Code style
-
-- Build the document top-down. Never insert paragraphs into the middle after the fact unless you're editing an existing file — it gets fragile.
-- Prefer styles over manual formatting. `doc.add_paragraph("x", style="Intense Quote")` beats building the same look with runs and colors.
-- One `Document()` per file. Multi-file jobs are multi-turn.
-- Filename: kebab-case, dated, descriptive (`monthly-carrier-review-2026-03.docx`).
-- Don't catch errors around `doc.save()` — let failures surface with a clear message.
-
-## Reusable helpers
-
-`scripts/docx_helpers.py` ships:
-
-- `set_body_defaults(doc, font="Calibri", size=11)` — overrides the Normal style on all paragraphs.
-- `add_header_footer(doc, header_text, footer_text)` — sets the first section's header/footer.
-- `add_inline_citation(paragraph, source_line)` — appends the italic-gray cite run to the end of a paragraph.
-
-Import:
-
-```python
-import sys
-sys.path.insert(0, "skills/docx/scripts")
-import docx_helpers as dh
+// Dot leader (e.g., TOC-style)
+new Paragraph({
+  children: [
+    new TextRun("Introduction"),
+    new TextRun({
+      children: [
+        new PositionalTab({
+          alignment: PositionalTabAlignment.RIGHT,
+          relativeTo: PositionalTabRelativeTo.MARGIN,
+          leader: PositionalTabLeader.DOT,
+        }),
+        "3",
+      ],
+    }),
+  ],
+});
 ```
 
-## Common pitfalls
+### Multi-Column Layouts
 
-- **Bold / italic only on part of a paragraph.** Don't retype the whole paragraph with `.bold = True` — it makes the entire paragraph bold. Split into multiple runs: `p.add_run("Normal text. ")` then `p.add_run("Bold tail.").bold = True`.
-- **Table cell text not centered vertically.** Cells default to top-aligned. Set `cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER` (import from `docx.enum.table`).
-- **Unicode in a run crashes.** It doesn't — python-docx handles UTF-8 natively. If a character renders as `?` in Word, the issue is the font, not the library. Swap to Arial / Noto Sans.
-- **`.text = "…"` on a cell wipes existing formatting.** Prefer `cell.paragraphs[0].runs[0].text = "…"` to preserve styles.
-- **Trying to set page size / margins on every section individually.** Use `doc.sections[0]` and be aware that each `add_section()` inherits from the previous — mutate once before adding.
-- **Saving in `.doc` format.** python-docx only writes `.docx` (Word 2007+). `.doc` is a different binary format — refuse the request and explain.
-- **Forgetting `doc.save()`.** Like openpyxl, there's no autosave. Print `f"saved {path}"` before handing off.
+```javascript
+// Equal-width columns
+sections: [
+  {
+    properties: {
+      column: {
+        count: 2, // number of columns
+        space: 720, // gap between columns in DXA (720 = 0.5 inch)
+        equalWidth: true,
+        separate: true, // vertical line between columns
+      },
+    },
+    children: [
+      /* content flows naturally across columns */
+    ],
+  },
+];
 
-## Further reading
+// Custom-width columns (equalWidth must be false)
+sections: [
+  {
+    properties: {
+      column: {
+        equalWidth: false,
+        children: [
+          new Column({ width: 5400, space: 720 }),
+          new Column({ width: 3240 }),
+        ],
+      },
+    },
+    children: [
+      /* content */
+    ],
+  },
+];
+```
 
-- `references/table-styles.md` — visual preview of every built-in Word table style with the exact name to pass to `table.style = …`.
-- `references/docx-templates.md` — pattern for turning a user's template into a placeholder-filling pipeline (mail-merge style).
+Force a column break with a new section using `type: SectionType.NEXT_COLUMN`.
 
-Load via `read("skills/docx/references/<name>.md")` when the user's scenario demands it.
+### Table of Contents
+
+```javascript
+// CRITICAL: Headings must use HeadingLevel ONLY - no custom styles
+new TableOfContents("Table of Contents", {
+  hyperlink: true,
+  headingStyleRange: "1-3",
+});
+```
+
+### Headers/Footers
+
+```javascript
+sections: [
+  {
+    properties: {
+      page: { margin: { top: 1440, right: 1440, bottom: 1440, left: 1440 } }, // 1440 = 1 inch
+    },
+    headers: {
+      default: new Header({
+        children: [new Paragraph({ children: [new TextRun("Header")] })],
+      }),
+    },
+    footers: {
+      default: new Footer({
+        children: [
+          new Paragraph({
+            children: [
+              new TextRun("Page "),
+              new TextRun({ children: [PageNumber.CURRENT] }),
+            ],
+          }),
+        ],
+      }),
+    },
+    children: [
+      /* content */
+    ],
+  },
+];
+```
+
+### Critical Rules for docx-js
+
+- **Set page size explicitly** - docx-js defaults to A4; use US Letter (12240 x 15840 DXA) for US documents
+- **Landscape: pass portrait dimensions** - docx-js swaps width/height internally; pass short edge as `width`, long edge as `height`, and set `orientation: PageOrientation.LANDSCAPE`
+- **Never use `\n`** - use separate Paragraph elements
+- **Never use unicode bullets** - use `LevelFormat.BULLET` with numbering config
+- **PageBreak must be in Paragraph** - standalone creates invalid XML
+- **ImageRun requires `type`** - always specify png/jpg/etc
+- **Always set table `width` with DXA** - never use `WidthType.PERCENTAGE` (breaks in Google Docs)
+- **Tables need dual widths** - `columnWidths` array AND cell `width`, both must match
+- **Table width = sum of columnWidths** - for DXA, ensure they add up exactly
+- **Always add cell margins** - use `margins: { top: 80, bottom: 80, left: 120, right: 120 }` for readable padding
+- **Use `ShadingType.CLEAR`** - never SOLID for table shading
+- **Never use tables as dividers/rules** - cells have minimum height and render as empty boxes (including in headers/footers); use `border: { bottom: { style: BorderStyle.SINGLE, size: 6, color: "2E75B6", space: 1 } }` on a Paragraph instead. For two-column footers, use tab stops (see Tab Stops section), not tables
+- **TOC requires HeadingLevel only** - no custom styles on heading paragraphs
+- **Override built-in styles** - use exact IDs: "Heading1", "Heading2", etc.
+- **Include `outlineLevel`** - required for TOC (0 for H1, 1 for H2, etc.)
+
+---
+
+## Editing Existing Documents
+
+**Follow all 3 steps in order.**
+
+### Step 1: Unpack
+
+```bash
+python scripts/office/unpack.py document.docx unpacked/
+```
+
+Extracts XML, pretty-prints, merges adjacent runs, and converts smart quotes to XML entities (`&#x201C;` etc.) so they survive editing. Use `--merge-runs false` to skip run merging.
+
+### Step 2: Edit XML
+
+Edit files in `unpacked/word/`. See XML Reference below for patterns.
+
+**Use "Claude" as the author** for tracked changes and comments, unless the user explicitly requests use of a different name.
+
+**Use the Edit tool directly for string replacement. Do not write Python scripts.** Scripts introduce unnecessary complexity. The Edit tool shows exactly what is being replaced.
+
+**CRITICAL: Use smart quotes for new content.** When adding text with apostrophes or quotes, use XML entities to produce smart quotes:
+
+```xml
+<!-- Use these entities for professional typography -->
+<w:t>Here&#x2019;s a quote: &#x201C;Hello&#x201D;</w:t>
+```
+
+| Entity     | Character                     |
+| ---------- | ----------------------------- |
+| `&#x2018;` | ‘ (left single)               |
+| `&#x2019;` | ’ (right single / apostrophe) |
+| `&#x201C;` | “ (left double)               |
+| `&#x201D;` | ” (right double)              |
+
+**Adding comments:** Use `comment.py` to handle boilerplate across multiple XML files (text must be pre-escaped XML):
+
+```bash
+python scripts/comment.py unpacked/ 0 "Comment text with &amp; and &#x2019;"
+python scripts/comment.py unpacked/ 1 "Reply text" --parent 0  # reply to comment 0
+python scripts/comment.py unpacked/ 0 "Text" --author "Custom Author"  # custom author name
+```
+
+Then add markers to document.xml (see Comments in XML Reference).
+
+### Step 3: Pack
+
+```bash
+python scripts/office/pack.py unpacked/ output.docx --original document.docx
+```
+
+Validates with auto-repair, condenses XML, and creates DOCX. Use `--validate false` to skip.
+
+**Auto-repair will fix:**
+
+- `durableId` >= 0x7FFFFFFF (regenerates valid ID)
+- Missing `xml:space="preserve"` on `<w:t>` with whitespace
+
+**Auto-repair won't fix:**
+
+- Malformed XML, invalid element nesting, missing relationships, schema violations
+
+### Common Pitfalls
+
+- **Replace entire `<w:r>` elements**: When adding tracked changes, replace the whole `<w:r>...</w:r>` block with `<w:del>...<w:ins>...` as siblings. Don't inject tracked change tags inside a run.
+- **Preserve `<w:rPr>` formatting**: Copy the original run's `<w:rPr>` block into your tracked change runs to maintain bold, font size, etc.
+
+---
+
+## XML Reference
+
+### Schema Compliance
+
+- **Element order in `<w:pPr>`**: `<w:pStyle>`, `<w:numPr>`, `<w:spacing>`, `<w:ind>`, `<w:jc>`, `<w:rPr>` last
+- **Whitespace**: Add `xml:space="preserve"` to `<w:t>` with leading/trailing spaces
+- **RSIDs**: Must be 8-digit hex (e.g., `00AB1234`)
+
+### Tracked Changes
+
+**Insertion:**
+
+```xml
+<w:ins w:id="1" w:author="Claude" w:date="2025-01-01T00:00:00Z">
+  <w:r><w:t>inserted text</w:t></w:r>
+</w:ins>
+```
+
+**Deletion:**
+
+```xml
+<w:del w:id="2" w:author="Claude" w:date="2025-01-01T00:00:00Z">
+  <w:r><w:delText>deleted text</w:delText></w:r>
+</w:del>
+```
+
+**Inside `<w:del>`**: Use `<w:delText>` instead of `<w:t>`, and `<w:delInstrText>` instead of `<w:instrText>`.
+
+**Minimal edits** - only mark what changes:
+
+```xml
+<!-- Change "30 days" to "60 days" -->
+<w:r><w:t>The term is </w:t></w:r>
+<w:del w:id="1" w:author="Claude" w:date="...">
+  <w:r><w:delText>30</w:delText></w:r>
+</w:del>
+<w:ins w:id="2" w:author="Claude" w:date="...">
+  <w:r><w:t>60</w:t></w:r>
+</w:ins>
+<w:r><w:t> days.</w:t></w:r>
+```
+
+**Deleting entire paragraphs/list items** - when removing ALL content from a paragraph, also mark the paragraph mark as deleted so it merges with the next paragraph. Add `<w:del/>` inside `<w:pPr><w:rPr>`:
+
+```xml
+<w:p>
+  <w:pPr>
+    <w:numPr>...</w:numPr>  <!-- list numbering if present -->
+    <w:rPr>
+      <w:del w:id="1" w:author="Claude" w:date="2025-01-01T00:00:00Z"/>
+    </w:rPr>
+  </w:pPr>
+  <w:del w:id="2" w:author="Claude" w:date="2025-01-01T00:00:00Z">
+    <w:r><w:delText>Entire paragraph content being deleted...</w:delText></w:r>
+  </w:del>
+</w:p>
+```
+
+Without the `<w:del/>` in `<w:pPr><w:rPr>`, accepting changes leaves an empty paragraph/list item.
+
+**Rejecting another author's insertion** - nest deletion inside their insertion:
+
+```xml
+<w:ins w:author="Jane" w:id="5">
+  <w:del w:author="Claude" w:id="10">
+    <w:r><w:delText>their inserted text</w:delText></w:r>
+  </w:del>
+</w:ins>
+```
+
+**Restoring another author's deletion** - add insertion after (don't modify their deletion):
+
+```xml
+<w:del w:author="Jane" w:id="5">
+  <w:r><w:delText>deleted text</w:delText></w:r>
+</w:del>
+<w:ins w:author="Claude" w:id="10">
+  <w:r><w:t>deleted text</w:t></w:r>
+</w:ins>
+```
+
+### Comments
+
+After running `comment.py` (see Step 2), add markers to document.xml. For replies, use `--parent` flag and nest markers inside the parent's.
+
+**CRITICAL: `<w:commentRangeStart>` and `<w:commentRangeEnd>` are siblings of `<w:r>`, never inside `<w:r>`.**
+
+```xml
+<!-- Comment markers are direct children of w:p, never inside w:r -->
+<w:commentRangeStart w:id="0"/>
+<w:del w:id="1" w:author="Claude" w:date="2025-01-01T00:00:00Z">
+  <w:r><w:delText>deleted</w:delText></w:r>
+</w:del>
+<w:r><w:t> more text</w:t></w:r>
+<w:commentRangeEnd w:id="0"/>
+<w:r><w:rPr><w:rStyle w:val="CommentReference"/></w:rPr><w:commentReference w:id="0"/></w:r>
+
+<!-- Comment 0 with reply 1 nested inside -->
+<w:commentRangeStart w:id="0"/>
+  <w:commentRangeStart w:id="1"/>
+  <w:r><w:t>text</w:t></w:r>
+  <w:commentRangeEnd w:id="1"/>
+<w:commentRangeEnd w:id="0"/>
+<w:r><w:rPr><w:rStyle w:val="CommentReference"/></w:rPr><w:commentReference w:id="0"/></w:r>
+<w:r><w:rPr><w:rStyle w:val="CommentReference"/></w:rPr><w:commentReference w:id="1"/></w:r>
+```
+
+### Images
+
+1. Add image file to `word/media/`
+2. Add relationship to `word/_rels/document.xml.rels`:
+
+```xml
+<Relationship Id="rId5" Type=".../image" Target="media/image1.png"/>
+```
+
+3. Add content type to `[Content_Types].xml`:
+
+```xml
+<Default Extension="png" ContentType="image/png"/>
+```
+
+4. Reference in document.xml:
+
+```xml
+<w:drawing>
+  <wp:inline>
+    <wp:extent cx="914400" cy="914400"/>  <!-- EMUs: 914400 = 1 inch -->
+    <a:graphic>
+      <a:graphicData uri=".../picture">
+        <pic:pic>
+          <pic:blipFill><a:blip r:embed="rId5"/></pic:blipFill>
+        </pic:pic>
+      </a:graphicData>
+    </a:graphic>
+  </wp:inline>
+</w:drawing>
+```
+
+---
+
+## Dependencies
+
+- **pandoc**: Text extraction
+- **docx**: `npm install -g docx` (new documents)
+- **LibreOffice**: PDF conversion (auto-configured for sandboxed environments via `scripts/office/soffice.py`)
+- **Poppler**: `pdftoppm` for images

@@ -43,17 +43,50 @@ const CHEAP_MODEL_HOLD_TIMEOUT_MS = 30_000;
  * hold timeout is the per-slot reclaim timer (what Redis considers a
  * "stuck" replica) — NOT a per-request execution cap. Without this
  * AbortSignal, a slow OpenRouter response could block the slot plus
- * burn the agent's step budget for the full 30s hold window. 8s is
- * comfortable for gpt-oss-20b on a 300-token completion (<2s p95 in
- * practice) and short enough that a lagging call doesn't dominate a
- * RAG turn.
+ * burn the agent's step budget for the full 30s hold window.
+ *
+ * Bumped from 8s → 10s after observing occasional `effort: "low"`
+ * timeouts on `gpt-oss-20b`: even with reasoning capped to "low",
+ * the model can spend 5-9s on the reformulation when an OpenRouter
+ * route is congested. 10s covers the long tail without dominating
+ * the RAG turn (still parallelisable with embeddings + hybrid
+ * search inside `searchRAG`).
  */
-const MULTI_QUERY_TIMEOUT_MS = 8_000;
+const MULTI_QUERY_TIMEOUT_MS = 10_000;
 
-const cheapModel = openrouter.chat(CHEAP_MODEL);
+/**
+ * Multi-query reformulation is a pure formatting task — produce 2
+ * alternate phrasings of one input — with zero multi-step
+ * decision-making. On reasoning-capable models (default for
+ * `openai/gpt-oss-20b` on OpenRouter), the provider applies a
+ * non-trivial reasoning budget out of the box; `maxOutputTokens`
+ * only caps the visible text and does NOT bound
+ * `outputTokenDetails.reasoningTokens`. Result observed in practice:
+ * a reformulation call generated 17 773 tokens and missed the 8 s
+ * timeout, falling back to `[original]` — wasted spend, wasted
+ * latency, zero quality gain.
+ *
+ * First attempt was `reasoning: { enabled: false, effort: "none" }`
+ * — some upstream OpenRouter routes for `gpt-oss-20b` rejected with
+ * `Reasoning is mandatory for this endpoint and cannot be disabled.`
+ * (which providers exactly is not exposed by OpenRouter's response
+ * envelope). Switched to `effort: "low"` so the request is
+ * accepted by every route while keeping the reasoning budget tight
+ * — no runaway, no rejection.
+ */
+const cheapModel = openrouter.chat(CHEAP_MODEL, {
+  reasoning: { effort: "low" },
+});
 
-const buildPrompt = (query: string): string =>
-  `You are a search query rewriter for a multilingual transport and logistics knowledge base (shipping documents, bills of lading, invoices).
+/**
+ * Static rubric — identical across every call, so it lives in the
+ * system prompt. The variable payload (the user query) is sent as the
+ * user prompt below. Providers that auto-cache identical systems get a
+ * small free win; mainly it gives the model a clearer separation
+ * between rules and data and removes the "User query:\n${query}" tail
+ * that was easy to mis-parse on noisy completions.
+ */
+const SYSTEM_PROMPT = `You are a search query rewriter for a multilingual transport and logistics knowledge base (shipping documents, bills of lading, invoices).
 
 Rewrite the user's query as ${TARGET_VARIANT_COUNT} ALTERNATE phrasings that preserve the exact intent but use different vocabulary, synonyms, or trade terms. The goal is to improve recall in a hybrid vector + BM25 retriever.
 
@@ -62,10 +95,7 @@ Rules:
 - Do NOT number them, do NOT add quotes, do NOT add explanations.
 - Keep the original language of the query (do not translate).
 - Keep proper nouns, codes, IDs, and numbers verbatim when present.
-- Each phrasing must be a complete, standalone search query.
-
-User query:
-${query}`;
+- Each phrasing must be a complete, standalone search query.`;
 
 const parseVariants = (raw: string): string[] =>
   raw
@@ -97,7 +127,8 @@ export const generateQueryVariants = async (
       () =>
         generateText({
           model: cheapModel,
-          prompt: buildPrompt(trimmed),
+          system: SYSTEM_PROMPT,
+          prompt: trimmed,
           temperature: MULTI_QUERY_TEMPERATURE,
           maxOutputTokens: MULTI_QUERY_MAX_TOKENS,
           abortSignal: AbortSignal.timeout(MULTI_QUERY_TIMEOUT_MS),

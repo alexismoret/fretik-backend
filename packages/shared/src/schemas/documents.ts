@@ -1,19 +1,10 @@
 import { z } from "zod";
-import {
-  documentStatusEnum,
-  documentTypeEnum,
-  transportModeEnum,
-} from "../db/schema";
+import { documentStatusEnum } from "../db/schema";
 import { entityRoleSchema } from "./entities";
+import { fieldDefinitionResponseSchema } from "./field-definitions";
+import { FolderBreadcrumbSchema } from "./folders";
 
 export const documentStatusSchema = z.enum(documentStatusEnum.enumValues);
-export const documentTypeSchema = z.enum(documentTypeEnum.enumValues);
-export const transportModeSchema = z.enum(transportModeEnum.enumValues);
-
-export const documentTransportType = z.object({
-  code: z.string(),
-  icon: z.string().nullable(),
-});
 
 /**
  * Upload schema: single file + optional folder
@@ -37,8 +28,6 @@ export const UploadDocumentSchema = z.object({
 
 export type UploadDocumentInput = z.infer<typeof UploadDocumentSchema>;
 
-import { FolderBreadcrumbSchema } from "./folders";
-
 /**
  * Document response schema (without pre-extraction data)
  */
@@ -59,7 +48,8 @@ export const DocumentResponseSchema = z.object({
 export type DocumentResponse = z.infer<typeof DocumentResponseSchema>;
 
 /**
- * Document details response schema (with properties, uploader, and folder).
+ * Document details response schema (with universal properties, uploader, folder,
+ * dynamic field values + their definitions for rendering).
  */
 export const GetDocumentDetailsResponseSchema = DocumentResponseSchema.extend({
   uploadedBy: z
@@ -79,13 +69,9 @@ export const GetDocumentDetailsResponseSchema = DocumentResponseSchema.extend({
     .object({
       id: z.uuid(),
       pageCount: z.number(),
-      documentType: documentTypeSchema,
       documentLanguage: z.string().nullable(),
       documentSummary: z.string(),
-      documentDate: z.date().nullable(),
-      documentNumber: z.string().nullable(),
-      transportMode: transportModeSchema.nullable(),
-      documentTransportType: z.string().nullable(),
+      confidenceScore: z.number().nullable(),
       completedAt: z.date(),
       createdAt: z.date(),
     })
@@ -98,6 +84,17 @@ export const GetDocumentDetailsResponseSchema = DocumentResponseSchema.extend({
       color: z.string().nullable(),
     }),
   ),
+  /**
+   * Per-document custom field values, keyed by `fieldDefinitions.key`.
+   * Values are JSON primitives or arrays (multi_select) — the type is
+   * declared on the corresponding `fieldDefinitions` entry.
+   */
+  fieldValues: z.record(z.string(), z.unknown()),
+  /**
+   * Definitions resolved for the document's team, so the frontend can
+   * render the right panel + edit form without a second round-trip.
+   */
+  fieldDefinitions: z.array(fieldDefinitionResponseSchema),
 });
 
 export type GetDocumentDetailsResponse = z.infer<
@@ -105,19 +102,16 @@ export type GetDocumentDetailsResponse = z.infer<
 >;
 
 /**
- * Update document schema
+ * Update document schema. Universal fields stay typed; custom fields go
+ * through `fieldValues` keyed by definition slug. `null` value clears the
+ * key for the document; absence leaves it untouched.
  */
 export const UpdateDocumentSchema = z.object({
   originalFilename: z.string().optional(),
   folderId: z.uuid().nullish(),
   documentSummary: z.string().min(1).max(500).optional(),
-  documentType: documentTypeSchema.optional(),
-  documentTransportType: z.string().nullish(),
-  documentDate: z.coerce.date().nullish(),
-  documentNumber: z.string().nullish(),
-  transportMode: transportModeSchema.nullish(),
-  documentLanguage: z.string().length(2).optional(),
-  labelId: z.uuid().nullish(),
+  documentLanguage: z.string().length(2).nullish(),
+  labelIds: z.array(z.uuid()).optional(),
   entities: z
     .array(
       z.object({
@@ -126,6 +120,7 @@ export const UpdateDocumentSchema = z.object({
       }),
     )
     .optional(),
+  fieldValues: z.record(z.string(), z.unknown()).optional(),
 });
 
 export type UpdateDocumentInput = z.infer<typeof UpdateDocumentSchema>;

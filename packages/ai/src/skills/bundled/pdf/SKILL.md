@@ -1,344 +1,342 @@
 ---
 name: pdf
-description: Generate print-ready PDFs with reportlab — either flowing multi-page reports (Platypus) or pixel-deliberate templates (canvas), with tables, page numbers, headers, footers, and embedded images. Use when the deliverable should be laid out for print or distribution rather than editing.
+description: Use this skill whenever the user wants to do anything with PDF files. This includes reading or extracting text/tables from PDFs, combining or merging multiple PDFs into one, splitting PDFs apart, rotating pages, adding watermarks, creating new PDFs, filling PDF forms, encrypting/decrypting PDFs, extracting images, and OCR on scanned PDFs to make them searchable. If the user mentions a .pdf file or asks to produce one, use this skill.
 ---
 
-# pdf skill
+> **Fretik sandbox conventions.** Helper script paths in this guide
+> are relative to the skill folder. From your `/workspace/` working
+> directory, prefix them with `skills/pdf/` — e.g.
+> `python skills/pdf/scripts/extract_form_structure.py …` — or
+> `cd skills/pdf/` first. For Python imports, prefer the loader:
+> `from skill_loader import load_skill; load_skill("pdf")`. Deeper
+> references live next to this file as `reference.md` (advanced
+> patterns) and `forms.md` (fillable forms) — read on demand via
+> `read("skills/pdf/reference.md")`. Write every deliverable under
+> `outputs/` (e.g. `outputs/report.pdf`) and surface it with
+> `presentFiles({ paths: ["outputs/report.pdf"] })`.
 
-Deliver a PDF that prints cleanly, has automatic pagination, carries real structure (headings, tables, page numbers), and isn't an accident — meaning it's pixel-deliberate when the use case is a template (invoice, certificate) and flow-laid-out when the use case is a multi-page report.
+# PDF Processing Guide
 
-## When to use this skill
+## Overview
 
-Trigger on: "PDF", "export PDF", "print", "imprimer", "facture", "invoice", "bon de livraison", "certificate", "certificat", "courrier", "lettre", "rapport imprimable", and similar asks for a non-editable final artefact.
+This guide covers essential PDF processing operations using Python libraries and command-line tools. For advanced features, JavaScript libraries, and detailed examples, see REFERENCE.md. If you need to fill out a PDF form, read FORMS.md and follow its instructions.
 
-Don't use for: a document the user will edit (→ `docx`), a numeric deliverable (→ `xlsx`), a slide deck (→ `pptx`), or a chart-only visual (→ `data-viz`).
-
-## The reportlab decision: Platypus OR canvas
-
-reportlab offers two generation models. Pick deliberately:
-
-| Use case                                                                                                                          | Use                                                                             | Why                                                                                                                                                        |
-| --------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Multi-page flowing report (executive summary, narrative, tables, figures)                                                         | **Platypus** (`SimpleDocTemplate`, `Paragraph`, `Table`, `Spacer`, `PageBreak`) | Flows content across pages automatically, handles pagination, re-flows when tables split mid-page.                                                         |
-| Invoice, certificate, shipping label, delivery note, anything with a fixed visual template where every element has a specific x/y | **canvas** (`reportlab.pdfgen.canvas.Canvas`)                                   | You control every pixel. Fixed boxes for logo, header, line items, totals, signature.                                                                      |
-| Hybrid (a canvas overlay of static elements behind a Platypus flowable)                                                           | **Platypus with a custom `onPage` callback**                                    | `SimpleDocTemplate`'s `onFirstPage`/`onLaterPages` callbacks give you a `canvas` to draw page chrome (header bar, logo, page number) on top of every page. |
-
-If you're unsure, default to Platypus. It's the right tool for 80% of real requests.
-
-## Platypus — flowing reports
+## Quick Start
 
 ```python
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.units import cm
-from reportlab.lib import colors
-from reportlab.platypus import (
-    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
-    PageBreak, Image,
-)
+from pypdf import PdfReader, PdfWriter
 
-doc = SimpleDocTemplate(
-    "monthly-carrier-review-2026-03.pdf",
-    pagesize=A4,
-    leftMargin=2 * cm,
-    rightMargin=2 * cm,
-    topMargin=2 * cm,
-    bottomMargin=2 * cm,
-    title="Monthly carrier review — March 2026",
-    author="Fretik",
-)
+# Read a PDF
+reader = PdfReader("document.pdf")
+print(f"Pages: {len(reader.pages)}")
 
-styles = getSampleStyleSheet()
-styles.add(ParagraphStyle(
-    name="BodyJustified",
-    parent=styles["BodyText"],
-    alignment=4,          # 0=L, 1=C, 2=R, 4=justify
-    leading=14,
-))
-styles.add(ParagraphStyle(
-    name="Source",
-    parent=styles["BodyText"],
-    fontName="Helvetica-Oblique",
-    textColor=colors.HexColor("#808080"),
-    fontSize=8,
-    leading=10,
-    spaceBefore=4,
-))
-
-story = []
-story.append(Paragraph("Monthly carrier review — March 2026", styles["Title"]))
-story.append(Spacer(1, 0.4 * cm))
-story.append(Paragraph(
-    "This report summarises shipment volumes, on-time performance, and "
-    "cost variance across the top ten carriers for March 2026. Data was "
-    "pulled from Fretik's internal database as of 2026-04-21.",
-    styles["BodyJustified"],
-))
-story.append(Spacer(1, 0.6 * cm))
-
-story.append(Paragraph("Headline numbers", styles["Heading2"]))
-headline = [
-    ["KPI", "March 2026", "Δ vs. February"],
-    ["Volume (TEU)", "5,487", "+4.1%"],
-    ["On-time rate", "91.2%", "+0.8 pts"],
-    ["Average transit time", "18.2 days", "-0.5 d"],
-    ["Cost variance vs. contract", "+1.9%", "+0.3 pts"],
-]
-t = Table(headline, hAlign="LEFT", colWidths=[6 * cm, 4 * cm, 4 * cm])
-t.setStyle(TableStyle([
-    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F4E78")),
-    ("TEXTCOLOR",  (0, 0), (-1, 0), colors.white),
-    ("FONTNAME",   (0, 0), (-1, 0), "Helvetica-Bold"),
-    ("ALIGN",      (1, 0), (-1, -1), "RIGHT"),
-    ("ROWBACKGROUNDS", (0, 1), (-1, -1),
-        [colors.white, colors.HexColor("#F2F6FA")]),
-    ("GRID",       (0, 0), (-1, -1), 0.25, colors.HexColor("#BFBFBF")),
-    ("VALIGN",     (0, 0), (-1, -1), "MIDDLE"),
-    ("LEFTPADDING",  (0, 0), (-1, -1), 6),
-    ("RIGHTPADDING", (0, 0), (-1, -1), 6),
-    ("TOPPADDING",   (0, 0), (-1, -1), 4),
-    ("BOTTOMPADDING",(0, 0), (-1, -1), 4),
-]))
-story.append(t)
-story.append(Spacer(1, 0.3 * cm))
-story.append(Paragraph(
-    "Source: querySql — shipments + contracts, as of 2026-04-21 09:00 Europe/Paris.",
-    styles["Source"],
-))
-
-# Next section on a fresh page
-story.append(PageBreak())
-story.append(Paragraph("By carrier", styles["Heading2"]))
-# …more flowables…
-
-doc.build(story)
-print("saved monthly-carrier-review-2026-03.pdf")
+# Extract text
+text = ""
+for page in reader.pages:
+    text += page.extract_text()
 ```
 
-Then:
+## Python Libraries
 
-```
-presentFiles({ paths: ["monthly-carrier-review-2026-03.pdf"], message: "Rapport mensuel transporteurs (PDF)." })
-```
+### pypdf - Basic Operations
 
-### Page chrome via callbacks
+#### Merge PDFs
 
 ```python
-def _page_chrome(canvas, doc):
-    canvas.saveState()
-    # Header bar
-    canvas.setFillColor(colors.HexColor("#1F4E78"))
-    canvas.rect(0, A4[1] - 1.2 * cm, A4[0], 1.2 * cm, fill=1, stroke=0)
-    canvas.setFillColor(colors.white)
-    canvas.setFont("Helvetica-Bold", 10)
-    canvas.drawString(2 * cm, A4[1] - 0.8 * cm, "Fretik — Monthly carrier review")
-    # Footer: page number
-    canvas.setFillColor(colors.HexColor("#808080"))
-    canvas.setFont("Helvetica", 9)
-    canvas.drawRightString(
-        A4[0] - 2 * cm,
-        1.2 * cm,
-        f"Page {doc.page}",
-    )
-    canvas.restoreState()
+from pypdf import PdfWriter, PdfReader
 
-doc.build(story, onFirstPage=_page_chrome, onLaterPages=_page_chrome)
+writer = PdfWriter()
+for pdf_file in ["doc1.pdf", "doc2.pdf", "doc3.pdf"]:
+    reader = PdfReader(pdf_file)
+    for page in reader.pages:
+        writer.add_page(page)
+
+with open("merged.pdf", "wb") as output:
+    writer.write(output)
 ```
 
-### Tables that split across pages
-
-`Table(..., splitByRow=1, repeatRows=1)` lets a long table flow across pages, repeating the header row at the top of each continuation.
+#### Split PDF
 
 ```python
-t = Table(rows, colWidths=[...], repeatRows=1, splitByRow=1)
+reader = PdfReader("input.pdf")
+for i, page in enumerate(reader.pages):
+    writer = PdfWriter()
+    writer.add_page(page)
+    with open(f"page_{i+1}.pdf", "wb") as output:
+        writer.write(output)
 ```
 
-## canvas — pixel-deliberate layouts
-
-Use for invoices, certificates, labels, anything template-like. The canvas is a grid; you place every element by coordinates (origin is bottom-left).
+#### Extract Metadata
 
 ```python
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.units import cm, mm
-from reportlab.lib import colors
-from reportlab.pdfgen import canvas as rl_canvas
+reader = PdfReader("document.pdf")
+meta = reader.metadata
+print(f"Title: {meta.title}")
+print(f"Author: {meta.author}")
+print(f"Subject: {meta.subject}")
+print(f"Creator: {meta.creator}")
+```
 
-w, h = A4
-c = rl_canvas.Canvas("invoice-2026-04-0173.pdf", pagesize=A4)
-c.setTitle("Invoice 2026-04-0173")
+#### Rotate Pages
 
-# Company block (top-left)
-c.setFont("Helvetica-Bold", 14)
-c.drawString(2 * cm, h - 2 * cm, "Fretik SAS")
-c.setFont("Helvetica", 10)
-c.drawString(2 * cm, h - 2.6 * cm, "12 rue des Ports, 75012 Paris")
-c.drawString(2 * cm, h - 3.0 * cm, "SIREN 900 123 456 — VAT FR 12 900123456")
+```python
+reader = PdfReader("input.pdf")
+writer = PdfWriter()
 
-# Invoice block (top-right)
-c.setFont("Helvetica-Bold", 16)
-c.drawRightString(w - 2 * cm, h - 2 * cm, "INVOICE")
-c.setFont("Helvetica", 10)
-c.drawRightString(w - 2 * cm, h - 2.6 * cm, "No. 2026-04-0173")
-c.drawRightString(w - 2 * cm, h - 3.0 * cm, "Date: 2026-04-21")
-c.drawRightString(w - 2 * cm, h - 3.4 * cm, "Due: 2026-05-21")
+page = reader.pages[0]
+page.rotate(90)  # Rotate 90 degrees clockwise
+writer.add_page(page)
 
-# Client block (left, mid-page)
-c.setFont("Helvetica-Bold", 11)
-c.drawString(2 * cm, h - 5.5 * cm, "Bill to")
-c.setFont("Helvetica", 10)
-c.drawString(2 * cm, h - 6.0 * cm, "ACME Logistics SA")
-c.drawString(2 * cm, h - 6.4 * cm, "44 Haven Road, Antwerp 2030")
-c.drawString(2 * cm, h - 6.8 * cm, "VAT BE 0234 567 890")
+with open("rotated.pdf", "wb") as output:
+    writer.write(output)
+```
 
-# Line items — draw a table by hand for a fixed template
-c.setFillColor(colors.HexColor("#1F4E78"))
-c.rect(2 * cm, h - 10 * cm, w - 4 * cm, 0.8 * cm, fill=1, stroke=0)
-c.setFillColor(colors.white)
-c.setFont("Helvetica-Bold", 10)
-c.drawString(2.2 * cm, h - 9.5 * cm, "Description")
-c.drawRightString(13 * cm, h - 9.5 * cm, "Qty")
-c.drawRightString(16 * cm, h - 9.5 * cm, "Unit price")
-c.drawRightString(w - 2.2 * cm, h - 9.5 * cm, "Line total")
+### pdfplumber - Text and Table Extraction
 
-c.setFillColor(colors.black)
-c.setFont("Helvetica", 10)
-y = h - 11 * cm
-for line in [
-    ("Ocean freight Antwerp → Shanghai (40'HC)", 4, 1250.0, 5000.0),
-    ("Inland haulage Shanghai → Suzhou",         4,  180.0,  720.0),
-    ("Customs clearance fee",                    4,   60.0,  240.0),
-]:
-    desc, qty, unit, total = line
-    c.drawString(2.2 * cm, y, desc)
-    c.drawRightString(13 * cm, y, f"{qty}")
-    c.drawRightString(16 * cm, y, f"{unit:,.2f} €")
-    c.drawRightString(w - 2.2 * cm, y, f"{total:,.2f} €")
-    y -= 0.7 * cm
+#### Extract Text with Layout
 
-# Totals
-c.line(2 * cm, y - 0.2 * cm, w - 2 * cm, y - 0.2 * cm)
-y -= 0.8 * cm
-c.setFont("Helvetica-Bold", 11)
-c.drawRightString(16 * cm, y, "Subtotal")
-c.drawRightString(w - 2.2 * cm, y, f"{5960.0:,.2f} €")
-y -= 0.6 * cm
-c.drawRightString(16 * cm, y, "VAT (20%)")
-c.drawRightString(w - 2.2 * cm, y, f"{1192.0:,.2f} €")
-y -= 0.8 * cm
-c.setFont("Helvetica-Bold", 12)
-c.drawRightString(16 * cm, y, "Total")
-c.drawRightString(w - 2.2 * cm, y, f"{7152.0:,.2f} €")
+```python
+import pdfplumber
 
-# Footer
-c.setFont("Helvetica", 8)
-c.setFillColor(colors.HexColor("#808080"))
-c.drawString(
-    2 * cm, 1.5 * cm,
-    "Payment by IBAN FR76 3000 4000 0100 0000 0000 012 — BIC BNPAFRPP — "
-    "Reference: 2026-04-0173"
-)
+with pdfplumber.open("document.pdf") as pdf:
+    for page in pdf.pages:
+        text = page.extract_text()
+        print(text)
+```
 
-c.showPage()
+#### Extract Tables
+
+```python
+with pdfplumber.open("document.pdf") as pdf:
+    for i, page in enumerate(pdf.pages):
+        tables = page.extract_tables()
+        for j, table in enumerate(tables):
+            print(f"Table {j+1} on page {i+1}:")
+            for row in table:
+                print(row)
+```
+
+#### Advanced Table Extraction
+
+```python
+import pandas as pd
+
+with pdfplumber.open("document.pdf") as pdf:
+    all_tables = []
+    for page in pdf.pages:
+        tables = page.extract_tables()
+        for table in tables:
+            if table:  # Check if table is not empty
+                df = pd.DataFrame(table[1:], columns=table[0])
+                all_tables.append(df)
+
+# Combine all tables
+if all_tables:
+    combined_df = pd.concat(all_tables, ignore_index=True)
+    combined_df.to_excel("extracted_tables.xlsx", index=False)
+```
+
+### reportlab - Create PDFs
+
+#### Basic PDF Creation
+
+```python
+from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen import canvas
+
+c = canvas.Canvas("hello.pdf", pagesize=letter)
+width, height = letter
+
+# Add text
+c.drawString(100, height - 100, "Hello World!")
+c.drawString(100, height - 120, "This is a PDF created with reportlab")
+
+# Add a line
+c.line(100, height - 140, 400, height - 140)
+
+# Save
 c.save()
 ```
 
-## Styling: colors, fonts, grid
-
-### Colors — default palette
-
-| Role                            | Hex      | Notes                                    |
-| ------------------------------- | -------- | ---------------------------------------- |
-| Primary (header bars, headings) | `1F4E78` | Deep blue                                |
-| Secondary (accent)              | `2E75B6` | Lighter blue                             |
-| Body text                       | `000000` | Black — PDF renders near-black naturally |
-| Muted / source                  | `808080` | Gray for footnotes and source lines      |
-| Alternating row                 | `F2F6FA` | Very pale blue                           |
-| Total row                       | `D9E2EC` | Slightly darker                          |
-| Warning                         | `C0504D` | Muted red                                |
-| Success                         | `548235` | Muted green                              |
+#### Create PDF with Multiple Pages
 
 ```python
-colors.HexColor("#1F4E78")
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak
+from reportlab.lib.styles import getSampleStyleSheet
+
+doc = SimpleDocTemplate("report.pdf", pagesize=letter)
+styles = getSampleStyleSheet()
+story = []
+
+# Add content
+title = Paragraph("Report Title", styles['Title'])
+story.append(title)
+story.append(Spacer(1, 12))
+
+body = Paragraph("This is the body of the report. " * 20, styles['Normal'])
+story.append(body)
+story.append(PageBreak())
+
+# Page 2
+story.append(Paragraph("Page 2", styles['Heading1']))
+story.append(Paragraph("Content for page 2", styles['Normal']))
+
+# Build PDF
+doc.build(story)
 ```
 
-### Fonts
+#### Subscripts and Superscripts
 
-Default to Helvetica (shipped with every PDF reader) at sizes:
+**IMPORTANT**: Never use Unicode subscript/superscript characters (₀₁₂₃₄₅₆₇₈₉, ⁰¹²³⁴⁵⁶⁷⁸⁹) in ReportLab PDFs. The built-in fonts do not include these glyphs, causing them to render as solid black boxes.
 
-- Title: 18pt bold
-- H1 / section: 14pt bold
-- H2: 12pt bold
-- Body: 10pt
-- Table body: 9pt
-- Caption / source: 8pt italic
-
-For multilingual content with diacritics (é, ñ, ß) Helvetica is fine. For CJK, register a DejaVu or Noto font explicitly:
+Instead, use ReportLab's XML markup tags in Paragraph objects:
 
 ```python
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
-pdfmetrics.registerFont(TTFont("Noto", "/usr/share/fonts/noto/NotoSans-Regular.ttf"))
+from reportlab.platypus import Paragraph
+from reportlab.lib.styles import getSampleStyleSheet
+
+styles = getSampleStyleSheet()
+
+# Subscripts: use <sub> tag
+chemical = Paragraph("H<sub>2</sub>O", styles['Normal'])
+
+# Superscripts: use <super> tag
+squared = Paragraph("x<super>2</super> + y<super>2</super>", styles['Normal'])
 ```
 
-### Margins and grid
+For canvas-drawn text (not Paragraph objects), manually adjust font the size and position rather than using Unicode subscripts/superscripts.
 
-Default A4 with 2 cm margins all around. For dense reports, drop to 1.5 cm. Never go below 1 cm — printers clip edges.
+## Command-Line Tools
 
-## Sources
+### pdftotext (poppler-utils)
 
-- Platypus: append a `Paragraph` with the `Source` style (8pt Helvetica-Oblique gray) one line below the data it annotates.
-- canvas: `c.setFont("Helvetica-Oblique", 8)` + `c.setFillColor(colors.HexColor("#808080"))` + `c.drawString(...)` below the block.
+```bash
+# Extract text
+pdftotext input.pdf output.txt
 
-Canonical line:
+# Extract text preserving layout
+pdftotext -layout input.pdf output.txt
 
+# Extract specific pages
+pdftotext -f 1 -l 5 input.pdf output.txt  # Pages 1-5
 ```
-Source: [System/Document], [Date], [Specific Reference], [URL if applicable]
+
+### qpdf
+
+```bash
+# Merge PDFs
+qpdf --empty --pages file1.pdf file2.pdf -- merged.pdf
+
+# Split pages
+qpdf input.pdf --pages . 1-5 -- pages1-5.pdf
+qpdf input.pdf --pages . 6-10 -- pages6-10.pdf
+
+# Rotate pages
+qpdf input.pdf output.pdf --rotate=+90:1  # Rotate page 1 by 90 degrees
+
+# Remove password
+qpdf --password=mypassword --decrypt encrypted.pdf decrypted.pdf
 ```
 
-## Code style
+### pdftk (if available)
 
-- Build the `story` list top-to-bottom, then call `doc.build(story)` once. Don't interleave build calls.
-- Use `cm`/`mm` units, not raw points. `2 * cm` is unambiguous; `56` is not.
-- For canvas, group related draws between `c.saveState()` / `c.restoreState()` so color/font settings don't leak into later blocks.
-- Filename: kebab-case, dated, descriptive (`invoice-2026-04-0173.pdf`, `monthly-carrier-review-2026-03.pdf`).
-- Page size A4 for Europe, Letter for US; pick based on the user's context.
+```bash
+# Merge
+pdftk file1.pdf file2.pdf cat output merged.pdf
 
-## Reusable helpers
+# Split
+pdftk input.pdf burst
 
-`scripts/pdf_helpers.py` ships:
+# Rotate
+pdftk input.pdf rotate 1east output rotated.pdf
+```
 
-- `make_platypus_doc(filename, title, author="Fretik", pagesize=A4)` — returns a `SimpleDocTemplate` with our standard margins and metadata.
-- `standard_styles()` — returns a `StyleSheet1` extended with `BodyJustified`, `Source`, and `TableHeader` styles.
-- `draw_page_chrome(canvas, doc, title)` — reusable `onFirstPage`/`onLaterPages` callback.
-- `styled_table(rows, col_widths, has_header=True, has_totals_row=False)` — returns a `Table` with the canonical banded style.
+## Common Tasks
 
-Import:
+### Extract Text from Scanned PDFs
 
 ```python
-import sys; sys.path.insert(0, "skills/pdf/scripts")
-import pdf_helpers as ph
+# Requires: pip install pytesseract pdf2image
+import pytesseract
+from pdf2image import convert_from_path
 
-doc = ph.make_platypus_doc("report.pdf", "Monthly carrier review — March 2026")
-styles = ph.standard_styles()
-story = [...]
-doc.build(story, onFirstPage=lambda c, d: ph.draw_page_chrome(c, d, "Fretik"),
-                 onLaterPages=lambda c, d: ph.draw_page_chrome(c, d, "Fretik"))
+# Convert PDF to images
+images = convert_from_path('scanned.pdf')
+
+# OCR each page
+text = ""
+for i, image in enumerate(images):
+    text += f"Page {i+1}:\n"
+    text += pytesseract.image_to_string(image)
+    text += "\n\n"
+
+print(text)
 ```
 
-## Common pitfalls
+### Add Watermark
 
-- **Text runs off the page.** In Platypus, use `Paragraph` (flows) instead of `Canvas.drawString`. In canvas, compute your y manually and check against `2 * cm` (bottom margin).
-- **Characters render as black rectangles.** Your font doesn't cover those glyphs (typically for non-Latin scripts). Register a broader font.
-- **Table rows get cut mid-page in Platypus.** Set `Table(..., splitByRow=1, repeatRows=1)` or `KeepTogether` small sub-tables.
-- **Nothing appears in the PDF.** You forgot `c.showPage()` + `c.save()` for canvas, or `doc.build(story)` for Platypus.
-- **Page numbers wrong.** Use `doc.page` inside the `onLaterPages` callback — it's the correct counter.
-- **Hard-coded coordinates in canvas break on Letter when you meant A4.** Always reference `w, h = pagesize` and use relative offsets.
-- **`drawString` clips text.** `drawString` doesn't wrap. Use `Paragraph` inside a `Frame`, or pre-wrap the string.
-- **File is huge because of an uncompressed image.** Pass `preserveAspectRatio=True` and appropriate `width`/`height` to `Image(...)`; the PDF writer will embed a sensible raster.
+```python
+from pypdf import PdfReader, PdfWriter
 
-## Further reading
+# Create watermark (or load existing)
+watermark = PdfReader("watermark.pdf").pages[0]
 
-- `references/platypus-flowables.md` — exhaustive flowable catalogue (KeepInFrame, KeepTogether, BalancedColumns, …).
-- `references/canvas-recipes.md` — ready-to-paste recipes for delivery note, packing list, shipping label, certificate.
+# Apply to all pages
+reader = PdfReader("document.pdf")
+writer = PdfWriter()
 
-Load via `read("skills/pdf/references/<name>.md")` when the user's scenario needs it.
+for page in reader.pages:
+    page.merge_page(watermark)
+    writer.add_page(page)
+
+with open("watermarked.pdf", "wb") as output:
+    writer.write(output)
+```
+
+### Extract Images
+
+```bash
+# Using pdfimages (poppler-utils)
+pdfimages -j input.pdf output_prefix
+
+# This extracts all images as output_prefix-000.jpg, output_prefix-001.jpg, etc.
+```
+
+### Password Protection
+
+```python
+from pypdf import PdfReader, PdfWriter
+
+reader = PdfReader("input.pdf")
+writer = PdfWriter()
+
+for page in reader.pages:
+    writer.add_page(page)
+
+# Add password
+writer.encrypt("userpassword", "ownerpassword")
+
+with open("encrypted.pdf", "wb") as output:
+    writer.write(output)
+```
+
+## Quick Reference
+
+| Task               | Best Tool                       | Command/Code               |
+| ------------------ | ------------------------------- | -------------------------- |
+| Merge PDFs         | pypdf                           | `writer.add_page(page)`    |
+| Split PDFs         | pypdf                           | One page per file          |
+| Extract text       | pdfplumber                      | `page.extract_text()`      |
+| Extract tables     | pdfplumber                      | `page.extract_tables()`    |
+| Create PDFs        | reportlab                       | Canvas or Platypus         |
+| Command line merge | qpdf                            | `qpdf --empty --pages ...` |
+| OCR scanned PDFs   | pytesseract                     | Convert to image first     |
+| Fill PDF forms     | pdf-lib or pypdf (see FORMS.md) | See FORMS.md               |
+
+## Next Steps
+
+- For advanced pypdfium2 usage, see REFERENCE.md
+- For JavaScript libraries (pdf-lib), see REFERENCE.md
+- If you need to fill out a PDF form, follow the instructions in FORMS.md
+- For troubleshooting guides, see REFERENCE.md

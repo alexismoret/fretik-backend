@@ -8,7 +8,36 @@ import {
   prepareSandbox,
 } from "../lib/conversation-storage";
 import { maybePersistLargeOutput } from "../lib/persisted-output";
+import { withSlot } from "../lib/rate-limit";
 import { mapE2BError } from "./_e2b-errors";
+
+/**
+ * Per-conversation E2B execution mutex.
+ *
+ * The E2B sandbox is keyed on `conversationId` (Redis
+ * `e2b:sandbox:{conversationId}`) and is therefore SHARED between
+ * the parent agent and every sub-agent it spawns via `dispatchAgent`.
+ * The Jupyter kernel inside that sandbox is NOT thread-safe, and the
+ * sandbox itself only has 1 vCPU / 1 GB. When several sub-agents
+ * (or parent + sub-agent) issue concurrent `python` / `bash` calls
+ * on the same conversation, the kernel serialises them under load
+ * and we have observed timeouts on `workspace snapshot` and
+ * `restartCodeContext` plus general contention.
+ *
+ * Solution: serialise EVERY sandbox-touching call (`runInSandbox`,
+ * `restartPythonKernel`) per `conversationId` with a Redis-backed
+ * mutex (`withSlot` capacity 1). Parallel sub-agents that only touch
+ * `searchKnowledge`, `querySql`, `read`, `searchWeb` are NOT
+ * affected — they don't go through this mutex.
+ *
+ * Hold timeout: 5 min wall-clock cap per E2B call (cf. CLAUDE.md
+ * `<sandbox_constraints>`) + 30 s grace for snapshot / mirror
+ * overhead. If a replica crashes mid-call, the slot self-reclaims
+ * after this timeout so the next caller is not stuck forever.
+ */
+const E2B_EXEC_HOLD_TIMEOUT_MS = 5 * 60 * 1000 + 30_000;
+const e2bExecMutexKey = (conversationId: string): string =>
+  `e2b:exec:${conversationId}`;
 
 /**
  * Aligned with Anthropic's `code_execution_20260120` and OpenAI's
@@ -116,21 +145,28 @@ export const createPythonTool = () =>
         return mapE2BError(err, "while preparing sandbox workspace");
       }
 
-      if (restart) {
-        try {
-          await restartPythonKernel(conversationId);
-        } catch (err) {
-          return mapE2BError(err, "while restarting Python kernel");
-        }
-      }
-
+      // Serialise restart + run on the per-conversation E2B sandbox.
+      // Parent + sub-agents share the same sandbox; the Jupyter
+      // kernel can't handle concurrent execution. See the
+      // `E2B_EXEC_HOLD_TIMEOUT_MS` docblock at the top of this
+      // file for the full rationale.
       let result;
       try {
-        result = await runInSandbox(conversationId, {
-          language: "python",
-          code,
-          toolCallId,
-        });
+        result = await withSlot(
+          e2bExecMutexKey(conversationId),
+          1,
+          E2B_EXEC_HOLD_TIMEOUT_MS,
+          async () => {
+            if (restart) {
+              await restartPythonKernel(conversationId);
+            }
+            return runInSandbox(conversationId, {
+              language: "python",
+              code,
+              toolCallId,
+            });
+          },
+        );
       } catch (err) {
         return mapE2BError(err, "while running Python in sandbox");
       }

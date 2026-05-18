@@ -1,34 +1,46 @@
 import type { DocumentVectorMetadata } from "@fretik/shared/db/schema";
 
 /**
+ * Stringify a primitive (or array of primitives) for inclusion in the
+ * semantic header / metadata-only text. `null` / `undefined` skip the
+ * field; arrays are joined with comma to keep the header compact.
+ */
+const formatScalar = (
+  value: string | number | boolean | string[] | null | undefined,
+): string | null => {
+  if (value === null || value === undefined) return null;
+  if (Array.isArray(value)) {
+    const joined = value.filter((v) => v != null && v !== "").join(", ");
+    return joined.length > 0 ? joined : null;
+  }
+  if (typeof value === "string") {
+    return value.length > 0 ? value : null;
+  }
+  return String(value);
+};
+
+/**
  * Builds a single-line semantic header prepended to each chunk's
  * `contextual_prefix` before embedding + BM25 indexing.
  *
- * Why per-chunk: Anthropic Contextual Retrieval bumps recall by ~35% by
- * situating each chunk. Adding document-level metadata (file name, type,
- * entity names) to every chunk means queries like "invoices from CMA CGM"
- * match documents where those tokens exist only in the metadata, not in
- * the OCR text. Without this, an invoice whose OCR doesn't mention
- * "CMA CGM" but whose `entities` metadata does is invisible to semantic
- * search unless the caller filters on JSONB explicitly — which our
- * agent tools don't do.
- *
- * The header is prepended to every chunk's prefix so every vector
- * carries the signal, not just the first chunk.
+ * Industry-specific fields ride through `metadata.custom_fields` as raw
+ * `{ key: value }` pairs (already pre-filtered by the caller to fields
+ * whose definition has `vectorizeInclude=true`). Keys are emitted as-is:
+ * they are already descriptive (`transport_mode`, `invoice_number`, …)
+ * and both cosine similarity and BM25 handle snake_case well — no need
+ * to round-trip via the field definitions for label lookup.
  */
 export const buildSemanticHeader = (
   metadata: DocumentVectorMetadata,
 ): string => {
-  const parts: string[] = [
-    `Document: ${metadata.file_name || "unknown"}`,
-    `Type: ${metadata.document_type || "unknown"}`,
-  ];
-  if (metadata.document_transport_type)
-    parts.push(`Transport: ${metadata.document_transport_type}`);
-  if (metadata.transport_mode) parts.push(`Mode: ${metadata.transport_mode}`);
-  if (metadata.document_date) parts.push(`Date: ${metadata.document_date}`);
-  if (metadata.document_number)
-    parts.push(`Number: ${metadata.document_number}`);
+  const parts: string[] = [`Document: ${metadata.file_name || "unknown"}`];
+  for (const [key, value] of Object.entries(metadata.custom_fields ?? {})) {
+    const formatted = formatScalar(value);
+    if (formatted !== null) parts.push(`${key}: ${formatted}`);
+  }
+  if (metadata.labels && metadata.labels.length > 0) {
+    parts.push(`labels: ${metadata.labels.map((l) => l.name).join(", ")}`);
+  }
   for (const entity of metadata.entities) {
     parts.push(`${entity.role}: ${entity.name} (${entity.type})`);
   }
@@ -55,16 +67,14 @@ export const buildMetadataOnlyText = (
   }
   lines.push(`File: ${metadata.file_name || "unknown"}`);
   lines.push(`File type: ${metadata.file_type || "unknown"}`);
-  if (metadata.document_type)
-    lines.push(`Document type: ${metadata.document_type}`);
-  if (metadata.document_transport_type)
-    lines.push(`Transport type: ${metadata.document_transport_type}`);
-  if (metadata.transport_mode)
-    lines.push(`Transport mode: ${metadata.transport_mode}`);
-  if (metadata.document_date)
-    lines.push(`Document date: ${metadata.document_date}`);
-  if (metadata.document_number)
-    lines.push(`Document number: ${metadata.document_number}`);
+
+  for (const [key, value] of Object.entries(metadata.custom_fields ?? {})) {
+    const formatted = formatScalar(value);
+    if (formatted !== null) lines.push(`${key}: ${formatted}`);
+  }
+  if (metadata.labels && metadata.labels.length > 0) {
+    lines.push(`Labels: ${metadata.labels.map((l) => l.name).join(", ")}`);
+  }
   for (const entity of metadata.entities) {
     lines.push(`${entity.role}: ${entity.name} (${entity.type})`);
   }

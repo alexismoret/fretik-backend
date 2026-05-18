@@ -136,3 +136,39 @@ export const sandboxFileExists = async (
     return false;
   }
 };
+
+export interface SandboxCommandResult {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+}
+
+/**
+ * Run a one-shot shell command in the conversation's sandbox.
+ *
+ * Thin wrapper over `sbx.commands.run` — kept here so callers that just
+ * need a synchronous bash exec (e.g. `tar -xzf` during bootstrap, a
+ * one-line filesystem fixup) don't have to pull in the much heavier
+ * `runInSandbox` (which manages the persistent Jupyter kernel, captures
+ * rich outputs, snapshots /workspace before/after, and mirrors changes
+ * to S3 — all overkill for "run this command, give me the exit code").
+ *
+ * `cwd` defaults to `/workspace` to match the template's `setWorkdir`
+ * contract.
+ */
+export const execSandboxCommand = async (
+  conversationId: string,
+  command: string,
+  options: { cwd?: string } = {},
+): Promise<SandboxCommandResult> => {
+  const lease = await acquireSandbox(conversationId);
+  const sbx = await Sandbox.connect(lease.sandboxId);
+  const result = await sbx.commands.run(command, {
+    cwd: options.cwd ?? SANDBOX_WORKSPACE,
+  });
+  return {
+    exitCode: result.exitCode,
+    stdout: result.stdout,
+    stderr: result.stderr,
+  };
+};

@@ -1,4 +1,4 @@
-import { getSkillCatalog } from "../../skills/materialize";
+import { buildSessionStateBlock } from "../../services/session-state/build-block";
 import type { SearchableToolRegistry } from "./chatbot-tool";
 import type { AgentRuntimeContext } from "./runtime-context";
 
@@ -26,6 +26,10 @@ import type { AgentRuntimeContext } from "./runtime-context";
  */
 
 const TEMPLATE_URL = new URL("../chatbot/system-prompt.md", import.meta.url);
+const SUB_AGENT_TEMPLATE_URL = new URL(
+  "../chatbot/sub-agent-system-prompt.md",
+  import.meta.url,
+);
 
 /**
  * Match `<!-- ... -->` blocks (including multi-line). The trailing
@@ -40,6 +44,26 @@ const SYSTEM_PROMPT_TEMPLATE = RAW_SYSTEM_PROMPT_TEMPLATE.replace(
   HTML_COMMENT_RE,
   "",
 );
+
+/**
+ * Sub-agent system prompt — loaded once at module init alongside the
+ * main system prompt. Pure static text (no `{{placeholder}}`
+ * substitutions): the sub-agent receives the per-task context
+ * verbatim through the `task` instruction passed by the parent's
+ * `dispatchAgent` tool, not through prompt template variables.
+ *
+ * HTML comments are stripped through the same regex used for the
+ * main prompt so the maintainer-facing docblock at the top of the
+ * file doesn't cost model tokens.
+ */
+const RAW_SUB_AGENT_PROMPT = await Bun.file(SUB_AGENT_TEMPLATE_URL).text();
+
+const SUB_AGENT_SYSTEM_PROMPT = RAW_SUB_AGENT_PROMPT.replace(
+  HTML_COMMENT_RE,
+  "",
+).trim();
+
+export const buildSubAgentSystemPrompt = (): string => SUB_AGENT_SYSTEM_PROMPT;
 
 /**
  * Format a `Date` the same way the Claude reference prompt does but
@@ -145,22 +169,18 @@ const formatDeferredToolList = (
 };
 
 /**
- * Render the `{{skillsCatalog}}` placeholder — the progressive-disclosure
- * L1 listing of bundled skills. Only the name + description are injected
- * into the system prompt; the agent reads `skills/{name}/SKILL.md` via
- * the existing `read` tool when a skill becomes relevant, matching
- * Anthropic's API Skills model exactly (filesystem + read, no bespoke
- * loadSkill tool).
+ * Pre-rendered `{{skillsCatalog}}` block — the L1 listing of skills
+ * the team has enabled. Built once per turn by the chatbot handler
+ * (`listEnabledSkillsForTeam → formatEnabledSkillsBlock`) and passed
+ * in via `ctx.enabledSkillsBlock`.
+ *
+ * The handler does the team filtering on purpose: a skill the team
+ * has disabled NEVER reaches the prompt. The agent has no way to
+ * know it exists and can't accidentally call into it (Anthropic's
+ * recommended pattern over instructing the model negatively — see
+ * plan §"Filtrage en amont"). When the team has no enabled skills
+ * the renderer falls back to a placeholder line.
  */
-const formatSkillsCatalog = (): string => {
-  const catalog = getSkillCatalog();
-  if (catalog.length === 0) {
-    return "_No bundled skills available._";
-  }
-  return catalog
-    .map((entry) => `- **${entry.name}** — ${entry.description}`)
-    .join("\n");
-};
 
 /**
  * Build the chatbot system prompt for a given runtime context.
@@ -182,7 +202,10 @@ export const buildChatbotSystemPrompt = (
     organizationId: ctx.organizationId,
     conversationId: ctx.conversationId ?? "unknown",
     deferredToolList: formatDeferredToolList(deferredTools),
-    skillsCatalog: formatSkillsCatalog(),
+    skillsCatalog:
+      ctx.enabledSkillsBlock && ctx.enabledSkillsBlock.length > 0
+        ? ctx.enabledSkillsBlock
+        : "_No skills enabled for this team._",
     attachedFilesBlock:
       ctx.attachedFilesBlock && ctx.attachedFilesBlock.length > 0
         ? ctx.attachedFilesBlock
@@ -191,5 +214,20 @@ export const buildChatbotSystemPrompt = (
       ctx.chatbotContextManifest && ctx.chatbotContextManifest.length > 0
         ? ctx.chatbotContextManifest
         : "_No persistent context configured._",
+    sessionStateBlock: (() => {
+      const block = buildSessionStateBlock({
+        dynamicToolManager: ctx.dynamicToolManager,
+        taskManager: ctx.taskManager,
+      });
+      return block.length > 0 ? block : "_No active session state._";
+    })(),
+    activeMemoryBlock:
+      ctx.activeMemoryBlock && ctx.activeMemoryBlock.length > 0
+        ? ctx.activeMemoryBlock
+        : "_No relevant memory recalled for this turn._",
+    teamFieldDefinitions:
+      ctx.teamFieldDefinitionsBlock && ctx.teamFieldDefinitionsBlock.length > 0
+        ? ctx.teamFieldDefinitionsBlock
+        : "_No dynamic fields configured for this team._",
   });
 };

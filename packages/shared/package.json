@@ -26,7 +26,9 @@
     "./schemas/*": "./src/schemas/*.ts",
     "./types/*": "./src/types/*.ts",
     "./utils/*": "./src/utils/*.ts",
-    "./emails/*": "./src/emails/*.ts"
+    "./emails/*": "./src/emails/*.ts",
+    "./templates/*": "./src/templates/*.ts",
+    "./templates/document-fields": "./src/templates/document-fields/index.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1045.0",

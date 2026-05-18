@@ -7,7 +7,25 @@ import {
   prepareSandbox,
 } from "../lib/conversation-storage";
 import { maybePersistLargeOutput } from "../lib/persisted-output";
+import { withSlot } from "../lib/rate-limit";
 import { mapE2BError } from "./_e2b-errors";
+
+/**
+ * Per-conversation E2B execution mutex (capacity 1) — SAME key
+ * namespace as `tools/python.ts` so every sandbox-touching call
+ * across `bash` + `python` on the SAME `conversationId` serialises
+ * through one shared lock. Bash itself is a fresh subprocess (no
+ * kernel state) but it still shares the sandbox's 1 vCPU / 1 GB AND
+ * the `/workspace` filesystem with `python`. Without this mutex,
+ * `bash rm file` racing against `python pd.read_csv(file)` would
+ * corrupt the workspace, and concurrent heavy commands (find,
+ * grep -R, tar) compete for the same CPU/RAM as a running Python
+ * cell — both observed to trigger E2B timeouts under load when
+ * sub-agents fan out via `dispatchAgent`.
+ */
+const E2B_EXEC_HOLD_TIMEOUT_MS = 5 * 60 * 1000 + 30_000;
+const e2bExecMutexKey = (conversationId: string): string =>
+  `e2b:exec:${conversationId}`;
 
 /**
  * Aligned with Anthropic's `bash_code_execution` and Claude Code's
@@ -68,35 +86,20 @@ export const bashInputSchema = z.object({
 export const createBashTool = () =>
   tool({
     description: [
-      "Executes a single bash command in the conversation's E2B sandbox. Same `/workspace` as the `python` tool — files written by either are visible to the other.",
+      "Run a single bash command in the conversation's E2B sandbox under `/workspace`. Same filesystem as `python` (files written by either are visible to the other), independent state.",
       "",
-      "Execution model — fresh subprocess per call, stateful filesystem:",
-      '- Each call is a fresh `bash -c "<command>"` invocation with cwd `/workspace`. Env vars, shell variables, `cd` changes, aliases, and `source`d files do NOT persist between calls. Chain in one call with `&&` / `;` / heredocs when you need them in the same shell.',
-      "- The `python` tool runs against a separate Jupyter kernel that DOES keep state across calls. `bash` cannot read Python variables and vice versa — they share only the filesystem. If you `pip install` a package via `bash`, restart the Python kernel (`python` tool with `restart: true`) before importing it.",
-      "- Files under `/workspace` DO persist across calls within the same conversation, including artifacts produced by `python`. Reference them by relative path (`ls`, `grep pattern attachments/invoice.csv`).",
-      "- Conversation files (user uploads, previous tool outputs) are synced into `/workspace` before every call.",
-      "- Files you create, modify, or delete come back as structured artifacts (path/mime/size) / `deletedPaths`. Call `presentFiles` afterwards to surface generated files — a bare bash write does not show anything by itself.",
+      "Usage:",
+      "- Use for shell-native operations: `ls`, `find`, `grep`, `head`, `tail`, `wc`, `sort`, `uniq`, `sed`, `awk`, `diff`, `tar`, pipelines, `mv` / `cp` / `rm` / `mkdir`.",
+      "- Use for `pip install <pkg>` for one-off packages (then `restart: true` on the next `python` call to pick it up).",
+      "- For viewing a single file → use `read` instead (handles PDF/DOCX/PPTX sidecars, line numbering).",
+      "- For pandas / numpy / chart generation / structured data work → use `python` instead (don't `bash python3 -c \"...\"` — you'd lose the persistent kernel).",
+      "- For HTTP fetches → use `searchWeb` / `webFetch` (sandbox egress is restricted to PyPI / GitHub / Fretik / carrier APIs).",
+      "- Each call is a fresh `bash -c` subprocess. Env vars, shell variables, `cd`, aliases, `source`d files do NOT persist between calls. Chain with `&&` / `;` / `|` / heredocs in one call when needed.",
+      "- Files under `/workspace` DO persist across calls. Files you create under `attachments/` or `outputs/` are auto-mirrored to durable storage — call `presentFiles` to surface generated files to the user.",
+      "- Sandbox: 1 vCPU, 1 GB memory, 5 min wall-clock, non-root user.",
+      "- `restart: true` KILLS AND RECREATES the entire sandbox (wipes `/workspace`!). Escape hatch for filesystem corruption only — for kernel-only reset use `python` with `restart: true` instead.",
       "",
-      "Sandbox: 1 vCPU, 1 GB memory, 5 min wall-clock timeout, non-root user, /workspace as cwd. Outbound internet is restricted to a curated allowlist (PyPI, GitHub, Fretik, common carrier APIs).",
-      "",
-      "When to use:",
-      "- `ls`, `find`, `grep`, `head`, `tail`, `wc`, `sort`, `uniq`, `sed`, `awk`, `diff`, `tar`, pipelines — anything shell-native.",
-      "- Quick file inspection where `read` would be overkill (`wc -l *.csv`, `head -5 data.json`).",
-      "- File movement: `mv`, `cp`, `rm`, `mkdir`.",
-      "- `pip install <pkg>` for one-off packages not in the pre-installed list (then `restart: true` on the next `python` call).",
-      "",
-      "When NOT to use — pick a more specialized tool:",
-      "- To view a single file's contents → `read` (handles PDF/DOCX sidecars, line numbering, persisted-output recovery).",
-      "- For pandas/numpy/chart generation → `python` (don't use `bash python3 -c ...`; the `python` tool keeps a stateful kernel).",
-      "- For HTTP fetches → `searchWeb` / `webFetch` (the sandbox's egress is restricted; only the allowlist works).",
-      "",
-      "Examples:",
-      "- Count rows: `wc -l invoice.csv`",
-      "- Find files: `find /workspace -name '*.pdf' -type f`",
-      "- Search text: `grep -n 'container' /workspace/*.txt | head -50`",
-      "- Chain: `mkdir -p out && cp *.csv out/ && ls out/`",
-      "",
-      "Output: `{ stdout, stderr, artifacts: [{path, mime, size}] }`. Large outputs (>30 KB serialized) are swapped for a `<persisted-output>` envelope — `read` that file to inspect. Pre-filter with `| head -N` or `| wc -l` when possible.",
+      "Output: `{ stdout, stderr, artifacts: [{path, mime, size}] }`. Large outputs are swapped for a `<persisted-output>` envelope — pre-filter with `| head -N` or `| wc -l` when possible.",
     ].join("\n"),
     inputSchema: bashInputSchema,
     execute: async ({ command, description, restart }, options) => {
@@ -117,13 +120,21 @@ export const createBashTool = () =>
         return mapE2BError(err, "while preparing sandbox workspace");
       }
 
+      // Serialise sandbox execution per conversation — see the
+      // `e2bExecMutexKey` docblock at the top of this file.
       let result;
       try {
-        result = await runInSandbox(conversationId, {
-          language: "bash",
-          code: command,
-          restart,
-        });
+        result = await withSlot(
+          e2bExecMutexKey(conversationId),
+          1,
+          E2B_EXEC_HOLD_TIMEOUT_MS,
+          () =>
+            runInSandbox(conversationId, {
+              language: "bash",
+              code: command,
+              restart,
+            }),
+        );
       } catch (err) {
         return mapE2BError(err, "while running bash in sandbox");
       }

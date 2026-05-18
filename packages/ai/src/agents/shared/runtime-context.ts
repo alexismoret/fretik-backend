@@ -119,6 +119,44 @@ export interface AgentRuntimeContext {
    * configured._".
    */
   chatbotContextManifest?: string;
+  /**
+   * Rendered `{{activeMemoryBlock}}` fragment for the system prompt —
+   * a 1-3 bullet markdown summary of the persistent memories already
+   * judged relevant for the current turn. Built by the handler before
+   * the main `streamText` call via `runActiveMemoryRecall`
+   * (`services/active-memory/recall.ts`). When `undefined` the prompt
+   * omits the `<active_memory>` block entirely (which is itself a
+   * signal — see `<memory_protocol>`). NEVER blocks the turn: a
+   * recall failure or "NONE" verdict simply leaves this undefined.
+   */
+  activeMemoryBlock?: string;
+  /**
+   * Rendered `{{teamFieldDefinitions}}` fragment for the system prompt
+   * — one line per enabled field definition (`- key (type)`), ordered
+   * by `displayOrder`. Compact on purpose: `type` is the only bit the
+   * LLM needs to write the right JSONB filter; the user-facing label,
+   * description, and full config are fetched on demand via the
+   * `listFieldDefinitions` tool. Built by the handler from
+   * `getFieldDefinitionsForTeam` (Redis-cached). Empty string when the
+   * team has no enabled fields — the prompt section then renders as
+   * `_No dynamic fields configured for this team._`.
+   */
+  teamFieldDefinitionsBlock?: string;
+  /**
+   * Rendered `{{skillsCatalog}}` fragment for the system prompt — one
+   * line per skill enabled for this team (`- **name** — description`),
+   * ordered by name. Built by the handler from
+   * `listEnabledSkillsForTeam` so always-on skills + the team's
+   * configurable opt-ins are the ONLY ones the model ever sees.
+   *
+   * Filtering happens here (upstream) on purpose: a skill the team has
+   * disabled never appears in the catalogue, the agent can't refer to
+   * it, and the prompt avoids the negative-instruction tax forever
+   * (Anthropic's recommended pattern — cf. plan §"Filtrage en amont").
+   *
+   * Empty / undefined renders as `_No skills enabled for this team._`.
+   */
+  enabledSkillsBlock?: string;
 }
 
 /**

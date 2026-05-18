@@ -1,17 +1,28 @@
 import { hasToolCall, stepCountIs, type PrepareStepFunction } from "ai";
 import { z } from "zod";
-import { chatModel, fallbackChatModel } from "../../lib/openrouter";
+import {
+  chatModel,
+  dispatchAgentCheapModel,
+  fallbackChatModel,
+} from "../../lib/openrouter";
+import { createDispatchAgentTool } from "../../tools/dispatch-agent";
 import {
   buildAgentSet,
   type AgentRuntimeContextBase,
 } from "../shared/agent-builder";
 import type { SearchableToolRegistry } from "../shared/chatbot-tool";
+import { buildSubAgentSystemPrompt } from "../shared/prompt-renderer";
 import {
   getRuntimeContext,
   type AgentRuntimeContext,
 } from "../shared/runtime-context";
 import { buildChatbotSystemPrompt } from "./system-prompt";
-import { buildChatbotTools, type ChatbotTools } from "./tools";
+import {
+  buildChatbotTools,
+  buildSubAgentTools,
+  type ChatbotTools,
+  type SubAgentTools,
+} from "./tools";
 
 /**
  * Maximum number of LLM steps the chatbot may take in a single turn,
@@ -103,6 +114,40 @@ export const ChatbotCallOptionsSchema = z.object({
    * is configured for either scope.
    */
   chatbotContextManifest: z.string().optional(),
+  /**
+   * Active Memory recall block — a 1-3 bullet markdown summary of
+   * memories already judged relevant for the current turn (see
+   * `services/active-memory/recall.ts`). Threaded into
+   * `AgentRuntimeContext.activeMemoryBlock` and substituted into the
+   * `{{activeMemoryBlock}}` placeholder at the very bottom of the
+   * dynamic suffix. Omitted when no candidate was relevant or when
+   * recall failed / timed out (active memory must never block a turn).
+   */
+  activeMemoryBlock: z.string().optional(),
+  /**
+   * Compact catalogue of the team's enabled dynamic field definitions
+   * — one line per field (`- key (type)`), ordered by `displayOrder`.
+   * The handler builds it via `getFieldDefinitionsForTeam`
+   * (Redis-cached). Threaded into
+   * `AgentRuntimeContext.teamFieldDefinitionsBlock` and substituted
+   * into the `{{teamFieldDefinitions}}` placeholder under
+   * `<team_fields>` in the dynamic suffix. Lets the LLM write correct
+   * `document_field_values.field_key` queries and
+   * `customFilters[].fieldKey` for `listDocuments` without an extra
+   * tool call. Omitted when the team has no enabled fields.
+   */
+  teamFieldDefinitionsBlock: z.string().optional(),
+  /**
+   * Catalogue of skills enabled for this team — one line per skill
+   * (`- **name** — description`). The handler builds it via
+   * `listEnabledSkillsForTeam` and threads it through
+   * `AgentRuntimeContext.enabledSkillsBlock`, substituted into the
+   * `{{skillsCatalog}}` placeholder. Filtering by team happens
+   * upstream: disabled skills NEVER reach the prompt (Anthropic's
+   * recommended pattern, vs. instructing the model negatively).
+   * Empty / undefined renders as a placeholder line.
+   */
+  enabledSkillsBlock: z.string().optional(),
   /**
    * Per-turn trace id. The handler generates this at the start of
    * `runChatbotTurn` (typically reusing the resumable `streamId`) and
@@ -197,7 +242,109 @@ const buildChatbotRuntimeContextBase = (
   timeZone: options.timeZone,
   attachedFilesBlock: options.attachedFilesBlock,
   chatbotContextManifest: options.chatbotContextManifest,
+  activeMemoryBlock: options.activeMemoryBlock,
+  teamFieldDefinitionsBlock: options.teamFieldDefinitionsBlock,
+  enabledSkillsBlock: options.enabledSkillsBlock,
   traceId: options.traceId,
+});
+
+/**
+ * Sub-agent step budget. Default 25 — comfortable headroom for a
+ * realistic "analyse 5 documents and compare" pattern (~5 reads +
+ * ~5 python cells + a few RAG/SQL probes + final summary) while
+ * staying tight enough that genuinely runaway sub-agents stop and
+ * escalate to the parent. Tunable via `CHATBOT_SUB_AGENT_MAX_STEPS`
+ * (range [1, 100]).
+ *
+ * When the budget IS exhausted, AI SDK does NOT throw — the run
+ * stops gracefully with `finishReason !== "stop"` and `result.text`
+ * is whatever the sub-agent had produced so far (often empty if the
+ * last step was mid tool-call). The `dispatchAgent` execute below
+ * detects this and prefixes the summary with a clear "[budget
+ * exhausted]" marker so the parent agent can decide whether to
+ * retry with a tighter task scope or accept the partial result.
+ */
+const parseSubAgentMaxSteps = (): number => {
+  const raw = process.env.CHATBOT_SUB_AGENT_MAX_STEPS;
+  if (raw === undefined || raw === "") return 25;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < 1 || parsed > 100) {
+    throw new Error(
+      `Invalid CHATBOT_SUB_AGENT_MAX_STEPS: "${raw}" — expected an integer in [1, 100].`,
+    );
+  }
+  return parsed;
+};
+
+/**
+ * Sub-agent system prompt — pure static text, no per-turn variables.
+ * The sub-agent receives every per-task signal (file paths, IDs,
+ * acceptance criteria) verbatim through the `task` instruction the
+ * parent passes via `dispatchAgent`. Wrapped in a callback to
+ * satisfy `buildAgentSet`'s `systemPrompt` shape.
+ */
+const subAgentSystemPrompt = (): string => buildSubAgentSystemPrompt();
+
+/**
+ * Sub-agent set on the PRIMARY model — same model as the main agent
+ * with the same fallback. Used when `dispatchAgent({ model: 'primary' })`
+ * (the default) is called.
+ *
+ * No `prepareStep` hook → the framework defaults to "every tool name
+ * in the registry is active on every step", which is what we want
+ * for a sub-agent (no Progressive Disclosure inside a sub-agent run).
+ */
+const subAgentPrimarySet = buildAgentSet<ChatbotCallOptions, SubAgentTools>({
+  id: "chatbot.sub.primary",
+  buildTools: buildSubAgentTools,
+  systemPrompt: subAgentSystemPrompt,
+  model: chatModel,
+  fallbackModel: fallbackChatModel,
+  stopWhen: [
+    stepCountIs(parseSubAgentMaxSteps()),
+    hasToolCall("askUserQuestion"),
+  ],
+  buildRuntimeContextBase: buildChatbotRuntimeContextBase,
+  callOptionsSchema: ChatbotCallOptionsSchema,
+});
+
+/**
+ * Sub-agent set on the CHEAP model (`dispatchAgentCheapModel`,
+ * `deepseek/deepseek-v4-flash` by default). Used when
+ * `dispatchAgent({ model: 'cheap' })` is called for well-scoped
+ * mechanical sub-tasks (summarise one document, extract a known
+ * schema, classify items).
+ *
+ * Fallback escalates to the main `chatModel`: if the cheap model
+ * errors out (rate-limit, provider 5xx, etc.), the parent's
+ * `dispatchAgent` execute returns the primary model's result rather
+ * than a hard failure.
+ */
+const subAgentCheapSet = buildAgentSet<ChatbotCallOptions, SubAgentTools>({
+  id: "chatbot.sub.cheap",
+  buildTools: buildSubAgentTools,
+  systemPrompt: subAgentSystemPrompt,
+  model: dispatchAgentCheapModel,
+  fallbackModel: chatModel,
+  stopWhen: [
+    stepCountIs(parseSubAgentMaxSteps()),
+    hasToolCall("askUserQuestion"),
+  ],
+  buildRuntimeContextBase: buildChatbotRuntimeContextBase,
+  callOptionsSchema: ChatbotCallOptionsSchema,
+});
+
+/**
+ * `dispatchAgent` tool — built once against the sub-agent sets above.
+ * Routed by the `model` parameter passed by the parent agent at call
+ * time: `"primary"` (default) → `subAgentPrimarySet`, `"cheap"` →
+ * `subAgentCheapSet`. The tool itself is registered as a `core` tool
+ * in `buildChatbotTools` so it's always available to the parent
+ * without going through Progressive Disclosure.
+ */
+const dispatchAgentTool = createDispatchAgentTool({
+  primary: subAgentPrimarySet.primary,
+  cheap: subAgentCheapSet.primary,
 });
 
 /**
@@ -215,7 +362,7 @@ const buildChatbotRuntimeContextBase = (
 // `computeCoreToolNames` docblock above for the DRY rationale.
 export const chatbotAgentSet = buildAgentSet<ChatbotCallOptions, ChatbotTools>({
   id: "chatbot",
-  buildTools: buildChatbotTools,
+  buildTools: () => buildChatbotTools({ dispatchAgent: dispatchAgentTool }),
   systemPrompt: chatbotSystemPrompt,
   model: chatModel,
   fallbackModel: fallbackChatModel,

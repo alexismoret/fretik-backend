@@ -50,18 +50,36 @@ export const entityVectorInfoSchema = z.object({
  * universal fields (team_id, organization_id, user_id, source_type, source_id)
  * — those are plain columns on the table, never duplicated in JSONB.
  */
+export const labelVectorInfoSchema = z.object({
+  id: z.uuid(),
+  name: z.string(),
+});
+
 export const documentVectorMetadataSchema = z.object({
   file_name: z.string(),
   file_type: z.string(),
   page_count: z.number().nullable(),
-  document_type: z.string().nullable(),
-  document_transport_type: z.string().nullable(),
   document_language: z.string().nullable(),
   document_summary: z.string().nullable(),
-  document_date: z.string().nullable(),
-  document_number: z.string().nullable(),
-  transport_mode: z.string().nullable(),
   entities: z.array(entityVectorInfoSchema),
+  labels: z.array(labelVectorInfoSchema).default([]),
+  /**
+   * Team-configurable custom field values keyed by `fieldDefinitions.key`.
+   * The caller (shared/services/documents/upload.ts) pre-filters this to
+   * fields whose definition has `vectorizeInclude=true`.
+   */
+  custom_fields: z
+    .record(
+      z.string(),
+      z.union([
+        z.string(),
+        z.number(),
+        z.boolean(),
+        z.array(z.string()),
+        z.null(),
+      ]),
+    )
+    .default({}),
   is_metadata_only: z.boolean().optional(),
 });
 

@@ -12,7 +12,6 @@ import { applyAntiBufferingHeaders } from "@fretik/shared/lib/sse-headers";
 import {
   bodyIdListSchema,
   DocumentResponseSchema,
-  documentTransportType,
   GetDocumentDetailsResponseSchema,
   UpdateDocumentSchema,
   UploadDocumentSchema,
@@ -31,13 +30,11 @@ import { streamUploadProgress } from "@fretik/shared/services/documents/progress
 import {
   getDocumentBreadcrumbs,
   getDocumentDetails,
-  getDocumentTransportTypes,
 } from "@fretik/shared/services/documents/retrieve";
 import { updateDocument } from "@fretik/shared/services/documents/update";
 import { uploadDocument } from "@fretik/shared/services/documents/upload";
 import { createRoute, OpenAPIHono } from "@hono/zod-openapi";
 import { streamSSE } from "hono/streaming";
-import { z } from "zod";
 
 // ==================== //
 // ROUTER SETUP         //
@@ -67,26 +64,6 @@ const formatDocumentResponse = (doc: Document) => ({
 // ==================== //
 // ROUTE DEFINITIONS    //
 // ==================== //
-
-const getDocumentTransportTypesRoute = createRoute({
-  method: "get",
-  path: "/transport-types",
-  summary: "Get all document transport types",
-  description: "Retrieves all document transport types sorted by name",
-  tags: ["Documents"],
-  responses: {
-    200: {
-      content: {
-        "application/json": {
-          schema: z.array(documentTransportType),
-        },
-      },
-      description: "Document transport types retrieved successfully",
-    },
-    ...responseForbiddenSchema,
-    ...responseInternalErrorSchema,
-  },
-});
 
 const uploadDocumentRoute = createRoute({
   method: "post",
@@ -204,15 +181,6 @@ const getDocumentDetailsRoute = createRoute({
 // ==================== //
 
 /**
- * -- GET DOCUMENT TRANSPORT TYPES
- * --
- */
-documentRoutes.openapi(getDocumentTransportTypesRoute, async (c) => {
-  const transportTypes = await getDocumentTransportTypes();
-  return c.json(transportTypes, 200);
-});
-
-/**
  * -- UPLOAD DOCUMENT
  * --
  */
@@ -299,7 +267,10 @@ documentRoutes.openapi(updateDocumentRoute, async (c) => {
 /**
  * -- GET DOCUMENT DETAILS
  * --
- * Returns document details including a presigned file URL.
+ * Returns document details including a presigned file URL, the team's
+ * field definitions, and the document's resolved field values — enough
+ * for the frontend to render the dynamic right panel without further
+ * round-trips.
  */
 documentRoutes.openapi(getDocumentDetailsRoute, async (c) => {
   const team = c.get("team");
@@ -309,13 +280,53 @@ documentRoutes.openapi(getDocumentDetailsRoute, async (c) => {
 
   const { id } = c.req.valid("param");
 
-  const document = await getDocumentDetails({ id, teamId: team.id });
+  const { document, fileUrl, fieldValues, fieldDefinitions } =
+    await getDocumentDetails({ id, teamId: team.id });
+
   const breadcrumbs = await getDocumentBreadcrumbs({
-    document,
+    document: {
+      id: document.id,
+      originalFilename: document.originalFilename,
+      folderId: document.folderId,
+    },
     teamId: team.id,
   });
 
-  return c.json({ ...document, breadcrumbs }, 200);
+  // Drizzle returns numeric/decimal as string — coerce before serialising
+  // so the response matches the OpenAPI schema (confidenceScore: number).
+  const properties = document.properties
+    ? {
+        ...document.properties,
+        confidenceScore: document.properties.confidenceScore
+          ? Number(document.properties.confidenceScore)
+          : null,
+      }
+    : null;
+
+  return c.json(
+    {
+      id: document.id,
+      teamId: document.teamId,
+      folderId: document.folderId,
+      status: document.status,
+      errorMessage: document.errorMessage,
+      originalFilename: document.originalFilename,
+      fileSize: document.fileSize,
+      mimeType: document.mimeType,
+      uploadedById: document.uploadedById,
+      createdAt: document.createdAt,
+      updatedAt: document.updatedAt,
+      uploadedBy: document.uploadedBy,
+      folder: document.folder,
+      properties,
+      labels: document.labels,
+      breadcrumbs,
+      fileUrl,
+      fieldValues,
+      fieldDefinitions,
+    },
+    200,
+  );
 });
 
 export { documentRoutes };

@@ -142,13 +142,12 @@ export const fallbackChatModel = wrapModelWithCache(
 /**
  * Settings for pre-extraction models (primary + fallback).
  *
- * Shared by both `openai/gpt-oss-120b` (primary) and `deepseek/deepseek-v3.2`
- * (fallback) — both expose reasoning + structured output reliably on
- * OpenRouter, so we can treat the fallback as a drop-in quality peer
- * rather than a degraded recovery path. This was NOT true of the
- * previous Mistral Small 4 fallback which rejected `response_format +
- * reasoning` combined (`Invalid structured output syntax` from the
- * Mistral provider).
+ * Shared by both `deepseek/deepseek-v4-flash` (primary, since 2026-05-16)
+ * and `openai/gpt-oss-120b` (fallback) — both expose reasoning +
+ * structured output reliably on OpenRouter. The roles were swapped
+ * after observing `gpt-oss-120b` timing out or emitting unparseable
+ * bodies on the `/internal/field-definitions/suggest` schema; DeepSeek
+ * V4 Flash is faster, cleaner, and only marginally pricier.
  *
  * `provider.require_parameters: true` forces OpenRouter to only route to
  * providers that support every param we send (including `response_format`
@@ -156,25 +155,29 @@ export const fallbackChatModel = wrapModelWithCache(
  * and we'd get un-reasoned output with no indication.
  */
 const preextractModelSettings: OpenRouterChatSettings = {
+  reasoning: {
+    effort: "minimal",
+  },
   provider: {
     require_parameters: true,
     zdr: true,
+    sort: "throughput",
   },
 };
 
 /**
- * Primary pre-extraction model — `openai/gpt-oss-120b` by default. Consumed
- * by `services/pre-extract/extract.ts` via `generateText()`.
+ * Primary pre-extraction model — `deepseek/deepseek-v4-flash` by default.
+ * Consumed by `services/pre-extract/extract.ts` and
+ * `handlers/field-definitions.ts` via `generateText()`.
  */
 export const preextractModel = wrapModelWithCache(
   openrouter.chat(preextractModelId, preextractModelSettings),
 );
 
 /**
- * Fallback pre-extraction model — `deepseek/deepseek-v3.2` by default.
+ * Fallback pre-extraction model — `openai/gpt-oss-120b` by default.
  * Used when the primary errors out (network, 5xx, schema validation failure).
- * Shares the primary settings (reasoning + require_parameters) since
- * DeepSeek reliably honours both.
+ * Shares the primary settings (reasoning + require_parameters).
  */
 export const preextractFallbackModel = wrapModelWithCache(
   openrouter.chat(preextractFallbackModelId, preextractModelSettings),
@@ -185,3 +188,79 @@ export const PREEXTRACT_MODEL_IDS = {
   primary: preextractModelId,
   fallback: preextractFallbackModelId,
 } as const;
+
+/**
+ * Active Memory recall model. Runs the pre-reply judgment step that
+ * decides which persistent memories are relevant for the current
+ * turn. The task is judgment-on-context (no factual recall, no tool
+ * chaining, just "is this candidate memory relevant to the user's
+ * intent?"), so a small, fast, cheap model is sufficient.
+ *
+ * Default `openai/gpt-oss-20b`: ~$0.03 / $0.14 per MTok, ~235 tok/s
+ * (Artificial Analysis), BFCL ~67%. Hallucination rate is high on
+ * factual recall (SimpleQA 0.91) but irrelevant here — the model
+ * works strictly on the candidate text we provide.
+ *
+ * Override via `OPENROUTER_ACTIVE_MEMORY_MODEL` to A/B alternatives
+ * (DeepSeek V4 Flash, Haiku 4.5) if recall quality regresses.
+ *
+ * Reasoning intentionally OFF: judgment-on-context doesn't benefit
+ * from extended thinking, and adds latency/cost.
+ */
+const activeMemoryModelId =
+  process.env.OPENROUTER_ACTIVE_MEMORY_MODEL ?? "openai/gpt-oss-20b";
+
+const activeMemoryModelSettings: OpenRouterChatSettings = {
+  provider: {
+    require_parameters: true,
+    zdr: true,
+  },
+  /**
+   * Cap reasoning to `low` rather than disabling outright. The
+   * recall judge is "compare the user message + attached files +
+   * recent tail against N candidate memories, decide which (if
+   * any) are relevant, distil into 1-3 bullets". A bit of
+   * reasoning helps when candidates are semantically close
+   * (same client across two policies, e.g.) — but on a reasoning
+   * model like `gpt-oss-20b`, the OpenRouter default budget can
+   * blow the 15 s timeout (observed: a 17 773-token completion
+   * timed out at 8 s on multi-query reformulation, same model).
+   * `effort: "low"` keeps the judgment sharp without runaway
+   * reasoning. Disable entirely if recall quality regresses on
+   * fully-formatting tasks.
+   */
+  reasoning: { effort: "low" },
+};
+
+export const activeMemoryModel = openrouter.chat(
+  activeMemoryModelId,
+  activeMemoryModelSettings,
+);
+
+export const ACTIVE_MEMORY_MODEL_ID = activeMemoryModelId;
+
+/**
+ * Sub-agent "cheap" model used by the `dispatchAgent` tool when the
+ * caller picks `model: "cheap"`. The default `deepseek/deepseek-v4-flash`
+ * is the May 2026 sweet spot for tool-strong sub-agents at a low
+ * price point: SWE-Bench Verified ~80%, native tool calling, 1M
+ * context, reasoning toggle, ~7× cheaper than Haiku 4.5.
+ *
+ * Override via `OPENROUTER_DISPATCH_AGENT_CHEAP_MODEL` to A/B
+ * alternatives. The "primary" path of `dispatchAgent` reuses
+ * `chatModel` directly (same model as the main agent) — no separate
+ * env needed for that branch.
+ *
+ * `chatModelSettings` is reused on purpose: a sub-agent that runs
+ * the chatbot tool loop needs the same `provider.require_parameters`
+ * + `reasoning` envelope to behave consistently with the parent.
+ */
+const dispatchAgentCheapModelId =
+  process.env.OPENROUTER_DISPATCH_AGENT_CHEAP_MODEL ??
+  "deepseek/deepseek-v4-flash";
+
+export const dispatchAgentCheapModel = wrapModelWithCache(
+  openrouter.chat(dispatchAgentCheapModelId, chatModelSettings),
+);
+
+export const DISPATCH_AGENT_CHEAP_MODEL_ID = dispatchAgentCheapModelId;

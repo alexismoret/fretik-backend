@@ -69,18 +69,36 @@ type EntityVectorInfo = {
   role: string;
 };
 
+/**
+ * Label info embedded into document vectors so the chatbot can filter and
+ * cite by label without an extra join at retrieval time. We embed id +
+ * name only — color is presentation-only and would bloat the JSONB blob.
+ */
+type LabelVectorInfo = {
+  id: string;
+  name: string;
+};
+
+/**
+ * Document vector metadata. Universal AI outputs (page count, language,
+ * summary, entities) ride as named fields; industry-specific outputs flow
+ * through `custom_fields` keyed by the team's field definition slugs.
+ * The semantic header prepended to each chunk before embedding is built
+ * dynamically from the field definitions whose `vectorizeInclude` is true.
+ */
 type DocumentVectorMetadata = {
   file_name: string;
   file_type: string;
   page_count: number | null;
-  document_type: string | null;
-  document_transport_type: string | null;
   document_language: string | null;
   document_summary: string | null;
-  document_date: string | null;
-  document_number: string | null;
-  transport_mode: string | null;
   entities: EntityVectorInfo[];
+  labels: LabelVectorInfo[];
+  /**
+   * Team-configurable custom field values keyed by `fieldDefinitions.key`.
+   * Primitives are stored as JSON primitives; multi_select as string[].
+   */
+  custom_fields: Record<string, string | number | boolean | string[] | null>;
   is_metadata_only?: boolean;
 };
 
@@ -158,6 +176,7 @@ export type {
   ContextVectorMetadata,
   DocumentVectorMetadata,
   EntityVectorInfo,
+  LabelVectorInfo,
   MemoryVectorMetadata,
   SkillVectorMetadata,
 };

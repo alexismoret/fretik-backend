@@ -1,3 +1,4 @@
+import { fieldDefinitionResponseSchema } from "@fretik/shared/schemas/field-definitions";
 import { OpenAPIHono } from "@hono/zod-openapi";
 import { z } from "zod";
 import { internalMiddleware } from "../middlewares/internal";
@@ -24,11 +25,25 @@ import type { HonoInternalAppType } from "../types/hono";
 
 const PreExtractRequestSchema = z.object({
   documentId: z.uuid(),
-  s3Key: z.string().min(1),
   mimeType: z.string().min(1),
   originalFilename: z.string().min(1),
   teamId: z.uuid(),
   organizationId: z.uuid(),
+  /**
+   * Optional override for the S3 key to OCR. When omitted, the
+   * pre-extract service derives `documents/{documentId}{ext}` from
+   * `originalFilename`. The upload pipeline sets this to the
+   * ephemeral conversion key (`documents/{documentId}-preextract.pdf`)
+   * when Word/PPT/spreadsheet input has been converted before OCR.
+   */
+  overrideS3Key: z.string().min(1).optional(),
+  /**
+   * Active team field definitions. Resolved by the caller in
+   * `@fretik/shared/services/documents/upload.ts` and forwarded as-is so
+   * the runtime Zod schema and `.describe()` strings reach the LLM. The
+   * server re-uses the canonical schema for validation.
+   */
+  fieldDefinitions: z.array(fieldDefinitionResponseSchema).default([]),
 });
 
 const preExtractRoutes = new OpenAPIHono<HonoInternalAppType>();
@@ -48,15 +63,27 @@ preExtractRoutes.post("/", async (c) => {
     );
   }
 
-  const { documentId, s3Key, mimeType } = parsed.data;
+  const {
+    documentId,
+    mimeType,
+    originalFilename,
+    overrideS3Key,
+    fieldDefinitions,
+  } = parsed.data;
 
   try {
-    const result = await runPreExtract({ documentId, s3Key, mimeType });
+    const result = await runPreExtract({
+      documentId,
+      originalFilename,
+      mimeType,
+      overrideS3Key,
+      fieldDefinitions,
+    });
     return c.json(result, 200);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error(
-      `[pre-extract] failed for document ${documentId} (s3Key=${s3Key}):`,
+      `[pre-extract] failed for document ${documentId} (override=${overrideS3Key ?? "none"}):`,
       message,
     );
     return c.json(

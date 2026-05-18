@@ -1,6 +1,11 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
 import db from "../../db";
 import { aiVectors, folders } from "../../db/schema";
+import {
+  buildDocumentOriginalKey,
+  buildDocumentSidecarKey,
+  buildDocumentThumbnailKey,
+} from "../../lib/document-storage";
 import { notFound, throwHttpError } from "../../lib/errors";
 import { deleteFilesFromS3 } from "../../lib/s3";
 
@@ -47,7 +52,7 @@ export const deleteFolders = async (data: {
 
     // Get all documents in the folders and subfolders that are not "uploading"
     const documentsToDelete = await tx.query.documents.findMany({
-      columns: { id: true, s3Key: true, s3ThumbnailKey: true },
+      columns: { id: true, originalFilename: true },
       where: {
         status: { ne: "uploading" },
         OR: [
@@ -77,11 +82,19 @@ export const deleteFolders = async (data: {
         ),
       );
 
-    // Delete files from S3 after successful folder deletion
+    // Delete files from S3 after successful folder deletion — binary,
+    // thumbnail, and OCR markdown sidecar for every cascade-deleted doc.
+    // Sidecars only exist for non-spreadsheet documents but `deleteObjects`
+    // treats missing keys as success, so we include every doc's sidecar
+    // unconditionally.
     if (documentsToDelete.length > 0) {
       const s3KeysToDelete = [
         ...new Set(
-          documentsToDelete.flatMap((doc) => [doc.s3Key, doc.s3ThumbnailKey]),
+          documentsToDelete.flatMap((doc) => [
+            buildDocumentOriginalKey(doc.id, doc.originalFilename),
+            buildDocumentThumbnailKey(doc.id),
+            buildDocumentSidecarKey(doc.id),
+          ]),
         ),
       ];
       await deleteFilesFromS3(s3KeysToDelete);

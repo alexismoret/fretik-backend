@@ -1,5 +1,5 @@
 import type { UIMessage } from "ai";
-import { buildChatbotTools } from "../../agents/chatbot/tools";
+import { buildSubAgentTools } from "../../agents/chatbot/tools";
 
 /**
  * Microcompact — applicative replacement for Claude Code's
@@ -68,7 +68,14 @@ import { buildChatbotTools } from "../../agents/chatbot/tools";
  * which needs to know which tools are state-bearing.
  */
 export const COMPACTABLE_TOOLS: ReadonlySet<string> = (() => {
-  const registry = buildChatbotTools();
+  // We use `buildSubAgentTools()` rather than `buildChatbotTools()`
+  // here on purpose: the latter requires a `dispatchAgent` argument
+  // (built in `agents/chatbot/index.ts` after the sub-agent sets are
+  // ready) which would create a circular import for this module. The
+  // two registries differ ONLY by `dispatchAgent` + `searchTools`,
+  // both of which are explicitly NOT microcompactable, so the
+  // resulting `COMPACTABLE_TOOLS` set is identical either way.
+  const registry = buildSubAgentTools();
   const names = new Set<string>();
   for (const [name, def] of Object.entries(registry)) {
     if (def.microcompactable) {

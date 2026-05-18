@@ -10,6 +10,12 @@ export * from "./folders";
 // Documents (file storage and pre-extraction)
 export * from "./documents";
 
+// Field definitions (per-org/team configurable fields for documents and beyond)
+export * from "./field-definitions";
+
+// Document field values (per-document custom values keyed by field definition slug)
+export * from "./document-field-values";
+
 // Entities (organizations referenced in documents)
 export * from "./entities";
 
@@ -30,3 +36,6 @@ export * from "./ai-context";
 
 // AI memory (agent-writable memory store — Anthropic memory_20250818-style)
 export * from "./ai-memory";
+
+// Skills (chatbot SKILL.md catalogue + per-team enable/disable overrides)
+export * from "./skills";

@@ -2,6 +2,11 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import db from "../../db";
 import { aiVectors, folders, teamSettings } from "../../db/schema";
 import { documents } from "../../db/schema/documents";
+import {
+  buildDocumentOriginalKey,
+  buildDocumentSidecarKey,
+  buildDocumentThumbnailKey,
+} from "../../lib/document-storage";
 import { deleteFilesFromS3 } from "../../lib/s3";
 
 /**
@@ -18,8 +23,7 @@ export const deleteDocuments = async (data: {
     columns: {
       id: true,
       folderId: true,
-      s3Key: true,
-      s3ThumbnailKey: true,
+      originalFilename: true,
       status: true,
       fileSize: true,
     },
@@ -82,12 +86,19 @@ export const deleteDocuments = async (data: {
         ),
       );
 
-    // Delete files in S3
+    // Delete files in S3 — binary, thumbnail, and OCR markdown sidecar.
+    // Sidecars only exist for non-spreadsheet documents; `deleteFilesFromS3`
+    // (via `deleteObjects`) treats missing keys as success, so it's safe to
+    // include every doc's sidecar key unconditionally.
     await deleteFilesFromS3([
       ...new Set(
         existingDocuments
           .filter((d) => d.status !== "uploading")
-          .flatMap((d) => [d.s3Key, d.s3ThumbnailKey]),
+          .flatMap((d) => [
+            buildDocumentOriginalKey(d.id, d.originalFilename),
+            buildDocumentThumbnailKey(d.id),
+            buildDocumentSidecarKey(d.id),
+          ]),
       ),
     ]);
 

@@ -3,7 +3,8 @@ import { z } from "zod";
 import db from "../../db";
 import type { DocumentVectorMetadata } from "../../db/schema/ai-vectors";
 import { callAiService } from "../../lib/ai-service";
-import { joinDocumentPagesMarkdown } from "./markdown";
+import { getDocumentSidecarBytes } from "../../lib/document-storage";
+import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
 
 const aiVectorizeResponseSchema = z.object({
   success: z.boolean(),
@@ -18,22 +19,26 @@ const aiVectorizeResponseSchema = z.object({
 });
 
 /**
- * Builds the full metadata JSON for a document's vectors.
- * Fetches document, properties, and linked entities.
+ * Build the metadata JSON for a document's vectors.
+ *
+ * Universal AI outputs (page count, language, summary, entities, labels)
+ * are emitted as named fields. Industry-specific outputs flow through
+ * `custom_fields` keyed by the team's field definition slugs, pre-filtered
+ * to `vectorizeInclude=true` so privacy-sensitive or internal fields
+ * never reach the embedding store. Field definitions themselves are NOT
+ * embedded — the chatbot reads them out-of-band via its own tool.
  */
 const buildDocumentVectorMetadata = async (
   documentId: string,
-): Promise<{
-  metadata: DocumentVectorMetadata;
-  markdown: string | null;
-} | null> => {
+  teamId: string,
+): Promise<DocumentVectorMetadata | null> => {
   const document = await db.query.documents.findFirst({
     where: { id: documentId },
     with: {
       properties: true,
-      documentEntities: {
-        with: { entity: true },
-      },
+      documentEntities: { with: { entity: true } },
+      labels: { columns: { id: true, name: true } },
+      fieldValues: { columns: { fieldKey: true, value: true } },
     },
   });
 
@@ -52,23 +57,35 @@ const buildDocumentVectorMetadata = async (
       role: de.role,
     }));
 
-  const metadata: DocumentVectorMetadata = {
+  const labels = document.labels.map((l) => ({ id: l.id, name: l.name }));
+
+  const definitions = await getFieldDefinitionsForTeam({
+    teamId,
+    resourceType: "document",
+  });
+  const vectorisableKeys = new Set(
+    definitions.filter((d) => d.vectorizeInclude).map((d) => d.key),
+  );
+  const customFields: DocumentVectorMetadata["custom_fields"] = {};
+  for (const fv of document.fieldValues) {
+    if (!vectorisableKeys.has(fv.fieldKey)) continue;
+    customFields[fv.fieldKey] = fv.value as
+      | string
+      | number
+      | boolean
+      | string[]
+      | null;
+  }
+
+  return {
     file_name: document.originalFilename,
     file_type: document.mimeType,
     page_count: properties?.pageCount ?? null,
-    document_type: properties?.documentType ?? null,
-    document_transport_type: properties?.documentTransportType ?? null,
     document_language: properties?.documentLanguage ?? null,
     document_summary: properties?.documentSummary ?? null,
-    document_date: properties?.documentDate?.toISOString() ?? null,
-    document_number: properties?.documentNumber ?? null,
-    transport_mode: properties?.transportMode ?? null,
     entities,
-  };
-
-  return {
-    metadata,
-    markdown: properties?.markdown ?? null,
+    labels,
+    custom_fields: customFields,
   };
 };
 
@@ -87,21 +104,23 @@ export const triggerDocumentVectorRefresh = async (
   organizationId: string,
 ): Promise<void> => {
   try {
-    const result = await buildDocumentVectorMetadata(documentId);
+    const metadata = await buildDocumentVectorMetadata(documentId, teamId);
 
-    if (!result) {
+    if (!metadata) {
       console.warn(
         `[VectorRefresh] Document ${documentId} not found or not ready, skipping`,
       );
       return;
     }
 
-    // Parse the stored JSON pages and join them into real markdown for
-    // the chunker. `null` (Excel / CSV) triggers the metadata-only
-    // vectorise branch in `@fretik/ai` — so unlike the historical
-    // behaviour that silently skipped spreadsheets, they now get an
-    // embedded metadata record and become searchable.
-    const vectorContent = joinDocumentPagesMarkdown(result.markdown);
+    // Pull the OCR markdown from the S3 sidecar. `null` (spreadsheet,
+    // or missing sidecar) triggers the metadata-only vectorise branch
+    // in `@fretik/ai` — spreadsheets still become searchable via
+    // their structured metadata embedding.
+    const sidecarBytes = await getDocumentSidecarBytes(documentId);
+    const vectorContent = sidecarBytes
+      ? new TextDecoder().decode(sidecarBytes)
+      : null;
 
     const vectorResult = await callAiService(
       "/internal/vectorize",
@@ -109,7 +128,7 @@ export const triggerDocumentVectorRefresh = async (
         sourceType: "documents",
         sourceId: documentId,
         content: vectorContent,
-        metadata: result.metadata,
+        metadata,
         teamId,
         organizationId,
       },

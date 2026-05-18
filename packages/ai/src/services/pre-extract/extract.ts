@@ -1,36 +1,67 @@
-import {
-  type PreExtractionLlmOutput,
-  preExtractionLlmSchema,
-} from "@fretik/shared/schemas/pre-extraction";
+import type { FieldDefinition } from "@fretik/shared/db/schema";
+import { buildPreExtractSchema } from "@fretik/shared/schemas/pre-extraction";
 import { generateText, Output } from "ai";
 import {
   PREEXTRACT_MODEL_IDS,
   preextractFallbackModel,
   preextractModel,
 } from "../../lib/openrouter";
-import { PREEXTRACT_SYSTEM_PROMPT } from "./prompt";
+import {
+  SCHEMA_BLOCK_TRAILER,
+  zodToPromptSchema,
+} from "../../lib/schema-prompt";
+import { PREEXTRACT_SYSTEM_PROMPT_BASE } from "./prompt";
+
+/**
+ * Output shape returned by the pre-extract LLM, derived from the runtime
+ * Zod schema. Universal fields are stable across teams; `customFields`
+ * keys are whatever the team's enabled field definitions declared.
+ */
+export type PreExtractionLlmOutput = {
+  documentSummary: string;
+  documentLanguage: string;
+  entities: {
+    name: string;
+    role: string;
+    type?: string;
+    confidence?: number;
+  }[];
+  confidenceScore?: number | null;
+  customFields: Record<string, unknown>;
+};
 
 /**
  * Wall-clock cap on a single `generateText` attempt (primary OR fallback).
  *
- * Calibrated for `openai/gpt-oss-120b` with `reasoning.effort: "low"` on
- * our strict schema (20-value `documentType` enum + 45-value
- * `documentTransportType` + nested entities with role/type enums). A
- * typical run is 10-25s; large documents with many entities push
- * through 30s when reasoning tokens expand. Previously 20s — which
- * fired the abort even when OpenRouter had already streamed the
- * complete response, wastefully cascading to the fallback. 60s gives
- * enough headroom that the primary actually succeeds in steady state
- * while still catching genuine stuck provider calls.
+ * The pre-extract schema is now dynamic — universal fields (summary,
+ * language, entities) plus the team's custom field defs spliced into
+ * `customFields`. Total payload + reasoning budget varies with team
+ * configuration, so we keep the ceiling generous (60s) to absorb large
+ * teams with many enabled definitions.
  */
 const PREEXTRACT_LLM_TIMEOUT_MS = 60_000;
 
 /** Temperature 0 — we want deterministic classification, not creativity. */
 const PREEXTRACT_TEMPERATURE = 0;
 
+/**
+ * Hard ceiling on output tokens to prevent runaway loops (empty-character
+ * spirals observed on DeepSeek). The pre-extract schema is bounded:
+ * summary ≤500 chars, ~20 entities × ~80 toks, ≤30 custom fields × ~50
+ * toks → ~3 500 toks worst case. The 4 000 budget gives headroom without
+ * leaving the model room to drift into multi-thousand-token padding.
+ */
+const PREEXTRACT_MAX_OUTPUT_TOKENS = 4000;
+
 export interface RunPreextractLlmArgs {
   /** Concatenated markdown assembled by `buildLlmInput` (includes the seen-pages metadata line). */
   prompt: string;
+  /**
+   * Active team field definitions. Used to build the runtime Zod schema
+   * (universal + per-team `customFields`) handed to the LLM. Empty array
+   * is valid — the LLM extracts only universal fields.
+   */
+  fieldDefinitions: FieldDefinition[];
 }
 
 export interface RunPreextractLlmResult {
@@ -47,7 +78,7 @@ export interface RunPreextractLlmResult {
  * Calls the pre-extraction LLM with `generateText()` and automatic
  * primary → fallback retry on error. Returns the Zod-parsed output plus
  * diagnostic info (tier, model id, duration) so the orchestrator can
- * emit structured logs and fill `preExtractionMetadata`.
+ * emit a structured log line per call.
  *
  * The fallback triggers on ANY failure of the primary: network 5xx,
  * generateText schema-validation failure, abort/timeout. If the
@@ -117,9 +148,13 @@ const describeError = (err: unknown): string => {
 export const runPreextractLlm = async (
   args: RunPreextractLlmArgs,
 ): Promise<RunPreextractLlmResult> => {
+  // Build the runtime Zod schema once for the call. Universal fields +
+  // dynamic `customFields` shape built from the team's definitions.
+  const schema = buildPreExtractSchema(args.fieldDefinitions);
+
   const primaryStart = Date.now();
   try {
-    const output = await callLlm(args.prompt, "primary");
+    const output = await callLlm(args.prompt, schema, "primary");
     return {
       output,
       tier: "primary",
@@ -133,7 +168,7 @@ export const runPreextractLlm = async (
     );
     const fallbackStart = Date.now();
     try {
-      const output = await callLlm(args.prompt, "fallback");
+      const output = await callLlm(args.prompt, schema, "fallback");
       return {
         output,
         tier: "fallback",
@@ -152,16 +187,31 @@ export const runPreextractLlm = async (
 
 const callLlm = async (
   prompt: string,
+  schema: ReturnType<typeof buildPreExtractSchema>,
   tier: "primary" | "fallback",
 ): Promise<PreExtractionLlmOutput> => {
   const model = tier === "primary" ? preextractModel : preextractFallbackModel;
 
+  // Belt-and-suspenders: ship the schema both via `response_format` (the
+  // `Output.object` argument) AND inside the system prompt. Some upstream
+  // OpenRouter providers silently downgrade strict json_schema mode to
+  // free-form `json_object`; when that happens the model relies on the
+  // schema in the prompt to know the expected shape.
+  const system = `${PREEXTRACT_SYSTEM_PROMPT_BASE}
+
+<schema>
+${zodToPromptSchema(schema)}
+</schema>
+
+${SCHEMA_BLOCK_TRAILER}`;
+
   const { output } = await generateText({
     model,
-    output: Output.object({ schema: preExtractionLlmSchema }),
-    system: PREEXTRACT_SYSTEM_PROMPT,
+    output: Output.object({ schema }),
+    system,
     prompt,
     temperature: PREEXTRACT_TEMPERATURE,
+    maxOutputTokens: PREEXTRACT_MAX_OUTPUT_TOKENS,
     abortSignal: AbortSignal.timeout(PREEXTRACT_LLM_TIMEOUT_MS),
   });
 

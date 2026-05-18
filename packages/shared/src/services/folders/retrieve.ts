@@ -13,15 +13,19 @@ import {
 import db from "../../db";
 import {
   documentEntities,
-  documentProperties,
+  documentFieldValues,
+  documentLabels,
   documents,
+  fieldDefinitions,
   folders,
   type DocumentStatus,
-  type DocumentType,
+  type FieldDefinitionType,
 } from "../../db/schema";
+import { buildDocumentThumbnailKey } from "../../lib/document-storage";
 import { notFound, throwHttpError } from "../../lib/errors";
 import { getPresignedUrl } from "../../lib/s3";
 import type {
+  DriveCustomFilter,
   DriveItem,
   DriveListParams,
   FolderBreadcrumb,
@@ -36,12 +40,7 @@ export const getRootDrive = async (data: {
   params: DriveListParams;
 }) => {
   const { teamId, params } = data;
-
-  return getFolderExplorer({
-    folderId: null,
-    teamId,
-    params,
-  });
+  return getFolderExplorer({ folderId: null, teamId, params });
 };
 
 /**
@@ -53,12 +52,7 @@ export const getFolder = async (data: {
   params: DriveListParams;
 }) => {
   const { folderId, teamId, params } = data;
-
-  return getFolderExplorer({
-    folderId,
-    teamId,
-    params,
-  });
+  return getFolderExplorer({ folderId, teamId, params });
 };
 
 /**
@@ -83,9 +77,9 @@ export const getFolderBreadcrumbs = async (data: {
         SELECT id, name, parent_folder_id, 0 as level
         FROM folders
         WHERE id = ${folderId} AND team_id = ${teamId}
-        
+
         UNION ALL
-        
+
         SELECT f.id, f.name, f.parent_folder_id, fp.level + 1
         FROM folders f
         INNER JOIN folder_parents fp ON f.id = fp.parent_folder_id
@@ -104,31 +98,23 @@ export const getFolderBreadcrumbs = async (data: {
   return breadcrumbs;
 };
 
-/**
- * Generates presigned thumbnail URLs for a list of documents in parallel.
- * Only generates URLs for documents with status 'ready'.
- */
-const mapDocsToDriveItems = async <
-  T extends {
-    id: string;
-    originalFilename: string;
-    fileSize: number;
-    mimeType: string;
-    status: DocumentStatus;
-    s3ThumbnailKey: string;
-    createdAt: Date;
-    updatedAt: Date;
-    properties: {
-      documentType: DocumentType;
-      transportType: { code: string; icon: string | null } | null;
-    } | null;
-  },
->(
-  docs: T[],
+type DocWithRelations = {
+  id: string;
+  originalFilename: string;
+  fileSize: number;
+  mimeType: string;
+  status: DocumentStatus;
+  createdAt: Date;
+  updatedAt: Date;
+  fieldValues: { fieldKey: string; value: unknown }[];
+};
+
+const mapDocsToDriveItems = async (
+  docs: DocWithRelations[],
 ): Promise<DriveItem[]> => {
   const readyDocs = docs.filter((d) => d.status === "ready");
   const thumbnailUrls = await Promise.all(
-    readyDocs.map((d) => getPresignedUrl(d.s3ThumbnailKey)),
+    readyDocs.map((d) => getPresignedUrl(buildDocumentThumbnailKey(d.id))),
   );
 
   const urlMap = new Map<string, string>();
@@ -136,43 +122,149 @@ const mapDocsToDriveItems = async <
     urlMap.set(d.id, thumbnailUrls[i] ?? "");
   }
 
-  return docs.map((d) => ({
-    type: "document" as const,
-    data: {
-      id: d.id,
-      name: d.originalFilename,
-      fileSize: d.fileSize,
-      mimeType: d.mimeType,
-      status: d.status,
-      thumbnailUrl: urlMap.get(d.id) ?? null,
-      documentType: d.properties?.documentType ?? "unknown",
-      documentTransportType: d.properties?.transportType ?? null,
-      createdAt: d.createdAt,
-      updatedAt: d.updatedAt,
-    },
-  }));
+  return docs.map((d) => {
+    const fieldValues: Record<string, unknown> = {};
+    for (const fv of d.fieldValues) fieldValues[fv.fieldKey] = fv.value;
+    return {
+      type: "document" as const,
+      data: {
+        id: d.id,
+        name: d.originalFilename,
+        fileSize: d.fileSize,
+        mimeType: d.mimeType,
+        status: d.status,
+        thumbnailUrl: urlMap.get(d.id) ?? null,
+        fieldValues,
+        createdAt: d.createdAt,
+        updatedAt: d.updatedAt,
+      },
+    };
+  });
 };
 
 /**
- * Returns true if at least one advanced filter array is non-empty.
- * Active advanced filters trigger flat cross-folder, document-only listing mode.
+ * True when any cross-folder filter is active (custom field, entity, label).
+ * Triggers flat document-only listing mode.
  */
 const hasAdvancedFilter = (params: DriveListParams): boolean =>
   !!(
-    (params.documentType && params.documentType.length > 0) ||
-    (params.transportMode && params.transportMode.length > 0) ||
-    (params.documentTransportType && params.documentTransportType.length > 0) ||
-    (params.entityId && params.entityId.length > 0)
+    (params.entityId && params.entityId.length > 0) ||
+    (params.labelIds && params.labelIds.length > 0) ||
+    (params.customFilters && params.customFilters.length > 0)
   );
 
 /**
+ * Field types whose values are free-form strings — partial substring
+ * match is the expected behaviour. Enum-like string fields
+ * (`select` / `multi_select`) stay on equality.
+ */
+const TEXT_LIKE_TYPES: ReadonlySet<FieldDefinitionType> = new Set([
+  "text",
+  "url",
+  "email",
+]);
+
+/**
+ * Date/datetime field types — accept the `{ start, end }` range shape
+ * emitted by the frontend `DateRangePicker`.
+ */
+const DATE_LIKE_TYPES: ReadonlySet<FieldDefinitionType> = new Set([
+  "date",
+  "datetime",
+]);
+
+const isDateRangeFilter = (
+  v: unknown,
+): v is { start: string | null; end: string | null } =>
+  typeof v === "object" &&
+  v !== null &&
+  !Array.isArray(v) &&
+  "start" in v &&
+  "end" in v;
+
+/**
+ * EXISTS clause for a single `(fieldKey, value)` predicate on the
+ * `document_field_values` table, scoped to the current `documents` row.
+ *
+ * Value shapes:
+ *   • array (string[] / number[] / boolean[])   → ANY-of match
+ *   • `{ start, end }` on a date/datetime field → range match (either
+ *     bound may be null for an open interval)
+ *   • scalar on a free-form string field        → case-insensitive
+ *     substring match (ILIKE %text%)
+ *   • scalar on any other type                  → equality
+ */
+const customFilterExists = (
+  cf: DriveCustomFilter,
+  fieldType: FieldDefinitionType | undefined,
+) => {
+  const valuePredicate = (() => {
+    if (Array.isArray(cf.value)) {
+      return inArray(documentFieldValues.value, cf.value as never[]);
+    }
+    if (
+      fieldType &&
+      DATE_LIKE_TYPES.has(fieldType) &&
+      isDateRangeFilter(cf.value)
+    ) {
+      // Compare directly in JSONB space — the `(fieldKey, value)`
+      // B-tree covers the range because JSONB has a total order and
+      // JSON-string comparison is lexicographic (which matches
+      // chronological order for ISO date / datetime strings stored as
+      // JSON primitive strings).
+      //
+      // We send each bound already wrapped as a JSON string literal
+      // (`"2025-01-01..."`) and cast to `jsonb` so the right side has
+      // the same type as the column. This keeps the index in play —
+      // any approach that extracts the value first (e.g.
+      // `value #>> '{}'`) is a functional expression and forces a
+      // sequential scan.
+      const bounds = [];
+      if (cf.value.start) {
+        bounds.push(
+          sql`${documentFieldValues.value} >= ${JSON.stringify(cf.value.start)}::jsonb`,
+        );
+      }
+      if (cf.value.end) {
+        bounds.push(
+          sql`${documentFieldValues.value} <= ${JSON.stringify(cf.value.end)}::jsonb`,
+        );
+      }
+      // Both bounds null → no constraint (filter is effectively
+      // inactive); fall back to a tautology so the outer `eq` on
+      // `fieldKey` still narrows.
+      return bounds.length > 0 ? and(...bounds) : sql`TRUE`;
+    }
+    if (
+      fieldType &&
+      TEXT_LIKE_TYPES.has(fieldType) &&
+      typeof cf.value === "string" &&
+      cf.value.length > 0
+    ) {
+      // `documentFieldValues.value` is JSONB — `ILIKE` doesn't have a
+      // jsonb operator. `#>> '{}'` extracts the value as text (strips
+      // outer quotes for JSON primitive strings) so we can substring-
+      // match cleanly.
+      return sql`${documentFieldValues.value} #>> '{}' ILIKE ${`%${cf.value}%`}`;
+    }
+    return eq(documentFieldValues.value, cf.value as never);
+  })();
+  return exists(
+    db
+      .select({ one: sql`1` })
+      .from(documentFieldValues)
+      .where(
+        and(
+          eq(documentFieldValues.documentId, documents.id),
+          eq(documentFieldValues.fieldKey, cf.fieldKey),
+          valuePredicate,
+        ),
+      ),
+  );
+};
+
+/**
  * Retrieves documents matching advanced filters across all folders in a team.
- *
- * Used when at least one advanced filter is active: folders are hidden and
- * folderId scope is ignored. Pagination is over documents only.
- *
- * Each filter accepts multiple values (OR semantics within one filter);
- * filters are combined with AND (intersection across filter types).
  */
 const getFilteredDocuments = async (data: {
   teamId: string;
@@ -182,7 +274,6 @@ const getFilteredDocuments = async (data: {
   const { page, limit, search } = params;
   const offset = page * limit;
 
-  // Base conditions on documents table
   const baseConditions = [
     eq(documents.teamId, teamId),
     ne(documents.status, "error"),
@@ -191,43 +282,29 @@ const getFilteredDocuments = async (data: {
     baseConditions.push(ilike(documents.originalFilename, `%${search}%`));
   }
 
-  // Filter on documentProperties via EXISTS subquery — avoids JOIN duplicates
-  const propertyConditions = [];
-  if (params.documentType && params.documentType.length > 0) {
-    propertyConditions.push(
-      inArray(documentProperties.documentType, params.documentType),
+  if (params.customFilters && params.customFilters.length > 0) {
+    const keys = params.customFilters.map((cf) => cf.fieldKey);
+    const defs = await db
+      .select({
+        key: fieldDefinitions.key,
+        type: fieldDefinitions.type,
+      })
+      .from(fieldDefinitions)
+      .where(
+        and(
+          eq(fieldDefinitions.teamId, teamId),
+          eq(fieldDefinitions.resourceType, "document"),
+          inArray(fieldDefinitions.key, keys),
+        ),
+      );
+    const typeByKey = new Map<string, FieldDefinitionType>(
+      defs.map((d) => [d.key, d.type]),
     );
-  }
-  if (params.transportMode && params.transportMode.length > 0) {
-    propertyConditions.push(
-      inArray(documentProperties.transportMode, params.transportMode),
-    );
-  }
-  if (params.documentTransportType && params.documentTransportType.length > 0) {
-    propertyConditions.push(
-      inArray(
-        documentProperties.documentTransportType,
-        params.documentTransportType,
-      ),
-    );
-  }
-  if (propertyConditions.length > 0) {
-    baseConditions.push(
-      exists(
-        db
-          .select({ one: sql`1` })
-          .from(documentProperties)
-          .where(
-            and(
-              eq(documentProperties.documentId, documents.id),
-              ...propertyConditions,
-            ),
-          ),
-      ),
-    );
+    for (const cf of params.customFilters) {
+      baseConditions.push(customFilterExists(cf, typeByKey.get(cf.fieldKey)));
+    }
   }
 
-  // Filter on documentEntities via EXISTS subquery — N:N junction
   if (params.entityId && params.entityId.length > 0) {
     baseConditions.push(
       exists(
@@ -244,9 +321,24 @@ const getFilteredDocuments = async (data: {
     );
   }
 
+  if (params.labelIds && params.labelIds.length > 0) {
+    baseConditions.push(
+      exists(
+        db
+          .select({ one: sql`1` })
+          .from(documentLabels)
+          .where(
+            and(
+              eq(documentLabels.documentId, documents.id),
+              inArray(documentLabels.labelId, params.labelIds),
+            ),
+          ),
+      ),
+    );
+  }
+
   const whereExpr = and(...baseConditions);
 
-  // Total count for pagination
   const [countResult] = await db
     .select({ count: count() })
     .from(documents)
@@ -257,7 +349,6 @@ const getFilteredDocuments = async (data: {
     return { count: 0, data: [] };
   }
 
-  // Paginated IDs (preserves order by updatedAt desc)
   const idRows = await db
     .select({ id: documents.id })
     .from(documents)
@@ -271,7 +362,6 @@ const getFilteredDocuments = async (data: {
     return { count: totalCount, data: [] };
   }
 
-  // Fetch full data via RQB to get properties + transportType in one query
   const docs = await db.query.documents.findMany({
     columns: {
       id: true,
@@ -279,26 +369,17 @@ const getFilteredDocuments = async (data: {
       fileSize: true,
       mimeType: true,
       status: true,
-      s3ThumbnailKey: true,
       createdAt: true,
       updatedAt: true,
     },
-    where: {
-      id: { in: ids },
-    },
+    where: { id: { in: ids } },
     with: {
-      properties: {
-        columns: {
-          documentType: true,
-        },
-        with: {
-          transportType: true,
-        },
+      fieldValues: {
+        columns: { fieldKey: true, value: true },
       },
     },
   });
 
-  // Restore original pagination order (RQB doesn't preserve `in` order)
   const docMap = new Map(docs.map((d) => [d.id, d]));
   const orderedDocs = ids
     .map((id) => docMap.get(id))
@@ -312,11 +393,6 @@ const getFilteredDocuments = async (data: {
 
 /**
  * Retrieves folder explorer data including folder details, children, and breadcrumbs.
- *
- * Modes:
- * - **Normal**: folder-scoped, folders + documents mixed, paginated together.
- * - **Filtered** (any advanced filter active): flat cross-folder, documents only,
- *   folderId scope ignored, breadcrumbs reset to root.
  */
 const getFolderExplorer = async (data: {
   folderId: string | null;
@@ -325,7 +401,6 @@ const getFolderExplorer = async (data: {
 }) => {
   const { folderId, teamId, params } = data;
 
-  // Filter mode — flat cross-folder, documents only
   if (hasAdvancedFilter(params)) {
     const children = await getFilteredDocuments({ teamId, params });
     return {
@@ -342,7 +417,6 @@ const getFolderExplorer = async (data: {
   let currentFolder: FolderResponse | null = null;
 
   if (folderId) {
-    // 1. Fetch current folder metadata
     const folder = await db.query.folders.findFirst({
       where: { id: folderId, teamId },
     });
@@ -352,10 +426,8 @@ const getFolderExplorer = async (data: {
     currentFolder = folder;
   }
 
-  // 2. Fetch breadcrumbs
   const breadcrumbs = await getFolderBreadcrumbs({ folderId, teamId });
 
-  // 3. Compute counts
   let totalFoldersCount = 0;
   let totalDocumentsCount = 0;
 
@@ -399,7 +471,6 @@ const getFolderExplorer = async (data: {
     fileSize: true,
     mimeType: true,
     status: true,
-    s3ThumbnailKey: true,
     createdAt: true,
     updatedAt: true,
   } as const;
@@ -411,7 +482,6 @@ const getFolderExplorer = async (data: {
     ...(search && { originalFilename: { ilike: `%${search}%` } }),
   };
 
-  // 4. Fetch children
   if (offset < totalFoldersCount) {
     const folderLimit = Math.min(limit, totalFoldersCount - offset);
     const subFolders = await db.query.folders.findMany({
@@ -435,14 +505,7 @@ const getFolderExplorer = async (data: {
         columns: docColumns,
         where: docWhere,
         with: {
-          properties: {
-            columns: {
-              documentType: true,
-            },
-            with: {
-              transportType: true,
-            },
-          },
+          fieldValues: { columns: { fieldKey: true, value: true } },
         },
         orderBy: { updatedAt: "desc" },
         limit: remainingLimit,
@@ -456,14 +519,7 @@ const getFolderExplorer = async (data: {
       columns: docColumns,
       where: docWhere,
       with: {
-        properties: {
-          columns: {
-            documentType: true,
-          },
-          with: {
-            transportType: true,
-          },
-        },
+        fieldValues: { columns: { fieldKey: true, value: true } },
       },
       orderBy: { updatedAt: "desc" },
       limit: limit,

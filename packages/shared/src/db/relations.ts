@@ -31,6 +31,7 @@ export const relations = defineRelations(schema, (r) => ({
     createdMemories: r.many.aiMemories({ alias: "memoryCreator" }),
     modifiedMemories: r.many.aiMemories({ alias: "memoryModifier" }),
     memoryHistoryWrites: r.many.aiMemoryHistory(),
+    teamSkillUpdates: r.many.teamSkills(),
   },
 
   account: {
@@ -55,6 +56,7 @@ export const relations = defineRelations(schema, (r) => ({
     aiContextProfiles: r.many.aiContextProfiles(),
     aiContextFiles: r.many.aiContextFiles(),
     aiMemories: r.many.aiMemories(),
+    fieldDefinitions: r.many.fieldDefinitions(),
   },
 
   team: {
@@ -80,6 +82,9 @@ export const relations = defineRelations(schema, (r) => ({
     aiContextProfiles: r.many.aiContextProfiles(),
     aiMemories: r.many.aiMemories(),
     aiMemoryHistory: r.many.aiMemoryHistory(),
+    fieldDefinitions: r.many.fieldDefinitions(),
+    teamSkills: r.many.teamSkills(),
+    ownedSkills: r.many.skills({ alias: "skillTeamOwner" }),
   },
 
   teamMember: {
@@ -209,6 +214,7 @@ export const relations = defineRelations(schema, (r) => ({
     }),
     documentLabels: r.many.documentLabels(),
     documentEntities: r.many.documentEntities(),
+    fieldValues: r.many.documentFieldValues(),
     // Many-to-many through documentEntities
     entities: r.many.entities({
       from: r.documents.id.through(r.documentEntities.documentId),
@@ -227,15 +233,29 @@ export const relations = defineRelations(schema, (r) => ({
       from: r.documentProperties.documentId,
       to: r.documents.id,
     }),
-    transportType: r.one.documentTransportTypes({
-      from: r.documentProperties.documentTransportType,
-      to: r.documentTransportTypes.code,
+  },
+
+  // ============================================================================
+  // Field Definitions Relations (org/team-scoped dynamic document fields)
+  // ============================================================================
+
+  fieldDefinitions: {
+    organization: r.one.organization({
+      from: r.fieldDefinitions.organizationId,
+      to: r.organization.id,
+    }),
+    team: r.one.team({
+      from: r.fieldDefinitions.teamId,
+      to: r.team.id,
       optional: true,
     }),
   },
 
-  documentTransportTypes: {
-    properties: r.many.documentProperties(),
+  documentFieldValues: {
+    document: r.one.documents({
+      from: r.documentFieldValues.documentId,
+      to: r.documents.id,
+    }),
   },
 
   // ============================================================================
@@ -512,6 +532,36 @@ export const relations = defineRelations(schema, (r) => ({
       from: r.aiMemoryHistory.byConversationId,
       to: r.aiConversations.id,
       alias: "memoryHistoryConversation",
+      optional: true,
+    }),
+  },
+
+  // ============================================================================
+  // Skills Relations
+  // ============================================================================
+
+  skills: {
+    teamOwner: r.one.team({
+      from: r.skills.teamId,
+      to: r.team.id,
+      alias: "skillTeamOwner",
+      optional: true,
+    }),
+    teamOverrides: r.many.teamSkills(),
+  },
+
+  teamSkills: {
+    team: r.one.team({
+      from: r.teamSkills.teamId,
+      to: r.team.id,
+    }),
+    skill: r.one.skills({
+      from: r.teamSkills.skillId,
+      to: r.skills.id,
+    }),
+    updatedBy: r.one.user({
+      from: r.teamSkills.updatedById,
+      to: r.user.id,
       optional: true,
     }),
   },

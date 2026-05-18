@@ -83,7 +83,6 @@ interface DriveFixture {
     originalFilename?: string;
     fileSize?: number;
     mimeType?: string;
-    s3Key?: string;
     bytes?: Uint8Array;
   }) => Promise<string>;
 }
@@ -165,7 +164,14 @@ beforeAll(async () => {
   const insertedDocIds: string[] = [];
   const insertDoc: DriveFixture["insertDoc"] = async (args) => {
     const id = randomUUID();
-    const s3Key = args.s3Key ?? `documents/${id}.pdf`;
+    const originalFilename = args.originalFilename ?? "doc.pdf";
+    // Keys are derived from id + originalFilename — same as production
+    // (`buildDocumentOriginalKey`). Stage the mocked S3 bytes under
+    // that key so `getObjectBytes` resolves it via `s3Bytes.get(...)`.
+    const ext = originalFilename.includes(".")
+      ? originalFilename.slice(originalFilename.lastIndexOf("."))
+      : ".pdf";
+    const s3Key = `documents/${id}${ext}`;
     const bytes = args.bytes ?? null;
     if (bytes !== null) s3Bytes.set(s3Key, bytes);
 
@@ -175,12 +181,10 @@ beforeAll(async () => {
       id,
       teamId: args.teamId ?? primary.id,
       status: args.status ?? "ready",
-      originalFilename: args.originalFilename ?? "doc.pdf",
+      originalFilename,
       fileSize,
       mimeType: args.mimeType ?? "application/pdf",
       fileHash: `hash-${randomUUID()}`,
-      s3Key,
-      s3ThumbnailKey: `${s3Key}.thumb.png`,
     });
     insertedDocIds.push(id);
     return id;

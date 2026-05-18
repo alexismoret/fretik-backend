@@ -18,13 +18,16 @@ xlsxwriter==3.2.9
 # Office docs
 python-docx==1.2.0
 python-pptx==1.0.2
+# Markdown extraction from Office / PDF files. Used by the pptx and
+# pdf skills to read content without parsing XML manually.
+markitdown==0.1.5
 
 # PDF parsing & generation
-pypdf==6.10.2
+pypdf==6.11.0
 pdfplumber==0.11.9
 pdfminer.six==20251230
 pypdfium2==5.7.0
-reportlab==4.4.10
+reportlab==4.5.1
 
 # Plotting / images
 matplotlib==3.10.8

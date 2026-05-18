@@ -1,51 +1,63 @@
 import { z } from "zod";
 import { paramsListSchema } from "./common/params";
 import { responseListSchema } from "./common/responses";
-import {
-  documentStatusSchema,
-  documentTransportType,
-  documentTypeSchema,
-  transportModeSchema,
-} from "./documents";
+import { documentStatusSchema } from "./documents";
 
 /**
  * Drive list params: pagination + search + advanced filters.
  *
- * All advanced filters accept multiple values. They can be passed either as
- * repeated query params (`?documentType=invoice&documentType=receipt`) or as
- * a single value (`?documentType=invoice`) — both are normalized to arrays.
- *
- * When any advanced filter array is non-empty the listing switches to a flat,
- * cross-folder, document-only mode (folders are hidden, folderId scope ignored).
+ * Universal filters (search, entityId, labelIds) stay typed. Custom
+ * filters target the per-team field definitions and are passed as
+ * `customFilters[<fieldKey>]=value` (parsed by the handler into a list
+ * of `{fieldKey, value}` predicates joined to `documentFieldValues`).
  */
 const toArray = <T>(val: unknown): T[] | undefined => {
   if (val === undefined || val === null || val === "") return undefined;
   return (Array.isArray(val) ? val : [val]) as T[];
 };
 
+/**
+ * A single dynamic filter predicate: equality on a `(fieldKey, value)`
+ * pair stored in `document_field_values`. `value` is `unknown` because
+ * the type is declared on the corresponding field definition; the
+ * handler validates the shape before passing it to the search service.
+ */
+export const driveCustomFilterSchema = z.object({
+  fieldKey: z.string().min(1).max(60),
+  value: z.unknown(),
+});
+
+export type DriveCustomFilter = z.infer<typeof driveCustomFilterSchema>;
+
 export const driveListParamsSchema = paramsListSchema.extend({
-  documentType: z
-    .preprocess(toArray, z.array(z.lazy(() => documentTypeSchema)).optional())
-    .openapi({
-      description:
-        "Filter by one or more document types (OR semantics within the filter).",
-    }),
-  transportMode: z
-    .preprocess(toArray, z.array(z.lazy(() => transportModeSchema)).optional())
-    .openapi({
-      description:
-        "Filter by one or more transport modes (OR semantics within the filter).",
-    }),
-  documentTransportType: z
-    .preprocess(toArray, z.array(z.string()).optional())
-    .openapi({
-      description:
-        "Filter by one or more transport document type codes (e.g. cmr, bl).",
-    }),
   entityId: z.preprocess(toArray, z.array(z.uuid()).optional()).openapi({
     description:
       "Filter to documents linked to one or more entities (any role). OR semantics within the filter.",
   }),
+  labelIds: z.preprocess(toArray, z.array(z.uuid()).optional()).openapi({
+    description:
+      "Filter to documents tagged with one or more labels. OR semantics within the filter.",
+  }),
+  customFilters: z
+    .preprocess((val) => {
+      // The frontend serialises customFilters to JSON because ofetch can't
+      // represent an array of objects in a query string (it collapses each
+      // entry to "[object Object]"). Decode the JSON back to an array
+      // before Zod validates the inner shape.
+      if (val === undefined || val === null || val === "") return undefined;
+      if (typeof val === "string") {
+        try {
+          return JSON.parse(val);
+        } catch {
+          return val; // let Zod produce a useful error
+        }
+      }
+      return val;
+    }, z.array(driveCustomFilterSchema).optional())
+    .openapi({
+      description:
+        "Equality filters on dynamic document fields. JSON-encoded array of `{fieldKey, value}` pairs. `value` may be a scalar (eq match) or an array (ANY-of match for enum filters).",
+    }),
 });
 
 export type DriveListParams = z.infer<typeof driveListParamsSchema>;
@@ -91,7 +103,10 @@ export const FolderBreadcrumbSchema = z.object({
 export type FolderBreadcrumb = z.infer<typeof FolderBreadcrumbSchema>;
 
 /**
- * Simplified document for drive view
+ * Simplified document for drive view. Custom fields ride along via
+ * `fieldValues` so the list view can render badges (e.g. document type,
+ * transport mode) without joining the full definitions on every row —
+ * the frontend has the resolved definitions from the parent drive query.
  */
 export const DriveDocumentSchema = z.object({
   id: z.uuid(),
@@ -99,9 +114,8 @@ export const DriveDocumentSchema = z.object({
   fileSize: z.number().int(),
   mimeType: z.string(),
   thumbnailUrl: z.string().nullable(),
-  documentType: z.lazy(() => documentTypeSchema),
-  documentTransportType: z.lazy(() => documentTransportType.nullable()),
   status: z.lazy(() => documentStatusSchema),
+  fieldValues: z.record(z.string(), z.unknown()),
   createdAt: z.date(),
   updatedAt: z.date(),
 });

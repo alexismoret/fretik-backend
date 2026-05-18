@@ -1,3 +1,5 @@
+import type { FieldDefinition } from "@fretik/shared/db/schema";
+import { buildDocumentOriginalKey } from "@fretik/shared/lib/document-storage";
 import { getFileFromS3, getPresignedUrl } from "@fretik/shared/lib/s3";
 import type { PreExtractionResponse } from "@fretik/shared/schemas/pre-extraction";
 import { type OcrPage, runMistralOcr } from "../../lib/mistral-ocr";
@@ -9,21 +11,28 @@ import { runPreextractLlm } from "./extract";
 
 /**
  * Upper bound on the concatenated OCR markdown we feed to the LLM. Above
- * this size we down-select pages (see `buildConsolidatedMarkdown`). 30 000
- * chars ≈ 7.5K tokens — a comfortable working set for gpt-oss-120b that
- * leaves plenty of context for the system prompt and the model's output.
+ * this size we down-select pages (see `selectPagesForLlm`). 80 000 chars
+ * ≈ 20K tokens — comfortable for DeepSeek-V4-Flash (1M context) and
+ * covers the vast majority of business docs in full. Increased from
+ * 30 000 (the GPT-OSS-120B-era setting) so long contracts / multi-page
+ * invoices no longer lose middle pages to down-selection. Latency
+ * impact: ~+1-2s TTFT on long inputs; OCR remains the dominant cost.
  */
-const LLM_MARKDOWN_CHAR_BUDGET = 30_000;
+const LLM_MARKDOWN_CHAR_BUDGET = 80_000;
 
 /**
  * Per-page cap applied AFTER down-selection when the total still exceeds
- * the budget. Keeps the 4 selected pages roughly balanced so no single
- * dense page eats the whole budget.
+ * the budget. Keeps selected pages roughly balanced so no single dense
+ * page eats the whole budget.
  */
 const LLM_PAGE_CHAR_CAP = 7_500;
 
-/** Cap on the number of chars read from `text/plain` files. */
-const TEXT_PLAIN_CHAR_CAP = 30_000;
+/**
+ * Cap on the number of chars read from `text/plain` files. Sits just
+ * below `LLM_MARKDOWN_CHAR_BUDGET` (with margin for the synthetic page
+ * header) so long .txt files get the same coverage as PDFs.
+ */
+const TEXT_PLAIN_CHAR_CAP = 75_000;
 
 /** Validity window (seconds) of the S3 presigned URL handed to Mistral OCR. */
 const PRESIGNED_URL_TTL_SECONDS = 600;
@@ -33,16 +42,27 @@ const PRESIGNED_URL_TTL_SECONDS = 600;
 // ==================== //
 
 export interface PreExtractArgs {
-  /** Document UUID — carried for logging only. */
+  /** Document UUID — used both for logging and to derive the S3 key. */
   documentId: string;
-  /**
-   * S3 key of the file to pre-extract. Must be a PDF, an image, or a plain
-   * text file. For Word/PowerPoint/Excel/CSV, the caller (shared) must have
-   * uploaded a converted PDF to an ephemeral key BEFORE calling the route.
-   */
-  s3Key: string;
+  /** Used to derive the default S3 key's extension. */
+  originalFilename: string;
   /** MIME type matching the S3 object. Drives the OCR branch. */
   mimeType: string;
+  /**
+   * Optional override for the S3 key to OCR. When omitted, the service
+   * derives `documents/{documentId}{ext}` from `originalFilename` — the
+   * native location of the user-uploaded binary. For Word / PowerPoint /
+   * Excel / CSV, the caller (shared) uploads a converted PDF to an
+   * ephemeral key BEFORE calling the route and passes that key here.
+   */
+  overrideS3Key?: string;
+  /**
+   * Active team field definitions. Drives the runtime Zod schema (and
+   * therefore the JSON Schema sent to the LLM): the universal universal
+   * fields are stable across teams, but `customFields` is built from
+   * these defs. Empty array → universal-only extraction.
+   */
+  fieldDefinitions: FieldDefinition[];
 }
 
 // ==================== //
@@ -69,9 +89,9 @@ const readTextFile = async (s3Key: string): Promise<OcrPage[]> => {
  * the LLM. Strategy:
  *  - if the full concatenation fits under `LLM_MARKDOWN_CHAR_BUDGET`,
  *    send every page prefixed by its page header (seen = all pages).
- *  - otherwise, keep pages [first, first+1, last-1, last] (dedup'd for
- *    short docs) and, if the result still exceeds the budget, cap each
- *    page to `LLM_PAGE_CHAR_CAP` chars.
+ *  - otherwise, keep the first 5 and last 3 pages (dedup'd for short
+ *    docs) and, if the result still exceeds the budget, cap each page
+ *    to `LLM_PAGE_CHAR_CAP` chars.
  *
  * Returns both the consolidated content AND the list of page indices the
  * model actually saw — the caller uses the indices to inject the
@@ -102,12 +122,14 @@ const selectPagesForLlm = (
     };
   }
 
-  // Down-select: first, first+1, last-1, last (dedup + preserve order).
+  // Down-select: first 5 + last 3 (dedup + preserve order). Larger
+  // window than before so contracts / multi-page invoices retain mid-
+  // document context too. For very short docs the Set dedups naturally.
   const candidateIndices = new Set<number>();
-  candidateIndices.add(0);
-  if (pages.length > 1) candidateIndices.add(1);
-  if (pages.length > 2) candidateIndices.add(pages.length - 2);
-  if (pages.length > 0) candidateIndices.add(pages.length - 1);
+  for (let i = 0; i < Math.min(5, pages.length); i++) candidateIndices.add(i);
+  for (let i = Math.max(0, pages.length - 3); i < pages.length; i++) {
+    candidateIndices.add(i);
+  }
   const selectedPages = [...candidateIndices]
     .sort((a, b) => a - b)
     .map((i) => pages[i])
@@ -153,6 +175,11 @@ export const runPreExtract = async (
   args: PreExtractArgs,
 ): Promise<PreExtractionResponse> => {
   const isPlainText = args.mimeType === "text/plain";
+  // Derive the S3 key from `documentId` + `originalFilename` unless the
+  // caller pinned an ephemeral conversion key.
+  const s3Key =
+    args.overrideS3Key ??
+    buildDocumentOriginalKey(args.documentId, args.originalFilename);
 
   // OCR (or raw text read) — measured separately so structured logs can
   // attribute latency between OCR, LLM, and the rest.
@@ -160,9 +187,9 @@ export const runPreExtract = async (
   let ocrPages: OcrPage[];
 
   if (isPlainText) {
-    ocrPages = await readTextFile(args.s3Key);
+    ocrPages = await readTextFile(s3Key);
   } else {
-    const url = await getPresignedUrl(args.s3Key, PRESIGNED_URL_TTL_SECONDS);
+    const url = await getPresignedUrl(s3Key, PRESIGNED_URL_TTL_SECONDS);
     const ocr = await runMistralOcr({ url, mimeType: args.mimeType });
     ocrPages = ocr.pages;
   }
@@ -170,7 +197,7 @@ export const runPreExtract = async (
 
   if (ocrPages.length === 0) {
     throw new Error(
-      `OCR returned zero pages for document ${args.documentId} (s3Key=${args.s3Key})`,
+      `OCR returned zero pages for document ${args.documentId} (s3Key=${s3Key})`,
     );
   }
 
@@ -182,47 +209,30 @@ export const runPreExtract = async (
     isPlainText,
   });
 
-  const llm = await runPreextractLlm({ prompt });
+  const llm = await runPreextractLlm({
+    prompt,
+    fieldDefinitions: args.fieldDefinitions,
+  });
 
   // Structured log — one line per successful pre-extract, lets us
   // diagnose latency + model usage in production without re-running.
   console.info(
-    `[pre-extract] documentId=${args.documentId} ocrMs=${ocrMs} llmMs=${llm.durationMs} tier=${llm.tier} model=${llm.modelId} pagesTotal=${ocrPages.length} pagesSent=${seenIndices.length} promptChars=${prompt.length} entities=${llm.output.entities.length} type=${llm.output.documentType} transportType=${llm.output.documentTransportType ?? "null"}`,
+    `[pre-extract] documentId=${args.documentId} ocrMs=${ocrMs} llmMs=${llm.durationMs} tier=${llm.tier} model=${llm.modelId} pagesTotal=${ocrPages.length} pagesSent=${seenIndices.length} promptChars=${prompt.length} entities=${llm.output.entities.length} customFieldKeys=${Object.keys(llm.output.customFields).length}`,
   );
-
-  // Merge any LLM-provided metadata with our own diagnostic fields so
-  // a future audit can trace which model / how long / how many chars
-  // produced each DB row. The column is already JSONB so we don't
-  // break the schema contract.
-  const diagnosticMetadata: Record<string, unknown> = {
-    ...(llm.output.preExtractionMetadata ?? {}),
-    modelId: llm.modelId,
-    modelTier: llm.tier,
-    ocrMs,
-    llmMs: llm.durationMs,
-    pagesTotal: ocrPages.length,
-    pagesSent: seenIndices.length,
-    promptChars: prompt.length,
-  };
 
   return {
     success: true,
     pages: ocrPages.map((p) => ({ index: p.index, markdown: p.markdown })),
     pageCount: ocrPages.length,
-    documentType: llm.output.documentType,
-    documentTransportType: llm.output.documentTransportType,
-    transportMode: llm.output.transportMode,
     documentSummary: llm.output.documentSummary,
     documentLanguage: llm.output.documentLanguage,
-    // LLM emits an ISO 8601 string; the response schema coerces to Date
-    // (via `z.coerce.date()`) on the caller side, but we must construct
-    // a Date here to satisfy the PreExtractionResponse TS type.
-    documentDate: llm.output.documentDate
-      ? new Date(llm.output.documentDate)
-      : null,
-    documentNumber: llm.output.documentNumber,
-    entities: llm.output.entities,
+    entities: llm.output.entities.map((e) => ({
+      name: e.name,
+      role: e.role as PreExtractionResponse["entities"][number]["role"],
+      type: e.type as PreExtractionResponse["entities"][number]["type"],
+      confidence: e.confidence,
+    })),
     confidenceScore: llm.output.confidenceScore,
-    preExtractionMetadata: diagnosticMetadata,
+    customFields: llm.output.customFields,
   };
 };

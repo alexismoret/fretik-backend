@@ -62,6 +62,15 @@ export interface SearchRagInput {
   topK?: number;
   /** When true, populate `debugScores` on the response. Default false. */
   debug?: boolean;
+  /**
+   * When true, skip multi-query reformulation entirely — runs hybrid
+   * search against the original query only. Use for callers where a
+   * downstream stage (e.g. judge LLM) provides precision filtering and
+   * the latency saving (~1–3 s on the cheap-model call + 2 extra
+   * embeddings + 2 extra hybrid searches) is worth the recall trade.
+   * Default false (full multi-query, preserves prior behaviour).
+   */
+  skipMultiQuery?: boolean;
 }
 
 export interface SearchRagDebugEntry {
@@ -159,6 +168,7 @@ export const searchRAG = async (
     filters,
     topK = DEFAULT_TOP_K,
     debug = false,
+    skipMultiQuery = false,
   } = input;
 
   const trimmed = query.trim();
@@ -172,8 +182,12 @@ export const searchRAG = async (
     };
   }
 
-  // Stage 1 — reformulation (soft-fail returns [original]).
-  const queryVariants = await generateQueryVariants(trimmed);
+  // Stage 1 — reformulation (soft-fail returns [original]). When the
+  // caller opts out, we skip the cheap-model round-trip and run hybrid
+  // search against the original query alone.
+  const queryVariants = skipMultiQuery
+    ? [trimmed]
+    : await generateQueryVariants(trimmed);
   if (queryVariants.length === 0) {
     return {
       results: [],

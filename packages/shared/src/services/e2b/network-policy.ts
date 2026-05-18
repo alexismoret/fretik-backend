@@ -17,7 +17,7 @@ export const SANDBOX_ALLOWED_DOMAINS = {
    * API/SaaS. Useful for skills that enrich data through internal
    * endpoints (use only with short-lived tokens).
    */
-  fretik: ["*.fretik.com", "fretik.com", "s3.fr-par.scw.cloud"],
+  fretik: ["*.fretik.com", "fretik.com"],
 
   /**
    * Python package manager. Allows runtime `pip install` from the

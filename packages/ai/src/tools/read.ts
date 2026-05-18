@@ -157,38 +157,47 @@ const resolveReadPath = (
   return resolveWorkspacePath(adjusted);
 };
 
+/**
+ * Build a directive recovery hint for a `FILE_NOT_FOUND` based on the
+ * resolved workspace path. Returns `undefined` when no prefix matches
+ * so the field is dropped from the serialized response (per Vercel AI
+ * SDK behavior). Anthropic's tool-design guidance: errors should
+ * "communicate specific and actionable improvements, rather than
+ * opaque error codes or tracebacks".
+ */
+const DRIVE_UUID_RE = /^drive\/([0-9a-fA-F-]{36})-/;
+
+const buildFileNotFoundHint = (relative: string): string | undefined => {
+  const driveMatch = DRIVE_UUID_RE.exec(relative);
+  if (driveMatch) {
+    return `Call \`downloadDriveDocument({ documentId: "${driveMatch[1]}" })\` first. Files under \`drive/\` exist only after a successful download in this conversation.`;
+  }
+  if (relative.startsWith(`${WORKSPACE_DIRS.attachments}/`)) {
+    return `Check the exact filename in the system prompt's <attached_files> block — case, extension, and spaces must match. Bare \`read("<filename>")\` is rewritten as \`${WORKSPACE_DIRS.attachments}/<filename>\`.`;
+  }
+  if (relative.startsWith(`${WORKSPACE_DIRS.outputs}/`)) {
+    return `The file may not have been generated yet. Check the stdout of the previous \`python\` / \`bash\` call for the actual output path.`;
+  }
+  return undefined;
+};
+
 export const createReadTool = () =>
   tool({
     description: [
-      "Reads a file from the current conversation's sandbox and returns its content with line numbers.",
+      "Read a file from the conversation's sandbox at `/workspace/`. Returns line-numbered content (6-char line number + tab + content) so citations can reference real file lines.",
       "",
-      "Files live at `/workspace/...` inside the sandbox. Six top-level directories carry distinct meaning:",
-      "  - `attachments/` — files the user uploaded in this conversation",
-      "  - `outputs/` — files produced by python/bash + persisted tool envelopes (under `outputs/persisted/`)",
-      "  - `drive/` — Drive documents you pulled in via `download_drive_document`",
-      "  - `skills/` — bundled skill bundles (read-only). Read the skill's `SKILL.md` for instructions.",
-      "  - `context/` — team/user persistent context files (read-only)",
-      "  - `memory/` — your persistent memory tree (read-only via this tool; write via the `memory` tool)",
+      "Usage:",
+      "- Use to view a specific file you already know exists (filename came from an attachment, `listDocuments`, or a previous tool result).",
+      "- Use `read(path, offset, limit)` to target a section in a large file (`offset` is 1-indexed, `limit` defaults to 2000 lines).",
+      "- For searching across multiple files → use `bash` (`grep`, `find`, `head`, pipelines) — much faster.",
+      "- For pandas / openpyxl / pypdf / programmatic processing → use `python` (mandatory for `.xlsx` / `.xls`).",
+      "- For visual questions (layout, signatures, diagrams) → use `vision`.",
+      "- For finding by topic when you don't know the path → use `searchKnowledge`.",
+      "- Path inputs: `attachments/invoice.pdf` (workspace-relative, preferred), `/workspace/attachments/invoice.pdf` (absolute), or bare `invoice.pdf` (assumed under `attachments/`). Paths escaping `/workspace/` are rejected.",
+      "- Extension routing is transparent — pass the original filename: PDF/DOCX/PPTX auto-resolve to the `{basename}.md` OCR sidecar; PNG/JPG/WEBP return the OCR sidecar if available else point at `vision`; XLSX/XLS return a markdown-tables sidecar if available else point at `python`.",
+      `- A byte safety cap (~${(MAX_READ_CHARS / 1000).toFixed(0)}K chars) fires first on dense content; when it does, \`truncatedByBytes: true\` + a \`notice\` field tell you exactly how to paginate.`,
       "",
-      "Path inputs accepted: `attachments/invoice.pdf`, `/workspace/attachments/invoice.pdf`, or a bare `invoice.pdf` (assumed to live under `attachments/`). Paths outside `/workspace/` are rejected.",
-      "",
-      "Extension handling:",
-      "- Text files (.md .txt .json .csv .xml .html .yaml ...): returns line-numbered content.",
-      "- PDF / DOCX / PPTX: automatically resolves to the `{basename}.md` OCR sidecar and returns its text (source=ocr-sidecar). You never have to think about OCR — just pass the original filename.",
-      "- PNG / JPG / WEBP: returns the OCR sidecar when one exists; otherwise returns an error pointing you at `vision(file_path, question)` for visual questions.",
-      "- XLSX / XLS: returns the markdown-tables sidecar when one exists; otherwise returns an error telling you to use `python` with `pandas.read_excel` / `openpyxl`.",
-      "",
-      "Inputs:",
-      "- file_path (required): workspace-relative or absolute under `/workspace/` (e.g. 'attachments/invoice.pdf').",
-      `- offset (optional): 1-indexed line number to start reading from. Defaults to 1.`,
-      `- limit (optional): number of lines to read. Defaults to ${DEFAULT_READ_LINES.toLocaleString()} — but it's recommended to read the whole file by not providing offset/limit when feasible. A byte safety cap (~${(MAX_READ_CHARS / 1000).toFixed(0)}K chars) fires first on dense content (OCR markdown, multi-page sidecars, minified JSON); when that happens, \`truncatedByBytes: true\` is set and a \`notice\` field tells you exactly how to paginate (offset+limit) or switch to \`python\` for full-doc processing.`,
-      "",
-      "Output shape: { filePath, source, startLine, numLines, totalLines, content, truncatedByBytes?, notice? }.",
-      "- Each line in `content` is prefixed with its real file line number: `     N\\t<line>` (6-char right-aligned).",
-      "- `totalLines` lets you detect when you still have more to read (paginate with offset = startLine + numLines).",
-      "- `truncatedByBytes: true` means a byte safety cap fired before `limit` was satisfied (pathologically long lines). Refine your slice with a smaller `limit`.",
-      "",
-      "When the returned slice is oversized, it is transparently saved to a `<persisted-output>` file and the tool returns the envelope instead. Page through the rest with offset + limit.",
+      "Output: `{ filePath, source, startLine, numLines, totalLines, content, truncatedByBytes?, notice? }`. When the slice is oversized it is saved to a `<persisted-output>` file and the envelope is returned instead — page through the rest with `offset` + `limit`.",
     ].join("\n"),
     inputSchema: z.object({
       file_path: z
@@ -318,6 +327,7 @@ export const createReadTool = () =>
           return {
             error: `File not found: ${finalAbsolute}`,
             code: "FILE_NOT_FOUND",
+            hint: buildFileNotFoundHint(finalRelative),
           };
         }
         return {

@@ -10,7 +10,11 @@ import { chatbotContextRoutes } from "./handlers/chatbot-context";
 import { conversationRoutes } from "./handlers/conversations";
 import { documentRoutes } from "./handlers/documents";
 import { entityRoutes } from "./handlers/entities";
+import { fieldDefinitionRoutes } from "./handlers/field-definitions";
+import { fieldTemplateRoutes } from "./handlers/field-templates";
 import { folderRoutes } from "./handlers/folders";
+import { labelRoutes } from "./handlers/labels";
+import { teamSkillsRoutes } from "./handlers/team-skills";
 
 const VERSION = packagejson.version;
 
@@ -44,6 +48,10 @@ app.route("/folder", folderRoutes);
 app.route("/conversation", conversationRoutes);
 app.route("/chatbot-context", chatbotContextRoutes);
 app.route("/ai-memory", aiMemoryRoutes);
+app.route("/field-definitions", fieldDefinitionRoutes);
+app.route("/field-templates", fieldTemplateRoutes);
+app.route("/label", labelRoutes);
+app.route("/team-skills", teamSkillsRoutes);
 
 // Init log
 const text = await figlet.text("fretik API");

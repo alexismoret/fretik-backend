@@ -8,20 +8,29 @@ import {
 } from "../services/vectorize/skills";
 
 /**
- * Bundled-skills catalog loader.
+ * Bundled-skills materialiser.
  *
- * The skill bundles ship as package sources under
- * `src/skills/bundled/<name>/` (each folder holds a `SKILL.md` plus
- * optional `scripts/` and `references/` subtrees). The Python source
- * stays in the package; the bundles themselves are pushed to the
- * conversation sandbox at first init by `lib/conversation-storage.ts`
- * — a lightweight per-sandbox copy that the agent reads via
- * `read("skills/<name>/SKILL.md")` and imports via
- * `from skill_loader import load_skill; load_skill("<name>")`.
+ * Two responsibilities:
  *
- * What we need at boot is the **catalog** (skill name + description
- * from the SKILL.md frontmatter) so the system prompt can advertise
- * the L1 listing.
+ *  1. **Filesystem catalogue cache** (`loadSkillCatalog` /
+ *     `getSkillCatalog`). Walks `bundled/<name>/SKILL.md`, parses the
+ *     spec-compliant frontmatter (`name` + `description`), and caches
+ *     the result at module level. Used today only by the vectoriser.
+ *     The agent system prompt no longer reads from this cache — it
+ *     queries the `skills` DB table (which is seeded via migration
+ *     and is the canonical source for the public catalogue + per-team
+ *     toggle state).
+ *
+ *  2. **Boot-time RAG indexer** (`vectorizeAllBundledSkills`). Embeds
+ *     SKILL.md + references/*.md into `ai_vectors` so the chatbot's
+ *     `searchKnowledge` tool can route skill-shaped questions to the
+ *     right playbook on its own. Idempotent + fire-and-forget.
+ *
+ * Frontmatter shape conforms to the agentskills.io spec — only `name`
+ * and `description` are read here. Fretik-specific metadata
+ * (`is_default`, `version`) lives in the `skills` DB row, not in the
+ * markdown frontmatter, so the SKILL.md files stay portable to any
+ * Anthropic-native Skills consumer.
  */
 
 export interface SkillCatalogEntry {
@@ -32,37 +41,86 @@ export interface SkillCatalogEntry {
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const BUNDLED_SRC_DIR = resolve(__dirname, "bundled");
 
+const NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
 let cachedCatalog: SkillCatalogEntry[] | null = null;
 
+interface ParsedFrontmatter {
+  name?: string;
+  description: string;
+}
+
+/**
+ * Read the YAML frontmatter of a SKILL.md and lift `name` +
+ * `description`. Uses `Bun.YAML.parse` (native, no extra dep) so
+ * multi-line descriptions and YAML block scalars work out of the box.
+ *
+ * Returns `null` when the file has no frontmatter, the YAML fails to
+ * parse, or no usable description is present. Callers treat that as
+ * "skip this skill, log a warning" rather than crashing the boot.
+ */
 const parseFrontmatter = (
   body: string,
-): { description: string; name?: string } => {
-  // Minimal YAML front-matter parser — we only read scalar values from
-  // the name/description keys. Keeps the implementation free of an
-  // extra dep for a format we fully control.
+  skillFolder: string,
+): ParsedFrontmatter | null => {
   const match = body.match(/^---\n([\s\S]*?)\n---/);
-  if (!match) return { description: "" };
-  const raw = match[1] ?? "";
-  const result: { description: string; name?: string } = { description: "" };
-  for (const line of raw.split("\n")) {
-    const m = line.match(/^(name|description):\s*(.*)$/);
-    if (!m) continue;
-    const key = m[1];
-    const value = m[2];
-    if (value === undefined) continue;
-    const trimmed = value.trim().replace(/^["']|["']$/g, "");
-    if (key === "description") result.description = trimmed;
-    if (key === "name") result.name = trimmed;
+  if (!match) {
+    console.warn(`[skills] ${skillFolder}: SKILL.md has no front-matter`);
+    return null;
   }
-  return result;
+
+  let parsed: unknown;
+  try {
+    parsed = Bun.YAML.parse(match[1] ?? "");
+  } catch (err) {
+    console.warn(
+      `[skills] ${skillFolder}: front-matter YAML parse failed:`,
+      err instanceof Error ? err.message : err,
+    );
+    return null;
+  }
+
+  if (parsed === null || typeof parsed !== "object") {
+    console.warn(`[skills] ${skillFolder}: front-matter is not an object`);
+    return null;
+  }
+
+  const fm = parsed as Record<string, unknown>;
+  const rawName = fm.name;
+  const rawDescription = fm.description;
+
+  if (
+    typeof rawDescription !== "string" ||
+    rawDescription.trim().length === 0
+  ) {
+    console.warn(
+      `[skills] ${skillFolder}: SKILL.md missing description in front-matter`,
+    );
+    return null;
+  }
+
+  const name = typeof rawName === "string" ? rawName.trim() : undefined;
+  if (name !== undefined && !NAME_PATTERN.test(name)) {
+    console.warn(
+      `[skills] ${skillFolder}: front-matter name "${name}" violates [a-z0-9-] slug rule, falling back to folder name`,
+    );
+  }
+
+  return {
+    name: name !== undefined && NAME_PATTERN.test(name) ? name : undefined,
+    description: rawDescription.trim(),
+  };
 };
 
 /**
- * Walk the bundled source tree once and produce the catalog
- * (skill name + description) consumed by the system-prompt renderer.
+ * Walk the bundled source tree once and produce the in-memory
+ * catalogue (skill name + description). Idempotent + cached at
+ * module level — bundled skills don't change at runtime.
  *
- * Idempotent + cached at module level — bundled skills don't change
- * at runtime. Safe to call multiple times.
+ * Today this cache is consumed by the vectoriser only. The agent
+ * system prompt reads from the `skills` DB table instead so it can
+ * apply per-team enable/disable overrides without rebooting the
+ * service.
  */
 export const loadSkillCatalog = async (): Promise<SkillCatalogEntry[]> => {
   if (cachedCatalog) return cachedCatalog;
@@ -97,14 +155,13 @@ export const loadSkillCatalog = async (): Promise<SkillCatalogEntry[]> => {
         return;
       }
       const body = await skillMdFile.text();
-      const { description, name } = parseFrontmatter(body);
-      if (!description) {
-        console.warn(
-          `[skills] skipping ${child}: SKILL.md missing description in frontmatter`,
-        );
-        return;
-      }
-      entries.push({ name: name ?? child, description });
+      const parsed = parseFrontmatter(body, child);
+      if (!parsed) return;
+
+      entries.push({
+        name: parsed.name ?? child,
+        description: parsed.description,
+      });
     }),
   );
 
@@ -114,7 +171,7 @@ export const loadSkillCatalog = async (): Promise<SkillCatalogEntry[]> => {
 };
 
 /**
- * Synchronous read-only accessor for the in-memory catalog. Returns
+ * Synchronous read-only accessor for the in-memory catalogue. Returns
  * an empty array until `loadSkillCatalog()` has run at least once.
  */
 export const getSkillCatalog = (): SkillCatalogEntry[] => cachedCatalog ?? [];
@@ -193,11 +250,11 @@ const collectBundledSkillFiles = async (): Promise<BundledSkillFile[]> => {
     const skillMdFile = Bun.file(skillMdPath);
     if (!(await skillMdFile.exists())) continue;
 
-    const { description, name } = parseFrontmatter(await skillMdFile.text());
-    if (!description) continue;
+    const parsed = parseFrontmatter(await skillMdFile.text(), child);
+    if (!parsed) continue;
 
-    const skillName = name ?? child;
-    const files = await readSkillFiles(skillName, skillDir, description);
+    const skillName = parsed.name ?? child;
+    const files = await readSkillFiles(skillName, skillDir, parsed.description);
     all.push(...files);
   }
 

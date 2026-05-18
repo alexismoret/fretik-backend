@@ -138,10 +138,16 @@ const findLastStableInRange = (
   return -1;
 };
 
-export const shouldInjectCacheControl = (modelId: string): boolean => {
-  if (!MANUAL_PROMPT_CACHE_ENABLED) return false;
-  return EXPLICIT_CACHE_MODEL_PATTERNS.some((re) => re.test(modelId));
-};
+/**
+ * Pure model-id predicate — true for upstreams that require explicit
+ * `cache_control` breakpoints. Env-agnostic so it's directly testable
+ * without restoring `MANUAL_PROMPT_CACHE` between tests; the master
+ * env switch is enforced separately in `wrapModelWithCache` below so
+ * a `MANUAL_PROMPT_CACHE=false` deployment skips the middleware
+ * entirely (no double-check needed on the hot path).
+ */
+export const shouldInjectCacheControl = (modelId: string): boolean =>
+  EXPLICIT_CACHE_MODEL_PATTERNS.some((re) => re.test(modelId));
 
 export const selectBreakpointIndices = (
   prompt: LanguageModelV3Prompt,

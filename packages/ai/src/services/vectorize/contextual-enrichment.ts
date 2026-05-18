@@ -13,18 +13,11 @@ import type { Chunk } from "./chunker";
  * OpenRouter (`CHEAP_MODEL` — $0.03 / $0.14 per MTok, cheapest reasoning
  * model on the stack).
  *
- * The prompt is the Anthropic cookbook verbatim
- * (see `chatbot-overhaul-progress.json.keyDecisions.phase7ContextualizationPrompt`):
- *
- *   <document>{doc_content}</document>
- *
- *   Here is the chunk we want to situate within the whole document
- *   <chunk>{chunk_content}</chunk>
- *
- *   Please give a short succinct context to situate this chunk within
- *   the overall document for the purposes of improving search retrieval
- *   of the chunk.
- *   Answer only with the succinct context and nothing else.
+ * The rubric is in `ENRICHMENT_SYSTEM_PROMPT` (the Anthropic cookbook
+ * verbatim, just split out so the variable payload — document context +
+ * chunk — is sent as the user prompt). System/user separation gives
+ * caching-aware providers a free win and makes the model treat the
+ * instructions with more weight.
  *
  * Concurrency: every call goes through the Redis distributed semaphore
  * `openrouter:cheap` so a cluster of @fretik/ai replicas vectorising in
@@ -33,7 +26,19 @@ import type { Chunk } from "./chunker";
  */
 
 const ENRICHMENT_TEMPERATURE = 0;
-const ENRICHMENT_MAX_TOKENS = 200;
+const ENRICHMENT_MAX_TOKENS = 300;
+
+/**
+ * Static instructions for the enrichment model. Moved out of the per-call
+ * `prompt` so the variable payload (document context + chunk) is cleanly
+ * separated from the constant rubric. Providers that cache identical
+ * system messages get a small free win; more importantly it gives the
+ * model a clearer separation between rubric and data.
+ */
+const ENRICHMENT_SYSTEM_PROMPT =
+  `You situate a chunk within the document it was extracted from so the chunk becomes self-contained for retrieval.\n\n` +
+  `Given a document and a chunk extracted from it, write a short succinct context (1–2 sentences) that situates the chunk within the overall document for the purposes of improving search retrieval of the chunk.\n\n` +
+  `Answer only with the succinct context and nothing else.`;
 
 /**
  * Doc-context budget sent to the enrichment model per chunk. Anthropic's
@@ -95,7 +100,21 @@ export interface EnrichedChunk {
   contextualPrefix: string;
 }
 
-const cheapModel = openrouter.chat(CHEAP_MODEL);
+/**
+ * `gpt-oss-20b` on OpenRouter applies a non-trivial reasoning budget by
+ * default. `maxOutputTokens` only caps the visible text and does NOT
+ * bound `outputTokenDetails.reasoningTokens` — so a call that maxes its
+ * budget on hidden reasoning returns an empty `text`. We cap reasoning
+ * to "low" (same trick as multi-query.ts) so the visible output gets
+ * room to materialise.
+ *
+ * Some upstream routes reject `effort: "none"` with
+ * `Reasoning is mandatory for this endpoint and cannot be disabled.`,
+ * so "low" is the floor that every route accepts.
+ */
+const cheapModel = openrouter.chat(CHEAP_MODEL, {
+  reasoning: { effort: "low" },
+});
 
 /**
  * Builds the bounded `{doc_content}` context passed to the enrichment
@@ -136,10 +155,7 @@ const buildDocContext = (docContent: string, chunk: Chunk): string => {
 
 const buildPrompt = (docContent: string, chunk: Chunk): string =>
   `<document>${buildDocContext(docContent, chunk)}</document>\n\n` +
-  `Here is the chunk we want to situate within the whole document\n` +
-  `<chunk>${chunk.content}</chunk>\n\n` +
-  `Please give a short succinct context to situate this chunk within the overall document for the purposes of improving search retrieval of the chunk.\n` +
-  `Answer only with the succinct context and nothing else.`;
+  `<chunk>${chunk.content}</chunk>`;
 
 const enrichOne = async (
   docContent: string,
@@ -153,6 +169,7 @@ const enrichOne = async (
       () =>
         generateText({
           model: cheapModel,
+          system: ENRICHMENT_SYSTEM_PROMPT,
           prompt: buildPrompt(docContent, chunk),
           temperature: ENRICHMENT_TEMPERATURE,
           maxOutputTokens: ENRICHMENT_MAX_TOKENS,

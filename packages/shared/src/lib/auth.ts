@@ -6,6 +6,8 @@ import db from "../db";
 import * as schema from "../db/schema";
 import { generateOrganizationInvitation } from "../emails/generators";
 import { bootstrapTeamWithBotUser } from "../services/auth/bot-user";
+import { applyDocumentFieldTemplate } from "../services/field-definitions/apply-template";
+import { duplicateOrgDefsToTeam } from "../services/field-definitions/duplicate-org-to-team";
 import { sendEmail } from "./email";
 import { redis } from "./redis";
 
@@ -62,11 +64,26 @@ export const auth = betterAuth({
           await db.insert(schema.organizationSettings).values({
             organizationId: data.organization.id,
           });
+          // Seed the org-scope document field definitions with the
+          // default template. New teams created under this org inherit
+          // this set at creation time.
+          await applyDocumentFieldTemplate({
+            organizationId: data.organization.id,
+            teamId: null,
+            templateKey: "default",
+            mode: "replace",
+          });
         },
         afterCreateTeam: async (data) => {
           await bootstrapTeamWithBotUser({
             teamId: data.team.id,
             organizationId: data.team.organizationId,
+          });
+          // Duplicate the org-scope field definitions into the new
+          // team so the runtime reads always find a non-empty set.
+          await duplicateOrgDefsToTeam({
+            organizationId: data.team.organizationId,
+            teamId: data.team.id,
           });
         },
       },

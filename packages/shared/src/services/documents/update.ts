@@ -10,11 +10,14 @@ import {
 import { notFound, throwHttpError } from "../../lib/errors";
 import { deleteKeysByPrefix } from "../../lib/redis";
 import type { UpdateDocumentInput } from "../../schemas/documents";
+import { setDocumentFieldValues } from "./field-values";
 import { triggerDocumentVectorRefresh } from "./vector-refresh";
 
 /**
- * Updates a document and optionally its processing data.
- * Handles folder changes and updates document counts accordingly.
+ * Update a document and its associated data.
+ * Handles folder changes (counts), universal property edits (summary,
+ * language), label assignments, entity links and dynamic field values
+ * (per-team configured fields).
  */
 export const updateDocument = async (data: {
   id: string;
@@ -24,7 +27,6 @@ export const updateDocument = async (data: {
 }) => {
   const { id, teamId, organizationId, updates } = data;
 
-  // Check if document exists
   const existingDocument = await db.query.documents.findFirst({
     columns: { id: true, folderId: true },
     where: { id, teamId },
@@ -37,7 +39,6 @@ export const updateDocument = async (data: {
 
   const updatedDoc = await db.transaction(async (tx) => {
     if (folderHasChanged) {
-      // Decrement old folder's document count if it exists
       if (existingDocument.folderId) {
         await tx
           .update(folders)
@@ -45,7 +46,6 @@ export const updateDocument = async (data: {
           .where(eq(folders.id, existingDocument.folderId));
       }
 
-      // Increment new folder's document count if it exists
       if (updates.folderId) {
         await tx
           .update(folders)
@@ -54,7 +54,6 @@ export const updateDocument = async (data: {
       }
     }
 
-    // Update document
     const [doc] = await tx
       .update(documents)
       .set({
@@ -64,55 +63,38 @@ export const updateDocument = async (data: {
       .where(eq(documents.id, id))
       .returning();
 
-    // Update document properties
-    const propertiesToUpdate: Partial<typeof documentProperties.$inferInsert> =
-      {
-        documentSummary: updates.documentSummary,
-        documentType: updates.documentType,
-        documentLanguage: updates.documentLanguage,
-        documentTransportType: updates.documentTransportType,
-        documentDate: updates.documentDate,
-        documentNumber: updates.documentNumber,
-        transportMode: updates.transportMode,
-      };
-
-    if (Object.values(propertiesToUpdate).some((v) => v !== undefined)) {
+    // Universal properties (summary + language). Industry-specific fields
+    // go through documentFieldValues below.
+    if (
+      updates.documentSummary !== undefined ||
+      updates.documentLanguage !== undefined
+    ) {
       await tx
         .update(documentProperties)
         .set({
           documentSummary: updates.documentSummary,
-          documentType: updates.documentType,
           documentLanguage: updates.documentLanguage,
-          documentTransportType: updates.documentTransportType,
-          documentDate: updates.documentDate,
-          documentNumber: updates.documentNumber,
-          transportMode: updates.transportMode,
         })
         .where(eq(documentProperties.documentId, id));
     }
 
-    // Update labels if labelId is provided
-    if (updates.labelId !== undefined) {
-      // Remove existing labels for this document
+    // Reset labels when an explicit list is provided.
+    if (updates.labelIds !== undefined) {
       await tx.delete(documentLabels).where(eq(documentLabels.documentId, id));
-
-      // Add new label if not null
-      if (updates.labelId) {
-        await tx.insert(documentLabels).values({
-          documentId: id,
-          labelId: updates.labelId,
-        });
+      if (updates.labelIds.length > 0) {
+        await tx.insert(documentLabels).values(
+          updates.labelIds.map((labelId) => ({
+            documentId: id,
+            labelId,
+          })),
+        );
       }
     }
 
-    // Update entity links if entities are provided
     if (updates.entities !== undefined) {
-      // Remove all existing entity links for this document
       await tx
         .delete(documentEntities)
         .where(eq(documentEntities.documentId, id));
-
-      // Insert new entity links
       if (updates.entities.length > 0) {
         await tx.insert(documentEntities).values(
           updates.entities.map((e) => ({
@@ -125,13 +107,24 @@ export const updateDocument = async (data: {
       }
     }
 
-    // Invalidate cache
+    // Dynamic field values keyed by definition slug. `null` clears a key
+    // for this document; absence leaves it untouched (the caller sends
+    // only the fields the user actually changed).
+    if (updates.fieldValues !== undefined) {
+      await setDocumentFieldValues({
+        documentId: id,
+        teamId,
+        values: updates.fieldValues,
+        source: "user_manual",
+        tx,
+      });
+    }
+
     await deleteKeysByPrefix(`document:${id}`);
 
     return doc;
   });
 
-  // Trigger vector refresh (fire-and-forget)
   triggerDocumentVectorRefresh(id, teamId, organizationId).catch(() => {});
 
   return updatedDoc;

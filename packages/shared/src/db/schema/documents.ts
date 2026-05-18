@@ -3,7 +3,6 @@ import {
   bigint,
   decimal,
   index,
-  json,
   pgEnum,
   pgTable,
   smallint,
@@ -31,7 +30,10 @@ export const documentStatusEnum = pgEnum("document_status", [
  * Documents - Files uploaded for storage and pre-processing
  * Supports PDF, Word, Excel, CSV, PowerPoint, and text files.
  * Non-PDF files are converted to PDF for thumbnails and processing.
- * Pre-extraction results are stored in documentProperties (1:1).
+ * Pre-extraction results are stored in documentProperties (1:1) for
+ * universal AI outputs (summary, language, page count) and in
+ * documentFieldValues for the team-configurable custom fields
+ * (document type, dates, transport mode, …).
  */
 export const documents = pgTable(
   "documents",
@@ -60,9 +62,10 @@ export const documents = pgTable(
     mimeType: varchar("mime_type", { length: 100 }).notNull(),
     fileHash: text("file_hash").notNull(), // SHA-256
 
-    // S3 storage
-    s3Key: varchar("s3_key").notNull(),
-    s3ThumbnailKey: varchar("s3_thumbnail_key").notNull(),
+    // S3 storage — keys are derived from `id` (+ `originalFilename` for
+    // the binary's extension) via `buildDocumentOriginalKey` /
+    // `buildDocumentThumbnailKey` / `buildDocumentSidecarKey` in
+    // `lib/document-storage.ts`. No DB column carries them.
 
     // Upload info
     uploadedById: uuid("uploaded_by_id").references(() => user.id, {
@@ -88,62 +91,10 @@ export const documents = pgTable(
 );
 
 /**
- * Document processing status enum
- */
-export const transportModeEnum = pgEnum("transport_mode", [
-  "sea",
-  "air",
-  "road",
-  "rail",
-  "inland_waterway",
-  "multimodal",
-]);
-
-/**
- * Document processing status enum
- */
-export const documentTypeEnum = pgEnum("document_type", [
-  "invoice",
-  "credit_note",
-  "receipt",
-  "statement",
-  "contract",
-  "order",
-  "quotation",
-  "certificate",
-  "permit",
-  "declaration",
-  "report",
-  "letter",
-  "form",
-  "list",
-  "instruction",
-  "specification",
-  "plan",
-  "notice",
-  "record",
-  "unknown",
-]);
-
-/**
- * Document Transport Types - Pre-extraction results (1:1 with documents)
- * Created only when processing completes successfully.
- */
-export const documentTransportTypes = pgTable("document_transport_types", {
-  code: varchar("code", { length: 100 }).primaryKey(),
-
-  icon: varchar("icon"),
-
-  // Timestamps
-  createdAt: timestamp("created_at", { mode: "date", withTimezone: true })
-    .defaultNow()
-    .notNull(),
-});
-
-/**
- * Document Properties - Global properties and pre-extraction results (1:1 with documents)
- * Created only when processing completes successfully.
- * All required fields are NOT NULL — no partial state.
+ * Document Properties - universal AI-extracted outputs (1:1 with documents).
+ * Created when processing completes successfully. Industry-specific fields
+ * (document type, transport mode, dates, …) live in `document_field_values`
+ * and are configured per team via `field_definitions`.
  */
 export const documentProperties = pgTable(
   "document_properties",
@@ -157,32 +108,16 @@ export const documentProperties = pgTable(
       .notNull()
       .references(() => documents.id, { onDelete: "cascade" }),
 
-    // Pre-extraction results — JSON [{page: number, content: string}]
-    // Null for Excel/CSV files
-    markdown: text("markdown"),
+    // Pre-extraction markdown lives on S3 at the key returned by
+    // `buildDocumentSidecarKey(documentId)` in `lib/document-storage.ts`.
+    // Spreadsheets (xlsx/csv) have no sidecar — the vectoriser falls
+    // back to a metadata-only embedding for those.
     pageCount: smallint("page_count").notNull(),
 
-    documentType: documentTypeEnum("document_type")
-      .default("unknown")
-      .notNull(),
-    documentTransportType: varchar("document_transport_type").references(
-      () => documentTransportTypes.code,
-      {
-        onDelete: "set null",
-      },
-    ),
     documentLanguage: varchar("document_language", { length: 5 }),
     documentSummary: text("document_summary").notNull(),
-    documentDate: timestamp("document_date", {
-      mode: "date",
-      withTimezone: true,
-    }),
-    documentNumber: varchar("document_number", { length: 150 }),
-    transportMode: transportModeEnum("transport_mode"),
 
     confidenceScore: decimal("confidence_score", { precision: 3, scale: 2 }),
-
-    preExtractionMetadata: json("pre_extraction_metadata"),
 
     // Timestamps
     completedAt: timestamp("completed_at", {
@@ -203,8 +138,6 @@ export const documentProperties = pgTable(
 // Type inference
 export type Document = typeof documents.$inferSelect;
 export type DocumentStatus = Document["status"];
-export type DocumentType =
-  (typeof documentProperties.$inferSelect)["documentType"];
 
 export type NewDocument = typeof documents.$inferInsert;
 export type DocumentProperties = typeof documentProperties.$inferSelect;

@@ -170,6 +170,17 @@ export const installSandboxMocks = (): void => {
       // No-op: in-memory store has no directory concept; writes
       // implicitly create the path.
     },
+    execSandboxCommand: async (
+      _conversationId: string,
+      _command: string,
+    ): Promise<{ exitCode: number; stdout: string; stderr: string }> => {
+      // No-op stub: the conversation-storage tarball bootstrap calls
+      // `tar -xzf …` via this helper. The in-memory sandbox has no
+      // real filesystem so we simply pretend the extract succeeded —
+      // tests that need actual skill files in the sandbox seed them
+      // through `sandboxFs.write(...)` directly.
+      return { exitCode: 0, stdout: "", stderr: "" };
+    },
   }));
 
   // Acquire/release sandbox — return a stable mock id so the

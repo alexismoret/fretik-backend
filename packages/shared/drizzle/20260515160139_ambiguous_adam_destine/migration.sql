@@ -1,0 +1,1 @@
+ALTER TABLE "document_properties" DROP COLUMN "pre_extraction_metadata";

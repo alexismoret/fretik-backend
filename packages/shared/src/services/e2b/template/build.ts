@@ -53,6 +53,23 @@ const tmpl = Template()
   // We layer our extra pinned deps on top via pipInstall — pip is a
   // no-op for already-installed matching versions.
   .fromTemplate("code-interpreter-v1")
+  // System packages needed by the bundled Office / PDF skills:
+  //   - pandoc            → docx skill: free-form text/markdown conversion
+  //   - libreoffice-core  → docx / pptx / xlsx skills: visual conversion to
+  //                         PDF/PNG + xlsx formula recalculation (recalc.py)
+  //   - poppler-utils     → pdf / pptx skills: PDF→PNG (pdftoppm) for thumbnails
+  //                         and visual verification of generated outputs
+  // `--no-install-recommends` keeps the layer small (libreoffice's
+  // suggested deps add ~400MB of unused packages).
+  .runCmd(
+    [
+      "apt-get update",
+      "DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pandoc libreoffice-core libreoffice-writer libreoffice-calc libreoffice-impress poppler-utils",
+      "apt-get clean",
+      "rm -rf /var/lib/apt/lists/*",
+    ].join(" && "),
+    { user: "root" },
+  )
   .pipInstall(requirements)
   // The base image already provides the `user` account; we just need
   // /workspace owned by it. Privileged steps require `user: "root"`
@@ -91,7 +108,7 @@ if (skipCache) {
 // references). Both point at the same build.
 const info = await Template.build(tmpl, "fretik-sandbox", {
   cpuCount: 1,
-  memoryMB: 1024,
+  memoryMB: 1536,
   skipCache,
   tags: ["default", "latest"],
   onBuildLogs: buildLogger,

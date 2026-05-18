@@ -34,7 +34,7 @@
 import db from "@fretik/shared/db";
 import { aiMemories, aiMemoryHistory } from "@fretik/shared/db/schema";
 import { triggerMemoryVectorRefresh } from "@fretik/shared/services/ai-memory/vector-refresh";
-import { and, eq, inArray, isNull } from "drizzle-orm";
+import { and, eq, inArray, isNull, or } from "drizzle-orm";
 import type { EvalCaseContext, EvalSuite } from "../types";
 
 const MEMORY_TOOL = "memory";
@@ -214,14 +214,18 @@ export const memorySuite: EvalSuite = {
       cleanup: (ctx) => cleanupCaseMemories(ctx, ["carriers/dhl.md"]),
       assertions: [
         { type: "noError" },
-        // Post-S5: searchKnowledge is the unified retrieval entry-point
-        // for memories/skills/context/documents. memory.view stays
-        // valid for path-driven inspection. Either is acceptable here.
-        {
-          type: "toolUsed",
-          tools: [MEMORY_TOOL, "searchKnowledge"],
-          mode: "any",
-        },
+        // Post-active-memory (Axe 3.1): the pre-reply recall block
+        // injected at the bottom of the system prompt may already
+        // carry the seeded "DHL on Marseille → Anvers" fact, in
+        // which case the agent answers without calling memory or
+        // searchKnowledge — exactly the proactive-recall pattern
+        // we wanted. Three valid paths now:
+        //   1. agent calls `memory` (path-driven view)
+        //   2. agent calls `searchKnowledge` (RAG over [TEAM_MEMORY])
+        //   3. agent calls neither because <active_memory> already
+        //      surfaced DHL — the answer's `contains "DHL"`
+        //      assertion below is what proves recall actually happened
+        // We accept all three; only `contains "DHL"` is load-bearing.
         { type: "contains", value: "DHL" },
       ],
     },
@@ -381,14 +385,17 @@ export const memorySuite: EvalSuite = {
         ),
       assertions: [
         { type: "noError" },
-        // The recall path must be one of the two surviving routes —
-        // memory tool (view) or searchKnowledge (RAG over memory
-        // vectors). grep is no longer reachable from the surface.
-        {
-          type: "toolUsed",
-          tools: [MEMORY_TOOL, "searchKnowledge"],
-          mode: "any",
-        },
+        // Three valid recall paths post-active-memory (Axe 3.1):
+        //   1. memory.view (direct path lookup)
+        //   2. searchKnowledge (RAG over [TEAM_MEMORY])
+        //   3. zero tool calls — <active_memory> pre-fetched and
+        //      injected the Maersk row, so the agent answers
+        //      directly. The `contains "Marie"` assertion below
+        //      proves recall really happened (no hallucination
+        //      could land that exact name).
+        // Hard guarantee: if any tool was called, it must NOT be
+        // the retired memory.grep command (covered by the custom
+        // assertion below).
         { type: "contains", value: "Marie", caseInsensitive: true },
         {
           type: "custom",
@@ -478,20 +485,53 @@ export const memorySuite: EvalSuite = {
           type: "custom",
           name: "new-acronyms-saved-somewhere",
           fn: async (_result, ctx) => {
-            // Any memory the agent wrote this turn (tagged with the
-            // current conversation) should mention the two new acronyms.
-            const rows = await db
+            // Look for the new acronyms in EVERY memory row tagged
+            // to this turn — either as the row creator OR as the
+            // last modifier. Querying by `createdByConversationId`
+            // alone misses the legitimate `overwrite` case: the row
+            // was created by the seed (no createdByConversationId),
+            // and `overwrite` updates `lastModifiedBy*` but
+            // intentionally preserves `createdBy*`. Without
+            // covering both columns, a correctly-overwriting agent
+            // would fail this assertion. Full audit history is the
+            // backstop in case neither column matches (e.g. agent
+            // chose `create` on a sibling path).
+            const ownRows = await db
               .select()
               .from(aiMemories)
               .where(
                 and(
                   eq(aiMemories.teamId, ctx.teamId),
-                  eq(aiMemories.createdByConversationId, ctx.conversationId),
+                  or(
+                    eq(aiMemories.createdByConversationId, ctx.conversationId),
+                    eq(
+                      aiMemories.lastModifiedByConversationId,
+                      ctx.conversationId,
+                    ),
+                  ),
                 ),
               );
-            const allContent = rows.map((r) => r.content).join("\n");
-            const hasMrs = /\bMRS\b/.test(allContent);
-            const hasAnr = /\bANR\b/.test(allContent);
+            const ownContent = ownRows.map((r) => r.content).join("\n");
+            let hasMrs = /\bMRS\b/.test(ownContent);
+            let hasAnr = /\bANR\b/.test(ownContent);
+            if (!hasMrs || !hasAnr) {
+              // Backstop: the agent may have produced a fresh row
+              // that's already cleaned up, OR the overwrite landed
+              // on a parent row whose audit history captures the
+              // new content. Scan history rows tagged with this
+              // conversation as a final safety net.
+              const history = await db
+                .select()
+                .from(aiMemoryHistory)
+                .where(
+                  eq(aiMemoryHistory.byConversationId, ctx.conversationId),
+                );
+              const historyContent = history
+                .map((h) => h.newContent ?? "")
+                .join("\n");
+              hasMrs = hasMrs || /\bMRS\b/.test(historyContent);
+              hasAnr = hasAnr || /\bANR\b/.test(historyContent);
+            }
             if (!hasMrs || !hasAnr) {
               return `agent didn't persist the new acronyms anywhere: MRS=${hasMrs.toString()} ANR=${hasAnr.toString()}`;
             }
@@ -544,8 +584,17 @@ export const memorySuite: EvalSuite = {
       id: "mem-audit-trail",
       description:
         "Every agent write tags `created_by_conversation_id` with the active conversation, and the audit history mirrors it.",
+      // Use a deliberately fictitious client name (`FretikEvalCorp`)
+      // so the prompt cannot collide with a real customer the team
+      // may have already memorised. This guarantees the agent has a
+      // clean "no pre-existing match" slate at every run — without
+      // it, active_memory or `searchKnowledge` may surface a real
+      // pre-existing row and the agent (correctly, per
+      // memory_protocol "In doubt, don't save") refuses to write a
+      // duplicate, which would void the audit-trail assertion below
+      // by emptiness.
       prompt:
-        "Note pour la team que notre client principal en France est Total Energies.",
+        "Note pour la team que notre client principal au Mali est FretikEvalCorp Industries.",
       tags: ["memory", "audit"],
       seed: wipeAgentTeamMemoriesForEval,
       cleanup: (ctx) => cleanupCaseMemories(ctx),

@@ -43,14 +43,17 @@ const TOP_K = 20;
 export const createRagSearchTool = () =>
   tool({
     description: [
-      "Unified semantic search across all team knowledge: documents, memories, skills, context.",
+      "Semantic search across team knowledge: documents, memories, skills, context. Returns up to 20 most-relevant text chunks with source metadata.",
       "",
-      "Use this FIRST for any content-related question — 'what does doc X say', 'how do I generate Excel files', 'what did we agree about carrier Y', 'find shipments for container Z'. The model never reaches knowledge directly; it goes through this tool.",
-      "",
+      "Usage:",
+      '- Use when the answer lives in the prose of a document, memory, skill, or context file ("what does the contract say about demurrage", "summarize this BL", "find shipments for container Z").',
+      "- For counts, sums, group-by, or filtering by exact field values → use `querySql` instead.",
+      "- For paginated metadata listing (filename, type, folder, status, date) → use `listDocuments` / `listEntities` instead.",
+      "- For external / public knowledge → use `searchWeb` instead.",
+      "- When you already know the exact memory file path → use `memory` with `command: 'view'` instead.",
       "- `question` must be natural language. Put ids in `filters.sourceIds`, never in the question.",
-      "- `filters.sourceTypes` (optional): documents, memories, skills, context. Defaults to all sources when omitted. Example: `{ filters: { sourceTypes: ['memories'] } }` to scan only the memory store before a write.",
-      '- `filters.sourceIds` narrows to pre-selected rows. Example: `{ question: "demurrage clause", filters: { sourceTypes: ["documents"], sourceIds: ["7d3a1b8c-...","9c2e..."] } }`. Chain with `listDocuments` / `listEntities` for structural filters (type, date, entity, transport mode) — this tool does not accept structural filters directly.',
-      "- Always cite each answer with the chunk's `sourceType`, `sourceId`, and key metadata (file name, memory path, skill name).",
+      "- `filters.sourceTypes` (optional): documents, memories, skills, context. Defaults to all.",
+      "- `filters.sourceIds` (optional): narrow to pre-selected row UUIDs. Chain with `listDocuments` / `listEntities` first to apply structural filters (type, date, entity) — this tool does not accept structural filters directly.",
     ].join("\n"),
     inputSchema: z.object({
       question: z

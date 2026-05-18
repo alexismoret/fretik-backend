@@ -13,6 +13,7 @@ import { askUserSuite } from "./ask-user";
 import { autoMemorySuite } from "./auto-memory";
 import { bashExecutionSuite } from "./bash-execution";
 import { compactionSuite } from "./compaction";
+import { dispatchAgentSuite } from "./dispatch-agent";
 import { edgeCasesSuite } from "./edge-cases";
 import { fileAttachmentsSuite } from "./file-attachments";
 import { latencyStressSuite } from "./latency-stress";
@@ -43,4 +44,5 @@ export const allSuites: EvalSuite[] = [
   parallelToolCallsSuite,
   askUserSuite,
   autoMemorySuite,
+  dispatchAgentSuite,
 ];

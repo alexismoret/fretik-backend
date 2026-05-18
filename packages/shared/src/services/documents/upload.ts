@@ -14,6 +14,13 @@ import {
   type NewDocumentProperties,
 } from "../../db/schema/documents";
 import { callAiService } from "../../lib/ai-service";
+import {
+  buildDocumentOriginalKey,
+  buildDocumentSidecarKey,
+  buildDocumentThumbnailKey,
+  copyDocumentSidecar,
+  uploadDocumentSidecar,
+} from "../../lib/document-storage";
 import { fileValidationError, throwHttpError } from "../../lib/errors";
 import { deleteFilesFromS3, uploadToS3 } from "../../lib/s3";
 import { emitUploadEvent } from "../../lib/upload-events";
@@ -26,7 +33,9 @@ import {
   isSpreadsheet,
 } from "../../utils/mimeTypes";
 import { matchAndLinkEntities } from "../entities/match";
+import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
 import { convertDocumentToPdf, convertFirstPageToPdf } from "./convert";
+import { setDocumentFieldValues } from "./field-values";
 import { joinDocumentPagesMarkdown } from "./markdown";
 import { generateImageThumbnail, generatePdfThumbnail } from "./thumbnails";
 
@@ -47,8 +56,6 @@ interface FileMetadata {
   fileSize: number;
   mimeType: string;
   fileHash: string;
-  s3Key: string;
-  s3ThumbnailKey: string;
 }
 
 // ==================== //
@@ -121,9 +128,6 @@ export const uploadDocument = async (
 
   // 2. Read file into buffer + prepare metadata
   const documentId = randomUUIDv7();
-  const extension = extname(file.name) || ".pdf";
-  const s3Key = `documents/${documentId}${extension}`;
-  const s3ThumbnailKey = `documents/${documentId}-thumbnail.png`;
 
   const arrayBuffer = await file.arrayBuffer();
   const buffer = new Uint8Array(arrayBuffer);
@@ -142,8 +146,6 @@ export const uploadDocument = async (
     fileSize: file.size,
     mimeType,
     fileHash,
-    s3Key,
-    s3ThumbnailKey,
   };
 
   // 4. Insert document in DB (converting for non-PDF, uploading for PDF)
@@ -257,13 +259,13 @@ const processDocument = async (
     await Promise.all([
       uploadToS3({
         buffer,
-        key: metadata.s3Key,
+        key: buildDocumentOriginalKey(documentId, metadata.originalFilename),
         contentType: metadata.mimeType,
         ...sharedMetadata,
       }),
       uploadToS3({
         buffer: thumbnailBuffer,
-        key: metadata.s3ThumbnailKey,
+        key: buildDocumentThumbnailKey(documentId),
         contentType: "image/png",
         ...sharedMetadata,
       }),
@@ -283,11 +285,33 @@ const processDocument = async (
     );
 
     if (duplicateResult) {
+      // Clone the source document's S3 sidecar onto the new id so
+      // `read('drive/{newId}-...')` and the vectoriser see the same
+      // markdown. No-op when the source has no sidecar (spreadsheet).
+      await copyDocumentSidecar(duplicateResult.sourceDocumentId, documentId, {
+        organizationId,
+        teamId,
+      });
+
       await db.transaction(async (tx) => {
         await tx.insert(documentProperties).values({
           ...duplicateResult.properties,
           documentId,
         });
+
+        // Re-apply the source document's custom field values to the new
+        // document. Values are validated against the team's current
+        // definitions — keys that no longer exist on the target team are
+        // skipped (defensive in case the two teams diverged).
+        if (Object.keys(duplicateResult.customFieldValues).length > 0) {
+          await setDocumentFieldValues({
+            documentId,
+            teamId,
+            values: duplicateResult.customFieldValues,
+            source: "ai_extraction",
+            tx,
+          });
+        }
 
         // Copy vectors from the source document for RAG
         const existingVectors = await tx.query.aiVectors.findMany({
@@ -328,14 +352,14 @@ const processDocument = async (
     // Mistral OCR requires a PDF or an image — for Word/PPT we upload a
     // full PDF conversion, for spreadsheets a first-page PDF (to avoid
     // Gotenberg choking on 20-sheet Excel monsters), for PDF/image/text
-    // we just hand the original S3 key. Ephemeral conversions are cleaned
-    // up in the `finally` below.
+    // we hand the pre-extract service nothing but the documentId — it
+    // derives the original S3 key itself. Ephemeral conversions land
+    // under an override key and are cleaned up in the `finally` below.
     const isDocumentSpreadsheet = isSpreadsheet(metadata.mimeType);
     const isDocumentPdf = isPdf(metadata.mimeType);
     const isDocumentImage = isImage(metadata.mimeType);
     const isDocumentTextPlain = metadata.mimeType === "text/plain";
 
-    let preExtractS3Key = metadata.s3Key;
     let preExtractMimeType = metadata.mimeType;
     let ephemeralPreExtractKey: string | null = null;
 
@@ -355,7 +379,6 @@ const processDocument = async (
         ...sharedMetadata,
         temporary: true,
       });
-      preExtractS3Key = ephemeralPreExtractKey;
       preExtractMimeType = "application/pdf";
     } else if (!isDocumentPdf && !isDocumentImage && !isDocumentTextPlain) {
       // Word / PowerPoint (and any other supported editable format) →
@@ -372,10 +395,17 @@ const processDocument = async (
         ...sharedMetadata,
         temporary: true,
       });
-      preExtractS3Key = ephemeralPreExtractKey;
       preExtractMimeType = "application/pdf";
     }
-    // PDF / image / text-plain: keep metadata.s3Key + metadata.mimeType.
+    // PDF / image / text-plain: no override; pre-extract derives the key.
+
+    // Resolve the team's active field definitions so the pre-extract LLM
+    // produces the right `customFields` shape. Empty defs → universal-only
+    // extraction (still valid; the team can wire fields up later).
+    const teamFieldDefinitions = await getFieldDefinitionsForTeam({
+      teamId,
+      resourceType: "document",
+    });
 
     let preExtractResult: z.infer<typeof preExtractionResponseSchema>;
     try {
@@ -383,11 +413,14 @@ const processDocument = async (
         "/internal/pre-extract",
         {
           documentId,
-          s3Key: preExtractS3Key,
           mimeType: preExtractMimeType,
           originalFilename: metadata.originalFilename,
           teamId,
           organizationId,
+          fieldDefinitions: teamFieldDefinitions,
+          ...(ephemeralPreExtractKey
+            ? { overrideS3Key: ephemeralPreExtractKey }
+            : {}),
         },
         preExtractionResponseSchema,
         { teamId, organizationId },
@@ -411,38 +444,46 @@ const processDocument = async (
 
     // Step 6: Save processing results.
     //
-    // Storage format (`documentProperties.markdown`): JSON array of
-    // `{ index, markdown }` page objects. This shape is consumed
-    // unchanged by `services/extractions/launch.ts` and
-    // `services/extraction-configs/generate.ts` which iterate per page
-    // for schema inference — switching to flat markdown would break
-    // those flows. Spreadsheets keep `null` because their single-page
-    // PDF OCR is tabular data unsuitable for the extraction workflow.
-    //
-    // Vectorisation uses `joinDocumentPagesMarkdown(...)` below to
-    // flatten this JSON into real markdown BEFORE sending — the
-    // chunker in `@fretik/ai` only matches ATX headers, not JSON.
-    const markdown = !isDocumentSpreadsheet
-      ? JSON.stringify(preExtractResult.pages)
+    // OCR markdown lives on S3 as a flat `.md` sidecar — see
+    // `buildDocumentSidecarKey` in `@fretik/shared/lib/document-storage`.
+    // Spreadsheets (xlsx/csv) get no sidecar: their first-page PDF OCR
+    // is tabular data, and the vectoriser already falls back to a
+    // metadata-only embedding for those.
+    const vectorContent = !isDocumentSpreadsheet
+      ? joinDocumentPagesMarkdown(preExtractResult.pages)
       : null;
+
+    if (vectorContent !== null) {
+      await uploadDocumentSidecar(documentId, vectorContent, {
+        documentId,
+        organizationId,
+        teamId,
+      });
+    }
 
     const propertiesToInsert: NewDocumentProperties = {
       documentId,
-      markdown,
       pageCount: preExtractResult.pageCount,
-      documentType: preExtractResult.documentType,
-      documentTransportType: preExtractResult.documentTransportType,
       documentSummary: preExtractResult.documentSummary,
       documentLanguage: preExtractResult.documentLanguage,
-      documentDate: preExtractResult.documentDate,
-      documentNumber: preExtractResult.documentNumber,
-      transportMode: preExtractResult.transportMode,
       confidenceScore: preExtractResult.confidenceScore?.toString(),
-      preExtractionMetadata: preExtractResult.preExtractionMetadata,
     };
 
     await db.transaction(async (tx) => {
       await tx.insert(documentProperties).values(propertiesToInsert);
+
+      // Persist LLM-produced custom field values keyed by definition slug.
+      // Keys not declared on the team's defs are silently skipped (defensive
+      // against LLM hallucinations).
+      if (Object.keys(preExtractResult.customFields).length > 0) {
+        await setDocumentFieldValues({
+          documentId,
+          teamId,
+          values: preExtractResult.customFields,
+          source: "ai_extraction",
+          tx,
+        });
+      }
 
       await tx
         .update(documents)
@@ -460,13 +501,25 @@ const processDocument = async (
     }
 
     // Step 8: Send document data to @fretik/ai for RAG vector storage (non-blocking).
-    // Fetch linked entities to include semantic data in vectors
-    const linkedEntities = await db.query.documentEntities.findMany({
-      where: { documentId },
-      with: { entity: true },
+    // Pull linked entities + labels in a single round-trip so the embedded
+    // semantic header carries them.
+    //
+    // Custom field values ride along under `custom_fields`. We pre-filter
+    // to fields whose definition has `vectorizeInclude=true` so vectorise
+    // stays definition-agnostic — it just turns `{ key: value }` pairs
+    // into "key: value" lines for the semantic header. Keys are already
+    // descriptive (`transport_mode`, `document_date`, …) and embed well
+    // both for cosine similarity and BM25; no label lookup needed.
+    const docWithRelations = await db.query.documents.findFirst({
+      where: { id: documentId },
+      columns: { id: true },
+      with: {
+        documentEntities: { with: { entity: true } },
+        labels: { columns: { id: true, name: true } },
+      },
     });
 
-    const entityVectorInfo = linkedEntities
+    const entityVectorInfo = (docWithRelations?.documentEntities ?? [])
       .filter((de) => de.entity !== null)
       .map((de) => ({
         id: de.entity!.id,
@@ -475,10 +528,26 @@ const processDocument = async (
         role: de.role,
       }));
 
-    // Flatten the stored JSON pages into real markdown for the
-    // chunker; `null` triggers the metadata-only branch of the
-    // vectoriser (Excel / CSV).
-    const vectorContent = joinDocumentPagesMarkdown(markdown);
+    const labelVectorInfo = (docWithRelations?.labels ?? []).map((l) => ({
+      id: l.id,
+      name: l.name,
+    }));
+
+    const vectorisableKeys = new Set(
+      teamFieldDefinitions
+        .filter((d) => d.vectorizeInclude && d.enabled)
+        .map((d) => d.key),
+    );
+    const vectorisableCustomFields: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(preExtractResult.customFields)) {
+      if (vectorisableKeys.has(key)) {
+        vectorisableCustomFields[key] = value;
+      }
+    }
+
+    // `vectorContent` was already computed above when uploading the
+    // sidecar; `null` triggers the metadata-only branch of the
+    // vectoriser (spreadsheets).
 
     try {
       const vectorResult = await callAiService(
@@ -491,15 +560,11 @@ const processDocument = async (
             file_name: metadata.originalFilename,
             file_type: metadata.mimeType,
             page_count: preExtractResult.pageCount ?? null,
-            document_type: preExtractResult.documentType ?? null,
-            document_transport_type:
-              preExtractResult.documentTransportType ?? null,
             document_language: preExtractResult.documentLanguage ?? null,
             document_summary: preExtractResult.documentSummary ?? null,
-            document_date: preExtractResult.documentDate ?? null,
-            document_number: preExtractResult.documentNumber ?? null,
-            transport_mode: preExtractResult.transportMode ?? null,
             entities: entityVectorInfo,
+            labels: labelVectorInfo,
+            custom_fields: vectorisableCustomFields,
           },
           teamId,
           organizationId,
@@ -554,8 +619,13 @@ const processDocument = async (
         })
         .where(eq(teamSettings.teamId, teamId));
 
-      // Cleanup S3 files (original + thumbnail)
-      await deleteFilesFromS3([metadata.s3Key, metadata.s3ThumbnailKey]);
+      // Cleanup S3 files (original + thumbnail + any partial sidecar).
+      // No-op for sidecars that were never written.
+      await deleteFilesFromS3([
+        buildDocumentOriginalKey(documentId, metadata.originalFilename),
+        buildDocumentThumbnailKey(documentId),
+        buildDocumentSidecarKey(documentId),
+      ]);
     });
 
     emitUploadEvent({ documentId, status: "error", error: errorMessage });
@@ -563,14 +633,17 @@ const processDocument = async (
 };
 
 /**
- * Finds an existing documentProperty from a document with the same hash and status 'ready'.
- * Returns the properties and the source document ID (for vector duplication).
+ * Finds an existing documentProperty from a document with the same hash and
+ * status 'ready'. Returns universal properties, the source document ID (for
+ * vector duplication) AND the custom field values keyed by definition slug
+ * so the new document inherits them.
  */
 const findExistingProcessingByHash = async (
   fileHash: string,
 ): Promise<{
   properties: Omit<NewDocumentProperties, "documentId">;
   sourceDocumentId: string;
+  customFieldValues: Record<string, unknown>;
 } | null> => {
   const existing = await db.query.documentProperties.findFirst({
     where: {
@@ -578,25 +651,36 @@ const findExistingProcessingByHash = async (
         fileHash,
         status: "ready",
       },
+      // Fetch the full document so we can join its custom field values
+      // in the same round-trip.
+    },
+    with: {
+      document: {
+        columns: { id: true },
+        with: {
+          fieldValues: {
+            columns: { fieldKey: true, value: true },
+          },
+        },
+      },
     },
   });
 
   if (!existing) return null;
 
+  const customFieldValues: Record<string, unknown> = {};
+  for (const fv of existing.document?.fieldValues ?? []) {
+    customFieldValues[fv.fieldKey] = fv.value;
+  }
+
   return {
     sourceDocumentId: existing.documentId,
     properties: {
-      markdown: existing.markdown,
       pageCount: existing.pageCount,
-      documentType: existing.documentType,
       documentSummary: existing.documentSummary,
       documentLanguage: existing.documentLanguage,
-      documentDate: existing.documentDate,
-      documentNumber: existing.documentNumber,
-      transportMode: existing.transportMode,
-      documentTransportType: existing.documentTransportType,
       confidenceScore: existing.confidenceScore,
-      preExtractionMetadata: existing.preExtractionMetadata,
     },
+    customFieldValues,
   };
 };

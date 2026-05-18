@@ -32,6 +32,8 @@ import {
   saveMessages,
 } from "@fretik/shared/services/ai/messages";
 import { releaseSandbox } from "@fretik/shared/services/e2b/release-sandbox";
+import { getFieldDefinitionsForTeam } from "@fretik/shared/services/field-definitions/get-for-team";
+import { listEnabledSkillsForTeam } from "@fretik/shared/services/skills/list-enabled-for-team";
 import { MAX_FILES_PER_MESSAGE } from "@fretik/shared/utils/chatbot-limits";
 import { OpenAPIHono } from "@hono/zod-openapi";
 import {
@@ -58,6 +60,10 @@ import { hydrateContextFiles } from "../lib/context-files-hydration";
 import { getResumableStreamContext } from "../lib/resumable-stream-context";
 import { chatbotRateLimitMiddleware } from "../middlewares/chatbot-rate-limit";
 import { internalMiddleware } from "../middlewares/internal";
+import {
+  buildActiveMemoryRecentTail,
+  runActiveMemoryRecall,
+} from "../services/active-memory/recall";
 import { buildChatbotContextManifest } from "../services/chatbot-context/build-manifest";
 import { sendChatbotFinishedEmailIfEnabled } from "../services/chatbot-finished-email";
 import { compactConversation } from "../services/compaction/compact";
@@ -477,6 +483,103 @@ const extractLastUserFileFilenames = (history: UIMessage[]): string[] => {
 };
 
 /**
+ * Concat all `text` parts of a `UIMessage` into a single string. Used
+ * by the Active Memory recall path to build the judge prompt and the
+ * recent conversation tail; tool / file parts are intentionally
+ * dropped — the recall judge only needs visible text intent.
+ */
+const uiMessageText = (m: UIMessage): string => {
+  const chunks: string[] = [];
+  for (const part of m.parts) {
+    if (part.type === "text" && typeof part.text === "string") {
+      chunks.push(part.text);
+    }
+  }
+  return chunks.join("\n").trim();
+};
+
+/**
+ * Cheap MIME inference from filename extension. Sufficient for the
+ * Active Memory recall judge (which uses `mimeType` as a coarse
+ * routing hint, not a strict identifier) and avoids an extra DB
+ * round-trip on `ai_chat_files`. Falls back to
+ * `application/octet-stream` for unknown extensions — the judge
+ * still sees the filename so it can pattern-match on the name alone.
+ */
+const inferMimeTypeFromFilename = (filename: string): string => {
+  const ext = filename.toLowerCase().split(".").pop() ?? "";
+  switch (ext) {
+    case "pdf":
+      return "application/pdf";
+    case "docx":
+      return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    case "xlsx":
+      return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+    case "pptx":
+      return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+    case "csv":
+      return "text/csv";
+    case "json":
+      return "application/json";
+    case "xml":
+      return "application/xml";
+    case "txt":
+    case "md":
+    case "log":
+      return "text/plain";
+    case "html":
+    case "htm":
+      return "text/html";
+    case "png":
+      return "image/png";
+    case "jpg":
+    case "jpeg":
+      return "image/jpeg";
+    case "webp":
+      return "image/webp";
+    case "gif":
+      return "image/gif";
+    default:
+      return "application/octet-stream";
+  }
+};
+
+/**
+ * Build the input bundle for `runActiveMemoryRecall` from the
+ * conversation history. Pure function — never throws, always
+ * returns a usable shape (empty strings / arrays when there is
+ * nothing to extract). The recall service applies its own skip
+ * conditions (trivial messages, etc.) on top.
+ */
+const buildActiveMemoryInputs = (
+  history: UIMessage[],
+  filenames: string[],
+): {
+  userMessage: string;
+  attachedFiles: { filename: string; mimeType: string }[];
+  recentTail: string;
+} => {
+  const lastUser = [...history].reverse().find((m) => m.role === "user");
+  const userMessage = lastUser ? uiMessageText(lastUser) : "";
+  const attachedFiles = filenames.map((filename) => ({
+    filename,
+    mimeType: inferMimeTypeFromFilename(filename),
+  }));
+  // Strip tool / file parts so the tail is judge-friendly. Excludes
+  // the latest user message (already covered by `userMessage`).
+  const trimmedHistory = history.slice(0, -1);
+  const tailMessages = trimmedHistory
+    .filter(
+      (m): m is UIMessage & { role: "user" | "assistant" } =>
+        m.role === "user" || m.role === "assistant",
+    )
+    .map((m) => ({ role: m.role, text: uiMessageText(m) }))
+    .filter((m) => m.text.length > 0);
+  const recentTail = buildActiveMemoryRecentTail(tailMessages);
+  return { userMessage, attachedFiles, recentTail };
+};
+
+/**
  * Build the `{{attachedFilesBlock}}` fragment for the system prompt.
  * JOINs the filenames from the last user message's file parts
  * against `ai_chat_files` so every entry carries the authoritative
@@ -678,11 +781,24 @@ const runChatbotTurn = async (params: {
   //     per-file metadata + outline + preview, with small files
   //     inlined). Stable across the conversation; lives in the
   //     cache-friendly suffix of the rendered prompt.
-  //
-  // Memory discovery is now handled via `searchKnowledge` (RAG over
-  // `ai_vectors` with `[TEAM_MEMORY]`/`[USER_MEMORY]` prefixes); the
-  // depth-2 `<persistent_memory>` manifest was removed in S6.
-  const [attachedFilesBlock, chatbotContextManifest] = await Promise.all([
+  //   - `activeMemoryRecall` — pre-reply judge over the team's
+  //     persistent `[TEAM_MEMORY]` / `[USER_MEMORY]` index. Returns
+  //     a 1-3 bullet block of memories already judged relevant for
+  //     this turn (or `null` for skip / NONE / failure). Runs in
+  //     parallel here so the judge LLM call overlaps with the
+  //     attached-files SQL and the context manifest assembly —
+  //     adds ~0-1s to the critical path depending on which
+  //     parallel branch is the long pole.
+  const activeMemoryInputs = params.callOptions.userId
+    ? buildActiveMemoryInputs(params.history, filenames)
+    : null;
+  const [
+    attachedFilesBlock,
+    chatbotContextManifest,
+    activeMemoryRecall,
+    teamFieldDefinitionsBlock,
+    enabledSkillsBlock,
+  ] = await Promise.all([
     buildAttachedFilesBlock(params.conversationId, filenames),
     buildChatbotContextManifest({
       userId: params.callOptions.userId,
@@ -701,10 +817,52 @@ const runChatbotTurn = async (params: {
         inlinedFileCount: 0,
       };
     }),
+    activeMemoryInputs && params.callOptions.userId
+      ? runActiveMemoryRecall({
+          userMessage: activeMemoryInputs.userMessage,
+          attachedFiles: activeMemoryInputs.attachedFiles,
+          recentTail: activeMemoryInputs.recentTail,
+          teamId: params.callOptions.teamId,
+          organizationId: params.callOptions.organizationId,
+          userId: params.callOptions.userId,
+        })
+      : Promise.resolve(null),
+    // Compact `- key (type)` catalogue for the dynamic suffix.
+    // Redis-cached (30 min TTL) so the per-turn cost is one HGET. A
+    // failure must never block the turn — fall back to an empty block
+    // and let the prompt render the "no dynamic fields" placeholder.
+    getFieldDefinitionsForTeam({ teamId: params.callOptions.teamId })
+      .then((defs) => defs.map((fd) => `- ${fd.key} (${fd.type})`).join("\n"))
+      .catch((error: unknown) => {
+        console.warn(
+          `${params.logPrefix} getFieldDefinitionsForTeam failed, continuing without team fields:`,
+          error instanceof Error ? error.message : error,
+        );
+        return "";
+      }),
+    // Team-filtered L1 skills listing. Always-on skills are always
+    // present; team-configurable skills appear only when no override
+    // exists or the team opted in. Disabled skills are absent entirely
+    // — the agent has no path to invoke them. Failure falls back to an
+    // empty block so the prompt renders the "no skills" placeholder
+    // and the turn still ships.
+    listEnabledSkillsForTeam(params.callOptions.teamId)
+      .then((skills) =>
+        skills
+          .map((skill) => `- **${skill.name}** — ${skill.description}`)
+          .join("\n"),
+      )
+      .catch((error: unknown) => {
+        console.warn(
+          `${params.logPrefix} listEnabledSkillsForTeam failed, continuing without skills catalogue:`,
+          error instanceof Error ? error.message : error,
+        );
+        return "";
+      }),
   ]);
 
   console.info(
-    `${params.logPrefix} contextManifestChars=${chatbotContextManifest.totalChars.toString()} files=${chatbotContextManifest.fileCount.toString()} inlined=${chatbotContextManifest.inlinedFileCount.toString()}`,
+    `${params.logPrefix} contextManifestChars=${chatbotContextManifest.totalChars.toString()} files=${chatbotContextManifest.fileCount.toString()} inlined=${chatbotContextManifest.inlinedFileCount.toString()} activeMemory=${activeMemoryRecall ? "hit" : "miss"} teamFieldsChars=${teamFieldDefinitionsBlock.length.toString()} enabledSkillsChars=${enabledSkillsBlock.length.toString()}`,
   );
 
   const callOptionsWithFiles: ChatbotCallOptions = {
@@ -715,6 +873,13 @@ const runChatbotTurn = async (params: {
       chatbotContextManifest.manifest.length > 0
         ? chatbotContextManifest.manifest
         : undefined,
+    activeMemoryBlock: activeMemoryRecall?.block,
+    teamFieldDefinitionsBlock:
+      teamFieldDefinitionsBlock.length > 0
+        ? teamFieldDefinitionsBlock
+        : undefined,
+    enabledSkillsBlock:
+      enabledSkillsBlock.length > 0 ? enabledSkillsBlock : undefined,
   };
 
   // Phase 12 — user-initiated Stop plumbing. Subscribe to the Redis

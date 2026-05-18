@@ -23,6 +23,14 @@ import {
  * The end-to-end behaviour (judge picks the right candidate, NONE
  * verdict, attachments-as-signal, etc.) is covered by the
  * `dispatch-agent` + `auto-memory` eval suites, not here.
+ *
+ * Note — this suite tests pure helpers + an early-return path that
+ * never touches I/O, but the SUT's import chain pulls
+ * `services/search/hybrid-search.ts` → `@fretik/shared/db`, which runs
+ * `await runMigrationsWithLock()` at top-level. Loading the SUT
+ * therefore requires a real Postgres reachable via `DATABASE_URL`, so
+ * the suite lives under `tests/integration/` and runs via
+ * `bun run test:integration` only.
  */
 
 const SCOPE = {

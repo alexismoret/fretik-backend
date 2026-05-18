@@ -1,0 +1,5 @@
+[test]
+# Stubs env vars consumed at module-load by modules transitively
+# imported from unit tests (OpenRouter / S3 / Redis fail-fast checks).
+# See tests/preload.ts for the rationale.
+preload = "./tests/preload.ts"

@@ -10,8 +10,12 @@ import { loadSkillCatalog } from "../../../src/skills/materialize";
  *   - a folder whose `name:` frontmatter doesn't match the directory,
  *   - a fresh skill being added without a SKILL.md.
  *
- * They are pure-filesystem (no DB, no E2B), so they stay fast and don't
- * need any setup beyond the repo checkout.
+ * Logically pure (filesystem-only), but importing
+ * `src/skills/materialize` transitively pulls `services/vectorize/skills`
+ * → `@fretik/shared/db`, which runs `await runMigrationsWithLock()` at
+ * top-level. Loading the SUT therefore requires a real Postgres
+ * reachable via `DATABASE_URL`, so this test lives under
+ * `tests/integration/` and runs via `bun run test:integration` only.
  *
  * If a new bundled skill is added or one is removed, update
  * `EXPECTED_SKILL_NAMES` — that's the contract we want flagged on diff.

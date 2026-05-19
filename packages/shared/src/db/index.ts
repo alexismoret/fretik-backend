@@ -42,6 +42,13 @@ export const runMigrationsWithLock = async () => {
   }
 };
 
-await runMigrationsWithLock();
+// Skip auto-migration under `bun test` — unit tests don't have a
+// real Postgres reachable and the eager `connect()` inside the
+// advisory-lock client would crash the top-level await. Production
+// + dev (NODE_ENV unset, "development", or "production") still
+// auto-migrate at boot exactly as before.
+if (process.env.NODE_ENV !== "test") {
+  await runMigrationsWithLock();
+}
 
 export default db;

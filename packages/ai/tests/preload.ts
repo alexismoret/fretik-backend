@@ -42,3 +42,10 @@ process.env.MISTRAL_API_KEY ??= "test-mistral";
 process.env.INTERNAL_KEY ??= "test-internal";
 process.env.AI_SERVICE_URL ??= "http://127.0.0.1:1";
 process.env.APP_URL ??= "http://127.0.0.1:1";
+
+// Postgres — `@fretik/shared/db` validates this env var at module
+// load. The actual `runMigrationsWithLock()` call is gated on
+// `NODE_ENV !== "test"` inside db/index.ts, so the fake URL below
+// only needs to satisfy the presence check — no connection ever
+// happens during unit tests.
+process.env.DATABASE_URL ??= "postgres://test:test@127.0.0.1:1/test";

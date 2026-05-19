@@ -36,6 +36,18 @@ import {
 export interface SkillCatalogEntry {
   name: string;
   description: string;
+  /**
+   * Fretik-specific defaults applied at first INSERT by the bundled
+   * catalogue sync. Optional and only honoured when the skill is
+   * NEW — existing DB rows are never overwritten so manual flips
+   * persist.
+   *
+   * Lifted from `metadata.fretik_is_default` / `metadata.fretik_is_meta`
+   * in the SKILL.md frontmatter (Anthropic-spec-compatible — these
+   * keys live under the open-ended `metadata` namespace).
+   */
+  isDefault?: boolean;
+  isMeta?: boolean;
 }
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -48,7 +60,18 @@ let cachedCatalog: SkillCatalogEntry[] | null = null;
 interface ParsedFrontmatter {
   name?: string;
   description: string;
+  isDefault?: boolean;
+  isMeta?: boolean;
 }
+
+const readBoolFromMetadata = (
+  metadata: unknown,
+  key: string,
+): boolean | undefined => {
+  if (!metadata || typeof metadata !== "object") return undefined;
+  const value = (metadata as Record<string, unknown>)[key];
+  return typeof value === "boolean" ? value : undefined;
+};
 
 /**
  * Read the YAML frontmatter of a SKILL.md and lift `name` +
@@ -109,6 +132,8 @@ const parseFrontmatter = (
   return {
     name: name !== undefined && NAME_PATTERN.test(name) ? name : undefined,
     description: rawDescription.trim(),
+    isDefault: readBoolFromMetadata(fm.metadata, "fretik_is_default"),
+    isMeta: readBoolFromMetadata(fm.metadata, "fretik_is_meta"),
   };
 };
 
@@ -161,6 +186,8 @@ export const loadSkillCatalog = async (): Promise<SkillCatalogEntry[]> => {
       entries.push({
         name: parsed.name ?? child,
         description: parsed.description,
+        isDefault: parsed.isDefault,
+        isMeta: parsed.isMeta,
       });
     }),
   );

@@ -1,5 +1,6 @@
 import { createAskUserQuestionTool } from "../../tools/ask-user";
 import { createBashTool } from "../../tools/bash";
+import { createCreateSkillTool } from "../../tools/create-skill";
 import type { createDispatchAgentTool } from "../../tools/dispatch-agent";
 import { createDownloadDriveDocumentTool } from "../../tools/download-drive-document";
 import { createGetEntityDetailsTool } from "../../tools/get-entity-details";
@@ -15,6 +16,7 @@ import { createRagSearchTool } from "../../tools/rag-search";
 import { createReadTool } from "../../tools/read";
 import { createSearchToolsTool } from "../../tools/search-tools";
 import { createSqlQueryTool } from "../../tools/sql-query";
+import { createUpdateSkillTool } from "../../tools/update-skill";
 import { createVisionTool } from "../../tools/vision";
 import { createWebFetchTool } from "../../tools/web-fetch";
 import { createWebSearchTool } from "../../tools/web-search";
@@ -278,6 +280,29 @@ export const buildDomainTools = () => ({
     // Mutates `/workspace/drive/` and (potentially) the conversation
     // sandbox quota — not strictly read-only.
     isReadOnly: false,
+  }),
+  createSkill: buildChatbotTool({
+    ...createCreateSkillTool(),
+    category: "domain",
+    // Skill-coded terms only — deliberately omit "save" / "remember"
+    // which overlap with the always-on `memory` tool (memory stores
+    // facts; skills store procedures). Disambiguation lives in the
+    // tool description itself.
+    searchHint:
+      "create new skill recipe playbook procedure instructions template reusable repeat task custom assistant ability set up automate",
+    // Slim envelope (slug + status). Body lives in the call's args,
+    // not in the result — see create-skill.ts for the rationale.
+    maxResultSizeChars: 2_000,
+    // Returns a draft for user confirmation — does not mutate DB.
+    isReadOnly: true,
+  }),
+  updateSkill: buildChatbotTool({
+    ...createUpdateSkillTool(),
+    category: "domain",
+    searchHint:
+      "update existing skill edit improve refine extend rewrite adjust modify enhance",
+    maxResultSizeChars: 2_000,
+    isReadOnly: true,
   }),
 });
 

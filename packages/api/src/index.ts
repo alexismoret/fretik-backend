@@ -14,7 +14,7 @@ import { fieldDefinitionRoutes } from "./handlers/field-definitions";
 import { fieldTemplateRoutes } from "./handlers/field-templates";
 import { folderRoutes } from "./handlers/folders";
 import { labelRoutes } from "./handlers/labels";
-import { teamSkillsRoutes } from "./handlers/team-skills";
+import { skillsRoutes } from "./handlers/skills";
 
 const VERSION = packagejson.version;
 
@@ -51,7 +51,7 @@ app.route("/ai-memory", aiMemoryRoutes);
 app.route("/field-definitions", fieldDefinitionRoutes);
 app.route("/field-templates", fieldTemplateRoutes);
 app.route("/label", labelRoutes);
-app.route("/team-skills", teamSkillsRoutes);
+app.route("/skills", skillsRoutes);
 
 // Init log
 const text = await figlet.text("fretik API");

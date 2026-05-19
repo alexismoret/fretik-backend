@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import {
   boolean,
+  check,
   index,
   pgEnum,
   pgTable,
@@ -11,6 +12,11 @@ import {
   uuid,
   varchar,
 } from "drizzle-orm/pg-core";
+import {
+  SKILL_BODY_MAX_BYTES,
+  SKILL_NAME_MAX_LENGTH,
+  SKILL_VERSION_MAX_LENGTH,
+} from "../../schemas/skills-limits";
 import { team, user } from "./auth-schema";
 
 /**
@@ -18,13 +24,15 @@ import { team, user } from "./auth-schema";
  *
  *  - `bundled`      : ships under `backend/packages/ai/src/skills/bundled/`,
  *                     `team_id` is NULL (global catalogue). The filesystem
- *                     is source-of-truth; the DB row mirrors the catalogue
- *                     so we can attach team overrides without coupling to
- *                     the AI service.
- *  - `team_uploaded`: placeholder for the future user-upload story. A
- *                     `team_id` will be set; the SKILL.md body will live
- *                     in object storage and be hydrated into the sandbox
- *                     alongside bundled skills. No UI exposes this yet.
+ *                     is source-of-truth; the `body` column stays NULL
+ *                     (loader reads from disk and tarballs it into the
+ *                     sandbox). The DB row exists only to anchor team
+ *                     overrides.
+ *  - `team_uploaded`: scoped to a `team_id`. The full SKILL.md body lives
+ *                     in the `body` column (NOT NULL, enforced by check
+ *                     constraint). The bootstrap pipeline writes each
+ *                     enabled team skill to `/workspace/skills/<slug>/`
+ *                     after the bundled tarball is unpacked.
  */
 export const skillSourceEnum = pgEnum("skill_source", [
   "bundled",
@@ -59,11 +67,38 @@ export const skills = pgTable(
       .default(sql`uuid_generate_v7()`)
       .primaryKey(),
 
-    name: varchar("name", { length: 64 }).notNull(),
+    name: varchar("name", { length: SKILL_NAME_MAX_LENGTH }).notNull(),
 
     description: text("description").notNull(),
 
+    /**
+     * Full SKILL.md body in markdown. NULL for `source = 'bundled'`
+     * (filesystem is source-of-truth, loader tarballs the on-disk file).
+     * NOT NULL for `source = 'team_uploaded'` (enforced by check
+     * constraint below). Hard cap at 100 KB (~25k tokens) — also a
+     * check constraint, applies regardless of source so future bundled
+     * mirroring stays safe.
+     */
+    body: text("body"),
+
     isDefault: boolean("is_default").notNull().default(false),
+
+    /**
+     * Meta skills are bundled infrastructure consumed by chatbot
+     * tools (or other platform code), NOT by the user directly.
+     * They're pushed to the conversation sandbox like any other
+     * bundled skill, but hidden from both human-visible surfaces:
+     *  - the system-prompt `{{skillsCatalog}}` (saves ~100-300
+     *    tokens per turn, avoids tempting the chatbot into reading
+     *    them when irrelevant),
+     *  - the settings/skills page (these aren't workflows the team
+     *    toggles — showing them just adds noise for non-tech users).
+     *
+     * The auto-sync at boot picks the initial value from the
+     * SKILL.md frontmatter (`metadata.fretik_is_meta`); existing
+     * rows are never overwritten.
+     */
+    isMeta: boolean("is_meta").notNull().default(false),
 
     source: skillSourceEnum("source").notNull().default("bundled"),
 
@@ -79,7 +114,9 @@ export const skills = pgTable(
      * (`metadata.fretik_version`). Used for cache busting on the
      * frontend listing and audit; the agent does not see it.
      */
-    version: varchar("version", { length: 20 }).notNull().default("1.0.0"),
+    version: varchar("version", { length: SKILL_VERSION_MAX_LENGTH })
+      .notNull()
+      .default("1.0.0"),
 
     /**
      * Soft-delete marker. The loader sets this when a bundled folder
@@ -103,6 +140,18 @@ export const skills = pgTable(
     // name in the future (`team_uploaded`) without colliding with each
     // other or with the bundled catalogue (team_id IS NULL).
     unique("skills_team_name_unique").on(t.teamId, t.name),
+    // Hard cap on body size: 100 KB ≈ 25k tokens. Applies to bundled
+    // too in case we ever mirror them into the column.
+    check(
+      "skills_body_max_length",
+      sql`${t.body} IS NULL OR length(${t.body}) <= ${sql.raw(SKILL_BODY_MAX_BYTES.toString())}`,
+    ),
+    // team_uploaded MUST carry the body in-DB (no filesystem fallback).
+    // bundled MAY have NULL (loader reads from disk).
+    check(
+      "skills_body_required_for_team_uploaded",
+      sql`${t.source} = 'bundled' OR ${t.body} IS NOT NULL`,
+    ),
   ],
 );
 

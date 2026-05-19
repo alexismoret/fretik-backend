@@ -27,6 +27,7 @@ const EXPECTED_SKILL_NAMES = [
   "docx",
   "pdf",
   "pptx",
+  "skill-author",
   "tabular-extraction",
   "xlsx",
 ];

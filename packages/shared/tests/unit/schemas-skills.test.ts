@@ -1,17 +1,16 @@
 import { describe, expect, test } from "bun:test";
 import {
-  skillNameParamSchema,
   skillSourceSchema,
   skillSummarySchema,
   skillsListResponseSchema,
-  toggleSkillBodySchema,
+  updateSkillRequestSchema,
 } from "../../src/schemas/skills";
 
 /**
- * Schema-level guarantees for `/team-skills/*`. The HTTP layer relies
+ * Schema-level guarantees for `/skills/*`. The HTTP layer relies
  * on these schemas to reject malformed input before the service runs;
  * the frontend relies on them to narrow the response shape. If a
- * frontmatter slug rule, name length, or boolean payload shape changes
+ * frontmatter slug rule, name length, or update payload shape changes
  * silently, these tests turn red.
  */
 
@@ -35,35 +34,65 @@ const INVALID_SKILL_NAMES = [
   "x".repeat(65), // 65 chars → over the 64-char agentskills.io cap
 ];
 
-describe("skillNameParamSchema", () => {
+describe("skillSummarySchema name regex", () => {
+  const validSummary = (name: string) => ({
+    id: "0193ad07-1100-7100-aaaa-bbbbccccdddd",
+    name,
+    description: "x",
+    isDefault: false,
+    enabled: true,
+    version: "1.0.0",
+    source: "bundled" as const,
+  });
+
   test.each(VALID_SKILL_NAMES)("accepts valid slug %s", (name) => {
-    expect(skillNameParamSchema.safeParse({ name }).success).toBe(true);
+    expect(skillSummarySchema.safeParse(validSummary(name)).success).toBe(true);
   });
 
   test.each(INVALID_SKILL_NAMES)("rejects invalid slug %s", (name) => {
-    expect(skillNameParamSchema.safeParse({ name }).success).toBe(false);
+    expect(skillSummarySchema.safeParse(validSummary(name)).success).toBe(
+      false,
+    );
   });
 });
 
-describe("toggleSkillBodySchema", () => {
-  test("accepts the canonical { enabled: boolean } shape", () => {
-    expect(toggleSkillBodySchema.safeParse({ enabled: true }).success).toBe(
+describe("updateSkillRequestSchema", () => {
+  test("accepts a single-field patch", () => {
+    expect(updateSkillRequestSchema.safeParse({ enabled: true }).success).toBe(
       true,
     );
-    expect(toggleSkillBodySchema.safeParse({ enabled: false }).success).toBe(
+    expect(
+      updateSkillRequestSchema.safeParse({ description: "x" }).success,
+    ).toBe(true);
+    expect(updateSkillRequestSchema.safeParse({ body: "x" }).success).toBe(
       true,
     );
   });
 
-  test("rejects anything that isn't a boolean", () => {
-    expect(toggleSkillBodySchema.safeParse({}).success).toBe(false);
-    expect(toggleSkillBodySchema.safeParse({ enabled: "true" }).success).toBe(
-      false,
-    );
-    expect(toggleSkillBodySchema.safeParse({ enabled: 1 }).success).toBe(false);
-    expect(toggleSkillBodySchema.safeParse({ enabled: null }).success).toBe(
-      false,
-    );
+  test("accepts a combined patch", () => {
+    expect(
+      updateSkillRequestSchema.safeParse({
+        description: "x",
+        body: "y",
+        enabled: false,
+      }).success,
+    ).toBe(true);
+  });
+
+  test("rejects an empty patch (would be a silent no-op)", () => {
+    expect(updateSkillRequestSchema.safeParse({}).success).toBe(false);
+  });
+
+  test("rejects an empty string description (zod min(1))", () => {
+    expect(
+      updateSkillRequestSchema.safeParse({ description: "" }).success,
+    ).toBe(false);
+  });
+
+  test("rejects body over the 102 400 byte cap", () => {
+    expect(
+      updateSkillRequestSchema.safeParse({ body: "x".repeat(102_401) }).success,
+    ).toBe(false);
   });
 });
 

@@ -65,12 +65,17 @@ export const listSkillsForTeam = async (
     .where(
       and(
         isNull(skills.deletedAt),
+        // Meta skills (bundled infrastructure consumed by chatbot
+        // tools, e.g. skill-author) are hidden from every
+        // human-visible listing — saves prompt tokens in the
+        // catalogue and avoids cluttering the settings page with
+        // rows the user can't act on. They still ship with the
+        // bundled tarball so the sandbox has them.
+        eq(skills.isMeta, false),
         or(
           // Bundled = global (no team scope), visible to every team.
           and(eq(skills.source, "bundled"), isNull(skills.teamId)),
-          // Team-uploaded = scoped to this team. No row exists today;
-          // wired now so the future user-upload path needs no schema
-          // change.
+          // Team-uploaded = scoped to this team.
           and(eq(skills.source, "team_uploaded"), eq(skills.teamId, teamId)),
         ),
       ),

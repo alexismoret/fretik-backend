@@ -1,0 +1,1 @@
+ALTER TABLE "skills" ADD COLUMN "is_meta" boolean DEFAULT false NOT NULL;

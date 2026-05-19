@@ -26,6 +26,7 @@ import type {
   SandboxFileEntry,
   SandboxLease,
 } from "@fretik/shared/services/e2b/types";
+import { listEnabledTeamUploadedSkillsWithBodyForConversation } from "@fretik/shared/services/skills/list-enabled-team-uploaded-with-body";
 import { randomUUID } from "node:crypto";
 import { readdir, stat } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
@@ -419,6 +420,7 @@ const bootstrapWithLock = async (
 const runFullBootstrap = async (conversationId: string): Promise<void> => {
   await createWorkspaceDirs(conversationId);
   await pushBundledSkills(conversationId);
+  await pushTeamSkills(conversationId);
   await restoreFromS3(conversationId);
   await touchFretikInitMarker(conversationId);
 };
@@ -515,6 +517,81 @@ const pushBundledSkills = async (conversationId: string): Promise<void> => {
   const duration = Date.now() - startedAt;
   console.log(
     `[conversation-storage] pushed skills tarball: ${(bytes.byteLength / 1024).toFixed(1)} KB, ${duration.toString()}ms (upload+extract)`,
+  );
+};
+
+/**
+ * Push every enabled team-uploaded skill into `/workspace/skills/<slug>/SKILL.md`.
+ *
+ * Bundled skills come in as a single pre-built tarball (see
+ * `pushBundledSkills` above) which is fast and idempotent. Team-uploaded
+ * skills are low-volume (cap at ~30 per team) and change at human pace,
+ * so per-file `writeSandboxFile` calls are simpler than maintaining a
+ * second per-team tarball cache — and E2B creates parent directories
+ * automatically on `files.write`.
+ *
+ * Materialised SKILL.md format mirrors the bundled on-disk layout
+ * (YAML frontmatter + body) so the chatbot reads both kinds the same
+ * way via `bash cat /workspace/skills/<slug>/SKILL.md`.
+ *
+ * Soft-fail: any error per skill is logged and skipped — the catalogue
+ * in the system prompt still lists the skill but `bash cat` will
+ * return ENOENT, which the LLM handles gracefully. We avoid hard
+ * failures here so a single bad skill doesn't break the whole
+ * conversation bootstrap.
+ *
+ * Resolves teamId from `aiConversations` inside the shared service —
+ * keeps `runFullBootstrap`'s signature small (`conversationId`-only)
+ * and avoids threading teamId through every call site.
+ */
+const pushTeamSkills = async (conversationId: string): Promise<void> => {
+  let entries: Awaited<
+    ReturnType<typeof listEnabledTeamUploadedSkillsWithBodyForConversation>
+  >;
+  try {
+    entries =
+      await listEnabledTeamUploadedSkillsWithBodyForConversation(
+        conversationId,
+      );
+  } catch (err) {
+    console.warn(
+      "[conversation-storage] failed to list team-uploaded skills:",
+      err instanceof Error ? err.message : err,
+    );
+    return;
+  }
+
+  if (entries.length === 0) return;
+
+  const startedAt = Date.now();
+  const skillsDir = `${WORKSPACE_ROOT}/${WORKSPACE_DIRS.skills}`;
+  const encoder = new TextEncoder();
+
+  // Writes are parallel-safe: distinct paths, no shared lock, E2B's
+  // `files.write` handles `mkdir -p` per call. Promise.allSettled so
+  // a single bad skill doesn't poison the rest.
+  const results = await Promise.allSettled(
+    entries.map((entry) => {
+      const skillMd = `---\nname: ${entry.name}\ndescription: ${entry.description.replace(/\n/g, " ").trim()}\n---\n\n${entry.body}`;
+      const path = `${skillsDir}/${entry.name}/SKILL.md`;
+      return writeSandboxFile(conversationId, path, encoder.encode(skillMd));
+    }),
+  );
+
+  const written = results.filter((r) => r.status === "fulfilled").length;
+  for (const [i, r] of results.entries()) {
+    if (r.status === "rejected") {
+      const entry = entries[i];
+      console.warn(
+        `[conversation-storage] failed to write team skill "${entry?.name ?? "?"}":`,
+        r.reason instanceof Error ? r.reason.message : r.reason,
+      );
+    }
+  }
+
+  const duration = Date.now() - startedAt;
+  console.log(
+    `[conversation-storage] pushed ${written.toString()}/${entries.length.toString()} team skills in parallel, ${duration.toString()}ms`,
   );
 };
 

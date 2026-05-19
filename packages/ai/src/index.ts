@@ -1,5 +1,6 @@
 import { errorHandler } from "@fretik/shared/lib/error-handler";
 import { reclaimOrphanSandboxes } from "@fretik/shared/services/e2b/reclaim-orphans";
+import { syncBundledSkillsCatalogue } from "@fretik/shared/services/skills/sync-bundled-catalogue";
 import { OpenAPIHono } from "@hono/zod-openapi";
 import figlet from "figlet";
 import { cors } from "hono/cors";
@@ -61,7 +62,34 @@ app.route("/internal/field-definitions", fieldDefinitionsRoutes);
 // The skill bundles themselves are pushed to each conversation's
 // sandbox at first init by `lib/conversation-storage.ts` — no /tmp
 // materialisation here.
-await loadSkillCatalog();
+const skillCatalog = await loadSkillCatalog();
+
+// Reconcile the on-disk bundled catalogue with the `skills` DB
+// table. Adding a new bundled skill folder is all it takes to make
+// it appear in DB — no per-skill migration required. The sync only
+// touches `name` + `description` (the only frontmatter-derivable
+// fields); `is_default` and `version` stay manually-managed.
+// Wrapped under a Postgres advisory lock so concurrent replica boots
+// don't fight. Soft-fail: a transient error here doesn't block boot
+// — the catalogue stays consistent on the next healthy startup.
+try {
+  const result = await syncBundledSkillsCatalogue(skillCatalog);
+  if (
+    result.inserted > 0 ||
+    result.updated > 0 ||
+    result.softDeleted > 0 ||
+    result.restored > 0
+  ) {
+    console.log(
+      `[skills-sync] bundled catalogue reconciled: +${result.inserted.toString()} inserted, ${result.updated.toString()} updated, ${result.restored.toString()} restored, ${result.softDeleted.toString()} soft-deleted`,
+    );
+  }
+} catch (err) {
+  console.error(
+    "[skills-sync] bundled catalogue reconciliation failed:",
+    err instanceof Error ? err.message : err,
+  );
+}
 
 // Boot-time RAG indexer for the bundled skills. Vectorises SKILL.md +
 // references/*.md as global rows in `ai_vectors` (team_id IS NULL).

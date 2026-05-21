@@ -38,7 +38,7 @@ export const createListDocumentsTool = () =>
       "- status: processing status ('ready' for usable docs).",
       "- labelIds: any-of match on the team's labels.",
       "- entityIds: any-of match on linked entities (any role).",
-      "- customFilters: equality on the team's configured dynamic fields. Each entry is `{ fieldKey, value }`. Field keys (`document_type`, `transport_mode`, `invoice_number`, …) come from the team's field definitions and are visible on each returned document's `fieldValues` map. AND semantics across entries.",
+      "- customFilters: equality on the team's configured dynamic fields. Each entry is `{ fieldKey, value }`. Field keys (`document_type`, `category`, `invoice_number`, …) come from the team's field definitions and are visible on each returned document's `fieldValues` map. AND semantics across entries.",
       "",
       "Pagination: `limit` defaults to 20, max 50. Pass the returned `nextOffset` on `hasMore: true` to fetch the next page.",
       "",
@@ -76,7 +76,7 @@ export const createListDocumentsTool = () =>
               .min(1)
               .max(60)
               .describe(
-                "Slug of a configured field definition (e.g. 'document_type', 'transport_mode')",
+                "Slug of a configured field definition (e.g. 'document_type', 'category')",
               ),
             value: z
               .union([

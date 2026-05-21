@@ -225,7 +225,7 @@ export const createSearchToolsTool = (domainTools: SearchableToolRegistry) =>
       '- "select:listDocuments,getDocumentContent" — comma-separated multi-select.',
       '- "listDocuments" — bare tool name also works (fast-path exact-match), but `select:listDocuments` is more explicit and reliable.',
       '- "documents folder" — keyword search; returns up to max_results best matches and activates them all. Keywords are split on spaces and matched against tool name parts.',
-      '- "+entity carrier" — require "entity" in the match, rank the rest.',
+      '- "+entity vendor" — require "entity" in the match, rank the rest.',
       "",
       "Activated tools become available in the next step — call them directly by name afterwards. Activation is idempotent: re-selecting an already-active tool is a harmless no-op.",
     ].join("\n"),

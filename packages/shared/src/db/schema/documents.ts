@@ -33,7 +33,7 @@ export const documentStatusEnum = pgEnum("document_status", [
  * Pre-extraction results are stored in documentProperties (1:1) for
  * universal AI outputs (summary, language, page count) and in
  * documentFieldValues for the team-configurable custom fields
- * (document type, dates, transport mode, …).
+ * (document type, dates, category, …).
  */
 export const documents = pgTable(
   "documents",
@@ -92,8 +92,8 @@ export const documents = pgTable(
 
 /**
  * Document Properties - universal AI-extracted outputs (1:1 with documents).
- * Created when processing completes successfully. Industry-specific fields
- * (document type, transport mode, dates, …) live in `document_field_values`
+ * Created when processing completes successfully. Team-configurable fields
+ * (document type, category, dates, …) live in `document_field_values`
  * and are configured per team via `field_definitions`.
  */
 export const documentProperties = pgTable(

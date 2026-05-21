@@ -51,7 +51,7 @@ const MEMORY_TOOL_DESCRIPTION = [
   "  - `delete` — remove a file. Logged in audit history.",
   "  - `rename` — move within the SAME namespace via `old_path` / `new_path`. Cross-namespace renames rejected.",
   "- Body format for `create` / `overwrite`: lead with the rule in plain language, then `**When to apply:**` (the trigger / context) and `**What to do:**` (the steps or rule).",
-  "- Path conventions (suggestions, adapt to existing paths): `team/processes/<slug>.md`, `team/conventions/<slug>.md`, `team/clients/<slug>.md`, `team/carriers/<slug>.md`, `user/preferences.md`.",
+  "- Path conventions (suggestions, adapt to existing paths): `team/processes/<slug>.md`, `team/conventions/<slug>.md`, `team/clients/<slug>.md`, `team/vendors/<slug>.md`, `user/preferences.md`.",
   "",
   "Discovery: every write is auto-indexed in `searchKnowledge` with `[TEAM_MEMORY]` / `[USER_MEMORY]` prefix. Errors return `{error, code}`.",
 ].join("\n");

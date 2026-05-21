@@ -46,7 +46,7 @@ import { EMBEDDING_DIMENSIONS } from "../../lib/embeddings";
  *
  * Filter surface is intentionally minimal: `sourceTypes` and
  * `sourceIds`. Every other metadata filter (document_type,
- * document_date, uploaded_at, entity id, transport_type…) is already
+ * document_date, uploaded_at, entity id, category…) is already
  * reachable via the dedicated domain tools (`listDocuments`,
  * `listEntities`) or `querySql`. The expected two-step pattern is:
  * model calls the right list tool with its own rich filters →

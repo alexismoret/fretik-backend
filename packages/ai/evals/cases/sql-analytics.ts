@@ -47,9 +47,9 @@ export const sqlAnalyticsSuite: EvalSuite = {
       ],
     },
     {
-      id: "sql-filter-carriers",
-      description: "Filter by entity type — carriers only",
-      prompt: "Liste-moi les 5 derniers transporteurs créés.",
+      id: "sql-filter-clients",
+      description: "Filter by entity type — clients only",
+      prompt: "Liste-moi les 5 derniers clients créés.",
       tags: ["sql", "filter", "listing"],
       assertions: [
         { type: "noError" },
@@ -57,7 +57,7 @@ export const sqlAnalyticsSuite: EvalSuite = {
         {
           type: "judge",
           rubric:
-            "The answer lists at most 5 items, each is a carrier (not a client), or explicitly notes there are none.",
+            "The answer lists at most 5 items, each is a client entity, or explicitly notes there are none.",
         },
       ],
     },

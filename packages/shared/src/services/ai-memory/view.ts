@@ -169,9 +169,9 @@ const renderDirectoryView = async (args: {
  * `MEMORY_FILE_NOT_FOUND`.
  *
  *  - `view /memories/user` → list everything under `/memories/user`
- *  - `view /memories/team/carriers` → list everything below
- *    `carriers/` (files at depth 1, sub-dirs collapsed)
- *  - `view /memories/team/carriers/dhl.md` → render the file with
+ *  - `view /memories/team/vendors` → list everything below
+ *    `vendors/` (files at depth 1, sub-dirs collapsed)
+ *  - `view /memories/team/vendors/acme.md` → render the file with
  *    line numbers
  */
 export const viewMemory = async (args: {

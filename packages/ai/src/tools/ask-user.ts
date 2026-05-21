@@ -80,7 +80,7 @@ export const createAskUserQuestionTool = () =>
       "Asks the user multiple choice questions to gather information, clarify ambiguity, understand preferences, make decisions, or offer choices about how to proceed.",
       "",
       "Use this tool when:",
-      "1. The user's intent is ambiguous and you cannot resolve it from history / RAG / SQL within 1-2 steps (e.g. two carriers match a name, two valid interpretations of a vague request).",
+      "1. The user's intent is ambiguous and you cannot resolve it from history / RAG / SQL within 1-2 steps (e.g. two entities match a name, two valid interpretations of a vague request).",
       "2. You are about to propose a memory write — present 'Save / Not now / Reword first' style options instead of asking in free text.",
       "3. You need a decision that materially changes the next steps (e.g. 'Generate as Excel or PDF?').",
       "",

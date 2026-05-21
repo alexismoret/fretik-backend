@@ -33,24 +33,37 @@ export const SANDBOX_ALLOWED_DOMAINS = {
   vcs: ["*.github.com", "github.com", "*.githubusercontent.com"],
 
   /**
-   * Transport / logistics APIs. Starter list — extend as integrations
-   * land. Wildcards cover the full carrier domain so we don't miss
-   * tracking subdomains.
+   * Common B2B SaaS APIs the sandbox may legitimately need to call —
+   * collaboration, CRM, payments, analytics, project management.
+   * Starter list, extend as integrations land. Wildcards cover the
+   * full vendor domain so we don't miss subdomains (e.g. `api.*`,
+   * `*.googleapis.com`).
    */
-  transport: [
-    // International
-    "*.dhl.com",
-    "*.fedex.com",
-    "*.ups.com",
-    // France
-    "*.laposte.fr",
-    "*.colissimo.fr",
-    // Pan-Europe
-    "*.dpd.com",
-    "*.gls-group.eu",
-    // Tracking aggregators
-    "*.aftership.com",
-    "*.trackingmore.com",
+  b2b: [
+    // Google Workspace (Drive, Gmail, Calendar, Sheets, …)
+    "*.googleapis.com",
+    "*.google.com",
+    // Microsoft 365 / Graph
+    "graph.microsoft.com",
+    "*.microsoft.com",
+    "*.office.com",
+    // Collaboration
+    "slack.com",
+    "*.slack.com",
+    "api.notion.com",
+    "api.airtable.com",
+    // CRM
+    "*.salesforce.com",
+    "api.hubapi.com",
+    // Payments / billing
+    "api.stripe.com",
+    // Project / issue tracking
+    "api.linear.app",
+    "*.atlassian.com",
+    "*.atlassian.net",
+    // Customer support
+    "*.zendesk.com",
+    "*.intercom.io",
   ],
 } as const;
 
@@ -77,7 +90,7 @@ export const buildSandboxNetworkPolicy = (
     ...SANDBOX_ALLOWED_DOMAINS.fretik,
     ...SANDBOX_ALLOWED_DOMAINS.pypi,
     ...SANDBOX_ALLOWED_DOMAINS.vcs,
-    ...SANDBOX_ALLOWED_DOMAINS.transport,
+    ...SANDBOX_ALLOWED_DOMAINS.b2b,
     ...(overrides?.extraAllowOut ?? []),
   ],
   denyOut: [ALL_TRAFFIC],

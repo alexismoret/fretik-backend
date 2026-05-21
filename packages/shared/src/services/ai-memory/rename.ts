@@ -15,8 +15,8 @@ import { triggerMemoryVectorRefresh } from "./vector-refresh";
  * effectively transfer ownership across the user/team boundary.
  *
  * The model can use rename to reorganise (e.g. flatten an
- * accidentally-nested file, or migrate `carriers/dhl` →
- * `carriers/dhl-fr.md`). For cross-scope migrations, the right
+ * accidentally-nested file, or migrate `vendors/acme` →
+ * `vendors/acme-supplies.md`). For cross-scope migrations, the right
  * primitive is `view` + `create` + `delete`.
  */
 export const renameMemory = async (args: {
@@ -110,7 +110,7 @@ export const renameMemory = async (args: {
     .then(async (updated) => {
       await trimMemoryHistory(updated.id);
       // Path is part of the memory's contextual prefix (`[TEAM_MEMORY]
-      // path:carriers/dhl.md`), so a rename invalidates every existing
+      // path:vendors/acme.md`), so a rename invalidates every existing
       // vector chunk's prefix — re-vectorise. `upsertVectors` clears
       // stale rows by `(source_type, source_id)` before inserting.
       void triggerMemoryVectorRefresh(

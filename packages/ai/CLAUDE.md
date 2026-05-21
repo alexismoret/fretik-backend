@@ -2,6 +2,12 @@
 
 Hono LLM service: chatbot (SSE resumable), vectorize, pre-extract, chat-files. The chatbot agent is a **singleton** built once at boot and reused across every request.
 
+## Positioning
+
+The chatbot is a **generalist B2B work assistant**, in the same vein as Claude or ChatGPT. It is **not** specialised in any industry — system prompts, tool descriptions, examples, and eval cases must stay industry-agnostic. Domain customisation comes from the field-templates layer in `@fretik/shared/templates/document-fields/` (which a team can pick to specialise their fields/document types) and from the team's own context, skills, and memory — not from this package's prompts.
+
+When editing prompts (`src/agents/chatbot/system-prompt.md`, `src/agents/chatbot/sub-agent-system-prompt.md`, `src/services/pre-extract/prompt.ts`, `src/services/compaction/prompt.ts`) or tool descriptions (`src/tools/*.ts`), do not introduce industry-specific vocabulary or examples. Generic business terms only: documents, entities (organizations/people), vendors, clients, contracts, invoices, reports, etc.
+
 ## Conventions
 
 - **Tools: read `src/tools/README.md` first.** The tool convention (one file per tool, `tool()` factory, `getRuntimeContext(options)` inside `execute`, structured `{ error, code }` returns) is non-negotiable and fully documented there.
@@ -17,7 +23,7 @@ Hono LLM service: chatbot (SSE resumable), vectorize, pre-extract, chat-files. T
 
 - New chatbot tool → mirror `src/tools/sql-query.ts` (factory + `getRuntimeContext` + structured error return + optional `maybePersistLargeOutput` for big results).
 - New HTTP endpoint → mirror `src/handlers/chatbot.ts` (middleware + fallback model try/catch + SSE resumable buffering).
-- Sandbox-backed tool → mirror `src/tools/python.ts` and `src/tools/bash.ts`. Code execution is delegated to E2B via `@fretik/shared/services/e2b/run-in-sandbox` (`acquireSandbox` lazily resumes a per-conversation sandbox; `releaseSandbox` is called from the chatbot handler's `onFinish` to pause it). The conversation→sandbox mapping lives in Redis (`e2b:sandbox:{conversationId}`); no DB column. Egress is restricted by `services/e2b/network-policy.ts` (Fretik / PyPI / GitHub / carrier APIs only). The Python kernel is stateful for the lifetime of a conversation — context is cached in Redis (`e2b:python-ctx:{conversationId}`) and reused across `runCode` calls. Two restart granularities: `python` tool's `restart: true` → `restartPythonKernel` (kernel-only, preserves filesystem); `bash` tool's `restart: true` → `runInSandbox({ restart: true })` → `killSandbox` (nukes the whole sandbox including `/workspace`). Rich Jupyter outputs (DataFrame HTML, matplotlib plots) are captured into `RunResult.richResults` and binary representations are written under `outputs/results/{toolCallId}-{idx}.{ext}`.
+- Sandbox-backed tool → mirror `src/tools/python.ts` and `src/tools/bash.ts`. Code execution is delegated to E2B via `@fretik/shared/services/e2b/run-in-sandbox` (`acquireSandbox` lazily resumes a per-conversation sandbox; `releaseSandbox` is called from the chatbot handler's `onFinish` to pause it). The conversation→sandbox mapping lives in Redis (`e2b:sandbox:{conversationId}`); no DB column. Egress is restricted by `services/e2b/network-policy.ts` (Fretik / PyPI / GitHub / common B2B service APIs only). The Python kernel is stateful for the lifetime of a conversation — context is cached in Redis (`e2b:python-ctx:{conversationId}`) and reused across `runCode` calls. Two restart granularities: `python` tool's `restart: true` → `restartPythonKernel` (kernel-only, preserves filesystem); `bash` tool's `restart: true` → `runInSandbox({ restart: true })` → `killSandbox` (nukes the whole sandbox including `/workspace`). Rich Jupyter outputs (DataFrame HTML, matplotlib plots) are captured into `RunResult.richResults` and binary representations are written under `outputs/results/{toolCallId}-{idx}.{ext}`.
 
 ## Gotchas
 

@@ -23,10 +23,10 @@ const formatScalar = (
  * Builds a single-line semantic header prepended to each chunk's
  * `contextual_prefix` before embedding + BM25 indexing.
  *
- * Industry-specific fields ride through `metadata.custom_fields` as raw
+ * Team-configurable fields ride through `metadata.custom_fields` as raw
  * `{ key: value }` pairs (already pre-filtered by the caller to fields
  * whose definition has `vectorizeInclude=true`). Keys are emitted as-is:
- * they are already descriptive (`transport_mode`, `invoice_number`, …)
+ * they are already descriptive (`document_type`, `invoice_number`, …)
  * and both cosine similarity and BM25 handle snake_case well — no need
  * to round-trip via the field definitions for label lookup.
  */

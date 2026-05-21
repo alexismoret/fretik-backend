@@ -107,7 +107,7 @@ export const createPythonTool = () =>
       "",
       "Restart semantics: pass `restart: true` to wipe the kernel (variables, imports) before running this code; the filesystem is preserved. The `bash` tool has its own heavier `restart` that nukes the whole sandbox including `/workspace` — use that only for filesystem corruption.",
       "",
-      "Sandbox: 1 vCPU, 1 GB memory, 5 min wall-clock timeout, non-root user, /workspace as cwd. Outbound internet is restricted to a curated allowlist (PyPI, GitHub, Fretik, common carrier APIs) — `pip install` works for those. Note: a `pip install` from `bash` is invisible to a kernel that already imported the package; restart the Python kernel (`restart: true`) to pick it up.",
+      "Sandbox: 1 vCPU, 1 GB memory, 5 min wall-clock timeout, non-root user, /workspace as cwd. Outbound internet is restricted to a curated allowlist (PyPI, GitHub, Fretik, common B2B service APIs) — `pip install` works for those. Note: a `pip install` from `bash` is invisible to a kernel that already imported the package; restart the Python kernel (`restart: true`) to pick it up.",
       "",
       "Pre-installed libraries:",
       "- Data: pandas, numpy, pyarrow",

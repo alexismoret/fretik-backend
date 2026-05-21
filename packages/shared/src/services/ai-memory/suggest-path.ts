@@ -174,7 +174,7 @@ const callOpenRouter = async (args: {
 
   const systemPrompt =
     args.scope === "team"
-      ? "You are organising a TEAM-shared memory tree under /memories/team/. Suggest a SHORT relative path for a new note. Prefer existing folder conventions when relevant (e.g. carriers/<slug>.md, clients/<slug>.md, ports/<slug>.md, conventions.md). Use kebab-case slugs. Output ONLY the path (no leading slash, no /memories/team/ prefix), nothing else."
+      ? "You are organising a TEAM-shared memory tree under /memories/team/. Suggest a SHORT relative path for a new note. Prefer existing folder conventions when relevant (e.g. vendors/<slug>.md, clients/<slug>.md, processes/<slug>.md, conventions.md). Use kebab-case slugs. Output ONLY the path (no leading slash, no /memories/team/ prefix), nothing else."
       : "You are organising a PRIVATE user memory tree under /memories/user/. Suggest a SHORT relative path for a new personal note (preferences, shortcuts, reminders). Use kebab-case slugs. Output ONLY the path (no leading slash, no /memories/user/ prefix), nothing else.";
 
   const userPrompt = [

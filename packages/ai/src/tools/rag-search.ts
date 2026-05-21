@@ -20,7 +20,7 @@ import { searchRAG } from "../services/search";
  *
  * Filter surface is intentionally tight: `sourceTypes` + `sourceIds`.
  * Every other structural filter (document type, date, entity,
- * transport mode, …) is already reachable via the dedicated domain
+ * category, …) is already reachable via the dedicated domain
  * tools and the agent pre-selects ids there, then passes them here.
  * Keeps filter semantics in one place and keeps the RAG tool surface
  * from ballooning with every new source kind.

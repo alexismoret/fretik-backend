@@ -15,10 +15,10 @@ const LEGAL_SUFFIXES =
  * - Trims whitespace
  *
  * Examples:
- *   "CMA-CGM S.A."         → "cma cgm"
- *   "Air France Cargo SAS" → "air france cargo"
- *   "MAERSK A/S"           → "maersk"
- *   "C.M.A. C.G.M."        → "cma cgm"
+ *   "Acme Solutions S.A."  → "acme solutions"
+ *   "Globex Industries SAS" → "globex industries"
+ *   "INITECH A/S"          → "initech"
+ *   "Stark, Inc."          → "stark"
  */
 export const normalizeEntityName = (name: string): string =>
   name

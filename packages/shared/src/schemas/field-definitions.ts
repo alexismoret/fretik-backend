@@ -224,14 +224,14 @@ const aiSuggestFieldOptionSchema = z.object({
     .min(1)
     .max(60)
     .describe(
-      "Stable machine value (lowercase, snake_case or short code) stored on the document. Lowercase a-z, digits, underscores. Example: 'sea', 'invoice', 'bill_of_lading'.",
+      "Stable machine value (lowercase, snake_case or short code) stored on the document. Lowercase a-z, digits, underscores. Example: 'invoice', 'contract', 'purchase_order'.",
     ),
   label: z
     .string()
     .min(1)
     .max(120)
     .describe(
-      "Human-readable label shown to the user for this option. Example: 'Sea', 'Invoice', 'Bill of Lading'.",
+      "Human-readable label shown to the user for this option. Example: 'Invoice', 'Contract', 'Purchase Order'.",
     ),
 });
 

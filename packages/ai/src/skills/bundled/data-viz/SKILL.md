@@ -9,9 +9,9 @@ Render a single-purpose chart that answers one question visually. Save as PNG at
 
 ## When to use this skill
 
-Trigger on: "chart", "graph", "graphique", "courbe", "camembert", "histogramme", "diagram", "diagramme", "plot", "visualise", "show me visually", "trace", "compare these two months/categories/carriers", and any question where the answer is a trend or a comparison (both are visually obvious, tedious in text).
+Trigger on: "chart", "graph", "graphique", "courbe", "camembert", "histogramme", "diagram", "diagramme", "plot", "visualise", "show me visually", "trace", "compare these two months/categories/vendors", and any question where the answer is a trend or a comparison (both are visually obvious, tedious in text).
 
-Don't use for: a single number ("how many shipments in March?" — reply in text), a formatted table of many rows (→ `xlsx`), or a layout-critical print deliverable (→ `pdf`).
+Don't use for: a single number ("how many invoices in March?" — reply in text), a formatted table of many rows (→ `xlsx`), or a layout-critical print deliverable (→ `pdf`).
 
 ## Tool: matplotlib — always
 
@@ -25,37 +25,37 @@ import matplotlib.pyplot as plt
 fig, ax = plt.subplots(figsize=(8, 4.5), dpi=160)
 
 months = ["Oct", "Nov", "Dec", "Jan", "Feb", "Mar"]
-volume = [4820, 4960, 5140, 5020, 5270, 5487]
+revenue = [482000, 496000, 514000, 502000, 527000, 548700]
 
-ax.plot(months, volume, marker="o", linewidth=2, color="#1F4E78")
-ax.set_title("Monthly shipment volume — last 6 months", loc="left", pad=10)
-ax.set_ylabel("TEU")
+ax.plot(months, revenue, marker="o", linewidth=2, color="#1F4E78")
+ax.set_title("Monthly revenue — last 6 months", loc="left", pad=10)
+ax.set_ylabel("€")
 ax.grid(True, axis="y", linestyle="--", linewidth=0.5, alpha=0.6)
 ax.spines["top"].set_visible(False)
 ax.spines["right"].set_visible(False)
 
 # Value labels on top of each marker
-for x, y in zip(months, volume):
+for x, y in zip(months, revenue):
     ax.annotate(f"{y:,}", (x, y), textcoords="offset points",
                 xytext=(0, 8), ha="center", fontsize=9, color="#222222")
 
 # Source line — one short italic gray line bottom-left
 fig.text(
     0.01, 0.01,
-    "Source: querySql — shipments, as of 2026-04-21.",
+    "Source: querySql — invoices, as of 2026-04-21.",
     fontsize=8, style="italic", color="#808080",
 )
 
 fig.tight_layout()
-fig.savefig("volume-last-6-months.png", dpi=160, bbox_inches="tight")
+fig.savefig("revenue-last-6-months.png", dpi=160, bbox_inches="tight")
 plt.close(fig)
-print("saved volume-last-6-months.png")
+print("saved revenue-last-6-months.png")
 ```
 
 Then hand off:
 
 ```
-presentFiles({ paths: ["volume-last-6-months.png"] })
+presentFiles({ paths: ["revenue-last-6-months.png"] })
 ```
 
 The frontend detects `image/png` and renders it **inline as a preview image** inside the chat bubble (click to expand, download overlay on hover). **Do NOT pass a `message` when presenting only images** — the image speaks for itself; a caption would look redundant. Reserve `message` for mixed / document outputs.
@@ -125,25 +125,25 @@ For multi-source charts, concatenate with `·` (middle dot) — don't stack mult
 ```python
 import matplotlib.pyplot as plt
 
-carriers = ["CMA CGM", "Maersk", "MSC", "Hapag-Lloyd", "ONE"]
-volumes  = [1240, 1102, 985, 812, 734]
+vendors = ["Acme", "Globex", "Initech", "Umbrella", "Stark"]
+spend   = [124000, 110200, 98500, 81200, 73400]
 
-order = sorted(range(len(carriers)), key=lambda i: volumes[i], reverse=True)
-carriers = [carriers[i] for i in order]
-volumes  = [volumes[i]  for i in order]
+order = sorted(range(len(vendors)), key=lambda i: spend[i], reverse=True)
+vendors = [vendors[i] for i in order]
+spend   = [spend[i]   for i in order]
 
 fig, ax = plt.subplots(figsize=(8, 4.5), dpi=160)
-bars = ax.bar(carriers, volumes, color="#1F4E78")
-ax.set_title("Shipment volume by carrier — March 2026", loc="left", pad=10)
-ax.set_ylabel("TEU")
+bars = ax.bar(vendors, spend, color="#1F4E78")
+ax.set_title("Spend by vendor — March 2026", loc="left", pad=10)
+ax.set_ylabel("€")
 ax.spines["top"].set_visible(False)
 ax.spines["right"].set_visible(False)
-for bar, v in zip(bars, volumes):
+for bar, v in zip(bars, spend):
     ax.annotate(f"{v:,}", (bar.get_x() + bar.get_width() / 2, v),
                 textcoords="offset points", xytext=(0, 6),
                 ha="center", fontsize=9, color="#222222")
 fig.tight_layout()
-fig.savefig("volume-by-carrier-march-2026.png", dpi=160, bbox_inches="tight")
+fig.savefig("spend-by-vendor-march-2026.png", dpi=160, bbox_inches="tight")
 plt.close(fig)
 ```
 
@@ -153,9 +153,9 @@ plt.close(fig)
 import numpy as np
 import matplotlib.pyplot as plt
 
-categories = ["CMA CGM", "Maersk", "MSC", "Hapag-Lloyd", "ONE"]
-feb = [1100, 1050, 940, 790, 700]
-mar = [1240, 1102, 985, 812, 734]
+categories = ["Acme", "Globex", "Initech", "Umbrella", "Stark"]
+feb = [110000, 105000,  94000, 79000, 70000]
+mar = [124000, 110200,  98500, 81200, 73400]
 
 x = np.arange(len(categories))
 w = 0.38
@@ -164,13 +164,13 @@ fig, ax = plt.subplots(figsize=(9, 4.5), dpi=160)
 ax.bar(x - w/2, feb, w, label="Feb 2026", color="#2E75B6")
 ax.bar(x + w/2, mar, w, label="Mar 2026", color="#1F4E78")
 ax.set_xticks(x, categories)
-ax.set_ylabel("TEU")
-ax.set_title("Carrier volumes — Feb vs Mar 2026", loc="left", pad=10)
+ax.set_ylabel("€")
+ax.set_title("Vendor spend — Feb vs Mar 2026", loc="left", pad=10)
 ax.legend(frameon=False)
 ax.spines["top"].set_visible(False)
 ax.spines["right"].set_visible(False)
 fig.tight_layout()
-fig.savefig("carrier-volumes-feb-vs-mar.png", dpi=160, bbox_inches="tight")
+fig.savefig("vendor-spend-feb-vs-mar.png", dpi=160, bbox_inches="tight")
 plt.close(fig)
 ```
 
@@ -180,25 +180,25 @@ plt.close(fig)
 import matplotlib.pyplot as plt
 
 months = ["Oct", "Nov", "Dec", "Jan", "Feb", "Mar"]
-cma    = [980,  1020, 1110, 1050, 1100, 1240]
-maersk = [920,  960,  1000, 980,  1050, 1102]
-msc    = [830,  860,  880,  890,  940,  985]
+acme    = [ 98000, 102000, 111000, 105000, 110000, 124000]
+globex  = [ 92000,  96000, 100000,  98000, 105000, 110200]
+initech = [ 83000,  86000,  88000,  89000,  94000,  98500]
 
 fig, ax = plt.subplots(figsize=(9, 4.5), dpi=160)
 for label, series, color in [
-    ("CMA CGM", cma,    "#1F4E78"),
-    ("Maersk",  maersk, "#C0504D"),
-    ("MSC",     msc,    "#548235"),
+    ("Acme",    acme,    "#1F4E78"),
+    ("Globex",  globex,  "#C0504D"),
+    ("Initech", initech, "#548235"),
 ]:
     ax.plot(months, series, marker="o", linewidth=2, label=label, color=color)
-ax.set_title("Top 3 carriers — monthly volume (TEU)", loc="left", pad=10)
-ax.set_ylabel("TEU")
+ax.set_title("Top 3 vendors — monthly spend (€)", loc="left", pad=10)
+ax.set_ylabel("€")
 ax.grid(True, axis="y", linestyle="--", linewidth=0.5, alpha=0.6)
 ax.spines["top"].set_visible(False)
 ax.spines["right"].set_visible(False)
 ax.legend(frameon=False, loc="upper left")
 fig.tight_layout()
-fig.savefig("top-3-carriers-6m.png", dpi=160, bbox_inches="tight")
+fig.savefig("top-3-vendors-6m.png", dpi=160, bbox_inches="tight")
 plt.close(fig)
 ```
 
@@ -207,34 +207,34 @@ plt.close(fig)
 ```python
 import matplotlib.pyplot as plt
 
-ports = ["Antwerp", "Rotterdam", "Hamburg", "Bremerhaven", "Le Havre", "Genoa"]
-calls = [87, 71, 62, 48, 41, 34]
+countries = ["United States", "United Kingdom", "Germany", "France", "Spain", "Italy"]
+counts    = [87, 71, 62, 48, 41, 34]
 
 fig, ax = plt.subplots(figsize=(8, 4.5), dpi=160)
-ax.barh(ports[::-1], calls[::-1], color="#1F4E78")   # reverse so largest is top
-ax.set_title("Port calls by origin — March 2026", loc="left", pad=10)
-ax.set_xlabel("Calls")
+ax.barh(countries[::-1], counts[::-1], color="#1F4E78")   # reverse so largest is top
+ax.set_title("Clients by country — March 2026", loc="left", pad=10)
+ax.set_xlabel("Clients")
 ax.spines["top"].set_visible(False)
 ax.spines["right"].set_visible(False)
-for i, v in enumerate(calls[::-1]):
+for i, v in enumerate(counts[::-1]):
     ax.annotate(f"{v}", (v, i), textcoords="offset points",
                 xytext=(4, 0), va="center", fontsize=9, color="#222222")
 fig.tight_layout()
-fig.savefig("port-calls-march-2026.png", dpi=160, bbox_inches="tight")
+fig.savefig("clients-by-country-march-2026.png", dpi=160, bbox_inches="tight")
 plt.close(fig)
 ```
 
-### Small multiples — one chart per carrier
+### Small multiples — one chart per vendor
 
 ```python
 import matplotlib.pyplot as plt
 
 months = ["Oct", "Nov", "Dec", "Jan", "Feb", "Mar"]
 series = {
-    "CMA CGM":    [980, 1020, 1110, 1050, 1100, 1240],
-    "Maersk":     [920, 960,  1000, 980,  1050, 1102],
-    "MSC":        [830, 860,  880,  890,  940,  985],
-    "Hapag-Lloyd":[700, 740,  760,  750,  790,  812],
+    "Acme":     [ 98000, 102000, 111000, 105000, 110000, 124000],
+    "Globex":   [ 92000,  96000, 100000,  98000, 105000, 110200],
+    "Initech":  [ 83000,  86000,  88000,  89000,  94000,  98500],
+    "Umbrella": [ 70000,  74000,  76000,  75000,  79000,  81200],
 }
 
 fig, axes = plt.subplots(2, 2, figsize=(9, 5), dpi=160, sharex=True, sharey=True)
@@ -244,7 +244,7 @@ for ax, (name, vals) in zip(axes.flat, series.items()):
     ax.grid(True, axis="y", linestyle="--", linewidth=0.5, alpha=0.5)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
-fig.suptitle("Monthly volume by carrier — 6-month trend", x=0.01, ha="left",
+fig.suptitle("Monthly spend by vendor — 6-month trend", x=0.01, ha="left",
              fontsize=13)
 fig.tight_layout(rect=[0, 0.02, 1, 0.97])
 fig.savefig("small-multiples-6m.png", dpi=160, bbox_inches="tight")
@@ -256,7 +256,7 @@ plt.close(fig)
 - One chart per call. If the user asked for "a few charts", produce them in sequence and `presentFiles` all their paths at once.
 - `matplotlib.use("Agg")` before importing `pyplot`. We're headless. The kernel is stateful across calls, so call this **once** per conversation (no need to repeat it in every cell).
 - `plt.close(fig)` after saving is good hygiene — figures accumulate in the persistent kernel otherwise. Not a hard requirement for one-off charts, but matters when a conversation produces many.
-- Filename: kebab-case, descriptive, date-suffixed if the content is time-sensitive (`volume-by-carrier-march-2026.png`). Always `.png`.
+- Filename: kebab-case, descriptive, date-suffixed if the content is time-sensitive (`spend-by-vendor-march-2026.png`). Always `.png`.
 - `plt.show()` is OK now — the kernel is Jupyter, so the PNG is captured into `richResults` and auto-saved under `outputs/results/`. Use it when you want to inspect the chart yourself before deciding whether to ship it via `presentFiles`. For final deliverables, prefer an explicit `savefig` to a known path under `outputs/` — that way the path is stable and `presentFiles` can reference it.
 
 ## Reusable helpers
@@ -275,10 +275,10 @@ import sys; sys.path.insert(0, "skills/data-viz/scripts")
 import viz_helpers as vz
 
 fig, ax = plt.subplots(figsize=(8, 4.5), dpi=160)
-ax.bar(carriers, volumes, color="#1F4E78")
+ax.bar(vendors, spend, color="#1F4E78")
 vz.apply_house_style(ax)
-vz.add_source(fig, "Source: querySql — shipments, as of 2026-04-21.")
-vz.save_and_close(fig, "volume-by-carrier.png")
+vz.add_source(fig, "Source: querySql — invoices, as of 2026-04-21.")
+vz.save_and_close(fig, "spend-by-vendor.png")
 ```
 
 ## Common pitfalls

@@ -132,9 +132,9 @@ const escapeIlike = (raw: string): string =>
  *  - `%` / `_` / `\\` → escaped (so users can't smuggle wildcards)
  *
  * Convenience rule: a glob without any wildcard AND without a dot
- * (e.g. `carriers`) is treated as a folder prefix and gets an
- * implicit `*` suffix (`carriers/*`-equivalent). The model writing
- * `pathGlob: "carriers"` almost certainly wants the folder, not an
+ * (e.g. `vendors`) is treated as a folder prefix and gets an
+ * implicit `*` suffix (`vendors/*`-equivalent). The model writing
+ * `pathGlob: "vendors"` almost certainly wants the folder, not an
  * exact-match file with no extension. Folder names with a dot
  * (`v1.0`) are kept strict — the dot signals an explicit file.
  */

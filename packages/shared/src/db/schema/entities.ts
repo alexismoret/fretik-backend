@@ -63,8 +63,10 @@ export const enrichmentStatusEnum = pgEnum("enrichment_status", [
 ]);
 
 /**
- * Entities — organizations referenced in documents.
- * Can be carriers (CMA CGM, Air France), clients, or other companies (customs, government).
+ * Entities — organizations and other parties referenced in documents.
+ * The `type` enum still carries the legacy `carrier` value from the
+ * pre-generic positioning; treat it as one option among many until the
+ * future per-team configurable enum lands.
  * Status distinguishes confirmed entities from AI-suggested ones.
  * Matching uses pg_trgm trigram similarity on normalizedName + aliases array.
  */

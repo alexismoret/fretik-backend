@@ -16,15 +16,15 @@ import {
  * API handler and the drive UI) leaves that flag off so payloads stay
  * small — the chatbot opts into the extra join because the model
  * usually needs the linked document ids to answer "what's tied to
- * carrier X" questions.
+ * entity X" questions.
  */
 
 export const createGetEntityDetailsTool = () =>
   tool({
     description: [
-      "Read a single entity (carrier, client, other) by id with its full list of linked documents.",
+      "Read a single entity by id with its full list of linked documents.",
       "",
-      "Use this after `listEntities` (or after the user gave you an entity id) to inspect the entity's enrichment fields (website, address, country, …) and the documents attached to it with their role (issuer, customer, mentioned, …).",
+      "Use this after `listEntities` (or after the user gave you an entity id) to inspect the entity's enrichment fields (website, address, country, …) and the documents attached to it with their role.",
       "",
       "Returns the entity row + `documentCount` + `documentEntities` (each with role, source, confidence, the linked document id, filename, mime type, status, createdAt).",
     ].join("\n"),

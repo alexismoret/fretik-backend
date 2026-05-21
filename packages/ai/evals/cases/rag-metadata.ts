@@ -19,11 +19,11 @@
  *   - EVAL_FIXTURE_ENTITY_DOC_ID   A document whose OCR content does
  *                                   NOT mention the entity name, but
  *                                   whose metadata has the entity
- *                                   (e.g. role=issuer, name="CMA CGM").
+ *                                   (e.g. role=issuer, name="Acme Inc").
  *                                   Validates that the semantic header
  *                                   makes the doc findable via entity.
  *   - EVAL_FIXTURE_EXCEL_DOC_ID    An Excel/CSV doc with a summary
- *                                   like "Freight rates Q1 2026" so
+ *                                   like "Vendor pricing Q1 2026" so
  *                                   it's recoverable via the
  *                                   metadata-only branch.
  *   - EVAL_FIXTURE_SUMMARY_DOC_ID  Another tabular doc where the match
@@ -50,7 +50,7 @@ export const ragMetadataSuite: EvalSuite = {
       id: "rag-metadata-entity-only",
       description:
         "Entity mentioned only in metadata (not in OCR text) — must still surface via the semantic header in the chunk's contextual prefix",
-      prompt: "Show me documents issued by CMA CGM in our recent uploads.",
+      prompt: "Show me documents issued by Acme Inc in our recent uploads.",
       tags: ["rag", "metadata", "entity-recall"],
       assertions: [
         { type: "noError" },
@@ -79,7 +79,7 @@ export const ragMetadataSuite: EvalSuite = {
       description:
         "Tabular file should be retrievable via its metadata-only vector (summary + classification)",
       prompt:
-        "Find the spreadsheet about freight rates for Q1 2026 from a European carrier.",
+        "Find the spreadsheet about vendor pricing for Q1 2026 from a European supplier.",
       tags: ["rag", "metadata", "metadata-only", "spreadsheet"],
       assertions: [
         { type: "noError" },
@@ -92,7 +92,7 @@ export const ragMetadataSuite: EvalSuite = {
       description:
         "Regression guard: a broad content query MUST return ≥1 chunk. Historical JSON-as-markdown bug silently produced zero chunks per doc — this case catches it by requiring any non-empty retrieval.",
       prompt:
-        "Give me the main points of any shipping document you have available.",
+        "Give me the main points of any business document you have available.",
       tags: ["rag", "metadata", "regression"],
       assertions: [
         { type: "noError" },
@@ -105,7 +105,7 @@ export const ragMetadataSuite: EvalSuite = {
       description:
         "Summary-based recall on a non-OCR (metadata-only) source — the match must come from the embedded summary line, not from the file content.",
       prompt:
-        "What do we have about pricing for European carriers for Q1 2026?",
+        "What do we have about pricing from European vendors for Q1 2026?",
       tags: ["rag", "metadata", "summary-recall"],
       assertions: [
         { type: "noError" },

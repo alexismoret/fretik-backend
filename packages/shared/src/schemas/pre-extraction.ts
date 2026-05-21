@@ -20,13 +20,13 @@ export const preExtractionEntitySchema = z.object({
   role: z
     .enum(entityRoleEnum.enumValues)
     .describe(
-      "Role of the entity in the document context. issuer = official authority that issued/created the document; customer = the customer/client (shipper, consignee, buyer, importer/exporter); broker = freight forwarder, customs broker, or intermediary agent; consignee = party receiving the goods (only if distinct from customer); shipper = party sending the goods (only if distinct from issuer); mentioned = any other organisation mentioned that does not fit above.",
+      "Role of the entity in the document context. issuer = the organisation that issued/created the document; customer = the customer/client/buyer/recipient party; broker = intermediary agent acting between two other parties (e.g. freight forwarder, customs broker, sales agent); consignee = party receiving goods or services (only if distinct from customer); shipper = party sending goods or services (only if distinct from issuer); mentioned = any other organisation mentioned that does not fit the above.",
     ),
   type: z
     .enum(entityTypeEnum.enumValues)
     .optional()
     .describe(
-      "Entity category. carrier = shipping lines, airlines, trucking companies, any transport operator; client = end customers, importers, exporters, buyers, sellers; other = government bodies, certification authorities, banks, insurance companies.",
+      "Entity category. client = end customers / buyers / recipients; carrier = transportation operator (used only when a team's domain is transport/logistics — leave empty otherwise); other = anything else (government bodies, certification authorities, banks, insurance companies, generic vendors, partners, …).",
     ),
   confidence: z
     .number()

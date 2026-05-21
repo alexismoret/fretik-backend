@@ -239,7 +239,7 @@ export const aiVectors = pgTable(
     // prerequisite for using it in a generated column expression.
     //
     // Config = 'simple' (NOT 'english'): the chatbot indexes multilingual
-    // content (FR / ES / DE / IT / NL + EN transport docs, summaries, etc.)
+    // content (FR / ES / DE / IT / NL + EN business documents, summaries, etc.)
     // and we don't reliably track per-row language (summaries have no lang
     // field), so we can't dispatch to a per-language
     // regconfig via a CASE expression. 'simple' tokenizes on whitespace and
@@ -249,10 +249,11 @@ export const aiVectors = pgTable(
     // same pattern via their 'standard' / ICU fallback analyzer).
     //
     // Why keep BM25 at all (vs SPLADE / BGE-M3 sparse / dense-only):
-    //   (1) Fretik transport/logistics content is dense in exact identifiers
-    //       — BL numbers, container IDs, HS codes, company names, port codes,
-    //       vessel names. These are BM25's sweet spot; learned sparse models
-    //       (SPLADE / BGE-M3) don't add value on proper nouns and codes.
+    //   (1) Fretik business documents are dense in exact identifiers
+    //       — invoice numbers, contract numbers, PO numbers, reference IDs,
+    //       company names, project codes. These are BM25's sweet spot; learned
+    //       sparse models (SPLADE / BGE-M3) don't add value on proper nouns
+    //       and codes.
     //   (2) Dense-only is a known anti-pattern in 2026 production RAG — it
     //       misses exact matches. Anthropic's own benchmark shows +6.06% from
     //       adding BM25 on top of Contextual Embeddings.

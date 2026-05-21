@@ -508,7 +508,7 @@ const processDocument = async (
     // to fields whose definition has `vectorizeInclude=true` so vectorise
     // stays definition-agnostic — it just turns `{ key: value }` pairs
     // into "key: value" lines for the semantic header. Keys are already
-    // descriptive (`transport_mode`, `document_date`, …) and embed well
+    // descriptive (`document_type`, `document_date`, …) and embed well
     // both for cosine similarity and BM25; no label lookup needed.
     const docWithRelations = await db.query.documents.findFirst({
       where: { id: documentId },

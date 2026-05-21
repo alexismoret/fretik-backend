@@ -127,7 +127,7 @@ const isContextMetadata = (
  * topic even when the chunk body itself is terse.
  *
  * Tags chosen to be unique and easily greppable in retrieval logs:
- *   `[TEAM_MEMORY] path:carriers/dhl.md`
+ *   `[TEAM_MEMORY] path:vendors/acme.md`
  *   `[USER_MEMORY] path:preferences.md`
  */
 const buildMemorySemanticHeader = (metadata: MemoryVectorMetadata): string => {
@@ -156,7 +156,7 @@ const buildSkillSemanticHeader = (metadata: SkillVectorMetadata): string =>
  * file by topic even when the chunk body itself is procedural or
  * terse.
  *
- *   `[TEAM_CONTEXT] file:carriers-2026.pdf`
+ *   `[TEAM_CONTEXT] file:vendor-pricing-2026.pdf`
  *   `[USER_CONTEXT] file:my-preferences.md`
  */
 const buildContextSemanticHeader = (

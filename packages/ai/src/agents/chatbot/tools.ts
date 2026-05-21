@@ -179,7 +179,7 @@ export const buildCoreTools = (domainTools: SearchableToolRegistry) => ({
     ...createMemoryTool(),
     category: "core",
     searchHint:
-      "memory remember persistent file user team carriers clients conventions preferences view create overwrite delete rename grep search",
+      "memory remember persistent file user team vendors clients partners conventions preferences view create overwrite delete rename grep search",
     // `view` of a directory + `grep` results are the largest payloads
     // — both are bounded server-side (depth-2 listing, line-truncation,
     // 30K total cap on grep). Aligned with the SQL/web cap.
@@ -239,7 +239,7 @@ export const buildDomainTools = () => ({
     ...createListEntitiesTool(),
     category: "domain",
     searchHint:
-      "search filter list entities carriers clients companies by type country",
+      "search filter list entities organizations people vendors clients partners companies by type country",
     maxResultSizeChars: 16_000,
   }),
   listLabels: buildChatbotTool({
@@ -260,7 +260,7 @@ export const buildDomainTools = () => ({
     ...createGetEntityDetailsTool(),
     category: "domain",
     searchHint:
-      "read entity details linked documents carrier client one specific id",
+      "read entity details linked documents organization person vendor client one specific id",
     maxResultSizeChars: 16_000,
   }),
   webFetch: buildChatbotTool({

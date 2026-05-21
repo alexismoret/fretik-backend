@@ -29,7 +29,7 @@ export const createWebFetchTool = () =>
     description: [
       "Fetch a public URL and return its cleaned Markdown content.",
       "",
-      "Use this when you need the FULL content of a SPECIFIC page the user referenced (a regulation page, a press release, a carrier tariff, …). For broad discovery of external information, use `searchWeb` first — it returns titles and snippets and scales better than fetching every candidate URL.",
+      "Use this when you need the FULL content of a SPECIFIC page the user referenced (a regulation page, a press release, a vendor pricing page, …). For broad discovery of external information, use `searchWeb` first — it returns titles and snippets and scales better than fetching every candidate URL.",
       "",
       "Input: a single `url` and an optional `depth` ('basic' or 'advanced'). `advanced` asks Tavily for a deeper extraction pass — slower but picks up content from JS-heavy pages. Default is 'basic'.",
       "",

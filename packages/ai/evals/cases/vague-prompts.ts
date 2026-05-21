@@ -59,14 +59,14 @@ export const vaguePromptsSuite: EvalSuite = {
     {
       id: "vague-open-domain",
       description: "Open-ended domain question",
-      prompt: "Parle-moi de transport.",
+      prompt: "Parle-moi de la plateforme.",
       tags: ["vague", "open-domain"],
       assertions: [
         { type: "noError" },
         {
           type: "judge",
           rubric:
-            "PASS if the assistant narrows the topic sensibly — either asks for a sub-topic, gives a short structured overview of what it can help with in the transport domain, or surfaces a sample of the user's transport data as a concrete starting point. All three approaches are fine.",
+            "PASS if the assistant narrows the topic sensibly — either asks for a sub-topic, gives a short structured overview of what it can help with on Fretik, or surfaces a sample of the user's data as a concrete starting point. All three approaches are fine.",
         },
       ],
     },

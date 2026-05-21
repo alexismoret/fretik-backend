@@ -105,7 +105,7 @@ export type FolderBreadcrumb = z.infer<typeof FolderBreadcrumbSchema>;
 /**
  * Simplified document for drive view. Custom fields ride along via
  * `fieldValues` so the list view can render badges (e.g. document type,
- * transport mode) without joining the full definitions on every row —
+ * category) without joining the full definitions on every row —
  * the frontend has the resolved definitions from the parent drive query.
  */
 export const DriveDocumentSchema = z.object({

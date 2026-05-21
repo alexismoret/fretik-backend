@@ -19,9 +19,10 @@ import { createRoute, OpenAPIHono } from "@hono/zod-openapi";
 import { z } from "zod";
 
 /**
- * Field templates API — code-defined industry presets (transport, legal,
- * accounting, default) that the user can apply via the settings UI.
- * Templates are localised through the dedicated template i18n instance
+ * Field templates API — code-defined presets (default + optional
+ * industry-specific templates: transport, legal, accounting, …) that
+ * the user can apply via the settings UI. Templates are localised
+ * through the dedicated template i18n instance
  * (`@fretik/shared/templates/document-fields/i18n.ts`) and resolved to
  * the current team's `teamSettings.lang` at apply time.
  */

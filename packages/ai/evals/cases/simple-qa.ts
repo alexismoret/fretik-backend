@@ -26,7 +26,7 @@ export const simpleQaSuite: EvalSuite = {
         {
           type: "judge",
           rubric:
-            "The assistant introduces itself as Fretik's transport/logistics assistant or equivalent, in French, without calling any tool.",
+            "The assistant introduces itself as Fretik's AI work assistant (a generalist B2B assistant) or equivalent, in French, without calling any tool. It does NOT claim to be specialised in any particular industry (transport, logistics, freight, …).",
         },
       ],
     },
@@ -59,14 +59,14 @@ export const simpleQaSuite: EvalSuite = {
     {
       id: "qa-clarify",
       description: "Answer must stay tightly focused on the question asked",
-      prompt: "Quelle est la différence entre un BL et une CMR ?",
+      prompt: "Quelle est la différence entre un devis et une facture ?",
       tags: ["domain-knowledge", "no-tool"],
       assertions: [
         { type: "noError" },
         {
           type: "judge",
           rubric:
-            "The answer correctly distinguishes a Bill of Lading (maritime) from a CMR (road) and stays on-topic in French. No hallucinated regulations.",
+            "The answer correctly distinguishes a quote (proposal, non-binding price estimate before the sale) from an invoice (post-sale request for payment with legal/accounting value), and stays on-topic in French. No hallucinated regulations.",
         },
       ],
     },
@@ -85,7 +85,7 @@ export const simpleQaSuite: EvalSuite = {
         {
           type: "judge",
           rubric:
-            "The assistant answers the off-topic request helpfully — either by producing a poem about the moon, or by doing so in a couple of verses plus a short offer to return to transport topics. It does NOT refuse the request; the chatbot is a generalist assistant for transport/logistics employees, free to help with any request the user explicitly asks for as long as work accuracy is not at stake.",
+            "The assistant answers the off-topic request helpfully — either by producing a poem about the moon, or by doing so in a couple of verses plus a short offer to return to work topics. It does NOT refuse the request; the chatbot is a generalist B2B work assistant, free to help with any request the user explicitly asks for as long as work accuracy is not at stake.",
         },
       ],
     },

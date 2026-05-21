@@ -86,7 +86,7 @@ const cheapModel = openrouter.chat(CHEAP_MODEL, {
  * between rules and data and removes the "User query:\n${query}" tail
  * that was easy to mis-parse on noisy completions.
  */
-const SYSTEM_PROMPT = `You are a search query rewriter for a multilingual transport and logistics knowledge base (shipping documents, bills of lading, invoices).
+const SYSTEM_PROMPT = `You are a search query rewriter for a multilingual B2B business knowledge base (contracts, invoices, proposals, reports, internal memos, and other office documents).
 
 Rewrite the user's query as ${TARGET_VARIANT_COUNT} ALTERNATE phrasings that preserve the exact intent but use different vocabulary, synonyms, or trade terms. The goal is to improve recall in a hybrid vector + BM25 retriever.
 

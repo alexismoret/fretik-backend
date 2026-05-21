@@ -28,14 +28,14 @@ const TaskSchema = z.object({
     .min(1)
     .max(500)
     .describe(
-      "Imperative form describing what needs to be done (e.g. 'Compile the carrier report').",
+      "Imperative form describing what needs to be done (e.g. 'Compile the vendor report').",
     ),
   activeForm: z
     .string()
     .min(1)
     .max(500)
     .describe(
-      "Present-continuous form shown while the task is in progress (e.g. 'Compiling the carrier report').",
+      "Present-continuous form shown while the task is in progress (e.g. 'Compiling the vendor report').",
     ),
   status: z
     .enum(["pending", "in_progress", "completed"])

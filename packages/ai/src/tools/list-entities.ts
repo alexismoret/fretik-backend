@@ -10,7 +10,7 @@ import {
 
 /**
  * Domain tool (deferred) — paginated listing of the team's entities
- * (carriers, clients, other companies).
+ * (organizations, people, and other parties tracked by the team).
  *
  * Thin wrapper around the shared `listEntities` service, same service
  * already used by the API handler. Filter semantics are owned there.
@@ -19,13 +19,13 @@ import {
 export const createListEntitiesTool = () =>
   tool({
     description: [
-      "List entities (carriers, clients, other companies) for the current team with optional filters and pagination.",
+      "List entities tracked by the current team — organizations (vendors, clients, partners, …) and other parties — with optional filters and pagination.",
       "",
       "Use this when the user wants to browse entities, find an entity id to feed into `getEntityDetails`, or filter by type/status.",
       "",
       "Filters:",
       "- search: substring match on name, normalized name, or aliases (case-insensitive).",
-      "- type: carrier, client, or other.",
+      "- type: see the `type` field's allowed values in the schema.",
       "- status: confirmed (validated), suggested (AI-created, pending review), rejected.",
       "",
       "Pagination: `limit` defaults to 20, max 50. Pass the returned `nextOffset` on `hasMore: true` to fetch the next page.",
@@ -42,7 +42,7 @@ export const createListEntitiesTool = () =>
       type: z
         .enum(entityTypeEnum.enumValues)
         .optional()
-        .describe("Restrict to carriers, clients, or other"),
+        .describe("Restrict to entities of a specific type"),
       status: z
         .enum(entityStatusEnum.enumValues)
         .optional()

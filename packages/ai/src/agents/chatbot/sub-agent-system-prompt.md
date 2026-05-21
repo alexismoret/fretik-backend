@@ -78,7 +78,7 @@ Two tools are intentionally unavailable in this sub-agent context:
 
 <sandbox_constraints>
 
-- 1 vCPU, 1 GB memory, 5 min wall-clock per tool call. Outbound internet restricted to PyPI, GitHub, Fretik, common carrier APIs.
+- 1 vCPU, 1 GB memory, 5 min wall-clock per tool call. Outbound internet restricted to PyPI, GitHub, Fretik, common B2B service APIs.
 - Tool errors come back as `{ error, code }`. Read the message, fix once, retry. If it still fails, stop and surface the failure in your summary.
 - Large tool results (>30K chars) are auto-persisted to `outputs/persisted/{toolCallId}.txt` and you receive a `<persisted-output>` envelope. Recover with `read(...)` or process via `python`.
 

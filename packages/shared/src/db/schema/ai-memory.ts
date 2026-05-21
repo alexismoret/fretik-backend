@@ -81,7 +81,7 @@ export const aiMemories = pgTable(
 
     /**
      * Relative path inside the namespace, e.g. `preferences.md` or
-     * `carriers/dhl.md`. Validated server-side: 3–200 chars, Unicode
+     * `vendors/acme.md`. Validated server-side: 3–200 chars, Unicode
      * letters allowed (French entity names), no `..` / `\\` / `\0` /
      * URL-encoded traversal sequences.
      */

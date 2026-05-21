@@ -2,17 +2,17 @@
  * Compaction summariser prompt + post-stream formatting.
  *
  * Direct port of `claude-code/src/services/compact/prompt.ts` adapted for
- * Fretik's transport / logistics / shipping documents domain. The 9-section
+ * Fretik's generic B2B document-and-data assistant. The 9-section
  * structure, `<analysis>...<summary>` envelope, NO_TOOLS preamble/trailer,
  * and `formatCompactSummary` strip pattern are kept verbatim — these are
  * the load-bearing parts validated in production by Claude Code.
  *
  * Diffs from the CC original:
  *   - Section 2: "Key Technical Concepts" → "Key Domain References" with
- *     explicit examples (BL/container numbers, HS codes, shipment IDs).
+ *     explicit examples (invoice/contract/reference numbers, document IDs).
  *   - Section 3: "Files and Code Sections" → "Files and Document
- *     References" — Fretik handles PDFs / DAEs / persisted-output paths,
- *     not source code.
+ *     References" — Fretik handles uploaded documents / persisted-output
+ *     paths, not source code.
  *   - "VERBATIM PRESERVATION" rules made explicit at the top of the
  *     instruction so the summariser never paraphrases identifiers,
  *     workspace paths, or tool call IDs (the model can `read()` these
@@ -45,9 +45,10 @@ the following:
 - RAG document IDs, document UUIDs, SQL query identifiers.
 - Persisted-output references inside <persisted-output>...</persisted-output>
   envelopes.
-- Domain identifiers: BL / container numbers (e.g. MSKU-3847291), HS codes,
-  shipment IDs, customs declaration numbers (DAE), invoice numbers, dates
-  (in their original format), monetary amounts (with original currency).
+- Domain identifiers: invoice numbers, contract numbers, reference IDs,
+  project codes, purchase order numbers, dates (in their original format),
+  monetary amounts (with original currency), and any verbatim business
+  identifiers specific to the team's industry.
 - File names in their exact form (case, spaces, accents preserved).
 
 If a section of the conversation references a file by path, repeat that path
@@ -63,13 +64,13 @@ const DETAILED_ANALYSIS_INSTRUCTION = `Before providing your final summary, wrap
    - Specific details like:
      - file names and workspace paths (verbatim)
      - persisted-output references and tool call IDs
-     - shipment / BL / container numbers, HS codes (verbatim)
+     - business identifiers — invoice / contract / reference / PO numbers (verbatim)
      - error messages encountered
    - Errors that you ran into and how you fixed them
    - Pay special attention to specific user feedback that you received, especially if the user told you to do something differently.
 2. Double-check for technical accuracy and completeness, addressing each required element thoroughly.`;
 
-const BASE_COMPACT_PROMPT = `Your task is to create a detailed summary of a conversation between a user and an AI assistant specialised in transport / logistics / shipping documents. The summary REPLACES the older messages in the assistant's short-term memory for the next turn, so it must capture everything the assistant will need to stay coherent without seeing the originals.
+const BASE_COMPACT_PROMPT = `Your task is to create a detailed summary of a conversation between a user and a generalist B2B AI work assistant. The summary REPLACES the older messages in the assistant's short-term memory for the next turn, so it must capture everything the assistant will need to stay coherent without seeing the originals.
 
 This summary should be thorough in capturing the user's intent, domain references, file paths, tool results, and pending work — anything the next turn will need to continue without losing context.
 
@@ -80,9 +81,9 @@ ${DETAILED_ANALYSIS_INSTRUCTION}
 Your summary should include the following sections:
 
 1. Primary Request and Intent: Capture all of the user's explicit requests and intents in detail. Quote key user messages verbatim where helpful.
-2. Key Domain References: List ALL load-bearing domain identifiers mentioned in the conversation — VERBATIM. Include BL / container / shipment / DAE numbers, HS codes, document IDs, RAG IDs, customs declaration references, dates (in their original format), invoice numbers, entity names. Do NOT translate or normalize these.
+2. Key Domain References: List ALL load-bearing domain identifiers mentioned in the conversation — VERBATIM. Include invoice / contract / reference / PO numbers, project codes, document IDs, RAG IDs, dates (in their original format), monetary amounts, and entity names. Do NOT translate or normalize these.
 3. Files and Document References: Enumerate every file, document, persisted-output reference, and workspace path examined or produced. For each, include:
-   - The exact path (verbatim, e.g. \`outputs/persisted/abc123.json\`, \`attachments/invoice.pdf\`, \`drive/uuid-shipments.xlsx\`).
+   - The exact path (verbatim, e.g. \`outputs/persisted/abc123.json\`, \`attachments/invoice.pdf\`, \`drive/uuid-report.xlsx\`).
    - Why it matters (which question it answers, what it contains).
    - Key snippets or extracted values when small enough to inline (otherwise note "full content available via read(<path>)").
 4. Errors and fixes: List all errors encountered (tool errors, schema mismatches, missing data, user corrections) and how they were resolved. Pay special attention to specific user feedback — especially when the user told you to do something differently.

@@ -21,11 +21,11 @@ export const multiStepSuite: EvalSuite = {
     "Complex requests spanning multiple sub-goals. Shortcutting via a single tool is allowed as long as every sub-goal is answered correctly.",
   cases: [
     {
-      id: "multi-audit-carriers",
+      id: "multi-audit-entities",
       description:
-        "3-sub-goal audit: list carriers → find missing email → summarise",
+        "3-sub-goal audit: list entities → find missing email → summarise",
       prompt:
-        "Fais un audit de mes transporteurs : liste-les, identifie ceux sans adresse email renseignée, et résume le résultat.",
+        "Fais un audit de mes entités : liste-les, identifie celles sans adresse email renseignée, et résume le résultat.",
       tags: ["multi-step"],
       assertions: [
         { type: "noError" },
@@ -37,7 +37,7 @@ export const multiStepSuite: EvalSuite = {
         {
           type: "judge",
           rubric:
-            "The answer addresses the three sub-goals: (1) it lists carriers (or states there are none), (2) it identifies which of them lack an email (or notes 'all / none'), and (3) it ends with a concrete summary. Using a single SQL query to deliver all three in one answer is acceptable — do NOT require a visible checklist or multiple tool calls.",
+            "The answer addresses the three sub-goals: (1) it lists entities (or states there are none), (2) it identifies which of them lack an email (or notes 'all / none'), and (3) it ends with a concrete summary. Using a single SQL query to deliver all three in one answer is acceptable — do NOT require a visible checklist or multiple tool calls.",
         },
       ],
     },
@@ -72,7 +72,7 @@ export const multiStepSuite: EvalSuite = {
       id: "multi-doc-rag-then-web",
       description: "Multi-source: doc lookup + web complement",
       prompt:
-        "Regarde si nos documents parlent des nouvelles règles ICS2, puis complète avec une recherche web si besoin.",
+        "Regarde si nos documents parlent des nouvelles obligations RGPD, puis complète avec une recherche web si besoin.",
       tags: ["multi-step", "rag+web"],
       assertions: [
         { type: "noError" },
@@ -100,7 +100,7 @@ export const multiStepSuite: EvalSuite = {
       description:
         "Task statuses must transition: pending → in_progress → completed",
       prompt:
-        "Plan et exécute: (1) compte mes clients, (2) compte mes transporteurs, (3) donne-moi le ratio. Utilise manageTasks pour suivre.",
+        "Plan et exécute: (1) compte mes clients, (2) compte mes fournisseurs, (3) donne-moi le ratio. Utilise manageTasks pour suivre.",
       tags: ["multi-step", "manageTasks-ordering"],
       assertions: [
         { type: "noError" },

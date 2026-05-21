@@ -2,6 +2,10 @@
 
 Hono HTTP REST API with OpenAPI. Thin wrappers around `@fretik/shared` services — no business logic lives here.
 
+## Positioning
+
+Fretik is a **generic B2B AI workspace** (see root `CLAUDE.md`). Keep handlers, OpenAPI descriptions, and error messages industry-agnostic. Industry specialisation lives in `@fretik/shared/templates/document-fields/` — never in route descriptions or handler logic.
+
 ## Conventions
 
 - **One `OpenAPIHono<HonoLoggedAppType>` instance per handler file.** Define routes, apply middlewares locally, export. Mount in `src/index.ts` via `app.route('/path', routes)`. Do NOT share a single global Hono instance.

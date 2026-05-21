@@ -50,7 +50,7 @@ export const dispatchAgentSuite: EvalSuite = {
       id: "dispatch-trivial-skip",
       description:
         "Anti-regression: a one-fact lookup answerable by a single tool call MUST NOT route through dispatchAgent. Single LLM step + single tool is always cheaper than spawning a sub-agent.",
-      prompt: "Combien de transporteurs avons-nous au total ?",
+      prompt: "Combien de clients avons-nous au total ?",
       tags: ["dispatch-agent", "anti-regression"],
       assertions: [
         { type: "noError" },
@@ -58,7 +58,7 @@ export const dispatchAgentSuite: EvalSuite = {
         {
           type: "judge",
           rubric:
-            "The answer states a carrier count (including zero). It must be a direct number derived from a single tool call (querySql or listEntities), not a meta-explanation about delegation. PASS if a count is given. FAIL if the answer talks about sub-agents, delegation, or refuses to answer.",
+            "The answer states a client count (including zero). It must be a direct number derived from a single tool call (querySql or listEntities), not a meta-explanation about delegation. PASS if a count is given. FAIL if the answer talks about sub-agents, delegation, or refuses to answer.",
         },
       ],
     },
@@ -68,7 +68,7 @@ export const dispatchAgentSuite: EvalSuite = {
       description:
         "Positive trigger: an explicitly multi-source request (web + internal) is a good candidate for delegation, but inline-handling with searchWeb + searchKnowledge is also acceptable. We validate the answer covers both sources, not the specific tool path.",
       prompt:
-        "Compare ce que disent nos documents internes sur les surcharges carburant avec les indices publiés cette semaine sur le web. Donne-moi une synthèse en 5-8 lignes.",
+        "Compare ce que disent nos documents internes sur nos conditions de paiement avec les pratiques standard du marché publiées cette semaine sur le web. Donne-moi une synthèse en 5-8 lignes.",
       tags: ["dispatch-agent", "multi-source"],
       assertions: [
         { type: "noError" },
@@ -80,7 +80,7 @@ export const dispatchAgentSuite: EvalSuite = {
         {
           type: "judge",
           rubric:
-            "The answer addresses both halves explicitly: (1) what internal documents say about fuel surcharges (or 'no internal data found' if nothing matched), AND (2) what the web sources show. The form must be a synthesis (not a raw dump). PASS if both halves are present. FAIL if only one source is referenced or the answer is empty.",
+            "The answer addresses both halves explicitly: (1) what internal documents say about payment terms (or 'no internal data found' if nothing matched), AND (2) what the web sources show. The form must be a synthesis (not a raw dump). PASS if both halves are present. FAIL if only one source is referenced or the answer is empty.",
         },
       ],
     },

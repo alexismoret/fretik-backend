@@ -79,7 +79,7 @@ export const createMemoryBodySchema = z.object({
   scope: aiMemoryScopeSchema,
   /**
    * Path inside the namespace, e.g. `preferences.md` or
-   * `carriers/dhl.md`. **Optional** — when omitted the API calls
+   * `vendors/acme.md`. **Optional** — when omitted the API calls
    * `suggestMemoryPath()` (an LLM via OpenRouter) so the user does
    * not have to pick a filename / folder. The handler prefixes
    * `/memories/<scope>/` and forwards to `createMemory()`, which

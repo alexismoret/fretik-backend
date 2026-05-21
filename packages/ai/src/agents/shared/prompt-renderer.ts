@@ -72,8 +72,8 @@ export const buildSubAgentSystemPrompt = (): string => SUB_AGENT_SYSTEM_PROMPT;
  *
  * Uses `en-US` locale explicitly so the output is stable regardless of
  * the server's locale settings, and forces 24h time (`hour12: false`)
- * so logistics data — where 15:00 vs 03:00 really matters — is never
- * ambiguous. The timezone is resolved from the client (Nuxt app sends
+ * so time-sensitive business data — where 15:00 vs 03:00 really
+ * matters — is never ambiguous. The timezone is resolved from the client (Nuxt app sends
  * an `X-Client-Timezone` header, the internal middleware forwards
  * `X-Context-Timezone`) so the date shown in the prompt matches what
  * the user sees in their browser. Falls back to UTC when the header is

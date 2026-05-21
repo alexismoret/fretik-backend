@@ -24,7 +24,7 @@
  * scope-routing assertions on the next run.
  *
  * `EVAL_TEAM_ID` is shared across cases so seeded paths are NATURAL
- * top-level names (`carriers/dhl.md`, `conventions.md`) — the depth-2
+ * top-level names (`vendors/acme.md`, `conventions.md`) — the depth-2
  * memory_index manifest collapses any deeper prefix into
  * `<dir>/  N files` and the model never drills in. We rely on
  * cleanup + `onConflictDoNothing` to keep concurrent cases from
@@ -124,9 +124,9 @@ export const memorySuite: EvalSuite = {
     {
       id: "mem-write-team-fact",
       description:
-        "Agent saves a stable team fact (carrier preference) with audit row tied to the current conversation.",
+        "Agent saves a stable team fact (preferred vendor) with audit row tied to the current conversation.",
       prompt:
-        "Notre transporteur principal sur Marseille→Anvers est DHL. Mémorise-le pour la team.",
+        "Notre fournisseur principal pour les fournitures de bureau est Acme Supplies. Mémorise-le pour la team.",
       tags: ["memory", "write"],
       seed: wipeAgentTeamMemoriesForEval,
       cleanup: (ctx) => cleanupCaseMemories(ctx),
@@ -162,7 +162,8 @@ export const memorySuite: EvalSuite = {
         "Fresh conversation reads a team memory previously seeded in DB and answers the question. " +
         "Post-S2/S5: memories are vectorized into ai_vectors, so the agent may recall via " +
         "searchKnowledge (RAG path with [TEAM_MEMORY] prefix) OR via memory.view — both are valid.",
-      prompt: "Quel est notre transporteur principal sur Marseille → Anvers ?",
+      prompt:
+        "Quel est notre fournisseur principal pour les fournitures de bureau ?",
       tags: ["memory", "read"],
       seed: async (ctx) => {
         if (!ctx.userId) {
@@ -175,10 +176,10 @@ export const memorySuite: EvalSuite = {
             teamId: ctx.teamId,
             scope: "team",
             userId: null,
-            path: "carriers/dhl.md",
+            path: "vendors/acme.md",
             content:
-              "## DHL\nPrimary carrier on Marseille → Anvers (MRS → ANR).\n",
-            sizeBytes: 90,
+              "## Acme Supplies\nPrimary vendor for office supplies (paper, stationery, printer toner).\n",
+            sizeBytes: 110,
             createdByUserId: ctx.userId,
             createdByActor: "human",
             lastModifiedByUserId: ctx.userId,
@@ -199,7 +200,7 @@ export const memorySuite: EvalSuite = {
             where: {
               teamId: ctx.teamId,
               scope: "team",
-              path: "carriers/dhl.md",
+              path: "vendors/acme.md",
             },
             columns: { id: true },
           }));
@@ -211,22 +212,22 @@ export const memorySuite: EvalSuite = {
           );
         }
       },
-      cleanup: (ctx) => cleanupCaseMemories(ctx, ["carriers/dhl.md"]),
+      cleanup: (ctx) => cleanupCaseMemories(ctx, ["vendors/acme.md"]),
       assertions: [
         { type: "noError" },
         // Post-active-memory (Axe 3.1): the pre-reply recall block
         // injected at the bottom of the system prompt may already
-        // carry the seeded "DHL on Marseille → Anvers" fact, in
-        // which case the agent answers without calling memory or
+        // carry the seeded "Acme Supplies as primary vendor" fact,
+        // in which case the agent answers without calling memory or
         // searchKnowledge — exactly the proactive-recall pattern
         // we wanted. Three valid paths now:
         //   1. agent calls `memory` (path-driven view)
         //   2. agent calls `searchKnowledge` (RAG over [TEAM_MEMORY])
         //   3. agent calls neither because <active_memory> already
-        //      surfaced DHL — the answer's `contains "DHL"`
+        //      surfaced Acme — the answer's `contains "Acme"`
         //      assertion below is what proves recall actually happened
-        // We accept all three; only `contains "DHL"` is load-bearing.
-        { type: "contains", value: "DHL" },
+        // We accept all three; only `contains "Acme"` is load-bearing.
+        { type: "contains", value: "Acme" },
       ],
     },
 
@@ -320,9 +321,9 @@ export const memorySuite: EvalSuite = {
       description:
         "Post-S6 positive validation: with `grep` retired from the memory tool surface " +
         "(only view/create/overwrite/delete/rename remain), the agent must still find a " +
-        "specific contact across a populated carriers folder by routing through " +
+        "specific contact across a populated vendors folder by routing through " +
         "searchKnowledge (preferred — memories are vectorized) or memory.view, never grep.",
-      prompt: "Quel est notre contact chez Maersk ?",
+      prompt: "Quel est notre contact chez Globex ?",
       tags: ["memory", "rag-recall", "post-s6"],
       seed: async (ctx) => {
         if (!ctx.userId) {
@@ -330,7 +331,7 @@ export const memorySuite: EvalSuite = {
         }
         const slugs = Array.from({ length: 30 }, (_, i) =>
           i === 17
-            ? "maersk"
+            ? "globex"
             : `mem-grep-filler-${i.toString().padStart(2, "0")}`,
         );
         const rows = slugs.map((slug) => ({
@@ -338,10 +339,10 @@ export const memorySuite: EvalSuite = {
           teamId: ctx.teamId,
           scope: "team" as const,
           userId: null,
-          path: `carriers/${slug}.md`,
+          path: `vendors/${slug}.md`,
           content:
-            slug === "maersk"
-              ? "## Maersk\nContact: Marie Dupont\nemail: marie.dupont@maersk.com\n"
+            slug === "globex"
+              ? "## Globex\nContact: Marie Dupont\nemail: marie.dupont@globex.com\n"
               : `## ${slug}\nNo contact recorded.\n`,
           sizeBytes: 80,
           createdByUserId: ctx.userId,
@@ -352,23 +353,23 @@ export const memorySuite: EvalSuite = {
         await db.insert(aiMemories).values(rows).onConflictDoNothing();
         // The direct INSERT bypasses services/ai-memory/create.ts and
         // therefore its fire-and-forget vectorize hook. We trigger
-        // vectorisation HERE (synchronously, awaited) for the maersk
+        // vectorisation HERE (synchronously, awaited) for the globex
         // row only — that's the row the agent is supposed to find via
         // searchKnowledge. The 29 filler rows stay un-vectorised: in
         // production they would also be vectorised, but for this case
         // we only need the target row to be discoverable. Saves
         // ~30× embedding API calls per run.
-        const maerskRow = await db.query.aiMemories.findFirst({
+        const globexRow = await db.query.aiMemories.findFirst({
           where: {
             teamId: ctx.teamId,
             scope: "team",
-            path: "carriers/maersk.md",
+            path: "vendors/globex.md",
           },
           columns: { id: true },
         });
-        if (maerskRow) {
+        if (globexRow) {
           await triggerMemoryVectorRefresh(
-            maerskRow.id,
+            globexRow.id,
             ctx.teamId,
             ctx.organizationId,
           );
@@ -379,8 +380,8 @@ export const memorySuite: EvalSuite = {
           ctx,
           Array.from({ length: 30 }, (_, i) =>
             i === 17
-              ? "carriers/maersk.md"
-              : `carriers/mem-grep-filler-${i.toString().padStart(2, "0")}.md`,
+              ? "vendors/globex.md"
+              : `vendors/mem-grep-filler-${i.toString().padStart(2, "0")}.md`,
           ),
         ),
       assertions: [
@@ -389,7 +390,7 @@ export const memorySuite: EvalSuite = {
         //   1. memory.view (direct path lookup)
         //   2. searchKnowledge (RAG over [TEAM_MEMORY])
         //   3. zero tool calls — <active_memory> pre-fetched and
-        //      injected the Maersk row, so the agent answers
+        //      injected the Globex row, so the agent answers
         //      directly. The `contains "Marie"` assertion below
         //      proves recall really happened (no hallucination
         //      could land that exact name).
@@ -422,7 +423,7 @@ export const memorySuite: EvalSuite = {
     {
       id: "mem-update-via-overwrite",
       description:
-        "Adding to existing knowledge: agent must never use delete+create, and the seeded content (BL/CMR acronyms) must still be discoverable after the turn — either via `overwrite` on the same path (preferred), or via a new file that does not clobber the seed.",
+        "Adding to existing knowledge: agent must never use delete+create, and the seeded content (PO/RFQ acronyms) must still be discoverable after the turn — either via `overwrite` on the same path (preferred), or via a new file that does not clobber the seed.",
       // The new memory protocol is write-first (`create` → retry with
       // `overwrite` on conflict) rather than search-first. The assertion
       // therefore validates the OUTCOME (no data loss + no antipattern)
@@ -430,7 +431,7 @@ export const memorySuite: EvalSuite = {
       // and `create(conventions/acronyms.md)` keep the seed intact and
       // count as correct.
       prompt:
-        "Ajoute aux conventions de l'équipe que MRS = Marseille (port) et ANR = Antwerpen (port).",
+        "Ajoute aux conventions de l'équipe que MRS = monthly review session et ANR = annual numbers review.",
       tags: ["memory", "update"],
       seed: async (ctx) => {
         if (!ctx.userId) {
@@ -444,7 +445,8 @@ export const memorySuite: EvalSuite = {
             scope: "team",
             userId: null,
             path: "conventions.md",
-            content: "## Acronymes\n- BL: Bill of Lading\n- CMR: Convention\n",
+            content:
+              "## Acronymes\n- PO: Purchase Order\n- RFQ: Request for Quote\n",
             sizeBytes: 60,
             createdByUserId: ctx.userId,
             createdByActor: "human",
@@ -542,7 +544,7 @@ export const memorySuite: EvalSuite = {
           type: "custom",
           name: "seeded-content-not-lost",
           fn: async (_result, ctx) => {
-            // The original `conventions.md` content (BL / CMR) must
+            // The original `conventions.md` content (PO / RFQ) must
             // remain discoverable somewhere after the turn — either at
             // the same path (preserved or merged via `overwrite`) or
             // via the audit history if it was replaced.
@@ -552,8 +554,8 @@ export const memorySuite: EvalSuite = {
               .where(eq(aiMemories.teamId, ctx.teamId));
             const allContent = rows.map((r) => r.content).join("\n");
             if (
-              allContent.includes("Bill of Lading") ||
-              allContent.includes("CMR")
+              allContent.includes("Purchase Order") ||
+              allContent.includes("RFQ")
             ) {
               return true;
             }
@@ -570,11 +572,11 @@ export const memorySuite: EvalSuite = {
             const overwrite = history.find(
               (h) =>
                 h.operation === "overwrite" &&
-                h.previousContent?.includes("Bill of Lading"),
+                h.previousContent?.includes("Purchase Order"),
             );
             return overwrite
               ? true
-              : "seeded BL/CMR content lost — neither preserved in any file nor captured in audit history";
+              : "seeded PO/RFQ content lost — neither preserved in any file nor captured in audit history";
           },
         },
       ],

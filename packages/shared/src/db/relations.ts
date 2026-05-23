@@ -32,6 +32,18 @@ export const relations = defineRelations(schema, (r) => ({
     modifiedMemories: r.many.aiMemories({ alias: "memoryModifier" }),
     memoryHistoryWrites: r.many.aiMemoryHistory(),
     teamSkillUpdates: r.many.teamSkills(),
+    externalAppConnections: r.many.externalAppConnections({
+      alias: "externalAppConnectionUser",
+    }),
+    createdExternalAppConnections: r.many.externalAppConnections({
+      alias: "externalAppConnectionCreator",
+    }),
+    toolApprovalRequests: r.many.toolApprovalRequests({
+      alias: "toolApprovalUser",
+    }),
+    decidedToolApprovals: r.many.toolApprovalRequests({
+      alias: "toolApprovalDecider",
+    }),
   },
 
   account: {
@@ -57,6 +69,8 @@ export const relations = defineRelations(schema, (r) => ({
     aiContextFiles: r.many.aiContextFiles(),
     aiMemories: r.many.aiMemories(),
     fieldDefinitions: r.many.fieldDefinitions(),
+    externalAppConnections: r.many.externalAppConnections(),
+    toolApprovalRequests: r.many.toolApprovalRequests(),
   },
 
   team: {
@@ -85,6 +99,8 @@ export const relations = defineRelations(schema, (r) => ({
     fieldDefinitions: r.many.fieldDefinitions(),
     teamSkills: r.many.teamSkills(),
     ownedSkills: r.many.skills({ alias: "skillTeamOwner" }),
+    externalAppConnections: r.many.externalAppConnections(),
+    toolApprovalRequests: r.many.toolApprovalRequests(),
   },
 
   teamMember: {
@@ -367,6 +383,7 @@ export const relations = defineRelations(schema, (r) => ({
     triggeredMemoryHistory: r.many.aiMemoryHistory({
       alias: "memoryHistoryConversation",
     }),
+    toolApprovalRequests: r.many.toolApprovalRequests(),
   },
 
   aiMessages: {
@@ -563,6 +580,58 @@ export const relations = defineRelations(schema, (r) => ({
       from: r.teamSkills.updatedById,
       to: r.user.id,
       optional: true,
+    }),
+  },
+
+  // ============================================================================
+  // External Apps Relations (Nango connections + write-action approval gate)
+  // ============================================================================
+
+  externalAppConnections: {
+    organization: r.one.organization({
+      from: r.externalAppConnections.organizationId,
+      to: r.organization.id,
+    }),
+    team: r.one.team({
+      from: r.externalAppConnections.teamId,
+      to: r.team.id,
+    }),
+    user: r.one.user({
+      from: r.externalAppConnections.userId,
+      to: r.user.id,
+      alias: "externalAppConnectionUser",
+      optional: true,
+    }),
+    createdBy: r.one.user({
+      from: r.externalAppConnections.createdByUserId,
+      to: r.user.id,
+      alias: "externalAppConnectionCreator",
+    }),
+  },
+
+  toolApprovalRequests: {
+    organization: r.one.organization({
+      from: r.toolApprovalRequests.organizationId,
+      to: r.organization.id,
+    }),
+    team: r.one.team({
+      from: r.toolApprovalRequests.teamId,
+      to: r.team.id,
+    }),
+    user: r.one.user({
+      from: r.toolApprovalRequests.userId,
+      to: r.user.id,
+      alias: "toolApprovalUser",
+    }),
+    decidedBy: r.one.user({
+      from: r.toolApprovalRequests.decidedByUserId,
+      to: r.user.id,
+      alias: "toolApprovalDecider",
+      optional: true,
+    }),
+    conversation: r.one.aiConversations({
+      from: r.toolApprovalRequests.conversationId,
+      to: r.aiConversations.id,
     }),
   },
 }));

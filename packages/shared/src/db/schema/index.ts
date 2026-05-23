@@ -39,3 +39,6 @@ export * from "./ai-memory";
 
 // Skills (chatbot SKILL.md catalogue + per-team enable/disable overrides)
 export * from "./skills";
+
+// External apps (Nango connections + write-action approval gate)
+export * from "./external-apps";

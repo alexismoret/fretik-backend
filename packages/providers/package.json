@@ -10,12 +10,16 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "check": "bun run typecheck && bun run lint && bun run format:check",
+    "smoke": "bun src/index.ts",
     "gen:sdk": "bun run scripts/generate-sdk.ts"
   },
   "exports": {
     ".": "./src/index.ts",
     "./outlook": "./src/outlook/index.ts",
-    "./imap-smtp": "./src/imap-smtp/index.ts"
+    "./imap-smtp": "./src/imap-smtp/index.ts",
+    "./front": "./src/front/index.ts",
+    "./shiptify": "./src/shiptify/index.ts",
+    "./teams": "./src/teams/index.ts"
   },
   "peerDependencies": {
     "typescript": "^6.0.3"

@@ -59,6 +59,9 @@ jobs:
       - name: Check @fretik/providers
         run: bun run --filter '@fretik/providers' check
 
+      - name: Smoke import @fretik/providers (runs setProviders → Zod validates every manifest)
+        run: bun run --filter '@fretik/providers' smoke
+
       - name: Check @fretik/ai
         run: bun run --filter '@fretik/ai' check
 

@@ -1,13 +1,16 @@
 /**
  * Internal E2B configuration helpers. Shared between every operation in
- * `services/e2b/*` so we read the env once and fail fast at boot when
- * keys are missing.
+ * `services/e2b/*`. The key check is deferred to `acquireSandbox` — the
+ * only path that *requires* E2B — so consumers that merely import e2b
+ * for best-effort cleanup (`killSandbox` from API's conversation
+ * delete) don't crash at boot when the env var is absent.
  */
 
-const E2B_API_KEY = process.env.E2B_API_KEY;
-if (!E2B_API_KEY && process.env.NODE_ENV === "production") {
-  throw "Missing env var E2B_API_KEY";
-}
+export const assertE2BConfigured = (): void => {
+  if (!process.env.E2B_API_KEY && process.env.NODE_ENV === "production") {
+    throw "Missing env var E2B_API_KEY";
+  }
+};
 
 export const E2B_TEMPLATE = process.env.E2B_TEMPLATE ?? "fretik-sandbox";
 

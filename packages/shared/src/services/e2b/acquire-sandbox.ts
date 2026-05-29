@@ -1,6 +1,10 @@
 import { Sandbox } from "@e2b/code-interpreter";
 import { randomUUID } from "node:crypto";
-import { E2B_TEMPLATE, SANDBOX_TIMEOUT_MS } from "./client";
+import {
+  E2B_TEMPLATE,
+  SANDBOX_TIMEOUT_MS,
+  assertE2BConfigured,
+} from "./client";
 import {
   buildSandboxNetworkPolicy,
   type NetworkPolicyOverrides,
@@ -64,6 +68,7 @@ export const acquireSandbox = async (
   conversationId: string,
   options?: AcquireSandboxOptions,
 ): Promise<SandboxLease> => {
+  assertE2BConfigured();
   // Fast path 1: Redis cache hit.
   const cachedId = await getSandboxIdFromRegistry(conversationId);
   if (cachedId) {

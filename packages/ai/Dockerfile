@@ -21,10 +21,11 @@ COPY package.json bun.lock tsconfig.base.json ./
 COPY packages/shared/package.json packages/shared/
 COPY packages/api/package.json packages/api/
 COPY packages/ai/package.json packages/ai/
+COPY packages/providers/package.json packages/providers/
 COPY .husky .husky
 ENV CI=true
 RUN --mount=type=cache,target=/root/.bun/install/cache \
-    bun install --frozen-lockfile --filter '@fretik/ai' --filter '@fretik/shared'
+    bun install --frozen-lockfile --filter '@fretik/ai' --filter '@fretik/shared' --filter '@fretik/providers'
 
 # ---- release: extend install (symlinks stay in place) ---------------
 FROM install AS release
@@ -40,6 +41,7 @@ RUN apt-get update \
 # layer. The .dockerignore strips tests/, evals/, and .eval-runs/
 # from the build context so they never end up in the image.
 COPY packages/shared packages/shared
+COPY packages/providers packages/providers
 COPY packages/ai packages/ai
 
 RUN rm -rf .husky

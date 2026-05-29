@@ -28,6 +28,7 @@ COPY package.json bun.lock tsconfig.base.json ./
 COPY packages/shared/package.json packages/shared/
 COPY packages/api/package.json packages/api/
 COPY packages/ai/package.json packages/ai/
+COPY packages/providers/package.json packages/providers/
 # The root `prepare` script literally execs `node .husky/install.mjs`,
 # so the file must be present. The script self-exits on CI=true, so
 # husky binaries are not installed. .husky is removed below before
@@ -35,7 +36,7 @@ COPY packages/ai/package.json packages/ai/
 COPY .husky .husky
 ENV CI=true
 RUN --mount=type=cache,target=/root/.bun/install/cache \
-    bun install --frozen-lockfile --filter '@fretik/api' --filter '@fretik/shared'
+    bun install --frozen-lockfile --filter '@fretik/api' --filter '@fretik/shared' --filter '@fretik/providers'
 
 # ---- release: extend install (symlinks stay in place) ---------------
 FROM install AS release
@@ -51,6 +52,7 @@ RUN apt-get update \
 # layer. `@fretik/shared` ships as workspace source (including
 # drizzle/ migrations loaded by runMigrationsWithLock at boot).
 COPY packages/shared packages/shared
+COPY packages/providers packages/providers
 COPY packages/api packages/api
 
 # Husky was only needed to satisfy the root `prepare` during install.

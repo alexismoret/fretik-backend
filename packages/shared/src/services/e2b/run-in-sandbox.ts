@@ -209,6 +209,43 @@ const truncatePreview = (value: string): string =>
     ? value
     : `${value.slice(0, RICH_RESULT_PREVIEW_CHARS)}…`;
 
+/**
+ * Coerce an E2B `Result.json` / `Result.text` field to a string the
+ * frontend can render. E2B types both as `string | undefined`, but the
+ * Jupyter `application/json` mimetype is sometimes forwarded as the
+ * already-parsed value (array / object) — Vue's `{{ value }}` then
+ * coerces to `[object Object],[object Object]…`. We pretty-print to a
+ * 2-space indented JSON so the rendering matches what Claude / ChatGPT
+ * surface for a bare-expression dict or list.
+ */
+const richPayloadToString = (value: unknown): string => {
+  if (typeof value === "string") {
+    // Already a JSON string from E2B: re-pretty-print if it's a single
+    // long line of compact JSON so the chat UI doesn't show one wide row.
+    if (
+      value.length > 120 &&
+      !value.includes("\n") &&
+      (value.startsWith("{") || value.startsWith("["))
+    ) {
+      try {
+        return JSON.stringify(JSON.parse(value), null, 2);
+      } catch {
+        // Not actually JSON — return as-is.
+      }
+    }
+    return value;
+  }
+  if (value === null || value === undefined) return "";
+  if (typeof value === "number" || typeof value === "boolean") {
+    return value.toString();
+  }
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return "[unserializable value]";
+  }
+};
+
 interface CapturedRichResult {
   rich: RichResult;
   /** Absolute sandbox path to write before the post-run snapshot, if any. */
@@ -292,12 +329,13 @@ const captureRichResult = (
     };
   }
   if (result.html) {
+    const htmlStr = richPayloadToString(result.html);
     const oversize =
-      result.html.length > RICH_RESULT_PREVIEW_CHARS && Boolean(toolCallId);
+      htmlStr.length > RICH_RESULT_PREVIEW_CHARS && Boolean(toolCallId);
     const rich: RichResult = {
       kind: "html",
       isMainResult: result.isMainResult,
-      preview: truncatePreview(result.html),
+      preview: truncatePreview(htmlStr),
       ...(oversize ? { artifactPath: buildPath("html") } : {}),
     };
     if (oversize) {
@@ -305,7 +343,7 @@ const captureRichResult = (
         rich,
         artifactWrite: {
           absPath: buildAbs("html"),
-          bytes: new TextEncoder().encode(result.html),
+          bytes: new TextEncoder().encode(htmlStr),
         },
       };
     }
@@ -316,7 +354,7 @@ const captureRichResult = (
       rich: {
         kind: "markdown",
         isMainResult: result.isMainResult,
-        preview: truncatePreview(result.markdown),
+        preview: truncatePreview(richPayloadToString(result.markdown)),
       },
     };
   }
@@ -326,7 +364,9 @@ const captureRichResult = (
         kind: "chart",
         isMainResult: result.isMainResult,
         chart: result.chart,
-        ...(result.text ? { preview: truncatePreview(result.text) } : {}),
+        ...(result.text
+          ? { preview: truncatePreview(richPayloadToString(result.text)) }
+          : {}),
       },
     };
   }
@@ -335,7 +375,7 @@ const captureRichResult = (
       rich: {
         kind: "json",
         isMainResult: result.isMainResult,
-        preview: truncatePreview(result.json),
+        preview: truncatePreview(richPayloadToString(result.json)),
       },
     };
   }
@@ -344,7 +384,7 @@ const captureRichResult = (
       rich: {
         kind: "text",
         isMainResult: result.isMainResult,
-        preview: truncatePreview(result.text),
+        preview: truncatePreview(richPayloadToString(result.text)),
       },
     };
   }

@@ -1,4 +1,5 @@
 import db from "../db";
+import type { RenderedApprovalSummary } from "../external-apps/i18n/render-summary";
 import { i18n } from "./i18n";
 import { renderMarkdownToEmailHtml } from "./markdown-to-html";
 import { renderEmail } from "./render";
@@ -212,6 +213,64 @@ export const generateChatbotFinishedAwaitingAnswers = async (
   });
 
   const subject = i18n.t("chatbotFinishedAwaitingAnswers.subject", {
+    conversationTitle: title,
+  });
+
+  return { subject, html };
+};
+
+interface ChatbotApprovalPendingParams {
+  /** Display name of the user receiving the email. Falls back to a generic greeting when null/empty. */
+  userName: string | null;
+  conversationId: string;
+  /** Conversation title from `ai_conversations.title`. May be empty/null before the first auto-rename. */
+  conversationTitle: string | null;
+  /**
+   * Translated approval summary built via
+   * `renderApprovalSummary(approval.summary, lang)`. The template uses
+   * `.title` for the header and the per-op `.title` strings for the
+   * numbered list — fields are deliberately omitted to keep the email
+   * scannable on mobile; the CTA sends the user to the chat where the
+   * full card has the per-op details.
+   */
+  summary: RenderedApprovalSummary;
+}
+
+/**
+ * Build the "plan awaiting your approval" email.
+ *
+ * Triggered when the assistant turn ends with a python tool call that
+ * raised `ApprovalPending` — i.e. the agent submitted a write plan via
+ * `run_plan(...)` and stopped pending the user's decision. Mirrors the
+ * "awaiting answers" pattern: surfaces the action needed and links back
+ * to the conversation so the user can review and approve in the card.
+ */
+export const generateChatbotApprovalPending = async (
+  params: ChatbotApprovalPendingParams,
+): Promise<EmailData> => {
+  const conversationUrl = `${appUrl}/chatbot/${params.conversationId}`;
+  const trimmedTitle = params.conversationTitle?.trim();
+  const title =
+    trimmedTitle && trimmedTitle.length > 0
+      ? trimmedTitle
+      : i18n.t("chatbotApprovalPending.untitledConversation");
+
+  const trimmedName = params.userName?.trim();
+  const greeting =
+    trimmedName && trimmedName.length > 0
+      ? i18n.t("chatbotApprovalPending.greetingNamed", { name: trimmedName })
+      : i18n.t("chatbotApprovalPending.greetingAnonymous");
+
+  const html = await renderEmail("chatbot-approval-pending", {
+    greeting,
+    intro: i18n.t("chatbotApprovalPending.intro", { conversationTitle: title }),
+    conversationUrl,
+    cta: i18n.t("chatbotApprovalPending.cta"),
+    planHeader: params.summary.title,
+    operations: params.summary.operations.map((op) => ({ title: op.title })),
+  });
+
+  const subject = i18n.t("chatbotApprovalPending.subject", {
     conversationTitle: title,
   });
 

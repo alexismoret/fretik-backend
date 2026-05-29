@@ -1,3 +1,7 @@
+// Bootstrap external-app provider registration (side-effect import — must
+// run before any route handler touches the registry).
+import "@fretik/providers";
+
 import { auth } from "@fretik/shared/lib/auth";
 import { errorHandler } from "@fretik/shared/lib/error-handler";
 import { OpenAPIHono } from "@hono/zod-openapi";
@@ -10,6 +14,8 @@ import { chatbotContextRoutes } from "./handlers/chatbot-context";
 import { conversationRoutes } from "./handlers/conversations";
 import { documentRoutes } from "./handlers/documents";
 import { entityRoutes } from "./handlers/entities";
+import { externalAppsRoutes } from "./handlers/external-apps";
+import { sandboxRoutes } from "./handlers/external-apps/sandbox-exec";
 import { fieldDefinitionRoutes } from "./handlers/field-definitions";
 import { fieldTemplateRoutes } from "./handlers/field-templates";
 import { folderRoutes } from "./handlers/folders";
@@ -52,6 +58,8 @@ app.route("/field-definitions", fieldDefinitionRoutes);
 app.route("/field-templates", fieldTemplateRoutes);
 app.route("/label", labelRoutes);
 app.route("/skills", skillsRoutes);
+app.route("/external-apps", externalAppsRoutes);
+app.route("/sandbox", sandboxRoutes);
 
 // Init log
 const text = await figlet.text("fretik API");

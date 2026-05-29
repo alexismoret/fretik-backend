@@ -9,7 +9,9 @@ import { createPendingApproval } from "../approvals/create-pending";
 import { findLatestApprovalByHash } from "../approvals/find";
 import { resolveConnection } from "../connections/resolve";
 import { buildRequest } from "./build-request";
+import { callCustomHandler } from "./call-custom-handler";
 import { extractFrameworkArgs } from "./framework-args";
+import { callHttpDirect } from "./http-direct";
 import { callNangoProxy } from "./nango-proxy";
 import { executePlan } from "./plan-executor";
 import type {
@@ -76,19 +78,55 @@ const dispatchRead = async (
       userId: ctx.userId,
       explicitId: framework.connection_id,
     });
-    const req = buildRequest(resolved, validated);
-    const raw = await callNangoProxy({
-      providerConfigKey: connection.nangoProviderConfigKey,
-      connectionId: connection.nangoConnectionId,
-      method: req.method,
-      endpoint: req.endpoint,
-      query: req.query,
-      body: req.body,
-    });
-    const data =
-      resolved.responseMapper !== undefined
-        ? resolved.responseMapper(raw)
-        : raw;
+
+    let data: unknown;
+    if (resolved.transport.kind === "nango-proxy") {
+      const req = buildRequest(resolved, validated);
+      const raw = await callNangoProxy({
+        providerConfigKey: connection.nangoProviderConfigKey,
+        connectionId: connection.nangoConnectionId,
+        method: req.method,
+        endpoint: req.endpoint,
+        query: req.query,
+        body: req.body,
+      });
+      data =
+        resolved.responseMapper !== undefined
+          ? resolved.responseMapper(raw)
+          : raw;
+    } else if (resolved.transport.kind === "http-direct") {
+      const req = buildRequest(resolved, validated);
+      const raw = await callHttpDirect({
+        manifest: resolved.manifest,
+        transport: resolved.transport,
+        providerConfigKey: connection.nangoProviderConfigKey,
+        connectionId: connection.nangoConnectionId,
+        method: req.method,
+        endpoint: req.endpoint,
+        query: req.query,
+        body: req.body,
+      });
+      data =
+        resolved.responseMapper !== undefined
+          ? resolved.responseMapper(raw)
+          : raw;
+    } else {
+      // custom-handler — the handler is responsible for returning the
+      // shape declared by the manifest's `returns`. No response mapper.
+      if (resolved.handler === undefined) {
+        return {
+          status: "error",
+          message: `Action ${qualifiedName} has no handler registered`,
+        };
+      }
+      data = await callCustomHandler({
+        manifest: resolved.manifest,
+        providerConfigKey: connection.nangoProviderConfigKey,
+        connectionId: connection.nangoConnectionId,
+        handler: resolved.handler,
+        args: validated,
+      });
+    }
     return { status: "ok", data };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

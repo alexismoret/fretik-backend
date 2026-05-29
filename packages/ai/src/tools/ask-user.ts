@@ -57,7 +57,7 @@ const QuestionSchema = z.object({
     .min(1)
     .max(12)
     .describe(
-      "Very short label displayed as a chip/tag (max 12 chars). Examples: 'Auth method', 'Save?', 'Approach'.",
+      "HARD ≤12 characters — rendered as a tiny chip. Pick ONE short noun, not a phrase. Good: 'Source', 'Method', 'Format', 'Save?'. Bad: 'Source des messages' (18 chars) — use 'Source' instead.",
     ),
   options: z
     .array(QuestionOptionSchema)

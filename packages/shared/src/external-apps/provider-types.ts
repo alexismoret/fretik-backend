@@ -2,8 +2,12 @@ import type { ToolApprovalSummaryField } from "../db/schema/external-apps";
 
 /**
  * Contracts a provider module contributes alongside its declarative
- * manifest: HTTP request/response transformers and approval-card summaries.
+ * manifest: HTTP request/response transformers (nango-proxy transport),
+ * action handlers (custom-handler transport), credentials tests, and
+ * approval-card summaries.
  */
+
+// ── Nango-proxy transport: request/response mappers ───────────────────
 
 /** Dynamic parts of a Nango Proxy request produced by a request mapper. */
 export interface ProxyRequestParts {
@@ -26,6 +30,89 @@ export type RequestMapper = (
 /** Normalizes a raw provider response into the manifest's return shape. */
 export type ResponseMapper = (raw: unknown) => unknown;
 
+/** HTTP transformers a provider registers, keyed by mapper name. */
+export interface ProviderMappers {
+  request: Record<string, RequestMapper>;
+  response: Record<string, ResponseMapper>;
+}
+
+// ── Custom-handler transport: action handlers & credentials tests ─────
+
+/**
+ * Context passed to a custom handler at dispatch time. Credentials and
+ * connection_config are fetched from Nango via `nango.getConnection(...)`
+ * just before the handler runs — Nango remains the single source of
+ * truth for credential storage even though the protocol may not be HTTP.
+ */
+export interface ProviderHandlerContext {
+  credentials: Record<string, unknown>;
+  connection_config: Record<string, unknown>;
+}
+
+/**
+ * A custom action handler. Returns the action's normalized result
+ * (matching the manifest's `returns` shape). Errors should be thrown —
+ * the dispatcher catches them and reports per-op `{ ok: false, error }`.
+ */
+export type ProviderHandler = (
+  args: Record<string, unknown>,
+  ctx: ProviderHandlerContext,
+) => Promise<unknown>;
+
+export type ProviderHandlers = Record<string, ProviderHandler>;
+
+/**
+ * Validates user-supplied credentials against the provider (e.g. an IMAP
+ * LOGIN + SMTP STARTTLS verify, or a `GET /me` ping for an API). Used by
+ * the "Test connection" button in the frontend AND by the post-create
+ * verification inside `confirmConnection`. Returns a granular result so
+ * the UI can tell the user which side failed.
+ */
+export type ProviderTestCredentials = (input: {
+  credentials: Record<string, unknown>;
+  connection_config: Record<string, unknown>;
+}) => Promise<{ ok: true } | { ok: false; scope?: string; message: string }>;
+
+/**
+ * Resolver for a `dynamic-select` credential field. Receives the values
+ * of the field's `dependsOn` dependencies (plus everything else the
+ * user has already typed in the form, split by `target`) and returns
+ * the option list the frontend should render. Used today by Shiptify's
+ * `account_id` to fetch the user's allowed accounts from a freshly-pasted
+ * API key, but reusable for any provider whose option set is personal to
+ * the connecting user (Salesforce sandboxes, Stripe accounts, …).
+ *
+ * Implementations should:
+ *  - throw with a clear message on auth failures (the dispatcher catches
+ *    and surfaces it inline in the form),
+ *  - return at most ~50 entries — the frontend renders them in a
+ *    searchable dropdown, not a virtualized list.
+ */
+export interface DynamicOptionsResult {
+  options: Array<{
+    value: string;
+    label: string;
+    /**
+     * Optional per-option metadata. The frontend modal reads it when the
+     * user picks an option and projects flagged keys into sibling form
+     * fields — e.g. Shiptify's `listAccounts` returns `meta: {
+     * account_type: "shipper" | "carrier" }` so the connectionOptions
+     * `account_type` field auto-fills from the chosen `account_id`,
+     * avoiding asking the user the same thing twice.
+     */
+    meta?: Record<string, unknown>;
+  }>;
+}
+
+export type DynamicOptionsHandler = (input: {
+  credentials: Record<string, unknown>;
+  connection_config: Record<string, unknown>;
+}) => Promise<DynamicOptionsResult>;
+
+export type ProviderDynamicOptions = Record<string, DynamicOptionsHandler>;
+
+// ── Approval-card summaries (every transport) ─────────────────────────
+
 /** Per-operation block of an approval card, built by a summary mapper. */
 export interface OperationSummaryPart {
   /**
@@ -43,12 +130,6 @@ export interface OperationSummaryPart {
 export type SummaryMapper = (
   args: Record<string, unknown>,
 ) => OperationSummaryPart;
-
-/** HTTP transformers a provider registers, keyed by mapper name. */
-export interface ProviderMappers {
-  request: Record<string, RequestMapper>;
-  response: Record<string, ResponseMapper>;
-}
 
 /** Approval-card summary builders, keyed by action name. */
 export type ProviderSummaries = Record<string, SummaryMapper>;

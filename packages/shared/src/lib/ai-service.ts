@@ -4,17 +4,21 @@ import type { z } from "zod";
 // CONFIGURATION        //
 // ==================== //
 
-const AI_SERVICE_URL = process.env.AI_SERVICE_URL;
-const INTERNAL_KEY = process.env.INTERNAL_KEY;
+// Lazy reads: env is checked on the first callAiService() call, not at
+// module load. Lets @fretik/ai boot without AI_SERVICE_URL — ai never
+// dials itself over HTTP — while @fretik/api still fails loudly on the
+// first invocation if the var is missing.
+let cachedConfig: { baseUrl: string; internalKey: string } | undefined;
 
-if (!AI_SERVICE_URL) {
-  throw "Missing AI_SERVICE_URL env";
-}
-if (!INTERNAL_KEY) {
-  throw "Missing INTERNAL_KEY env";
-}
-
-const AI_SERVICE_BASE_URL = AI_SERVICE_URL.replace(/\/$/, "");
+const getConfig = () => {
+  if (cachedConfig) return cachedConfig;
+  const url = process.env.AI_SERVICE_URL;
+  const key = process.env.INTERNAL_KEY;
+  if (!url) throw new Error("Missing AI_SERVICE_URL env");
+  if (!key) throw new Error("Missing INTERNAL_KEY env");
+  cachedConfig = { baseUrl: url.replace(/\/$/, ""), internalKey: key };
+  return cachedConfig;
+};
 
 // ==================== //
 // REQUEST CONTEXT      //
@@ -57,12 +61,13 @@ export const callAiService = async <T extends z.ZodTypeAny>(
   ctx: AiServiceContext,
   options?: CallAiServiceOptions,
 ): Promise<z.infer<T>> => {
+  const { baseUrl, internalKey } = getConfig();
   const normalisedPath = path.startsWith("/") ? path : `/${path}`;
-  const url = `${AI_SERVICE_BASE_URL}${normalisedPath}`;
+  const url = `${baseUrl}${normalisedPath}`;
 
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
-    "X-Internal-Key": INTERNAL_KEY,
+    "X-Internal-Key": internalKey,
     "X-Context-Team-Id": ctx.teamId,
     "X-Context-Organization-Id": ctx.organizationId,
   };

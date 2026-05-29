@@ -157,6 +157,61 @@ export interface AgentRuntimeContext {
    * Empty / undefined renders as `_No skills enabled for this team._`.
    */
   enabledSkillsBlock?: string;
+  /**
+   * Active external-app connections (Outlook, Gmail, …) visible to this
+   * turn — team-scoped rows + the caller's user-scoped rows, filtered
+   * to `status = 'active'`. The handler loads them via
+   * `listConnections(teamId, userId)` and re-uses them for two things:
+   *
+   *  1. Conditionally pushing `sandbox-assets/skills/<providerKey>/`
+   *     into `/workspace/skills/<providerKey>/` at sandbox bootstrap —
+   *     a SKILL.md the agent cannot actually use never bloats the
+   *     filesystem.
+   *  2. Rendering `{{externalAppsBlock}}` in the system prompt below.
+   *
+   * Empty array when the team has no external apps — the prompt block
+   * then renders the "_No external apps connected._" placeholder.
+   */
+  externalAppConnections?: ExternalAppConnectionLite[];
+  /**
+   * Rendered `{{externalAppsBlock}}` fragment for the system prompt —
+   * one line per active external-app connection (`- <providerKey>
+   * (id: <uuid>, <displayName>)`). The id is included so the agent can
+   * pass `connection_id=<id>` when the team has several connections for
+   * the same provider (e.g. "Pro mailbox" + "Personal mailbox") to
+   * disambiguate without prompting the user.
+   *
+   * Empty / undefined renders as `_No external apps connected._`.
+   */
+  externalAppsBlock?: string;
+}
+
+/**
+ * Minimal view of an external-app connection that we ship into the
+ * runtime context. Mirrors the public DTO (no Nango-internal fields)
+ * but with `userId` already collapsed into the `scope` discriminator.
+ */
+export interface ExternalAppConnectionLite {
+  id: string;
+  providerKey: string;
+  displayName: string;
+  scope: "team" | "user";
+  /**
+   * Provider categories pulled from the manifest at request time. First
+   * slug is the root (`communication`, `crm`, …); subsequent slugs are
+   * fine-grained (`email`, `instant-messaging`, `calendar`, …). Used by
+   * the agent to decide whether two connections are substitutable for a
+   * given user intent.
+   */
+  categories: string[];
+  /**
+   * Per-connection runtime options keyed by the provider's descriptor
+   * (e.g. `persona: "personal" | "bot"` for communication providers).
+   * Only fields opted in with `exposeToAgent: true` are surfaced in the
+   * system prompt; this map carries every persisted option so other
+   * call sites (UI, audit) can read them too.
+   */
+  options: Record<string, unknown> | null;
 }
 
 /**

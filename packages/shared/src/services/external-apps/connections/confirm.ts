@@ -1,21 +1,37 @@
+import { z } from "zod";
 import db from "../../../db";
 import {
-  type ExternalAppConnection,
   externalAppConnections,
+  type ExternalAppConnection,
 } from "../../../db/schema";
+import { buildConnectionOptionsZod } from "../../../external-apps/connection-options-validator";
+import { isRecord } from "../../../external-apps/json-access";
+import { normalizeNangoCredentials } from "../../../external-apps/normalize-nango-credentials";
 import { getProvider } from "../../../external-apps/registry";
 import { throwHttpError } from "../../../lib/errors";
 import { getNangoClient } from "../../../lib/external-apps/nango-client";
 import { ERROR_CODES } from "../../../schemas/errors";
 
 /**
- * Confirm a connection created via Connect UI. Called by the API after
- * the frontend fires `onEvent({ type: 'connect' })`.
+ * Confirm a connection created via Connect UI (for `nango-proxy` OAuth
+ * providers) or via headless `nango.auth(...)` (for `custom-handler`
+ * providers using their own descriptor-driven credentials form).
  *
- * Verifies the connection actually exists in Nango (sanity check + guards
- * against a hostile client sending fake IDs), then upserts our DB row.
- * Nango is the source of truth for the auth state; this row is the
- * Fretik-side scope, display name and audit.
+ * In both cases the frontend has already created the connection in Nango
+ * and now POSTs the resulting `nangoConnectionId` so we can:
+ *
+ *  1. Verify the connection exists in Nango (sanity + defense against a
+ *     hostile client posting fake IDs).
+ *  2. For `custom-handler` providers that advertise `testConnection.supported`,
+ *     run `provider.testCredentials(...)` against the stored credentials —
+ *     this is the only place we can catch a misconfigured IMAP/SMTP host
+ *     or a typo'd password BEFORE the user discovers it through a failing
+ *     chatbot action. If KO, the row is still created (so the user can
+ *     find and fix it) but with `status: 'error'` + `lastErrorMessage`.
+ *  3. Upsert the Fretik-side row (scope, displayName, audit).
+ *
+ * Nango remains the source of truth for credential storage; this row is
+ * the Fretik-side metadata.
  */
 export const confirmConnection = async (params: {
   organizationId: string;
@@ -25,6 +41,7 @@ export const confirmConnection = async (params: {
   providerKey: string;
   displayName: string;
   nangoConnectionId: string;
+  options?: Record<string, unknown>;
 }): Promise<ExternalAppConnection> => {
   const provider = getProvider(params.providerKey);
   if (provider === undefined) {
@@ -34,9 +51,34 @@ export const confirmConnection = async (params: {
     });
   }
 
+  // Validate user-supplied options against the provider's descriptor.
+  // When the provider declares one, `options` is required on the wire.
+  let validatedOptions: Record<string, unknown> | null = null;
+  if (provider.manifest.connectionOptions !== undefined) {
+    if (params.options === undefined) {
+      return throwHttpError(400, {
+        code: ERROR_CODES.EXTERNAL_APP_INVALID_OPTIONS,
+        message: `Provider ${params.providerKey} requires connection options.`,
+      });
+    }
+    const schema = buildConnectionOptionsZod(
+      provider.manifest.connectionOptions,
+    );
+    const parsed = schema.safeParse(params.options);
+    if (!parsed.success) {
+      return throwHttpError(400, {
+        code: ERROR_CODES.EXTERNAL_APP_INVALID_OPTIONS,
+        message: "Invalid connection options",
+        details: z.prettifyError(parsed.error),
+      });
+    }
+    validatedOptions = parsed.data;
+  }
+
   const nango = getNangoClient();
+  let nangoConnection;
   try {
-    await nango.getConnection(
+    nangoConnection = await nango.getConnection(
       provider.manifest.nangoProviderConfigKey,
       params.nangoConnectionId,
     );
@@ -47,6 +89,49 @@ export const confirmConnection = async (params: {
       message: "Failed to verify the Nango connection",
       details: message,
     });
+  }
+
+  // Post-creation credentials check — for descriptor-driven transports
+  // (`custom-handler`, `http-direct`) that opted in. For nango-proxy
+  // (OAuth) the grant itself is the test, and there's no testCredentials.
+  let initialStatus: ExternalAppConnection["status"] = "active";
+  let initialError: string | null = null;
+  if (
+    provider.manifest.transport.kind !== "nango-proxy" &&
+    provider.manifest.credentialsForm?.testConnection.supported === true &&
+    provider.testCredentials !== undefined
+  ) {
+    const rawCredentials = isRecord(nangoConnection.credentials)
+      ? (nangoConnection.credentials as Record<string, unknown>)
+      : {};
+    const rawConnectionConfig = isRecord(nangoConnection.connection_config)
+      ? (nangoConnection.connection_config as Record<string, unknown>)
+      : {};
+    // Reverse `nangoKey` rename so the provider's `testCredentials` reads
+    // canonical snake_case keys, same shape as the pre-store `/test-credentials`
+    // route receives.
+    const { credentials, connection_config: connectionConfig } =
+      normalizeNangoCredentials(
+        provider.manifest,
+        rawCredentials,
+        rawConnectionConfig,
+      );
+    try {
+      const result = await provider.testCredentials({
+        credentials,
+        connection_config: connectionConfig,
+      });
+      if (!result.ok) {
+        initialStatus = "error";
+        initialError =
+          result.scope !== undefined
+            ? `${result.scope}: ${result.message}`
+            : result.message;
+      }
+    } catch (error) {
+      initialStatus = "error";
+      initialError = error instanceof Error ? error.message : String(error);
+    }
   }
 
   const [row] = await db
@@ -60,6 +145,9 @@ export const confirmConnection = async (params: {
       nangoConnectionId: params.nangoConnectionId,
       nangoProviderConfigKey: provider.manifest.nangoProviderConfigKey,
       createdByUserId: params.userId,
+      status: initialStatus,
+      lastErrorMessage: initialError,
+      options: validatedOptions,
     })
     .returning();
 

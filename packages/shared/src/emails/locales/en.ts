@@ -49,4 +49,15 @@ export default {
       "You can also type a free-text answer if none of the options fit.",
     untitledConversation: "your conversation",
   },
+
+  chatbotApprovalPending: {
+    subject:
+      "Approval required in your Fretik conversation: {{conversationTitle}}",
+    greetingNamed: "Hello {{name}},",
+    greetingAnonymous: "Hello,",
+    intro:
+      'The Fretik chatbot prepared a plan in your conversation "{{conversationTitle}}" that needs your review before it can be executed.',
+    cta: "Review and approve",
+    untitledConversation: "your conversation",
+  },
 };

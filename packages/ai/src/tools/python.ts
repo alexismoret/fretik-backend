@@ -180,6 +180,39 @@ export const createPythonTool = () =>
       }
 
       if (result.error) {
+        // `fretik_apps.run_plan(...)` raises `ApprovalPending(approval_id)`
+        // whenever a write plan needs the user's go-ahead. That's an
+        // **expected** control-flow signal, not an error: the turn must
+        // stop, the user reviews the plan in the UI, and once they
+        // decide the approval handler in @fretik/api executes the plan
+        // server-side and **mutates this very tool result** in-place
+        // (cf. `services/ai/update-tool-part-output.ts`), replacing the
+        // `approval_pending` payload below with the final outcome
+        // (`approval_granted` + result, or `approval_rejected` +
+        // feedback). The agent's next turn — triggered by the front via
+        // `chat.sendMessage` with a hidden metadata marker — then sees
+        // the actual result in history and just summarises; it never
+        // re-runs python with the same code.
+        //
+        // We DO NOT classify this as an `error` (no `error` key, no
+        // traceback message) because the model would otherwise treat it
+        // as a failure to retry or apologise for. The `message` field
+        // gives the model a one-liner that explains the pause in plain
+        // English.
+        if (result.error.name === "ApprovalPending") {
+          const approvalId = extractApprovalId(result.error.value);
+          if (approvalId !== undefined) {
+            return {
+              status: "approval_pending" as const,
+              approvalId,
+              message:
+                "⏸ APPROVAL REQUIRED — execution paused. The user is reviewing your plan in the UI; nothing has been executed yet. Stop now — you will be programmatically resumed once the user decides, with the outcome substituted directly in this tool's result.",
+            };
+          }
+          // Fall through to the generic error path — message did not
+          // carry a UUID, which would indicate a malformed exception
+          // from the SDK and is worth surfacing to the model verbatim.
+        }
         return {
           error: `${result.error.name}: ${result.error.value}`,
           code: "PYTHON_ERROR",
@@ -198,3 +231,19 @@ export const createPythonTool = () =>
       return maybePersistLargeOutput(payload, conversationId, toolCallId);
     },
   });
+
+/**
+ * Pull the approval UUID out of `ApprovalPending`'s error message.
+ *
+ * The Python SDK builds the message as `f"Plan {approval_id} awaiting
+ * user approval"` (see `sandbox-assets/fretik_apps/_runtime.py`). We
+ * match on a v4-or-v7 UUID inside that string rather than parsing the
+ * full sentence so a future tweak to the wording doesn't silently
+ * break the bridge — the UUID is the load-bearing piece.
+ */
+const APPROVAL_UUID_RE =
+  /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i;
+const extractApprovalId = (message: string): string | undefined => {
+  const m = APPROVAL_UUID_RE.exec(message);
+  return m?.[0];
+};

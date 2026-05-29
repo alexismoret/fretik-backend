@@ -3,6 +3,7 @@
   "private": true,
   "workspaces": [
     "packages/shared",
+    "packages/providers",
     "packages/api",
     "packages/ai"
   ],
@@ -22,7 +23,7 @@
   "devDependencies": {
     "husky": "^9.1.7",
     "lint-staged": "^17.0.5",
-    "oxlint": "^1.65.0",
+    "oxlint": "^1.66.0",
     "oxlint-tsgolint": "^0.23.0",
     "prettier": "^3.8.3",
     "prettier-plugin-organize-imports": "^4.3.0"

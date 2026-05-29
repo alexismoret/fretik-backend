@@ -1,4 +1,5 @@
 import type { Tool } from "ai";
+import { z } from "zod";
 
 /**
  * Shared tool metadata used by the chatbot agent.
@@ -84,6 +85,69 @@ export type ChatbotTool<TInput = unknown, TOutput = unknown> = Tool<
 };
 
 /**
+ * User-visible caption field injected into every chatbot tool's input
+ * schema by `buildChatbotTool`. The model fills it on each call; the
+ * frontend renders it as the live action label (header of
+ * `ChatStepGroup` + body of `ChatStepTool`) instead of a static i18n
+ * label. See `<tool_captions>` in `chatbot/system-prompt.md` for the
+ * instruction the model follows when generating it.
+ *
+ * Required at the schema level so the model cannot silently skip it
+ * on chained or repetitive calls (the earlier optional version was
+ * dropped 90% of the time on long `searchWeb` chains). The frontend
+ * still has a static-label fallback for the unlikely case where the
+ * model emits something invalid.
+ */
+const CAPTION_FIELD = z
+  .string()
+  .min(1)
+  .describe(
+    "Short user-visible caption (4-8 words, present continuous) describing what you are doing RIGHT NOW. Match the user's last-message language exactly — French → 'Lecture de la facture', English → 'Reading the invoice'. Never default to English when the user wrote in another language. This is the ONLY thing the user sees while the tool runs — never omit, even on repeated similar calls (each call gets its own distinct caption).",
+  );
+
+/**
+ * Runtime extension of a tool's `inputSchema` with the shared
+ * `caption` field. Every chatbot tool declares its inputSchema as a
+ * `z.object({...})`, so the Zod v3/v4 `.extend(...)` contract is
+ * available — we detect it via duck-typing on the `extend` method
+ * rather than re-importing `ZodObject` (the AI SDK widens the field
+ * to `FlexibleSchema<INPUT>` which loses the concrete Zod type).
+ *
+ * The TypeScript `TInput` is intentionally left untouched: tools'
+ * `execute(input, options)` keep their original input typing, the
+ * caption field is just an extra wire-level field the model can fill
+ * and the frontend can read. Tools never need to look at it.
+ */
+const injectCaptionField = <TSchema>(schema: TSchema): TSchema => {
+  if (
+    !schema ||
+    typeof schema !== "object" ||
+    !("shape" in schema) ||
+    typeof (schema as { shape: unknown }).shape !== "object" ||
+    !("extend" in schema) ||
+    typeof (schema as { extend: unknown }).extend !== "function"
+  ) {
+    return schema;
+  }
+  // Build a NEW ZodObject with `caption` declared FIRST, then spread
+  // the original shape on top. Field declaration order matters: the
+  // model tends to emit JSON keys in the order they appear in the
+  // schema, so placing caption first means it streams to the client
+  // first — the frontend can show "Reading the invoice…" within the
+  // first 50-100 ms of the tool call instead of waiting for the
+  // entire input JSON to land. The previous `extend({caption})`
+  // appended it last and the caption often only arrived just before
+  // `tool-input-available`.
+  const objectSchema = schema as unknown as {
+    shape: Record<string, z.ZodTypeAny>;
+  };
+  return z.object({
+    caption: CAPTION_FIELD,
+    ...objectSchema.shape,
+  }) as unknown as TSchema;
+};
+
+/**
  * Wraps a `Tool` definition with chatbot metadata, filling in defaults
  * and enforcing the invariant `shouldDefer === (category === 'domain')`.
  *
@@ -97,13 +161,23 @@ export type ChatbotTool<TInput = unknown, TOutput = unknown> = Tool<
  *       inputSchema: z.object({ question: z.string() }),
  *       execute: async ({ question }) => { ... },
  *     })
+ *
+ * Caption injection: the input schema is automatically prepended
+ * with a required `caption` field so every tool call carries a
+ * short user-visible action label. The model is instructed (in the
+ * system prompt) to fill it in the user's language. The execute
+ * function ignores the field through ordinary destructuring.
  */
 export const buildChatbotTool = <TInput, TOutput>(
   definition: ChatbotToolDefinition<TInput, TOutput>,
 ): ChatbotTool<TInput, TOutput> => {
   const isReadOnly = definition.isReadOnly ?? true;
-  const resolved: ChatbotTool<TInput, TOutput> = {
+  const enrichedDefinition = {
     ...definition,
+    inputSchema: injectCaptionField(definition.inputSchema),
+  };
+  const resolved: ChatbotTool<TInput, TOutput> = {
+    ...enrichedDefinition,
     maxResultSizeChars:
       definition.maxResultSizeChars ?? DEFAULT_MAX_RESULT_SIZE_CHARS,
     isReadOnly,

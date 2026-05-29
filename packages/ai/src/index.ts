@@ -1,3 +1,7 @@
+// Bootstrap external-app provider registration (side-effect import — must
+// run before any chatbot tool or sandbox-exec touches the registry).
+import "@fretik/providers";
+
 import { errorHandler } from "@fretik/shared/lib/error-handler";
 import { reclaimOrphanSandboxes } from "@fretik/shared/services/e2b/reclaim-orphans";
 import { syncBundledSkillsCatalogue } from "@fretik/shared/services/skills/sync-bundled-catalogue";

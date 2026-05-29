@@ -229,5 +229,9 @@ export const buildChatbotSystemPrompt = (
       ctx.teamFieldDefinitionsBlock && ctx.teamFieldDefinitionsBlock.length > 0
         ? ctx.teamFieldDefinitionsBlock
         : "_No dynamic fields configured for this team._",
+    externalAppsBlock:
+      ctx.externalAppsBlock && ctx.externalAppsBlock.length > 0
+        ? ctx.externalAppsBlock
+        : "_No external apps connected._",
   });
 };

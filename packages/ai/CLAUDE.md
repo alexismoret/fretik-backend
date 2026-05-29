@@ -10,6 +10,7 @@ When editing prompts (`src/agents/chatbot/system-prompt.md`, `src/agents/chatbot
 
 ## Conventions
 
+- **Agent-facing prose:** every word the LLM reads (`agents/chatbot/system-prompt.md`, `agents/chatbot/sub-agent-system-prompt.md`, `services/pre-extract/prompt.ts`, `services/compaction/prompt.ts`, every `description:` on a tool, every `.describe(...)` on a param Zod) follows `.agent/rules/agent-facing-prose.md`. Compact, imperative, no hedging, no duplication. Read it before adding to a prompt or a tool description — a 5-line description that does the work of 2 is a regression.
 - **Tools: read `src/tools/README.md` first.** The tool convention (one file per tool, `tool()` factory, `getRuntimeContext(options)` inside `execute`, structured `{ error, code }` returns) is non-negotiable and fully documented there.
 - **NEVER close over `ctx` at construction.** The agent is a singleton. Per-request state (`organizationId`, `conversationId`, `dynamicToolManager`, `taskManager`) is read via `getRuntimeContext(options)` inside `execute`. A closure leak silently crosses requests.
 - **Mutations on `AgentRuntimeContext` must be idempotent + commutative.** Parallel tool calls can race. `dynamicToolManager.activate(names)` and `taskManager.setTasks(tasks)` already are. Any new mutable field must be too — or move state to Redis keyed by `conversationId`.

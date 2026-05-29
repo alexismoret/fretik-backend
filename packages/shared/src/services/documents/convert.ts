@@ -1,10 +1,21 @@
 import { Chromiumly, LibreOffice } from "chromiumly";
 
-Chromiumly.configure({
-  endpoint: process.env.GOTENBERG_ENDPOINT!,
-  username: process.env.GOTENBERG_API_BASIC_AUTH_USERNAME,
-  password: process.env.GOTENBERG_API_BASIC_AUTH_PASSWORD,
-});
+// Lazy: Chromiumly.configure runs on first convert call, not at module
+// load. Lets consumers boot without GOTENBERG_* set (services that
+// never convert non-PDF documents — e.g. cron-only entrypoints — don't
+// need them). First convertXxx call throws loudly if env is missing.
+let configured = false;
+const ensureConfigured = () => {
+  if (configured) return;
+  const endpoint = process.env.GOTENBERG_ENDPOINT;
+  if (!endpoint) throw new Error("Missing GOTENBERG_ENDPOINT env");
+  Chromiumly.configure({
+    endpoint,
+    username: process.env.GOTENBERG_API_BASIC_AUTH_USERNAME,
+    password: process.env.GOTENBERG_API_BASIC_AUTH_PASSWORD,
+  });
+  configured = true;
+};
 
 type LibreOfficeFileExtension = Extract<
   Parameters<typeof LibreOffice.convert>[0]["files"][number],
@@ -22,6 +33,7 @@ export const convertFirstPageToPdf = async (
   buffer: Uint8Array,
   extension: string,
 ): Promise<Uint8Array> => {
+  ensureConfigured();
   const ext = extension.replace(
     /^\./,
     "",
@@ -45,6 +57,7 @@ export const convertDocumentToPdf = async (
   buffer: Uint8Array,
   extension: string,
 ): Promise<Uint8Array> => {
+  ensureConfigured();
   const ext = extension.replace(
     /^\./,
     "",

@@ -84,6 +84,19 @@ export const externalAppConnections = pgTable(
       .notNull()
       .default("active"),
 
+    /**
+     * Per-provider runtime options, validated dynamically against the
+     * provider's `connectionOptions` descriptor. Examples: communication
+     * providers (Outlook, IMAP/SMTP, future Slack/Teams/WhatsApp) carry a
+     * `persona: "personal" | "bot"` option that drives how the chatbot
+     * writes messages on this connection's behalf.
+     *
+     * NULL when the provider has no `connectionOptions` descriptor. When
+     * the descriptor exists, validation happens at the application
+     * boundary (POST/PATCH handlers) — no DB-level enforcement.
+     */
+    options: jsonb("options").$type<Record<string, unknown>>(),
+
     /** Last Nango/provider error surfaced to the user (set with `error`). */
     lastErrorMessage: text("last_error_message"),
 

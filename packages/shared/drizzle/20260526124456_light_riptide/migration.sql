@@ -1,0 +1,1 @@
+ALTER TABLE "external_app_connections" ADD COLUMN "options" jsonb;

@@ -4,6 +4,7 @@ import {
   aiChatFiles,
   type AiVectorSourceType,
 } from "@fretik/shared/db/schema";
+import { getProvider } from "@fretik/shared/external-apps/registry";
 import {
   authMiddleware,
   type HonoLoggedAppType,
@@ -14,6 +15,7 @@ import {
   teamRequired,
   throwHttpError,
 } from "@fretik/shared/lib/errors";
+import { signSandboxJwt } from "@fretik/shared/lib/external-apps/sandbox-jwt";
 import { redis } from "@fretik/shared/lib/redis";
 import { ANTI_BUFFERING_HEADERS } from "@fretik/shared/lib/sse-headers";
 import {
@@ -32,6 +34,7 @@ import {
   saveMessages,
 } from "@fretik/shared/services/ai/messages";
 import { releaseSandbox } from "@fretik/shared/services/e2b/release-sandbox";
+import { listConnections } from "@fretik/shared/services/external-apps/connections/list";
 import { getFieldDefinitionsForTeam } from "@fretik/shared/services/field-definitions/get-for-team";
 import { listEnabledSkillsForTeam } from "@fretik/shared/services/skills/list-enabled-for-team";
 import { MAX_FILES_PER_MESSAGE } from "@fretik/shared/utils/chatbot-limits";
@@ -57,6 +60,7 @@ import { TransformStream } from "node:stream/web";
 import { z } from "zod";
 import { chatbotAgentSet, type ChatbotCallOptions } from "../agents/chatbot";
 import { hydrateContextFiles } from "../lib/context-files-hydration";
+import { writeSandboxAuthFile } from "../lib/conversation-storage";
 import { getResumableStreamContext } from "../lib/resumable-stream-context";
 import { chatbotRateLimitMiddleware } from "../middlewares/chatbot-rate-limit";
 import { internalMiddleware } from "../middlewares/internal";
@@ -773,6 +777,128 @@ const runChatbotTurn = async (params: {
     });
   }
 
+  // ── External apps: load active connections + write a per-turn JWT ──
+  //
+  // Two distinct things happen here, both per-turn:
+  //
+  //  (1) Load active external-app connections (Outlook, …) the caller
+  //      can see. We surface them to the agent in two places: the
+  //      `{{externalAppsBlock}}` line in the system prompt (one row per
+  //      connection so the agent knows what providers exist + their id
+  //      for disambiguation), and the runtime-context for downstream
+  //      tools that need to enumerate them programmatically.
+  //
+  //  (2) Mint a fresh sandbox JWT (HS256, 1 h TTL) and write it to
+  //      `/workspace/.fretik/auth.json`. The Python SDK
+  //      (`fretik_apps._runtime`) re-reads this file on every call, so
+  //      the JWT rotates between turns without restarting the Jupyter
+  //      kernel. Without `SANDBOX_JWT_SECRET` set we skip the JWT step
+  //      so dev environments that don't use external apps still work.
+  let externalAppConnections: ChatbotCallOptions["externalAppConnections"];
+  let externalAppsBlock: string | undefined;
+  if (
+    params.conversationId !== undefined &&
+    params.callOptions.userId !== undefined
+  ) {
+    try {
+      const rows = await listConnections(
+        params.callOptions.teamId,
+        params.callOptions.userId,
+      );
+      const active = rows.filter((r) => r.status === "active");
+      externalAppConnections = active.map((r) => {
+        const provider = getProvider(r.providerKey);
+        return {
+          id: r.id,
+          providerKey: r.providerKey,
+          displayName: r.displayName,
+          scope: r.userId === null ? ("team" as const) : ("user" as const),
+          categories: provider?.manifest.categories ?? [],
+          options: r.options,
+        };
+      });
+      externalAppsBlock =
+        externalAppConnections.length === 0
+          ? undefined
+          : externalAppConnections
+              .map((c) => {
+                // Surface only the options the provider opted to expose to
+                // the agent (e.g. `persona` on communication providers).
+                // Other options stay server-side.
+                const provider = getProvider(c.providerKey);
+                const formatOptionValue = (v: unknown): string | null => {
+                  if (v === undefined || v === null) return null;
+                  if (
+                    typeof v === "string" ||
+                    typeof v === "number" ||
+                    typeof v === "boolean"
+                  ) {
+                    return String(v);
+                  }
+                  // Complex shapes (object / array) — drop from the system
+                  // prompt rather than spilling JSON the agent doesn't need.
+                  return null;
+                };
+                const exposed =
+                  provider?.manifest.connectionOptions?.fields
+                    .filter((f) => f.exposeToAgent)
+                    .map((f) => {
+                      const formatted = formatOptionValue(c.options?.[f.key]);
+                      return formatted === null
+                        ? null
+                        : `${f.key}: ${formatted}`;
+                    })
+                    .filter((s): s is string => s !== null) ?? [];
+                const parts = [
+                  `display_name: "${c.displayName}"`,
+                  `id: ${c.id}`,
+                  `categories: [${c.categories.join(", ")}]`,
+                  ...exposed,
+                ];
+                return `- ${c.providerKey} (${parts.join(", ")})`;
+              })
+              .join("\n");
+    } catch (error) {
+      console.warn(
+        `${params.logPrefix} listConnections failed, proceeding without external apps:`,
+        error instanceof Error ? error.message : error,
+      );
+    }
+
+    const sandboxJwtSecret = Bun.env.SANDBOX_JWT_SECRET;
+    const backendUrl = Bun.env.FRETIK_BACKEND_INTERNAL_URL;
+    if (
+      sandboxJwtSecret !== undefined &&
+      sandboxJwtSecret !== "" &&
+      backendUrl !== undefined &&
+      backendUrl !== ""
+    ) {
+      try {
+        const jwt = await signSandboxJwt({
+          conversationId: params.conversationId,
+          teamId: params.callOptions.teamId,
+          userId: params.callOptions.userId,
+          organizationId: params.callOptions.organizationId,
+          turnId: params.callOptions.traceId ?? params.conversationId,
+        });
+        await writeSandboxAuthFile(params.conversationId, {
+          jwt,
+          backendUrl,
+          turnId: params.callOptions.traceId ?? params.conversationId,
+        });
+      } catch (error) {
+        console.warn(
+          `${params.logPrefix} writeSandboxAuthFile failed — fretik_apps calls will fail until next turn:`,
+          error instanceof Error ? error.message : error,
+        );
+      }
+    } else if (externalAppConnections && externalAppConnections.length > 0) {
+      console.warn(
+        `${params.logPrefix} external-app connections exist but SANDBOX_JWT_SECRET/FRETIK_BACKEND_INTERNAL_URL is missing — fretik_apps calls will fail`,
+      );
+    }
+  }
+
   // Build all per-turn system-prompt fragments in parallel:
   //   - `attachedFilesBlock` — one row per file part on the last
   //     user message, joined against `ai_chat_files` metadata.
@@ -880,6 +1006,8 @@ const runChatbotTurn = async (params: {
         : undefined,
     enabledSkillsBlock:
       enabledSkillsBlock.length > 0 ? enabledSkillsBlock : undefined,
+    externalAppConnections,
+    externalAppsBlock,
   };
 
   // Phase 12 — user-initiated Stop plumbing. Subscribe to the Redis

@@ -1,5 +1,7 @@
 import type { HttpMethod } from "../../../external-apps/manifest-schema";
+import { isAuthFailure } from "../../../lib/external-apps/detect-auth-failure";
 import { getNangoClient } from "../../../lib/external-apps/nango-client";
+import { markConnectionAsError } from "../connections/mark-as-error";
 
 /**
  * Thin wrapper around `nango.proxy(...)`. Centralises the call so every
@@ -10,6 +12,13 @@ import { getNangoClient } from "../../../lib/external-apps/nango-client";
  * Retries — Nango itself retries 5xx + 429 with exponential backoff
  * when `retries > 0`. We default to 3; mappers needing different
  * semantics can be wrapped at a higher layer.
+ *
+ * Auth failure detection — on a thrown error, `isAuthFailure` inspects
+ * the Nango response shape and, when it matches a durable failure
+ * (refresh expired, scope revoked, …), `markConnectionAsError` flips
+ * the row's `status` to `error` so the frontend renders the Reconnect
+ * CTA. The original error is always re-thrown — the wrapper is purely
+ * additive.
  */
 
 export interface NangoProxyCall {
@@ -26,14 +35,26 @@ export const callNangoProxy = async (
   call: NangoProxyCall,
 ): Promise<unknown> => {
   const nango = getNangoClient();
-  const res = await nango.proxy({
-    method: call.method,
-    endpoint: call.endpoint,
-    providerConfigKey: call.providerConfigKey,
-    connectionId: call.connectionId,
-    params: call.query,
-    data: call.body,
-    retries: 3,
-  });
-  return res.data;
+  try {
+    const res = await nango.proxy({
+      method: call.method,
+      endpoint: call.endpoint,
+      providerConfigKey: call.providerConfigKey,
+      connectionId: call.connectionId,
+      params: call.query,
+      data: call.body,
+      retries: 3,
+    });
+    return res.data;
+  } catch (error) {
+    const detected = isAuthFailure(error);
+    if (detected.matched) {
+      await markConnectionAsError({
+        nangoConnectionId: call.connectionId,
+        nangoProviderConfigKey: call.providerConfigKey,
+        reason: detected.reason,
+      }).catch(() => undefined);
+    }
+    throw error;
+  }
 };

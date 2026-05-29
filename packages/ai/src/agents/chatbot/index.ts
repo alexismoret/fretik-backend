@@ -1,4 +1,9 @@
-import { hasToolCall, stepCountIs, type PrepareStepFunction } from "ai";
+import {
+  hasToolCall,
+  stepCountIs,
+  type PrepareStepFunction,
+  type StopCondition,
+} from "ai";
 import { z } from "zod";
 import {
   chatModel,
@@ -156,6 +161,31 @@ export const ChatbotCallOptionsSchema = z.object({
    * container logs without correlating timestamps.
    */
   traceId: z.string().optional(),
+  /**
+   * Active external-app connections (Outlook, …) visible to this turn.
+   * Loaded by the handler via `listConnections(teamId, userId)` and
+   * threaded into `AgentRuntimeContext.externalAppConnections`. The
+   * sandbox bootstrap reads this list to push only the relevant SKILL.md
+   * files into `/workspace/skills/<providerKey>/`.
+   */
+  externalAppConnections: z
+    .array(
+      z.object({
+        id: z.string(),
+        providerKey: z.string(),
+        displayName: z.string(),
+        scope: z.enum(["team", "user"]),
+        categories: z.array(z.string()),
+        options: z.record(z.string(), z.unknown()).nullable(),
+      }),
+    )
+    .optional(),
+  /**
+   * Pre-rendered `{{externalAppsBlock}}` fragment for the system prompt
+   * — one line per active connection. Omitted when the team has no
+   * external apps; the prompt then shows the placeholder.
+   */
+  externalAppsBlock: z.string().optional(),
 });
 
 export type ChatbotCallOptions = z.infer<typeof ChatbotCallOptionsSchema>;
@@ -245,6 +275,8 @@ const buildChatbotRuntimeContextBase = (
   activeMemoryBlock: options.activeMemoryBlock,
   teamFieldDefinitionsBlock: options.teamFieldDefinitionsBlock,
   enabledSkillsBlock: options.enabledSkillsBlock,
+  externalAppConnections: options.externalAppConnections,
+  externalAppsBlock: options.externalAppsBlock,
   traceId: options.traceId,
 });
 
@@ -348,6 +380,34 @@ const dispatchAgentTool = createDispatchAgentTool({
 });
 
 /**
+ * Custom `stopWhen` predicate — halts the agent loop the moment a
+ * `python` tool call comes back with `{ status: "approval_pending" }`.
+ *
+ * `hasToolCall("python")` would fire on every step that ran python, not
+ * just the ones where execution paused waiting for a HITL approval, so
+ * we walk the last step's `toolResults` and look at the output shape
+ * instead. Symmetric to `hasToolCall("askUserQuestion")` (which is also
+ * load-bearing): without it, the agent would loop python → ApprovalPending
+ * → python forever, since each retry re-emits the same code, hits the
+ * same dispatch path, and the approval row is still `pending`.
+ *
+ * Defining this in TypeScript with `unknown` narrowing (not `as`) keeps
+ * the codebase's no-cast rule intact.
+ */
+const pythonAwaitingApproval: StopCondition<ChatbotTools> = ({ steps }) => {
+  const lastStep = steps.at(-1);
+  if (lastStep === undefined) return false;
+  for (const tr of lastStep.toolResults) {
+    if (tr.toolName !== "python") continue;
+    const output: unknown = tr.output;
+    if (output === null || typeof output !== "object") continue;
+    if (!("status" in output)) continue;
+    if (output.status === "approval_pending") return true;
+  }
+  return false;
+};
+
+/**
  * The chatbot agent pair. Instantiated once at module init; reused
  * across every request. Handlers call
  * `chatbotAgentSet.primary.stream({ messages, options, abortSignal })`
@@ -379,6 +439,12 @@ export const chatbotAgentSet = buildAgentSet<ChatbotCallOptions, ChatbotTools>({
   stopWhen: [
     stepCountIs(parseChatbotMaxSteps()),
     hasToolCall("askUserQuestion"),
+    // Pause the loop when a write plan submitted via `run_plan(...)` is
+    // waiting for the user's approval in the UI. The next user message
+    // (sent by the frontend after grant/modify/reject) starts a fresh
+    // turn — the agent re-runs the same code and the dispatch path
+    // matches the grant by `lookupHash`.
+    pythonAwaitingApproval,
   ],
   prepareStep: chatbotPrepareStep,
   buildRuntimeContextBase: buildChatbotRuntimeContextBase,

@@ -1,11 +1,14 @@
 import db from "@fretik/shared/db";
 import {
+  generateChatbotApprovalPending,
   generateChatbotFinished,
   generateChatbotFinishedAwaitingAnswers,
   type AskUserQuestionForEmail,
 } from "@fretik/shared/emails/generators";
+import { renderApprovalSummary } from "@fretik/shared/external-apps/i18n/render-summary";
 import { readSessionFile } from "@fretik/shared/lib/chatbot-session-storage";
 import { sendEmail } from "@fretik/shared/lib/email";
+import { getTeamLocale } from "@fretik/shared/services/field-definitions/get-locale";
 import type { UIMessage } from "ai";
 
 /**
@@ -214,6 +217,31 @@ const buildAttachments = async (
   return { attachments, oversized: false };
 };
 
+/**
+ * Detect that the last assistant message ends with a python tool call
+ * whose output is `{ status: "approval_pending", approvalId }`. Returns
+ * the approvalId so the caller can fetch the row and build a dedicated
+ * approval-pending email. Null = no pending approval in this turn.
+ *
+ * Symmetric with `extractAskUserQuestion` — both detect a turn-ending
+ * stop condition that the user is supposed to act on, but they branch
+ * to different email templates so the call-to-action matches.
+ */
+const extractApprovalPending = (message: UIMessage): string | null => {
+  for (const part of message.parts) {
+    if (part.type !== "tool-python") continue;
+    const recordPart = part as Record<string, unknown>;
+    if (recordPart.state !== "output-available") continue;
+    const output = recordPart.output;
+    if (!output || typeof output !== "object") continue;
+    const status = (output as Record<string, unknown>).status;
+    if (status !== "approval_pending") continue;
+    const approvalId = (output as Record<string, unknown>).approvalId;
+    if (typeof approvalId === "string") return approvalId;
+  }
+  return null;
+};
+
 interface SendChatbotFinishedEmailParams {
   conversationId: string;
   /**
@@ -245,6 +273,7 @@ export const sendChatbotFinishedEmailIfEnabled = async (
     where: { id: conversationId },
     columns: {
       id: true,
+      teamId: true,
       title: true,
       emailOnCompletion: true,
     },
@@ -271,6 +300,57 @@ export const sendChatbotFinishedEmailIfEnabled = async (
     .reverse()
     .find((m) => m.role === "assistant");
   if (!lastAssistant) return;
+
+  // Branch 0 — turn paused on a write-plan approval gate.
+  //
+  // The chatbot agent's `stopWhen` includes `pythonAwaitingApproval`
+  // (see `agents/chatbot/index.ts`), so any python tool returning
+  // `{ status: "approval_pending", approvalId }` ends the turn there.
+  // We branch BEFORE `askUserQuestion` (and before the generic
+  // "finished" path) so the user gets the right call-to-action:
+  // "review and approve" rather than "your assistant replied".
+  //
+  // Defensive checks:
+  //   - approval row exists and belongs to this conversation
+  //   - status is still `pending` — the user might have approved in
+  //     another tab between the turn ending and this fire-and-forget
+  //     callback running; in that case skip the email entirely
+  //     (the approval flow is already complete on the other tab).
+  const pendingApprovalId = extractApprovalPending(lastAssistant);
+  if (pendingApprovalId !== null) {
+    const approval = await db.query.toolApprovalRequests.findFirst({
+      where: { id: pendingApprovalId },
+      columns: {
+        id: true,
+        conversationId: true,
+        status: true,
+        summary: true,
+      },
+    });
+    if (
+      approval !== undefined &&
+      approval.conversationId === conversationId &&
+      approval.status === "pending"
+    ) {
+      const lang = await getTeamLocale(conversation.teamId);
+      const rendered = renderApprovalSummary(approval.summary, lang);
+      const emailData = await generateChatbotApprovalPending({
+        userName: conversation.user.name ?? null,
+        conversationId,
+        conversationTitle: conversation.title,
+        summary: rendered,
+      });
+      await sendEmail({
+        to: { email: conversation.user.email, name: conversation.user.name },
+        subject: emailData.subject,
+        html: emailData.html,
+      });
+      console.info(
+        `${logPrefix} email-on-approval-pending sent to ${conversation.user.email} ops=${approval.summary.operations.length.toString()}`,
+      );
+      return;
+    }
+  }
 
   // Branch 1 — turn stop-conditioned on `askUserQuestion`.
   //

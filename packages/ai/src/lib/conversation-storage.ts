@@ -26,6 +26,7 @@ import type {
   SandboxFileEntry,
   SandboxLease,
 } from "@fretik/shared/services/e2b/types";
+import { listActiveProviderKeysForConversation } from "@fretik/shared/services/external-apps/connections/list-active-providers-for-conversation";
 import { listEnabledTeamUploadedSkillsWithBodyForConversation } from "@fretik/shared/services/skills/list-enabled-team-uploaded-with-body";
 import { randomUUID } from "node:crypto";
 import { readdir, stat } from "node:fs/promises";
@@ -418,10 +419,44 @@ const bootstrapWithLock = async (
 };
 
 const runFullBootstrap = async (conversationId: string): Promise<void> => {
+  // Bootstrap is dominated by per-call E2B round-trip latency
+  // (~1-2 s baseline for any writeSandboxFile + tar -xzf pair,
+  // regardless of payload size). Sequentially that totals 6-8 s on
+  // cold start. Every push targets a DISJOINT top-level sub-directory
+  // under /workspace, and the staging tarballs land at distinct /tmp
+  // paths, so we fan them out with `Promise.all`. Worst case becomes
+  // the slowest single push (~2 s) instead of the sum.
+  //
+  // Safety audit (parallel-safe pre-conditions):
+  //  - `createWorkspaceDirs` is awaited BEFORE the fan-out → all
+  //    top-level dirs exist before any push runs.
+  //  - Top-level destinations are disjoint: bundled skills →
+  //    /workspace/skills/{pdf,xlsx,…}, team skills →
+  //    /workspace/skills/<team-slug>, external-app skills →
+  //    /workspace/skills/<providerKey>, SDK → /workspace/fretik_apps,
+  //    S3 restore → /workspace/{attachments,outputs}. Names cannot
+  //    collide under current conventions (provider keys are not used
+  //    by bundled skills; a team-uploaded skill named after a provider
+  //    would already collide in the sequential version, so the risk
+  //    isn't introduced by parallelism).
+  //  - Each push owns its /tmp tarball filename (different per push,
+  //    `rm -f` at the end of its own extract command).
+  //  - E2B's daemon serialises filesystem mutations inside the
+  //    container; parallel HTTP requests only eliminate the
+  //    round-trip dead time, they don't produce concurrent `tar`
+  //    processes that fight over the FS.
+  //
+  // `touchFretikInitMarker` STAYS sequential after the fan-out — its
+  // presence is the cross-replica signal that bootstrap finished
+  // (see `bootstrapWithLock`).
   await createWorkspaceDirs(conversationId);
-  await pushBundledSkills(conversationId);
-  await pushTeamSkills(conversationId);
-  await restoreFromS3(conversationId);
+  await Promise.all([
+    pushBundledSkills(conversationId),
+    pushTeamSkills(conversationId),
+    pushExternalAppsSdk(conversationId),
+    pushExternalAppProviderSkills(conversationId),
+    restoreFromS3(conversationId),
+  ]);
   await touchFretikInitMarker(conversationId);
 };
 
@@ -592,6 +627,318 @@ const pushTeamSkills = async (conversationId: string): Promise<void> => {
   const duration = Date.now() - startedAt;
   console.log(
     `[conversation-storage] pushed ${written.toString()}/${entries.length.toString()} team skills in parallel, ${duration.toString()}ms`,
+  );
+};
+
+// ============================================================ //
+// EXTERNAL APPS — fretik_apps SDK + per-provider skills + auth  //
+// ============================================================ //
+
+const EXTERNAL_APPS_SDK_SRC_DIR = resolve(
+  __dirname,
+  "..",
+  "..",
+  "sandbox-assets",
+  "fretik_apps",
+);
+const EXTERNAL_APPS_SKILLS_SRC_DIR = resolve(
+  __dirname,
+  "..",
+  "..",
+  "sandbox-assets",
+  "skills",
+);
+const EXTERNAL_APPS_SDK_TARBALL_SANDBOX_PATH =
+  "/tmp/fretik-external-apps-sdk.tar.gz";
+const EXTERNAL_APPS_SKILL_TARBALL_SANDBOX_PATH = (
+  providerKey: string,
+): string => `/tmp/fretik-external-apps-skill-${providerKey}.tar.gz`;
+const EXTERNAL_APPS_AUTH_DIR = ".fretik";
+const EXTERNAL_APPS_AUTH_FILE = `${WORKSPACE_ROOT}/${EXTERNAL_APPS_AUTH_DIR}/auth.json`;
+
+/**
+ * Bundle every `.py` under `sandbox-assets/fretik_apps/` into a gzipped
+ * tarball. Mirrors `buildSkillsTarballBytes` for the bundled-skills path:
+ *
+ *  - Cached at module load (3 files for v1 ~40 KB; bigger as providers ship).
+ *  - Single E2B file write + `tar -xzf` per sandbox vs. one round-trip per
+ *    file — keeps cold-start latency from scaling with provider count.
+ *  - Eager `Bun.file(...).bytes()` because `Bun.Archive` does NOT await
+ *    async blob reads at serialization time (validated 2026-05 on the
+ *    bundled-skills path — without eager reads the archive headers were
+ *    correct but file bodies were 0-byte).
+ */
+let cachedExternalAppsSdkTarball: Promise<Uint8Array | null> | null = null;
+
+const buildExternalAppsSdkTarballBytes =
+  async (): Promise<Uint8Array | null> => {
+    const startedAt = Date.now();
+    const info = await stat(EXTERNAL_APPS_SDK_SRC_DIR).catch(() => null);
+    if (!info?.isDirectory()) {
+      console.warn(
+        `[conversation-storage] fretik_apps SDK directory missing at ${EXTERNAL_APPS_SDK_SRC_DIR}, tarball skipped`,
+      );
+      return null;
+    }
+
+    const files: Record<string, Blob> = {};
+    await collectSkillFilesForArchive(EXTERNAL_APPS_SDK_SRC_DIR, "", files);
+    if (Object.keys(files).length === 0) {
+      console.warn(
+        "[conversation-storage] no fretik_apps SDK files found, tarball skipped",
+      );
+      return null;
+    }
+
+    const archive = new Bun.Archive(files, { compress: "gzip" });
+    const bytes = await archive.bytes();
+    const duration = Date.now() - startedAt;
+    console.log(
+      `[conversation-storage] built fretik_apps SDK tarball: ${Object.keys(files).length.toString()} files, ${(bytes.byteLength / 1024).toFixed(1)} KB gzipped, ${duration.toString()}ms`,
+    );
+    return bytes;
+  };
+
+const getExternalAppsSdkTarballBytes = (): Promise<Uint8Array | null> => {
+  cachedExternalAppsSdkTarball ??= buildExternalAppsSdkTarballBytes();
+  return cachedExternalAppsSdkTarball;
+};
+
+/**
+ * Per-provider tarballs of `sandbox-assets/skills/<providerKey>/*`,
+ * cached lazily. We do NOT bundle every provider into one archive
+ * because connected providers differ per team — pushing the Gmail
+ * SKILL.md to a team that only has Outlook would waste bandwidth and
+ * surface a SKILL the agent has no live connection to drive.
+ *
+ * Cache is per provider key so the first call for a given provider on
+ * a fresh service replica builds the tarball, subsequent calls hit the
+ * cached promise.
+ */
+const cachedExternalAppSkillTarballs = new Map<
+  string,
+  Promise<Uint8Array | null>
+>();
+
+const buildExternalAppSkillTarballBytes = async (
+  providerKey: string,
+): Promise<Uint8Array | null> => {
+  const startedAt = Date.now();
+  const srcDir = `${EXTERNAL_APPS_SKILLS_SRC_DIR}/${providerKey}`;
+  const info = await stat(srcDir).catch(() => null);
+  if (!info?.isDirectory()) {
+    console.warn(
+      `[conversation-storage] no skill folder for provider "${providerKey}" at ${srcDir}, tarball skipped`,
+    );
+    return null;
+  }
+
+  const files: Record<string, Blob> = {};
+  await collectSkillFilesForArchive(srcDir, "", files);
+  if (Object.keys(files).length === 0) {
+    console.warn(
+      `[conversation-storage] no files in provider "${providerKey}" skill folder, tarball skipped`,
+    );
+    return null;
+  }
+
+  const archive = new Bun.Archive(files, { compress: "gzip" });
+  const bytes = await archive.bytes();
+  const duration = Date.now() - startedAt;
+  console.log(
+    `[conversation-storage] built "${providerKey}" skill tarball: ${Object.keys(files).length.toString()} files, ${(bytes.byteLength / 1024).toFixed(1)} KB gzipped, ${duration.toString()}ms`,
+  );
+  return bytes;
+};
+
+const getExternalAppSkillTarballBytes = (
+  providerKey: string,
+): Promise<Uint8Array | null> => {
+  let cached = cachedExternalAppSkillTarballs.get(providerKey);
+  if (!cached) {
+    cached = buildExternalAppSkillTarballBytes(providerKey);
+    cachedExternalAppSkillTarballs.set(providerKey, cached);
+  }
+  return cached;
+};
+
+/**
+ * Push the generated Python SDK (`fretik_apps/*.py`) into
+ * `/workspace/fretik_apps/`. Pushed unconditionally at bootstrap because
+ * the SDK is inert without an `auth.json` (no creds in the sandbox by
+ * design — see `lib/external-apps/sandbox-jwt.ts`); having the files
+ * present means an early `from fretik_apps import outlook` raises
+ * `ModuleNotFoundError` only on an actually missing provider, not on a
+ * missing SDK skeleton.
+ *
+ * Soft-fail: a tarball or extract error is logged but does not throw.
+ * The next bootstrap retries.
+ */
+const pushExternalAppsSdk = async (conversationId: string): Promise<void> => {
+  const bytes = await getExternalAppsSdkTarballBytes();
+  if (!bytes) return;
+
+  const startedAt = Date.now();
+  try {
+    await writeSandboxFile(
+      conversationId,
+      EXTERNAL_APPS_SDK_TARBALL_SANDBOX_PATH,
+      bytes,
+    );
+  } catch (err) {
+    console.warn(
+      "[conversation-storage] failed to upload fretik_apps SDK tarball:",
+      err instanceof Error ? err.message : err,
+    );
+    return;
+  }
+
+  const sdkDir = `${WORKSPACE_ROOT}/fretik_apps`;
+  const extractCommand = [
+    "set -e",
+    `mkdir -p ${sdkDir}`,
+    `tar -xzf ${EXTERNAL_APPS_SDK_TARBALL_SANDBOX_PATH} -C ${sdkDir}`,
+    `rm -f ${EXTERNAL_APPS_SDK_TARBALL_SANDBOX_PATH}`,
+  ].join(" && ");
+
+  try {
+    const result = await execSandboxCommand(conversationId, extractCommand);
+    if (result.exitCode !== 0) {
+      console.warn(
+        `[conversation-storage] fretik_apps SDK extract failed (exit=${result.exitCode.toString()}): ${result.stderr.trim()}`,
+      );
+      return;
+    }
+  } catch (err) {
+    console.warn(
+      "[conversation-storage] fretik_apps SDK extract threw:",
+      err instanceof Error ? err.message : err,
+    );
+    return;
+  }
+
+  const duration = Date.now() - startedAt;
+  console.log(
+    `[conversation-storage] pushed fretik_apps SDK tarball: ${(bytes.byteLength / 1024).toFixed(1)} KB, ${duration.toString()}ms (upload+extract)`,
+  );
+};
+
+/**
+ * Push `sandbox-assets/skills/<providerKey>/` into
+ * `/workspace/skills/<providerKey>/` for every provider with at least
+ * one active connection on this conversation's team.
+ *
+ * Conditional by design — we don't push the Gmail SKILL.md to a team
+ * that only has Outlook. Bundled and uploaded as one tarball per
+ * provider so we get one E2B round-trip per active provider instead of
+ * one per file: scales with provider count, not provider × files.
+ *
+ * Called inside `runFullBootstrap` so it fires once per sandbox.
+ * If a user adds a connection mid-conversation, the new SKILL.md
+ * appears on the next conversation's sandbox — the current sandbox
+ * already has the SDK so the agent can still drive existing providers.
+ */
+const pushExternalAppProviderSkills = async (
+  conversationId: string,
+): Promise<void> => {
+  let providerKeys: string[];
+  try {
+    providerKeys = await listActiveProviderKeysForConversation(conversationId);
+  } catch (err) {
+    console.warn(
+      "[conversation-storage] failed to list active providers:",
+      err instanceof Error ? err.message : err,
+    );
+    return;
+  }
+
+  if (providerKeys.length === 0) return;
+
+  const startedAt = Date.now();
+  const skillsDir = `${WORKSPACE_ROOT}/${WORKSPACE_DIRS.skills}`;
+
+  // Parallel-safe: distinct tarball paths + distinct target subdirs.
+  await Promise.all(
+    providerKeys.map(async (providerKey) => {
+      const bytes = await getExternalAppSkillTarballBytes(providerKey);
+      if (!bytes) return;
+
+      const tarballPath = EXTERNAL_APPS_SKILL_TARBALL_SANDBOX_PATH(providerKey);
+      try {
+        await writeSandboxFile(conversationId, tarballPath, bytes);
+      } catch (err) {
+        console.warn(
+          `[conversation-storage] failed to upload "${providerKey}" skill tarball:`,
+          err instanceof Error ? err.message : err,
+        );
+        return;
+      }
+
+      const providerDir = `${skillsDir}/${providerKey}`;
+      const extractCommand = [
+        "set -e",
+        `mkdir -p ${providerDir}`,
+        `tar -xzf ${tarballPath} -C ${providerDir}`,
+        `rm -f ${tarballPath}`,
+      ].join(" && ");
+
+      try {
+        const result = await execSandboxCommand(conversationId, extractCommand);
+        if (result.exitCode !== 0) {
+          console.warn(
+            `[conversation-storage] "${providerKey}" skill extract failed (exit=${result.exitCode.toString()}): ${result.stderr.trim()}`,
+          );
+        }
+      } catch (err) {
+        console.warn(
+          `[conversation-storage] "${providerKey}" skill extract threw:`,
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }),
+  );
+
+  const duration = Date.now() - startedAt;
+  console.log(
+    `[conversation-storage] pushed external-app skills for [${providerKeys.join(", ")}], ${duration.toString()}ms`,
+  );
+};
+
+/**
+ * Write `/workspace/.fretik/auth.json` with the per-turn sandbox JWT,
+ * the backend URL the SDK should call back, and the turn id.
+ *
+ * The Python SDK's `_runtime.py` re-reads this file on every `call()`
+ * so a fresh JWT minted by the chatbot handler at turn start propagates
+ * to the long-lived Jupyter kernel without restart. Overwrite semantics
+ * — never appended; the previous turn's JWT is replaced.
+ *
+ * Called per-turn from `handlers/chatbot.ts` BEFORE the agent stream
+ * starts. Idempotent.
+ */
+export const writeSandboxAuthFile = async (
+  conversationId: string,
+  payload: { jwt: string; backendUrl: string; turnId: string },
+): Promise<void> => {
+  try {
+    await makeSandboxDir(conversationId, EXTERNAL_APPS_AUTH_DIR);
+  } catch (err) {
+    // Defensive — `writeSandboxFile` below will fail loudly if the dir
+    // truly cannot be created; mkdir races typically resolve safely.
+    console.warn(
+      "[conversation-storage] makeDir failed for .fretik:",
+      err instanceof Error ? err.message : err,
+    );
+  }
+  const body = JSON.stringify({
+    jwt: payload.jwt,
+    backend_url: payload.backendUrl,
+    turn_id: payload.turnId,
+  });
+  await writeSandboxFile(
+    conversationId,
+    EXTERNAL_APPS_AUTH_FILE,
+    new TextEncoder().encode(body),
   );
 };
 

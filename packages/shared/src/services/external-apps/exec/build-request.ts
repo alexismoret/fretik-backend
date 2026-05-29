@@ -37,10 +37,10 @@ const substitutePath = (
   for (const [key, spec] of Object.entries(params)) {
     if (spec.in !== "path") continue;
     const value = args[key];
-    if (typeof value !== "string") {
+    if (typeof value !== "string" && typeof value !== "number") {
       throw new Error(`Missing path parameter "${key}"`);
     }
-    result = result.replace(`{${key}}`, encodeURIComponent(value));
+    result = result.replace(`{${key}}`, encodeURIComponent(String(value)));
   }
   return result;
 };
@@ -94,6 +94,15 @@ export const buildRequest = (
   args: Record<string, unknown>,
 ): BuiltRequest => {
   const { action } = resolved;
+  // buildRequest is reachable only from the nango-proxy branch of the
+  // dispatcher; the registry enforces `endpoint` is present on every
+  // nango-proxy action. The check below is a defense-in-depth narrowing
+  // for the type system — it should be unreachable at runtime.
+  if (action.endpoint === undefined) {
+    throw new Error(
+      `Action ${action.name} has no endpoint — buildRequest is reserved for nango-proxy transport`,
+    );
+  }
   const endpoint = substitutePath(action.endpoint.path, args, action.params);
 
   if (resolved.requestMapper !== undefined) {

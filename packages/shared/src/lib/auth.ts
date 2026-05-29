@@ -53,6 +53,15 @@ export const auth = betterAuth({
   basePath: "/auth",
   trustedOrigins: [appUrl],
 
+  // NOTE: experimental.joins is intentionally disabled.
+  // Better-Auth's drizzle adapter passes the output of convertWhereClause()
+  // (raw Drizzle SQL expressions from eq()/and()/or()) into the relational
+  // query API db.query.X.findFirst({ where: ... }). That API expects a
+  // filter MAP ({ col: value, AND: [...] }), not a SQL object — so Drizzle
+  // v2 Object.entries() the SQL and throws on its internal "decoder"
+  // property: `Unknown relational filter field: "decoder"`. Re-enable only
+  // once upstream patches the adapter or we move off the Drizzle v2 RC.
+
   emailAndPassword: {
     enabled: true,
   },

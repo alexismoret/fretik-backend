@@ -3,8 +3,9 @@
 from ._runtime import ApprovalPending, FretikActionError, Operation, run_plan
 from . import outlook
 from . import imap_smtp
+from . import exchange
 from . import teams
 from . import front
 from . import shiptify
 
-__all__ = ["ApprovalPending", "FretikActionError", "Operation", "run_plan", "outlook", "imap_smtp", "teams", "front", "shiptify"]
+__all__ = ["ApprovalPending", "FretikActionError", "Operation", "run_plan", "outlook", "imap_smtp", "exchange", "teams", "front", "shiptify"]

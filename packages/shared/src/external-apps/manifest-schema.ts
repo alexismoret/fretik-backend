@@ -429,7 +429,19 @@ export type CredentialLinkedField = z.infer<typeof credentialLinkedFieldSchema>;
 export const credentialsFormDescriptorSchema = z.object({
   /** Optional grouped sections (e.g. `imap`, `smtp`) for UI grouping. */
   sections: z
-    .array(z.object({ key: z.string(), titleKey: z.string() }))
+    .array(
+      z.object({
+        key: z.string(),
+        titleKey: z.string(),
+        /**
+         * When true, the frontend renders this section collapsed behind a
+         * "show advanced options" toggle. Use for optional override / fallback
+         * fields the typical user never touches (auto-resolved server URL,
+         * version, alternate login) so the default form stays minimal.
+         */
+        collapsed: z.boolean().optional(),
+      }),
+    )
     .optional(),
   fields: z.array(credentialFieldSchema).min(1),
   /** Mirror toggles between fields. */

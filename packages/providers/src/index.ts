@@ -1,4 +1,5 @@
 import { setProviders } from "@fretik/shared/external-apps/registry";
+import { exchangeEntry } from "./exchange";
 import { frontEntry } from "./front";
 import { imapSmtpEntry } from "./imap-smtp";
 import { outlookEntry } from "./outlook";
@@ -20,9 +21,17 @@ import { teamsEntry } from "./teams";
 setProviders({
   outlook: outlookEntry,
   "imap-smtp": imapSmtpEntry,
+  exchange: exchangeEntry,
   teams: teamsEntry,
   front: frontEntry,
   shiptify: shiptifyEntry,
 });
 
-export { frontEntry, imapSmtpEntry, outlookEntry, shiptifyEntry, teamsEntry };
+export {
+  exchangeEntry,
+  frontEntry,
+  imapSmtpEntry,
+  outlookEntry,
+  shiptifyEntry,
+  teamsEntry,
+};

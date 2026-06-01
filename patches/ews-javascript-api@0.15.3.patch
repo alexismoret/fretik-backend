@@ -1,0 +1,48 @@
+diff --git a/js/Core/EwsServiceXmlWriter.js b/js/Core/EwsServiceXmlWriter.js
+index ead0453e2efed5202229fbf2527d00046fac9705..076b60e620b07eb760a063f59b3151fa8fc7f5f6 100644
+--- a/js/Core/EwsServiceXmlWriter.js
++++ b/js/Core/EwsServiceXmlWriter.js
+@@ -7,6 +7,25 @@ const EwsUtilities_1 = require("./EwsUtilities");
+ const ExtensionMethods_1 = require("../ExtensionMethods");
+ const Strings_1 = require("../Strings");
+ const TypeGuards_1 = require("../Interfaces/TypeGuards");
++// [fretik patch] Robust XML escaping for the request writer. Upstream concatenated
++// values RAW (it never escaped — see the `//todo: validate invalid characters` below),
++// so any `& < > "` in user text (subject, HTML body, folder/contact names, AQS query,
++// attachment names…) produced malformed SOAP and the server rejected the whole request
++// with ErrorSchemaValidation. We escape the markup characters AND drop the characters
++// that are simply illegal in XML 1.0 (most C0 controls, the U+FFFE/U+FFFF noncharacters,
++// and lone surrogates) — those cannot be represented even as numeric refs, so they must
++// be removed, not escaped. Tab/newline/CR and valid astral chars (emoji = surrogate
++// pairs) are preserved.
++function fretikEscapeXmlText(value) {
++    return ("" + value)
++        .replace(new RegExp("[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]", "g"), "")
++        .replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/g, "")
++        .replace(/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "")
++        .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
++}
++function fretikEscapeXmlAttr(value) {
++    return fretikEscapeXmlText(value).replace(/"/g, "&quot;");
++}
+ /**
+  * @internal XML writer
+  */
+@@ -129,7 +148,7 @@ class EwsServiceXmlWriter {
+         }
+         if (namespacePrefix !== "")
+             namespacePrefix += ":";
+-        this.soapData += " " + namespacePrefix + localName + "=\"" + stringValue + "\"";
++        this.soapData += " " + namespacePrefix + localName + "=\"" + fretikEscapeXmlAttr(stringValue) + "\""; // [fretik patch] was: + stringValue (unescaped)
+         if (namespacePrefix == "xmlns:") // push to rootUris cache
+             this.PushUris(localName, stringValue);
+         //try {
+@@ -248,7 +267,7 @@ class EwsServiceXmlWriter {
+         //var closeElement = this.soapData.charAt(this.soapData.length - 1) !== ">";
+         //if (closeElement) this.soapData += ">";
+         this.CloseTag();
+-        this.soapData += value;
++        this.soapData += fretikEscapeXmlText(value); // [fretik patch] was: += value (unescaped)
+         //todo: validate invalid characters
+         // name is used for exception with invalid characters
+     }

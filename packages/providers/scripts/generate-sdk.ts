@@ -21,41 +21,28 @@ import type {
   ReturnSpec,
 } from "@fretik/shared/external-apps/manifest-schema";
 import { providerManifestSchema } from "@fretik/shared/external-apps/manifest-schema";
-import { frontManifest } from "../src/front/manifest";
-import { imapSmtpManifest } from "../src/imap-smtp/manifest";
-import { outlookManifest } from "../src/outlook/manifest";
-import { shiptifyManifest } from "../src/shiptify/manifest";
-import { teamsManifest } from "../src/teams/manifest";
+import { listProviderManifests } from "@fretik/shared/external-apps/registry";
+// Side-effect import: running the package index calls `setProviders(...)`, so
+// every provider is registered and discoverable below — no hardcoded list to
+// keep in sync when adding a provider.
+// eslint-disable-next-line import/no-unassigned-import -- registers providers
+import "../src/index";
 
-// ── Provider registry (extend here when adding a new provider) ────────
+// ── Provider discovery (from the registry) ────────────────────────────
+//
+// Providers are enumerated from the registry; each provider's `guidance.md`
+// lives in `src/<key>/` (folder name == manifest key). Adding a provider
+// requires no change here.
 
 interface ProviderInput {
   manifest: ProviderManifest;
   guidancePath: string;
 }
 
-const PROVIDERS: ProviderInput[] = [
-  {
-    manifest: outlookManifest,
-    guidancePath: `${import.meta.dir}/../src/outlook/guidance.md`,
-  },
-  {
-    manifest: imapSmtpManifest,
-    guidancePath: `${import.meta.dir}/../src/imap-smtp/guidance.md`,
-  },
-  {
-    manifest: teamsManifest,
-    guidancePath: `${import.meta.dir}/../src/teams/guidance.md`,
-  },
-  {
-    manifest: frontManifest,
-    guidancePath: `${import.meta.dir}/../src/front/guidance.md`,
-  },
-  {
-    manifest: shiptifyManifest,
-    guidancePath: `${import.meta.dir}/../src/shiptify/guidance.md`,
-  },
-];
+const PROVIDERS: ProviderInput[] = listProviderManifests().map((manifest) => ({
+  manifest,
+  guidancePath: `${import.meta.dir}/../src/${manifest.key}/guidance.md`,
+}));
 
 /**
  * Convert a manifest key (kebab-case) to a Python-safe module name

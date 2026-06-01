@@ -265,6 +265,91 @@ export default {
         },
       },
 
+      exchange: {
+        send_email: {
+          title: { default: "Send email to {{recipients}}" },
+        },
+        reply_email: {
+          title: { default: "Reply to email" },
+        },
+        reply_all_email: {
+          title: { default: "Reply all to email" },
+        },
+        forward_email: {
+          title: { default: "Forward email to {{recipients}}" },
+        },
+        create_draft: {
+          title: { default: "Create draft email" },
+        },
+        update_draft: {
+          title: {
+            default: "Update draft",
+            withSubject: 'Update draft: "{{subject}}"',
+          },
+        },
+        delete_message: {
+          title: { default: "Delete email" },
+        },
+        move_message: {
+          title: { default: "Move email to folder" },
+        },
+        copy_message: {
+          title: { default: "Copy email to folder" },
+        },
+        delete_messages: {
+          title: { default: "Delete {{count}} emails" },
+        },
+        move_messages: {
+          title: { default: "Move {{count}} emails to another folder" },
+        },
+        mark_messages_read: {
+          title: { default: "Mark {{count}} emails as read" },
+        },
+        mark_messages_unread: {
+          title: { default: "Mark {{count}} emails as unread" },
+        },
+        mark_read: {
+          title: { default: "Mark email as read" },
+        },
+        mark_unread: {
+          title: { default: "Mark email as unread" },
+        },
+        flag_message: {
+          title: {
+            flagged: "Flag email for follow-up",
+            complete: "Mark email as complete",
+            notFlagged: "Clear email flag",
+            default: "Update email flag",
+          },
+        },
+        create_folder: {
+          title: { default: 'Create mail folder "{{name}}"' },
+        },
+        create_calendar_event: {
+          title: { default: 'Create event "{{subject}}"' },
+        },
+        update_calendar_event: {
+          title: {
+            default: "Update calendar event",
+            withSubject: 'Update event "{{subject}}"',
+          },
+        },
+        delete_calendar_event: {
+          title: { default: "Delete calendar event" },
+        },
+        respond_to_event: {
+          title: {
+            accept: "Accept meeting invite",
+            decline: "Decline meeting invite",
+            tentativelyAccept: "Tentatively accept meeting invite",
+            default: "Respond to meeting invite",
+          },
+        },
+        create_contact: {
+          title: { default: 'Create contact "{{name}}"' },
+        },
+      },
+
       shiptify: {
         create_shipment_request: {
           title: { default: 'Create shipment request "{{name}}"' },

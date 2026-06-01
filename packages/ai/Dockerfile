@@ -23,6 +23,9 @@ COPY packages/api/package.json packages/api/
 COPY packages/ai/package.json packages/ai/
 COPY packages/providers/package.json packages/providers/
 COPY .husky .husky
+# `bun install` applies patchedDependencies (the ews-javascript-api XML-escaping
+# fix used by the Exchange provider) — the patch file must be present beforehand.
+COPY patches patches
 ENV CI=true
 RUN --mount=type=cache,target=/root/.bun/install/cache \
     bun install --frozen-lockfile --filter '@fretik/ai' --filter '@fretik/shared' --filter '@fretik/providers'

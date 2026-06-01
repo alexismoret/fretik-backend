@@ -2,6 +2,7 @@ import db from "@fretik/shared/db";
 import {
   AI_VECTOR_SOURCE_TYPES,
   aiChatFiles,
+  aiMessages,
   type AiVectorSourceType,
 } from "@fretik/shared/db/schema";
 import { getProvider } from "@fretik/shared/external-apps/registry";
@@ -40,6 +41,7 @@ import { listEnabledSkillsForTeam } from "@fretik/shared/services/skills/list-en
 import { MAX_FILES_PER_MESSAGE } from "@fretik/shared/utils/chatbot-limits";
 import { OpenAPIHono } from "@hono/zod-openapi";
 import {
+  getActiveTraceId,
   propagateAttributes,
   startActiveObservation,
   updateActiveObservation,
@@ -53,7 +55,7 @@ import {
   type UIMessageChunk,
 } from "ai";
 import { randomUUIDv7 } from "bun";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 // Use node:stream/web's TransformStream rather than the DOM global:
 // Bun implements both, but the DOM lib's TransformStream clashes with
 // `AsyncIterableStream.pipeThrough` typings (DOM's ReadableStream has
@@ -67,6 +69,7 @@ import { chatbotAgentSet, type ChatbotCallOptions } from "../agents/chatbot";
 import { hydrateContextFiles } from "../lib/context-files-hydration";
 import { writeSandboxAuthFile } from "../lib/conversation-storage";
 import { flushLangfuse, langfuseEnabled } from "../lib/langfuse";
+import { recordScore } from "../lib/langfuse-scores";
 import { getResumableStreamContext } from "../lib/resumable-stream-context";
 import { chatbotRateLimitMiddleware } from "../middlewares/chatbot-rate-limit";
 import { internalMiddleware } from "../middlewares/internal";
@@ -1374,7 +1377,12 @@ const runChatbotTurn = async (
             messageMetadata: ({ part }) => {
               if (part.type !== "finish") return undefined;
               const usage = part.totalUsage;
+              // Trace id of this turn (active span context) — sent to the
+              // client live AND folded into the persisted message metadata,
+              // so the feedback control can score the right Langfuse trace.
+              const traceId = getActiveTraceId();
               return {
+                ...(traceId !== undefined ? { langfuseTraceId: traceId } : {}),
                 telemetry: {
                   finishReason: part.finishReason,
                   rawFinishReason: part.rawFinishReason,
@@ -1446,7 +1454,11 @@ const runChatbotTurn = async (
                 messageMetadata: ({ part }) => {
                   if (part.type !== "finish") return undefined;
                   const fbUsage = part.totalUsage;
+                  const traceId = getActiveTraceId();
                   return {
+                    ...(traceId !== undefined
+                      ? { langfuseTraceId: traceId }
+                      : {}),
                     telemetry: {
                       finishReason: part.finishReason,
                       rawFinishReason: part.rawFinishReason,
@@ -1938,6 +1950,94 @@ chatbotRoutes.post("/:conversationId/stop", async (c) => {
   await clearConversationActiveStream(conversationId, activeStreamId);
 
   return c.json({ stopped: true }, 200);
+});
+
+/**
+ * POST /chatbot/feedback — capture user quality signals as Langfuse scores.
+ *
+ * The client sends the `langfuseTraceId` it received in the assistant
+ * message metadata (live via the stream, or persisted on reload). We verify
+ * the caller owns the conversation, then write a source-named score on that
+ * trace:
+ *   - thumbs-up   → `user-feedback` = 1 (BOOLEAN)
+ *   - thumbs-down → `user-feedback` = 0
+ *   - retry       → `user-retry`    = 1 (implicit dissatisfaction signal)
+ *
+ * Scores live in Langfuse only (Score Analytics, dataset curation, judge
+ * calibration) — nothing is mirrored in our DB.
+ */
+const ChatFeedbackSchema = z.object({
+  conversationId: z.uuid(),
+  messageId: z.uuid(),
+  traceId: z.string().min(1).max(200),
+  type: z.enum(["thumbs-up", "thumbs-down", "retry"]),
+  comment: z.string().max(500).optional(),
+});
+
+chatbotRoutes.post("/feedback", async (c) => {
+  const user = c.get("user");
+  const team = c.get("team");
+  if (!team) return throwHttpError(403, teamRequired());
+
+  const body: unknown = await c.req.json();
+  const parsed = ChatFeedbackSchema.safeParse(body);
+  if (!parsed.success) {
+    return c.json(
+      {
+        code: "VALIDATION_ERROR",
+        message: "Invalid request body",
+        details: parsed.error.issues.map((i) => i.message),
+      },
+      400,
+    );
+  }
+  const { conversationId, messageId, traceId, type, comment } = parsed.data;
+
+  // Ownership check: only score traces from a conversation the caller owns.
+  const conversation = await getConversation({
+    id: conversationId,
+    teamId: team.id,
+    userId: user.id,
+  });
+  if (!conversation) {
+    return throwHttpError(404, notFound("Conversation not found"));
+  }
+
+  const scoreName = type === "retry" ? "user-retry" : "user-feedback";
+  const scoreValue = type === "thumbs-down" ? 0 : 1;
+  const recorded = await recordScore({
+    // Stable id per (trace, signal) → re-clicking a thumb upserts the one
+    // score instead of stacking duplicates.
+    id: `${traceId}-${scoreName}`,
+    traceId,
+    name: scoreName,
+    value: scoreValue,
+    dataType: "BOOLEAN",
+    ...(comment !== undefined ? { comment } : {}),
+  });
+
+  // Persist the chosen thumb on the message itself — a UX flag, distinct
+  // from the analytical Langfuse score — so it shows again on reload,
+  // arriving for free with the message history (no extra read). Merge into
+  // the existing metadata jsonb to preserve telemetry / langfuseTraceId.
+  // The `WHERE conversationId` scopes the write to the owned conversation.
+  // Retry is an implicit signal with no UI state to persist.
+  if (type !== "retry") {
+    const userFeedback = type === "thumbs-up" ? "up" : "down";
+    await db
+      .update(aiMessages)
+      .set({
+        metadata: sql`coalesce(${aiMessages.metadata}, '{}'::jsonb) || ${JSON.stringify({ userFeedback })}::jsonb`,
+      })
+      .where(
+        and(
+          eq(aiMessages.id, messageId),
+          eq(aiMessages.conversationId, conversationId),
+        ),
+      );
+  }
+
+  return c.json({ recorded }, 200);
 });
 
 // ==================== //

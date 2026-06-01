@@ -27,6 +27,7 @@
     "@fretik/providers": "workspace:*",
     "@fretik/shared": "workspace:*",
     "@hono/zod-openapi": "^1.4.0",
+    "@langfuse/client": "^5.4.1",
     "@langfuse/otel": "^5.4.1",
     "@langfuse/tracing": "^5.4.1",
     "@mistralai/mistralai": "^2.2.1",

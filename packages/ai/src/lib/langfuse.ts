@@ -28,6 +28,7 @@
 import { LangfuseSpanProcessor } from "@langfuse/otel";
 import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
 import type { TelemetrySettings } from "ai";
+import { langfuseMask } from "./langfuse-mask";
 
 const publicKey = process.env.LANGFUSE_PUBLIC_KEY;
 const secretKey = process.env.LANGFUSE_SECRET_KEY;
@@ -55,7 +56,12 @@ export const langfuseEnvironment =
  * when `langfuseEnabled` is false.
  */
 export const langfuseSpanProcessor = langfuseEnabled
-  ? new LangfuseSpanProcessor({ environment: langfuseEnvironment })
+  ? new LangfuseSpanProcessor({
+      environment: langfuseEnvironment,
+      // Redact PII / secrets from every observation's input/output/metadata
+      // before export. See lib/langfuse-mask.ts.
+      mask: langfuseMask,
+    })
   : undefined;
 
 if (langfuseSpanProcessor) {

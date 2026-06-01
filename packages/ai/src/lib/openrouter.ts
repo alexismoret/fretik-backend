@@ -2,6 +2,7 @@ import {
   createOpenRouter,
   type OpenRouterChatSettings,
 } from "@openrouter/ai-sdk-provider";
+import { instrumentModel } from "./model-instrumentation";
 import { wrapModelWithCache } from "./openrouter-cache";
 
 const apiKey = process.env.OPENROUTER_API_KEY;
@@ -110,6 +111,17 @@ const chatModelSettings: OpenRouterChatSettings = {
     enabled: true,
     max_tokens: parseChatbotReasoningMaxTokens(),
   },
+  /**
+   * Usage accounting — ask OpenRouter to return the REAL cost (and the
+   * upstream provider that served the request) in each response, surfaced
+   * by the AI SDK under `providerMetadata.openrouter.usage` (`cost`,
+   * `costDetails`). Lets us track exact cost on our own Langfuse traces
+   * rather than Langfuse's estimated model-price inference — accurate even
+   * for models Langfuse has no price table for (e.g. MiniMax). Included in
+   * the same response, so no extra request / negligible overhead.
+   * @see https://openrouter.ai/docs/use-cases/usage-accounting
+   */
+  usage: { include: true },
   // NOTE on `parallelToolCalls`: tested 2026-05-07. Setting it to true
   // combined with `require_parameters: true` empties the eligible
   // provider pool for MiniMax M2.7 on OpenRouter — every request
@@ -127,16 +139,16 @@ const chatModelSettings: OpenRouterChatSettings = {
 };
 
 /** Primary chat model — Deepseek V4 Pro via OpenRouter (configurable via `OPENROUTER_CHAT_MODEL`). */
-export const chatModel = wrapModelWithCache(
-  openrouter.chat(chatModelId, chatModelSettings),
+export const chatModel = instrumentModel(
+  wrapModelWithCache(openrouter.chat(chatModelId, chatModelSettings)),
 );
 
 /**
  * Fallback model used when the primary errors out. Wrapped at the SDK level
  * in `agents/shared/agent-builder.ts`.
  */
-export const fallbackChatModel = wrapModelWithCache(
-  openrouter.chat(fallbackChatModelId, chatModelSettings),
+export const fallbackChatModel = instrumentModel(
+  wrapModelWithCache(openrouter.chat(fallbackChatModelId, chatModelSettings)),
 );
 
 /**
@@ -170,8 +182,10 @@ const preextractModelSettings: OpenRouterChatSettings = {
  * Consumed by `services/pre-extract/extract.ts` and
  * `handlers/field-definitions.ts` via `generateText()`.
  */
-export const preextractModel = wrapModelWithCache(
-  openrouter.chat(preextractModelId, preextractModelSettings),
+export const preextractModel = instrumentModel(
+  wrapModelWithCache(
+    openrouter.chat(preextractModelId, preextractModelSettings),
+  ),
 );
 
 /**
@@ -179,8 +193,10 @@ export const preextractModel = wrapModelWithCache(
  * Used when the primary errors out (network, 5xx, schema validation failure).
  * Shares the primary settings (reasoning + require_parameters).
  */
-export const preextractFallbackModel = wrapModelWithCache(
-  openrouter.chat(preextractFallbackModelId, preextractModelSettings),
+export const preextractFallbackModel = instrumentModel(
+  wrapModelWithCache(
+    openrouter.chat(preextractFallbackModelId, preextractModelSettings),
+  ),
 );
 
 /** Exposed for log/diagnostic purposes. */
@@ -232,9 +248,8 @@ const activeMemoryModelSettings: OpenRouterChatSettings = {
   reasoning: { effort: "low" },
 };
 
-export const activeMemoryModel = openrouter.chat(
-  activeMemoryModelId,
-  activeMemoryModelSettings,
+export const activeMemoryModel = instrumentModel(
+  openrouter.chat(activeMemoryModelId, activeMemoryModelSettings),
 );
 
 export const ACTIVE_MEMORY_MODEL_ID = activeMemoryModelId;
@@ -259,8 +274,10 @@ const dispatchAgentCheapModelId =
   process.env.OPENROUTER_DISPATCH_AGENT_CHEAP_MODEL ??
   "deepseek/deepseek-v4-flash";
 
-export const dispatchAgentCheapModel = wrapModelWithCache(
-  openrouter.chat(dispatchAgentCheapModelId, chatModelSettings),
+export const dispatchAgentCheapModel = instrumentModel(
+  wrapModelWithCache(
+    openrouter.chat(dispatchAgentCheapModelId, chatModelSettings),
+  ),
 );
 
 export const DISPATCH_AGENT_CHEAP_MODEL_ID = dispatchAgentCheapModelId;

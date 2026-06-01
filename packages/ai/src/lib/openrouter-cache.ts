@@ -278,7 +278,10 @@ const cacheMiddleware: LanguageModelV3Middleware = {
   },
 };
 
+// Cache only — Langfuse cost capture is applied separately and uniformly
+// via `instrumentModel` (`lib/model-instrumentation.ts`) so it covers every
+// model, not just the cached chat ones.
 export const wrapModelWithCache = (model: LanguageModelV3): LanguageModelV3 => {
   if (!MANUAL_PROMPT_CACHE_ENABLED) return model;
-  return wrapLanguageModel({ model, middleware: cacheMiddleware });
+  return wrapLanguageModel({ model, middleware: [cacheMiddleware] });
 };

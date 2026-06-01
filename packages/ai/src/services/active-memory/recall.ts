@@ -1,4 +1,5 @@
 import { generateText } from "ai";
+import { telemetryFor } from "../../lib/langfuse";
 import { activeMemoryModel } from "../../lib/openrouter";
 import { searchRAG } from "../search";
 import { ACTIVE_MEMORY_SYSTEM_PROMPT } from "./prompt";
@@ -210,6 +211,10 @@ export const runActiveMemoryRecall = async (
         system: ACTIVE_MEMORY_SYSTEM_PROMPT,
         prompt: judgePrompt,
         abortSignal: judgeAbort,
+        // Recall judge generation. The caller wraps this in a
+        // `propagateAttributes` session context (it runs pre-`execute`,
+        // so it's a sibling trace rather than nested under `chatbot-turn`).
+        experimental_telemetry: telemetryFor("active-memory"),
       });
 
       const text = judged.text.trim();

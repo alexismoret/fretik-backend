@@ -8,6 +8,7 @@ import {
   type ToolLoopAgentOnStepFinishCallback,
   type ToolSet,
 } from "ai";
+import { telemetryFor } from "../../lib/langfuse";
 import {
   DynamicToolManager,
   replayActivationFromHistory,
@@ -259,6 +260,11 @@ const buildToolLoopAgent = <CALL_OPTIONS, TTools extends ToolSet>(
     prepareStep,
     onStepFinish,
     callOptionsSchema: config.callOptionsSchema,
+    // Langfuse tracing: emit OpenTelemetry spans for every model call +
+    // tool call. `prepareCall` spreads `...baseCallArgs` (which carries
+    // this construction setting), so the telemetry config survives the
+    // wholesale settings replacement. No-op when Langfuse is unconfigured.
+    experimental_telemetry: telemetryFor(`agent:${config.id}`),
     prepareCall: (baseCallArgs) => {
       // **Critical semantics of `ToolLoopAgent.prepareCall`**: the
       // return value is **NOT** merged with the agent's construction

@@ -40,6 +40,11 @@ import { listEnabledSkillsForTeam } from "@fretik/shared/services/skills/list-en
 import { MAX_FILES_PER_MESSAGE } from "@fretik/shared/utils/chatbot-limits";
 import { OpenAPIHono } from "@hono/zod-openapi";
 import {
+  propagateAttributes,
+  startActiveObservation,
+  updateActiveObservation,
+} from "@langfuse/tracing";
+import {
   convertToModelMessages,
   createUIMessageStream,
   createUIMessageStreamResponse,
@@ -61,6 +66,7 @@ import { z } from "zod";
 import { chatbotAgentSet, type ChatbotCallOptions } from "../agents/chatbot";
 import { hydrateContextFiles } from "../lib/context-files-hydration";
 import { writeSandboxAuthFile } from "../lib/conversation-storage";
+import { flushLangfuse, langfuseEnabled } from "../lib/langfuse";
 import { getResumableStreamContext } from "../lib/resumable-stream-context";
 import { chatbotRateLimitMiddleware } from "../middlewares/chatbot-rate-limit";
 import { internalMiddleware } from "../middlewares/internal";
@@ -164,28 +170,33 @@ const streamChatbotWithFallback = async (params: {
   const modelMessages = await convertToModelMessages(
     stripFilePartsForModel(params.history),
   );
-  try {
-    return await chatbotAgentSet.primary.stream({
+  // Primary → fallback failover. Langfuse trace nesting + attribute
+  // propagation are owned by the caller: `execute` (in `runChatbotTurn`)
+  // wraps the whole turn in a single `chatbot-turn` active span, so every
+  // `.stream()` here — and its nested tool / sub-agent spans — attaches
+  // under that one trace. This function just runs the model.
+  return chatbotAgentSet.primary
+    .stream({
       messages: modelMessages,
       options: params.callOptions,
       abortSignal: params.abortSignal,
+    })
+    .catch((err: unknown) => {
+      // Sprint B §3.5: when the abort fired (user clicked Stop) the
+      // primary call rejects with an AbortError — there is nothing to
+      // fall back to. Re-raising lets the upstream handler treat the
+      // turn as cleanly aborted instead of burning fallback tokens for
+      // a generation the user already cancelled.
+      if (params.abortSignal?.aborted) {
+        throw err;
+      }
+      console.error("[chatbot] primary model failed, falling back:", err);
+      return chatbotAgentSet.fallback.stream({
+        messages: modelMessages,
+        options: params.callOptions,
+        abortSignal: params.abortSignal,
+      });
     });
-  } catch (err) {
-    // Sprint B §3.5: when the abort fired (user clicked Stop) the
-    // primary call rejects with an AbortError — there is nothing to
-    // fall back to. Re-raising lets the upstream handler treat the
-    // turn as cleanly aborted instead of burning fallback tokens for
-    // a generation the user already cancelled.
-    if (params.abortSignal?.aborted) {
-      throw err;
-    }
-    console.error("[chatbot] primary model failed, falling back:", err);
-    return await chatbotAgentSet.fallback.stream({
-      messages: modelMessages,
-      options: params.callOptions,
-      abortSignal: params.abortSignal,
-    });
-  }
 };
 
 /**
@@ -691,32 +702,9 @@ const linkChatFilesToMessage = async (
 };
 
 /**
- * Shared tail of both routes: hydrate cache → stream with fallback
- * → return a UIMessage stream response whose `onFinish` persists
- * new assistant messages + fires the stale-output sweep.
- *
- * The outbound stream goes through a scrubber transform that strips
- * sensitive tool inputs (currently: `querySql.sql_query`). `onFinish`
- * runs on the PRE-scrub stream so persistence + future-turn replay
- * see the real values.
- *
- * Phase 12 (resumable streams): when a `conversationId` is provided
- * and a `streamId` was claimed by the caller, the outbound SSE stream
- * is simultaneously tee'd into a Redis-backed resumable buffer (via
- * the `resumable-stream` package). The `onFinish` callback clears the
- * `activeStreamId` column so the GET /:conversationId/stream
- * reconnection handler knows the turn is done. We intentionally do
- * NOT forward the request AbortSignal to the LLM — the turn must
- * finish regardless of whether the HTTP client is still connected so
- * `onFinish` can persist the assistant messages and keep the buffer
- * consistent.
- *
- * Intentionally NOT a middleware: the two routes have distinct
- * pre-work (Better Auth session vs X-Context headers, user-message
- * persistence only on /stream, …). Factoring the shared tail keeps
- * the two routes aligned without flattening their differences.
+ * Per-turn input bag shared by `runChatbotTurn` and its setup helpers.
  */
-const runChatbotTurn = async (params: {
+interface RunChatbotTurnParams {
   conversationId: string | undefined;
   history: UIMessage[];
   callOptions: ChatbotCallOptions;
@@ -729,71 +717,62 @@ const runChatbotTurn = async (params: {
    */
   resumableStreamId?: string;
   logPrefix: string;
-}): Promise<Response> => {
-  // Captured at the start of the turn so the `chatbot.turn-metrics`
-  // structured log emitted in `onFinish` carries an accurate
-  // `latencyMs` (turn-level wall clock, includes RAG + tool calls +
-  // model gen). Read inside the closure below.
-  const turnStartedAt = Date.now();
-  // Bypass-resistant guard. The frontend prevents a 6th
-  // file from being added to a draft, but a crafted request could
-  // still send a user message with > MAX_FILES_PER_MESSAGE file
-  // parts. Reject before we stream anything.
-  const filenames = extractLastUserFileFilenames(params.history);
-  if (filenames.length > MAX_FILES_PER_MESSAGE) {
-    if (params.conversationId && params.resumableStreamId) {
-      await clearConversationActiveStream(
-        params.conversationId,
-        params.resumableStreamId,
-      );
-    }
-    return new Response(
-      JSON.stringify({
-        code: "TOO_MANY_FILES",
-        message: `Maximum ${MAX_FILES_PER_MESSAGE.toString()} files per message.`,
-      }),
-      {
-        status: 400,
-        headers: { "Content-Type": "application/json" },
-      },
+}
+
+/**
+ * Bypass-resistant guard against a crafted request carrying more than
+ * `MAX_FILES_PER_MESSAGE` file parts. Returns a 400 `Response` to
+ * short-circuit the turn, or `null` to proceed. Clears the resumable
+ * stream slot on rejection so a retry isn't blocked by the idempotence
+ * guard.
+ */
+const rejectTooManyFiles = async (
+  params: RunChatbotTurnParams,
+  filenames: string[],
+): Promise<Response | null> => {
+  if (filenames.length <= MAX_FILES_PER_MESSAGE) {
+    return null;
+  }
+  if (params.conversationId && params.resumableStreamId) {
+    await clearConversationActiveStream(
+      params.conversationId,
+      params.resumableStreamId,
     );
   }
+  return new Response(
+    JSON.stringify({
+      code: "TOO_MANY_FILES",
+      message: `Maximum ${MAX_FILES_PER_MESSAGE.toString()} files per message.`,
+    }),
+    {
+      status: 400,
+      headers: { "Content-Type": "application/json" },
+    },
+  );
+};
 
-  // Hydrate the persistent team/user context files into the
-  // conversation's sandbox at `/workspace/context/...`. Chat
-  // attachments + outputs come back automatically when the storage
-  // façade restores from S3 on first access.
-  if (params.conversationId !== undefined && params.callOptions.userId) {
-    await hydrateContextFiles({
-      conversationId: params.conversationId,
-      userId: params.callOptions.userId,
-      teamId: params.callOptions.teamId,
-      organizationId: params.callOptions.organizationId,
-    }).catch((error: unknown) => {
-      console.warn(
-        `${params.logPrefix} hydrateContextFiles failed, proceeding with whatever is in the sandbox:`,
-        error instanceof Error ? error.message : error,
-      );
-    });
-  }
-
-  // ── External apps: load active connections + write a per-turn JWT ──
-  //
-  // Two distinct things happen here, both per-turn:
-  //
-  //  (1) Load active external-app connections (Outlook, …) the caller
-  //      can see. We surface them to the agent in two places: the
-  //      `{{externalAppsBlock}}` line in the system prompt (one row per
-  //      connection so the agent knows what providers exist + their id
-  //      for disambiguation), and the runtime-context for downstream
-  //      tools that need to enumerate them programmatically.
-  //
-  //  (2) Mint a fresh sandbox JWT (HS256, 1 h TTL) and write it to
-  //      `/workspace/.fretik/auth.json`. The Python SDK
-  //      (`fretik_apps._runtime`) re-reads this file on every call, so
-  //      the JWT rotates between turns without restarting the Jupyter
-  //      kernel. Without `SANDBOX_JWT_SECRET` set we skip the JWT step
-  //      so dev environments that don't use external apps still work.
+/**
+ * Per-turn external-app setup. Two things happen, both soft-failing so
+ * a failure never blocks the turn:
+ *
+ *  (1) Load the active external-app connections (Outlook, …) the caller
+ *      can see — surfaced to the agent via the `{{externalAppsBlock}}`
+ *      prompt line and the runtime context.
+ *  (2) Mint a fresh sandbox JWT (HS256, 1 h TTL) and write it to
+ *      `/workspace/.fretik/auth.json` so `fretik_apps` calls
+ *      authenticate this turn. The Python SDK re-reads the file every
+ *      call, so the JWT rotates between turns without restarting the
+ *      kernel. Skipped when `SANDBOX_JWT_SECRET` is unset.
+ *
+ * No-op (returns empty) for stateless `/invoke` callers without a
+ * conversationId / userId.
+ */
+const loadExternalApps = async (
+  params: RunChatbotTurnParams,
+): Promise<{
+  externalAppConnections: ChatbotCallOptions["externalAppConnections"];
+  externalAppsBlock: string | undefined;
+}> => {
   let externalAppConnections: ChatbotCallOptions["externalAppConnections"];
   let externalAppsBlock: string | undefined;
   if (
@@ -898,24 +877,30 @@ const runChatbotTurn = async (params: {
       );
     }
   }
+  return { externalAppConnections, externalAppsBlock };
+};
 
-  // Build all per-turn system-prompt fragments in parallel:
-  //   - `attachedFilesBlock` — one row per file part on the last
-  //     user message, joined against `ai_chat_files` metadata.
-  //   - `chatbotContextManifest` — compact Projects-style catalogue
-  //     of the user / team persistent context files (instructions +
-  //     per-file metadata + outline + preview, with small files
-  //     inlined). Stable across the conversation; lives in the
-  //     cache-friendly suffix of the rendered prompt.
-  //   - `activeMemoryRecall` — pre-reply judge over the team's
-  //     persistent `[TEAM_MEMORY]` / `[USER_MEMORY]` index. Returns
-  //     a 1-3 bullet block of memories already judged relevant for
-  //     this turn (or `null` for skip / NONE / failure). Runs in
-  //     parallel here so the judge LLM call overlaps with the
-  //     attached-files SQL and the context manifest assembly —
-  //     adds ~0-1s to the critical path depending on which
-  //     parallel branch is the long pole.
-  const activeMemoryInputs = params.callOptions.userId
+/**
+ * Build all per-turn system-prompt fragments in parallel (attached
+ * files, persistent-context manifest, active-memory recall, dynamic
+ * field catalogue, enabled-skills catalogue) and fold them — plus the
+ * external-app connections — into the final `ChatbotCallOptions` passed
+ * to the agent. Every fragment soft-fails to an empty value so a single
+ * failing source never blocks the turn.
+ */
+const buildTurnCallOptions = async (
+  params: RunChatbotTurnParams,
+  filenames: string[],
+  externalApps: {
+    externalAppConnections: ChatbotCallOptions["externalAppConnections"];
+    externalAppsBlock: string | undefined;
+  },
+): Promise<ChatbotCallOptions> => {
+  // Captured in a const so the truthiness narrowing survives into the
+  // `propagateAttributes` callback closure below (a const can't change, so
+  // TS keeps the `string` narrowing; a property access would widen back).
+  const activeMemoryUserId = params.callOptions.userId;
+  const activeMemoryInputs = activeMemoryUserId
     ? buildActiveMemoryInputs(params.history, filenames)
     : null;
   const [
@@ -943,15 +928,30 @@ const runChatbotTurn = async (params: {
         inlinedFileCount: 0,
       };
     }),
-    activeMemoryInputs && params.callOptions.userId
-      ? runActiveMemoryRecall({
-          userMessage: activeMemoryInputs.userMessage,
-          attachedFiles: activeMemoryInputs.attachedFiles,
-          recentTail: activeMemoryInputs.recentTail,
-          teamId: params.callOptions.teamId,
-          organizationId: params.callOptions.organizationId,
-          userId: params.callOptions.userId,
-        })
+    activeMemoryInputs && activeMemoryUserId
+      ? // Sibling trace linked to the conversation's session: the pre-turn
+        // recall judge runs before `execute`, so it can't nest under
+        // `chatbot-turn` — `propagateAttributes` keeps it navigable per
+        // session instead of producing an orphan trace.
+        propagateAttributes(
+          {
+            traceName: "active-memory-recall",
+            ...(params.conversationId !== undefined
+              ? { sessionId: params.conversationId }
+              : {}),
+            userId: activeMemoryUserId,
+            tags: [`team:${params.callOptions.teamId}`],
+          },
+          () =>
+            runActiveMemoryRecall({
+              userMessage: activeMemoryInputs.userMessage,
+              attachedFiles: activeMemoryInputs.attachedFiles,
+              recentTail: activeMemoryInputs.recentTail,
+              teamId: params.callOptions.teamId,
+              organizationId: params.callOptions.organizationId,
+              userId: activeMemoryUserId,
+            }),
+        )
       : Promise.resolve(null),
     // Compact `- key (type)` catalogue for the dynamic suffix.
     // Redis-cached (30 min TTL) so the per-turn cost is one HGET. A
@@ -991,7 +991,7 @@ const runChatbotTurn = async (params: {
     `${params.logPrefix} contextManifestChars=${chatbotContextManifest.totalChars.toString()} files=${chatbotContextManifest.fileCount.toString()} inlined=${chatbotContextManifest.inlinedFileCount.toString()} activeMemory=${activeMemoryRecall ? "hit" : "miss"} teamFieldsChars=${teamFieldDefinitionsBlock.length.toString()} enabledSkillsChars=${enabledSkillsBlock.length.toString()}`,
   );
 
-  const callOptionsWithFiles: ChatbotCallOptions = {
+  return {
     ...params.callOptions,
     attachedFilesBlock:
       attachedFilesBlock.length > 0 ? attachedFilesBlock : undefined,
@@ -1006,25 +1006,33 @@ const runChatbotTurn = async (params: {
         : undefined,
     enabledSkillsBlock:
       enabledSkillsBlock.length > 0 ? enabledSkillsBlock : undefined,
-    externalAppConnections,
-    externalAppsBlock,
+    externalAppConnections: externalApps.externalAppConnections,
+    externalAppsBlock: externalApps.externalAppsBlock,
   };
+};
 
-  // Phase 12 — user-initiated Stop plumbing. Subscribe to the Redis
-  // abort channel keyed by streamId so POST /:id/stop can kill the
-  // LLM mid-generation. The controller's signal is server-owned, so
-  // HTTP client disconnects do NOT trigger it (tab close still lets
-  // the turn finish and `onFinish` persist). Cleaned up in `onFinish`.
-  //
-  // Abort propagation chain (Sprint B §3.5):
-  //   abortController.abort()
-  //     → AI SDK's streamText() resolves with abort error
-  //       → `@openrouter/ai-sdk-provider` forwards `signal: abortSignal`
-  //         to its `fetch()` call (verified in node_modules dist)
-  //         → TCP close on the OpenRouter HTTPS connection, which
-  //           closes the upstream provider socket. Provider-level
-  //           generation cancellation behaviour is provider-specific
-  //           (Anthropic / OpenAI honour it; MiniMax — TBC).
+/**
+ * Wire the user-initiated Stop plumbing for a resumable turn. Subscribe
+ * to the Redis abort channel keyed by streamId so POST /:id/stop can
+ * abort the controller mid-generation. The controller's signal is
+ * server-owned, so HTTP client disconnects do NOT trigger it (tab close
+ * still lets the turn finish and `onFinish` persist).
+ *
+ * Abort propagation chain (Sprint B §3.5): `abortController.abort()` →
+ * AI SDK `streamText()` rejects → `@openrouter/ai-sdk-provider` forwards
+ * `signal` to its `fetch()` → TCP close on the OpenRouter HTTPS socket.
+ * Provider-level cancellation is provider-specific (Anthropic / OpenAI
+ * honour it; MiniMax — TBC).
+ *
+ * Returns the controller + a `releaseAbortSubscriber` cleanup to call
+ * from `onFinish`. No subscriber is created for non-resumable callers.
+ */
+const setupAbortChannel = async (
+  params: RunChatbotTurnParams,
+): Promise<{
+  abortController: AbortController;
+  releaseAbortSubscriber: () => Promise<void>;
+}> => {
   const abortController = new AbortController();
   const abortSubscriber =
     params.resumableStreamId !== undefined ? redis.duplicate() : null;
@@ -1046,6 +1054,83 @@ const runChatbotTurn = async (params: {
       console.warn("[chatbot] abort subscriber cleanup failed", err);
     }
   };
+  return { abortController, releaseAbortSubscriber };
+};
+
+/**
+ * Shared tail of both routes: hydrate cache → stream with fallback
+ * → return a UIMessage stream response whose `onFinish` persists
+ * new assistant messages + fires the stale-output sweep.
+ *
+ * The outbound stream goes through a scrubber transform that strips
+ * sensitive tool inputs (currently: `querySql.sql_query`). `onFinish`
+ * runs on the PRE-scrub stream so persistence + future-turn replay
+ * see the real values.
+ *
+ * Phase 12 (resumable streams): when a `conversationId` is provided
+ * and a `streamId` was claimed by the caller, the outbound SSE stream
+ * is simultaneously tee'd into a Redis-backed resumable buffer (via
+ * the `resumable-stream` package). The `onFinish` callback clears the
+ * `activeStreamId` column so the GET /:conversationId/stream
+ * reconnection handler knows the turn is done. We intentionally do
+ * NOT forward the request AbortSignal to the LLM — the turn must
+ * finish regardless of whether the HTTP client is still connected so
+ * `onFinish` can persist the assistant messages and keep the buffer
+ * consistent.
+ *
+ * Intentionally NOT a middleware: the two routes have distinct
+ * pre-work (Better Auth session vs X-Context headers, user-message
+ * persistence only on /stream, …). Factoring the shared tail keeps
+ * the two routes aligned without flattening their differences.
+ */
+const runChatbotTurn = async (
+  params: RunChatbotTurnParams,
+): Promise<Response> => {
+  // Captured at the start of the turn so the `chatbot.turn-metrics`
+  // structured log emitted in `onFinish` carries an accurate
+  // `latencyMs` (turn-level wall clock, includes RAG + tool calls +
+  // model gen). Read inside the closure below.
+  const turnStartedAt = Date.now();
+
+  const filenames = extractLastUserFileFilenames(params.history);
+  const tooManyFiles = await rejectTooManyFiles(params, filenames);
+  if (tooManyFiles) {
+    return tooManyFiles;
+  }
+
+  // Hydrate the persistent team/user context files into the
+  // conversation's sandbox at `/workspace/context/...`. Chat
+  // attachments + outputs come back automatically when the storage
+  // façade restores from S3 on first access.
+  if (params.conversationId !== undefined && params.callOptions.userId) {
+    await hydrateContextFiles({
+      conversationId: params.conversationId,
+      userId: params.callOptions.userId,
+      teamId: params.callOptions.teamId,
+      organizationId: params.callOptions.organizationId,
+    }).catch((error: unknown) => {
+      console.warn(
+        `${params.logPrefix} hydrateContextFiles failed, proceeding with whatever is in the sandbox:`,
+        error instanceof Error ? error.message : error,
+      );
+    });
+  }
+
+  // External apps: active connections (surfaced to the agent) + a fresh
+  // per-turn sandbox JWT for `fretik_apps`. See loadExternalApps.
+  const externalApps = await loadExternalApps(params);
+
+  // Assemble the per-turn system-prompt fragments + external apps into
+  // the final call options handed to the agent. See buildTurnCallOptions.
+  const callOptionsWithFiles = await buildTurnCallOptions(
+    params,
+    filenames,
+    externalApps,
+  );
+
+  // User-initiated Stop plumbing (Phase 12). See setupAbortChannel.
+  const { abortController, releaseAbortSubscriber } =
+    await setupAbortChannel(params);
 
   // Build the response stream via `createUIMessageStream({ execute })`.
   // The execute callback owns the full turn pipeline:
@@ -1202,202 +1287,296 @@ const runChatbotTurn = async (params: {
         );
       }
       await releaseAbortSubscriber();
+      // Ship this turn's spans to Langfuse promptly (don't wait for the
+      // batch interval). Soft-fails internally; never blocks the response.
+      await flushLangfuse();
     },
     execute: async ({ writer }) => {
-      const historyForModel = await compactConversation(params.history, {
-        onProgress: (event) => {
-          // The shared `id` makes consecutive writes UPDATE the
-          // single existing data part on the client (started → done
-          // / failed) instead of stacking three separate cards.
-          // The frontend renders this part as a UChatTool with a
-          // loader while phase==='running' and transitions to a
-          // success / failure state on the final write.
-          if (event.phase === "started") {
-            writer.write({
-              type: "data-compaction",
-              id: COMPACTION_PART_ID,
-              data: { phase: "running", tokensBefore: event.tokensBefore },
-            });
-            return;
-          }
-          if (event.phase === "succeeded") {
-            writer.write({
-              type: "data-compaction",
-              id: COMPACTION_PART_ID,
-              data: {
-                phase: "done",
-                tokensBefore: event.tokensBefore,
-                tokensAfter: event.tokensAfter,
-                reductionPct: event.reductionPct,
-              },
-            });
-            return;
-          }
-          // failed
-          writer.write({
-            type: "data-compaction",
-            id: COMPACTION_PART_ID,
-            data: { phase: "failed", tokensBefore: event.tokensBefore },
-          });
-        },
-      });
+      // Trace I/O for the `chatbot-turn` parent span (set inside the
+      // active-observation context below). Captured by `turnBody`.
+      let visibleOutput = "";
+      let traceFinishReason: string | undefined;
 
-      const result = await streamChatbotWithFallback({
-        history: historyForModel,
-        callOptions: callOptionsWithFiles,
-        abortSignal: abortController.signal,
-      });
-
-      // Merge the model's UIMessage stream into the outer stream.
-      // `originalMessages` / `onError` / `onFinish` were configured
-      // on the outer createUIMessageStream above — passing them again
-      // here would double-fire `onFinish` on persistence.
-      //
-      // `messageMetadata` is attached HERE (not on the outer
-      // createUIMessageStream — `messageMetadata` is a `toUIMessageStream`
-      // option, not a `createUIMessageStream` one). It is invoked on
-      // the inner stream's `start` and `finish` events; we only emit
-      // metadata on `finish` (start would overwrite a prior turn with
-      // `undefined`). The returned blob lands in the assistant
-      // message's `metadata` field, which `enrichAssistantMetadata`
-      // then folds together with parts-derived `steps` and `toolCalls`
-      // counts before persistence in `persistAssistantMessages`.
-      //
-      // Without this, diagnosing the reasoning-only zombie pattern
-      // (see `agents/shared/zombie-step-error.ts`) requires
-      // correlating server logs with SQL spelunking on `parts` JSON.
-      // The follow-up monitoring SQL becomes:
-      //
-      //   SELECT date_trunc('day', created_at), count(*) FILTER (
-      //     WHERE metadata->'telemetry'->>'finishReason' IN ('other','length')
-      //   ) FROM ai_messages WHERE role='assistant' GROUP BY 1;
-      writer.merge(
-        result.toUIMessageStream<UIMessage>({
-          messageMetadata: ({ part }) => {
-            if (part.type !== "finish") return undefined;
-            const usage = part.totalUsage;
-            return {
-              telemetry: {
-                finishReason: part.finishReason,
-                rawFinishReason: part.rawFinishReason,
-                usage: {
-                  inputTokens: usage.inputTokens,
-                  outputTokens: usage.outputTokens,
-                  totalTokens: usage.totalTokens,
-                  reasoningTokens: usage.outputTokenDetails?.reasoningTokens,
-                  cachedInputTokens: usage.inputTokenDetails?.cacheReadTokens,
+      // Full turn pipeline (compaction → model gen → zombie recovery) as a
+      // thunk, so the Langfuse wrapper can run it inside one `chatbot-turn`
+      // active span — every model + tool call then nests under ONE trace
+      // per turn. Run directly when Langfuse is unconfigured.
+      const turnBody = async (): Promise<void> => {
+        const historyForModel = await compactConversation(params.history, {
+          onProgress: (event) => {
+            // The shared `id` makes consecutive writes UPDATE the
+            // single existing data part on the client (started → done
+            // / failed) instead of stacking three separate cards.
+            // The frontend renders this part as a UChatTool with a
+            // loader while phase==='running' and transitions to a
+            // success / failure state on the final write.
+            if (event.phase === "started") {
+              writer.write({
+                type: "data-compaction",
+                id: COMPACTION_PART_ID,
+                data: { phase: "running", tokensBefore: event.tokensBefore },
+              });
+              return;
+            }
+            if (event.phase === "succeeded") {
+              writer.write({
+                type: "data-compaction",
+                id: COMPACTION_PART_ID,
+                data: {
+                  phase: "done",
+                  tokensBefore: event.tokensBefore,
+                  tokensAfter: event.tokensAfter,
+                  reductionPct: event.reductionPct,
                 },
-              },
-            };
+              });
+              return;
+            }
+            // failed
+            writer.write({
+              type: "data-compaction",
+              id: COMPACTION_PART_ID,
+              data: { phase: "failed", tokensBefore: event.tokensBefore },
+            });
           },
-        }),
-      );
+        });
 
-      // Post-merge zombie recovery: when the primary finishes with
-      // `finish=other|length` and no visible text, the SDK has already
-      // streamed the (empty) primary output to the writer. We don't
-      // bubble an error to the user — instead we chain into the
-      // fallback model in the same writer. Mirrors the principle of
-      // graceful degradation: the user gets a real answer instead of
-      // a silent stop, at the cost of one extra model turn that only
-      // fires on the rare zombie path.
-      //
-      // Note: this fires *regardless of whether tool calls happened*.
-      // A turn that called `read` 5 times and then died without text
-      // is still a zombie from the user's perspective — they see
-      // collapsed tool-result UI cards and no answer.
-      try {
-        const [finishReason, finalText] = await Promise.all([
-          result.finishReason,
-          result.text,
-        ]);
-        const isBudgetExhausted =
-          finishReason === "other" || finishReason === "length";
-        const hasNoVisibleText = (finalText ?? "").trim().length === 0;
-        const primaryZombied = isBudgetExhausted && hasNoVisibleText;
-        if (primaryZombied && !abortController.signal.aborted) {
-          console.error(
-            `${params.logPrefix} primary zombied (finish=${finishReason}) — chaining to fallback model`,
-          );
-          // Inline UI notice so the user sees something happen during
-          // the second model turn instead of staring at silence.
-          const noticeId = randomUUIDv7();
-          writer.write({ type: "text-start", id: noticeId });
-          writer.write({
-            type: "text-delta",
-            id: `${noticeId}-d`,
-            delta:
-              "_Switching to the fallback model after the primary stopped without producing an answer…_\n\n",
-          });
-          writer.write({ type: "text-end", id: noticeId });
+        const result = await streamChatbotWithFallback({
+          history: historyForModel,
+          callOptions: callOptionsWithFiles,
+          abortSignal: abortController.signal,
+        });
 
-          const fallbackMessages = await convertToModelMessages(
-            stripFilePartsForModel(historyForModel),
-          );
-          const fallbackResult = await chatbotAgentSet.fallback.stream({
-            messages: fallbackMessages,
-            options: callOptionsWithFiles,
-            abortSignal: abortController.signal,
-          });
-          writer.merge(
-            fallbackResult.toUIMessageStream<UIMessage>({
-              messageMetadata: ({ part }) => {
-                if (part.type !== "finish") return undefined;
-                const fbUsage = part.totalUsage;
-                return {
-                  telemetry: {
-                    finishReason: part.finishReason,
-                    rawFinishReason: part.rawFinishReason,
-                    usage: {
-                      inputTokens: fbUsage.inputTokens,
-                      outputTokens: fbUsage.outputTokens,
-                      totalTokens: fbUsage.totalTokens,
-                      reasoningTokens:
-                        fbUsage.outputTokenDetails?.reasoningTokens,
-                      cachedInputTokens:
-                        fbUsage.inputTokenDetails?.cacheReadTokens,
-                    },
+        // Merge the model's UIMessage stream into the outer stream.
+        // `originalMessages` / `onError` / `onFinish` were configured
+        // on the outer createUIMessageStream above — passing them again
+        // here would double-fire `onFinish` on persistence.
+        //
+        // `messageMetadata` is attached HERE (not on the outer
+        // createUIMessageStream — `messageMetadata` is a `toUIMessageStream`
+        // option, not a `createUIMessageStream` one). It is invoked on
+        // the inner stream's `start` and `finish` events; we only emit
+        // metadata on `finish` (start would overwrite a prior turn with
+        // `undefined`). The returned blob lands in the assistant
+        // message's `metadata` field, which `enrichAssistantMetadata`
+        // then folds together with parts-derived `steps` and `toolCalls`
+        // counts before persistence in `persistAssistantMessages`.
+        //
+        // Without this, diagnosing the reasoning-only zombie pattern
+        // (see `agents/shared/zombie-step-error.ts`) requires
+        // correlating server logs with SQL spelunking on `parts` JSON.
+        // The follow-up monitoring SQL becomes:
+        //
+        //   SELECT date_trunc('day', created_at), count(*) FILTER (
+        //     WHERE metadata->'telemetry'->>'finishReason' IN ('other','length')
+        //   ) FROM ai_messages WHERE role='assistant' GROUP BY 1;
+        writer.merge(
+          result.toUIMessageStream<UIMessage>({
+            messageMetadata: ({ part }) => {
+              if (part.type !== "finish") return undefined;
+              const usage = part.totalUsage;
+              return {
+                telemetry: {
+                  finishReason: part.finishReason,
+                  rawFinishReason: part.rawFinishReason,
+                  usage: {
+                    inputTokens: usage.inputTokens,
+                    outputTokens: usage.outputTokens,
+                    totalTokens: usage.totalTokens,
+                    reasoningTokens: usage.outputTokenDetails?.reasoningTokens,
+                    cachedInputTokens: usage.inputTokenDetails?.cacheReadTokens,
                   },
-                };
-              },
-            }),
-          );
+                },
+              };
+            },
+          }),
+        );
 
-          // If the fallback ALSO zombies, surface the actionable
-          // remediation message — at this point we've burned both
-          // models and the user deserves a clear next step.
-          const [fbFinish, fbText] = await Promise.all([
-            fallbackResult.finishReason,
-            fallbackResult.text,
+        // Post-merge zombie recovery: when the primary finishes with
+        // `finish=other|length` and no visible text, the SDK has already
+        // streamed the (empty) primary output to the writer. We don't
+        // bubble an error to the user — instead we chain into the
+        // fallback model in the same writer. Mirrors the principle of
+        // graceful degradation: the user gets a real answer instead of
+        // a silent stop, at the cost of one extra model turn that only
+        // fires on the rare zombie path.
+        //
+        // Note: this fires *regardless of whether tool calls happened*.
+        // A turn that called `read` 5 times and then died without text
+        // is still a zombie from the user's perspective — they see
+        // collapsed tool-result UI cards and no answer.
+        try {
+          const [finishReason, finalText] = await Promise.all([
+            result.finishReason,
+            result.text,
           ]);
-          const fbZombie =
-            (fbFinish === "other" || fbFinish === "length") &&
-            (fbText ?? "").trim().length === 0;
-          if (fbZombie) {
+          // Trace output for `chatbot-turn`: the primary's visible answer
+          // (overridden below if zombie-recovery's fallback produces text).
+          visibleOutput = finalText ?? "";
+          traceFinishReason = finishReason;
+          const isBudgetExhausted =
+            finishReason === "other" || finishReason === "length";
+          const hasNoVisibleText = (finalText ?? "").trim().length === 0;
+          const primaryZombied = isBudgetExhausted && hasNoVisibleText;
+          if (primaryZombied && !abortController.signal.aborted) {
             console.error(
-              `${params.logPrefix} fallback also zombied (finish=${fbFinish})`,
+              `${params.logPrefix} primary zombied (finish=${finishReason}) — chaining to fallback model`,
             );
-            const finalId = randomUUIDv7();
-            writer.write({ type: "text-start", id: finalId });
+            // Inline UI notice so the user sees something happen during
+            // the second model turn instead of staring at silence.
+            const noticeId = randomUUIDv7();
+            writer.write({ type: "text-start", id: noticeId });
             writer.write({
               type: "text-delta",
-              id: `${finalId}-d`,
+              id: `${noticeId}-d`,
               delta:
-                "Both models stopped without producing an answer. Please retry — for large attachments, try opening the file directly in `python` (e.g. `pdfplumber.open(...)`, `pd.read_csv(...)`).",
+                "_Switching to the fallback model after the primary stopped without producing an answer…_\n\n",
             });
-            writer.write({ type: "text-end", id: finalId });
+            writer.write({ type: "text-end", id: noticeId });
+
+            const fallbackMessages = await convertToModelMessages(
+              stripFilePartsForModel(historyForModel),
+            );
+            const fallbackResult = await chatbotAgentSet.fallback.stream({
+              messages: fallbackMessages,
+              options: callOptionsWithFiles,
+              abortSignal: abortController.signal,
+            });
+            writer.merge(
+              fallbackResult.toUIMessageStream<UIMessage>({
+                messageMetadata: ({ part }) => {
+                  if (part.type !== "finish") return undefined;
+                  const fbUsage = part.totalUsage;
+                  return {
+                    telemetry: {
+                      finishReason: part.finishReason,
+                      rawFinishReason: part.rawFinishReason,
+                      usage: {
+                        inputTokens: fbUsage.inputTokens,
+                        outputTokens: fbUsage.outputTokens,
+                        totalTokens: fbUsage.totalTokens,
+                        reasoningTokens:
+                          fbUsage.outputTokenDetails?.reasoningTokens,
+                        cachedInputTokens:
+                          fbUsage.inputTokenDetails?.cacheReadTokens,
+                      },
+                    },
+                  };
+                },
+              }),
+            );
+
+            // If the fallback ALSO zombies, surface the actionable
+            // remediation message — at this point we've burned both
+            // models and the user deserves a clear next step.
+            const [fbFinish, fbText] = await Promise.all([
+              fallbackResult.finishReason,
+              fallbackResult.text,
+            ]);
+            // The fallback produced the actually-visible answer — make it
+            // the trace output instead of the primary's empty text.
+            if ((fbText ?? "").trim().length > 0) {
+              visibleOutput = fbText;
+              traceFinishReason = fbFinish;
+            }
+            const fbZombie =
+              (fbFinish === "other" || fbFinish === "length") &&
+              (fbText ?? "").trim().length === 0;
+            if (fbZombie) {
+              console.error(
+                `${params.logPrefix} fallback also zombied (finish=${fbFinish})`,
+              );
+              const finalId = randomUUIDv7();
+              writer.write({ type: "text-start", id: finalId });
+              writer.write({
+                type: "text-delta",
+                id: `${finalId}-d`,
+                delta:
+                  "Both models stopped without producing an answer. Please retry — for large attachments, try opening the file directly in `python` (e.g. `pdfplumber.open(...)`, `pd.read_csv(...)`).",
+              });
+              writer.write({ type: "text-end", id: finalId });
+            }
           }
+        } catch (err) {
+          // Defensive — if `result.finishReason` / fallback chain fail
+          // to resolve, we don't want to break the happy path. Log and
+          // move on. The user has at least seen the primary's output
+          // (even if empty).
+          console.warn(
+            `${params.logPrefix} zombie-fallback chain failed:`,
+            err instanceof Error ? err.message : err,
+          );
         }
-      } catch (err) {
-        // Defensive — if `result.finishReason` / fallback chain fail
-        // to resolve, we don't want to break the happy path. Log and
-        // move on. The user has at least seen the primary's output
-        // (even if empty).
-        console.warn(
-          `${params.logPrefix} zombie-fallback chain failed:`,
-          err instanceof Error ? err.message : err,
-        );
+      };
+
+      // No Langfuse → run the turn directly, no tracing overhead.
+      if (!langfuseEnabled) {
+        await turnBody();
+        return;
       }
+
+      // Single `chatbot-turn` parent observation per turn. `tags` /
+      // `metadata` carry team + per-turn ids for filtering; `sessionId =
+      // conversationId` groups the multi-turn thread in the Session view.
+      // Order is load-bearing: `startActiveObservation` OUTER so
+      // `chatbot-turn` is the active span when `propagateAttributes` runs —
+      // the session / user / tags then land on the parent itself, not only
+      // on its child spans. Every model + tool call inside `turnBody` nests
+      // under this one observation.
+      const o = params.callOptions;
+      const tags = [`team:${o.teamId}`];
+      if (o.traceId !== undefined) {
+        tags.push(`turn:${o.traceId}`);
+      }
+      const metadata: Record<string, string> = {
+        teamId: o.teamId,
+        organizationId: o.organizationId,
+      };
+      if (o.conversationId !== undefined) {
+        metadata.conversationId = o.conversationId;
+      }
+      if (o.traceId !== undefined) {
+        metadata.traceId = o.traceId;
+      }
+      const lastUserMessage = [...params.history]
+        .reverse()
+        .find((m) => m.role === "user");
+      const inputText = lastUserMessage ? uiMessageText(lastUserMessage) : "";
+
+      await startActiveObservation(
+        "chatbot-turn",
+        async () => {
+          await propagateAttributes(
+            {
+              traceName: "chatbot-turn",
+              ...(o.conversationId !== undefined
+                ? { sessionId: o.conversationId }
+                : {}),
+              ...(o.userId !== undefined ? { userId: o.userId } : {}),
+              tags,
+              metadata,
+            },
+            async () => {
+              if (inputText.length > 0) {
+                updateActiveObservation(
+                  { input: inputText },
+                  { asType: "agent" },
+                );
+              }
+              await turnBody();
+              updateActiveObservation(
+                {
+                  output: visibleOutput,
+                  ...(traceFinishReason !== undefined
+                    ? { metadata: { finishReason: traceFinishReason } }
+                    : {}),
+                },
+                { asType: "agent" },
+              );
+            },
+          );
+        },
+        { asType: "agent" },
+      );
     },
   });
 

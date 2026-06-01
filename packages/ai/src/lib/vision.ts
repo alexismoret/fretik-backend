@@ -1,4 +1,7 @@
+import { type LanguageModelV3 } from "@ai-sdk/provider";
 import { generateText } from "ai";
+import { telemetryFor } from "./langfuse";
+import { instrumentModel } from "./model-instrumentation";
 import { openrouter } from "./openrouter";
 
 /**
@@ -43,8 +46,10 @@ const DEFAULT_TIMEOUT_MS = 60_000;
 const MAX_OUTPUT_TOKENS = 1_500;
 const TEMPERATURE = 0.2;
 
-const visionModel = openrouter.chat(VISION_MODEL_ID);
-const visionFallbackModel = openrouter.chat(VISION_FALLBACK_MODEL_ID);
+const visionModel = instrumentModel(openrouter.chat(VISION_MODEL_ID));
+const visionFallbackModel = instrumentModel(
+  openrouter.chat(VISION_FALLBACK_MODEL_ID),
+);
 
 /**
  * Run a primary→fallback chain and return the result of whichever
@@ -55,10 +60,7 @@ const visionFallbackModel = openrouter.chat(VISION_FALLBACK_MODEL_ID);
  * so the agent can see which one actually answered.
  */
 const runWithVisionFallback = async <T>(
-  builder: (
-    model: ReturnType<typeof openrouter.chat>,
-    modelId: string,
-  ) => Promise<T>,
+  builder: (model: LanguageModelV3, modelId: string) => Promise<T>,
 ): Promise<T> => {
   try {
     return await builder(visionModel, VISION_MODEL_ID);
@@ -95,6 +97,8 @@ export const describeImage = async (
       temperature: TEMPERATURE,
       maxOutputTokens: MAX_OUTPUT_TOKENS,
       abortSignal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
+      // Nests under the `vision` tool call → under `chatbot-turn`.
+      experimental_telemetry: telemetryFor("vision"),
       messages: [
         {
           role: "user",
@@ -153,6 +157,8 @@ export const describePdf = async (
       temperature: TEMPERATURE,
       maxOutputTokens: MAX_OUTPUT_TOKENS,
       abortSignal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
+      // Nests under the `vision` tool call → under `chatbot-turn`.
+      experimental_telemetry: telemetryFor("vision"),
       messages: [
         {
           role: "user",

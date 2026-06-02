@@ -31,54 +31,5 @@ export const latencyStressSuite: EvalSuite = {
         { type: "latencyUnder", ms: 30_000 },
       ],
     },
-    {
-      id: "lat-rag-content",
-      description:
-        "Content-grounded RAG turn — MiniMax reasoning dominates, ~30-120s",
-      prompt: "Quel est le dernier document que tu as indexé ?",
-      tags: ["latency", "rag"],
-      assertions: [
-        { type: "noError" },
-        {
-          type: "toolUsed",
-          tools: ["searchKnowledge", "querySql", "listDocuments"],
-          mode: "any",
-        },
-        { type: "latencyUnder", ms: 150_000 },
-      ],
-    },
-    {
-      id: "lat-multi-tool",
-      description:
-        "Multi-tool turn — count + recent list combined, 5+ tool calls expected",
-      prompt:
-        "Donne-moi un aperçu rapide: combien de documents, combien d'extractions, et la plus récente de chaque.",
-      tags: ["latency", "multi-tool"],
-      assertions: [
-        { type: "noError" },
-        {
-          type: "toolUsed",
-          tools: ["querySql", "listDocuments", "listExtractions"],
-          mode: "any",
-        },
-        { type: "latencyUnder", ms: 120_000 },
-      ],
-    },
-    {
-      id: "lat-no-tool",
-      description:
-        "Pure conversation turn — no tool call, model reasoning only (MiniMax can still take 30-60s)",
-      prompt:
-        "Explique-moi en deux phrases ce qu'est un connaissement maritime.",
-      tags: ["latency", "no-tool"],
-      assertions: [
-        { type: "noError" },
-        {
-          type: "toolNotUsed",
-          tools: ["searchKnowledge", "querySql", "searchWeb"],
-        },
-        { type: "latencyUnder", ms: 90_000 },
-      ],
-    },
   ],
 };

@@ -1,10 +1,5 @@
 import db from "@fretik/shared/db";
-import {
-  AI_VECTOR_SOURCE_TYPES,
-  aiChatFiles,
-  aiMessages,
-  type AiVectorSourceType,
-} from "@fretik/shared/db/schema";
+import { aiChatFiles, aiMessages } from "@fretik/shared/db/schema";
 import { getProvider } from "@fretik/shared/external-apps/registry";
 import {
   authMiddleware,
@@ -215,162 +210,16 @@ const streamChatbotWithFallback = async (params: {
  * conversation directly — no need for a pre-stream message stub.
  */
 /**
- * Augment an assistant message's metadata with derived per-turn
- * telemetry — `steps` (count of `step-start` parts) and `toolCalls`
- * (count + names of `tool-*` parts). The `finishReason` + `usage`
- * fields are already attached upstream by the `messageMetadata`
- * callback configured on `createUIMessageStream` below; this just
- * folds in the parts-derived counts so a single
- * `metadata.telemetry.{...}` blob lands in the DB row.
- *
- * Without this, diagnosing reasoning-only zombie incidents (see
- * `zombie-step-error.ts`) requires correlating SQL `parts` JSON
- * spelunking with server logs — exactly the friction that delayed
- * the analysis of conv `019defed-68c1-71f5-aae8-462311360d08`.
+ * Narrow a UIMessage's `unknown` metadata to a plain object for
+ * persistence — keeps whatever the `messageMetadata` stream callback
+ * attached (`langfuseTraceId`, `usage`, `finishReason`). Per-turn
+ * observability (tool calls, RAG hits, latency, cost) now lives in
+ * Langfuse, not in the DB row.
  */
-/**
- * Memory tool commands tracked for surveillance — see S6 deviation:
- * "% of turns where an exact-match grep would have improved retrieval
- * quality. If > 5%, S9 corrective re-introduces grep". Persisted in
- * `metadata.telemetry.memoryCommands` for SQL aggregation by
- * `scripts/measure-rag-metrics.ts` (S8 Task 6).
- */
-type MemoryCommand = "view" | "create" | "overwrite" | "delete" | "rename";
-
-interface PartsTelemetry {
-  steps: number;
-  toolCalls: string[];
-  ragHits: Record<AiVectorSourceType, number>;
-  ragHitsTotal: number;
-  toolCallsByName: Record<string, number>;
-  memoryCommands: Record<MemoryCommand, number>;
-}
-
-const emptyRagHits = (): Record<AiVectorSourceType, number> => {
-  const init = {} as Record<AiVectorSourceType, number>;
-  for (const t of AI_VECTOR_SOURCE_TYPES) init[t] = 0;
-  return init;
-};
-
-const emptyMemoryCommands = (): Record<MemoryCommand, number> => ({
-  view: 0,
-  create: 0,
-  overwrite: 0,
-  delete: 0,
-  rename: 0,
-});
-
-/**
- * Walk a UIMessage's parts to derive observability counters per turn:
- * step starts, tool-call names, per-source RAG hits, per-tool call
- * counts, and memory command counts. Used by both
- * `enrichAssistantMetadata` (DB persistence) and the `chatbot.turn-metrics`
- * structured log emitted in `onFinish` (S8 Task 1).
- *
- * Defensive narrowing throughout: UIMessagePart types are loosely
- * typed, and `output` of `tool-{name}` parts can be the tool's
- * structured return, an `{error,code}` envelope, or a
- * `<persisted-output>` marker (`maybePersistLargeOutput`, threshold
- * `RAG_THRESHOLD_CHARS=48000`). Non-shaped outputs are silently
- * skipped — counters undercount in the rare large-output case, which
- * is acceptable per S8 Task 1 design.
- */
-const extractPartsTelemetry = (m: UIMessage): PartsTelemetry => {
-  const ragHits = emptyRagHits();
-  const memoryCommands = emptyMemoryCommands();
-  const toolCallsByName: Record<string, number> = {};
-  const toolCalls: string[] = [];
-  let steps = 0;
-  let ragHitsTotal = 0;
-  for (const p of m.parts) {
-    if (p.type === "step-start") {
-      steps += 1;
-      continue;
-    }
-    if (typeof p.type !== "string" || !p.type.startsWith("tool-")) continue;
-    const toolName = p.type.slice("tool-".length);
-    toolCalls.push(toolName);
-    toolCallsByName[toolName] = (toolCallsByName[toolName] ?? 0) + 1;
-    // p is { type, toolCallId, state, input?, output?, errorText? }
-    // We narrow by reading the fields we care about as `unknown`.
-    const part = p as unknown as {
-      state?: string;
-      input?: unknown;
-      output?: unknown;
-    };
-    if (
-      toolName === "searchKnowledge" &&
-      part.state === "output-available" &&
-      part.output &&
-      typeof part.output === "object" &&
-      "results" in part.output &&
-      Array.isArray((part.output as { results: unknown }).results)
-    ) {
-      const results = (part.output as { results: unknown[] }).results;
-      for (const hit of results) {
-        if (
-          hit &&
-          typeof hit === "object" &&
-          "sourceType" in hit &&
-          typeof (hit as { sourceType: unknown }).sourceType === "string"
-        ) {
-          const st = (hit as { sourceType: string }).sourceType;
-          if ((AI_VECTOR_SOURCE_TYPES as readonly string[]).includes(st)) {
-            const key = st as AiVectorSourceType;
-            ragHits[key] = (ragHits[key] ?? 0) + 1;
-            ragHitsTotal += 1;
-          }
-        }
-      }
-    } else if (
-      toolName === "memory" &&
-      part.input &&
-      typeof part.input === "object" &&
-      "command" in part.input &&
-      typeof (part.input as { command: unknown }).command === "string"
-    ) {
-      const cmd = (part.input as { command: string }).command;
-      if (cmd in memoryCommands) {
-        memoryCommands[cmd as MemoryCommand] += 1;
-      }
-    }
-  }
-  return {
-    steps,
-    toolCalls,
-    ragHits,
-    ragHitsTotal,
-    toolCallsByName,
-    memoryCommands,
-  };
-};
-
-const enrichAssistantMetadata = (
-  m: UIMessage,
-): Record<string, unknown> | undefined => {
-  const t = extractPartsTelemetry(m);
-  // `metadata` is `unknown` on UIMessage — defensively narrow before
-  // spreading so we never replace an existing object with garbage.
-  const baseMetadata: Record<string, unknown> =
-    m.metadata && typeof m.metadata === "object"
-      ? (m.metadata as Record<string, unknown>)
-      : {};
-  const baseTelemetry =
-    baseMetadata.telemetry && typeof baseMetadata.telemetry === "object"
-      ? (baseMetadata.telemetry as Record<string, unknown>)
-      : {};
-  return {
-    ...baseMetadata,
-    telemetry: {
-      ...baseTelemetry,
-      steps: t.steps,
-      toolCalls: t.toolCalls,
-      ragHits: { ...t.ragHits, total: t.ragHitsTotal },
-      toolCallsByName: t.toolCallsByName,
-      memoryCommands: t.memoryCommands,
-    },
-  };
-};
+const narrowMetadata = (m: UIMessage): Record<string, unknown> | undefined =>
+  m.metadata && typeof m.metadata === "object"
+    ? (m.metadata as Record<string, unknown>)
+    : undefined;
 
 const persistAssistantMessages = async (
   conversationId: string | undefined,
@@ -388,7 +237,7 @@ const persistAssistantMessages = async (
     assistantMessages.map((m) => ({
       role: "assistant" as const,
       parts: m.parts,
-      metadata: enrichAssistantMetadata(m),
+      metadata: narrowMetadata(m),
     })),
   );
 };
@@ -1089,12 +938,6 @@ const setupAbortChannel = async (
 const runChatbotTurn = async (
   params: RunChatbotTurnParams,
 ): Promise<Response> => {
-  // Captured at the start of the turn so the `chatbot.turn-metrics`
-  // structured log emitted in `onFinish` carries an accurate
-  // `latencyMs` (turn-level wall clock, includes RAG + tool calls +
-  // model gen). Read inside the closure below.
-  const turnStartedAt = Date.now();
-
   const filenames = extractLastUserFileFilenames(params.history);
   const tooManyFiles = await rejectTooManyFiles(params, filenames);
   if (tooManyFiles) {
@@ -1179,72 +1022,10 @@ const runChatbotTurn = async (
         params.history,
         finalMessages,
       );
-      // S8 Task 1 — per-turn observability. Aggregate parts-derived
-      // counters across every NEW assistant message produced this turn
-      // (same set as `persistAssistantMessages` operates on) and emit a
-      // single structured JSON line aligned with OpenTelemetry GenAI
-      // semantic conventions. One line per turn, JSON-valid → grep + jq
-      // → trivial Bash aggregation. Future-proof: a migration to
-      // LangSmith / Logfire / OpenObserve only needs to map `gen_ai.*`
-      // attributes verbatim.
-      try {
-        const knownIds = new Set(params.history.map((m) => m.id));
-        const newAssistant = finalMessages.filter(
-          (m) => !knownIds.has(m.id) && m.role === "assistant",
-        );
-        const turn: PartsTelemetry = {
-          steps: 0,
-          toolCalls: [],
-          ragHits: emptyRagHits(),
-          ragHitsTotal: 0,
-          toolCallsByName: {},
-          memoryCommands: emptyMemoryCommands(),
-        };
-        for (const m of newAssistant) {
-          const t = extractPartsTelemetry(m);
-          turn.steps += t.steps;
-          turn.toolCalls.push(...t.toolCalls);
-          turn.ragHitsTotal += t.ragHitsTotal;
-          for (const st of AI_VECTOR_SOURCE_TYPES) {
-            turn.ragHits[st] = (turn.ragHits[st] ?? 0) + (t.ragHits[st] ?? 0);
-          }
-          for (const [name, n] of Object.entries(t.toolCallsByName)) {
-            turn.toolCallsByName[name] = (turn.toolCallsByName[name] ?? 0) + n;
-          }
-          for (const cmd of Object.keys(
-            turn.memoryCommands,
-          ) as MemoryCommand[]) {
-            turn.memoryCommands[cmd] =
-              (turn.memoryCommands[cmd] ?? 0) + (t.memoryCommands[cmd] ?? 0);
-          }
-        }
-        console.info(
-          JSON.stringify({
-            evt: "chatbot.turn-metrics",
-            conversationId: params.conversationId ?? null,
-            streamId: params.resumableStreamId ?? null,
-            // Same value as the trace prefix on every per-step log line
-            // for this turn. Lets log aggregation join the JSON event
-            // back to the per-step text logs without timestamp matching.
-            traceId: params.callOptions.traceId ?? null,
-            // OpenTelemetry GenAI semantic-conventions aligned attributes.
-            "gen_ai.system": "openrouter",
-            "gen_ai.usage.latency_ms": Date.now() - turnStartedAt,
-            // Fretik-specific RAG breakdown.
-            assistantMessages: newAssistant.length,
-            steps: turn.steps,
-            ragHits: { ...turn.ragHits, total: turn.ragHitsTotal },
-            toolCallsByName: turn.toolCallsByName,
-            memoryCommands: turn.memoryCommands,
-          }),
-        );
-      } catch (err: unknown) {
-        // Telemetry must never block the turn completion path.
-        console.warn(
-          `${params.logPrefix} turn-metrics emission failed:`,
-          err instanceof Error ? err.message : err,
-        );
-      }
+      // Per-turn observability (tool calls, RAG hits, latency, cost) is
+      // captured by Langfuse via `experimental_telemetry` — see
+      // `lib/langfuse.ts`. No custom DB telemetry blob or structured log
+      // line here.
       // Email-on-finish notification. Reads `emailOnCompletion` off the
       // conversation row in DB itself — no need to plumb the toggle
       // through the request body. Fire-and-forget so a flaky SMTP path
@@ -1359,19 +1140,11 @@ const runChatbotTurn = async (
         // option, not a `createUIMessageStream` one). It is invoked on
         // the inner stream's `start` and `finish` events; we only emit
         // metadata on `finish` (start would overwrite a prior turn with
-        // `undefined`). The returned blob lands in the assistant
-        // message's `metadata` field, which `enrichAssistantMetadata`
-        // then folds together with parts-derived `steps` and `toolCalls`
-        // counts before persistence in `persistAssistantMessages`.
-        //
-        // Without this, diagnosing the reasoning-only zombie pattern
-        // (see `agents/shared/zombie-step-error.ts`) requires
-        // correlating server logs with SQL spelunking on `parts` JSON.
-        // The follow-up monitoring SQL becomes:
-        //
-        //   SELECT date_trunc('day', created_at), count(*) FILTER (
-        //     WHERE metadata->'telemetry'->>'finishReason' IN ('other','length')
-        //   ) FROM ai_messages WHERE role='assistant' GROUP BY 1;
+        // `undefined`). The returned blob lands in the assistant message's
+        // `metadata`: `langfuseTraceId` (so the feedback control can score
+        // the right Langfuse trace) plus `finishReason` / `usage` (read by
+        // the eval harness over SSE). Full per-turn observability —
+        // tool calls, RAG hits, latency, cost — lives in Langfuse.
         writer.merge(
           result.toUIMessageStream<UIMessage>({
             messageMetadata: ({ part }) => {
@@ -1828,9 +1601,9 @@ chatbotRoutes.post("/stream", async (c) => {
     conversationId,
     timeZone: c.req.header("X-Client-Timezone"),
     // Reuse the resumable streamId as the per-turn trace id so step /
-    // zombie / fallback log lines all share the same identifier as
-    // the `chatbot.turn-metrics` JSON line — one grep recovers the
-    // full turn end-to-end.
+    // zombie / fallback log lines all share one identifier — one grep
+    // recovers the full turn end-to-end. (Distinct from the Langfuse
+    // trace id, which is the active OTel span context.)
     traceId: streamId,
   };
 

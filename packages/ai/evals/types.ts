@@ -204,53 +204,7 @@ export interface CaseResult {
   assertions: AssertionResult[];
 }
 
-export interface SuiteReport {
-  suite: string;
-  total: number;
-  passed: number;
-  failed: number;
-  cases: CaseResult[];
-}
-
-export interface LatencyStats {
-  samples: number;
-  medianMs: number;
-  p95Ms: number;
-  totalMs: number;
-}
-
-export interface PerToolLatency {
-  tool: string;
-  calls: number;
-  medianMs: number;
-  p95Ms: number;
-}
-
-export interface RunReport {
-  startedAt: string;
-  finishedAt: string;
-  durationMs: number;
-  env: {
-    aiServiceUrl: string;
-    teamId: string;
-    organizationId: string;
-  };
-  suites: SuiteReport[];
-  totals: {
-    cases: number;
-    passed: number;
-    failed: number;
-    /** Turn-level wall-clock latency (HTTP + stream drain). */
-    turnLatency: LatencyStats;
-    /**
-     * Time spent INSIDE tool executions (sum of per-tool latency
-     * samples). Separate from `turnLatency` so we can tell whether
-     * the bottleneck is tool code or the surrounding model reasoning.
-     */
-    toolLatency: LatencyStats;
-    /** `turnLatency - toolLatency`, clamped ≥0. */
-    modelLatency: LatencyStats;
-    /** Per-tool-name p50/p95 for drill-down. */
-    perTool: PerToolLatency[];
-  };
-}
+// Eval results are recorded as Langfuse dataset runs (see
+// `evals/langfuse/`). `CaseResult` above is the per-case shape the runner
+// returns; aggregation + reporting live in the Langfuse UI, not in a local
+// report type.

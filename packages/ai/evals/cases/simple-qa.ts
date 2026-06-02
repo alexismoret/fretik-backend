@@ -31,32 +31,6 @@ export const simpleQaSuite: EvalSuite = {
       ],
     },
     {
-      id: "qa-capabilities",
-      description: "What can you do? — meta question, pure text",
-      prompt: "Que peux-tu faire pour moi ?",
-      tags: ["smoke", "no-tool"],
-      assertions: [
-        { type: "noError" },
-        { type: "toolNotUsed", tools: ["searchKnowledge", "querySql"] },
-        {
-          type: "judge",
-          rubric:
-            "The answer mentions at least two concrete capabilities (e.g. searching documents, querying data, summarising extractions, fetching web info).",
-        },
-      ],
-    },
-    {
-      id: "qa-arithmetic",
-      description: "Trivial arithmetic — no tool needed",
-      prompt: "Combien font 12 + 30 ?",
-      tags: ["no-tool"],
-      assertions: [
-        { type: "noError" },
-        { type: "contains", value: "42" },
-        { type: "toolNotUsed", tools: ["python", "querySql"] },
-      ],
-    },
-    {
       id: "qa-clarify",
       description: "Answer must stay tightly focused on the question asked",
       prompt: "Quelle est la différence entre un devis et une facture ?",

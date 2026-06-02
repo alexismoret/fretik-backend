@@ -31,7 +31,7 @@ When editing prompts (`src/agents/chatbot/system-prompt.md`, `src/agents/chatbot
 
 ## Evals (Langfuse loop)
 
-**How to run / what to run when → `evals/RUNBOOK.md`.** One engine (`evals/`, runs the REAL chatbot — needs a live service + `AI_SERVICE_URL`, not in `.env`), three surfaces: scripts (dev), CI (gate), Langfuse UI (analysis). `bun run evals:langfuse` = experiment/dataset-run; `bun run evals` = local report.
+**How to run / what to run when → `evals/RUNBOOK.md`.** One engine (`evals/`, runs the REAL chatbot — needs a live service + `AI_SERVICE_URL`, not in `.env`), Langfuse-only: `bun run evals:langfuse` runs the curated cases as a `chatbot-eval` dataset run (scored + compared in the Langfuse UI). There is no local JSON-report path. Only curated cases (`curation.ts`) run; the gold set grows from prod via `promoteTrace` (removed synthetic cases are recorded in `evals/BACKLOG.md`).
 
 Invariants:
 

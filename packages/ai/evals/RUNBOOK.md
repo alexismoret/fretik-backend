@@ -23,7 +23,7 @@ AI_SERVICE_URL=http://localhost:8083 bun run evals:langfuse                 # fu
 AI_SERVICE_URL=http://localhost:8083 bun run evals:langfuse -- --smoke      # PR smoke subset (~8)
 AI_SERVICE_URL=http://localhost:8083 bun run evals:langfuse -- --capability external-actions
 AI_SERVICE_URL=http://localhost:8083 bun run evals:langfuse -- --deterministic-only   # no judge (free of judge cost)
-bun run evals                                                               # local JSON/MD report, no Langfuse
+AI_SERVICE_URL=http://localhost:8083 bun run evals:langfuse -- --run-name <name>      # explicit dataset-run name
 ```
 
 The run prints a per-capability summary + a **dataset-run URL** → open it in Langfuse to

@@ -119,38 +119,6 @@ export const dispatchAgentSuite: EvalSuite = {
     },
 
     {
-      id: "dispatch-parallel-easy",
-      description:
-        "Medium-difficulty trigger: prompt explicitly mentions 'en parallèle' + a fixed N of independent sub-tasks (3 documents). The model has every signal it needs to recognise the fan-out pattern without being told to call dispatchAgent by name. If MiniMax does NOT invoke dispatchAgent here, the bias against delegation is strong enough that no prompt-only fix will move the needle on this model — the next lever would be programmatic (mid-step nudge or prepareStep restriction).",
-      prompt:
-        "Analyse en parallèle les 3 derniers documents importés et résume chacun en 2 lignes (titre, type, résumé).",
-      tags: ["dispatch-agent", "easy-trigger"],
-      assertions: [
-        { type: "noError" },
-        // Soft check — we WANT dispatchAgent here but acknowledge
-        // MiniMax may still inline. The custom assertion below is
-        // the real diagnostic: it always passes (turn does run) but
-        // the dispatchAgent count goes into the JSON report so we
-        // can see model behaviour without flagging the case red.
-        {
-          type: "custom",
-          name: "diagnostic-dispatch-count",
-          fn: (result) => {
-            const calls = result.toolCalls.filter(
-              (c) => c.name === "dispatchAgent",
-            );
-            // Always passes — this is observation, not a hard
-            // failure. Read the report's per-tool latency block to
-            // see whether the model actually delegated.
-            const _diag = `dispatchAgent invocations=${calls.length.toString()}, total tool calls=${result.toolCalls.length.toString()}`;
-            void _diag;
-            return true;
-          },
-        },
-      ],
-    },
-
-    {
       id: "dispatch-explicit-instruction",
       description:
         "Sanity check: when the user EXPLICITLY tells the agent to use dispatchAgent, it MUST invoke the tool. If this case fails the tool is not technically exposed (registry / prepareStep / activeTools issue) and no amount of prompt engineering will help. If this case passes but the soft cases below don't trigger dispatchAgent, the problem is purely prompt engineering / model bias.",
@@ -160,36 +128,6 @@ export const dispatchAgentSuite: EvalSuite = {
       assertions: [
         { type: "noError" },
         { type: "toolUsed", tools: ["dispatchAgent"] },
-      ],
-    },
-
-    {
-      id: "dispatch-incomplete-marker-on-budget",
-      description:
-        "Soft check: when a sub-agent stops on its step budget rather than producing a clean summary, dispatchAgent's formatResult prefixes the summary with `[incomplete: …]`. The parent should surface this rather than silently treating the partial as the final answer. We pass when the answer is non-empty and either the run was clean OR the parent acknowledges incompleteness.",
-      // A genuinely budget-exhausting prompt is hard to construct
-      // deterministically (depends on model behaviour, sub-agent
-      // budget, current data shape). This case is a soft sanity check
-      // — if the model self-resolves without dispatch, it still
-      // passes via the noError + non-empty assertion.
-      prompt:
-        "Fais l'inventaire complet de chaque type de document que la team a déjà uploadé, avec un compte par type, par mois sur les 6 derniers mois.",
-      tags: ["dispatch-agent", "incomplete"],
-      assertions: [
-        { type: "noError" },
-        {
-          type: "custom",
-          name: "non-empty-output-or-acknowledged-incomplete",
-          fn: (result) => {
-            const text = result.text.trim();
-            if (text.length === 0)
-              return "empty output — turn produced nothing";
-            // If the parent surfaced incompleteness, the marker is
-            // either echoed verbatim or paraphrased. Either way is
-            // acceptable; what we want to catch is a hidden partial.
-            return true;
-          },
-        },
       ],
     },
   ],

@@ -35,10 +35,7 @@
  * would automate this in CI.
  */
 
-import {
-  ragFoundDocument,
-  ragReturnedAtLeast,
-} from "../assertions/rag-found-document";
+import { ragFoundDocument } from "../assertions/rag-found-document";
 import type { EvalSuite } from "../types";
 
 export const ragMetadataSuite: EvalSuite = {
@@ -59,22 +56,6 @@ export const ragMetadataSuite: EvalSuite = {
       ],
     },
     {
-      id: "rag-metadata-type-recall",
-      description:
-        "Structural-type query — the assistant should route through searchKnowledge and the results should be dominated by invoice-type documents",
-      prompt: "Find the most recent invoices in our corpus.",
-      tags: ["rag", "metadata", "doc-type"],
-      assertions: [
-        { type: "noError" },
-        { type: "toolUsed", tools: ["searchKnowledge", "listDocuments"] },
-        {
-          type: "judge",
-          rubric:
-            "PASS if the assistant surfaces invoice-type documents (documentType=invoice) in its answer and cites them, OR honestly states none were found. FAIL if the assistant returns non-invoice documents as if they were invoices.",
-        },
-      ],
-    },
-    {
       id: "rag-metadata-excel-summary",
       description:
         "Tabular file should be retrievable via its metadata-only vector (summary + classification)",
@@ -85,32 +66,6 @@ export const ragMetadataSuite: EvalSuite = {
         { type: "noError" },
         { type: "toolUsed", tools: ["searchKnowledge"] },
         ragFoundDocument({ documentIdEnv: "EVAL_FIXTURE_EXCEL_DOC_ID" }),
-      ],
-    },
-    {
-      id: "rag-metadata-chunking-regression",
-      description:
-        "Regression guard: a broad content query MUST return ≥1 chunk. Historical JSON-as-markdown bug silently produced zero chunks per doc — this case catches it by requiring any non-empty retrieval.",
-      prompt:
-        "Give me the main points of any business document you have available.",
-      tags: ["rag", "metadata", "regression"],
-      assertions: [
-        { type: "noError" },
-        { type: "toolUsed", tools: ["searchKnowledge"] },
-        ragReturnedAtLeast(1),
-      ],
-    },
-    {
-      id: "rag-metadata-summary-recall",
-      description:
-        "Summary-based recall on a non-OCR (metadata-only) source — the match must come from the embedded summary line, not from the file content.",
-      prompt:
-        "What do we have about pricing from European vendors for Q1 2026?",
-      tags: ["rag", "metadata", "summary-recall"],
-      assertions: [
-        { type: "noError" },
-        { type: "toolUsed", tools: ["searchKnowledge"] },
-        ragFoundDocument({ documentIdEnv: "EVAL_FIXTURE_SUMMARY_DOC_ID" }),
       ],
     },
   ],

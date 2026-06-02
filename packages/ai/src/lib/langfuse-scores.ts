@@ -8,10 +8,7 @@
  *
  * No-op when Langfuse is unconfigured (`langfuseClient` is undefined).
  */
-import { LangfuseClient } from "@langfuse/client";
-import { langfuseEnabled, langfuseEnvironment } from "./langfuse";
-
-const langfuseClient = langfuseEnabled ? new LangfuseClient() : undefined;
+import { langfuseClient, langfuseEnvironment } from "./langfuse";
 
 /**
  * Create a score on an existing trace (by id) and flush it. Returns whether
@@ -47,6 +44,26 @@ export const recordScore = async (params: {
   } catch (err) {
     console.warn(
       "[langfuse] recordScore failed:",
+      err instanceof Error ? err.message : err,
+    );
+    return false;
+  }
+};
+
+/**
+ * Delete a score by its (stable) id — used to REMOVE user feedback when the
+ * user toggles a thumb off. Deletion lives on the legacy v1 scores endpoint;
+ * the id is the same one `recordScore` upserts (`${traceId}-${name}`). Returns
+ * whether the delete was sent. Soft-fail: never throws.
+ */
+export const deleteScore = async (id: string): Promise<boolean> => {
+  if (!langfuseClient) return false;
+  try {
+    await langfuseClient.api.legacy.scoreV1.delete(id);
+    return true;
+  } catch (err) {
+    console.warn(
+      "[langfuse] deleteScore failed:",
       err instanceof Error ? err.message : err,
     );
     return false;

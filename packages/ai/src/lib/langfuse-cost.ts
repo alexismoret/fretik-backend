@@ -20,6 +20,7 @@
  * model call that emits no generation span (see `writeCost`).
  */
 import type {
+  EmbeddingModelV3Middleware,
   LanguageModelV3Middleware,
   LanguageModelV3StreamPart,
   SharedV3ProviderMetadata,
@@ -49,6 +50,7 @@ const extractOpenRouterCost = (
  */
 const writeCost = (
   providerMetadata: SharedV3ProviderMetadata | undefined,
+  asType: "generation" | "embedding" = "generation",
 ): void => {
   const cost = extractOpenRouterCost(providerMetadata);
   if (cost === undefined) return;
@@ -59,10 +61,20 @@ const writeCost = (
   // `instrumentModel` safe to apply uniformly to every model.
   if (getActiveSpanId() === undefined) return;
   try {
-    updateActiveObservation(
-      { costDetails: { total: cost } },
-      { asType: "generation" },
-    );
+    // Branch on the literal so overload resolution picks the right
+    // (cost-bearing) attribute type — a union `asType` falls back to the
+    // base span overload, which has no `costDetails`.
+    if (asType === "embedding") {
+      updateActiveObservation(
+        { costDetails: { total: cost } },
+        { asType: "embedding" },
+      );
+    } else {
+      updateActiveObservation(
+        { costDetails: { total: cost } },
+        { asType: "generation" },
+      );
+    }
   } catch {
     // Swallow — never let cost ingestion break the generation.
   }
@@ -97,5 +109,23 @@ export const costCaptureMiddleware: LanguageModelV3Middleware = {
       ),
     );
     return { stream: tapped, ...rest };
+  },
+};
+
+/**
+ * Embedding-model counterpart of `costCaptureMiddleware`: ingests OpenRouter's
+ * exact per-call cost onto the Langfuse `embedding` observation emitted by
+ * `embed` / `embedMany` telemetry. `overrideMaxEmbeddingsPerCall` keeps the
+ * 20-input batch size of the previous raw-fetch path (one cost write per
+ * chunk → Langfuse aggregates them at the trace level). Attach via
+ * `instrumentEmbeddingModel` only when Langfuse is configured.
+ */
+export const embeddingCostCaptureMiddleware: EmbeddingModelV3Middleware = {
+  specificationVersion: "v3",
+  overrideMaxEmbeddingsPerCall: () => 20,
+  wrapEmbed: async ({ doEmbed }) => {
+    const result = await doEmbed();
+    writeCost(result.providerMetadata, "embedding");
+    return result;
   },
 };

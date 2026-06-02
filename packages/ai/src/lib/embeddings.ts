@@ -1,3 +1,8 @@
+import { createOpenRouter } from "@openrouter/ai-sdk-provider";
+import { embed, embedMany } from "ai";
+import { telemetryFor } from "./langfuse";
+import { instrumentEmbeddingModel } from "./model-instrumentation";
+
 const apiKey = process.env.OPENROUTER_API_KEY;
 if (!apiKey) {
   throw "Missing OPENROUTER_API_KEY env";
@@ -21,54 +26,51 @@ if (!embeddingModelId) {
  */
 export const EMBEDDING_DIMENSIONS = 2560;
 
-const OPENROUTER_EMBEDDINGS_URL = "https://openrouter.ai/api/v1/embeddings";
+/**
+ * Intra-call embedding concurrency — how many 20-input batches `embedMany`
+ * fires in parallel for ONE `embedBatch`. Default 2 (≈2× the single-document
+ * indexing speed vs sequential). Cross-document concurrency stays bounded by
+ * the `openrouter:embeddings` Redis semaphore in `services/vectorize/embedder.ts`
+ * (so peak global ≈ that cap × this); env-overridable.
+ */
+const EMBEDDING_PARALLEL_CALLS = (() => {
+  const raw = Number(process.env.AI_EMBEDDING_PARALLEL_CALLS);
+  return Number.isInteger(raw) && raw > 0 ? raw : 2;
+})();
 
 /**
- * Max inputs per batch request. OpenRouter / OpenAI-compatible embedding
- * endpoints accept an array of strings in `input`. 20 is a safe cap that
- * keeps individual request bodies bounded (20 × ~2000 chars chunk + prefix
- * ≈ 40K payload), well under provider limits.
+ * Dedicated OpenRouter provider for embeddings. `@openrouter/ai-sdk-provider`
+ * v2.9.0 exposes no `dimensions` setting on `textEmbeddingModel`, but its
+ * `doEmbed` spreads `config.extraBody` at the top level of the request body —
+ * so the provider-level `extraBody` is how we send the Matryoshka `dimensions`
+ * (load-bearing: the `halfvec(2560)` column depends on it) plus usage
+ * accounting (`usage: { include: true }`) so OpenRouter returns the real USD
+ * cost for the Langfuse `embedding` observation. A separate instance keeps
+ * `dimensions` off the chat provider.
  */
-const EMBEDDING_BATCH_SIZE = 20;
+const embeddingsProvider = createOpenRouter({
+  apiKey,
+  extraBody: { dimensions: EMBEDDING_DIMENSIONS, usage: { include: true } },
+});
 
-interface OpenRouterEmbeddingResponse {
-  data: { embedding: number[]; index: number }[];
-}
-
-const postEmbeddings = async (
-  input: string | string[],
-): Promise<number[][]> => {
-  const response = await fetch(OPENROUTER_EMBEDDINGS_URL, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: embeddingModelId,
-      input,
-      dimensions: EMBEDDING_DIMENSIONS,
-    }),
-  });
-
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(
-      `OpenRouter embedding failed (${response.status}): ${text.slice(0, 200)}`,
-    );
-  }
-
-  const json = (await response.json()) as OpenRouterEmbeddingResponse;
-  const sorted = [...json.data].sort((a, b) => a.index - b.index);
-  return sorted.map((d) => d.embedding);
-};
+/**
+ * The wrapped embedding model — `instrumentEmbeddingModel` attaches cost
+ * capture + 20-input batching (preserving the prior batch size). Built once.
+ */
+const embeddingModel = instrumentEmbeddingModel(
+  embeddingsProvider.textEmbeddingModel(embeddingModelId),
+);
 
 export const embedQuery = async (value: string): Promise<number[]> => {
-  const [embedding] = await postEmbeddings(value);
+  const { embedding } = await embed({
+    model: embeddingModel,
+    value,
+    experimental_telemetry: telemetryFor("embeddings"),
+  });
 
-  if (!embedding || embedding.length !== EMBEDDING_DIMENSIONS) {
+  if (embedding.length !== EMBEDDING_DIMENSIONS) {
     throw new Error(
-      `Expected ${EMBEDDING_DIMENSIONS}-dim embedding, got ${embedding?.length ?? 0}`,
+      `Expected ${EMBEDDING_DIMENSIONS}-dim embedding, got ${embedding.length}`,
     );
   }
 
@@ -76,41 +78,29 @@ export const embedQuery = async (value: string): Promise<number[]> => {
 };
 
 /**
- * Batch embed. Splits the input array into chunks of `EMBEDDING_BATCH_SIZE`,
- * calls the OpenRouter endpoint once per chunk, and reassembles the output
- * in input order. Each returned vector is fp32; conversion to the pgvector
- * `halfvec` literal happens at insert time in `services/vectorize/upsert.ts`.
- *
- * Throws if any vector comes back with a dimension count other than
- * `EMBEDDING_DIMENSIONS` — upstream callers (`services/vectorize`) drop
- * offending chunks defensively before the INSERT.
+ * Batch embed, preserving input order. `embedMany` chunks the values at the
+ * model's `maxEmbeddingsPerCall` (set to 20 by the cost middleware) and runs
+ * up to `EMBEDDING_PARALLEL_CALLS` of those batches concurrently. Each fp32
+ * vector must be exactly `EMBEDDING_DIMENSIONS` long; callers
+ * (`services/vectorize`) drop offenders defensively before insert.
  */
 export const embedBatch = async (texts: string[]): Promise<number[][]> => {
   if (texts.length === 0) return [];
 
-  const batches: string[][] = [];
-  for (let i = 0; i < texts.length; i += EMBEDDING_BATCH_SIZE) {
-    batches.push(texts.slice(i, i + EMBEDDING_BATCH_SIZE));
-  }
+  const { embeddings } = await embedMany({
+    model: embeddingModel,
+    values: texts,
+    maxParallelCalls: EMBEDDING_PARALLEL_CALLS,
+    experimental_telemetry: telemetryFor("embeddings"),
+  });
 
-  const results: number[][] = [];
-  for (const batch of batches) {
-    // oxlint-disable-next-line no-await-in-loop
-    const vectors = await postEmbeddings(batch);
-    if (vectors.length !== batch.length) {
+  for (const v of embeddings) {
+    if (v.length !== EMBEDDING_DIMENSIONS) {
       throw new Error(
-        `OpenRouter embedding batch size mismatch: requested ${batch.length}, got ${vectors.length}`,
+        `Expected ${EMBEDDING_DIMENSIONS}-dim embedding, got ${v.length}`,
       );
     }
-    for (const v of vectors) {
-      if (v.length !== EMBEDDING_DIMENSIONS) {
-        throw new Error(
-          `Expected ${EMBEDDING_DIMENSIONS}-dim embedding, got ${v.length}`,
-        );
-      }
-      results.push(v);
-    }
   }
 
-  return results;
+  return embeddings;
 };

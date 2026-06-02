@@ -25,6 +25,7 @@
  *   LANGFUSE_TRACING_ENVIRONMENT  — optional; defaults to NODE_ENV-derived
  *   LANGFUSE_RELEASE              — optional; version stamp on every trace
  */
+import { LangfuseClient } from "@langfuse/client";
 import { LangfuseSpanProcessor } from "@langfuse/otel";
 import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
 import type { TelemetrySettings } from "ai";
@@ -50,6 +51,16 @@ export const langfuseEnabled = Boolean(publicKey && secretKey && baseUrl);
 export const langfuseEnvironment =
   process.env.LANGFUSE_TRACING_ENVIRONMENT ??
   (process.env.NODE_ENV === "production" ? "production" : "development");
+
+/**
+ * Shared Langfuse client for the non-span HTTP APIs (score ingestion,
+ * prompt management). Keeps its own batched queue, independent of the OTel
+ * span exporter above. `undefined` when unconfigured, so every consumer
+ * (`langfuse-scores.ts`, `langfuse-prompts.ts`) stays a strict no-op.
+ */
+export const langfuseClient = langfuseEnabled
+  ? new LangfuseClient()
+  : undefined;
 
 /**
  * The single span processor instance — also the flush handle. `undefined`

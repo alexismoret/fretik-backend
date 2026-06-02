@@ -15,10 +15,13 @@
  * exists. So wrapping an untraced model is a harmless no-op. No-op too
  * when Langfuse is unconfigured.
  */
-import { type LanguageModelV3 } from "@ai-sdk/provider";
-import { wrapLanguageModel } from "ai";
+import { type EmbeddingModelV3, type LanguageModelV3 } from "@ai-sdk/provider";
+import { wrapEmbeddingModel, wrapLanguageModel } from "ai";
 import { langfuseEnabled } from "./langfuse";
-import { costCaptureMiddleware } from "./langfuse-cost";
+import {
+  costCaptureMiddleware,
+  embeddingCostCaptureMiddleware,
+} from "./langfuse-cost";
 
 /**
  * Attach Langfuse cost capture to a model. For cached chat models,
@@ -28,4 +31,20 @@ import { costCaptureMiddleware } from "./langfuse-cost";
 export const instrumentModel = (model: LanguageModelV3): LanguageModelV3 =>
   langfuseEnabled
     ? wrapLanguageModel({ model, middleware: [costCaptureMiddleware] })
+    : model;
+
+/**
+ * Embedding-model counterpart of `instrumentModel`: attaches the embedding
+ * cost middleware (cost onto the `embedding` observation + 20-input batching)
+ * so `embed`/`embedMany` calls land their OpenRouter cost on the trace.
+ * A no-op when Langfuse is unconfigured.
+ */
+export const instrumentEmbeddingModel = (
+  model: EmbeddingModelV3,
+): EmbeddingModelV3 =>
+  langfuseEnabled
+    ? wrapEmbeddingModel({
+        model,
+        middleware: [embeddingCostCaptureMiddleware],
+      })
     : model;

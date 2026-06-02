@@ -69,7 +69,7 @@ import { chatbotAgentSet, type ChatbotCallOptions } from "../agents/chatbot";
 import { hydrateContextFiles } from "../lib/context-files-hydration";
 import { writeSandboxAuthFile } from "../lib/conversation-storage";
 import { flushLangfuse, langfuseEnabled } from "../lib/langfuse";
-import { recordScore } from "../lib/langfuse-scores";
+import { deleteScore, recordScore } from "../lib/langfuse-scores";
 import { getResumableStreamContext } from "../lib/resumable-stream-context";
 import { chatbotRateLimitMiddleware } from "../middlewares/chatbot-rate-limit";
 import { internalMiddleware } from "../middlewares/internal";
@@ -1962,15 +1962,17 @@ chatbotRoutes.post("/:conversationId/stop", async (c) => {
  *   - thumbs-up   → `user-feedback` = 1 (BOOLEAN)
  *   - thumbs-down → `user-feedback` = 0
  *   - retry       → `user-retry`    = 1 (implicit dissatisfaction signal)
+ *   - clear       → DELETE the `user-feedback` score (thumb toggled off)
  *
  * Scores live in Langfuse only (Score Analytics, dataset curation, judge
- * calibration) — nothing is mirrored in our DB.
+ * calibration); a `metadata.userFeedback` UX flag on the message mirrors the
+ * chosen thumb for reload — cleared alongside the score on `clear`.
  */
 const ChatFeedbackSchema = z.object({
   conversationId: z.uuid(),
   messageId: z.uuid(),
   traceId: z.string().min(1).max(200),
-  type: z.enum(["thumbs-up", "thumbs-down", "retry"]),
+  type: z.enum(["thumbs-up", "thumbs-down", "retry", "clear"]),
   comment: z.string().max(500).optional(),
 });
 
@@ -2001,6 +2003,24 @@ chatbotRoutes.post("/feedback", async (c) => {
   });
   if (!conversation) {
     return throwHttpError(404, notFound("Conversation not found"));
+  }
+
+  // Toggle off: delete the `user-feedback` score and drop the UX flag.
+  if (type === "clear") {
+    const recorded = await deleteScore(`${traceId}-user-feedback`);
+    await db
+      .update(aiMessages)
+      .set({
+        // jsonb `-` removes the key, preserving telemetry / langfuseTraceId.
+        metadata: sql`coalesce(${aiMessages.metadata}, '{}'::jsonb) - 'userFeedback'`,
+      })
+      .where(
+        and(
+          eq(aiMessages.id, messageId),
+          eq(aiMessages.conversationId, conversationId),
+        ),
+      );
+    return c.json({ recorded }, 200);
   }
 
   const scoreName = type === "retry" ? "user-retry" : "user-feedback";

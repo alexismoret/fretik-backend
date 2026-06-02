@@ -78,8 +78,15 @@ export interface BuildAgentSetConfig<CALL_OPTIONS, TTools extends ToolSet> {
    * boot. Tools MUST be ctx-less (see `../../tools/README.md`).
    */
   buildTools: () => TTools;
-  /** System prompt renderer. Called on every `.stream()` via `prepareCall`. */
-  systemPrompt: (ctx: AgentRuntimeContext, tools: TTools) => string;
+  /**
+   * System prompt renderer. Called on every `.stream()` via `prepareCall`.
+   * May be async — managed-prompt renderers fetch from Langfuse (instant on
+   * SDK cache hit) and `prepareCall` awaits the result.
+   */
+  systemPrompt: (
+    ctx: AgentRuntimeContext,
+    tools: TTools,
+  ) => string | Promise<string>;
   /** Primary language model. */
   model: LanguageModel;
   /** Fallback language model, used when the primary errors out. */
@@ -265,7 +272,7 @@ const buildToolLoopAgent = <CALL_OPTIONS, TTools extends ToolSet>(
     // this construction setting), so the telemetry config survives the
     // wholesale settings replacement. No-op when Langfuse is unconfigured.
     experimental_telemetry: telemetryFor(`agent:${config.id}`),
-    prepareCall: (baseCallArgs) => {
+    prepareCall: async (baseCallArgs) => {
       // **Critical semantics of `ToolLoopAgent.prepareCall`**: the
       // return value is **NOT** merged with the agent's construction
       // settings — it REPLACES them wholesale before being forwarded
@@ -331,8 +338,28 @@ const buildToolLoopAgent = <CALL_OPTIONS, TTools extends ToolSet>(
         dynamicToolManager,
         taskManager: new TaskManager(),
       };
-      const instructions = config.systemPrompt(ctx, tools);
+      const instructions = await config.systemPrompt(ctx, tools);
       const branded = wrapRuntimeContext(ctx);
+
+      // Link this generation to the managed prompt version that rendered
+      // `instructions`. The renderer set `ctx.langfusePromptLink` to
+      // `prompt.toJSON()` (a string) just above; surface it in the
+      // telemetry metadata under the `langfusePrompt` key Langfuse reads.
+      // Only override when both the link and the base telemetry exist (they
+      // co-exist: a link implies Langfuse is configured).
+      const baseTelemetry = baseCallArgs.experimental_telemetry;
+      const telemetryOverride =
+        ctx.langfusePromptLink !== undefined && baseTelemetry !== undefined
+          ? {
+              experimental_telemetry: {
+                ...baseTelemetry,
+                metadata: {
+                  ...baseTelemetry.metadata,
+                  langfusePrompt: ctx.langfusePromptLink,
+                },
+              },
+            }
+          : {};
 
       // Per-request `onStepFinish` so step + zombie log lines can
       // carry the runtime ctx's `traceId`. The closure is created
@@ -349,6 +376,7 @@ const buildToolLoopAgent = <CALL_OPTIONS, TTools extends ToolSet>(
         ...baseCallArgs,
         instructions,
         experimental_context: branded,
+        ...telemetryOverride,
         ...(stepFinishOverride !== undefined
           ? { onStepFinish: stepFinishOverride }
           : {}),

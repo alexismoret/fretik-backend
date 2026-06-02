@@ -111,3 +111,88 @@ the path.
   migrations at load and the process lingers on open connections; the work completes first.
 - `scripts/*` are OUTSIDE the `tsconfig` include — `bun run typecheck` does NOT cover them;
   verify with a temp tsconfig that adds `scripts/**`.
+
+---
+
+# Production deployment — operator actions (one-time, before first prod traffic)
+
+These require a human with server / Dokploy / Langfuse-UI / GitHub access — Claude cannot do
+them. The full Langfuse chantier is merged to `main` (merge commit) but **NOT pushed**, so a
+push doesn't accidentally deploy before the env below is set.
+
+1. **Push + deploy.** Once steps 2–6 are set: `git push origin main` → build the single Docker
+   image → deploy via Dokploy. DB migrations run automatically on container boot (advisory-locked).
+2. **Prod env vars** (Dokploy service env):
+   - `LANGFUSE_TRACING_ENVIRONMENT=production` — **load-bearing**: this attribute is what
+     separates prod from dev across traces, scores, sessions, datasets. Dev is `development`.
+   - `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` / `LANGFUSE_BASE_URL` — same self-hosted instance.
+   - `LANGFUSE_RELEASE=<git sha / version>` — tags every trace with the release (regression attribution).
+   - Confirm `OPENROUTER_*` models, `E2B_API_KEY`, and set REAL cost rates
+     `E2B_PRICE_PER_SECOND` / `TAVILY_PRICE_PER_CREDIT` (defaults are public approximations →
+     cost analytics is only as accurate as these).
+3. **Seed prompts** — prompts are project-level + label-based (NOT environment-scoped), so the
+   `production` label already exists from dev seeding; re-run only after editing a `.md`:
+   `bun run langfuse:seed-prompts`. Prod reads label `production`, dev reads `latest`.
+   (If prod points at a SEPARATE Langfuse project, seed there.)
+4. **Seed eval config** (objective score-configs + Gemini judge connection + managed evaluator —
+   no billing): `bun run langfuse:seed-eval-config`. Confirm in the UI that
+   `google/gemini-3.5-flash` is on the `openrouter` LLM connection.
+5. **Disable the OpenRouter "Broadcast"** in the OpenRouter dashboard — it still emits
+   `env=default` "OpenRouter Request" traces (noise, separate from `chatbot-turn`).
+6. **Frontend (separate repo):** ship the Phase-2 feedback UI (CopyButton, FeedbackThumbs,
+   useChatFeedback, i18n) and click-test: 👍/👎 + comment on an assistant turn → score+comment
+   on that turn's trace in Langfuse + thumb persists across reload.
+7. **CI secrets/vars** (GitHub repo settings) for `.github/workflows/langfuse-experiment.yml`:
+   `LANGFUSE_*` creds as **secrets**, dataset/project IDs + URLs as **vars**. PR-blocking gate
+   (service-in-CI) is still a follow-up — the workflow is non-blocking today.
+
+# Long-term roadmap — once prod traces accumulate (the improvement engine)
+
+Gated on real prod traffic. Until traces exist, the offline loop + objective metrics are the ONLY
+signal — do NOT invent a failure taxonomy or tune against synthetic targets.
+
+1. **Enable the online managed eval rule** (sampled LLM-judge on prod) — create in the Langfuse UI;
+   **first verify the observation filter on a real prod trace** (`chatbot-turn` is the TRACE name,
+   not a filterable observation name — `observations list --name chatbot-turn` returns 0). Gate with
+   `SEED_ONLINE_RULE=1` + a spend cap. This is monitoring/harvesting, NEVER the improvement metric.
+2. **Error analysis (methodology core)** — once ~30–50 representative traces exist (sample low
+   `user-feedback` 👎 + a random+stratified set): drive sampling + an Annotation Queue via the CLI,
+   the HUMAN open-codes ~30–50 → cluster into a DISCOVERED failure taxonomy (never seed one a priori).
+   Calibrate the Gemini judge against the human labels (skill `langfuse/judge-calibration.md`).
+3. **Grow the gold set from prod** via `promoteTrace` (`evals/langfuse/dataset-sync.ts`) — each
+   confirmed failure → a permanent `origin:prod` regression case. This is how extraction breadth
+   (deliberately deferred — synthetic-fixture cases were tried then reverted) and every capability
+   grow representatively. The synthetic 20 stay as a smoke seed.
+4. **Phase 7 — measured harness fixes**, error-analysis-driven: each named failure → fix at source
+   (prompt / tool description / harness) → re-run `evals:langfuse`, require a gain over baseline with
+   NO per-capability regression + acceptable `cost-per-turn-usd` → promote the fixing case.
+   NOTE: the n=20 set is judge-noisy (a case flapped 1.0/0.75/0.875 across runs) — use multiple
+   trials and/or the grown set before trusting small deltas.
+5. **Phase 8 — model strategy, data-driven**: compare agent models (MiniMax M2.7 vs DeepSeek V4 Pro
+   vs others) on the grown dataset (correctness/capability + cost-per-turn + latency). Mechanism:
+   swap `OPENROUTER_CHAT_MODEL`, restart, `evals:langfuse --run-name <model>`, compare in the UI.
+   Adopt hybrid escalation (cheap default + escalate hard steps) only where experiments prove it pays.
+6. **Phase 6 — GEPA/DSPy auto-optimization**: once taxonomy + prod dataset are solid, pull the
+   dataset + judge rationales, let a strong reflection model propose prompt / tool-description / skill
+   edits, push candidates as Langfuse prompt versions (label `candidate`) → PR with measured gain →
+   human review before `production`. **This is the trigger to move tool descriptions into Langfuse
+   prompt management** — not before (they're Zod-schema-coupled in code today).
+7. **Analytics / dashboards**: Custom Dashboards (cost/conversation, cost/team, latency p50/p95,
+   error-rate by capability, cache ratio) segmented by user/tag/metadata/environment; Score Analytics
+   for quality trend over time.
+8. **Sampling**: when traffic scales, set trace sampling to bound volume/cost.
+
+# Known minor (non-blocking, prod-safe)
+
+- **Embedding batch cap divergence when Langfuse is OFF** (`lib/model-instrumentation.ts`): the
+  `overrideMaxEmbeddingsPerCall: 20` cap rides the cost middleware, applied only when Langfuse is
+  enabled. Prod always has Langfuse on → unaffected; a Langfuse-off env (local without creds /
+  outage) reverts to the provider default batch size during indexing. Move the override into an
+  always-applied middleware if you ever run prod-scale indexing with Langfuse off.
+- **Judge in-process cost** is not yet rolled into the run cost (constant across agent-model
+  comparisons; minor).
+- **Cost shows $0 on the experiment view** — the dataset-run `experiment-item-run` traces carry $0
+  because the real model calls run in the AI service as separate `chatbot-turn` traces. The real
+  cost is the run-level `cost-agent-usd` / `cost-per-turn-usd` SCORES on the dataset run. To make
+  cost show natively on the experiment, add distributed-tracing (traceparent) propagation from the
+  eval harness to the AI service.

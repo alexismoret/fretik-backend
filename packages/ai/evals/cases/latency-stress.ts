@@ -7,10 +7,10 @@
  * pipeline). Bump these when the stack gets faster or the team data
  * grows.
  *
- * Interpret failures as "this category got slower", not as bugs. The
- * reporter surfaces turn/model/tool latency per case plus the
- * per-tool p50/p95 breakdown — read that to tell whether the slip
- * comes from the model, the tool, or both.
+ * Interpret failures as "this category got slower", not as bugs.
+ * Langfuse records turn / model / tool latency on each trace — drill
+ * into the dataset run to tell whether the slip comes from the model,
+ * the tool, or both.
  */
 
 import type { EvalSuite } from "../types";
@@ -18,7 +18,7 @@ import type { EvalSuite } from "../types";
 export const latencyStressSuite: EvalSuite = {
   name: "latency-stress",
   summary:
-    "Per-category latency baselines. No judge calls — pure wall-clock gates with the reporter's turn/model/tool breakdown surfacing where time is spent.",
+    "Per-category latency baselines. No judge calls — pure wall-clock gates; turn/model/tool latency is recorded per trace in Langfuse.",
   cases: [
     {
       id: "lat-sql-simple",

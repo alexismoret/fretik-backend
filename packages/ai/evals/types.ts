@@ -130,10 +130,7 @@ export interface EvalCase {
   id: string;
   description: string;
   prompt: string;
-  /**
-   * Optional per-case tags for filtering from the CLI
-   * (`bun run evals -- --tag rag`).
-   */
+  /** Optional per-case tags, surfaced as metadata on the Langfuse dataset item. */
   tags?: string[];
   /**
    * Filenames (relative to `evals/fixtures/`) to copy into the

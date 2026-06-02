@@ -18,9 +18,7 @@
     "langfuse:triage-cases": "bun run scripts/triage-eval-cases.ts",
     "langfuse:sync-datasets": "bun run evals/langfuse/dataset-sync.ts",
     "langfuse:seed-eval-config": "bun run scripts/seed-langfuse-eval-config.ts",
-    "measure:tokens": "bun run scripts/measure-system-prompt-tokens.ts",
-    "dump:conversation": "bun run scripts/dump-conversation.ts",
-    "replay:conversations": "bun run scripts/replay-conversations.ts"
+    "measure:tokens": "bun run scripts/measure-system-prompt-tokens.ts"
   },
   "peerDependencies": {
     "typescript": "^5"

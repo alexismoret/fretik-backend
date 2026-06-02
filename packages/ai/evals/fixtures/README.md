@@ -67,14 +67,13 @@ For the image / PDF fixtures the easiest is to grab any real invoice /
 receipt / schematic you have lying around and drop it here, then write
 a quick markdown transcript of the text for the sidecars.
 
-## Re-running just the file-attachments suite
+## Using fixtures
 
-Once the files are in place:
-
-```bash
-cd backend/packages/ai
-bun run evals -- --suite file-attachments --concurrency 2
-```
+These files are picked up automatically by any curated case that declares
+`fixtures: [...]` (see `evals/conversation-lifecycle.ts`) on its next
+`bun run evals:langfuse` run. The current curated set is fixture-free —
+fixture-bound cases return as the gold set grows from prod (see
+`evals/BACKLOG.md`).
 
 The runner will log `[evals] fixture "foo" not found at ...` if any
 file is missing, so you can iterate.

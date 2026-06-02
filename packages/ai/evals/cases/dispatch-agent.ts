@@ -33,8 +33,7 @@
  * (dispatching for a 1-shot lookup) is concrete: extra latency +
  * extra tokens.
  *
- * Tag `dispatch-agent` lets `bun run evals -- --tag dispatch-agent`
- * pick this suite specifically.
+ * Tagged `dispatch-agent` for filtering / dataset-item metadata.
  */
 
 import type { EvalSuite } from "../types";

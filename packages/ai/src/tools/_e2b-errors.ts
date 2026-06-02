@@ -4,6 +4,7 @@ import {
   SandboxNotFoundError,
   TimeoutError,
 } from "e2b";
+import { TOOL_ERROR_CODES } from "../lib/tool-error-codes";
 
 /**
  * Map an unexpected error thrown by the E2B-backed sandbox layer into
@@ -31,30 +32,30 @@ export const mapE2BError = (
     return {
       error:
         "The conversation's sandbox no longer exists (E2B cleaned it up). The next call will spawn a fresh one — workspace files are re-hydrated from the hot cache automatically.",
-      code: "SANDBOX_NOT_FOUND",
+      code: TOOL_ERROR_CODES.SANDBOX_NOT_FOUND,
     };
   }
   if (err instanceof TimeoutError) {
     return {
       error: `Sandbox request timed out ${context}: ${err.message}`,
-      code: "SANDBOX_TIMEOUT",
+      code: TOOL_ERROR_CODES.SANDBOX_TIMEOUT,
     };
   }
   if (err instanceof RateLimitError) {
     return {
       error: `Sandbox rate-limited ${context}: ${err.message}. Try again after a short delay.`,
-      code: "SANDBOX_RATE_LIMIT",
+      code: TOOL_ERROR_CODES.SANDBOX_RATE_LIMIT,
     };
   }
   if (err instanceof SandboxError) {
     return {
       error: `Sandbox error ${context}: ${err.message}`,
-      code: "SANDBOX_UNAVAILABLE",
+      code: TOOL_ERROR_CODES.SANDBOX_UNAVAILABLE,
     };
   }
   const message = err instanceof Error ? err.message : String(err);
   return {
     error: `Unexpected error ${context}: ${message}`,
-    code: "INTERNAL_ERROR",
+    code: TOOL_ERROR_CODES.INTERNAL_ERROR,
   };
 };

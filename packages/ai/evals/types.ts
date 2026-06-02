@@ -56,6 +56,12 @@ export interface InvokeResult {
   };
   httpStatus?: number;
   error?: string;
+  /**
+   * Langfuse trace id of the server-side `chatbot-turn` (from the SSE
+   * `langfuseTraceId` message metadata). Lets the experiment fetch the
+   * turn's exact agent cost (`api.trace.get(...).totalCost`).
+   */
+  traceId?: string;
 }
 
 /**
@@ -82,7 +88,8 @@ export interface EvalCaseContext {
  *   - `toolNotUsed` none of the listed tool names may have been called
  *   - `latencyUnder` wall-clock cap in ms
  *   - `noError`     `error` must be unset and `finishReason !== "error"`
- *   - `judge`       LLM-as-judge with a rubric string (binary verdict)
+ *   - `judge`       LLM-as-judge with a rubric string (graded verdict,
+ *                   partial credit; see `evals/judge.ts`)
  *   - `custom`      escape hatch: user-supplied
  *                   `(result, ctx) => boolean | string | Promise<...>`
  *                   returning `true` passes; `false` / a reason string fails.
@@ -105,6 +112,19 @@ export type Assertion =
         ctx: EvalCaseContext,
       ) => boolean | string | Promise<boolean | string>;
     };
+
+/**
+ * Coarse capability bucket a case exercises. Used to STRATIFY the
+ * Langfuse dataset + the baseline (accuracy per capability), so a
+ * regression in one capability is visible even when the overall score
+ * holds. Assigned per curated case in `evals/curation.ts` (the triage
+ * gate output), NOT on the case object.
+ */
+export type Capability =
+  | "extraction"
+  | "generation"
+  | "external-actions"
+  | "reasoning";
 
 export interface EvalCase {
   id: string;
@@ -165,6 +185,13 @@ export interface AssertionResult {
   label: string;
   passed: boolean;
   message?: string;
+  /**
+   * Graded score in [0, 1]. Deterministic assertions emit 1 (pass) / 0
+   * (fail); a `judge` assertion emits the judge's partial-credit score
+   * (1 / 0.5 / 0). Consumed by `evals/langfuse/evaluators.ts` to compute
+   * the `correctness` experiment score with partial credit.
+   */
+  score?: number;
 }
 
 export interface CaseResult {

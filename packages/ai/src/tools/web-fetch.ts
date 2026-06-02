@@ -3,6 +3,7 @@ import { z } from "zod";
 import { getRuntimeContext } from "../agents/shared/runtime-context";
 import { maybePersistLargeOutput } from "../lib/persisted-output";
 import { extractUrls, TavilyTimeoutError } from "../lib/tavily";
+import { TOOL_ERROR_CODES } from "../lib/tool-error-codes";
 
 /**
  * Domain tool (deferred) — fetch a single public URL and return its
@@ -54,12 +55,12 @@ export const createWebFetchTool = () =>
         if (err instanceof TavilyTimeoutError) {
           return {
             error: `webFetch timed out: ${err.message}`,
-            code: "TAVILY_TIMEOUT",
+            code: TOOL_ERROR_CODES.TAVILY_TIMEOUT,
           };
         }
         return {
           error: `webFetch failed: ${err instanceof Error ? err.message : String(err)}`,
-          code: "WEB_FETCH_ERROR",
+          code: TOOL_ERROR_CODES.WEB_FETCH_ERROR,
         };
       }
 
@@ -68,7 +69,7 @@ export const createWebFetchTool = () =>
         const failure = result.failed[0];
         return {
           error: failure?.error ?? `No content returned for ${url}`,
-          code: "WEB_FETCH_EMPTY",
+          code: TOOL_ERROR_CODES.WEB_FETCH_EMPTY,
           url,
         };
       }

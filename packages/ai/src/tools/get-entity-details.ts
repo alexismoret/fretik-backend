@@ -6,6 +6,7 @@ import {
   DOMAIN_TOOL_THRESHOLD_CHARS,
   maybePersistLargeOutput,
 } from "../lib/persisted-output";
+import { TOOL_ERROR_CODES } from "../lib/tool-error-codes";
 
 /**
  * Domain tool (deferred) — read a single entity by id including its
@@ -44,7 +45,7 @@ export const createGetEntityDetailsTool = () =>
       } catch (err) {
         return {
           error: `getEntityDetails failed: ${err instanceof Error ? err.message : String(err)}`,
-          code: "GET_ENTITY_DETAILS_ERROR",
+          code: TOOL_ERROR_CODES.GET_ENTITY_DETAILS_ERROR,
         };
       }
 

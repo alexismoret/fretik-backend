@@ -7,6 +7,7 @@ import {
   DOMAIN_TOOL_THRESHOLD_CHARS,
   maybePersistLargeOutput,
 } from "../lib/persisted-output";
+import { TOOL_ERROR_CODES } from "../lib/tool-error-codes";
 
 /**
  * Domain tool (deferred) — paginated listing of the team's entities
@@ -71,7 +72,7 @@ export const createListEntitiesTool = () =>
       } catch (err) {
         return {
           error: `listEntities failed: ${err instanceof Error ? err.message : String(err)}`,
-          code: "LIST_ENTITIES_ERROR",
+          code: TOOL_ERROR_CODES.LIST_ENTITIES_ERROR,
         };
       }
 

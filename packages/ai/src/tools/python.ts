@@ -7,8 +7,11 @@ import {
   mirrorSandboxChanges,
   prepareSandbox,
 } from "../lib/conversation-storage";
+import { E2B_PRICE_PER_SECOND } from "../lib/e2b-cost";
 import { maybePersistLargeOutput } from "../lib/persisted-output";
 import { withSlot } from "../lib/rate-limit";
+import { TOOL_ERROR_CODES } from "../lib/tool-error-codes";
+import { traceExternalCall } from "../lib/trace-tool";
 import { mapE2BError } from "./_e2b-errors";
 
 /**
@@ -134,7 +137,7 @@ export const createPythonTool = () =>
         return {
           error:
             "python requires an active conversation context. No conversationId was provided.",
-          code: "NO_CONVERSATION",
+          code: TOOL_ERROR_CODES.NO_CONVERSATION,
         };
       }
       const conversationId = ctx.conversationId;
@@ -160,11 +163,23 @@ export const createPythonTool = () =>
             if (restart) {
               await restartPythonKernel(conversationId);
             }
-            return runInSandbox(conversationId, {
-              language: "python",
-              code,
-              toolCallId,
-            });
+            return traceExternalCall(
+              "e2b-python",
+              { code, restart },
+              () =>
+                runInSandbox(conversationId, {
+                  language: "python",
+                  code,
+                  toolCallId,
+                }),
+              (r, durationMs) => ({
+                output: {
+                  error: r.error ? `${r.error.name}: ${r.error.value}` : null,
+                },
+                costUsd: (durationMs / 1000) * E2B_PRICE_PER_SECOND,
+                metadata: { durationMs },
+              }),
+            );
           },
         );
       } catch (err) {
@@ -215,7 +230,7 @@ export const createPythonTool = () =>
         }
         return {
           error: `${result.error.name}: ${result.error.value}`,
-          code: "PYTHON_ERROR",
+          code: TOOL_ERROR_CODES.PYTHON_ERROR,
           stdout: result.stdout,
           stderr: result.error.traceback ?? result.stderr,
         };

@@ -9,6 +9,7 @@ import {
   resolveWorkspacePath,
   WORKSPACE_DIRS,
 } from "../lib/conversation-storage";
+import { TOOL_ERROR_CODES } from "../lib/tool-error-codes";
 
 /**
  * `presentFiles` — surface one or more generated files to the user as
@@ -149,7 +150,7 @@ export const createPresentFilesTool = () =>
           errors: [
             {
               path: "",
-              code: "NO_CONVERSATION",
+              code: TOOL_ERROR_CODES.NO_CONVERSATION,
               message:
                 "presentFiles is only available inside a conversation. No conversationId in the current context.",
             },
@@ -166,7 +167,7 @@ export const createPresentFilesTool = () =>
         if (!resolved) {
           errors.push({
             path: requested,
-            code: "PATH_OUT_OF_SANDBOX",
+            code: TOOL_ERROR_CODES.PATH_OUT_OF_SANDBOX,
             message: `Path is outside the conversation's sandbox (/workspace/).`,
           });
           continue;
@@ -176,7 +177,7 @@ export const createPresentFilesTool = () =>
         if (head !== undefined && READ_ONLY_PRESENT_BLOCKLIST.has(head)) {
           errors.push({
             path: requested,
-            code: "READ_ONLY_PATH",
+            code: TOOL_ERROR_CODES.READ_ONLY_PATH,
             message: `${head}/ is a read-only tree — only files you generated yourself in attachments/ or outputs/ can be presented.`,
           });
           continue;
@@ -186,7 +187,7 @@ export const createPresentFilesTool = () =>
         if (!(await fileExists(conversationId, resolved.relative))) {
           errors.push({
             path: requested,
-            code: "FILE_NOT_FOUND",
+            code: TOOL_ERROR_CODES.FILE_NOT_FOUND,
             message: `File not found in the conversation sandbox: ${requested}.`,
           });
           continue;
@@ -199,7 +200,7 @@ export const createPresentFilesTool = () =>
         } catch (err) {
           errors.push({
             path: requested,
-            code: "READ_FAILED",
+            code: TOOL_ERROR_CODES.READ_FAILED,
             message: `Failed to read ${requested} from the sandbox: ${
               err instanceof Error ? err.message : String(err)
             }`,
@@ -215,7 +216,7 @@ export const createPresentFilesTool = () =>
         } catch (err) {
           errors.push({
             path: requested,
-            code: "S3_UPLOAD_FAILED",
+            code: TOOL_ERROR_CODES.S3_UPLOAD_FAILED,
             message: `Failed to mirror ${filename} to the session store: ${
               err instanceof Error ? err.message : String(err)
             }`,

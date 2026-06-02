@@ -19,6 +19,7 @@ import {
   getRuntimeContext,
   type AgentRuntimeContext,
 } from "../agents/shared/runtime-context";
+import { TOOL_ERROR_CODES } from "../lib/tool-error-codes";
 
 /**
  * `memory` — agent-curated knowledge store under `/memories/`.
@@ -119,11 +120,15 @@ const requireFieldsForCommand = (
   input: MemoryInput,
 ):
   | { ok: true }
-  | { ok: false; error: string; code: "MEMORY_INVALID_INPUT" } => {
+  | {
+      ok: false;
+      error: string;
+      code: typeof TOOL_ERROR_CODES.MEMORY_INVALID_INPUT;
+    } => {
   const missing = (field: string) => ({
     ok: false as const,
     error: `memory.${input.command} requires '${field}'`,
-    code: "MEMORY_INVALID_INPUT" as const,
+    code: TOOL_ERROR_CODES.MEMORY_INVALID_INPUT,
   });
   switch (input.command) {
     case "view":
@@ -156,11 +161,11 @@ const liftError = (err: unknown): { error: string; code: string } => {
         code: parsed.code,
       };
     }
-    return { error: err.message, code: "MEMORY_HTTP_ERROR" };
+    return { error: err.message, code: TOOL_ERROR_CODES.MEMORY_HTTP_ERROR };
   }
   return {
     error: err instanceof Error ? err.message : "Unknown error",
-    code: "INTERNAL_ERROR",
+    code: TOOL_ERROR_CODES.INTERNAL_ERROR,
   };
 };
 
@@ -181,7 +186,7 @@ const buildContexts = (
       ok: false,
       error:
         "memory tool requires an authenticated user — current runtime context has no userId. Tell the user the memory tool is unavailable in this session and continue without memory operations.",
-      code: "MEMORY_REQUIRES_USER",
+      code: TOOL_ERROR_CODES.MEMORY_REQUIRES_USER,
     };
   }
   return {

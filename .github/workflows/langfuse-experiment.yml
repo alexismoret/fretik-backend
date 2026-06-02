@@ -1,26 +1,37 @@
-# Langfuse experiment gate (SCAFFOLD, non-blocking first).
+# Langfuse eval — MANUAL run against a reachable, data-bearing @fretik/ai.
 #
-# Runs the chatbot eval as a Langfuse experiment and reports a correctness
-# regression. Our eval stack is Bun-native and drives a LIVE @fretik/ai
-# service, so this uses Bun directly (the node-based langfuse/experiment-action
-# does not fit). It needs a reachable eval environment plus Langfuse +
-# OpenRouter credentials.
+# Why manual-only (not a PR gate): evals drive a LIVE @fretik/ai end-to-end AND
+# assume the target team's real data (the curated cases query actual documents /
+# entities / counts), so they cannot run against a fresh CI database, and a CI
+# runner can't reach your local dev. Pre-merge evals are run LOCALLY against dev
+# — see packages/ai/evals/RUNBOOK.md. PR quality gating (typecheck/lint/test +
+# image build) already lives in ai.yml; this is NOT a PR gate.
 #
-# Secrets = credentials only (API keys, internal key). Non-sensitive URLs and
-# UUIDs are repository VARIABLES (`vars.*`), not secrets.
+# Use this to trigger an eval from CI against a reachable, data-bearing service
+# you pass in (`ai_service_url`) — e.g. a tunnelled dev or a dedicated staging.
+# Avoid pointing it at PROD: eval turns spend on the prod account and the target
+# service emits env=production traces that pollute prod analytics.
 #
-# Non-blocking for now (`continue-on-error: true`): the gate reports but does
-# not block merges. Flip to blocking once a reproducible service-in-CI exists
-# (docker-compose: @fretik/ai + Postgres + Redis) — that is the follow-up.
+# Bun-native (the node-based langfuse/experiment-action doesn't fit our stack).
 name: langfuse-experiment
 
 on:
-  pull_request:
-    paths:
-      - "packages/ai/**"
-      - ".github/workflows/langfuse-experiment.yml"
-  schedule:
-    - cron: "0 3 * * *" # nightly full run
+  workflow_dispatch:
+    inputs:
+      ai_service_url:
+        description: "Reachable @fretik/ai base URL holding the eval team's data (NOT prod)"
+        required: true
+        type: string
+      mode:
+        description: "smoke-gate (subset + regression check, exits non-zero on drop) or full-baseline (all curated cases)"
+        required: false
+        default: smoke-gate
+        type: choice
+        options: [smoke-gate, full-baseline]
+      run_name:
+        description: "Dataset-run name (full-baseline only; optional)"
+        required: false
+        type: string
 
 concurrency:
   group: langfuse-experiment-${{ github.ref }}
@@ -29,17 +40,16 @@ concurrency:
 jobs:
   experiment:
     runs-on: ubuntu-latest
-    continue-on-error: true # non-blocking scaffold — remove to gate merges
     env:
       # Credentials → secrets.
       LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
       LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
       INTERNAL_KEY: ${{ secrets.EVAL_INTERNAL_KEY }}
-      # Non-sensitive URLs / UUIDs → repository variables.
+      # Non-sensitive URLs / UUIDs → repository variables; target URL → input.
       LANGFUSE_BASE_URL: ${{ vars.LANGFUSE_BASE_URL }}
       LANGFUSE_TRACING_ENVIRONMENT: ci
-      AI_SERVICE_URL: ${{ vars.EVAL_AI_SERVICE_URL }}
+      AI_SERVICE_URL: ${{ inputs.ai_service_url }}
       EVAL_TEAM_ID: ${{ vars.EVAL_TEAM_ID }}
       EVAL_ORGANIZATION_ID: ${{ vars.EVAL_ORGANIZATION_ID }}
       EVAL_USER_ID: ${{ vars.EVAL_USER_ID }}
@@ -51,11 +61,16 @@ jobs:
       - name: Install deps
         working-directory: backend
         run: bun install --frozen-lockfile
-      - name: PR smoke gate (judge + deterministic)
-        if: github.event_name == 'pull_request'
+      - name: Smoke gate (subset + judge + regression check)
+        if: inputs.mode == 'smoke-gate'
         working-directory: backend/packages/ai
         run: bun run evals/langfuse/gate.ts
-      - name: Nightly full baseline
-        if: github.event_name == 'schedule'
+      - name: Full baseline (all curated cases)
+        if: inputs.mode == 'full-baseline'
         working-directory: backend/packages/ai
-        run: bun run evals:langfuse -- --run-name "nightly-${{ github.run_number }}"
+        env:
+          RUN_NAME: ${{ inputs.run_name }}
+        run: |
+          args=()
+          [ -n "$RUN_NAME" ] && args+=(--run-name "$RUN_NAME")
+          bun run evals:langfuse -- "${args[@]}"

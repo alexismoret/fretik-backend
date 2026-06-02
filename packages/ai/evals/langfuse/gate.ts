@@ -1,21 +1,21 @@
 /**
- * CI gate: run the PR SMOKE experiment and fail on a correctness drop.
+ * Smoke regression gate: run the SMOKE subset experiment and fail on a
+ * correctness drop (exit non-zero) — a quick "did this regress?" check.
  *
- * PR tier = the SMOKE subset (~1 case/capability) WITH the judge — the
- * chatbot turn is the dominant per-case cost, so keeping the cheap judge
- * catches semantic regressions for negligible extra spend. The full suite
- * + judge + trials run nightly (`bun run evals:langfuse`).
+ * Smoke = ~1 case/capability WITH the judge — the chatbot turn is the
+ * dominant per-case cost, so keeping the cheap judge catches semantic
+ * regressions for negligible extra spend. The full curated suite runs via
+ * `bun run evals:langfuse`.
  *
  * Regression check runs AFTER the experiment, comparing the run-level
  * `correctness` to a threshold (`RegressionError`, the validated pattern —
  * not inside an evaluator). Start conservative; track the frozen baseline.
  *
- * Run with Bun (`bun run evals/langfuse/gate.ts`) — our eval stack is
- * Bun-native + pulls the full @fretik graph, so the node-based
- * `langfuse/experiment-action` does NOT fit; `.github/workflows/langfuse-experiment.yml`
- * drives this with Bun. `experiment(context)` is kept for any future
- * action use. Needs a LIVE @fretik/ai service at `AI_SERVICE_URL`.
- * PR-blocking is a follow-up once that service runs reproducibly in CI.
+ * Run with Bun (`bun run evals/langfuse/gate.ts`), locally or via the manual
+ * `langfuse-experiment.yml` (smoke-gate mode). NOT a PR gate — evals need a
+ * data-bearing service running the right code; see `evals/RUNBOOK.md`. Needs
+ * a LIVE @fretik/ai at `AI_SERVICE_URL`. `experiment(context)` is kept for any
+ * future node-based `langfuse/experiment-action` use.
  */
 
 import { RegressionError, type RunnerContext } from "@langfuse/client";

@@ -3,14 +3,24 @@
 The chatbot eval is **one engine** (this `evals/` harness, runs the REAL chatbot
 end-to-end) invoked from **three surfaces**, each with a distinct job.
 
-| Surface           | Who / when                   | Job                                                                                                          |
-| ----------------- | ---------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| **Scripts (dev)** | You, by hand, after a change | "Did my change help?" — run the cases, score, push a dataset-run                                             |
-| **CI**            | Automatic on PR + nightly    | Same engine, with a threshold — PR smoke gate blocks regressions, nightly = full                             |
-| **Langfuse UI**   | You, to analyse              | Compare dataset-runs, read per-capability scores, drill into a failing trace. NOT a runner for offline evals |
+| Surface           | Who / when                           | Job                                                                                                                                       |
+| ----------------- | ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| **Scripts (dev)** | You, by hand, after a change         | "Did my change help?" — run the cases against your dev service, score, push a dataset-run. THE primary surface.                           |
+| **Manual CI**     | You, on demand (`workflow_dispatch`) | Same engine, triggered from a runner against a reachable, data-bearing service you pass in (`ai_service_url`). NOT a PR gate (see below). |
+| **Langfuse UI**   | You, to analyse                      | Compare dataset-runs, read per-capability scores, drill into a failing trace. NOT a runner for offline evals                              |
 
 Separately: the **managed online evaluator** (configured in the Langfuse UI) runs
 continuously on **prod** traffic, sampled — quality monitoring, not the dataset loop.
+
+**Why evals are NOT a PR gate** (`langfuse-experiment.yml` is `workflow_dispatch`-only):
+the curated cases drive a LIVE `@fretik/ai` AND assume the target team's real data
+(counts, documents, entities), so they can't run against a fresh CI database; a CI
+runner can't reach your local dev; and evaluating a PR against any _external_ deployed
+service would test the deployed code, not the PR. PR quality gating (typecheck / lint /
+test + image build) lives in `ai.yml`. Run evals locally against dev before merging
+(below). The manual workflow is for triggering a run from CI against a reachable,
+data-bearing service you specify — never prod (it spends on the prod account and emits
+`env=production` traces that pollute prod analytics).
 
 ## Day-to-day (scripts)
 
@@ -20,7 +30,7 @@ Needs a **live `@fretik/ai` service** and `AI_SERVICE_URL` (it is NOT in `.env` 
 cd backend/packages/ai
 # 1. start the service in another pane (dev DB): bun run dev   (or ../../dev.sh)
 AI_SERVICE_URL=http://localhost:8083 bun run evals:langfuse                 # full baseline (20 cases)
-AI_SERVICE_URL=http://localhost:8083 bun run evals:langfuse -- --smoke      # PR smoke subset (~8)
+AI_SERVICE_URL=http://localhost:8083 bun run evals:langfuse -- --smoke      # smoke subset (~8)
 AI_SERVICE_URL=http://localhost:8083 bun run evals:langfuse -- --capability external-actions
 AI_SERVICE_URL=http://localhost:8083 bun run evals:langfuse -- --deterministic-only   # no judge (free of judge cost)
 AI_SERVICE_URL=http://localhost:8083 bun run evals:langfuse -- --run-name <name>      # explicit dataset-run name
@@ -136,10 +146,13 @@ push doesn't accidentally deploy before the remaining steps are checked.
 3. **Frontend (separate repo):** ship the Phase-2 feedback UI (CopyButton, FeedbackThumbs,
    useChatFeedback, i18n) and click-test: 👍/👎 + comment on an assistant turn → score+comment
    on that turn's trace in Langfuse + thumb persists across reload.
-4. **CI secrets/vars** (GitHub repo settings) for `.github/workflows/langfuse-experiment.yml`:
-   `LANGFUSE_*` creds as **secrets**, dataset/project IDs + URLs as **vars**. PR-blocking gate
-   (service-in-CI) is still a follow-up — the workflow is non-blocking today.
-5. **Push + deploy.** Once 3–4 are done: `git push origin main` → build the single Docker image →
+4. **(Optional) Manual eval workflow secrets/vars** — only if you'll trigger
+   `langfuse-experiment.yml` (`workflow_dispatch`) from CI. Secrets: `LANGFUSE_PUBLIC_KEY`,
+   `LANGFUSE_SECRET_KEY`, `OPENROUTER_API_KEY`, `EVAL_INTERNAL_KEY`. Vars: `LANGFUSE_BASE_URL`,
+   `EVAL_TEAM_ID`, `EVAL_ORGANIZATION_ID`, `EVAL_USER_ID`. The target service URL is a run input
+   (`ai_service_url`) pointing at a reachable, data-bearing, NON-prod service. NOT a deploy
+   prerequisite — pre-merge evals run locally against dev.
+5. **Push + deploy.** Once 3 is done: `git push origin main` → build the single Docker image →
    deploy via Dokploy. DB migrations run automatically on container boot (advisory-locked).
 
 > OpenRouter "Broadcast" is already disabled (no stray `env=default` traces) — no action needed.

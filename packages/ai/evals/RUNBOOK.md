@@ -118,33 +118,31 @@ the path.
 
 These require a human with server / Dokploy / Langfuse-UI / GitHub access — Claude cannot do
 them. The full Langfuse chantier is merged to `main` (merge commit) but **NOT pushed**, so a
-push doesn't accidentally deploy before the env below is set.
+push doesn't accidentally deploy before the remaining steps are checked.
 
-1. **Push + deploy.** Once steps 2–6 are set: `git push origin main` → build the single Docker
-   image → deploy via Dokploy. DB migrations run automatically on container boot (advisory-locked).
-2. **Prod env vars** (Dokploy service env):
-   - `LANGFUSE_TRACING_ENVIRONMENT=production` — **load-bearing**: this attribute is what
-     separates prod from dev across traces, scores, sessions, datasets. Dev is `development`.
-   - `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` / `LANGFUSE_BASE_URL` — same self-hosted instance.
-   - `LANGFUSE_RELEASE=<git sha / version>` — tags every trace with the release (regression attribution).
-   - Confirm `OPENROUTER_*` models, `E2B_API_KEY`, and set REAL cost rates
-     `E2B_PRICE_PER_SECOND` / `TAVILY_PRICE_PER_CREDIT` (defaults are public approximations →
-     cost analytics is only as accurate as these).
-3. **Seed prompts** — prompts are project-level + label-based (NOT environment-scoped), so the
-   `production` label already exists from dev seeding; re-run only after editing a `.md`:
-   `bun run langfuse:seed-prompts`. Prod reads label `production`, dev reads `latest`.
-   (If prod points at a SEPARATE Langfuse project, seed there.)
-4. **Seed eval config** (objective score-configs + Gemini judge connection + managed evaluator —
-   no billing): `bun run langfuse:seed-eval-config`. Confirm in the UI that
-   `google/gemini-3.5-flash` is on the `openrouter` LLM connection.
-5. **Disable the OpenRouter "Broadcast"** in the OpenRouter dashboard — it still emits
-   `env=default` "OpenRouter Request" traces (noise, separate from `chatbot-turn`).
-6. **Frontend (separate repo):** ship the Phase-2 feedback UI (CopyButton, FeedbackThumbs,
+1. **Prod env vars** (Dokploy service env) — ✅ **DONE** (confirmed 2026-06-02). For reference, the
+   load-bearing ones: `LANGFUSE_TRACING_ENVIRONMENT=production` (separates prod from dev across
+   traces/scores/sessions/datasets — dev is `development`), `LANGFUSE_PUBLIC_KEY` /
+   `LANGFUSE_SECRET_KEY` / `LANGFUSE_BASE_URL`, `LANGFUSE_RELEASE=<git sha>`, and REAL cost rates
+   `E2B_PRICE_PER_SECOND` / `TAVILY_PRICE_PER_CREDIT` (defaults are approximations).
+2. **Langfuse server seeding** — ✅ **already DONE** on `langfuse.fretik.com`. Prompts
+   (`fretik-chatbot-system` + `fretik-chatbot-sub-agent`, label `production`) and eval-config
+   (score-configs + Gemini judge connection + managed evaluator) are **project-level**, separated
+   from prod only by the `environment` attribute — NOT by project — so prod reads the same seeded
+   data. The `langfuse:*` scripts are plain HTTPS API calls (run from anywhere with the Langfuse
+   creds, e.g. locally). Re-run **only**: `bun run langfuse:seed-prompts` after editing a prompt
+   `.md` (publishes a new `production` version); both scripts once against a NEW project IF prod
+   ever uses separate Langfuse keys (not the case today).
+3. **Frontend (separate repo):** ship the Phase-2 feedback UI (CopyButton, FeedbackThumbs,
    useChatFeedback, i18n) and click-test: 👍/👎 + comment on an assistant turn → score+comment
    on that turn's trace in Langfuse + thumb persists across reload.
-7. **CI secrets/vars** (GitHub repo settings) for `.github/workflows/langfuse-experiment.yml`:
+4. **CI secrets/vars** (GitHub repo settings) for `.github/workflows/langfuse-experiment.yml`:
    `LANGFUSE_*` creds as **secrets**, dataset/project IDs + URLs as **vars**. PR-blocking gate
    (service-in-CI) is still a follow-up — the workflow is non-blocking today.
+5. **Push + deploy.** Once 3–4 are done: `git push origin main` → build the single Docker image →
+   deploy via Dokploy. DB migrations run automatically on container boot (advisory-locked).
+
+> OpenRouter "Broadcast" is already disabled (no stray `env=default` traces) — no action needed.
 
 # Long-term roadmap — once prod traces accumulate (the improvement engine)
 

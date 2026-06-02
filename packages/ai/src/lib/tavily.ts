@@ -1,4 +1,5 @@
 import { tavily } from "@tavily/core";
+import { traceExternalCall } from "./trace-tool";
 
 const apiKey = process.env.TAVILY_API_KEY;
 if (!apiKey) {
@@ -73,6 +74,17 @@ const withTavilyTimeout = async <T>(
 };
 
 /**
+ * Estimated price per Tavily credit (USD). Tavily bills in credits; the exact
+ * rate depends on your plan, so it's env-overridable. Public pay-as-you-go
+ * default ≈ $0.008/credit. Credits per call: search = 1 (basic) / 2
+ * (advanced); extract = ⌈urls/5⌉ × (1 basic / 2 advanced).
+ */
+const TAVILY_PRICE_PER_CREDIT = (() => {
+  const raw = Number(process.env.TAVILY_PRICE_PER_CREDIT);
+  return Number.isFinite(raw) && raw > 0 ? raw : 0.008;
+})();
+
+/**
  * Typed helper around Tavily's `/extract` endpoint. Given one or more
  * URLs, returns cleaned Markdown content + favicon + the source url.
  *
@@ -105,24 +117,48 @@ export interface ExtractUrlsResult {
 export const searchTavily: typeof tavilyClient.search = async (
   query,
   options,
-) =>
-  withTavilyTimeout(
-    "search",
-    SEARCH_TIMEOUT_MS,
-    tavilyClient.search(query, options),
+) => {
+  const credits = options?.searchDepth === "advanced" ? 2 : 1;
+  return traceExternalCall(
+    "web-search",
+    { query },
+    () =>
+      withTavilyTimeout(
+        "search",
+        SEARCH_TIMEOUT_MS,
+        tavilyClient.search(query, options),
+      ),
+    (r) => ({
+      output: { results: Array.isArray(r.results) ? r.results.length : 0 },
+      costUsd: credits * TAVILY_PRICE_PER_CREDIT,
+      metadata: { credits },
+    }),
   );
+};
 
 export const extractUrls = async (
   urls: string[],
   depth: "basic" | "advanced" = "basic",
 ): Promise<ExtractUrlsResult> => {
-  const response = await withTavilyTimeout(
-    "extract",
-    EXTRACT_TIMEOUT_MS,
-    tavilyClient.extract(urls, {
-      extractDepth: depth,
-      format: "markdown",
-      includeFavicon: true,
+  // Tavily bills extract per group of 5 URLs; advanced costs 2× per group.
+  const credits = Math.ceil(urls.length / 5) * (depth === "advanced" ? 2 : 1);
+  const response = await traceExternalCall(
+    "web-fetch",
+    { urls },
+    () =>
+      withTavilyTimeout(
+        "extract",
+        EXTRACT_TIMEOUT_MS,
+        tavilyClient.extract(urls, {
+          extractDepth: depth,
+          format: "markdown",
+          includeFavicon: true,
+        }),
+      ),
+    (r) => ({
+      output: { results: r.results.length, failed: r.failedResults.length },
+      costUsd: credits * TAVILY_PRICE_PER_CREDIT,
+      metadata: { credits },
     }),
   );
 

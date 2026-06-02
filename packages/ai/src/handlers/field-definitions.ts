@@ -9,6 +9,7 @@ import {
 import { OpenAPIHono } from "@hono/zod-openapi";
 import { generateText, Output } from "ai";
 import { z } from "zod";
+import { telemetryFor } from "../lib/langfuse";
 import { preextractFallbackModel, preextractModel } from "../lib/openrouter";
 import { SCHEMA_BLOCK_TRAILER, zodToPromptSchema } from "../lib/schema-prompt";
 import { internalMiddleware } from "../middlewares/internal";
@@ -169,6 +170,7 @@ const callSuggest = async (
     temperature: SUGGEST_TEMPERATURE,
     maxOutputTokens: SUGGEST_MAX_OUTPUT_TOKENS,
     abortSignal: AbortSignal.timeout(SUGGEST_TIMEOUT_MS),
+    experimental_telemetry: telemetryFor("field-suggest"),
   });
   return output;
 };

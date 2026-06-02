@@ -7,6 +7,7 @@ import {
   DOMAIN_TOOL_THRESHOLD_CHARS,
   maybePersistLargeOutput,
 } from "../lib/persisted-output";
+import { TOOL_ERROR_CODES } from "../lib/tool-error-codes";
 
 /**
  * Domain tool (deferred) — paginated search over the team's documents.
@@ -132,7 +133,7 @@ export const createListDocumentsTool = () =>
       } catch (err) {
         return {
           error: `listDocuments failed: ${err instanceof Error ? err.message : String(err)}`,
-          code: "LIST_DOCUMENTS_ERROR",
+          code: TOOL_ERROR_CODES.LIST_DOCUMENTS_ERROR,
         };
       }
 

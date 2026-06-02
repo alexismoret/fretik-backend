@@ -32,7 +32,7 @@
  *
  * The judge (LLM-as-judge):
  *   OPENROUTER_API_KEY           required
- *   OPENROUTER_EVAL_JUDGE_MODEL  optional (default: openai/gpt-oss-120b)
+ *   OPENROUTER_EVAL_JUDGE_MODEL  optional (default: google/gemini-3.5-flash)
  *
  * Plus whatever `@fretik/ai` itself needs to run (OPENROUTER_CHAT_MODEL,
  * DATABASE_URL, REDIS_URL, ...) — those belong to the service you're
@@ -63,19 +63,13 @@
  */
 
 import path from "node:path";
-import { runAssertions } from "./assertions";
 import { allSuites } from "./cases";
-import {
-  createEphemeralConversation,
-  destroyEphemeralConversation,
-} from "./conversation-lifecycle";
-import { invokeChatbot } from "./http-client";
+import { runChatbotExperiment } from "./langfuse/experiment";
 import { renderMarkdown, writeJsonReport } from "./reporter";
+import { filterCasesByTag, pool, runCase } from "./runner";
 import type {
+  Capability,
   CaseResult,
-  EvalCase,
-  EvalCaseContext,
-  EvalSuite,
   LatencyStats,
   PerToolLatency,
   RunReport,
@@ -86,10 +80,31 @@ interface CliOptions {
   suite?: string;
   tag?: string;
   concurrency: number;
+  /** Run as a Langfuse experiment (dataset run) instead of a local report. */
+  langfuse: boolean;
+  /** With --langfuse: PR smoke subset only. */
+  smoke: boolean;
+  /** With --langfuse: one capability stratum. */
+  capability?: Capability;
+  /** With --langfuse: skip the judge (deterministic only). */
+  deterministicOnly: boolean;
+  /** With --langfuse: explicit dataset-run name. */
+  runName?: string;
 }
 
+const isCapability = (v: string): v is Capability =>
+  v === "extraction" ||
+  v === "generation" ||
+  v === "external-actions" ||
+  v === "reasoning";
+
 const parseArgs = (argv: string[]): CliOptions => {
-  const opts: CliOptions = { concurrency: 3 };
+  const opts: CliOptions = {
+    concurrency: 3,
+    langfuse: false,
+    smoke: false,
+    deterministicOnly: false,
+  };
   for (let i = 0; i < argv.length; i++) {
     const flag = argv[i];
     const next = argv[i + 1];
@@ -109,103 +124,30 @@ const parseArgs = (argv: string[]): CliOptions => {
       i++;
       continue;
     }
+    if (flag === "--langfuse") {
+      opts.langfuse = true;
+      continue;
+    }
+    if (flag === "--smoke") {
+      opts.smoke = true;
+      continue;
+    }
+    if (flag === "--deterministic-only") {
+      opts.deterministicOnly = true;
+      continue;
+    }
+    if (flag === "--capability" && next && isCapability(next)) {
+      opts.capability = next;
+      i++;
+      continue;
+    }
+    if (flag === "--run-name" && next) {
+      opts.runName = next;
+      i++;
+      continue;
+    }
   }
   return opts;
-};
-
-const filterCases = (suite: EvalSuite, tag?: string): EvalCase[] =>
-  tag ? suite.cases.filter((c) => c.tags?.includes(tag)) : suite.cases;
-
-/** Simple promise pool — resolves when every task has been awaited. */
-const pool = async <T>(
-  items: T[],
-  concurrency: number,
-  fn: (item: T) => Promise<void>,
-): Promise<void> => {
-  let cursor = 0;
-  const worker = async (): Promise<void> => {
-    // eslint-disable-next-line no-await-in-loop -- serial by design
-    // inside a single worker; parallelism comes from spawning
-    // `concurrency` workers that all drain the shared `items` queue.
-    while (cursor < items.length) {
-      const idx = cursor++;
-      const item = items[idx];
-      if (item === undefined) return;
-      await fn(item);
-    }
-  };
-  const workers = Array.from(
-    { length: Math.min(concurrency, items.length) },
-    () => worker(),
-  );
-  await Promise.all(workers);
-};
-
-const runCase = async (suite: EvalSuite, c: EvalCase): Promise<CaseResult> => {
-  // Every case runs against a fresh `ai_conversations` row so
-  // sandbox-backed tools (bash, python, read) see a
-  // valid `conversationId` in their runtime context. Without this
-  // they'd short-circuit to NO_CONVERSATION and the agent would loop
-  // on failed retries, both distorting the routing signal and
-  // inflating latency. Cleanup is best-effort in `finally` — a
-  // failed teardown does not abort the run.
-  let conversationId: string | undefined;
-  try {
-    conversationId = await createEphemeralConversation({
-      teamId: process.env.EVAL_TEAM_ID ?? "",
-      organizationId: process.env.EVAL_ORGANIZATION_ID ?? "",
-      userId: process.env.EVAL_USER_ID,
-      label: `${suite.name}/${c.id}`,
-      prompt: c.prompt,
-      fixtures: c.fixtures,
-    });
-  } catch (err) {
-    console.warn(
-      `[evals] createEphemeralConversation failed for ${c.id}; falling back to stateless:`,
-      err instanceof Error ? err.message : err,
-    );
-  }
-  // The seed hook needs a real conversationId so any rows it inserts
-  // can carry it; without one we skip the seed and let the case run
-  // stateless. Cases that rely on the seed will fail their assertions
-  // accordingly — better than silently running with stale state.
-  const ctx: EvalCaseContext = {
-    conversationId: conversationId ?? "",
-    teamId: process.env.EVAL_TEAM_ID ?? "",
-    organizationId: process.env.EVAL_ORGANIZATION_ID ?? "",
-    userId: process.env.EVAL_USER_ID,
-  };
-  try {
-    if (c.seed && conversationId) {
-      await c.seed(ctx);
-    }
-    const invoke = await invokeChatbot(c.prompt, conversationId);
-    const assertions = await runAssertions(c.assertions, invoke, c.prompt, ctx);
-    const passed = assertions.every((a) => a.passed);
-    return {
-      caseId: c.id,
-      suiteName: suite.name,
-      description: c.description,
-      prompt: c.prompt,
-      passed,
-      invoke,
-      assertions,
-    };
-  } finally {
-    if (c.cleanup && conversationId) {
-      try {
-        await c.cleanup(ctx);
-      } catch (err) {
-        console.warn(
-          `[evals] case cleanup failed for ${c.id}:`,
-          err instanceof Error ? err.message : err,
-        );
-      }
-    }
-    if (conversationId) {
-      await destroyEphemeralConversation(conversationId);
-    }
-  }
 };
 
 const median = (xs: number[]): number => {
@@ -230,8 +172,31 @@ const percentile = (xs: number[], p: number): number => {
   return sorted[idx] ?? 0;
 };
 
+const runLangfuse = async (opts: CliOptions): Promise<void> => {
+  const result = await runChatbotExperiment({
+    smoke: opts.smoke,
+    deterministicOnly: opts.deterministicOnly,
+    maxConcurrency: opts.concurrency,
+    ...(opts.capability ? { capability: opts.capability } : {}),
+    ...(opts.runName ? { runName: opts.runName } : {}),
+    metadata: {
+      release: process.env.LANGFUSE_RELEASE ?? "(dev)",
+      smoke: opts.smoke,
+      deterministicOnly: opts.deterministicOnly,
+    },
+  });
+  console.log(await result.format({ includeItemResults: true }));
+  if (result.datasetRunUrl)
+    console.log(`\n[evals] dataset run: ${result.datasetRunUrl}`);
+  process.exit(0);
+};
+
 const main = async (): Promise<void> => {
   const opts = parseArgs(process.argv.slice(2));
+  if (opts.langfuse) {
+    await runLangfuse(opts);
+    return;
+  }
   const startedAt = new Date();
   const selected = opts.suite
     ? allSuites.filter((s) => s.name === opts.suite)
@@ -250,7 +215,7 @@ const main = async (): Promise<void> => {
 
   const suiteReports: SuiteReport[] = [];
   for (const suite of selected) {
-    const cases = filterCases(suite, opts.tag);
+    const cases = filterCasesByTag(suite, opts.tag);
     if (cases.length === 0) continue;
     console.log(
       `[evals] suite=${suite.name} cases=${cases.length} concurrency=${opts.concurrency}`,

@@ -1,4 +1,6 @@
 import { generateText } from "ai";
+import { telemetryFor } from "../../lib/langfuse";
+import { instrumentModel } from "../../lib/model-instrumentation";
 import { CHEAP_MODEL } from "../../lib/models";
 import { openrouter } from "../../lib/openrouter";
 import { withSlot } from "../../lib/rate-limit";
@@ -112,9 +114,11 @@ export interface EnrichedChunk {
  * `Reasoning is mandatory for this endpoint and cannot be disabled.`,
  * so "low" is the floor that every route accepts.
  */
-const cheapModel = openrouter.chat(CHEAP_MODEL, {
-  reasoning: { effort: "low" },
-});
+const cheapModel = instrumentModel(
+  openrouter.chat(CHEAP_MODEL, {
+    reasoning: { effort: "low" },
+  }),
+);
 
 /**
  * Builds the bounded `{doc_content}` context passed to the enrichment
@@ -173,6 +177,7 @@ const enrichOne = async (
           prompt: buildPrompt(docContent, chunk),
           temperature: ENRICHMENT_TEMPERATURE,
           maxOutputTokens: ENRICHMENT_MAX_TOKENS,
+          experimental_telemetry: telemetryFor("vectorize-enrichment"),
         }),
     );
     return {

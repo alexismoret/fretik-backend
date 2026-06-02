@@ -5,6 +5,7 @@ import { requiresOcrPreprocessing } from "@fretik/shared/utils/mimeTypes";
 import { eq } from "drizzle-orm";
 import { WORKSPACE_DIRS, writeFile } from "../../lib/conversation-storage";
 import { flattenOcrMarkdown, runMistralOcr } from "../../lib/mistral-ocr";
+import { withTraceSession } from "../../lib/trace-tool";
 
 /**
  * Chat-file preprocessor. Called synchronously from `upload.ts` once
@@ -80,7 +81,16 @@ export const preprocessChatFile = async (
     args.conversationId,
     attachmentS3Path,
   );
-  const ocr = await runMistralOcr({ url, mimeType: args.mimeType });
+  // Group the file's OCR under its conversation session so it appears
+  // alongside the chat turns (conversationId is always present here).
+  const ocr = await withTraceSession(
+    args.conversationId,
+    {
+      metadata: { fileId: args.fileId, filename: args.filename },
+      tags: ["process:chat-file"],
+    },
+    () => runMistralOcr({ url, mimeType: args.mimeType }),
+  );
   const markdown = flattenOcrMarkdown(ocr);
 
   const isImage = args.mimeType.startsWith("image/");

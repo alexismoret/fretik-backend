@@ -1,0 +1,61 @@
+# Langfuse experiment gate (SCAFFOLD, non-blocking first).
+#
+# Runs the chatbot eval as a Langfuse experiment and reports a correctness
+# regression. Our eval stack is Bun-native and drives a LIVE @fretik/ai
+# service, so this uses Bun directly (the node-based langfuse/experiment-action
+# does not fit). It needs a reachable eval environment plus Langfuse +
+# OpenRouter credentials.
+#
+# Secrets = credentials only (API keys, internal key). Non-sensitive URLs and
+# UUIDs are repository VARIABLES (`vars.*`), not secrets.
+#
+# Non-blocking for now (`continue-on-error: true`): the gate reports but does
+# not block merges. Flip to blocking once a reproducible service-in-CI exists
+# (docker-compose: @fretik/ai + Postgres + Redis) — that is the follow-up.
+name: langfuse-experiment
+
+on:
+  pull_request:
+    paths:
+      - "packages/ai/**"
+      - ".github/workflows/langfuse-experiment.yml"
+  schedule:
+    - cron: "0 3 * * *" # nightly full run
+
+concurrency:
+  group: langfuse-experiment-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  experiment:
+    runs-on: ubuntu-latest
+    continue-on-error: true # non-blocking scaffold — remove to gate merges
+    env:
+      # Credentials → secrets.
+      LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+      LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      INTERNAL_KEY: ${{ secrets.EVAL_INTERNAL_KEY }}
+      # Non-sensitive URLs / UUIDs → repository variables.
+      LANGFUSE_BASE_URL: ${{ vars.LANGFUSE_BASE_URL }}
+      LANGFUSE_TRACING_ENVIRONMENT: ci
+      AI_SERVICE_URL: ${{ vars.EVAL_AI_SERVICE_URL }}
+      EVAL_TEAM_ID: ${{ vars.EVAL_TEAM_ID }}
+      EVAL_ORGANIZATION_ID: ${{ vars.EVAL_ORGANIZATION_ID }}
+      EVAL_USER_ID: ${{ vars.EVAL_USER_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: Install deps
+        working-directory: backend
+        run: bun install --frozen-lockfile
+      - name: PR smoke gate (judge + deterministic)
+        if: github.event_name == 'pull_request'
+        working-directory: backend/packages/ai
+        run: bun run evals/langfuse/gate.ts
+      - name: Nightly full baseline
+        if: github.event_name == 'schedule'
+        working-directory: backend/packages/ai
+        run: bun run evals:langfuse -- --run-name "nightly-${{ github.run_number }}"

@@ -6,6 +6,7 @@ import type {
   MemoryVectorMetadata,
   SkillVectorMetadata,
 } from "@fretik/shared/db/schema";
+import { withPipelineTrace } from "../../lib/trace-tool";
 import { splitMarkdown } from "./chunker";
 import { enrichChunks, type EnrichedChunk } from "./contextual-enrichment";
 import { embedBatch } from "./embedder";
@@ -241,7 +242,30 @@ const runMetadataOnly = async (
   };
 };
 
-export const vectorizeSource = async (
+/**
+ * Run a source's vectorisation as ONE `vectorize` trace (the N contextual-
+ * enrichment LLM calls + the embeddings nested under it), grouped under a
+ * per-source session (`{sourceType}:{sourceId}`). For documents this is
+ * `documents:{documentId}` — the same key `runPreExtract` uses — so OCR +
+ * pre-extraction + vectorisation all share one Sessions-view timeline + cost.
+ */
+export const vectorizeSource = (
+  input: VectorizeSourceInput,
+): Promise<VectorizeSourceResult> =>
+  withPipelineTrace(
+    "vectorize",
+    `${input.sourceType}:${input.sourceId}`,
+    {
+      metadata: { sourceType: input.sourceType, sourceId: input.sourceId },
+      tags: [
+        "process:vectorize",
+        ...(input.teamId !== null ? [`team:${input.teamId}`] : []),
+      ],
+    },
+    () => vectorizeSourceImpl(input),
+  );
+
+const vectorizeSourceImpl = async (
   input: VectorizeSourceInput,
 ): Promise<VectorizeSourceResult> => {
   const {

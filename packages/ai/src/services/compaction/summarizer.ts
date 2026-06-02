@@ -1,4 +1,6 @@
 import { type UIMessage, streamText } from "ai";
+import { telemetryFor } from "../../lib/langfuse";
+import { instrumentModel } from "../../lib/model-instrumentation";
 import { openrouter } from "../../lib/openrouter";
 import { dropOldestRounds } from "./grouping";
 import { formatCompactSummary, getCompactPrompt } from "./prompt";
@@ -89,7 +91,7 @@ const SUMMARISER_TIMEOUT_MS = (() => {
 const MAX_PTL_RETRIES = 3;
 const PTL_DROP_FRACTION = 0.2;
 
-const compactionModel = openrouter.chat(COMPACTION_MODEL_ID);
+const compactionModel = instrumentModel(openrouter.chat(COMPACTION_MODEL_ID));
 
 const PART_TOOL_PREFIX = "tool-";
 
@@ -196,6 +198,10 @@ const runSummariser = async (messages: UIMessage[]): Promise<string | null> => {
     temperature: SUMMARISER_TEMPERATURE,
     maxOutputTokens: SUMMARISER_MAX_TOKENS,
     abortSignal: AbortSignal.timeout(SUMMARISER_TIMEOUT_MS),
+    // Nests this summariser generation under the turn's `chatbot-turn`
+    // span (it runs inside `execute`'s active observation). No-op when
+    // Langfuse is unconfigured.
+    experimental_telemetry: telemetryFor("compaction"),
   });
   // `result.text` resolves once the stream finishes — the AI SDK
   // accumulates deltas internally so we get the full final string

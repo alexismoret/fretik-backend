@@ -3,6 +3,7 @@ import { buildDocumentOriginalKey } from "@fretik/shared/lib/document-storage";
 import { getFileFromS3, getPresignedUrl } from "@fretik/shared/lib/s3";
 import type { PreExtractionResponse } from "@fretik/shared/schemas/pre-extraction";
 import { type OcrPage, runMistralOcr } from "../../lib/mistral-ocr";
+import { withPipelineTrace } from "../../lib/trace-tool";
 import { runPreextractLlm } from "./extract";
 
 // ==================== //
@@ -171,7 +172,26 @@ const buildLlmPrompt = (args: {
  * classification + entity extraction → merge into the response contract
  * consumed by `@fretik/shared/services/documents/upload.ts`.
  */
-export const runPreExtract = async (
+/**
+ * Run the whole pre-extraction pipeline as ONE `pre-extract` trace (OCR + the
+ * extraction LLM nested under it), grouped under a per-document session
+ * (`documents:{documentId}`) so it shares the Sessions view with the
+ * document's vectorisation — full per-document cost/timeline.
+ */
+export const runPreExtract = (
+  args: PreExtractArgs,
+): Promise<PreExtractionResponse> =>
+  withPipelineTrace(
+    "pre-extract",
+    `documents:${args.documentId}`,
+    {
+      metadata: { documentId: args.documentId },
+      tags: ["process:pre-extract"],
+    },
+    () => runPreExtractImpl(args),
+  );
+
+const runPreExtractImpl = async (
   args: PreExtractArgs,
 ): Promise<PreExtractionResponse> => {
   const isPlainText = args.mimeType === "text/plain";

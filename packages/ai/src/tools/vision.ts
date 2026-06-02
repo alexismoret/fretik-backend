@@ -6,6 +6,7 @@ import {
   readFile,
   resolveWorkspacePath,
 } from "../lib/conversation-storage";
+import { TOOL_ERROR_CODES } from "../lib/tool-error-codes";
 import { describeVisionFile } from "../lib/vision";
 
 /**
@@ -102,7 +103,7 @@ export const createVisionTool = () =>
         return {
           error:
             "vision is only available inside a conversation. No conversationId in the current context.",
-          code: "NO_CONVERSATION",
+          code: TOOL_ERROR_CODES.NO_CONVERSATION,
         };
       }
       const conversationId = ctx.conversationId;
@@ -111,7 +112,7 @@ export const createVisionTool = () =>
       if (!resolved) {
         return {
           error: `Path is outside the conversation's sandbox (/workspace/).`,
-          code: "PATH_OUT_OF_SANDBOX",
+          code: TOOL_ERROR_CODES.PATH_OUT_OF_SANDBOX,
         };
       }
 
@@ -119,7 +120,7 @@ export const createVisionTool = () =>
       if (!SUPPORTED_VISION_EXTENSIONS.has(ext)) {
         return {
           error: `Not a supported vision format (${ext || "no extension"}). Use read instead — vision only accepts .png, .jpg, .jpeg, .webp, or .pdf.`,
-          code: "UNSUPPORTED_VISION_TYPE",
+          code: TOOL_ERROR_CODES.UNSUPPORTED_VISION_TYPE,
         };
       }
 
@@ -127,14 +128,14 @@ export const createVisionTool = () =>
       if (!mimeType || !SUPPORTED_VISION_MIMES.has(mimeType)) {
         return {
           error: `Unsupported MIME type for ${ext}.`,
-          code: "UNSUPPORTED_VISION_TYPE",
+          code: TOOL_ERROR_CODES.UNSUPPORTED_VISION_TYPE,
         };
       }
 
       if (!(await fileExists(conversationId, resolved.relative))) {
         return {
           error: `File not found: ${resolved.absolute}`,
-          code: "FILE_NOT_FOUND",
+          code: TOOL_ERROR_CODES.FILE_NOT_FOUND,
         };
       }
 
@@ -144,7 +145,7 @@ export const createVisionTool = () =>
       } catch (err) {
         return {
           error: `Failed to read file: ${err instanceof Error ? err.message : String(err)}`,
-          code: "READ_ERROR",
+          code: TOOL_ERROR_CODES.READ_ERROR,
         };
       }
 
@@ -164,7 +165,7 @@ export const createVisionTool = () =>
       } catch (err) {
         return {
           error: `Vision call failed: ${err instanceof Error ? err.message : String(err)}`,
-          code: "VISION_ERROR",
+          code: TOOL_ERROR_CODES.VISION_ERROR,
         };
       }
     },

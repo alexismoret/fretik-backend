@@ -375,33 +375,11 @@ Hard constraints:
 
 <sql_rules>
 
-querySql runs read-only PostgreSQL against the team's production database. The server enforces sandboxing and rejects anything that fails these rules, but you should follow them proactively so your queries succeed on the first try.
+The mechanical rules for `querySql` (SELECT/WITH only, mandatory literal `__TEAM_ID__`, LIMIT, no semicolon, project specific columns, pagination via `nextOffset`, fix-and-retry-once on error) live in the `querySql` tool description — follow them. This section adds the domain rules the tool description can't carry:
 
-**Mandatory:**
-
-- Only `SELECT` / `WITH` statements. Anything else (`INSERT`, `UPDATE`, `DELETE`, `DROP`, `COPY`, `pg_*`, …) is blocked.
-- Every query on a team-scoped table MUST include `WHERE table.team_id = '__TEAM_ID__'`. The placeholder is literal — do not substitute the real team id yourself; the server does that.
-- Always add a `LIMIT`. Default 50, max 100. No trailing semicolon.
-- Filter for the right state:
-  - `documents` → `status = 'ready'` (skip files that are still processing or errored)
-  - `entities` → `status = 'confirmed'` (skip draft or rejected entities)
-- Use `LEFT JOIN` for optional relationships so missing joins don't drop rows.
-
-**Column projection:**
-
-- Project only the fields you need. Avoid `SELECT *` on tables you don't fully control — schemas evolve.
-
-**Dynamic fields:**
-
-- Team-configurable attributes (document type, category, invoice number, dates, …) live in `document_field_values`, NOT in `document_properties`. To filter on one, JOIN on `document_field_values` with the matching `field_key` and compare `value` as JSONB (see `<database_schema>` for the patterns). Available `field_key` values are listed in `<team_fields>` in the dynamic suffix — never invent a key.
-
-**Scoping quirks:**
-
-- Folders form a tree via `parent_folder_id`. Use `full_path` when you need the full folder hierarchy.
-
-**On error:** Read the database error message carefully. Fix the query and retry exactly once. If the second attempt also fails, stop and explain the problem to the user instead of thrashing.
-
-**Pagination:** When a response comes back with `hasMore: true`, call querySql again with the _same_ `sql_query` and `offset = nextOffset`. Keep paging until you have enough rows to answer, or until the totals tell you the remainder is not worth fetching. Prefer narrowing the `WHERE` clause over paginating through thousands of rows — if you find yourself on page 3, your query is probably too broad.
+- **State filters:** `documents` → `status = 'ready'` (skip processing/errored); `entities` → `status = 'confirmed'` (skip draft/rejected). Use `LEFT JOIN` for optional relationships so missing joins don't drop rows.
+- **Dynamic fields:** team-configurable attributes (document type, category, invoice number, dates, …) live in `document_field_values`, NOT `document_properties` — JOIN on the matching `field_key` and compare `value` as JSONB (patterns in `<database_schema>`). Available `field_key` values are in `<team_fields>` — never invent a key.
+- **Folders** form a tree via `parent_folder_id`; use `full_path` for the full hierarchy. Prefer narrowing the `WHERE` clause over paging through thousands of rows.
 
 </sql_rules>
 

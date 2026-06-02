@@ -1,3 +1,8 @@
+import {
+  startActiveObservation,
+  updateActiveObservation,
+} from "@langfuse/tracing";
+import { langfuseEnabled } from "../../lib/langfuse";
 import type { HybridCandidate } from "./hybrid-search";
 
 /**
@@ -80,7 +85,39 @@ interface CohereRerankResult {
 
 interface CohereRerankResponse {
   results: CohereRerankResult[];
+  /** Present when `usage: { include: true }` is sent — OpenRouter's real USD cost. */
+  usage?: { cost?: number };
 }
+
+/**
+ * Record the rerank call's I/O + OpenRouter cost on the active `rerank`
+ * observation. Soft-fail; a no-op when Langfuse is off or usage accounting
+ * returned no cost.
+ */
+const recordRerankObservation = (
+  query: string,
+  docCount: number,
+  json: CohereRerankResponse,
+): void => {
+  if (!langfuseEnabled) return;
+  const cost =
+    typeof json.usage?.cost === "number" && Number.isFinite(json.usage.cost)
+      ? json.usage.cost
+      : undefined;
+  try {
+    updateActiveObservation(
+      {
+        input: { query, documents: docCount },
+        output: { results: json.results.length },
+        model: rerankModelId,
+        ...(cost !== undefined ? { costDetails: { total: cost } } : {}),
+      },
+      { asType: "generation" },
+    );
+  } catch {
+    // Telemetry must never break rerank.
+  }
+};
 
 const buildDocumentText = (candidate: HybridCandidate): string =>
   candidate.contextualPrefix.length > 0
@@ -123,39 +160,54 @@ export const rerankCandidates = async (
   const timeoutId = setTimeout(() => controller.abort(), RERANK_TIMEOUT_MS);
 
   try {
-    const response = await fetch(OPENROUTER_RERANK_URL, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: rerankModelId,
-        query,
-        documents,
-        top_n: Math.min(topK, candidates.length),
-      }),
-      signal: controller.signal,
-    });
+    const run = async (): Promise<RerankedCandidate[]> => {
+      const response = await fetch(OPENROUTER_RERANK_URL, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: rerankModelId,
+          query,
+          documents,
+          top_n: Math.min(topK, candidates.length),
+          // Return OpenRouter's real USD cost so we can attach it to the trace.
+          usage: { include: true },
+        }),
+        signal: controller.signal,
+      });
 
-    if (!response.ok) {
-      const text = await response.text().catch(() => "");
-      throw new Error(
-        `OpenRouter rerank ${response.status}: ${text.slice(0, 200)}`,
-      );
-    }
+      if (!response.ok) {
+        const text = await response.text().catch(() => "");
+        throw new Error(
+          `OpenRouter rerank ${response.status}: ${text.slice(0, 200)}`,
+        );
+      }
 
-    const json = (await response.json()) as CohereRerankResponse;
-    if (!Array.isArray(json.results)) {
-      throw new Error("OpenRouter rerank response missing results[]");
-    }
+      const json = (await response.json()) as CohereRerankResponse;
+      if (!Array.isArray(json.results)) {
+        throw new Error("OpenRouter rerank response missing results[]");
+      }
 
-    const reranked: RerankedCandidate[] = [];
-    for (const r of json.results) {
-      const candidate = candidates[r.index];
-      if (!candidate) continue;
-      reranked.push({ ...candidate, rerankScore: r.relevance_score });
-    }
+      const reranked: RerankedCandidate[] = [];
+      for (const r of json.results) {
+        const candidate = candidates[r.index];
+        if (!candidate) continue;
+        reranked.push({ ...candidate, rerankScore: r.relevance_score });
+      }
+
+      recordRerankObservation(query, documents.length, json);
+      return reranked;
+    };
+
+    // Trace the upstream call as a `rerank` generation (with cost) when
+    // Langfuse is on; the circuit-breaker / RRF fallback below stays outside.
+    const reranked = langfuseEnabled
+      ? await startActiveObservation("rerank", () => run(), {
+          asType: "generation",
+        })
+      : await run();
 
     consecutiveFailures = 0;
     return reranked.slice(0, topK);

@@ -1,3 +1,4 @@
+import { fetchManagedPrompt } from "../../lib/langfuse-prompts";
 import { buildSessionStateBlock } from "../../services/session-state/build-block";
 import type { SearchableToolRegistry } from "./chatbot-tool";
 import type { AgentRuntimeContext } from "./runtime-context";
@@ -38,32 +39,45 @@ const SUB_AGENT_TEMPLATE_URL = new URL(
  */
 const HTML_COMMENT_RE = /<!--[\s\S]*?-->\n?/g;
 
-const RAW_SYSTEM_PROMPT_TEMPLATE = await Bun.file(TEMPLATE_URL).text();
-
-const SYSTEM_PROMPT_TEMPLATE = RAW_SYSTEM_PROMPT_TEMPLATE.replace(
-  HTML_COMMENT_RE,
-  "",
-);
+/**
+ * Names of the chatbot prompts managed in Langfuse Prompt Management, each
+ * paired with the repo `.md` that seeds it and serves as the offline
+ * fallback. Single source of truth shared with
+ * `scripts/seed-langfuse-prompts.ts`.
+ */
+export const MANAGED_PROMPTS = {
+  system: { name: "fretik-chatbot-system", url: TEMPLATE_URL },
+  subAgent: { name: "fretik-chatbot-sub-agent", url: SUB_AGENT_TEMPLATE_URL },
+} as const;
 
 /**
- * Sub-agent system prompt — loaded once at module init alongside the
- * main system prompt. Pure static text (no `{{placeholder}}`
- * substitutions): the sub-agent receives the per-task context
- * verbatim through the `task` instruction passed by the parent's
- * `dispatchAgent` tool, not through prompt template variables.
- *
- * HTML comments are stripped through the same regex used for the
- * main prompt so the maintainer-facing docblock at the top of the
- * file doesn't cost model tokens.
+ * Raw `.md` text (HTML comments INTACT) — the Langfuse fallback used when the
+ * managed prompt can't be fetched, and the seed source. Comments are stripped
+ * per turn after fetch, so keeping them in the stored/fallback text leaves the
+ * architecture docblock + DYNAMIC SUFFIX marker visible to whoever edits the
+ * prompt in the Langfuse UI.
  */
-const RAW_SUB_AGENT_PROMPT = await Bun.file(SUB_AGENT_TEMPLATE_URL).text();
+const SYSTEM_PROMPT_FALLBACK = await Bun.file(TEMPLATE_URL).text();
+const SUB_AGENT_FALLBACK = await Bun.file(SUB_AGENT_TEMPLATE_URL).text();
 
-const SUB_AGENT_SYSTEM_PROMPT = RAW_SUB_AGENT_PROMPT.replace(
-  HTML_COMMENT_RE,
-  "",
-).trim();
-
-export const buildSubAgentSystemPrompt = (): string => SUB_AGENT_SYSTEM_PROMPT;
+/**
+ * Sub-agent system prompt. Managed in Langfuse (label per environment),
+ * falling back to the embedded `.md`. Pure static text (no `{{placeholder}}`
+ * substitutions): the sub-agent receives per-task context verbatim through
+ * the `task` instruction from the parent's `dispatchAgent` tool. Strips HTML
+ * comments and records the prompt's trace-link on `ctx` so the sub-agent's
+ * generations link to the version that produced them.
+ */
+export const buildSubAgentSystemPrompt = async (
+  ctx: AgentRuntimeContext,
+): Promise<string> => {
+  const { text, link } = await fetchManagedPrompt(
+    MANAGED_PROMPTS.subAgent.name,
+    SUB_AGENT_FALLBACK,
+  );
+  ctx.langfusePromptLink = link;
+  return text.replace(HTML_COMMENT_RE, "").trim();
+};
 
 /**
  * Format a `Date` the same way the Claude reference prompt does but
@@ -190,11 +204,20 @@ const formatDeferredToolList = (
  * the full domain-tool registry so `{{deferredToolList}}` reflects
  * what `searchTools` can activate.
  */
-export const buildChatbotSystemPrompt = (
+export const buildChatbotSystemPrompt = async (
   ctx: AgentRuntimeContext,
   deferredTools: SearchableToolRegistry = {},
-): string => {
-  return renderPrompt(SYSTEM_PROMPT_TEMPLATE, {
+): Promise<string> => {
+  const { text, link } = await fetchManagedPrompt(
+    MANAGED_PROMPTS.system.name,
+    SYSTEM_PROMPT_FALLBACK,
+  );
+  ctx.langfusePromptLink = link;
+  // `.trim()` to match the seed script and the sub-agent path: the stored
+  // (trimmed) text and the embedded fallback must be byte-identical so the
+  // static prefix — and the OpenRouter prompt cache — survives every
+  // Langfuse↔fallback transition.
+  return renderPrompt(text.replace(HTML_COMMENT_RE, "").trim(), {
     currentDate: formatCurrentDate(new Date(), ctx.timeZone),
     userName: ctx.userName ?? "Unknown user",
     userId: ctx.userId ?? "unknown",

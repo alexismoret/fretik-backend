@@ -1,4 +1,6 @@
 import { generateText } from "ai";
+import { telemetryFor } from "../../lib/langfuse";
+import { instrumentModel } from "../../lib/model-instrumentation";
 import { CHEAP_MODEL } from "../../lib/models";
 import { openrouter } from "../../lib/openrouter";
 import { withSlot } from "../../lib/rate-limit";
@@ -74,9 +76,11 @@ const MULTI_QUERY_TIMEOUT_MS = 10_000;
  * accepted by every route while keeping the reasoning budget tight
  * — no runaway, no rejection.
  */
-const cheapModel = openrouter.chat(CHEAP_MODEL, {
-  reasoning: { effort: "low" },
-});
+const cheapModel = instrumentModel(
+  openrouter.chat(CHEAP_MODEL, {
+    reasoning: { effort: "low" },
+  }),
+);
 
 /**
  * Static rubric — identical across every call, so it lives in the
@@ -132,6 +136,8 @@ export const generateQueryVariants = async (
           temperature: MULTI_QUERY_TEMPERATURE,
           maxOutputTokens: MULTI_QUERY_MAX_TOKENS,
           abortSignal: AbortSignal.timeout(MULTI_QUERY_TIMEOUT_MS),
+          // Nests under the `searchKnowledge` tool call → `chatbot-turn`.
+          experimental_telemetry: telemetryFor("rag-multi-query"),
         }),
     );
     rawText = text;

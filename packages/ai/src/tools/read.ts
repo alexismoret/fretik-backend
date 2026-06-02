@@ -9,6 +9,7 @@ import {
   WORKSPACE_DIRS,
 } from "../lib/conversation-storage";
 import { maybePersistLargeOutput } from "../lib/persisted-output";
+import { TOOL_ERROR_CODES } from "../lib/tool-error-codes";
 
 /**
  * Unified `read` tool. Mirrors Claude Code's `FileReadTool`:
@@ -230,7 +231,7 @@ export const createReadTool = () =>
         return {
           error:
             "read is only available inside a conversation. No conversationId in the current context.",
-          code: "NO_CONVERSATION",
+          code: TOOL_ERROR_CODES.NO_CONVERSATION,
         };
       }
       const conversationId = ctx.conversationId;
@@ -239,7 +240,7 @@ export const createReadTool = () =>
       if (!resolved) {
         return {
           error: `Path is outside the conversation's sandbox (/workspace/). Only files under attachments/, outputs/, drive/, skills/, context/, or memory/ are readable.`,
-          code: "PATH_OUT_OF_SANDBOX",
+          code: TOOL_ERROR_CODES.PATH_OUT_OF_SANDBOX,
         };
       }
 
@@ -259,13 +260,13 @@ export const createReadTool = () =>
         if (!sidecarResolved) {
           return {
             error: `Unable to resolve OCR sidecar path for ${basename(resolved.relative)}.`,
-            code: "PATH_OUT_OF_SANDBOX",
+            code: TOOL_ERROR_CODES.PATH_OUT_OF_SANDBOX,
           };
         }
         if (!(await fileExists(conversationId, sidecarResolved.relative))) {
           return {
             error: `Binary ${ext} files cannot be read directly. No OCR sidecar found at ${sidecarResolved.absolute}. For tables use python with pdfplumber/python-docx/python-pptx; for visual layout use vision(file_path, question).`,
-            code: "NO_OCR_SIDECAR",
+            code: TOOL_ERROR_CODES.NO_OCR_SIDECAR,
             hint: ext === ".pdf" ? "python-or-vision" : "python",
           };
         }
@@ -279,7 +280,7 @@ export const createReadTool = () =>
         ) {
           return {
             error: `No OCR sidecar available for this image. Use vision(file_path, question) with a specific visual question if you need to inspect the image content.`,
-            code: "NO_OCR_SIDECAR",
+            code: TOOL_ERROR_CODES.NO_OCR_SIDECAR,
             hint: "vision",
           };
         }
@@ -293,7 +294,7 @@ export const createReadTool = () =>
         ) {
           return {
             error: `Binary spreadsheet files (${ext}) cannot be read as text. Use python with pandas.read_excel('${resolved.absolute}') or openpyxl to inspect the data.`,
-            code: "BINARY_NOT_READABLE",
+            code: TOOL_ERROR_CODES.BINARY_NOT_READABLE,
             hint: "python",
           };
         }
@@ -314,7 +315,7 @@ export const createReadTool = () =>
       } else {
         return {
           error: `Extension ${ext} is not supported. Attach the file as text or use python for binary formats.`,
-          code: "UNSUPPORTED_EXTENSION",
+          code: TOOL_ERROR_CODES.UNSUPPORTED_EXTENSION,
         };
       }
 
@@ -326,13 +327,13 @@ export const createReadTool = () =>
         if (/not exist|not found|missing/i.test(message)) {
           return {
             error: `File not found: ${finalAbsolute}`,
-            code: "FILE_NOT_FOUND",
+            code: TOOL_ERROR_CODES.FILE_NOT_FOUND,
             hint: buildFileNotFoundHint(finalRelative),
           };
         }
         return {
           error: `Failed to read file: ${message}`,
-          code: "READ_ERROR",
+          code: TOOL_ERROR_CODES.READ_ERROR,
         };
       }
 

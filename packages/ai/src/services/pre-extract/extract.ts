@@ -1,6 +1,7 @@
 import type { FieldDefinition } from "@fretik/shared/db/schema";
 import { buildPreExtractSchema } from "@fretik/shared/schemas/pre-extraction";
 import { generateText, Output } from "ai";
+import { telemetryFor } from "../../lib/langfuse";
 import {
   PREEXTRACT_MODEL_IDS,
   preextractFallbackModel,
@@ -213,6 +214,7 @@ ${SCHEMA_BLOCK_TRAILER}`;
     temperature: PREEXTRACT_TEMPERATURE,
     maxOutputTokens: PREEXTRACT_MAX_OUTPUT_TOKENS,
     abortSignal: AbortSignal.timeout(PREEXTRACT_LLM_TIMEOUT_MS),
+    experimental_telemetry: telemetryFor("pre-extract"),
   });
 
   return output;

@@ -38,6 +38,7 @@ const runOne = async (
         type: "contains",
         label: `contains "${assertion.value}"${assertion.caseInsensitive ? " (ci)" : ""}`,
         passed,
+        score: passed ? 1 : 0,
         message: passed
           ? undefined
           : `text did not contain the expected fragment`,
@@ -50,6 +51,7 @@ const runOne = async (
         type: "regex",
         label: `matches /${assertion.value}/${assertion.flags ?? ""}`,
         passed,
+        score: passed ? 1 : 0,
         message: passed ? undefined : `regex did not match assistant text`,
       };
     }
@@ -64,6 +66,7 @@ const runOne = async (
         type: "toolUsed",
         label: `${mode === "all" ? "all of" : "any of"} [${assertion.tools.join(", ")}]`,
         passed,
+        score: passed ? 1 : 0,
         message: passed
           ? undefined
           : `tools used: [${[...toolsUsed].join(", ") || "none"}]`,
@@ -77,6 +80,7 @@ const runOne = async (
         type: "toolNotUsed",
         label: `none of [${assertion.tools.join(", ")}]`,
         passed,
+        score: passed ? 1 : 0,
         message: passed
           ? undefined
           : `unexpected tools called: [${leaked.join(", ")}]`,
@@ -88,6 +92,7 @@ const runOne = async (
         type: "latencyUnder",
         label: `latency < ${assertion.ms}ms`,
         passed,
+        score: passed ? 1 : 0,
         message: passed ? undefined : `latency was ${result.latencyMs}ms`,
       };
     }
@@ -100,6 +105,7 @@ const runOne = async (
         type: "noError",
         label: "no error",
         passed: !errorish,
+        score: errorish ? 0 : 1,
         message: errorish
           ? `error=${result.error ?? "(none)"} finish=${result.finishReason ?? "?"} status=${result.httpStatus ?? "?"}`
           : undefined,
@@ -117,10 +123,15 @@ const runOne = async (
       });
       const expected = assertion.expectPass ?? true;
       const passed = verdict.passed === expected;
+      // `score` = how well the assertion's EXPECTATION was met. For a
+      // negative assertion (`expectPass: false`) invert the judge's
+      // partial-credit score so incorrect→1, correct→0, partial→0.5.
+      const score = expected ? verdict.score : 1 - verdict.score;
       return {
         type: "judge",
         label: `llm-judge: "${assertion.rubric.slice(0, 60)}${assertion.rubric.length > 60 ? "…" : ""}"`,
         passed,
+        score,
         message: verdict.rationale,
       };
     }
@@ -132,6 +143,7 @@ const runOne = async (
         type: "custom",
         label: `custom: ${assertion.name}`,
         passed,
+        score: passed ? 1 : 0,
         message:
           typeof verdict === "string" && !passed
             ? verdict

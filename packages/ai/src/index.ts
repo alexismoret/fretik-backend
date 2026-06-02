@@ -1,3 +1,8 @@
+// OpenTelemetry tracing bootstrap (Langfuse). Side-effect import — MUST be
+// first so the global tracer provider is registered before any model call
+// creates a telemetry span. No-op when LANGFUSE_* env vars are absent.
+import "./lib/langfuse";
+
 // Bootstrap external-app provider registration (side-effect import — must
 // run before any chatbot tool or sandbox-exec touches the registry).
 import "@fretik/providers";

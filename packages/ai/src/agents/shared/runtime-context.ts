@@ -76,6 +76,15 @@ export interface AgentRuntimeContext {
    */
   traceId?: string;
   /**
+   * `prompt.toJSON()` of the managed Langfuse prompt that produced this
+   * turn's instructions, or `undefined` when the prompt resolved from the
+   * embedded `.md` fallback (or Langfuse is off). Set once by the system-
+   * prompt renderer inside `prepareCall` — before the agent loop, so never
+   * races a tool call — and read back by the builder to link the generation
+   * to its prompt version via `experimental_telemetry.metadata.langfusePrompt`.
+   */
+  langfusePromptLink?: string;
+  /**
    * IANA time-zone identifier of the requesting client (e.g.
    * `Europe/Paris`). Forwarded from `X-Client-Timezone` on the
    * user-facing route and `X-Context-Timezone` on the internal route.

@@ -6,8 +6,11 @@ import {
   mirrorSandboxChanges,
   prepareSandbox,
 } from "../lib/conversation-storage";
+import { E2B_PRICE_PER_SECOND } from "../lib/e2b-cost";
 import { maybePersistLargeOutput } from "../lib/persisted-output";
 import { withSlot } from "../lib/rate-limit";
+import { TOOL_ERROR_CODES } from "../lib/tool-error-codes";
+import { traceExternalCall } from "../lib/trace-tool";
 import { mapE2BError } from "./_e2b-errors";
 
 /**
@@ -30,7 +33,7 @@ const e2bExecMutexKey = (conversationId: string): string =>
 /**
  * Aligned with Anthropic's `bash_code_execution` and Claude Code's
  * `Bash`:
- *  - input fields: `command` (mandatory), `description?`, `restart?`
+ *  - input fields: `command` (mandatory), `description` (mandatory), `restart?`
  *  - output on success: `{ stdout, stderr, artifacts }`
  *  - output on failure: `{ error, code, stdout?, stderr? }`
  *
@@ -71,9 +74,8 @@ export const bashInputSchema = z.object({
     .string()
     .min(1)
     .max(120)
-    .optional()
     .describe(
-      "5–10 word gloss of what this command does (e.g. 'List CSV files in workspace'). Rendered above the raw command in the UI so the user can scan the chat without parsing shell syntax.",
+      "Required. 5–10 word gloss of what this command does (e.g. 'List CSV files in workspace'). Rendered above the raw command in the UI so the user can scan the chat without parsing shell syntax.",
     ),
   restart: z
     .boolean()
@@ -109,7 +111,7 @@ export const createBashTool = () =>
         return {
           error:
             "bash requires an active conversation context. No conversationId was provided.",
-          code: "NO_CONVERSATION",
+          code: TOOL_ERROR_CODES.NO_CONVERSATION,
         };
       }
       const conversationId = ctx.conversationId;
@@ -129,11 +131,23 @@ export const createBashTool = () =>
           1,
           E2B_EXEC_HOLD_TIMEOUT_MS,
           () =>
-            runInSandbox(conversationId, {
-              language: "bash",
-              code: command,
-              restart,
-            }),
+            traceExternalCall(
+              "e2b-bash",
+              { command, restart },
+              () =>
+                runInSandbox(conversationId, {
+                  language: "bash",
+                  code: command,
+                  restart,
+                }),
+              (r, durationMs) => ({
+                output: {
+                  error: r.error ? `${r.error.name}: ${r.error.value}` : null,
+                },
+                costUsd: (durationMs / 1000) * E2B_PRICE_PER_SECOND,
+                metadata: { durationMs },
+              }),
+            ),
         );
       } catch (err) {
         return mapE2BError(err, "while running bash in sandbox");
@@ -150,7 +164,7 @@ export const createBashTool = () =>
       if (result.error) {
         return {
           error: `${result.error.name}: ${result.error.value}`,
-          code: "NON_ZERO_EXIT",
+          code: TOOL_ERROR_CODES.NON_ZERO_EXIT,
           stdout: result.stdout,
           stderr: result.stderr,
           ...(description ? { description } : {}),

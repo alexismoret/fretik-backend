@@ -109,6 +109,7 @@ interface StreamState {
   toolCalls: ToolCallTrace[];
   finishReason: string | undefined;
   usage: InvokeResult["usage"];
+  traceId: string | undefined;
 }
 
 const absorbChunk = (chunk: UnknownRecord, state: StreamState): void => {
@@ -152,22 +153,35 @@ const absorbChunk = (chunk: UnknownRecord, state: StreamState): void => {
     case "finish": {
       const reason = readString(chunk, "finishReason");
       if (reason !== undefined) state.finishReason = reason;
+      // The server attaches `messageMetadata` (langfuseTraceId + telemetry
+      // usage) to the FINISH chunk — not a separate `message-metadata`
+      // frame, and under `messageMetadata`, not `metadata`.
+      absorbMessageMetadata(chunk["messageMetadata"], state);
       return;
     }
-    case "message-metadata":
-    case "metadata": {
-      const meta = chunk["metadata"];
-      if (!isRecord(meta)) return;
-      const usage = meta["usage"];
-      if (!isRecord(usage)) return;
-      state.usage = {
-        inputTokens: readNumber(usage, "inputTokens"),
-        outputTokens: readNumber(usage, "outputTokens"),
-        totalTokens: readNumber(usage, "totalTokens"),
-      };
+    case "message-metadata": {
+      absorbMessageMetadata(chunk["messageMetadata"], state);
       return;
     }
   }
+};
+
+/**
+ * Pull `langfuseTraceId` + token usage out of a `messageMetadata` object
+ * (`{ langfuseTraceId, telemetry: { usage: {...} } }`).
+ */
+const absorbMessageMetadata = (mm: unknown, state: StreamState): void => {
+  if (!isRecord(mm)) return;
+  const traceId = readString(mm, "langfuseTraceId");
+  if (traceId !== undefined) state.traceId = traceId;
+  const telemetry = mm["telemetry"];
+  const usage = isRecord(telemetry) ? telemetry["usage"] : undefined;
+  if (!isRecord(usage)) return;
+  state.usage = {
+    inputTokens: readNumber(usage, "inputTokens"),
+    outputTokens: readNumber(usage, "outputTokens"),
+    totalTokens: readNumber(usage, "totalTokens"),
+  };
 };
 
 const sumToolLatency = (calls: ToolCallTrace[]): number =>
@@ -208,6 +222,7 @@ const readStream = async (
     toolCalls: [],
     finishReason: undefined,
     usage: undefined,
+    traceId: undefined,
   };
   let buffer = "";
 
@@ -241,6 +256,7 @@ const readStream = async (
     modelLatencyMs,
     usage: state.usage,
     httpStatus: res.status,
+    ...(state.traceId !== undefined ? { traceId: state.traceId } : {}),
   };
 };
 

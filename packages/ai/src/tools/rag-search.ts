@@ -6,6 +6,7 @@ import {
   maybePersistLargeOutput,
   RAG_THRESHOLD_CHARS,
 } from "../lib/persisted-output";
+import { TOOL_ERROR_CODES } from "../lib/tool-error-codes";
 import { searchRAG } from "../services/search";
 
 /**
@@ -98,7 +99,7 @@ export const createRagSearchTool = () =>
       } catch (err) {
         return {
           error: `RAG search failed: ${err instanceof Error ? err.message : String(err)}`,
-          code: "RAG_ERROR",
+          code: TOOL_ERROR_CODES.RAG_ERROR,
         };
       }
 

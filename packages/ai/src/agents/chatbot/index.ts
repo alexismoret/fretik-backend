@@ -227,7 +227,7 @@ const pickDomainRegistry = (tools: ChatbotTools): SearchableToolRegistry => {
 const chatbotSystemPrompt = (
   ctx: AgentRuntimeContext,
   tools: ChatbotTools,
-): string => buildChatbotSystemPrompt(ctx, pickDomainRegistry(tools));
+): Promise<string> => buildChatbotSystemPrompt(ctx, pickDomainRegistry(tools));
 
 /**
  * Progressive Disclosure hook. Receives the static tool set at
@@ -315,7 +315,8 @@ const parseSubAgentMaxSteps = (): number => {
  * parent passes via `dispatchAgent`. Wrapped in a callback to
  * satisfy `buildAgentSet`'s `systemPrompt` shape.
  */
-const subAgentSystemPrompt = (): string => buildSubAgentSystemPrompt();
+const subAgentSystemPrompt = (ctx: AgentRuntimeContext): Promise<string> =>
+  buildSubAgentSystemPrompt(ctx);
 
 /**
  * Sub-agent set on the PRIMARY model — same model as the main agent

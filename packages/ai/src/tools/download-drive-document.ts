@@ -14,6 +14,7 @@ import {
   WORKSPACE_DIRS,
   writeFile,
 } from "../lib/conversation-storage";
+import { TOOL_ERROR_CODES } from "../lib/tool-error-codes";
 
 /**
  * `download_drive_document` tool — pull a Drive document's binary
@@ -121,7 +122,7 @@ export const createDownloadDriveDocumentTool = () =>
         return {
           error:
             "download_drive_document is only available inside a conversation. No conversationId in the current context.",
-          code: "NO_CONVERSATION",
+          code: TOOL_ERROR_CODES.NO_CONVERSATION,
         };
       }
       const conversationId = ctx.conversationId;
@@ -141,20 +142,20 @@ export const createDownloadDriveDocumentTool = () =>
       if (!document) {
         return {
           error: `Document not found: ${documentId}`,
-          code: "NOT_FOUND",
+          code: TOOL_ERROR_CODES.NOT_FOUND,
         };
       }
       if (document.teamId !== ctx.teamId) {
         return {
           error:
             "This document belongs to a different team. You don't have access to it.",
-          code: "FORBIDDEN",
+          code: TOOL_ERROR_CODES.FORBIDDEN,
         };
       }
       if (document.status !== "ready") {
         return {
           error: `Document is not ready yet (status=${document.status}). Try again once processing finishes.`,
-          code: "NOT_READY",
+          code: TOOL_ERROR_CODES.NOT_READY,
         };
       }
 
@@ -212,7 +213,7 @@ export const createDownloadDriveDocumentTool = () =>
         const quotaMb = (DRIVE_QUOTA_BYTES / (1024 * 1024)).toFixed(0);
         return {
           error: `Drive quota exceeded for this conversation: ${usedMb} MB already downloaded, this document adds ${docMb} MB, cap is ${quotaMb} MB. Delete files under drive/ via bash (\`rm drive/...\`) or work with what you already have.`,
-          code: "QUOTA_EXCEEDED",
+          code: TOOL_ERROR_CODES.QUOTA_EXCEEDED,
           usedBytes,
           quotaBytes: DRIVE_QUOTA_BYTES,
         };
@@ -237,13 +238,13 @@ export const createDownloadDriveDocumentTool = () =>
       } catch (err) {
         return {
           error: `Failed to fetch document bytes from storage: ${err instanceof Error ? err.message : String(err)}`,
-          code: "S3_FETCH_FAILED",
+          code: TOOL_ERROR_CODES.S3_FETCH_FAILED,
         };
       }
       if (!bytes) {
         return {
           error: `Document bytes not found in storage (key=${binaryKey}).`,
-          code: "S3_OBJECT_MISSING",
+          code: TOOL_ERROR_CODES.S3_OBJECT_MISSING,
         };
       }
 
@@ -260,7 +261,7 @@ export const createDownloadDriveDocumentTool = () =>
         const quotaMb = (DRIVE_QUOTA_BYTES / (1024 * 1024)).toFixed(0);
         return {
           error: `Drive quota exceeded for this conversation: ${usedMb} MB already downloaded, this document (+ sidecar) adds ${totalMb} MB, cap is ${quotaMb} MB. Delete files under drive/ via bash or work with what you already have.`,
-          code: "QUOTA_EXCEEDED",
+          code: TOOL_ERROR_CODES.QUOTA_EXCEEDED,
           usedBytes,
           quotaBytes: DRIVE_QUOTA_BYTES,
         };
@@ -274,7 +275,7 @@ export const createDownloadDriveDocumentTool = () =>
       } catch (err) {
         return {
           error: `Failed to write document into the conversation sandbox: ${err instanceof Error ? err.message : String(err)}`,
-          code: "SANDBOX_WRITE_FAILED",
+          code: TOOL_ERROR_CODES.SANDBOX_WRITE_FAILED,
         };
       }
 

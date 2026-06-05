@@ -29,7 +29,7 @@ Quick summary:
 2. For `nango-proxy`: add `mappers.ts` (request + response transformers).
 3. For `custom-handler`: add `handlers.ts` (one function per action) + `test-connection.ts` (validates user credentials).
 4. Add `summaries.ts` if the provider has write actions (one summary builder per write action — required by the registry).
-5. Add `guidance.md` — instructions the chatbot sees once it touches this provider. **Follows `.agent/rules/agent-facing-prose.md` and explicitly does NOT duplicate the persona/voice section (which the generator injects automatically for `categories.includes("communication")`).**
+5. Add `guidance.md` — instructions the chatbot sees once it touches this provider. **Follows `.agent/agent-facing-prose.md` and explicitly does NOT duplicate the persona/voice section (which the generator injects automatically for `categories.includes("communication")`).**
 6. Register the provider in `src/index.ts` via `setProviders({...})`.
 7. Run `bun run gen:sdk` to regenerate the Python SDK + SKILL.md committed under `@fretik/ai/sandbox-assets/`.
 8. Configure the corresponding Nango integration in the self-hosted dashboard (unique key must match `nangoProviderConfigKey` of the manifest).

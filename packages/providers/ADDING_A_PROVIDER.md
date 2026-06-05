@@ -6,7 +6,7 @@ Trello, Stripe, Salesforce, Front, Docusign, Canva, Akanea, Shiptify, …).
 
 Read `CLAUDE.md` in this package first for context; this document is the
 detailed procedure that fills the gaps. Read
-`.agent/rules/agent-facing-prose.md` before writing any text that ends up
+`.agent/agent-facing-prose.md` before writing any text that ends up
 in the SKILL — it gates `guidance.md` and every `summary:` / `description:`
 in the manifest.
 
@@ -226,7 +226,7 @@ address" because field names vary across providers.
 ## 6. Write `guidance.md`
 
 Appended verbatim to the generated SKILL.md. Read
-`.agent/rules/agent-facing-prose.md` before opening the file.
+`.agent/agent-facing-prose.md` before opening the file.
 
 ### Required sections
 

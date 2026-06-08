@@ -17,6 +17,14 @@ export const user = pgTable("user", {
   email: text("email").notNull().unique(),
   emailVerified: boolean("email_verified").default(false).notNull(),
   image: text("image"),
+  // Added by the Better Auth `twoFactor` plugin (see twoFactor table below).
+  twoFactorEnabled: boolean("two_factor_enabled").default(false).notNull(),
+  // Platform operator flag (cross-org) — grants access to the admin pages
+  // (sign-up access, super-admins). Storage column for the Better Auth
+  // `user.additionalFields.isSuperAdmin` (declared `input: false` so it can
+  // never be set through a sign-up/update payload). Granted only via the
+  // super-admins service or the one-off `grant:super-admin` bootstrap script.
+  isSuperAdmin: boolean("is_super_admin").default(false).notNull(),
   createdAt: timestamp("created_at", { mode: "date", withTimezone: true })
     .defaultNow()
     .notNull(),
@@ -172,4 +180,24 @@ export const invitation = pgTable(
     index("invitation_organizationId_idx").on(table.organizationId),
     index("invitation_email_idx").on(table.email),
   ],
+);
+
+// Added by the Better Auth `twoFactor` plugin. One row per user enrolled in
+// TOTP; `verified` flips to true after the first successful verification and
+// `user.twoFactorEnabled` mirrors it. Id follows this codebase's uuid v7
+// convention; `user_id` is `uuid` to match the `user.id` it references.
+export const twoFactor = pgTable(
+  "two_factor",
+  {
+    id: uuid("id")
+      .default(sql`uuid_generate_v7()`)
+      .primaryKey(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    secret: text("secret").notNull(),
+    backupCodes: text("backup_codes").notNull(),
+    verified: boolean("verified").notNull(),
+  },
+  (table) => [index("twoFactor_userId_idx").on(table.userId)],
 );

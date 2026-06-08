@@ -1,5 +1,6 @@
 import db from "../db";
 import type { RenderedApprovalSummary } from "../external-apps/i18n/render-summary";
+import { OTP_EXPIRY_MINUTES } from "../lib/auth-constants";
 import { i18n } from "./i18n";
 import { renderMarkdownToEmailHtml } from "./markdown-to-html";
 import { renderEmail } from "./render";
@@ -83,6 +84,50 @@ export const generateOrganizationInvitation = async (
   });
 
   return { subject, html };
+};
+
+/**
+ * OTP email types emitted by the Better Auth email-otp plugin's
+ * `sendVerificationOTP({ type })` callback.
+ */
+type OtpEmailType =
+  | "sign-in"
+  | "email-verification"
+  | "forget-password"
+  | "change-email";
+
+/**
+ * Build a one-time-password email (email verification, password reset, or
+ * sign-in). The email-otp plugin calls this from its single
+ * `sendVerificationOTP` callback; `type` selects the copy. Expiry copy is
+ * derived from the shared `OTP_EXPIRY_MINUTES` so it always matches the
+ * plugin's `expiresIn`.
+ */
+export const generateOtpEmail = async (
+  type: OtpEmailType,
+  otp: string,
+): Promise<EmailData> => {
+  const copyKey =
+    type === "forget-password"
+      ? "otp.forgetPassword"
+      : type === "sign-in"
+        ? "otp.signIn"
+        : type === "change-email"
+          ? "otp.changeEmail"
+          : "otp.emailVerification";
+
+  const html = await renderEmail("email-otp", {
+    greeting: i18n.t("otp.greeting"),
+    intro: i18n.t(`${copyKey}.intro`),
+    codeLabel: i18n.t("otp.codeLabel"),
+    code: otp,
+    expiration: i18n.t("otp.expiration", {
+      minutes: String(OTP_EXPIRY_MINUTES),
+    }),
+    ignore: i18n.t("otp.ignore"),
+  });
+
+  return { subject: i18n.t(`${copyKey}.subject`), html };
 };
 
 interface ChatbotFinishedParams {

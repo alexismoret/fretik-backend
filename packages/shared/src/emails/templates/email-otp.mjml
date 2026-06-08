@@ -1,0 +1,31 @@
+<mj-column width="100%">
+  <mj-text font-size="15px" color="#374151">
+    {{ greeting }}
+  </mj-text>
+
+  <mj-text font-size="15px" color="#374151" padding-top="16px">
+    {{ intro }}
+  </mj-text>
+
+  <mj-text align="center" font-size="13px" color="#6b7280" padding-top="24px">
+    {{ codeLabel }}
+  </mj-text>
+  <mj-text
+    align="center"
+    font-size="36px"
+    font-weight="700"
+    letter-spacing="8px"
+    color="#0f766e"
+    padding="8px 0 0 0"
+  >
+    {{ code }}
+  </mj-text>
+
+  <mj-text align="center" font-size="13px" color="#9ca3af" padding-top="24px">
+    {{ expiration }}
+  </mj-text>
+
+  <mj-text align="center" font-size="13px" color="#9ca3af" padding-top="8px">
+    {{ ignore }}
+  </mj-text>
+</mj-column>

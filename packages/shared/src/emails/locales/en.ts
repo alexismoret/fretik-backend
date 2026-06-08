@@ -7,6 +7,30 @@ export default {
     },
   },
 
+  otp: {
+    greeting: "Hello,",
+    codeLabel: "Your verification code",
+    expiration: "This code expires in {{minutes}} minutes.",
+    ignore: "If you didn't request this, you can safely ignore this email.",
+    emailVerification: {
+      subject: "Your Fretik verification code",
+      intro: "Use the code below to verify your email address.",
+    },
+    forgetPassword: {
+      subject: "Your Fretik password reset code",
+      intro: "Use the code below to reset your Fretik password.",
+    },
+    changeEmail: {
+      subject: "Confirm your new email — your Fretik code",
+      intro:
+        "Use the code below to confirm this email address for your Fretik account.",
+    },
+    signIn: {
+      subject: "Your Fretik sign-in code",
+      intro: "Use the code below to sign in to Fretik.",
+    },
+  },
+
   organizationInvitation: {
     subject: "You've been invited to join {{organizationName}}",
     greeting: "Hello,",

@@ -6,9 +6,11 @@ import { auth } from "@fretik/shared/lib/auth";
 import { errorHandler } from "@fretik/shared/lib/error-handler";
 import { OpenAPIHono } from "@hono/zod-openapi";
 import figlet from "figlet";
+import { getConnInfo } from "hono/bun";
 import { cors } from "hono/cors";
 
 import packagejson from "../package.json";
+import { accountRoutes } from "./handlers/account";
 import { aiMemoryRoutes } from "./handlers/ai-memory";
 import { chatbotContextRoutes } from "./handlers/chatbot-context";
 import { conversationRoutes } from "./handlers/conversations";
@@ -19,8 +21,12 @@ import { sandboxRoutes } from "./handlers/external-apps/sandbox-exec";
 import { fieldDefinitionRoutes } from "./handlers/field-definitions";
 import { fieldTemplateRoutes } from "./handlers/field-templates";
 import { folderRoutes } from "./handlers/folders";
+import { invitationRoutes } from "./handlers/invitations";
 import { labelRoutes } from "./handlers/labels";
+import { organizationRoutes } from "./handlers/organization";
+import { signupAccessRoutes } from "./handlers/signup-access";
 import { skillsRoutes } from "./handlers/skills";
+import { superAdminRoutes } from "./handlers/super-admins";
 
 const VERSION = packagejson.version;
 
@@ -39,15 +45,29 @@ app.use(
   }),
 );
 
-// Auth
+// Auth. Better Auth reads the client IP from `x-forwarded-for` (see auth.ts
+// `advanced.ipAddress`). Behind a proxy (e.g. Vercel) that header is set for
+// us; on a direct connection (local dev, native/Electron client) the IP lives
+// only at the socket level, so the session would store no IP. Backfill it from
+// the peer address when the header is absent. Cold path (login/session ops) —
+// `new Request` reuses the body by reference, only the small header set is copied.
 app.on(["POST", "GET"], "/auth/*", (c) => {
-  return auth.handler(c.req.raw);
+  const headers = new Headers(c.req.raw.headers);
+  if (!headers.has("x-forwarded-for")) {
+    const address = getConnInfo(c).remote.address;
+    if (address) headers.set("x-forwarded-for", address);
+  }
+  return auth.handler(new Request(c.req.raw, { headers }));
 });
 
 // Health check
 app.get("/health", (c) => c.json({ status: "ok" }, 200));
 
 // Routes
+app.route("/account", accountRoutes);
+app.route("/organization", organizationRoutes);
+app.route("/signup-access", signupAccessRoutes);
+app.route("/super-admins", superAdminRoutes);
 app.route("/document", documentRoutes);
 app.route("/entity", entityRoutes);
 app.route("/folder", folderRoutes);
@@ -57,6 +77,7 @@ app.route("/ai-memory", aiMemoryRoutes);
 app.route("/field-definitions", fieldDefinitionRoutes);
 app.route("/field-templates", fieldTemplateRoutes);
 app.route("/label", labelRoutes);
+app.route("/invitations", invitationRoutes);
 app.route("/skills", skillsRoutes);
 app.route("/external-apps", externalAppsRoutes);
 app.route("/sandbox", sandboxRoutes);

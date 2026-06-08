@@ -78,3 +78,18 @@ export const authMiddleware = createMiddleware<HonoLoggedAppType>(
     await next();
   },
 );
+
+/**
+ * Gate for platform-operator (super-admin) endpoints. Mount AFTER
+ * `authMiddleware` — it reads the `isSuperAdmin` flag off the typed user. The
+ * flag is an immutable `user` column (never derived from the email), so this
+ * check cannot be bypassed by changing or spoofing an email.
+ */
+export const superAdminMiddleware = createMiddleware<HonoLoggedAppType>(
+  async (c, next) => {
+    if (!c.get("user").isSuperAdmin) {
+      return c.json({ message: "Forbidden", code: "FORBIDDEN" }, 403);
+    }
+    await next();
+  },
+);

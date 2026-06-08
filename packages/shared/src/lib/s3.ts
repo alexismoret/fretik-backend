@@ -3,6 +3,7 @@ import {
   DeleteObjectsCommand,
   GetObjectCommand,
   ListObjectsV2Command,
+  type ObjectCannedACL,
   PutObjectCommand,
   S3Client,
   waitUntilObjectNotExists,
@@ -44,6 +45,12 @@ export const putObject = async (args: {
   body: Uint8Array;
   contentType?: string;
   metadata?: Record<string, string>;
+  /**
+   * Canned ACL. Pass `"public-read"` for assets served directly to the
+   * browser (avatars, org logos) under the `public/` prefix. Omit for
+   * private objects (documents, sessions) read through presigned URLs.
+   */
+  acl?: ObjectCannedACL;
 }): Promise<void> => {
   await client.send(
     new PutObjectCommand({
@@ -52,9 +59,18 @@ export const putObject = async (args: {
       Body: args.body,
       ContentType: args.contentType,
       Metadata: args.metadata,
+      ACL: args.acl,
     }),
   );
 };
+
+/**
+ * Permanent, public URL for an object stored under the `public/` prefix.
+ * Mirrors the path-style addressing the bucket is configured for
+ * (`forcePathStyle`), e.g. `https://s3.<region>.scw.cloud/<bucket>/<key>`.
+ * Only meaningful for objects uploaded with `acl: "public-read"`.
+ */
+export const publicUrl = (key: string): string => `${s3Url}/${s3Bucket}/${key}`;
 
 /**
  * Raw GET of an object. Returns the S3 `Body` stream (or `null` when

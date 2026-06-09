@@ -38,6 +38,13 @@ const PreExtractRequestSchema = z.object({
    */
   overrideS3Key: z.string().min(1).optional(),
   /**
+   * Hex SHA-256 of the ORIGINAL document bytes. The dedup key into the
+   * shared `file_extractions` cache so a document already OCR'd on
+   * another surface (e.g. attached to a chat) reuses the extraction.
+   * Optional for back-compat; absence falls back to a direct OCR call.
+   */
+  fileHash: z.string().min(1).optional(),
+  /**
    * Active team field definitions. Resolved by the caller in
    * `@fretik/shared/services/documents/upload.ts` and forwarded as-is so
    * the runtime Zod schema and `.describe()` strings reach the LLM. The
@@ -67,7 +74,9 @@ preExtractRoutes.post("/", async (c) => {
     documentId,
     mimeType,
     originalFilename,
+    organizationId,
     overrideS3Key,
+    fileHash,
     fieldDefinitions,
   } = parsed.data;
 
@@ -76,7 +85,9 @@ preExtractRoutes.post("/", async (c) => {
       documentId,
       originalFilename,
       mimeType,
+      organizationId,
       overrideS3Key,
+      fileHash,
       fieldDefinitions,
     });
     return c.json(result, 200);

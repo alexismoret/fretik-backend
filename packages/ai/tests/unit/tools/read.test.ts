@@ -1,7 +1,94 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, mock, test } from "bun:test";
 import { installSandboxMocks, sandboxFs } from "../../lib/sandbox-fixture";
 
 installSandboxMocks();
+
+// --------------------------------------------------------------- //
+// New-architecture mocks: chat-file rows + content-addressed       //
+// extraction. The read tool now resolves attachments by the stored //
+// MIME (from `ai_chat_files`) and, for documents/images, defers to //
+// `getOrCreateExtraction` instead of a sandbox `.md` sidecar.      //
+// --------------------------------------------------------------- //
+
+interface ChatFileRow {
+  id: string;
+  fileHash: string | null;
+  mimeType: string;
+}
+const chatFileRows = new Map<string, ChatFileRow>();
+/** Extraction markdown keyed by fileHash (null markdown = image-skip). */
+const extractions = new Map<string, string | null>();
+
+const rowKey = (conversationId: string, filename: string): string =>
+  `${conversationId}::${filename}`;
+
+void mock.module("@fretik/shared/db", () => ({
+  default: {
+    query: new Proxy(
+      {},
+      {
+        get: (_t, table: string) => ({
+          findFirst: async (q: {
+            where?: { conversationId?: string; filename?: string };
+          }) => {
+            if (table !== "aiChatFiles") return undefined;
+            const where = q.where ?? {};
+            if (!where.conversationId || !where.filename) return undefined;
+            return chatFileRows.get(
+              rowKey(where.conversationId, where.filename),
+            );
+          },
+          findMany: async () => [],
+        }),
+      },
+    ),
+    update: () => ({ set: () => ({ where: async () => undefined }) }),
+  },
+}));
+
+void mock.module("@fretik/shared/services/file-extraction/extract", () => ({
+  getOrCreateExtraction: async (input: { fileHash: string }) => {
+    const markdown = extractions.get(input.fileHash) ?? null;
+    return {
+      route: "mistral-ocr",
+      markdown,
+      pages: [],
+      pageCount: null,
+      charCount: markdown?.length ?? null,
+      sidecarS3Key: null,
+    };
+  },
+}));
+
+// Context files are served Bun-side (no sandbox): the read tool loads
+// the accessible set, then reads extracted markdown from the `content`
+// column or the S3 sidecar — never a sandbox `.md`.
+interface ContextFileRow {
+  id: string;
+  profileId: string;
+  filename: string;
+  mimeType: string;
+  status: string;
+  content: string | null;
+}
+const contextFiles: ContextFileRow[] = [];
+const contextOriginals = new Map<string, Uint8Array>();
+const contextSidecars = new Map<string, Uint8Array>();
+
+void mock.module("../../../src/services/chatbot-context/load-context", () => ({
+  loadAccessibleContext: async () => ({
+    userProfile: null,
+    teamProfile: null,
+    files: contextFiles.map((f) => ({ ...f, scope: "team" as const })),
+  }),
+}));
+
+void mock.module("@fretik/shared/lib/ai-context-storage", () => ({
+  readContextOriginal: async (_profileId: string, fileId: string) =>
+    contextOriginals.get(fileId) ?? null,
+  readContextSidecar: async (_profileId: string, fileId: string) =>
+    contextSidecars.get(fileId) ?? null,
+}));
 
 const { createReadTool } = await import("../../../src/tools/read");
 const { DynamicToolManager } =
@@ -61,8 +148,45 @@ const expectRecord = (result: unknown): Record<string, unknown> => {
   return result;
 };
 
+/**
+ * Seed a chat attachment: register its `ai_chat_files` row and back it
+ * with content — S3 bytes for text MIMEs, an extraction markdown entry
+ * for documents/images. `extractionMarkdown: null` simulates an image
+ * with no usable text (image-skip).
+ */
+const seedAttachment = (args: {
+  conversationId: string;
+  filename: string;
+  mimeType: string;
+  fileHash?: string;
+  textContent?: string;
+  extractionMarkdown?: string | null;
+}): void => {
+  const fileHash = args.fileHash ?? `hash-${args.filename}`;
+  chatFileRows.set(rowKey(args.conversationId, args.filename), {
+    id: `id-${args.filename}`,
+    fileHash,
+    mimeType: args.mimeType,
+  });
+  if (args.textContent !== undefined) {
+    sandboxFs.seedS3(
+      args.conversationId,
+      `attachments/${args.filename}`,
+      args.textContent,
+    );
+  }
+  if (args.extractionMarkdown !== undefined) {
+    extractions.set(fileHash, args.extractionMarkdown);
+  }
+};
+
 beforeEach(() => {
   sandboxFs.reset();
+  chatFileRows.clear();
+  extractions.clear();
+  contextFiles.length = 0;
+  contextOriginals.clear();
+  contextSidecars.clear();
 });
 
 describe("read tool — path sandbox", () => {
@@ -79,46 +203,45 @@ describe("read tool — path sandbox", () => {
     expect(out["code"]).toBe("PATH_OUT_OF_SANDBOX");
   });
 
-  test("accepts absolute /workspace/ path", async () => {
-    sandboxFs.write("conv-a", "attachments/note.md", "hello");
+  test("accepts absolute /workspace/ attachment path", async () => {
+    seedAttachment({
+      conversationId: "conv-a",
+      filename: "note.md",
+      mimeType: "text/markdown",
+      textContent: "hello",
+    });
     const out = expectRecord(
       await execRead("conv-a", "/workspace/attachments/note.md"),
     );
     expect(out["source"]).toBe("original");
+    expect(readString(out, "content")).toContain("hello");
   });
 });
 
-describe("read tool — extension routing", () => {
+describe("read tool — attachments (transparent)", () => {
   test("bare basename is auto-resolved under attachments/", async () => {
-    sandboxFs.write(
-      "conv-c",
-      "attachments/shipping-notes.md",
-      "first\nsecond\nthird",
-    );
+    seedAttachment({
+      conversationId: "conv-c",
+      filename: "shipping-notes.md",
+      mimeType: "text/markdown",
+      textContent: "first\nsecond\nthird",
+    });
     const out = expectRecord(await execRead("conv-c", "shipping-notes.md"));
     expect(out["source"]).toBe("original");
-    expect(out["startLine"]).toBe(1);
     expect(out["numLines"]).toBe(3);
     expect(out["totalLines"]).toBe(3);
     const content = readString(out, "content");
     expect(content).toContain("     1\tfirst");
-    expect(content).toContain("     2\tsecond");
     expect(content).toContain("     3\tthird");
   });
 
-  test("explicit subdir paths read directly (outputs/)", async () => {
-    sandboxFs.write("conv-c2", "outputs/report.md", "alpha\nbravo");
-    const out = expectRecord(await execRead("conv-c2", "outputs/report.md"));
-    expect(out["source"]).toBe("original");
-    expect(out["totalLines"]).toBe(2);
-  });
-
   test("offset + limit slice returns real file line numbers", async () => {
-    sandboxFs.write(
-      "conv-slice",
-      "attachments/long.md",
-      "alpha\nbravo\ncharlie\ndelta\necho",
-    );
+    seedAttachment({
+      conversationId: "conv-slice",
+      filename: "long.md",
+      mimeType: "text/markdown",
+      textContent: "alpha\nbravo\ncharlie\ndelta\necho",
+    });
     const out = expectRecord(
       await execRead("conv-slice", "attachments/long.md", {
         offset: 3,
@@ -135,13 +258,99 @@ describe("read tool — extension routing", () => {
   });
 
   test("offset past EOF returns numLines=0 without erroring", async () => {
-    sandboxFs.write("conv-eof", "attachments/short.md", "only");
+    seedAttachment({
+      conversationId: "conv-eof",
+      filename: "short.md",
+      mimeType: "text/markdown",
+      textContent: "only",
+    });
     const out = expectRecord(
       await execRead("conv-eof", "attachments/short.md", { offset: 99 }),
     );
     expect(out["numLines"]).toBe(0);
     expect(out["totalLines"]).toBe(1);
     expect(out["content"]).toBe("");
+  });
+
+  test("PDF is read transparently as the extracted text", async () => {
+    seedAttachment({
+      conversationId: "conv-d",
+      filename: "invoice.pdf",
+      mimeType: "application/pdf",
+      extractionMarkdown: "Invoice #42 — Total: 100 EUR",
+    });
+    const out = expectRecord(
+      await execRead("conv-d", "attachments/invoice.pdf"),
+    );
+    expect(out["source"]).toBe("original");
+    expect(readString(out, "content")).toContain("Invoice #42");
+  });
+
+  test("DOCX is read transparently as the extracted text", async () => {
+    seedAttachment({
+      conversationId: "conv-docx",
+      filename: "contract.docx",
+      mimeType:
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      extractionMarkdown: "## Agreement\n\nParty A and Party B",
+    });
+    const out = expectRecord(
+      await execRead("conv-docx", "attachments/contract.docx"),
+    );
+    expect(out["source"]).toBe("original");
+    expect(readString(out, "content")).toContain("Agreement");
+  });
+
+  test("image with usable text returns the extracted text", async () => {
+    seedAttachment({
+      conversationId: "conv-f",
+      filename: "receipt.jpg",
+      mimeType: "image/jpeg",
+      extractionMarkdown: "Receipt\nTotal: 12.50 EUR",
+    });
+    const out = expectRecord(
+      await execRead("conv-f", "attachments/receipt.jpg"),
+    );
+    expect(out["source"]).toBe("original");
+    expect(readString(out, "content")).toContain("Receipt");
+  });
+
+  test("image with no extractable text returns a vision hint", async () => {
+    seedAttachment({
+      conversationId: "conv-e",
+      filename: "cat.jpg",
+      mimeType: "image/jpeg",
+      extractionMarkdown: null,
+    });
+    const out = expectRecord(await execRead("conv-e", "attachments/cat.jpg"));
+    expect(out["code"]).toBe("NO_TEXT_CONTENT");
+    expect(out["hint"]).toBe("vision");
+  });
+
+  test("XLSX routes to python (no text dump)", async () => {
+    seedAttachment({
+      conversationId: "conv-g",
+      filename: "data.xlsx",
+      mimeType:
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+    const out = expectRecord(await execRead("conv-g", "attachments/data.xlsx"));
+    expect(out["code"]).toBe("BINARY_NOT_READABLE");
+    expect(out["hint"]).toBe("python");
+  });
+
+  test("missing attachment row returns FILE_NOT_FOUND", async () => {
+    const out = expectRecord(await execRead("conv-x", "attachments/ghost.md"));
+    expect(out["code"]).toBe("FILE_NOT_FOUND");
+  });
+});
+
+describe("read tool — non-attachment workspace paths", () => {
+  test("explicit subdir paths read directly (outputs/)", async () => {
+    sandboxFs.write("conv-c2", "outputs/report.md", "alpha\nbravo");
+    const out = expectRecord(await execRead("conv-c2", "outputs/report.md"));
+    expect(out["source"]).toBe("original");
+    expect(out["totalLines"]).toBe(2);
   });
 
   test("persisted-output txt under outputs/persisted/ reports source=persisted-output", async () => {
@@ -156,104 +365,56 @@ describe("read tool — extension routing", () => {
     expect(out["source"]).toBe("persisted-output");
   });
 
-  test("PDF auto-resolves to {basename}.md OCR sidecar in the same dir", async () => {
-    sandboxFs.write(
-      "conv-d",
-      "attachments/invoice.md",
-      "Invoice #42 — Total: 100 EUR",
-    );
-    const out = expectRecord(
-      await execRead("conv-d", "attachments/invoice.pdf"),
-    );
-    expect(out["source"]).toBe("ocr-sidecar");
-    expect(readString(out, "content")).toContain("Invoice #42");
-  });
-
-  test("PDF without sidecar returns NO_OCR_SIDECAR with actionable hint", async () => {
-    const out = expectRecord(
-      await execRead("conv-d-missing", "attachments/invoice.pdf"),
-    );
-    expect(out["code"]).toBe("NO_OCR_SIDECAR");
-    expect(readString(out, "error")).toContain("pdfplumber");
-    expect(readString(out, "error")).toContain("vision");
-  });
-
-  test("DOCX without sidecar returns NO_OCR_SIDECAR with python hint", async () => {
-    const out = expectRecord(
-      await execRead("conv-docx-missing", "attachments/contract.docx"),
-    );
-    expect(out["code"]).toBe("NO_OCR_SIDECAR");
-    expect(out["hint"]).toBe("python");
-  });
-
-  test("image without sidecar returns vision hint", async () => {
-    const out = expectRecord(await execRead("conv-e", "attachments/cat.jpg"));
-    expect(out["code"]).toBe("NO_OCR_SIDECAR");
-    expect(out["hint"]).toBe("vision");
-  });
-
-  test("image with sidecar returns the markdown", async () => {
-    sandboxFs.write(
-      "conv-f",
-      "attachments/receipt.md",
-      "Receipt\nTotal: 12.50 EUR",
-    );
-    const out = expectRecord(
-      await execRead("conv-f", "attachments/receipt.jpg"),
-    );
-    expect(out["source"]).toBe("ocr-sidecar");
-    expect(readString(out, "content")).toContain("Receipt");
-  });
-
-  test("XLSX without sidecar returns python hint", async () => {
-    const out = expectRecord(await execRead("conv-g", "attachments/data.xlsx"));
-    expect(out["code"]).toBe("BINARY_NOT_READABLE");
-    expect(out["hint"]).toBe("python");
-  });
-
-  test("context/<file>.pdf resolves the sidecar inside context/, not attachments/", async () => {
-    sandboxFs.write(
-      "conv-ctx",
-      "context/handbook.md",
-      "Internal handbook contents",
-    );
+  test("context/<file>.pdf serves the extracted markdown Bun-side (no sandbox)", async () => {
+    contextFiles.push({
+      id: "ctx-1",
+      profileId: "profile-1",
+      filename: "handbook.pdf",
+      mimeType: "application/pdf",
+      status: "ready",
+      content: "Internal handbook contents",
+    });
     const out = expectRecord(
       await execRead("conv-ctx", "context/handbook.pdf"),
     );
-    expect(out["source"]).toBe("ocr-sidecar");
+    expect(out["source"]).toBe("original");
     expect(readString(out, "content")).toContain("Internal handbook");
   });
 
-  test("missing file returns FILE_NOT_FOUND", async () => {
-    const out = expectRecord(await execRead("conv-x", "attachments/ghost.md"));
-    expect(out["code"]).toBe("FILE_NOT_FOUND");
+  test("context/<file>.xlsx routes to python instead of dumping text", async () => {
+    contextFiles.push({
+      id: "ctx-2",
+      profileId: "profile-1",
+      filename: "grid.xlsx",
+      mimeType:
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      status: "ready",
+      content: null,
+    });
+    const out = expectRecord(await execRead("conv-ctx", "context/grid.xlsx"));
+    expect(out["code"]).toBe("BINARY_NOT_READABLE");
+    expect(readString(out, "hint")).toBe("python");
   });
 });
 
 describe("read tool — persisted-output handoff", () => {
   test("oversized content is wrapped in a <persisted-output> envelope", async () => {
-    // READ_PERSIST_THRESHOLD_CHARS = 120K. The read tool's
-    // MAX_READ_CHARS = 30K byte cap trims the joined slice before
-    // line numbering, so the persist threshold can only be crossed
-    // when `addLineNumbers()` (7-char `cat -n` prefix per line)
-    // inflates the slice past 120K. We achieve that by feeding many
-    // short lines: 30 000 × 1-char lines produces a ~60K raw join,
-    // the byte cap trims to ~15 000 lines (~30K joined), then line
-    // numbering adds ~7 chars per line → ~135K serialised content
-    // → persisted envelope.
+    // Many short lines: the 30K byte cap trims the join, then cat -n
+    // line-numbering inflates it past the 120K persist threshold.
     const huge = Array.from({ length: 30_000 }, () => "x").join("\n");
-    sandboxFs.write("conv-h", "attachments/big.md", huge);
+    seedAttachment({
+      conversationId: "conv-h",
+      filename: "big.md",
+      mimeType: "text/markdown",
+      textContent: huge,
+    });
     const out = await execRead("conv-h", "attachments/big.md", {
       limit: 30_000,
     });
-    // maybePersistLargeOutput returns a string envelope when the
-    // serialised payload exceeds the read tool's threshold.
     expect(typeof out).toBe("string");
     const envelope = out as string;
     expect(envelope).toContain("<persisted-output>");
     expect(envelope).toContain("Output too large");
-    // The envelope must reference the new outputs/persisted/ path,
-    // not any legacy /tmp prefix.
     expect(envelope).toContain("outputs/persisted/");
     expect(envelope).not.toContain("/tmp/");
   });

@@ -38,6 +38,8 @@ export const TOOL_ERROR_CODES = {
   READ_FAILED: "READ_FAILED",
   BINARY_NOT_READABLE: "BINARY_NOT_READABLE",
   NO_OCR_SIDECAR: "NO_OCR_SIDECAR",
+  // Image / scan carries no extractable text → inspect visually with `vision`.
+  NO_TEXT_CONTENT: "NO_TEXT_CONTENT",
 
   // Vision
   UNSUPPORTED_EXTENSION: "UNSUPPORTED_EXTENSION",

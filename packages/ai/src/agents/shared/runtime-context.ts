@@ -119,10 +119,11 @@ export interface AgentRuntimeContext {
    * context files (instructions + per-file metadata + outline +
    * preview, with small files inlined). Computed by the handler
    * through `buildChatbotContextManifest` against the
-   * `ai_context_*` tables, with per-user mutes applied. The actual
-   * file bodies live in the conversation sandbox at
-   * `/workspace/context/...` after `hydrateContextFiles` has run; the
-   * model fetches them via the regular `read` tool. Empty when neither
+   * `ai_context_*` tables, with per-user mutes applied. The model
+   * fetches file bodies via the regular `read` tool, which serves
+   * `context/` Bun-side (no sandbox); the `python` / `bash` tools
+   * additionally hydrate the files into `/workspace/context/...` on
+   * demand via `prepareSandboxForCode`. Empty when neither
    * profile has any content
    * — the prompt section then renders as "_No persistent context
    * configured._".

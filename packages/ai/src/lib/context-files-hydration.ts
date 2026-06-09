@@ -8,13 +8,19 @@ import {
 } from "@fretik/shared/lib/ai-context-storage";
 import { sanitizeSessionPath } from "@fretik/shared/lib/chatbot-session-storage";
 import { shouldWriteSidecar } from "@fretik/shared/services/ai-context/upload";
+import type { SandboxLease } from "@fretik/shared/services/e2b/types";
 import { eq } from "drizzle-orm";
 import { extname } from "node:path";
 import {
   loadAccessibleContext,
   type AccessibleContextFile,
 } from "../services/chatbot-context/load-context";
-import { fileExists, WORKSPACE_DIRS, writeFile } from "./conversation-storage";
+import {
+  fileExists,
+  prepareSandbox,
+  WORKSPACE_DIRS,
+  writeFile,
+} from "./conversation-storage";
 
 /**
  * Hydrate the persistent chatbot-context files (`aiContextFiles`)
@@ -49,6 +55,16 @@ interface HydrationContext {
   teamId: string;
   organizationId: string;
 }
+
+/**
+ * Last turn for which a given sandbox was hydrated, by `sandboxId`.
+ * Lets `prepareSandboxForCode` skip redundant hydration when several
+ * `python` / `bash` calls fire within the same turn, while still
+ * re-hydrating on the next turn so context files added between turns
+ * are picked up — the same per-turn freshness the old turn-start
+ * hydration gave, now paid only when code actually runs.
+ */
+const lastHydratedTurnBySandbox = new Map<string, string>();
 
 const sidecarBasenameFor = (filename: string): string => {
   const ext = extname(filename);
@@ -183,4 +199,55 @@ export const hydrateContextFiles = async (
       }
     }),
   );
+};
+
+/**
+ * Prepare the sandbox for code execution: bootstrap it (dirs, skills,
+ * S3 restore) AND hydrate the persistent context files into
+ * `/workspace/context/` so `python` / `bash` can read them directly
+ * (e.g. `pandas.read_excel("context/grid.xlsx")`).
+ *
+ * Replaces a bare `prepareSandbox` call in the `python` / `bash` tools.
+ * Context hydration is what used to run eagerly at the start of every
+ * turn; moving it here means a turn that never executes code (pure
+ * chat, or `read`-only — `read` serves `context/` Bun-side) no longer
+ * pays for sandbox acquisition + per-file existence checks.
+ *
+ * Hydration is memoised per sandbox per turn (`traceId`): the first
+ * code call in a turn hydrates, later calls in the same turn skip,
+ * and the next turn re-hydrates so files added between turns surface.
+ * Best-effort — a hydration failure never blocks code execution.
+ */
+export const prepareSandboxForCode = async (ctx: {
+  conversationId: string;
+  organizationId: string;
+  teamId: string;
+  userId: string | undefined;
+  traceId: string | undefined;
+}): Promise<SandboxLease> => {
+  const lease = await prepareSandbox(ctx.conversationId);
+
+  const alreadyHydrated =
+    ctx.traceId !== undefined &&
+    lastHydratedTurnBySandbox.get(lease.sandboxId) === ctx.traceId;
+  if (!alreadyHydrated) {
+    try {
+      await hydrateContextFiles({
+        conversationId: ctx.conversationId,
+        userId: ctx.userId,
+        teamId: ctx.teamId,
+        organizationId: ctx.organizationId,
+      });
+      if (ctx.traceId !== undefined) {
+        lastHydratedTurnBySandbox.set(lease.sandboxId, ctx.traceId);
+      }
+    } catch (err) {
+      console.warn(
+        "[context-hydration] prepareSandboxForCode hydration failed, proceeding with whatever is in the sandbox:",
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
+  return lease;
 };

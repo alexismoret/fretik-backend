@@ -417,6 +417,7 @@ const processDocument = async (
           originalFilename: metadata.originalFilename,
           teamId,
           organizationId,
+          fileHash: metadata.fileHash,
           fieldDefinitions: teamFieldDefinitions,
           ...(ephemeralPreExtractKey
             ? { overrideS3Key: ephemeralPreExtractKey }

@@ -1,11 +1,11 @@
 import { readdir, stat } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 import {
   deleteSkillFileVectors,
   listIndexedSkillFiles,
   vectorizeSkillFile,
 } from "../services/vectorize/skills";
+import { BUNDLED_SKILLS_DIR } from "./paths";
 
 /**
  * Bundled-skills materialiser.
@@ -50,8 +50,7 @@ export interface SkillCatalogEntry {
   isMeta?: boolean;
 }
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const BUNDLED_SRC_DIR = resolve(__dirname, "bundled");
+const BUNDLED_SRC_DIR = BUNDLED_SKILLS_DIR;
 
 const NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
@@ -127,10 +126,27 @@ const parseFrontmatter = (
     console.warn(
       `[skills] ${skillFolder}: front-matter name "${name}" violates [a-z0-9-] slug rule, falling back to folder name`,
     );
+  } else if (name !== undefined && name !== skillFolder) {
+    // Anthropic spec requires `name` === directory. A valid-but-mismatched
+    // name would register the skill under one identity while its files
+    // (SKILL.md, references/, scripts/) live under the folder — breaking
+    // every `read("skills/<name>/...")` and the sandbox script push.
+    // Canonicalise to the folder so the catalogue name always equals the
+    // readable path; the CI test (materialize.test.ts) flags the mismatch.
+    console.warn(
+      `[skills] ${skillFolder}: front-matter name "${name}" does not match its folder; using folder name (Anthropic spec requires name === directory)`,
+    );
   }
 
+  // Only honour the front-matter name when it is a valid slug AND matches
+  // the folder; otherwise the caller falls back to the folder name.
+  const usableName =
+    name !== undefined && NAME_PATTERN.test(name) && name === skillFolder
+      ? name
+      : undefined;
+
   return {
-    name: name !== undefined && NAME_PATTERN.test(name) ? name : undefined,
+    name: usableName,
     description: rawDescription.trim(),
     isDefault: readBoolFromMetadata(fm.metadata, "fretik_is_default"),
     isMeta: readBoolFromMetadata(fm.metadata, "fretik_is_meta"),

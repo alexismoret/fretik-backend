@@ -71,6 +71,7 @@ export const relations = defineRelations(schema, (r) => ({
     fieldDefinitions: r.many.fieldDefinitions(),
     externalAppConnections: r.many.externalAppConnections(),
     toolApprovalRequests: r.many.toolApprovalRequests(),
+    fileExtractions: r.many.fileExtractions(),
   },
 
   team: {
@@ -413,6 +414,13 @@ export const relations = defineRelations(schema, (r) => ({
       from: r.aiChatFiles.uploadedById,
       to: r.user.id,
       optional: true,
+    }),
+  },
+
+  fileExtractions: {
+    organization: r.one.organization({
+      from: r.fileExtractions.organizationId,
+      to: r.organization.id,
     }),
   },
 

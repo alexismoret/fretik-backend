@@ -70,8 +70,25 @@ export const runMistralOcr = async (args: RunOcrArgs): Promise<OcrResult> => {
  * resolves to, and by the context extractor to fill
  * `ai_context_files.content`.
  */
+export const OCR_PAGE_SEPARATOR = "\n\n---\n\n";
+
 export const flattenOcrMarkdown = (result: OcrResult): string =>
   result.pages
     .map((p) => p.markdown)
     .filter((md) => md.length > 0)
-    .join("\n\n---\n\n");
+    .join(OCR_PAGE_SEPARATOR);
+
+/**
+ * Inverse of `flattenOcrMarkdown`: reconstruct per-page markdown from a
+ * flattened sidecar. Used on a content-addressed cache HIT so the Drive
+ * pre-extract pipeline keeps its per-page down-selection without storing
+ * a separate JSON artifact. The common Drive path (cache miss) uses the
+ * exact pages from live OCR; this approximate split only runs on the
+ * rarer cross-surface hit (file first OCR'd by chat/context). A stray
+ * `---` thematic break inside a page can over-split, which is harmless
+ * for down-selection (it still yields a representative head/tail sample).
+ */
+export const splitFlattenedMarkdown = (markdown: string): OcrPage[] =>
+  markdown
+    .split(OCR_PAGE_SEPARATOR)
+    .map((md, index) => ({ index, markdown: md }));

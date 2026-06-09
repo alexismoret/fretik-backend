@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test";
+import { readdir, stat } from "node:fs/promises";
+import { join } from "node:path";
 import { loadSkillCatalog } from "../../../src/skills/materialize";
+import { BUNDLED_SKILLS_DIR } from "../../../src/skills/paths";
+
+/** Mirrors the agentskills.io slug rule (lowercase, single hyphens). */
+const NAME_SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const NAME_MAX = 64;
 
 /**
  * Smoke tests for the bundled-skills filesystem walker.
@@ -50,13 +57,32 @@ describe("loadSkillCatalog", () => {
     }
   });
 
-  test("frontmatter `name` matches folder name when explicit", async () => {
+  test("every skill name is a valid slug within the length cap", async () => {
     const catalog = await loadSkillCatalog();
-    // `loadSkillCatalog` falls back to the folder name when the
-    // frontmatter `name` is invalid or missing. Our bundled skills
-    // declare it explicitly — they MUST match the folder.
     for (const entry of catalog) {
-      expect(EXPECTED_SKILL_NAMES).toContain(entry.name);
+      expect(entry.name).toMatch(NAME_SLUG);
+      expect(entry.name.length).toBeLessThanOrEqual(NAME_MAX);
+    }
+  });
+
+  test("every skill name === its on-disk folder (Anthropic spec)", async () => {
+    // The catalogue name must equal the directory under `bundled/`, since
+    // that directory is the path the agent reads (`skills/<name>/...`) and
+    // the tree pushed to the sandbox. A mismatched frontmatter `name`
+    // would silently break `read` + the script push — `parseFrontmatter`
+    // canonicalises to the folder, and this test fails loudly if a
+    // bundled skill is ever authored with `name:` ≠ its directory.
+    const catalog = await loadSkillCatalog();
+    const folders = new Set<string>();
+    for (const child of await readdir(BUNDLED_SKILLS_DIR)) {
+      if (child.startsWith(".")) continue;
+      const info = await stat(join(BUNDLED_SKILLS_DIR, child)).catch(
+        () => null,
+      );
+      if (info?.isDirectory()) folders.add(child);
+    }
+    for (const entry of catalog) {
+      expect(folders).toContain(entry.name);
     }
   });
 

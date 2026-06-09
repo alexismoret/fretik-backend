@@ -2,10 +2,8 @@ import { runInSandbox } from "@fretik/shared/services/e2b/run-in-sandbox";
 import { tool } from "ai";
 import { z } from "zod";
 import { getRuntimeContext } from "../agents/shared/runtime-context";
-import {
-  mirrorSandboxChanges,
-  prepareSandbox,
-} from "../lib/conversation-storage";
+import { prepareSandboxForCode } from "../lib/context-files-hydration";
+import { mirrorSandboxChanges } from "../lib/conversation-storage";
 import { E2B_PRICE_PER_SECOND } from "../lib/e2b-cost";
 import { maybePersistLargeOutput } from "../lib/persisted-output";
 import { withSlot } from "../lib/rate-limit";
@@ -93,7 +91,7 @@ export const createBashTool = () =>
       "Usage:",
       "- Use for shell-native operations: `ls`, `find`, `grep`, `head`, `tail`, `wc`, `sort`, `uniq`, `sed`, `awk`, `diff`, `tar`, pipelines, `mv` / `cp` / `rm` / `mkdir`.",
       "- Use for `pip install <pkg>` for one-off packages (then `restart: true` on the next `python` call to pick it up).",
-      "- For viewing a single file → use `read` instead (handles PDF/DOCX/PPTX sidecars, line numbering).",
+      "- For viewing a single file → use `read` instead (reads documents/images as text, line numbering).",
       "- For pandas / numpy / chart generation / structured data work → use `python` instead (don't `bash python3 -c \"...\"` — you'd lose the persistent kernel).",
       "- For HTTP fetches → use `searchWeb` / `webFetch` (sandbox egress is restricted to PyPI / GitHub / Fretik / common B2B service APIs).",
       "- Each call is a fresh `bash -c` subprocess. Env vars, shell variables, `cd`, aliases, `source`d files do NOT persist between calls. Chain with `&&` / `;` / `|` / heredocs in one call when needed.",
@@ -117,7 +115,13 @@ export const createBashTool = () =>
       const conversationId = ctx.conversationId;
 
       try {
-        await prepareSandbox(conversationId);
+        await prepareSandboxForCode({
+          conversationId,
+          organizationId: ctx.organizationId,
+          teamId: ctx.teamId,
+          userId: ctx.userId,
+          traceId: ctx.traceId,
+        });
       } catch (err) {
         return mapE2BError(err, "while preparing sandbox workspace");
       }

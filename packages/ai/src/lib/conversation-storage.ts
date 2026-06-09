@@ -32,6 +32,8 @@ import { randomUUID } from "node:crypto";
 import { readdir, stat } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { materializeTeamSkillMd } from "../skills/materialize-team-skill";
+import { BUNDLED_SKILLS_DIR, EXTERNAL_APP_SKILLS_DIR } from "../skills/paths";
 
 /**
  * Sandbox-first conversation storage façade.
@@ -211,7 +213,6 @@ export const resolveWorkspacePath = (
 // ============================================================ //
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const BUNDLED_SKILLS_SRC_DIR = resolve(__dirname, "..", "skills", "bundled");
 
 /**
  * Path inside the sandbox where the tarball is dropped before
@@ -276,16 +277,16 @@ const collectSkillFilesForArchive = async (
 
 const buildSkillsTarballBytes = async (): Promise<Uint8Array | null> => {
   const startedAt = Date.now();
-  const info = await stat(BUNDLED_SKILLS_SRC_DIR).catch(() => null);
+  const info = await stat(BUNDLED_SKILLS_DIR).catch(() => null);
   if (!info?.isDirectory()) {
     console.warn(
-      `[conversation-storage] bundled skills directory missing at ${BUNDLED_SKILLS_SRC_DIR}, tarball skipped`,
+      `[conversation-storage] bundled skills directory missing at ${BUNDLED_SKILLS_DIR}, tarball skipped`,
     );
     return null;
   }
 
   const files: Record<string, Blob> = {};
-  await collectSkillFilesForArchive(BUNDLED_SKILLS_SRC_DIR, "", files);
+  await collectSkillFilesForArchive(BUNDLED_SKILLS_DIR, "", files);
 
   if (Object.keys(files).length === 0) {
     console.warn(
@@ -607,7 +608,7 @@ const pushTeamSkills = async (conversationId: string): Promise<void> => {
   // a single bad skill doesn't poison the rest.
   const results = await Promise.allSettled(
     entries.map((entry) => {
-      const skillMd = `---\nname: ${entry.name}\ndescription: ${entry.description.replace(/\n/g, " ").trim()}\n---\n\n${entry.body}`;
+      const skillMd = materializeTeamSkillMd(entry);
       const path = `${skillsDir}/${entry.name}/SKILL.md`;
       return writeSandboxFile(conversationId, path, encoder.encode(skillMd));
     }),
@@ -640,13 +641,6 @@ const EXTERNAL_APPS_SDK_SRC_DIR = resolve(
   "..",
   "sandbox-assets",
   "fretik_apps",
-);
-const EXTERNAL_APPS_SKILLS_SRC_DIR = resolve(
-  __dirname,
-  "..",
-  "..",
-  "sandbox-assets",
-  "skills",
 );
 const EXTERNAL_APPS_SDK_TARBALL_SANDBOX_PATH =
   "/tmp/fretik-external-apps-sdk.tar.gz";
@@ -724,7 +718,7 @@ const buildExternalAppSkillTarballBytes = async (
   providerKey: string,
 ): Promise<Uint8Array | null> => {
   const startedAt = Date.now();
-  const srcDir = `${EXTERNAL_APPS_SKILLS_SRC_DIR}/${providerKey}`;
+  const srcDir = `${EXTERNAL_APP_SKILLS_DIR}/${providerKey}`;
   const info = await stat(srcDir).catch(() => null);
   if (!info?.isDirectory()) {
     console.warn(

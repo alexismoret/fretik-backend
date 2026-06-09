@@ -94,16 +94,16 @@ const sidecarPathFor = (path: string): string => {
 const hintFor = (file: AccessibleContextFile, path: string): string => {
   if (OCR_DOC_MIMES.has(file.mimeType)) {
     const sidecarPath = sidecarPathFor(path);
-    return `_Use \`read("${path}")\` — auto-resolves to the OCR markdown sidecar. For Python access, open the sidecar directly: \`open("${sidecarPath}").read()\` (the original PDF/DOCX/PPTX is not synced to the sandbox)._`;
+    return `_Use \`read("${path}")\` to get its text. For Python access, open the extracted-text companion directly: \`open("${sidecarPath}").read()\` (the original PDF/DOCX/PPTX is not synced to the sandbox)._`;
   }
   if (SPREADSHEET_MIMES.has(file.mimeType)) {
-    return `_Use \`read("${path}")\` for the markdown-tables sidecar (one table per sheet), or \`python\` with \`pandas.read_excel("${path}")\` / \`pd.read_csv("${path}")\` for cell-level access. The sandbox sees this file at \`${path}\` (read-only)._`;
+    return `_Use \`read("${path}")\` for the text tables, or \`python\` with \`pandas.read_excel("${path}")\` / \`pd.read_csv("${path}")\` for cell-level access. The sandbox sees this file at \`${path}\` (read-only)._`;
   }
   if (file.mimeType.startsWith("image/")) {
     if (file.hasMarkdown) {
-      return `_Use \`read("${path}")\` for the OCR text, or \`vision("${path}", "<question>")\` for explicitly visual questions._`;
+      return `_Use \`read("${path}")\` for its text, or \`vision("${path}", "<question>")\` for explicitly visual questions._`;
     }
-    return `_Use \`vision("${path}", "<question>")\` — no OCR text was extractable from this image._`;
+    return `_Use \`vision("${path}", "<question>")\` — no text was extractable from this image._`;
   }
   return `_Use \`read("${path}")\`, or open it directly from \`python\` (synced to the sandbox at \`${path}\`)._`;
 };

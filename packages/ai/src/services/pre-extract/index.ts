@@ -2,6 +2,7 @@ import type { FieldDefinition } from "@fretik/shared/db/schema";
 import { buildDocumentOriginalKey } from "@fretik/shared/lib/document-storage";
 import { getFileFromS3, getPresignedUrl } from "@fretik/shared/lib/s3";
 import type { PreExtractionResponse } from "@fretik/shared/schemas/pre-extraction";
+import { getOrCreateExtraction } from "@fretik/shared/services/file-extraction/extract";
 import { type OcrPage, runMistralOcr } from "../../lib/mistral-ocr";
 import { withPipelineTrace } from "../../lib/trace-tool";
 import { runPreextractLlm } from "./extract";
@@ -57,6 +58,15 @@ export interface PreExtractArgs {
    * ephemeral key BEFORE calling the route and passes that key here.
    */
   overrideS3Key?: string;
+  /** Owning organisation — isolation key for the shared extraction cache. */
+  organizationId?: string;
+  /**
+   * Hex SHA-256 of the original document bytes — the dedup key into the
+   * shared `file_extractions` cache. When present (with `organizationId`)
+   * the OCR step reuses / populates the cross-surface cache; when absent
+   * it falls back to a direct OCR call (no regression).
+   */
+  fileHash?: string;
   /**
    * Active team field definitions. Drives the runtime Zod schema (and
    * therefore the JSON Schema sent to the LLM): the universal universal
@@ -208,6 +218,27 @@ const runPreExtractImpl = async (
 
   if (isPlainText) {
     ocrPages = await readTextFile(s3Key);
+  } else if (args.organizationId && args.fileHash) {
+    // Route OCR through the shared content-addressed cache so a document
+    // already extracted on another surface (chat attachment, context
+    // file) is reused instead of re-OCR'd, and vice-versa. The cache key
+    // is the ORIGINAL content hash even when OCR runs on a converted PDF
+    // (`overrideS3Key`) — same source doc → same hash → same result.
+    const extraction = await getOrCreateExtraction({
+      organizationId: args.organizationId,
+      fileHash: args.fileHash,
+      mimeType: args.mimeType,
+      filename: args.originalFilename,
+      getBytes: async () => {
+        const body = await getFileFromS3(s3Key);
+        if (!body) throw new Error(`File not found in storage at key ${s3Key}`);
+        return new Uint8Array(await body.transformToByteArray());
+      },
+      getPresignedUrl: () => getPresignedUrl(s3Key, PRESIGNED_URL_TTL_SECONDS),
+      onOcr: runMistralOcr,
+    });
+    if (extraction.error) throw new Error(extraction.error);
+    ocrPages = extraction.pages;
   } else {
     const url = await getPresignedUrl(s3Key, PRESIGNED_URL_TTL_SECONDS);
     const ocr = await runMistralOcr({ url, mimeType: args.mimeType });

@@ -29,6 +29,24 @@ export const fileAttachmentsSuite: EvalSuite = {
     "Tool routing for user-uploaded chat files (read / vision / python).",
   cases: [
     {
+      id: "file-pdf-read",
+      description:
+        "Reads an attached PDF transparently (lazy content-addressed extraction) and answers a fact from its extracted text",
+      prompt:
+        "Quel est le montant total TTC de la facture invoice.pdf ? Donne le chiffre exact.",
+      tags: ["files", "read", "extraction"],
+      fixtures: ["invoice.pdf"],
+      assertions: [
+        { type: "noError" },
+        { type: "toolUsed", tools: ["read"], mode: "any" },
+        {
+          type: "judge",
+          rubric:
+            "PASS if the assistant reads invoice.pdf (via `read`) and reports a total TTC of 10 364,32 USD (equivalently 10364.32 USD — accept either decimal/thousands formatting and the USD currency). FAIL if the number is wrong, the currency is wrong, it claims the file is unreadable / not found, or it answers from a guess without reading the file.",
+        },
+      ],
+    },
+    {
       id: "file-cross-conv-isolation",
       description:
         "A filename from another conversation must not be readable — path sandbox refuses",

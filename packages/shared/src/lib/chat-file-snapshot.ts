@@ -437,7 +437,7 @@ export const extractChatFileSnapshot = async (
       if (ocrSidecar) {
         return parseDocumentSnapshot(ocrSidecar.markdown, ocrSidecar.pageCount);
       }
-      return { kind: "opaque", reason: "document without OCR sidecar" };
+      return { kind: "opaque", reason: "call read(path) to view the text" };
     }
     if (isPlainTextMime(mimeType)) return parseTextSnapshot(bytes);
     return { kind: "opaque", reason: opaqueHint(mimeType) };
@@ -479,7 +479,7 @@ export const renderSnapshot = (snapshot: ChatFileSnapshot): string => {
       const out: string[] = [];
       if (snapshot.pages !== undefined) out.push(`pages: ${snapshot.pages}`);
       out.push(
-        `OCR sidecar: ${snapshot.sidecarChars} chars / ${snapshot.sidecarLines} lines${
+        `extracted text: ${snapshot.sidecarChars} chars / ${snapshot.sidecarLines} lines${
           snapshot.sidecarLines > 1000
             ? " — large file: prefer paginated `read(path, offset, limit)` over a default full read"
             : ""

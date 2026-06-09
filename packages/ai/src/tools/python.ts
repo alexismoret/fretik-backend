@@ -3,10 +3,8 @@ import { runInSandbox } from "@fretik/shared/services/e2b/run-in-sandbox";
 import { tool } from "ai";
 import { z } from "zod";
 import { getRuntimeContext } from "../agents/shared/runtime-context";
-import {
-  mirrorSandboxChanges,
-  prepareSandbox,
-} from "../lib/conversation-storage";
+import { prepareSandboxForCode } from "../lib/context-files-hydration";
+import { mirrorSandboxChanges } from "../lib/conversation-storage";
 import { E2B_PRICE_PER_SECOND } from "../lib/e2b-cost";
 import { maybePersistLargeOutput } from "../lib/persisted-output";
 import { withSlot } from "../lib/rate-limit";
@@ -143,7 +141,13 @@ export const createPythonTool = () =>
       const conversationId = ctx.conversationId;
 
       try {
-        await prepareSandbox(conversationId);
+        await prepareSandboxForCode({
+          conversationId,
+          organizationId: ctx.organizationId,
+          teamId: ctx.teamId,
+          userId: ctx.userId,
+          traceId: ctx.traceId,
+        });
       } catch (err) {
         return mapE2BError(err, "while preparing sandbox workspace");
       }

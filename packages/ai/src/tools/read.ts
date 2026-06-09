@@ -1,4 +1,24 @@
+import db from "@fretik/shared/db";
+import { aiChatFiles } from "@fretik/shared/db/schema";
+import {
+  readContextOriginal,
+  readContextSidecar,
+} from "@fretik/shared/lib/ai-context-storage";
+import {
+  getSessionFilePresignedUrl,
+  readSessionFile,
+  sanitizeSessionPath,
+} from "@fretik/shared/lib/chatbot-session-storage";
+import { getOrCreateExtraction } from "@fretik/shared/services/file-extraction/extract";
+import {
+  isImageMime,
+  isOcrDocumentMime,
+  isSpreadsheetMime,
+  isTextMime,
+} from "@fretik/shared/utils/mimeTypes";
 import { tool } from "ai";
+import { SHA256 } from "bun";
+import { eq } from "drizzle-orm";
 import { basename, dirname, extname, join } from "node:path";
 import { z } from "zod";
 import { getRuntimeContext } from "../agents/shared/runtime-context";
@@ -8,20 +28,22 @@ import {
   resolveWorkspacePath,
   WORKSPACE_DIRS,
 } from "../lib/conversation-storage";
+import { runMistralOcr } from "../lib/mistral-ocr";
 import { maybePersistLargeOutput } from "../lib/persisted-output";
 import { TOOL_ERROR_CODES } from "../lib/tool-error-codes";
+import { withTraceSession } from "../lib/trace-tool";
+import { loadAccessibleContext } from "../services/chatbot-context/load-context";
+import { readSkillWorkspaceFile } from "../skills/read-skill-file";
 
 /**
- * Unified `read` tool. Mirrors Claude Code's `FileReadTool`:
- * line-based `offset` / `limit` (NOT character-based), line-numbered
- * content with real file line numbers, and an output shape of
- * `{ filePath, source, startLine, numLines, totalLines, content }`.
+ * Unified `read` tool. Mirrors Claude Code's `FileReadTool`: line-based
+ * `offset` / `limit` (NOT character-based), line-numbered content with
+ * real file line numbers, and an output shape of `{ filePath, source,
+ * startLine, numLines, totalLines, content }`.
  *
  * Reads anything in the conversation's `/workspace/` sandbox:
  *
  *  - Chat attachments under `attachments/`
- *  - OCR markdown sidecars (auto-resolved for PDF/DOCX/PPTX/image
- *    requests)
  *  - Persisted-output files saved by other tools at
  *    `outputs/persisted/{toolCallId}.(json|txt)`
  *  - Drive documents pulled in on demand at `drive/`
@@ -29,81 +51,38 @@ import { TOOL_ERROR_CODES } from "../lib/tool-error-codes";
  *  - Context files at `context/...`
  *  - Memory files at `memory/...`
  *
+ * For chat attachments, extraction is TRANSPARENT and lazy: the model
+ * passes the original filename and gets readable text back. Behind the
+ * scenes documents (PDF / DOCX / PPTX) and images are extracted on the
+ * first read and cached content-addressed by `(org, contentHash)` via
+ * `@fretik/shared/services/file-extraction` — no sandbox round-trip, no
+ * markdown artifact the model ever has to know about. Plain-text and
+ * source-code files are returned verbatim. Spreadsheets are not read
+ * here — they route to `python` (pandas/openpyxl) for full precision.
+ *
  * Path inputs accepted:
  *   - `attachments/invoice.pdf`             (workspace-relative)
  *   - `/workspace/attachments/invoice.pdf`  (absolute, stripped)
  *   - `invoice.pdf`                         (bare basename — assumed
- *                                            to live under
- *                                            `attachments/`)
+ *                                            under `attachments/`)
  *
- * Anything that escapes `/workspace/` via `..` or absolute paths
- * outside the workspace is rejected with `PATH_OUT_OF_SANDBOX`.
- *
- * Extension routing:
- *
- *  - Text-like (.md, .txt, .json, .xml, .csv, .html, …): returns
- *    numbered-line content, source=`original`.
- *  - `.pdf`, `.docx`, `.pptx`: auto-resolves to `{basename}.md`
- *    sidecar, source=`ocr-sidecar`.
- *  - `.png`, `.jpg`, `.jpeg`, `.webp`: returns the sidecar if OCR
- *    produced useful text, otherwise a typed error pointing at
- *    `vision`.
- *  - `.xlsx`, `.xls`: returns the markdown-tables sidecar when one
- *    exists; otherwise a typed error pointing at `python`
- *    (`pandas.read_excel` / `openpyxl`).
+ * Anything that escapes `/workspace/` is rejected with
+ * `PATH_OUT_OF_SANDBOX`.
  */
 
-/**
- * Default number of lines returned when `limit` is not specified.
- * Matches claude-code's `FileReadTool` default. The byte cap below
- * (`MAX_READ_CHARS`) usually kicks in first on dense content (OCR
- * markdown, minified JSON, multi-page sidecars), naturally producing
- * paginated reads without an OCR-specific code path.
- */
+/** Default lines returned when `limit` is omitted (claude-code parity). */
 const DEFAULT_READ_LINES = 2_000;
 
 /**
- * Hard character safety cap on the slice before it is returned. When
- * exceeded, we truncate lines from the tail and emit a `notice` field
- * with explicit pagination guidance so the model knows to call back
- * with `offset` / `limit` (or switch to `python` for full-doc work).
- *
- * Sized at 30K chars (~7.5K tokens) — generous enough to fit a typical
- * skill body or a short attachment, tight enough that two reads in a
- * single turn don't exhaust the context window of a 200K-token model
- * (e.g. MiniMax M2.7) on multi-attachment / multi-turn flows. Earlier
- * iterations sat at 100K (mirroring claude-code) but observed context
- * overflow on 2-PDF conversations: 2 × 100K reads + system prompt +
- * history regularly hit 250K+ tokens. The model is free to bypass with
- * an explicit `limit` for legitimate full-doc cases.
+ * Hard character safety cap on the returned slice. When exceeded, lines
+ * are dropped from the tail and a `notice` field gives explicit
+ * pagination guidance. Sized at 30K chars (~7.5K tokens) so two reads in
+ * a turn don't exhaust a 200K-token context on multi-attachment flows.
  */
 const MAX_READ_CHARS = 30_000;
 
-/**
- * Persisted-output threshold for `read` results specifically. Slightly
- * above `MAX_READ_CHARS` to account for `cat -n` line-numbering
- * overhead (~7 chars/line padding) + the JSON envelope around
- * `{ filePath, source, content, ... }`. Reads almost never persist now
- * that the byte cap is 30K — kept as a defense-in-depth ceiling.
- */
+/** Defense-in-depth persisted-output ceiling for `read` results. */
 const READ_PERSIST_THRESHOLD_CHARS = 120_000;
-
-const TEXT_LIKE_EXTENSIONS = new Set([
-  ".md",
-  ".markdown",
-  ".txt",
-  ".text",
-  ".log",
-  ".json",
-  ".ndjson",
-  ".xml",
-  ".csv",
-  ".tsv",
-  ".html",
-  ".htm",
-  ".yaml",
-  ".yml",
-]);
 
 const OCR_SIDECAR_EXTENSIONS = new Set([".pdf", ".docx", ".pptx"]);
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp"]);
@@ -118,11 +97,9 @@ const resolveSidecarBasename = (filename: string): string => {
 };
 
 /**
- * Adds `cat -n` style line numbers to `content`, starting from
- * `startLine` (1-indexed). Matches claude-code's `addLineNumbers`:
- * 6-char right-padded number + tab + content. Line numbers reflect
- * the real file position (not slice-relative), so the model can
- * cite lines reliably across paginated reads.
+ * Adds `cat -n` style line numbers starting from `startLine` (1-indexed):
+ * 6-char right-padded number + tab + content. Line numbers reflect the
+ * real file position so citations stay stable across paginated reads.
  */
 const addLineNumbers = ({
   content,
@@ -146,9 +123,6 @@ const addLineNumbers = ({
 const resolveReadPath = (
   rawPath: string,
 ): { relative: string; absolute: string } | null => {
-  // Bare basename → assume the agent meant a chat attachment.
-  // Anything with a slash or absolute prefix goes through the
-  // standard workspace resolver.
   const startsWithSlash = rawPath.startsWith("/");
   const hasSubdir = rawPath.includes("/");
   const adjusted =
@@ -158,14 +132,6 @@ const resolveReadPath = (
   return resolveWorkspacePath(adjusted);
 };
 
-/**
- * Build a directive recovery hint for a `FILE_NOT_FOUND` based on the
- * resolved workspace path. Returns `undefined` when no prefix matches
- * so the field is dropped from the serialized response (per Vercel AI
- * SDK behavior). Anthropic's tool-design guidance: errors should
- * "communicate specific and actionable improvements, rather than
- * opaque error codes or tracebacks".
- */
 const DRIVE_UUID_RE = /^drive\/([0-9a-fA-F-]{36})-/;
 
 const buildFileNotFoundHint = (relative: string): string | undefined => {
@@ -182,21 +148,280 @@ const buildFileNotFoundHint = (relative: string): string | undefined => {
   return undefined;
 };
 
+/** Typed error payload returned to the model in the `{ error, code }` shape. */
+interface ReadErrorPayload {
+  error: string;
+  code: string;
+  hint?: string;
+}
+
+type ResolveResult = { text: string } | { error: ReadErrorPayload };
+
+/**
+ * Resolve a chat-attachment to readable text — fully Bun-side, no E2B.
+ * Routes by the file's REAL MIME (detected + stored at upload):
+ *  - text / code / CSV → original bytes, decoded;
+ *  - PDF / DOCX / PPTX / image → lazy content-addressed extraction;
+ *  - XLSX / XLS → routed to `python`.
+ */
+const resolveAttachmentContent = async (args: {
+  conversationId: string;
+  organizationId: string;
+  relative: string;
+  absolute: string;
+}): Promise<ResolveResult> => {
+  const { conversationId, organizationId, relative, absolute } = args;
+  const name = basename(relative);
+
+  const row = await db.query.aiChatFiles.findFirst({
+    where: { conversationId, filename: name },
+    columns: { id: true, fileHash: true, mimeType: true },
+  });
+  if (!row) {
+    return {
+      error: {
+        error: `File not found: ${absolute}`,
+        code: TOOL_ERROR_CODES.FILE_NOT_FOUND,
+        hint: buildFileNotFoundHint(relative),
+      },
+    };
+  }
+  const mimeType = row.mimeType;
+
+  // Plain text / source code / CSV (text/csv is text/*): decode verbatim.
+  if (isTextMime(mimeType)) {
+    const bytes = await readSessionFile(conversationId, relative);
+    if (!bytes) {
+      return {
+        error: {
+          error: `File not found: ${absolute}`,
+          code: TOOL_ERROR_CODES.FILE_NOT_FOUND,
+        },
+      };
+    }
+    return { text: new TextDecoder().decode(bytes) };
+  }
+
+  // Spreadsheets: code-execution is higher-precision than any text dump.
+  if (isSpreadsheetMime(mimeType)) {
+    return {
+      error: {
+        error: `Spreadsheet files (${mimeType}) can't be read as text without losing formulas and types. Use python with pandas.read_excel('${absolute}') or openpyxl to inspect the data.`,
+        code: TOOL_ERROR_CODES.BINARY_NOT_READABLE,
+        hint: "python",
+      },
+    };
+  }
+
+  // Documents / images: lazy content-addressed extraction.
+  if (isOcrDocumentMime(mimeType) || isImageMime(mimeType)) {
+    // Backfill a content hash for legacy rows uploaded before hashing.
+    let fileHash = row.fileHash;
+    if (!fileHash) {
+      const bytes = await readSessionFile(conversationId, relative);
+      if (!bytes) {
+        return {
+          error: {
+            error: `File not found: ${absolute}`,
+            code: TOOL_ERROR_CODES.FILE_NOT_FOUND,
+          },
+        };
+      }
+      fileHash = SHA256.hash(bytes, "hex");
+      await db
+        .update(aiChatFiles)
+        .set({ fileHash })
+        .where(eq(aiChatFiles.id, row.id));
+    }
+    const contentHash = fileHash;
+
+    // Legacy back-compat: import a pre-refonte session-prefix sidecar
+    // instead of paying for a re-OCR (older conversations only).
+    const legacySidecarRel = join(
+      dirname(relative),
+      resolveSidecarBasename(name),
+    );
+
+    const extraction = await withTraceSession(
+      conversationId,
+      { metadata: { filename: name }, tags: ["process:read-file"] },
+      () =>
+        getOrCreateExtraction({
+          organizationId,
+          fileHash: contentHash,
+          mimeType,
+          filename: name,
+          getBytes: async () => {
+            const bytes = await readSessionFile(conversationId, relative);
+            if (!bytes) throw new Error(`Original bytes missing for ${name}`);
+            return bytes;
+          },
+          getPresignedUrl: () =>
+            getSessionFilePresignedUrl(conversationId, relative),
+          onOcr: runMistralOcr,
+          legacySidecarLookup: async () => {
+            const bytes = await readSessionFile(
+              conversationId,
+              legacySidecarRel,
+            );
+            return bytes ? new TextDecoder().decode(bytes) : null;
+          },
+        }),
+    );
+
+    if (extraction.error) {
+      return {
+        error: {
+          error: `Failed to read file: ${extraction.error}`,
+          code: TOOL_ERROR_CODES.READ_ERROR,
+        },
+      };
+    }
+    if (extraction.markdown === null) {
+      // Image with no usable text (a photo / logo).
+      return {
+        error: {
+          error: `This image has no extractable text. Use vision(file_path, question) with a specific visual question to inspect it.`,
+          code: TOOL_ERROR_CODES.NO_TEXT_CONTENT,
+          hint: "vision",
+        },
+      };
+    }
+    return { text: extraction.markdown };
+  }
+
+  return {
+    error: {
+      error: `This file type (${mimeType}) can't be read as text. Use python for binary formats, or vision for images.`,
+      code: TOOL_ERROR_CODES.UNSUPPORTED_EXTENSION,
+    },
+  };
+};
+
+/**
+ * Resolve a persistent context file to readable text — fully Bun-side,
+ * no E2B. `read` is just an accelerator: any real processing
+ * (spreadsheets, page-by-page work) still routes to `python` / `bash`,
+ * which hydrate `context/` into the sandbox on demand. Context files
+ * are extracted once at upload, so the markdown is read straight from
+ * the `content` column / S3 sidecar — never re-OCR'd here. Routes by
+ * the file's REAL MIME, mirroring `resolveAttachmentContent`.
+ */
+const resolveContextContent = async (args: {
+  organizationId: string;
+  teamId: string;
+  userId: string | undefined;
+  relative: string;
+  absolute: string;
+}): Promise<ResolveResult> => {
+  const { organizationId, teamId, userId, relative, absolute } = args;
+  const name = basename(relative);
+
+  const accessible = await loadAccessibleContext({
+    userId,
+    teamId,
+    organizationId,
+  });
+  const file = accessible.files.find(
+    (f) => sanitizeSessionPath(f.filename) === name,
+  );
+  if (!file) {
+    return {
+      error: {
+        error: `File not found: ${absolute}`,
+        code: TOOL_ERROR_CODES.FILE_NOT_FOUND,
+        hint: "Check the exact filename in the system prompt's context manifest — case, extension, and spaces must match.",
+      },
+    };
+  }
+  if (file.status !== "ready") {
+    return {
+      error: {
+        error: `Context file "${name}" is still processing (status: ${file.status}). Try again shortly.`,
+        code: TOOL_ERROR_CODES.NOT_READY,
+      },
+    };
+  }
+  const mimeType = file.mimeType;
+
+  // Plain text / source code / CSV: decode the original bytes verbatim.
+  if (isTextMime(mimeType)) {
+    const bytes = await readContextOriginal(
+      file.profileId,
+      file.id,
+      extname(name),
+    );
+    if (!bytes) {
+      return {
+        error: {
+          error: `File not found: ${absolute}`,
+          code: TOOL_ERROR_CODES.FILE_NOT_FOUND,
+        },
+      };
+    }
+    return { text: new TextDecoder().decode(bytes) };
+  }
+
+  // Spreadsheets: code-execution is higher-precision than any text dump.
+  if (isSpreadsheetMime(mimeType)) {
+    return {
+      error: {
+        error: `Spreadsheet files (${mimeType}) can't be read as text without losing formulas and types. Use python with pandas.read_excel('${absolute}') or openpyxl to inspect the data.`,
+        code: TOOL_ERROR_CODES.BINARY_NOT_READABLE,
+        hint: "python",
+      },
+    };
+  }
+
+  // Documents / images: return the markdown extracted at upload time.
+  if (isOcrDocumentMime(mimeType) || isImageMime(mimeType)) {
+    let markdown = file.content;
+    if (markdown === null || markdown.length === 0) {
+      const bytes = await readContextSidecar(file.profileId, file.id);
+      markdown = bytes ? new TextDecoder().decode(bytes) : null;
+    }
+    if (markdown === null || markdown.length === 0) {
+      if (isImageMime(mimeType)) {
+        return {
+          error: {
+            error: `This image has no extractable text. Use vision(file_path, question) with a specific visual question to inspect it.`,
+            code: TOOL_ERROR_CODES.NO_TEXT_CONTENT,
+            hint: "vision",
+          },
+        };
+      }
+      return {
+        error: {
+          error: `Failed to read file: extracted text is not available for ${name}.`,
+          code: TOOL_ERROR_CODES.READ_ERROR,
+        },
+      };
+    }
+    return { text: markdown };
+  }
+
+  return {
+    error: {
+      error: `This file type (${mimeType}) can't be read as text. Use python for binary formats, or vision for images.`,
+      code: TOOL_ERROR_CODES.UNSUPPORTED_EXTENSION,
+    },
+  };
+};
+
 export const createReadTool = () =>
   tool({
     description: [
-      "Read a file from the conversation's sandbox at `/workspace/`. Returns line-numbered content (6-char line number + tab + content) so citations can reference real file lines.",
+      "Read a file from the conversation's workspace at `/workspace/` by path. Returns line-numbered content (6-char line number + tab + content) so citations can reference real file lines.",
       "",
       "Usage:",
-      "- Use to view a specific file you already know exists (filename came from an attachment, `listDocuments`, or a previous tool result).",
-      "- Use `read(path, offset, limit)` to target a section in a large file (`offset` is 1-indexed, `limit` defaults to 2000 lines).",
-      "- For searching across multiple files → use `bash` (`grep`, `find`, `head`, pipelines) — much faster.",
-      "- For pandas / openpyxl / pypdf / programmatic processing → use `python` (mandatory for `.xlsx` / `.xls`).",
-      "- For visual questions (layout, signatures, diagrams) → use `vision`.",
-      "- For finding by topic when you don't know the path → use `searchKnowledge`.",
-      "- Path inputs: `attachments/invoice.pdf` (workspace-relative, preferred), `/workspace/attachments/invoice.pdf` (absolute), or bare `invoice.pdf` (assumed under `attachments/`). Paths escaping `/workspace/` are rejected.",
-      "- Extension routing is transparent — pass the original filename: PDF/DOCX/PPTX auto-resolve to the `{basename}.md` OCR sidecar; PNG/JPG/WEBP return the OCR sidecar if available else point at `vision`; XLSX/XLS return a markdown-tables sidecar if available else point at `python`.",
-      `- A byte safety cap (~${(MAX_READ_CHARS / 1000).toFixed(0)}K chars) fires first on dense content; when it does, \`truncatedByBytes: true\` + a \`notice\` field tell you exactly how to paginate.`,
+      "- View a file you already know exists (filename came from an attachment, `listDocuments`, or a previous tool result).",
+      "- `read(path, offset, limit)` targets a section in a large file (`offset` is 1-indexed, `limit` defaults to 2000 lines).",
+      "- Searching across multiple files → use `bash` (`grep`, `find`, `head`, pipelines).",
+      "- Spreadsheets (`.xlsx` / `.xls`) and programmatic / page-by-page processing → use `python` (pandas, openpyxl, pdfplumber).",
+      "- Visual questions (layout, signatures, diagrams, photos) → use `vision`.",
+      "- Finding by topic when you don't know the path → use `searchKnowledge`.",
+      "- Path inputs: `attachments/invoice.pdf` (workspace-relative, preferred), `/workspace/attachments/invoice.pdf` (absolute), or bare `invoice.pdf` (assumed under `attachments/`). Documents and images are made readable transparently — just pass the original filename.",
+      `- A byte safety cap (~${(MAX_READ_CHARS / 1000).toFixed(0)}K chars) fires on dense content; when it does, \`truncatedByBytes: true\` + a \`notice\` field tell you exactly how to paginate.`,
       "",
       "Output: `{ filePath, source, startLine, numLines, totalLines, content, truncatedByBytes?, notice? }`. When the slice is oversized it is saved to a `<persisted-output>` file and the envelope is returned instead — page through the rest with `offset` + `limit`.",
     ].join("\n"),
@@ -205,7 +430,7 @@ export const createReadTool = () =>
         .string()
         .min(1)
         .describe(
-          "Workspace-relative path (e.g. 'attachments/report.pdf') or absolute under '/workspace/'. PDF / DOCX / PPTX auto-resolve to `{basename}.md` OCR sidecar; pass the original filename and we handle the sidecar transparently. XLSX / XLS auto-resolve to a markdown-tables sidecar when available, else use `python`.",
+          "Workspace-relative path (e.g. 'attachments/report.pdf') or absolute under '/workspace/'. Pass the original filename — documents and images are made readable transparently. Spreadsheets (.xlsx/.xls) route to `python` instead.",
         ),
       offset: z
         .number()
@@ -245,101 +470,142 @@ export const createReadTool = () =>
       }
 
       const ext = extname(resolved.relative).toLowerCase();
+      const isAttachment = resolved.relative.startsWith(
+        `${WORKSPACE_DIRS.attachments}/`,
+      );
+      const isSkill = resolved.relative.startsWith(`${WORKSPACE_DIRS.skills}/`);
+      const isContext = resolved.relative.startsWith(
+        `${WORKSPACE_DIRS.context}/`,
+      );
+
+      let text: string;
+      let source: ReadSource = "original";
       let finalRelative = resolved.relative;
       let finalAbsolute = resolved.absolute;
-      let source: ReadSource = "original";
 
-      // Sidecar resolution preserves the original's directory so a
-      // file under `context/foo.pdf` resolves to `context/foo.md`,
-      // not `attachments/foo.md`.
-      const sidecarBase = resolveSidecarBasename(basename(resolved.relative));
-      const sidecarRel = join(dirname(resolved.relative), sidecarBase);
-      const sidecarResolved = resolveWorkspacePath(sidecarRel);
+      if (isAttachment) {
+        // Chat attachments: transparent, Bun-side extraction (no E2B).
+        const result = await resolveAttachmentContent({
+          conversationId,
+          organizationId: ctx.organizationId,
+          relative: resolved.relative,
+          absolute: resolved.absolute,
+        });
+        if ("error" in result) return result.error;
+        text = result.text;
+      } else if (isSkill) {
+        // Skill bundles: served Bun-side (no E2B). SKILL.md bodies,
+        // references, and scripts originate from this package's disk
+        // (bundled / provider) or the `skills` DB row (team-uploaded);
+        // the sandbox push of skill trees still happens at bootstrap so
+        // `python` can load helper scripts via `skill_loader`.
+        let skillText: string | null;
+        try {
+          skillText = await readSkillWorkspaceFile(
+            conversationId,
+            resolved.relative,
+          );
+        } catch (err) {
+          return {
+            error: `Failed to read file: ${err instanceof Error ? err.message : String(err)}`,
+            code: TOOL_ERROR_CODES.READ_ERROR,
+          };
+        }
+        if (skillText === null) {
+          return {
+            error: `File not found: ${resolved.absolute}`,
+            code: TOOL_ERROR_CODES.FILE_NOT_FOUND,
+            hint: 'Check the exact skill name in the system prompt\'s skills catalogue. Read its instructions with `read("skills/<name>/SKILL.md")`.',
+          };
+        }
+        text = skillText;
+      } else if (isContext) {
+        // Persistent context files: served Bun-side (no E2B). `read` is an
+        // accelerator — extracted text comes straight from storage. Any
+        // real processing (spreadsheets, etc.) routes to `python` / `bash`,
+        // which hydrate `context/` into the sandbox on demand.
+        const result = await resolveContextContent({
+          organizationId: ctx.organizationId,
+          teamId: ctx.teamId,
+          userId: ctx.userId,
+          relative: resolved.relative,
+          absolute: resolved.absolute,
+        });
+        if ("error" in result) return result.error;
+        text = result.text;
+      } else {
+        // Non-attachment workspace paths (drive/, outputs/, memory/): read
+        // via the sandbox. Binary documents under these prefixes are
+        // resolved against the `{basename}.md` text file dropped next to
+        // them by their own hydrator.
+        const sidecarBase = resolveSidecarBasename(basename(resolved.relative));
+        const sidecarRel = join(dirname(resolved.relative), sidecarBase);
+        const sidecarResolved = resolveWorkspacePath(sidecarRel);
 
-      if (OCR_SIDECAR_EXTENSIONS.has(ext)) {
-        if (!sidecarResolved) {
+        if (OCR_SIDECAR_EXTENSIONS.has(ext)) {
+          if (
+            !sidecarResolved ||
+            !(await fileExists(conversationId, sidecarResolved.relative))
+          ) {
+            return {
+              error: `Binary ${ext} files can't be read directly here. For tables use python (pdfplumber / python-docx / python-pptx); for visual layout use vision(file_path, question).`,
+              code: TOOL_ERROR_CODES.BINARY_NOT_READABLE,
+              hint: ext === ".pdf" ? "python-or-vision" : "python",
+            };
+          }
+          finalRelative = sidecarResolved.relative;
+          finalAbsolute = sidecarResolved.absolute;
+          source = "ocr-sidecar";
+        } else if (IMAGE_EXTENSIONS.has(ext)) {
+          if (
+            !sidecarResolved ||
+            !(await fileExists(conversationId, sidecarResolved.relative))
+          ) {
+            return {
+              error: `This image has no extractable text. Use vision(file_path, question) with a specific visual question to inspect it.`,
+              code: TOOL_ERROR_CODES.NO_TEXT_CONTENT,
+              hint: "vision",
+            };
+          }
+          finalRelative = sidecarResolved.relative;
+          finalAbsolute = sidecarResolved.absolute;
+          source = "ocr-sidecar";
+        } else if (SPREADSHEET_EXTENSIONS.has(ext)) {
           return {
-            error: `Unable to resolve OCR sidecar path for ${basename(resolved.relative)}.`,
-            code: TOOL_ERROR_CODES.PATH_OUT_OF_SANDBOX,
-          };
-        }
-        if (!(await fileExists(conversationId, sidecarResolved.relative))) {
-          return {
-            error: `Binary ${ext} files cannot be read directly. No OCR sidecar found at ${sidecarResolved.absolute}. For tables use python with pdfplumber/python-docx/python-pptx; for visual layout use vision(file_path, question).`,
-            code: TOOL_ERROR_CODES.NO_OCR_SIDECAR,
-            hint: ext === ".pdf" ? "python-or-vision" : "python",
-          };
-        }
-        finalRelative = sidecarResolved.relative;
-        finalAbsolute = sidecarResolved.absolute;
-        source = "ocr-sidecar";
-      } else if (IMAGE_EXTENSIONS.has(ext)) {
-        if (
-          !sidecarResolved ||
-          !(await fileExists(conversationId, sidecarResolved.relative))
-        ) {
-          return {
-            error: `No OCR sidecar available for this image. Use vision(file_path, question) with a specific visual question if you need to inspect the image content.`,
-            code: TOOL_ERROR_CODES.NO_OCR_SIDECAR,
-            hint: "vision",
-          };
-        }
-        finalRelative = sidecarResolved.relative;
-        finalAbsolute = sidecarResolved.absolute;
-        source = "ocr-sidecar";
-      } else if (SPREADSHEET_EXTENSIONS.has(ext)) {
-        if (
-          !sidecarResolved ||
-          !(await fileExists(conversationId, sidecarResolved.relative))
-        ) {
-          return {
-            error: `Binary spreadsheet files (${ext}) cannot be read as text. Use python with pandas.read_excel('${resolved.absolute}') or openpyxl to inspect the data.`,
+            error: `Spreadsheet files (${ext}) can't be read as text. Use python with pandas.read_excel('${resolved.absolute}') or openpyxl to inspect the data.`,
             code: TOOL_ERROR_CODES.BINARY_NOT_READABLE,
             hint: "python",
           };
+        } else {
+          // Text-like / persisted-output / anything else readable as UTF-8.
+          const persistedDir = `${WORKSPACE_DIRS.outputsPersisted}/`;
+          if (
+            resolved.relative.startsWith(persistedDir) &&
+            /\.(json|txt)$/i.test(resolved.relative)
+          ) {
+            source = "persisted-output";
+          }
         }
-        finalRelative = sidecarResolved.relative;
-        finalAbsolute = sidecarResolved.absolute;
-        source = "ocr-sidecar";
-      } else if (TEXT_LIKE_EXTENSIONS.has(ext) || ext === "") {
-        // Plain text path — read directly. Detect the persisted-output
-        // shape (toolCallId.(json|txt) under outputs/persisted/) so the
-        // UI can label this slice as a recovered envelope.
-        const persistedDir = `${WORKSPACE_DIRS.outputsPersisted}/`;
-        if (
-          resolved.relative.startsWith(persistedDir) &&
-          /\.(json|txt)$/i.test(resolved.relative)
-        ) {
-          source = "persisted-output";
-        }
-      } else {
-        return {
-          error: `Extension ${ext} is not supported. Attach the file as text or use python for binary formats.`,
-          code: TOOL_ERROR_CODES.UNSUPPORTED_EXTENSION,
-        };
-      }
 
-      let text: string;
-      try {
-        text = await readFileText(conversationId, finalRelative);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        if (/not exist|not found|missing/i.test(message)) {
+        try {
+          text = await readFileText(conversationId, finalRelative);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          if (/not exist|not found|missing/i.test(message)) {
+            return {
+              error: `File not found: ${finalAbsolute}`,
+              code: TOOL_ERROR_CODES.FILE_NOT_FOUND,
+              hint: buildFileNotFoundHint(finalRelative),
+            };
+          }
           return {
-            error: `File not found: ${finalAbsolute}`,
-            code: TOOL_ERROR_CODES.FILE_NOT_FOUND,
-            hint: buildFileNotFoundHint(finalRelative),
+            error: `Failed to read file: ${message}`,
+            code: TOOL_ERROR_CODES.READ_ERROR,
           };
         }
-        return {
-          error: `Failed to read file: ${message}`,
-          code: TOOL_ERROR_CODES.READ_ERROR,
-        };
       }
 
-      // Line-based slicing (claude-code parity). offset is 1-indexed;
-      // we convert to a 0-indexed array position. Input validation
-      // (`z.number().positive()`) rules out offset=0.
+      // Line-based slicing (claude-code parity). offset is 1-indexed.
       const lines = text.split("\n");
       const totalLines = lines.length;
       const startLine = offset ?? 1;
@@ -370,9 +636,6 @@ export const createReadTool = () =>
       let joined = slicedLines.join("\n");
       let truncatedByBytes = false;
 
-      // Byte safety cap: if the slice (even with the line bound)
-      // exceeds MAX_READ_CHARS, drop lines from the tail until it
-      // fits. Flag so the agent can refine.
       if (joined.length > MAX_READ_CHARS) {
         truncatedByBytes = true;
         let fittedLines = slicedLines.length;
@@ -408,13 +671,6 @@ export const createReadTool = () =>
       };
       if (truncatedByBytes) payload.truncatedByBytes = true;
 
-      // When the slice is a partial view of a larger file (byte cap
-      // truncated the slice OR the natural limit didn't reach EOF),
-      // surface explicit pagination guidance. Without this, the model
-      // has been observed to plan over the partial slice as if it
-      // were complete and ship incomplete deliverables. Generic
-      // across all file types — OCR sidecars, large CSV/JSON,
-      // persisted-output files, anything that doesn't fit in one go.
       if (numLines < totalLines) {
         const nextOffset = startLine + numLines;
         payload.notice = `Returned ${numLines.toString()} of ${totalLines.toString()} lines (lines ${startLine.toString()}–${(startLine + numLines - 1).toString()}).${truncatedByBytes ? ` Byte safety cap fired (${(MAX_READ_CHARS / 1000).toFixed(0)}K chars).` : ""} Call \`read("${finalRelative}", offset=${nextOffset.toString()})\` to continue, or process the file directly in \`python\` (e.g. \`pdfplumber.open(...)\`, \`pd.read_csv(...)\`) for full-doc work.`;

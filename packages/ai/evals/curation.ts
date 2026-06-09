@@ -31,8 +31,9 @@ export interface CuratedCase {
 }
 
 export const CURATED: Record<string, CuratedCase> = {
-  // extraction (1)
+  // extraction (2)
   "rag-specific-id": { capability: "extraction", smoke: true },
+  "file-pdf-read": { capability: "extraction", smoke: true },
   // generation (3)
   "edge-unicode-identifier": { capability: "generation", smoke: true },
   "qa-clarify": { capability: "generation", smoke: true },

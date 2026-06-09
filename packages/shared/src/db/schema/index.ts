@@ -37,6 +37,10 @@ export * from "./ai";
 // AI chat files (user-uploaded attachments on chatbot conversations)
 export * from "./chat-files";
 
+// File extractions (content-addressed OCR/extraction cache shared across
+// chat files, Drive documents, and context files — keyed by org + hash)
+export * from "./file-extractions";
+
 // AI context (Projects-style user + team persistent context + files)
 export * from "./ai-context";
 

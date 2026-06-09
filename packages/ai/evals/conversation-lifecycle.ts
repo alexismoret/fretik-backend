@@ -31,7 +31,14 @@ import {
   aiChatFiles,
   aiConversations,
   aiMessages,
+  fileExtractions,
 } from "@fretik/shared/db/schema";
+import { writeExtractionSidecar } from "@fretik/shared/services/file-extraction/storage";
+import {
+  detectMimeFromBytes,
+  isImageMime,
+} from "@fretik/shared/utils/mimeTypes";
+import { SHA256 } from "bun";
 import { eq } from "drizzle-orm";
 import { dirname, extname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -39,7 +46,6 @@ import {
   attachUserFile,
   WORKSPACE_DIRS,
   WORKSPACE_ROOT,
-  writeFile,
 } from "../src/lib/conversation-storage";
 
 const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
@@ -50,7 +56,44 @@ interface SeededChatFile {
   mimeType: string;
   size: number;
   hasMarkdown: boolean;
+  fileHash: string;
 }
+
+/**
+ * Pre-populate the shared content-addressed extraction cache from a
+ * fixture's `{stem}.md` ground-truth OCR (or seed an `image-skip` row
+ * for text-less images). This makes the production `read` path get a
+ * deterministic cache HIT instead of calling live Mistral OCR, while
+ * exercising the real lazy-extraction code path (and dedup —
+ * `onConflictDoNothing` lets two cases share one fixture). `null`
+ * markdown = no sidecar (image-skip → `read` points at `vision`).
+ */
+const seedExtractionCache = async (
+  organizationId: string,
+  fileHash: string,
+  mimeType: string,
+  markdown: string | null,
+  route: "mistral-ocr" | "image-skip",
+): Promise<void> => {
+  const sidecarS3Key =
+    markdown !== null
+      ? await writeExtractionSidecar(organizationId, fileHash, markdown)
+      : null;
+  await db
+    .insert(fileExtractions)
+    .values({
+      organizationId,
+      fileHash,
+      mimeType,
+      route,
+      sidecarS3Key,
+      charCount: markdown?.length ?? null,
+      status: "ready",
+    })
+    .onConflictDoNothing({
+      target: [fileExtractions.organizationId, fileExtractions.fileHash],
+    });
+};
 
 /**
  * Lightweight MIME guess — keeps us free from node:mime dependencies.
@@ -105,10 +148,11 @@ const guessMime = (filename: string): string => {
 };
 
 /**
- * Push a fixture file (and any sibling OCR sidecar) into the
- * conversation sandbox at `/workspace/attachments/{filename}` via the
- * storage façade. Returns the metadata the caller needs to register
- * the file in `ai_chat_files`.
+ * Push a fixture's ORIGINAL binary into the conversation sandbox at
+ * `/workspace/attachments/{filename}` (for `python` / `bash`), and
+ * pre-seed the content-addressed extraction cache from its `{stem}.md`
+ * ground-truth so `read` resolves deterministically. Returns the
+ * metadata the caller needs to register the file in `ai_chat_files`.
  *
  * Missing fixtures emit a warning and resolve to `null` — the case
  * then runs with an empty workspace, which is how the suite used to
@@ -118,6 +162,7 @@ const guessMime = (filename: string): string => {
  */
 const pushFixtureIntoSandbox = async (
   conversationId: string,
+  organizationId: string,
   filename: string,
 ): Promise<SeededChatFile | null> => {
   const src = resolve(FIXTURES_DIR, filename);
@@ -129,34 +174,49 @@ const pushFixtureIntoSandbox = async (
     return null;
   }
 
+  // Push the ORIGINAL binary into the sandbox (+ S3 backup) — `python` /
+  // `bash` operate on it. NO markdown sidecar lands in the sandbox; the
+  // new `read` path reads extraction from the content-addressed cache.
   const bytes = new Uint8Array(await srcFile.arrayBuffer());
   await attachUserFile(conversationId, filename, bytes);
 
-  // Optional OCR sidecar. The `read` tool resolves `{stem}.md` when
-  // asked for a PDF / DOCX / PPTX / image. Mirror the same naming
-  // convention the production chat-file preprocessor uses so the
-  // agent's default code path is unchanged.
+  const mimeType = await detectMimeFromBytes(bytes, guessMime(filename));
+  const fileHash = SHA256.hash(bytes, "hex");
+
+  // Pre-seed the extraction cache from the operator's `{stem}.md`
+  // ground-truth OCR so `read` resolves deterministically without a live
+  // Mistral call. Text-less images get an `image-skip` row so `read`
+  // points at `vision` instead.
   const ext = extname(filename);
   const stem = ext ? filename.slice(0, -ext.length) : filename;
-  const sidecarName = `${stem}.md`;
-  const sidecarSrc = resolve(FIXTURES_DIR, sidecarName);
-  const sidecarFile = Bun.file(sidecarSrc);
+  const sidecarFile = Bun.file(resolve(FIXTURES_DIR, `${stem}.md`));
   let hasMarkdown = false;
   if (await sidecarFile.exists()) {
-    const sidecarBytes = new Uint8Array(await sidecarFile.arrayBuffer());
-    await writeFile(
-      conversationId,
-      `${WORKSPACE_DIRS.attachments}/${sidecarName}`,
-      sidecarBytes,
+    const markdown = await sidecarFile.text();
+    await seedExtractionCache(
+      organizationId,
+      fileHash,
+      mimeType,
+      markdown,
+      "mistral-ocr",
     );
     hasMarkdown = true;
+  } else if (isImageMime(mimeType)) {
+    await seedExtractionCache(
+      organizationId,
+      fileHash,
+      mimeType,
+      null,
+      "image-skip",
+    );
   }
 
   return {
     filename,
-    mimeType: guessMime(filename),
+    mimeType,
     size: bytes.byteLength,
     hasMarkdown,
+    fileHash,
   };
 };
 
@@ -212,7 +272,11 @@ export const createEphemeralConversation = async (args: {
     // each push hits the sandbox + S3 backup queue, and keeping the
     // calls sequential simplifies error handling with minimal latency
     // cost (typical fixture set is < 10 files).
-    const meta = await pushFixtureIntoSandbox(conversationId, filename);
+    const meta = await pushFixtureIntoSandbox(
+      conversationId,
+      args.organizationId,
+      filename,
+    );
     if (meta) seeded.push(meta);
   }
 
@@ -257,9 +321,9 @@ export const createEphemeralConversation = async (args: {
 
   // Register the seeded fixtures in `ai_chat_files` so
   // `buildAttachedFilesBlock` can resolve them and emit the rich
-  // `<file_attachments>` system-prompt section. `status='ready'`
-  // because we bypass the normal upload/OCR pipeline — the sidecar
-  // (if any) is already in the sandbox next to the main file.
+  // `<file_attachments>` system-prompt section. `status='ready'` +
+  // `fileHash` set — `read` resolves the extraction from the
+  // content-addressed cache pre-seeded above (no live OCR).
   if (seeded.length > 0) {
     await db.insert(aiChatFiles).values(
       seeded.map((f) => ({
@@ -268,6 +332,7 @@ export const createEphemeralConversation = async (args: {
         filename: f.filename,
         mimeType: f.mimeType,
         size: f.size,
+        fileHash: f.fileHash,
         hasMarkdown: f.hasMarkdown,
         status: "ready" as const,
       })),

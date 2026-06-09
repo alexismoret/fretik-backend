@@ -77,6 +77,13 @@ export const aiChatFiles = pgTable(
     filename: varchar("filename", { length: 255 }).notNull(),
     mimeType: varchar("mime_type", { length: 100 }).notNull(),
     size: bigint("size", { mode: "number" }).notNull(),
+    /**
+     * Hex SHA-256 of the original bytes. Nullable on legacy rows
+     * uploaded before content-addressed extraction shipped — backfilled
+     * lazily on first `read` (fetch bytes from S3, hash, persist). The
+     * dedup key into `file_extractions` is `(organizationId, fileHash)`.
+     */
+    fileHash: varchar("file_hash", { length: 64 }),
     hasMarkdown: boolean("has_markdown").notNull().default(false),
     /**
      * Structured preview of the file (rows + columns + head for

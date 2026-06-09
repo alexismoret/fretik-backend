@@ -19,35 +19,36 @@ import {
   MAX_FILE_SIZE_BYTES,
   MAX_FILES_PER_CONVERSATION,
 } from "@fretik/shared/utils/chatbot-limits";
-import { isChatbotSupported } from "@fretik/shared/utils/mimeTypes";
+import {
+  detectMimeFromBytes,
+  isChatbotSupported,
+  requiresOcrPreprocessing,
+} from "@fretik/shared/utils/mimeTypes";
 import { and, eq, ne } from "drizzle-orm";
-import { attachUserFile, readFileText } from "../../lib/conversation-storage";
-import { preprocessChatFile } from "./preprocess";
+import { attachUserFile } from "../../lib/conversation-storage";
 
 /**
  * Chat-file upload orchestrator. Called from the chat-files POST
  * route. Responsibilities:
  *
  *  1. Verify the conversation exists and belongs to the calling team.
- *  2. Validate file size / MIME / aggregate conversation cap
+ *  2. Read the bytes once, resolve the REAL MIME from magic bytes
+ *     (`detectMimeFromBytes` — never trust the extension / browser type),
+ *     and validate size / MIME / aggregate conversation cap
  *     (HTTP 413 / 415 / 409 respectively).
- *  3. Dedup the filename on `(conversationId, filename)` UNIQUE by
- *     appending `_2`, `_3`, … when a collision is detected.
- *  4. INSERT an `ai_chat_files` row in `status: 'uploading'` and grab
- *     the generated id.
+ *  3. Hash the bytes (SHA-256) and dedup the filename on
+ *     `(conversationId, filename)` UNIQUE by appending `_2`, `_3`, ….
+ *  4. INSERT an `ai_chat_files` row in `status: 'uploading'` carrying the
+ *     detected MIME + `fileHash`.
  *  5. Push the raw bytes into the conversation sandbox under
  *     `/workspace/attachments/{filename}` via the conversation-storage
- *     façade. The façade also queues an async S3 backup so a sandbox
- *     recreated after expiry can be re-hydrated.
- *  6. Run `preprocessChatFile` synchronously — OCR for PDF / DOCX /
- *     PPTX / images, no-op passthrough for everything else.
- *  7. Optionally upload to Drive in parallel (via the existing
- *     `documents` pipeline) and persist the resulting `documentId`
- *     on the row.
- *  8. UPDATE the row to `status: 'ready'` with final metadata.
- *     Any failure between 5-7 flips the row to `status: 'error'`
- *     with the message and re-throws so the handler can bubble it
- *     up to the client.
+ *     façade (+ async S3 backup for sandbox re-hydration).
+ *  6. Extract a structured snapshot from the bytes for the UI / attached
+ *     files block. NO OCR here — extraction is lazy (first `read`) and
+ *     cached via `@fretik/shared/services/file-extraction`.
+ *  7. Optionally upload to Drive in parallel and persist `documentId`.
+ *  8. UPDATE the row to `status: 'ready'`. Any failure between 5-7 flips
+ *     the row to `status: 'error'` and re-throws.
  */
 
 interface UploadChatFileArgs {
@@ -117,15 +118,20 @@ export const uploadChatFile = async (
     return throwHttpError(403, forbidden());
   }
 
-  // 2. Size / MIME / aggregate cap.
+  // 2. Read the bytes once, resolve the REAL MIME from magic bytes
+  //    (never trust the extension / browser-provided file.type), then
+  //    validate size / MIME / aggregate cap.
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const mimeType = await detectMimeFromBytes(bytes, file.type);
+
   if (file.size > MAX_FILE_SIZE_BYTES) {
     return throwHttpError(
       413,
       fileTooLarge(file.name, file.size, MAX_FILE_SIZE_BYTES),
     );
   }
-  if (!isChatbotSupported(file.type)) {
-    return throwHttpError(415, unsupportedMediaType(file.type));
+  if (!isChatbotSupported(mimeType)) {
+    return throwHttpError(415, unsupportedMediaType(mimeType));
   }
   const activeCount = await countActiveFiles(conversationId);
   if (activeCount >= MAX_FILES_PER_CONVERSATION) {
@@ -135,29 +141,29 @@ export const uploadChatFile = async (
     );
   }
 
-  // 3. Sanitize the original filename FIRST, then dedup against
-  //    existing sanitized names. The stored value must equal the
-  //    on-disk basename so every downstream surface
-  //    (`/workspace/attachments/{filename}` in the sandbox, the S3
-  //    backup key under `attachments/{filename}`,
-  //    `{{attachedFilesBlock}}`, FileUIPart.filename, DELETE /
-  //    download routes) lines up without a second-pass translation.
-  //    Spaces / parens / accents all collapse to `_` via
-  //    sanitizeSessionPath — accepted cost for consistency.
+  // 3. Hash the content (SHA-256 — the dedup key into `file_extractions`)
+  //    and sanitize + dedup the filename. The stored filename must equal
+  //    the on-disk basename so every downstream surface
+  //    (`/workspace/attachments/{filename}`, the S3 backup key,
+  //    `{{attachedFilesBlock}}`, FileUIPart.filename, DELETE / download
+  //    routes) lines up without a second-pass translation. Spaces /
+  //    parens / accents all collapse to `_` via sanitizeSessionPath.
+  const fileHash = Bun.SHA256.hash(bytes, "hex");
   const sanitizedBase = sanitizeSessionPath(file.name);
   const dedupedFilename = await resolveDedupedFilename(
     conversationId,
     sanitizedBase,
   );
 
-  // 4. Insert row in 'uploading' state.
+  // 4. Insert row in 'uploading' state with the detected MIME + hash.
   const [inserted] = await db
     .insert(aiChatFiles)
     .values({
       conversationId,
       uploadedById: userId,
       filename: dedupedFilename,
-      mimeType: file.type,
+      mimeType,
+      fileHash,
       size: file.size,
       status: "uploading",
     })
@@ -173,41 +179,20 @@ export const uploadChatFile = async (
   const fileId = inserted.id;
 
   try {
-    // 5. Push the raw bytes into the conversation sandbox (and queue
-    //    the async S3 backup) via the storage façade. Triggers
-    //    sandbox bootstrap on first call — workspace dirs are created,
-    //    bundled skills pushed, attachments/outputs restored from S3
-    //    if any.
-    const bytes = new Uint8Array(await file.arrayBuffer());
-    await attachUserFile(conversationId, dedupedFilename, bytes, file.type);
+    // 5. Push the raw bytes into the conversation sandbox (+ async S3
+    //    backup) via the storage façade. Triggers sandbox bootstrap on
+    //    first call. NO OCR here — extraction is lazy (first `read`) and
+    //    cached by `@fretik/shared/services/file-extraction`.
+    await attachUserFile(conversationId, dedupedFilename, bytes, mimeType);
 
-    // 6. Synchronous preprocess (OCR sidecar for PDF / DOCX / PPTX /
-    //    images that produce useful text).
-    const preprocess = await preprocessChatFile({
-      fileId,
-      conversationId,
-      filename: dedupedFilename,
-      mimeType: file.type,
-    });
-
-    // 6b. Snapshot extraction (Pattern A — see plan
-    //     `mission-enrichir-le-glowing-castle.md`). Pure function over
-    //     the bytes already in memory + the OCR sidecar markdown when
-    //     one was written. Failures fall back to `opaque` instead of
-    //     throwing — never break the upload because of preview
-    //     extraction.
+    // 6. Snapshot extraction (Pattern A) — pure function over the bytes
+    //    already in memory. Tabular / text snapshots are exact; document
+    //    snapshots (PDF / DOCX / PPTX / image) are lean until the first
+    //    `read` populates the extraction cache. Failures fall back to
+    //    `opaque` — never break the upload because of preview extraction.
     let snapshot: ChatFileSnapshot;
     try {
-      const ocrSidecar = preprocess.sidecarPath
-        ? {
-            markdown: await readFileText(
-              conversationId,
-              preprocess.sidecarPath,
-            ),
-            pageCount: preprocess.pageCount,
-          }
-        : undefined;
-      snapshot = await extractChatFileSnapshot(bytes, file.type, ocrSidecar);
+      snapshot = await extractChatFileSnapshot(bytes, mimeType, undefined);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       snapshot = {
@@ -215,6 +200,11 @@ export const uploadChatFile = async (
         reason: `snapshot extraction failed: ${message.slice(0, 100)}`,
       };
     }
+
+    // `hasMarkdown` reflects "an OCR extraction is expected for this MIME"
+    // (PDF / office / image) — the sidecar is produced lazily on first
+    // `read`, not here. Spreadsheet / text never get a markdown sidecar.
+    const hasMarkdown = requiresOcrPreprocessing(mimeType);
 
     // 7. Optional Drive parallel upload.
     let documentId: string | null = null;
@@ -244,7 +234,7 @@ export const uploadChatFile = async (
       .update(aiChatFiles)
       .set({
         status: "ready",
-        hasMarkdown: preprocess.hasMarkdown,
+        hasMarkdown,
         documentId,
         snapshot,
       })

@@ -10,16 +10,20 @@ manually once per dev machine.
 `evals/conversation-lifecycle.ts::createEphemeralConversation` reads the
 case's `fixtures` field, then for each filename it:
 
-1. Pushes `evals/fixtures/{filename}` into the conversation sandbox at
-   `/workspace/attachments/{filename}` via the storage façade
-   (`attachUserFile`). The façade also queues an S3 backup so a
-   sandbox recreated after expiry sees the file again.
-2. If a sibling `{stem}.md` sits next to the fixture (same basename, `.md`
-   extension), pushes it too as the OCR sidecar at
-   `/workspace/attachments/{stem}.md` and flips
-   `ai_chat_files.hasMarkdown = true`. The `read` tool auto-resolves
-   PDFs / DOCX / images to this sidecar (see `src/tools/read.ts`).
-3. Inserts a row in `ai_chat_files` with `status = 'ready'`.
+1. Pushes the ORIGINAL `evals/fixtures/{filename}` into the conversation
+   sandbox at `/workspace/attachments/{filename}` via the storage façade
+   (`attachUserFile`, + S3 backup). `python` / `bash` operate on this
+   original; NO markdown sidecar is written into the sandbox.
+2. If a sibling `{stem}.md` sits next to the fixture (same basename,
+   `.md` extension), pre-seeds the **content-addressed extraction cache**
+   from it: a `file_extractions` row keyed by `(org, SHA-256)` + an S3
+   sidecar at `file-extractions/{org}/{hash}.md`, and flips
+   `ai_chat_files.hasMarkdown = true`. The new `read` tool resolves
+   documents/images transparently to this cached text — a deterministic
+   HIT, no live Mistral call (and it exercises dedup when two cases share
+   a fixture). A text-less image fixture (no `{stem}.md`) gets an
+   `image-skip` cache row so `read` deterministically points at `vision`.
+3. Inserts a row in `ai_chat_files` with `status = 'ready'` + `fileHash`.
 4. Appends a `{ type: 'file', mediaType, filename, url }` part to the
    seeded user message so the system prompt's `<file_attachments>`
    section gets populated via `buildAttachedFilesBlock`.

@@ -1,6 +1,7 @@
 import { and, eq, isNull, or } from "drizzle-orm";
 import db from "../../db";
 import { skills } from "../../db/schema";
+import { listProviderKeys } from "../../external-apps/registry";
 import { SKILL_NAME_MAX_LENGTH } from "../../schemas/skills-limits";
 
 /**
@@ -35,11 +36,16 @@ export const slugifySkillName = (raw: string): string => {
  * base slug is taken, suffixes `-2`, `-3`, … until an unused slug is
  * found.
  *
- * Collision check is GLOBAL across both bundled skills (visible to
- * every team) and this team's own `team_uploaded` skills. This keeps
- * the `/workspace/skills/<slug>/` paths unambiguous on the sandbox —
- * we never want a team-uploaded skill named `docx` to collide with
- * the bundled `docx` skill at extraction time.
+ * Collision check is GLOBAL across three reserved sets so the
+ * `/workspace/skills/<slug>/` paths stay unambiguous on the sandbox:
+ *  - bundled skills (visible to every team) — DB rows, `team_id IS NULL`,
+ *  - this team's own `team_uploaded` skills — DB rows scoped to the team,
+ *  - external-app provider keys (e.g. `outlook`, `imap-smtp`) — these own
+ *    `skills/<providerKey>/` on disk and are resolved BEFORE team skills
+ *    in `readSkillWorkspaceFile`, so a team skill sharing a provider key
+ *    would be silently shadowed whenever that provider is connected.
+ * A colliding name is suffixed (`-2`, `-3`, …) instead of rejected, the
+ * same UX the create flow already applies to ordinary name clashes.
  *
  * Throws when:
  *  - the base slug can't accommodate a `-N` suffix within 64 chars
@@ -50,6 +56,7 @@ export const pickAvailableSkillSlug = async (
   baseSlug: string,
   teamId: string,
 ): Promise<string> => {
+  const reservedProviderKeys = new Set(listProviderKeys());
   for (let attempt = 0; attempt < SLUG_DEDUPE_MAX_ATTEMPTS; attempt++) {
     const candidate = attempt === 0 ? baseSlug : `${baseSlug}-${attempt + 1}`;
     if (candidate.length > SKILL_NAME_MAX_LENGTH) {
@@ -57,6 +64,7 @@ export const pickAvailableSkillSlug = async (
         `Cannot derive a unique skill slug from "${baseSlug}" within ${SKILL_NAME_MAX_LENGTH} chars`,
       );
     }
+    if (reservedProviderKeys.has(candidate)) continue;
     const existing = await db
       .select({ id: skills.id })
       .from(skills)

@@ -61,7 +61,6 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { TransformStream } from "node:stream/web";
 import { z } from "zod";
 import { chatbotAgentSet, type ChatbotCallOptions } from "../agents/chatbot";
-import { hydrateContextFiles } from "../lib/context-files-hydration";
 import { writeSandboxAuthFile } from "../lib/conversation-storage";
 import { flushLangfuse, langfuseEnabled } from "../lib/langfuse";
 import { deleteScore, recordScore } from "../lib/langfuse-scores";
@@ -505,22 +504,22 @@ const buildAttachedFilesBlock = async (
     }
     if (row.hasMarkdown) {
       body.push(
-        `OCR sidecar at \`attachments/${filename.replace(/\.[^.]+$/, "")}.md\` — \`read({ file_path: '${relativePath}' })\` resolves to it.`,
+        `\`read({ file_path: '${relativePath}' })\` returns its text. For visual layout / signatures / diagrams use \`vision({ file_path: '${relativePath}', question: '...' })\`.`,
       );
     } else if (row.mimeType.startsWith("image/")) {
       body.push(
-        `No OCR sidecar — call \`vision({ file_path: '${relativePath}', question: '...' })\` for visual questions.`,
+        `Call \`vision({ file_path: '${relativePath}', question: '...' })\` for visual questions (\`read\` has no text for this image).`,
       );
     } else if (
       row.mimeType.includes("spreadsheet") ||
       row.mimeType.includes("excel")
     ) {
       body.push(
-        `Spreadsheet — open in \`python\` with \`pandas.read_excel('${relativePath}')\`.`,
+        `Spreadsheet — open in \`python\` with \`pandas.read_excel('${relativePath}')\` / \`openpyxl\`.`,
       );
     } else {
       body.push(
-        `Plain file — \`read({ file_path: '${relativePath}' })\` for the full content.`,
+        `\`read({ file_path: '${relativePath}' })\` for the full content.`,
       );
     }
     body.push(`</attached_file>`);
@@ -944,23 +943,13 @@ const runChatbotTurn = async (
     return tooManyFiles;
   }
 
-  // Hydrate the persistent team/user context files into the
-  // conversation's sandbox at `/workspace/context/...`. Chat
-  // attachments + outputs come back automatically when the storage
-  // façade restores from S3 on first access.
-  if (params.conversationId !== undefined && params.callOptions.userId) {
-    await hydrateContextFiles({
-      conversationId: params.conversationId,
-      userId: params.callOptions.userId,
-      teamId: params.callOptions.teamId,
-      organizationId: params.callOptions.organizationId,
-    }).catch((error: unknown) => {
-      console.warn(
-        `${params.logPrefix} hydrateContextFiles failed, proceeding with whatever is in the sandbox:`,
-        error instanceof Error ? error.message : error,
-      );
-    });
-  }
+  // Context files are NOT hydrated here. `read("context/...")` serves
+  // them Bun-side (no sandbox), and the `python` / `bash` tools hydrate
+  // them into `/workspace/context/...` on demand via
+  // `prepareSandboxForCode` — so a turn that never runs code skips
+  // sandbox acquisition entirely. Chat attachments + outputs come back
+  // automatically when the storage façade restores from S3 on first
+  // sandbox access.
 
   // External apps: active connections (surfaced to the agent) + a fresh
   // per-turn sandbox JWT for `fretik_apps`. See loadExternalApps.

@@ -374,6 +374,7 @@ export const relations = defineRelations(schema, (r) => ({
       optional: true,
     }),
     messages: r.many.aiMessages(),
+    members: r.many.aiConversationMembers(),
     chatFiles: r.many.aiChatFiles(),
     triggeredMemoryCreates: r.many.aiMemories({
       alias: "memoryCreatedByConversation",
@@ -392,7 +393,23 @@ export const relations = defineRelations(schema, (r) => ({
       from: r.aiMessages.conversationId,
       to: r.aiConversations.id,
     }),
+    author: r.one.user({
+      from: r.aiMessages.authorId,
+      to: r.user.id,
+      optional: true,
+    }),
     chatFiles: r.many.aiChatFiles(),
+  },
+
+  aiConversationMembers: {
+    conversation: r.one.aiConversations({
+      from: r.aiConversationMembers.conversationId,
+      to: r.aiConversations.id,
+    }),
+    user: r.one.user({
+      from: r.aiConversationMembers.userId,
+      to: r.user.id,
+    }),
   },
 
   aiChatFiles: {

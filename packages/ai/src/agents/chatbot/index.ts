@@ -154,6 +154,15 @@ export const ChatbotCallOptionsSchema = z.object({
    */
   enabledSkillsBlock: z.string().optional(),
   /**
+   * Roster of conversation participants — one line per member (`- Name`),
+   * present ONLY when the conversation is collaborative (≥2 members). The
+   * handler builds it via `buildSpeakerContext`; the same helper prefixes
+   * every user message with `[Name]:` so the model knows who said what.
+   * Omitted for solo conversations, which then render byte-identical to the
+   * single-user prompt (no participants block, no labels).
+   */
+  participantsBlock: z.string().optional(),
+  /**
    * Per-turn trace id. The handler generates this at the start of
    * `runChatbotTurn` (typically reusing the resumable `streamId`) and
    * threads it through so every step / fallback / tool log carries the
@@ -275,6 +284,7 @@ const buildChatbotRuntimeContextBase = (
   activeMemoryBlock: options.activeMemoryBlock,
   teamFieldDefinitionsBlock: options.teamFieldDefinitionsBlock,
   enabledSkillsBlock: options.enabledSkillsBlock,
+  participantsBlock: options.participantsBlock,
   externalAppConnections: options.externalAppConnections,
   externalAppsBlock: options.externalAppsBlock,
   traceId: options.traceId,

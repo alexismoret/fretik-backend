@@ -13,7 +13,6 @@ import {
   throwHttpError,
   unsupportedMediaType,
 } from "@fretik/shared/lib/errors";
-import { uploadDocument } from "@fretik/shared/services/documents/upload";
 import {
   CHAT_FILE_ERROR_CODES,
   MAX_FILE_SIZE_BYTES,
@@ -26,6 +25,11 @@ import {
 } from "@fretik/shared/utils/mimeTypes";
 import { and, eq, ne } from "drizzle-orm";
 import { attachUserFile } from "../../lib/conversation-storage";
+
+// NOTE: promoting a chat file to the team Drive is a SEPARATE flow
+// (`promote-to-drive.ts`, called at message-send time). The upload path
+// never touches the Drive — the "Save to Drive" toggle is read on send,
+// not at file-selection time.
 
 /**
  * Chat-file upload orchestrator. Called from the chat-files POST
@@ -46,18 +50,18 @@ import { attachUserFile } from "../../lib/conversation-storage";
  *  6. Extract a structured snapshot from the bytes for the UI / attached
  *     files block. NO OCR here — extraction is lazy (first `read`) and
  *     cached via `@fretik/shared/services/file-extraction`.
- *  7. Optionally upload to Drive in parallel and persist `documentId`.
- *  8. UPDATE the row to `status: 'ready'`. Any failure between 5-7 flips
+ *  7. UPDATE the row to `status: 'ready'`. Any failure between 5-6 flips
  *     the row to `status: 'error'` and re-throws.
+ *
+ * Drive promotion is intentionally NOT done here — see the note above
+ * the imports.
  */
 
 interface UploadChatFileArgs {
   file: File;
   conversationId: string;
-  organizationId: string;
   teamId: string;
   userId: string;
-  alsoUploadToDrive: boolean;
 }
 
 const resolveDedupedFilename = async (
@@ -206,36 +210,13 @@ export const uploadChatFile = async (
     // `read`, not here. Spreadsheet / text never get a markdown sidecar.
     const hasMarkdown = requiresOcrPreprocessing(mimeType);
 
-    // 7. Optional Drive parallel upload.
-    let documentId: string | null = null;
-    if (args.alsoUploadToDrive) {
-      try {
-        const doc = await uploadDocument(
-          file,
-          args.organizationId,
-          teamId,
-          userId,
-          undefined,
-        );
-        documentId = doc.id;
-      } catch (err) {
-        // Drive upload is best-effort — a failure here shouldn't fail
-        // the chat attachment itself. Log and continue; the row just
-        // keeps `documentId = null`.
-        console.warn(
-          "[chat-files/upload] Drive upload failed, chat attachment still usable:",
-          err instanceof Error ? err.message : err,
-        );
-      }
-    }
-
-    // 8. Finalize.
+    // 7. Finalize. `documentId` stays null — it is set later, only if the
+    // user promotes the file to the Drive on send (`promote-to-drive.ts`).
     const [finalized] = await db
       .update(aiChatFiles)
       .set({
         status: "ready",
         hasMarkdown,
-        documentId,
         snapshot,
       })
       .where(eq(aiChatFiles.id, fileId))

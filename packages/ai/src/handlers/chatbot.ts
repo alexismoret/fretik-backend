@@ -23,12 +23,16 @@ import {
   getConversationActiveStream,
   setConversationActiveStream,
 } from "@fretik/shared/services/ai/active-stream";
+import { loadCatchUpContext } from "@fretik/shared/services/ai/catch-up";
 import { getConversation } from "@fretik/shared/services/ai/get";
+import { markConversationRead } from "@fretik/shared/services/ai/members/mark-read";
+import { applyMentions } from "@fretik/shared/services/ai/members/mention";
 import {
   loadConversationForAgent,
   saveMessage,
   saveMessages,
 } from "@fretik/shared/services/ai/messages";
+import { updateConversation } from "@fretik/shared/services/ai/update";
 import { releaseSandbox } from "@fretik/shared/services/e2b/release-sandbox";
 import { listConnections } from "@fretik/shared/services/external-apps/connections/list";
 import { getFieldDefinitionsForTeam } from "@fretik/shared/services/field-definitions/get-for-team";
@@ -48,9 +52,13 @@ import {
   UI_MESSAGE_STREAM_HEADERS,
   type UIMessage,
   type UIMessageChunk,
+  type UIMessageStreamWriter,
 } from "ai";
 import { randomUUIDv7 } from "bun";
 import { and, eq, inArray, sql } from "drizzle-orm";
+import { buildSpeakerContext } from "../agents/chatbot/speaker-context";
+import { summariseMissedMessages } from "../services/catch-up-summary";
+import { notifyMentionedMembers } from "../services/chatbot-mention-email";
 // Use node:stream/web's TransformStream rather than the DOM global:
 // Bun implements both, but the DOM lib's TransformStream clashes with
 // `AsyncIterableStream.pipeThrough` typings (DOM's ReadableStream has
@@ -74,6 +82,7 @@ import {
 import { buildChatbotContextManifest } from "../services/chatbot-context/build-manifest";
 import { sendChatbotFinishedEmailIfEnabled } from "../services/chatbot-finished-email";
 import { compactConversation } from "../services/compaction/compact";
+import { generateConversationTitle } from "../services/conversation-title/generate";
 import type { HonoInternalAppType } from "../types/hono";
 
 const InternalInvokeSchema = z.object({
@@ -239,6 +248,84 @@ const persistAssistantMessages = async (
       metadata: narrowMetadata(m),
     })),
   );
+};
+
+/**
+ * Conditionally start auto-title generation for a conversation's FIRST
+ * turn. Returns a promise resolving to the generated title (or null), or
+ * `null` when this turn must not be auto-titled.
+ *
+ * Big-actor behaviour (Claude / ChatGPT): the sidebar shows a placeholder
+ * title, then swaps in a real one once the first turn lands. The title is
+ * derived from the first user message only, so generation fires in
+ * PARALLEL with the model answer (the message is already in `history`) and
+ * adds ~0 latency — by the time the answer has streamed, the cheap-model
+ * title is usually ready.
+ *
+ * Gated to the first turn of a real, owned conversation: `conversationId`
+ * + `userId` present and no assistant message in the loaded history yet.
+ * The membership-gated `updateConversation` write (finalizeAutoTitle) is
+ * the authoritative guard against titling a conversation the caller can't
+ * see — generation here is cheap and side-effect-free.
+ */
+const maybeStartAutoTitle = (
+  params: RunChatbotTurnParams,
+): Promise<string | null> | null => {
+  if (
+    params.conversationId === undefined ||
+    params.callOptions.userId === undefined ||
+    params.history.some((m) => m.role === "assistant")
+  ) {
+    return null;
+  }
+  const lastUser = [...params.history].reverse().find((m) => m.role === "user");
+  const firstUserText = lastUser ? uiMessageText(lastUser) : "";
+  if (firstUserText.length === 0) return null;
+  return generateConversationTitle(firstUserText);
+};
+
+/**
+ * Await the in-flight auto-title (if any), stream it to the client as a
+ * transient `data-conversation-title` part (the @ai-sdk/vue `onData`
+ * handler patches the sidebar + header cache live — never persisted into
+ * `chat.messages`), and persist it on the conversation row.
+ *
+ * Kicked off (NOT awaited) right after `maybeStartAutoTitle` so the write
+ * lands the MOMENT the cheap model returns — concurrent with the model
+ * answer — instead of waiting for the (possibly long, tool-heavy) reply to
+ * finish. The returned task is awaited once before `execute` returns so
+ * the write is guaranteed inside the stream's lifetime. Soft-fails: a
+ * title failure never breaks the turn (never rejects).
+ */
+const emitAutoTitle = async (args: {
+  writer: UIMessageStreamWriter;
+  params: RunChatbotTurnParams;
+  titlePromise: Promise<string | null> | null;
+}): Promise<void> => {
+  const { writer, params, titlePromise } = args;
+  if (!titlePromise) return;
+  const { conversationId, callOptions } = params;
+  if (conversationId === undefined || callOptions.userId === undefined) return;
+  try {
+    const title = await titlePromise;
+    if (!title) return;
+    writer.write({
+      type: "data-conversation-title",
+      transient: true,
+      data: { conversationId, title },
+    });
+    await updateConversation({
+      id: conversationId,
+      teamId: callOptions.teamId,
+      userId: callOptions.userId,
+      updates: { title },
+    });
+  } catch (err) {
+    console.warn(
+      `${params.logPrefix} auto-title emit failed:`,
+      err instanceof Error ? err.message : err,
+    );
+  }
 };
 
 /**
@@ -1070,6 +1157,16 @@ const runChatbotTurn = async (
       let visibleOutput = "";
       let traceFinishReason: string | undefined;
 
+      // Auto-title the conversation from the first user message. The
+      // generation + the emit/persist both run in PARALLEL with the model
+      // answer: `emitAutoTitle` writes the `data-conversation-title` part
+      // the moment the cheap model returns (typically mid-stream), so the
+      // sidebar/header swap from the placeholder without waiting for the
+      // reply. Awaited once before `execute` returns. No-op past the first
+      // turn.
+      const titlePromise = maybeStartAutoTitle(params);
+      const titleTask = emitAutoTitle({ writer, params, titlePromise });
+
       // Full turn pipeline (compaction → model gen → zombie recovery) as a
       // thunk, so the Langfuse wrapper can run it inside one `chatbot-turn`
       // active span — every model + tool call then nests under ONE trace
@@ -1285,6 +1382,9 @@ const runChatbotTurn = async (
       // No Langfuse → run the turn directly, no tracing overhead.
       if (!langfuseEnabled) {
         await turnBody();
+        // Ensure the concurrent auto-title task settled before the stream
+        // closes (it usually already wrote mid-stream).
+        await titleTask;
         return;
       }
 
@@ -1351,6 +1451,10 @@ const runChatbotTurn = async (
         },
         { asType: "agent" },
       );
+
+      // Ensure the concurrent auto-title task settled before the stream
+      // closes (it usually already wrote mid-stream).
+      await titleTask;
     },
   });
 
@@ -1524,7 +1628,8 @@ chatbotRoutes.post("/stream", async (c) => {
     );
   }
 
-  const { conversationId, messages } = parsed.data;
+  const { conversationId, messages, mentionedUserIds, mentionsAssistant } =
+    parsed.data;
 
   const conversation = await getConversation({
     id: conversationId,
@@ -1533,6 +1638,68 @@ chatbotRoutes.post("/stream", async (c) => {
   });
   if (!conversation) {
     return throwHttpError(404, notFound("Conversation not found"));
+  }
+
+  // Persist the new user message (last one in the incoming array),
+  // attributed to its human author. This happens BEFORE the activation
+  // gate so a human-to-human aside is still stored and seen by the others.
+  const lastUser = [...messages].reverse().find((m) => m.role === "user");
+  if (lastUser) {
+    const savedUserMessage = await saveMessage({
+      conversationId,
+      role: "user",
+      parts: lastUser.parts,
+      metadata: lastUser.metadata,
+      authorId: user.id,
+    });
+    // Bind every `ai_chat_files` row that was created in the draft
+    // (messageId = NULL) to the message we just persisted. The orphan
+    // reaper keys off `messageId IS NULL` to reap abandoned drafts —
+    // flipping this field here removes those rows from its scan.
+    if (savedUserMessage) {
+      const attachedFilenames = extractLastUserFileFilenames([lastUser]);
+      await linkChatFilesToMessage(
+        conversationId,
+        attachedFilenames,
+        savedUserMessage.id,
+      );
+    }
+  }
+
+  // The sender has, by definition, just read the conversation — clear their
+  // own unread / action-required state.
+  await markConversationRead({ conversationId, userId: user.id });
+
+  // Pull @mentioned teammates into the conversation and notify them.
+  if (mentionedUserIds && mentionedUserIds.length > 0) {
+    const mentioned = await applyMentions({
+      conversationId,
+      teamId: team.id,
+      byUserId: user.id,
+      mentionedUserIds,
+    });
+    void notifyMentionedMembers({
+      mentioned,
+      conversationId,
+      conversationTitle: conversation.title,
+      mentionedByName: user.name,
+      logPrefix: "[chatbot]",
+    });
+  }
+
+  // Activation gate. The agent answers by default, but stays silent when the
+  // message @mentions humans only (a human-to-human aside). An explicit
+  // @Assistant mention forces a reply.
+  const hasHumanMention = (mentionedUserIds?.length ?? 0) > 0;
+  const shouldAgentRespond = !(hasHumanMention && !mentionsAssistant);
+  if (!shouldAgentRespond) {
+    // Human-to-human aside: the message is stored and the mentioned
+    // teammates are notified, but the agent doesn't reply. Return an empty
+    // UI message stream (not JSON) so the AI SDK transport on the client
+    // completes cleanly — the user's message stays, no assistant bubble.
+    return createUIMessageStreamResponse({
+      stream: createUIMessageStream<UIMessage>({ execute: () => undefined }),
+    });
   }
 
   // Phase 12 resumable streams — idempotence guard. Claim the active
@@ -1554,33 +1721,17 @@ chatbotRoutes.post("/stream", async (c) => {
     );
   }
 
-  // Persist the new user message (last one in the incoming array).
-  const lastUser = [...messages].reverse().find((m) => m.role === "user");
-  if (lastUser) {
-    const savedUserMessage = await saveMessage({
-      conversationId,
-      role: "user",
-      parts: lastUser.parts,
-      metadata: lastUser.metadata,
-    });
-    // Bind every `ai_chat_files` row that was created in the draft
-    // (messageId = NULL) to the message we just persisted. The orphan
-    // reaper keys off `messageId IS NULL` to reap abandoned drafts —
-    // flipping this field here removes those rows from its scan.
-    if (savedUserMessage) {
-      const attachedFilenames = extractLastUserFileFilenames([lastUser]);
-      await linkChatFilesToMessage(
-        conversationId,
-        attachedFilenames,
-        savedUserMessage.id,
-      );
-    }
-  }
-
   // Load last N messages from DB for the agent's memory window. 30 is
   // the Phase 8 default — compaction collapses the older portion when
   // the total exceeds 12K tokens.
   const history = await loadConversationForAgent(conversationId, 30);
+
+  // Attribute speakers when the conversation is collaborative (≥2 members).
+  // Solo conversations are left untouched — see buildSpeakerContext.
+  const { history: speakerHistory, participantsBlock } = buildSpeakerContext({
+    history,
+    participants: conversation.members,
+  });
 
   const callOptions: ChatbotCallOptions = {
     organizationId: organization.id,
@@ -1589,6 +1740,7 @@ chatbotRoutes.post("/stream", async (c) => {
     userName: user.name,
     conversationId,
     timeZone: c.req.header("X-Client-Timezone"),
+    participantsBlock,
     // Reuse the resumable streamId as the per-turn trace id so step /
     // zombie / fallback log lines all share one identifier — one grep
     // recovers the full turn end-to-end. (Distinct from the Langfuse
@@ -1598,7 +1750,7 @@ chatbotRoutes.post("/stream", async (c) => {
 
   return runChatbotTurn({
     conversationId,
-    history,
+    history: speakerHistory,
     callOptions,
     resumableStreamId: streamId,
     logPrefix: "[chatbot]",
@@ -1820,6 +1972,52 @@ chatbotRoutes.post("/feedback", async (c) => {
   }
 
   return c.json({ recorded }, 200);
+});
+
+/**
+ * POST /chatbot/:conversationId/summary — "summarise what I missed".
+ *
+ * Builds a short, speaker-aware catch-up of every message the caller hasn't
+ * read yet (since their `lastReadAt` / `joinedAt`). Membership-gated. Does
+ * NOT mark the conversation read — the client decides when to clear unread.
+ */
+chatbotRoutes.post("/:conversationId/summary", async (c) => {
+  const user = c.get("user");
+  const team = c.get("team");
+  if (!team) return throwHttpError(403, teamRequired());
+
+  const conversationId = c.req.param("conversationId");
+
+  const conversation = await getConversation({
+    id: conversationId,
+    teamId: team.id,
+    userId: user.id,
+  });
+  if (!conversation) {
+    return throwHttpError(404, notFound("Conversation not found"));
+  }
+
+  // Optional `since` — the client's snapshot of its `lastReadAt` captured
+  // before the conversation was marked read on open. Ignored if unparseable.
+  const body = await c.req.json().catch(() => ({}));
+  const rawSince = (body as { since?: unknown }).since;
+  const since =
+    typeof rawSince === "string" && !Number.isNaN(Date.parse(rawSince))
+      ? new Date(rawSince)
+      : undefined;
+
+  const { priorContext, missed } = await loadCatchUpContext({
+    conversationId,
+    userId: user.id,
+    ...(since ? { since } : {}),
+  });
+  const summary = await summariseMissedMessages({
+    missed,
+    priorContext,
+    participants: conversation.members,
+  });
+
+  return c.json({ summary }, 200);
 });
 
 // ==================== //

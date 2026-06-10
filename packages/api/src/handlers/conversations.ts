@@ -13,10 +13,13 @@ import {
   paramsListSchema,
 } from "@fretik/shared/schemas";
 import {
+  AddConversationMembersSchema,
   aiAgentTypeSchema,
   ConversationResponseSchema,
   CreateConversationSchema,
+  MembersResponseSchema,
   MessagesResponseSchema,
+  SetMemberEmailPreferenceSchema,
   UpdateConversationSchema,
 } from "@fretik/shared/schemas/ai";
 import {
@@ -30,6 +33,10 @@ import { createConversation } from "@fretik/shared/services/ai/create";
 import { deleteConversations } from "@fretik/shared/services/ai/delete";
 import { getConversation } from "@fretik/shared/services/ai/get";
 import { listConversations } from "@fretik/shared/services/ai/list";
+import { addConversationMembers } from "@fretik/shared/services/ai/members/add";
+import { markConversationRead } from "@fretik/shared/services/ai/members/mark-read";
+import { removeConversationMember } from "@fretik/shared/services/ai/members/remove";
+import { setMemberEmailPreference } from "@fretik/shared/services/ai/members/set-email-preference";
 import { getConversationMessages } from "@fretik/shared/services/ai/messages";
 import { updateConversation } from "@fretik/shared/services/ai/update";
 import { createRoute, OpenAPIHono } from "@hono/zod-openapi";
@@ -51,7 +58,7 @@ const listConversationsRoute = createRoute({
   path: "/",
   summary: "List AI conversations",
   description:
-    "List conversations owned by the current user for a given agent type (defaults to chatbot).",
+    "List conversations the current user participates in for a given agent type (defaults to chatbot), most-recently-active first.",
   tags: ["Conversations"],
   request: {
     query: paramsListSchema.extend({
@@ -106,7 +113,7 @@ const getConversationRoute = createRoute({
   path: "/{id}",
   summary: "Get an AI conversation",
   description:
-    "Return the metadata of a single conversation owned by the current user (title, emailOnCompletion toggle, …).",
+    "Return a single conversation the current user participates in: metadata, member roster, the caller's role and email opt-in, plus unread / action-required flags.",
   tags: ["Conversations"],
   request: { params: paramsIdSchema },
   responses: {
@@ -127,7 +134,7 @@ const updateConversationRoute = createRoute({
   path: "/{id}",
   summary: "Update an AI conversation",
   description:
-    "Rename a conversation and/or toggle the `emailOnCompletion` notification flag. At least one field must be provided.",
+    "Rename a conversation. Any participant may rename. The email-on-completion opt-in is per-member and lives on PATCH /{id}/members/me.",
   tags: ["Conversations"],
   request: {
     params: paramsIdSchema,
@@ -189,6 +196,104 @@ const getMessagesRoute = createRoute({
       description: "Messages retrieved successfully",
     },
     ...responseNotFoundSchema,
+    ...responseForbiddenSchema,
+    ...responseInternalErrorSchema,
+  },
+});
+
+const memberIdParamsSchema = z.object({
+  id: z.uuid(),
+  userId: z.uuid(),
+});
+
+const addMembersRoute = createRoute({
+  method: "post",
+  path: "/{id}/members",
+  summary: "Add conversation members",
+  description:
+    "Add team members as participants. Ids that aren't real team members are ignored. Returns the refreshed roster.",
+  tags: ["Conversations"],
+  request: {
+    params: paramsIdSchema,
+    body: {
+      content: { "application/json": { schema: AddConversationMembersSchema } },
+      required: true,
+    },
+  },
+  responses: {
+    200: {
+      content: { "application/json": { schema: MembersResponseSchema } },
+      description: "Members added",
+    },
+    ...responseNotFoundSchema,
+    ...responseForbiddenSchema,
+    ...responseInternalErrorSchema,
+  },
+});
+
+const removeMemberRoute = createRoute({
+  method: "delete",
+  path: "/{id}/members/{userId}",
+  summary: "Remove a conversation member",
+  description:
+    "Remove a participant. The conversation owner cannot be removed. Returns the refreshed roster.",
+  tags: ["Conversations"],
+  request: { params: memberIdParamsSchema },
+  responses: {
+    200: {
+      content: { "application/json": { schema: MembersResponseSchema } },
+      description: "Member removed",
+    },
+    ...responseNotFoundSchema,
+    ...responseForbiddenSchema,
+    ...responseInternalErrorSchema,
+  },
+});
+
+const setMemberEmailRoute = createRoute({
+  method: "patch",
+  path: "/{id}/members/me",
+  summary: "Set my email-on-completion preference",
+  description:
+    "Toggle the current user's personal opt-in to be emailed at the end of every assistant turn. Affects only the caller.",
+  tags: ["Conversations"],
+  request: {
+    params: paramsIdSchema,
+    body: {
+      content: {
+        "application/json": { schema: SetMemberEmailPreferenceSchema },
+      },
+      required: true,
+    },
+  },
+  responses: {
+    200: {
+      content: {
+        "application/json": { schema: SetMemberEmailPreferenceSchema },
+      },
+      description: "Preference updated",
+    },
+    ...responseNotFoundSchema,
+    ...responseForbiddenSchema,
+    ...responseInternalErrorSchema,
+  },
+});
+
+const markReadRoute = createRoute({
+  method: "post",
+  path: "/{id}/read",
+  summary: "Mark a conversation as read",
+  description:
+    "Clear the unread indicator and any action-required badge for the current user.",
+  tags: ["Conversations"],
+  request: { params: paramsIdSchema },
+  responses: {
+    200: {
+      content: {
+        "application/json": { schema: z.object({ success: z.boolean() }) },
+      },
+      description: "Marked as read",
+    },
     ...responseForbiddenSchema,
     ...responseInternalErrorSchema,
   },
@@ -307,6 +412,71 @@ conversationRoutes.openapi(getMessagesRoute, async (c) => {
   const messages = await getConversationMessages(conversation.id);
 
   return c.json(messages, 200);
+});
+
+conversationRoutes.openapi(addMembersRoute, async (c) => {
+  const user = c.get("user");
+  const team = c.get("team");
+  if (!team) return throwHttpError(403, teamRequired());
+
+  const { id } = c.req.valid("param");
+  const { userIds } = c.req.valid("json");
+
+  const members = await addConversationMembers({
+    conversationId: id,
+    teamId: team.id,
+    requesterId: user.id,
+    userIds,
+  });
+
+  return c.json(members, 200);
+});
+
+conversationRoutes.openapi(removeMemberRoute, async (c) => {
+  const user = c.get("user");
+  const team = c.get("team");
+  if (!team) return throwHttpError(403, teamRequired());
+
+  const { id, userId } = c.req.valid("param");
+
+  const members = await removeConversationMember({
+    conversationId: id,
+    teamId: team.id,
+    requesterId: user.id,
+    targetUserId: userId,
+  });
+
+  return c.json(members, 200);
+});
+
+conversationRoutes.openapi(setMemberEmailRoute, async (c) => {
+  const user = c.get("user");
+  const team = c.get("team");
+  if (!team) return throwHttpError(403, teamRequired());
+
+  const { id } = c.req.valid("param");
+  const { emailOnCompletion } = c.req.valid("json");
+
+  const result = await setMemberEmailPreference({
+    conversationId: id,
+    teamId: team.id,
+    userId: user.id,
+    emailOnCompletion,
+  });
+
+  return c.json(result, 200);
+});
+
+conversationRoutes.openapi(markReadRoute, async (c) => {
+  const user = c.get("user");
+  const team = c.get("team");
+  if (!team) return throwHttpError(403, teamRequired());
+
+  const { id } = c.req.valid("param");
+
+  await markConversationRead({ conversationId: id, userId: user.id });
+
+  return c.json({ success: true }, 200);
 });
 
 export { conversationRoutes };

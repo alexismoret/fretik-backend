@@ -37,6 +37,39 @@ export const clearSandboxFromRegistry = async (
   await redis.del(sandboxRegistryKey(conversationId));
 };
 
+// ============================================================ //
+// ATTACHMENT GENERATION — lazy sandbox hydration                //
+// ============================================================ //
+
+/**
+ * Monotonic per-conversation counter, bumped every time a user file is
+ * attached. Attachments are written to S3 only (never eagerly pushed to
+ * the sandbox — `read`/extraction work straight off S3, and only
+ * `python`/`bash` need the workspace). The counter lets
+ * `ensureSandboxReady` detect that new files landed and restore them
+ * from S3 the next time a sandbox tool actually runs, instead of paying
+ * a sandbox round-trip at attach time. Shares the registry TTL — moot
+ * once the conversation's sandbox is gone.
+ */
+const attachmentGenerationKey = (conversationId: string): string =>
+  `e2b:attach-gen:${conversationId}`;
+
+export const bumpAttachmentGeneration = async (
+  conversationId: string,
+): Promise<number> => {
+  const key = attachmentGenerationKey(conversationId);
+  const next = await redis.incr(key);
+  await redis.expire(key, SANDBOX_REGISTRY_TTL_S);
+  return next;
+};
+
+export const getAttachmentGeneration = async (
+  conversationId: string,
+): Promise<number> => {
+  const raw = await redis.get(attachmentGenerationKey(conversationId));
+  return raw ? Number.parseInt(raw, 10) : 0;
+};
+
 const SANDBOX_LOCK_TTL_S = 30;
 const sandboxLockKey = (conversationId: string): string =>
   `${sandboxRegistryKey(conversationId)}:lock`;

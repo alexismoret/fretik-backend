@@ -582,6 +582,8 @@ The user sending this message:
 
 Address the user by name when it feels natural. Scope every database query to the team id via the `__TEAM_ID__` placeholder.
 
+{{collaborationBlock}}
+
 </runtime_context>
 
 <session_state>

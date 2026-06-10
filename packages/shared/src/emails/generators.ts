@@ -191,6 +191,54 @@ export const generateChatbotFinished = async (
   return { subject, html };
 };
 
+interface ChatbotMentionParams {
+  /** Display name of the mentioned user receiving the email. */
+  userName: string | null;
+  /** Display name of the teammate who wrote the @mention. */
+  mentionedByName: string | null;
+  conversationId: string;
+  /** Conversation title from `ai_conversations.title`. May be empty/null. */
+  conversationTitle: string | null;
+}
+
+/**
+ * Build the "a teammate mentioned you" email, sent when a user is @mentioned
+ * in a collaborative conversation. Pulls the recipient straight into the
+ * thread via the CTA.
+ */
+export const generateChatbotMention = async (
+  params: ChatbotMentionParams,
+): Promise<EmailData> => {
+  const conversationUrl = `${appUrl}/chatbot/${params.conversationId}`;
+  const trimmedTitle = params.conversationTitle?.trim();
+  const title =
+    trimmedTitle && trimmedTitle.length > 0
+      ? trimmedTitle
+      : i18n.t("chatbotMention.untitledConversation");
+
+  const trimmedName = params.userName?.trim();
+  const greeting =
+    trimmedName && trimmedName.length > 0
+      ? i18n.t("chatbotMention.greetingNamed", { name: trimmedName })
+      : i18n.t("chatbotMention.greetingAnonymous");
+
+  const mentionedBy = params.mentionedByName?.trim() || "A teammate";
+
+  const html = await renderEmail("chatbot-mention", {
+    greeting,
+    intro: i18n.t("chatbotMention.intro", {
+      mentionedBy,
+      conversationTitle: title,
+    }),
+    conversationUrl,
+    cta: i18n.t("chatbotMention.cta"),
+  });
+
+  const subject = i18n.t("chatbotMention.subject", { mentionedBy });
+
+  return { subject, html };
+};
+
 /**
  * One question shape consumed by the awaiting-answers email.
  *

@@ -3,6 +3,7 @@ import { aiChatFiles } from "@fretik/shared/db/schema";
 import { buildSessionKey } from "@fretik/shared/lib/chatbot-session-storage";
 import { getObjectBytes } from "@fretik/shared/lib/s3";
 import { uploadDocument } from "@fretik/shared/services/documents/upload";
+import { isDriveSupported } from "@fretik/shared/utils/mimeTypes";
 import { eq, inArray } from "drizzle-orm";
 import { WORKSPACE_DIRS } from "../../lib/conversation-storage";
 
@@ -34,9 +35,12 @@ interface PromoteArgs {
   userId: string;
 }
 
+/** Why a file could not be promoted — lets the UI pick the right copy. */
+export type PromoteFailureCode = "unsupported_type" | "error";
+
 export interface PromoteResult {
   promoted: { fileId: string; documentId: string }[];
-  failed: { fileId: string; reason: string }[];
+  failed: { fileId: string; reason: string; code: PromoteFailureCode }[];
 }
 
 const buildAttachmentPath = (filename: string): string =>
@@ -70,7 +74,11 @@ export const promoteChatFilesToDrive = async (
   });
   if (!conversation || conversation.teamId !== teamId) {
     for (const fileId of fileIds) {
-      failed.push({ fileId, reason: "Conversation not found or not owned" });
+      failed.push({
+        fileId,
+        reason: "Conversation not found or not owned",
+        code: "error",
+      });
     }
     return { promoted, failed };
   }
@@ -80,13 +88,14 @@ export const promoteChatFilesToDrive = async (
   for (const fileId of fileIds) {
     const row = rowsById.get(fileId);
     if (!row) {
-      failed.push({ fileId, reason: "Chat file not found" });
+      failed.push({ fileId, reason: "Chat file not found", code: "error" });
       continue;
     }
     if (row.conversationId !== conversationId) {
       failed.push({
         fileId,
         reason: "Chat file does not belong to conversation",
+        code: "error",
       });
       continue;
     }
@@ -95,13 +104,29 @@ export const promoteChatFilesToDrive = async (
       promoted.push({ fileId, documentId: row.documentId });
       continue;
     }
+    // The chatbot accepts a broader MIME set than the Drive pipeline
+    // (markdown / JSON / XML / arbitrary text). Pre-check so an
+    // unsupported type is reported cleanly instead of throwing a generic
+    // 400 inside `uploadDocument` → `assertFile`.
+    if (!isDriveSupported(row.mimeType)) {
+      failed.push({
+        fileId,
+        reason: `Drive does not accept ${row.mimeType} files`,
+        code: "unsupported_type",
+      });
+      continue;
+    }
 
     try {
       const bytes = await getObjectBytes(
         buildSessionKey(conversationId, buildAttachmentPath(row.filename)),
       );
       if (!bytes) {
-        failed.push({ fileId, reason: "Original bytes missing from S3" });
+        failed.push({
+          fileId,
+          reason: "Original bytes missing from S3",
+          code: "error",
+        });
         continue;
       }
 
@@ -127,7 +152,7 @@ export const promoteChatFilesToDrive = async (
         `[chat-files/promote-to-drive] Failed for ${fileId}:`,
         reason,
       );
-      failed.push({ fileId, reason });
+      failed.push({ fileId, reason, code: "error" });
     }
   }
 

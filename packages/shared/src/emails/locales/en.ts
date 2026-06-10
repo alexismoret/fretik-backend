@@ -60,6 +60,16 @@ export default {
       "Some files generated during this turn were too large to attach (>20 MB total). Open the conversation to download them.",
   },
 
+  chatbotMention: {
+    subject: "{{mentionedBy}} mentioned you in a Fretik conversation",
+    greetingNamed: "Hello {{name}},",
+    greetingAnonymous: "Hello,",
+    intro:
+      '{{mentionedBy}} mentioned you in the conversation "{{conversationTitle}}".',
+    cta: "Open the conversation",
+    untitledConversation: "a conversation",
+  },
+
   chatbotFinishedAwaitingAnswers: {
     subject: "Action needed in your Fretik conversation: {{conversationTitle}}",
     greetingNamed: "Hello {{name}},",

@@ -275,10 +275,14 @@ export const sendChatbotFinishedEmailIfEnabled = async (
       id: true,
       teamId: true,
       title: true,
-      emailOnCompletion: true,
     },
     with: {
-      user: { columns: { email: true, name: true } },
+      // Email-on-completion is per-member: only participants who personally
+      // opted in are notified. Each gets the same content, greeted by name.
+      members: {
+        where: { emailOnCompletion: true },
+        with: { user: { columns: { email: true, name: true } } },
+      },
     },
   });
 
@@ -288,18 +292,44 @@ export const sendChatbotFinishedEmailIfEnabled = async (
     );
     return;
   }
-  if (!conversation.emailOnCompletion) return;
-  if (!conversation.user?.email) {
-    console.info(
-      `${logPrefix} email-on-finish: conversation ${conversationId} has no owner email, skipping`,
-    );
-    return;
-  }
+
+  const recipients = conversation.members
+    .map((m) => m.user)
+    .filter((u): u is { email: string; name: string } => Boolean(u?.email));
+  if (recipients.length === 0) return;
 
   const lastAssistant = [...finalMessages]
     .reverse()
     .find((m) => m.role === "assistant");
   if (!lastAssistant) return;
+
+  /**
+   * Send one rendered email to every opted-in recipient, greeting each by
+   * their own name. The caller computes any expensive shared inputs
+   * (attachments, summaries) once and only the lightweight template render
+   * happens per recipient.
+   */
+  const sendToRecipients = async (
+    build: (recipientName: string | null) => Promise<{
+      subject: string;
+      html: string;
+      attachments?: BuiltAttachment[];
+    }>,
+    label: string,
+  ): Promise<void> => {
+    for (const recipient of recipients) {
+      const { subject, html, attachments } = await build(recipient.name);
+      await sendEmail({
+        to: { email: recipient.email, name: recipient.name },
+        subject,
+        html,
+        ...(attachments && attachments.length > 0 ? { attachments } : {}),
+      });
+    }
+    console.info(
+      `${logPrefix} ${label} sent to ${recipients.length.toString()} recipient(s)`,
+    );
+  };
 
   // Branch 0 — turn paused on a write-plan approval gate.
   //
@@ -334,19 +364,15 @@ export const sendChatbotFinishedEmailIfEnabled = async (
     ) {
       const lang = await getTeamLocale(conversation.teamId);
       const rendered = renderApprovalSummary(approval.summary, lang);
-      const emailData = await generateChatbotApprovalPending({
-        userName: conversation.user.name ?? null,
-        conversationId,
-        conversationTitle: conversation.title,
-        summary: rendered,
-      });
-      await sendEmail({
-        to: { email: conversation.user.email, name: conversation.user.name },
-        subject: emailData.subject,
-        html: emailData.html,
-      });
-      console.info(
-        `${logPrefix} email-on-approval-pending sent to ${conversation.user.email} ops=${approval.summary.operations.length.toString()}`,
+      await sendToRecipients(
+        (recipientName) =>
+          generateChatbotApprovalPending({
+            userName: recipientName,
+            conversationId,
+            conversationTitle: conversation.title,
+            summary: rendered,
+          }),
+        "email-on-approval-pending",
       );
       return;
     }
@@ -367,19 +393,15 @@ export const sendChatbotFinishedEmailIfEnabled = async (
   // user's attention should go on the action that's required of them.
   const awaitingQuestions = extractAskUserQuestion(lastAssistant);
   if (awaitingQuestions !== null && awaitingQuestions.length > 0) {
-    const emailData = await generateChatbotFinishedAwaitingAnswers({
-      userName: conversation.user.name ?? null,
-      conversationId,
-      conversationTitle: conversation.title,
-      questions: awaitingQuestions,
-    });
-    await sendEmail({
-      to: { email: conversation.user.email, name: conversation.user.name },
-      subject: emailData.subject,
-      html: emailData.html,
-    });
-    console.info(
-      `${logPrefix} email-on-finish-awaiting sent to ${conversation.user.email} questions=${awaitingQuestions.length.toString()}`,
+    await sendToRecipients(
+      (recipientName) =>
+        generateChatbotFinishedAwaitingAnswers({
+          userName: recipientName,
+          conversationId,
+          conversationTitle: conversation.title,
+          questions: awaitingQuestions,
+        }),
+      "email-on-finish-awaiting",
     );
     return;
   }
@@ -391,6 +413,7 @@ export const sendChatbotFinishedEmailIfEnabled = async (
     return;
   }
 
+  // Build the attachments once — they're identical for every recipient.
   const presentedFiles = collectPresentedFiles(lastAssistant);
   const { attachments, oversized } = await buildAttachments(
     conversationId,
@@ -398,22 +421,14 @@ export const sendChatbotFinishedEmailIfEnabled = async (
     logPrefix,
   );
 
-  const { subject, html } = await generateChatbotFinished({
-    userName: conversation.user.name ?? null,
-    conversationId,
-    conversationTitle: conversation.title,
-    assistantMarkdown,
-    oversizedAttachments: oversized,
-  });
-
-  await sendEmail({
-    to: { email: conversation.user.email, name: conversation.user.name },
-    subject,
-    html,
-    ...(attachments.length > 0 && { attachments }),
-  });
-
-  console.info(
-    `${logPrefix} email-on-finish sent to ${conversation.user.email} attachments=${attachments.length.toString()} oversized=${oversized.toString()}`,
-  );
+  await sendToRecipients(async (recipientName) => {
+    const { subject, html } = await generateChatbotFinished({
+      userName: recipientName,
+      conversationId,
+      conversationTitle: conversation.title,
+      assistantMarkdown,
+      oversizedAttachments: oversized,
+    });
+    return { subject, html, attachments };
+  }, "email-on-finish");
 };

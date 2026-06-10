@@ -1,6 +1,9 @@
 import { z } from "@hono/zod-openapi";
 import type { UIMessage } from "ai";
-import { aiVectorSourceTypeEnum } from "../db/schema";
+import {
+  aiConversationMemberRoleEnum,
+  aiVectorSourceTypeEnum,
+} from "../db/schema";
 
 /**
  * Agent types supported in ai_conversations. Kept in sync with the
@@ -141,7 +144,7 @@ export const contextVectorMetadataSchema = z.object({
 
 export const CreateConversationSchema = z.object({
   title: z.string().min(1).max(255).openapi({
-    example: "Résumé du connaissement MCOP0101",
+    example: "Q2 budget review",
     description: "Conversation title shown in the sidebar",
   }),
   agentType: aiAgentTypeSchema.optional().default("chatbot").openapi({
@@ -151,22 +154,33 @@ export const CreateConversationSchema = z.object({
 });
 export type CreateConversationInput = z.infer<typeof CreateConversationSchema>;
 
-export const UpdateConversationSchema = z
-  .object({
-    title: z.string().min(1).max(255).optional().openapi({
-      example: "Nouveau titre",
-      description: "Updated conversation title",
-    }),
-    emailOnCompletion: z.boolean().optional().openapi({
-      example: true,
-      description:
-        "When true, the conversation owner is emailed at the end of every assistant turn with the generated reply (and any presented files as attachments).",
-    }),
-  })
-  .refine((v) => v.title !== undefined || v.emailOnCompletion !== undefined, {
-    message: "At least one field must be provided",
-  });
+export const UpdateConversationSchema = z.object({
+  title: z.string().min(1).max(255).openapi({
+    example: "Q2 budget review",
+    description: "Updated conversation title",
+  }),
+});
 export type UpdateConversationInput = z.infer<typeof UpdateConversationSchema>;
+
+/** Role of a participant inside a collaborative conversation. */
+export const conversationMemberRoleSchema = z.enum(
+  aiConversationMemberRoleEnum.enumValues,
+);
+export type ConversationMemberRole = z.infer<
+  typeof conversationMemberRoleSchema
+>;
+
+/** A participant of a conversation, as returned in the member roster. */
+export const ConversationMemberSchema = z.object({
+  userId: z.uuid(),
+  name: z.string(),
+  email: z.string(),
+  image: z.string().nullable(),
+  role: conversationMemberRoleSchema,
+});
+export type ConversationMemberResponse = z.infer<
+  typeof ConversationMemberSchema
+>;
 
 export const ConversationResponseSchema = z.object({
   id: z.uuid(),
@@ -176,11 +190,56 @@ export const ConversationResponseSchema = z.object({
   agentType: aiAgentTypeSchema,
   title: z.string(),
   metadata: z.record(z.string(), z.unknown()).nullable(),
+  members: z.array(ConversationMemberSchema),
+  /** The current user's role in this conversation. */
+  role: conversationMemberRoleSchema,
+  /** The current user's personal end-of-turn email opt-in. */
   emailOnCompletion: z.boolean(),
+  /** When the current user last read the conversation (catch-up anchor). */
+  lastReadAt: z.date().nullable(),
+  /** When the current user joined — catch-up fallback when never read. */
+  joinedAt: z.date(),
+  /** New activity since the current user last opened the conversation. */
+  unread: z.boolean(),
+  /** The current user was @mentioned and hasn't read since. */
+  actionRequired: z.boolean(),
   createdAt: z.date(),
   updatedAt: z.date(),
 });
 export type ConversationResponse = z.infer<typeof ConversationResponseSchema>;
+
+// ==================== //
+// Membership           //
+// ==================== //
+
+export const AddConversationMembersSchema = z.object({
+  userIds: z.array(z.uuid()).min(1).openapi({
+    description: "Team member ids to add as participants",
+  }),
+});
+export type AddConversationMembersInput = z.infer<
+  typeof AddConversationMembersSchema
+>;
+
+export const SetMemberEmailPreferenceSchema = z.object({
+  emailOnCompletion: z.boolean().openapi({
+    description:
+      "The current user's personal opt-in to be emailed at the end of every assistant turn. Affects only the caller.",
+  }),
+});
+export type SetMemberEmailPreferenceInput = z.infer<
+  typeof SetMemberEmailPreferenceSchema
+>;
+
+export const MembersResponseSchema = z.array(ConversationMemberSchema);
+
+/** "Summarise what I missed" — catch-up for a member opening a busy thread. */
+export const ConversationSummaryResponseSchema = z.object({
+  summary: z.string(),
+});
+export type ConversationSummaryResponse = z.infer<
+  typeof ConversationSummaryResponseSchema
+>;
 
 // ==================== //
 // Messages             //
@@ -211,11 +270,26 @@ export const MessagesResponseSchema = z.array(UiMessageSchema);
 
 export const ChatStreamRequestSchema = z.object({
   conversationId: z.uuid().openapi({
-    description: "UUID of an existing conversation owned by the user's team",
+    description: "UUID of an existing conversation the user participates in",
   }),
   messages: z.array(UiMessageSchema).openapi({
     description:
       "Full messages array maintained by the AI SDK `Chat` class on the client",
+  }),
+  /**
+   * Team members @mentioned in the new user message. Each is pulled into the
+   * conversation and notified. When the message mentions humans but NOT the
+   * assistant, the agent stays silent (human-to-human aside).
+   */
+  mentionedUserIds: z.array(z.uuid()).optional().openapi({
+    description: "Team member ids @mentioned in the new user message",
+  }),
+  /**
+   * True when the message explicitly @mentions the assistant. Forces the
+   * agent to respond even alongside human mentions.
+   */
+  mentionsAssistant: z.boolean().optional().openapi({
+    description: "Whether the new user message @mentions the assistant",
   }),
 });
 export type ChatStreamRequest = z.infer<typeof ChatStreamRequestSchema>;

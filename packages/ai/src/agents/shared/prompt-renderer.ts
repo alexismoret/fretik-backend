@@ -256,5 +256,12 @@ export const buildChatbotSystemPrompt = async (
       ctx.externalAppsBlock && ctx.externalAppsBlock.length > 0
         ? ctx.externalAppsBlock
         : "_No external apps connected._",
+    // Collaborative-conversation block. Empty for solo conversations so the
+    // prompt is byte-identical to the single-user case; populated (roster +
+    // speaker-label instruction) once a second participant joins.
+    collaborationBlock:
+      ctx.participantsBlock && ctx.participantsBlock.length > 0
+        ? `This conversation is shared by several teammates:\n${ctx.participantsBlock}\n\nEach user message is prefixed with its sender in brackets — \`[Name]: …\`. Address people by name when it helps, and suggest @mentioning a teammate when their input is needed.`
+        : "",
   });
 };

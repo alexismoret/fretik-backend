@@ -118,15 +118,11 @@ chatFilesRoutes.get("/conversation/:id/files", async (c) => {
 chatFilesRoutes.post("/conversation/:id/files", async (c) => {
   const user = c.get("user");
   const team = c.get("team");
-  const organization = c.get("organization");
   if (!team) return throwHttpError(403, teamRequired());
 
   const conversationId = c.req.param("id");
   const form = await c.req.formData();
   const file = form.get("file");
-  const alsoUploadToDrive =
-    form.get("alsoUploadToDrive") === "true" ||
-    form.get("alsoUploadToDrive") === "1";
 
   if (!(file instanceof File)) {
     return c.json(
@@ -141,10 +137,8 @@ chatFilesRoutes.post("/conversation/:id/files", async (c) => {
   const row = await uploadChatFile({
     file,
     conversationId,
-    organizationId: organization.id,
     teamId: team.id,
     userId: user.id,
-    alsoUploadToDrive,
   });
 
   return c.json(row, 201);

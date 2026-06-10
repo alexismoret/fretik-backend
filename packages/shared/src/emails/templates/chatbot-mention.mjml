@@ -1,0 +1,18 @@
+<mj-column width="100%">
+  <mj-text font-size="15px" color="#374151">
+    {{ greeting }}
+  </mj-text>
+
+  <mj-text font-size="15px" color="#374151" padding-top="16px">
+    {{ intro }}
+  </mj-text>
+
+  <mj-button
+    href="{{conversationUrl}}"
+    align="center"
+    padding-top="20px"
+    padding-bottom="24px"
+  >
+    {{ cta }}
+  </mj-button>
+</mj-column>

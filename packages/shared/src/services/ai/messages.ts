@@ -1,16 +1,40 @@
 import type { UIMessage } from "ai";
-import { asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, gt, lte } from "drizzle-orm";
 import db from "../../db";
-import { aiMessages } from "../../db/schema";
+import { aiConversations, aiMessages } from "../../db/schema";
 
 type Role = "user" | "assistant" | "system";
 
-const rowToUiMessage = (row: typeof aiMessages.$inferSelect): UIMessage => ({
-  id: row.id,
-  role: row.role,
-  parts: row.parts,
-  ...(row.metadata ? { metadata: row.metadata } : {}),
-});
+/**
+ * Project a stored row into a UIMessage. The human author of a `user` message
+ * is surfaced under `metadata.authorId` (not a UIMessage field of its own) so
+ * it flows unchanged to both the frontend (per-message avatar) and the agent
+ * (conditional `[Name]:` speaker labels) without widening the SDK type.
+ */
+const rowToUiMessage = (row: typeof aiMessages.$inferSelect): UIMessage => {
+  const metadata = {
+    ...(row.metadata ?? {}),
+    ...(row.authorId ? { authorId: row.authorId } : {}),
+  };
+  return {
+    id: row.id,
+    role: row.role,
+    parts: row.parts,
+    ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
+  };
+};
+
+/**
+ * Bump a conversation's `updatedAt` so it counts as the last-activity marker
+ * that drives list ordering and per-member unread detection. Inserting a
+ * message doesn't touch the parent row on its own.
+ */
+const touchConversation = async (conversationId: string): Promise<void> => {
+  await db
+    .update(aiConversations)
+    .set({ updatedAt: new Date() })
+    .where(eq(aiConversations.id, conversationId));
+};
 
 /**
  * Load every message of a conversation in chronological order. Used by the
@@ -56,6 +80,55 @@ export const loadConversationForAgent = async (
 };
 
 /**
+ * Load every message created strictly after `since`, in chronological order.
+ * Backs the "summarise what I missed" catch-up: `since` is the requesting
+ * member's `lastReadAt` (or `joinedAt`).
+ */
+export const loadMessagesSince = async (
+  conversationId: string,
+  since: Date,
+): Promise<UIMessage[]> => {
+  const rows = await db
+    .select()
+    .from(aiMessages)
+    .where(
+      and(
+        eq(aiMessages.conversationId, conversationId),
+        gt(aiMessages.createdAt, since),
+      ),
+    )
+    .orderBy(asc(aiMessages.createdAt));
+
+  return rows.map(rowToUiMessage);
+};
+
+/**
+ * Load up to `limit` messages created at or before `before`, in chronological
+ * order. Backs the catch-up's grounding window — the last few already-read
+ * messages give the summariser enough context to make sense of the unread
+ * tail without re-reading the whole thread.
+ */
+export const loadMessagesBefore = async (
+  conversationId: string,
+  before: Date,
+  limit: number,
+): Promise<UIMessage[]> => {
+  const rows = await db
+    .select()
+    .from(aiMessages)
+    .where(
+      and(
+        eq(aiMessages.conversationId, conversationId),
+        lte(aiMessages.createdAt, before),
+      ),
+    )
+    .orderBy(desc(aiMessages.createdAt))
+    .limit(limit);
+
+  return rows.reverse().map(rowToUiMessage);
+};
+
+/**
  * Coerce any metadata blob we receive from the AI SDK (`UIMessage.metadata`,
  * typed as `JSONValue`) into the `Record<string, unknown>` shape the
  * aiMessages table column expects. Non-object values are dropped — we
@@ -81,6 +154,8 @@ export const saveMessage = async (data: {
   role: Role;
   parts: UIMessage["parts"];
   metadata?: unknown;
+  /** Human author of a `user` message; null/omitted for assistant/system. */
+  authorId?: string | null;
 }) => {
   const [row] = await db
     .insert(aiMessages)
@@ -89,8 +164,11 @@ export const saveMessage = async (data: {
       role: data.role,
       parts: data.parts,
       metadata: toRecordMetadata(data.metadata),
+      authorId: data.authorId ?? null,
     })
     .returning();
+
+  await touchConversation(data.conversationId);
 
   return row;
 };
@@ -101,11 +179,16 @@ export const saveMessage = async (data: {
  */
 export const saveMessages = async (
   conversationId: string,
-  messages: { role: Role; parts: UIMessage["parts"]; metadata?: unknown }[],
+  messages: {
+    role: Role;
+    parts: UIMessage["parts"];
+    metadata?: unknown;
+    authorId?: string | null;
+  }[],
 ) => {
   if (messages.length === 0) return [];
 
-  return db
+  const rows = await db
     .insert(aiMessages)
     .values(
       messages.map((m) => ({
@@ -113,7 +196,12 @@ export const saveMessages = async (
         role: m.role,
         parts: m.parts,
         metadata: toRecordMetadata(m.metadata),
+        authorId: m.authorId ?? null,
       })),
     )
     .returning();
+
+  await touchConversation(conversationId);
+
+  return rows;
 };

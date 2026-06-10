@@ -168,6 +168,13 @@ export interface AgentRuntimeContext {
    */
   enabledSkillsBlock?: string;
   /**
+   * Roster of conversation participants (`- Name` per line), present only
+   * for collaborative conversations (≥2 members). Renders the
+   * `{{collaborationBlock}}` section; absent for solo conversations so the
+   * prompt stays byte-identical to the single-user case.
+   */
+  participantsBlock?: string;
+  /**
    * Active external-app connections (Outlook, Gmail, …) visible to this
    * turn — team-scoped rows + the caller's user-scoped rows, filtered
    * to `status = 'active'`. The handler loads them via

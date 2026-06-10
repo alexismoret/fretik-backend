@@ -8,6 +8,7 @@ import {
   pgTable,
   text,
   timestamp,
+  uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
 import { organization, team, user } from "./auth-schema";
@@ -28,6 +29,17 @@ export const aiMessageRoleEnum = pgEnum("ai_message_role", [
   "assistant",
   "system",
 ]);
+
+/**
+ * Role of a participant inside a collaborative conversation. Flat model:
+ * the creator is `owner` (sole actor allowed to delete the conversation),
+ * everyone else is a `member`. A future chantier may add finer roles
+ * (viewer/editor) — until then keep these two only.
+ */
+export const aiConversationMemberRoleEnum = pgEnum(
+  "ai_conversation_member_role",
+  ["owner", "member"],
+);
 
 /**
  * Conversation metadata. One row per user-visible conversation — owned by a
@@ -53,14 +65,6 @@ export const aiConversations = pgTable(
 
     title: text("title").notNull(),
     metadata: jsonb("metadata").$type<Record<string, unknown>>(),
-
-    /**
-     * Per-conversation toggle: when true, the chatbot handler emails the
-     * conversation's owner at the end of every assistant turn with the
-     * generated reply (and any `presentFiles` outputs as attachments).
-     * Persisted so the user only has to flip it once per conversation.
-     */
-    emailOnCompletion: boolean("email_on_completion").notNull().default(false),
 
     /**
      * UUID v7 of the currently-active resumable stream for this conversation.
@@ -100,6 +104,17 @@ export const aiMessages = pgTable(
       .notNull()
       .references(() => aiConversations.id, { onDelete: "cascade" }),
 
+    /**
+     * Human author of a `user` message. Null for `assistant`/`system` rows
+     * (the agent has no user identity). Set to null on user deletion so the
+     * transcript survives. Used to attribute messages in a collaborative
+     * conversation: per-message avatar on the frontend, and conditional
+     * `[Name]:` speaker labels fed to the model when ≥2 participants.
+     */
+    authorId: uuid("author_id").references(() => user.id, {
+      onDelete: "set null",
+    }),
+
     role: aiMessageRoleEnum("role").notNull(),
     parts: jsonb("parts").$type<UIMessage["parts"]>().notNull(),
     metadata: jsonb("metadata").$type<Record<string, unknown>>(),
@@ -112,5 +127,50 @@ export const aiMessages = pgTable(
       t.conversationId,
       t.createdAt,
     ),
+  ],
+);
+
+/**
+ * Membership of a collaborative conversation (M2M conversation ↔ user).
+ * One row per participant. Beyond access control, each row also carries the
+ * participant's **per-user** state for that conversation:
+ *  - `emailOnCompletion`: this member's own opt-in for end-of-turn emails
+ *    (replaces the former per-conversation flag — each member decides alone).
+ *  - `lastReadAt`: drives unread indicators in the conversation list.
+ *  - `mentionedAt`: set when this member is @mentioned; powers the
+ *    "action required" badge until they read (cleared on read).
+ *  - `joinedAt`: anchor for the "summarise what I missed" catch-up.
+ */
+export const aiConversationMembers = pgTable(
+  "ai_conversation_members",
+  {
+    id: uuid("id")
+      .default(sql`uuid_generate_v7()`)
+      .primaryKey(),
+
+    conversationId: uuid("conversation_id")
+      .notNull()
+      .references(() => aiConversations.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+
+    role: aiConversationMemberRoleEnum("role").notNull().default("member"),
+
+    emailOnCompletion: boolean("email_on_completion").notNull().default(false),
+
+    lastReadAt: timestamp("last_read_at"),
+    mentionedAt: timestamp("mentioned_at"),
+
+    joinedAt: timestamp("joined_at").defaultNow().notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [
+    uniqueIndex("ai_conversation_members_conversation_user_idx").on(
+      t.conversationId,
+      t.userId,
+    ),
+    index("ai_conversation_members_user_idx").on(t.userId),
+    index("ai_conversation_members_conversation_idx").on(t.conversationId),
   ],
 );

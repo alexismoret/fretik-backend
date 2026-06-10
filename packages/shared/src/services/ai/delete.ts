@@ -1,9 +1,14 @@
 import { and, eq, inArray } from "drizzle-orm";
 import db from "../../db";
-import { aiConversations } from "../../db/schema";
+import { aiConversationMembers, aiConversations } from "../../db/schema";
 import { deleteSessionFolder } from "../../lib/chatbot-session-storage";
 import { killSandbox } from "../e2b/kill-sandbox";
 
+/**
+ * Delete conversations. Only an `owner` may delete a collaborative
+ * conversation — requested ids the user doesn't own are silently skipped, so
+ * a member can never wipe a shared thread out from under the owner.
+ */
 export const deleteConversations = async (data: {
   ids: string[];
   teamId: string;
@@ -15,15 +20,30 @@ export const deleteConversations = async (data: {
     return { rowCount: 0 };
   }
 
-  const deleted = await db
-    .delete(aiConversations)
+  const ownedRows = await db
+    .select({ conversationId: aiConversationMembers.conversationId })
+    .from(aiConversationMembers)
+    .innerJoin(
+      aiConversations,
+      eq(aiConversations.id, aiConversationMembers.conversationId),
+    )
     .where(
       and(
-        inArray(aiConversations.id, ids),
+        inArray(aiConversationMembers.conversationId, ids),
+        eq(aiConversationMembers.userId, userId),
+        eq(aiConversationMembers.role, "owner"),
         eq(aiConversations.teamId, teamId),
-        eq(aiConversations.userId, userId),
       ),
-    )
+    );
+
+  const ownedIds = ownedRows.map((r) => r.conversationId);
+  if (ownedIds.length === 0) {
+    return { rowCount: 0 };
+  }
+
+  const deleted = await db
+    .delete(aiConversations)
+    .where(inArray(aiConversations.id, ownedIds))
     .returning({ id: aiConversations.id });
 
   // The FK cascade just reaped every `ai_chat_files` row for these

@@ -19,6 +19,9 @@ import {
 } from "@fretik/shared/services/e2b/files";
 import {
   acquireSandboxBootstrapLock,
+  bumpAttachmentGeneration,
+  getAttachmentGeneration,
+  getSandboxIdFromRegistry,
   releaseSandboxBootstrapLock,
 } from "@fretik/shared/services/e2b/registry";
 import type {
@@ -124,6 +127,18 @@ const BOOTSTRAP_POLL_MAX_ITERATIONS = 75; // 15s ceiling.
 const initializedSandboxes = new Set<string>();
 const inFlightInits = new Map<string, Promise<void>>();
 const backupChains = new Map<string, Promise<void>>();
+
+/**
+ * Per-sandbox high-water mark of the attachment generation already
+ * restored into the workspace. A purely LOCAL optimisation cache over a
+ * SHARED source of truth (the Redis generation counter bumped on every
+ * attach): a stale entry only ever triggers a redundant, idempotent
+ * `restoreFromS3`, never a miss — every replica that serves a code run
+ * reads the global counter in `reconcileAttachments` and the workspace
+ * is a shared remote object. Safe to keep in-process under horizontal
+ * scaling for that reason; do NOT promote correctness decisions onto it.
+ */
+const restoredAttachmentGen = new Map<string, number>();
 
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
@@ -331,16 +346,42 @@ export const prepareSandbox = async (
 ): Promise<SandboxLease> => ensureSandboxReady(conversationId);
 
 /**
+ * Pull any attachments uploaded since this replica last restored them
+ * into an already-bootstrapped sandbox. Attachments are written to S3
+ * only at attach time (no eager E2B push), so a sandbox this replica
+ * bootstrapped on an earlier turn won't have files added between turns.
+ * The Redis-backed generation counter (bumped on every attach) tells us
+ * whether a re-restore is needed — a single Redis GET in the steady
+ * state, and `restoreFromS3` is idempotent (skip-on-exists) when it
+ * does run.
+ */
+const reconcileAttachments = async (
+  sandboxId: string,
+  conversationId: string,
+): Promise<void> => {
+  const currentGen = await getAttachmentGeneration(conversationId);
+  const restoredGen = restoredAttachmentGen.get(sandboxId) ?? 0;
+  if (currentGen <= restoredGen) return;
+  await restoreFromS3(conversationId);
+  restoredAttachmentGen.set(sandboxId, currentGen);
+};
+
+/**
  * Idempotent: returns the lease, ensuring the underlying sandbox has
- * been bootstrapped (dirs + skills + S3 restore) for our process.
+ * been bootstrapped (dirs + skills + S3 restore) for our process AND
+ * that any attachment uploaded since the last restore is present.
  */
 const ensureSandboxReady = async (
   conversationId: string,
 ): Promise<SandboxLease> => {
   const lease = await acquireSandbox(conversationId);
 
-  // In-process fast path.
-  if (initializedSandboxes.has(lease.sandboxId)) return lease;
+  // In-process fast path — still reconcile attachments uploaded since
+  // we bootstrapped (cheap Redis GET unless a new file landed).
+  if (initializedSandboxes.has(lease.sandboxId)) {
+    await reconcileAttachments(lease.sandboxId, conversationId);
+    return lease;
+  }
 
   // In-process dedup.
   let pending = inFlightInits.get(lease.sandboxId);
@@ -355,6 +396,10 @@ const ensureSandboxReady = async (
     inFlightInits.set(lease.sandboxId, pending);
   }
   await pending;
+  // Bootstrap's restoreFromS3 already pulled everything currently in S3;
+  // mark this generation covered so the next code run skips the redundant
+  // restore until a further attach bumps the counter.
+  await reconcileAttachments(lease.sandboxId, conversationId);
   return lease;
 };
 
@@ -994,11 +1039,20 @@ export interface AttachUserFileResult {
 }
 
 /**
- * Attach a user-uploaded file to the conversation. Writes it to the
- * sandbox under `attachments/{filename}` and uploads the same bytes
- * to S3 — synchronously, so a downstream consumer (e.g. the OCR
- * preprocessor that hands a presigned URL to Mistral) cannot race the
- * backup and see a 404.
+ * Attach a user-uploaded file to the conversation. Writes the bytes to
+ * S3 only — the durable source of truth — and bumps the attachment
+ * generation so a warm sandbox re-restores before its next code run.
+ *
+ * The sandbox is intentionally NOT touched here: `read` and the
+ * extraction cache work straight off S3, so the common "attach + ask a
+ * question" turn never pays an E2B round-trip. The file is lazily
+ * restored into `/workspace/attachments/` by `ensureSandboxReady` the
+ * first time `python`/`bash` actually needs the workspace (cold
+ * bootstrap → `restoreFromS3`; warm sandbox → `reconcileAttachments`).
+ *
+ * The S3 upload is awaited synchronously so a downstream consumer that
+ * presigns + fetches the object immediately (e.g. Mistral OCR) cannot
+ * race the backup and see a 404.
  *
  * The filename is sanitised; the caller (chat-files upload service)
  * is expected to have already deduped against existing names.
@@ -1015,10 +1069,10 @@ export const attachUserFile = async (
 ): Promise<AttachUserFileResult> => {
   const sanitisedFilename = sanitizeSessionPath(filename);
   const relativePath = `${WORKSPACE_DIRS.attachments}/${sanitisedFilename}`;
-  await writeFile(conversationId, relativePath, bytes, {
-    contentType,
-    awaitBackup: true,
-  });
+  const buffer =
+    typeof bytes === "string" ? new TextEncoder().encode(bytes) : bytes;
+  await uploadSessionFile(conversationId, relativePath, buffer, contentType);
+  await bumpAttachmentGeneration(conversationId);
   return {
     path: relativePath,
     absolutePath: `${WORKSPACE_ROOT}/${relativePath}`,
@@ -1123,23 +1177,37 @@ export const listFiles = async (
 };
 
 /**
- * Delete a file from the sandbox and from S3 if it was backup-eligible.
- * Best-effort on both sides — failure to delete locally still attempts
- * the remote delete.
+ * Delete a file from S3 (the durable source of truth) and, only if a
+ * sandbox currently exists for the conversation, from the workspace too.
+ *
+ * We deliberately do NOT call `ensureSandboxReady` here: a delete must
+ * not trigger a cold E2B bootstrap (skills push + S3 restore) just to
+ * remove a file that — under lazy hydration — may never have been
+ * restored into the sandbox in the first place. The "does a sandbox
+ * exist?" gate is the SHARED Redis registry, not in-process state, so it
+ * holds across replicas: whichever replica serves the delete removes the
+ * file from the one shared remote sandbox. When no sandbox exists the S3
+ * delete alone is sufficient (nothing to re-restore — the object is
+ * gone).
+ *
+ * Best-effort on both sides — a sandbox-side failure still attempts the
+ * remote delete.
  */
 export const deleteFile = async (
   conversationId: string,
   path: string,
 ): Promise<void> => {
-  await ensureSandboxReady(conversationId);
   const relativePath = toRelativeWorkspacePath(path);
-  try {
-    await removeSandboxFile(conversationId, relativePath);
-  } catch (err) {
-    console.warn(
-      `[conversation-storage] sandbox delete failed for ${relativePath}:`,
-      err instanceof Error ? err.message : err,
-    );
+  const sandboxExists = await getSandboxIdFromRegistry(conversationId);
+  if (sandboxExists) {
+    try {
+      await removeSandboxFile(conversationId, relativePath);
+    } catch (err) {
+      console.warn(
+        `[conversation-storage] sandbox delete failed for ${relativePath}:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
   }
   if (isUnderBackupEligibleDir(relativePath)) {
     void deleteSessionFileFromS3(conversationId, relativePath).catch(

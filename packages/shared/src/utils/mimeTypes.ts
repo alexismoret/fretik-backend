@@ -211,6 +211,23 @@ export const isSpreadsheet = (mimeType: string): boolean =>
 export const isConversionRequired = (mimeType: string): boolean =>
   !isPdf(mimeType);
 
+/**
+ * True when a file's MIME is accepted by the Drive document pipeline
+ * (`uploadDocument` → `assertFile`). Checks the (magic-byte detected)
+ * MIME only — that's the reliable signal; a wrong extension on an
+ * otherwise-supported file shouldn't bar it.
+ *
+ * The chatbot attachment set (`isChatbotSupported`) is a SUPERSET —
+ * markdown / JSON / XML / arbitrary `text/*` are fine as chat
+ * attachments but the Drive rejects them. Callers promoting a chat file
+ * to the Drive must pre-check with this so the rejection is surfaced
+ * explicitly instead of throwing a generic 400 deep in the pipeline.
+ */
+export const isDriveSupported = (mimeType: string): boolean => {
+  const base = mimeType.split(";")[0]?.trim().toLowerCase() ?? "";
+  return ALLOWED_MIME_TYPES.includes(base);
+};
+
 // ==================== //
 // CHATBOT ATTACHMENTS  //
 // ==================== //

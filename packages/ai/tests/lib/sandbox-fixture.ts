@@ -210,7 +210,32 @@ export const installSandboxMocks = (): void => {
     clearSandboxFromRegistry: async () => {
       /* no-op */
     },
+    // Lazy-attachment generation counter (Redis-backed in prod). Tests
+    // never restore from S3, so a stable 0 keeps `reconcileAttachments`
+    // a no-op (currentGen <= restoredGen). Without these two stubs the
+    // real ioredis client runs and hangs the test against the unreachable
+    // stub REDIS_URL — see the `connect ECONNREFUSED 127.0.0.1:1` flood.
+    getAttachmentGeneration: async () => 0,
+    bumpAttachmentGeneration: async () => 1,
   }));
+
+  // Team-uploaded skills + active external-app providers are resolved
+  // from Postgres in prod (`select team_id from ai_conversations`).
+  // Unit tests have no DB — stub both list services to empty so the
+  // bootstrap's `pushTeamSkills` / `pushExternalAppProviderSkills`
+  // early-return instead of issuing (failing) queries.
+  void mock.module(
+    "@fretik/shared/services/skills/list-enabled-team-uploaded-with-body",
+    () => ({
+      listEnabledTeamUploadedSkillsWithBodyForConversation: async () => [],
+    }),
+  );
+  void mock.module(
+    "@fretik/shared/services/external-apps/connections/list-active-providers-for-conversation",
+    () => ({
+      listActiveProviderKeysForConversation: async () => [],
+    }),
+  );
 
   // S3 session storage — back the helpers by the in-memory `s3Store`.
   void mock.module("@fretik/shared/lib/chatbot-session-storage", () => {

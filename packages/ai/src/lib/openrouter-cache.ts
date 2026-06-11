@@ -17,8 +17,9 @@ import { wrapLanguageModel } from "ai";
  * `deepseek/deepseek-v3.2` which routes through Alibaba on OpenRouter).
  *
  * This middleware injects breakpoints for the explicit-caching family
- * only — letting us swap `OPENROUTER_CHAT_MODEL` between auto and
- * explicit upstreams without touching agent or handler code.
+ * only — letting the chat role binding (`model-registry/profiles.ts`)
+ * swap between auto and explicit upstreams without touching agent or
+ * handler code.
  *
  * # Algorithm — stable 4-breakpoint sliding cache
  *

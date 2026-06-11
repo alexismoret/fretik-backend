@@ -1,16 +1,13 @@
 import { type LanguageModelV3 } from "@ai-sdk/provider";
 import { generateText } from "ai";
 import { telemetryFor } from "./langfuse";
-import { instrumentModel } from "./model-instrumentation";
-import { openrouter } from "./openrouter";
+import { resolveModel } from "./model-registry/resolve";
 
 /**
- * Vision sub-model for the `vision` tool. Routed to
- * `google/gemini-3.1-flash-lite-preview` via OpenRouter by default
- * (env override `OPENROUTER_VISION_MODEL`). The primary chat model
- * (MiniMax M2.7) never sees image or PDF bytes — this keeps the
- * hot-path context cheap and isolates vision cost behind an explicit
- * tool call.
+ * Vision sub-model for the `vision` tool — the registry's `vision`
+ * role (default Gemini 3.1 Flash Lite). The primary chat model never
+ * sees image or PDF bytes — this keeps the hot-path context cheap and
+ * isolates vision cost behind an explicit tool call.
  *
  * Contract: the caller hands raw bytes (already read from the
  * conversation sandbox via the storage façade) plus the mime type
@@ -25,31 +22,26 @@ import { openrouter } from "./openrouter";
  *
  * **Primary → fallback (Sprint B §3.7).** When the primary vision
  * model errors out (timeout, transport, provider rate-limit, schema
- * failure), we transparently retry on a fallback model
- * (`OPENROUTER_VISION_FALLBACK_MODEL`, default suggestion
- * `openai/gpt-4o-mini`). Mirrors the chat primary→fallback pattern in
- * `agents/shared/agent-builder.ts`. Both errors propagate to the
- * caller (the `vision` tool surface, which formats them as a typed
- * `error` field) only if BOTH models fail — otherwise the agent never
- * sees the transient failure.
+ * failure), we transparently retry on the registry's
+ * `vision-fallback` role (default `openai/gpt-4o-mini`). Mirrors the
+ * chat primary→fallback pattern in `agents/shared/agent-builder.ts`.
+ * Both errors propagate to the caller (the `vision` tool surface,
+ * which formats them as a typed `error` field) only if BOTH models
+ * fail — otherwise the agent never sees the transient failure.
  */
 
-const VISION_MODEL_ID =
-  process.env.OPENROUTER_VISION_MODEL ?? "google/gemini-3.1-flash-lite-preview";
+const visionPrimary = resolveModel("vision");
+const visionFallback = resolveModel("vision-fallback");
 
-const VISION_FALLBACK_MODEL_ID = process.env.OPENROUTER_VISION_FALLBACK_MODEL;
-if (!VISION_FALLBACK_MODEL_ID) {
-  throw "Missing OPENROUTER_VISION_FALLBACK_MODEL env";
-}
+const VISION_MODEL_ID = visionPrimary.profile.catalog.id;
+const VISION_FALLBACK_MODEL_ID = visionFallback.profile.catalog.id;
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 const MAX_OUTPUT_TOKENS = 1_500;
 const TEMPERATURE = 0.2;
 
-const visionModel = instrumentModel(openrouter.chat(VISION_MODEL_ID));
-const visionFallbackModel = instrumentModel(
-  openrouter.chat(VISION_FALLBACK_MODEL_ID),
-);
+const visionModel = visionPrimary.model;
+const visionFallbackModel = visionFallback.model;
 
 /**
  * Run a primary→fallback chain and return the result of whichever

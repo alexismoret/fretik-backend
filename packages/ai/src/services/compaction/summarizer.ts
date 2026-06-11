@@ -1,7 +1,6 @@
 import { type UIMessage, streamText } from "ai";
 import { telemetryFor } from "../../lib/langfuse";
-import { instrumentModel } from "../../lib/model-instrumentation";
-import { openrouter } from "../../lib/openrouter";
+import { resolveModel } from "../../lib/model-registry/resolve";
 import { dropOldestRounds } from "./grouping";
 import { formatCompactSummary, getCompactPrompt } from "./prompt";
 
@@ -32,17 +31,13 @@ import { formatCompactSummary, getCompactPrompt } from "./prompt";
 const SUMMARISER_TEMPERATURE = 0.2;
 
 /**
- * Compaction summariser model. Defaults to `deepseek/deepseek-v4-flash`
- * — 1M-token context window keeps very long older blocks within
- * reach, and the price-per-token is well below the previous default
- * (`gpt-oss-120b`) which capped us at 131K. Add `OPENROUTER_COMPACTION_MODEL`
- * to the chatbot service `.env` to override (useful when the team
- * wants to A/B against a different summariser without redeploying).
- *
- * Env override: `OPENROUTER_COMPACTION_MODEL`.
+ * Compaction summariser model — the registry's `compaction-summarizer`
+ * role (default `deepseek/deepseek-v4-flash`: 1M-token context keeps
+ * very long older blocks within reach at a price well below the
+ * previous `gpt-oss-120b`, which capped us at 131K). Changing the
+ * summariser is a reviewed edit to `model-registry/profiles.ts`, not
+ * an env flip — A/B runs go through the eval harness.
  */
-const COMPACTION_MODEL_ID =
-  process.env.OPENROUTER_COMPACTION_MODEL ?? "deepseek/deepseek-v4-flash";
 
 /**
  * Upper bound on the summary length, aligned with Claude Code's
@@ -53,13 +48,16 @@ const COMPACTION_MODEL_ID =
  * Env override: `COMPACTION_SUMMARIZER_MAX_TOKENS`, clamped
  * `[2_000, 32_000]`.
  */
-export const SUMMARISER_MAX_TOKENS = (() => {
-  const raw = process.env.COMPACTION_SUMMARIZER_MAX_TOKENS;
+export const parseSummariserMaxTokens = (raw: string | undefined): number => {
   if (!raw) return 20_000;
   const parsed = Number(raw);
   if (!Number.isFinite(parsed)) return 20_000;
   return Math.min(32_000, Math.max(2_000, Math.floor(parsed)));
-})();
+};
+
+export const SUMMARISER_MAX_TOKENS = parseSummariserMaxTokens(
+  process.env.COMPACTION_SUMMARIZER_MAX_TOKENS,
+);
 
 /**
  * Total wall-clock timeout for the summariser call. Bumped from 20s
@@ -72,13 +70,16 @@ export const SUMMARISER_MAX_TOKENS = (() => {
  * Env override: `COMPACTION_SUMMARIZER_TIMEOUT_MS`, clamped
  * `[10_000, 300_000]`.
  */
-const SUMMARISER_TIMEOUT_MS = (() => {
-  const raw = process.env.COMPACTION_SUMMARIZER_TIMEOUT_MS;
+export const parseSummariserTimeoutMs = (raw: string | undefined): number => {
   if (!raw) return 90_000;
   const parsed = Number(raw);
   if (!Number.isFinite(parsed)) return 90_000;
   return Math.min(300_000, Math.max(10_000, Math.floor(parsed)));
-})();
+};
+
+const SUMMARISER_TIMEOUT_MS = parseSummariserTimeoutMs(
+  process.env.COMPACTION_SUMMARIZER_TIMEOUT_MS,
+);
 
 /**
  * Maximum number of retries when the summariser request itself blows
@@ -91,7 +92,7 @@ const SUMMARISER_TIMEOUT_MS = (() => {
 const MAX_PTL_RETRIES = 3;
 const PTL_DROP_FRACTION = 0.2;
 
-const compactionModel = instrumentModel(openrouter.chat(COMPACTION_MODEL_ID));
+const compactionModel = resolveModel("compaction-summarizer").model;
 
 const PART_TOOL_PREFIX = "tool-";
 

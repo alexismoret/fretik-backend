@@ -11,9 +11,9 @@ import { describeVisionFile } from "../lib/vision";
 
 /**
  * `vision` tool — sends an image or PDF from the conversation's
- * sandbox to a vision sub-model (Google Gemini 3.1 Flash Lite
- * Preview by default, env override `OPENROUTER_VISION_MODEL`) with a
- * caller-supplied question, and returns the description.
+ * sandbox to a vision sub-model (the model registry's `vision` role,
+ * Google Gemini 3.1 Flash Lite by default) with a caller-supplied
+ * question, and returns the description.
  *
  * Designed to be RARE. Most uploaded files in the Fretik chatbot are
  * scans of documents — the OCR sidecar covers them at zero

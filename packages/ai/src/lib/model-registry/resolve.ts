@@ -136,6 +136,22 @@ export const getProfileForRole = (role: ModelRole): ModelProfile =>
 export const listProfiles = (): readonly ModelProfile[] =>
   Object.values(MODEL_PROFILES);
 
+const buildResolved = (binding: RoleBinding): ResolvedModel => {
+  const profile = getProfile(binding.profileKey);
+  const settings = settingsForRole(binding, profile);
+  const raw = settings
+    ? openrouter.chat(profile.catalog.id, settings)
+    : openrouter.chat(profile.catalog.id);
+  const model = instrumentModel(
+    binding.wrapCache ? wrapModelWithCache(raw, profile) : raw,
+  );
+  return { model, profile, binding };
+};
+
+// Per-replica memoization of STATELESS constructs (model client
+// wrappers). Deterministic from code, so every replica builds
+// identical instances — no cross-replica coordination needed, same
+// multi-replica model as the historical module-level singletons.
 const resolved = new Map<ModelRole, ResolvedModel>();
 
 /**
@@ -147,18 +163,40 @@ const resolved = new Map<ModelRole, ResolvedModel>();
 export const resolveModel = (role: ModelRole): ResolvedModel => {
   const cached = resolved.get(role);
   if (cached) return cached;
-
-  const binding = ROLE_BINDINGS[role];
-  const profile = getProfile(binding.profileKey);
-  const settings = settingsForRole(binding, profile);
-  const raw = settings
-    ? openrouter.chat(profile.catalog.id, settings)
-    : openrouter.chat(profile.catalog.id);
-  const model = instrumentModel(
-    binding.wrapCache ? wrapModelWithCache(raw, profile) : raw,
-  );
-
-  const entry: ResolvedModel = { model, profile, binding };
+  const entry = buildResolved(ROLE_BINDINGS[role]);
   resolved.set(role, entry);
+  return entry;
+};
+
+// Bounded: getProfile throws on unknown keys, so at most one entry per
+// registry profile.
+const chatResolvedByProfile = new Map<string, ResolvedModel>();
+
+/**
+ * Resolve an ARBITRARY profile under the chat envelope (same settings
+ * kind + cache wrapping as the `chat` role). This is the seam the C3
+ * eval header (`X-Model-Profile-Key`) and the C8 per-team /
+ * per-conversation selection resolve through. Memoized per profile
+ * key; the default chat profile reuses the role-memoized instance.
+ *
+ * Deliberately does NOT check `evalGate.status`: the eval harness must
+ * run PENDING candidates — that is how they get gated. Selectability
+ * enforcement (only `passed` profiles) belongs to the C8 DB read.
+ */
+export const resolveChatModelForProfile = (
+  profileKey: string,
+): ResolvedModel => {
+  if (profileKey === ROLE_BINDINGS.chat.profileKey) {
+    return resolveModel("chat");
+  }
+  const cached = chatResolvedByProfile.get(profileKey);
+  if (cached) return cached;
+  const entry = buildResolved({
+    role: "chat",
+    profileKey,
+    settingsKind: "chat",
+    wrapCache: true,
+  });
+  chatResolvedByProfile.set(profileKey, entry);
   return entry;
 };

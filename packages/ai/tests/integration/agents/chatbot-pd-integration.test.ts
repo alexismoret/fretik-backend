@@ -1,9 +1,7 @@
 import type { ModelMessage } from "ai";
 import { describe, expect, test } from "bun:test";
-import {
-  buildChatbotTools,
-  type ChatbotTools,
-} from "../../../src/agents/chatbot/tools";
+import { chatbotAgentSet } from "../../../src/agents/chatbot/index";
+import { type ChatbotTools } from "../../../src/agents/chatbot/tools";
 import {
   DynamicToolManager,
   replayActivationFromHistory,
@@ -13,6 +11,7 @@ import {
   type AgentRuntimeContext,
 } from "../../../src/agents/shared/runtime-context";
 import { TaskManager } from "../../../src/agents/shared/task-manager";
+import { getProfileForRole } from "../../../src/lib/model-registry/resolve";
 
 /**
  * End-to-end integration test for Progressive Disclosure.
@@ -50,16 +49,19 @@ const EXPECTED_CORE_TOOL_NAMES: readonly string[] = [
   "manageTasks",
   "memory",
   "askUserQuestion",
+  "dispatchAgent",
 ];
 
 const EXPECTED_DOMAIN_TOOL_NAMES: readonly string[] = [
   "listDocuments",
-  "listExtractions",
-  "getExtractionData",
   "listEntities",
+  "listLabels",
+  "listFieldDefinitions",
   "getEntityDetails",
   "webFetch",
   "downloadDriveDocument",
+  "createSkill",
+  "updateSkill",
 ];
 
 /**
@@ -91,6 +93,7 @@ const buildCtx = (
     teamId: "team-1",
     dynamicToolManager: manager,
     taskManager: new TaskManager(),
+    modelProfile: getProfileForRole("chat"),
   };
   return { ctx, branded: wrapRuntimeContext(ctx) };
 };
@@ -133,8 +136,8 @@ const runSearchTools = async (
 };
 
 describe("Chatbot Progressive Disclosure — end-to-end", () => {
-  test("tool registry: 11 core tools + 7 domain tools, categories correct", () => {
-    const tools = buildChatbotTools();
+  test("tool registry: 13 core tools + 9 domain tools, categories correct", () => {
+    const tools = chatbotAgentSet.primary.tools;
     const coreNames = Object.entries(tools)
       .filter(([, t]) => t.category === "core")
       .map(([n]) => n);
@@ -146,7 +149,7 @@ describe("Chatbot Progressive Disclosure — end-to-end", () => {
   });
 
   test("step 0 with a fresh manager exposes core tools only — no domain leakage", () => {
-    const tools = buildChatbotTools();
+    const tools = chatbotAgentSet.primary.tools;
     const manager = new DynamicToolManager();
     const active = computeActiveTools(tools, manager);
     expect(new Set(active)).toEqual(new Set(EXPECTED_CORE_TOOL_NAMES));
@@ -156,7 +159,7 @@ describe("Chatbot Progressive Disclosure — end-to-end", () => {
   });
 
   test("full cycle: searchTools select: → manager mutation → next step exposes the activated domain tool", async () => {
-    const tools = buildChatbotTools();
+    const tools = chatbotAgentSet.primary.tools;
     const manager = new DynamicToolManager();
     const { ctx } = buildCtx(manager);
 
@@ -186,7 +189,7 @@ describe("Chatbot Progressive Disclosure — end-to-end", () => {
   });
 
   test("full cycle: searchTools with free-form keyword query also activates", async () => {
-    const tools = buildChatbotTools();
+    const tools = chatbotAgentSet.primary.tools;
     const manager = new DynamicToolManager();
     const { ctx } = buildCtx(manager);
 
@@ -205,7 +208,7 @@ describe("Chatbot Progressive Disclosure — end-to-end", () => {
     // M2.5: model passes a bare camelCase tool name and would
     // otherwise fall through to the scorer, which can't tokenize
     // the glued name. See search-tools.ts fast-path comment.
-    const tools = buildChatbotTools();
+    const tools = chatbotAgentSet.primary.tools;
     const manager = new DynamicToolManager();
     const { ctx } = buildCtx(manager);
 
@@ -225,7 +228,7 @@ describe("Chatbot Progressive Disclosure — end-to-end", () => {
     // rehydrated from the `searchTools` tool-result messages already
     // present in the history, so the model does NOT need to
     // re-discover tools it already used.
-    const tools = buildChatbotTools();
+    const tools = chatbotAgentSet.primary.tools;
     const manager = new DynamicToolManager();
     const history: ModelMessage[] = [
       { role: "user", content: "list my documents" },
@@ -275,7 +278,7 @@ describe("Chatbot Progressive Disclosure — end-to-end", () => {
   });
 
   test("replay is idempotent — running the same history twice does not duplicate activations", () => {
-    const tools = buildChatbotTools();
+    const tools = chatbotAgentSet.primary.tools;
     const manager = new DynamicToolManager();
     const history: ModelMessage[] = [
       {

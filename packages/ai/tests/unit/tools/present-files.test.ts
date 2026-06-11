@@ -5,6 +5,7 @@
  * generated file downloadable to the user.
  */
 import { beforeEach, describe, expect, test } from "bun:test";
+import { getProfileForRole } from "../../../src/lib/model-registry/resolve";
 import { installSandboxMocks, sandboxFs } from "../../lib/sandbox-fixture";
 
 installSandboxMocks();
@@ -28,6 +29,7 @@ const buildOptions = (conversationId: string) => {
     organizationId: "org-1",
     teamId: "team-1",
     conversationId,
+    modelProfile: getProfileForRole("chat"),
     dynamicToolManager: new DynamicToolManager(),
     taskManager: new TaskManager(),
   };

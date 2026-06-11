@@ -6,6 +6,7 @@ import {
   type AgentRuntimeContext,
 } from "../../../src/agents/shared/runtime-context";
 import { TaskManager } from "../../../src/agents/shared/task-manager";
+import { getProfileForRole } from "../../../src/lib/model-registry/resolve";
 
 /**
  * Fixture — a minimal ctx with every field populated. The real one
@@ -19,6 +20,7 @@ const makeCtx = (): AgentRuntimeContext => ({
   userName: "Alice",
   conversationId: "conv-1",
   timeZone: "Europe/Paris",
+  modelProfile: getProfileForRole("chat"),
   dynamicToolManager: new DynamicToolManager(),
   taskManager: new TaskManager(),
 });
@@ -77,6 +79,7 @@ describe("getRuntimeContext rejects unbranded values", () => {
         experimental_context: {
           organizationId: "org-1",
           teamId: "team-1",
+          modelProfile: getProfileForRole("chat"),
           dynamicToolManager: new DynamicToolManager(),
           taskManager: new TaskManager(),
         },

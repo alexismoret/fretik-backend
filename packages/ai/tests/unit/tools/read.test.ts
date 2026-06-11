@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { getProfileForRole } from "../../../src/lib/model-registry/resolve";
 import { installSandboxMocks, sandboxFs } from "../../lib/sandbox-fixture";
 
 installSandboxMocks();
@@ -88,6 +89,17 @@ void mock.module("@fretik/shared/lib/ai-context-storage", () => ({
     contextOriginals.get(fileId) ?? null,
   readContextSidecar: async (_profileId: string, fileId: string) =>
     contextSidecars.get(fileId) ?? null,
+  // mock.module is process-global: other test files in the same run
+  // import modules that pull the remaining exports — an incomplete
+  // mock breaks THEIR import with "Export named ... not found", so
+  // mirror the module's full export surface (no-ops are fine).
+  buildContextOriginalKey: (profileId: string, fileId: string) =>
+    `mock/${profileId}/${fileId}`,
+  buildContextSidecarKey: (profileId: string, fileId: string) =>
+    `mock/${profileId}/${fileId}.md`,
+  uploadContextSidecar: async () => undefined,
+  deleteContextOriginal: async () => undefined,
+  deleteContextSidecar: async () => undefined,
 }));
 
 const { createReadTool } = await import("../../../src/tools/read");
@@ -116,6 +128,7 @@ const buildExecuteOptions = (conversationId: string): ExecuteOptions => {
     organizationId: "org-1",
     teamId: "team-1",
     conversationId,
+    modelProfile: getProfileForRole("chat"),
     dynamicToolManager: new DynamicToolManager(),
     taskManager: new TaskManager(),
   };

@@ -197,6 +197,53 @@ const formatDeferredToolList = (
  */
 
 /**
+ * Per-family system-prompt overlays (`agents/chatbot/overlays/<key>.md`).
+ * Loaded once per replica, keyed by `profile.assessment.promptOverlayKey`;
+ * a missing file renders as the empty string so profiles without an
+ * overlay produce a byte-identical prompt. Cache-safe by construction:
+ * prompt caches are namespaced per upstream model, the overlay is
+ * deterministic per profile, and it is spliced ABOVE the dynamic-suffix
+ * marker so the static prefix stays byte-stable per model.
+ *
+ * Overlays start EMPTY for every family — write one only when a C3
+ * eval failure demonstrates a family-specific need
+ * (`.agent/agent-facing-prose.md`: growth without sharpening is a
+ * regression).
+ */
+const overlayCache = new Map<string, Promise<string>>();
+
+const loadPromptOverlay = (key: string | undefined): Promise<string> => {
+  if (!key) return Promise.resolve("");
+  const cached = overlayCache.get(key);
+  if (cached) return cached;
+  const loading = (async () => {
+    const file = Bun.file(
+      new URL(`../chatbot/overlays/${key}.md`, import.meta.url),
+    );
+    if (!(await file.exists())) return "";
+    return (await file.text()).trim();
+  })();
+  overlayCache.set(key, loading);
+  return loading;
+};
+
+/**
+ * Splice an overlay at the END of the static prefix — immediately above
+ * the DYNAMIC SUFFIX marker comment, so per-turn placeholders stay
+ * below it. Falls back to appending when the marker is absent (foreign
+ * prompt text); a comment-only marker means the overlay survives the
+ * per-turn comment strip while the marker itself does not. Exported
+ * for tests.
+ */
+export const insertPromptOverlay = (text: string, overlay: string): string => {
+  if (overlay.length === 0) return text;
+  const suffixAt = text.indexOf("DYNAMIC SUFFIX — every");
+  const markerAt = suffixAt === -1 ? -1 : text.lastIndexOf("<!--", suffixAt);
+  if (markerAt === -1) return `${text}\n\n${overlay}\n`;
+  return `${text.slice(0, markerAt)}${overlay}\n\n${text.slice(markerAt)}`;
+};
+
+/**
  * Build the chatbot system prompt for a given runtime context.
  *
  * `deferredTools` defaults to an empty set so callers can build the
@@ -213,55 +260,62 @@ export const buildChatbotSystemPrompt = async (
     SYSTEM_PROMPT_FALLBACK,
   );
   ctx.langfusePromptLink = link;
+  const overlay = await loadPromptOverlay(
+    ctx.modelProfile.assessment.promptOverlayKey,
+  );
   // `.trim()` to match the seed script and the sub-agent path: the stored
   // (trimmed) text and the embedded fallback must be byte-identical so the
   // static prefix — and the OpenRouter prompt cache — survives every
   // Langfuse↔fallback transition.
-  return renderPrompt(text.replace(HTML_COMMENT_RE, "").trim(), {
-    currentDate: formatCurrentDate(new Date(), ctx.timeZone),
-    userName: ctx.userName ?? "Unknown user",
-    userId: ctx.userId ?? "unknown",
-    teamId: ctx.teamId,
-    organizationId: ctx.organizationId,
-    conversationId: ctx.conversationId ?? "unknown",
-    deferredToolList: formatDeferredToolList(deferredTools),
-    skillsCatalog:
-      ctx.enabledSkillsBlock && ctx.enabledSkillsBlock.length > 0
-        ? ctx.enabledSkillsBlock
-        : "_No skills enabled for this team._",
-    attachedFilesBlock:
-      ctx.attachedFilesBlock && ctx.attachedFilesBlock.length > 0
-        ? ctx.attachedFilesBlock
-        : "_No files attached to the current message._",
-    chatbotContextManifest:
-      ctx.chatbotContextManifest && ctx.chatbotContextManifest.length > 0
-        ? ctx.chatbotContextManifest
-        : "_No persistent context configured._",
-    sessionStateBlock: (() => {
-      const block = buildSessionStateBlock({
-        dynamicToolManager: ctx.dynamicToolManager,
-        taskManager: ctx.taskManager,
-      });
-      return block.length > 0 ? block : "_No active session state._";
-    })(),
-    activeMemoryBlock:
-      ctx.activeMemoryBlock && ctx.activeMemoryBlock.length > 0
-        ? ctx.activeMemoryBlock
-        : "_No relevant memory recalled for this turn._",
-    teamFieldDefinitions:
-      ctx.teamFieldDefinitionsBlock && ctx.teamFieldDefinitionsBlock.length > 0
-        ? ctx.teamFieldDefinitionsBlock
-        : "_No dynamic fields configured for this team._",
-    externalAppsBlock:
-      ctx.externalAppsBlock && ctx.externalAppsBlock.length > 0
-        ? ctx.externalAppsBlock
-        : "_No external apps connected._",
-    // Collaborative-conversation block. Empty for solo conversations so the
-    // prompt is byte-identical to the single-user case; populated (roster +
-    // speaker-label instruction) once a second participant joins.
-    collaborationBlock:
-      ctx.participantsBlock && ctx.participantsBlock.length > 0
-        ? `This conversation is shared by several teammates:\n${ctx.participantsBlock}\n\nEach user message is prefixed with its sender in brackets — \`[Name]: …\`. Address people by name when it helps, and suggest @mentioning a teammate when their input is needed.`
-        : "",
-  });
+  return renderPrompt(
+    insertPromptOverlay(text, overlay).replace(HTML_COMMENT_RE, "").trim(),
+    {
+      currentDate: formatCurrentDate(new Date(), ctx.timeZone),
+      userName: ctx.userName ?? "Unknown user",
+      userId: ctx.userId ?? "unknown",
+      teamId: ctx.teamId,
+      organizationId: ctx.organizationId,
+      conversationId: ctx.conversationId ?? "unknown",
+      deferredToolList: formatDeferredToolList(deferredTools),
+      skillsCatalog:
+        ctx.enabledSkillsBlock && ctx.enabledSkillsBlock.length > 0
+          ? ctx.enabledSkillsBlock
+          : "_No skills enabled for this team._",
+      attachedFilesBlock:
+        ctx.attachedFilesBlock && ctx.attachedFilesBlock.length > 0
+          ? ctx.attachedFilesBlock
+          : "_No files attached to the current message._",
+      chatbotContextManifest:
+        ctx.chatbotContextManifest && ctx.chatbotContextManifest.length > 0
+          ? ctx.chatbotContextManifest
+          : "_No persistent context configured._",
+      sessionStateBlock: (() => {
+        const block = buildSessionStateBlock({
+          dynamicToolManager: ctx.dynamicToolManager,
+          taskManager: ctx.taskManager,
+        });
+        return block.length > 0 ? block : "_No active session state._";
+      })(),
+      activeMemoryBlock:
+        ctx.activeMemoryBlock && ctx.activeMemoryBlock.length > 0
+          ? ctx.activeMemoryBlock
+          : "_No relevant memory recalled for this turn._",
+      teamFieldDefinitions:
+        ctx.teamFieldDefinitionsBlock &&
+        ctx.teamFieldDefinitionsBlock.length > 0
+          ? ctx.teamFieldDefinitionsBlock
+          : "_No dynamic fields configured for this team._",
+      externalAppsBlock:
+        ctx.externalAppsBlock && ctx.externalAppsBlock.length > 0
+          ? ctx.externalAppsBlock
+          : "_No external apps connected._",
+      // Collaborative-conversation block. Empty for solo conversations so the
+      // prompt is byte-identical to the single-user case; populated (roster +
+      // speaker-label instruction) once a second participant joins.
+      collaborationBlock:
+        ctx.participantsBlock && ctx.participantsBlock.length > 0
+          ? `This conversation is shared by several teammates:\n${ctx.participantsBlock}\n\nEach user message is prefixed with its sender in brackets — \`[Name]: …\`. Address people by name when it helps, and suggest @mentioning a teammate when their input is needed.`
+          : "",
+    },
+  );
 };

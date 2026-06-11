@@ -23,7 +23,8 @@ import {
 } from "bun:test";
 import { eq } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
-import { installSandboxMocks, sandboxFs } from "../../../lib/sandbox-fixture";
+import { getProfileForRole } from "../../../src/lib/model-registry/resolve";
+import { installSandboxMocks, sandboxFs } from "../../lib/sandbox-fixture";
 
 installSandboxMocks();
 
@@ -97,6 +98,7 @@ const buildOptions = (conversationId: string, teamId: string) => {
     organizationId: fx.organizationId,
     teamId,
     conversationId,
+    modelProfile: getProfileForRole("chat"),
     dynamicToolManager: new DynamicToolManager(),
     taskManager: new TaskManager(),
   };

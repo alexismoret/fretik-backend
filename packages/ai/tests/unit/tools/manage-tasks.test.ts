@@ -8,6 +8,7 @@ import {
   TaskManager,
   type Task,
 } from "../../../src/agents/shared/task-manager";
+import { getProfileForRole } from "../../../src/lib/model-registry/resolve";
 import { createManageTasksTool } from "../../../src/tools/manage-tasks";
 
 /**
@@ -39,6 +40,7 @@ interface ManageTasksOutput {
 const makeCtx = (): AgentRuntimeContext => ({
   organizationId: "org-1",
   teamId: "team-1",
+  modelProfile: getProfileForRole("chat"),
   dynamicToolManager: new DynamicToolManager(),
   taskManager: new TaskManager(),
 });

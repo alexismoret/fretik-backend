@@ -8,7 +8,8 @@
  * way.
  */
 import { beforeEach, describe, expect, mock, test } from "bun:test";
-import { installSandboxMocks, sandboxFs } from "../../../lib/sandbox-fixture";
+import { getProfileForRole } from "../../../src/lib/model-registry/resolve";
+import { installSandboxMocks, sandboxFs } from "../../lib/sandbox-fixture";
 
 installSandboxMocks();
 
@@ -107,6 +108,7 @@ const buildOptions = (conversationId: string, toolCallId: string) => {
     organizationId: "org-1",
     teamId: "team-1",
     conversationId,
+    modelProfile: getProfileForRole("chat"),
     dynamicToolManager: new DynamicToolManager(),
     taskManager: new TaskManager(),
   };
@@ -169,6 +171,7 @@ describe("python tool", () => {
       organizationId: "org-1",
       teamId: "team-1",
       conversationId: undefined,
+      modelProfile: getProfileForRole("chat"),
       dynamicToolManager: new DynamicToolManager(),
       taskManager: new TaskManager(),
     };

@@ -5,11 +5,16 @@ import {
   type StopCondition,
 } from "ai";
 import { z } from "zod";
-import { resolveModel } from "../../lib/model-registry/resolve";
+import {
+  resolveChatModelForProfile,
+  resolveModel,
+  type ResolvedModel,
+} from "../../lib/model-registry/resolve";
 import { createDispatchAgentTool } from "../../tools/dispatch-agent";
 import {
   buildAgentSet,
   type AgentRuntimeContextBase,
+  type AgentSet,
 } from "../shared/agent-builder";
 import type { SearchableToolRegistry } from "../shared/chatbot-tool";
 import { buildSubAgentSystemPrompt } from "../shared/prompt-renderer";
@@ -427,33 +432,72 @@ const pythonAwaitingApproval: StopCondition<ChatbotTools> = ({ steps }) => {
 // initial gating logic in one place (`chatbotPrepareStep`) avoids
 // the risk of those two lists drifting apart over time. See the
 // `computeCoreToolNames` docblock above for the DRY rationale.
-export const chatbotAgentSet = buildAgentSet<ChatbotCallOptions, ChatbotTools>({
-  id: "chatbot",
-  buildTools: () => buildChatbotTools({ dispatchAgent: dispatchAgentTool }),
-  systemPrompt: chatbotSystemPrompt,
-  model: resolveModel("chat"),
-  fallbackModel: resolveModel("chat-fallback"),
-  // Stop the agent loop on either of two conditions:
-  //   1. Hit the per-turn step budget (`CHATBOT_MAX_STEPS`, default 30).
-  //   2. The model just called `askUserQuestion` — we MUST end the
-  //      turn there because the tool's "answer" is provided out-of-band
-  //      by the user via the UI on a future turn. Continuing past it
-  //      would burn tokens generating filler text on top of an empty
-  //      `answers: {}` payload, AND would risk the model
-  //      hallucinating an answer in place of the user. The next turn
-  //      starts fresh once the frontend posts the user's reply as a
-  //      new user message.
-  stopWhen: [
-    stepCountIs(parseChatbotMaxSteps()),
-    hasToolCall("askUserQuestion"),
-    // Pause the loop when a write plan submitted via `run_plan(...)` is
-    // waiting for the user's approval in the UI. The next user message
-    // (sent by the frontend after grant/modify/reject) starts a fresh
-    // turn — the agent re-runs the same code and the dispatch path
-    // matches the grant by `lookupHash`.
-    pythonAwaitingApproval,
-  ],
-  prepareStep: chatbotPrepareStep,
-  buildRuntimeContextBase: buildChatbotRuntimeContextBase,
-  callOptionsSchema: ChatbotCallOptionsSchema,
-});
+const makeChatbotAgentSet = (
+  model: ResolvedModel,
+): AgentSet<ChatbotCallOptions, ChatbotTools> =>
+  buildAgentSet<ChatbotCallOptions, ChatbotTools>({
+    id: "chatbot",
+    buildTools: () => buildChatbotTools({ dispatchAgent: dispatchAgentTool }),
+    systemPrompt: chatbotSystemPrompt,
+    model,
+    fallbackModel: resolveModel("chat-fallback"),
+    // Stop the agent loop on either of two conditions:
+    //   1. Hit the per-turn step budget (`CHATBOT_MAX_STEPS`, default 30).
+    //   2. The model just called `askUserQuestion` — we MUST end the
+    //      turn there because the tool's "answer" is provided out-of-band
+    //      by the user via the UI on a future turn. Continuing past it
+    //      would burn tokens generating filler text on top of an empty
+    //      `answers: {}` payload, AND would risk the model
+    //      hallucinating an answer in place of the user. The next turn
+    //      starts fresh once the frontend posts the user's reply as a
+    //      new user message.
+    stopWhen: [
+      stepCountIs(parseChatbotMaxSteps()),
+      hasToolCall("askUserQuestion"),
+      // Pause the loop when a write plan submitted via `run_plan(...)` is
+      // waiting for the user's approval in the UI. The next user message
+      // (sent by the frontend after grant/modify/reject) starts a fresh
+      // turn — the agent re-runs the same code and the dispatch path
+      // matches the grant by `lookupHash`.
+      pythonAwaitingApproval,
+    ],
+    prepareStep: chatbotPrepareStep,
+    buildRuntimeContextBase: buildChatbotRuntimeContextBase,
+    callOptionsSchema: ChatbotCallOptionsSchema,
+  });
+
+/**
+ * Per-replica memoization of chatbot agent sets, one per serving
+ * profile. AgentSets are STATELESS singletons (per-request state is
+ * created inside `prepareCall`), so every replica builds identical
+ * sets from code — no cross-replica coordination. Bounded by the
+ * registry: `resolveChatModelForProfile` throws on unknown keys.
+ */
+const chatbotAgentSets = new Map<
+  string,
+  AgentSet<ChatbotCallOptions, ChatbotTools>
+>();
+
+/**
+ * Chatbot agent set for an arbitrary registry profile — the seam the
+ * C3 eval header (`X-Model-Profile-Key`) and the C8 per-team /
+ * per-conversation selection call. No `profileKey` → the default
+ * `chat` role binding. The fallback agent stays on the shared
+ * `chat-fallback` binding regardless of the primary profile.
+ */
+export const getChatbotAgentSet = (
+  profileKey?: string,
+): AgentSet<ChatbotCallOptions, ChatbotTools> => {
+  const resolved =
+    profileKey === undefined
+      ? resolveModel("chat")
+      : resolveChatModelForProfile(profileKey);
+  const key = resolved.profile.key;
+  const cached = chatbotAgentSets.get(key);
+  if (cached) return cached;
+  const set = makeChatbotAgentSet(resolved);
+  chatbotAgentSets.set(key, set);
+  return set;
+};
+
+export const chatbotAgentSet = getChatbotAgentSet();

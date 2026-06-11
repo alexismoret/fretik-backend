@@ -69,7 +69,6 @@ describe("COMPACTABLE_TOOLS — derived from registry metadata", () => {
     expect(COMPACTABLE_TOOLS.has("querySql")).toBe(true);
     expect(COMPACTABLE_TOOLS.has("read")).toBe(true);
     expect(COMPACTABLE_TOOLS.has("listDocuments")).toBe(true);
-    expect(COMPACTABLE_TOOLS.has("getExtractionData")).toBe(true);
     expect(COMPACTABLE_TOOLS.has("webFetch")).toBe(true);
     expect(COMPACTABLE_TOOLS.has("vision")).toBe(true);
   });

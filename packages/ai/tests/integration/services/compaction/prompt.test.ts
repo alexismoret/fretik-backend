@@ -35,7 +35,11 @@ describe("getCompactPrompt", () => {
     expect(prompt).toContain("outputs/persisted/");
     expect(prompt).toContain("attachments/");
     expect(prompt).toContain("drive/");
-    expect(prompt).toContain("BL");
+    // Identifier examples must stay industry-agnostic (core rule) —
+    // generic business identifiers in, transport vocabulary out.
+    expect(prompt).toContain("invoice numbers");
+    expect(prompt).toContain("purchase order numbers");
+    expect(prompt).not.toContain("CMR");
   });
 
   test("instructs the model to write the summary in the conversation language", () => {

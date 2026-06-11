@@ -112,7 +112,7 @@ export const resolveModel = (role: ModelRole): ResolvedModel => {
     ? openrouter.chat(profile.catalog.id, settings)
     : openrouter.chat(profile.catalog.id);
   const model = instrumentModel(
-    binding.wrapCache ? wrapModelWithCache(raw) : raw,
+    binding.wrapCache ? wrapModelWithCache(raw, profile) : raw,
   );
 
   const entry: ResolvedModel = { model, profile, binding };

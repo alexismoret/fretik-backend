@@ -72,6 +72,7 @@ import { chatbotAgentSet, type ChatbotCallOptions } from "../agents/chatbot";
 import { writeSandboxAuthFile } from "../lib/conversation-storage";
 import { flushLangfuse, langfuseEnabled } from "../lib/langfuse";
 import { deleteScore, recordScore } from "../lib/langfuse-scores";
+import { getProfileForRole } from "../lib/model-registry/resolve";
 import { getResumableStreamContext } from "../lib/resumable-stream-context";
 import { chatbotRateLimitMiddleware } from "../middlewares/chatbot-rate-limit";
 import { internalMiddleware } from "../middlewares/internal";
@@ -1173,6 +1174,10 @@ const runChatbotTurn = async (
       // per turn. Run directly when Langfuse is unconfigured.
       const turnBody = async (): Promise<void> => {
         const historyForModel = await compactConversation(params.history, {
+          // Threshold follows the serving model's context window. Today
+          // that is always the `chat` role binding; the per-conversation
+          // profile override (C8) will thread the resolved profile here.
+          profile: getProfileForRole("chat"),
           onProgress: (event) => {
             // The shared `id` makes consecutive writes UPDATE the
             // single existing data part on the client (started → done

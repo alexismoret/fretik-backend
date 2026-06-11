@@ -6,6 +6,7 @@ import {
   type SharedV3ProviderOptions,
 } from "@ai-sdk/provider";
 import { wrapLanguageModel } from "ai";
+import type { ModelProfile } from "./model-registry/types";
 
 /**
  * Manual prompt-caching middleware for OpenRouter chat models.
@@ -264,10 +265,12 @@ export const applyCacheControl = (
   });
 };
 
-const cacheMiddleware: LanguageModelV3Middleware = {
+const buildCacheMiddleware = (
+  shouldInject: (modelId: string) => boolean,
+): LanguageModelV3Middleware => ({
   specificationVersion: "v3",
   transformParams: async ({ params, model }) => {
-    if (!shouldInjectCacheControl(model.modelId)) return params;
+    if (!shouldInject(model.modelId)) return params;
     const indices = selectBreakpointIndices(params.prompt);
     if (CACHE_DEBUG) {
       console.debug(
@@ -277,12 +280,39 @@ const cacheMiddleware: LanguageModelV3Middleware = {
     if (indices.length === 0) return params;
     return { ...params, prompt: applyCacheControl(params.prompt, indices) };
   },
-};
+});
+
+/** Always-inject variant — the decision was already made from the profile. */
+const profileCacheMiddleware = buildCacheMiddleware(() => true);
+
+/** Legacy regex-driven variant — for callers with no profile in hand. */
+const patternCacheMiddleware = buildCacheMiddleware(shouldInjectCacheControl);
 
 // Cache only — Langfuse cost capture is applied separately and uniformly
 // via `instrumentModel` (`lib/model-instrumentation.ts`) so it covers every
 // model, not just the cached chat ones.
-export const wrapModelWithCache = (model: LanguageModelV3): LanguageModelV3 => {
+//
+// When a `ModelProfile` is provided (every registry-resolved model), the
+// caching decision comes from `assessment.cache.strategy` — the profile is
+// the source of truth, the id-pattern table above is only a fallback for
+// profile-less callers. The breakpoint algorithm emits at most 4 markers;
+// a profile declaring fewer is not supported yet (warned at wrap time).
+export const wrapModelWithCache = (
+  model: LanguageModelV3,
+  profile?: ModelProfile,
+): LanguageModelV3 => {
   if (!MANUAL_PROMPT_CACHE_ENABLED) return model;
-  return wrapLanguageModel({ model, middleware: [cacheMiddleware] });
+  if (profile) {
+    if (profile.assessment.cache.strategy !== "explicit-breakpoints") {
+      return model;
+    }
+    const max = profile.assessment.cache.maxBreakpoints;
+    if (max !== undefined && max < 4) {
+      console.warn(
+        `[openrouter-cache] profile ${profile.key} declares maxBreakpoints=${max} < 4 — the 4-breakpoint algorithm may exceed it`,
+      );
+    }
+    return wrapLanguageModel({ model, middleware: [profileCacheMiddleware] });
+  }
+  return wrapLanguageModel({ model, middleware: [patternCacheMiddleware] });
 };

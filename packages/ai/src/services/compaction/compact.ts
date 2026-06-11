@@ -1,4 +1,5 @@
 import type { UIMessage } from "ai";
+import type { ModelProfile } from "../../lib/model-registry/types";
 import { microcompactMessages } from "./microcompact";
 import { getCompactUserSummaryMessage } from "./prompt";
 import {
@@ -6,7 +7,7 @@ import {
   extractRuntimeState,
   formatRuntimeStateForSummary,
 } from "./runtime-state-attachments";
-import { summariseMessages } from "./summarizer";
+import { parseSummariserMaxTokens, summariseMessages } from "./summarizer";
 import { estimateMessagesTokens } from "./token-estimator";
 
 /**
@@ -20,7 +21,7 @@ import { estimateMessagesTokens } from "./token-estimator";
  *      below threshold and skip the heavyweight summariser.
  *      See `./microcompact.ts`.
  *   2. **Threshold check**: if total estimated tokens are still above
- *      `COMPACTION_THRESHOLD_TOKENS`, fire the summariser; otherwise
+ *      the compaction threshold, fire the summariser; otherwise
  *      return the (microcompacted) array as-is.
  *   3. **Summarisation**: `summariseMessages` runs the 9-section CC
  *      prompt over ALL prior messages, with PTL retry baked in (it
@@ -48,7 +49,10 @@ import { estimateMessagesTokens } from "./token-estimator";
  * PTL retries handle the summariser's own context overflow.
  *
  * Sources of truth that drive the threshold computation:
- *   - `OPENROUTER_CHAT_MODEL_CONTEXT` (default 196_608, MiniMax M2.7)
+ *   - the serving model's context window — `profile.catalog.contextLength`
+ *     from the model registry, passed by the caller (no more
+ *     `OPENROUTER_CHAT_MODEL_CONTEXT` env: the threshold follows the
+ *     model that actually serves the conversation)
  *   - `SUMMARISER_MAX_TOKENS` (default 20_000, env-overridable via
  *     `COMPACTION_SUMMARIZER_MAX_TOKENS` — see summarizer.ts) reserves
  *     room for the summary output itself.
@@ -73,50 +77,27 @@ import { estimateMessagesTokens } from "./token-estimator";
  */
 const AUTOCOMPACT_BUFFER_TOKENS = 13_000;
 
-const PRIMARY_MODEL_CONTEXT_TOKENS = (() => {
-  const raw = process.env.OPENROUTER_CHAT_MODEL_CONTEXT;
-  if (!raw) return 196_608;
-  const parsed = Number(raw);
-  if (!Number.isFinite(parsed) || parsed <= 0) return 196_608;
-  return Math.floor(parsed);
-})();
+/**
+ * Tokens reserved for the summary output itself — same clamp logic the
+ * summariser applies, captured once at module load.
+ */
+const SUMMARISER_MAX_TOKENS = parseSummariserMaxTokens(
+  process.env.COMPACTION_SUMMARIZER_MAX_TOKENS,
+);
 
 /**
- * Tokens reserved for the summary output itself. Read directly from
- * the same env (`COMPACTION_SUMMARIZER_MAX_TOKENS`) the summariser
- * reads — duplicating the clamp here rather than importing from
- * `./summarizer` is a deliberate decoupling: each module captures
- * the env at load time, and re-importing only `compact.ts` (the
- * test pattern) would otherwise reuse the cached `summarizer.ts`
- * module's frozen value, hiding env-driven threshold shifts behind
- * stale state.
+ * Token threshold above which compaction fires, derived from the
+ * SERVING model's profile: effective window (context − reserved
+ * summary output) minus the autocompact buffer. For MiniMax M2.7
+ * (204.8K) with the default 20K reserve this lands at 171.8K — close
+ * to CC's 83.5% on Sonnet but derived rather than tuned, so it stays
+ * correct for any model swap or per-conversation override (C8): the
+ * threshold always follows the profile passed by the caller.
  */
-const SUMMARISER_MAX_TOKENS = (() => {
-  const raw = process.env.COMPACTION_SUMMARIZER_MAX_TOKENS;
-  if (!raw) return 20_000;
-  const parsed = Number(raw);
-  if (!Number.isFinite(parsed)) return 20_000;
-  return Math.min(32_000, Math.max(2_000, Math.floor(parsed)));
-})();
-
-/**
- * Effective window = full context − reserved summary output. The
- * threshold and any next-turn budget are computed from this, not the
- * raw model window, so we never plan a turn whose summary alone
- * couldn't fit.
- */
-const EFFECTIVE_CONTEXT_TOKENS =
-  PRIMARY_MODEL_CONTEXT_TOKENS - SUMMARISER_MAX_TOKENS;
-
-/**
- * Token threshold above which compaction fires. Below it we return
- * the (microcompacted) array unchanged. For MiniMax M2.7 (196K) with
- * the default 20K summary reserve this lands at 163K — close to CC's
- * 83.5% on Sonnet but derived rather than tuned, so it stays correct
- * for any model swap via `OPENROUTER_CHAT_MODEL_CONTEXT`.
- */
-export const COMPACTION_THRESHOLD_TOKENS =
-  EFFECTIVE_CONTEXT_TOKENS - AUTOCOMPACT_BUFFER_TOKENS;
+export const getCompactionThresholdTokens = (profile: ModelProfile): number =>
+  profile.catalog.contextLength -
+  SUMMARISER_MAX_TOKENS -
+  AUTOCOMPACT_BUFFER_TOKENS;
 
 export interface CompactionSummaryMetadata {
   type: "compaction_summary";
@@ -129,7 +110,7 @@ export interface CompactionSummaryMetadata {
 /**
  * Progress events emitted (when caller passes `onProgress`) ONLY when
  * the heavyweight summarisation path actually fires — i.e. tokens
- * crossed `COMPACTION_THRESHOLD_TOKENS`. Below-threshold runs (fast,
+ * crossed the compaction threshold. Below-threshold runs (fast,
  * microcompact-only) never fire a progress event so the UI doesn't
  * flash a "Compacting…" indicator for short conversations.
  *
@@ -161,8 +142,13 @@ export type CompactionProgressCallback = (
 
 export interface CompactConversationOptions {
   /**
+   * Profile of the model that will serve the next turn — drives the
+   * compaction threshold via `getCompactionThresholdTokens`.
+   */
+  profile: ModelProfile;
+  /**
    * Optional progress hook. Fires only on the heavyweight path
-   * (above `COMPACTION_THRESHOLD_TOKENS`). Errors thrown by the
+   * (above the compaction threshold). Errors thrown by the
    * callback are caught and logged so a buggy listener never aborts
    * compaction itself.
    */
@@ -191,9 +177,10 @@ const safeProgress = (
  */
 export const compactConversation = async (
   messages: UIMessage[],
-  options: CompactConversationOptions = {},
+  options: CompactConversationOptions,
 ): Promise<UIMessage[]> => {
-  const { onProgress } = options;
+  const { onProgress, profile } = options;
+  const threshold = getCompactionThresholdTokens(profile);
 
   // Step 1 — microcompact (always cheap, often skips the summariser).
   const microcompacted = microcompactMessages(messages);
@@ -202,16 +189,16 @@ export const compactConversation = async (
   // intentionally do NOT fire `onProgress` so the UI never flashes a
   // "Compacting…" indicator for short conversations.
   const totalTokens = estimateMessagesTokens(microcompacted);
-  if (totalTokens <= COMPACTION_THRESHOLD_TOKENS) {
+  if (totalTokens <= threshold) {
     console.info(
-      `[compaction] skipped reason=below_threshold tokens=${totalTokens.toString()} threshold=${COMPACTION_THRESHOLD_TOKENS.toString()}`,
+      `[compaction] skipped reason=below_threshold tokens=${totalTokens.toString()} threshold=${threshold.toString()}`,
     );
     return microcompacted;
   }
 
   // Step 3 — full summarisation.
   console.info(
-    `[compaction] starting tokens=${totalTokens.toString()} threshold=${COMPACTION_THRESHOLD_TOKENS.toString()} messageCount=${microcompacted.length.toString()}`,
+    `[compaction] starting tokens=${totalTokens.toString()} threshold=${threshold.toString()} messageCount=${microcompacted.length.toString()}`,
   );
   safeProgress(onProgress, { phase: "started", tokensBefore: totalTokens });
   const summary = await summariseMessages(microcompacted);

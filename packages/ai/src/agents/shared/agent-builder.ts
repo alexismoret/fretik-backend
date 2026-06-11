@@ -9,6 +9,7 @@ import {
   type ToolSet,
 } from "ai";
 import { telemetryFor } from "../../lib/langfuse";
+import type { ResolvedModel } from "../../lib/model-registry/resolve";
 import {
   DynamicToolManager,
   replayActivationFromHistory,
@@ -62,7 +63,7 @@ import { TaskManager } from "./task-manager";
  */
 export type AgentRuntimeContextBase = Omit<
   AgentRuntimeContext,
-  "dynamicToolManager" | "taskManager"
+  "dynamicToolManager" | "taskManager" | "modelProfile"
 >;
 
 /**
@@ -87,10 +88,10 @@ export interface BuildAgentSetConfig<CALL_OPTIONS, TTools extends ToolSet> {
     ctx: AgentRuntimeContext,
     tools: TTools,
   ) => string | Promise<string>;
-  /** Primary language model. */
-  model: LanguageModel;
-  /** Fallback language model, used when the primary errors out. */
-  fallbackModel: LanguageModel;
+  /** Primary model, registry-resolved (instance + profile). */
+  model: ResolvedModel;
+  /** Fallback model, used when the primary errors out. */
+  fallbackModel: ResolvedModel;
   /**
    * Optional stop condition. Defaults to `stepCountIs(12)` — mirrors
    * the previous `maxSteps: 12` default from Phase 1.
@@ -242,8 +243,9 @@ const defaultOnStepFinish = <TTools extends ToolSet>(
 
 const buildToolLoopAgent = <CALL_OPTIONS, TTools extends ToolSet>(
   config: BuildAgentSetConfig<CALL_OPTIONS, TTools>,
-  model: LanguageModel,
+  resolved: ResolvedModel,
 ): ToolLoopAgent<CALL_OPTIONS, TTools> => {
+  const model: LanguageModel = resolved.model;
   const tools = config.buildTools();
   const prepareStep = config.prepareStep?.(tools);
   const stopWhen = config.stopWhen ?? stepCountIs(12);
@@ -337,6 +339,11 @@ const buildToolLoopAgent = <CALL_OPTIONS, TTools extends ToolSet>(
         ...base,
         dynamicToolManager,
         taskManager: new TaskManager(),
+        // The profile of THIS instance's model — the fallback agent
+        // carries the fallback profile, so capability-aware reads
+        // (modalities, strict schemas, compaction) always describe the
+        // model actually serving the call.
+        modelProfile: resolved.profile,
       };
       const instructions = await config.systemPrompt(ctx, tools);
       const branded = wrapRuntimeContext(ctx);

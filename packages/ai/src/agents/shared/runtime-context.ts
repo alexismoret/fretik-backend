@@ -1,3 +1,4 @@
+import type { ModelProfile } from "../../lib/model-registry/types";
 import type { DynamicToolManager } from "./dynamic-tools";
 import type { TaskManager } from "./task-manager";
 
@@ -59,6 +60,14 @@ export interface AgentRuntimeContext {
   teamId: string;
   userId?: string;
   userName?: string;
+  /**
+   * Profile of the model serving THIS agent instance (primary or
+   * fallback), injected by `buildToolLoopAgent`'s `prepareCall` —
+   * callers never provide it. Tools and the prompt renderer read it
+   * for capability-aware decisions (native modalities, strict
+   * schemas, reasoning style) instead of assuming a fixed model.
+   */
+  modelProfile: ModelProfile;
   /**
    * ID of the `ai_conversations` row this turn belongs to. Used by
    * the persisted-output layer to namespace large tool result files

@@ -5,11 +5,7 @@ import {
   type StopCondition,
 } from "ai";
 import { z } from "zod";
-import {
-  chatModel,
-  dispatchAgentCheapModel,
-  fallbackChatModel,
-} from "../../lib/openrouter";
+import { resolveModel } from "../../lib/model-registry/resolve";
 import { createDispatchAgentTool } from "../../tools/dispatch-agent";
 import {
   buildAgentSet,
@@ -341,8 +337,8 @@ const subAgentPrimarySet = buildAgentSet<ChatbotCallOptions, SubAgentTools>({
   id: "chatbot.sub.primary",
   buildTools: buildSubAgentTools,
   systemPrompt: subAgentSystemPrompt,
-  model: chatModel,
-  fallbackModel: fallbackChatModel,
+  model: resolveModel("chat"),
+  fallbackModel: resolveModel("chat-fallback"),
   stopWhen: [
     stepCountIs(parseSubAgentMaxSteps()),
     hasToolCall("askUserQuestion"),
@@ -352,13 +348,13 @@ const subAgentPrimarySet = buildAgentSet<ChatbotCallOptions, SubAgentTools>({
 });
 
 /**
- * Sub-agent set on the CHEAP model (`dispatchAgentCheapModel`,
+ * Sub-agent set on the CHEAP model (the registry's `dispatch-cheap` role,
  * `deepseek/deepseek-v4-flash` by default). Used when
  * `dispatchAgent({ model: 'cheap' })` is called for well-scoped
  * mechanical sub-tasks (summarise one document, extract a known
  * schema, classify items).
  *
- * Fallback escalates to the main `chatModel`: if the cheap model
+ * Fallback escalates to the main `chat` model: if the cheap model
  * errors out (rate-limit, provider 5xx, etc.), the parent's
  * `dispatchAgent` execute returns the primary model's result rather
  * than a hard failure.
@@ -367,8 +363,8 @@ const subAgentCheapSet = buildAgentSet<ChatbotCallOptions, SubAgentTools>({
   id: "chatbot.sub.cheap",
   buildTools: buildSubAgentTools,
   systemPrompt: subAgentSystemPrompt,
-  model: dispatchAgentCheapModel,
-  fallbackModel: chatModel,
+  model: resolveModel("dispatch-cheap"),
+  fallbackModel: resolveModel("chat"),
   stopWhen: [
     stepCountIs(parseSubAgentMaxSteps()),
     hasToolCall("askUserQuestion"),
@@ -435,8 +431,8 @@ export const chatbotAgentSet = buildAgentSet<ChatbotCallOptions, ChatbotTools>({
   id: "chatbot",
   buildTools: () => buildChatbotTools({ dispatchAgent: dispatchAgentTool }),
   systemPrompt: chatbotSystemPrompt,
-  model: chatModel,
-  fallbackModel: fallbackChatModel,
+  model: resolveModel("chat"),
+  fallbackModel: resolveModel("chat-fallback"),
   // Stop the agent loop on either of two conditions:
   //   1. Hit the per-turn step budget (`CHATBOT_MAX_STEPS`, default 30).
   //   2. The model just called `askUserQuestion` — we MUST end the

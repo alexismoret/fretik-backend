@@ -6,7 +6,12 @@ import {
 import { instrumentModel } from "../model-instrumentation";
 import { wrapModelWithCache } from "../openrouter-cache";
 import { MODEL_PROFILES, ROLE_BINDINGS } from "./profiles";
-import type { ModelProfile, ModelRole, RoleBinding } from "./types";
+import type {
+  ModelProfile,
+  ModelRole,
+  ReasoningLevel,
+  RoleBinding,
+} from "./types";
 
 const apiKey = process.env.OPENROUTER_API_KEY;
 if (!apiKey) {
@@ -19,12 +24,11 @@ export const openrouter = createOpenRouter({
 });
 
 /**
- * Role-level request envelopes, reproducing the historical per-role
- * settings objects EXACTLY — C1 is a zero-behaviour-change chantier.
- * The profile's `reasoning.defaultLevel` (effort-first vocabulary) is
- * NOT consumed here yet: the level → wire-param mapping is chantier
- * C2 work, re-baselined through the C3 eval gate before it changes
- * anything on the wire.
+ * Role-level request envelopes. The chat kind derives its reasoning
+ * param from the profile via `reasoningParamForProfile` (effort-first);
+ * for every current binding this reproduces the historical settings
+ * byte-for-byte (max-tokens style at `low` → 1 500) — non-default
+ * levels stay unexercised until the C3 gate calibrates them.
  *
  * - `chat` — `provider.require_parameters: true` is LOAD-BEARING for
  *   tool-calling: by default OpenRouter silently drops unsupported
@@ -50,12 +54,13 @@ export const openrouter = createOpenRouter({
  */
 export const settingsForRole = (
   binding: RoleBinding,
+  profile: ModelProfile,
 ): OpenRouterChatSettings | undefined => {
   switch (binding.settingsKind) {
     case "chat":
       return {
         provider: { require_parameters: true, zdr: true },
-        reasoning: { enabled: true, max_tokens: 1_500 },
+        reasoning: reasoningParamForProfile(profile),
         usage: { include: true },
       };
     case "preextract":
@@ -71,6 +76,44 @@ export const settingsForRole = (
     case "bare":
       return undefined;
   }
+};
+
+/**
+ * PROVISIONAL token budgets for `max-tokens`-style families, by effort
+ * level. Only `low` (1 500 — the historical chat budget, Anthropic's
+ * chat-turn guidance) is production-validated; the other rungs are
+ * placeholders to be calibrated by C3 eval runs before anything
+ * non-default requests them (the « deep thinking » toggle lands in C8).
+ */
+const MAX_TOKENS_BUDGET_BY_LEVEL: Record<
+  Exclude<ReasoningLevel, "none">,
+  number
+> = {
+  minimal: 512,
+  low: 1_500,
+  medium: 4_000,
+  high: 8_000,
+  xhigh: 16_000,
+};
+
+/**
+ * Map the product's effort-first `ReasoningLevel` to the wire param the
+ * model family honours: effort-style families get OpenRouter's `effort`
+ * (whose union matches `ReasoningLevel` exactly); `max-tokens` families
+ * get a budget from the table above. `none` (level or style) → no
+ * reasoning param at all.
+ */
+export const reasoningParamForProfile = (
+  profile: ModelProfile,
+  level?: ReasoningLevel,
+): OpenRouterChatSettings["reasoning"] => {
+  const { style, defaultLevel } = profile.assessment.reasoning;
+  const resolved = level ?? defaultLevel;
+  if (style === "none" || resolved === "none") return undefined;
+  if (style === "max-tokens") {
+    return { enabled: true, max_tokens: MAX_TOKENS_BUDGET_BY_LEVEL[resolved] };
+  }
+  return { enabled: true, effort: resolved };
 };
 
 export interface ResolvedModel {
@@ -107,7 +150,7 @@ export const resolveModel = (role: ModelRole): ResolvedModel => {
 
   const binding = ROLE_BINDINGS[role];
   const profile = getProfile(binding.profileKey);
-  const settings = settingsForRole(binding);
+  const settings = settingsForRole(binding, profile);
   const raw = settings
     ? openrouter.chat(profile.catalog.id, settings)
     : openrouter.chat(profile.catalog.id);

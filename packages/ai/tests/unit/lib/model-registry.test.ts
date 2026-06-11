@@ -25,7 +25,9 @@ import { shouldInjectCacheControl } from "../../../src/lib/openrouter-cache";
 
 describe("settingsForRole — parity with historical settings objects", () => {
   test("chat envelope matches the legacy chatModelSettings", () => {
-    expect(settingsForRole(ROLE_BINDINGS.chat)).toEqual({
+    expect(
+      settingsForRole(ROLE_BINDINGS.chat, getProfileForRole("chat")),
+    ).toEqual({
       provider: { require_parameters: true, zdr: true },
       reasoning: { enabled: true, max_tokens: 1_500 },
       usage: { include: true },
@@ -33,12 +35,18 @@ describe("settingsForRole — parity with historical settings objects", () => {
   });
 
   test("chat-fallback and dispatch-cheap share the chat envelope", () => {
-    expect(settingsForRole(ROLE_BINDINGS["chat-fallback"])).toEqual(
-      settingsForRole(ROLE_BINDINGS.chat),
-    );
-    expect(settingsForRole(ROLE_BINDINGS["dispatch-cheap"])).toEqual(
-      settingsForRole(ROLE_BINDINGS.chat),
-    );
+    expect(
+      settingsForRole(
+        ROLE_BINDINGS["chat-fallback"],
+        getProfileForRole("chat-fallback"),
+      ),
+    ).toEqual(settingsForRole(ROLE_BINDINGS.chat, getProfileForRole("chat")));
+    expect(
+      settingsForRole(
+        ROLE_BINDINGS["dispatch-cheap"],
+        getProfileForRole("dispatch-cheap"),
+      ),
+    ).toEqual(settingsForRole(ROLE_BINDINGS.chat, getProfileForRole("chat")));
   });
 
   test("preextract envelope matches the legacy preextractModelSettings", () => {
@@ -46,14 +54,27 @@ describe("settingsForRole — parity with historical settings objects", () => {
       reasoning: { effort: "minimal" },
       provider: { require_parameters: true, zdr: true, sort: "throughput" },
     };
-    expect(settingsForRole(ROLE_BINDINGS["pre-extract"])).toEqual(expected);
-    expect(settingsForRole(ROLE_BINDINGS["pre-extract-fallback"])).toEqual(
-      expected,
-    );
+    expect(
+      settingsForRole(
+        ROLE_BINDINGS["pre-extract"],
+        getProfileForRole("pre-extract"),
+      ),
+    ).toEqual(expected);
+    expect(
+      settingsForRole(
+        ROLE_BINDINGS["pre-extract-fallback"],
+        getProfileForRole("pre-extract-fallback"),
+      ),
+    ).toEqual(expected);
   });
 
   test("active-memory envelope matches the legacy activeMemoryModelSettings", () => {
-    expect(settingsForRole(ROLE_BINDINGS["active-memory"])).toEqual({
+    expect(
+      settingsForRole(
+        ROLE_BINDINGS["active-memory"],
+        getProfileForRole("active-memory"),
+      ),
+    ).toEqual({
       provider: { require_parameters: true, zdr: true },
       reasoning: { effort: "low" },
     });
@@ -61,11 +82,26 @@ describe("settingsForRole — parity with historical settings objects", () => {
 
   test("bare roles get NO settings object (call sites own their options)", () => {
     expect(
-      settingsForRole(ROLE_BINDINGS["compaction-summarizer"]),
+      settingsForRole(
+        ROLE_BINDINGS["compaction-summarizer"],
+        getProfileForRole("compaction-summarizer"),
+      ),
     ).toBeUndefined();
-    expect(settingsForRole(ROLE_BINDINGS["cheap-tasks"])).toBeUndefined();
-    expect(settingsForRole(ROLE_BINDINGS.vision)).toBeUndefined();
-    expect(settingsForRole(ROLE_BINDINGS["vision-fallback"])).toBeUndefined();
+    expect(
+      settingsForRole(
+        ROLE_BINDINGS["cheap-tasks"],
+        getProfileForRole("cheap-tasks"),
+      ),
+    ).toBeUndefined();
+    expect(
+      settingsForRole(ROLE_BINDINGS.vision, getProfileForRole("vision")),
+    ).toBeUndefined();
+    expect(
+      settingsForRole(
+        ROLE_BINDINGS["vision-fallback"],
+        getProfileForRole("vision-fallback"),
+      ),
+    ).toBeUndefined();
   });
 });
 

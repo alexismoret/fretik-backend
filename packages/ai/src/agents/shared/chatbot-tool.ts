@@ -1,5 +1,57 @@
-import type { Tool } from "ai";
+import type { Tool, ToolExecuteFunction } from "ai";
 import { z } from "zod";
+import {
+  TOOL_ERROR_CODES,
+  toolError,
+  type ToolErrorOutput,
+} from "../../lib/tool-error-codes";
+
+/**
+ * Wrap a tool's `execute` so an UNEXPECTED throw (or promise rejection)
+ * becomes a canonical `ToolErrorOutput` the model reads as a normal result,
+ * instead of a raw stream error. Tools still RETURN `{ error, code }` for
+ * expected failures — this is the backstop for the unexpected ones, making
+ * the "never throw" convention a guarantee. Streaming (async-iterable)
+ * results are passed through untouched.
+ */
+const guardToolExecute = <TInput, TOutput>(
+  execute: ToolExecuteFunction<TInput, TOutput>,
+): ToolExecuteFunction<TInput, TOutput> => {
+  const internalError = (): ToolErrorOutput =>
+    toolError(
+      TOOL_ERROR_CODES.INTERNAL_ERROR,
+      "The tool hit an unexpected internal error. Retry once; if it persists, tell the user this action is temporarily unavailable.",
+    );
+  const guarded: ToolExecuteFunction<TInput, TOutput | ToolErrorOutput> = (
+    input,
+    options,
+  ) => {
+    let result: AsyncIterable<TOutput> | PromiseLike<TOutput> | TOutput;
+    try {
+      result = execute(input, options);
+    } catch (err) {
+      console.error("[chatbot-tool] uncaught error in tool execute", err);
+      return Promise.resolve(internalError());
+    }
+    // Streaming tool result — pass through (no chatbot tool uses this today).
+    if (
+      result !== null &&
+      typeof result === "object" &&
+      Symbol.asyncIterator in result
+    ) {
+      return result;
+    }
+    return Promise.resolve(result).catch((err: unknown) => {
+      console.error("[chatbot-tool] rejected promise in tool execute", err);
+      return internalError();
+    });
+  };
+  // The AI SDK types `Tool["execute"]` invariantly in OUTPUT; the guard only
+  // adds a `ToolErrorOutput` runtime return on unexpected failure, which is
+  // serialised opaquely downstream. Same sanctioned escape hatch as
+  // `injectCaptionField` below.
+  return guarded as unknown as ToolExecuteFunction<TInput, TOutput>;
+};
 
 /**
  * Shared tool metadata used by the chatbot agent.
@@ -175,6 +227,9 @@ export const buildChatbotTool = <TInput, TOutput>(
   const enrichedDefinition = {
     ...definition,
     inputSchema: injectCaptionField(definition.inputSchema),
+    execute: definition.execute
+      ? guardToolExecute(definition.execute)
+      : undefined,
   };
   const resolved: ChatbotTool<TInput, TOutput> = {
     ...enrichedDefinition,

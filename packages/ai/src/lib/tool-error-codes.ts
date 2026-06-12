@@ -74,3 +74,23 @@ export const TOOL_ERROR_CODES = {
 
 export type ToolErrorCode =
   (typeof TOOL_ERROR_CODES)[keyof typeof TOOL_ERROR_CODES];
+
+/**
+ * Canonical failure envelope every chatbot tool returns instead of
+ * throwing. A thrown error is opaque to the model; this object is a
+ * normal tool result it can read, explain, or recover from. `hint`
+ * (optional) gives the corrected call shape or next step.
+ */
+export interface ToolErrorOutput {
+  error: string;
+  code: ToolErrorCode;
+  hint?: string;
+}
+
+/** Build a `ToolErrorOutput`. Use at every tool failure path. */
+export const toolError = (
+  code: ToolErrorCode,
+  error: string,
+  hint?: string,
+): ToolErrorOutput =>
+  hint === undefined ? { error, code } : { error, code, hint };

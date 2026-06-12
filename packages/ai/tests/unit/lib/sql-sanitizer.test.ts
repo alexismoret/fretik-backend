@@ -6,32 +6,29 @@ import {
 } from "../../../src/lib/sql-sanitizer";
 
 /**
- * Security-critical tests for the agent-facing SQL sanitizer. These
- * are deterministic (pure function, no DB, no LLM) so they belong in
- * unit tests — the live-LLM eval harness can't reliably exercise the
- * blocked-identifier / placeholder-contract branches because the
- * sanitised model won't emit the bad SQL in the first place.
+ * Security-critical tests for the agent-facing SQL sanitizer. These are
+ * deterministic (pure function, no DB, no LLM) so they belong in unit tests —
+ * the live-LLM eval harness can't reliably exercise the not-read-only /
+ * table-allowlist branches because the sanitised model won't emit the bad SQL
+ * in the first place.
  *
- * The tests mirror every failure path documented on
- * `SqlValidationError.code`:
+ * Team/org scoping is enforced by the database (RLS + the `fretik_sql_tool`
+ * role), NOT by this function — so there is no placeholder contract here.
+ * The sanitizer's job is: parse, allow only SELECT/WITH, and reject any
+ * relation outside the product allowlist.
+ *
+ * The tests mirror every failure path documented on `SqlValidationError.code`:
  *   - SQL_PARSE_FAILED
  *   - SQL_NOT_READ_ONLY
- *   - SQL_BLOCKED_IDENTIFIER
- *   - SQL_MISSING_PLACEHOLDER
+ *   - SQL_TABLE_NOT_ALLOWED
  */
-
-const TEAM_ID = "019cd97b-326e-7000-9ebe-96def6cc53df";
 
 const expectRejection = (
   sql: string,
-  code:
-    | "SQL_PARSE_FAILED"
-    | "SQL_NOT_READ_ONLY"
-    | "SQL_BLOCKED_IDENTIFIER"
-    | "SQL_MISSING_PLACEHOLDER",
+  code: "SQL_PARSE_FAILED" | "SQL_NOT_READ_ONLY" | "SQL_TABLE_NOT_ALLOWED",
 ) => {
   try {
-    sanitizeSelect(sql, TEAM_ID);
+    sanitizeSelect(sql);
     throw new Error(`Expected rejection with ${code}, got success`);
   } catch (err) {
     expect(err).toBeInstanceOf(SqlValidationException);
@@ -42,54 +39,40 @@ const expectRejection = (
 };
 
 describe("sanitizeSelect — happy path", () => {
-  test("accepts a well-formed SELECT with the placeholder", () => {
+  test("accepts a well-formed SELECT on an allowed table", () => {
     const sql = sanitizeSelect(
-      "SELECT id, name FROM documents WHERE team_id = __TEAM_ID__",
-      TEAM_ID,
+      "SELECT id, name FROM documents WHERE status = 'ready'",
     );
-    expect(sql).toContain(`'${TEAM_ID}'`);
-    expect(sql).not.toContain("__TEAM_ID__");
-    expect(sql).not.toMatch(/;$/);
+    expect(sql).toBe("SELECT id, name FROM documents WHERE status = 'ready'");
   });
 
-  test("accepts WITH (CTE) statements", () => {
+  test("accepts joins across allowed tables and the identity view", () => {
     const sql = sanitizeSelect(
-      "WITH x AS (SELECT * FROM documents WHERE team_id = __TEAM_ID__) SELECT * FROM x",
-      TEAM_ID,
+      "SELECT m.name, count(d.id) FROM documents d JOIN chatbot_org_members m ON m.user_id = d.uploaded_by_id GROUP BY m.name",
     );
-    expect(sql).toContain(`'${TEAM_ID}'`);
+    expect(sql).toContain("chatbot_org_members");
+  });
+
+  test("accepts WITH (CTE) statements and treats the CTE name as a relation", () => {
+    const sql = sanitizeSelect(
+      "WITH recent AS (SELECT * FROM documents) SELECT * FROM recent",
+    );
+    expect(sql).toContain("recent");
+  });
+
+  test("accepts public-qualified table names", () => {
+    const sql = sanitizeSelect("SELECT id FROM public.documents");
+    expect(sql).toContain("documents");
   });
 
   test("strips trailing semicolon before parsing", () => {
-    const sql = sanitizeSelect(
-      "SELECT 1 FROM documents WHERE team_id = __TEAM_ID__;",
-      TEAM_ID,
-    );
+    const sql = sanitizeSelect("SELECT 1 FROM documents;");
     expect(sql.endsWith(";")).toBe(false);
   });
 
-  test("handles both quoted and unquoted placeholder forms", () => {
-    const unquoted = sanitizeSelect(
-      "SELECT 1 FROM documents WHERE team_id = __TEAM_ID__",
-      TEAM_ID,
-    );
-    const quoted = sanitizeSelect(
-      "SELECT 1 FROM documents WHERE team_id = '__TEAM_ID__'",
-      TEAM_ID,
-    );
-    expect(unquoted).toBe(quoted);
-    expect(unquoted).toContain(`'${TEAM_ID}'`);
-    expect(quoted).not.toContain("''");
-  });
-
-  test("escapes single quotes in the teamId literal", () => {
-    const teamWithQuote = "00000000-0000-'evil'-8000-000000000001";
-    const sql = sanitizeSelect(
-      "SELECT 1 FROM documents WHERE team_id = __TEAM_ID__",
-      teamWithQuote,
-    );
-    // Doubled-up single quotes are the Postgres-standard literal escape.
-    expect(sql).toContain("''evil''");
+  test("accepts a subquery on an allowed table", () => {
+    const sql = sanitizeSelect("SELECT * FROM (SELECT id FROM entities) s");
+    expect(sql).toContain("entities");
   });
 
   test("MAX_SQL_LIMIT is a sensible positive integer", () => {
@@ -98,7 +81,7 @@ describe("sanitizeSelect — happy path", () => {
   });
 });
 
-describe("sanitizeSelect — rejections", () => {
+describe("sanitizeSelect — read-only enforcement", () => {
   test("rejects an empty / whitespace string", () => {
     expectRejection("   ", "SQL_PARSE_FAILED");
   });
@@ -115,17 +98,11 @@ describe("sanitizeSelect — rejections", () => {
   });
 
   test("rejects UPDATE", () => {
-    expectRejection(
-      "UPDATE documents SET name='x' WHERE team_id = __TEAM_ID__",
-      "SQL_NOT_READ_ONLY",
-    );
+    expectRejection("UPDATE documents SET name='x'", "SQL_NOT_READ_ONLY");
   });
 
   test("rejects DELETE", () => {
-    expectRejection(
-      "DELETE FROM documents WHERE team_id = __TEAM_ID__",
-      "SQL_NOT_READ_ONLY",
-    );
+    expectRejection("DELETE FROM documents", "SQL_NOT_READ_ONLY");
   });
 
   test("rejects DROP", () => {
@@ -135,55 +112,61 @@ describe("sanitizeSelect — rejections", () => {
   test("rejects CREATE", () => {
     expectRejection("CREATE TABLE foo (id INT)", "SQL_NOT_READ_ONLY");
   });
+});
 
-  test("rejects pg_catalog access", () => {
+describe("sanitizeSelect — table allowlist", () => {
+  test("rejects auth/secret tables (account)", () => {
     expectRejection(
-      "SELECT * FROM pg_catalog.pg_tables WHERE team_id = __TEAM_ID__",
-      "SQL_BLOCKED_IDENTIFIER",
+      "SELECT access_token, password FROM account",
+      "SQL_TABLE_NOT_ALLOWED",
+    );
+  });
+
+  test("rejects the raw user table (identity must go through the view)", () => {
+    expectRejection('SELECT email FROM "user"', "SQL_TABLE_NOT_ALLOWED");
+  });
+
+  test("rejects two_factor (TOTP secrets)", () => {
+    expectRejection("SELECT secret FROM two_factor", "SQL_TABLE_NOT_ALLOWED");
+  });
+
+  test("rejects unqualified system catalogs (pg_tables)", () => {
+    expectRejection("SELECT tablename FROM pg_tables", "SQL_TABLE_NOT_ALLOWED");
+  });
+
+  test("rejects pg_roles enumeration", () => {
+    expectRejection("SELECT rolname FROM pg_roles", "SQL_TABLE_NOT_ALLOWED");
+  });
+
+  test("rejects schema-qualified pg_catalog access", () => {
+    expectRejection(
+      "SELECT * FROM pg_catalog.pg_tables",
+      "SQL_TABLE_NOT_ALLOWED",
     );
   });
 
   test("rejects information_schema access", () => {
     expectRejection(
-      "SELECT * FROM information_schema.tables WHERE team_id = __TEAM_ID__",
-      "SQL_BLOCKED_IDENTIFIER",
+      "SELECT * FROM information_schema.tables",
+      "SQL_TABLE_NOT_ALLOWED",
     );
   });
 
-  test("rejects pg_sleep — blocked even via call expression", () => {
+  test("rejects an unknown product table", () => {
+    expectRejection("SELECT * FROM secrets_table", "SQL_TABLE_NOT_ALLOWED");
+  });
+
+  test("rejects a forbidden table joined onto an allowed one", () => {
     expectRejection(
-      "SELECT pg_sleep(10) WHERE team_id = __TEAM_ID__",
-      "SQL_BLOCKED_IDENTIFIER",
+      "SELECT d.id FROM documents d JOIN account a ON a.id = d.uploaded_by_id",
+      "SQL_TABLE_NOT_ALLOWED",
     );
   });
 
-  test("rejects dblink as a table reference", () => {
-    // Use parseable SQL that still contains the "dblink" substring —
-    // the sanitizer's blocked-identifier check is a substring scan
-    // that runs AFTER parse, so the SQL must tokenize first.
+  test("rejects a forbidden table hidden in a CTE", () => {
     expectRejection(
-      "SELECT 1 FROM dblink WHERE team_id = __TEAM_ID__",
-      "SQL_BLOCKED_IDENTIFIER",
-    );
-  });
-
-  test("rejects uppercase blocked identifiers (case-insensitive match)", () => {
-    expectRejection(
-      "SELECT * FROM PG_CATALOG.pg_tables WHERE team_id = __TEAM_ID__",
-      "SQL_BLOCKED_IDENTIFIER",
-    );
-  });
-
-  test("rejects queries missing the __TEAM_ID__ placeholder", () => {
-    expectRejection("SELECT 1 FROM documents", "SQL_MISSING_PLACEHOLDER");
-  });
-
-  test("blocked-identifier rejection wins over missing-placeholder", () => {
-    // Both failures apply — the blocked check runs before the
-    // placeholder check, so that's the code we expect.
-    expectRejection(
-      "SELECT * FROM pg_catalog.pg_tables",
-      "SQL_BLOCKED_IDENTIFIER",
+      "WITH leak AS (SELECT password FROM account) SELECT * FROM leak",
+      "SQL_TABLE_NOT_ALLOWED",
     );
   });
 });

@@ -29,7 +29,7 @@ export const toolPortabilitySuite: EvalSuite = {
     {
       id: "tp-sql-quoting",
       description:
-        "SQL with an embedded apostrophe → properly quoted query, __TEAM_ID__ scoping intact",
+        "SQL with an embedded apostrophe → properly quoted query, valid and bounded",
       prompt:
         "Combien de documents de l'équipe ont un nom de fichier qui contient exactement le texte « d'expédition » (avec l'apostrophe) ? Donne juste le nombre.",
       tags: ["tool-portability", "sql"],
@@ -38,7 +38,7 @@ export const toolPortabilitySuite: EvalSuite = {
         { type: "toolUsed", tools: ["querySql"], mode: "any" },
         {
           type: "custom",
-          name: "every querySql call carries __TEAM_ID__ and a LIMIT",
+          name: "every querySql call carries a LIMIT",
           fn: (result) => {
             const calls = result.toolCalls.filter((c) => c.name === "querySql");
             if (calls.length === 0) return "no querySql call observed";
@@ -46,9 +46,6 @@ export const toolPortabilitySuite: EvalSuite = {
               const input = call.input as { sql_query?: unknown };
               const sql =
                 typeof input?.sql_query === "string" ? input.sql_query : "";
-              if (!sql.includes("__TEAM_ID__")) {
-                return `querySql without __TEAM_ID__: ${sql.slice(0, 80)}`;
-              }
               if (!/limit\s+\d+/i.test(sql)) {
                 return `querySql without LIMIT: ${sql.slice(0, 80)}`;
               }

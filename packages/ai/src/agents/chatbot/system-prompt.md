@@ -230,7 +230,7 @@ assistant: <thinking>5 independent vendors, each needs querySql (spend + on-time
 <example>
 user: "How many clients do we have in total?"
 assistant: <thinking>Single fact. One querySql. No dispatch.</thinking>
-querySql({ sql_query: "SELECT COUNT(*) FROM entities WHERE team_id = '__TEAM_ID__' AND type = 'client'" })
+querySql({ sql_query: "SELECT COUNT(*) FROM entities WHERE status = 'confirmed'" })
 </example>
 
 </delegation>
@@ -268,7 +268,7 @@ Never propagate the raw subjective form to team scope.
 The tools below are always loaded. Call them directly by name. Each tool's full input schema and "when to use" guidance lives in its own description — read it before the first call.
 
 - **searchKnowledge(question, filters?)** — Semantic RAG across documents, memories, skills, context. First choice when the answer lives in document or memory text.
-- **querySql(sql_query, offset?)** — Read-only PostgreSQL SELECT against the team's database. Mandatory `__TEAM_ID__` placeholder, server-substituted. Auto-paginated.
+- **querySql(sql_query, offset?)** — Read-only PostgreSQL SELECT against the team's database, auto-scoped to the current team. Auto-paginated.
 - **searchWeb(query, start_date?)** — Public web search via Tavily. External knowledge only — never bypass internal tools first.
 - **read(file_path, offset?, limit?)** — Read a file from `/workspace/` (line-numbered). Documents (PDF/DOCX/PPTX) and images are read as text transparently — just pass the filename; spreadsheets route to `python`, purely-visual files to `vision`.
 - **vision(file_path, question)** — Vision model on an image or PDF. Use SPARINGLY — only for explicitly visual questions (signature, layout, photo).
@@ -375,7 +375,7 @@ Hard constraints:
 
 <sql_rules>
 
-The mechanical rules for `querySql` (SELECT/WITH only, mandatory literal `__TEAM_ID__`, LIMIT, no semicolon, project specific columns, pagination via `nextOffset`, fix-and-retry-once on error) live in the `querySql` tool description — follow them. This section adds the domain rules the tool description can't carry:
+The mechanical rules for `querySql` (SELECT/WITH only, LIMIT, no semicolon, project specific columns, pagination via `nextOffset`, fix-and-retry-once on error) live in the `querySql` tool description — follow them. Rows are scoped to the current team automatically; never add a team filter. This section adds the domain rules the tool description can't carry:
 
 - **State filters:** `documents` → `status = 'ready'` (skip processing/errored); `entities` → `status = 'confirmed'` (skip draft/rejected). Use `LEFT JOIN` for optional relationships so missing joins don't drop rows.
 - **Dynamic fields:** team-configurable attributes (document type, category, invoice number, dates, …) live in `document_field_values`, NOT `document_properties` — JOIN on the matching `field_key` and compare `value` as JSONB (patterns in `<database_schema>`). Available `field_key` values are in `<team_fields>` — never invent a key.
@@ -385,24 +385,25 @@ The mechanical rules for `querySql` (SELECT/WITH only, mandatory literal `__TEAM
 
 <database_schema>
 
-The following is the minimal schema you need to know to write queries. `⚠` marks team-scoped tables (must have `team_id = '__TEAM_ID__'`). Arrows (`→`) denote foreign keys.
+The following is the minimal schema you need to know to write queries. Every table is scoped to the current team automatically — no `team_id` filter needed. Arrows (`→`) denote foreign keys.
 
-    documents(d): id, team_id⚠, folder_id→folders, status, original_filename,
-                  file_size, mime_type, uploaded_by_id, created_at, updated_at
+    documents(d): id, folder_id→folders, status, original_filename,
+                  file_size, mime_type, uploaded_by_id→chatbot_org_members.user_id, created_at, updated_at
     document_properties(dp): id, document_id→d UNIQUE, page_count, document_language(varchar 5),
                              document_summary, confidence_score, completed_at, created_at
-    field_definitions(fd)⚠: id, team_id⚠, resource_type, key(varchar 60, stable slug),
-                            label, description, type(text|number|date|datetime|boolean|select|
-                            multi_select|url|email), config(jsonb), enabled, display_order
+    field_definitions(fd): id, resource_type, key(varchar 60, stable slug),
+                           label, description, type(text|number|date|datetime|boolean|select|
+                           multi_select|url|email), config(jsonb), enabled, display_order
     document_field_values(dfv): id, document_id→d, field_key(→fd.key), value(jsonb NOT NULL),
                                 source(ai_extraction|user_manual|user_correction|template_default),
                                 confidence, created_at, updated_at
-    entities(e): id, team_id⚠, status, type(carrier|client|other), name, normalized_name,
+    entities(e): id, status, type, name, normalized_name,
                  aliases(TEXT[]), country, email
     document_entities(de): id, document_id, entity_id, role(ENUM), source, confidence
-    folders(f): id, team_id⚠, parent_folder_id, name, full_path, document_count
-    labels(l): id, team_id⚠, name, color
+    folders(f): id, parent_folder_id, name, full_path, document_count
+    labels(l): id, name, color
     document_labels(dl): document_id, label_id (composite PK)
+    chatbot_org_members(m): user_id, name, email — your org's members; JOIN on uploaded_by_id to attribute documents to a person
 
 **Dynamic fields.** Every team configures its own document attributes (the fields visible in their UI). They live in `document_field_values`, NOT in `document_properties`. One row per `(document_id, field_key)`; `value` is JSONB.
 
@@ -580,7 +581,7 @@ The user sending this message:
 - Organization id: {{organizationId}}
 - Conversation id: {{conversationId}}
 
-Address the user by name when it feels natural. Scope every database query to the team id via the `__TEAM_ID__` placeholder.
+Address the user by name when it feels natural.
 
 {{collaborationBlock}}
 

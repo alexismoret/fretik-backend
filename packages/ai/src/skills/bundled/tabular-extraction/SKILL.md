@@ -50,7 +50,7 @@ Classify the source(s) **first**, then pick the loader. Cardinality axes (orthog
 | Chat transcripts (Slack / WhatsApp / Zoom)   | Plain-text parser per platform; speaker turns matter                                                   | Audio→text outputs need speaker-diarization preserved.                                                                                                 |
 | Screenshots / charts → data                  | `vision(file_path, question)` for spot questions; transcribe deliberately                              | Never extract from a screenshot of a table when the underlying source file is available — ask the user.                                                |
 | Source code / configs                        | `read` then a language-aware parser (`ast` for Python, regex for env files)                            | Extracting an API surface usually means walking AST nodes.                                                                                             |
-| Database (Fretik internal)                   | `querySql` (read-only, paginated, `__TEAM_ID__` placeholder mandatory)                                 | Source of truth for internal data — prefer it over re-deriving from documents.                                                                         |
+| Database (Fretik internal)                   | `querySql` (read-only, paginated, auto-scoped to the team)                                             | Source of truth for internal data — prefer it over re-deriving from documents.                                                                         |
 | Mixed / multi-doc joins                      | Load each source ONCE into a named DataFrame (`df_invoices`, `df_lines`), then `merge` on an exact key | DataFrames stay in the kernel — reuse across cells. If the join key isn't exact, normalise it in a hidden column; never normalise the displayed value. |
 
 When the source family isn't in this table, default to: read with `read`, parse with `python`, structure with `pandas`. The pattern below is format-agnostic.
@@ -66,7 +66,7 @@ Before declaring the deliverable ready:
    - Spreadsheet: `sum(len(df) for df in pd.read_excel(path, sheet_name=None).values())`.
    - JSON: `len(data)` after locating the repeating array.
    - XML: count of the repeating tag via XPath.
-   - SQL: `SELECT count(*) FROM ... WHERE ... AND team_id = '__TEAM_ID__'`.
+   - SQL: `SELECT count(*) FROM ... WHERE ...` (rows are auto-scoped to the team).
    - Logs: `wc -l` (sentinel-anchored count if multi-line records).
 2. **Print the number** so it appears in the conversation log; that anchors verification.
 3. **Count output rows** of your deliverable.
@@ -253,7 +253,7 @@ Note how every `python` cell after the first one builds on the previous one's st
 - `bash` — `wc -l`, `head`, `grep`, file inspection. Use for quick counts before writing extraction code.
 - `vision` — visual layout questions on images / screenshots. Spot questions only; never the primary extraction path.
 - `webFetch` — HTML / web pages. Returns cleaned markdown — for tabular HTML pass through `pd.read_html` on the original HTML, not the markdown.
-- `querySql` — Fretik internal database. Read-only, paginated, `__TEAM_ID__` placeholder mandatory.
+- `querySql` — Fretik internal database. Read-only, paginated, auto-scoped to the team.
 - `searchKnowledge` — RAG over the team's indexed documents. Use to **locate** records before extraction, not to extract them (RAG returns chunks, not full tables).
 - `presentFiles` — final hand-off. Caption MUST mention row count + any documented gap (`"312 rows extracted from 4 sources; 3 rows flagged in match_status"`).
 

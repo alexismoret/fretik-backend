@@ -1,26 +1,32 @@
 import { Parser } from "node-sql-parser";
 
 const parser = new Parser();
+const PARSE_OPTIONS = { database: "postgresql" } as const;
 
 /**
- * Schemas / identifiers the LLM is never allowed to reach. Matched
- * case-insensitively against the raw SQL *and* against AST identifiers to
- * catch quoted-identifier tricks.
+ * Tables and views the SQL tool may read. Anything else — auth/secret tables
+ * (account, two_factor, …), system catalogs (pg_*, information_schema), other
+ * teams' internals — is rejected before the query reaches the database. This is
+ * the second line of defence: the `fretik_sql_tool` role also lacks GRANTs on
+ * everything outside this set, but rejecting here gives the agent a clean,
+ * actionable error instead of a Postgres permission failure.
+ *
+ * Identity (member names/emails) is reachable only through `chatbot_org_members`,
+ * a curated view that projects safe columns and is org-scoped by RLS session
+ * variable — never the raw `user`/`member` tables.
  */
-const BLOCKED_IDENTIFIERS = [
-  "pg_catalog",
-  "information_schema",
-  "pg_sleep",
-  "pg_read_file",
-  "pg_read_server_files",
-  "pg_ls_dir",
-  "pg_stat_file",
-  "pg_exec",
-  "dblink",
-  "lo_import",
-  "lo_export",
-  "copy",
-];
+const ALLOWED_RELATIONS = new Set([
+  "documents",
+  "document_properties",
+  "document_field_values",
+  "entities",
+  "document_entities",
+  "folders",
+  "labels",
+  "document_labels",
+  "field_definitions",
+  "chatbot_org_members",
+]);
 
 /**
  * Statement types allowed — strictly read-only. Every other statement type
@@ -28,15 +34,9 @@ const BLOCKED_IDENTIFIERS = [
  */
 const ALLOWED_STATEMENTS = new Set(["select", "with"]);
 
-const PLACEHOLDER = "__TEAM_ID__";
-
 /** Shape of a validation error bubbled back up to the agent. */
 export interface SqlValidationError {
-  code:
-    | "SQL_PARSE_FAILED"
-    | "SQL_NOT_READ_ONLY"
-    | "SQL_BLOCKED_IDENTIFIER"
-    | "SQL_MISSING_PLACEHOLDER";
+  code: "SQL_PARSE_FAILED" | "SQL_NOT_READ_ONLY" | "SQL_TABLE_NOT_ALLOWED";
   message: string;
 }
 
@@ -53,25 +53,41 @@ export class SqlValidationException extends Error {
  */
 export const MAX_SQL_LIMIT = 100;
 
+/** Collect every CTE name defined by `WITH` clauses so they aren't mistaken for base tables. */
+const collectCteNames = (statements: unknown[]): Set<string> => {
+  const names = new Set<string>();
+  for (const stmt of statements) {
+    const withClause = (stmt as { with?: unknown }).with;
+    if (!Array.isArray(withClause)) continue;
+    for (const cte of withClause) {
+      const value = (cte as { name?: { value?: string } }).name?.value;
+      if (typeof value === "string") names.add(value.toLowerCase());
+    }
+  }
+  return names;
+};
+
 /**
  * Validate + sanitize a user-supplied SQL query:
  *  1. Parse with node-sql-parser (postgresql dialect) — reject on parse error.
  *  2. Reject anything that isn't SELECT / WITH.
- *  3. Reject blocked identifiers (pg_catalog, pg_sleep, dblink, …).
- *  4. Require the __TEAM_ID__ placeholder to prevent the agent from
- *     forgetting the team scope.
- *  5. Replace the placeholder with the escaped teamId literal.
+ *  3. Reject any relation outside the product allowlist (catches system
+ *     catalogs, auth tables, and schema-qualified access).
  *
- * Returns the sanitized SQL string ready to execute (without trailing
- * semicolon). Throws `SqlValidationException` on any failure.
+ * Team/org scoping is enforced by the database (RLS + the curated view via the
+ * `fretik.team_id` / `fretik.organization_id` session variables set per query),
+ * so the query no longer needs to carry a team filter.
+ *
+ * Returns the query ready to execute (without trailing semicolon). Throws
+ * `SqlValidationException` on any failure.
  */
-export const sanitizeSelect = (rawSql: string, teamId: string): string => {
+export const sanitizeSelect = (rawSql: string): string => {
   const sql = rawSql.trim().replace(/;$/, "");
 
   // 1. Parse
   let ast;
   try {
-    ast = parser.astify(sql, { database: "postgresql" });
+    ast = parser.astify(sql, PARSE_OPTIONS);
   } catch (err) {
     throw new SqlValidationException({
       code: "SQL_PARSE_FAILED",
@@ -99,35 +115,40 @@ export const sanitizeSelect = (rawSql: string, teamId: string): string => {
     }
   }
 
-  // 3. Blocked identifiers — naive substring scan, case-insensitive.
-  // Cheap and catches the usual suspects. The AST walk below would also
-  // catch them but this protects against parser edge cases.
-  const lower = sql.toLowerCase();
-  for (const blocked of BLOCKED_IDENTIFIERS) {
-    if (lower.includes(blocked)) {
-      throw new SqlValidationException({
-        code: "SQL_BLOCKED_IDENTIFIER",
-        message: `Blocked identifier "${blocked}" is not allowed`,
-      });
-    }
-  }
-
-  // 4. __TEAM_ID__ must be present — mandatory contract with the agent.
-  if (!sql.includes(PLACEHOLDER)) {
+  // 3. Table allowlist. `tableList` returns "type::db::table" strings; CTE
+  //    names appear here too, so subtract them. A non-public schema (db is not
+  //    "null"/"public") is rejected outright — that's how `pg_catalog.*` and
+  //    `information_schema.*` are blocked.
+  const cteNames = collectCteNames(statements);
+  let tableList: string[];
+  try {
+    tableList = parser.tableList(sql, PARSE_OPTIONS);
+  } catch (err) {
     throw new SqlValidationException({
-      code: "SQL_MISSING_PLACEHOLDER",
-      message:
-        "SQL query must include the __TEAM_ID__ placeholder in its WHERE clause",
+      code: "SQL_PARSE_FAILED",
+      message: `Invalid SQL: ${err instanceof Error ? err.message : String(err)}`,
     });
   }
 
-  // 5. Replace placeholder with the quoted team id.
-  // The agent may write either `'__TEAM_ID__'` (quoted) or `__TEAM_ID__`
-  // (unquoted). We handle both so the result is always a valid SQL string
-  // literal: `'<uuid>'`. Replace the quoted variant first to avoid
-  // producing double-quoted `''<uuid>''`.
-  const safeTeamId = teamId.replace(/'/g, "''");
-  return sql
-    .replaceAll(`'${PLACEHOLDER}'`, `'${safeTeamId}'`)
-    .replaceAll(PLACEHOLDER, `'${safeTeamId}'`);
+  for (const entry of tableList) {
+    const parts = entry.split("::");
+    const schema = parts[1];
+    const table = (parts[2] ?? "").toLowerCase();
+
+    if (schema && schema !== "null" && schema !== "public") {
+      throw new SqlValidationException({
+        code: "SQL_TABLE_NOT_ALLOWED",
+        message: `Schema "${schema}" is not accessible. Query only the product tables listed in the system prompt.`,
+      });
+    }
+
+    if (cteNames.has(table) || ALLOWED_RELATIONS.has(table)) continue;
+
+    throw new SqlValidationException({
+      code: "SQL_TABLE_NOT_ALLOWED",
+      message: `Table "${table}" is not accessible. Query only the product tables listed in the system prompt (documents, entities, folders, field_definitions, chatbot_org_members, …).`,
+    });
+  }
+
+  return sql;
 };

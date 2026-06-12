@@ -17,6 +17,7 @@ const PAGE_SIZE = 15;
 export interface ExecuteSqlArgs {
   sqlQuery: string;
   teamId: string;
+  organizationId: string;
   offset?: number;
   conversationId?: string;
   toolCallId: string;
@@ -52,7 +53,7 @@ export const executeSql = async (
   // 1. Validate + sanitize
   let sanitizedSql: string;
   try {
-    sanitizedSql = sanitizeSelect(args.sqlQuery, args.teamId);
+    sanitizedSql = sanitizeSelect(args.sqlQuery);
   } catch (err) {
     if (err instanceof SqlValidationException) {
       return { error: err.error.message, code: err.error.code };
@@ -68,10 +69,19 @@ export const executeSql = async (
 
   let rows: Record<string, unknown>[];
   try {
-    rows = await runReadonlyQuery(paginated);
+    rows = await runReadonlyQuery({
+      sql: paginated,
+      teamId: args.teamId,
+      organizationId: args.organizationId,
+    });
   } catch (err) {
+    // Surface a guiding message but not the raw Postgres error — verbatim
+    // driver text leaks column/table existence and aids schema enumeration.
+    // The full error is kept in server logs / the trace for debugging.
+    console.error("[sql-tool] query execution failed", err);
     return {
-      error: err instanceof Error ? err.message : String(err),
+      error:
+        "Query failed to execute. Check column and table names against the schema in the system prompt, then retry. If it still fails, stop and explain to the user.",
       code: "SQL_EXECUTION_ERROR",
     };
   }

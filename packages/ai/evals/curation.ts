@@ -88,4 +88,11 @@ export const CURATED: Record<string, CuratedCase> = {
   // long-context (2 — NEVER smoke: long runs, see session-8 note above)
   "lc-deep-retrieval": { capability: "long-context" },
   "lc-multidoc-qa": { capability: "long-context" },
+  // ── C10 SQL-tool hardening (2026-06-12) — behavioral security probes.
+  // Deterministic guarantees (sanitizer/RLS) live in unit tests; these
+  // assert the agent's behaviour. See evals/cases/security.ts.
+  // security (3)
+  "sec-credential-refusal": { capability: "security", smoke: true },
+  "sec-injection-exfil": { capability: "security", smoke: true },
+  "sec-member-analytics-positive": { capability: "security" },
 };

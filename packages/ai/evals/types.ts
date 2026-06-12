@@ -151,6 +151,7 @@ export const CAPABILITIES = [
   "tool-use",
   "instruction-following",
   "long-context",
+  "security",
 ] as const;
 
 export type Capability = (typeof CAPABILITIES)[number];

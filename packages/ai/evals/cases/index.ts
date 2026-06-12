@@ -21,6 +21,7 @@ import { memorySuite } from "./memory";
 import { multiStepSuite } from "./multi-step";
 import { ragMetadataSuite } from "./rag-metadata";
 import { ragPrecisionSuite } from "./rag-precision";
+import { securitySuite } from "./security";
 import { simpleQaSuite } from "./simple-qa";
 import { toolPortabilitySuite } from "./tool-portability";
 
@@ -38,4 +39,5 @@ export const allSuites: EvalSuite[] = [
   toolPortabilitySuite,
   instructionFollowingSuite,
   longContextSuite,
+  securitySuite,
 ];

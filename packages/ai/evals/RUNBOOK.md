@@ -59,6 +59,68 @@ bun run langfuse:seed-eval-config   # score-configs + Gemini llm-connection + ma
 `promoteTrace` (in `dataset-sync.ts`) turns a failing PROD trace into a permanent dataset
 case (`origin: "prod"`) — this is how the dataset grows into the real gold set.
 
+## Model promotion (C3 gate)
+
+Every change of a model-registry binding (`src/lib/model-registry/profiles.ts`) goes
+through the promotion gate — never a hand swap. The gate runs the curated suite twice
+**back-to-back** (baseline = current `chat` binding, then candidate, both pinned via the
+`X-Model-Profile-Key` header on `/invoke`) and compares paired same-data/same-day runs.
+
+```bash
+cd backend/packages/ai
+# service running in another pane; same env as evals:langfuse
+AI_SERVICE_URL=http://localhost:8083 bun run evals:gate -- --candidate minimax-m3
+# optional: reuse a stored baseline run (parity-checked against the current curated set)
+AI_SERVICE_URL=http://localhost:8083 bun run evals:gate -- --candidate minimax-m3 --baseline-run gate-base-minimax-m2.7-20260611
+# quick variant on the smoke subset (sanity only — promotion requires the full set)
+AI_SERVICE_URL=http://localhost:8083 bun run evals:gate -- --candidate minimax-m3 --smoke
+```
+
+**Procedure:**
+
+1. `bun run langfuse:sync-datasets` (dataset mirrors the current curated set) and, once
+   ever after adding score names, `bun run langfuse:seed-eval-config`.
+2. **Self-test first** (validates the harness + calibrates cost envelopes):
+   `evals:gate -- --candidate <current chat profileKey>` — must pass trivially. Read the
+   `cost-per-turn-usd` it prints, set the envelopes in `evals/langfuse/gate-config.ts`,
+   then enable enforcement (`GATE_COST_CALIBRATED=1` or flip the default in a PR).
+3. `evals:gate -- --candidate <newProfileKey>` — read the verdict table.
+4. On PASS, the gate prints **suggested grades** (`toolCalling.grade`,
+   `instructionFollowing`, `structuredOutput.grade`, a `toolCalling.parallel` suggestion
+   from the parallel probes) and a ready-to-paste `evalGate` stamp. **The gate never
+   writes `profiles.ts`** — commit the grades + `evalGate` + the role-binding flip in ONE
+   reviewed PR. The PR is the promotion.
+5. After the flip deploys: run a full `evals:langfuse` on the new default as the fresh
+   baseline.
+
+**Pass criteria** (envelopes in `evals/langfuse/gate-config.ts`, env-overridable):
+per-capability correctness drop ≤ 1 case-equivalent · `tool-call-validity` ≥ baseline − ε ·
+`zombie-rate` ≤ baseline + ε · `cost-per-turn-usd` within the profile's `costClass`
+envelope (ADVISORY until calibrated) · avg latency ≤ 1.3× baseline · ≤ 1 candidate case
+answered by the fallback agent (`fallback-served` — a silent failover must not score as
+the candidate).
+
+**Caveats:** a stored `--baseline-run` is only comparable while the curated set is
+unchanged (the gate aborts on caseId-set mismatch); the parallel probes are
+informational (the baseline may not support parallel calls at all); judge noise on small
+deltas — prefer the full set and re-run before trusting a borderline verdict.
+
+## External capability priors (leaderboards — never imported datasets)
+
+Public benchmarks are PRIORS for choosing candidates and pre-filling expectations, not
+grades. Read **BFCL v4** (gorilla.cs.berkeley.edu/leaderboard.html — tool calling, incl.
+parallel/multi-turn/format-sensitivity) and **Artificial Analysis**
+(artificialanalysis.ai — intelligence index, cost, latency) when shortlisting a
+candidate profile. Grades in `profiles.ts` stay `untested` until OUR gate runs — a
+leaderboard score is about someone else's harness.
+
+Do NOT import benchmark datasets (τ-bench, GAIA, BFCL cases) into the Langfuse dataset:
+foreign tool schemas measure nothing about our harness, licences are partly gated
+(GAIA), and the leaderboard already publishes the generic signal for free. We borrow the
+**method** instead — the `tool-portability` suite is BFCL-style probes on OUR tools, the
+`instruction-following` suite is IFEval-style mechanical validators, `tool-call-validity`
+is the BFCL-AST analogue (Zod `safeParse` on recorded tool-call inputs).
+
 ## Cost
 
 Every model call bills **OpenRouter**, on every surface. The difference is **bounded/on-demand**
@@ -179,9 +241,10 @@ signal — do NOT invent a failure taxonomy or tune against synthetic targets.
    NO per-capability regression + acceptable `cost-per-turn-usd` → promote the fixing case.
    NOTE: the n=20 set is judge-noisy (a case flapped 1.0/0.75/0.875 across runs) — use multiple
    trials and/or the grown set before trusting small deltas.
-5. **Phase 8 — model strategy, data-driven**: compare agent models (MiniMax M2.7 vs DeepSeek V4 Pro
-   vs others) on the grown dataset (correctness/capability + cost-per-turn + latency). Mechanism:
-   swap `OPENROUTER_CHAT_MODEL`, restart, `evals:langfuse --run-name <model>`, compare in the UI.
+5. **Phase 8 — model strategy, data-driven**: compare agent models on the grown dataset
+   (correctness/capability + cost-per-turn + latency). Mechanism: the **C3 promotion gate**
+   (`evals:gate -- --candidate <profileKey>`, see "Model promotion" above) — model env vars no
+   longer exist; bindings live in `src/lib/model-registry/profiles.ts` and flip via a reviewed PR.
    Adopt hybrid escalation (cheap default + escalate hard steps) only where experiments prove it pays.
 6. **Phase 6 — GEPA/DSPy auto-optimization**: once taxonomy + prod dataset are solid, pull the
    dataset + judge rationales, let a strong reflection model propose prompt / tool-description / skill

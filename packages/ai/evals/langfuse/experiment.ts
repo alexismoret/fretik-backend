@@ -35,6 +35,12 @@ export interface ExperimentOptions {
   capability?: Capability;
   /** Skip the judge (PR tier — deterministic checks only). */
   deterministicOnly?: boolean;
+  /**
+   * Pin every turn to this registry profile (C3 gate candidate runs).
+   * Folded into the run metadata so the Langfuse run records which
+   * model served it.
+   */
+  candidateProfileKey?: string;
   runName?: string;
   /** Concurrent cases — keep low; each is a real chatbot turn. */
   maxConcurrency?: number;
@@ -136,6 +142,7 @@ export const runChatbotExperiment = async (
   const configIds = await fetchConfigIds();
   const task = buildExperimentTask({
     deterministicOnly: opts.deterministicOnly,
+    modelProfileKey: opts.candidateProfileKey,
   });
   const evaluators = [buildItemEvaluator(configIds)];
   const runEvaluators = [buildRunEvaluator(configIds), buildCostRunEvaluator()];
@@ -143,6 +150,12 @@ export const runChatbotExperiment = async (
   const filtered = Boolean(opts.smoke || opts.capability);
   const dataset = await langfuseClient.dataset.get(DATASET_NAME);
 
+  const metadata = {
+    ...(opts.metadata ?? {}),
+    ...(opts.candidateProfileKey
+      ? { candidateProfileKey: opts.candidateProfileKey }
+      : {}),
+  };
   const common = {
     name: EXPERIMENT_NAME,
     ...(opts.runName ? { runName: opts.runName } : {}),
@@ -150,7 +163,7 @@ export const runChatbotExperiment = async (
     evaluators,
     runEvaluators,
     maxConcurrency,
-    ...(opts.metadata ? { metadata: opts.metadata } : {}),
+    ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
   };
 
   let result: ExperimentResult;

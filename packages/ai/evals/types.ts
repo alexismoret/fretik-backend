@@ -49,6 +49,21 @@ export interface InvokeResult {
   latencyMs: number;
   toolLatencyMs: number;
   modelLatencyMs: number;
+  /**
+   * Number of agent-loop steps in the turn, counted from `start-step`
+   * SSE frames. One step = one model generation (possibly with tool
+   * calls). Feeds the `steps-used` mechanical score.
+   */
+  stepsUsed?: number;
+  /**
+   * Which agent actually answered (`"primary"` | `"fallback"`), from
+   * the finish-frame telemetry. During a candidate-profile run a
+   * silent failover serves the FALLBACK model — such cases must be
+   * flagged, not scored as the candidate.
+   */
+  servedBy?: string;
+  /** Registry profile key that served the turn (finish-frame telemetry). */
+  modelProfileKey?: string;
   usage?: {
     inputTokens?: number;
     outputTokens?: number;
@@ -119,12 +134,26 @@ export type Assertion =
  * regression in one capability is visible even when the overall score
  * holds. Assigned per curated case in `evals/curation.ts` (the triage
  * gate output), NOT on the case object.
+ *
+ * Single source of truth: per-capability run scores
+ * (`correctness:<capability>`) and the CLI `--capability` filter both
+ * derive from this const — adding a value here is the whole change.
+ * The C3 additions stratify the model-gate suites: `tool-use`
+ * (tool-portability + parallel probes), `instruction-following`
+ * (mechanical-validator cases + structured-output probes),
+ * `long-context` (near-compaction fixtures).
  */
-export type Capability =
-  | "extraction"
-  | "generation"
-  | "external-actions"
-  | "reasoning";
+export const CAPABILITIES = [
+  "extraction",
+  "generation",
+  "external-actions",
+  "reasoning",
+  "tool-use",
+  "instruction-following",
+  "long-context",
+] as const;
+
+export type Capability = (typeof CAPABILITIES)[number];
 
 export interface EvalCase {
   id: string;

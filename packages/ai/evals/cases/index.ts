@@ -14,12 +14,15 @@ import { bashExecutionSuite } from "./bash-execution";
 import { dispatchAgentSuite } from "./dispatch-agent";
 import { edgeCasesSuite } from "./edge-cases";
 import { fileAttachmentsSuite } from "./file-attachments";
+import { instructionFollowingSuite } from "./instruction-following";
 import { latencyStressSuite } from "./latency-stress";
+import { longContextSuite } from "./long-context";
 import { memorySuite } from "./memory";
 import { multiStepSuite } from "./multi-step";
 import { ragMetadataSuite } from "./rag-metadata";
 import { ragPrecisionSuite } from "./rag-precision";
 import { simpleQaSuite } from "./simple-qa";
+import { toolPortabilitySuite } from "./tool-portability";
 
 export const allSuites: EvalSuite[] = [
   simpleQaSuite,
@@ -32,4 +35,7 @@ export const allSuites: EvalSuite[] = [
   bashExecutionSuite,
   memorySuite,
   dispatchAgentSuite,
+  toolPortabilitySuite,
+  instructionFollowingSuite,
+  longContextSuite,
 ];

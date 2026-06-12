@@ -74,6 +74,55 @@ const SCORE_CONFIGS: ScoreConfigSeed[] = [
     dataType: "BOOLEAN",
     description: "The turn met its latency budget (when asserted).",
   },
+  // ── C3 model-gate mechanical scores ──────────────────────────────
+  // All objective (no taxonomy). Score configs are NON-DELETABLE:
+  // names below are final and must match evals/langfuse/evaluators.ts.
+  {
+    name: "tool-call-validity",
+    dataType: "NUMERIC",
+    minValue: 0,
+    maxValue: 1,
+    description:
+      "Fraction of tool calls whose input parses against the tool's Zod schema (mechanical, BFCL-AST analogue). Item: per-turn ratio. Run: aggregate over all calls.",
+  },
+  {
+    name: "zombie",
+    dataType: "BOOLEAN",
+    description:
+      "The turn ended with no visible text and no transport error — the agent loop died silently.",
+  },
+  {
+    name: "zombie-rate",
+    dataType: "NUMERIC",
+    minValue: 0,
+    maxValue: 1,
+    description: "Run-level fraction of zombie turns.",
+  },
+  {
+    name: "steps-used",
+    dataType: "NUMERIC",
+    minValue: 0,
+    description:
+      "Agent-loop steps in the turn (one step = one model generation).",
+  },
+  {
+    name: "avg-steps-used",
+    dataType: "NUMERIC",
+    minValue: 0,
+    description: "Run-level mean of steps-used.",
+  },
+  {
+    name: "avg-latency-ms",
+    dataType: "NUMERIC",
+    minValue: 0,
+    description: "Run-level mean wall-clock latency per turn (ms).",
+  },
+  {
+    name: "fallback-served",
+    dataType: "BOOLEAN",
+    description:
+      "The FALLBACK agent answered this turn (silent failover or zombie recovery) — during a gate run the case was NOT served by the candidate model.",
+  },
 ];
 
 const client = new LangfuseClient();

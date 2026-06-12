@@ -41,7 +41,16 @@ const requireEnv = (name: string): string => {
   return v;
 };
 
-const buildHeaders = (): Record<string, string> => {
+export interface InvokeOptions {
+  /**
+   * Registry profile key to pin the turn to, sent as the
+   * `X-Model-Profile-Key` header (C3 gate candidate runs). Omitted →
+   * the service's default `chat` binding.
+   */
+  modelProfileKey?: string;
+}
+
+const buildHeaders = (opts?: InvokeOptions): Record<string, string> => {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     Accept: "text/event-stream, application/json",
@@ -55,6 +64,11 @@ const buildHeaders = (): Record<string, string> => {
     headers["X-Context-User-Name"] = process.env.EVAL_USER_NAME;
   if (process.env.EVAL_TIMEZONE)
     headers["X-Context-Timezone"] = process.env.EVAL_TIMEZONE;
+  // C3 gate: pin the turn to a candidate registry profile. The /invoke
+  // handler 400s on unknown keys, which surfaces here as an `error`
+  // result instead of silently scoring the default model.
+  if (opts?.modelProfileKey)
+    headers["X-Model-Profile-Key"] = opts.modelProfileKey;
   return headers;
 };
 
@@ -110,6 +124,10 @@ interface StreamState {
   finishReason: string | undefined;
   usage: InvokeResult["usage"];
   traceId: string | undefined;
+  stepsUsed: number;
+  servedBy: string | undefined;
+  modelProfileKey: string | undefined;
+  error: string | undefined;
 }
 
 const absorbChunk = (chunk: UnknownRecord, state: StreamState): void => {
@@ -119,6 +137,22 @@ const absorbChunk = (chunk: UnknownRecord, state: StreamState): void => {
     case "text-delta": {
       const delta = readString(chunk, "delta");
       if (delta !== undefined) state.textParts.push(delta);
+      return;
+    }
+    case "start-step": {
+      // One frame per agent-loop step (model generation). Counting
+      // them gives `stepsUsed` without any server-side change.
+      state.stepsUsed++;
+      return;
+    }
+    case "error": {
+      // Surfaced stream error (e.g. an empty provider pool kills the
+      // turn after `start`). Without this, an errored turn looks like
+      // a ZOMBIE (no text, no error) and pollutes that metric — the
+      // 2026-06-12 M3 gate failure mode. Keep the FIRST error: it is
+      // the root cause; later frames are downstream noise.
+      const text = readString(chunk, "errorText");
+      state.error ??= text ?? "stream error frame without errorText";
       return;
     }
     case "tool-input-available": {
@@ -175,6 +209,16 @@ const absorbMessageMetadata = (mm: unknown, state: StreamState): void => {
   const traceId = readString(mm, "langfuseTraceId");
   if (traceId !== undefined) state.traceId = traceId;
   const telemetry = mm["telemetry"];
+  if (isRecord(telemetry)) {
+    // Which agent answered + under which profile (see InvokeResult).
+    // A zombie-recovery merge emits a SECOND finish frame with
+    // `servedBy: "fallback"` — last write wins, which is correct: the
+    // fallback produced the visible answer.
+    const servedBy = readString(telemetry, "servedBy");
+    if (servedBy !== undefined) state.servedBy = servedBy;
+    const profileKey = readString(telemetry, "modelProfileKey");
+    if (profileKey !== undefined) state.modelProfileKey = profileKey;
+  }
   const usage = isRecord(telemetry) ? telemetry["usage"] : undefined;
   if (!isRecord(usage)) return;
   state.usage = {
@@ -223,6 +267,10 @@ const readStream = async (
     finishReason: undefined,
     usage: undefined,
     traceId: undefined,
+    stepsUsed: 0,
+    servedBy: undefined,
+    modelProfileKey: undefined,
+    error: undefined,
   };
   let buffer = "";
 
@@ -254,9 +302,15 @@ const readStream = async (
     latencyMs,
     toolLatencyMs,
     modelLatencyMs,
+    stepsUsed: state.stepsUsed,
     usage: state.usage,
     httpStatus: res.status,
     ...(state.traceId !== undefined ? { traceId: state.traceId } : {}),
+    ...(state.servedBy !== undefined ? { servedBy: state.servedBy } : {}),
+    ...(state.modelProfileKey !== undefined
+      ? { modelProfileKey: state.modelProfileKey }
+      : {}),
+    ...(state.error !== undefined ? { error: state.error } : {}),
   };
 };
 
@@ -275,13 +329,14 @@ const readStream = async (
 export const invokeChatbot = async (
   prompt: string,
   conversationId?: string,
+  opts?: InvokeOptions,
 ): Promise<InvokeResult> => {
   const startedAt = Date.now();
   const url = `${requireEnv("AI_SERVICE_URL").replace(/\/+$/, "")}/internal/agents/chatbot/invoke`;
   try {
     const res = await fetch(url, {
       method: "POST",
-      headers: buildHeaders(),
+      headers: buildHeaders(opts),
       body: buildBody(prompt, conversationId),
     });
     if (!res.ok) {

@@ -41,11 +41,13 @@
  *   ...  -- --capability extraction # one capability stratum
  *   ...  -- --deterministic-only    # skip the judge
  *   ...  -- --run-name <name>       # explicit dataset-run name
+ *   ...  -- --candidate <profileKey> # pin turns to a registry profile (C3 gate)
  * ==================================================================
  */
 
 import { runChatbotExperiment } from "./langfuse/experiment";
 import type { Capability } from "./types";
+import { CAPABILITIES } from "./types";
 
 interface CliOptions {
   concurrency: number;
@@ -57,13 +59,12 @@ interface CliOptions {
   deterministicOnly: boolean;
   /** Explicit dataset-run name. */
   runName?: string;
+  /** Pin every turn to this registry profile (C3 gate candidate). */
+  candidate?: string;
 }
 
 const isCapability = (v: string): v is Capability =>
-  v === "extraction" ||
-  v === "generation" ||
-  v === "external-actions" ||
-  v === "reasoning";
+  (CAPABILITIES as readonly string[]).includes(v);
 
 const parseArgs = (argv: string[]): CliOptions => {
   const opts: CliOptions = {
@@ -98,6 +99,11 @@ const parseArgs = (argv: string[]): CliOptions => {
       i++;
       continue;
     }
+    if (flag === "--candidate" && next) {
+      opts.candidate = next;
+      i++;
+      continue;
+    }
   }
   return opts;
 };
@@ -110,6 +116,7 @@ const main = async (): Promise<void> => {
     maxConcurrency: opts.concurrency,
     ...(opts.capability ? { capability: opts.capability } : {}),
     ...(opts.runName ? { runName: opts.runName } : {}),
+    ...(opts.candidate ? { candidateProfileKey: opts.candidate } : {}),
     metadata: {
       release: process.env.LANGFUSE_RELEASE ?? "(dev)",
       smoke: opts.smoke,

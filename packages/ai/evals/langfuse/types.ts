@@ -43,6 +43,37 @@ export interface TaskOutput {
   toolNames: string[];
   /** Server `chatbot-turn` trace id → fetch the turn's agent cost. */
   traceId?: string;
+  /** Turn finish reason — feeds the `zombie` mechanical score. */
+  finishReason?: string;
+  /** Agent-loop steps in the turn (`start-step` SSE frames). */
+  stepsUsed?: number;
+  /**
+   * Mechanical Zod validation of the turn's tool-call inputs (see
+   * `evals/tool-schemas.ts`). Summary only — raw inputs stay out of
+   * the trace output.
+   */
+  toolCallValidity?: {
+    total: number;
+    valid: number;
+    unknown: number;
+    failures: string[];
+  };
+  /**
+   * True when at least two tool executions overlapped in wall-clock
+   * time — the model batched parallel tool calls. INFORMATIONAL: feeds
+   * the gate's suggestion for the profile's `toolCalling.parallel`
+   * assessment, never a pass/fail criterion (the baseline model may
+   * not support parallel calls at all).
+   */
+  parallelObserved?: boolean;
+  /**
+   * True when the FALLBACK agent answered (silent failover or zombie
+   * recovery). A candidate gate run must flag these — they were not
+   * served by the candidate model.
+   */
+  fallbackServed?: boolean;
+  /** Registry profile key that served the turn (finish telemetry). */
+  modelProfileKey?: string;
   [key: string]: unknown;
 }
 

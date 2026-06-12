@@ -22,6 +22,12 @@ export interface RunCaseOptions {
    * deterministic checks only. Defaults to false (full run).
    */
   deterministicOnly?: boolean;
+  /**
+   * Pin every invoke to this registry profile (`X-Model-Profile-Key`).
+   * Set by the C3 gate's candidate runs; omitted → the service's
+   * default `chat` binding.
+   */
+  modelProfileKey?: string;
 }
 
 const selectAssertions = (
@@ -69,7 +75,9 @@ export const runCase = async (
     if (c.seed && conversationId) {
       await c.seed(ctx);
     }
-    const invoke = await invokeChatbot(c.prompt, conversationId);
+    const invoke = await invokeChatbot(c.prompt, conversationId, {
+      modelProfileKey: opts?.modelProfileKey,
+    });
     const assertions = await runAssertions(
       selectAssertions(c.assertions, opts),
       invoke,

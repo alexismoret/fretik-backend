@@ -40,6 +40,34 @@ import { createSubAgentExecute } from "../agents/shared/sub-agent";
  */
 
 /**
+ * Input schema of the `dispatchAgent` tool. Hoisted to module scope —
+ * it closes over nothing in the factory — so the eval harness's
+ * `evals/tool-schemas.ts` can validate recorded tool calls without
+ * constructing the sub-agent sets the factory requires.
+ */
+export const dispatchAgentInputSchema = z.object({
+  task: z
+    .string()
+    .min(10)
+    .describe(
+      "Self-contained instruction for the sub-agent: goal + context + expected output format. The sub-agent reads no other context, so include every relevant file path, ID, and acceptance criterion verbatim.",
+    ),
+  description: z
+    .string()
+    .min(1)
+    .max(80)
+    .describe(
+      "Short (3-5 word) label shown in traces and the UI. Example: 'Compare 5 invoices'.",
+    ),
+  model: z
+    .enum(["primary", "cheap"])
+    .optional()
+    .describe(
+      "'primary' (default): same model as the main agent — use when the sub-task needs reasoning, judgment, or complex multi-step planning. 'cheap': runs on a smaller but tool-strong model (DeepSeek V4 Flash by default) — use for well-scoped mechanical sub-tasks (summarise one document, extract a known schema, classify items).",
+    ),
+});
+
+/**
  * Factory: build the `dispatchAgent` tool against a pair of pre-built
  * sub-agent sets. Called once from `agents/chatbot/index.ts` after
  * the sub-agent sets are constructed; the main agent's tool registry
@@ -53,27 +81,7 @@ export const createDispatchAgentTool = <TTools extends ToolSet>(deps: {
   primary: Agent<ChatbotCallOptions, TTools>;
   cheap: Agent<ChatbotCallOptions, TTools>;
 }) => {
-  const inputSchema = z.object({
-    task: z
-      .string()
-      .min(10)
-      .describe(
-        "Self-contained instruction for the sub-agent: goal + context + expected output format. The sub-agent reads no other context, so include every relevant file path, ID, and acceptance criterion verbatim.",
-      ),
-    description: z
-      .string()
-      .min(1)
-      .max(80)
-      .describe(
-        "Short (3-5 word) label shown in traces and the UI. Example: 'Compare 5 invoices'.",
-      ),
-    model: z
-      .enum(["primary", "cheap"])
-      .optional()
-      .describe(
-        "'primary' (default): same model as the main agent — use when the sub-task needs reasoning, judgment, or complex multi-step planning. 'cheap': runs on a smaller but tool-strong model (DeepSeek V4 Flash by default) — use for well-scoped mechanical sub-tasks (summarise one document, extract a known schema, classify items).",
-      ),
-  });
+  const inputSchema = dispatchAgentInputSchema;
 
   /**
    * Format the sub-agent's `GenerateTextResult` into the

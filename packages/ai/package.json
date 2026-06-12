@@ -13,6 +13,7 @@
     "test": "bun test tests/unit",
     "test:integration": "bun test tests/integration",
     "evals:langfuse": "bun run evals/run.ts",
+    "evals:gate": "bun run evals/langfuse/gate.ts",
     "check": "bun run typecheck && bun run lint && bun run format:check",
     "langfuse:seed-prompts": "bun run scripts/seed-langfuse-prompts.ts",
     "langfuse:triage-cases": "bun run scripts/triage-eval-cases.ts",

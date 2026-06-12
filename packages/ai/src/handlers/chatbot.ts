@@ -68,11 +68,21 @@ import { notifyMentionedMembers } from "../services/chatbot-mention-email";
 // overhead) while matching the iterator shape the AI SDK expects.
 import { TransformStream } from "node:stream/web";
 import { z } from "zod";
-import { chatbotAgentSet, type ChatbotCallOptions } from "../agents/chatbot";
+import {
+  chatbotAgentSet,
+  getChatbotAgentSet,
+  type ChatbotCallOptions,
+} from "../agents/chatbot";
+import type { ChatbotTools } from "../agents/chatbot/tools";
+import type { AgentSet } from "../agents/shared/agent-builder";
 import { writeSandboxAuthFile } from "../lib/conversation-storage";
 import { flushLangfuse, langfuseEnabled } from "../lib/langfuse";
 import { deleteScore, recordScore } from "../lib/langfuse-scores";
-import { getProfileForRole } from "../lib/model-registry/resolve";
+import {
+  getProfileForRole,
+  resolveChatModelForProfile,
+} from "../lib/model-registry/resolve";
+import type { ModelProfile } from "../lib/model-registry/types";
 import { getResumableStreamContext } from "../lib/resumable-stream-context";
 import { chatbotRateLimitMiddleware } from "../middlewares/chatbot-rate-limit";
 import { internalMiddleware } from "../middlewares/internal";
@@ -93,10 +103,10 @@ const InternalInvokeSchema = z.object({
 
 /**
  * Stream a chatbot turn with automatic primary → fallback model
- * failover. Both `chatbotAgentSet.primary` and `.fallback` share
- * every other setting (tools, system prompt, prepareStep) — only
- * the underlying `LanguageModel` differs, so the retry is
- * transparent to the caller.
+ * failover. Both `agentSet.primary` and `.fallback` share every
+ * other setting (tools, system prompt, prepareStep) — only the
+ * underlying `LanguageModel` differs, so the retry is transparent
+ * to the caller.
  *
  * Important nuance: `.stream()` resolves when the AI SDK has set up
  * the stream, NOT when the stream has finished. Errors that surface
@@ -172,6 +182,7 @@ const getAbortChannel = (streamId: string): string =>
 const streamChatbotWithFallback = async (params: {
   history: UIMessage[];
   callOptions: ChatbotCallOptions;
+  agentSet: AgentSet<ChatbotCallOptions, ChatbotTools>;
   abortSignal?: AbortSignal;
 }) => {
   const modelMessages = await convertToModelMessages(
@@ -182,28 +193,34 @@ const streamChatbotWithFallback = async (params: {
   // wraps the whole turn in a single `chatbot-turn` active span, so every
   // `.stream()` here — and its nested tool / sub-agent spans — attaches
   // under that one trace. This function just runs the model.
-  return chatbotAgentSet.primary
-    .stream({
+  //
+  // `servedBy` reports which agent actually answered: an eval run with a
+  // candidate profile must know when a silent failover served the
+  // FALLBACK model instead, or the candidate's scores are polluted.
+  try {
+    const result = await params.agentSet.primary.stream({
       messages: modelMessages,
       options: params.callOptions,
       abortSignal: params.abortSignal,
-    })
-    .catch((err: unknown) => {
-      // Sprint B §3.5: when the abort fired (user clicked Stop) the
-      // primary call rejects with an AbortError — there is nothing to
-      // fall back to. Re-raising lets the upstream handler treat the
-      // turn as cleanly aborted instead of burning fallback tokens for
-      // a generation the user already cancelled.
-      if (params.abortSignal?.aborted) {
-        throw err;
-      }
-      console.error("[chatbot] primary model failed, falling back:", err);
-      return chatbotAgentSet.fallback.stream({
-        messages: modelMessages,
-        options: params.callOptions,
-        abortSignal: params.abortSignal,
-      });
     });
+    return { result, servedBy: "primary" as const };
+  } catch (err) {
+    // Sprint B §3.5: when the abort fired (user clicked Stop) the
+    // primary call rejects with an AbortError — there is nothing to
+    // fall back to. Re-raising lets the upstream handler treat the
+    // turn as cleanly aborted instead of burning fallback tokens for
+    // a generation the user already cancelled.
+    if (params.abortSignal?.aborted) {
+      throw err;
+    }
+    console.error("[chatbot] primary model failed, falling back:", err);
+    const result = await params.agentSet.fallback.stream({
+      messages: modelMessages,
+      options: params.callOptions,
+      abortSignal: params.abortSignal,
+    });
+    return { result, servedBy: "fallback" as const };
+  }
 };
 
 /**
@@ -655,6 +672,26 @@ interface RunChatbotTurnParams {
    * lifecycle.
    */
   resumableStreamId?: string;
+  /**
+   * Profile-keyed serving set + profile for this turn. Set by the
+   * internal `/invoke` route when the caller sends
+   * `X-Model-Profile-Key` (C3 eval gate); C8 will thread the
+   * per-conversation pin through the same fields. Omitted → the
+   * default `chat` role binding. Both fields travel together: the
+   * profile drives the compaction threshold of the SAME model that
+   * serves the turn.
+   */
+  agentSet?: AgentSet<ChatbotCallOptions, ChatbotTools>;
+  modelProfile?: ModelProfile;
+  /**
+   * Scrub sensitive tool inputs (querySql.sql_query) from the outbound
+   * SSE stream. Default true — the scrubber's threat model is the
+   * end-user BROWSER. The internal `/invoke` route sets false: its
+   * consumers are authenticated server-side callers (eval harness,
+   * workers) that need the real arguments — the eval `tool-call-validity`
+   * score is blind to any field scrubbed here.
+   */
+  scrubSensitiveInputs?: boolean;
   logPrefix: string;
 }
 
@@ -1055,6 +1092,12 @@ const runChatbotTurn = async (
   const { abortController, releaseAbortSubscriber } =
     await setupAbortChannel(params);
 
+  // Serving set + profile for this turn (see RunChatbotTurnParams).
+  // Resolved ONCE here so every consumer below — compaction threshold,
+  // primary stream, zombie-recovery fallback — uses the same pair.
+  const agentSet = params.agentSet ?? chatbotAgentSet;
+  const modelProfile = params.modelProfile ?? getProfileForRole("chat");
+
   // Build the response stream via `createUIMessageStream({ execute })`.
   // The execute callback owns the full turn pipeline:
   //   1. Run `compactConversation` (CC-aligned, see
@@ -1174,10 +1217,9 @@ const runChatbotTurn = async (
       // per turn. Run directly when Langfuse is unconfigured.
       const turnBody = async (): Promise<void> => {
         const historyForModel = await compactConversation(params.history, {
-          // Threshold follows the serving model's context window. Today
-          // that is always the `chat` role binding; the per-conversation
-          // profile override (C8) will thread the resolved profile here.
-          profile: getProfileForRole("chat"),
+          // Threshold follows the SERVING model's context window — the
+          // profile resolved above (header override or `chat` binding).
+          profile: modelProfile,
           onProgress: (event) => {
             // The shared `id` makes consecutive writes UPDATE the
             // single existing data part on the client (started → done
@@ -1215,9 +1257,10 @@ const runChatbotTurn = async (
           },
         });
 
-        const result = await streamChatbotWithFallback({
+        const { result, servedBy } = await streamChatbotWithFallback({
           history: historyForModel,
           callOptions: callOptionsWithFiles,
+          agentSet,
           abortSignal: abortController.signal,
         });
 
@@ -1250,6 +1293,12 @@ const runChatbotTurn = async (
                 telemetry: {
                   finishReason: part.finishReason,
                   rawFinishReason: part.rawFinishReason,
+                  // Which agent answered + under which profile. The eval
+                  // harness reads these over SSE: a candidate run where a
+                  // silent failover served the fallback model must be
+                  // flagged, not scored as the candidate.
+                  servedBy,
+                  modelProfileKey: modelProfile.key,
                   usage: {
                     inputTokens: usage.inputTokens,
                     outputTokens: usage.outputTokens,
@@ -1308,7 +1357,7 @@ const runChatbotTurn = async (
             const fallbackMessages = await convertToModelMessages(
               stripFilePartsForModel(historyForModel),
             );
-            const fallbackResult = await chatbotAgentSet.fallback.stream({
+            const fallbackResult = await agentSet.fallback.stream({
               messages: fallbackMessages,
               options: callOptionsWithFiles,
               abortSignal: abortController.signal,
@@ -1326,6 +1375,9 @@ const runChatbotTurn = async (
                     telemetry: {
                       finishReason: part.finishReason,
                       rawFinishReason: part.rawFinishReason,
+                      // Zombie recovery always serves the fallback agent.
+                      servedBy: "fallback",
+                      modelProfileKey: modelProfile.key,
                       usage: {
                         inputTokens: fbUsage.inputTokens,
                         outputTokens: fbUsage.outputTokens,
@@ -1466,7 +1518,10 @@ const runChatbotTurn = async (
   const resumableStreamId = params.resumableStreamId;
 
   const baseResponse = createUIMessageStreamResponse({
-    stream: rawStream.pipeThrough(buildSensitiveInputScrubber()),
+    stream:
+      params.scrubSensitiveInputs === false
+        ? rawStream
+        : rawStream.pipeThrough(buildSensitiveInputScrubber()),
     // When the caller wants resumability, tee the SSE-encoded stream
     // into a Redis-backed buffer so a subsequent GET can replay every
     // byte that was emitted — even if the original HTTP connection
@@ -2058,6 +2113,31 @@ chatbotInternalRoutes.post("/invoke", async (c) => {
   }
   const { conversationId, messages } = parsed.data;
 
+  // C3 eval seam: an internal caller may pin this turn to an arbitrary
+  // registry profile via `X-Model-Profile-Key`. Read HERE, not in
+  // `middlewares/internal.ts` — the middleware is shared by every
+  // internal route and the override must never leak into the
+  // user-facing /stream path. Unknown keys 400 instead of silently
+  // serving the default model: an eval run scored against the wrong
+  // model is worse than a failed one.
+  const profileKey = c.req.header("X-Model-Profile-Key");
+  let agentSet: AgentSet<ChatbotCallOptions, ChatbotTools> | undefined;
+  let modelProfile: ModelProfile | undefined;
+  if (profileKey !== undefined) {
+    try {
+      agentSet = getChatbotAgentSet(profileKey);
+      modelProfile = resolveChatModelForProfile(profileKey).profile;
+    } catch {
+      return c.json(
+        {
+          code: "UNKNOWN_MODEL_PROFILE",
+          message: `Unknown model profile key: "${profileKey}"`,
+        },
+        400,
+      );
+    }
+  }
+
   // D.3 warning: `messages` is silently ignored when `conversationId`
   // is set (the history is loaded from DB instead). Alert the caller
   // via log so this isn't a silent footgun. Not rejected to preserve
@@ -2099,6 +2179,11 @@ chatbotInternalRoutes.post("/invoke", async (c) => {
     conversationId,
     history,
     callOptions,
+    agentSet,
+    modelProfile,
+    // Server-to-server channel: deliver real tool inputs (see
+    // RunChatbotTurnParams.scrubSensitiveInputs).
+    scrubSensitiveInputs: false,
     logPrefix: "[chatbot.invoke]",
   });
 });

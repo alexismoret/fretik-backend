@@ -10,6 +10,7 @@ import type { ExperimentTask } from "@langfuse/client";
 import { allSuites } from "../cases";
 import { CURATED } from "../curation";
 import { runCase, type RunCaseOptions } from "../runner";
+import { validateToolCalls } from "../tool-schemas";
 import type { Capability, EvalCase, EvalSuite } from "../types";
 import type { TaskOutput } from "./types";
 
@@ -31,6 +32,27 @@ export const buildCaseRegistry = (): Map<string, RegistryEntry> => {
 
 const resolveCapability = (c: EvalCase): Capability =>
   CURATED[c.id]?.capability ?? "reasoning";
+
+/**
+ * True when any two tool executions overlapped in wall-clock time —
+ * mechanical evidence of parallel tool batching (see TaskOutput).
+ */
+const detectParallelToolWindows = (
+  toolCalls: { startedAtMs?: number; latencyMs?: number }[],
+): boolean => {
+  const windows = toolCalls.filter(
+    (c): c is { startedAtMs: number; latencyMs: number } =>
+      typeof c.startedAtMs === "number" && typeof c.latencyMs === "number",
+  );
+  return windows.some((a, i) =>
+    windows.some(
+      (b, j) =>
+        j > i &&
+        Math.max(a.startedAtMs, b.startedAtMs) <
+          Math.min(a.startedAtMs + a.latencyMs, b.startedAtMs + b.latencyMs),
+    ),
+  );
+};
 
 /**
  * Read `caseId` off the item metadata. The task param is a union
@@ -71,6 +93,7 @@ export const buildExperimentTask = (opts?: RunCaseOptions): ExperimentTask => {
       return out;
     }
     const result = await runCase(entry.suite, entry.case, opts);
+    const validity = validateToolCalls(result.invoke.toolCalls);
     const out: TaskOutput = {
       caseId: result.caseId,
       suite: result.suiteName,
@@ -86,6 +109,24 @@ export const buildExperimentTask = (opts?: RunCaseOptions): ExperimentTask => {
         : {}),
       assertionResults: result.assertions,
       toolNames: result.invoke.toolCalls.map((t) => t.name),
+      ...(result.invoke.finishReason !== undefined
+        ? { finishReason: result.invoke.finishReason }
+        : {}),
+      ...(result.invoke.stepsUsed !== undefined
+        ? { stepsUsed: result.invoke.stepsUsed }
+        : {}),
+      ...(validity.total > 0 || validity.unknown > 0
+        ? { toolCallValidity: validity }
+        : {}),
+      ...(detectParallelToolWindows(result.invoke.toolCalls)
+        ? { parallelObserved: true }
+        : {}),
+      ...(result.invoke.servedBy === "fallback"
+        ? { fallbackServed: true }
+        : {}),
+      ...(result.invoke.modelProfileKey !== undefined
+        ? { modelProfileKey: result.invoke.modelProfileKey }
+        : {}),
     };
     return out;
   };

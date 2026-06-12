@@ -22,15 +22,9 @@
  */
 
 import type { Evaluation, Evaluator, RunEvaluator } from "@langfuse/client";
-import type { AssertionResult, Capability } from "../types";
+import type { AssertionResult } from "../types";
+import { CAPABILITIES } from "../types";
 import type { FailedCheck, TaskOutput } from "./types";
-
-const CAPABILITIES: Capability[] = [
-  "extraction",
-  "generation",
-  "external-actions",
-  "reasoning",
-];
 
 /** name → Langfuse score-config id, for `configId` linkage (optional). */
 export type ConfigIds = Partial<Record<string, string>>;
@@ -89,6 +83,15 @@ const score = (configIds: ConfigIds, base: Evaluation): Evaluation => {
   return id ? { ...base, configId: id } : base;
 };
 
+/**
+ * Mechanical zombie flag: the turn produced NO visible text and NO
+ * transport error — the agent loop died silently. (A zombie that the
+ * handler recovered via its fallback chain produces text, so it is
+ * NOT flagged here — `fallback-served` carries that signal instead.)
+ */
+export const isZombie = (out: TaskOutput): boolean =>
+  out.text.trim().length === 0 && out.error === undefined;
+
 /** Item-level evaluator → one Langfuse score array per case. */
 export const buildItemEvaluator = (configIds: ConfigIds = {}): Evaluator => {
   return async ({ output }) => {
@@ -105,6 +108,14 @@ export const buildItemEvaluator = (configIds: ConfigIds = {}): Evaluator => {
         value: out.error ? 0 : 1,
         dataType: "BOOLEAN",
         ...(out.error ? { comment: out.error } : {}),
+      }),
+      score(configIds, {
+        name: "zombie",
+        value: isZombie(out) ? 1 : 0,
+        dataType: "BOOLEAN",
+        ...(out.finishReason !== undefined
+          ? { comment: `finishReason=${out.finishReason}` }
+          : {}),
       }),
     ];
     if (!out.passed) {
@@ -125,6 +136,43 @@ export const buildItemEvaluator = (configIds: ConfigIds = {}): Evaluator => {
           name: "latency-ok",
           value: latency.passed ? 1 : 0,
           dataType: "BOOLEAN",
+        }),
+      );
+    }
+    // Mechanical Zod validity of the turn's tool-call inputs (BFCL-AST
+    // analogue on OUR tools). Emitted only when at least one call hit
+    // a known schema — a turn with zero tool calls has no signal.
+    const validity = out.toolCallValidity;
+    if (validity && validity.total > 0) {
+      evaluations.push(
+        score(configIds, {
+          name: "tool-call-validity",
+          value: Number((validity.valid / validity.total).toFixed(4)),
+          dataType: "NUMERIC",
+          comment:
+            validity.failures.length > 0
+              ? validity.failures.join(" | ")
+              : `${validity.valid.toString()}/${validity.total.toString()} valid`,
+        }),
+      );
+    }
+    if (out.stepsUsed !== undefined) {
+      evaluations.push(
+        score(configIds, {
+          name: "steps-used",
+          value: out.stepsUsed,
+          dataType: "NUMERIC",
+        }),
+      );
+    }
+    if (out.fallbackServed === true) {
+      evaluations.push(
+        score(configIds, {
+          name: "fallback-served",
+          value: 1,
+          dataType: "BOOLEAN",
+          comment:
+            "turn answered by the FALLBACK agent — not the candidate model",
         }),
       );
     }
@@ -153,7 +201,58 @@ export const buildRunEvaluator = (configIds: ConfigIds = {}): RunEvaluator => {
         value: mean(outputs.map((o) => (o.passed ? 1 : 0))),
         dataType: "NUMERIC",
       },
+      // Mechanical gate signals (C3). All objective — no taxonomy.
+      score(configIds, {
+        name: "zombie-rate",
+        value: mean(outputs.map((o) => (isZombie(o) ? 1 : 0))),
+        dataType: "NUMERIC",
+      }),
+      score(configIds, {
+        name: "avg-latency-ms",
+        value: Math.round(mean(outputs.map((o) => o.latencyMs))),
+        dataType: "NUMERIC",
+      }),
+      {
+        name: "fallback-served-count",
+        value: outputs.filter((o) => o.fallbackServed === true).length,
+        dataType: "NUMERIC",
+      },
     ];
+    // Aggregate tool-call validity over ALL calls in the run (not the
+    // mean of per-case ratios — a 1-call case must not weigh as much
+    // as a 9-call case).
+    const totals = outputs.reduce(
+      (acc, o) => {
+        if (o.toolCallValidity) {
+          acc.valid += o.toolCallValidity.valid;
+          acc.total += o.toolCallValidity.total;
+        }
+        return acc;
+      },
+      { valid: 0, total: 0 },
+    );
+    if (totals.total > 0) {
+      evaluations.push(
+        score(configIds, {
+          name: "tool-call-validity",
+          value: Number((totals.valid / totals.total).toFixed(4)),
+          dataType: "NUMERIC",
+          comment: `${totals.valid.toString()}/${totals.total.toString()} calls valid`,
+        }),
+      );
+    }
+    const stepCounts = outputs
+      .map((o) => o.stepsUsed)
+      .filter((s): s is number => typeof s === "number");
+    if (stepCounts.length > 0) {
+      evaluations.push(
+        score(configIds, {
+          name: "avg-steps-used",
+          value: Number(mean(stepCounts).toFixed(2)),
+          dataType: "NUMERIC",
+        }),
+      );
+    }
     for (const cap of CAPABILITIES) {
       const subset = outputs.filter((o) => o.capability === cap);
       if (subset.length === 0) continue;

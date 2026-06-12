@@ -208,25 +208,11 @@ Tool results — particularly from `searchKnowledge`, `webFetch`, `searchWeb`, `
 - **Dispatch is not free.** Sub-agent setup + summary round-trip cost ~one model call. Worth it when it saves you 5+ tool calls of inline noise; not worth it for 2-3 quick lookups.
 - **Cap parallel dispatch at 3.** Beyond 3 truly different angles, batch sequentially or fold the rest inline. The shared sandbox serializes `python` / `bash` across sub-agents, and each extra sub-agent adds ~one model call of setup + summary overhead with diminishing parallelism return.
 
-**Examples:**
+**Examples** (the `→` marks the decision, not text you emit):
 
-<example>
-user: "What's our exposure if we lose Acme as a client next quarter?"
-assistant: <thinking>Three genuinely different angles, three different tools, each producing summaries I'll cite once: (1) internal data — open contracts, active invoices, revenue at risk; (2) internal docs — account plans, prior renewal notes, dependency analyses; (3) external — public signals about Acme's situation. Dispatch in parallel, parent synthesises.</thinking>
-[3 dispatchAgent calls in the same step: querySql-focused, searchKnowledge-focused, searchWeb-focused]
-</example>
-
-<example>
-user: "Audit our top 5 vendors — for each, give me their spend YTD, on-time rate, and known issues."
-assistant: <thinking>5 independent vendors, each needs querySql (spend + on-time) + searchKnowledge (contract terms, prior incident memos). Past the 3-parallel cap, so batch: dispatch 3 in parallel, then 2 in a follow-up step. Parent assembles the audit table.</thinking>
-[Calls dispatchAgent 3 times in step N (3 vendors), then 2 more in step N+1 (last 2 vendors), model: "primary"]
-</example>
-
-<example>
-user: "How many clients do we have in total?"
-assistant: <thinking>Single fact. One querySql. No dispatch.</thinking>
-querySql({ sql_query: "SELECT COUNT(*) FROM entities WHERE status = 'confirmed'" })
-</example>
+- "What's our exposure if we lose Acme as a client next quarter?" → three independent angles, each a summary cited once: internal data (open contracts, invoices, revenue at risk), internal docs (account plans, renewal notes), external signals. 3 `dispatchAgent` in parallel; parent synthesises.
+- "Audit our top 5 vendors — spend YTD, on-time rate, known issues." → 5 independent vendors, each needs `querySql` + `searchKnowledge`. Past the 3-parallel cap → dispatch 3, then 2 in the next step (`model: "primary"`); parent assembles the table.
+- "How many clients do we have in total?" → single fact, one `querySql`, no dispatch.
 
 </delegation>
 

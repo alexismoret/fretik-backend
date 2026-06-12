@@ -3,6 +3,7 @@ import {
   createOpenRouter,
   type OpenRouterChatSettings,
 } from "@openrouter/ai-sdk-provider";
+import { extractReasoningMiddleware, wrapLanguageModel } from "ai";
 import { instrumentModel } from "../model-instrumentation";
 import { wrapModelWithCache } from "../openrouter-cache";
 import { MODEL_PROFILES, ROLE_BINDINGS } from "./profiles";
@@ -140,14 +141,33 @@ export const getProfileForRole = (role: ModelRole): ModelProfile =>
 export const listProfiles = (): readonly ModelProfile[] =>
   Object.values(MODEL_PROFILES);
 
+/**
+ * Pulls a `<think>…</think>` block out of the CONTENT channel back into
+ * reasoning. Open-weights families (MiniMax M3, DeepSeek, …) intermittently
+ * emit their reasoning inline in content on continuation turns (observed ~10%
+ * of prod chat turns), which would otherwise render as raw `<think>` text in
+ * the user-facing answer. No-op for models whose reasoning is natively
+ * separated (Anthropic / Google / OpenAI emit no `<think>` text). Applied only
+ * on the user-facing `chat` path — internal roles (pre-extract, judge) don't
+ * surface text to users.
+ */
+const reasoningTagMiddleware = extractReasoningMiddleware({
+  tagName: "think",
+  separator: "\n",
+});
+
 const buildResolved = (binding: RoleBinding): ResolvedModel => {
   const profile = getProfile(binding.profileKey);
   const settings = settingsForRole(binding, profile);
   const raw = settings
     ? openrouter.chat(profile.catalog.id, settings)
     : openrouter.chat(profile.catalog.id);
+  const cleaned =
+    binding.settingsKind === "chat"
+      ? wrapLanguageModel({ model: raw, middleware: reasoningTagMiddleware })
+      : raw;
   const model = instrumentModel(
-    binding.wrapCache ? wrapModelWithCache(raw, profile) : raw,
+    binding.wrapCache ? wrapModelWithCache(cleaned, profile) : cleaned,
   );
   return { model, profile, binding };
 };

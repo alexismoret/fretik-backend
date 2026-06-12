@@ -164,13 +164,18 @@ export interface ModelAssessment {
     defaultLevel: ReasoningLevel;
   };
   /**
-   * Non-negotiable OpenRouter routing envelope. `requireParameters`
-   * and `zdr` are load-bearing (silent `tools` drops / data-retention
-   * compliance) — typed as literal `true` so a profile cannot opt out.
+   * OpenRouter routing envelope. `requireParameters` is non-negotiable
+   * (silent `tools` drops break SSE parsing) — typed as literal `true`
+   * so a profile cannot opt out. `zdr` is the DEFAULT policy but a
+   * per-profile fact: a model served only by its first-party,
+   * non-ZDR-flagged provider (e.g. MiniMax M3 pre-open-weights, gate
+   * 2026-06-12: empty ZDR pool → 100% errors) may set `false` —
+   * a deliberate product decision recorded next to the profile, to be
+   * revisited when ZDR endpoints appear.
    */
   provider: {
     requireParameters: true;
-    zdr: true;
+    zdr: boolean;
     sort?: "throughput";
   };
   /** Per-family system-prompt overlay key (C2). Unset = no overlay. */

@@ -48,9 +48,11 @@ describe("getChatbotAgentSet", () => {
   });
 
   test("a different profile gets its own set, memoized per key", () => {
-    const other = getChatbotAgentSet("minimax-m3");
+    // minimax-m2.7 — the former default, non-default since the gated
+    // M3 flip (2026-06-12).
+    const other = getChatbotAgentSet("minimax-m2.7");
     expect(other).not.toBe(chatbotAgentSet);
-    expect(getChatbotAgentSet("minimax-m3")).toBe(other);
+    expect(getChatbotAgentSet("minimax-m2.7")).toBe(other);
     expect(other.toolNames).toEqual(chatbotAgentSet.toolNames);
   });
 });

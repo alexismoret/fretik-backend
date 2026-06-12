@@ -21,32 +21,42 @@ import { shouldInjectCacheControl } from "../../../src/lib/openrouter-cache";
  * default model ids against what prod served before the registry
  * existed. Any intentional change here must go through the C3
  * promotion gate first.
+ *
+ * Gated change 2026-06-12: `chat` flipped to minimax-m3 through the
+ * C3 promotion gate (run 3aeec9d1-… vs the M2.7 baseline). M3 carries
+ * the documented `zdr: false` exemption, so the chat envelope pin
+ * tracks it; every other binding keeps the historical envelope.
  */
 
 describe("settingsForRole — parity with historical settings objects", () => {
-  test("chat envelope matches the legacy chatModelSettings", () => {
+  test("chat envelope matches the legacy chatModelSettings (M3: zdr exemption)", () => {
     expect(
       settingsForRole(ROLE_BINDINGS.chat, getProfileForRole("chat")),
     ).toEqual({
-      provider: { require_parameters: true, zdr: true },
+      provider: { require_parameters: true, zdr: false },
       reasoning: { enabled: true, max_tokens: 1_500 },
       usage: { include: true },
     });
   });
 
-  test("chat-fallback and dispatch-cheap share the chat envelope", () => {
+  test("chat-fallback and dispatch-cheap keep the historical chat envelope", () => {
+    const historicalChatEnvelope = {
+      provider: { require_parameters: true, zdr: true },
+      reasoning: { enabled: true, max_tokens: 1_500 },
+      usage: { include: true },
+    };
     expect(
       settingsForRole(
         ROLE_BINDINGS["chat-fallback"],
         getProfileForRole("chat-fallback"),
       ),
-    ).toEqual(settingsForRole(ROLE_BINDINGS.chat, getProfileForRole("chat")));
+    ).toEqual(historicalChatEnvelope);
     expect(
       settingsForRole(
         ROLE_BINDINGS["dispatch-cheap"],
         getProfileForRole("dispatch-cheap"),
       ),
-    ).toEqual(settingsForRole(ROLE_BINDINGS.chat, getProfileForRole("chat")));
+    ).toEqual(historicalChatEnvelope);
   });
 
   test("preextract envelope matches the legacy preextractModelSettings", () => {
@@ -105,9 +115,9 @@ describe("settingsForRole — parity with historical settings objects", () => {
   });
 });
 
-describe("role bindings — default model ids pinned to pre-registry prod", () => {
+describe("role bindings — default model ids pinned (chat: gated M3 flip)", () => {
   const expectedIds: Record<ModelRole, string> = {
-    chat: "minimax/minimax-m2.7",
+    chat: "minimax/minimax-m3",
     "chat-fallback": "deepseek/deepseek-v4-pro",
     "dispatch-cheap": "deepseek/deepseek-v4-flash",
     "pre-extract": "deepseek/deepseek-v4-flash",

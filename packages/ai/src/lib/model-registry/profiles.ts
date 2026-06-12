@@ -606,19 +606,42 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
     assessment: {
       costClass: "budget",
       toolCalling: {
-        grade: "untested",
-        parallel: "untested",
+        // Gate 2026-06-12 (run pair *-20260612-0112, full curated set):
+        // tool-call-validity 1.000 — every recorded call input parses
+        // against the production Zod schemas.
+        grade: "A",
+        // Probes batched parallel calls in 3/6 runs across two gate
+        // executions with NO provider-pool breakage (M2.7: 0/6).
+        parallel: "supported",
         strictSchemas: false,
       },
-      structuredOutput: { grade: "untested" },
-      instructionFollowing: "untested",
+      // 2/2 structured-output probes on both gate executions.
+      structuredOutput: { grade: "A" },
+      // correctness:instruction-following 1.000 then 0.938 (8 cases).
+      instructionFollowing: "A",
       nativeFileMimeTypes: [],
       cache: { strategy: "implicit" },
       reasoning: { style: "max-tokens", defaultLevel: "low" },
-      provider: { requireParameters: true, zdr: true },
-      // Target flagship default — promotion happens through the C3
-      // gate (M3 vs M2.7 baseline), not by hand-flipping this status.
-      evalGate: { status: "pending" },
+      // `zdr: false` — DELIBERATE exemption (user decision 2026-06-12):
+      // M3 is not open-weights yet, so OpenRouter serves it ONLY via
+      // MiniMax first-party, which carries no ZDR flag — with
+      // `zdr: true` the pool is empty and every turn errors instantly
+      // (gate run ccf1822e…, 100% error frames; verified by direct API
+      // probe). Revisit to `true` when open-weights release brings
+      // ZDR-flagged providers.
+      provider: { requireParameters: true, zdr: false },
+      // Promoted via the C3 gate, 2026-06-12. All capabilities at or
+      // above the M2.7 baseline; cost $0.0134/turn (budget envelope).
+      // The avg-latency criterion of this run pair passed only after
+      // the factor recalibration to 1.5× (see gate-config.ts — the
+      // 1.3× cap was below measured same-model variance). Earlier
+      // attempt ccf1822e-… failed on the empty ZDR pool above, not on
+      // the model.
+      evalGate: {
+        status: "passed",
+        lastRunId: "3aeec9d1-583f-4ac2-b35a-6cc1381665f3",
+        gatedAt: "2026-06-12",
+      },
     },
   },
   "minimax-m2.7": {
@@ -645,19 +668,30 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
     assessment: {
       costClass: "budget",
       toolCalling: {
-        grade: "untested",
+        // Gate baseline 2026-06-12 (run 3deef61e…, full curated set):
+        // tool-call-validity 1.000.
+        grade: "A",
         // 2026-05-07 finding — see types.ts. Do not flip without a
-        // fresh provider-pool test.
+        // fresh provider-pool test. Gate probes: 0/6 batched across
+        // two executions — consistent.
         parallel: "breaks-provider-pool",
         strictSchemas: false,
       },
-      structuredOutput: { grade: "untested" },
-      instructionFollowing: "untested",
+      // 2/2 structured-output probes (gate self-test 2026-06-11).
+      structuredOutput: { grade: "A" },
+      // correctness:instruction-following 0.875 on both measured runs.
+      instructionFollowing: "B",
       nativeFileMimeTypes: [],
       cache: { strategy: "implicit" },
       reasoning: { style: "max-tokens", defaultLevel: "low" },
       provider: { requireParameters: true, zdr: true },
-      evalGate: { status: "passed" },
+      // Grandfathered prod incumbent; grades grounded by the gate
+      // baseline run of the M3 promotion.
+      evalGate: {
+        status: "passed",
+        lastRunId: "3deef61e-9a75-4f04-9d53-af9f0fdf8b5c",
+        gatedAt: "2026-06-12",
+      },
     },
   },
   "minimax-m2.5": {
@@ -930,13 +964,15 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
  * Default role → profile bindings. Pure code — model env vars are
  * GONE: changing a default is a reviewed PR, per-team / per-
  * conversation overrides arrive with C8 (DB). These defaults
- * reproduce the models prod served before the registry existed; the
- * M3 flagship flip happens through the C3 gate.
+ * reproduce the models prod served before the registry existed,
+ * EXCEPT `chat`: flipped to minimax-m3 on 2026-06-12 through the C3
+ * promotion gate (run 3aeec9d1-… vs M2.7 baseline — see the M3
+ * profile's evalGate).
  */
 export const ROLE_BINDINGS: Record<ModelRole, RoleBinding> = {
   chat: {
     role: "chat",
-    profileKey: "minimax-m2.7",
+    profileKey: "minimax-m3",
     settingsKind: "chat",
     wrapCache: true,
   },

@@ -56,21 +56,25 @@ export const settingsForRole = (
   binding: RoleBinding,
   profile: ModelProfile,
 ): OpenRouterChatSettings | undefined => {
+  // `zdr` is a per-profile fact (see ModelProfile.assessment.provider):
+  // true for every profile except the ones a recorded product decision
+  // exempts (first-party-only providers without a ZDR flag).
+  const zdr = profile.assessment.provider.zdr;
   switch (binding.settingsKind) {
     case "chat":
       return {
-        provider: { require_parameters: true, zdr: true },
+        provider: { require_parameters: true, zdr },
         reasoning: reasoningParamForProfile(profile),
         usage: { include: true },
       };
     case "preextract":
       return {
         reasoning: { effort: "minimal" },
-        provider: { require_parameters: true, zdr: true, sort: "throughput" },
+        provider: { require_parameters: true, zdr, sort: "throughput" },
       };
     case "active-memory":
       return {
-        provider: { require_parameters: true, zdr: true },
+        provider: { require_parameters: true, zdr },
         reasoning: { effort: "low" },
       };
     case "bare":

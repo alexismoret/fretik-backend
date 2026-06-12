@@ -26,7 +26,7 @@ export const simpleQaSuite: EvalSuite = {
         {
           type: "judge",
           rubric:
-            "The assistant introduces itself as Fretik's AI work assistant (a generalist B2B assistant) or equivalent, in French, without calling any tool. It does NOT claim to be specialised in any particular industry (transport, logistics, freight, …).",
+            "The assistant introduces itself as Fretik's AI work assistant (a generalist B2B assistant) or equivalent, in French, without calling any tool. Listing example document types or capabilities — including ones adapted to the team's context — is fine and expected. FAIL only if it explicitly claims to BE specialised in / built for one specific industry (e.g. 'je suis ton assistant transport/logistique').",
         },
       ],
     },

@@ -142,6 +142,15 @@ follow-up).
   configs are only objective metrics (`correctness`, `pass-rate`, `no-error`, `latency-ok`);
   `failed-check` is a mechanical "which assertion broke" label, not the taxonomy.
 - **Synthetic cases are a seed, not the gold set** — the real dataset grows from prod failures.
+- **The flagship is held to a perfect score.** MiniMax M3 (current flagship) is expected to score
+  `correctness: 1.000` on EVERY curated case — it is capable of it. A sub-1.000 case is never
+  accepted as noise: it is a signal to fix one of two things, decided by reading the trace.
+  (a) The model genuinely missed → fix the **system** (prompt line, tool description, routing, or even the base structure of the chatbot).
+  (b) The model behaved correctly but was penalized → fix the **eval** (an over-strict assertion,
+  a mis-specified expected tool, or a bad judge rubric). Example: demanding a `LIMIT` on a
+  `COUNT(*)` query, or asserting `searchKnowledge` when a structured `listEntities`/`querySql`
+  path answers the prompt just as correctly. Keep iterating until M3 is at 1.000 with no
+  capability regression.
 - The **online billing rule** is created in the UI (verify its observation filter against live
   data first — `chatbot-turn` is the TRACE name, not necessarily a filterable observation name).
 

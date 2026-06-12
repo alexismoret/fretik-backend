@@ -38,7 +38,7 @@ export const toolPortabilitySuite: EvalSuite = {
         { type: "toolUsed", tools: ["querySql"], mode: "any" },
         {
           type: "custom",
-          name: "every querySql call carries a LIMIT",
+          name: "every row-returning querySql call carries a LIMIT",
           fn: (result) => {
             const calls = result.toolCalls.filter((c) => c.name === "querySql");
             if (calls.length === 0) return "no querySql call observed";
@@ -46,7 +46,13 @@ export const toolPortabilitySuite: EvalSuite = {
               const input = call.input as { sql_query?: unknown };
               const sql =
                 typeof input?.sql_query === "string" ? input.sql_query : "";
-              if (!/limit\s+\d+/i.test(sql)) {
+              // Single-row aggregates (COUNT/SUM/… without GROUP BY) return one
+              // row — a LIMIT is pointless, so don't require it. The LIMIT guard
+              // only protects the context window on row-returning queries.
+              const isSingleRowAggregate =
+                /^\s*select\s+(count|sum|avg|min|max)\s*\(/i.test(sql) &&
+                !/group\s+by/i.test(sql);
+              if (!isSingleRowAggregate && !/limit\s+\d+/i.test(sql)) {
                 return `querySql without LIMIT: ${sql.slice(0, 80)}`;
               }
             }
@@ -324,15 +330,15 @@ export const toolPortabilitySuite: EvalSuite = {
       id: "tp-vision-image",
       description: "Image attachment question → vision(file_path, question)",
       prompt:
-        "Décris-moi en une phrase ce qu'on voit sur l'image jointe cat.jpg.",
+        "Décris-moi en une phrase ce qu'on voit sur l'image jointe marina.jpg.",
       tags: ["tool-portability", "vision"],
-      fixtures: ["cat.jpg"],
+      fixtures: ["marina.jpg"],
       assertions: [
         { type: "noError" },
         { type: "toolUsed", tools: ["vision"], mode: "any" },
         {
           type: "custom",
-          name: "a vision call targets cat.jpg with a non-empty question",
+          name: "a vision call targets marina.jpg with a non-empty question",
           fn: (result) => {
             const calls = result.toolCalls.filter((c) => c.name === "vision");
             if (calls.length === 0) return "no vision call observed";
@@ -343,18 +349,18 @@ export const toolPortabilitySuite: EvalSuite = {
               };
               return (
                 typeof input?.file_path === "string" &&
-                input.file_path.includes("cat.jpg") &&
+                input.file_path.includes("marina.jpg") &&
                 typeof input?.question === "string" &&
                 input.question.length > 0
               );
             });
-            return wellFormed || "no vision call targeted cat.jpg properly";
+            return wellFormed || "no vision call targeted marina.jpg properly";
           },
         },
         {
           type: "judge",
           rubric:
-            "The assistant's one-sentence description mentions the animal on the image (a cat). Any answer produced WITHOUT calling the vision tool, or describing something other than a cat, is a FAIL.",
+            "The image is an aerial view of a marina / harbour full of moored boats (sailboats) in front of a city. The assistant's one-sentence description must reflect that scene (a port / marina / boats / harbour). Any answer produced WITHOUT calling the vision tool, or describing something unrelated to a marina, is a FAIL.",
         },
       ],
     },

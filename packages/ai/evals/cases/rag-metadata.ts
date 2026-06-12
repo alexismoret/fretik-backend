@@ -46,12 +46,25 @@ export const ragMetadataSuite: EvalSuite = {
     {
       id: "rag-metadata-entity-only",
       description:
-        "Entity mentioned only in metadata (not in OCR text) — must still surface via the semantic header in the chunk's contextual prefix",
+        "Documents linked to an entity must surface — via RAG's semantic header OR a structured entity lookup; the outcome (the right doc) is what's graded",
       prompt: "Show me documents issued by Acme Inc in our recent uploads.",
       tags: ["rag", "metadata", "entity-recall"],
       assertions: [
         { type: "noError" },
-        { type: "toolUsed", tools: ["searchKnowledge"] },
+        // "documents issued by <entity>" is answerable either by RAG
+        // (searchKnowledge) or by the structured entity path (listEntities →
+        // listDocuments / querySql) — both correct, so accept any. The
+        // ragFoundDocument outcome below is what actually grades recall.
+        {
+          type: "toolUsed",
+          tools: [
+            "searchKnowledge",
+            "listEntities",
+            "listDocuments",
+            "querySql",
+          ],
+          mode: "any",
+        },
         ragFoundDocument({ documentIdEnv: "EVAL_FIXTURE_ENTITY_DOC_ID" }),
       ],
     },

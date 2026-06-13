@@ -18,6 +18,7 @@
  * over-calling temptation on deterministic compute.
  */
 
+import { checkGeneratedCsv } from "../file-content-check";
 import type { EvalSuite } from "../types";
 
 export const b2bEfficiencySuite: EvalSuite = {
@@ -74,17 +75,17 @@ export const b2bEfficiencySuite: EvalSuite = {
         { type: "toolUsed", tools: ["presentFiles"], mode: "any" },
         {
           type: "custom",
-          name: "presentFiles call references the produced CSV",
-          fn: (result) => {
-            const calls = result.toolCalls.filter(
-              (c) => c.name === "presentFiles",
-            );
-            if (calls.length === 0) return "no presentFiles call observed";
-            const presented = calls.some((call) =>
-              JSON.stringify(call.input ?? {}).includes(".csv"),
-            );
-            return presented || "presentFiles call does not reference a .csv";
-          },
+          name: "recap.csv carries the correct per-region totals (Nord 17000, Sud 15500, Est 9500)",
+          fn: (result, ctx) =>
+            checkGeneratedCsv(result, ctx, {
+              filename: /recap.*\.csv$/i,
+              requiredColumns: ["region", "total"],
+              rows: [
+                { region: "Nord", total: 17000 },
+                { region: "Sud", total: 15500 },
+                { region: "Est", total: 9500 },
+              ],
+            }),
         },
       ],
     },
@@ -105,9 +106,18 @@ export const b2bEfficiencySuite: EvalSuite = {
         { type: "toolUsed", tools: ["python", "bash"], mode: "any" },
         { type: "toolUsed", tools: ["presentFiles"], mode: "any" },
         {
-          type: "judge",
-          rubric:
-            "The assistant adds a 'statut' column set to 'actif' for every contact and presents an updated CSV, by actually running code (python/bash) to transform contacts.csv — not by merely describing the change. The three original contacts must be preserved. Producing the file any other way (inventing rows, not running code) is a FAIL.",
+          type: "custom",
+          name: "updated CSV preserves the 3 contacts and adds statut=actif to each",
+          fn: (result, ctx) =>
+            checkGeneratedCsv(result, ctx, {
+              requiredColumns: ["nom", "email", "entreprise", "statut"],
+              rowCount: 3,
+              rows: [
+                { nom: "Alice Martin", statut: "actif" },
+                { nom: "Bob Durand", statut: "actif" },
+                { nom: "Carla Petit", statut: "actif" },
+              ],
+            }),
         },
       ],
     },

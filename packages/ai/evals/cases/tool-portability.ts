@@ -19,6 +19,7 @@
  * and feeds the gate's `toolCalling.parallel` suggestion.
  */
 
+import { checkGeneratedCsv } from "../file-content-check";
 import type { EvalSuite } from "../types";
 
 export const toolPortabilitySuite: EvalSuite = {
@@ -252,17 +253,13 @@ export const toolPortabilitySuite: EvalSuite = {
         { type: "toolUsed", tools: ["presentFiles"], mode: "any" },
         {
           type: "custom",
-          name: "presentFiles call references the produced CSV",
-          fn: (result) => {
-            const calls = result.toolCalls.filter(
-              (c) => c.name === "presentFiles",
-            );
-            if (calls.length === 0) return "no presentFiles call observed";
-            const presented = calls.some((call) =>
-              JSON.stringify(call.input ?? {}).includes(".csv"),
-            );
-            return presented || "presentFiles call does not reference a .csv";
-          },
+          name: "produits.csv is a real CSV with a produit/prix header and 3 rows",
+          fn: (result, ctx) =>
+            checkGeneratedCsv(result, ctx, {
+              filename: /produits\.csv$/i,
+              requiredColumns: ["produit", "prix"],
+              rowCount: 3,
+            }),
         },
       ],
     },

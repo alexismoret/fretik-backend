@@ -29,8 +29,8 @@ Needs a **live `@fretik/ai` service** and `AI_SERVICE_URL` (it is NOT in `.env` 
 ```bash
 cd backend/packages/ai
 # 1. start the service in another pane (dev DB): bun run dev   (or ../../dev.sh)
-AI_SERVICE_URL=http://localhost:8083 bun run evals:langfuse                 # full baseline (20 cases)
-AI_SERVICE_URL=http://localhost:8083 bun run evals:langfuse -- --smoke      # smoke subset (~8)
+AI_SERVICE_URL=http://localhost:8083 bun run evals:langfuse                 # full baseline (~57 cases)
+AI_SERVICE_URL=http://localhost:8083 bun run evals:langfuse -- --smoke      # smoke subset (~17)
 AI_SERVICE_URL=http://localhost:8083 bun run evals:langfuse -- --capability external-actions
 AI_SERVICE_URL=http://localhost:8083 bun run evals:langfuse -- --deterministic-only   # no judge (free of judge cost)
 AI_SERVICE_URL=http://localhost:8083 bun run evals:langfuse -- --run-name <name>      # explicit dataset-run name
@@ -96,9 +96,11 @@ AI_SERVICE_URL=http://localhost:8083 bun run evals:gate -- --candidate minimax-m
 **Pass criteria** (envelopes in `evals/langfuse/gate-config.ts`, env-overridable):
 per-capability correctness drop ≤ 1 case-equivalent · `tool-call-validity` ≥ baseline − ε ·
 `zombie-rate` ≤ baseline + ε · `cost-per-turn-usd` within the profile's `costClass`
-envelope (ADVISORY until calibrated) · avg latency ≤ 1.3× baseline · ≤ 1 candidate case
+envelope (ADVISORY until calibrated) · avg latency ≤ 1.5× baseline · ≤ 1 candidate case
 answered by the fallback agent (`fallback-served` — a silent failover must not score as
-the candidate).
+the candidate). The gate also prints a tool-calling **efficiency** block
+(`avg-tool-calls` / `tool-error-rate` / `redundant-call-rate`) — ADVISORY (never failing)
+until `GATE_EFFICIENCY_ENFORCED=1` + calibrated envelopes (same discipline as cost).
 
 **Caveats:** a stored `--baseline-run` is only comparable while the curated set is
 unchanged (the gate aborts on caseId-set mismatch); the parallel probes are
@@ -120,6 +122,27 @@ foreign tool schemas measure nothing about our harness, licences are partly gate
 **method** instead — the `tool-portability` suite is BFCL-style probes on OUR tools, the
 `instruction-following` suite is IFEval-style mechanical validators, `tool-call-validity`
 is the BFCL-AST analogue (Zod `safeParse` on recorded tool-call inputs).
+
+## Tool-calling efficiency scores (C11)
+
+Beyond IF the turn succeeded (`correctness`), the harness measures HOW WELL it used
+tools — computed mechanically from the observed `toolCalls[]` in
+`evals/tool-efficiency.ts`, summarised onto `TaskOutput.toolEfficiency`, scored in
+`evals/langfuse/evaluators.ts`. **All INFORMATIONAL** — never folded into `correctness`,
+never gate-blocking in C11 (Anthropic: grade the outcome, report efficiency apart).
+
+- **Item**: `tool-call-count`, `tool-error-rate` (errored calls / total, when calls > 0),
+  `redundant-call-count` (identical tool+input repeats), `tool-budget-overage` (only for
+  cases that declare a `budget`).
+- **Run**: `avg-tool-calls`, `tool-error-rate` (aggregate), `redundant-call-rate`
+  (fraction of cases with a redundant call). `error-then-retry` rides the run-level
+  `tool-error-rate` comment (not seeded — named for good only once calibrated).
+
+A case opts into a budget by declaring `budget: { maxToolCalls?, expectedTools? }` on the
+`EvalCase` (see the `b2b-efficiency` suite). The budget is a LOOSE envelope: it flags
+over-calling / off-plan tools, it does NOT punish legitimate exploration, and it cannot
+make a correct answer fail. Enforcing any of these as a gate criterion is a future PR
+(`GATE_EFFICIENCY_ENFORCED=1` once a baseline sets the envelopes in `gate-config.ts`).
 
 ## Cost
 

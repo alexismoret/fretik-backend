@@ -176,6 +176,55 @@ export const buildItemEvaluator = (configIds: ConfigIds = {}): Evaluator => {
         }),
       );
     }
+    // Tool-calling EFFICIENCY (INFORMATIONAL — never folded into
+    // correctness). Did the turn work WELL: too many calls, redundant
+    // calls, erroring calls, or off-budget? See `evals/tool-efficiency.ts`.
+    const eff = out.toolEfficiency;
+    if (eff) {
+      evaluations.push(
+        score(configIds, {
+          name: "tool-call-count",
+          value: eff.totalCalls,
+          dataType: "NUMERIC",
+          ...(eff.totalCalls > 0
+            ? {
+                comment: Object.entries(eff.perTool)
+                  .map(([n, c]) => `${n}×${c.toString()}`)
+                  .join(" "),
+              }
+            : {}),
+        }),
+      );
+      if (eff.totalCalls > 0) {
+        evaluations.push(
+          score(configIds, {
+            name: "tool-error-rate",
+            value: Number((eff.errorCalls / eff.totalCalls).toFixed(4)),
+            dataType: "NUMERIC",
+            ...(eff.errorThenRetry > 0
+              ? {
+                  comment: `${eff.errorCalls.toString()} errored, ${eff.errorThenRetry.toString()} error→retry`,
+                }
+              : {}),
+          }),
+          score(configIds, {
+            name: "redundant-call-count",
+            value: eff.redundantCalls,
+            dataType: "NUMERIC",
+          }),
+        );
+      }
+      if (eff.budget) {
+        evaluations.push(
+          score(configIds, {
+            name: "tool-budget-overage",
+            value: eff.budget.overage + eff.budget.offAllowlist,
+            dataType: "NUMERIC",
+            comment: `${eff.totalCalls.toString()} calls${eff.budget.maxToolCalls !== undefined ? ` / max ${eff.budget.maxToolCalls.toString()}` : ""}; ${eff.budget.offAllowlist.toString()} off-allowlist`,
+          }),
+        );
+      }
+    }
     return evaluations;
   };
 };
@@ -252,6 +301,50 @@ export const buildRunEvaluator = (configIds: ConfigIds = {}): RunEvaluator => {
           dataType: "NUMERIC",
         }),
       );
+    }
+    // Tool-calling EFFICIENCY aggregates (INFORMATIONAL). `tool-error-rate`
+    // sums totals first (like validity — a 1-call case must not weigh as
+    // much as a 9-call one). `error-then-retry` rides the error-rate
+    // comment (not a seeded score — deferred until the metric is named
+    // definitively; score configs cannot be deleted).
+    const eff = outputs.reduce(
+      (acc, o) => {
+        if (o.toolEfficiency) {
+          acc.cases++;
+          acc.calls += o.toolEfficiency.totalCalls;
+          acc.errors += o.toolEfficiency.errorCalls;
+          acc.errorThenRetry += o.toolEfficiency.errorThenRetry;
+          if (o.toolEfficiency.redundantCalls > 0) acc.redundantCases++;
+        }
+        return acc;
+      },
+      { cases: 0, calls: 0, errors: 0, errorThenRetry: 0, redundantCases: 0 },
+    );
+    if (eff.cases > 0) {
+      evaluations.push(
+        score(configIds, {
+          name: "avg-tool-calls",
+          value: Number((eff.calls / eff.cases).toFixed(2)),
+          dataType: "NUMERIC",
+          comment: `${eff.calls.toString()} calls over ${eff.cases.toString()} cases`,
+        }),
+        score(configIds, {
+          name: "redundant-call-rate",
+          value: Number((eff.redundantCases / eff.cases).toFixed(4)),
+          dataType: "NUMERIC",
+          comment: `${eff.redundantCases.toString()}/${eff.cases.toString()} cases had a redundant call`,
+        }),
+      );
+      if (eff.calls > 0) {
+        evaluations.push(
+          score(configIds, {
+            name: "tool-error-rate",
+            value: Number((eff.errors / eff.calls).toFixed(4)),
+            dataType: "NUMERIC",
+            comment: `${eff.errors.toString()}/${eff.calls.toString()} calls errored, ${eff.errorThenRetry.toString()} error→retry`,
+          }),
+        );
+      }
     }
     for (const cap of CAPABILITIES) {
       const subset = outputs.filter((o) => o.capability === cap);

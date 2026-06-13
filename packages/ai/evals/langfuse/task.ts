@@ -10,6 +10,7 @@ import type { ExperimentTask } from "@langfuse/client";
 import { allSuites } from "../cases";
 import { CURATED } from "../curation";
 import { runCase, type RunCaseOptions } from "../runner";
+import { summarizeToolEfficiency } from "../tool-efficiency";
 import { validateToolCalls } from "../tool-schemas";
 import type { Capability, EvalCase, EvalSuite } from "../types";
 import type { TaskOutput } from "./types";
@@ -94,6 +95,10 @@ export const buildExperimentTask = (opts?: RunCaseOptions): ExperimentTask => {
     }
     const result = await runCase(entry.suite, entry.case, opts);
     const validity = validateToolCalls(result.invoke.toolCalls);
+    const efficiency = summarizeToolEfficiency(
+      result.invoke.toolCalls,
+      entry.case.budget,
+    );
     const out: TaskOutput = {
       caseId: result.caseId,
       suite: result.suiteName,
@@ -118,6 +123,9 @@ export const buildExperimentTask = (opts?: RunCaseOptions): ExperimentTask => {
       ...(validity.total > 0 || validity.unknown > 0
         ? { toolCallValidity: validity }
         : {}),
+      // Always attached (even at 0 calls — that IS the success signal for
+      // a "don't call a tool" probe, and run-level averages count it).
+      toolEfficiency: efficiency,
       ...(detectParallelToolWindows(result.invoke.toolCalls)
         ? { parallelObserved: true }
         : {}),

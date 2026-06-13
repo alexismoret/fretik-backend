@@ -123,6 +123,55 @@ const SCORE_CONFIGS: ScoreConfigSeed[] = [
     description:
       "The FALLBACK agent answered this turn (silent failover or zombie recovery) — during a gate run the case was NOT served by the candidate model.",
   },
+  // ── C11 tool-calling EFFICIENCY scores ───────────────────────────
+  // INFORMATIONAL (never gate-blocking in C11). Measure HOW the turn
+  // worked, not just IF — they never fold into correctness. Names below
+  // are FINAL (score configs are non-deletable) and must match
+  // evals/langfuse/evaluators.ts. `error-then-retry` is deliberately NOT
+  // seeded — it rides the tool-error-rate comment until named for good.
+  {
+    name: "tool-call-count",
+    dataType: "NUMERIC",
+    minValue: 0,
+    description:
+      "Total tool calls in the turn (item). 0 = a text-only answer. Over-calling signal.",
+  },
+  {
+    name: "tool-error-rate",
+    dataType: "NUMERIC",
+    minValue: 0,
+    maxValue: 1,
+    description:
+      "Fraction of tool calls whose output is a canonical {error,code}. Item: per-turn (calls>0). Run: aggregate over all calls.",
+  },
+  {
+    name: "redundant-call-count",
+    dataType: "NUMERIC",
+    minValue: 0,
+    description:
+      "Surplus repeats of an identical (tool + normalised input) call in the turn — a redundancy/loop signal.",
+  },
+  {
+    name: "tool-budget-overage",
+    dataType: "NUMERIC",
+    minValue: 0,
+    description:
+      "Calls beyond the case's declared budget (overage past maxToolCalls + off-allowlist calls). Emitted only for cases that declare a budget.",
+  },
+  {
+    name: "avg-tool-calls",
+    dataType: "NUMERIC",
+    minValue: 0,
+    description: "Run-level mean tool calls per turn.",
+  },
+  {
+    name: "redundant-call-rate",
+    dataType: "NUMERIC",
+    minValue: 0,
+    maxValue: 1,
+    description:
+      "Run-level fraction of cases with at least one redundant call.",
+  },
 ];
 
 const client = new LangfuseClient();

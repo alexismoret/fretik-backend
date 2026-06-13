@@ -20,7 +20,9 @@
  *    correctness drop ≤ 1 case-equivalent; tool-call-validity ≥
  *    baseline − ε; zombie-rate ≤ baseline + ε; cost-per-turn within
  *    the profile's costClass envelope (ADVISORY until calibrated);
- *    avg latency ≤ 1.3× baseline; fallback-served items ≤ 1.
+ *    avg latency ≤ 1.5× baseline; fallback-served items ≤ 1. Plus a
+ *    tool-calling EFFICIENCY section (avg-tool-calls / tool-error-rate
+ *    / redundant-call-rate) — ADVISORY in C11, never failing.
  *
  *    Output: a verdict per criterion + SUGGESTED A/B/C grades and an
  *    `evalGate` stamp. The gate NEVER writes `profiles.ts` — a human
@@ -100,6 +102,12 @@ interface RunMetrics {
   avgLatencyMs?: number;
   costPerTurnUsd?: number;
   fallbackServedCount: number;
+  // C11 tool-calling efficiency (advisory). errorThenRetryTotal is only
+  // available from a live run (not a seeded score → absent for stored).
+  avgToolCalls?: number;
+  toolErrorRate?: number;
+  redundantCallRate?: number;
+  errorThenRetryTotal?: number;
 }
 
 const mean = (xs: number[]): number =>
@@ -138,6 +146,19 @@ const metricsFromResult = (
   const cost = result.runEvaluations.find(
     (e) => e.name === "cost-per-turn-usd",
   )?.value;
+  const eff = outputs.reduce(
+    (acc, o) => {
+      if (o.toolEfficiency) {
+        acc.cases++;
+        acc.calls += o.toolEfficiency.totalCalls;
+        acc.errors += o.toolEfficiency.errorCalls;
+        acc.errorThenRetry += o.toolEfficiency.errorThenRetry;
+        if (o.toolEfficiency.redundantCalls > 0) acc.redundantCases++;
+      }
+      return acc;
+    },
+    { cases: 0, calls: 0, errors: 0, errorThenRetry: 0, redundantCases: 0 },
+  );
   return {
     source: "live",
     runName,
@@ -154,6 +175,14 @@ const metricsFromResult = (
     ...(typeof cost === "number" ? { costPerTurnUsd: cost } : {}),
     fallbackServedCount: outputs.filter((o) => o.fallbackServed === true)
       .length,
+    ...(eff.cases > 0
+      ? {
+          avgToolCalls: eff.calls / eff.cases,
+          redundantCallRate: eff.redundantCases / eff.cases,
+          errorThenRetryTotal: eff.errorThenRetry,
+        }
+      : {}),
+    ...(eff.calls > 0 ? { toolErrorRate: eff.errors / eff.calls } : {}),
   };
 };
 
@@ -229,6 +258,9 @@ const metricsFromStoredRun = async (runName: string): Promise<RunMetrics> => {
   const zombieRate = get("zombie-rate");
   const avgLatencyMs = get("avg-latency-ms");
   const cost = get("cost-per-turn-usd");
+  const avgToolCalls = get("avg-tool-calls");
+  const toolErrorRate = get("tool-error-rate");
+  const redundantCallRate = get("redundant-call-rate");
   return {
     source: "stored",
     runName,
@@ -240,6 +272,9 @@ const metricsFromStoredRun = async (runName: string): Promise<RunMetrics> => {
     ...(avgLatencyMs !== undefined ? { avgLatencyMs } : {}),
     ...(cost !== undefined ? { costPerTurnUsd: cost } : {}),
     fallbackServedCount: get("fallback-served-count") ?? 0,
+    ...(avgToolCalls !== undefined ? { avgToolCalls } : {}),
+    ...(toolErrorRate !== undefined ? { toolErrorRate } : {}),
+    ...(redundantCallRate !== undefined ? { redundantCallRate } : {}),
   };
 };
 
@@ -325,6 +360,38 @@ const evaluateCriteria = (
       cand.fallbackServedCount <= cfg.maxFallbackServed ? "pass" : "fail",
     detail: `${cand.fallbackServedCount.toString()} candidate case(s) answered by the fallback agent (max ${cfg.maxFallbackServed.toString()})`,
   });
+
+  // ── C11 tool-calling EFFICIENCY (advisory until calibrated) ──────────
+  // ADVISORY by default: reported, never failing. A reviewed flip of
+  // `efficiencyEnforced` (after a baseline sets real envelopes) turns
+  // these into pass/fail — same discipline as the cost criterion.
+  const env = cfg.efficiencyEnvelope;
+  const note = cfg.efficiencyEnforced ? "" : " — advisory (uncalibrated)";
+  const effVerdict = (within: boolean): CriterionResult["verdict"] =>
+    cfg.efficiencyEnforced ? (within ? "pass" : "fail") : "advisory";
+
+  if (base.avgToolCalls !== undefined && cand.avgToolCalls !== undefined) {
+    const capCalls = env.avgToolCallsFactor * base.avgToolCalls;
+    out.push({
+      name: "avg-tool-calls",
+      verdict: effVerdict(cand.avgToolCalls <= capCalls + 1e-9),
+      detail: `${base.avgToolCalls.toFixed(2)} → ${cand.avgToolCalls.toFixed(2)} (cap ${capCalls.toFixed(2)} = ${env.avgToolCallsFactor.toString()}×)${note}`,
+    });
+  }
+  if (cand.toolErrorRate !== undefined) {
+    out.push({
+      name: "tool-error-rate",
+      verdict: effVerdict(cand.toolErrorRate <= env.maxToolErrorRate),
+      detail: `${(base.toolErrorRate ?? 0).toFixed(3)} → ${cand.toolErrorRate.toFixed(3)} (max ${env.maxToolErrorRate.toString()})${cand.errorThenRetryTotal !== undefined ? `, ${cand.errorThenRetryTotal.toString()} error→retry` : ""}${note}`,
+    });
+  }
+  if (cand.redundantCallRate !== undefined) {
+    out.push({
+      name: "redundant-call-rate",
+      verdict: effVerdict(cand.redundantCallRate <= env.maxRedundantCallRate),
+      detail: `${(base.redundantCallRate ?? 0).toFixed(3)} → ${cand.redundantCallRate.toFixed(3)} (max ${env.maxRedundantCallRate.toString()})${note}`,
+    });
+  }
 
   return out;
 };

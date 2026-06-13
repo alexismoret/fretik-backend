@@ -42,6 +42,22 @@ export interface GateConfig {
    */
   costCalibrated: boolean;
   costEnvelopeUsdPerTurn: Record<CostClass, number>;
+  /**
+   * Tool-calling EFFICIENCY enforcement (C11). UNCALIBRATED — the
+   * efficiency criteria stay ADVISORY (reported, never failing) until a
+   * baseline run sets real envelopes below AND `GATE_EFFICIENCY_ENFORCED=1`
+   * (env) or a reviewed flip here. Same calibrate-then-enforce discipline
+   * as `costCalibrated`: no placeholder ever gates a promotion.
+   */
+  efficiencyEnforced: boolean;
+  efficiencyEnvelope: {
+    /** Candidate avg-tool-calls ≤ factor × baseline. */
+    avgToolCallsFactor: number;
+    /** Candidate run-level tool-error-rate ≤ this. */
+    maxToolErrorRate: number;
+    /** Candidate run-level redundant-call-rate ≤ this. */
+    maxRedundantCallRate: number;
+  };
 }
 
 export const GATE_CONFIG: GateConfig = {
@@ -55,6 +71,13 @@ export const GATE_CONFIG: GateConfig = {
     premium: num(process.env.GATE_COST_PREMIUM_USD, 0.25),
     standard: num(process.env.GATE_COST_STANDARD_USD, 0.08),
     budget: num(process.env.GATE_COST_BUDGET_USD, 0.03),
+  },
+  efficiencyEnforced: process.env.GATE_EFFICIENCY_ENFORCED === "1",
+  // PLACEHOLDERS pending baseline calibration (see efficiencyEnforced).
+  efficiencyEnvelope: {
+    avgToolCallsFactor: num(process.env.GATE_AVG_TOOL_CALLS_FACTOR, 1.5),
+    maxToolErrorRate: num(process.env.GATE_MAX_TOOL_ERROR_RATE, 0.15),
+    maxRedundantCallRate: num(process.env.GATE_MAX_REDUNDANT_CALL_RATE, 0.1),
   },
 };
 

@@ -2,6 +2,7 @@
  * Shared types for the Langfuse experiment wiring of the eval harness.
  */
 
+import type { ToolEfficiencySummary } from "../tool-efficiency";
 import type { AssertionResult, Capability } from "../types";
 
 /** Where a dataset item came from. Drives weighting/filtering later. */
@@ -58,6 +59,15 @@ export interface TaskOutput {
     unknown: number;
     failures: string[];
   };
+  /**
+   * Mechanical tool-calling EFFICIENCY snapshot (call count, per-tool
+   * counts, error / error-then-retry / redundancy, optional per-case
+   * budget adherence). Summary only — raw inputs/outputs stay out of
+   * the trace (see `evals/tool-efficiency.ts`). INFORMATIONAL: surfaced
+   * as its own scores + the gate's advisory section, NEVER folded into
+   * `correctness` and never a pass/fail criterion in this chantier.
+   */
+  toolEfficiency?: ToolEfficiencySummary;
   /**
    * True when at least two tool executions overlapped in wall-clock
    * time — the model batched parallel tool calls. INFORMATIONAL: feeds

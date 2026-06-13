@@ -37,6 +37,18 @@ remaining `ask-user`, `vague-prompts`, `parallel-tool-calls`, and the trimmed ca
 `simple-qa`. Most need a sharper rubric before they're worth re-adding; prefer deriving the
 equivalent from a real prod failure.
 
+## C11 review (2026-06-12) — additive, no removals
+
+The eval-overhaul (C11) reviewed the curated set for redundant/artificial cases before
+adding. Decision: **additive only — nothing removed.** After the C3 (model-gate) and C6
+(error-analysis) passes the 49-case set is already tightly curated; no case read as
+redundant or artificial enough to drop without losing a real signal (the 3 `par-*`
+parallel probes are intentionally informational, not redundant). C11 instead **added** the
+8-case `b2b-efficiency` suite (realistic generalist office tasks) and a layer of
+INFORMATIONAL tool-calling **efficiency** scores — so "the bot worked badly/slowly" is now
+caught by metrics on the existing trajectories, not by manufacturing more cases (which the
+guardrail below discourages). If a future pass does drop a case, record it here.
+
 ## Method to re-add (do NOT bulk-restore)
 
 When prod error-analysis names a real failure: `promoteTrace` the failing trace into the

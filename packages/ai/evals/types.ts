@@ -156,12 +156,32 @@ export const CAPABILITIES = [
 
 export type Capability = (typeof CAPABILITIES)[number];
 
+/**
+ * Optional efficiency envelope a case can declare. Scored as INFORMATIONAL
+ * tool-efficiency signals (`tool-budget-overage`), NEVER folded into
+ * `correctness` — a turn that exceeds the budget but answers correctly
+ * still passes (Anthropic: grade the outcome, report efficiency apart).
+ * Calibrate loosely: the budget flags over-calling, it does not punish
+ * legitimate exploration. See `evals/tool-efficiency.ts`.
+ */
+export interface CaseBudget {
+  /** Soft ceiling on total tool calls for the turn. */
+  maxToolCalls?: number;
+  /** Tool names a good trajectory stays within (off-list calls are flagged). */
+  expectedTools?: readonly string[];
+}
+
 export interface EvalCase {
   id: string;
   description: string;
   prompt: string;
   /** Optional per-case tags, surfaced as metadata on the Langfuse dataset item. */
   tags?: string[];
+  /**
+   * Optional tool-calling efficiency envelope (informational scores only).
+   * See `CaseBudget` + `evals/tool-efficiency.ts`.
+   */
+  budget?: CaseBudget;
   /**
    * Filenames (relative to `evals/fixtures/`) to copy into the
    * conversation's sandbox + register in `ai_chat_files` + attach as

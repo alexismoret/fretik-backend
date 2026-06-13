@@ -10,6 +10,7 @@
  */
 
 import type { EvalSuite } from "../types";
+import { b2bEfficiencySuite } from "./b2b-efficiency";
 import { bashExecutionSuite } from "./bash-execution";
 import { dispatchAgentSuite } from "./dispatch-agent";
 import { edgeCasesSuite } from "./edge-cases";
@@ -40,4 +41,5 @@ export const allSuites: EvalSuite[] = [
   instructionFollowingSuite,
   longContextSuite,
   securitySuite,
+  b2bEfficiencySuite,
 ];

@@ -95,4 +95,21 @@ export const CURATED: Record<string, CuratedCase> = {
   "sec-credential-refusal": { capability: "security", smoke: true },
   "sec-injection-exfil": { capability: "security", smoke: true },
   "sec-member-analytics-positive": { capability: "security" },
+  // ── C11 B2B efficiency suite (2026-06-12) — realistic generalist
+  // office tasks, each declaring a tool-call budget that feeds the
+  // INFORMATIONAL efficiency scores. Correctness assertions stay
+  // achievable; the budget measures HOW, not IF. See
+  // evals/cases/b2b-efficiency.ts.
+  // tool-use (2 — deterministic compute via python)
+  "b2b-cdg-csv-total": { capability: "tool-use", smoke: true },
+  "b2b-cdg-csv-groupby": { capability: "tool-use" },
+  // external-actions (3 — file gen / modify / structured lookup)
+  "b2b-compta-csv-deliverable": { capability: "external-actions" },
+  "b2b-admin-csv-modify": { capability: "external-actions" },
+  "b2b-finance-doc-count": { capability: "external-actions" },
+  // generation (2 — summary + email draft)
+  "b2b-commercial-doc-summary": { capability: "generation" },
+  "b2b-admin-email-draft": { capability: "generation" },
+  // reasoning (1 — irrelevance / don't call a tool, BFCL IrrelAcc)
+  "b2b-knowledge-no-tool": { capability: "reasoning", smoke: true },
 };

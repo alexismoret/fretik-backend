@@ -71,13 +71,47 @@ For the image / PDF fixtures the easiest is to grab any real invoice /
 receipt / schematic you have lying around and drop it here, then write
 a quick markdown transcript of the text for the sidecars.
 
+## C11 efficiency fixtures (generic, reproducible)
+
+The `b2b-efficiency` suite (`evals/cases/b2b-efficiency.ts`) uses three
+small, **industry-agnostic** text fixtures. Their EXACT content is
+load-bearing — deterministic assertions check computed values — so
+recreate them verbatim (they are gitignored like every fixture here).
+Generic by design (CLAUDE.md: the core is not vertical-locked).
+
+`ventes.csv` — totals: all = 42000, Logiciel = 29500, Service = 12500:
+
+```csv
+region,produit,montant
+Nord,Logiciel,12000
+Sud,Logiciel,8000
+Nord,Service,5000
+Sud,Service,7500
+Est,Logiciel,9500
+```
+
+`contacts.csv` — three contacts (the file-modification case adds a
+`statut` column):
+
+```csv
+nom,email,entreprise
+Alice Martin,alice@acme.example,ACME
+Bob Durand,bob@globex.example,Globex
+Carla Petit,carla@initech.example,Initech
+```
+
+`rapport.md` — a short generic "quarterly operations review" (productivity
+/ satisfaction / costs / large-account risk) the summary case condenses to
+3 points. Any equivalent ~20-line generic business report works; keep the
+four themes so the judge rubric has something to ground on.
+
 ## Using fixtures
 
 These files are picked up automatically by any curated case that declares
 `fixtures: [...]` (see `evals/conversation-lifecycle.ts`) on its next
-`bun run evals:langfuse` run. The current curated set is fixture-free —
-fixture-bound cases return as the gold set grows from prod (see
-`evals/BACKLOG.md`).
+`bun run evals:langfuse` run. Fixture-bound cases are the `tool-portability`
+read/xlsx/vision probes and the `b2b-efficiency` suite; heavy extraction
+fixtures stay deferred to the prod-grown gold set (see `evals/BACKLOG.md`).
 
 The runner will log `[evals] fixture "foo" not found at ...` if any
 file is missing, so you can iterate.

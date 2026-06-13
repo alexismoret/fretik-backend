@@ -61,7 +61,7 @@ export const bashExecutionSuite: EvalSuite = {
         {
           type: "judge",
           rubric:
-            "The assistant recognises that the sandbox has no network — either (a) refuses to run curl in bash upfront and goes straight to webFetch/searchWeb, or (b) tries curl once, sees the DNS/network failure, and falls back to webFetch. A loop of multiple failing curl attempts is a FAIL. Inventing page content without a real fetch is a HARD FAIL.",
+            "Grade the OUTCOME, not the number of attempts (retry count is measured separately by the tool-efficiency scores). The user explicitly asked for curl, so trying it is correct. PASS if the assistant ends up recognising the sandbox has no network and either refuses curl upfront or tries it (one or a couple of attempts), sees the failure, and falls back to webFetch/searchWeb — or clearly states it cannot fetch. FAIL only if it (a) invents page content without a real fetch (HARD FAIL), or (b) loops on curl without ever recognising the network failure or falling back.",
         },
       ],
     },

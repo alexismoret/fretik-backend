@@ -226,6 +226,8 @@ export const delay = (ms: number): Promise<void> =>
 export interface RetryFallbackResult<R> {
   readonly result: R;
   readonly servedBy: "primary" | "fallback";
+  /** True when a same-model retry was attempted (transient pre-stream error). */
+  readonly retried: boolean;
 }
 
 /**
@@ -244,7 +246,11 @@ export const streamWithRetryThenFallback = async <R>(opts: {
 }): Promise<RetryFallbackResult<R>> => {
   const log = opts.log ?? ((message: string) => console.warn(message));
   try {
-    return { result: await opts.primary(), servedBy: "primary" };
+    return {
+      result: await opts.primary(),
+      servedBy: "primary",
+      retried: false,
+    };
   } catch (err) {
     if (opts.abortSignal?.aborted) throw err;
     const classification = classifyStreamError(err);
@@ -256,16 +262,28 @@ export const streamWithRetryThenFallback = async <R>(opts: {
       await delay(backoffMs);
       if (opts.abortSignal?.aborted) throw err;
       try {
-        return { result: await opts.primary(), servedBy: "primary" };
+        return {
+          result: await opts.primary(),
+          servedBy: "primary",
+          retried: true,
+        };
       } catch (retryErr) {
         if (opts.abortSignal?.aborted) throw retryErr;
         log(
           `primary retry failed (${classifyStreamError(retryErr).reason}) — falling back`,
         );
+        return {
+          result: await opts.fallback(),
+          servedBy: "fallback",
+          retried: true,
+        };
       }
-    } else {
-      log(`primary failed (fatal ${classification.reason}) — falling back`);
     }
-    return { result: await opts.fallback(), servedBy: "fallback" };
+    log(`primary failed (fatal ${classification.reason}) — falling back`);
+    return {
+      result: await opts.fallback(),
+      servedBy: "fallback",
+      retried: false,
+    };
   }
 };

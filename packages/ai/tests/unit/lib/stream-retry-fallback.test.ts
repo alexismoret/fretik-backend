@@ -38,7 +38,11 @@ describe("streamWithRetryThenFallback", () => {
       },
       log: noLog,
     });
-    expect(out).toEqual({ result: "primary-ok", servedBy: "primary" });
+    expect(out).toEqual({
+      result: "primary-ok",
+      servedBy: "primary",
+      retried: false,
+    });
     expect(primaryCalls).toBe(1);
     expect(fallbackCalls).toBe(0);
   });
@@ -58,7 +62,11 @@ describe("streamWithRetryThenFallback", () => {
       },
       log: noLog,
     });
-    expect(out).toEqual({ result: "primary-retry-ok", servedBy: "primary" });
+    expect(out).toEqual({
+      result: "primary-retry-ok",
+      servedBy: "primary",
+      retried: true,
+    });
     expect(primaryCalls).toBe(2);
     expect(fallbackCalls).toBe(0);
   });
@@ -77,7 +85,11 @@ describe("streamWithRetryThenFallback", () => {
       },
       log: noLog,
     });
-    expect(out).toEqual({ result: "fallback-ok", servedBy: "fallback" });
+    expect(out).toEqual({
+      result: "fallback-ok",
+      servedBy: "fallback",
+      retried: false,
+    });
     expect(primaryCalls).toBe(1);
     expect(fallbackCalls).toBe(1);
   });
@@ -96,7 +108,11 @@ describe("streamWithRetryThenFallback", () => {
       },
       log: noLog,
     });
-    expect(out).toEqual({ result: "fallback-ok", servedBy: "fallback" });
+    expect(out).toEqual({
+      result: "fallback-ok",
+      servedBy: "fallback",
+      retried: true,
+    });
     expect(primaryCalls).toBe(2);
     expect(fallbackCalls).toBe(1);
   });

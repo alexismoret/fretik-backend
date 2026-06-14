@@ -894,10 +894,16 @@ const buildTurnCallOptions = async (
   ] = await Promise.all([
     // C4 — each fragment already soft-fails to an empty value; the soft
     // timeout adds the missing TIME bound so one slow source can't hang
-    // the whole turn.
+    // the whole turn. These are HANG backstops, NOT latency caps: set
+    // them above realistic p99 so a transient DB/Redis/LLM spike doesn't
+    // needlessly drop context. The DB/Redis fragments resolve in well
+    // under a second normally; active-memory is the heavy one (a RAG
+    // sweep + an LLM judge with its OWN 15s internal budget — see
+    // `RECALL_TIMEOUT_MS`), so its bound sits ABOVE that 15s, catching
+    // only a true RAG hang (the RAG search has no internal timeout).
     withSoftTimeout(
       buildAttachedFilesBlock(params.conversationId, filenames),
-      2000,
+      4000,
       "",
       "attached-files",
     ),
@@ -919,7 +925,7 @@ const buildTurnCallOptions = async (
           inlinedFileCount: 0,
         };
       }),
-      2000,
+      4000,
       { manifest: "", totalChars: 0, fileCount: 0, inlinedFileCount: 0 },
       "context-manifest",
     ),
@@ -947,7 +953,10 @@ const buildTurnCallOptions = async (
                 organizationId: params.callOptions.organizationId,
                 userId: activeMemoryUserId,
               }),
-              3000,
+              // ABOVE the recall's own 15s judge budget (RECALL_TIMEOUT_MS)
+              // + RAG headroom — only fires on a true RAG hang, never on a
+              // normal (multi-second) judge generation.
+              18000,
               null,
               "active-memory",
             ),
@@ -967,7 +976,7 @@ const buildTurnCallOptions = async (
           );
           return "";
         }),
-      1500,
+      3000,
       "",
       "field-defs",
     ),
@@ -991,7 +1000,7 @@ const buildTurnCallOptions = async (
           );
           return "";
         }),
-      1500,
+      3000,
       "",
       "enabled-skills",
     ),
@@ -1274,6 +1283,15 @@ const runChatbotTurn = async (
       // active-observation context below). Captured by `turnBody`.
       let visibleOutput = "";
       let traceFinishReason: string | undefined;
+      // Recovery telemetry folded onto the `chatbot-turn` observation so a
+      // failover is filterable in Langfuse (the model spans are all named
+      // `agent:chatbot`, indistinguishable on their own). `servedByTurn`
+      // = which agent produced the visible answer; `recoveryKind` = how the
+      // turn was rescued (undefined = clean); `recoveryErrorReason` = the
+      // classified cause when a stream error drove the recovery.
+      let servedByTurn: "primary" | "fallback" = "primary";
+      let recoveryKind: string | undefined;
+      let recoveryErrorReason: string | undefined;
 
       // Stream the fallback model into the SAME writer and fold its
       // result into the turn's trace. Shared by two callers: zombie
@@ -1284,9 +1302,11 @@ const runChatbotTurn = async (
       // instead of being swallowed as a second (impossible) failover.
       const runFallbackModel = async (
         historyForModel: UIMessage[],
-        opts: { notice: boolean },
+        opts: { notice: boolean; recovery: string },
       ): Promise<void> => {
         turnFlags.failoverAttempted = true;
+        servedByTurn = "fallback";
+        recoveryKind = opts.recovery;
         try {
           if (opts.notice) {
             const noticeId = randomUUIDv7();
@@ -1435,13 +1455,23 @@ const runChatbotTurn = async (
           },
         });
 
-        const { result, servedBy } = await streamChatbotWithFallback({
+        const { result, servedBy, retried } = await streamChatbotWithFallback({
           history: historyForModel,
           callOptions: callOptionsWithFiles,
           agentSet,
           abortSignal: abortController.signal,
           onStepFinish: onTurnStep,
         });
+        // Pre-stream recovery telemetry (the mid-stream paths set their own
+        // `recoveryKind` via runFallbackModel / the structured-error branch).
+        servedByTurn = servedBy;
+        if (servedBy === "fallback") {
+          recoveryKind = retried
+            ? "retry-then-fallback"
+            : "pre-stream-fallback";
+        } else if (retried) {
+          recoveryKind = "retry-same-model";
+        }
 
         // Merge the model's UIMessage stream into the outer stream.
         // `originalMessages` / `onError` / `onFinish` were configured
@@ -1517,16 +1547,21 @@ const runChatbotTurn = async (
           // fallback into the same writer — silent, because the primary
           // produced nothing visible and ran no tool.
           const classification = classifyStreamError(streamRejection);
+          recoveryErrorReason = classification.reason;
           if (isTransparentFailure(streamRejection)) {
             console.error(
               `${params.logPrefix} pre-output ${classification.reason} — transparent failover to fallback model`,
             );
-            await runFallbackModel(historyForModel, { notice: false });
+            await runFallbackModel(historyForModel, {
+              notice: false,
+              recovery: "transparent-failover",
+            });
           } else {
             // Fatal, or a mid-stream socket drop (recovered by the
             // resumable-stream reconnect, not a model swap), or the
             // failover was already spent. The structured error is on the
             // wire; partial messages persist via `onFinish`. Log only.
+            recoveryKind = "structured-error";
             console.error(
               `${params.logPrefix} pre-output ${classification.kind}/${classification.reason} — structured retryable error on the wire`,
             );
@@ -1553,7 +1588,10 @@ const runChatbotTurn = async (
             console.error(
               `${params.logPrefix} primary zombied (finish=${finishReason}) — chaining to fallback model`,
             );
-            await runFallbackModel(historyForModel, { notice: true });
+            await runFallbackModel(historyForModel, {
+              notice: true,
+              recovery: "zombie-fallback",
+            });
           }
         }
       };
@@ -1616,13 +1654,24 @@ const runChatbotTurn = async (
                 );
               }
               await turnBody();
+              // Fold the turn outcome onto `chatbot-turn` so a failover is
+              // filterable in Langfuse: `servedBy` (primary|fallback),
+              // `recovery` (how the turn was rescued — absent when clean),
+              // and the classified `errorReason` behind any recovery.
+              const turnMetadata: Record<string, string> = {
+                servedBy: servedByTurn,
+              };
+              if (traceFinishReason !== undefined) {
+                turnMetadata.finishReason = traceFinishReason;
+              }
+              if (recoveryKind !== undefined) {
+                turnMetadata.recovery = recoveryKind;
+              }
+              if (recoveryErrorReason !== undefined) {
+                turnMetadata.errorReason = recoveryErrorReason;
+              }
               updateActiveObservation(
-                {
-                  output: visibleOutput,
-                  ...(traceFinishReason !== undefined
-                    ? { metadata: { finishReason: traceFinishReason } }
-                    : {}),
-                },
+                { output: visibleOutput, metadata: turnMetadata },
                 { asType: "agent" },
               );
             },

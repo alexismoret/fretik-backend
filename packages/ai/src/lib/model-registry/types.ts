@@ -175,7 +175,7 @@ export interface ModelAssessment {
    */
   provider: {
     requireParameters: true;
-    zdr: boolean;
+    zdr?: boolean;
     sort?: "throughput";
   };
   /** Per-family system-prompt overlay key (C2). Unset = no overlay. */

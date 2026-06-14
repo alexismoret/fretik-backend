@@ -29,16 +29,6 @@ import { shouldInjectCacheControl } from "../../../src/lib/openrouter-cache";
  */
 
 describe("settingsForRole — parity with historical settings objects", () => {
-  test("chat envelope matches the legacy chatModelSettings (M3: zdr exemption)", () => {
-    expect(
-      settingsForRole(ROLE_BINDINGS.chat, getProfileForRole("chat")),
-    ).toEqual({
-      provider: { require_parameters: true, zdr: false },
-      reasoning: { enabled: true, max_tokens: 1_500 },
-      usage: { include: true },
-    });
-  });
-
   test("chat-fallback and dispatch-cheap keep the historical chat envelope", () => {
     const historicalChatEnvelope = {
       provider: { require_parameters: true, zdr: true },

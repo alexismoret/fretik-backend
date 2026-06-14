@@ -622,14 +622,8 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
       nativeFileMimeTypes: [],
       cache: { strategy: "implicit" },
       reasoning: { style: "max-tokens", defaultLevel: "low" },
-      // `zdr: false` — DELIBERATE exemption (user decision 2026-06-12):
-      // M3 is not open-weights yet, so OpenRouter serves it ONLY via
-      // MiniMax first-party, which carries no ZDR flag — with
-      // `zdr: true` the pool is empty and every turn errors instantly
-      // (gate run ccf1822e…, 100% error frames; verified by direct API
-      // probe). Revisit to `true` when open-weights release brings
-      // ZDR-flagged providers.
-      provider: { requireParameters: true, zdr: false },
+
+      provider: { requireParameters: true, zdr: true },
       // Promoted via the C3 gate, 2026-06-12. All capabilities at or
       // above the M2.7 baseline; cost $0.0134/turn (budget envelope).
       // The avg-latency criterion of this run pair passed only after

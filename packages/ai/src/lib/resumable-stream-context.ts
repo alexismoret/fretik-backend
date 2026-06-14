@@ -31,6 +31,24 @@ import { createResumableStreamContext } from "resumable-stream/ioredis";
  */
 let cachedContext: ResumableStreamContext | null = null;
 
+/**
+ * Static (connection-independent) options for the resumable-stream
+ * context. Exported so a guard test can pin them without standing up
+ * Redis: changing `keyPrefix` would orphan every in-flight resumable
+ * stream, and `waitUntil` must stay `null` for a long-lived Bun server.
+ */
+export const RESUMABLE_STREAM_CONFIG = {
+  // Bun server process is long-lived — no need to extend lifetime.
+  waitUntil: null,
+  // The buffer's Redis keys carry a fixed 24h TTL set by the library
+  // (`resumable-stream/dist/runtime.js`, `EX: 24*60*60`); it is NOT
+  // configurable, and 24h is a safe ceiling — the real recovery window
+  // is seconds (a reconnecting tab), and `onFinish` clears the
+  // conversation's active-stream id as soon as the turn completes. No
+  // per-key TTL override exists; do not invent one.
+  keyPrefix: "fretik-chatbot-stream",
+} as const;
+
 const assertRedisUrl = (): string => {
   const url = process.env.REDIS_URL;
   if (!url) {
@@ -76,9 +94,7 @@ export const getResumableStreamContext = (): ResumableStreamContext => {
   cachedContext = createResumableStreamContext({
     publisher,
     subscriber,
-    // Bun server process is long-lived — no need to extend lifetime.
-    waitUntil: null,
-    keyPrefix: "fretik-chatbot-stream",
+    ...RESUMABLE_STREAM_CONFIG,
   });
   return cachedContext;
 };

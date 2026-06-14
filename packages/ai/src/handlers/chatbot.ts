@@ -50,6 +50,7 @@ import {
   createUIMessageStream,
   createUIMessageStreamResponse,
   UI_MESSAGE_STREAM_HEADERS,
+  type ToolLoopAgentOnStepFinishCallback,
   type UIMessage,
   type UIMessageChunk,
   type UIMessageStreamWriter,
@@ -84,6 +85,14 @@ import {
 } from "../lib/model-registry/resolve";
 import type { ModelProfile } from "../lib/model-registry/types";
 import { getResumableStreamContext } from "../lib/resumable-stream-context";
+import {
+  classifyStreamError,
+  FAILOVER_SENTINEL,
+  isTransparentlyRecoverable,
+  streamWithRetryThenFallback,
+  toStructuredError,
+  withSoftTimeout,
+} from "../lib/stream-errors";
 import { chatbotRateLimitMiddleware } from "../middlewares/chatbot-rate-limit";
 import { internalMiddleware } from "../middlewares/internal";
 import {
@@ -184,43 +193,40 @@ const streamChatbotWithFallback = async (params: {
   callOptions: ChatbotCallOptions;
   agentSet: AgentSet<ChatbotCallOptions, ChatbotTools>;
   abortSignal?: AbortSignal;
+  /**
+   * Per-step hook forwarded to whichever agent serves the call, so the
+   * caller can track `toolExecuted` / `visibleText` live (C4 failover).
+   */
+  onStepFinish?: ToolLoopAgentOnStepFinishCallback<ChatbotTools>;
 }) => {
   const modelMessages = await convertToModelMessages(
     stripFilePartsForModel(params.history),
   );
-  // Primary → fallback failover. Langfuse trace nesting + attribute
-  // propagation are owned by the caller: `execute` (in `runChatbotTurn`)
-  // wraps the whole turn in a single `chatbot-turn` active span, so every
-  // `.stream()` here — and its nested tool / sub-agent spans — attaches
-  // under that one trace. This function just runs the model.
+  // Primary → fallback failover (C4: transient errors earn one retry on
+  // the SAME model before spending the fallback). Langfuse trace nesting +
+  // attribute propagation are owned by the caller: `execute` (in
+  // `runChatbotTurn`) wraps the whole turn in a single `chatbot-turn`
+  // active span, so every `.stream()` here — and its nested tool /
+  // sub-agent spans — attaches under that one trace.
   //
   // `servedBy` reports which agent actually answered: an eval run with a
   // candidate profile must know when a silent failover served the
   // FALLBACK model instead, or the candidate's scores are polluted.
-  try {
-    const result = await params.agentSet.primary.stream({
+  const streamWith = (
+    agent: AgentSet<ChatbotCallOptions, ChatbotTools>["primary"],
+  ) =>
+    agent.stream({
       messages: modelMessages,
       options: params.callOptions,
       abortSignal: params.abortSignal,
+      onStepFinish: params.onStepFinish,
     });
-    return { result, servedBy: "primary" as const };
-  } catch (err) {
-    // Sprint B §3.5: when the abort fired (user clicked Stop) the
-    // primary call rejects with an AbortError — there is nothing to
-    // fall back to. Re-raising lets the upstream handler treat the
-    // turn as cleanly aborted instead of burning fallback tokens for
-    // a generation the user already cancelled.
-    if (params.abortSignal?.aborted) {
-      throw err;
-    }
-    console.error("[chatbot] primary model failed, falling back:", err);
-    const result = await params.agentSet.fallback.stream({
-      messages: modelMessages,
-      options: params.callOptions,
-      abortSignal: params.abortSignal,
-    });
-    return { result, servedBy: "fallback" as const };
-  }
+  return streamWithRetryThenFallback({
+    primary: () => streamWith(params.agentSet.primary),
+    fallback: () => streamWith(params.agentSet.fallback),
+    abortSignal: params.abortSignal,
+    log: (message) => console.warn(`[chatbot] ${message}`),
+  });
 };
 
 /**
@@ -886,24 +892,37 @@ const buildTurnCallOptions = async (
     teamFieldDefinitionsBlock,
     enabledSkillsBlock,
   ] = await Promise.all([
-    buildAttachedFilesBlock(params.conversationId, filenames),
-    buildChatbotContextManifest({
-      userId: params.callOptions.userId,
-      teamId: params.callOptions.teamId,
-      organizationId: params.callOptions.organizationId,
-    }).catch((error: unknown) => {
-      // Never let a missing/corrupt manifest block a turn.
-      console.warn(
-        `${params.logPrefix} buildChatbotContextManifest failed, continuing without persistent context:`,
-        error,
-      );
-      return {
-        manifest: "",
-        totalChars: 0,
-        fileCount: 0,
-        inlinedFileCount: 0,
-      };
-    }),
+    // C4 — each fragment already soft-fails to an empty value; the soft
+    // timeout adds the missing TIME bound so one slow source can't hang
+    // the whole turn.
+    withSoftTimeout(
+      buildAttachedFilesBlock(params.conversationId, filenames),
+      2000,
+      "",
+      "attached-files",
+    ),
+    withSoftTimeout(
+      buildChatbotContextManifest({
+        userId: params.callOptions.userId,
+        teamId: params.callOptions.teamId,
+        organizationId: params.callOptions.organizationId,
+      }).catch((error: unknown) => {
+        // Never let a missing/corrupt manifest block a turn.
+        console.warn(
+          `${params.logPrefix} buildChatbotContextManifest failed, continuing without persistent context:`,
+          error,
+        );
+        return {
+          manifest: "",
+          totalChars: 0,
+          fileCount: 0,
+          inlinedFileCount: 0,
+        };
+      }),
+      2000,
+      { manifest: "", totalChars: 0, fileCount: 0, inlinedFileCount: 0 },
+      "context-manifest",
+    ),
     activeMemoryInputs && activeMemoryUserId
       ? // Sibling trace linked to the conversation's session: the pre-turn
         // recall judge runs before `execute`, so it can't nest under
@@ -919,48 +938,63 @@ const buildTurnCallOptions = async (
             tags: [`team:${params.callOptions.teamId}`],
           },
           () =>
-            runActiveMemoryRecall({
-              userMessage: activeMemoryInputs.userMessage,
-              attachedFiles: activeMemoryInputs.attachedFiles,
-              recentTail: activeMemoryInputs.recentTail,
-              teamId: params.callOptions.teamId,
-              organizationId: params.callOptions.organizationId,
-              userId: activeMemoryUserId,
-            }),
+            withSoftTimeout(
+              runActiveMemoryRecall({
+                userMessage: activeMemoryInputs.userMessage,
+                attachedFiles: activeMemoryInputs.attachedFiles,
+                recentTail: activeMemoryInputs.recentTail,
+                teamId: params.callOptions.teamId,
+                organizationId: params.callOptions.organizationId,
+                userId: activeMemoryUserId,
+              }),
+              3000,
+              null,
+              "active-memory",
+            ),
         )
       : Promise.resolve(null),
     // Compact `- key (type)` catalogue for the dynamic suffix.
     // Redis-cached (30 min TTL) so the per-turn cost is one HGET. A
     // failure must never block the turn — fall back to an empty block
     // and let the prompt render the "no dynamic fields" placeholder.
-    getFieldDefinitionsForTeam({ teamId: params.callOptions.teamId })
-      .then((defs) => defs.map((fd) => `- ${fd.key} (${fd.type})`).join("\n"))
-      .catch((error: unknown) => {
-        console.warn(
-          `${params.logPrefix} getFieldDefinitionsForTeam failed, continuing without team fields:`,
-          error instanceof Error ? error.message : error,
-        );
-        return "";
-      }),
+    withSoftTimeout(
+      getFieldDefinitionsForTeam({ teamId: params.callOptions.teamId })
+        .then((defs) => defs.map((fd) => `- ${fd.key} (${fd.type})`).join("\n"))
+        .catch((error: unknown) => {
+          console.warn(
+            `${params.logPrefix} getFieldDefinitionsForTeam failed, continuing without team fields:`,
+            error instanceof Error ? error.message : error,
+          );
+          return "";
+        }),
+      1500,
+      "",
+      "field-defs",
+    ),
     // Team-filtered L1 skills listing. Always-on skills are always
     // present; team-configurable skills appear only when no override
     // exists or the team opted in. Disabled skills are absent entirely
     // — the agent has no path to invoke them. Failure falls back to an
     // empty block so the prompt renders the "no skills" placeholder
     // and the turn still ships.
-    listEnabledSkillsForTeam(params.callOptions.teamId)
-      .then((skills) =>
-        skills
-          .map((skill) => `- **${skill.name}** — ${skill.description}`)
-          .join("\n"),
-      )
-      .catch((error: unknown) => {
-        console.warn(
-          `${params.logPrefix} listEnabledSkillsForTeam failed, continuing without skills catalogue:`,
-          error instanceof Error ? error.message : error,
-        );
-        return "";
-      }),
+    withSoftTimeout(
+      listEnabledSkillsForTeam(params.callOptions.teamId)
+        .then((skills) =>
+          skills
+            .map((skill) => `- **${skill.name}** — ${skill.description}`)
+            .join("\n"),
+        )
+        .catch((error: unknown) => {
+          console.warn(
+            `${params.logPrefix} listEnabledSkillsForTeam failed, continuing without skills catalogue:`,
+            error instanceof Error ? error.message : error,
+          );
+          return "";
+        }),
+      1500,
+      "",
+      "enabled-skills",
+    ),
   ]);
 
   console.info(
@@ -1098,6 +1132,56 @@ const runChatbotTurn = async (
   const agentSet = params.agentSet ?? chatbotAgentSet;
   const modelProfile = params.modelProfile ?? getProfileForRole("chat");
 
+  // C4 turn-robustness state. `onError` (sync, fires on the wire when the
+  // stream errors) and the recovery seam inside `execute` below reach the
+  // SAME verdict from these flags + `classifyStreamError`, so they never
+  // contradict. The flags are advanced live by `onTurnStep`, forwarded to
+  // every `.stream()` call as `onStepFinish`.
+  const turnFlags = {
+    toolExecuted: false,
+    visibleText: false,
+    failoverAttempted: false,
+  };
+  const onTurnStep: ToolLoopAgentOnStepFinishCallback<ChatbotTools> = (
+    step,
+  ) => {
+    if (step.toolCalls.length > 0 || step.toolResults.length > 0) {
+      turnFlags.toolExecuted = true;
+    }
+    if (step.text.length > 0) turnFlags.visibleText = true;
+  };
+  // A stream error is "transparently recoverable" only when it is a
+  // pre-output provider failure (empty pool / 429 / 5xx / timeout), no
+  // tool ran, nothing visible was streamed, and we haven't already spent
+  // the failover. Then re-streaming the fallback can't duplicate text or
+  // repeat a side effect.
+  const isTransparentFailure = (err: unknown): boolean =>
+    !turnFlags.toolExecuted &&
+    !turnFlags.visibleText &&
+    !turnFlags.failoverAttempted &&
+    isTransparentlyRecoverable(classifyStreamError(err));
+  // Map a stream error onto the wire. Transparent failures return the
+  // sentinel (the recovery seam re-streams the fallback; the eval harness
+  // and the chat client treat it as a no-op). Everything else returns a
+  // structured retryable error the client renders with a one-click retry;
+  // `resume` tells it to CONTINUE the turn (a tool already ran — replaying
+  // would repeat the side effect) rather than regenerate from scratch.
+  const recordStreamError = (err: unknown): string => {
+    if (abortController.signal.aborted) {
+      console.info(`${params.logPrefix} stream ended after user abort`);
+      return "Stopped.";
+    }
+    const classification = classifyStreamError(err);
+    console.error(
+      `${params.logPrefix} mid-stream ${classification.kind}/${classification.reason}:`,
+      err instanceof Error ? `${err.name}: ${err.message}` : err,
+    );
+    if (isTransparentFailure(err)) return FAILOVER_SENTINEL;
+    return JSON.stringify(
+      toStructuredError(classification, { resume: turnFlags.toolExecuted }),
+    );
+  };
+
   // Build the response stream via `createUIMessageStream({ execute })`.
   // The execute callback owns the full turn pipeline:
   //   1. Run `compactConversation` (CC-aligned, see
@@ -1118,24 +1202,14 @@ const runChatbotTurn = async (
   const COMPACTION_PART_ID = "compaction-status";
   const rawStream = createUIMessageStream<UIMessage>({
     originalMessages: params.history,
-    // Sprint B §3.1 — observability for mid-stream errors. The
-    // primary→fallback try/catch in `streamChatbotWithFallback` only
-    // catches errors that surface BEFORE the stream is set up;
-    // anything that errors after the first chunk reaches this
-    // callback. We log it with full context and return a
-    // user-friendly fragment so the client renders an actionable
-    // message instead of an opaque truncated answer.
-    onError: (err: unknown) => {
-      if (abortController.signal.aborted) {
-        console.info(`${params.logPrefix} stream ended after user abort`);
-        return "Stopped.";
-      }
-      console.error(
-        `${params.logPrefix} mid-stream error:`,
-        err instanceof Error ? `${err.name}: ${err.message}` : err,
-      );
-      return "The model lost the connection mid-answer. Please retry — your previous messages are preserved.";
-    },
+    // C4 — mid-stream errors. The primary→fallback try/catch in
+    // `streamChatbotWithFallback` only catches errors BEFORE the stream
+    // is set up; anything that errors after `.stream()` returns reaches
+    // this callback (and the inner `toUIMessageStream` onError). Both
+    // delegate to `recordStreamError`: a transparent pre-output failure
+    // is swallowed (the recovery seam re-streams the fallback), every
+    // other error becomes a structured retryable frame.
+    onError: recordStreamError,
     onFinish: async ({ messages: finalMessages }) => {
       await persistAssistantMessages(
         params.conversationId,
@@ -1201,6 +1275,110 @@ const runChatbotTurn = async (
       let visibleOutput = "";
       let traceFinishReason: string | undefined;
 
+      // Stream the fallback model into the SAME writer and fold its
+      // result into the turn's trace. Shared by two callers: zombie
+      // recovery (primary finished empty → `notice: true`, a visible
+      // "switching…" line) and C4 transparent failover (primary errored
+      // pre-output → `notice: false`, silent). Sets `failoverAttempted`
+      // so a subsequent fallback error surfaces as a structured error
+      // instead of being swallowed as a second (impossible) failover.
+      const runFallbackModel = async (
+        historyForModel: UIMessage[],
+        opts: { notice: boolean },
+      ): Promise<void> => {
+        turnFlags.failoverAttempted = true;
+        try {
+          if (opts.notice) {
+            const noticeId = randomUUIDv7();
+            writer.write({ type: "text-start", id: noticeId });
+            writer.write({
+              type: "text-delta",
+              id: `${noticeId}-d`,
+              delta:
+                "_Switching to the fallback model after the primary stopped without producing an answer…_\n\n",
+            });
+            writer.write({ type: "text-end", id: noticeId });
+          }
+          const fallbackMessages = await convertToModelMessages(
+            stripFilePartsForModel(historyForModel),
+          );
+          const fallbackResult = await agentSet.fallback.stream({
+            messages: fallbackMessages,
+            options: callOptionsWithFiles,
+            abortSignal: abortController.signal,
+            onStepFinish: onTurnStep,
+          });
+          writer.merge(
+            fallbackResult.toUIMessageStream<UIMessage>({
+              onError: recordStreamError,
+              messageMetadata: ({ part }) => {
+                if (part.type !== "finish") return undefined;
+                const fbUsage = part.totalUsage;
+                const traceId = getActiveTraceId();
+                return {
+                  ...(traceId !== undefined
+                    ? { langfuseTraceId: traceId }
+                    : {}),
+                  telemetry: {
+                    finishReason: part.finishReason,
+                    rawFinishReason: part.rawFinishReason,
+                    // Failover (zombie or transparent) always serves the
+                    // fallback agent — flagged for the eval harness.
+                    servedBy: "fallback",
+                    modelProfileKey: modelProfile.key,
+                    usage: {
+                      inputTokens: fbUsage.inputTokens,
+                      outputTokens: fbUsage.outputTokens,
+                      totalTokens: fbUsage.totalTokens,
+                      reasoningTokens:
+                        fbUsage.outputTokenDetails?.reasoningTokens,
+                      cachedInputTokens:
+                        fbUsage.inputTokenDetails?.cacheReadTokens,
+                    },
+                  },
+                };
+              },
+            }),
+          );
+          const [fbFinish, fbText] = await Promise.all([
+            fallbackResult.finishReason,
+            fallbackResult.text,
+          ]);
+          // The fallback produced the actually-visible answer — make it the
+          // trace output instead of the primary's empty/partial text.
+          if ((fbText ?? "").trim().length > 0) {
+            visibleOutput = fbText;
+            traceFinishReason = fbFinish;
+          }
+          const fbZombie =
+            (fbFinish === "other" || fbFinish === "length") &&
+            (fbText ?? "").trim().length === 0;
+          if (fbZombie) {
+            console.error(
+              `${params.logPrefix} fallback also zombied (finish=${fbFinish})`,
+            );
+            const finalId = randomUUIDv7();
+            writer.write({ type: "text-start", id: finalId });
+            writer.write({
+              type: "text-delta",
+              id: `${finalId}-d`,
+              delta:
+                "Both models stopped without producing an answer. Please retry — for large attachments, try opening the file directly in `python` (e.g. `pdfplumber.open(...)`, `pd.read_csv(...)`).",
+            });
+            writer.write({ type: "text-end", id: finalId });
+          }
+        } catch (err) {
+          // The fallback chain failed too (pre-stream throw, or its own
+          // pre-output error rejecting the result promises). `recordStreamError`
+          // already put a structured retryable error on the wire; partials
+          // persist via `onFinish`. Log and let the turn close gracefully.
+          console.warn(
+            `${params.logPrefix} fallback-model chain failed:`,
+            err instanceof Error ? err.message : err,
+          );
+        }
+      };
+
       // Auto-title the conversation from the first user message. The
       // generation + the emit/persist both run in PARALLEL with the model
       // answer: `emitAutoTitle` writes the `data-conversation-title` part
@@ -1262,6 +1440,7 @@ const runChatbotTurn = async (
           callOptions: callOptionsWithFiles,
           agentSet,
           abortSignal: abortController.signal,
+          onStepFinish: onTurnStep,
         });
 
         // Merge the model's UIMessage stream into the outer stream.
@@ -1281,6 +1460,10 @@ const runChatbotTurn = async (
         // tool calls, RAG hits, latency, cost — lives in Langfuse.
         writer.merge(
           result.toUIMessageStream<UIMessage>({
+            // A provider `error` part (e.g. empty pool) surfaces through
+            // the INNER stream's onError, not the outer one — route it to
+            // the same mapper so both surfaces agree on the wire frame.
+            onError: recordStreamError,
             messageMetadata: ({ part }) => {
               if (part.type !== "finish") return undefined;
               const usage = part.totalUsage;
@@ -1312,127 +1495,66 @@ const runChatbotTurn = async (
           }),
         );
 
-        // Post-merge zombie recovery: when the primary finishes with
-        // `finish=other|length` and no visible text, the SDK has already
-        // streamed the (empty) primary output to the writer. We don't
-        // bubble an error to the user — instead we chain into the
-        // fallback model in the same writer. Mirrors the principle of
-        // graceful degradation: the user gets a real answer instead of
-        // a silent stop, at the cost of one extra model turn that only
-        // fires on the rare zombie path.
-        //
-        // Note: this fires *regardless of whether tool calls happened*.
-        // A turn that called `read` 5 times and then died without text
-        // is still a zombie from the user's perspective — they see
-        // collapsed tool-result UI cards and no answer.
+        // Post-merge recovery (C4 + zombie). Awaiting the primary's
+        // aggregate promises RESOLVES on a completed turn (happy path or
+        // zombie) and REJECTS when the stream errored before any step
+        // completed — `recordedSteps === 0` in the SDK, i.e. a pre-output
+        // provider failure (empty pool / 429 / 5xx). We branch on that.
+        let resolved: [string, string] | undefined;
+        let streamRejection: unknown;
         try {
-          const [finishReason, finalText] = await Promise.all([
-            result.finishReason,
-            result.text,
-          ]);
+          resolved = await Promise.all([result.finishReason, result.text]);
+        } catch (err) {
+          streamRejection = err;
+        }
+
+        if (abortController.signal.aborted) {
+          // User clicked Stop — nothing to recover.
+        } else if (resolved === undefined) {
+          // Pre-output stream error. `recordStreamError` already mapped it
+          // onto the wire (the FAILOVER_SENTINEL when transparent, else a
+          // structured retryable error). When transparent, re-stream the
+          // fallback into the same writer — silent, because the primary
+          // produced nothing visible and ran no tool.
+          const classification = classifyStreamError(streamRejection);
+          if (isTransparentFailure(streamRejection)) {
+            console.error(
+              `${params.logPrefix} pre-output ${classification.reason} — transparent failover to fallback model`,
+            );
+            await runFallbackModel(historyForModel, { notice: false });
+          } else {
+            // Fatal, or a mid-stream socket drop (recovered by the
+            // resumable-stream reconnect, not a model swap), or the
+            // failover was already spent. The structured error is on the
+            // wire; partial messages persist via `onFinish`. Log only.
+            console.error(
+              `${params.logPrefix} pre-output ${classification.kind}/${classification.reason} — structured retryable error on the wire`,
+            );
+          }
+        } else {
+          // Stream completed ≥1 step: happy path or zombie. A post-tool
+          // mid-stream error that resolved with a partial already had its
+          // structured frame emitted by `recordStreamError`; partials
+          // persist via `onFinish`, so there is nothing extra to do here.
+          const [finishReason, finalText] = resolved;
           // Trace output for `chatbot-turn`: the primary's visible answer
-          // (overridden below if zombie-recovery's fallback produces text).
+          // (overridden inside runFallbackModel if its fallback answers).
           visibleOutput = finalText ?? "";
           traceFinishReason = finishReason;
           const isBudgetExhausted =
             finishReason === "other" || finishReason === "length";
           const hasNoVisibleText = (finalText ?? "").trim().length === 0;
           const primaryZombied = isBudgetExhausted && hasNoVisibleText;
-          if (primaryZombied && !abortController.signal.aborted) {
+          if (primaryZombied) {
+            // Zombie: the primary finished with no answer. Chain the
+            // fallback with a visible notice (this fires regardless of
+            // whether tool calls happened — from the user's perspective a
+            // turn that called `read` 5× and produced no text is a zombie).
             console.error(
               `${params.logPrefix} primary zombied (finish=${finishReason}) — chaining to fallback model`,
             );
-            // Inline UI notice so the user sees something happen during
-            // the second model turn instead of staring at silence.
-            const noticeId = randomUUIDv7();
-            writer.write({ type: "text-start", id: noticeId });
-            writer.write({
-              type: "text-delta",
-              id: `${noticeId}-d`,
-              delta:
-                "_Switching to the fallback model after the primary stopped without producing an answer…_\n\n",
-            });
-            writer.write({ type: "text-end", id: noticeId });
-
-            const fallbackMessages = await convertToModelMessages(
-              stripFilePartsForModel(historyForModel),
-            );
-            const fallbackResult = await agentSet.fallback.stream({
-              messages: fallbackMessages,
-              options: callOptionsWithFiles,
-              abortSignal: abortController.signal,
-            });
-            writer.merge(
-              fallbackResult.toUIMessageStream<UIMessage>({
-                messageMetadata: ({ part }) => {
-                  if (part.type !== "finish") return undefined;
-                  const fbUsage = part.totalUsage;
-                  const traceId = getActiveTraceId();
-                  return {
-                    ...(traceId !== undefined
-                      ? { langfuseTraceId: traceId }
-                      : {}),
-                    telemetry: {
-                      finishReason: part.finishReason,
-                      rawFinishReason: part.rawFinishReason,
-                      // Zombie recovery always serves the fallback agent.
-                      servedBy: "fallback",
-                      modelProfileKey: modelProfile.key,
-                      usage: {
-                        inputTokens: fbUsage.inputTokens,
-                        outputTokens: fbUsage.outputTokens,
-                        totalTokens: fbUsage.totalTokens,
-                        reasoningTokens:
-                          fbUsage.outputTokenDetails?.reasoningTokens,
-                        cachedInputTokens:
-                          fbUsage.inputTokenDetails?.cacheReadTokens,
-                      },
-                    },
-                  };
-                },
-              }),
-            );
-
-            // If the fallback ALSO zombies, surface the actionable
-            // remediation message — at this point we've burned both
-            // models and the user deserves a clear next step.
-            const [fbFinish, fbText] = await Promise.all([
-              fallbackResult.finishReason,
-              fallbackResult.text,
-            ]);
-            // The fallback produced the actually-visible answer — make it
-            // the trace output instead of the primary's empty text.
-            if ((fbText ?? "").trim().length > 0) {
-              visibleOutput = fbText;
-              traceFinishReason = fbFinish;
-            }
-            const fbZombie =
-              (fbFinish === "other" || fbFinish === "length") &&
-              (fbText ?? "").trim().length === 0;
-            if (fbZombie) {
-              console.error(
-                `${params.logPrefix} fallback also zombied (finish=${fbFinish})`,
-              );
-              const finalId = randomUUIDv7();
-              writer.write({ type: "text-start", id: finalId });
-              writer.write({
-                type: "text-delta",
-                id: `${finalId}-d`,
-                delta:
-                  "Both models stopped without producing an answer. Please retry — for large attachments, try opening the file directly in `python` (e.g. `pdfplumber.open(...)`, `pd.read_csv(...)`).",
-              });
-              writer.write({ type: "text-end", id: finalId });
-            }
+            await runFallbackModel(historyForModel, { notice: true });
           }
-        } catch (err) {
-          // Defensive — if `result.finishReason` / fallback chain fail
-          // to resolve, we don't want to break the happy path. Log and
-          // move on. The user has at least seen the primary's output
-          // (even if empty).
-          console.warn(
-            `${params.logPrefix} zombie-fallback chain failed:`,
-            err instanceof Error ? err.message : err,
-          );
         }
       };
 

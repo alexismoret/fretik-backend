@@ -7,6 +7,7 @@
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { invokeChatbot } from "../../../evals/http-client";
+import { FAILOVER_SENTINEL } from "../../../src/lib/stream-errors";
 
 process.env.EVAL_TEAM_ID ??= "00000000-0000-0000-0000-00000000aaaa";
 process.env.EVAL_ORGANIZATION_ID ??= "00000000-0000-0000-0000-00000000bbbb";
@@ -57,5 +58,23 @@ describe("invokeChatbot — SSE error frames", () => {
     expect(result.error).toBe("root cause");
     expect(result.text).toBe("partial answer");
     expect(result.stepsUsed).toBe(1);
+  });
+
+  test("C4 — a FAILOVER_SENTINEL error frame is ignored (transparent failover)", async () => {
+    // The transparent failover emits the sentinel error frame, then the
+    // fallback's answer follows on the same stream. The harness must NOT
+    // record it as a turn error, or a recovered turn scores as failed.
+    stubFetch(
+      sseResponse([
+        '{"type":"start","messageId":"x"}',
+        `{"type":"error","errorText":"${FAILOVER_SENTINEL}"}`,
+        '{"type":"start-step"}',
+        '{"type":"text-delta","id":"t","delta":"fallback answer"}',
+        "[DONE]",
+      ]),
+    );
+    const result = await invokeChatbot("ping");
+    expect(result.error).toBeUndefined();
+    expect(result.text).toBe("fallback answer");
   });
 });

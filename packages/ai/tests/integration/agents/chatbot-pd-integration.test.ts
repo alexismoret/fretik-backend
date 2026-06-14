@@ -184,7 +184,11 @@ describe("Chatbot Progressive Disclosure — end-to-end", () => {
       expect(stepOne).toContain(coreName);
     }
     // Other domain tools remain hidden until explicitly activated.
-    expect(stepOne).not.toContain("listExtractions");
+    // `listEntities` is a REAL registered domain tool (guarded below), so
+    // this isolation assertion is meaningful — not a vacuous check against
+    // a tool name that doesn't exist.
+    expect(Object.keys(tools)).toContain("listEntities");
+    expect(stepOne).not.toContain("listEntities");
     expect(stepOne).not.toContain("getEntityDetails");
   });
 
@@ -273,8 +277,8 @@ describe("Chatbot Progressive Disclosure — end-to-end", () => {
     // Step 0 of the new turn already has listDocuments active.
     const stepZero = computeActiveTools(tools, manager);
     expect(stepZero).toContain("listDocuments");
-    // Other domain tools are still gated.
-    expect(stepZero).not.toContain("listExtractions");
+    // Other (real) domain tools are still gated.
+    expect(stepZero).not.toContain("listEntities");
   });
 
   test("replay is idempotent — running the same history twice does not duplicate activations", () => {
@@ -291,8 +295,8 @@ describe("Chatbot Progressive Disclosure — end-to-end", () => {
             output: {
               type: "json",
               value: {
-                matches: ["listDocuments", "listExtractions"],
-                query: "select:listDocuments,listExtractions",
+                matches: ["listDocuments", "listEntities"],
+                query: "select:listDocuments,listEntities",
                 total_deferred_tools: 6,
               },
             },
@@ -302,8 +306,11 @@ describe("Chatbot Progressive Disclosure — end-to-end", () => {
     ];
     replayActivationFromHistory(manager, history, "searchTools");
     replayActivationFromHistory(manager, history, "searchTools");
+    // Both are REAL registered domain tools, so the replay activates a
+    // genuine multi-tool set (not phantom names the active-tools filter
+    // would silently drop).
     expect(new Set(manager.getSnapshot())).toEqual(
-      new Set(["listDocuments", "listExtractions"]),
+      new Set(["listDocuments", "listEntities"]),
     );
     const active = computeActiveTools(tools, manager);
     // No duplicate entries either.

@@ -18,6 +18,7 @@
  * produces a partial result rather than throwing.
  */
 
+import { FAILOVER_SENTINEL } from "../src/lib/stream-errors";
 import type { InvokeResult, ToolCallTrace } from "./types";
 
 type UnknownRecord = Record<string, unknown>;
@@ -152,6 +153,11 @@ const absorbChunk = (chunk: UnknownRecord, state: StreamState): void => {
       // 2026-06-12 M3 gate failure mode. Keep the FIRST error: it is
       // the root cause; later frames are downstream noise.
       const text = readString(chunk, "errorText");
+      // C4: a transparent failover emits a sentinel error frame before
+      // re-streaming on the fallback. It is NOT a turn error — the
+      // fallback's answer follows — so ignore it (else a recovered turn
+      // would score as failed and `servedBy:"fallback"` already flags it).
+      if (text === FAILOVER_SENTINEL) return;
       state.error ??= text ?? "stream error frame without errorText";
       return;
     }

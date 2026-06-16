@@ -13,27 +13,30 @@
  */
 
 /**
- * Per-file size cap. 15 MB is 50% above the Drive document cap
- * (10 MB) to accommodate slightly larger PDFs users attach to chat
- * for analysis without promoting to Drive, still well under Claude's
- * 30 MB to keep OCR + hydration fast.
+ * Per-file size cap. 30 MB (raised from 15 MB, 2026-06) — chosen against
+ * the real provider ceilings of the paths a chat file travels:
+ * Mistral OCR (`read`) and Gemini vision both accept 50 MB / 1000 pages,
+ * and Claude caps the whole request at 32 MB. 30 MB sits at the
+ * conservative side — comfortably under the OCR/vision 50 MB, aligned
+ * with Claude's 32 MB request ceiling, and keeps native-image base64
+ * inlining (~×1.33 payload) sane. Generous enough for B2B scans /
+ * multi-page reports without blowing up cost or upload latency.
  */
-export const MAX_FILE_SIZE_BYTES = 15 * 1024 * 1024;
+export const MAX_FILE_SIZE_BYTES = 30 * 1024 * 1024;
 
 /**
- * Per-message cap. 5 files keeps the attached-files block in the
- * system prompt concise (model tool-calling degrades past ~10 paths
- * at once) and the hydration cost bounded (5 × 15 MB ≈ 75 MB worst
- * case per turn).
+ * Per-message cap. 10 files (raised from 5, 2026-06) unblocks B2B
+ * fan-out ("compare these 8 invoices") while staying far under provider
+ * per-request limits (Claude 100 images, Gemini more). Keeps the
+ * attached-files block readable and the per-turn hydration cost bounded.
  */
-export const MAX_FILES_PER_MESSAGE = 5;
+export const MAX_FILES_PER_MESSAGE = 10;
 
 /**
- * Per-conversation aggregate cap. Mirrors Claude.ai's documented
- * 20-files-per-chat limit (support.claude.com/en/articles/8241126).
+ * Per-conversation aggregate cap. 30 files (raised from 20, 2026-06).
  * Counted across rows `status != 'error'` for the conversation.
  */
-export const MAX_FILES_PER_CONVERSATION = 20;
+export const MAX_FILES_PER_CONVERSATION = 30;
 
 /** HTTP-surface error codes used by the upload/handler validation path. */
 export const CHAT_FILE_ERROR_CODES = {

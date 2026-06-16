@@ -155,26 +155,49 @@ describe("registry integrity", () => {
     }
   });
 
-  test("every family covers all three tiers", () => {
+  test("every tier is covered by at least one profile", () => {
+    // The registry is pruned for profitability — a family need NOT cover all
+    // three tiers (e.g. MiniMax ships only its flagship M3). The picker-
+    // relevant invariant is that each tier has at least one option overall.
+    // A profile may list MORE THAN ONE tier (multi-tier), so flatMap.
     const tiers: ModelTier[] = ["flagship", "workhorse", "utility"];
-    const byFamily = new Map<string, Set<ModelTier>>();
-    for (const profile of Object.values(MODEL_PROFILES)) {
-      const set = byFamily.get(profile.family) ?? new Set<ModelTier>();
-      set.add(profile.tier);
-      byFamily.set(profile.family, set);
+    const covered = new Set<ModelTier>(
+      Object.values(MODEL_PROFILES).flatMap((p) => p.tiers),
+    );
+    for (const tier of tiers) {
+      expect(`${tier}:${covered.has(tier)}`).toBe(`${tier}:true`);
     }
-    for (const [family, covered] of byFamily) {
-      for (const tier of tiers) {
-        expect(`${family}:${covered.has(tier)}`).toBe(`${family}:true`);
+  });
+
+  test("nativeInput activation is a subset of catalog facts (C5)", () => {
+    // The product may only send a modality natively when the model truly
+    // accepts it upstream. The catalog is the hard ceiling; nativeInput is
+    // the (eval-gated) product decision under it.
+    for (const profile of Object.values(MODEL_PROFILES)) {
+      const { nativeInput } = profile.assessment;
+      const modalities = profile.catalog.inputModalities;
+      if (nativeInput.image) expect(modalities).toContain("image");
+      if (nativeInput.video) expect(modalities).toContain("video");
+      if (nativeInput.audio) expect(modalities).toContain("audio");
+      if (nativeInput.fileMimeTypes.length > 0) {
+        expect(modalities).toContain("file");
       }
     }
   });
 
-  test("native file MIME types require the `file` input modality", () => {
-    for (const profile of Object.values(MODEL_PROFILES)) {
-      if (profile.assessment.nativeFileMimeTypes.length > 0) {
-        expect(profile.catalog.inputModalities).toContain("file");
-      }
+  test("only the gate-passed flagship (M3) has native input activated (C5)", () => {
+    // C5 shipped inert; the activation PR (2026-06-15) switched M3 — the only
+    // profile with native input on. Every other profile stays fully disabled
+    // until its own A/B activation. A new `image:true`/`video:true` elsewhere
+    // must come with its eval evidence, so this guards accidental flips.
+    for (const [key, profile] of Object.entries(MODEL_PROFILES)) {
+      const { nativeInput } = profile.assessment;
+      const active =
+        nativeInput.image ||
+        nativeInput.video ||
+        nativeInput.audio ||
+        nativeInput.fileMimeTypes.length > 0;
+      expect(`${key}:${active}`).toBe(`${key}:${key === "minimax-m3"}`);
     }
   });
 

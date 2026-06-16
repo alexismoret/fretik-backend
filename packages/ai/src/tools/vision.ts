@@ -39,6 +39,9 @@ const SUPPORTED_VISION_EXTENSIONS = new Set([
   ".jpeg",
   ".webp",
   ".pdf",
+  ".mp4",
+  ".webm",
+  ".mov",
 ]);
 
 const SUPPORTED_VISION_MIMES = new Set([
@@ -46,6 +49,9 @@ const SUPPORTED_VISION_MIMES = new Set([
   "image/jpeg",
   "image/webp",
   "application/pdf",
+  "video/mp4",
+  "video/webm",
+  "video/quicktime",
 ]);
 
 const getExtension = (path: string): string => {
@@ -64,6 +70,12 @@ const guessMimeFromExtension = (ext: string): string | null => {
       return "image/webp";
     case ".pdf":
       return "application/pdf";
+    case ".mp4":
+      return "video/mp4";
+    case ".webm":
+      return "video/webm";
+    case ".mov":
+      return "video/quicktime";
     default:
       return null;
   }
@@ -72,23 +84,23 @@ const guessMimeFromExtension = (ext: string): string | null => {
 export const createVisionTool = () =>
   tool({
     description: [
-      "Invokes a vision model to look at an image or PDF file in the conversation's sandbox and answer a specific visual question about it.",
+      "Invokes a vision model to look at an image, PDF, or video file in the conversation's sandbox and answer a specific visual question about it.",
       "",
-      "USE SPARINGLY. For scans or screenshots of documents (invoices, receipts, contracts), try `read(file_path)` first — OCR has already extracted the text into a markdown sidecar. Only call vision when the question is explicitly visual: layout, diagrams, colours, photo content, positional details, signatures, or the overall document structure as a picture.",
+      "USE SPARINGLY. For scans or screenshots of documents (invoices, receipts, contracts), try `read(file_path)` first — OCR has already extracted the text into a markdown sidecar. Only call vision when the question is explicitly visual: layout, diagrams, colours, photo content, positional details, signatures, the overall document structure as a picture, or what happens in a video.",
       "",
       "Inputs:",
-      "- file_path (required): workspace-relative or absolute path under `/workspace/` (e.g. 'attachments/chart.png', 'drive/uuid-report.pdf').",
+      "- file_path (required): workspace-relative or absolute path under `/workspace/` (e.g. 'attachments/chart.png', 'drive/uuid-report.pdf', 'attachments/clip.mp4').",
       "- question (required): the specific visual question to ask. Be precise — 'Describe the chart in the bottom-right, including colours and values' works better than 'Describe this file'.",
       "",
-      "Accepted formats: .png, .jpg, .jpeg, .webp, .pdf. Anything else returns an error.",
-      "PDFs are sent natively to the vision model (not OCR-converted) so layout, diagrams, and signatures are preserved.",
+      "Accepted formats: .png, .jpg, .jpeg, .webp, .pdf, .mp4, .webm, .mov. Anything else returns an error.",
+      "PDFs and videos are sent natively to the vision model (not OCR-converted) so layout, motion, diagrams, and signatures are preserved.",
     ].join("\n"),
     inputSchema: z.object({
       file_path: z
         .string()
         .min(1)
         .describe(
-          "Workspace-relative or absolute path under '/workspace/'. Accepts .png, .jpg, .jpeg, .webp, .pdf.",
+          "Workspace-relative or absolute path under '/workspace/'. Accepts .png, .jpg, .jpeg, .webp, .pdf, .mp4, .webm, .mov.",
         ),
       question: z
         .string()
@@ -119,7 +131,7 @@ export const createVisionTool = () =>
       const ext = getExtension(resolved.relative);
       if (!SUPPORTED_VISION_EXTENSIONS.has(ext)) {
         return {
-          error: `Not a supported vision format (${ext || "no extension"}). Use read instead — vision only accepts .png, .jpg, .jpeg, .webp, or .pdf.`,
+          error: `Not a supported vision format (${ext || "no extension"}). Use read instead — vision only accepts .png, .jpg, .jpeg, .webp, .pdf, .mp4, .webm, or .mov.`,
           code: TOOL_ERROR_CODES.UNSUPPORTED_VISION_TYPE,
         };
       }
@@ -154,6 +166,7 @@ export const createVisionTool = () =>
           bytes,
           mimeType,
           question,
+          filename: resolved.relative.split("/").pop(),
         });
         return {
           filePath: resolved.absolute,

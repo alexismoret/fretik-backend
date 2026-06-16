@@ -112,4 +112,12 @@ export const CURATED: Record<string, CuratedCase> = {
   "b2b-admin-email-draft": { capability: "generation" },
   // reasoning (1 — irrelevance / don't call a tool, BFCL IrrelAcc)
   "b2b-knowledge-no-tool": { capability: "reasoning", smoke: true },
+  // ── C5 native multimodal (2026-06-15) — image/video Q&A graded on the
+  // ANSWER, not the tool, so the activation A/B (native vs tool-mediated)
+  // isolates the multimodal delta. See evals/cases/multimodal.ts.
+  // multimodal (4)
+  "mm-image-scene-qa": { capability: "multimodal", smoke: true },
+  "mm-chart-reading": { capability: "multimodal" },
+  "mm-image-plus-text": { capability: "multimodal" },
+  "mm-video-qa": { capability: "multimodal" },
 };

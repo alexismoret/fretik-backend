@@ -1,4 +1,7 @@
-import { AI_VECTOR_SOURCE_TYPES } from "@fretik/shared/db/schema";
+import {
+  AI_VECTOR_SOURCE_TYPES,
+  type AiVectorSourceType,
+} from "@fretik/shared/db/schema";
 import { tool } from "ai";
 import { z } from "zod";
 import { getRuntimeContext } from "../agents/shared/runtime-context";
@@ -67,10 +70,10 @@ export const createRagSearchTool = () =>
       filters: z
         .object({
           sourceTypes: z
-            .array(z.enum(AI_VECTOR_SOURCE_TYPES))
+            .array(z.string())
             .optional()
             .describe(
-              "Restrict to specific source types. Defaults to all when omitted.",
+              `Restrict to specific source types: ${AI_VECTOR_SOURCE_TYPES.join(", ")}. Defaults to all when omitted.`,
             ),
           sourceIds: z
             .array(z.uuid())
@@ -85,6 +88,30 @@ export const createRagSearchTool = () =>
     execute: async ({ question, filters }, options) => {
       const ctx = getRuntimeContext(options);
       const { toolCallId } = options;
+
+      // Permissive sourceTypes: the model sometimes requests a type that
+      // isn't vector-indexed (e.g. "entities" — structured rows reached via
+      // listEntities / getEntityDetails / querySql). Drop unknown values and
+      // steer the model, instead of failing the whole call on a schema enum.
+      const isSourceType = (t: string): t is AiVectorSourceType =>
+        AI_VECTOR_SOURCE_TYPES.some((v) => v === t);
+      const requestedTypes = filters?.sourceTypes ?? [];
+      const validTypes: AiVectorSourceType[] =
+        requestedTypes.filter(isSourceType);
+      const droppedTypes = requestedTypes.filter((t) => !isSourceType(t));
+      const effectiveFilters:
+        | { sourceTypes?: AiVectorSourceType[]; sourceIds?: string[] }
+        | undefined = filters
+        ? {
+            sourceIds: filters.sourceIds,
+            sourceTypes: validTypes.length > 0 ? validTypes : undefined,
+          }
+        : undefined;
+      const sourceTypeNotice =
+        droppedTypes.length > 0
+          ? `Ignored unsupported sourceType(s): ${droppedTypes.join(", ")}. Supported: ${AI_VECTOR_SOURCE_TYPES.join(", ")}.`
+          : undefined;
+
       let result: Awaited<ReturnType<typeof searchRAG>>;
       try {
         result = await searchRAG({
@@ -92,7 +119,7 @@ export const createRagSearchTool = () =>
           teamId: ctx.teamId,
           organizationId: ctx.organizationId,
           userId: ctx.userId,
-          filters,
+          filters: effectiveFilters,
           topK: TOP_K,
           debug: RAG_DEBUG,
         });
@@ -123,6 +150,7 @@ export const createRagSearchTool = () =>
         }>;
         filtersApplied?: typeof result.filtersApplied;
         debugScores?: typeof result.debugScores;
+        notice?: string;
       } = {
         results: result.results.map((r) => ({
           // Contextual prefix is merged into the content — same
@@ -146,6 +174,7 @@ export const createRagSearchTool = () =>
         payload.filtersApplied = result.filtersApplied;
         payload.debugScores = result.debugScores;
       }
+      if (sourceTypeNotice) payload.notice = sourceTypeNotice;
 
       return maybePersistLargeOutput(
         payload,

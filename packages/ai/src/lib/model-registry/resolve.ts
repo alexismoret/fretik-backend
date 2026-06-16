@@ -10,6 +10,7 @@ import { MODEL_PROFILES, ROLE_BINDINGS } from "./profiles";
 import type {
   ModelProfile,
   ModelRole,
+  ModelTier,
   ReasoningLevel,
   RoleBinding,
 } from "./types";
@@ -223,4 +224,84 @@ export const resolveChatModelForProfile = (
   });
   chatResolvedByProfile.set(profileKey, entry);
   return entry;
+};
+
+// ============================================================================
+// C8 — per-team / per-conversation tier selection
+// ============================================================================
+
+/**
+ * The user-selectable tier each role belongs to (chantier C8). The three
+ * tiers map the ~10 internal roles onto the three knobs a team customises;
+ * `"fixed"` roles (fallbacks, capability-routed vision) are never
+ * user-overridable in v1. This map + `isSelectableForTier` are the
+ * foundation C8b reuses to make workhorse/utility resolution team-aware.
+ */
+export const ROLE_TIER: Record<ModelRole, ModelTier | "fixed"> = {
+  chat: "flagship",
+  "chat-fallback": "fixed",
+  "dispatch-cheap": "workhorse",
+  "pre-extract": "workhorse",
+  "pre-extract-fallback": "fixed",
+  "active-memory": "utility",
+  "compaction-summarizer": "workhorse",
+  "cheap-tasks": "utility",
+  vision: "fixed",
+  "vision-fallback": "fixed",
+};
+
+/** Representative role whose code-default profile is the tier's recommendation. */
+const TIER_DEFAULT_ROLE: Record<ModelTier, ModelRole> = {
+  flagship: "chat",
+  workhorse: "pre-extract",
+  utility: "cheap-tasks",
+};
+
+/**
+ * A profile a team may pick for a tier: it is `enabled` (product on/off),
+ * LISTS that tier, AND is gate-passed. A multi-tier profile (e.g. Sonnet 4.6
+ * — flagship + workhorse) is selectable in each tier it lists. `enabled:false`
+ * hides a model regardless of gate status (cost / beta); the C3 gate defines
+ * the rest of the menu — `pending`/`failed` profiles never appear, so the
+ * picker can never offer an unvalidated model.
+ */
+export const isSelectableForTier = (
+  profile: ModelProfile,
+  tier: ModelTier,
+): boolean =>
+  profile.assessment.enabled !== false &&
+  profile.tiers.includes(tier) &&
+  profile.assessment.evalGate.status === "passed";
+
+/** Every gate-passed profile recommended for a tier (the tier's picker menu). */
+export const listSelectableProfilesForTier = (
+  tier: ModelTier,
+): readonly ModelProfile[] =>
+  listProfiles().filter((profile) => isSelectableForTier(profile, tier));
+
+/** The code-default profile key for a tier — badged "recommended" in the UI. */
+export const recommendedProfileKeyForTier = (tier: ModelTier): string =>
+  ROLE_BINDINGS[TIER_DEFAULT_ROLE[tier]].profileKey;
+
+/**
+ * Resolve a conversation's pinned flagship key for the chat loop, with
+ * graceful degradation: an unset, unknown, or no-longer-selectable
+ * (removed / gate-failed / wrong-tier) pin falls back to the chat default.
+ * Returns the effective key plus whether a fallback occurred, so the
+ * handler can surface a one-line UI notice.
+ *
+ * Distinct from `resolveChatModelForProfile`, which deliberately skips the
+ * gate check (the eval harness must run `pending` candidates). User-facing
+ * conversation pins MUST be gate-passed flagships — hence the check here.
+ */
+export const resolveFlagshipProfileKey = (
+  pinnedKey: string | null | undefined,
+): { profileKey: string; fellBack: boolean } => {
+  const fallback = ROLE_BINDINGS.chat.profileKey;
+  if (!pinnedKey) return { profileKey: fallback, fellBack: false };
+  const profile = MODEL_PROFILES[pinnedKey];
+  if (profile && isSelectableForTier(profile, "flagship")) {
+    return { profileKey: pinnedKey, fellBack: false };
+  }
+  return { profileKey: fallback, fellBack: true };
 };

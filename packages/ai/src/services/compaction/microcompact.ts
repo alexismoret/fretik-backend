@@ -21,6 +21,14 @@ import { buildSubAgentTools } from "../../agents/chatbot/tools";
  * marker shrinks the token count, which can avoid triggering the
  * heavyweight summariser in the first place.
  *
+ * Native media parts (C5) are intentionally NOT aged here. They are not
+ * tool results, and `prepareModelMessages` already bounds how many ride a
+ * single request via the per-modality recency cap
+ * (`nativeInput.limits.max{Images,Videos}PerRequest`), re-resolved fresh
+ * every turn against the active profile — so the prompt weight stays
+ * bounded regardless of history length. The token estimator costs the
+ * surviving native parts so the threshold below stays honest.
+ *
  * Trade-off vs CC:
  *   - CC keeps the recent N tool results verbatim AND skips the
  *     mutation when the cache is warm (so the prefix isn't broken).

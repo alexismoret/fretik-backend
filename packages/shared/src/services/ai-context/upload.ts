@@ -25,10 +25,15 @@ import { findContextProfile, type ScopeKey } from "./retrieve";
 import { triggerContextVectorRefresh } from "./vector-refresh";
 
 /**
- * Per-file size cap, aligned with the user's decision for V1 (the
- * default Claude Projects cap is 30 MB; we start more conservative).
+ * Per-file size cap. 30 MB (raised from 15 MB, 2026-06) — matches the
+ * Claude Projects cap, and safe here because context is RAG-consumed, not
+ * inlined: a context file's system-prompt footprint is BOUNDED (manifest
+ * = outline + 200-char preview via `build-manifest.ts`), full content is
+ * lazy-read (`read("context/<file>")`) + chunked/vectorised for
+ * `searchKnowledge`. File SIZE doesn't bloat the prompt; only total file
+ * COUNT does (advisory `CHATBOT_CONTEXT_MAX_CHARS` manifest budget).
  */
-export const CHATBOT_CONTEXT_MAX_FILE_SIZE = 15 * 1024 * 1024;
+export const CHATBOT_CONTEXT_MAX_FILE_SIZE = 30 * 1024 * 1024;
 
 /**
  * S3 key namespace for context-file binaries. Kept separate from the

@@ -23,8 +23,8 @@ import { parseSummariserMaxTokens } from "../../../../src/services/compaction/su
  * `evals/cases/compaction.ts`.
  */
 
-const baseProfile = MODEL_PROFILES["minimax-m2.7"];
-if (!baseProfile) throw new Error("minimax-m2.7 profile missing from registry");
+const baseProfile = MODEL_PROFILES["minimax-m3"];
+if (!baseProfile) throw new Error("minimax-m3 profile missing from registry");
 
 /** Same profile, different context window — the only threshold input that varies per model. */
 const withContext = (contextLength: number): ModelProfile => ({
@@ -82,10 +82,10 @@ describe("getCompactionThresholdTokens — CC effective-window arithmetic", () =
     );
   });
 
-  test("default chat profile (MiniMax M2.7, 204.8K) lands at 171.8K with the 20K reserve", () => {
+  test("default chat profile (MiniMax M3, 1M) lands at 1,015,576 with the 20K reserve", () => {
     // Pins the real serving threshold — update deliberately on model swap.
     if (SUMMARY_RESERVE === 20_000) {
-      expect(getCompactionThresholdTokens(baseProfile)).toBe(171_800);
+      expect(getCompactionThresholdTokens(baseProfile)).toBe(1_015_576);
     }
   });
 });
@@ -93,7 +93,7 @@ describe("getCompactionThresholdTokens — CC effective-window arithmetic", () =
 describe("compactConversation — pass-through behaviour", () => {
   test("under-threshold conversations are returned by reference (microcompact no-op)", async () => {
     // 4 short text-only messages, no tool parts → microcompact noop,
-    // total tokens ≈ 250, well below the M2.7 threshold.
+    // total tokens ≈ 250, well below the M3 threshold.
     const msgs = buildShortConversation(4, 200);
     const out = await compactConversation(msgs, { profile: baseProfile });
     expect(out).toBe(msgs);

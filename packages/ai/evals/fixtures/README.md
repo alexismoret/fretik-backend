@@ -71,6 +71,30 @@ For the image / PDF fixtures the easiest is to grab any real invoice /
 receipt / schematic you have lying around and drop it here, then write
 a quick markdown transcript of the text for the sidecars.
 
+## C5 multimodal fixtures (native image / video)
+
+The `multimodal` suite (`evals/cases/multimodal.ts`) grades native
+image/video Q&A on the ANSWER. None of these takes an OCR sidecar (the
+video and the photos carry no extractable text); a text-less image gets
+an `image-skip` cache row automatically, and a video routes straight to
+the vision tool. `marina.jpg` is reused from the table above; the two new
+ones are real public files (download commands below). If you re-fetch
+different content, update the matching judge rubric in `multimodal.ts`.
+
+| Filename    | Format | Content the rubric expects                                                                           | Used by            |
+| ----------- | ------ | ---------------------------------------------------------------------------------------------------- | ------------------ |
+| `chart.png` | PNG    | Bar chart "Monthly revenue 2026", Jan–Jun, where **March** (95) is clearly the tallest bar           | `mm-chart-reading` |
+| `clip.mp4`  | MP4    | "Big Buck Bunny" 10 s clip (~1 MB): an animated outdoor scene with a large grey-and-white **rabbit** | `mm-video-qa`      |
+
+```bash
+# chart.png — rendered by QuickChart (public Chart.js renderer); March is the peak
+curl -sL -X POST https://quickchart.io/chart -H 'Content-Type: application/json' -o chart.png \
+  -d '{"width":600,"height":400,"format":"png","chart":{"type":"bar","data":{"labels":["Jan","Feb","Mar","Apr","May","Jun"],"datasets":[{"label":"Monthly revenue (k)","data":[42,58,95,61,49,70]}]},"options":{"title":{"display":true,"text":"Monthly revenue 2026"}}}}'
+
+# clip.mp4 — Big Buck Bunny, 360p, 10 s, ~1 MB (Blender open movie, CC-BY)
+curl -sL -o clip.mp4 https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/360/Big_Buck_Bunny_360_10s_1MB.mp4
+```
+
 ## C11 efficiency fixtures (generic, reproducible)
 
 The `b2b-efficiency` suite (`evals/cases/b2b-efficiency.ts`) uses three

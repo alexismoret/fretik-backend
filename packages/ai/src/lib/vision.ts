@@ -19,6 +19,9 @@ import { resolveModel } from "./model-registry/resolve";
  *    `file-parser` plugin pinned to `engine: "native"` so Gemini
  *    receives the raw PDF instead of OpenRouter's default
  *    Mistral-OCR conversion.
+ *  - Videos (.mp4/.webm/.mov) go as a `type: "file"` content part; the
+ *    OpenRouter provider maps a `video/*` mediaType to a `video_url`
+ *    block. Primary-only — see `describeVideo`.
  *
  * **Primary → fallback (Sprint B §3.7).** When the primary vision
  * model errors out (timeout, transport, provider rate-limit, schema
@@ -37,6 +40,8 @@ const VISION_MODEL_ID = visionPrimary.profile.catalog.id;
 const VISION_FALLBACK_MODEL_ID = visionFallback.profile.catalog.id;
 
 const DEFAULT_TIMEOUT_MS = 60_000;
+/** Video decoding/inference runs longer than a still image. */
+const VIDEO_TIMEOUT_MS = 120_000;
 const MAX_OUTPUT_TOKENS = 1_500;
 const TEMPERATURE = 0.2;
 
@@ -188,11 +193,68 @@ export const describePdf = async (
   });
 };
 
+export interface DescribeVideoArgs {
+  /** Raw video bytes. */
+  bytes: Uint8Array;
+  /** Original MIME type (e.g. `video/mp4`), used on the `file` content part. */
+  mimeType: string;
+  /** Optional original filename — forwarded to OpenRouter on the file part. */
+  filename?: string;
+  /** Explicit visual question from the agent — mandatory, no default. */
+  question: string;
+}
+
+/**
+ * Describe a video by sending its raw bytes to the PRIMARY vision model
+ * only. Gemini 3.1 Flash Lite ingests video natively; the OpenRouter
+ * provider serialises a `file` part with a `video/*` mediaType as a
+ * `video_url` block. NO fallback: the `vision-fallback` role
+ * (`gpt-4o-mini`) has no video modality, so a second route would add cost
+ * without real resilience (both vision models are Google). On failure the
+ * error propagates to the `vision` tool surface as a typed error and the
+ * agent can retry next turn.
+ */
+export const describeVideo = async (
+  args: DescribeVideoArgs,
+): Promise<DescribeFileResult> => {
+  const { text } = await generateText({
+    model: visionModel,
+    temperature: TEMPERATURE,
+    maxOutputTokens: MAX_OUTPUT_TOKENS,
+    abortSignal: AbortSignal.timeout(VIDEO_TIMEOUT_MS),
+    // Nests under the `vision` tool call → under `chatbot-turn`.
+    experimental_telemetry: telemetryFor("vision"),
+    messages: [
+      {
+        role: "user",
+        content: [
+          {
+            type: "file",
+            data: args.bytes,
+            mediaType: args.mimeType,
+            filename: args.filename ?? "video",
+          },
+          {
+            type: "text",
+            text: args.question,
+          },
+        ],
+      },
+    ],
+  });
+
+  return {
+    description: text.trim(),
+    model: VISION_MODEL_ID,
+    question: args.question,
+  };
+};
+
 export interface DescribeVisionFileArgs {
   bytes: Uint8Array;
   mimeType: string;
   question: string;
-  /** Optional filename, forwarded to PDF content parts. */
+  /** Optional filename, forwarded to PDF / video content parts. */
   filename?: string;
 }
 
@@ -206,6 +268,14 @@ export const describeVisionFile = async (
   if (args.mimeType === "application/pdf") {
     return describePdf({
       bytes: args.bytes,
+      filename: args.filename,
+      question: args.question,
+    });
+  }
+  if (args.mimeType.startsWith("video/")) {
+    return describeVideo({
+      bytes: args.bytes,
+      mimeType: args.mimeType,
       filename: args.filename,
       question: args.question,
     });

@@ -20,6 +20,7 @@ import { latencyStressSuite } from "./latency-stress";
 import { longContextSuite } from "./long-context";
 import { memorySuite } from "./memory";
 import { multiStepSuite } from "./multi-step";
+import { multimodalSuite } from "./multimodal";
 import { ragMetadataSuite } from "./rag-metadata";
 import { ragPrecisionSuite } from "./rag-precision";
 import { securitySuite } from "./security";
@@ -42,4 +43,5 @@ export const allSuites: EvalSuite[] = [
   longContextSuite,
   securitySuite,
   b2bEfficiencySuite,
+  multimodalSuite,
 ];

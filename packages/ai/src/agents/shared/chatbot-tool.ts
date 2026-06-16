@@ -144,17 +144,23 @@ export type ChatbotTool<TInput = unknown, TOutput = unknown> = Tool<
  * label. See `<tool_captions>` in `chatbot/system-prompt.md` for the
  * instruction the model follows when generating it.
  *
- * Required at the schema level so the model cannot silently skip it
- * on chained or repetitive calls (the earlier optional version was
- * dropped 90% of the time on long `searchWeb` chains). The frontend
- * still has a static-label fallback for the unlikely case where the
- * model emits something invalid.
+ * Declared `.catch("")`, NOT `.optional()`. The model must keep seeing it as
+ * REQUIRED — it stays in the JSON-schema `required` list (an earlier optional
+ * version was dropped ~90% of the time on long chains), so the model is
+ * maximally incited to send one on every call. But `.catch` makes runtime
+ * parsing tolerant: a missing/invalid caption recovers to "" instead of
+ * failing the whole tool call with a validation error + wasted error→retry
+ * cycles (observed: weaker instruction-followers like MiniMax M3 intermittently
+ * omit it). When it's "" the frontend shows its static-label fallback — but the
+ * model is never told that, so the description below stays unconditionally
+ * imperative.
  */
 const CAPTION_FIELD = z
   .string()
   .min(1)
+  .catch("")
   .describe(
-    "Short user-visible caption (4-8 words, present continuous) describing what you are doing RIGHT NOW. Match the user's last-message language exactly — French → 'Lecture de la facture', English → 'Reading the invoice'. Never default to English when the user wrote in another language. This is the ONLY thing the user sees while the tool runs — never omit, even on repeated similar calls (each call gets its own distinct caption).",
+    "Short user-visible caption (4-8 words, present continuous) describing what you are doing RIGHT NOW. Match the user's last-message language exactly — French → 'Lecture de la facture', English → 'Reading the invoice'. Never default to English when the user wrote in another language. This is the ONLY thing the user sees while the tool runs — REQUIRED on every call; never omit, even on repeated similar calls (each gets its own distinct caption).",
   );
 
 /**

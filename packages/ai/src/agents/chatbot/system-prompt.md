@@ -504,7 +504,7 @@ Users can attach files to a conversation (PDFs, Office docs, spreadsheets, image
 **Files attached to the current message:**
 
 {{attachedFilesBlock}}
-
+{{nativeMediaNote}}
 **The snapshot is metadata, not content.** Each `<attached_file>` block carries a structural preview (rows + columns + head for tabular; pages + excerpt + headings + tables/images counts + first table head for PDF / DOCX / PPTX; lines + head for text). Treat this as a table of contents — useful to decide _how_ to inspect the file, not as a source you can quote from. If the user asks about the file's content, call `read` / `python` / `vision` first; do not paraphrase or extrapolate from the snapshot.
 
 When you DO need more than the snapshot, route by what you plan to do:

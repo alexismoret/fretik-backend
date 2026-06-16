@@ -85,10 +85,8 @@ AI_SERVICE_URL=http://localhost:8083 bun run evals:gate -- --candidate minimax-m
    `cost-per-turn-usd` it prints, set the envelopes in `evals/langfuse/gate-config.ts`,
    then enable enforcement (`GATE_COST_CALIBRATED=1` or flip the default in a PR).
 3. `evals:gate -- --candidate <newProfileKey>` — read the verdict table.
-4. On PASS, the gate prints **suggested grades** (`toolCalling.grade`,
-   `instructionFollowing`, `structuredOutput.grade`, a `toolCalling.parallel` suggestion
-   from the parallel probes) and a ready-to-paste `evalGate` stamp. **The gate never
-   writes `profiles.ts`** — commit the grades + `evalGate` + the role-binding flip in ONE
+4. On PASS, the gate prints a ready-to-paste `evalGate` stamp. **The gate never
+   writes `profiles.ts`** — commit the `evalGate` stamp + the role-binding flip in ONE
    reviewed PR. The PR is the promotion.
 5. After the flip deploys: run a full `evals:langfuse` on the new default as the fresh
    baseline.
@@ -107,13 +105,54 @@ unchanged (the gate aborts on caseId-set mismatch); the parallel probes are
 informational (the baseline may not support parallel calls at all); judge noise on small
 deltas — prefer the full set and re-run before trusting a borderline verdict.
 
+### Surfacing a model in the C8 picker (frontier / per-tier menus)
+
+The C8 picker (`/model-profiles`) lists **only** profiles whose `assessment.evalGate.status
+=== "passed"`, grouped per tier (flagship / workhorse / utility) — `isSelectableForTier`
+in `lib/model-registry/resolve.ts` matches `profile.tiers.includes(tier)`, so a multi-tier
+profile (e.g. Sonnet 4.6, Gemini 3.5 Flash = flagship + workhorse) shows in every tier it
+lists. A model becomes team-selectable the moment its `evalGate` flips to `passed` in
+`profiles.ts` (the same reviewed-PR promotion above) — no UI change needed.
+
+To enrich a tier (e.g. offer a frontier flagship like Claude Sonnet 4.6 / Gemini 3.5 Flash,
+or a full-Mistral stack for a data-residency-sensitive team), gate the candidate, then flip
+its `evalGate` to `passed` in the promotion PR:
+
+```bash
+cd backend/packages/ai           # service running in another pane
+AI_SERVICE_URL=http://localhost:8083 bun run evals:gate -- --candidate claude-sonnet-4.6
+AI_SERVICE_URL=http://localhost:8083 bun run evals:gate -- --candidate gemini-3.5-flash
+AI_SERVICE_URL=http://localhost:8083 bun run evals:gate -- --candidate mistral-medium-3.5
+```
+
+The candidate profiles already exist in `profiles.ts` at `status: "pending"` (every
+family ships flagship/workhorse/utility). The picker's per-tier "recommended" badge tracks
+the code-default `ROLE_BINDINGS` for that tier — promotion does not change the recommendation,
+only the available choices. Display metadata: brand name + icon live in
+`lib/model-registry/display.ts`; intelligence/speed are fetched live from Artificial Analysis
+and cost is abstracted from the catalog price (`services/model-metrics`) — no per-model
+display edit is needed when promoting.
+
+**Reasoning steerability (C7 extended-thinking toggle) — classify at every flagship gate.**
+The toggle is shown per-model via `STEERABLE_REASONING_KEYS` (`profiles.ts`) and the wire
+lever is `reasoning.style` (`effort` for OpenAI / Anthropic / Google / Mistral / DeepSeek;
+`none`/adaptive otherwise — Claude 4.x rejects `max-tokens`/`budget_tokens`). Docs are
+PRIORS only — confirm at RUNTIME, the param is frequently inert: minimax-m3 lists
+`reasoning` yet ignores both `effort` and `max_tokens` (self-regulating ~3-5k). Probe with a
+direct OpenRouter call comparing `usage.completion_tokens_details.reasoning_tokens` at
+`effort: low` vs `high` (plus `xhigh` for budget models, but note OpenRouter strips
+DeepSeek's `xhigh→max`, LiteLLM #27439): a clear monotonic rise ⇒ steerable (add to the set);
+flat ⇒ adaptive (leave out). Tune `defaultLevel` to a sensible B2B baseline (~`medium`,
+≈ the provider's own default) and let the gate eval confirm no regression — only `low` is
+eval-validated today.
+
 ## External capability priors (leaderboards — never imported datasets)
 
 Public benchmarks are PRIORS for choosing candidates and pre-filling expectations, not
 grades. Read **BFCL v4** (gorilla.cs.berkeley.edu/leaderboard.html — tool calling, incl.
 parallel/multi-turn/format-sensitivity) and **Artificial Analysis**
 (artificialanalysis.ai — intelligence index, cost, latency) when shortlisting a
-candidate profile. Grades in `profiles.ts` stay `untested` until OUR gate runs — a
+candidate profile. A profile's `evalGate.status` stays `pending` until OUR gate runs — a
 leaderboard score is about someone else's harness.
 
 Do NOT import benchmark datasets (τ-bench, GAIA, BFCL cases) into the Langfuse dataset:

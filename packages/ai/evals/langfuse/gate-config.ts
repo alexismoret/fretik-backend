@@ -80,11 +80,3 @@ export const GATE_CONFIG: GateConfig = {
     maxRedundantCallRate: num(process.env.GATE_MAX_REDUNDANT_CALL_RATE, 0.1),
   },
 };
-
-/**
- * Grade-suggestion thresholds. The gate only SUGGESTS grades — a
- * human commits them into `profiles.ts` (the PR is the promotion).
- */
-export const TOOL_GRADE_THRESHOLDS = { a: 0.95, b: 0.85 } as const;
-export const IF_GRADE_THRESHOLDS = { a: 0.9, b: 0.75 } as const;
-export const SO_GRADE_THRESHOLDS = { a: 0.95, b: 0.7 } as const;

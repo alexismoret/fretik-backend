@@ -14,9 +14,7 @@
  *
  * The three `parallel`-tagged probes ask for independent lookups in
  * one breath. Their ASSERTIONS only require that both lookups happen
- * (blocking-safe on models without parallel calls); actual window
- * overlap is reported separately via `TaskOutput.parallelObserved`
- * and feeds the gate's `toolCalling.parallel` suggestion.
+ * (blocking-safe on models without parallel calls).
  */
 
 import { checkGeneratedCsv } from "../file-content-check";
@@ -324,40 +322,23 @@ export const toolPortabilitySuite: EvalSuite = {
       ],
     },
     {
+      // C5: with a native-multimodal flagship (M3) the model SEES marina.jpg
+      // directly and answers without routing to the `vision` tool, so this
+      // no longer asserts the tool was called — it grades the answer. A
+      // non-multimodal profile reaches the same answer via `vision`; either
+      // path passes. Native-vs-tool accuracy is the `multimodal` suite's job.
       id: "tp-vision-image",
-      description: "Image attachment question → vision(file_path, question)",
+      description: "Image attachment question → correct visual answer",
       prompt:
         "Décris-moi en une phrase ce qu'on voit sur l'image jointe marina.jpg.",
       tags: ["tool-portability", "vision"],
       fixtures: ["marina.jpg"],
       assertions: [
         { type: "noError" },
-        { type: "toolUsed", tools: ["vision"], mode: "any" },
-        {
-          type: "custom",
-          name: "a vision call targets marina.jpg with a non-empty question",
-          fn: (result) => {
-            const calls = result.toolCalls.filter((c) => c.name === "vision");
-            if (calls.length === 0) return "no vision call observed";
-            const wellFormed = calls.some((call) => {
-              const input = call.input as {
-                file_path?: unknown;
-                question?: unknown;
-              };
-              return (
-                typeof input?.file_path === "string" &&
-                input.file_path.includes("marina.jpg") &&
-                typeof input?.question === "string" &&
-                input.question.length > 0
-              );
-            });
-            return wellFormed || "no vision call targeted marina.jpg properly";
-          },
-        },
         {
           type: "judge",
           rubric:
-            "The image is an aerial view of a marina / harbour full of moored boats (sailboats) in front of a city. The assistant's one-sentence description must reflect that scene (a port / marina / boats / harbour). Any answer produced WITHOUT calling the vision tool, or describing something unrelated to a marina, is a FAIL.",
+            "The image is an aerial view of a marina / harbour full of moored boats (sailboats) in front of a city. The assistant's one-sentence description must reflect that scene (a port / marina / boats / harbour). The model MAY answer directly (native multimodal) or via the vision tool — do not penalise either. An answer describing something unrelated to a marina, or an error, is a FAIL.",
         },
       ],
     },

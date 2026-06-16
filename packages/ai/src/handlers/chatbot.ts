@@ -7,6 +7,10 @@ import {
 } from "@fretik/shared/lib/auth-middleware";
 import { renderSnapshot } from "@fretik/shared/lib/chat-file-snapshot";
 import {
+  getSessionFilePresignedUrl,
+  readSessionFile,
+} from "@fretik/shared/lib/chatbot-session-storage";
+import {
   notFound,
   teamRequired,
   throwHttpError,
@@ -57,6 +61,7 @@ import {
 } from "ai";
 import { randomUUIDv7 } from "bun";
 import { and, eq, inArray, sql } from "drizzle-orm";
+import { HTTPException } from "hono/http-exception";
 import { buildSpeakerContext } from "../agents/chatbot/speaker-context";
 import { summariseMissedMessages } from "../services/catch-up-summary";
 import { notifyMentionedMembers } from "../services/chatbot-mention-email";
@@ -81,9 +86,11 @@ import { flushLangfuse, langfuseEnabled } from "../lib/langfuse";
 import { deleteScore, recordScore } from "../lib/langfuse-scores";
 import {
   getProfileForRole,
+  reasoningParamForProfile,
   resolveChatModelForProfile,
+  resolveFlagshipProfileKey,
 } from "../lib/model-registry/resolve";
-import type { ModelProfile } from "../lib/model-registry/types";
+import type { ModelProfile, ReasoningLevel } from "../lib/model-registry/types";
 import { getResumableStreamContext } from "../lib/resumable-stream-context";
 import {
   classifyStreamError,
@@ -103,6 +110,10 @@ import { buildChatbotContextManifest } from "../services/chatbot-context/build-m
 import { sendChatbotFinishedEmailIfEnabled } from "../services/chatbot-finished-email";
 import { compactConversation } from "../services/compaction/compact";
 import { generateConversationTitle } from "../services/conversation-title/generate";
+import {
+  prepareModelMessages,
+  type PrepareModelMessagesDeps,
+} from "../services/native-input";
 import type { HonoInternalAppType } from "../types/hono";
 
 const InternalInvokeSchema = z.object({
@@ -125,40 +136,25 @@ const InternalInvokeSchema = z.object({
  * the "true mid-stream fallback" follow-up.
  */
 /**
- * Strip `file` UIMessage parts before `convertToModelMessages` hands
- * the history to the provider.
+ * Attachments reach the model through `prepareModelMessages`
+ * (`services/native-input`) before `convertToModelMessages`. For
+ * non-multimodal / inert profiles it is byte-identical to the historical
+ * `stripFilePartsForModel` (which now lives there): file parts are
+ * scrubbed and the model reaches content via `read`/`vision`/`python`.
+ * Multimodal profiles (C5) receive image/video parts native instead —
+ * see that module. File parts always survive in `originalMessages`
+ * (history replay, persistence, the {{attachedFilesBlock}} fragment).
  *
- * Architecture boundary: UIMessage `file` parts exist for the
- * client's chat UI — inline attachment cards, history replay,
- * persistence in ai_messages.parts. They must NEVER reach the primary
- * chat model because Fretik deliberately decouples file handling
- * from the model:
- *
- *   - Model learns which files exist via the {{attachedFilesBlock}}
- *     system-prompt fragment (filename + mime + size + tool hint).
- *   - Model accesses content via `read()` (OCR sidecars), `vision`
- *     (Gemini sub-model, images + PDFs), and `python()`
- *     (pandas / pdfplumber / python-docx).
- *   - Primary model (MiniMax M2.7) is text-only — no vision, no
- *     native PDF, no XLSX parse. OpenRouter's auto-parse works for
- *     some PDFs but returns HTTP 400 "Failed to parse" on XLSX /
- *     PPTX / DOCX (reproducible on every run).
- *
- * Keeping file parts in `originalMessages` (→ toUIMessageStream) is
- * correct: the client re-renders the attachment card on message
- * replay, and `extractLastUserFileFilenames` above still reads them
- * to build the system-prompt block. Only the model's view is
- * scrubbed here.
- *
- * Claude Code reference pattern: files live on disk, Read tool
- * surfaces content to the model. The model never sees file bytes
- * or URLs in the conversation stream.
+ * The two I/O helpers below mirror the chatbot-session-storage
+ * signatures so they drop straight into the deps.
  */
-const stripFilePartsForModel = (messages: UIMessage[]): UIMessage[] =>
-  messages.map((m) => ({
-    ...m,
-    parts: m.parts.filter((p) => p.type !== "file"),
-  }));
+const buildNativeInputDeps = (
+  conversationId: string | undefined,
+): PrepareModelMessagesDeps => ({
+  conversationId,
+  readSessionFile,
+  presignSessionFile: getSessionFilePresignedUrl,
+});
 
 /**
  * Redis pub/sub channel used to carry explicit user-initiated
@@ -192,15 +188,29 @@ const streamChatbotWithFallback = async (params: {
   history: UIMessage[];
   callOptions: ChatbotCallOptions;
   agentSet: AgentSet<ChatbotCallOptions, ChatbotTools>;
+  /** Active profile — decides which attachments travel native (C5). */
+  modelProfile: ModelProfile;
   abortSignal?: AbortSignal;
   /**
    * Per-step hook forwarded to whichever agent serves the call, so the
    * caller can track `toolExecuted` / `visibleText` live (C4 failover).
    */
   onStepFinish?: ToolLoopAgentOnStepFinishCallback<ChatbotTools>;
+  /**
+   * Per-turn reasoning override (C7 "deep thinking"). When set, sent as
+   * `providerOptions.openrouter.reasoning` to whichever agent serves the
+   * call — it overrides the profile-baked default on the wire (the
+   * provider merges call-time providerOptions over construction
+   * settings). `undefined` → the baked default (byte-identical to today).
+   */
+  reasoningOverride?: ReturnType<typeof reasoningParamForProfile>;
 }) => {
   const modelMessages = await convertToModelMessages(
-    stripFilePartsForModel(params.history),
+    await prepareModelMessages(
+      params.history,
+      params.modelProfile,
+      buildNativeInputDeps(params.callOptions.conversationId),
+    ),
   );
   // Primary → fallback failover (C4: transient errors earn one retry on
   // the SAME model before spending the fallback). Langfuse trace nesting +
@@ -220,6 +230,15 @@ const streamChatbotWithFallback = async (params: {
       options: params.callOptions,
       abortSignal: params.abortSignal,
       onStepFinish: params.onStepFinish,
+      // Spread the override only when set, so a turn without the toggle
+      // sends no `providerOptions` at all (byte-identical to pre-C7).
+      ...(params.reasoningOverride !== undefined
+        ? {
+            providerOptions: {
+              openrouter: { reasoning: params.reasoningOverride },
+            },
+          }
+        : {}),
     });
   return streamWithRetryThenFallback({
     primary: () => streamWith(params.agentSet.primary),
@@ -345,6 +364,10 @@ const emitAutoTitle = async (args: {
       updates: { title },
     });
   } catch (err) {
+    // A 404 here is the EXPECTED guard outcome, not a failure: the
+    // membership-gated write refuses a conversation the caller can't see
+    // (e.g. eval / never-persisted conversations). Skip silently.
+    if (err instanceof HTTPException && err.status === 404) return;
     console.warn(
       `${params.logPrefix} auto-title emit failed:`,
       err instanceof Error ? err.message : err,
@@ -689,6 +712,16 @@ interface RunChatbotTurnParams {
    */
   agentSet?: AgentSet<ChatbotCallOptions, ChatbotTools>;
   modelProfile?: ModelProfile;
+  /**
+   * Per-turn reasoning escalation (C7 "deep thinking"). Set to "high"
+   * by the user-facing POST /stream when the request carries
+   * `deepThinking: true`; absent → the profile's default level (a turn
+   * byte-identical to one without the toggle). Internal `/invoke`
+   * callers omit it. The field is the FULL `ReasoningLevel` enum, not a
+   * boolean, so a future advanced picker threads finer levels with no
+   * backend change — only `high` is reachable from the v1 toggle.
+   */
+  reasoningLevel?: ReasoningLevel;
   /**
    * Scrub sensitive tool inputs (querySql.sql_query) from the outbound
    * SSE stream. Default true — the scrubber's threat model is the
@@ -1141,6 +1174,17 @@ const runChatbotTurn = async (
   const agentSet = params.agentSet ?? chatbotAgentSet;
   const modelProfile = params.modelProfile ?? getProfileForRole("chat");
 
+  // C7 — per-turn "deep thinking" reasoning override. Built once from the
+  // turn's level + the SAME profile that serves it, so the primary stream
+  // AND the zombie/transparent-failover path request the same depth.
+  // `undefined` when the toggle is off (→ profile default, byte-identical
+  // to pre-C7) or when the profile does not reason (reasoningParamForProfile
+  // returns undefined for `style: "none"`).
+  const reasoningOverride =
+    params.reasoningLevel === undefined
+      ? undefined
+      : reasoningParamForProfile(modelProfile, params.reasoningLevel);
+
   // C4 turn-robustness state. `onError` (sync, fires on the wire when the
   // stream errors) and the recovery seam inside `execute` below reach the
   // SAME verdict from these flags + `classifyStreamError`, so they never
@@ -1320,13 +1364,25 @@ const runChatbotTurn = async (
             writer.write({ type: "text-end", id: noticeId });
           }
           const fallbackMessages = await convertToModelMessages(
-            stripFilePartsForModel(historyForModel),
+            await prepareModelMessages(
+              historyForModel,
+              modelProfile,
+              buildNativeInputDeps(callOptionsWithFiles.conversationId),
+            ),
           );
           const fallbackResult = await agentSet.fallback.stream({
             messages: fallbackMessages,
             options: callOptionsWithFiles,
             abortSignal: abortController.signal,
             onStepFinish: onTurnStep,
+            // Mirror the primary path's per-turn reasoning depth (C7).
+            ...(reasoningOverride !== undefined
+              ? {
+                  providerOptions: {
+                    openrouter: { reasoning: reasoningOverride },
+                  },
+                }
+              : {}),
           });
           writer.merge(
             fallbackResult.toUIMessageStream<UIMessage>({
@@ -1459,8 +1515,10 @@ const runChatbotTurn = async (
           history: historyForModel,
           callOptions: callOptionsWithFiles,
           agentSet,
+          modelProfile,
           abortSignal: abortController.signal,
           onStepFinish: onTurnStep,
+          reasoningOverride,
         });
         // Pre-stream recovery telemetry (the mid-stream paths set their own
         // `recoveryKind` via runFallbackModel / the structured-error branch).
@@ -1859,8 +1917,13 @@ chatbotRoutes.post("/stream", async (c) => {
     );
   }
 
-  const { conversationId, messages, mentionedUserIds, mentionsAssistant } =
-    parsed.data;
+  const {
+    conversationId,
+    messages,
+    mentionedUserIds,
+    mentionsAssistant,
+    deepThinking,
+  } = parsed.data;
 
   const conversation = await getConversation({
     id: conversationId,
@@ -1979,12 +2042,30 @@ chatbotRoutes.post("/stream", async (c) => {
     traceId: streamId,
   };
 
+  // C8 — resolve the conversation's pinned flagship model. The key was
+  // stamped at creation (picker choice → team default → null). An unset /
+  // unknown / no-longer-selectable pin degrades to the chat default; a
+  // fallback is logged (a UI notice could ride the metadata later).
+  const { profileKey: flagshipKey, fellBack } = resolveFlagshipProfileKey(
+    conversation.modelProfileKey,
+  );
+  if (fellBack && conversation.modelProfileKey) {
+    console.warn(
+      `[chatbot] conversation ${conversationId} pinned model "${conversation.modelProfileKey}" is not a selectable flagship — using default`,
+    );
+  }
+
   return runChatbotTurn({
     conversationId,
     history: speakerHistory,
     callOptions,
     resumableStreamId: streamId,
     logPrefix: "[chatbot]",
+    agentSet: getChatbotAgentSet(flagshipKey),
+    modelProfile: resolveChatModelForProfile(flagshipKey).profile,
+    // C7 — map the user-facing boolean to a ReasoningLevel server-side so
+    // only the eval-validated `high` rung is reachable from the v1 toggle.
+    reasoningLevel: deepThinking ? "high" : undefined,
   });
 });
 

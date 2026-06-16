@@ -19,16 +19,16 @@ import { describe, expect, test } from "bun:test";
  */
 
 describe("chatbot-limits — numeric caps", () => {
-  test("MAX_FILE_SIZE_BYTES is 15 MB", () => {
-    expect(MAX_FILE_SIZE_BYTES).toBe(15 * 1024 * 1024);
+  test("MAX_FILE_SIZE_BYTES is 30 MB", () => {
+    expect(MAX_FILE_SIZE_BYTES).toBe(30 * 1024 * 1024);
   });
 
-  test("MAX_FILES_PER_MESSAGE is 5", () => {
-    expect(MAX_FILES_PER_MESSAGE).toBe(5);
+  test("MAX_FILES_PER_MESSAGE is 10", () => {
+    expect(MAX_FILES_PER_MESSAGE).toBe(10);
   });
 
-  test("MAX_FILES_PER_CONVERSATION is 20", () => {
-    expect(MAX_FILES_PER_CONVERSATION).toBe(20);
+  test("MAX_FILES_PER_CONVERSATION is 30", () => {
+    expect(MAX_FILES_PER_CONVERSATION).toBe(30);
   });
 
   test("CHAT_FILE_ERROR_CODES covers every HTTP-surface guard", () => {
@@ -44,7 +44,7 @@ describe("chatbot-limits — numeric caps", () => {
 });
 
 describe("mimeTypes — chatbot whitelist", () => {
-  test("accepts PDF / DOCX / XLSX / PPTX / CSV / images / text formats", () => {
+  test("accepts PDF / DOCX / XLSX / PPTX / CSV / images / video / text formats", () => {
     const expected = [
       "application/pdf",
       "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -54,6 +54,11 @@ describe("mimeTypes — chatbot whitelist", () => {
       "image/png",
       "image/jpeg",
       "image/webp",
+      // Video (C5) — analysed by the vision tool, or sent native by a
+      // multimodal profile.
+      "video/mp4",
+      "video/webm",
+      "video/quicktime",
       "text/plain",
       "text/markdown",
       "application/json",
@@ -63,11 +68,12 @@ describe("mimeTypes — chatbot whitelist", () => {
     }
   });
 
-  test("rejects executables / archives / unknown types", () => {
+  test("rejects executables / archives / unknown / non-allowlisted video types", () => {
     expect(isChatbotSupported("application/x-msdownload")).toBe(false);
     expect(isChatbotSupported("application/zip")).toBe(false);
     expect(isChatbotSupported("application/octet-stream")).toBe(false);
-    expect(isChatbotSupported("video/mp4")).toBe(false);
+    // Video acceptance is a specific allowlist, not "any video/*".
+    expect(isChatbotSupported("video/x-msvideo")).toBe(false);
   });
 
   test("strips parameters from the MIME string (e.g. ;charset=utf-8)", () => {

@@ -152,6 +152,10 @@ export const CAPABILITIES = [
   "instruction-following",
   "long-context",
   "security",
+  // Native multimodal input (C5) — image/video Q&A graded on the ANSWER,
+  // not on whether `vision` was called, so the A/B (native vs
+  // tool-mediated) isolates the multimodal accuracy delta from tool-use.
+  "multimodal",
 ] as const;
 
 export type Capability = (typeof CAPABILITIES)[number];

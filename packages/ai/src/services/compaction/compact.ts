@@ -188,7 +188,7 @@ export const compactConversation = async (
   // Step 2 — threshold check. Below threshold: silent fast path; we
   // intentionally do NOT fire `onProgress` so the UI never flashes a
   // "Compacting…" indicator for short conversations.
-  const totalTokens = estimateMessagesTokens(microcompacted);
+  const totalTokens = estimateMessagesTokens(microcompacted, profile);
   if (totalTokens <= threshold) {
     console.info(
       `[compaction] skipped reason=below_threshold tokens=${totalTokens.toString()} threshold=${threshold.toString()}`,
@@ -238,7 +238,7 @@ export const compactConversation = async (
     ? [summaryMessage, replayMessage]
     : [summaryMessage];
 
-  const tokensAfter = estimateMessagesTokens(compacted);
+  const tokensAfter = estimateMessagesTokens(compacted, profile);
   // Patch the metadata in place — the message is still ours, no
   // sharing concerns. Doing it post-hoc avoids a double-estimation.
   const md = summaryMessage.metadata as CompactionSummaryMetadata;

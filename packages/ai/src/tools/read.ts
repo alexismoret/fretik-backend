@@ -15,6 +15,7 @@ import {
   isOcrDocumentMime,
   isSpreadsheetMime,
   isTextMime,
+  isVideoMime,
 } from "@fretik/shared/utils/mimeTypes";
 import { tool } from "ai";
 import { SHA256 } from "bun";
@@ -209,6 +210,19 @@ const resolveAttachmentContent = async (args: {
         error: `Spreadsheet files (${mimeType}) can't be read as text without losing formulas and types. Use python with pandas.read_excel('${absolute}') or openpyxl to inspect the data.`,
         code: TOOL_ERROR_CODES.BINARY_NOT_READABLE,
         hint: "python",
+      },
+    };
+  }
+
+  // Videos: nothing to extract as text — route to the vision tool. (A
+  // multimodal profile sees attached videos natively; this branch is for
+  // the agent that explicitly tries to `read` one.)
+  if (isVideoMime(mimeType)) {
+    return {
+      error: {
+        error: `Video files (${mimeType}) have no extractable text. Use vision("${absolute}", "<question>") to analyse what happens in the video.`,
+        code: TOOL_ERROR_CODES.NO_TEXT_CONTENT,
+        hint: "vision",
       },
     };
   }
@@ -435,7 +449,7 @@ export const createReadTool = () =>
       offset: z
         .number()
         .int()
-        .positive()
+        .nonnegative()
         .optional()
         .describe(
           "The line number to start reading from. Only provide if the file is too large to read at once.",
@@ -605,10 +619,11 @@ export const createReadTool = () =>
         }
       }
 
-      // Line-based slicing (claude-code parity). offset is 1-indexed.
+      // Line-based slicing (claude-code parity). offset is 1-indexed;
+      // accept 0 permissively (0-indexed habit) and treat it as the start.
       const lines = text.split("\n");
       const totalLines = lines.length;
-      const startLine = offset ?? 1;
+      const startLine = offset && offset > 0 ? offset : 1;
       const lineOffset = startLine - 1;
 
       if (lineOffset >= totalLines) {

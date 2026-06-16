@@ -24,14 +24,14 @@
  *    tool-calling EFFICIENCY section (avg-tool-calls / tool-error-rate
  *    / redundant-call-rate) — ADVISORY in C11, never failing.
  *
- *    Output: a verdict per criterion + SUGGESTED A/B/C grades and an
- *    `evalGate` stamp. The gate NEVER writes `profiles.ts` — a human
- *    commits the grades in a reviewed PR; the PR is the promotion.
+ *    Output: a verdict per criterion + a suggested `evalGate` stamp.
+ *    The gate NEVER writes `profiles.ts` — a human commits the stamp
+ *    in a reviewed PR; the PR is the promotion.
  *
  * Needs a LIVE @fretik/ai at `AI_SERVICE_URL` (see `evals/RUNBOOK.md`).
  *
- *   bun run evals:gate -- --candidate minimax-m3 [--baseline-run <name>]
- *   bun run evals:gate -- --candidate minimax-m2.7        # self-test
+ *   bun run evals:gate -- --candidate deepseek-v4-pro [--baseline-run <name>]
+ *   bun run evals:gate -- --candidate minimax-m3          # self-test (current default)
  */
 
 import { RegressionError, type RunnerContext } from "@langfuse/client";
@@ -45,13 +45,7 @@ import { CAPABILITIES, type Capability } from "../types";
 import { DATASET_NAME } from "./dataset-sync";
 import { caseCorrectness, isZombie } from "./evaluators";
 import { runChatbotExperiment } from "./experiment";
-import {
-  GATE_CONFIG,
-  IF_GRADE_THRESHOLDS,
-  SO_GRADE_THRESHOLDS,
-  TOOL_GRADE_THRESHOLDS,
-} from "./gate-config";
-import { buildCaseRegistry } from "./task";
+import { GATE_CONFIG } from "./gate-config";
 import type { TaskOutput } from "./types";
 
 const THRESHOLD = Number(process.env.EVAL_CORRECTNESS_THRESHOLD ?? "0.6");
@@ -396,64 +390,19 @@ const evaluateCriteria = (
   return out;
 };
 
-const gradeFor = (
-  ratio: number,
-  thresholds: { a: number; b: number },
-): "A" | "B" | "C" =>
-  ratio >= thresholds.a ? "A" : ratio >= thresholds.b ? "B" : "C";
-
-/** Suggested `profiles.ts` updates — computed, never written. */
+/** Suggested `profiles.ts` evalGate stamp — computed, never written. */
 const printSuggestions = (
   cand: RunMetrics,
-  result: GateExperimentResult,
   candidateKey: string,
   passed: boolean,
 ): void => {
-  const registry = buildCaseRegistry();
-  const outputs = outputsOf(result);
-  const tagged = (tag: string): TaskOutput[] =>
-    outputs.filter((o) => registry.get(o.caseId)?.case.tags?.includes(tag));
-
-  console.log(`\nSuggested profiles.ts updates for "${candidateKey}":`);
-  if (cand.toolCallValidity !== undefined) {
-    console.log(
-      `  toolCalling.grade: "${gradeFor(cand.toolCallValidity, TOOL_GRADE_THRESHOLDS)}"  (tool-call-validity ${cand.toolCallValidity.toFixed(3)})`,
-    );
-  }
-  const ifMetric = cand.perCapability["instruction-following"];
-  if (ifMetric) {
-    console.log(
-      `  instructionFollowing: "${gradeFor(ifMetric.value, IF_GRADE_THRESHOLDS)}"  (correctness:instruction-following ${ifMetric.value.toFixed(3)} over ${ifMetric.cases.toString()} cases)`,
-    );
-  }
-  const soOutputs = tagged("structured-output");
-  if (soOutputs.length > 0) {
-    const soScore = mean(soOutputs.map(caseCorrectness));
-    console.log(
-      `  structuredOutput.grade: "${gradeFor(soScore, SO_GRADE_THRESHOLDS)}"  (${soOutputs.length.toString()} structured-output probes, ${soScore.toFixed(3)})`,
-    );
-  }
-  const parOutputs = tagged("parallel");
-  if (parOutputs.length > 0) {
-    const observed = parOutputs.filter(
-      (o) => o.parallelObserved === true,
-    ).length;
-    const suggestion =
-      observed >= 2
-        ? '"supported"'
-        : observed === 1
-          ? '"supported" (1/3 only — verify provider-pool behaviour first)'
-          : '"unsupported" (no probe batched — or keep current value)';
-    console.log(
-      `  toolCalling.parallel: ${suggestion}  (${observed.toString()}/${parOutputs.length.toString()} parallel probes batched)`,
-    );
-  }
   const gatedAt = new Date().toISOString().slice(0, 10);
+  console.log(`\nSuggested profiles.ts update for "${candidateKey}":`);
   console.log(
     `  evalGate: { status: "${passed ? "passed" : "failed"}", lastRunId: "${cand.datasetRunId ?? "?"}", gatedAt: "${gatedAt}" },`,
   );
   console.log(
-    "\nThe gate never writes profiles.ts — commit these in a reviewed PR (the PR IS the promotion).",
+    "\nThe gate never writes profiles.ts — commit this in a reviewed PR (the PR IS the promotion).",
   );
 };
 
@@ -541,7 +490,7 @@ const runModelGate = async (opts: ModelGateOptions): Promise<void> => {
   }
   const failed = criteria.filter((c) => c.verdict === "fail");
   const passed = failed.length === 0;
-  printSuggestions(candMetrics, candResult, opts.candidate, passed);
+  printSuggestions(candMetrics, opts.candidate, passed);
 
   if (!passed) {
     const first = failed[0];

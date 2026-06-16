@@ -88,6 +88,10 @@ export const isOcrDocumentMime = (mimeType: string): boolean =>
 export const isImageMime = (mimeType: string): boolean =>
   baseMime(mimeType).startsWith("image/");
 
+/** Videos — no text to extract; handed to the vision tool, or sent native by a multimodal profile (C5). */
+export const isVideoMime = (mimeType: string): boolean =>
+  baseMime(mimeType).startsWith("video/");
+
 export const isSpreadsheetMime = (mimeType: string): boolean => {
   const base = baseMime(mimeType);
   return (
@@ -256,6 +260,11 @@ export const CHATBOT_ACCEPTED_MIMES: readonly string[] = [
   "image/png",
   "image/jpeg",
   "image/webp",
+  // Videos — no OCR; the vision tool (Gemini) analyses them, or a
+  // multimodal profile sends them native (C5). Kept short to bound size.
+  "video/mp4",
+  "video/webm",
+  "video/quicktime",
   // Plain-text / lightweight data formats — passthrough, no preprocessing.
   "text/plain",
   "text/markdown",

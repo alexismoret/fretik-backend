@@ -9,7 +9,6 @@
  * Checked per profile:
  *   - the model id still exists on OpenRouter;
  *   - `contextLength` and `maxCompletionTokens` match exactly;
- *   - `pricing` matches (per-MTok, 1% tolerance for float noise);
  *   - `inputModalities` / `outputModalities` match as SETS;
  *   - our `supportedParameters` are a SUBSET of the live list (we
  *     intentionally store only the parameters the product reads).
@@ -25,26 +24,12 @@ interface ApiModel {
   id: string;
   context_length?: number;
   top_provider?: { max_completion_tokens?: number | null };
-  pricing?: {
-    prompt?: string;
-    completion?: string;
-    input_cache_read?: string;
-  };
   architecture?: {
     input_modalities?: string[];
     output_modalities?: string[];
   };
   supported_parameters?: string[];
 }
-
-const perMTok = (perToken: string | undefined): number | undefined =>
-  perToken === undefined ? undefined : Number(perToken) * 1_000_000;
-
-const close = (a: number | undefined, b: number | undefined): boolean => {
-  if (a === undefined || b === undefined) return a === b;
-  if (a === 0 || b === 0) return a === b;
-  return Math.abs(a - b) / Math.max(Math.abs(a), Math.abs(b)) <= 0.01;
-};
 
 const sameSet = (a: readonly string[], b: readonly string[]): boolean =>
   a.length === b.length && [...a].sort().join(",") === [...b].sort().join(",");
@@ -83,25 +68,6 @@ for (const profile of Object.values(MODEL_PROFILES)) {
     drift(
       key,
       `maxCompletionTokens ${catalog.maxCompletionTokens} → live ${liveMaxOut}`,
-    );
-  }
-
-  const livePrompt = perMTok(live.pricing?.prompt);
-  const liveCompletion = perMTok(live.pricing?.completion);
-  const liveCacheRead = perMTok(live.pricing?.input_cache_read);
-  if (!close(catalog.pricing.prompt, livePrompt)) {
-    drift(key, `pricing.prompt ${catalog.pricing.prompt} → live ${livePrompt}`);
-  }
-  if (!close(catalog.pricing.completion, liveCompletion)) {
-    drift(
-      key,
-      `pricing.completion ${catalog.pricing.completion} → live ${liveCompletion}`,
-    );
-  }
-  if (!close(catalog.pricing.inputCacheRead, liveCacheRead)) {
-    drift(
-      key,
-      `pricing.inputCacheRead ${catalog.pricing.inputCacheRead} → live ${liveCacheRead}`,
     );
   }
 

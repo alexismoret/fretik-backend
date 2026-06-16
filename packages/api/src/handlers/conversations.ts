@@ -326,7 +326,7 @@ conversationRoutes.openapi(createConversationRoute, async (c) => {
   const organization = c.get("organization");
   if (!team) return throwHttpError(403, teamRequired());
 
-  const { title, agentType } = c.req.valid("json");
+  const { title, agentType, modelProfileKey } = c.req.valid("json");
 
   const row = await createConversation({
     organizationId: organization.id,
@@ -334,6 +334,7 @@ conversationRoutes.openapi(createConversationRoute, async (c) => {
     userId: user.id,
     title,
     agentType,
+    modelProfileKey,
   });
 
   return c.json(row, 201);

@@ -151,6 +151,11 @@ export const CreateConversationSchema = z.object({
     example: "chatbot",
     description: "Agent responsible for this conversation",
   }),
+  modelProfileKey: z.string().max(64).optional().openapi({
+    example: "minimax-m3",
+    description:
+      "Flagship model picked for this conversation (chantier C8). Stamped at creation, immutable. Omitted → team default → code default.",
+  }),
 });
 export type CreateConversationInput = z.infer<typeof CreateConversationSchema>;
 
@@ -190,6 +195,8 @@ export const ConversationResponseSchema = z.object({
   agentType: aiAgentTypeSchema,
   title: z.string(),
   metadata: z.record(z.string(), z.unknown()).nullable(),
+  /** Flagship model pinned to this conversation (chantier C8). Null = default. */
+  modelProfileKey: z.string().nullable(),
   members: z.array(ConversationMemberSchema),
   /** The current user's role in this conversation. */
   role: conversationMemberRoleSchema,
@@ -290,6 +297,17 @@ export const ChatStreamRequestSchema = z.object({
    */
   mentionsAssistant: z.boolean().optional().openapi({
     description: "Whether the new user message @mentions the assistant",
+  }),
+  /**
+   * Per-turn "deep thinking" toggle. true → high reasoning effort for
+   * this turn; absent/false → the model's default depth. Not persisted —
+   * the user flips it freely per message (Claude-style). The server maps
+   * this boolean to a `ReasoningLevel` so only the eval-validated rung is
+   * reachable; a future advanced picker can add a level field additively.
+   */
+  deepThinking: z.boolean().optional().openapi({
+    description:
+      "Request high reasoning effort for this turn (deep thinking). Absent/false uses the model's default depth.",
   }),
 });
 export type ChatStreamRequest = z.infer<typeof ChatStreamRequestSchema>;

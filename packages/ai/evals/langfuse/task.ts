@@ -35,27 +35,6 @@ const resolveCapability = (c: EvalCase): Capability =>
   CURATED[c.id]?.capability ?? "reasoning";
 
 /**
- * True when any two tool executions overlapped in wall-clock time —
- * mechanical evidence of parallel tool batching (see TaskOutput).
- */
-const detectParallelToolWindows = (
-  toolCalls: { startedAtMs?: number; latencyMs?: number }[],
-): boolean => {
-  const windows = toolCalls.filter(
-    (c): c is { startedAtMs: number; latencyMs: number } =>
-      typeof c.startedAtMs === "number" && typeof c.latencyMs === "number",
-  );
-  return windows.some((a, i) =>
-    windows.some(
-      (b, j) =>
-        j > i &&
-        Math.max(a.startedAtMs, b.startedAtMs) <
-          Math.min(a.startedAtMs + a.latencyMs, b.startedAtMs + b.latencyMs),
-    ),
-  );
-};
-
-/**
  * Read `caseId` off the item metadata. The task param is a union
  * (ExperimentItem | DatasetItem) whose `metadata` widens to `{}`, so
  * narrow with `in` instead of an unsafe cast.
@@ -126,9 +105,6 @@ export const buildExperimentTask = (opts?: RunCaseOptions): ExperimentTask => {
       // Always attached (even at 0 calls — that IS the success signal for
       // a "don't call a tool" probe, and run-level averages count it).
       toolEfficiency: efficiency,
-      ...(detectParallelToolWindows(result.invoke.toolCalls)
-        ? { parallelObserved: true }
-        : {}),
       ...(result.invoke.servedBy === "fallback"
         ? { fallbackServed: true }
         : {}),

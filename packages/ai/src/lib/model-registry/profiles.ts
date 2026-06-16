@@ -1,75 +1,38 @@
 import type { ModelProfile, ModelRole, RoleBinding } from "./types";
 
 /**
- * Seed profiles — the curated brand × tier matrix (every family ships
- * at least one flagship, one workhorse, one utility so the future
- * team picker always has a same-brand option at each tier).
+ * Seed profiles — a curated brand × tier matrix, PRUNED for
+ * profitability: a family need not cover every tier (e.g. MiniMax
+ * ships only its flagship M3). The picker groups by tier across
+ * families, so the only invariant is that each tier has ≥1 option.
  *
  * `catalog` blocks were read from the OpenRouter models API on
  * 2026-06-11 (`scripts/check-model-catalog.ts` re-verifies them — run
  * it after any provider announcement). Tier placements follow the
  * Artificial Analysis Intelligence Index (June 2026 snapshot):
- * Claude Fable 5 ≈ 65, Opus 4.8 ≈ 61, GPT-5.5 ≈ 60, Gemini 3.5
- * Flash ≈ 55, MiniMax M3 ≈ 55 (leading open weights), DeepSeek V4
- * Pro ≈ 52, GLM-5.1 ≈ 51.
+ * Opus 4.8 ≈ 61, GPT-5.5 ≈ 60, Gemini 3.5 Flash ≈ 55, MiniMax M3 ≈ 55
+ * (leading open weights), DeepSeek V4 Pro ≈ 52, GLM-5.1 ≈ 51. A profile
+ * may list more than one tier (e.g. Sonnet 4.6 / Gemini 3.5 Flash serve
+ * both flagship and workhorse).
  *
- * `assessment` grades stay `untested` until the C3 promotion gate
- * assigns them; incumbents already serving prod before the gate
- * existed are grandfathered `passed` with no run id. The eval judge
+ * A profile's `evalGate.status` stays `pending` until the C3 promotion
+ * gate (a human-committed PR) flips it; incumbents already serving prod
+ * before the gate existed are grandfathered `passed` with no run id. The
+ * eval judge
  * (`evals/judge.ts`) intentionally stays OUTSIDE the registry: it must
  * remain a different family from the serving models.
  */
 
-const PDF = "application/pdf";
-
 export const MODEL_PROFILES: Record<string, ModelProfile> = {
   // ───────────────────────── Anthropic ─────────────────────────
-  "claude-fable-5": {
-    key: "claude-fable-5",
-    family: "anthropic",
-    tier: "flagship",
-    catalog: {
-      id: "anthropic/claude-fable-5",
-      contextLength: 1_000_000,
-      maxCompletionTokens: 128_000,
-      pricing: { prompt: 10, completion: 50, inputCacheRead: 1 },
-      inputModalities: ["text", "image", "file"],
-      outputModalities: ["text"],
-      supportedParameters: [
-        "tools",
-        "tool_choice",
-        "max_tokens",
-        "reasoning",
-        "include_reasoning",
-        "response_format",
-        "structured_outputs",
-      ],
-    },
-    assessment: {
-      costClass: "premium",
-      toolCalling: {
-        grade: "untested",
-        parallel: "untested",
-        strictSchemas: true,
-      },
-      structuredOutput: { grade: "untested" },
-      instructionFollowing: "untested",
-      nativeFileMimeTypes: [PDF],
-      cache: { strategy: "explicit-breakpoints", maxBreakpoints: 4 },
-      reasoning: { style: "max-tokens", defaultLevel: "low" },
-      provider: { requireParameters: true, zdr: true },
-      evalGate: { status: "pending" },
-    },
-  },
   "claude-opus-4.8": {
     key: "claude-opus-4.8",
     family: "anthropic",
-    tier: "flagship",
+    tiers: ["flagship"],
     catalog: {
       id: "anthropic/claude-opus-4.8",
       contextLength: 1_000_000,
       maxCompletionTokens: 128_000,
-      pricing: { prompt: 5, completion: 25, inputCacheRead: 0.5 },
       inputModalities: ["text", "image", "file"],
       outputModalities: ["text"],
       supportedParameters: [
@@ -84,16 +47,21 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
     },
     assessment: {
       costClass: "premium",
-      toolCalling: {
-        grade: "untested",
-        parallel: "untested",
-        strictSchemas: true,
+      pricing: { inputPerMTok: 5, outputPerMTok: 25, cacheReadPerMTok: 0.5 },
+      // enabled:false — capable but too costly to offer right now.
+      enabled: false,
+      nativeInput: {
+        image: false,
+        video: false,
+        fileMimeTypes: [],
+        audio: false,
       },
-      structuredOutput: { grade: "untested" },
-      instructionFollowing: "untested",
-      nativeFileMimeTypes: [PDF],
       cache: { strategy: "explicit-breakpoints", maxBreakpoints: 4 },
-      reasoning: { style: "max-tokens", defaultLevel: "low" },
+      // effort-style: Claude 4.x steers thinking via the `effort` knob +
+      // adaptive thinking; manual `budget_tokens` (max-tokens) is rejected /
+      // deprecated (2026 docs). `defaultLevel` stays low (the only eval-
+      // validated rung); tune to ~medium + re-probe steerability at its gate.
+      reasoning: { style: "effort", defaultLevel: "low" },
       provider: { requireParameters: true, zdr: true },
       evalGate: { status: "pending" },
     },
@@ -101,12 +69,11 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
   "claude-sonnet-4.6": {
     key: "claude-sonnet-4.6",
     family: "anthropic",
-    tier: "workhorse",
+    tiers: ["flagship", "workhorse"],
     catalog: {
       id: "anthropic/claude-sonnet-4.6",
       contextLength: 1_000_000,
       maxCompletionTokens: 128_000,
-      pricing: { prompt: 3, completion: 15, inputCacheRead: 0.3 },
       inputModalities: ["text", "image", "file"],
       outputModalities: ["text"],
       supportedParameters: [
@@ -121,16 +88,20 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
     },
     assessment: {
       costClass: "premium",
-      toolCalling: {
-        grade: "untested",
-        parallel: "untested",
-        strictSchemas: true,
+      pricing: { inputPerMTok: 3, outputPerMTok: 15, cacheReadPerMTok: 0.3 },
+      // enabled:false — capable but too costly to offer right now.
+      enabled: false,
+      nativeInput: {
+        image: false,
+        video: false,
+        fileMimeTypes: [],
+        audio: false,
       },
-      structuredOutput: { grade: "untested" },
-      instructionFollowing: "untested",
-      nativeFileMimeTypes: [PDF],
       cache: { strategy: "explicit-breakpoints", maxBreakpoints: 4 },
-      reasoning: { style: "max-tokens", defaultLevel: "low" },
+      // effort-style (see claude-opus-4.8): Claude 4.x uses `effort` + adaptive
+      // thinking; `budget_tokens` is rejected/deprecated. defaultLevel stays
+      // low (validated rung); tune to ~medium + probe at its gate.
+      reasoning: { style: "effort", defaultLevel: "low" },
       provider: { requireParameters: true, zdr: true },
       evalGate: { status: "pending" },
     },
@@ -138,12 +109,11 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
   "claude-haiku-4.5": {
     key: "claude-haiku-4.5",
     family: "anthropic",
-    tier: "utility",
+    tiers: ["utility"],
     catalog: {
       id: "anthropic/claude-haiku-4.5",
       contextLength: 200_000,
       maxCompletionTokens: 64_000,
-      pricing: { prompt: 1, completion: 5, inputCacheRead: 0.1 },
       inputModalities: ["text", "image", "file"],
       outputModalities: ["text"],
       supportedParameters: [
@@ -158,14 +128,15 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
     },
     assessment: {
       costClass: "standard",
-      toolCalling: {
-        grade: "untested",
-        parallel: "untested",
-        strictSchemas: true,
+      pricing: { inputPerMTok: 1, outputPerMTok: 5, cacheReadPerMTok: 0.1 },
+      // enabled:false — capable but too costly to offer right now.
+      enabled: false,
+      nativeInput: {
+        image: false,
+        video: false,
+        fileMimeTypes: [],
+        audio: false,
       },
-      structuredOutput: { grade: "untested" },
-      instructionFollowing: "untested",
-      nativeFileMimeTypes: [PDF],
       cache: { strategy: "explicit-breakpoints", maxBreakpoints: 4 },
       reasoning: { style: "max-tokens", defaultLevel: "low" },
       provider: { requireParameters: true, zdr: true },
@@ -177,12 +148,11 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
   "gpt-5.5": {
     key: "gpt-5.5",
     family: "openai",
-    tier: "flagship",
+    tiers: ["flagship"],
     catalog: {
       id: "openai/gpt-5.5",
       contextLength: 1_050_000,
       maxCompletionTokens: 128_000,
-      pricing: { prompt: 5, completion: 30, inputCacheRead: 0.5 },
       inputModalities: ["file", "image", "text"],
       outputModalities: ["text"],
       supportedParameters: [
@@ -197,29 +167,27 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
     },
     assessment: {
       costClass: "premium",
-      toolCalling: {
-        grade: "untested",
-        parallel: "untested",
-        strictSchemas: true,
+      pricing: { inputPerMTok: 5, outputPerMTok: 30, cacheReadPerMTok: 0.5 },
+      nativeInput: {
+        image: false,
+        video: false,
+        fileMimeTypes: [],
+        audio: false,
       },
-      structuredOutput: { grade: "untested" },
-      instructionFollowing: "untested",
-      nativeFileMimeTypes: [PDF],
       cache: { strategy: "implicit" },
       reasoning: { style: "effort", defaultLevel: "low" },
       provider: { requireParameters: true, zdr: true },
       evalGate: { status: "pending" },
     },
   },
-  "gpt-5.4-mini": {
-    key: "gpt-5.4-mini",
+  "gpt-5.4-nano": {
+    key: "gpt-5.4-nano",
     family: "openai",
-    tier: "workhorse",
+    tiers: ["workhorse"],
     catalog: {
-      id: "openai/gpt-5.4-mini",
+      id: "openai/gpt-5.4-nano",
       contextLength: 400_000,
       maxCompletionTokens: 128_000,
-      pricing: { prompt: 0.75, completion: 4.5, inputCacheRead: 0.075 },
       inputModalities: ["file", "image", "text"],
       outputModalities: ["text"],
       supportedParameters: [
@@ -233,15 +201,18 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
       ],
     },
     assessment: {
-      costClass: "standard",
-      toolCalling: {
-        grade: "untested",
-        parallel: "untested",
-        strictSchemas: true,
+      costClass: "budget",
+      pricing: {
+        inputPerMTok: 0.2,
+        outputPerMTok: 1.25,
+        cacheReadPerMTok: 0.02,
       },
-      structuredOutput: { grade: "untested" },
-      instructionFollowing: "untested",
-      nativeFileMimeTypes: [PDF],
+      nativeInput: {
+        image: false,
+        video: false,
+        fileMimeTypes: [],
+        audio: false,
+      },
       cache: { strategy: "implicit" },
       reasoning: { style: "effort", defaultLevel: "low" },
       provider: { requireParameters: true, zdr: true },
@@ -251,11 +222,10 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
   "gpt-oss-120b": {
     key: "gpt-oss-120b",
     family: "openai",
-    tier: "workhorse",
+    tiers: ["workhorse"],
     catalog: {
       id: "openai/gpt-oss-120b",
       contextLength: 131_072,
-      pricing: { prompt: 0.039, completion: 0.18 },
       inputModalities: ["text"],
       outputModalities: ["text"],
       supportedParameters: [
@@ -270,14 +240,13 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
     },
     assessment: {
       costClass: "budget",
-      toolCalling: {
-        grade: "untested",
-        parallel: "untested",
-        strictSchemas: false,
+      pricing: { inputPerMTok: 0.039, outputPerMTok: 0.18 },
+      nativeInput: {
+        image: false,
+        video: false,
+        fileMimeTypes: [],
+        audio: false,
       },
-      structuredOutput: { grade: "untested" },
-      instructionFollowing: "untested",
-      nativeFileMimeTypes: [],
       cache: { strategy: "none" },
       reasoning: { style: "effort", defaultLevel: "minimal" },
       provider: { requireParameters: true, zdr: true, sort: "throughput" },
@@ -287,11 +256,10 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
   "gpt-oss-20b": {
     key: "gpt-oss-20b",
     family: "openai",
-    tier: "utility",
+    tiers: ["utility"],
     catalog: {
       id: "openai/gpt-oss-20b",
       contextLength: 131_072,
-      pricing: { prompt: 0.029, completion: 0.14 },
       inputModalities: ["text"],
       outputModalities: ["text"],
       supportedParameters: [
@@ -306,14 +274,13 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
     },
     assessment: {
       costClass: "budget",
-      toolCalling: {
-        grade: "untested",
-        parallel: "untested",
-        strictSchemas: false,
+      pricing: { inputPerMTok: 0.029, outputPerMTok: 0.14 },
+      nativeInput: {
+        image: false,
+        video: false,
+        fileMimeTypes: [],
+        audio: false,
       },
-      structuredOutput: { grade: "untested" },
-      instructionFollowing: "untested",
-      nativeFileMimeTypes: [],
       cache: { strategy: "none" },
       reasoning: { style: "effort", defaultLevel: "low" },
       provider: { requireParameters: true, zdr: true },
@@ -323,12 +290,11 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
   "gpt-4o-mini": {
     key: "gpt-4o-mini",
     family: "openai",
-    tier: "utility",
+    tiers: ["utility"],
     catalog: {
       id: "openai/gpt-4o-mini",
       contextLength: 128_000,
       maxCompletionTokens: 16_384,
-      pricing: { prompt: 0.15, completion: 0.6, inputCacheRead: 0.075 },
       inputModalities: ["text", "image", "file"],
       outputModalities: ["text"],
       supportedParameters: [
@@ -341,14 +307,17 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
     },
     assessment: {
       costClass: "budget",
-      toolCalling: {
-        grade: "untested",
-        parallel: "untested",
-        strictSchemas: true,
+      pricing: {
+        inputPerMTok: 0.15,
+        outputPerMTok: 0.6,
+        cacheReadPerMTok: 0.075,
       },
-      structuredOutput: { grade: "untested" },
-      instructionFollowing: "untested",
-      nativeFileMimeTypes: [PDF],
+      nativeInput: {
+        image: false,
+        video: false,
+        fileMimeTypes: [],
+        audio: false,
+      },
       cache: { strategy: "implicit" },
       reasoning: { style: "none", defaultLevel: "none" },
       provider: { requireParameters: true, zdr: true },
@@ -360,12 +329,11 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
   "gemini-3.1-pro": {
     key: "gemini-3.1-pro",
     family: "google",
-    tier: "flagship",
+    tiers: ["flagship"],
     catalog: {
       id: "google/gemini-3.1-pro-preview",
       contextLength: 1_048_576,
       maxCompletionTokens: 65_536,
-      pricing: { prompt: 2, completion: 12, inputCacheRead: 0.2 },
       inputModalities: ["audio", "file", "image", "text", "video"],
       outputModalities: ["text"],
       supportedParameters: [
@@ -380,14 +348,13 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
     },
     assessment: {
       costClass: "standard",
-      toolCalling: {
-        grade: "untested",
-        parallel: "untested",
-        strictSchemas: false,
+      pricing: { inputPerMTok: 2, outputPerMTok: 12, cacheReadPerMTok: 0.2 },
+      nativeInput: {
+        image: false,
+        video: false,
+        fileMimeTypes: [],
+        audio: false,
       },
-      structuredOutput: { grade: "untested" },
-      instructionFollowing: "untested",
-      nativeFileMimeTypes: [PDF],
       cache: { strategy: "implicit" },
       reasoning: { style: "effort", defaultLevel: "low" },
       provider: { requireParameters: true, zdr: true },
@@ -397,12 +364,11 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
   "gemini-3.5-flash": {
     key: "gemini-3.5-flash",
     family: "google",
-    tier: "workhorse",
+    tiers: ["flagship", "workhorse"],
     catalog: {
       id: "google/gemini-3.5-flash",
       contextLength: 1_048_576,
       maxCompletionTokens: 65_536,
-      pricing: { prompt: 1.5, completion: 9, inputCacheRead: 0.15 },
       inputModalities: ["text", "image", "video", "file", "audio"],
       outputModalities: ["text"],
       supportedParameters: [
@@ -417,14 +383,13 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
     },
     assessment: {
       costClass: "standard",
-      toolCalling: {
-        grade: "untested",
-        parallel: "untested",
-        strictSchemas: false,
+      pricing: { inputPerMTok: 1.5, outputPerMTok: 9, cacheReadPerMTok: 0.15 },
+      nativeInput: {
+        image: false,
+        video: false,
+        fileMimeTypes: [],
+        audio: false,
       },
-      structuredOutput: { grade: "untested" },
-      instructionFollowing: "untested",
-      nativeFileMimeTypes: [PDF],
       cache: { strategy: "implicit" },
       reasoning: { style: "effort", defaultLevel: "low" },
       provider: { requireParameters: true, zdr: true },
@@ -434,7 +399,7 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
   "gemini-3.1-flash-lite": {
     key: "gemini-3.1-flash-lite",
     family: "google",
-    tier: "utility",
+    tiers: ["utility"],
     catalog: {
       // GA id — the prod vision incumbent ran the `-preview` route of
       // the SAME model until 2026-06; preview routes get sunset, the
@@ -442,7 +407,6 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
       id: "google/gemini-3.1-flash-lite",
       contextLength: 1_048_576,
       maxCompletionTokens: 65_536,
-      pricing: { prompt: 0.25, completion: 1.5, inputCacheRead: 0.025 },
       inputModalities: ["text", "image", "video", "file", "audio"],
       outputModalities: ["text"],
       supportedParameters: [
@@ -457,14 +421,17 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
     },
     assessment: {
       costClass: "budget",
-      toolCalling: {
-        grade: "untested",
-        parallel: "untested",
-        strictSchemas: false,
+      pricing: {
+        inputPerMTok: 0.25,
+        outputPerMTok: 1.5,
+        cacheReadPerMTok: 0.025,
       },
-      structuredOutput: { grade: "untested" },
-      instructionFollowing: "untested",
-      nativeFileMimeTypes: [PDF],
+      nativeInput: {
+        image: false,
+        video: false,
+        fileMimeTypes: [],
+        audio: false,
+      },
       cache: { strategy: "implicit" },
       reasoning: { style: "effort", defaultLevel: "none" },
       provider: { requireParameters: true, zdr: true },
@@ -476,11 +443,10 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
   "mistral-medium-3.5": {
     key: "mistral-medium-3.5",
     family: "mistral",
-    tier: "flagship",
+    tiers: ["flagship"],
     catalog: {
       id: "mistralai/mistral-medium-3-5",
       contextLength: 262_144,
-      pricing: { prompt: 1.5, completion: 7.5 },
       inputModalities: ["text", "image", "file"],
       outputModalities: ["text"],
       supportedParameters: [
@@ -495,28 +461,39 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
     },
     assessment: {
       costClass: "standard",
-      toolCalling: {
-        grade: "untested",
-        parallel: "untested",
-        strictSchemas: false,
+      pricing: { inputPerMTok: 1.5, outputPerMTok: 7.5 },
+      // enabled:false — validated but not offered yet (cost; beta).
+      enabled: false,
+      nativeInput: {
+        image: false,
+        video: false,
+        fileMimeTypes: [],
+        audio: false,
       },
-      structuredOutput: { grade: "untested" },
-      instructionFollowing: "untested",
-      nativeFileMimeTypes: [PDF],
       cache: { strategy: "none" },
       reasoning: { style: "effort", defaultLevel: "low" },
-      provider: { requireParameters: true, zdr: true },
-      evalGate: { status: "pending" },
+      // zdr:false — Mistral has no ZDR-flagged endpoint on OpenRouter, so
+      // zdr:true empties the pool. Mistral is GDPR/EU-native regardless;
+      // OpenRouter's ZDR flag (zero-retention) is a separate axis from RGPD.
+      provider: { requireParameters: true },
+      // Marked passed on technical-health grounds (answered every gate case,
+      // 0 fallback) despite the gate's "failed" on correctness:generation —
+      // that 2026-06-15 run was confounded by OpenRouter credit exhaustion +
+      // the now-fixed required-caption bug. enabled:false keeps it hidden.
+      evalGate: {
+        status: "passed",
+        lastRunId: "56999471-a788-4e2c-b616-b5abdfa0bf53",
+        gatedAt: "2026-06-15",
+      },
     },
   },
   "mistral-small-2603": {
     key: "mistral-small-2603",
     family: "mistral",
-    tier: "workhorse",
+    tiers: ["workhorse"],
     catalog: {
       id: "mistralai/mistral-small-2603",
       contextLength: 262_144,
-      pricing: { prompt: 0.15, completion: 0.6, inputCacheRead: 0.015 },
       inputModalities: ["text", "image"],
       outputModalities: ["text"],
       supportedParameters: [
@@ -531,14 +508,17 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
     },
     assessment: {
       costClass: "budget",
-      toolCalling: {
-        grade: "untested",
-        parallel: "untested",
-        strictSchemas: false,
+      pricing: {
+        inputPerMTok: 0.15,
+        outputPerMTok: 0.6,
+        cacheReadPerMTok: 0.015,
       },
-      structuredOutput: { grade: "untested" },
-      instructionFollowing: "untested",
-      nativeFileMimeTypes: [],
+      nativeInput: {
+        image: false,
+        video: false,
+        fileMimeTypes: [],
+        audio: false,
+      },
       cache: { strategy: "implicit" },
       reasoning: { style: "effort", defaultLevel: "low" },
       provider: { requireParameters: true, zdr: true },
@@ -548,11 +528,10 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
   "ministral-8b-2512": {
     key: "ministral-8b-2512",
     family: "mistral",
-    tier: "utility",
+    tiers: ["utility"],
     catalog: {
       id: "mistralai/ministral-8b-2512",
       contextLength: 262_144,
-      pricing: { prompt: 0.15, completion: 0.15, inputCacheRead: 0.015 },
       inputModalities: ["text", "image"],
       outputModalities: ["text"],
       supportedParameters: [
@@ -565,14 +544,17 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
     },
     assessment: {
       costClass: "budget",
-      toolCalling: {
-        grade: "untested",
-        parallel: "untested",
-        strictSchemas: false,
+      pricing: {
+        inputPerMTok: 0.15,
+        outputPerMTok: 0.15,
+        cacheReadPerMTok: 0.015,
       },
-      structuredOutput: { grade: "untested" },
-      instructionFollowing: "untested",
-      nativeFileMimeTypes: [],
+      nativeInput: {
+        image: false,
+        video: false,
+        fileMimeTypes: [],
+        audio: false,
+      },
       cache: { strategy: "implicit" },
       reasoning: { style: "none", defaultLevel: "none" },
       provider: { requireParameters: true, zdr: true },
@@ -584,12 +566,11 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
   "minimax-m3": {
     key: "minimax-m3",
     family: "minimax",
-    tier: "flagship",
+    tiers: ["flagship"],
     catalog: {
       id: "minimax/minimax-m3",
       contextLength: 1_048_576,
       maxCompletionTokens: 512_000,
-      pricing: { prompt: 0.3, completion: 1.2, inputCacheRead: 0.06 },
       // Native image + video input, NO file input — verified 2026-06-11.
       inputModalities: ["text", "image", "video"],
       outputModalities: ["text"],
@@ -605,25 +586,35 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
     },
     assessment: {
       costClass: "budget",
-      toolCalling: {
-        // Gate 2026-06-12 (run pair *-20260612-0112, full curated set):
-        // tool-call-validity 1.000 — every recorded call input parses
-        // against the production Zod schemas.
-        grade: "A",
-        // Probes batched parallel calls in 3/6 runs across two gate
-        // executions with NO provider-pool breakage (M2.7: 0/6).
-        parallel: "supported",
-        strictSchemas: false,
+      pricing: {
+        inputPerMTok: 0.3,
+        outputPerMTok: 1.2,
+        cacheReadPerMTok: 0.06,
       },
-      // 2/2 structured-output probes on both gate executions.
-      structuredOutput: { grade: "A" },
-      // correctness:instruction-following 1.000 then 0.938 (8 cases).
-      instructionFollowing: "A",
-      nativeFileMimeTypes: [],
+      // C5 native multimodal — ACTIVATED 2026-06-15. M3's catalog lists
+      // image + video, so native ingestion is on (validated by the A/B eval
+      // run, `multimodal` capability). Images inline as base64; video rides a
+      // presigned URL (OpenRouter `video_url`). `limits` is an internal
+      // cost/payload guard (NOT an upload cap — the 5-files/15 MB hard caps
+      // live in chatbot-limits.ts): across a long conversation only the N
+      // most-recent media of each modality travel native, older ones degrade
+      // gracefully to the `vision` tool — no error, nothing lost. Video is
+      // heavy, so just the latest clip.
+      nativeInput: {
+        image: true,
+        video: true,
+        fileMimeTypes: [],
+        audio: false,
+        limits: { maxImagesPerRequest: 6, maxVideosPerRequest: 1 },
+      },
       cache: { strategy: "implicit" },
       reasoning: { style: "max-tokens", defaultLevel: "low" },
-
-      provider: { requireParameters: true, zdr: true },
+      // zdr:false — M3's only ZDR provider that supports tool-calling is
+      // Morph (2× the price, no prompt caching). Enforcing ZDR collapses
+      // the pool to Morph; disabling it lets OpenRouter reach the cheaper,
+      // cache-capable MiniMax first-party endpoint. M3 isn't a RGPD-grade
+      // choice anyway — ZDR teams pick an EU model (e.g. Mistral).
+      provider: { requireParameters: true, zdr: undefined },
       // Promoted via the C3 gate, 2026-06-12. All capabilities at or
       // above the M2.7 baseline; cost $0.0134/turn (budget envelope).
       // The avg-latency criterion of this run pair passed only after
@@ -638,104 +629,15 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
       },
     },
   },
-  "minimax-m2.7": {
-    key: "minimax-m2.7",
-    family: "minimax",
-    tier: "workhorse",
-    catalog: {
-      id: "minimax/minimax-m2.7",
-      contextLength: 204_800,
-      maxCompletionTokens: 131_072,
-      pricing: { prompt: 0.27, completion: 1.08, inputCacheRead: 0.054 },
-      inputModalities: ["text"],
-      outputModalities: ["text"],
-      supportedParameters: [
-        "tools",
-        "tool_choice",
-        "max_tokens",
-        "reasoning",
-        "include_reasoning",
-        "response_format",
-        "structured_outputs",
-      ],
-    },
-    assessment: {
-      costClass: "budget",
-      toolCalling: {
-        // Gate baseline 2026-06-12 (run 3deef61e…, full curated set):
-        // tool-call-validity 1.000.
-        grade: "A",
-        // 2026-05-07 finding — see types.ts. Do not flip without a
-        // fresh provider-pool test. Gate probes: 0/6 batched across
-        // two executions — consistent.
-        parallel: "breaks-provider-pool",
-        strictSchemas: false,
-      },
-      // 2/2 structured-output probes (gate self-test 2026-06-11).
-      structuredOutput: { grade: "A" },
-      // correctness:instruction-following 0.875 on both measured runs.
-      instructionFollowing: "B",
-      nativeFileMimeTypes: [],
-      cache: { strategy: "implicit" },
-      reasoning: { style: "max-tokens", defaultLevel: "low" },
-      provider: { requireParameters: true, zdr: true },
-      // Grandfathered prod incumbent; grades grounded by the gate
-      // baseline run of the M3 promotion.
-      evalGate: {
-        status: "passed",
-        lastRunId: "3deef61e-9a75-4f04-9d53-af9f0fdf8b5c",
-        gatedAt: "2026-06-12",
-      },
-    },
-  },
-  "minimax-m2.5": {
-    key: "minimax-m2.5",
-    family: "minimax",
-    tier: "utility",
-    catalog: {
-      id: "minimax/minimax-m2.5",
-      contextLength: 204_800,
-      maxCompletionTokens: 196_608,
-      pricing: { prompt: 0.15, completion: 0.9, inputCacheRead: 0.05 },
-      inputModalities: ["text"],
-      outputModalities: ["text"],
-      supportedParameters: [
-        "tools",
-        "tool_choice",
-        "max_tokens",
-        "reasoning",
-        "include_reasoning",
-        "response_format",
-        "structured_outputs",
-      ],
-    },
-    assessment: {
-      costClass: "budget",
-      toolCalling: {
-        grade: "untested",
-        parallel: "untested",
-        strictSchemas: false,
-      },
-      structuredOutput: { grade: "untested" },
-      instructionFollowing: "untested",
-      nativeFileMimeTypes: [],
-      cache: { strategy: "implicit" },
-      reasoning: { style: "max-tokens", defaultLevel: "low" },
-      provider: { requireParameters: true, zdr: true },
-      evalGate: { status: "pending" },
-    },
-  },
-
   // ───────────────────────── DeepSeek ─────────────────────────
   "deepseek-v4-pro": {
     key: "deepseek-v4-pro",
     family: "deepseek",
-    tier: "flagship",
+    tiers: ["flagship"],
     catalog: {
       id: "deepseek/deepseek-v4-pro",
       contextLength: 1_048_576,
       maxCompletionTokens: 384_000,
-      pricing: { prompt: 0.435, completion: 0.87, inputCacheRead: 0.0036 },
       inputModalities: ["text"],
       outputModalities: ["text"],
       supportedParameters: [
@@ -750,14 +652,17 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
     },
     assessment: {
       costClass: "budget",
-      toolCalling: {
-        grade: "untested",
-        parallel: "untested",
-        strictSchemas: false,
+      pricing: {
+        inputPerMTok: 1.74,
+        outputPerMTok: 3.48,
+        cacheReadPerMTok: 0.15,
       },
-      structuredOutput: { grade: "untested" },
-      instructionFollowing: "untested",
-      nativeFileMimeTypes: [],
+      nativeInput: {
+        image: false,
+        video: false,
+        fileMimeTypes: [],
+        audio: false,
+      },
       cache: { strategy: "implicit" },
       reasoning: { style: "max-tokens", defaultLevel: "low" },
       provider: { requireParameters: true, zdr: true },
@@ -767,12 +672,11 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
   "deepseek-v4-flash": {
     key: "deepseek-v4-flash",
     family: "deepseek",
-    tier: "workhorse",
+    tiers: ["workhorse"],
     catalog: {
       id: "deepseek/deepseek-v4-flash",
       contextLength: 1_048_576,
       maxCompletionTokens: 131_072,
-      pricing: { prompt: 0.0983, completion: 0.1966, inputCacheRead: 0.0197 },
       inputModalities: ["text"],
       outputModalities: ["text"],
       supportedParameters: [
@@ -787,57 +691,21 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
     },
     assessment: {
       costClass: "budget",
-      toolCalling: {
-        grade: "untested",
-        parallel: "untested",
-        strictSchemas: false,
+      pricing: {
+        inputPerMTok: 0.14,
+        outputPerMTok: 0.28,
+        cacheReadPerMTok: 0.04,
       },
-      structuredOutput: { grade: "untested" },
-      instructionFollowing: "untested",
-      nativeFileMimeTypes: [],
+      nativeInput: {
+        image: false,
+        video: false,
+        fileMimeTypes: [],
+        audio: false,
+      },
       cache: { strategy: "implicit" },
       reasoning: { style: "max-tokens", defaultLevel: "low" },
       provider: { requireParameters: true, zdr: true, sort: "throughput" },
       evalGate: { status: "passed" },
-    },
-  },
-  "deepseek-v3.2": {
-    key: "deepseek-v3.2",
-    family: "deepseek",
-    tier: "utility",
-    catalog: {
-      id: "deepseek/deepseek-v3.2",
-      contextLength: 131_072,
-      maxCompletionTokens: 64_000,
-      pricing: { prompt: 0.2288, completion: 0.3432 },
-      inputModalities: ["text"],
-      outputModalities: ["text"],
-      supportedParameters: [
-        "tools",
-        "tool_choice",
-        "max_tokens",
-        "reasoning",
-        "include_reasoning",
-        "response_format",
-        "structured_outputs",
-      ],
-    },
-    assessment: {
-      costClass: "budget",
-      toolCalling: {
-        grade: "untested",
-        parallel: "untested",
-        strictSchemas: false,
-      },
-      structuredOutput: { grade: "untested" },
-      instructionFollowing: "untested",
-      nativeFileMimeTypes: [],
-      // Routed through Alibaba upstream — needs explicit breakpoints
-      // (matches EXPLICIT_CACHE_MODEL_PATTERNS in openrouter-cache.ts).
-      cache: { strategy: "explicit-breakpoints", maxBreakpoints: 4 },
-      reasoning: { style: "max-tokens", defaultLevel: "low" },
-      provider: { requireParameters: true, zdr: true },
-      evalGate: { status: "pending" },
     },
   },
 
@@ -845,11 +713,10 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
   "glm-5.1": {
     key: "glm-5.1",
     family: "zai",
-    tier: "flagship",
+    tiers: ["flagship"],
     catalog: {
       id: "z-ai/glm-5.1",
       contextLength: 202_752,
-      pricing: { prompt: 0.98, completion: 3.08, inputCacheRead: 0.182 },
       inputModalities: ["text"],
       outputModalities: ["text"],
       supportedParameters: [
@@ -864,14 +731,17 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
     },
     assessment: {
       costClass: "standard",
-      toolCalling: {
-        grade: "untested",
-        parallel: "untested",
-        strictSchemas: false,
+      pricing: {
+        inputPerMTok: 0.98,
+        outputPerMTok: 3.08,
+        cacheReadPerMTok: 0.182,
       },
-      structuredOutput: { grade: "untested" },
-      instructionFollowing: "untested",
-      nativeFileMimeTypes: [],
+      nativeInput: {
+        image: false,
+        video: false,
+        fileMimeTypes: [],
+        audio: false,
+      },
       cache: { strategy: "implicit" },
       reasoning: { style: "max-tokens", defaultLevel: "low" },
       provider: { requireParameters: true, zdr: true },
@@ -881,12 +751,11 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
   "glm-4.7": {
     key: "glm-4.7",
     family: "zai",
-    tier: "workhorse",
+    tiers: ["workhorse"],
     catalog: {
       id: "z-ai/glm-4.7",
       contextLength: 202_752,
       maxCompletionTokens: 131_072,
-      pricing: { prompt: 0.4, completion: 1.75, inputCacheRead: 0.08 },
       inputModalities: ["text"],
       outputModalities: ["text"],
       supportedParameters: [
@@ -901,51 +770,17 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
     },
     assessment: {
       costClass: "budget",
-      toolCalling: {
-        grade: "untested",
-        parallel: "untested",
-        strictSchemas: false,
+      pricing: {
+        inputPerMTok: 0.6,
+        outputPerMTok: 2.2,
+        cacheReadPerMTok: 0.11,
       },
-      structuredOutput: { grade: "untested" },
-      instructionFollowing: "untested",
-      nativeFileMimeTypes: [],
-      cache: { strategy: "implicit" },
-      reasoning: { style: "max-tokens", defaultLevel: "low" },
-      provider: { requireParameters: true, zdr: true },
-      evalGate: { status: "pending" },
-    },
-  },
-  "glm-4.7-flash": {
-    key: "glm-4.7-flash",
-    family: "zai",
-    tier: "utility",
-    catalog: {
-      id: "z-ai/glm-4.7-flash",
-      contextLength: 202_752,
-      maxCompletionTokens: 16_384,
-      pricing: { prompt: 0.06, completion: 0.4, inputCacheRead: 0.01 },
-      inputModalities: ["text"],
-      outputModalities: ["text"],
-      supportedParameters: [
-        "tools",
-        "tool_choice",
-        "max_tokens",
-        "reasoning",
-        "include_reasoning",
-        "response_format",
-        "structured_outputs",
-      ],
-    },
-    assessment: {
-      costClass: "budget",
-      toolCalling: {
-        grade: "untested",
-        parallel: "untested",
-        strictSchemas: false,
+      nativeInput: {
+        image: false,
+        video: false,
+        fileMimeTypes: [],
+        audio: false,
       },
-      structuredOutput: { grade: "untested" },
-      instructionFollowing: "untested",
-      nativeFileMimeTypes: [],
       cache: { strategy: "implicit" },
       reasoning: { style: "max-tokens", defaultLevel: "low" },
       provider: { requireParameters: true, zdr: true },
@@ -953,6 +788,33 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
     },
   },
 };
+
+/**
+ * Flagship profiles whose reasoning depth is genuinely USER-STEERABLE through
+ * OpenRouter — raising the effort level meaningfully increases reasoning, so
+ * the C7 "extended thinking" toggle actually does something. Gates the toggle's
+ * per-model visibility (hidden when the picked model isn't listed here).
+ *
+ * VALIDATED, not assumed — docs/leaderboards are priors, a runtime probe is the
+ * source of truth. Deliberately EXCLUDED:
+ *   - minimax-m3: runtime-probed 2026-06 — ignores BOTH effort and max_tokens
+ *     (reasoning_tokens flat ~3-5k regardless); self-regulating / adaptive.
+ *   - deepseek-v4-pro: effort low/med/high all map to its native default
+ *     "high"; only xhigh→"max" lifts it, and OpenRouter currently strips that
+ *     (LiteLLM #27439) — our high-level toggle can't boost it.
+ *   - glm-5.1: binary `enable_thinking` on/off, no depth control.
+ * Members are doc-confirmed effort-steerable (HIGH confidence OpenAI/Anthropic/
+ * Google) but NONE is selectable yet (all gate-pending or enabled:false), so the
+ * toggle is dormant today. Re-probe each at its gate run (evals/RUNBOOK.md).
+ */
+export const STEERABLE_REASONING_KEYS: ReadonlySet<string> = new Set([
+  "gpt-5.5",
+  "gemini-3.1-pro",
+  "gemini-3.5-flash",
+  "claude-opus-4.8",
+  "claude-sonnet-4.6",
+  "mistral-medium-3.5",
+]);
 
 /**
  * Default role → profile bindings. Pure code — model env vars are

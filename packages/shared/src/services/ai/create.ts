@@ -1,6 +1,7 @@
 import db from "../../db";
 import { aiConversationMembers, aiConversations } from "../../db/schema";
 import type { AiAgentType } from "../../schemas/ai";
+import { getTeamAiSettings } from "../team-ai-settings/get-for-team";
 import type { SerializedConversation } from "./conversation-serializer";
 import { getConversation } from "./get";
 
@@ -16,8 +17,25 @@ export const createConversation = async (data: {
   userId: string;
   title: string;
   agentType?: AiAgentType;
+  /**
+   * Flagship model the user picked for this conversation (chantier C8).
+   * Stamped here and immutable thereafter. Null/undefined → resolved from
+   * the team default (or code default) lazily on the first turn. Validation
+   * is authoritative at resolution time in `@fretik/ai`.
+   */
+  modelProfileKey?: string;
 }): Promise<SerializedConversation> => {
-  const { organizationId, teamId, userId, title, agentType } = data;
+  const { organizationId, teamId, userId, title, agentType, modelProfileKey } =
+    data;
+
+  // Pin the flagship model at creation: explicit picker choice → team
+  // default → null (code default, resolved per turn in @fretik/ai). Reading
+  // the team default is a plain key lookup — registry validation happens
+  // authoritatively at resolution time, where an invalid key falls back.
+  const pinnedProfileKey =
+    modelProfileKey ??
+    (await getTeamAiSettings(teamId))?.flagshipProfileKey ??
+    null;
 
   const conversationId = await db.transaction(async (tx) => {
     const [row] = await tx
@@ -28,6 +46,7 @@ export const createConversation = async (data: {
         userId,
         title,
         agentType: agentType ?? "chatbot",
+        modelProfileKey: pinnedProfileKey,
       })
       .returning({ id: aiConversations.id });
 

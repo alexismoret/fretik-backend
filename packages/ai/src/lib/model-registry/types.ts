@@ -8,22 +8,19 @@
  *   API verbatim (same field semantics, camelCased) so a script can
  *   diff our facts against the live API and flag drift —
  *   `scripts/check-model-catalog.ts`. `assessment` holds OUR product
- *   decisions (grades, gate status, cache strategy, reasoning
- *   envelope); it never syncs from anywhere.
+ *   decisions (gate status, cache strategy, reasoning envelope); it
+ *   never syncs from anywhere.
  * - **No model env vars.** Role bindings below are the code defaults;
  *   per-team / per-conversation selection comes from the DB (C8).
  *   Changing a default model = a reviewed PR, not an env edit.
- * - **Grades are eval-assigned, never guessed.** `"untested"` is the
- *   honest default; the C3 promotion gate suggests grades that a human
- *   commits here. The PR is the promotion.
+ * - **Promotion is eval-gated, never guessed.** A profile is `pending`
+ *   until a C3 gate run, committed by a human, flips it to `passed`.
+ *   The PR is the promotion.
  * - **Catalog facts are exact.** Modalities list what the model truly
  *   accepts upstream — product policy (e.g. which attachments go
  *   native, C5) reads these facts plus `evalGate`, it does not edit
  *   them.
  */
-
-/** Eval-assigned quality grade. `untested` until a C3 gate run says otherwise. */
-export type CapabilityGrade = "A" | "B" | "C" | "untested";
 
 /** Native modality vocabulary — identical to OpenRouter's `architecture` arrays. */
 export type InputModality = "text" | "image" | "file" | "audio" | "video";
@@ -57,16 +54,6 @@ export interface ModelCatalogFacts {
   contextLength: number;
   /** `top_provider.max_completion_tokens`; omitted when upstream reports null. */
   maxCompletionTokens?: number;
-  /**
-   * `pricing`, converted to USD per MILLION tokens (OpenRouter serves
-   * per-token strings — the conversion is the only transformation).
-   */
-  pricing: {
-    prompt: number;
-    completion: number;
-    /** `input_cache_read` — omitted when the upstream has no cache discount. */
-    inputCacheRead?: number;
-  };
   /** `architecture.input_modalities`, verbatim. */
   inputModalities: readonly InputModality[];
   /** `architecture.output_modalities`, verbatim. */
@@ -124,35 +111,83 @@ export type CostClass = "premium" | "standard" | "budget";
  * Product tiers a team customises (C8). `flagship` = main chat loop,
  * `workhorse` = tool-capable cheap sub-work (pre-extract, sub-agents,
  * compaction), `utility` = judgment-on-context one-shots (memory
- * recall, titles, reformulation). Every family ships at least one
- * profile per tier so the C8 picker always has a same-brand option.
+ * recall, titles, reformulation). A profile may belong to MORE THAN ONE
+ * tier — e.g. Sonnet 4.6 / Gemini 3.5 Flash serve as both flagship and
+ * workhorse — see `ModelProfile.tiers`.
  */
 export type ModelTier = "flagship" | "workhorse" | "utility";
+
+/**
+ * Native multimodal-input policy (chantier C5) — which attachment
+ * modalities this profile receives as NATIVE content parts instead of
+ * routing them through the `read`/`vision` tools. A per-modality switch
+ * that is eval-gated, never inferred from the catalog: a flag is `true`
+ * only once an A/B run proves native beats tool-mediated for THIS model.
+ *
+ * Integrity invariant (`model-registry.test.ts`): activation ⊆ catalog
+ * facts — `image:true` ⇒ catalog lists `"image"`, `video:true` ⇒
+ * `"video"`, `fileMimeTypes` non-empty ⇒ `"file"`, `audio:true` ⇒
+ * `"audio"`. The catalog is the hard ceiling; this block is the product
+ * decision under it.
+ *
+ * Ships INERT — every flag is `false`/empty until a gated activation PR,
+ * so `prepareModelMessages` is byte-identical to `stripFilePartsForModel`.
+ * v1 wires `image` + `video`; `fileMimeTypes` (native PDF, absorbs the
+ * old `nativeFileMimeTypes`) and `audio` are forward-declared for v2.
+ */
+export interface NativeInputPolicy {
+  image: boolean;
+  video: boolean;
+  /**
+   * MIME types sent as native `file` parts (v2 — native PDF). Empty =
+   * disabled. Which types an upstream truly accepts is family knowledge
+   * OpenRouter does not expose; today the only candidate is
+   * `application/pdf`, and only where the catalog lists `"file"`.
+   */
+  fileMimeTypes: readonly string[];
+  audio: boolean;
+  /**
+   * HARD provider limits (facts, not heuristics) — used to bound how many
+   * media parts ride a single request. `prepareModelMessages` keeps the N
+   * most-recent native parts per modality and falls the older ones back to
+   * tool-mediated. `maxVideosPerRequest` defaults to 1 at activation: video
+   * is heavy.
+   */
+  limits?: {
+    maxImagesPerRequest?: number;
+    maxVideosPerRequest?: number;
+    maxFileBytes?: number;
+    maxPdfPages?: number;
+  };
+}
 
 /** Product decisions about a model — ours, never synced from any API. */
 export interface ModelAssessment {
   costClass: CostClass;
-  toolCalling: {
-    grade: CapabilityGrade;
-    /**
-     * Parallel tool-call support. `breaks-provider-pool` encodes the
-     * 2026-05-07 finding: `parallelToolCalls: true` +
-     * `require_parameters: true` empties the OpenRouter provider pool
-     * for MiniMax M2.7 (200 OK, empty text, no tool calls).
-     */
-    parallel: "supported" | "unsupported" | "breaks-provider-pool" | "untested";
-    /** Provider supports strict / grammar-constrained tool schemas (C6). */
-    strictSchemas: boolean;
-  };
-  structuredOutput: { grade: CapabilityGrade };
-  instructionFollowing: CapabilityGrade;
   /**
-   * MIME types we send as native `file` parts when the catalog lists
-   * the `file` input modality. Which types an upstream truly accepts
-   * is family knowledge OpenRouter does not expose — today that means
-   * `application/pdf` everywhere `file` is listed.
+   * HAND-CURATED price, USD per 1,000,000 tokens. Lives here (not in
+   * `catalog`) because it is a product-maintained value, NOT the mechanical
+   * OpenRouter mirror — fix it by hand, no automatic price feed. The only
+   * reader is `services/model-metrics/cost-level.ts`, which folds in the cache
+   * discount (weighted by `cache.strategy`) and turns it into the relative
+   * `costLevel`; the raw dollar value never leaves the backend.
+   *
+   * `cacheReadPerMTok` is the cached-input price — omit when the model has no
+   * cache discount (`cache.strategy === "none"` or no cheaper cached rate).
+   * Cache WRITE has no field: OpenRouter doesn't expose it and the cost model
+   * absorbs it approximately via the per-strategy cache-hit ratio.
    */
-  nativeFileMimeTypes: readonly string[];
+  pricing: {
+    inputPerMTok: number;
+    outputPerMTok: number;
+    cacheReadPerMTok?: number;
+  };
+  /**
+   * Native multimodal-input policy (C5). Absorbs the former
+   * `nativeFileMimeTypes`. Ships inert (all flags off) — see
+   * `NativeInputPolicy`.
+   */
+  nativeInput: NativeInputPolicy;
   cache: {
     strategy: CacheStrategy;
     /** Max `cache_control` breakpoints (explicit-breakpoints only). */
@@ -181,6 +216,14 @@ export interface ModelAssessment {
   /** Per-family system-prompt overlay key (C2). Unset = no overlay. */
   promptOverlayKey?: string;
   /**
+   * Product on/off switch — whether teams may select this profile, ORTHOGONAL
+   * to `evalGate` (which records whether we've TESTED it). `false` hides it
+   * from every picker AND rejects it as a team default / conversation pin,
+   * even when gate-passed. Use for models we've validated but choose not to
+   * offer yet (cost / beta). Absent = enabled.
+   */
+  enabled?: boolean;
+  /**
    * Promotion state. Only `passed` profiles are selectable by teams
    * (C8). Incumbents serving prod before the gate existed are
    * grandfathered as `passed` with no `lastRunId`.
@@ -196,8 +239,13 @@ export interface ModelProfile {
   /** Stable internal key — what DB rows (C8) and evals reference. */
   key: string;
   family: ModelFamily;
-  /** Recommended tier placement (intelligence-index informed, C8 picker grouping). */
-  tier: ModelTier;
+  /**
+   * Tiers this profile may be selected for (C8 picker grouping). Usually
+   * one; multi-tier models (e.g. Sonnet 4.6, Gemini 3.5 Flash) list
+   * `["flagship", "workhorse"]`. The profile surfaces in every tier menu
+   * it lists, gate permitting — see `isSelectableForTier`.
+   */
+  tiers: readonly ModelTier[];
   catalog: ModelCatalogFacts;
   assessment: ModelAssessment;
 }

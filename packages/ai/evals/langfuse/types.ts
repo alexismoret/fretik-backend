@@ -69,14 +69,6 @@ export interface TaskOutput {
    */
   toolEfficiency?: ToolEfficiencySummary;
   /**
-   * True when at least two tool executions overlapped in wall-clock
-   * time — the model batched parallel tool calls. INFORMATIONAL: feeds
-   * the gate's suggestion for the profile's `toolCalling.parallel`
-   * assessment, never a pass/fail criterion (the baseline model may
-   * not support parallel calls at all).
-   */
-  parallelObserved?: boolean;
-  /**
    * True when the FALLBACK agent answered (silent failover or zombie
    * recovery). A candidate gate run must flag these — they were not
    * served by the candidate model.

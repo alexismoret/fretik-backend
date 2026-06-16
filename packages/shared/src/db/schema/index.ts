@@ -10,6 +10,9 @@ export * from "./auth-audit";
 // Organization extensions (enterprise_settings, agency_settings)
 export * from "./organization-extensions";
 
+// Per-team AI model selection (chantier C8)
+export * from "./team-ai-settings";
+
 // Folders and labels (folders, labels, document_labels)
 export * from "./folders";
 

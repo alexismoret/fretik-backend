@@ -114,6 +114,10 @@ export const createDispatchAgentTool = <TTools extends ToolSet>(deps: {
     };
   };
 
+  // C5 invariant: a sub-agent's message channel is the `task` STRING only —
+  // never the parent conversation history. So native image/video parts can
+  // never leak into a sub-agent (v1 excludes them by construction). See
+  // `tests/unit/tools/dispatch-agent-no-native.test.ts`.
   const executePrimary = createSubAgentExecute<
     ChatbotCallOptions,
     TTools,

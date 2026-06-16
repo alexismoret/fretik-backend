@@ -18,6 +18,7 @@ import packagejson from "../package.json";
 import { chatFilesRoutes } from "./handlers/chat-files";
 import { chatbotInternalRoutes, chatbotRoutes } from "./handlers/chatbot";
 import { fieldDefinitionsRoutes } from "./handlers/field-definitions";
+import { modelProfilesRoutes } from "./handlers/model-profiles";
 import { preExtractRoutes } from "./handlers/pre-extract";
 import { vectorizeRoutes } from "./handlers/vectorize";
 import { registerOrphanCleanupCron } from "./services/chat-files/orphan-cron";
@@ -50,6 +51,9 @@ app.route("/chatbot", chatbotRoutes);
 
 // User-facing chat-file upload / delete / download
 app.route("/chatbot-files", chatFilesRoutes);
+
+// User-facing model selection (C8) — picker menu + team defaults (cookie auth).
+app.route("/model-profiles", modelProfilesRoutes);
 
 // Internal agent invocations (X-Internal-Key middleware inside)
 app.route("/internal/agents/chatbot", chatbotInternalRoutes);

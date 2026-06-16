@@ -1,7 +1,23 @@
 import { fetchManagedPrompt } from "../../lib/langfuse-prompts";
+import type { NativeInputPolicy } from "../../lib/model-registry/types";
 import { buildSessionStateBlock } from "../../services/session-state/build-block";
 import type { SearchableToolRegistry } from "./chatbot-tool";
 import type { AgentRuntimeContext } from "./runtime-context";
+
+/**
+ * Dynamic-suffix note (C5) telling the model that attachments of the
+ * modalities its profile sends native are directly visible — so it should
+ * answer from what it sees rather than reach for `vision`. Empty for inert
+ * / non-multimodal profiles, keeping the rendered prompt byte-identical to
+ * today. Below the cache marker, so it never touches the static prefix.
+ */
+const buildNativeMediaNote = (nativeInput: NativeInputPolicy): string => {
+  const kinds: string[] = [];
+  if (nativeInput.image) kinds.push("images");
+  if (nativeInput.video) kinds.push("videos");
+  if (kinds.length === 0) return "";
+  return `**Attached ${kinds.join(" and ")} are directly visible to you in this message** — describe and answer from what you see. Call \`vision\` only for a finer visual sub-question (a region of an image, a specific moment of a video).`;
+};
 
 /**
  * Pure prompt template renderer used by the chatbot agent.
@@ -285,6 +301,9 @@ export const buildChatbotSystemPrompt = async (
         ctx.attachedFilesBlock && ctx.attachedFilesBlock.length > 0
           ? ctx.attachedFilesBlock
           : "_No files attached to the current message._",
+      nativeMediaNote: buildNativeMediaNote(
+        ctx.modelProfile.assessment.nativeInput,
+      ),
       chatbotContextManifest:
         ctx.chatbotContextManifest && ctx.chatbotContextManifest.length > 0
           ? ctx.chatbotContextManifest

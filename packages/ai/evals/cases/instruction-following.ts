@@ -6,11 +6,10 @@
  * raw-JSON shape) but every prompt is written for OUR product voice —
  * no imported benchmark data.
  *
- * The two `structured-output`-tagged probes additionally feed the
- * gate's `structuredOutput.grade` suggestion: they JSON.parse the
- * answer and shape-check it. Note: MiniMax M3's catalog does NOT
- * expose `structured_outputs` — these probes are the detector for
- * what that costs in practice.
+ * The two `structured-output`-tagged probes JSON.parse the answer and
+ * shape-check it, contributing to the gate's correctness score. Note:
+ * MiniMax M3's catalog does NOT expose `structured_outputs` — these
+ * probes are the detector for what that costs in practice.
  */
 
 import type { EvalSuite } from "../types";
@@ -156,7 +155,7 @@ export const instructionFollowingSuite: EvalSuite = {
         { type: "contains", value: "marge", caseInsensitive: true },
       ],
     },
-    // ── Structured-output probes (feed structuredOutput.grade) ──────
+    // ── Structured-output probes (raw-JSON shape fidelity) ──────────
     {
       id: "if-json-only",
       description:

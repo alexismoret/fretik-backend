@@ -48,11 +48,11 @@ describe("getChatbotAgentSet", () => {
   });
 
   test("a different profile gets its own set, memoized per key", () => {
-    // minimax-m2.7 — the former default, non-default since the gated
-    // M3 flip (2026-06-12).
-    const other = getChatbotAgentSet("minimax-m2.7");
+    // deepseek-v4-flash — a non-default profile (the workhorse binding),
+    // distinct from the minimax-m3 chat default.
+    const other = getChatbotAgentSet("deepseek-v4-flash");
     expect(other).not.toBe(chatbotAgentSet);
-    expect(getChatbotAgentSet("minimax-m2.7")).toBe(other);
+    expect(getChatbotAgentSet("deepseek-v4-flash")).toBe(other);
     expect(other.toolNames).toEqual(chatbotAgentSet.toolNames);
   });
 });

@@ -10,6 +10,7 @@ import {
   timestamp,
   uniqueIndex,
   uuid,
+  varchar,
 } from "drizzle-orm/pg-core";
 import { organization, team, user } from "./auth-schema";
 
@@ -65,6 +66,16 @@ export const aiConversations = pgTable(
 
     title: text("title").notNull(),
     metadata: jsonb("metadata").$type<Record<string, unknown>>(),
+
+    /**
+     * Model registry profile key pinning this conversation's flagship model
+     * (chantier C8). Stamped at creation from the picker choice → team
+     * default → code default, then **immutable** (no update path touches it)
+     * so a later change of team default never re-targets an open
+     * conversation. Null until the first turn resolves and stamps it; an
+     * unknown/gate-failed key degrades to the current default at resolution.
+     */
+    modelProfileKey: varchar("model_profile_key", { length: 64 }),
 
     /**
      * UUID v7 of the currently-active resumable stream for this conversation.

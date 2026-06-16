@@ -412,7 +412,7 @@ const isPlainTextMime = (mimeType: string): boolean =>
 const opaqueHint = (mimeType: string): string => {
   if (mimeType.startsWith("image/")) return "image (use vision tool)";
   if (mimeType.startsWith("audio/")) return "audio (no in-context preview)";
-  if (mimeType.startsWith("video/")) return "video (no in-context preview)";
+  if (mimeType.startsWith("video/")) return "video (use vision tool)";
   return `${mimeType || "unknown mime"} (binary)`;
 };
 

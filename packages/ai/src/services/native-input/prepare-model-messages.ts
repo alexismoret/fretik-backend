@@ -14,11 +14,14 @@ import {
  * stream call sites.
  *
  * Contract:
+ * - Always strips prior-turn reasoning parts first
+ *   (`stripReasoningPartsForModel`) — reasoning is never re-sent (provider
+ *   signature bug #423 + zombie risk; see that helper).
  * - Runs the pure `resolveAttachmentIngestion` over every file part.
  * - When NOTHING travels native (every current profile, and every
- *   non-multimodal profile), returns `stripFilePartsForModel(history)` —
- *   byte-identical to today. That fast path is the fallback branch the
- *   plan keeps; the strip helper is not deleted, it lives here.
+ *   non-multimodal profile), returns `stripFilePartsForModel(base)` — file +
+ *   reasoning stripped. That fast path is the fallback branch the plan keeps;
+ *   the strip helper is not deleted, it lives here.
  * - Otherwise keeps the most-recent N native parts per modality (provider
  *   hard limit), demoting older ones back to tool-mediated, and rewrites
  *   each kept-native part:
@@ -56,6 +59,31 @@ export const stripFilePartsForModel = (messages: UIMessage[]): UIMessage[] =>
   messages.map((message) => ({
     ...message,
     parts: message.parts.filter((part) => !isFileUIPart(part)),
+  }));
+
+/**
+ * Strip reasoning parts from the prior-turn history the model sees, ALWAYS.
+ *
+ * The OpenRouter provider re-validates `reasoning_details` signatures when it
+ * re-sends our assistant messages and silently DROPS Gemini/Claude reasoning
+ * whose signature is missing — a turn cut off mid-reasoning (a "zombie":
+ * finishReason `length`/`other`) never receives the signature-only final delta,
+ * because the provider's `doStream` doesn't accumulate it
+ * (OpenRouterTeam/ai-sdk-provider#423, unfixed through 2.9.1). Re-sending that
+ * half-signed reasoning logs a per-turn warning AND feeds reasoning models an
+ * inconsistent context — a plausible reasoning-only zombie trigger.
+ *
+ * Dropping prior-turn reasoning gives every model a clean fresh-reasoning-each-
+ * turn context — the maintainer-recommended workaround. It touches ONLY the
+ * persisted history fed in here; the live in-turn tool loop keeps its own
+ * fresh-signature reasoning, so interleaved thinking+tool-use is unaffected.
+ */
+export const stripReasoningPartsForModel = (
+  messages: UIMessage[],
+): UIMessage[] =>
+  messages.map((message) => ({
+    ...message,
+    parts: message.parts.filter((part) => part.type !== "reasoning"),
   }));
 
 const ATTACHMENTS_DIR = "attachments";
@@ -104,10 +132,14 @@ export const prepareModelMessages = async (
   profile: ModelProfile,
   deps: PrepareModelMessagesDeps,
 ): Promise<UIMessage[]> => {
+  // Reasoning is never re-sent (provider signature bug #423 + zombie risk):
+  // strip it from the persisted history before any file/native handling.
+  const base = stripReasoningPartsForModel(history);
+
   // Plan pass — native-eligible file parts per modality, in conversation
   // order (array order == chronological).
   const nativeByModality = new Map<NativeModality, FileUIPart[]>();
-  for (const message of history) {
+  for (const message of base) {
     for (const part of message.parts) {
       if (!isFileUIPart(part)) continue;
       if (resolveAttachmentIngestion(part, profile) !== "native") continue;
@@ -119,9 +151,9 @@ export const prepareModelMessages = async (
     }
   }
 
-  // Fast path — nothing native (inert / non-multimodal): byte-identical to
-  // stripFilePartsForModel, no I/O.
-  if (nativeByModality.size === 0) return stripFilePartsForModel(history);
+  // Fast path — nothing native (inert / non-multimodal): file-stripped
+  // (reasoning already stripped above), no I/O.
+  if (nativeByModality.size === 0) return stripFilePartsForModel(base);
 
   // Recency cap per modality — keep the most-recent N; older native parts
   // demote to tool-mediated (the agent can re-`read`/`vision` them).
@@ -140,7 +172,7 @@ export const prepareModelMessages = async (
   // tool-mediated, demoted, and I/O-failed parts dropped. New objects only.
   type Part = UIMessage["parts"][number];
   return Promise.all(
-    history.map(async (message) => {
+    base.map(async (message) => {
       const parts = await Promise.all(
         message.parts.map(async (part): Promise<Part | null> => {
           if (!isFileUIPart(part)) return part;

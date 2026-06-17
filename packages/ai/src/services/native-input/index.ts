@@ -1,6 +1,7 @@
 export {
   prepareModelMessages,
   stripFilePartsForModel,
+  stripReasoningPartsForModel,
   type PrepareModelMessagesDeps,
 } from "./prepare-model-messages";
 export {

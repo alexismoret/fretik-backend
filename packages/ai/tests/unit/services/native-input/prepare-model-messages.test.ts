@@ -10,6 +10,7 @@ import {
   type PrepareModelMessagesDeps,
   prepareModelMessages,
   stripFilePartsForModel,
+  stripReasoningPartsForModel,
 } from "../../../../src/services/native-input/prepare-model-messages";
 
 const profileWith = (
@@ -215,5 +216,58 @@ describe("prepareModelMessages — recency cap + failure handling", () => {
     const result = await prepareModelMessages(history, profile, deps);
     expect(result[0]?.parts).toHaveLength(1);
     expect(deps.calls.read).toHaveLength(0);
+  });
+});
+
+// Reasoning is never re-sent: the OpenRouter provider drops Gemini/Claude
+// reasoning whose signature was lost on a cut-off turn (bug #423), logging a
+// per-turn warning and feeding an inconsistent context (a zombie trigger).
+describe("prepareModelMessages — reasoning stripping (#423)", () => {
+  const reasoningHistory = (): UIMessage[] => [
+    {
+      id: "a1",
+      role: "assistant",
+      parts: [
+        { type: "reasoning", text: "internal chain of thought" },
+        { type: "text", text: "the visible answer" },
+      ],
+    },
+  ];
+
+  test("stripReasoningPartsForModel drops reasoning, keeps others, no mutation", () => {
+    const history = reasoningHistory();
+    const out = stripReasoningPartsForModel(history);
+    expect(out[0]?.parts).toEqual([
+      { type: "text", text: "the visible answer" },
+    ]);
+    // input untouched
+    expect(history[0]?.parts).toHaveLength(2);
+  });
+
+  test("fast path (inert profile) strips prior-turn reasoning", async () => {
+    const inert = profileWith(["text"], {});
+    const result = await prepareModelMessages(
+      reasoningHistory(),
+      inert,
+      makeDeps(),
+    );
+    expect(
+      result.flatMap((m) => m.parts).some((p) => p.type === "reasoning"),
+    ).toBe(false);
+    expect(result[0]?.parts).toEqual([
+      { type: "text", text: "the visible answer" },
+    ]);
+  });
+
+  test("native path also strips reasoning (reasoning + native image in one history)", async () => {
+    const nativeImage = profileWith(["text", "image"], { image: true });
+    const history: UIMessage[] = [
+      ...reasoningHistory(),
+      mediaMsg("u1", "image/png", "shot.png"),
+    ];
+    const result = await prepareModelMessages(history, nativeImage, makeDeps());
+    expect(
+      result.flatMap((m) => m.parts).some((p) => p.type === "reasoning"),
+    ).toBe(false);
   });
 });

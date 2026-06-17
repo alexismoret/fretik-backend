@@ -70,6 +70,9 @@ export const TOOL_ERROR_CODES = {
   WEB_FETCH_ERROR: "WEB_FETCH_ERROR",
   WEB_FETCH_EMPTY: "WEB_FETCH_EMPTY",
   WEB_SEARCH_ERROR: "WEB_SEARCH_ERROR",
+  // Egress hardening (web-egress.ts): scheme/private-IP/length vs domain policy.
+  WEB_FETCH_BLOCKED_TARGET: "WEB_FETCH_BLOCKED_TARGET",
+  WEB_FETCH_DOMAIN_BLOCKED: "WEB_FETCH_DOMAIN_BLOCKED",
 } as const;
 
 export type ToolErrorCode =

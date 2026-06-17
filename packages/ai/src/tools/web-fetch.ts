@@ -4,6 +4,7 @@ import { getRuntimeContext } from "../agents/shared/runtime-context";
 import { maybePersistLargeOutput } from "../lib/persisted-output";
 import { extractUrls, TavilyTimeoutError } from "../lib/tavily";
 import { TOOL_ERROR_CODES } from "../lib/tool-error-codes";
+import { assertFetchableTarget, WebEgressError } from "../lib/web-egress";
 
 /**
  * Domain tool (deferred) — fetch a single public URL and return its
@@ -48,6 +49,19 @@ export const createWebFetchTool = () =>
     execute: async ({ url, depth }, options) => {
       const ctx = getRuntimeContext(options);
       const { toolCallId } = options;
+
+      // Egress hardening: reject internal/private/non-http(s) targets and
+      // domains excluded by the deployment's denylist/allowlist before the
+      // Tavily call. The web stays open by default; see `lib/web-egress.ts`.
+      try {
+        assertFetchableTarget(url);
+      } catch (err) {
+        if (err instanceof WebEgressError) {
+          return { error: err.detail.message, code: err.detail.code, url };
+        }
+        throw err;
+      }
+
       let result: Awaited<ReturnType<typeof extractUrls>>;
       try {
         result = await extractUrls([url], depth ?? "basic");

@@ -4,6 +4,7 @@ import { getRuntimeContext } from "../agents/shared/runtime-context";
 import { maybePersistLargeOutput } from "../lib/persisted-output";
 import { searchTavily, TavilyTimeoutError } from "../lib/tavily";
 import { TOOL_ERROR_CODES } from "../lib/tool-error-codes";
+import { isUrlDenied } from "../lib/web-egress";
 
 /**
  * Per-tool char threshold for `maybePersistLargeOutput`. Tavily
@@ -45,13 +46,18 @@ export const createWebSearchTool = () =>
         });
 
         const payload = {
-          results: result.results.map((r) => ({
-            title: r.title,
-            url: r.url,
-            content: r.content,
-            score: r.score,
-            favicon: (r as { favicon?: string }).favicon,
-          })),
+          // Drop results whose host is on the deployment's denylist (no-op
+          // when `AI_WEB_BLOCKED_DOMAINS` is unset) so the model is never
+          // nudged toward a blocked site. See `lib/web-egress.ts`.
+          results: result.results
+            .filter((r) => !isUrlDenied(r.url))
+            .map((r) => ({
+              title: r.title,
+              url: r.url,
+              content: r.content,
+              score: r.score,
+              favicon: (r as { favicon?: string }).favicon,
+            })),
         };
 
         return maybePersistLargeOutput(

@@ -10,6 +10,7 @@ import {
   resolveModel,
   type ResolvedModel,
 } from "../../lib/model-registry/resolve";
+import { areWebToolsEnabled } from "../../lib/web-egress";
 import { createDispatchAgentTool } from "../../tools/dispatch-agent";
 import {
   buildAgentSet,
@@ -64,13 +65,25 @@ const parseChatbotMaxSteps = (): number => {
  * future divergence between "initial" and "per-step" gating is an
  * intentional choice rather than an accidental drift.
  */
+/**
+ * Names of the web tools, suppressed entirely when an operator sets
+ * `AI_WEB_TOOLS_ENABLED=false` (the disable lever in `lib/web-egress.ts`).
+ * Filtering here keeps them out of both `activeTools` and the prompt's
+ * domain-tool catalogue, so the model never sees a tool it cannot use.
+ */
+const WEB_TOOL_NAMES = new Set<string>(["searchWeb", "webFetch"]);
+const isToolSuppressed = (name: string): boolean =>
+  !areWebToolsEnabled() && WEB_TOOL_NAMES.has(name);
+
 const computeCoreToolNames = (tools: ChatbotTools): (keyof ChatbotTools)[] => {
   const isToolName = (name: string): name is keyof ChatbotTools =>
     name in tools;
   const result: (keyof ChatbotTools)[] = [];
   for (const entry of Object.entries(tools)) {
     const [name, t] = entry;
-    if (t.category === "core" && isToolName(name)) result.push(name);
+    if (t.category === "core" && isToolName(name) && !isToolSuppressed(name)) {
+      result.push(name);
+    }
   }
   return result;
 };
@@ -218,7 +231,7 @@ const pickDomainRegistry = (tools: ChatbotTools): SearchableToolRegistry => {
   if (cached) return cached;
   const domainTools: SearchableToolRegistry = {};
   for (const [name, t] of Object.entries(tools)) {
-    if (t.category === "domain") {
+    if (t.category === "domain" && !isToolSuppressed(name)) {
       domainTools[name] = {
         description: t.description,
         searchHint: t.searchHint,

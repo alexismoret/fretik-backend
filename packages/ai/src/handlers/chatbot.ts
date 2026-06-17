@@ -324,7 +324,7 @@ const maybeStartAutoTitle = (
   const lastUser = [...params.history].reverse().find((m) => m.role === "user");
   const firstUserText = lastUser ? uiMessageText(lastUser) : "";
   if (firstUserText.length === 0) return null;
-  return generateConversationTitle(firstUserText);
+  return generateConversationTitle(firstUserText, params.callOptions.teamId);
 };
 
 /**
@@ -1474,6 +1474,8 @@ const runChatbotTurn = async (
           // Threshold follows the SERVING model's context window — the
           // profile resolved above (header override or `chat` binding).
           profile: modelProfile,
+          // Summariser honours the team's workhorse pick (C8b).
+          teamId: params.callOptions.teamId,
           onProgress: (event) => {
             // The shared `id` makes consecutive writes UPDATE the
             // single existing data part on the client (started → done
@@ -2327,6 +2329,7 @@ chatbotRoutes.post("/:conversationId/summary", async (c) => {
     missed,
     priorContext,
     participants: conversation.members,
+    teamId: team.id,
   });
 
   return c.json({ summary }, 200);

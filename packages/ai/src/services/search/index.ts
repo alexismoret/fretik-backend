@@ -187,7 +187,7 @@ export const searchRAG = async (
   // search against the original query alone.
   const queryVariants = skipMultiQuery
     ? [trimmed]
-    : await generateQueryVariants(trimmed);
+    : await generateQueryVariants(trimmed, teamId);
   if (queryVariants.length === 0) {
     return {
       results: [],

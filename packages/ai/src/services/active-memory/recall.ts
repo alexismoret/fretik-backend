@@ -1,6 +1,6 @@
 import { generateText } from "ai";
 import { telemetryFor } from "../../lib/langfuse";
-import { activeMemoryModel } from "../../lib/openrouter";
+import { resolveModelForTeam } from "../../lib/model-registry/team-model";
 import { searchRAG } from "../search";
 import { ACTIVE_MEMORY_SYSTEM_PROMPT } from "./prompt";
 
@@ -206,6 +206,11 @@ export const runActiveMemoryRecall = async (
       if (params.abortSignal) signals.push(params.abortSignal);
       const judgeAbort = AbortSignal.any(signals);
 
+      // Utility-tier model, honouring the team's pick (C8b) with a defensive
+      // fall back to the code default.
+      const activeMemoryModel = (
+        await resolveModelForTeam("active-memory", params.teamId)
+      ).model;
       const judged = await generateText({
         model: activeMemoryModel,
         system: ACTIVE_MEMORY_SYSTEM_PROMPT,

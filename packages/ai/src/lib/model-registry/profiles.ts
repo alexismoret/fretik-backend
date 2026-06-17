@@ -290,7 +290,8 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
   "gpt-4o-mini": {
     key: "gpt-4o-mini",
     family: "openai",
-    tiers: ["utility"],
+    // vision-fallback only (fixed role) — not user-selectable in any tier.
+    tiers: [],
     catalog: {
       id: "openai/gpt-4o-mini",
       contextLength: 128_000,
@@ -393,6 +394,12 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
       cache: { strategy: "implicit" },
       reasoning: { style: "effort", defaultLevel: "low" },
       provider: { requireParameters: true, zdr: true },
+      // Gated 2026-06-16 (run d82e121d): every correctness capability PASSED and
+      // it's faster than M3 — flagship promotion was held back by zombie-rate
+      // ALONE (0.049 > 0.02ε: ~2-3 reasoning-only cut-offs, which prod's C4
+      // recovery catches). A capable model, not a bad one — kept `pending` for
+      // flagship (re-gate after budget/effort tuning), and selectable in
+      // WORKHORSE now (workhorse needs no flagship gate — see isSelectableForTier).
       evalGate: { status: "pending" },
     },
   },

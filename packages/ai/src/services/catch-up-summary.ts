@@ -1,7 +1,7 @@
 import { type UIMessage, streamText } from "ai";
 import { telemetryFor } from "../lib/langfuse";
 import { instrumentModel } from "../lib/model-instrumentation";
-import { CHEAP_MODEL } from "../lib/models";
+import { cheapModelIdForTeam } from "../lib/model-registry/team-model";
 import { openrouter } from "../lib/openrouter";
 
 type Participant = { userId: string; name: string };
@@ -16,14 +16,24 @@ const PART_TOOL_PREFIX = "tool-";
 const MAX_MISSED_MESSAGES = 60;
 
 /**
- * Catch-up runs on the shared `CHEAP_MODEL` (gpt-oss-20b) with low reasoning
- * effort — the summary is short and the input small, so the cheapest/fastest
- * tier keeps the banner snappy (the previous pre-extract model could take
- * ~10s). Same model family as RAG enrichment / multi-query.
+ * Catch-up runs on the utility-tier cheap model with low reasoning effort — the
+ * summary is short and the input small, so the cheapest/fastest tier keeps the
+ * banner snappy. Honours a team's utility pick (C8b); same envelope as RAG
+ * multi-query / conversation titles. Per-id memo so a team's pick gets its own
+ * instance without rebuilding it per call.
  */
-const summaryModel = instrumentModel(
-  openrouter.chat(CHEAP_MODEL, { reasoning: { effort: "low" } }),
-);
+const summaryModelById = new Map<string, ReturnType<typeof instrumentModel>>();
+const summaryModelFor = (
+  modelId: string,
+): ReturnType<typeof instrumentModel> => {
+  const cached = summaryModelById.get(modelId);
+  if (cached) return cached;
+  const model = instrumentModel(
+    openrouter.chat(modelId, { reasoning: { effort: "low" } }),
+  );
+  summaryModelById.set(modelId, model);
+  return model;
+};
 
 /** Read the human author id stamped under a user message's metadata. */
 const authorIdOf = (message: UIMessage): string | undefined => {
@@ -81,17 +91,17 @@ CRITICAL: Write your entire summary in the SAME LANGUAGE as the conversation mes
  * conversation. `priorContext` is a short window of already-read messages
  * passed only to ground the summary — the model is told to summarise the
  * unread tail alone. Returns a short, speaker-aware catch-up, or a friendly
- * note when there's nothing to summarise. Reuses the lighter `preextractModel`
- * (same tier as the pre-extract / compaction summariser) — a short
- * summarisation doesn't need the main chat model. Soft-fails to a generic
- * line on error so the endpoint never 500s on a flaky model call.
+ * note when there's nothing to summarise. Runs on the utility-tier cheap model
+ * — a short summarisation doesn't need the main chat model. Soft-fails to a
+ * generic line on error so the endpoint never 500s on a flaky model call.
  */
 export const summariseMissedMessages = async (params: {
   missed: UIMessage[];
   priorContext: UIMessage[];
   participants: Participant[];
+  teamId: string | undefined;
 }): Promise<string> => {
-  const { missed, priorContext, participants } = params;
+  const { missed, priorContext, participants, teamId } = params;
 
   // Keep only the most recent missed messages — a latency guard.
   const missedTranscript = buildTranscript(
@@ -113,7 +123,7 @@ export const summariseMissedMessages = async (params: {
 
   try {
     const result = streamText({
-      model: summaryModel,
+      model: summaryModelFor(await cheapModelIdForTeam(teamId)),
       prompt: groundedPrompt,
       temperature: 0.3,
       maxOutputTokens: 500,

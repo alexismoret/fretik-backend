@@ -89,6 +89,9 @@ preExtractRoutes.post("/", async (c) => {
       overrideS3Key,
       fileHash,
       fieldDefinitions,
+      // From the internal context headers (X-Context-Team-Id) — drives the
+      // team's workhorse pick for the primary pre-extract model (C8b).
+      teamId: c.get("context").teamId,
     });
     return c.json(result, 200);
   } catch (err) {

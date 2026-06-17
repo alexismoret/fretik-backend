@@ -147,6 +147,11 @@ export interface CompactConversationOptions {
    */
   profile: ModelProfile;
   /**
+   * Team whose workhorse pick (C8b) the summariser model honours. Undefined
+   * falls back to the code default.
+   */
+  teamId?: string;
+  /**
    * Optional progress hook. Fires only on the heavyweight path
    * (above the compaction threshold). Errors thrown by the
    * callback are caught and logged so a buggy listener never aborts
@@ -179,7 +184,7 @@ export const compactConversation = async (
   messages: UIMessage[],
   options: CompactConversationOptions,
 ): Promise<UIMessage[]> => {
-  const { onProgress, profile } = options;
+  const { onProgress, profile, teamId } = options;
   const threshold = getCompactionThresholdTokens(profile);
 
   // Step 1 — microcompact (always cheap, often skips the summariser).
@@ -201,7 +206,7 @@ export const compactConversation = async (
     `[compaction] starting tokens=${totalTokens.toString()} threshold=${threshold.toString()} messageCount=${microcompacted.length.toString()}`,
   );
   safeProgress(onProgress, { phase: "started", tokensBefore: totalTokens });
-  const summary = await summariseMessages(microcompacted);
+  const summary = await summariseMessages(microcompacted, teamId);
 
   if (summary === null) {
     console.warn(

@@ -10,7 +10,8 @@ import { OpenAPIHono } from "@hono/zod-openapi";
 import { generateText, Output } from "ai";
 import { z } from "zod";
 import { telemetryFor } from "../lib/langfuse";
-import { preextractFallbackModel, preextractModel } from "../lib/openrouter";
+import { resolveModelForTeam } from "../lib/model-registry/team-model";
+import { preextractFallbackModel } from "../lib/openrouter";
 import { SCHEMA_BLOCK_TRAILER, zodToPromptSchema } from "../lib/schema-prompt";
 import { internalMiddleware } from "../middlewares/internal";
 import type { HonoInternalAppType } from "../types/hono";
@@ -136,15 +137,16 @@ fieldDefinitionsRoutes.post("/suggest", async (c) => {
     userPrompt,
   ].join("\n");
 
+  const teamId = c.get("context").teamId;
   try {
-    const output = await callSuggest(userMessage, "primary");
+    const output = await callSuggest(userMessage, "primary", teamId);
     return c.json(output, 200);
   } catch (primaryError) {
     console.warn(
       `[field-definitions/suggest] primary failed: ${primaryError instanceof Error ? primaryError.message : primaryError}`,
     );
     try {
-      const output = await callSuggest(userMessage, "fallback");
+      const output = await callSuggest(userMessage, "fallback", teamId);
       return c.json(output, 200);
     } catch (fallbackError) {
       const message =
@@ -160,8 +162,13 @@ fieldDefinitionsRoutes.post("/suggest", async (c) => {
 const callSuggest = async (
   userMessage: string,
   tier: "primary" | "fallback",
+  teamId: string | undefined,
 ): Promise<AiSuggestResponse> => {
-  const model = tier === "primary" ? preextractModel : preextractFallbackModel;
+  // Primary honours the team's workhorse pick (C8b); fallback stays fixed.
+  const model =
+    tier === "primary"
+      ? (await resolveModelForTeam("pre-extract", teamId)).model
+      : preextractFallbackModel;
   const { output } = await generateText({
     model,
     output: Output.object({ schema: aiSuggestResponseSchema }),

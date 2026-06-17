@@ -74,6 +74,11 @@ export interface PreExtractArgs {
    * these defs. Empty array → universal-only extraction.
    */
   fieldDefinitions: FieldDefinition[];
+  /**
+   * Owning team — drives the per-team workhorse model pick (C8b) for the
+   * primary pre-extract LLM. Undefined falls back to the code default.
+   */
+  teamId?: string;
 }
 
 // ==================== //
@@ -263,6 +268,7 @@ const runPreExtractImpl = async (
   const llm = await runPreextractLlm({
     prompt,
     fieldDefinitions: args.fieldDefinitions,
+    teamId: args.teamId,
   });
 
   // Structured log — one line per successful pre-extract, lets us

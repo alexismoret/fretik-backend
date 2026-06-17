@@ -38,7 +38,7 @@ describe("ROLE_TIER", () => {
 });
 
 describe("isSelectableForTier", () => {
-  test("requires both the right tier AND a passed gate", () => {
+  test("flagship requires the flagship tier AND a passed gate", () => {
     const m3 = MODEL_PROFILES["minimax-m3"];
     expect(m3).toBeDefined();
     expect(isSelectableForTier(m3, "flagship")).toBe(true);
@@ -46,21 +46,37 @@ describe("isSelectableForTier", () => {
     expect(isSelectableForTier(m3, "utility")).toBe(false);
   });
 
-  test("a pending profile is never selectable", () => {
+  test("workhorse / utility do NOT require a gate — only the tier + enabled", () => {
+    // gemini-3.5-flash is `pending` (failed flagship on zombie-rate) but lists
+    // workhorse → selectable there, NOT in flagship.
+    const gemini = MODEL_PROFILES["gemini-3.5-flash"];
+    expect(gemini).toBeDefined();
+    expect(gemini.assessment.evalGate.status).not.toBe("passed");
+    expect(gemini.tiers).toContain("workhorse");
+    expect(isSelectableForTier(gemini, "workhorse")).toBe(true);
+    expect(isSelectableForTier(gemini, "flagship")).toBe(false);
+  });
+
+  test("a non-passed profile is never selectable for FLAGSHIP", () => {
     const pending = Object.values(MODEL_PROFILES).find(
-      (p) => p.assessment.evalGate.status !== "passed",
+      (p) =>
+        p.assessment.evalGate.status !== "passed" &&
+        p.tiers.includes("flagship"),
     );
     expect(pending).toBeDefined();
-    expect(isSelectableForTier(pending!, pending!.tiers[0])).toBe(false);
+    expect(isSelectableForTier(pending!, "flagship")).toBe(false);
   });
 });
 
 describe("listSelectableProfilesForTier", () => {
-  test("every listed profile is passed + of that tier", () => {
+  test("every listed profile is of that tier + enabled; flagship also requires passed", () => {
     for (const tier of TIERS) {
       for (const profile of listSelectableProfilesForTier(tier)) {
         expect(profile.tiers).toContain(tier);
-        expect(profile.assessment.evalGate.status).toBe("passed");
+        expect(profile.assessment.enabled).not.toBe(false);
+        if (tier === "flagship") {
+          expect(profile.assessment.evalGate.status).toBe("passed");
+        }
       }
     }
   });
@@ -68,6 +84,16 @@ describe("listSelectableProfilesForTier", () => {
   test("flagship menu includes the chat default (minimax-m3)", () => {
     const keys = listSelectableProfilesForTier("flagship").map((p) => p.key);
     expect(keys).toContain("minimax-m3");
+  });
+
+  test("workhorse menu includes a non-gated model (gemini-3.5-flash)", () => {
+    const keys = listSelectableProfilesForTier("workhorse").map((p) => p.key);
+    expect(keys).toContain("gemini-3.5-flash");
+  });
+
+  test("utility menu excludes gpt-4o-mini (vision-fallback only)", () => {
+    const keys = listSelectableProfilesForTier("utility").map((p) => p.key);
+    expect(keys).not.toContain("gpt-4o-mini");
   });
 });
 

@@ -1,6 +1,6 @@
 import { type UIMessage, streamText } from "ai";
 import { telemetryFor } from "../../lib/langfuse";
-import { resolveModel } from "../../lib/model-registry/resolve";
+import { resolveModelForTeam } from "../../lib/model-registry/team-model";
 import { dropOldestRounds } from "./grouping";
 import { formatCompactSummary, getCompactPrompt } from "./prompt";
 
@@ -34,9 +34,11 @@ const SUMMARISER_TEMPERATURE = 0.2;
  * Compaction summariser model — the registry's `compaction-summarizer`
  * role (default `deepseek/deepseek-v4-flash`: 1M-token context keeps
  * very long older blocks within reach at a price well below the
- * previous `gpt-oss-120b`, which capped us at 131K). Changing the
- * summariser is a reviewed edit to `model-registry/profiles.ts`, not
- * an env flip — A/B runs go through the eval harness.
+ * previous `gpt-oss-120b`, which capped us at 131K). It is a workhorse-tier
+ * role, so a team's workhorse pick (C8b) overrides the default — resolved per
+ * call in `runSummariser` via `resolveModelForTeam`. Changing the code default
+ * is a reviewed edit to `model-registry/profiles.ts`, not an env flip — A/B
+ * runs go through the eval harness.
  */
 
 /**
@@ -91,8 +93,6 @@ const SUMMARISER_TIMEOUT_MS = parseSummariserTimeoutMs(
  */
 const MAX_PTL_RETRIES = 3;
 const PTL_DROP_FRACTION = 0.2;
-
-const compactionModel = resolveModel("compaction-summarizer").model;
 
 const PART_TOOL_PREFIX = "tool-";
 
@@ -192,7 +192,13 @@ const looksLikeContextOverflow = (err: unknown): boolean => {
  * whether to retry. All other errors are caught here and surface
  * as `null`.
  */
-const runSummariser = async (messages: UIMessage[]): Promise<string | null> => {
+const runSummariser = async (
+  messages: UIMessage[],
+  teamId: string | undefined,
+): Promise<string | null> => {
+  const compactionModel = (
+    await resolveModelForTeam("compaction-summarizer", teamId)
+  ).model;
   const result = streamText({
     model: compactionModel,
     prompt: buildPrompt(messages),
@@ -224,6 +230,7 @@ const runSummariser = async (messages: UIMessage[]): Promise<string | null> => {
  */
 export const summariseMessages = async (
   messages: UIMessage[],
+  teamId: string | undefined,
 ): Promise<string | null> => {
   if (messages.length === 0) return null;
 
@@ -231,7 +238,7 @@ export const summariseMessages = async (
   let attempt = 0;
   while (attempt <= MAX_PTL_RETRIES) {
     try {
-      return await runSummariser(current);
+      return await runSummariser(current, teamId);
     } catch (err) {
       if (looksLikeContextOverflow(err) && attempt < MAX_PTL_RETRIES) {
         const { messages: smaller, droppedRounds } = dropOldestRounds(

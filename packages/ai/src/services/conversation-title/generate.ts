@@ -1,7 +1,7 @@
 import { generateText } from "ai";
 import { telemetryFor } from "../../lib/langfuse";
 import { instrumentModel } from "../../lib/model-instrumentation";
-import { CHEAP_MODEL } from "../../lib/models";
+import { cheapModelIdForTeam } from "../../lib/model-registry/team-model";
 import { openrouter } from "../../lib/openrouter";
 import { withSlot } from "../../lib/rate-limit";
 
@@ -42,11 +42,19 @@ const CHEAP_MODEL_MAX_CONCURRENT = Number(
 );
 const CHEAP_MODEL_HOLD_TIMEOUT_MS = 30_000;
 
-const titleModel = instrumentModel(
-  openrouter.chat(CHEAP_MODEL, {
-    reasoning: { effort: "low" },
-  }),
-);
+// Per-id memo of the instrumented title model under its own `effort: "low"`
+// envelope. Keyed by the resolved model ID so a team's utility pick (C8b) gets
+// its own instance without rebuilding it per call.
+const titleModelById = new Map<string, ReturnType<typeof instrumentModel>>();
+const titleModelFor = (modelId: string): ReturnType<typeof instrumentModel> => {
+  const cached = titleModelById.get(modelId);
+  if (cached) return cached;
+  const model = instrumentModel(
+    openrouter.chat(modelId, { reasoning: { effort: "low" } }),
+  );
+  titleModelById.set(modelId, model);
+  return model;
+};
 
 const SYSTEM_PROMPT = `Generate a concise title for a conversation that opens with the message below.
 
@@ -73,9 +81,12 @@ const cleanTitle = (raw: string): string => {
 
 export const generateConversationTitle = async (
   userMessage: string,
+  teamId?: string,
 ): Promise<string | null> => {
   const trimmed = userMessage.trim();
   if (trimmed.length === 0) return null;
+
+  const titleModel = titleModelFor(await cheapModelIdForTeam(teamId));
 
   let rawText: string;
   try {

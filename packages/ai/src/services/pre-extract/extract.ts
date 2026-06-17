@@ -1,11 +1,11 @@
 import type { FieldDefinition } from "@fretik/shared/db/schema";
 import { buildPreExtractSchema } from "@fretik/shared/schemas/pre-extraction";
-import { generateText, Output } from "ai";
+import { generateText, type LanguageModel, Output } from "ai";
 import { telemetryFor } from "../../lib/langfuse";
+import { resolveModelForTeam } from "../../lib/model-registry/team-model";
 import {
   PREEXTRACT_MODEL_IDS,
   preextractFallbackModel,
-  preextractModel,
 } from "../../lib/openrouter";
 import {
   SCHEMA_BLOCK_TRAILER,
@@ -63,6 +63,11 @@ export interface RunPreextractLlmArgs {
    * is valid — the LLM extracts only universal fields.
    */
   fieldDefinitions: FieldDefinition[];
+  /**
+   * Team whose workhorse pick (C8b) the PRIMARY pre-extract model honours.
+   * Undefined falls back to the code default. The fallback tier stays fixed.
+   */
+  teamId?: string;
 }
 
 export interface RunPreextractLlmResult {
@@ -153,23 +158,33 @@ export const runPreextractLlm = async (
   // dynamic `customFields` shape built from the team's definitions.
   const schema = buildPreExtractSchema(args.fieldDefinitions);
 
+  // Primary honours the team's workhorse pick (C8b); the fallback tier is
+  // fixed (code default).
+  const primaryResolved = await resolveModelForTeam("pre-extract", args.teamId);
+  const primaryModel = primaryResolved.model;
+  const primaryModelId = primaryResolved.profile.catalog.id;
+
   const primaryStart = Date.now();
   try {
-    const output = await callLlm(args.prompt, schema, "primary");
+    const output = await callLlm(args.prompt, schema, primaryModel);
     return {
       output,
       tier: "primary",
-      modelId: PREEXTRACT_MODEL_IDS.primary,
+      modelId: primaryModelId,
       durationMs: Date.now() - primaryStart,
     };
   } catch (primaryError) {
     const primaryMs = Date.now() - primaryStart;
     console.warn(
-      `[pre-extract] primary model (${PREEXTRACT_MODEL_IDS.primary}) failed after ${primaryMs}ms, retrying with fallback (${PREEXTRACT_MODEL_IDS.fallback}) — ${describeError(primaryError)}`,
+      `[pre-extract] primary model (${primaryModelId}) failed after ${primaryMs}ms, retrying with fallback (${PREEXTRACT_MODEL_IDS.fallback}) — ${describeError(primaryError)}`,
     );
     const fallbackStart = Date.now();
     try {
-      const output = await callLlm(args.prompt, schema, "fallback");
+      const output = await callLlm(
+        args.prompt,
+        schema,
+        preextractFallbackModel,
+      );
       return {
         output,
         tier: "fallback",
@@ -189,10 +204,8 @@ export const runPreextractLlm = async (
 const callLlm = async (
   prompt: string,
   schema: ReturnType<typeof buildPreExtractSchema>,
-  tier: "primary" | "fallback",
+  model: LanguageModel,
 ): Promise<PreExtractionLlmOutput> => {
-  const model = tier === "primary" ? preextractModel : preextractFallbackModel;
-
   // Belt-and-suspenders: ship the schema both via `response_format` (the
   // `Output.object` argument) AND inside the system prompt. Some upstream
   // OpenRouter providers silently downgrade strict json_schema mode to

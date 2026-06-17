@@ -1,7 +1,7 @@
 import { generateText } from "ai";
 import { telemetryFor } from "../../lib/langfuse";
 import { instrumentModel } from "../../lib/model-instrumentation";
-import { CHEAP_MODEL } from "../../lib/models";
+import { cheapModelIdForTeam } from "../../lib/model-registry/team-model";
 import { openrouter } from "../../lib/openrouter";
 import { withSlot } from "../../lib/rate-limit";
 
@@ -76,11 +76,19 @@ const MULTI_QUERY_TIMEOUT_MS = 10_000;
  * accepted by every route while keeping the reasoning budget tight
  * — no runaway, no rejection.
  */
-const cheapModel = instrumentModel(
-  openrouter.chat(CHEAP_MODEL, {
-    reasoning: { effort: "low" },
-  }),
-);
+// Per-id memo of the instrumented cheap model under multi-query's own
+// `effort: "low"` envelope. Keyed by the resolved model ID so a team's utility
+// pick (C8b) gets its own instance without rebuilding it per call.
+const cheapModelById = new Map<string, ReturnType<typeof instrumentModel>>();
+const cheapModelFor = (modelId: string): ReturnType<typeof instrumentModel> => {
+  const cached = cheapModelById.get(modelId);
+  if (cached) return cached;
+  const model = instrumentModel(
+    openrouter.chat(modelId, { reasoning: { effort: "low" } }),
+  );
+  cheapModelById.set(modelId, model);
+  return model;
+};
 
 /**
  * Static rubric — identical across every call, so it lives in the
@@ -118,9 +126,12 @@ const parseVariants = (raw: string): string[] =>
  */
 export const generateQueryVariants = async (
   originalQuery: string,
+  teamId?: string,
 ): Promise<string[]> => {
   const trimmed = originalQuery.trim();
   if (trimmed.length === 0) return [];
+
+  const cheapModel = cheapModelFor(await cheapModelIdForTeam(teamId));
 
   let rawText: string;
   try {

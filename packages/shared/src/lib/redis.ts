@@ -9,6 +9,18 @@ export const redis = new Redis(databaseUrl, {
   maxRetriesPerRequest: null,
 });
 
+// An ioredis client with no `error` listener rethrows any connection blip as
+// an unhandled 'error' event, which crashes the process (and fails unit tests
+// that only transitively import this module). Log instead — the client keeps
+// retrying under `maxRetriesPerRequest: null`. Mirrors the resumable-stream
+// connection diagnostics in @fretik/ai.
+redis.on("error", (err: unknown) => {
+  console.error(
+    "[redis] connection error:",
+    err instanceof Error ? err.message : err,
+  );
+});
+
 /**
  * If in redis, return data else Select from fn, set in cache and return
  *

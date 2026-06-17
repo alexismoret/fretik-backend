@@ -39,6 +39,7 @@ process.env.S3_REGION ??= "fr-par";
 process.env.REDIS_URL ??= "redis://127.0.0.1:1";
 process.env.E2B_API_KEY ??= "test-e2b";
 process.env.MISTRAL_API_KEY ??= "test-mistral";
+process.env.TAVILY_API_KEY ??= "test-tavily"; // src/lib/tavily.ts validates at load
 process.env.INTERNAL_KEY ??= "test-internal";
 process.env.AI_SERVICE_URL ??= "http://127.0.0.1:1";
 process.env.APP_URL ??= "http://127.0.0.1:1";
@@ -49,3 +50,8 @@ process.env.APP_URL ??= "http://127.0.0.1:1";
 // only needs to satisfy the presence check — no connection ever
 // happens during unit tests.
 process.env.DATABASE_URL ??= "postgres://test:test@127.0.0.1:1/test";
+
+// SQL tool read-only role — src/lib/db-readonly.ts throws at module load
+// when this is absent (C10 hardening). The pg Pool is lazy, so the fake URL
+// only satisfies the presence check; no connection happens in unit tests.
+process.env.AI_DB_READONLY_URL ??= "postgres://test:test@127.0.0.1:1/test";

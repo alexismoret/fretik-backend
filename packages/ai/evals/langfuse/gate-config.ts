@@ -28,9 +28,21 @@ export interface GateConfig {
   maxFallbackServed: number;
   /**
    * Max per-capability correctness drop, in CASE-EQUIVALENTS
-   * (drop × number of candidate cases in the capability ≤ this).
+   * (drop × number of candidate cases in the capability ≤ this). This is
+   * always the pass/advisory boundary; `correctnessEnforced` only decides
+   * whether crossing it DISQUALIFIES or merely warns.
    */
   maxCapabilityDropCases: number;
+  /**
+   * When false (default), a per-capability correctness drop past
+   * `maxCapabilityDropCases` is ADVISORY (reported with `≈`, never failing) —
+   * so a smarter frontier candidate can gate through without a single
+   * regression auto-disqualifying it. Re-arm the hard fail with
+   * `GATE_CORRECTNESS_ENFORCED=1` (env) or a reviewed flip here once the
+   * correctness thresholds are re-tuned for the new flagship. Same
+   * calibrate-then-enforce discipline as `costCalibrated` / `efficiencyEnforced`.
+   */
+  correctnessEnforced: boolean;
   /**
    * Cost envelope per turn by `assessment.costClass` (USD).
    * UNCALIBRATED until the self-test run (`gate --candidate <current
@@ -65,6 +77,7 @@ export const GATE_CONFIG: GateConfig = {
   latencyFactor: num(process.env.GATE_LATENCY_FACTOR, 1.5),
   maxFallbackServed: num(process.env.GATE_MAX_FALLBACK_SERVED, 1),
   maxCapabilityDropCases: num(process.env.GATE_MAX_CAPABILITY_DROP_CASES, 1),
+  correctnessEnforced: process.env.GATE_CORRECTNESS_ENFORCED === "1",
   costCalibrated: process.env.GATE_COST_CALIBRATED === "1",
   // PLACEHOLDERS pending self-test calibration (see costCalibrated).
   costEnvelopeUsdPerTurn: {

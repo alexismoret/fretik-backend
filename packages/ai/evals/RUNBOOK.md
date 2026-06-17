@@ -92,13 +92,20 @@ AI_SERVICE_URL=http://localhost:8083 bun run evals:gate -- --candidate minimax-m
    baseline.
 
 **Pass criteria** (envelopes in `evals/langfuse/gate-config.ts`, env-overridable):
-per-capability correctness drop ≤ 1 case-equivalent · `tool-call-validity` ≥ baseline − ε ·
-`zombie-rate` ≤ baseline + ε · `cost-per-turn-usd` within the profile's `costClass`
-envelope (ADVISORY until calibrated) · avg latency ≤ 1.5× baseline · ≤ 1 candidate case
-answered by the fallback agent (`fallback-served` — a silent failover must not score as
-the candidate). The gate also prints a tool-calling **efficiency** block
-(`avg-tool-calls` / `tool-error-rate` / `redundant-call-rate`) — ADVISORY (never failing)
+per-capability correctness drop ≤ 1 case-equivalent (ADVISORY by default — see below) ·
+`tool-call-validity` ≥ baseline − ε · `zombie-rate` ≤ baseline + ε · `cost-per-turn-usd`
+within the profile's `costClass` envelope (ADVISORY until calibrated) · avg latency ≤ 1.5×
+baseline · ≤ 1 candidate case answered by the fallback agent (`fallback-served` — a silent
+failover must not score as the candidate). The gate also prints a tool-calling **efficiency**
+block (`avg-tool-calls` / `tool-error-rate` / `redundant-call-rate`) — ADVISORY (never failing)
 until `GATE_EFFICIENCY_ENFORCED=1` + calibrated envelopes (same discipline as cost).
+
+**Correctness is ADVISORY by default** (`correctnessEnforced: false`): a per-capability drop
+past the case-equivalent threshold prints `≈` but does NOT disqualify — so a smarter frontier
+candidate can gate through without one regression auto-failing it. The `≈` deltas are still
+visible in the verdict table; read them. Re-arm the hard fail with `GATE_CORRECTNESS_ENFORCED=1`
+(env) or a reviewed flip in `gate-config.ts` once the correctness thresholds are re-tuned for
+the new flagship — same calibrate-then-enforce discipline as cost / efficiency.
 
 **Caveats:** a stored `--baseline-run` is only comparable while the curated set is
 unchanged (the gate aborts on caseId-set mismatch); the parallel probes are

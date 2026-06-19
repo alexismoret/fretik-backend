@@ -15,8 +15,7 @@
     "db:push": "bun --env-file=../../.env drizzle-kit push",
     "db:studio": "bun --env-file=../../.env drizzle-kit studio",
     "e2b:build": "bun run src/services/e2b/template/build.ts",
-    "grant:super-admin": "bun --env-file=.env run src/scripts/grant-super-admin.ts",
-    "thumbnails:migrate-webp": "bun run src/scripts/migrate-thumbnails-to-webp.ts"
+    "grant:super-admin": "bun --env-file=.env run src/scripts/grant-super-admin.ts"
   },
   "exports": {
     ".": "./src/index.ts",

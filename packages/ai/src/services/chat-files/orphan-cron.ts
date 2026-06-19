@@ -1,4 +1,7 @@
-import { redis } from "@fretik/shared";
+import {
+  createWorkerConnection,
+  getProducerConnection,
+} from "@fretik/shared/lib/queue/connection";
 import { Queue, Worker } from "bullmq";
 import { runOrphanCleanup } from "./orphan-cleanup";
 
@@ -7,8 +10,7 @@ import { runOrphanCleanup } from "./orphan-cleanup";
  *
  * Lives inside the @fretik/ai container (this package already owns
  * the chat-file surface end-to-end — storage, services, handlers —
- * so the janitor stays self-contained instead of leaking into the
- * workflow-engine worker).
+ * so the janitor stays self-contained).
  *
  * Why BullMQ over `setInterval`:
  *  - Deduplication across @fretik/ai replicas. `setInterval` fires
@@ -17,13 +19,12 @@ import { runOrphanCleanup } from "./orphan-cleanup";
  *    daily run.
  *  - Built-in retry / backoff / observability via the Redis queue
  *    which the rest of the stack already runs on.
- *  - Zero added moving parts: @fretik/worker already uses this
- *    exact pattern for its workflow queue.
  *
  * The Queue adds (or idempotently refreshes) a single repeatable
  * job at @fretik/ai boot. The Worker in the same process consumes
- * it and calls `runOrphanCleanup()`. Both ride on the shared
- * `redis` ioredis client from @fretik/shared.
+ * it and calls `runOrphanCleanup()`. Connections come from the shared
+ * BullMQ factory: the producer (fail-fast) for the Queue, a dedicated
+ * patient connection for the Worker — never the main `redis` client.
  */
 
 const QUEUE_NAME = "chat-files-maintenance";
@@ -37,7 +38,7 @@ let worker: Worker | null = null;
  * boot. Adding the same repeatable key twice is a no-op per BullMQ.
  */
 export const registerOrphanCleanupCron = async (): Promise<void> => {
-  const queue = new Queue(QUEUE_NAME, { connection: redis });
+  const queue = new Queue(QUEUE_NAME, { connection: getProducerConnection() });
 
   await queue.add(
     JOB_NAME,
@@ -60,7 +61,7 @@ export const registerOrphanCleanupCron = async (): Promise<void> => {
         return result;
       },
       {
-        connection: redis,
+        connection: createWorkerConnection(),
         concurrency: 1,
       },
     );

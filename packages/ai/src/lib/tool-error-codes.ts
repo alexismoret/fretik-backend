@@ -16,6 +16,11 @@ export const TOOL_ERROR_CODES = {
   NO_CONVERSATION: "NO_CONVERSATION",
   MEMORY_REQUIRES_USER: "MEMORY_REQUIRES_USER",
 
+  // User-initiated Stop — the turn was aborted mid-tool (POST /:id/stop).
+  // The model never reads this (the tool loop is aborted with it); it
+  // documents intent and keeps the failure envelope canonical.
+  ABORTED: "ABORTED",
+
   // Catch-all for unexpected internal failures
   INTERNAL_ERROR: "INTERNAL_ERROR",
 

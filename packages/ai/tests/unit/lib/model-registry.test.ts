@@ -4,8 +4,10 @@ import {
   ROLE_BINDINGS,
 } from "../../../src/lib/model-registry/profiles";
 import {
+  createOrphanThinkStreamStripper,
   getProfileForRole,
   settingsForRole,
+  stripOrphanThinkTags,
 } from "../../../src/lib/model-registry/resolve";
 import {
   supportsParameter,
@@ -216,5 +218,25 @@ describe("registry integrity", () => {
     expect(supportsParameter(m3, "tools")).toBe(true);
     // structured_outputs is absent from the M3 parameter list (unlike M2.7).
     expect(supportsParameter(m3, "structured_outputs")).toBe(false);
+  });
+});
+
+describe("orphan <think> strip — M3 leaks a dangling </think> into content", () => {
+  test("no-op when no think token is present", () => {
+    expect(stripOrphanThinkTags("plain answer")).toBe("plain answer");
+  });
+
+  test("removes a dangling close tag", () => {
+    expect(stripOrphanThinkTags("done</think> answer")).toBe("done answer");
+  });
+
+  test("removes a tag on its own line without leaving a blank line", () => {
+    expect(stripOrphanThinkTags("a\n</think>\nb")).toBe("a\nb");
+  });
+
+  test("catches a tag split across two streamed deltas", () => {
+    const s = createOrphanThinkStreamStripper();
+    const out = s.push("hi </thi") + s.push("nk> there") + s.flush();
+    expect(out).toBe("hi  there");
   });
 });

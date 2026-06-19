@@ -20,21 +20,21 @@
     "@fretik/providers": "workspace:*",
     "@fretik/shared": "workspace:*",
     "@hono/zod-openapi": "^1.4.0",
-    "ai": "^6.0.191",
+    "ai": "^6.0.208",
     "chromiumly": "^5.2.1",
     "exceljs": "^4.4.0",
     "figlet": "^1.11.0",
     "file-type": "^22.0.1",
-    "hono": "^4.12.22",
+    "hono": "^4.12.26",
     "node-poppler": "^9.1.2",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/bun": "latest",
-    "@typescript/native-preview": "^7.0.0-dev.20260508.1",
-    "oxlint": "^1.66.0",
+    "@typescript/native-preview": "^7.0.0-dev.20260618.1",
+    "oxlint": "^1.70.0",
     "oxlint-tsgolint": "^0.23.0",
-    "prettier": "^3.8.3",
+    "prettier": "^3.8.4",
     "prettier-plugin-organize-imports": "^4.3.0"
   }
 }

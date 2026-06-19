@@ -197,6 +197,15 @@ export interface ModelAssessment {
     style: ReasoningStyle;
     /** Default effort level when the product runs in `auto` mode. */
     defaultLevel: ReasoningLevel;
+    /**
+     * Per-profile hard `max_tokens` reasoning budget, overriding the
+     * shared level→budget table. Only meaningful for `style:
+     * "max-tokens"`. Use for ADAPTIVE models (MiniMax / DeepSeek) that
+     * ignore the effort knob and over-think — pin an explicit ceiling
+     * here instead of inheriting the shared per-level budget. Omit to
+     * use the table value for `defaultLevel`.
+     */
+    maxTokens?: number;
   };
   /**
    * OpenRouter routing envelope. `requireParameters` is non-negotiable
@@ -212,6 +221,17 @@ export interface ModelAssessment {
     requireParameters: true;
     zdr?: boolean;
     sort?: "throughput";
+    /**
+     * Preferred upstream provider slug order (OpenRouter `provider.order`).
+     * Set when a model is served by MULTIPLE upstreams with INDEPENDENT
+     * prompt caches and we want tool-loop turns to keep hitting the same
+     * (cache-capable) one — unpinned, OpenRouter load-balances and the
+     * KV-cache goes cold between round-trips (observed on MiniMax M3).
+     * Fallbacks stay enabled, so a listed provider being down degrades to
+     * normal routing, never a hard failure. Omit for single-provider or
+     * cache-less models.
+     */
+    order?: readonly string[];
   };
   /** Per-family system-prompt overlay key (C2). Unset = no overlay. */
   promptOverlayKey?: string;

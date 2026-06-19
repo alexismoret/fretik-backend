@@ -1,9 +1,19 @@
-import type { LanguageModelV3 } from "@ai-sdk/provider";
+import type {
+  LanguageModelV3,
+  LanguageModelV3Content,
+  LanguageModelV3Middleware,
+  LanguageModelV3StreamPart,
+} from "@ai-sdk/provider";
 import {
   createOpenRouter,
   type OpenRouterChatSettings,
 } from "@openrouter/ai-sdk-provider";
 import { extractReasoningMiddleware, wrapLanguageModel } from "ai";
+// `node:stream/web` TransformStream — the DOM global's `ReadableStream`
+// iterator typings clash with the AI SDK's `pipeThrough`; this matches
+// the native runtime semantics with the shape the SDK expects (see
+// handlers/chatbot.ts + lib/langfuse-cost.ts for the same workaround).
+import { TransformStream } from "node:stream/web";
 import { instrumentModel } from "../model-instrumentation";
 import { wrapModelWithCache } from "../openrouter-cache";
 import { MODEL_PROFILES, ROLE_BINDINGS } from "./profiles";
@@ -62,10 +72,19 @@ export const settingsForRole = (
   // true for every profile except the ones a recorded product decision
   // exempts (first-party-only providers without a ZDR flag).
   const zdr = profile.assessment.provider.zdr;
+  // Per-profile upstream pin (cache stability across tool-loop turns).
+  // Undefined for every profile that doesn't set it → no change to their
+  // routing. `allow_fallbacks` stays default-on, so the pin is a
+  // preference, never a hard constraint. See `ModelAssessment.provider.order`.
+  const order = profile.assessment.provider.order;
   switch (binding.settingsKind) {
     case "chat":
       return {
-        provider: { require_parameters: true, zdr },
+        provider: {
+          require_parameters: true,
+          zdr,
+          ...(order ? { order: [...order] } : {}),
+        },
         reasoning: reasoningParamForProfile(profile),
         usage: { include: true },
       };
@@ -113,11 +132,16 @@ export const reasoningParamForProfile = (
   profile: ModelProfile,
   level?: ReasoningLevel,
 ): OpenRouterChatSettings["reasoning"] => {
-  const { style, defaultLevel } = profile.assessment.reasoning;
+  const { style, defaultLevel, maxTokens } = profile.assessment.reasoning;
   const resolved = level ?? defaultLevel;
   if (style === "none" || resolved === "none") return undefined;
   if (style === "max-tokens") {
-    return { enabled: true, max_tokens: MAX_TOKENS_BUDGET_BY_LEVEL[resolved] };
+    // A per-profile `maxTokens` override (adaptive models that over-think,
+    // e.g. MiniMax M3) wins over the shared level→budget table.
+    return {
+      enabled: true,
+      max_tokens: maxTokens ?? MAX_TOKENS_BUDGET_BY_LEVEL[resolved],
+    };
   }
   return { enabled: true, effort: resolved };
 };
@@ -157,6 +181,133 @@ const reasoningTagMiddleware = extractReasoningMiddleware({
   separator: "\n",
 });
 
+const THINK_TAGS = ["<think>", "</think>"] as const;
+const MAX_THINK_TAG_LEN = Math.max(...THINK_TAGS.map((t) => t.length));
+
+/**
+ * Strip standalone `<think>` / `</think>` tokens the reasoning extractor
+ * leaves behind. MiniMax M3 (and other open-weights families) route
+ * reasoning through OpenRouter's native `reasoning_details` channel yet
+ * leak a dangling `</think>` into the CONTENT channel on continuation
+ * steps — with no partner tag `extractReasoningMiddleware` keeps it, so
+ * it renders as user-facing text and splits the chat tool-activity group.
+ * Pure, no-op when no `think` token is present; collapses the blank line
+ * a tag-on-its-own-line would leave.
+ */
+export const stripOrphanThinkTags = (text: string): string => {
+  if (!text.includes("think")) return text;
+  let out = text;
+  for (const tag of THINK_TAGS) {
+    out = out.split(`\n${tag}\n`).join("\n");
+    out = out.split(tag).join("");
+  }
+  return out;
+};
+
+/**
+ * Longest suffix of `buffer` that is a strict prefix of a tag — held back
+ * across deltas so a tag split over two chunks is still caught.
+ */
+const pendingThinkTagSuffixLen = (buffer: string): number => {
+  const start = Math.max(0, buffer.length - (MAX_THINK_TAG_LEN - 1));
+  for (let i = start; i < buffer.length; i++) {
+    const tail = buffer.slice(i);
+    if (THINK_TAGS.some((tag) => tag.startsWith(tail)))
+      return buffer.length - i;
+  }
+  return 0;
+};
+
+/** Stateful stripper — a tag can span two text-deltas; buffer only the partial-tag tail. */
+export const createOrphanThinkStreamStripper = () => {
+  let buffer = "";
+  return {
+    push: (delta: string): string => {
+      buffer += delta;
+      const hold = pendingThinkTagSuffixLen(buffer);
+      const emittable = buffer.slice(0, buffer.length - hold);
+      buffer = buffer.slice(buffer.length - hold);
+      return stripOrphanThinkTags(emittable);
+    },
+    flush: (): string => {
+      const rest = stripOrphanThinkTags(buffer);
+      buffer = "";
+      return rest;
+    },
+  };
+};
+
+/**
+ * Output-only middleware that removes orphan `think` tags from both the
+ * streaming and non-streaming text paths. MUST sit OUTSIDE
+ * `reasoningTagMiddleware` (first in the wrap array) so the extractor
+ * sees the raw output first and pulls paired `<think>…</think>` into
+ * reasoning before we clean whatever dangling tag remains.
+ */
+const orphanTagMiddleware: LanguageModelV3Middleware = {
+  specificationVersion: "v3",
+  wrapGenerate: async ({ doGenerate }) => {
+    const result = await doGenerate();
+    const content = result.content.map(
+      (part): LanguageModelV3Content =>
+        part.type === "text"
+          ? { ...part, text: stripOrphanThinkTags(part.text) }
+          : part,
+    );
+    return { ...result, content };
+  },
+  wrapStream: async ({ doStream }) => {
+    const { stream, ...rest } = await doStream();
+    const strippers = new Map<
+      string,
+      ReturnType<typeof createOrphanThinkStreamStripper>
+    >();
+    const cleaned = stream.pipeThrough(
+      new TransformStream<LanguageModelV3StreamPart, LanguageModelV3StreamPart>(
+        {
+          transform: (part, controller) => {
+            if (part.type === "text-delta") {
+              let stripper = strippers.get(part.id);
+              if (!stripper) {
+                stripper = createOrphanThinkStreamStripper();
+                strippers.set(part.id, stripper);
+              }
+              const delta = stripper.push(part.delta);
+              if (delta) controller.enqueue({ ...part, delta });
+              return;
+            }
+            if (part.type === "text-end") {
+              const stripper = strippers.get(part.id);
+              if (stripper) {
+                const delta = stripper.flush();
+                strippers.delete(part.id);
+                if (delta) {
+                  controller.enqueue({
+                    type: "text-delta",
+                    id: part.id,
+                    delta,
+                  });
+                }
+              }
+              controller.enqueue(part);
+              return;
+            }
+            controller.enqueue(part);
+          },
+          flush: (controller) => {
+            for (const [id, stripper] of strippers) {
+              const delta = stripper.flush();
+              if (delta) controller.enqueue({ type: "text-delta", id, delta });
+            }
+            strippers.clear();
+          },
+        },
+      ),
+    );
+    return { stream: cleaned, ...rest };
+  },
+};
+
 const buildResolved = (binding: RoleBinding): ResolvedModel => {
   const profile = getProfile(binding.profileKey);
   const settings = settingsForRole(binding, profile);
@@ -165,7 +316,13 @@ const buildResolved = (binding: RoleBinding): ResolvedModel => {
     : openrouter.chat(profile.catalog.id);
   const cleaned =
     binding.settingsKind === "chat"
-      ? wrapLanguageModel({ model: raw, middleware: reasoningTagMiddleware })
+      ? wrapLanguageModel({
+          model: raw,
+          // Order matters: extractReasoning innermost (sees raw output
+          // first, pulls paired <think>…</think> into reasoning), orphan
+          // strip outermost (cleans the leftover dangling tag).
+          middleware: [orphanTagMiddleware, reasoningTagMiddleware],
+        })
       : raw;
   const model = instrumentModel(
     binding.wrapCache ? wrapModelWithCache(cleaned, profile) : cleaned,

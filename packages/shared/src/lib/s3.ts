@@ -1,4 +1,5 @@
 import {
+  CopyObjectCommand,
   DeleteObjectCommand,
   DeleteObjectsCommand,
   GetObjectCommand,
@@ -108,6 +109,32 @@ export const getObjectBytes = async (
     }
     return null;
   }
+};
+
+/**
+ * Server-side object copy within the bucket — the bytes never transit the
+ * caller's process. Used to hand a chat-file attachment off to the Drive
+ * pipeline (chatbot Save-on-drive) without downloading + re-uploading it
+ * in the AI service. Pass `metadata` to overwrite the S3 user-metadata on
+ * the copy (defaults to inheriting the source's).
+ */
+export const copyObject = async (args: {
+  sourceKey: string;
+  destinationKey: string;
+  contentType?: string;
+  metadata?: Record<string, string>;
+}): Promise<void> => {
+  await client.send(
+    new CopyObjectCommand({
+      Bucket: s3Bucket,
+      Key: args.destinationKey,
+      CopySource: encodeURIComponent(`${s3Bucket}/${args.sourceKey}`),
+      ...(args.contentType ? { ContentType: args.contentType } : {}),
+      ...(args.metadata
+        ? { Metadata: args.metadata, MetadataDirective: "REPLACE" }
+        : {}),
+    }),
+  );
 };
 
 /**

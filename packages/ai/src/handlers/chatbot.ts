@@ -28,6 +28,10 @@ import {
   setConversationActiveStream,
 } from "@fretik/shared/services/ai/active-stream";
 import { loadCatchUpContext } from "@fretik/shared/services/ai/catch-up";
+import {
+  publishConversationEvent,
+  subscribeConversationEvents,
+} from "@fretik/shared/services/ai/conversation-events";
 import { getConversation } from "@fretik/shared/services/ai/get";
 import { markConversationRead } from "@fretik/shared/services/ai/members/mark-read";
 import { applyMentions } from "@fretik/shared/services/ai/members/mention";
@@ -36,6 +40,12 @@ import {
   saveMessage,
   saveMessages,
 } from "@fretik/shared/services/ai/messages";
+import {
+  listViewers,
+  markPresent,
+  publishTyping,
+  removePresent,
+} from "@fretik/shared/services/ai/presence";
 import { updateConversation } from "@fretik/shared/services/ai/update";
 import { releaseSandbox } from "@fretik/shared/services/e2b/release-sandbox";
 import { listConnections } from "@fretik/shared/services/external-apps/connections/list";
@@ -62,6 +72,7 @@ import {
 import { randomUUIDv7 } from "bun";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { HTTPException } from "hono/http-exception";
+import { streamSSE } from "hono/streaming";
 import { buildSpeakerContext } from "../agents/chatbot/speaker-context";
 import { summariseMissedMessages } from "../services/catch-up-summary";
 import { notifyMentionedMembers } from "../services/chatbot-mention-email";
@@ -171,6 +182,28 @@ const buildNativeInputDeps = (
  */
 const getAbortChannel = (streamId: string): string =>
   `fretik-chatbot-abort:${streamId}`;
+
+/**
+ * Provider-agnostic Stop backstop. Once the turn's abort signal fires,
+ * stop forwarding model chunks downstream so a provider that ignores
+ * fetch-abort can't keep painting text into the response — and thus into
+ * the resumable buffer that reconnecting / collaborative viewers read.
+ * The model stream is also abort-signalled upstream; this guarantees the
+ * visible output truncates at the Stop regardless of provider behaviour
+ * (the "break the consumption loop" pattern, expressed as a transform).
+ */
+const dropChunksAfterAbort = <C>(
+  stream: ReadableStream<C>,
+  signal: AbortSignal,
+): ReadableStream<C> =>
+  stream.pipeThrough(
+    new TransformStream<C, C>({
+      transform(chunk, controller) {
+        if (signal.aborted) return;
+        controller.enqueue(chunk);
+      },
+    }),
+  );
 
 /**
  * Note on abort signals (Phase 12 — resumable streams):
@@ -1316,6 +1349,14 @@ const runChatbotTurn = async (
           params.conversationId,
           params.resumableStreamId,
         );
+        // Tell every connected viewer the shared turn is over: stop the
+        // live fan-out + lift the send gate. `stopped` flags a user Stop
+        // so viewers render the same "Stopped" affordance on the partial.
+        await publishConversationEvent(params.conversationId, {
+          type: "turn-ended",
+          streamId: params.resumableStreamId,
+          stopped: abortController.signal.aborted,
+        });
       }
       await releaseAbortSubscriber();
       // Ship this turn's spans to Langfuse promptly (don't wait for the
@@ -1385,36 +1426,39 @@ const runChatbotTurn = async (
               : {}),
           });
           writer.merge(
-            fallbackResult.toUIMessageStream<UIMessage>({
-              onError: recordStreamError,
-              messageMetadata: ({ part }) => {
-                if (part.type !== "finish") return undefined;
-                const fbUsage = part.totalUsage;
-                const traceId = getActiveTraceId();
-                return {
-                  ...(traceId !== undefined
-                    ? { langfuseTraceId: traceId }
-                    : {}),
-                  telemetry: {
-                    finishReason: part.finishReason,
-                    rawFinishReason: part.rawFinishReason,
-                    // Failover (zombie or transparent) always serves the
-                    // fallback agent — flagged for the eval harness.
-                    servedBy: "fallback",
-                    modelProfileKey: modelProfile.key,
-                    usage: {
-                      inputTokens: fbUsage.inputTokens,
-                      outputTokens: fbUsage.outputTokens,
-                      totalTokens: fbUsage.totalTokens,
-                      reasoningTokens:
-                        fbUsage.outputTokenDetails?.reasoningTokens,
-                      cachedInputTokens:
-                        fbUsage.inputTokenDetails?.cacheReadTokens,
+            dropChunksAfterAbort(
+              fallbackResult.toUIMessageStream<UIMessage>({
+                onError: recordStreamError,
+                messageMetadata: ({ part }) => {
+                  if (part.type !== "finish") return undefined;
+                  const fbUsage = part.totalUsage;
+                  const traceId = getActiveTraceId();
+                  return {
+                    ...(traceId !== undefined
+                      ? { langfuseTraceId: traceId }
+                      : {}),
+                    telemetry: {
+                      finishReason: part.finishReason,
+                      rawFinishReason: part.rawFinishReason,
+                      // Failover (zombie or transparent) always serves the
+                      // fallback agent — flagged for the eval harness.
+                      servedBy: "fallback",
+                      modelProfileKey: modelProfile.key,
+                      usage: {
+                        inputTokens: fbUsage.inputTokens,
+                        outputTokens: fbUsage.outputTokens,
+                        totalTokens: fbUsage.totalTokens,
+                        reasoningTokens:
+                          fbUsage.outputTokenDetails?.reasoningTokens,
+                        cachedInputTokens:
+                          fbUsage.inputTokenDetails?.cacheReadTokens,
+                      },
                     },
-                  },
-                };
-              },
-            }),
+                  };
+                },
+              }),
+              abortController.signal,
+            ),
           );
           const [fbFinish, fbText] = await Promise.all([
             fallbackResult.finishReason,
@@ -1549,40 +1593,47 @@ const runChatbotTurn = async (
         // the eval harness over SSE). Full per-turn observability —
         // tool calls, RAG hits, latency, cost — lives in Langfuse.
         writer.merge(
-          result.toUIMessageStream<UIMessage>({
-            // A provider `error` part (e.g. empty pool) surfaces through
-            // the INNER stream's onError, not the outer one — route it to
-            // the same mapper so both surfaces agree on the wire frame.
-            onError: recordStreamError,
-            messageMetadata: ({ part }) => {
-              if (part.type !== "finish") return undefined;
-              const usage = part.totalUsage;
-              // Trace id of this turn (active span context) — sent to the
-              // client live AND folded into the persisted message metadata,
-              // so the feedback control can score the right Langfuse trace.
-              const traceId = getActiveTraceId();
-              return {
-                ...(traceId !== undefined ? { langfuseTraceId: traceId } : {}),
-                telemetry: {
-                  finishReason: part.finishReason,
-                  rawFinishReason: part.rawFinishReason,
-                  // Which agent answered + under which profile. The eval
-                  // harness reads these over SSE: a candidate run where a
-                  // silent failover served the fallback model must be
-                  // flagged, not scored as the candidate.
-                  servedBy,
-                  modelProfileKey: modelProfile.key,
-                  usage: {
-                    inputTokens: usage.inputTokens,
-                    outputTokens: usage.outputTokens,
-                    totalTokens: usage.totalTokens,
-                    reasoningTokens: usage.outputTokenDetails?.reasoningTokens,
-                    cachedInputTokens: usage.inputTokenDetails?.cacheReadTokens,
+          dropChunksAfterAbort(
+            result.toUIMessageStream<UIMessage>({
+              // A provider `error` part (e.g. empty pool) surfaces through
+              // the INNER stream's onError, not the outer one — route it to
+              // the same mapper so both surfaces agree on the wire frame.
+              onError: recordStreamError,
+              messageMetadata: ({ part }) => {
+                if (part.type !== "finish") return undefined;
+                const usage = part.totalUsage;
+                // Trace id of this turn (active span context) — sent to the
+                // client live AND folded into the persisted message metadata,
+                // so the feedback control can score the right Langfuse trace.
+                const traceId = getActiveTraceId();
+                return {
+                  ...(traceId !== undefined
+                    ? { langfuseTraceId: traceId }
+                    : {}),
+                  telemetry: {
+                    finishReason: part.finishReason,
+                    rawFinishReason: part.rawFinishReason,
+                    // Which agent answered + under which profile. The eval
+                    // harness reads these over SSE: a candidate run where a
+                    // silent failover served the fallback model must be
+                    // flagged, not scored as the candidate.
+                    servedBy,
+                    modelProfileKey: modelProfile.key,
+                    usage: {
+                      inputTokens: usage.inputTokens,
+                      outputTokens: usage.outputTokens,
+                      totalTokens: usage.totalTokens,
+                      reasoningTokens:
+                        usage.outputTokenDetails?.reasoningTokens,
+                      cachedInputTokens:
+                        usage.inputTokenDetails?.cacheReadTokens,
+                    },
                   },
-                },
-              };
-            },
-          }),
+                };
+              },
+            }),
+            abortController.signal,
+          ),
         );
 
         // Post-merge recovery (C4 + zombie). Awaiting the primary's
@@ -1785,11 +1836,14 @@ const runChatbotTurn = async (
 };
 
 /**
- * Frequency of SSE keep-alive frames (10s — matches the shared
- * `streamStatusEvents` default and stays well under Bun's 30s
- * `idleTimeout`).
+ * Frequency of SSE keep-alive frames (5s — halved from 10s to survive
+ * aggressive intermediate proxies during slow-model "silent thinking"
+ * windows, while staying well under Bun's 30s `idleTimeout`). A first
+ * ping is also emitted immediately on `start()` (see injectSseHeartbeat)
+ * so the pre-first-token preamble — context loading + compaction —
+ * never looks idle.
  */
-const CHATBOT_HEARTBEAT_MS = 10_000;
+const CHATBOT_HEARTBEAT_MS = 5_000;
 
 /**
  * Build the raw SSE frame string for a heartbeat ping. Uses a real
@@ -1827,6 +1881,15 @@ const injectSseHeartbeat = <T extends Uint8Array | string>(
   let interval: ReturnType<typeof setInterval> | null = null;
   return new TransformStream<T, T>({
     start(controller) {
+      // Emit one ping immediately so bytes flow before the model produces
+      // anything — borders the pre-first-token preamble (context loading /
+      // compaction) where an aggressive proxy could otherwise time out the
+      // idle connection before the first `intervalMs` elapses.
+      try {
+        controller.enqueue(encodePing());
+      } catch {
+        // Controller already closed — nothing to do.
+      }
       interval = setInterval(() => {
         try {
           controller.enqueue(encodePing());
@@ -1959,6 +2022,15 @@ chatbotRoutes.post("/stream", async (c) => {
         attachedFilenames,
         savedUserMessage.id,
       );
+      // Surface the new user message to other connected viewers right away
+      // — covers human-to-human asides that never start an assistant turn,
+      // and lets viewers paint the sender's bubble before the answer streams.
+      await publishConversationEvent(conversationId, {
+        type: "message-added",
+        messageId: savedUserMessage.id,
+        role: "user",
+        authorId: user.id,
+      });
     }
   }
 
@@ -2016,6 +2088,16 @@ chatbotRoutes.post("/stream", async (c) => {
       409,
     );
   }
+
+  // Announce the turn to every connected viewer so non-senders fan-in to
+  // the same resumable buffer (live multi-user streaming) and their send
+  // button gates while it runs. `byUserId` lets the sender's own client
+  // skip the fan-in (it is already streaming via this POST).
+  await publishConversationEvent(conversationId, {
+    type: "turn-started",
+    streamId,
+    byUserId: user.id,
+  });
 
   // Load last N messages from DB for the agent's memory window. 30 is
   // the Phase 8 default — compaction collapses the older portion when
@@ -2178,6 +2260,171 @@ chatbotRoutes.post("/:conversationId/stop", async (c) => {
   await clearConversationActiveStream(conversationId, activeStreamId);
 
   return c.json({ stopped: true }, 200);
+});
+
+/**
+ * GET /chatbot/:conversationId/events — long-lived per-viewer SSE channel
+ * carrying the collaborative signals (turn-started / turn-ended,
+ * message-added, presence, typing). Cross-replica fan-out via Redis
+ * pub/sub. The initial snapshot lets a viewer joining mid-turn learn the
+ * live streamId immediately (→ `resumeStream` fan-in) and see the roster.
+ * Long-lived: returns only when the client disconnects (`stream.aborted`).
+ */
+chatbotRoutes.get("/:conversationId/events", async (c) => {
+  const user = c.get("user");
+  const team = c.get("team");
+  if (!team) return throwHttpError(403, teamRequired());
+
+  const conversationId = c.req.param("conversationId");
+  const conversation = await getConversation({
+    id: conversationId,
+    teamId: team.id,
+    userId: user.id,
+  });
+  if (!conversation) {
+    return throwHttpError(404, notFound("Conversation not found"));
+  }
+
+  for (const [key, value] of Object.entries(ANTI_BUFFERING_HEADERS)) {
+    c.header(key, value);
+  }
+  return streamSSE(c, async (stream) => {
+    // Initial snapshot: any live turn + the current presence roster, so a
+    // viewer joining mid-turn fans in and renders avatars without waiting
+    // for the next event.
+    const activeStreamId = await getConversationActiveStream(conversationId);
+    if (activeStreamId) {
+      await stream.writeSSE({
+        event: "message",
+        data: JSON.stringify({
+          type: "turn-started",
+          streamId: activeStreamId,
+          byUserId: "",
+        }),
+      });
+    }
+    await stream.writeSSE({
+      event: "message",
+      data: JSON.stringify({
+        type: "presence",
+        viewers: await listViewers(conversationId),
+      }),
+    });
+
+    // Bridge Redis pub/sub → an awaitable queue so every SSE write is
+    // ordered + awaited (the Bun chunked-encoding footgun; see sse-utils).
+    const queue: string[] = [];
+    let resolveNext: (() => void) | null = null;
+    const cleanup = await subscribeConversationEvents(
+      conversationId,
+      (payload) => {
+        queue.push(payload);
+        if (resolveNext) {
+          const fn = resolveNext;
+          resolveNext = null;
+          fn();
+        }
+      },
+    );
+    const waitForEvent = (): Promise<string | null> =>
+      queue.length > 0
+        ? Promise.resolve(queue.shift() ?? null)
+        : new Promise<string | null>((resolve) => {
+            resolveNext = () => resolve(queue.shift() ?? null);
+          });
+
+    /* oxlint-disable no-await-in-loop -- sequential SSE writes are required */
+    try {
+      while (!stream.aborted) {
+        const heartbeat = stream
+          .sleep(CHATBOT_HEARTBEAT_MS)
+          .then(() => "heartbeat" as const);
+        const next = await Promise.race([heartbeat, waitForEvent()]);
+        if (next === "heartbeat") {
+          await stream.writeSSE({ event: "ping", data: "ping" });
+          continue;
+        }
+        if (!next) continue;
+        await stream.writeSSE({ event: "message", data: next });
+      }
+    } finally {
+      await cleanup();
+    }
+    /* oxlint-enable no-await-in-loop */
+  });
+});
+
+const PresenceRequestSchema = z.object({ present: z.boolean().optional() });
+
+/**
+ * POST /chatbot/:conversationId/presence — viewer heartbeat. The client
+ * re-posts every ~10s while the conversation is open (short Redis TTL
+ * self-heals an unclean tab close) and posts `{ present: false }` on a
+ * clean leave. Broadcasts the refreshed roster to the other viewers.
+ */
+chatbotRoutes.post("/:conversationId/presence", async (c) => {
+  const user = c.get("user");
+  const team = c.get("team");
+  if (!team) return throwHttpError(403, teamRequired());
+
+  const conversationId = c.req.param("conversationId");
+  const conversation = await getConversation({
+    id: conversationId,
+    teamId: team.id,
+    userId: user.id,
+  });
+  if (!conversation) {
+    return throwHttpError(404, notFound("Conversation not found"));
+  }
+
+  const body: unknown = await c.req.json().catch(() => ({}));
+  const parsed = PresenceRequestSchema.safeParse(body);
+  const present = parsed.success ? (parsed.data.present ?? true) : true;
+  if (present) {
+    await markPresent(conversationId, {
+      userId: user.id,
+      name: user.name,
+      image: user.image ?? null,
+    });
+  } else {
+    await removePresent(conversationId, user.id);
+  }
+  return c.json({ ok: true }, 200);
+});
+
+const TypingRequestSchema = z.object({ isTyping: z.boolean() });
+
+/**
+ * POST /chatbot/:conversationId/typing — broadcast a transient typing
+ * on/off signal to the other viewers. No storage; the client auto-expires
+ * the indicator after a few seconds.
+ */
+chatbotRoutes.post("/:conversationId/typing", async (c) => {
+  const user = c.get("user");
+  const team = c.get("team");
+  if (!team) return throwHttpError(403, teamRequired());
+
+  const conversationId = c.req.param("conversationId");
+  const body: unknown = await c.req.json();
+  const parsed = TypingRequestSchema.safeParse(body);
+  if (!parsed.success) {
+    return c.json({ code: "VALIDATION_ERROR", message: "Invalid body" }, 400);
+  }
+  const conversation = await getConversation({
+    id: conversationId,
+    teamId: team.id,
+    userId: user.id,
+  });
+  if (!conversation) {
+    return throwHttpError(404, notFound("Conversation not found"));
+  }
+
+  await publishTyping(
+    conversationId,
+    { userId: user.id, name: user.name },
+    parsed.data.isTyping,
+  );
+  return c.json({ ok: true }, 200);
 });
 
 /**

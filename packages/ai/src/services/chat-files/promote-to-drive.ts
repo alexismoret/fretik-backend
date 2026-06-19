@@ -1,30 +1,35 @@
 import db from "@fretik/shared/db";
 import { aiChatFiles } from "@fretik/shared/db/schema";
 import { buildSessionKey } from "@fretik/shared/lib/chatbot-session-storage";
-import { getObjectBytes } from "@fretik/shared/lib/s3";
-import { uploadDocument } from "@fretik/shared/services/documents/upload";
+import { buildDocumentOriginalKey } from "@fretik/shared/lib/document-storage";
+import { copyObject } from "@fretik/shared/lib/s3";
+import { finalizeFailedDocument } from "@fretik/shared/services/documents/process";
+import { enqueueDocumentProcessing } from "@fretik/shared/services/documents/processing-queue";
+import { createDocumentRecord } from "@fretik/shared/services/documents/upload";
 import { isDriveSupported } from "@fretik/shared/utils/mimeTypes";
+import { randomUUIDv7 } from "bun";
 import { eq, inArray } from "drizzle-orm";
 import { WORKSPACE_DIRS } from "../../lib/conversation-storage";
 
 /**
  * Promote already-uploaded chat-files to the team's Drive (`documents`
- * table). Called from the new POST `/conversation/:id/files/promote-to-drive`
+ * table). Called from the POST `/conversation/:id/files/promote-to-drive`
  * route so the toggle's value is read at message-send time, not at
  * file-selection time (the latter raced with the eager upload and made
  * the toggle look broken).
  *
  * For each fileId:
  *  1. Verify the row belongs to `conversationId` + `teamId`.
- *  2. Skip if `documentId` is already set (idempotent — re-clicking
- *     send on a turn that already promoted the files is a no-op).
- *  3. Fetch the original bytes from S3 (`chatbot-sessions/{conv}/attachments/{filename}`).
- *  4. Reconstruct a `File` and call `uploadDocument()` to reuse the
- *     full Drive pipeline (validation, S3, pre-extract, vectorize).
- *  5. Persist the resulting `documents.id` back on the chat-file row.
+ *  2. Skip if `documentId` is already set (idempotent).
+ *  3. Insert the `documents` row, server-side COPY the attachment's S3
+ *     object onto the document's original key (no bytes pulled into the
+ *     AI process), then enqueue the shared document-processing job.
+ *  4. Persist the resulting `documents.id` back on the chat-file row.
  *
- * Best-effort: per-file failures are collected in `failed` instead of
- * aborting the whole batch. The chat attachment itself is unaffected.
+ * The heavy work (OCR / conversion / vectorisation) runs in the API-side
+ * BullMQ worker, so promotion never blocks the chat stream. Best-effort:
+ * per-file failures are collected in `failed` instead of aborting the
+ * whole batch.
  */
 
 interface PromoteArgs {
@@ -63,6 +68,8 @@ export const promoteChatFilesToDrive = async (
       conversationId: aiChatFiles.conversationId,
       filename: aiChatFiles.filename,
       mimeType: aiChatFiles.mimeType,
+      fileHash: aiChatFiles.fileHash,
+      size: aiChatFiles.size,
       documentId: aiChatFiles.documentId,
     })
     .from(aiChatFiles)
@@ -106,8 +113,7 @@ export const promoteChatFilesToDrive = async (
     }
     // The chatbot accepts a broader MIME set than the Drive pipeline
     // (markdown / JSON / XML / arbitrary text). Pre-check so an
-    // unsupported type is reported cleanly instead of throwing a generic
-    // 400 inside `uploadDocument` → `assertFile`.
+    // unsupported type is reported cleanly.
     if (!isDriveSupported(row.mimeType)) {
       failed.push({
         fileId,
@@ -116,36 +122,70 @@ export const promoteChatFilesToDrive = async (
       });
       continue;
     }
+    if (!row.fileHash) {
+      failed.push({
+        fileId,
+        reason: "Chat file has no content hash",
+        code: "error",
+      });
+      continue;
+    }
 
     try {
-      const bytes = await getObjectBytes(
-        buildSessionKey(conversationId, buildAttachmentPath(row.filename)),
-      );
-      if (!bytes) {
-        failed.push({
-          fileId,
-          reason: "Original bytes missing from S3",
-          code: "error",
+      const documentId = randomUUIDv7();
+      const metadata = {
+        id: documentId,
+        folderId: null,
+        originalFilename: row.filename,
+        fileSize: row.size,
+        mimeType: row.mimeType,
+        fileHash: row.fileHash,
+      };
+      const originalKey = buildDocumentOriginalKey(documentId, row.filename);
+
+      // Server-side copy: attachment → document original key. Done before
+      // the row is created/enqueued so the worker always finds the bytes.
+      await copyObject({
+        sourceKey: buildSessionKey(
+          conversationId,
+          buildAttachmentPath(row.filename),
+        ),
+        destinationKey: originalKey,
+        contentType: row.mimeType,
+        metadata: { documentId, organizationId, teamId },
+      });
+
+      await createDocumentRecord({ metadata, teamId, userId });
+
+      // Enqueue after the row + bytes exist. On failure (Redis down),
+      // finalize the document to a clean `error` state instead of leaving
+      // it stuck, then bubble up to the per-file failure handler.
+      try {
+        await enqueueDocumentProcessing({
+          documentId,
+          organizationId,
+          teamId,
+          originalKey,
+          metadata,
         });
-        continue;
+      } catch (enqueueErr) {
+        const message =
+          enqueueErr instanceof Error
+            ? enqueueErr.message
+            : "Failed to enqueue processing";
+        await finalizeFailedDocument(
+          { documentId, organizationId, teamId, originalKey, metadata },
+          message,
+        );
+        throw enqueueErr;
       }
-
-      const file = new File([bytes], row.filename, { type: row.mimeType });
-
-      const document = await uploadDocument(
-        file,
-        organizationId,
-        teamId,
-        userId,
-        undefined,
-      );
 
       await db
         .update(aiChatFiles)
-        .set({ documentId: document.id })
+        .set({ documentId })
         .where(eq(aiChatFiles.id, fileId));
 
-      promoted.push({ fileId, documentId: document.id });
+      promoted.push({ fileId, documentId });
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       console.warn(

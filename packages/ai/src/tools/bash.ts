@@ -104,7 +104,7 @@ export const createBashTool = () =>
     inputSchema: bashInputSchema,
     execute: async ({ command, description, restart }, options) => {
       const ctx = getRuntimeContext(options);
-      const { toolCallId } = options;
+      const { toolCallId, abortSignal } = options;
       if (!ctx.conversationId) {
         return {
           error:
@@ -113,6 +113,11 @@ export const createBashTool = () =>
         };
       }
       const conversationId = ctx.conversationId;
+
+      // User already Stopped before this call started — bail cleanly.
+      if (abortSignal?.aborted) {
+        return { error: "Stopped.", code: TOOL_ERROR_CODES.ABORTED };
+      }
 
       try {
         await prepareSandboxForCode({
@@ -143,6 +148,7 @@ export const createBashTool = () =>
                   language: "bash",
                   code: command,
                   restart,
+                  abortSignal,
                 }),
               (r, durationMs) => ({
                 output: {
@@ -155,6 +161,12 @@ export const createBashTool = () =>
         );
       } catch (err) {
         return mapE2BError(err, "while running bash in sandbox");
+      }
+
+      // Stopped mid-run: the sandbox was killed by the abort race. Skip the
+      // S3 mirror (the workspace is gone) and return a clean marker.
+      if (abortSignal?.aborted) {
+        return { error: "Stopped.", code: TOOL_ERROR_CODES.ABORTED };
       }
 
       if (result.artifacts.length > 0 || result.deletedPaths.length > 0) {

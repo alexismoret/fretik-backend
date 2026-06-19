@@ -44,12 +44,14 @@ export const buildDocumentOriginalKey = (
 };
 
 /**
- * S3 key for the document thumbnail. Always `.png` — generated via
- * `generatePdfThumbnail` / `generateImageThumbnail` which both emit
- * PNG. No call site has ever produced a different extension.
+ * S3 key for the document thumbnail. Always `.webp` — generated via
+ * `generatePdfThumbnail` / `generateImageThumbnail`, which both emit a
+ * compressed WebP through Bun's native image pipeline. Documents
+ * processed before the WebP switch keep a stale `.png` object whose
+ * presigned URL 404s until they are reprocessed.
  */
 export const buildDocumentThumbnailKey = (documentId: string): string =>
-  `${DOCUMENTS_PREFIX}/${documentId}-thumbnail.png`;
+  `${DOCUMENTS_PREFIX}/${documentId}-thumbnail.webp`;
 
 export const buildDocumentSidecarKey = (documentId: string): string =>
   `${DOCUMENTS_PREFIX}/${documentId}.md`;

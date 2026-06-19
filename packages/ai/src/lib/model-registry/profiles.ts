@@ -615,13 +615,34 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
         limits: { maxImagesPerRequest: 6, maxVideosPerRequest: 1 },
       },
       cache: { strategy: "implicit" },
-      reasoning: { style: "max-tokens", defaultLevel: "low" },
+      // maxTokens:10000 — M3 is adaptive and ignores the effort knob; on hard
+      // turns it over-thinks  (observed: 38 679 reasoning tokens in one step,
+      // a full Python script inside a single `<think>` block). The level
+      // budget (1 500 at `low`) was too small for the provider to honour; a
+      // larger explicit cap is the lever that tamed MiniMax M2.7, so we pin
+      // 10 000 here. Re-verify M3 actually respects it (the C7 probe found it
+      // ignored 1 500).
+      reasoning: {
+        style: "max-tokens",
+        defaultLevel: "low",
+        maxTokens: 5_000,
+      },
       // zdr:false — M3's only ZDR provider that supports tool-calling is
       // Morph (2× the price, no prompt caching). Enforcing ZDR collapses
       // the pool to Morph; disabling it lets OpenRouter reach the cheaper,
       // cache-capable MiniMax first-party endpoint. M3 isn't a RGPD-grade
       // choice anyway — ZDR teams pick an EU model (e.g. Mistral).
-      provider: { requireParameters: true, zdr: undefined },
+      //
+      // order:["minimax"] — M3 is served by 6 upstreams (MiniMax, Novita,
+      // Parasail, Together, AtlasCloud, Morph), each with its OWN prompt
+      // cache. Unpinned, OpenRouter load-balances them, so consecutive
+      // tool-loop calls land on different providers and re-prefill the full
+      // ~100K-token context cold (measured: cache hit on only ~half the
+      // steps, ~200s wasted on a form→CSV turn). Pinning the cache-capable
+      // first-party MiniMax endpoint first keeps the implicit cache warm
+      // across the loop; fallbacks stay on so a MiniMax blip degrades to
+      // normal routing, not a failed turn.
+      provider: { requireParameters: true, zdr: undefined, order: ["minimax"] },
       // Promoted via the C3 gate, 2026-06-12. All capabilities at or
       // above the M2.7 baseline; cost $0.0134/turn (budget envelope).
       // The avg-latency criterion of this run pair passed only after

@@ -400,12 +400,83 @@ export interface RunInSandboxOptions extends RunOptions {
    * only resets the Jupyter kernel.
    */
   restart?: boolean;
+  /**
+   * The turn's server-owned abort signal (a user Stop, see the chatbot
+   * handler's abort channel). E2B's `runCode` / `commands.run` expose no
+   * AbortSignal, so the only in-band cancellation lever is to KILL the
+   * sandbox — `runInSandbox` races the exec against this signal and, on
+   * abort, kills the sandbox (dropping the running cell/command
+   * immediately) and returns an `Aborted` result. The sandbox is
+   * recreated lazily on the next turn. Without this, a Stop during a
+   * long python/bash run does nothing until the run finishes on its own.
+   */
+  abortSignal?: AbortSignal;
 }
+
+/**
+ * Sentinel returned by `raceSandboxAbort` when the turn was Stopped
+ * while an exec was in flight.
+ */
+const ABORTED_SENTINEL = Symbol("e2b-aborted");
+
+/** Synthetic `RunResult` for a user-aborted run (no artifacts, no diff). */
+const abortedRunResult = (): RunResult => ({
+  stdout: "",
+  stderr: "",
+  exitCode: 1,
+  error: { name: "Aborted", value: "Stopped by user" },
+  artifacts: [],
+  deletedPaths: [],
+  richResults: [],
+});
+
+/**
+ * Race an in-flight sandbox exec against the turn's abort signal. When
+ * the user Stops mid-run, E2B can't cancel the exec in-band, so we kill
+ * the whole sandbox — that terminates the running cell/command at once —
+ * and resolve to {@link ABORTED_SENTINEL}. The orphaned exec promise is
+ * swallowed (it rejects once the sandbox dies). When no signal is
+ * provided, or it never fires, the exec resolves normally.
+ */
+const raceSandboxAbort = async <T>(
+  conversationId: string,
+  signal: AbortSignal | undefined,
+  exec: Promise<T>,
+): Promise<T | typeof ABORTED_SENTINEL> => {
+  if (!signal) return exec;
+  if (signal.aborted) {
+    void killSandbox(conversationId).catch(() => undefined);
+    void exec.catch(() => undefined);
+    return ABORTED_SENTINEL;
+  }
+  return await new Promise<T | typeof ABORTED_SENTINEL>((resolve, reject) => {
+    const onAbort = (): void => {
+      void killSandbox(conversationId).catch(() => undefined);
+      void exec.catch(() => undefined);
+      resolve(ABORTED_SENTINEL);
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    exec.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (err: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(err instanceof Error ? err : new Error(String(err)));
+      },
+    );
+  });
+};
 
 export const runInSandbox = async (
   conversationId: string,
   options: RunInSandboxOptions,
 ): Promise<RunResult> => {
+  // Cooperative cancel: the turn was already Stopped — don't even spin
+  // up / connect the sandbox.
+  if (options.abortSignal?.aborted) return abortedRunResult();
+
   if (options.restart) {
     // Cached context belongs to the kernel we're about to kill —
     // wipe it before tearing the sandbox down so the next run picks
@@ -429,23 +500,28 @@ export const runInSandbox = async (
       conversationId,
       lease.sandboxId,
     );
-    const exec = await sbx.runCode(options.code, {
-      context,
-      onStdout: (data: { line?: string }) => {
-        const line = data.line ?? "";
-        stdoutBuf += line;
-        options.onStdout?.(line);
-      },
-      onStderr: (data: { line?: string }) => {
-        const line = data.line ?? "";
-        stderrBuf += line;
-        options.onStderr?.(line);
-      },
-      onError: (err: { name: string; value: string; traceback?: string }) => {
-        kernelError = err;
-        options.onError?.(err);
-      },
-    });
+    const exec = await raceSandboxAbort(
+      conversationId,
+      options.abortSignal,
+      sbx.runCode(options.code, {
+        context,
+        onStdout: (data: { line?: string }) => {
+          const line = data.line ?? "";
+          stdoutBuf += line;
+          options.onStdout?.(line);
+        },
+        onStderr: (data: { line?: string }) => {
+          const line = data.line ?? "";
+          stderrBuf += line;
+          options.onStderr?.(line);
+        },
+        onError: (err: { name: string; value: string; traceback?: string }) => {
+          kernelError = err;
+          options.onError?.(err);
+        },
+      }),
+    );
+    if (exec === ABORTED_SENTINEL) return abortedRunResult();
 
     // The SDK also exposes accumulated logs on `exec.logs`; prefer the
     // streamed buffers (already populated above) and fall back to the
@@ -504,17 +580,22 @@ export const runInSandbox = async (
     // `commands.run` default to /workspace, but we pin it here as
     // defense-in-depth — a future template change wouldn't silently
     // regress the cwd contract.
-    const result = await sbx.commands.run(options.code, {
-      cwd: WORKSPACE_ROOT,
-      onStdout: (chunk: string) => {
-        stdoutBuf += chunk;
-        options.onStdout?.(chunk);
-      },
-      onStderr: (chunk: string) => {
-        stderrBuf += chunk;
-        options.onStderr?.(chunk);
-      },
-    });
+    const result = await raceSandboxAbort(
+      conversationId,
+      options.abortSignal,
+      sbx.commands.run(options.code, {
+        cwd: WORKSPACE_ROOT,
+        onStdout: (chunk: string) => {
+          stdoutBuf += chunk;
+          options.onStdout?.(chunk);
+        },
+        onStderr: (chunk: string) => {
+          stderrBuf += chunk;
+          options.onStderr?.(chunk);
+        },
+      }),
+    );
+    if (result === ABORTED_SENTINEL) return abortedRunResult();
     if (result.exitCode !== 0) {
       kernelError = {
         name: "NonZeroExit",

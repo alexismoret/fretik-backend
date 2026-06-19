@@ -29,19 +29,19 @@
     "@ewsjs/xhr": "^3.1.3",
     "@fretik/shared": "workspace:*",
     "ews-javascript-api": "^0.15.3",
-    "imapflow": "^1.3.3",
-    "mailparser": "^3.9.8",
-    "nodemailer": "^8.0.8",
+    "imapflow": "^1.4.1",
+    "mailparser": "^3.9.10",
+    "nodemailer": "^9.0.1",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/bun": "latest",
     "@types/mailparser": "^3.4.6",
-    "@types/nodemailer": "^8.0.0",
-    "@typescript/native-preview": "^7.0.0-dev.20260524.1",
-    "oxlint": "^1.66.0",
+    "@types/nodemailer": "^8.0.1",
+    "@typescript/native-preview": "^7.0.0-dev.20260618.1",
+    "oxlint": "^1.70.0",
     "oxlint-tsgolint": "^0.23.0",
-    "prettier": "^3.8.3",
+    "prettier": "^3.8.4",
     "prettier-plugin-organize-imports": "^4.3.0"
   }
 }

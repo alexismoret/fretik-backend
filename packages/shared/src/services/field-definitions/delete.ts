@@ -1,14 +1,16 @@
 import { eq } from "drizzle-orm";
 import db from "../../db";
-import { documentFieldValues, fieldDefinitions } from "../../db/schema";
+import { fieldDefinitions } from "../../db/schema";
 import { notFound, throwHttpError } from "../../lib/errors";
+import { deleteFieldKeysFromRecords } from "../object-records/field-data";
+import { refreshTypedViewAfterCatalogChange } from "../object-types/sync-typed-view";
 import { invalidateFieldDefinitionsCache } from "./cache";
 
 /**
- * Delete a field definition. When `cascade=true`, also wipes every
- * `documentFieldValues` row whose `fieldKey` matches the deleted key
- * (this is the only safe way to drop a field with existing values — the
- * fieldKey would otherwise dangle).
+ * Delete a field definition. When `cascade=true`, also strips the field key
+ * from every record's `data` for that object type (this is the only safe way to
+ * drop a field with existing values — the key would otherwise dangle in the
+ * stored JSONB).
  *
  * `cascade=false` (default) protects against accidental data loss:
  * deletion fails if any value still references the key.
@@ -27,6 +29,7 @@ export const deleteFieldDefinition = async (data: {
       columns: {
         id: true,
         key: true,
+        objectTypeId: true,
         organizationId: true,
         teamId: true,
       },
@@ -38,14 +41,24 @@ export const deleteFieldDefinition = async (data: {
 
     let deletedValues = 0;
     if (cascade) {
-      const rows = await tx
-        .delete(documentFieldValues)
-        .where(eq(documentFieldValues.fieldKey, existing.key))
-        .returning({ id: documentFieldValues.id });
-      deletedValues = rows.length;
+      deletedValues = await deleteFieldKeysFromRecords({
+        tx,
+        objectTypeId: existing.objectTypeId,
+        keys: [existing.key],
+      });
     }
 
     await tx.delete(fieldDefinitions).where(eq(fieldDefinitions.id, id));
+
+    // Regenerate the team's typed view (column dropped) + search vectors, in
+    // the SAME tx so the catalog change is atomic.
+    await refreshTypedViewAfterCatalogChange({
+      tx,
+      organizationId: existing.organizationId,
+      objectTypeId: existing.objectTypeId,
+      teamId: existing.teamId,
+    });
+
     return {
       id,
       deletedValues,

@@ -35,10 +35,10 @@ export const aiVectorSourceTypeSchema = z.enum(
 // ==================== //
 
 /**
- * Shape of an entity reference embedded inside a document vector's metadata.
- * Mirrors the TypeScript `EntityVectorInfo` type from db/schema/ai-vectors.ts.
+ * Shape of a mentioned-record reference embedded inside a document vector's
+ * metadata. Mirrors `MentionVectorInfo` from db/schema/ai-vectors.ts.
  */
-export const entityVectorInfoSchema = z.object({
+export const mentionVectorInfoSchema = z.object({
   id: z.string(),
   name: z.string(),
   type: z.string(),
@@ -64,7 +64,7 @@ export const documentVectorMetadataSchema = z.object({
   page_count: z.number().nullable(),
   document_language: z.string().nullable(),
   document_summary: z.string().nullable(),
-  entities: z.array(entityVectorInfoSchema),
+  entities: z.array(mentionVectorInfoSchema),
   labels: z.array(labelVectorInfoSchema).default([]),
   /**
    * Team-configurable custom field values keyed by `fieldDefinitions.key`.

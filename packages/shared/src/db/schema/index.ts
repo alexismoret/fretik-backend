@@ -19,14 +19,21 @@ export * from "./folders";
 // Documents (file storage and pre-extraction)
 export * from "./documents";
 
-// Field definitions (per-org/team configurable fields for documents and beyond)
+// Dynamic data system (ontology) — runtime-defined object types, fields,
+// relations, and governed actions. The catalog half of the unified graph.
+export * from "./action-types";
+export * from "./link-types";
+export * from "./object-types";
+export * from "./ontology-enums";
+
+// Dynamic data system — the data plane: typed nodes (object_records), typed
+// edges (links), and the durable journal (domain_events) feeding memory + audit.
+export * from "./domain-events";
+export * from "./links";
+export * from "./object-records";
+
+// Field definitions (per-object-type configurable fields — the field catalog)
 export * from "./field-definitions";
-
-// Document field values (per-document custom values keyed by field definition slug)
-export * from "./document-field-values";
-
-// Entities (organizations referenced in documents)
-export * from "./entities";
 
 // Metrics and logs (usage_metrics, activity_logs, webhooks)
 export * from "./metrics";

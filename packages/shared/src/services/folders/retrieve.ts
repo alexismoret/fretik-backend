@@ -12,12 +12,13 @@ import {
 } from "drizzle-orm";
 import db from "../../db";
 import {
-  documentEntities,
-  documentFieldValues,
   documentLabels,
   documents,
   fieldDefinitions,
   folders,
+  links,
+  objectRecords,
+  objectTypes,
   type DocumentStatus,
   type FieldDefinitionType,
 } from "../../db/schema";
@@ -106,7 +107,7 @@ type DocWithRelations = {
   status: DocumentStatus;
   createdAt: Date;
   updatedAt: Date;
-  fieldValues: { fieldKey: string; value: unknown }[];
+  mirrorRecord: { data: Record<string, unknown> } | null;
 };
 
 const mapDocsToDriveItems = async (
@@ -123,8 +124,6 @@ const mapDocsToDriveItems = async (
   }
 
   return docs.map((d) => {
-    const fieldValues: Record<string, unknown> = {};
-    for (const fv of d.fieldValues) fieldValues[fv.fieldKey] = fv.value;
     return {
       type: "document" as const,
       data: {
@@ -134,7 +133,7 @@ const mapDocsToDriveItems = async (
         mimeType: d.mimeType,
         status: d.status,
         thumbnailUrl: urlMap.get(d.id) ?? null,
-        fieldValues,
+        fieldValues: d.mirrorRecord?.data ?? {},
         createdAt: d.createdAt,
         updatedAt: d.updatedAt,
       },
@@ -183,8 +182,8 @@ const isDateRangeFilter = (
   "end" in v;
 
 /**
- * EXISTS clause for a single `(fieldKey, value)` predicate on the
- * `document_field_values` table, scoped to the current `documents` row.
+ * EXISTS clause for a single `(fieldKey, value)` predicate against the
+ * document's 1:1 mirror record `data`, scoped to the current `documents` row.
  *
  * Value shapes:
  *   • array (string[] / number[] / boolean[])   → ANY-of match
@@ -198,41 +197,40 @@ const customFilterExists = (
   cf: DriveCustomFilter,
   fieldType: FieldDefinitionType | undefined,
 ) => {
+  // The value lives at `data['<fieldKey>']` on the document's 1:1 mirror record.
+  // `jsonb_extract_path(_text)` keeps the key a bound text parameter (no
+  // injection, no `jsonb -> unknown` operator ambiguity).
+  const jsonbVal = sql`jsonb_extract_path(${objectRecords.data}, ${cf.fieldKey})`;
+  const textVal = sql`jsonb_extract_path_text(${objectRecords.data}, ${cf.fieldKey})`;
+
   const valuePredicate = (() => {
     if (Array.isArray(cf.value)) {
-      return inArray(documentFieldValues.value, cf.value as never[]);
+      if (cf.value.length === 0) return sql`FALSE`;
+      const members = sql.join(
+        cf.value.map((v) => sql`${JSON.stringify(v)}::jsonb`),
+        sql`, `,
+      );
+      return sql`${jsonbVal} IN (${members})`;
     }
     if (
       fieldType &&
       DATE_LIKE_TYPES.has(fieldType) &&
       isDateRangeFilter(cf.value)
     ) {
-      // Compare directly in JSONB space — the `(fieldKey, value)`
-      // B-tree covers the range because JSONB has a total order and
-      // JSON-string comparison is lexicographic (which matches
-      // chronological order for ISO date / datetime strings stored as
-      // JSON primitive strings).
-      //
-      // We send each bound already wrapped as a JSON string literal
-      // (`"2025-01-01..."`) and cast to `jsonb` so the right side has
-      // the same type as the column. This keeps the index in play —
-      // any approach that extracts the value first (e.g.
-      // `value #>> '{}'`) is a functional expression and forces a
-      // sequential scan.
+      // Compare directly in JSONB space: each bound is wrapped as a JSON string
+      // literal (`"2025-01-01…"`) cast to `jsonb`, and JSON-string comparison is
+      // lexicographic — which matches chronological order for ISO date strings.
       const bounds = [];
       if (cf.value.start) {
         bounds.push(
-          sql`${documentFieldValues.value} >= ${JSON.stringify(cf.value.start)}::jsonb`,
+          sql`${jsonbVal} >= ${JSON.stringify(cf.value.start)}::jsonb`,
         );
       }
       if (cf.value.end) {
-        bounds.push(
-          sql`${documentFieldValues.value} <= ${JSON.stringify(cf.value.end)}::jsonb`,
-        );
+        bounds.push(sql`${jsonbVal} <= ${JSON.stringify(cf.value.end)}::jsonb`);
       }
-      // Both bounds null → no constraint (filter is effectively
-      // inactive); fall back to a tautology so the outer `eq` on
-      // `fieldKey` still narrows.
+      // Both bounds null → no constraint (filter inactive); fall back to a
+      // tautology so the outer correlation on `document_id` still narrows.
       return bounds.length > 0 ? and(...bounds) : sql`TRUE`;
     }
     if (
@@ -241,25 +239,17 @@ const customFilterExists = (
       typeof cf.value === "string" &&
       cf.value.length > 0
     ) {
-      // `documentFieldValues.value` is JSONB — `ILIKE` doesn't have a
-      // jsonb operator. `#>> '{}'` extracts the value as text (strips
-      // outer quotes for JSON primitive strings) so we can substring-
-      // match cleanly.
-      return sql`${documentFieldValues.value} #>> '{}' ILIKE ${`%${cf.value}%`}`;
+      // `_text` extracts the value as text (strips outer quotes for JSON
+      // primitive strings) so `ILIKE` substring-matches cleanly.
+      return sql`${textVal} ILIKE ${`%${cf.value}%`}`;
     }
-    return eq(documentFieldValues.value, cf.value as never);
+    return sql`${jsonbVal} = ${JSON.stringify(cf.value)}::jsonb`;
   })();
   return exists(
     db
       .select({ one: sql`1` })
-      .from(documentFieldValues)
-      .where(
-        and(
-          eq(documentFieldValues.documentId, documents.id),
-          eq(documentFieldValues.fieldKey, cf.fieldKey),
-          valuePredicate,
-        ),
-      ),
+      .from(objectRecords)
+      .where(and(eq(objectRecords.documentId, documents.id), valuePredicate)),
   );
 };
 
@@ -290,10 +280,11 @@ const getFilteredDocuments = async (data: {
         type: fieldDefinitions.type,
       })
       .from(fieldDefinitions)
+      .innerJoin(objectTypes, eq(fieldDefinitions.objectTypeId, objectTypes.id))
       .where(
         and(
           eq(fieldDefinitions.teamId, teamId),
-          eq(fieldDefinitions.resourceType, "document"),
+          eq(objectTypes.key, "document"),
           inArray(fieldDefinitions.key, keys),
         ),
       );
@@ -310,11 +301,12 @@ const getFilteredDocuments = async (data: {
       exists(
         db
           .select({ one: sql`1` })
-          .from(documentEntities)
+          .from(objectRecords)
+          .innerJoin(links, eq(links.fromRecordId, objectRecords.id))
           .where(
             and(
-              eq(documentEntities.documentId, documents.id),
-              inArray(documentEntities.entityId, params.entityId),
+              eq(objectRecords.documentId, documents.id),
+              inArray(links.toRecordId, params.entityId),
             ),
           ),
       ),
@@ -374,8 +366,8 @@ const getFilteredDocuments = async (data: {
     },
     where: { id: { in: ids } },
     with: {
-      fieldValues: {
-        columns: { fieldKey: true, value: true },
+      mirrorRecord: {
+        columns: { data: true },
       },
     },
   });
@@ -505,7 +497,7 @@ const getFolderExplorer = async (data: {
         columns: docColumns,
         where: docWhere,
         with: {
-          fieldValues: { columns: { fieldKey: true, value: true } },
+          mirrorRecord: { columns: { data: true } },
         },
         orderBy: { updatedAt: "desc" },
         limit: remainingLimit,
@@ -519,7 +511,7 @@ const getFolderExplorer = async (data: {
       columns: docColumns,
       where: docWhere,
       with: {
-        fieldValues: { columns: { fieldKey: true, value: true } },
+        mirrorRecord: { columns: { data: true } },
       },
       orderBy: { updatedAt: "desc" },
       limit: limit,

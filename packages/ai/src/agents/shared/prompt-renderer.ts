@@ -319,11 +319,10 @@ export const buildChatbotSystemPrompt = async (
         ctx.activeMemoryBlock && ctx.activeMemoryBlock.length > 0
           ? ctx.activeMemoryBlock
           : "_No relevant memory recalled for this turn._",
-      teamFieldDefinitions:
-        ctx.teamFieldDefinitionsBlock &&
-        ctx.teamFieldDefinitionsBlock.length > 0
-          ? ctx.teamFieldDefinitionsBlock
-          : "_No dynamic fields configured for this team._",
+      teamObjects:
+        ctx.teamObjectsBlock && ctx.teamObjectsBlock.length > 0
+          ? ctx.teamObjectsBlock
+          : "_No object types configured for this team._",
       externalAppsBlock:
         ctx.externalAppsBlock && ctx.externalAppsBlock.length > 0
           ? ctx.externalAppsBlock

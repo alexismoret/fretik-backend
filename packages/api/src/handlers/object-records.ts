@@ -1,0 +1,290 @@
+import {
+  authMiddleware,
+  type HonoLoggedAppType,
+} from "@fretik/shared/lib/auth-middleware";
+import { teamRequired } from "@fretik/shared/lib/errors";
+import { paramsIdSchema } from "@fretik/shared/schemas/common/params";
+import {
+  responseForbiddenSchema,
+  responseInternalErrorSchema,
+  responseListSchema,
+  responseNotFoundSchema,
+} from "@fretik/shared/schemas/common/responses";
+import {
+  createObjectRecordRequestSchema,
+  objectRecordListItemSchema,
+  objectRecordResponseSchema,
+  objectRecordWithLinksResponseSchema,
+  recordHistoryResponseSchema,
+  recordListQuerySchema,
+  setRecordStatusRequestSchema,
+  updateObjectRecordRequestSchema,
+} from "@fretik/shared/schemas/ontology";
+import { getRecordHistory } from "@fretik/shared/services/domain-events/history";
+import { createObjectRecord } from "@fretik/shared/services/object-records/create";
+import { deleteObjectRecord } from "@fretik/shared/services/object-records/delete";
+import {
+  getObjectRecord,
+  listObjectRecords,
+} from "@fretik/shared/services/object-records/retrieve";
+import { setRecordStatus } from "@fretik/shared/services/object-records/set-status";
+import { setRecordData } from "@fretik/shared/services/object-records/update";
+import { createRoute, OpenAPIHono } from "@hono/zod-openapi";
+import { z } from "zod";
+
+/**
+ * Object-records API — the typed rows of the workspace. Trust lives on
+ * `status`: AI-fed records arrive `suggested` and the human confirms/rejects
+ * them via the status route.
+ */
+const objectRecordRoutes = new OpenAPIHono<HonoLoggedAppType>();
+objectRecordRoutes.use("*", authMiddleware);
+
+const listRoute = createRoute({
+  method: "get",
+  path: "",
+  summary: "List records of a type",
+  tags: ["ObjectRecords"],
+  request: { query: recordListQuerySchema },
+  responses: {
+    200: {
+      content: {
+        "application/json": {
+          schema: responseListSchema(objectRecordListItemSchema),
+        },
+      },
+      description: "Records retrieved",
+    },
+    ...responseForbiddenSchema,
+    ...responseInternalErrorSchema,
+  },
+});
+
+const getRoute = createRoute({
+  method: "get",
+  path: "/{id}",
+  summary: "Get a record with its links",
+  tags: ["ObjectRecords"],
+  request: { params: paramsIdSchema },
+  responses: {
+    200: {
+      content: {
+        "application/json": { schema: objectRecordWithLinksResponseSchema },
+      },
+      description: "Record retrieved",
+    },
+    ...responseNotFoundSchema,
+    ...responseForbiddenSchema,
+    ...responseInternalErrorSchema,
+  },
+});
+
+const historyRoute = createRoute({
+  method: "get",
+  path: "/{id}/history",
+  summary: "Get a record's activity timeline",
+  description:
+    "Folds the durable journal into the record's field history + event list.",
+  tags: ["ObjectRecords"],
+  request: { params: paramsIdSchema },
+  responses: {
+    200: {
+      content: {
+        "application/json": { schema: recordHistoryResponseSchema },
+      },
+      description: "History retrieved",
+    },
+    ...responseNotFoundSchema,
+    ...responseForbiddenSchema,
+    ...responseInternalErrorSchema,
+  },
+});
+
+const createRouteDef = createRoute({
+  method: "post",
+  path: "",
+  summary: "Create a record",
+  tags: ["ObjectRecords"],
+  request: {
+    body: {
+      content: {
+        "application/json": { schema: createObjectRecordRequestSchema },
+      },
+      required: true,
+    },
+  },
+  responses: {
+    201: {
+      content: {
+        "application/json": { schema: objectRecordResponseSchema },
+      },
+      description: "Record created",
+    },
+    ...responseForbiddenSchema,
+    ...responseInternalErrorSchema,
+  },
+});
+
+const updateRouteDef = createRoute({
+  method: "patch",
+  path: "/{id}",
+  summary: "Replace a record's data",
+  tags: ["ObjectRecords"],
+  request: {
+    params: paramsIdSchema,
+    body: {
+      content: {
+        "application/json": { schema: updateObjectRecordRequestSchema },
+      },
+      required: true,
+    },
+  },
+  responses: {
+    200: {
+      content: {
+        "application/json": { schema: objectRecordResponseSchema },
+      },
+      description: "Record updated",
+    },
+    ...responseNotFoundSchema,
+    ...responseForbiddenSchema,
+    ...responseInternalErrorSchema,
+  },
+});
+
+const statusRoute = createRoute({
+  method: "post",
+  path: "/{id}/status",
+  summary: "Confirm or reject a record",
+  tags: ["ObjectRecords"],
+  request: {
+    params: paramsIdSchema,
+    body: {
+      content: {
+        "application/json": { schema: setRecordStatusRequestSchema },
+      },
+      required: true,
+    },
+  },
+  responses: {
+    200: {
+      content: {
+        "application/json": { schema: objectRecordResponseSchema },
+      },
+      description: "Record status updated",
+    },
+    ...responseNotFoundSchema,
+    ...responseForbiddenSchema,
+    ...responseInternalErrorSchema,
+  },
+});
+
+const deleteRouteDef = createRoute({
+  method: "delete",
+  path: "/{id}",
+  summary: "Delete a record",
+  tags: ["ObjectRecords"],
+  request: { params: paramsIdSchema },
+  responses: {
+    200: {
+      content: {
+        "application/json": { schema: z.object({ id: z.uuid() }) },
+      },
+      description: "Record deleted",
+    },
+    ...responseNotFoundSchema,
+    ...responseForbiddenSchema,
+    ...responseInternalErrorSchema,
+  },
+});
+
+objectRecordRoutes.openapi(listRoute, async (c) => {
+  const team = c.get("team");
+  if (!team) return c.json(teamRequired(), 403);
+  const {
+    objectTypeId,
+    status,
+    search,
+    filters,
+    page,
+    limit,
+    sortBy,
+    sortDir,
+    withLinks,
+  } = c.req.valid("query");
+  const result = await listObjectRecords({
+    teamId: team.id,
+    objectTypeId,
+    status,
+    search,
+    filters,
+    page,
+    limit,
+    sortBy,
+    sortDir,
+    withLinks,
+  });
+  return c.json(result, 200);
+});
+
+objectRecordRoutes.openapi(getRoute, async (c) => {
+  const team = c.get("team");
+  if (!team) return c.json(teamRequired(), 403);
+  const { id } = c.req.valid("param");
+  const record = await getObjectRecord({ id });
+  return c.json(record, 200);
+});
+
+objectRecordRoutes.openapi(historyRoute, async (c) => {
+  const team = c.get("team");
+  if (!team) return c.json(teamRequired(), 403);
+  const { id } = c.req.valid("param");
+  const history = await getRecordHistory({ recordId: id });
+  return c.json(history, 200);
+});
+
+objectRecordRoutes.openapi(createRouteDef, async (c) => {
+  const team = c.get("team");
+  if (!team) return c.json(teamRequired(), 403);
+  const user = c.get("user");
+  const body = c.req.valid("json");
+  const created = await createObjectRecord({
+    organizationId: team.organizationId,
+    teamId: team.id,
+    userId: user.id,
+    objectTypeId: body.objectTypeId,
+    data: body.data,
+    status: body.status,
+    source: body.source ?? "user_manual",
+    labelOverride: body.labelOverride ?? null,
+  });
+  return c.json(created, 201);
+});
+
+objectRecordRoutes.openapi(updateRouteDef, async (c) => {
+  const team = c.get("team");
+  if (!team) return c.json(teamRequired(), 403);
+  const { id } = c.req.valid("param");
+  const { data } = c.req.valid("json");
+  const updated = await setRecordData({ id, data });
+  return c.json(updated, 200);
+});
+
+objectRecordRoutes.openapi(statusRoute, async (c) => {
+  const team = c.get("team");
+  if (!team) return c.json(teamRequired(), 403);
+  const { id } = c.req.valid("param");
+  const { status } = c.req.valid("json");
+  const updated = await setRecordStatus({ id, status });
+  return c.json(updated, 200);
+});
+
+objectRecordRoutes.openapi(deleteRouteDef, async (c) => {
+  const team = c.get("team");
+  if (!team) return c.json(teamRequired(), 403);
+  const { id } = c.req.valid("param");
+  const result = await deleteObjectRecord({ id });
+  return c.json(result, 200);
+});
+
+export { objectRecordRoutes };

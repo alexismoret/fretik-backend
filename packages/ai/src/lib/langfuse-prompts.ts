@@ -28,6 +28,16 @@
 import { langfuseClient, langfuseEnvironment } from "./langfuse";
 
 /**
+ * Local prompt-source override. Set `LANGFUSE_PROMPTS_LOCAL=true` in a dev
+ * `.env` to read the in-repo `.md` directly and SKIP Langfuse entirely: local
+ * then runs whatever the `.md` currently says (your latest edit, picked up on
+ * the next dev-server reload) while NOTHING is published to Langfuse — so the
+ * `production` label, and therefore prod, stays exactly as it is. Tracing is
+ * unaffected (this gates only the prompt source). NEVER set it in prod.
+ */
+const USE_LOCAL_PROMPTS = process.env.LANGFUSE_PROMPTS_LOCAL === "true";
+
+/**
  * Per-environment fetch options. Production pins the promoted `production`
  * label (cached); every other environment tracks `latest` uncached so a UI
  * edit is visible on the next turn.
@@ -64,7 +74,7 @@ export const fetchManagedPrompt = async (
   name: string,
   fallbackText: string,
 ): Promise<ManagedPrompt> => {
-  if (!langfuseClient) return { text: fallbackText };
+  if (USE_LOCAL_PROMPTS || !langfuseClient) return { text: fallbackText };
   try {
     const prompt = await langfuseClient.prompt.get(name, {
       ...FETCH_OPTIONS,

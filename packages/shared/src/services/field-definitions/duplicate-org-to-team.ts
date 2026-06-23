@@ -2,6 +2,7 @@ import { and, eq, isNull } from "drizzle-orm";
 import db from "../../db";
 import type { NewFieldDefinition } from "../../db/schema";
 import { fieldDefinitions } from "../../db/schema";
+import { syncAllTypedViewsForTeam } from "../object-types/sync-typed-view";
 import { invalidateTeamFieldDefinitionsCache } from "./cache";
 
 /**
@@ -32,32 +33,41 @@ export const duplicateOrgDefsToTeam = async (data: {
         ),
       );
 
-    if (orgDefs.length === 0) {
-      return { inserted: 0 };
+    let inserted = 0;
+    if (orgDefs.length > 0) {
+      const rows: NewFieldDefinition[] = orgDefs.map((def) => ({
+        organizationId,
+        teamId,
+        objectTypeId: def.objectTypeId,
+        key: def.key,
+        label: def.label,
+        description: def.description,
+        type: def.type,
+        config: def.config,
+        isTitle: def.isTitle,
+        aiExtractionEnabled: def.aiExtractionEnabled,
+        vectorizeInclude: def.vectorizeInclude,
+        displayInPanel: def.displayInPanel,
+        displayInFilters: def.displayInFilters,
+        enabled: def.enabled,
+        displayOrder: def.displayOrder,
+      }));
+
+      const insertedRows = await tx
+        .insert(fieldDefinitions)
+        .values(rows)
+        .onConflictDoNothing()
+        .returning({ id: fieldDefinitions.id });
+      inserted = insertedRows.length;
     }
 
-    const rows: NewFieldDefinition[] = orgDefs.map((def) => ({
-      organizationId,
-      teamId,
-      resourceType: def.resourceType,
-      key: def.key,
-      label: def.label,
-      description: def.description,
-      type: def.type,
-      config: def.config,
-      aiExtractionEnabled: def.aiExtractionEnabled,
-      vectorizeInclude: def.vectorizeInclude,
-      displayInPanel: def.displayInPanel,
-      displayInFilters: def.displayInFilters,
-      enabled: def.enabled,
-      displayOrder: def.displayOrder,
-    }));
+    // Build the team's typed views now that its field defs exist — one per
+    // visible type (its own + org/system). Atomic with the copy and cheap (a
+    // new team has no records). Runs even when 0 defs were copied so the system
+    // types still get structural-only views.
+    await syncAllTypedViewsForTeam({ tx, organizationId, teamId });
 
-    const inserted = await tx
-      .insert(fieldDefinitions)
-      .values(rows)
-      .returning({ id: fieldDefinitions.id });
-    return { inserted: inserted.length };
+    return { inserted };
   });
 
   await invalidateTeamFieldDefinitionsCache(teamId);

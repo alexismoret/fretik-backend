@@ -150,17 +150,16 @@ export interface AgentRuntimeContext {
    */
   activeMemoryBlock?: string;
   /**
-   * Rendered `{{teamFieldDefinitions}}` fragment for the system prompt
-   * — one line per enabled field definition (`- key (type)`), ordered
-   * by `displayOrder`. Compact on purpose: `type` is the only bit the
-   * LLM needs to write the right JSONB filter; the user-facing label,
-   * description, and full config are fetched on demand via the
-   * `listFieldDefinitions` tool. Built by the handler from
-   * `getFieldDefinitionsForTeam` (Redis-cached). Empty string when the
-   * team has no enabled fields — the prompt section then renders as
-   * `_No dynamic fields configured for this team._`.
+   * Rendered `{{teamObjects}}` fragment for the system prompt — one line
+   * per object type the team can query (`- **key** (view …) — columns: ….
+   * relations: …`). The AI query path's schema-discovery block: it names
+   * each type's typed SQL view + columns + outgoing relations. Full field
+   * metadata is fetched on demand via `describeObjectType`. Built by the
+   * handler from `describeTeamSchema`. Empty string when the team has no
+   * types — the prompt section then renders as
+   * `_No object types configured for this team._`.
    */
-  teamFieldDefinitionsBlock?: string;
+  teamObjectsBlock?: string;
   /**
    * Rendered `{{skillsCatalog}}` fragment for the system prompt — one
    * line per skill enabled for this team (`- **name** — description`),

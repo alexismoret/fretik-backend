@@ -62,7 +62,11 @@ export type AiVectorSourceType = (typeof AI_VECTOR_SOURCE_TYPES)[number];
  * JSONB.
  */
 
-type EntityVectorInfo = {
+// A record mentioned by a document, embedded into the document's vectors so RAG
+// can filter / cite by it. `type` is the object-type key (e.g. "company") and
+// `role` the relation key (e.g. "mentions"). The JSONB field stays named
+// `entities` for back-compat with already-indexed vectors.
+type MentionVectorInfo = {
   id: string;
   name: string;
   type: string;
@@ -92,7 +96,7 @@ type DocumentVectorMetadata = {
   page_count: number | null;
   document_language: string | null;
   document_summary: string | null;
-  entities: EntityVectorInfo[];
+  entities: MentionVectorInfo[];
   labels: LabelVectorInfo[];
   /**
    * Team-configurable custom field values keyed by `fieldDefinitions.key`.
@@ -175,9 +179,9 @@ export type AiVectorMetadata =
 export type {
   ContextVectorMetadata,
   DocumentVectorMetadata,
-  EntityVectorInfo,
   LabelVectorInfo,
   MemoryVectorMetadata,
+  MentionVectorInfo,
   SkillVectorMetadata,
 };
 

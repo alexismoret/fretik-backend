@@ -1,7 +1,7 @@
 import { and, asc, eq, isNull } from "drizzle-orm";
 import db from "../../db";
 import type { FieldDefinition } from "../../db/schema";
-import { fieldDefinitions } from "../../db/schema";
+import { fieldDefinitions, objectTypes } from "../../db/schema";
 import { selectOrCache } from "../../lib/redis";
 import { fieldDefinitionsCacheKeyOrg } from "./cache";
 
@@ -10,6 +10,9 @@ import { fieldDefinitionsCacheKeyOrg } from "./cache";
  * These rows are the template Fretik copies into a freshly created team —
  * editing them never propagates to existing teams.
  *
+ * The object type is resolved by `objectTypeId` when provided, otherwise by
+ * `objectTypeKey` (default `"document"`) via an INNER JOIN on `object_types`.
+ *
  * Cached under `organization:{orgId}:field-definitions:…` (30 min TTL).
  *
  * The relational query API does not natively express `IS NULL` predicates
@@ -17,12 +20,14 @@ import { fieldDefinitionsCacheKeyOrg } from "./cache";
  */
 export const getFieldDefinitionsForOrganization = async (data: {
   organizationId: string;
-  resourceType?: FieldDefinition["resourceType"];
+  objectTypeId?: string;
+  objectTypeKey?: string;
   includeDisabled?: boolean;
 }): Promise<FieldDefinition[]> => {
   const {
     organizationId,
-    resourceType = "document",
+    objectTypeId,
+    objectTypeKey = "document",
     includeDisabled = false,
   } = data;
 
@@ -30,19 +35,40 @@ export const getFieldDefinitionsForOrganization = async (data: {
     async () => {
       const conditions = [
         eq(fieldDefinitions.organizationId, organizationId),
-        eq(fieldDefinitions.resourceType, resourceType),
         isNull(fieldDefinitions.teamId),
       ];
+      if (objectTypeId) {
+        conditions.push(eq(fieldDefinitions.objectTypeId, objectTypeId));
+      } else {
+        conditions.push(eq(objectTypes.key, objectTypeKey));
+      }
       if (!includeDisabled) {
         conditions.push(eq(fieldDefinitions.enabled, true));
       }
 
-      return await db
+      if (objectTypeId) {
+        return await db
+          .select()
+          .from(fieldDefinitions)
+          .where(and(...conditions))
+          .orderBy(asc(fieldDefinitions.displayOrder));
+      }
+
+      const rows = await db
         .select()
         .from(fieldDefinitions)
+        .innerJoin(
+          objectTypes,
+          eq(fieldDefinitions.objectTypeId, objectTypes.id),
+        )
         .where(and(...conditions))
         .orderBy(asc(fieldDefinitions.displayOrder));
+      return rows.map((r) => r.field_definitions);
     },
-    fieldDefinitionsCacheKeyOrg(organizationId, resourceType, includeDisabled),
+    fieldDefinitionsCacheKeyOrg(
+      organizationId,
+      objectTypeId ?? objectTypeKey,
+      includeDisabled,
+    ),
   );
 };

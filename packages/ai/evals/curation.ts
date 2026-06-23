@@ -120,4 +120,9 @@ export const CURATED: Record<string, CuratedCase> = {
   "mm-chart-reading": { capability: "multimodal" },
   "mm-image-plus-text": { capability: "multimodal" },
   "mm-video-qa": { capability: "multimodal" },
+  // ── Dynamic-data AI query path (2026-06-20) — the typed-view + links
+  // "killer query". Seeds its own object-graph dataset (industry-agnostic),
+  // so NOT smoke (needs a DB seed). See evals/cases/object-graph.ts.
+  // tool-use (1)
+  "graph-killer-query": { capability: "tool-use" },
 };

@@ -15,18 +15,36 @@ const PARSE_OPTIONS = { database: "postgresql" } as const;
  * a curated view that projects safe columns and is org-scoped by RLS session
  * variable — never the raw `user`/`member` tables.
  */
+// The dynamic-data graph is reached through the typed `v_*` views (the `v_`
+// namespace, allowed below by prefix — never raw `object_records` / `data`) plus
+// the graph relations `links` / `link_types` / `domain_events` /
+// `domain_event_links` (the join + provenance path). `object_records` and
+// `object_types` are deliberately ABSENT: they back the security_invoker views
+// (GRANT + RLS at the DB level) but the model cannot reference them directly, so
+// raw JSONB is never in its SQL surface — maximizing text-to-SQL precision.
 const ALLOWED_RELATIONS = new Set([
   "documents",
   "document_properties",
-  "document_field_values",
-  "entities",
-  "document_entities",
   "folders",
   "labels",
   "document_labels",
   "field_definitions",
   "chatbot_org_members",
+  // Dynamic-data graph (Phase 3). Typed `v_*` views are allowed by prefix.
+  "links",
+  "link_types",
+  "domain_events",
+  "domain_event_links",
 ]);
+
+/**
+ * Prefix of the typed-view namespace. Any relation named `v_*` (the generic
+ * `v_record` + the per-type `v_<key>_<teamhex>` views) is allowed — the names
+ * are slug-validated at creation (anti-DDL-injection) and the views are RLS-
+ * scoped via `security_invoker`. This is how the model reads typed record data
+ * without ever touching raw `object_records`.
+ */
+const TYPED_VIEW_PREFIX = "v_";
 
 /**
  * Statement types allowed — strictly read-only. Every other statement type
@@ -142,11 +160,16 @@ export const sanitizeSelect = (rawSql: string): string => {
       });
     }
 
-    if (cteNames.has(table) || ALLOWED_RELATIONS.has(table)) continue;
+    if (
+      cteNames.has(table) ||
+      ALLOWED_RELATIONS.has(table) ||
+      table.startsWith(TYPED_VIEW_PREFIX)
+    )
+      continue;
 
     throw new SqlValidationException({
       code: "SQL_TABLE_NOT_ALLOWED",
-      message: `Table "${table}" is not accessible. Query only the product tables listed in the system prompt (documents, entities, folders, field_definitions, chatbot_org_members, …).`,
+      message: `Table "${table}" is not accessible. Query the typed views (v_record, v_<type>) and the graph relations (links, link_types, domain_events) listed in the system prompt — never raw object_records.`,
     });
   }
 

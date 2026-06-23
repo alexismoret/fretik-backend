@@ -67,7 +67,6 @@ describe("validateToolCalls", () => {
       "memory",
       "askUserQuestion",
       "listDocuments",
-      "listEntities",
       "webFetch",
       "dispatchAgent",
     ];

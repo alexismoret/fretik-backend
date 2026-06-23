@@ -1,10 +1,17 @@
 // oxlint-disable no-await-in-loop
-import { count, eq } from "drizzle-orm";
-import db from "../../db";
+import { eq } from "drizzle-orm";
+import db, { type Transaction } from "../../db";
 import type { FieldDefinition } from "../../db/schema";
-import { documentFieldValues, fieldDefinitions } from "../../db/schema";
+import { fieldDefinitions } from "../../db/schema";
 import { badRequest, notFound, throwHttpError } from "../../lib/errors";
 import type { FieldDefinitionOperation } from "../../schemas/field-definitions";
+import {
+  countRecordsWithFieldKey,
+  deleteFieldKeysFromRecords,
+  renameFieldKeyInRecords,
+} from "../object-records/field-data";
+import { resolveOrgObjectTypeId } from "../object-types/resolve";
+import { refreshTypedViewAfterCatalogChange } from "../object-types/sync-typed-view";
 import { invalidateFieldDefinitionsCache } from "./cache";
 import { slugifyFieldKey } from "./slugify-key";
 import {
@@ -40,6 +47,13 @@ export const batchApplyFieldDefinitionOperations = async (data: {
     return { created: 0, updated: 0, deleted: 0, renamed: 0 };
   }
 
+  // Only document fields are supported today — resolve the system "document"
+  // type once for the whole batch.
+  const objectTypeId = await resolveOrgObjectTypeId({
+    organizationId,
+    key: "document",
+  });
+
   const result = await db.transaction(async (tx) => {
     let created = 0;
     let updated = 0;
@@ -60,7 +74,7 @@ export const batchApplyFieldDefinitionOperations = async (data: {
           tx,
           organizationId,
           teamId,
-          resourceType: "document",
+          objectTypeId,
           baseKey,
         });
         validateFieldDefinitionShape({
@@ -73,10 +87,10 @@ export const batchApplyFieldDefinitionOperations = async (data: {
         await tx.insert(fieldDefinitions).values({
           organizationId,
           teamId,
-          // The AI-suggest payload does not carry `resourceType` — only
+          // The AI-suggest payload does not carry the object type — only
           // "document" is supported today, and keeping it out of the
-          // schema spares the LLM one redundant field. Default here.
-          resourceType: "document",
+          // schema spares the LLM one redundant field. Resolved above.
+          objectTypeId,
           key,
           label: op.payload.label,
           description: op.payload.description ?? null,
@@ -116,11 +130,12 @@ export const batchApplyFieldDefinitionOperations = async (data: {
         const typeChanged =
           op.patch.type !== undefined && op.patch.type !== existing.type;
         if (typeChanged) {
-          const [c] = await tx
-            .select({ n: count() })
-            .from(documentFieldValues)
-            .where(eq(documentFieldValues.fieldKey, existing.key));
-          if ((c?.n ?? 0) > 0 && !op.patch.cascade) {
+          const valueCount = await countRecordsWithFieldKey({
+            tx,
+            objectTypeId: existing.objectTypeId,
+            key: existing.key,
+          });
+          if (valueCount > 0 && !op.patch.cascade) {
             return throwHttpError(
               400,
               badRequest(
@@ -128,10 +143,12 @@ export const batchApplyFieldDefinitionOperations = async (data: {
               ),
             );
           }
-          if ((c?.n ?? 0) > 0 && op.patch.cascade) {
-            await tx
-              .delete(documentFieldValues)
-              .where(eq(documentFieldValues.fieldKey, existing.key));
+          if (valueCount > 0 && op.patch.cascade) {
+            await deleteFieldKeysFromRecords({
+              tx,
+              objectTypeId: existing.objectTypeId,
+              keys: [existing.key],
+            });
           }
         }
         await tx
@@ -147,9 +164,11 @@ export const batchApplyFieldDefinitionOperations = async (data: {
           teamId,
         );
         if (op.cascade) {
-          await tx
-            .delete(documentFieldValues)
-            .where(eq(documentFieldValues.fieldKey, existing.key));
+          await deleteFieldKeysFromRecords({
+            tx,
+            objectTypeId: existing.objectTypeId,
+            keys: [existing.key],
+          });
         }
         await tx.delete(fieldDefinitions).where(eq(fieldDefinitions.id, op.id));
         deleted += 1;
@@ -161,13 +180,14 @@ export const batchApplyFieldDefinitionOperations = async (data: {
           teamId,
         );
         if (existing.key === op.newKey) continue;
-        // Migrate any existing values pointing to the old key before
-        // changing the def — the unique (documentId, fieldKey) constraint
-        // would otherwise collide.
-        await tx
-          .update(documentFieldValues)
-          .set({ fieldKey: op.newKey })
-          .where(eq(documentFieldValues.fieldKey, existing.key));
+        // Migrate any record values stored under the old key before changing
+        // the def, so the value carries over to the new key.
+        await renameFieldKeyInRecords({
+          tx,
+          objectTypeId: existing.objectTypeId,
+          fromKey: existing.key,
+          toKey: op.newKey,
+        });
         await tx
           .update(fieldDefinitions)
           .set({ key: op.newKey })
@@ -180,8 +200,17 @@ export const batchApplyFieldDefinitionOperations = async (data: {
     await assertScopeEnabledCap({
       organizationId,
       teamId,
-      resourceType: "document",
+      objectTypeId,
       addEnabled: 0,
+    });
+
+    // One typed-view + search-vector refresh for the whole batch (every op
+    // targets the same object type), atomic with the field-def changes.
+    await refreshTypedViewAfterCatalogChange({
+      tx,
+      organizationId,
+      objectTypeId,
+      teamId,
     });
 
     return { created, updated, deleted, renamed };
@@ -192,7 +221,7 @@ export const batchApplyFieldDefinitionOperations = async (data: {
 };
 
 const assertOwnedById = async (
-  tx: Parameters<Parameters<typeof db.transaction>[0]>[0],
+  tx: Transaction,
   id: string,
   organizationId: string,
   teamId: string | null,
@@ -221,13 +250,13 @@ const assertOwnedById = async (
  * collision detection.
  */
 const pickAvailableKey = async (data: {
-  tx: Parameters<Parameters<typeof db.transaction>[0]>[0];
+  tx: Transaction;
   organizationId: string;
   teamId: string | null;
-  resourceType: "document";
+  objectTypeId: string;
   baseKey: string;
 }): Promise<string> => {
-  const { tx, organizationId, teamId, resourceType, baseKey } = data;
+  const { tx, organizationId, teamId, objectTypeId, baseKey } = data;
 
   for (let i = 0; i < 1000; i++) {
     const candidate = i === 0 ? baseKey : `${baseKey}_${i + 1}`.slice(0, 60);
@@ -235,7 +264,7 @@ const pickAvailableKey = async (data: {
       columns: { id: true },
       where: {
         organizationId,
-        resourceType,
+        objectTypeId,
         key: candidate,
         // Drizzle v2 RQB requires `{ isNull: true }` to match NULL —
         // a bare `null` is rejected by the filter type. The two

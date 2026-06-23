@@ -1,7 +1,6 @@
 import { eq, sql } from "drizzle-orm";
 import db from "../../db";
 import {
-  documentEntities,
   documentLabels,
   documentProperties,
   documents,
@@ -10,7 +9,7 @@ import {
 import { notFound, throwHttpError } from "../../lib/errors";
 import { deleteKeysByPrefix } from "../../lib/redis";
 import type { UpdateDocumentInput } from "../../schemas/documents";
-import { setDocumentFieldValues } from "./field-values";
+import { setRecordData } from "../object-records/update";
 import { triggerDocumentVectorRefresh } from "./vector-refresh";
 
 /**
@@ -91,33 +90,29 @@ export const updateDocument = async (data: {
       }
     }
 
-    if (updates.entities !== undefined) {
-      await tx
-        .delete(documentEntities)
-        .where(eq(documentEntities.documentId, id));
-      if (updates.entities.length > 0) {
-        await tx.insert(documentEntities).values(
-          updates.entities.map((e) => ({
-            documentId: id,
-            entityId: e.entityId,
-            role: e.role,
-            source: "user_manual" as const,
-          })),
-        );
-      }
-    }
-
-    // Dynamic field values keyed by definition slug. `null` clears a key
-    // for this document; absence leaves it untouched (the caller sends
-    // only the fields the user actually changed).
+    // Field values live on the document's 1:1 mirror record. Merge the partial
+    // patch into its `data` — `null` clears a key, absence leaves it untouched
+    // (the caller sends only the fields the user changed). Editing the set of
+    // linked records (the former `entities`) moves to the generic object editor.
     if (updates.fieldValues !== undefined) {
-      await setDocumentFieldValues({
-        documentId: id,
-        teamId,
-        values: updates.fieldValues,
-        source: "user_manual",
-        tx,
+      const mirror = await tx.query.objectRecords.findFirst({
+        columns: { id: true, data: true },
+        where: { documentId: id },
       });
+      if (mirror) {
+        const merged: Record<string, unknown> = { ...mirror.data };
+        for (const [key, value] of Object.entries(updates.fieldValues)) {
+          if (value === null || value === undefined) delete merged[key];
+          else merged[key] = value;
+        }
+        await setRecordData({
+          tx,
+          id: mirror.id,
+          data: merged,
+          source: "user_correction",
+          strict: false,
+        });
+      }
     }
 
     await deleteKeysByPrefix(`document:${id}`);

@@ -18,7 +18,6 @@ export const legalTemplate: DocumentFieldTemplate = {
   descriptionKey: "legal.description",
   fields: [
     {
-      resourceType: "document",
       key: "document_type",
       labelKey: "legal.fields.documentType.label",
       descriptionKey: "legal.fields.documentType.description",
@@ -41,7 +40,6 @@ export const legalTemplate: DocumentFieldTemplate = {
       displayOrder: 0,
     },
     {
-      resourceType: "document",
       key: "effective_date",
       labelKey: "legal.fields.effectiveDate.label",
       descriptionKey: "legal.fields.effectiveDate.description",
@@ -50,7 +48,6 @@ export const legalTemplate: DocumentFieldTemplate = {
       displayOrder: 1,
     },
     {
-      resourceType: "document",
       key: "expiration_date",
       labelKey: "legal.fields.expirationDate.label",
       descriptionKey: "legal.fields.expirationDate.description",
@@ -58,7 +55,6 @@ export const legalTemplate: DocumentFieldTemplate = {
       displayOrder: 2,
     },
     {
-      resourceType: "document",
       key: "contract_value",
       labelKey: "legal.fields.contractValue.label",
       descriptionKey: "legal.fields.contractValue.description",
@@ -67,7 +63,6 @@ export const legalTemplate: DocumentFieldTemplate = {
       displayOrder: 3,
     },
     {
-      resourceType: "document",
       key: "currency",
       labelKey: "legal.fields.currency.label",
       descriptionKey: "legal.fields.currency.description",
@@ -86,7 +81,6 @@ export const legalTemplate: DocumentFieldTemplate = {
       displayOrder: 4,
     },
     {
-      resourceType: "document",
       key: "jurisdiction",
       labelKey: "legal.fields.jurisdiction.label",
       descriptionKey: "legal.fields.jurisdiction.description",
@@ -95,7 +89,6 @@ export const legalTemplate: DocumentFieldTemplate = {
       displayOrder: 5,
     },
     {
-      resourceType: "document",
       key: "parties",
       labelKey: "legal.fields.parties.label",
       descriptionKey: "legal.fields.parties.description",
@@ -104,7 +97,6 @@ export const legalTemplate: DocumentFieldTemplate = {
       displayOrder: 6,
     },
     {
-      resourceType: "document",
       key: "counterparty_type",
       labelKey: "legal.fields.counterpartyType.label",
       descriptionKey: "legal.fields.counterpartyType.description",

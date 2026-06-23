@@ -144,18 +144,15 @@ export const ChatbotCallOptionsSchema = z.object({
    */
   activeMemoryBlock: z.string().optional(),
   /**
-   * Compact catalogue of the team's enabled dynamic field definitions
-   * — one line per field (`- key (type)`), ordered by `displayOrder`.
-   * The handler builds it via `getFieldDefinitionsForTeam`
-   * (Redis-cached). Threaded into
-   * `AgentRuntimeContext.teamFieldDefinitionsBlock` and substituted
-   * into the `{{teamFieldDefinitions}}` placeholder under
-   * `<team_fields>` in the dynamic suffix. Lets the LLM write correct
-   * `document_field_values.field_key` queries and
-   * `customFilters[].fieldKey` for `listDocuments` without an extra
-   * tool call. Omitted when the team has no enabled fields.
+   * Catalogue of the team's object types for the AI query path — one line
+   * per type (typed view + field columns + outgoing relations). The
+   * handler builds it via `describeTeamSchema`. Threaded into
+   * `AgentRuntimeContext.teamObjectsBlock` and substituted into the
+   * `{{teamObjects}}` placeholder under `<team_objects>` in the dynamic
+   * suffix. Lets the LLM write correct typed-view + `links` queries
+   * without an extra tool call. Omitted when the team has no types.
    */
-  teamFieldDefinitionsBlock: z.string().optional(),
+  teamObjectsBlock: z.string().optional(),
   /**
    * Catalogue of skills enabled for this team — one line per skill
    * (`- **name** — description`). The handler builds it via
@@ -296,7 +293,7 @@ const buildChatbotRuntimeContextBase = (
   attachedFilesBlock: options.attachedFilesBlock,
   chatbotContextManifest: options.chatbotContextManifest,
   activeMemoryBlock: options.activeMemoryBlock,
-  teamFieldDefinitionsBlock: options.teamFieldDefinitionsBlock,
+  teamObjectsBlock: options.teamObjectsBlock,
   enabledSkillsBlock: options.enabledSkillsBlock,
   participantsBlock: options.participantsBlock,
   externalAppConnections: options.externalAppConnections,

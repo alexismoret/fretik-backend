@@ -1,10 +1,10 @@
-import { and, eq, inArray, isNull } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import db from "../../db";
 import type {
   FieldDefinitionConfig,
   NewFieldDefinition,
 } from "../../db/schema";
-import { documentFieldValues, fieldDefinitions } from "../../db/schema";
+import { fieldDefinitions } from "../../db/schema";
 import { badRequest, throwHttpError } from "../../lib/errors";
 import {
   DOCUMENT_FIELD_TEMPLATES,
@@ -14,6 +14,9 @@ import type {
   DocumentFieldTemplate,
   FieldDefinitionSeed,
 } from "../../templates/document-fields/types";
+import { deleteFieldKeysFromRecords } from "../object-records/field-data";
+import { resolveOrgObjectTypeId } from "../object-types/resolve";
+import { refreshTypedViewAfterCatalogChange } from "../object-types/sync-typed-view";
 import { invalidateFieldDefinitionsCache } from "./cache";
 import { FIELD_DEFINITION_LIMITS } from "./constants";
 import { getTeamLocale } from "./get-locale";
@@ -61,6 +64,13 @@ export const applyDocumentFieldTemplate = async (data: {
   const locale =
     localeOverride ?? (teamId ? await getTeamLocale(teamId) : "en");
 
+  // These are document-field templates — resolve the system "document" type
+  // once and stamp every seeded row with it.
+  const objectTypeId = await resolveOrgObjectTypeId({
+    organizationId,
+    key: "document",
+  });
+
   const template = DOCUMENT_FIELD_TEMPLATES[templateKey];
   if (!template) {
     return throwHttpError(400, badRequest(`Unknown template '${templateKey}'`));
@@ -88,16 +98,15 @@ export const applyDocumentFieldTemplate = async (data: {
         .returning({ key: fieldDefinitions.key });
       dropped = droppedRows.length;
 
-      // Cascade: drop any documentFieldValues whose key referenced one of
-      // the dropped defs. Only when applying to a team scope — org-scoped
-      // defs are templates and have no values.
+      // Cascade: strip the dropped defs' keys from every document record's
+      // `data`. Only when applying to a team scope — org-scoped defs are
+      // templates and have no values.
       if (teamId && droppedRows.length > 0) {
-        await tx.delete(documentFieldValues).where(
-          inArray(
-            documentFieldValues.fieldKey,
-            droppedRows.map((r) => r.key),
-          ),
-        );
+        await deleteFieldKeysFromRecords({
+          tx,
+          objectTypeId,
+          keys: droppedRows.map((r) => r.key),
+        });
       }
     } else {
       const existing = await tx
@@ -115,7 +124,15 @@ export const applyDocumentFieldTemplate = async (data: {
         skipped += 1;
         continue;
       }
-      rows.push(buildRowFromSeed({ seed, organizationId, teamId, locale }));
+      rows.push(
+        buildRowFromSeed({
+          seed,
+          organizationId,
+          teamId,
+          objectTypeId,
+          locale,
+        }),
+      );
     }
 
     let inserted = 0;
@@ -126,6 +143,15 @@ export const applyDocumentFieldTemplate = async (data: {
         .returning({ id: fieldDefinitions.id });
       inserted = insertResult.length;
     }
+
+    // Rebuild the team's typed view + search vectors for the (replaced/merged)
+    // field set, atomic with the template application.
+    await refreshTypedViewAfterCatalogChange({
+      tx,
+      organizationId,
+      objectTypeId,
+      teamId,
+    });
 
     return { inserted, skipped, dropped };
   });
@@ -151,9 +177,10 @@ const buildRowFromSeed = (data: {
   seed: FieldDefinitionSeed;
   organizationId: string;
   teamId: string | null;
+  objectTypeId: string;
   locale: string;
 }): NewFieldDefinition => {
-  const { seed, organizationId, teamId, locale } = data;
+  const { seed, organizationId, teamId, objectTypeId, locale } = data;
   const label = translateTemplateKey(seed.labelKey, locale);
   const description = seed.descriptionKey
     ? translateTemplateKey(seed.descriptionKey, locale)
@@ -172,7 +199,7 @@ const buildRowFromSeed = (data: {
   return {
     organizationId,
     teamId,
-    resourceType: seed.resourceType,
+    objectTypeId,
     key: seed.key,
     label,
     description,

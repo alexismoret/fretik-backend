@@ -52,12 +52,12 @@ export const createRagSearchTool = () =>
       "Usage:",
       '- Use when the answer lives in the prose of a document, memory, skill, or context file ("what does the contract say about demurrage", "summarize this BL", "find shipments for container Z").',
       "- For counts, sums, group-by, or filtering by exact field values → use `querySql` instead.",
-      "- For paginated metadata listing (filename, type, folder, status, date) → use `listDocuments` / `listEntities` instead.",
+      "- For paginated metadata listing (filename, type, folder, status, date) → use `listDocuments` instead.",
       "- For external / public knowledge → use `searchWeb` instead.",
       "- When you already know the exact memory file path → use `memory` with `command: 'view'` instead.",
       "- `question` must be natural language. Put ids in `filters.sourceIds`, never in the question.",
       "- `filters.sourceTypes` (optional): documents, memories, skills, context. Defaults to all.",
-      "- `filters.sourceIds` (optional): narrow to pre-selected row UUIDs. Chain with `listDocuments` / `listEntities` first to apply structural filters (type, date, entity) — this tool does not accept structural filters directly.",
+      "- `filters.sourceIds` (optional): narrow to pre-selected row UUIDs. Chain with `listDocuments` first to apply structural filters (type, date) — this tool does not accept structural filters directly.",
     ].join("\n"),
     inputSchema: z.object({
       question: z
@@ -80,7 +80,7 @@ export const createRagSearchTool = () =>
             .max(100)
             .optional()
             .describe(
-              "Narrow to specific row UUIDs pre-selected via listDocuments / listExtractions / listEntities. Max 100 ids per call.",
+              "Narrow to specific row UUIDs pre-selected via listDocuments / listExtractions. Max 100 ids per call.",
             ),
         })
         .optional(),
@@ -90,9 +90,9 @@ export const createRagSearchTool = () =>
       const { toolCallId } = options;
 
       // Permissive sourceTypes: the model sometimes requests a type that
-      // isn't vector-indexed (e.g. "entities" — structured rows reached via
-      // listEntities / getEntityDetails / querySql). Drop unknown values and
-      // steer the model, instead of failing the whole call on a schema enum.
+      // isn't vector-indexed (structured rows are reached via querySql).
+      // Drop unknown values and steer the model, instead of failing the
+      // whole call on a schema enum.
       const isSourceType = (t: string): t is AiVectorSourceType =>
         AI_VECTOR_SOURCE_TYPES.some((v) => v === t);
       const requestedTypes = filters?.sourceTypes ?? [];

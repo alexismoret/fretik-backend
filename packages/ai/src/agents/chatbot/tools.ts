@@ -1,13 +1,14 @@
 import { createAskUserQuestionTool } from "../../tools/ask-user";
 import { createBashTool } from "../../tools/bash";
 import { createCreateSkillTool } from "../../tools/create-skill";
+import { createDescribeObjectTypeTool } from "../../tools/describe-object-type";
 import type { createDispatchAgentTool } from "../../tools/dispatch-agent";
 import { createDownloadDriveDocumentTool } from "../../tools/download-drive-document";
-import { createGetEntityDetailsTool } from "../../tools/get-entity-details";
+import { createGetObjectTool } from "../../tools/get-object";
 import { createListDocumentsTool } from "../../tools/list-documents";
-import { createListEntitiesTool } from "../../tools/list-entities";
-import { createListFieldDefinitionsTool } from "../../tools/list-field-definitions";
 import { createListLabelsTool } from "../../tools/list-labels";
+import { createListObjectTypesTool } from "../../tools/list-object-types";
+import { createListObjectsTool } from "../../tools/list-objects";
 import { createManageTasksTool } from "../../tools/manage-tasks";
 import { createMemoryTool } from "../../tools/memory";
 import { createPresentFilesTool } from "../../tools/present-files";
@@ -208,12 +209,14 @@ export const buildCoreTools = (domainTools: SearchableToolRegistry) => ({
  * Domain tools — not loaded by default, activated on demand via
  * `searchTools`. Currently registered:
  *
- * - **listDocuments / listEntities**: paginated browse operations over
- *   the SaaS core objects. Backed by shared services in
- *   `@fretik/shared/services/*` — the same code paths the API handlers
- *   use, so filter semantics stay consistent across every caller.
- * - **getEntityDetails**: single-row read that carries the full payload
- *   (entity's linked documents), again via a shared service.
+ * - **listDocuments**: paginated browse over the team's documents.
+ *   Backed by a shared service in `@fretik/shared/services/*` — the same
+ *   code path the API handlers use, so filter semantics stay consistent.
+ * - **listObjectTypes / describeObjectType / listObjects / getObject**:
+ *   the AI query path over the dynamic-data graph — discover the team's
+ *   object types, inspect one type's fields + relations, browse a type's
+ *   records, and fetch one record with its links. The no-SQL companions
+ *   to `querySql` over the typed `v_*` views.
  * - **webFetch**: pulls a specific public URL as cleaned Markdown
  *   via Tavily `/extract`. Paired with the core `searchWeb` tool —
  *   search first, fetch specific hits second.
@@ -235,13 +238,6 @@ export const buildDomainTools = () => ({
       "search filter list team documents by type folder status filename",
     maxResultSizeChars: 16_000,
   }),
-  listEntities: buildChatbotTool({
-    ...createListEntitiesTool(),
-    category: "domain",
-    searchHint:
-      "search filter list entities organizations people vendors clients partners companies by type country",
-    maxResultSizeChars: 16_000,
-  }),
   listLabels: buildChatbotTool({
     ...createListLabelsTool(),
     category: "domain",
@@ -249,18 +245,32 @@ export const buildDomainTools = () => ({
       "search list labels tags categories team filter documents by label",
     maxResultSizeChars: 16_000,
   }),
-  listFieldDefinitions: buildChatbotTool({
-    ...createListFieldDefinitionsTool(),
+  listObjectTypes: buildChatbotTool({
+    ...createListObjectTypesTool(),
     category: "domain",
     searchHint:
-      "field definitions custom dynamic schema metadata attributes properties key label type description config options enum allowed values choices select multi_select bounds min max what fields does the team have configured",
+      "object types ontology catalogue what kinds of things does the team track companies people custom types schema discovery list types",
     maxResultSizeChars: 16_000,
   }),
-  getEntityDetails: buildChatbotTool({
-    ...createGetEntityDetailsTool(),
+  describeObjectType: buildChatbotTool({
+    ...createDescribeObjectTypeTool(),
     category: "domain",
     searchHint:
-      "read entity details linked documents organization person vendor client one specific id",
+      "describe object type fields columns schema metadata key label type description config options enum allowed values choices select multi_select bounds min max relations typed view what fields",
+    maxResultSizeChars: 16_000,
+  }),
+  listObjects: buildChatbotTool({
+    ...createListObjectsTool(),
+    category: "domain",
+    searchHint:
+      "list browse object records of a type rows entities companies people custom records search status confirmed suggested pending pagination",
+    maxResultSizeChars: 16_000,
+  }),
+  getObject: buildChatbotTool({
+    ...createGetObjectTool(),
+    category: "domain",
+    searchHint:
+      "get object record by id detail fields linked records relations connections neighbors what is connected to",
     maxResultSizeChars: 16_000,
   }),
   webFetch: buildChatbotTool({

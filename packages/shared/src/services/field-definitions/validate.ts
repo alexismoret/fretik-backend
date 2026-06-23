@@ -1,7 +1,6 @@
 import { and, eq, isNull, ne } from "drizzle-orm";
 import db from "../../db";
 import type {
-  FieldDefinition,
   FieldDefinitionConfig,
   FieldDefinitionType,
 } from "../../db/schema";
@@ -18,6 +17,7 @@ export type FieldDefinitionPatch = {
   description?: string | null;
   type?: FieldDefinitionType;
   config?: FieldDefinitionConfig;
+  isTitle?: boolean;
   aiExtractionEnabled?: boolean;
   vectorizeInclude?: boolean;
   displayInPanel?: boolean;
@@ -97,13 +97,13 @@ export const validateFieldDefinitionShape = (
 export const countEnabledForScope = async (data: {
   organizationId: string;
   teamId: string | null;
-  resourceType: FieldDefinition["resourceType"];
+  objectTypeId: string;
   excludeId?: string;
 }): Promise<number> => {
-  const { organizationId, teamId, resourceType, excludeId } = data;
+  const { organizationId, teamId, objectTypeId, excludeId } = data;
   const conditions = [
     eq(fieldDefinitions.organizationId, organizationId),
-    eq(fieldDefinitions.resourceType, resourceType),
+    eq(fieldDefinitions.objectTypeId, objectTypeId),
     eq(fieldDefinitions.enabled, true),
     teamId === null
       ? isNull(fieldDefinitions.teamId)
@@ -126,14 +126,14 @@ export const countEnabledForScope = async (data: {
 export const assertScopeEnabledCap = async (data: {
   organizationId: string;
   teamId: string | null;
-  resourceType: FieldDefinition["resourceType"];
+  objectTypeId: string;
   addEnabled: number;
   excludeId?: string;
 }): Promise<void> => {
   const current = await countEnabledForScope({
     organizationId: data.organizationId,
     teamId: data.teamId,
-    resourceType: data.resourceType,
+    objectTypeId: data.objectTypeId,
     excludeId: data.excludeId,
   });
   if (

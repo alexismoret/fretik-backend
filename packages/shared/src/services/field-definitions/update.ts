@@ -1,8 +1,13 @@
-import { count, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import db from "../../db";
 import type { FieldDefinition } from "../../db/schema";
-import { documentFieldValues, fieldDefinitions } from "../../db/schema";
+import { fieldDefinitions } from "../../db/schema";
 import { badRequest, notFound, throwHttpError } from "../../lib/errors";
+import {
+  countRecordsWithFieldKey,
+  deleteFieldKeysFromRecords,
+} from "../object-records/field-data";
+import { refreshTypedViewAfterCatalogChange } from "../object-types/sync-typed-view";
 import { invalidateFieldDefinitionsCache } from "./cache";
 import {
   assertScopeEnabledCap,
@@ -30,7 +35,8 @@ export const updateFieldDefinition = async (data: {
   cascade?: boolean;
   patch: FieldDefinitionPatch;
 }): Promise<FieldDefinition> => {
-  const { id, cascade = false, patch } = data;
+  const { id, cascade = false } = data;
+  let patch = data.patch;
 
   const updated = await db.transaction(async (tx) => {
     const existing = await tx.query.fieldDefinitions.findFirst({
@@ -53,11 +59,12 @@ export const updateFieldDefinition = async (data: {
       patch.type !== undefined && patch.type !== existing.type;
 
     if (keyChanged || typeChanged) {
-      const [valueCount] = await tx
-        .select({ n: count() })
-        .from(documentFieldValues)
-        .where(eq(documentFieldValues.fieldKey, existing.key));
-      const hasValues = (valueCount?.n ?? 0) > 0;
+      const hasValues =
+        (await countRecordsWithFieldKey({
+          tx,
+          objectTypeId: existing.objectTypeId,
+          key: existing.key,
+        })) > 0;
 
       if (keyChanged && hasValues) {
         return throwHttpError(
@@ -76,10 +83,40 @@ export const updateFieldDefinition = async (data: {
             ),
           );
         }
-        await tx
-          .delete(documentFieldValues)
-          .where(eq(documentFieldValues.fieldKey, existing.key));
+        await deleteFieldKeysFromRecords({
+          tx,
+          objectTypeId: existing.objectTypeId,
+          keys: [existing.key],
+        });
       }
+    }
+
+    // Only a text field can be the title. Ignore a promotion of any other type.
+    const effectiveType = patch.type ?? existing.type;
+    if (patch.isTitle === true && effectiveType !== "text") {
+      patch = { ...patch, isTitle: undefined };
+    }
+
+    // Title moves: promoting this field demotes the type's current title (the
+    // one-per-type unique index would otherwise reject the write). A type
+    // always keeps a title, so demoting the current title via this path is a
+    // no-op (use "promote another field" instead).
+    if (patch.isTitle === true && !existing.isTitle) {
+      await tx
+        .update(fieldDefinitions)
+        .set({ isTitle: false })
+        .where(
+          and(
+            eq(fieldDefinitions.objectTypeId, existing.objectTypeId),
+            existing.teamId === null
+              ? isNull(fieldDefinitions.teamId)
+              : eq(fieldDefinitions.teamId, existing.teamId),
+            eq(fieldDefinitions.isTitle, true),
+          ),
+        );
+    } else if (patch.isTitle === false && existing.isTitle) {
+      // Refuse to leave a type with no title.
+      patch = { ...patch, isTitle: undefined };
     }
 
     // Recompute enabled cap if we are turning a disabled field back on.
@@ -88,7 +125,7 @@ export const updateFieldDefinition = async (data: {
       await assertScopeEnabledCap({
         organizationId: existing.organizationId,
         teamId: existing.teamId,
-        resourceType: existing.resourceType,
+        objectTypeId: existing.objectTypeId,
         addEnabled: 1,
         excludeId: existing.id,
       });
@@ -102,6 +139,16 @@ export const updateFieldDefinition = async (data: {
     if (!updatedRow) {
       return throwHttpError(404, notFound("Field definition not found"));
     }
+
+    // Regenerate the team's typed view (column key/type/set may have changed)
+    // + search vectors, atomically with the field-def change.
+    await refreshTypedViewAfterCatalogChange({
+      tx,
+      organizationId: updatedRow.organizationId,
+      objectTypeId: updatedRow.objectTypeId,
+      teamId: updatedRow.teamId,
+    });
+
     return updatedRow;
   });
 

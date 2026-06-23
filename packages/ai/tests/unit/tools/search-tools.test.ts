@@ -36,12 +36,6 @@ const DOMAIN: SearchableToolRegistry = {
       "read extraction extracted_data json schema fields one specific id",
     category: "domain",
   },
-  listEntities: {
-    description: "List entities (carriers, clients, other companies).",
-    searchHint:
-      "search filter list entities carriers clients companies by type country",
-    category: "domain",
-  },
   webFetch: {
     description: "Fetch a public URL as cleaned Markdown.",
     searchHint: "fetch extract read content specific url page markdown article",

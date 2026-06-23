@@ -53,7 +53,7 @@ ORGANISATIONAL SIGNALS (at least one required to accept a name that looks like a
 
 Rules for valid entities:
 - Extract EVERY distinct legal-entity mention — do NOT cap the count.
-- If the SAME organisation plays SEVERAL roles in this document (e.g. the same company is both ISSUER and CUSTOMER), emit ONE entry PER role — same \`name\`, different \`role\`, with a \`confidence\` per role. Do NOT pick a single "best" role.
+- Emit each distinct organisation ONCE (dedupe by name); do not repeat the same \`name\`.
 - \`name\` must be the EXACT text as written on the document — no casing normalisation, no acronym expansion, no translation.
 
 Quick test before emitting (apply IN ORDER):

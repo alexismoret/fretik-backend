@@ -1,7 +1,7 @@
-import { and, eq, exists } from "drizzle-orm";
+import { and, eq, exists, sql } from "drizzle-orm";
 import db from "../../db";
 import type { DocumentStatus, FieldDefinition } from "../../db/schema";
-import { documentFieldValues } from "../../db/schema";
+import { documents, objectRecords } from "../../db/schema";
 import {
   buildDocumentOriginalKey,
   buildDocumentThumbnailKey,
@@ -25,10 +25,11 @@ import { getFolderBreadcrumbs } from "../folders/retrieve";
  *   to team-root documents. Omit to search across every folder.
  * - `status`: processing status. Omit to return every status.
  * - `labelIds`: any-of match on the `documents.labels` M2M.
- * - `entityIds`: any-of match on the `documents.entities` M2M.
- * - `customFilters`: equality on `(fieldKey, value)` pairs in
- *   `document_field_values`. Each entry produces an `EXISTS` sub-select
- *   joined on the document id — AND semantics across entries.
+ * - `entityIds`: any-of match on the records the document mentions
+ *   (its mirror record's `mentions` links).
+ * - `customFilters`: equality on `(fieldKey, value)` against the document
+ *   mirror record's `data`. Each entry produces an `EXISTS` sub-select
+ *   correlated on the document id — AND semantics across entries.
  * - `includeThumbnailUrl` (default `false`): generates presigned S3
  *   thumbnail URLs for `ready` documents. Off by default because
  *   presigning is remote, serial, and only the drive UI needs it.
@@ -95,19 +96,21 @@ export const searchDocuments = async (
     includeThumbnailUrl = false,
   } = opts;
 
-  // Custom filter clauses are expressed as `EXISTS` sub-selects on
-  // `document_field_values` so each one can run against the same row
-  // independently. Drizzle's relational query API doesn't compose raw
-  // sub-selects cleanly, so we pass them via `AND(RAW)` builders.
+  // Custom filter clauses are `EXISTS` sub-selects on the document's 1:1 mirror
+  // record, correlated by `object_records.document_id`. The value now lives at
+  // `data['<fieldKey>']` in the graph; `jsonb_extract_path` keeps the key a bound
+  // text parameter (no injection, no `jsonb -> unknown` operator ambiguity).
+  // Drizzle's relational query API doesn't compose raw sub-selects cleanly, so
+  // we pass them via `AND(RAW)` builders.
   const customFilterExists = (customFilters ?? []).map((cf) =>
     exists(
       db
-        .select({ one: documentFieldValues.id })
-        .from(documentFieldValues)
+        .select({ one: objectRecords.id })
+        .from(objectRecords)
         .where(
           and(
-            eq(documentFieldValues.fieldKey, cf.fieldKey),
-            eq(documentFieldValues.value, cf.value as never),
+            eq(objectRecords.documentId, documents.id),
+            sql`jsonb_extract_path(${objectRecords.data}, ${cf.fieldKey}) = ${JSON.stringify(cf.value)}::jsonb`,
           ),
         ),
     ),
@@ -127,7 +130,7 @@ export const searchDocuments = async (
         ? { documentLabels: { labelId: { in: labelIds } } }
         : {}),
       ...(entityIds && entityIds.length > 0
-        ? { documentEntities: { entityId: { in: entityIds } } }
+        ? { mirrorRecord: { outgoingLinks: { toRecordId: { in: entityIds } } } }
         : {}),
       ...(customFilterExists.length > 0
         ? { RAW: and(...customFilterExists) }
@@ -149,11 +152,9 @@ export const searchDocuments = async (
       properties: {
         columns: { pageCount: true },
       },
-      documentEntities: {
-        columns: { id: true },
-      },
-      fieldValues: {
-        columns: { fieldKey: true, value: true },
+      mirrorRecord: {
+        columns: { data: true },
+        with: { outgoingLinks: { columns: { id: true } } },
       },
     },
     orderBy: { createdAt: "desc" },
@@ -177,10 +178,6 @@ export const searchDocuments = async (
 
   return {
     documents: pageRows.map((r) => {
-      const fieldValues: Record<string, unknown> = {};
-      for (const fv of r.fieldValues) {
-        fieldValues[fv.fieldKey] = fv.value;
-      }
       return {
         id: r.id,
         originalFilename: r.originalFilename,
@@ -189,8 +186,8 @@ export const searchDocuments = async (
         status: r.status,
         folder: r.folder ? { id: r.folder.id, name: r.folder.name } : null,
         pageCount: r.properties?.pageCount ?? null,
-        entityCount: r.documentEntities.length,
-        fieldValues,
+        entityCount: r.mirrorRecord?.outgoingLinks.length ?? 0,
+        fieldValues: r.mirrorRecord?.data ?? {},
         thumbnailUrl: includeThumbnailUrl
           ? (thumbnailMap.get(r.id) ?? null)
           : null,
@@ -257,14 +254,11 @@ export const getDocumentDetails = async (data: {
         )
       : null;
 
-  const fieldValues: Record<string, unknown> = {};
-  for (const fv of document.fieldValues) {
-    fieldValues[fv.fieldKey] = fv.value;
-  }
+  const fieldValues: Record<string, unknown> =
+    document.mirrorRecord?.data ?? {};
 
   const fieldDefinitions = await getFieldDefinitionsForTeam({
     teamId: data.teamId,
-    resourceType: "document",
   });
 
   return { document, fileUrl, fieldValues, fieldDefinitions };
@@ -294,8 +288,8 @@ const loadDocument = async (data: { id: string; teamId: string }) => {
       labels: {
         columns: { id: true, name: true, color: true },
       },
-      fieldValues: {
-        columns: { fieldKey: true, value: true },
+      mirrorRecord: {
+        columns: { data: true },
       },
     },
   });

@@ -23,8 +23,6 @@ export type PreExtractionLlmOutput = {
   documentLanguage: string;
   entities: {
     name: string;
-    role: string;
-    type?: string;
     confidence?: number;
   }[];
   confidenceScore?: number | null;

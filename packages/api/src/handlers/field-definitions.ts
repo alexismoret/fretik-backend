@@ -32,6 +32,7 @@ import { getFieldDefinitionsForOrganization } from "@fretik/shared/services/fiel
 import { getFieldDefinitionsForTeam } from "@fretik/shared/services/field-definitions/get-for-team";
 import { reorderFieldDefinitions } from "@fretik/shared/services/field-definitions/reorder";
 import { updateFieldDefinition } from "@fretik/shared/services/field-definitions/update";
+import { resolveOrgObjectTypeId } from "@fretik/shared/services/object-types/resolve";
 import { createRoute, OpenAPIHono } from "@hono/zod-openapi";
 import { z } from "zod";
 
@@ -259,14 +260,12 @@ fieldDefinitionRoutes.openapi(listRoute, async (c) => {
     });
     const defs = await getFieldDefinitionsForOrganization({
       organizationId: team.organizationId,
-      resourceType: "document",
       includeDisabled: true,
     });
     return c.json(defs, 200);
   }
   const defs = await getFieldDefinitionsForTeam({
     teamId: team.id,
-    resourceType: "document",
     includeDisabled: true,
   });
   return c.json(defs, 200);
@@ -285,15 +284,23 @@ fieldDefinitionRoutes.openapi(createRouteDef, async (c) => {
     });
   }
 
+  const objectTypeId =
+    body.objectTypeId ??
+    (await resolveOrgObjectTypeId({
+      organizationId: team.organizationId,
+      key: body.objectTypeKey ?? "document",
+    }));
+
   const created = await createFieldDefinition({
     organizationId: team.organizationId,
     teamId: body.scope === "organization" ? null : team.id,
-    resourceType: body.resourceType,
+    objectTypeId,
     key: body.key,
     label: body.label,
     description: body.description ?? null,
     type: body.type,
     config: body.config,
+    isTitle: body.isTitle,
     aiExtractionEnabled: body.aiExtractionEnabled,
     vectorizeInclude: body.vectorizeInclude,
     displayInPanel: body.displayInPanel,
@@ -365,12 +372,10 @@ fieldDefinitionRoutes.openapi(aiSuggestRoute, async (c) => {
     body.scope === "organization"
       ? await getFieldDefinitionsForOrganization({
           organizationId: team.organizationId,
-          resourceType: "document",
           includeDisabled: true,
         })
       : await getFieldDefinitionsForTeam({
           teamId: team.id,
-          resourceType: "document",
           includeDisabled: true,
         });
 

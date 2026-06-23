@@ -47,9 +47,10 @@ import {
   removePresent,
 } from "@fretik/shared/services/ai/presence";
 import { updateConversation } from "@fretik/shared/services/ai/update";
+import { emitDomainEvent } from "@fretik/shared/services/domain-events/emit";
 import { releaseSandbox } from "@fretik/shared/services/e2b/release-sandbox";
 import { listConnections } from "@fretik/shared/services/external-apps/connections/list";
-import { getFieldDefinitionsForTeam } from "@fretik/shared/services/field-definitions/get-for-team";
+import { describeTeamSchema } from "@fretik/shared/services/object-types/describe-team-schema";
 import { listEnabledSkillsForTeam } from "@fretik/shared/services/skills/list-enabled-for-team";
 import { MAX_FILES_PER_MESSAGE } from "@fretik/shared/utils/chatbot-limits";
 import { OpenAPIHono } from "@hono/zod-openapi";
@@ -74,6 +75,7 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { HTTPException } from "hono/http-exception";
 import { streamSSE } from "hono/streaming";
 import { buildSpeakerContext } from "../agents/chatbot/speaker-context";
+import { formatTeamObjectsBlock } from "../agents/chatbot/team-objects-block";
 import { summariseMissedMessages } from "../services/catch-up-summary";
 import { notifyMentionedMembers } from "../services/chatbot-mention-email";
 // Use node:stream/web's TransformStream rather than the DOM global:
@@ -955,7 +957,7 @@ const buildTurnCallOptions = async (
     attachedFilesBlock,
     chatbotContextManifest,
     activeMemoryRecall,
-    teamFieldDefinitionsBlock,
+    teamObjectsBlock,
     enabledSkillsBlock,
   ] = await Promise.all([
     // C4 — each fragment already soft-fails to an empty value; the soft
@@ -1033,18 +1035,21 @@ const buildTurnCallOptions = async (
     // failure must never block the turn — fall back to an empty block
     // and let the prompt render the "no dynamic fields" placeholder.
     withSoftTimeout(
-      getFieldDefinitionsForTeam({ teamId: params.callOptions.teamId })
-        .then((defs) => defs.map((fd) => `- ${fd.key} (${fd.type})`).join("\n"))
+      describeTeamSchema({
+        organizationId: params.callOptions.organizationId,
+        teamId: params.callOptions.teamId,
+      })
+        .then((types) => formatTeamObjectsBlock(types))
         .catch((error: unknown) => {
           console.warn(
-            `${params.logPrefix} getFieldDefinitionsForTeam failed, continuing without team fields:`,
+            `${params.logPrefix} describeTeamSchema failed, continuing without team objects:`,
             error instanceof Error ? error.message : error,
           );
           return "";
         }),
       3000,
       "",
-      "field-defs",
+      "team-objects",
     ),
     // Team-filtered L1 skills listing. Always-on skills are always
     // present; team-configurable skills appear only when no override
@@ -1073,7 +1078,7 @@ const buildTurnCallOptions = async (
   ]);
 
   console.info(
-    `${params.logPrefix} contextManifestChars=${chatbotContextManifest.totalChars.toString()} files=${chatbotContextManifest.fileCount.toString()} inlined=${chatbotContextManifest.inlinedFileCount.toString()} activeMemory=${activeMemoryRecall ? "hit" : "miss"} teamFieldsChars=${teamFieldDefinitionsBlock.length.toString()} enabledSkillsChars=${enabledSkillsBlock.length.toString()}`,
+    `${params.logPrefix} contextManifestChars=${chatbotContextManifest.totalChars.toString()} files=${chatbotContextManifest.fileCount.toString()} inlined=${chatbotContextManifest.inlinedFileCount.toString()} activeMemory=${activeMemoryRecall ? "hit" : "miss"} teamObjectsChars=${teamObjectsBlock.length.toString()} enabledSkillsChars=${enabledSkillsBlock.length.toString()}`,
   );
 
   return {
@@ -1085,10 +1090,8 @@ const buildTurnCallOptions = async (
         ? chatbotContextManifest.manifest
         : undefined,
     activeMemoryBlock: activeMemoryRecall?.block,
-    teamFieldDefinitionsBlock:
-      teamFieldDefinitionsBlock.length > 0
-        ? teamFieldDefinitionsBlock
-        : undefined,
+    teamObjectsBlock:
+      teamObjectsBlock.length > 0 ? teamObjectsBlock : undefined,
     enabledSkillsBlock:
       enabledSkillsBlock.length > 0 ? enabledSkillsBlock : undefined,
     externalAppConnections: externalApps.externalAppConnections,
@@ -1302,6 +1305,32 @@ const runChatbotTurn = async (
         params.history,
         finalMessages,
       );
+
+      // Journal the turn boundary: a durable `chat.turn` domain event for
+      // memory recall + future workflows (their Phase 5+ consumers). Persisted
+      // conversations only; fire-and-forget and dedup-keyed on the final
+      // message id so a re-fired `onFinish` never double-journals. Advisory in
+      // V1 — not yet co-transactional with the message rows persisted above.
+      if (params.conversationId) {
+        const lastMessageId = finalMessages[finalMessages.length - 1]?.id;
+        void emitDomainEvent({
+          organizationId: params.callOptions.organizationId,
+          teamId: params.callOptions.teamId,
+          type: "chat.turn",
+          actor: {
+            actorType: "agent",
+            actorUserId: params.callOptions.userId ?? null,
+            conversationId: params.conversationId,
+          },
+          payload: lastMessageId ? { lastMessageId } : {},
+          dedupKey: lastMessageId ? `chat.turn:${lastMessageId}` : null,
+        }).catch((err: unknown) => {
+          console.error(
+            `${params.logPrefix} failed to journal chat.turn:`,
+            err,
+          );
+        });
+      }
       // Per-turn observability (tool calls, RAG hits, latency, cost) is
       // captured by Langfuse via `experimental_telemetry` — see
       // `lib/langfuse.ts`. No custom DB telemetry blob or structured log

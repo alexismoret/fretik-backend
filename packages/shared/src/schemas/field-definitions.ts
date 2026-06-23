@@ -1,8 +1,5 @@
 import { z } from "zod";
-import {
-  fieldDefinitionResourceTypeEnum,
-  fieldDefinitionTypeEnum,
-} from "../db/schema";
+import { fieldDefinitionTypeEnum } from "../db/schema";
 import {
   FIELD_DEFINITION_KEY_REGEX,
   FIELD_DEFINITION_LIMITS,
@@ -14,10 +11,6 @@ import {
 
 export const fieldDefinitionTypeSchema = z.enum(
   fieldDefinitionTypeEnum.enumValues,
-);
-
-export const fieldDefinitionResourceTypeSchema = z.enum(
-  fieldDefinitionResourceTypeEnum.enumValues,
 );
 
 export const fieldOptionSchema = z.object({
@@ -52,7 +45,7 @@ export const fieldDefinitionResponseSchema = z.object({
   id: z.uuid(),
   organizationId: z.uuid(),
   teamId: z.uuid().nullable(),
-  resourceType: fieldDefinitionResourceTypeSchema,
+  objectTypeId: z.uuid(),
   key: fieldDefinitionKeySchema,
   label: z.string(),
   description: z.string().nullable(),
@@ -62,6 +55,7 @@ export const fieldDefinitionResponseSchema = z.object({
   vectorizeInclude: z.boolean(),
   displayInPanel: z.boolean(),
   displayInFilters: z.boolean(),
+  isTitle: z.boolean(),
   enabled: z.boolean(),
   displayOrder: z.number().int(),
   // `z.coerce.date()` (not `z.date()`) so the schema accepts BOTH `Date`
@@ -93,8 +87,13 @@ export type FieldDefinitionResponse = z.infer<
 export const createFieldDefinitionRequestSchema = z
   .object({
     scope: z.enum(["organization", "team"]),
-    resourceType: fieldDefinitionResourceTypeSchema.default("document"),
-    key: fieldDefinitionKeySchema,
+    // The object type the field attaches to. Resolve by id when known,
+    // otherwise by key (the handler defaults to the "document" system type).
+    objectTypeId: z.uuid().optional(),
+    objectTypeKey: z.string().optional(),
+    // Optional: omitted from the UI and derived server-side from the label.
+    // Templates / imports may still pass an explicit key.
+    key: fieldDefinitionKeySchema.optional(),
     label: z.string().min(1).max(FIELD_DEFINITION_LIMITS.MAX_LABEL_CHARS),
     description: z
       .string()
@@ -102,6 +101,7 @@ export const createFieldDefinitionRequestSchema = z
       .nullish(),
     type: fieldDefinitionTypeSchema,
     config: fieldConfigSchema.default({}),
+    isTitle: z.boolean().optional(),
     aiExtractionEnabled: z.boolean().default(true),
     vectorizeInclude: z.boolean().default(true),
     displayInPanel: z.boolean().default(true),
@@ -153,6 +153,7 @@ export const updateFieldDefinitionRequestSchema = z
       .optional(),
     type: fieldDefinitionTypeSchema.optional(),
     config: fieldConfigSchema.optional(),
+    isTitle: z.boolean().optional(),
     aiExtractionEnabled: z.boolean().optional(),
     vectorizeInclude: z.boolean().optional(),
     displayInPanel: z.boolean().optional(),

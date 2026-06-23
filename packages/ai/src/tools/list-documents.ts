@@ -21,9 +21,9 @@ import { TOOL_ERROR_CODES } from "../lib/tool-error-codes";
  * Filters are now fully dynamic: instead of a hardcoded `documentType`
  * enum, the tool accepts a generic `customFilters` list of
  * `{ fieldKey, value }` pairs. The model can discover available keys
- * via `listFieldDefinitions` (or by inspecting field values returned
- * here) and use them to refine searches. Universal filters (label,
- * entity) remain typed.
+ * via `describeObjectType("document")` (or by inspecting field values
+ * returned here) and use them to refine searches. Universal filters
+ * (label, entity) remain typed.
  */
 
 export const createListDocumentsTool = () =>
@@ -31,14 +31,14 @@ export const createListDocumentsTool = () =>
     description: [
       "List documents for the current team with optional filters and pagination.",
       "",
-      "Use this when the user asks for a listing of documents (by type, folder, status, name, label, entity, or any custom field) or needs document IDs to feed into another tool (getDocumentContent, getExtractionData, …).",
+      "Use this when the user asks for a listing of documents (by type, folder, status, name, label, linked organization, or any custom field) or needs document IDs to feed into another tool (getDocumentContent, getExtractionData, …).",
       "",
       "Filters:",
       "- search: substring match on the original filename (case-insensitive).",
       "- folderId: restrict to a single folder.",
       "- status: processing status ('ready' for usable docs).",
       "- labelIds: any-of match on the team's labels.",
-      "- entityIds: any-of match on linked entities (any role).",
+      "- entityIds: any-of match on linked organizations (record ids the document mentions).",
       "- customFilters: equality on the team's configured dynamic fields. Each entry is `{ fieldKey, value }`. Field keys (`document_type`, `category`, `invoice_number`, …) come from the team's field definitions and are visible on each returned document's `fieldValues` map. AND semantics across entries.",
       "",
       "Pagination: `limit` defaults to 20, max 50. Pass the returned `nextOffset` on `hasMore: true` to fetch the next page.",
@@ -67,7 +67,7 @@ export const createListDocumentsTool = () =>
         .array(z.string().uuid())
         .optional()
         .describe(
-          "Filter to documents linked to any of these entity ids (any role)",
+          "Filter to documents that mention any of these organization record ids",
         ),
       customFilters: z
         .array(

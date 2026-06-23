@@ -22,11 +22,11 @@ import { deleteFilesFromS3, getObjectBytes, uploadToS3 } from "../../lib/s3";
 import { emitUploadEvent } from "../../lib/upload-events";
 import { preExtractionResponseSchema } from "../../schemas/pre-extraction";
 import { isImage, isPdf, isSpreadsheet } from "../../utils/mimeTypes";
-import { matchAndLinkEntities } from "../entities/match";
 import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
+import { MENTIONS_LINK_TYPE_KEY } from "../object-types/seed-system-types";
 import { convertDocumentToPdf, convertFirstPageToPdf } from "./convert";
-import { setDocumentFieldValues } from "./field-values";
 import { joinDocumentPagesMarkdown } from "./markdown";
+import { syncDocumentGraph } from "./sync-document-graph";
 import { generateImageThumbnail, generatePdfThumbnail } from "./thumbnails";
 
 // ==================== //
@@ -83,9 +83,9 @@ const aiVectorizeResponseSchema = z.object({
  * Document processing pipeline — runs inside a BullMQ worker, so it is
  * RETRY-SAFE: any throw lets BullMQ re-run the job (transient blip or a
  * crashed worker reclaim). Every persistence step is idempotent
- * (`documentProperties` upsert, `setDocumentFieldValues` upsert,
- * `matchAndLinkEntities` on-conflict-do-nothing, vectorise deletes by
- * source first), so a re-run after partial progress converges cleanly.
+ * (`documentProperties` upsert, `syncDocumentGraph` upserts the 1:1 mirror
+ * record + dedups links + dedups `document.uploaded` on its dedupKey, vectorise
+ * deletes by source first), so a re-run after partial progress converges cleanly.
  *
  * Steps:
  * 1. Fetch the original bytes from S3 (`originalKey`).
@@ -98,7 +98,8 @@ const aiVectorizeResponseSchema = z.object({
  *    consumable by Mistral OCR (Word/PPT full doc, Excel/CSV first page).
  * 6. Call @fretik/ai `/internal/pre-extract` — OCR + structured LLM
  *    classification + entity extraction.
- * 7. Persist results, link entities, kick off RAG vectorisation, mark ready.
+ * 7. Persist results + mirror into the graph (`syncDocumentGraph`), mark ready,
+ *    then kick off RAG vectorisation.
  *
  * On unexpected failure it THROWS; the terminal failure handling
  * (status → error, storage refund, S3 cleanup) lives in
@@ -195,15 +196,17 @@ export const processDocument = async (
           set: duplicateResult.properties,
         });
 
-      if (Object.keys(duplicateResult.customFieldValues).length > 0) {
-        await setDocumentFieldValues({
-          documentId,
-          teamId,
-          values: duplicateResult.customFieldValues,
-          source: "ai_extraction",
-          tx,
-        });
-      }
+      // Mirror the inherited fields into the graph. No mentions: a content-hash
+      // duplicate reuses the prior upload's results and skips entity extraction.
+      await syncDocumentGraph({
+        tx,
+        organizationId,
+        teamId,
+        documentId,
+        filename: metadata.originalFilename,
+        customFields: duplicateResult.customFieldValues,
+        mentions: [],
+      });
 
       // The whole clone is one atomic transaction: a retry only re-enters
       // here when the prior attempt rolled back (status never reached
@@ -284,7 +287,6 @@ export const processDocument = async (
 
   const teamFieldDefinitions = await getFieldDefinitionsForTeam({
     teamId,
-    resourceType: "document",
   });
 
   let preExtractResult: z.infer<typeof preExtractionResponseSchema>;
@@ -344,7 +346,7 @@ export const processDocument = async (
     confidenceScore: preExtractResult.confidenceScore?.toString(),
   };
 
-  await db.transaction(async (tx) => {
+  const graphResult = await db.transaction(async (tx) => {
     await tx
       .insert(documentProperties)
       .values(propertiesToInsert)
@@ -358,53 +360,51 @@ export const processDocument = async (
         },
       });
 
-    if (Object.keys(preExtractResult.customFields).length > 0) {
-      await setDocumentFieldValues({
-        documentId,
-        teamId,
-        values: preExtractResult.customFields,
-        source: "ai_extraction",
-        tx,
-      });
-    }
+    // Mirror the document into the unified graph — 1:1 document record
+    // (data = extracted custom fields), `mentions` links to resolved company
+    // records, and the `document.uploaded` journal entry — all inside this
+    // transaction. The slow/external steps (OCR above, vectorise + S3 below)
+    // stay outside it so a Postgres tx is never held open across the network.
+    const result = await syncDocumentGraph({
+      tx,
+      organizationId,
+      teamId,
+      documentId,
+      filename: metadata.originalFilename,
+      customFields: preExtractResult.customFields,
+      mentions: preExtractResult.entities.map((e) => ({
+        name: e.name,
+        confidence: e.confidence,
+      })),
+    });
 
     await tx
       .update(documents)
       .set({ status: "ready" })
       .where(eq(documents.id, documentId));
+
+    return result;
   });
 
-  // Step 7: Match and link entities from pre-extraction
-  if (preExtractResult.entities.length > 0) {
-    await matchAndLinkEntities({
-      teamId,
-      documentId,
-      extractedEntities: preExtractResult.entities,
-    });
-  }
-
-  // Step 8: Send document data to @fretik/ai for RAG vector storage.
+  // Step 7: Send document data to @fretik/ai for RAG vector storage.
   // `/internal/vectorize` deletes existing rows for (sourceType, sourceId)
   // before inserting, so a retry replaces rather than duplicates.
-  const docWithRelations = await db.query.documents.findFirst({
+  const docLabels = await db.query.documents.findFirst({
     where: { id: documentId },
     columns: { id: true },
     with: {
-      documentEntities: { with: { entity: true } },
       labels: { columns: { id: true, name: true } },
     },
   });
 
-  const entityVectorInfo = (docWithRelations?.documentEntities ?? [])
-    .filter((de) => de.entity !== null)
-    .map((de) => ({
-      id: de.entity!.id,
-      name: de.entity!.name,
-      type: de.entity!.type,
-      role: de.role,
-    }));
+  const mentionVectorInfo = graphResult.companies.map((c) => ({
+    id: c.id,
+    name: c.name,
+    type: "company",
+    role: MENTIONS_LINK_TYPE_KEY,
+  }));
 
-  const labelVectorInfo = (docWithRelations?.labels ?? []).map((l) => ({
+  const labelVectorInfo = (docLabels?.labels ?? []).map((l) => ({
     id: l.id,
     name: l.name,
   }));
@@ -434,7 +434,7 @@ export const processDocument = async (
           page_count: preExtractResult.pageCount ?? null,
           document_language: preExtractResult.documentLanguage ?? null,
           document_summary: preExtractResult.documentSummary ?? null,
-          entities: entityVectorInfo,
+          entities: mentionVectorInfo,
           labels: labelVectorInfo,
           custom_fields: vectorisableCustomFields,
         },
@@ -541,9 +541,7 @@ const findExistingProcessingByHash = async (
       document: {
         columns: { id: true },
         with: {
-          fieldValues: {
-            columns: { fieldKey: true, value: true },
-          },
+          mirrorRecord: { columns: { data: true } },
         },
       },
     },
@@ -553,10 +551,8 @@ const findExistingProcessingByHash = async (
   // Guard against matching the document we're processing (e.g. on retry).
   if (existing.documentId === excludeDocumentId) return null;
 
-  const customFieldValues: Record<string, unknown> = {};
-  for (const fv of existing.document?.fieldValues ?? []) {
-    customFieldValues[fv.fieldKey] = fv.value;
-  }
+  const customFieldValues: Record<string, unknown> =
+    existing.document?.mirrorRecord?.data ?? {};
 
   return {
     sourceDocumentId: existing.documentId,

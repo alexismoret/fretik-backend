@@ -49,4 +49,27 @@ describe("buildRequest header threading", () => {
     const built = buildRequest(resolved({}), { thing_id: "T1" });
     expect(built.headers).toBeUndefined();
   });
+
+  it("propagates the action's `paginate` flag onto the built request", () => {
+    const action = {
+      name: "list_things",
+      kind: "read" as const,
+      summary: "List things",
+      endpoint: { method: "GET" as const, path: "/v1.0/things" },
+      params: {},
+      returns: { list: "Thing" },
+      paginate: true,
+    };
+    const withMapper = buildRequest(
+      resolved({ action, requestMapper: () => ({ query: { a: "1" } }) }),
+      {},
+    );
+    const generic = buildRequest(resolved({ action }), {});
+    expect(withMapper.paginate).toBe(true);
+    expect(generic.paginate).toBe(true);
+    // Off by default.
+    expect(
+      buildRequest(resolved({}), { thing_id: "T1" }).paginate,
+    ).toBeUndefined();
+  });
 });

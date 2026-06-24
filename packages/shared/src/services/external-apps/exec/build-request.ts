@@ -27,6 +27,7 @@ export interface BuiltRequest {
   query?: Record<string, string>;
   body?: unknown;
   headers?: Record<string, string>;
+  paginate?: boolean;
 }
 
 const substitutePath = (
@@ -114,6 +115,7 @@ export const buildRequest = (
       query: parts.query,
       body: parts.body,
       headers: parts.headers,
+      paginate: action.paginate,
     };
   }
 
@@ -122,5 +124,6 @@ export const buildRequest = (
     endpoint,
     query: genericQuery(args, action),
     body: genericBody(args, action),
+    paginate: action.paginate,
   };
 };

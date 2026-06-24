@@ -1,6 +1,6 @@
 # AUTO-GENERATED from manifest.ts — do not edit by hand. Regenerate: bun run gen:sdk
 
-"""Microsoft Planner provider — 12 actions.
+"""Microsoft Planner provider — 14 actions.
 
 All calls go through fretik-backend, which dispatches them to the
 provider (Nango Proxy or a custom handler). Write actions return an
@@ -27,7 +27,14 @@ class PlannerTask(BaseModel):
     priority: int | None = None
     due_date: str | None = None
     start_date: str | None = None
+    completed_at: str | None = None
     assignee_ids: list[str] | None = None
+    label_ids: list[str] | None = None
+
+
+class PlannerLabel(BaseModel):
+    id: str
+    name: str
 
 
 class PlannerTaskDetails(BaseModel):
@@ -77,8 +84,16 @@ class ListPlanBucketsArgs(BaseModel):
     plan_id: str
 
 
+class ListPlanLabelsArgs(BaseModel):
+    plan_id: str
+
+
 class ListPlanTasksArgs(BaseModel):
     plan_id: str
+
+
+class ListBucketTasksArgs(BaseModel):
+    bucket_id: str
 
 
 class GetTaskDetailsArgs(BaseModel):
@@ -135,7 +150,7 @@ class CreatePlanArgs(BaseModel):
 def list_my_tasks(
     connection_id: str | None = None,
 ) -> list[PlannerTask]:
-    """List the tasks assigned to the signed-in user across all plans
+    """List ONLY the tasks assigned to the signed-in user, across all plans
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
@@ -197,11 +212,27 @@ def list_plan_buckets(
     return [PlannerBucket(**item) for item in data]
 
 
+def list_plan_labels(
+    plan_id: str,
+    connection_id: str | None = None,
+) -> list[PlannerLabel]:
+    """List a plan's label definitions (maps PlannerTask.label_ids to names)
+
+    connection_id: pick a specific connection when several exist for this
+    provider. Pass the ID surfaced in the agent context.
+    """
+    _args = ListPlanLabelsArgs(plan_id=plan_id).model_dump(exclude_none=True)
+    if connection_id is not None:
+        _args["connection_id"] = connection_id
+    data = _call_read("planner.list_plan_labels", _args)
+    return [PlannerLabel(**item) for item in data]
+
+
 def list_plan_tasks(
     plan_id: str,
     connection_id: str | None = None,
 ) -> list[PlannerTask]:
-    """List every task in a plan (each carries its bucket_id and etag)
+    """List ALL tasks in a plan, every bucket (auto-paginated — returns the full set, not a page)
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
@@ -210,6 +241,22 @@ def list_plan_tasks(
     if connection_id is not None:
         _args["connection_id"] = connection_id
     data = _call_read("planner.list_plan_tasks", _args)
+    return [PlannerTask(**item) for item in data]
+
+
+def list_bucket_tasks(
+    bucket_id: str,
+    connection_id: str | None = None,
+) -> list[PlannerTask]:
+    """List ALL tasks in one bucket (auto-paginated — use this to scope to a single column)
+
+    connection_id: pick a specific connection when several exist for this
+    provider. Pass the ID surfaced in the agent context.
+    """
+    _args = ListBucketTasksArgs(bucket_id=bucket_id).model_dump(exclude_none=True)
+    if connection_id is not None:
+        _args["connection_id"] = connection_id
+    data = _call_read("planner.list_bucket_tasks", _args)
     return [PlannerTask(**item) for item in data]
 
 

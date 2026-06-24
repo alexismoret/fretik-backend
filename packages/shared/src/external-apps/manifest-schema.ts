@@ -257,6 +257,15 @@ export const actionSchema = z.object({
    */
   response: z.string().optional(),
   /**
+   * Follow OData `@odata.nextLink` and aggregate every page's `value[]`
+   * before the response mapper runs (`nango-proxy` only). Set on collection
+   * reads of APIs that page server-side — notably Microsoft Graph Planner,
+   * which caps task lists at ~400/page, so an un-paginated read silently
+   * drops everything past the first page. Leave off for single-object reads
+   * and intentionally-bounded lists (e.g. Outlook `$top`).
+   */
+  paginate: z.boolean().optional(),
+  /**
    * Name of a handler function in the provider's `handlers` module
    * (`custom-handler` transport only). The handler receives
    * `(args, ctx: { credentials, connection_config })` and returns the

@@ -90,6 +90,7 @@ const dispatchRead = async (
         query: req.query,
         body: req.body,
         headers: req.headers,
+        paginate: req.paginate,
       });
       data =
         resolved.responseMapper !== undefined

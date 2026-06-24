@@ -156,6 +156,16 @@ const createPlan: RequestMapper = (args) => ({
 
 // ── Response mappers ───────────────────────────────────────────────────
 
+/** Applied category IDs (`category1`…) whose value is `true`. */
+const labelIdsOf = (raw: unknown): string[] => {
+  const applied = prop(raw, "appliedCategories");
+  return isRecord(applied)
+    ? Object.entries(applied)
+        .filter(([, v]) => v === true)
+        .map(([k]) => k)
+    : [];
+};
+
 const normalizeTask = (raw: unknown): Record<string, unknown> => {
   const out: Record<string, unknown> = {
     id: str(path(raw, "id")),
@@ -174,9 +184,26 @@ const normalizeTask = (raw: unknown): Record<string, unknown> => {
   if (dueDate !== undefined) out.due_date = dueDate;
   const startDate = asString(path(raw, "startDateTime"));
   if (startDate !== undefined) out.start_date = startDate;
+  const completedAt = asString(path(raw, "completedDateTime"));
+  if (completedAt !== undefined) out.completed_at = completedAt;
   const assignees = assigneeIdsOf(raw);
   if (assignees.length > 0) out.assignee_ids = assignees;
+  const labels = labelIdsOf(raw);
+  if (labels.length > 0) out.label_ids = labels;
   return out;
+};
+
+/**
+ * `plannerPlanDetails.categoryDescriptions` is an open map
+ * `{ category1: "Urgent", category2: null, … }`. Emit one PlannerLabel per
+ * non-empty entry so the agent can resolve PlannerTask.label_ids to names.
+ */
+const planLabels: ResponseMapper = (raw): Record<string, unknown>[] => {
+  const descriptions = prop(raw, "categoryDescriptions");
+  if (!isRecord(descriptions)) return [];
+  return Object.entries(descriptions)
+    .map(([id, name]) => ({ id, name: asString(name) }))
+    .filter((l): l is { id: string; name: string } => l.name !== undefined);
 };
 
 const normalizeChecklistItem = (
@@ -290,6 +317,7 @@ export const plannerMappers: ProviderMappers = {
     plan: normalizePlan,
     planList,
     bucketList,
+    planLabels,
     writeResult,
   },
 };

@@ -2,9 +2,15 @@ import type { ProviderManifest } from "@fretik/shared/external-apps/manifest-sch
 
 /**
  * Microsoft Planner provider manifest — task & project management via
- * Microsoft Graph v1.0. 12 actions: read a user's tasks and a team's plans,
- * drill into a plan's buckets/tasks/details, and create/update/delete tasks
- * plus create buckets and plans.
+ * Microsoft Graph v1.0. 14 actions: read a user's tasks and a team's plans,
+ * drill into a plan's buckets / labels / a plan's or bucket's tasks / task
+ * details, and create/update/delete tasks plus create buckets and plans.
+ *
+ * Pagination: Planner caps task/plan lists at ~400 items per page and walks
+ * the rest via `@odata.nextLink`. Every collection read is marked
+ * `paginate: true` so the executor aggregates ALL pages — without it a plan
+ * with >400 tasks silently returns only its first page (mostly the noisiest
+ * bucket), which is exactly the "agent can't find most tasks" failure.
  *
  * Decisions (plan `je-veux-rajouter-un-shiny-crayon.md`):
  *  - Backed by the Nango `microsoft-planner` provider (delegated user
@@ -64,13 +70,30 @@ export const plannerManifest: ProviderManifest = {
         optional: true,
         description: "0–10; 1 urgent, 3 important, 5 medium, 9 low",
       },
-      due_date: { type: "datetime", optional: true },
+      due_date: {
+        type: "datetime",
+        optional: true,
+        description:
+          "Full ISO-8601 UTC, e.g. 2026-04-30T10:00:00Z (not date-only)",
+      },
       start_date: { type: "datetime", optional: true },
+      completed_at: {
+        type: "datetime",
+        optional: true,
+        description: "Set when percent_complete reached 100 (ISO-8601 UTC)",
+      },
       assignee_ids: {
         type: "array",
         items: { type: "string" },
         optional: true,
         description: "Azure AD user IDs the task is assigned to",
+      },
+      label_ids: {
+        type: "array",
+        items: { type: "string" },
+        optional: true,
+        description:
+          "Applied label/category IDs (e.g. 'category1'). Resolve to human names with list_plan_labels(plan_id).",
       },
       has_description: {
         type: "boolean",
@@ -78,6 +101,14 @@ export const plannerManifest: ProviderManifest = {
           "True when the task carries a description — fetch it with get_task_details",
       },
       created_at: { type: "datetime" },
+    },
+    PlannerLabel: {
+      id: {
+        type: "string",
+        description:
+          "Category ID (e.g. 'category1') — matches PlannerTask.label_ids",
+      },
+      name: { type: "string", description: "Human-readable label name" },
     },
     PlannerTaskDetails: {
       id: { type: "string" },
@@ -138,11 +169,13 @@ export const plannerManifest: ProviderManifest = {
     {
       name: "list_my_tasks",
       kind: "read",
-      summary: "List the tasks assigned to the signed-in user across all plans",
+      summary:
+        "List ONLY the tasks assigned to the signed-in user, across all plans",
       endpoint: { method: "GET", path: "/v1.0/me/planner/tasks" },
       params: {},
       returns: { list: "PlannerTask" },
       response: "taskList",
+      paginate: true,
     },
     {
       name: "list_group_plans",
@@ -162,6 +195,7 @@ export const plannerManifest: ProviderManifest = {
       },
       returns: { list: "PlannerPlan" },
       response: "planList",
+      paginate: true,
     },
     {
       name: "get_plan",
@@ -183,16 +217,45 @@ export const plannerManifest: ProviderManifest = {
       params: { plan_id: { type: "string", in: "path" } },
       returns: { list: "PlannerBucket" },
       response: "bucketList",
+      paginate: true,
+    },
+    {
+      name: "list_plan_labels",
+      kind: "read",
+      summary:
+        "List a plan's label definitions (maps PlannerTask.label_ids to names)",
+      endpoint: {
+        method: "GET",
+        path: "/v1.0/planner/plans/{plan_id}/details",
+      },
+      params: { plan_id: { type: "string", in: "path" } },
+      returns: { list: "PlannerLabel" },
+      response: "planLabels",
     },
     {
       name: "list_plan_tasks",
       kind: "read",
       summary:
-        "List every task in a plan (each carries its bucket_id and etag)",
+        "List ALL tasks in a plan, every bucket (auto-paginated — returns the full set, not a page)",
       endpoint: { method: "GET", path: "/v1.0/planner/plans/{plan_id}/tasks" },
       params: { plan_id: { type: "string", in: "path" } },
       returns: { list: "PlannerTask" },
       response: "taskList",
+      paginate: true,
+    },
+    {
+      name: "list_bucket_tasks",
+      kind: "read",
+      summary:
+        "List ALL tasks in one bucket (auto-paginated — use this to scope to a single column)",
+      endpoint: {
+        method: "GET",
+        path: "/v1.0/planner/buckets/{bucket_id}/tasks",
+      },
+      params: { bucket_id: { type: "string", in: "path" } },
+      returns: { list: "PlannerTask" },
+      response: "taskList",
+      paginate: true,
     },
     {
       name: "get_task_details",

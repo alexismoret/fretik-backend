@@ -71,6 +71,7 @@ export const executePlan = async (params: {
           query: req.query,
           body: req.body,
           headers: req.headers,
+          paginate: req.paginate,
         });
         data =
           resolved.responseMapper !== undefined

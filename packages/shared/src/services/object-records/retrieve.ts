@@ -11,10 +11,84 @@ import {
   type SQL,
 } from "drizzle-orm";
 import db from "../../db";
-import type { ObjectRecord, OntologyStatus } from "../../db/schema";
-import { linkTypes, links, objectRecords } from "../../db/schema";
+import type {
+  FieldDefinitionType,
+  ObjectRecord,
+  OntologyStatus,
+} from "../../db/schema";
+import {
+  fieldDefinitions,
+  linkTypes,
+  links,
+  objectRecords,
+} from "../../db/schema";
 import { notFound, throwHttpError } from "../../lib/errors";
 import type { RecordFilter } from "../../schemas/ontology";
+import { typedViewName } from "../object-types/sync-typed-view";
+
+/** Field-key grammar, re-validated before composing any view-column identifier. */
+const SAFE_FIELD_KEY = /^[a-z][a-z0-9_]*$/;
+
+/**
+ * Project the values that don't live in `object_records.data` — relations as
+ * `[{id,label}]` and rollup aggregates — by reading the team's typed view for a
+ * page of records. The view is the single source of truth (identical to the AI
+ * SQL surface), and the API role owns it (it ran the CREATE), so no extra grant
+ * is needed. Best-effort: a missing view or unsafe key yields an empty map
+ * rather than failing the list. Column names + view name are slug-revalidated
+ * before embedding (anti-DDL-injection boundary); record ids are parameterized.
+ */
+const loadComputedFieldValues = async (input: {
+  teamId: string;
+  objectTypeId: string;
+  recordIds: string[];
+}): Promise<Map<string, Record<string, unknown>>> => {
+  const empty = new Map<string, Record<string, unknown>>();
+  if (input.recordIds.length === 0) return empty;
+
+  const type = await db.query.objectTypes.findFirst({
+    columns: { key: true },
+    where: { id: input.objectTypeId },
+  });
+  if (!type) return empty;
+
+  const defs = await db
+    .select({ key: fieldDefinitions.key, type: fieldDefinitions.type })
+    .from(fieldDefinitions)
+    .where(
+      and(
+        eq(fieldDefinitions.teamId, input.teamId),
+        eq(fieldDefinitions.objectTypeId, input.objectTypeId),
+        eq(fieldDefinitions.enabled, true),
+      ),
+    );
+  const cols = defs
+    .filter(
+      (d) =>
+        (d.type === "relation" || d.type === "rollup") &&
+        SAFE_FIELD_KEY.test(d.key),
+    )
+    .map((d) => d.key);
+  if (cols.length === 0) return empty;
+
+  try {
+    const viewName = typedViewName(type.key, input.teamId);
+    const selectList = ["_id", ...cols].join(", ");
+    const res = await db.execute(
+      sql`SELECT ${sql.raw(selectList)} FROM ${sql.raw(viewName)} WHERE _id = ANY(${sql.param(input.recordIds)}::uuid[])`,
+    );
+    const map = new Map<string, Record<string, unknown>>();
+    for (const row of res.rows) {
+      const id = String(row._id);
+      const values: Record<string, unknown> = {};
+      for (const c of cols) values[c] = row[c];
+      map.set(id, values);
+    }
+    return map;
+  } catch {
+    return empty;
+  }
+};
 
 /**
  * Lightweight outgoing-relation summary attached to list rows (Twenty-style
@@ -28,6 +102,10 @@ export type RecordLinkSummary = {
 
 export type ObjectRecordListItem = ObjectRecord & {
   outgoingLinks?: RecordLinkSummary[];
+  // Field values that don't live in `data`: relations as `[{id,label}]` and
+  // rollup aggregates, projected from the team's typed view (the same surface
+  // the AI reads) so the UI and the AI never disagree.
+  computed?: Record<string, unknown>;
 };
 
 /**
@@ -111,14 +189,31 @@ const textExpr = (key: string): SQL => sql`(${objectRecords.data} ->> ${key})`;
 const numericGuarded = (key: string): SQL =>
   sql`CASE WHEN (${objectRecords.data} ->> ${key}) ~ '^-?[0-9]+(\\.[0-9]+)?$' THEN (${objectRecords.data} ->> ${key})::numeric END`;
 
-const buildFilterCondition = (f: RecordFilter): SQL | null => {
+/**
+ * `money` stores `{ amount, currencyCode }`, so its numeric value sits one level
+ * deeper than a scalar field. Guarded the same way as `numericGuarded` so a
+ * malformed amount never aborts the cast — lets users filter "costs more / less
+ * than" on the amount.
+ */
+const moneyAmountGuarded = (key: string): SQL =>
+  sql`CASE WHEN (${objectRecords.data} -> ${key} ->> 'amount') ~ '^-?[0-9]+(\\.[0-9]+)?$' THEN (${objectRecords.data} -> ${key} ->> 'amount')::numeric END`;
+
+const buildFilterCondition = (
+  f: RecordFilter,
+  fieldType?: FieldDefinitionType,
+): SQL | null => {
   if (!SLUG.test(f.key)) return null;
+  const isMoney = fieldType === "money";
   const t = textExpr(f.key);
   switch (f.op) {
     case "is_empty":
-      return sql`((${objectRecords.data} ->> ${f.key}) IS NULL OR (${objectRecords.data} ->> ${f.key}) = '')`;
+      return isMoney
+        ? sql`(${objectRecords.data} -> ${f.key} ->> 'amount') IS NULL`
+        : sql`((${objectRecords.data} ->> ${f.key}) IS NULL OR (${objectRecords.data} ->> ${f.key}) = '')`;
     case "is_not_empty":
-      return sql`((${objectRecords.data} ->> ${f.key}) IS NOT NULL AND (${objectRecords.data} ->> ${f.key}) <> '')`;
+      return isMoney
+        ? sql`(${objectRecords.data} -> ${f.key} ->> 'amount') IS NOT NULL`
+        : sql`((${objectRecords.data} ->> ${f.key}) IS NOT NULL AND (${objectRecords.data} ->> ${f.key}) <> '')`;
     case "is_true":
       return sql`(${objectRecords.data} -> ${f.key})::boolean = true`;
     case "is_false":
@@ -128,12 +223,16 @@ const buildFilterCondition = (f: RecordFilter): SQL | null => {
       if (typeof v === "boolean")
         return sql`(${objectRecords.data} -> ${f.key})::boolean = ${v}`;
       if (v === undefined || Array.isArray(v)) return null;
+      if (isMoney && typeof v === "number")
+        return sql`${moneyAmountGuarded(f.key)} = ${v}`;
       return sql`${t} = ${String(v)}`;
     }
     case "neq": {
       const v = f.value;
       if (v === undefined || Array.isArray(v) || typeof v === "boolean")
         return null;
+      if (isMoney && typeof v === "number")
+        return sql`${moneyAmountGuarded(f.key)} IS DISTINCT FROM ${v}`;
       return sql`${t} IS DISTINCT FROM ${String(v)}`;
     }
     case "contains": {
@@ -161,6 +260,8 @@ const buildFilterCondition = (f: RecordFilter): SQL | null => {
             : f.op === "gte"
               ? sql`>=`
               : sql`<=`;
+      if (isMoney && typeof v === "number")
+        return sql`${moneyAmountGuarded(f.key)} ${opSql} ${v}`;
       if (typeof v === "number")
         return sql`${numericGuarded(f.key)} ${opSql} ${v}`;
       return sql`${t} ${opSql} ${v}`;
@@ -192,6 +293,9 @@ export const listObjectRecords = async (data: {
   sortBy?: string;
   sortDir?: "asc" | "desc";
   withLinks?: boolean;
+  // Resolve the 1:1 mirror record of an uploaded document (the attachment
+  // field links to this mirror, not the drive `documentId`).
+  documentId?: string;
 }): Promise<{ count: number; data: ObjectRecordListItem[] }> => {
   const {
     teamId,
@@ -204,6 +308,7 @@ export const listObjectRecords = async (data: {
     sortBy = "createdAt",
     sortDir = "desc",
     withLinks = false,
+    documentId,
   } = data;
 
   const conditions = [
@@ -211,6 +316,9 @@ export const listObjectRecords = async (data: {
     eq(objectRecords.objectTypeId, objectTypeId),
     eq(objectRecords.status, status),
   ];
+  if (documentId) {
+    conditions.push(eq(objectRecords.documentId, documentId));
+  }
   if (search && search.trim().length > 0) {
     const q = search.trim();
     const like = `%${q}%`;
@@ -220,9 +328,28 @@ export const listObjectRecords = async (data: {
       sql`(${objectRecords.label} ILIKE ${like} OR ${objectRecords.normalizedLabel} ILIKE ${like} OR ${objectRecords.searchVector} @@ plainto_tsquery('simple', ${q}))`,
     );
   }
-  for (const f of filters) {
-    const cond = buildFilterCondition(f);
-    if (cond) conditions.push(cond);
+  if (filters.length > 0) {
+    // Some filters are type-aware (e.g. `money` compares the nested amount), so
+    // resolve each key's field type once before building the predicates.
+    const defs = await db
+      .select({
+        key: fieldDefinitions.key,
+        type: fieldDefinitions.type,
+      })
+      .from(fieldDefinitions)
+      .where(
+        and(
+          eq(fieldDefinitions.teamId, teamId),
+          eq(fieldDefinitions.objectTypeId, objectTypeId),
+        ),
+      );
+    const fieldTypeByKey = new Map<string, FieldDefinitionType>(
+      defs.map((d) => [d.key, d.type]),
+    );
+    for (const f of filters) {
+      const cond = buildFilterCondition(f, fieldTypeByKey.get(f.key));
+      if (cond) conditions.push(cond);
+    }
   }
   const whereClause = and(...conditions);
   const offset = Math.max(0, page * limit);
@@ -241,14 +368,28 @@ export const listObjectRecords = async (data: {
     db.select({ total: count() }).from(objectRecords).where(whereClause),
   ]);
 
+  const recordIds = items.map((r) => r.id);
+  const computed = await loadComputedFieldValues({
+    teamId,
+    objectTypeId,
+    recordIds,
+  });
+  const withComputed = items.map((r) => ({
+    ...r,
+    computed: computed.get(r.id) ?? {},
+  }));
+
   if (!withLinks) {
-    return { count: totalResult?.total ?? 0, data: items };
+    return { count: totalResult?.total ?? 0, data: withComputed };
   }
 
-  const summaries = await fetchOutgoingLinkSummaries(items.map((r) => r.id));
+  const summaries = await fetchOutgoingLinkSummaries(recordIds);
   return {
     count: totalResult?.total ?? 0,
-    data: items.map((r) => ({ ...r, outgoingLinks: summaries[r.id] ?? [] })),
+    data: withComputed.map((r) => ({
+      ...r,
+      outgoingLinks: summaries[r.id] ?? [],
+    })),
   };
 };
 
@@ -267,5 +408,15 @@ export const getObjectRecord = async (data: { id: string }) => {
   if (!record) {
     return throwHttpError(404, notFound("Record not found"));
   }
-  return record;
+  // Relation + rollup values from the typed view (same source as the AI).
+  const computed = record.teamId
+    ? ((
+        await loadComputedFieldValues({
+          teamId: record.teamId,
+          objectTypeId: record.objectTypeId,
+          recordIds: [record.id],
+        })
+      ).get(record.id) ?? {})
+    : {};
+  return { ...record, computed };
 };

@@ -11,6 +11,7 @@ import {
 } from "../domain-events/emit";
 import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
 import { validateRecordData } from "./validate";
+import { assertMemberFieldsValid } from "./validate-members";
 
 /**
  * Field-level diff between the prior and next `data` — only changed keys (added,
@@ -59,6 +60,8 @@ export const setRecordData = async (input: {
         teamId: true,
         objectTypeId: true,
         data: true,
+        label: true,
+        normalizedLabel: true,
       },
       where: { id },
     });
@@ -76,7 +79,23 @@ export const setRecordData = async (input: {
       data,
       strict: input.strict,
     });
+    await assertMemberFieldsValid({
+      teamId: existing.teamId,
+      fieldDefs,
+      data: parsed,
+    });
     const identity = computeRecordIdentity({ fieldDefs, data: parsed });
+    // Records whose name came from a `labelOverride` (e.g. the document mirror =
+    // filename) or that have an empty title field keep their existing label —
+    // never clear a name on a data update.
+    const keepLabel = identity.label === "" && existing.label !== "";
+    const label = keepLabel ? existing.label : identity.label;
+    const normalizedLabel = keepLabel
+      ? existing.normalizedLabel
+      : identity.normalizedLabel;
+    const searchText = keepLabel
+      ? `${existing.label} ${identity.searchText}`
+      : identity.searchText;
 
     const event = await emitDomainEvent({
       tx,
@@ -93,10 +112,13 @@ export const setRecordData = async (input: {
       .update(objectRecords)
       .set({
         data: parsed,
-        label: identity.label,
-        normalizedLabel: identity.normalizedLabel,
-        searchVector: sql`to_tsvector('simple', ${identity.searchText})`,
+        label,
+        normalizedLabel,
+        searchVector: sql`to_tsvector('simple', ${searchText})`,
         sourceEventId: event.id,
+        // Refresh the last-edited-by stamp (created-by is left untouched).
+        updatedByActor: actor.actorType,
+        updatedByUserId: actor.actorUserId ?? null,
         ...(source ? { source } : {}),
       })
       .where(eq(objectRecords.id, id))

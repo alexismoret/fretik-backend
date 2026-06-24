@@ -64,6 +64,17 @@ export const createObjectTypeWithFields = async (
   // Validate every field's intrinsic shape before touching the DB so the whole
   // batch fails fast and atomically.
   for (const f of input.fields) {
+    // Relation fields need a backing link type resolved against existing types;
+    // they are added after the type exists (via `createFieldDefinition`), not
+    // at type-creation time.
+    if (f.type === "relation") {
+      return throwHttpError(
+        400,
+        badRequest(
+          "Relation fields must be added after the type is created, not in the initial field set.",
+        ),
+      );
+    }
     validateFieldDefinitionShape({
       label: f.label,
       description: f.description ?? null,

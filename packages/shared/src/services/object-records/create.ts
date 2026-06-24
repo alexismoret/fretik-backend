@@ -15,6 +15,7 @@ import {
 } from "../domain-events/emit";
 import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
 import { validateRecordData } from "./validate";
+import { assertMemberFieldsValid } from "./validate-members";
 
 /**
  * Per-field create diff for the journal: every present attribute as a
@@ -70,6 +71,7 @@ export const createObjectRecord = async (input: {
     data: input.data,
     strict: input.strict,
   });
+  await assertMemberFieldsValid({ teamId: input.teamId, fieldDefs, data });
   const identity = computeRecordIdentity({
     fieldDefs,
     data,
@@ -93,6 +95,11 @@ export const createObjectRecord = async (input: {
         source: input.source ?? "user_manual",
         confidence: input.confidence == null ? null : String(input.confidence),
         documentId: input.documentId ?? null,
+        // Actor stamps: on create, last-edited-by == created-by.
+        createdByActor: actor.actorType,
+        createdByUserId: actor.actorUserId ?? null,
+        updatedByActor: actor.actorType,
+        updatedByUserId: actor.actorUserId ?? null,
       })
       .returning();
     if (!row) {

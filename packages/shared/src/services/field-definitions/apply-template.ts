@@ -1,9 +1,6 @@
 import { and, eq, isNull } from "drizzle-orm";
 import db from "../../db";
-import type {
-  FieldDefinitionConfig,
-  NewFieldDefinition,
-} from "../../db/schema";
+import type { NewFieldDefinition } from "../../db/schema";
 import { fieldDefinitions } from "../../db/schema";
 import { badRequest, throwHttpError } from "../../lib/errors";
 import {
@@ -186,15 +183,21 @@ const buildRowFromSeed = (data: {
     ? translateTemplateKey(seed.descriptionKey, locale)
     : null;
 
-  const config: FieldDefinitionConfig = { ...(seed.configExtras ?? {}) };
-  if (seed.options && seed.options.length > 0) {
-    config.options = seed.options.map((option) => ({
-      value: option.value,
-      label: translateTemplateKey(option.labelKey, locale),
-      color: option.color,
-      icon: option.icon,
-    }));
-  }
+  // No explicit `FieldDefinitionConfig` annotation: the union would trigger
+  // excess-property checking on this fresh literal (options is select-only).
+  // The inferred type is checked structurally against the column type below.
+  const config =
+    seed.options && seed.options.length > 0
+      ? {
+          ...(seed.configExtras ?? {}),
+          options: seed.options.map((option) => ({
+            value: option.value,
+            label: translateTemplateKey(option.labelKey, locale),
+            color: option.color,
+            icon: option.icon,
+          })),
+        }
+      : { ...(seed.configExtras ?? {}) };
 
   return {
     organizationId,

@@ -30,3 +30,18 @@ export const ONTOLOGY_STATUSES = ontologyStatusEnum.enumValues;
 export const ONTOLOGY_SOURCES = ontologySourceEnum.enumValues;
 export type OntologyStatus = (typeof ONTOLOGY_STATUSES)[number];
 export type OntologySource = (typeof ONTOLOGY_SOURCES)[number];
+
+/**
+ * Who/what produced a mutation: a user CRUD (`user`), an agent tool-call
+ * (`agent`), the document pipeline / seeds (`system`), or an external connector
+ * (`connector`). Carried on every `domain_events` row AND denormalized as the
+ * actor stamps on `object_records`. Lives here (not in `domain-events.ts`) so
+ * `object-records.ts` can use it without a circular import — `domain-events.ts`
+ * already imports `object_records` for its provenance FK.
+ */
+export const domainEventActorEnum = pgEnum("domain_event_actor", [
+  "user",
+  "agent",
+  "system",
+  "connector",
+]);

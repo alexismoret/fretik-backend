@@ -2,6 +2,7 @@ import { inArray } from "drizzle-orm";
 import db, { type Transaction } from "../../db";
 import { objectRecords } from "../../db/schema";
 import { internalError, throwHttpError } from "../../lib/errors";
+import { selectOrCache } from "../../lib/redis";
 import {
   type EventActor,
   emitDomainEvent,
@@ -15,17 +16,35 @@ import { setRecordData } from "../object-records/update";
 import { resolveObjectTypeId } from "../object-types/resolve";
 import { MENTIONS_LINK_TYPE_KEY } from "../object-types/seed-system-types";
 
-/** A party extracted from a document, to mirror into a linked `company` record. */
+/** A party extracted from a document, mirrored into a linked mention-target record. */
 export interface DocumentGraphMention {
   name: string;
   confidence?: number;
 }
 
-/** A `company` record linked to the document, for downstream vectorize metadata. */
-export interface LinkedCompany {
+/** A record the document was folded into (the mention target), for vectorize metadata. */
+export interface LinkedMention {
   id: string;
   name: string;
 }
+
+/**
+ * Resolve the object type extracted parties are folded into. Configurable per
+ * org (`organization_settings.document_mention_target_type_key`); falls back to
+ * `company` for back-compat. Decoupled from a hardcoded `company` so a team can
+ * retarget extraction and deleting `company` degrades gracefully. Cached 30 min
+ * (config, rarely changed) under `organization:{orgId}:document-mention-target`.
+ */
+const resolveMentionTargetTypeKey = async (
+  organizationId: string,
+): Promise<string> =>
+  selectOrCache(async () => {
+    const settings = await db.query.organizationSettings.findFirst({
+      columns: { documentMentionTargetTypeKey: true },
+      where: { organizationId },
+    });
+    return settings?.documentMentionTargetTypeKey ?? "company";
+  }, `organization:${organizationId}:document-mention-target`);
 
 /**
  * Mirror a processed document into the unified graph — the document-pipeline
@@ -33,15 +52,16 @@ export interface LinkedCompany {
  * vectorize / S3 stay outside):
  *   1. upsert the document's 1:1 `document` object-record (data = the extracted
  *      custom fields, validated leniently like pre-extraction; label = filename),
- *   2. resolve each mentioned party to a `company` record (dedup within the
- *      transaction), link it to the document via the generic `mentions` relation,
+ *   2. resolve each mentioned party to a record of the configured mention-target
+ *      type (dedup within the transaction), link it to the document via the
+ *      generic `mentions` relation,
  *   3. journal `document.uploaded`, linking the mirror (subject) + every
- *      mentioned company.
+ *      mentioned record.
  *
  * The mirror is required (the `document` type is seeded + delete-protected, so
  * its absence is a broken invariant → 500). Entity linking degrades gracefully
- * if the `company` type or `mentions` relation is somehow missing. Returns the
- * mirror id + linked companies so the caller builds vectorize metadata without
+ * if the mention-target type or `mentions` relation is missing. Returns the
+ * mirror id + linked records so the caller builds vectorize metadata without
  * re-reading the graph.
  */
 export const syncDocumentGraph = async (input: {
@@ -53,13 +73,21 @@ export const syncDocumentGraph = async (input: {
   customFields: Record<string, unknown>;
   mentions: DocumentGraphMention[];
   actor?: EventActor;
-}): Promise<{ mirrorRecordId: string; companies: LinkedCompany[] }> => {
+}): Promise<{
+  mirrorRecordId: string;
+  mentionedRecords: LinkedMention[];
+  mentionTargetTypeKey: string;
+}> => {
   const { organizationId, teamId, documentId, filename, customFields } = input;
   const actor = input.actor ?? SYSTEM_ACTOR;
 
   const run = async (
     tx: Transaction,
-  ): Promise<{ mirrorRecordId: string; companies: LinkedCompany[] }> => {
+  ): Promise<{
+    mirrorRecordId: string;
+    mentionedRecords: LinkedMention[];
+    mentionTargetTypeKey: string;
+  }> => {
     const documentTypeId = await resolveObjectTypeId({
       organizationId,
       teamId,
@@ -99,17 +127,20 @@ export const syncDocumentGraph = async (input: {
           actor,
         });
 
-    // 2. Resolve mentioned parties to `company` records + `mentions` links.
-    const companies = await linkMentions({
+    // 2. Resolve mentioned parties to mention-target records + `mentions` links.
+    const mentionTargetTypeKey =
+      await resolveMentionTargetTypeKey(organizationId);
+    const mentionedRecords = await linkMentions({
       tx,
       organizationId,
       teamId,
+      targetTypeKey: mentionTargetTypeKey,
       mirrorRecordId: mirror.id,
       mentions: input.mentions,
       actor,
     });
 
-    // 3. Journal the upload, linking the mirror + every mentioned company.
+    // 3. Journal the upload, linking the mirror + every mentioned record.
     await emitDomainEvent({
       tx,
       organizationId,
@@ -121,43 +152,56 @@ export const syncDocumentGraph = async (input: {
       payload: {
         documentId,
         filename,
-        mentionCount: companies.length,
+        mentionCount: mentionedRecords.length,
       },
       dedupKey: `document.uploaded:${documentId}`,
       recordLinks: [
         { recordId: mirror.id, role: "subject" },
-        ...companies.map((c) => ({ recordId: c.id, role: "mentioned" })),
+        ...mentionedRecords.map((c) => ({ recordId: c.id, role: "mentioned" })),
       ],
     });
 
-    return { mirrorRecordId: mirror.id, companies };
+    return {
+      mirrorRecordId: mirror.id,
+      mentionedRecords,
+      mentionTargetTypeKey,
+    };
   };
 
   return input.tx ? run(input.tx) : db.transaction(run);
 };
 
 /**
- * Resolve each mention to a `company` record and link it to the document.
- * Returns the unique linked companies (id + canonical label) for vectorize
- * metadata. Degrades to an empty list if the `company` type or `mentions`
- * relation is missing.
+ * Resolve each mention to a record of the configured mention-target type and
+ * link it to the document. Returns the unique linked records (id + canonical
+ * label) for vectorize metadata. Degrades to an empty list if the target type
+ * or the `mentions` relation is missing (e.g. the team deleted the type).
  */
 const linkMentions = async (input: {
   tx: Transaction;
   organizationId: string;
   teamId: string;
+  targetTypeKey: string;
   mirrorRecordId: string;
   mentions: DocumentGraphMention[];
   actor: EventActor;
-}): Promise<LinkedCompany[]> => {
-  const { tx, organizationId, teamId, mirrorRecordId, mentions, actor } = input;
+}): Promise<LinkedMention[]> => {
+  const {
+    tx,
+    organizationId,
+    teamId,
+    targetTypeKey,
+    mirrorRecordId,
+    mentions,
+    actor,
+  } = input;
   if (mentions.length === 0) return [];
 
-  const [companyTypeId, mentionsLinkTypeId] = await Promise.all([
-    resolveObjectTypeId({ organizationId, teamId, key: "company" }),
+  const [targetTypeId, mentionsLinkTypeId] = await Promise.all([
+    resolveObjectTypeId({ organizationId, teamId, key: targetTypeKey }),
     resolveOrgLinkTypeId({ organizationId, key: MENTIONS_LINK_TYPE_KEY }),
   ]);
-  if (!companyTypeId || !mentionsLinkTypeId) return [];
+  if (!targetTypeId || !mentionsLinkTypeId) return [];
 
   const linkedIds = new Set<string>();
   for (const mention of mentions) {
@@ -167,7 +211,7 @@ const linkMentions = async (input: {
     const resolved = await resolveRecord({
       tx,
       teamId,
-      objectTypeId: companyTypeId,
+      objectTypeId: targetTypeId,
       rawLabel: name,
     });
     if (linkedIds.has(resolved.recordId)) continue;

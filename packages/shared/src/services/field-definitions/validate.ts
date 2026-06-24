@@ -5,6 +5,7 @@ import type {
   FieldDefinitionType,
 } from "../../db/schema";
 import { fieldDefinitions } from "../../db/schema";
+import { fieldOptions } from "../../db/schema/field-types";
 import { badRequest, throwHttpError } from "../../lib/errors";
 import {
   FIELD_DEFINITION_KEY_REGEX,
@@ -63,11 +64,8 @@ export const validateFieldDefinitionShape = (
       ),
     );
   }
-  const options = patch.config?.options;
-  if (
-    options !== undefined &&
-    options.length > FIELD_DEFINITION_LIMITS.MAX_OPTIONS_PER_FIELD
-  ) {
+  const options = patch.config ? fieldOptions(patch.config) : [];
+  if (options.length > FIELD_DEFINITION_LIMITS.MAX_OPTIONS_PER_FIELD) {
     return throwHttpError(
       400,
       badRequest(
@@ -77,7 +75,7 @@ export const validateFieldDefinitionShape = (
   }
   if (
     (patch.type === "select" || patch.type === "multi_select") &&
-    (options === undefined || options.length === 0)
+    options.length === 0
   ) {
     return throwHttpError(
       400,
@@ -85,6 +83,32 @@ export const validateFieldDefinitionShape = (
         "Select / multi_select fields require at least one option in config.options.",
       ),
     );
+  }
+  if (patch.type === "rollup" && patch.config) {
+    const cfg = patch.config;
+    const relationFieldKey =
+      "relationFieldKey" in cfg ? cfg.relationFieldKey : undefined;
+    const fn = "fn" in cfg ? cfg.fn : undefined;
+    const targetFieldKey =
+      "targetFieldKey" in cfg ? cfg.targetFieldKey : undefined;
+    if (!relationFieldKey || !fn) {
+      return throwHttpError(
+        400,
+        badRequest(
+          "Rollup fields require config.relationFieldKey and config.fn.",
+        ),
+      );
+    }
+    const numericFn =
+      fn === "sum" || fn === "avg" || fn === "min" || fn === "max";
+    if (numericFn && !targetFieldKey) {
+      return throwHttpError(
+        400,
+        badRequest(
+          `Rollup fn '${fn}' requires config.targetFieldKey (the field to aggregate).`,
+        ),
+      );
+    }
   }
 };
 

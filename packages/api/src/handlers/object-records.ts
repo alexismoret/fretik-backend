@@ -211,6 +211,7 @@ objectRecordRoutes.openapi(listRoute, async (c) => {
     sortBy,
     sortDir,
     withLinks,
+    documentId,
   } = c.req.valid("query");
   const result = await listObjectRecords({
     teamId: team.id,
@@ -223,6 +224,7 @@ objectRecordRoutes.openapi(listRoute, async (c) => {
     sortBy,
     sortDir,
     withLinks,
+    documentId,
   });
   return c.json(result, 200);
 });

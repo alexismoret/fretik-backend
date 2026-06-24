@@ -18,17 +18,59 @@ export const fieldOptionSchema = z.object({
   label: z.string().min(1).max(120),
   color: z.string().max(20).optional(),
   icon: z.string().max(120).optional(),
+  // Status semantics (kanban lanes) — see `FieldDefinitionOption.group`.
+  group: z.enum(["todo", "in_progress", "done"]).optional(),
 });
 
+/**
+ * Permissive superset of every per-type config (mirrors `FieldTypeConfigMap` in
+ * `db/schema/field-types.ts`). Kept flat at the API boundary — per-type
+ * correctness is enforced by `validateFieldDefinitionShape` and the relation
+ * binding in the service layer. Keep this in sync when adding a field type.
+ */
 export const fieldConfigSchema = z.object({
+  // select / multi_select
   options: z
     .array(fieldOptionSchema)
     .max(FIELD_DEFINITION_LIMITS.MAX_OPTIONS_PER_FIELD)
     .optional(),
+  freeform: z.boolean().optional(),
+  // text
   multiline: z.boolean().optional(),
+  // number (+ "Progress" display)
   min: z.number().optional(),
   max: z.number().optional(),
-  freeform: z.boolean().optional(),
+  numberFormat: z.enum(["plain", "percent"]).optional(),
+  display: z.enum(["plain", "bar", "ring"]).optional(),
+  divideBy: z.number().optional(),
+  color: z.string().max(20).optional(),
+  showNumber: z.boolean().optional(),
+  // relation
+  targetTypeKey: z.string().max(60).optional(),
+  cardinality: z.enum(["one", "many"]).optional(),
+  linkTypeKey: z.string().max(60).optional(),
+  widget: z.literal("attachment").optional(),
+  // member
+  multiple: z.boolean().optional(),
+  // money
+  defaultCurrencyCode: z.string().max(3).optional(),
+  // rating
+  ratingMax: z.number().int().min(1).max(20).optional(),
+  ratingIcon: z.string().max(120).optional(),
+  // rollup (read-only aggregate over a relation field)
+  relationFieldKey: z.string().max(60).optional(),
+  targetFieldKey: z.string().max(60).optional(),
+  fn: z
+    .enum([
+      "sum",
+      "count",
+      "avg",
+      "min",
+      "max",
+      "count_not_empty",
+      "percent_not_empty",
+    ])
+    .optional(),
 });
 
 export const fieldDefinitionKeySchema = z

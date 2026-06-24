@@ -1,5 +1,12 @@
 import { z } from "zod";
 import type { FieldDefinition } from "../db/schema";
+import {
+  fieldOptions,
+  isFreeform,
+  isMultiMember,
+  numberBounds,
+  ratingMax,
+} from "../db/schema/field-types";
 import { normalizeEntityName } from "../utils/normalizeEntityName";
 
 /**
@@ -49,14 +56,42 @@ export const zodForField = (
       const base = strict ? z.url() : z.string();
       return base.nullish().describe(description);
     }
-    case "number": {
+    case "number":
+    case "rating": {
       let base = z.number();
       if (strict) {
-        const { min, max } = def.config ?? {};
+        const { min, max } = numberBounds(def.config);
         if (typeof min === "number") base = base.min(min);
         if (typeof max === "number") base = base.max(max);
+        // A rating is a 0..ratingMax integer.
+        if (def.type === "rating")
+          base = base.min(0).max(ratingMax(def.config));
       }
       return base.nullish().describe(description);
+    }
+    case "phone": {
+      return z.string().nullish().describe(description);
+    }
+    case "markdown": {
+      return z.string().nullish().describe(description);
+    }
+    case "member": {
+      // userId(s); resolved against team membership in the write service.
+      const base = isMultiMember(def.config) ? z.array(z.string()) : z.string();
+      return base.nullish().describe(description);
+    }
+    case "money": {
+      return z
+        .object({ amount: z.number(), currencyCode: z.string() })
+        .nullish()
+        .describe(description);
+    }
+    case "relation":
+    case "rollup": {
+      // Neither is stored in `data`: relations live in the `links` graph and
+      // rollups are aggregates computed in the typed view. `buildRecordShape`
+      // skips both; this branch only keeps the switch exhaustive.
+      return z.unknown().nullish().describe(description);
     }
     case "boolean": {
       return z.boolean().nullish().describe(description);
@@ -93,7 +128,7 @@ export const zodForField = (
     }
     case "multi_select": {
       const values = optionValues(def);
-      const freeform = def.config?.freeform ?? false;
+      const freeform = isFreeform(def.config);
       if (values.length === 0 || freeform) {
         return z.array(z.string()).nullish().describe(description);
       }
@@ -105,11 +140,8 @@ export const zodForField = (
   }
 };
 
-const optionValues = (def: FieldDefinition): string[] => {
-  const options = def.config?.options;
-  if (!options) return [];
-  return options.map((o) => o.value);
-};
+const optionValues = (def: FieldDefinition): string[] =>
+  fieldOptions(def.config).map((o) => o.value);
 
 /**
  * Build the strict runtime Zod object an object record's `data` validates
@@ -128,6 +160,9 @@ export const buildRecordShape = (
   const shape: Record<string, z.ZodTypeAny> = {};
   for (const def of fieldDefs) {
     if (!def.enabled) continue;
+    // Relations are graph edges (`links`) and rollups are view-computed
+    // aggregates — neither lives in `data`.
+    if (def.type === "relation" || def.type === "rollup") continue;
     shape[def.key] = zodForField(def, { strict });
   }
   return z.object(shape);

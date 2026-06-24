@@ -58,6 +58,21 @@ export const updateFieldDefinition = async (data: {
     const typeChanged =
       patch.type !== undefined && patch.type !== existing.type;
 
+    // Converting to/from `relation` changes storage (data ↔ links) and link-type
+    // binding — recreate the field instead. (Editing a relation field's target
+    // in place is a Phase-2 concern.)
+    if (
+      typeChanged &&
+      (patch.type === "relation" || existing.type === "relation")
+    ) {
+      return throwHttpError(
+        400,
+        badRequest(
+          "Changing a field's type to or from `relation` is not supported; delete and recreate the field.",
+        ),
+      );
+    }
+
     if (keyChanged || typeChanged) {
       const hasValues =
         (await countRecordsWithFieldKey({

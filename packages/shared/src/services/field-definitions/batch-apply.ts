@@ -62,6 +62,17 @@ export const batchApplyFieldDefinitionOperations = async (data: {
 
     for (const op of operations) {
       if (op.action === "create") {
+        // Relation fields need a link-type binding (resolved via
+        // `createFieldDefinition`) and are out of scope for the AI-suggest
+        // batch path — reject rather than persist an unbound relation.
+        if (op.payload.type === "relation") {
+          return throwHttpError(
+            400,
+            badRequest(
+              "Relation fields cannot be created through the batch-apply path; use the field-definition create endpoint.",
+            ),
+          );
+        }
         // The AI no longer generates the `key` — it was the most
         // common failure mode of the suggest call (DeepSeek would
         // occasionally emit prose, runaway whitespace, or a duplicate
@@ -129,6 +140,19 @@ export const batchApplyFieldDefinitionOperations = async (data: {
         }
         const typeChanged =
           op.patch.type !== undefined && op.patch.type !== existing.type;
+        // Converting a field to/from `relation` changes its storage (data ↔
+        // links graph) and requires link-type binding — not supported in batch.
+        if (
+          typeChanged &&
+          (op.patch.type === "relation" || existing.type === "relation")
+        ) {
+          return throwHttpError(
+            400,
+            badRequest(
+              "Changing a field's type to or from `relation` is not supported in batch-apply.",
+            ),
+          );
+        }
         if (typeChanged) {
           const valueCount = await countRecordsWithFieldKey({
             tx,

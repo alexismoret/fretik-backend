@@ -397,10 +397,10 @@ export const processDocument = async (
     },
   });
 
-  const mentionVectorInfo = graphResult.companies.map((c) => ({
+  const mentionVectorInfo = graphResult.mentionedRecords.map((c) => ({
     id: c.id,
     name: c.name,
-    type: "company",
+    type: graphResult.mentionTargetTypeKey,
     role: MENTIONS_LINK_TYPE_KEY,
   }));
 

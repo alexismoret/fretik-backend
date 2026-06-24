@@ -87,7 +87,7 @@ const run = async (): Promise<void> => {
     });
     createdRecordIds.push(
       fold.mirrorRecordId,
-      ...fold.companies.map((c) => c.id),
+      ...fold.mentionedRecords.map((c) => c.id),
     );
 
     const mirror = await db.query.objectRecords.findFirst({
@@ -100,8 +100,8 @@ const run = async (): Promise<void> => {
       "mirror is the document type",
     );
     assert(
-      fold.companies.length === 2,
-      "3 mentions (with a duplicate) collapse to 2 company records",
+      fold.mentionedRecords.length === 2,
+      "3 mentions (with a duplicate) collapse to 2 mention-target records",
     );
 
     const mentionLinks = await db

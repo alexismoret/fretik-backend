@@ -33,7 +33,9 @@ export * from "./links";
 export * from "./object-records";
 
 // Field definitions (per-object-type configurable fields — the field catalog)
+// `field-types` is the registry: the field-type catalogue + per-type config.
 export * from "./field-definitions";
+export * from "./field-types";
 
 // Metrics and logs (usage_metrics, activity_logs, webhooks)
 export * from "./metrics";

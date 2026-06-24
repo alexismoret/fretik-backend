@@ -41,10 +41,14 @@ export const listObjectTypes = async (data: {
  */
 export const getObjectType = async (data: {
   id: string;
+  teamId: string;
 }): Promise<ObjectType & { fieldDefinitions: FieldDefinition[] }> => {
   const row = await db.query.objectTypes.findFirst({
     where: { id: data.id },
-    with: { fieldDefinitions: true },
+    // Scope fields to the team's own copies — a type carries BOTH the org
+    // template (`team_id IS NULL`, the seed source) and each team's copy, so an
+    // unfiltered fetch shows every field twice.
+    with: { fieldDefinitions: { where: { teamId: data.teamId } } },
   });
   if (!row) {
     return throwHttpError(404, notFound("Object type not found"));

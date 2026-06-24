@@ -1,6 +1,7 @@
 import db from "../db";
 import { organization, team } from "../db/schema";
 import { duplicateOrgDefsToTeam } from "../services/field-definitions/duplicate-org-to-team";
+import { seedStarterObjectTypes } from "../services/object-types/seed-starter-types";
 import { seedSystemOntology } from "../services/object-types/seed-system-types";
 
 /**
@@ -15,7 +16,10 @@ const run = async (): Promise<void> => {
   const orgs = await db.select({ id: organization.id }).from(organization);
   for (const org of orgs) {
     await seedSystemOntology(org.id);
-    console.log(`[reseed] seeded standard object types for org ${org.id}`);
+    await seedStarterObjectTypes(org.id);
+    console.log(
+      `[reseed] seeded system + starter object types for org ${org.id}`,
+    );
   }
 
   const teams = await db

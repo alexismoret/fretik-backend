@@ -9,6 +9,7 @@ import { fieldDefinitions } from "../../db/schema";
 import { internalError, throwHttpError } from "../../lib/errors";
 import { refreshTypedViewAfterCatalogChange } from "../object-types/sync-typed-view";
 import { invalidateFieldDefinitionsCache } from "./cache";
+import { bindRelationFieldLinkType } from "./relation-link";
 import { slugifyFieldKey } from "./slugify-key";
 import {
   assertScopeEnabledCap,
@@ -93,6 +94,19 @@ export const createFieldDefinition = async (
     config: input.config,
   });
 
+  // A relation field is backed by a link type (its edges live in `links`, not
+  // `data`). Resolve-or-create that binding and carry the key on the config.
+  const config =
+    input.type === "relation"
+      ? await bindRelationFieldLinkType({
+          organizationId: input.organizationId,
+          teamId: input.teamId,
+          objectTypeId: input.objectTypeId,
+          label: input.label,
+          config: input.config ?? {},
+        })
+      : (input.config ?? {});
+
   const willBeEnabled = input.enabled ?? true;
   if (willBeEnabled) {
     await assertScopeEnabledCap({
@@ -141,7 +155,7 @@ export const createFieldDefinition = async (
         label: input.label,
         description: input.description ?? null,
         type: input.type,
-        config: input.config ?? {},
+        config,
         isTitle: willBeTitle,
         aiExtractionEnabled: input.aiExtractionEnabled ?? true,
         vectorizeInclude: input.vectorizeInclude ?? true,

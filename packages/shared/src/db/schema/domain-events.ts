@@ -2,7 +2,6 @@ import { sql } from "drizzle-orm";
 import {
   index,
   jsonb,
-  pgEnum,
   pgTable,
   text,
   timestamp,
@@ -13,16 +12,11 @@ import {
 import { aiConversations } from "./ai";
 import { organization, team, user } from "./auth-schema";
 import { objectRecords } from "./object-records";
-
-/**
- * Who/what produced a journal entry.
- */
-export const domainEventActorEnum = pgEnum("domain_event_actor", [
-  "user",
-  "agent",
-  "system",
-  "connector",
-]);
+// `domainEventActorEnum` lives in `ontology-enums.ts` (so `object-records` can
+// use it for actor stamps without a circular import — this module imports
+// `object_records` for its provenance FK). The schema barrel exports it once,
+// from there.
+import { domainEventActorEnum } from "./ontology-enums";
 
 /**
  * Domain events — the DURABLE, append-only journal / transactional outbox. Not

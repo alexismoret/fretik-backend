@@ -143,6 +143,10 @@ export const objectRecordResponseSchema = z.object({
   source: ontologySourceSchema,
   confidence: z.string().nullable(),
   documentId: z.uuid().nullable(),
+  // Field values not stored in `data` — relations as `[{id,label}]` and rollup
+  // aggregates — projected from the team's typed view. Optional: present on the
+  // list / detail read paths, absent on write responses.
+  computed: jsonMap.optional(),
   createdAt: z.coerce.date(),
   updatedAt: z.coerce.date(),
 });
@@ -197,6 +201,9 @@ export type RecordFilter = z.infer<typeof recordFilterSchema>;
 export const recordListQuerySchema = paramsListSchema.extend({
   objectTypeId: z.uuid(),
   status: ontologyStatusSchema.default("confirmed"),
+  // Resolve the mirror record of an uploaded document (attachment fields link
+  // to the mirror, keyed by the drive document id).
+  documentId: z.uuid().optional(),
   // Query params arrive as strings; only the literal "true" opts in.
   withLinks: z
     .string()

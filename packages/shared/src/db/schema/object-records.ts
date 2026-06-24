@@ -16,7 +16,11 @@ import {
 import { organization, team, user } from "./auth-schema";
 import { documents } from "./documents";
 import { objectTypes } from "./object-types";
-import { ontologySourceEnum, ontologyStatusEnum } from "./ontology-enums";
+import {
+  domainEventActorEnum,
+  ontologySourceEnum,
+  ontologyStatusEnum,
+} from "./ontology-enums";
 
 // Postgres tsvector (Drizzle ships no native column). Maintained by the
 // service layer (NOT a generated column — the expression would have to be
@@ -98,6 +102,19 @@ export const objectRecords = pgTable(
 
     // 1:1 anchor to the uploaded file for `document` records.
     documentId: uuid("document_id").references(() => documents.id, {
+      onDelete: "set null",
+    }),
+
+    // Denormalized actor stamps (Notion's Created-by / Last-edited-by). Cheap
+    // "who touched this" display + filtering ("my records", "AI-created"); the
+    // full per-attribute history still lives in `domain_events`. Populated from
+    // the same `EventActor` threaded through the create/update services.
+    createdByActor: domainEventActorEnum("created_by_actor"),
+    createdByUserId: uuid("created_by_user_id").references(() => user.id, {
+      onDelete: "set null",
+    }),
+    updatedByActor: domainEventActorEnum("updated_by_actor"),
+    updatedByUserId: uuid("updated_by_user_id").references(() => user.id, {
       onDelete: "set null",
     }),
 

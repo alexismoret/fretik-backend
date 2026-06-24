@@ -2,6 +2,7 @@ import { and, eq, sql } from "drizzle-orm";
 import db, { type Transaction } from "../../db";
 import type { FieldDefinition } from "../../db/schema";
 import { fieldDefinitions, objectTypes } from "../../db/schema";
+import { isMultiMember } from "../../db/schema/field-types";
 import { recomputeSearchVectorsForType } from "../object-records/field-data";
 
 /**
@@ -80,6 +81,7 @@ const castExpr = (def: FieldDefinition): string => {
   const text = `data->>'${def.key}'`;
   switch (def.type) {
     case "number":
+    case "rating":
       return `CASE WHEN (${text}) ~ '^-?[0-9]+(\\.[0-9]+)?$' THEN (${text})::numeric END`;
     case "date":
       // Native text→date (`::date`, `to_date`) is STABLE (DateStyle/locale), so
@@ -99,9 +101,156 @@ const castExpr = (def: FieldDefinition): string => {
       // Keep the array as JSONB (queryable with `@>` / `?`); no cast to error.
       return `data->'${def.key}'`;
     default:
-      // text / email / url / select — raw text, never errors.
+      // text / email / url / markdown / phone — raw text, never errors.
       return text;
   }
+};
+
+/**
+ * Project a `relation` field: a JSONB array of `{id, label}` for the active
+ * edges of the field's backing link type, correlated on the outer record id.
+ * Relations are NOT in `data` — they live in `links` — so the view exposes them
+ * via this correlated subquery. RLS on `links` / `object_records` / `link_types`
+ * (double-armed for `fretik_sql_tool`) scopes the rows under `security_invoker`;
+ * the team filter is pinned to the generation team for precision. A relation
+ * field with no bound link type projects an empty array. `linkTypeKey` is
+ * re-validated slug-safe before embedding (the anti-DDL-injection boundary).
+ */
+const relationProjection = (def: FieldDefinition, teamId: string): string => {
+  const linkTypeKey =
+    "linkTypeKey" in def.config ? def.config.linkTypeKey : undefined;
+  if (!linkTypeKey || !SAFE_IDENT.test(linkTypeKey)) return `'[]'::jsonb`;
+  return `COALESCE((
+    SELECT jsonb_agg(jsonb_build_object('id', rt.id, 'label', rt.label) ORDER BY l.created_at)
+    FROM links l
+    JOIN object_records rt ON rt.id = l.to_record_id
+    JOIN link_types lt ON lt.id = l.link_type_id
+    WHERE l.from_record_id = object_records.id
+      AND lt.normalized_key = '${linkTypeKey}'
+      AND lt.team_id = '${teamId}'::uuid
+      AND l.valid_to IS NULL AND l.invalidated_at IS NULL
+  ), '[]'::jsonb)`;
+};
+
+/**
+ * Project a `member` field: the assigned teammate userId(s) from `data`. Single
+ * assignee → the raw text id; `multiple` → the JSONB array (queryable with
+ * `?`/`@>`). The AI filters on the id; display names are resolved client-side
+ * (and by the member-list tool), so the view stays free of a cross-schema join
+ * to the auth `user` table.
+ */
+const memberExpr = (def: FieldDefinition): string =>
+  isMultiMember(def.config) ? `data->'${def.key}'` : `data->>'${def.key}'`;
+
+/**
+ * Project a `money` field into two columns — `<key>_amount` (guarded numeric)
+ * and `<key>_currency` (ISO text) — from the `{ amount, currencyCode }` object
+ * in `data`, so the AI can `SUM(<key>_amount)` and group by currency.
+ */
+const moneyAmountExpr = (def: FieldDefinition): string => {
+  const text = `data->'${def.key}'->>'amount'`;
+  return `CASE WHEN (${text}) ~ '^-?[0-9]+(\\.[0-9]+)?$' THEN (${text})::numeric END`;
+};
+const moneyCurrencyExpr = (def: FieldDefinition): string =>
+  `data->'${def.key}'->>'currencyCode'`;
+
+/**
+ * Project a `rollup` field: a read-only aggregate over the records linked
+ * through a sibling `relation` field. Resolves that relation's backing
+ * `linkTypeKey` from the type's own field set, then aggregates the target
+ * field's value across the active edges — the same correlated-subquery shape as
+ * `relationProjection`, with an aggregate instead of `jsonb_agg`.
+ *
+ * `fn`:
+ *   - `count` → number of linked records (target field ignored)
+ *   - `count_not_empty` / `percent_not_empty` → (share of) linked records whose
+ *     target field is set
+ *   - `sum` / `avg` / `min` / `max` → numeric aggregate of the target field,
+ *     guarded so a non-numeric value is skipped (NULL) rather than erroring.
+ *
+ * Misconfigured (no relation field, unbound relation, or a numeric fn with no
+ * target) → a constant NULL column, so the view never fails to build. `key`s
+ * are re-validated slug-safe before embedding (anti-DDL-injection boundary).
+ */
+const rollupProjection = (
+  def: FieldDefinition,
+  fields: FieldDefinition[],
+  teamId: string,
+): string => {
+  const cfg = def.config;
+  const relationFieldKey =
+    "relationFieldKey" in cfg ? cfg.relationFieldKey : undefined;
+  const targetFieldKey =
+    "targetFieldKey" in cfg ? cfg.targetFieldKey : undefined;
+  const fn = "fn" in cfg ? cfg.fn : undefined;
+  if (!relationFieldKey || !fn) return `NULL`;
+
+  const relationField = fields.find(
+    (f) => f.key === relationFieldKey && f.type === "relation",
+  );
+  const linkTypeKey =
+    relationField && "linkTypeKey" in relationField.config
+      ? relationField.config.linkTypeKey
+      : undefined;
+  if (!linkTypeKey || !SAFE_IDENT.test(linkTypeKey)) return `NULL`;
+
+  // Guarded numeric read of the target field on a linked record (`rt`).
+  const needsTarget =
+    fn === "sum" || fn === "avg" || fn === "min" || fn === "max";
+  if (needsTarget && (!targetFieldKey || !SAFE_IDENT.test(targetFieldKey))) {
+    return `NULL`;
+  }
+  const targetText = targetFieldKey
+    ? `rt.data->>'${targetFieldKey}'`
+    : undefined;
+  const targetNumeric = targetText
+    ? `CASE WHEN (${targetText}) ~ '^-?[0-9]+(\\.[0-9]+)?$' THEN (${targetText})::numeric END`
+    : undefined;
+
+  let agg: string;
+  switch (fn) {
+    case "count":
+      agg = `count(*)`;
+      break;
+    case "count_not_empty":
+      agg = targetText
+        ? `count(*) FILTER (WHERE (${targetText}) IS NOT NULL AND (${targetText}) <> '')`
+        : `count(*)`;
+      break;
+    case "percent_not_empty":
+      agg = targetText
+        ? `round(100.0 * count(*) FILTER (WHERE (${targetText}) IS NOT NULL AND (${targetText}) <> '') / NULLIF(count(*), 0), 2)`
+        : `100`;
+      break;
+    case "sum":
+      agg = `COALESCE(sum(${targetNumeric}), 0)`;
+      break;
+    case "avg":
+      agg = `avg(${targetNumeric})`;
+      break;
+    case "min":
+      agg = `min(${targetNumeric})`;
+      break;
+    case "max":
+      agg = `max(${targetNumeric})`;
+      break;
+  }
+
+  // count-family defaults to 0 (a record with no links has zero, not NULL);
+  // numeric aggregates stay NULL when there is nothing to aggregate.
+  const zeroDefault =
+    fn === "count" || fn === "count_not_empty" || fn === "sum";
+  const body = `(
+    SELECT ${agg}
+    FROM links l
+    JOIN object_records rt ON rt.id = l.to_record_id
+    JOIN link_types lt ON lt.id = l.link_type_id
+    WHERE l.from_record_id = object_records.id
+      AND lt.normalized_key = '${linkTypeKey}'
+      AND lt.team_id = '${teamId}'::uuid
+      AND l.valid_to IS NULL AND l.invalidated_at IS NULL
+  )`;
+  return zeroDefault ? `COALESCE(${body}, 0)` : body;
 };
 
 /**
@@ -192,9 +341,30 @@ export const syncTypedView = async (input: {
   const columns = ["id AS _id", "label AS _label", "status::text AS _status"];
   columns.push("created_at AS _created_at", "updated_at AS _updated_at");
   columns.push("document_id AS _document_id");
+  // Actor stamps (Notion's Created-by / Last-edited-by), exposed as the
+  // teammate userId who created / last edited the record.
+  columns.push(
+    "created_by_user_id AS _created_by",
+    "updated_by_user_id AS _updated_by",
+  );
   for (const def of shape.fields) {
     assertSafeKey(def.key, "field key");
-    columns.push(`${castExpr(def)} AS ${def.key}`);
+    // Relation / member / money have bespoke projections (graph edges, userIds,
+    // or a two-column money split); everything else uses the guarded cast.
+    if (def.type === "relation") {
+      columns.push(`${relationProjection(def, input.teamId)} AS ${def.key}`);
+    } else if (def.type === "rollup") {
+      columns.push(
+        `${rollupProjection(def, shape.fields, input.teamId)} AS ${def.key}`,
+      );
+    } else if (def.type === "member") {
+      columns.push(`${memberExpr(def)} AS ${def.key}`);
+    } else if (def.type === "money") {
+      columns.push(`${moneyAmountExpr(def)} AS ${def.key}_amount`);
+      columns.push(`${moneyCurrencyExpr(def)} AS ${def.key}_currency`);
+    } else {
+      columns.push(`${castExpr(def)} AS ${def.key}`);
+    }
   }
 
   await ddl(exec, `DROP VIEW IF EXISTS ${name}`);

@@ -128,6 +128,72 @@ describe("buildRecordShape", () => {
     expect(shape.safeParse({ score: 11 }).success).toBe(false);
   });
 
+  it("validates a money field as { amount, currencyCode }", () => {
+    const shape = buildRecordShape([
+      makeField({ key: "total", type: "money" }),
+    ]);
+    expect(
+      shape.safeParse({ total: { amount: 1200, currencyCode: "EUR" } }).success,
+    ).toBe(true);
+    // A bare number is not a money value.
+    expect(shape.safeParse({ total: 1200 }).success).toBe(false);
+    // Missing currencyCode fails.
+    expect(shape.safeParse({ total: { amount: 1200 } }).success).toBe(false);
+  });
+
+  it("validates a member field: string single, array when multiple", () => {
+    const single = buildRecordShape([
+      makeField({ key: "assignee", type: "member" }),
+    ]);
+    expect(single.safeParse({ assignee: "user_123" }).success).toBe(true);
+    expect(single.safeParse({ assignee: ["user_123"] }).success).toBe(false);
+
+    const multi = buildRecordShape([
+      makeField({ key: "owners", type: "member", config: { multiple: true } }),
+    ]);
+    expect(multi.safeParse({ owners: ["user_1", "user_2"] }).success).toBe(
+      true,
+    );
+    expect(multi.safeParse({ owners: "user_1" }).success).toBe(false);
+  });
+
+  it("bounds a rating field by config.ratingMax", () => {
+    const shape = buildRecordShape([
+      makeField({ key: "stars", type: "rating", config: { ratingMax: 5 } }),
+    ]);
+    expect(shape.safeParse({ stars: 4 }).success).toBe(true);
+    expect(shape.safeParse({ stars: 6 }).success).toBe(false);
+    expect(shape.safeParse({ stars: -1 }).success).toBe(false);
+  });
+
+  it("accepts markdown and phone as strings", () => {
+    const shape = buildRecordShape([
+      makeField({ key: "notes", type: "markdown" }),
+      makeField({ key: "tel", type: "phone" }),
+    ]);
+    expect(
+      shape.safeParse({ notes: "# Title\n- a", tel: "+33123456789" }).success,
+    ).toBe(true);
+    expect(shape.safeParse({ notes: 42 }).success).toBe(false);
+  });
+
+  it("excludes relation fields from the data shape (they live in links)", () => {
+    const shape = buildRecordShape([
+      makeField({ key: "name", type: "text" }),
+      makeField({
+        key: "vendor",
+        type: "relation",
+        config: { targetTypeKey: "company", linkTypeKey: "vendor" },
+      }),
+    ]);
+    // `vendor` is not a key in the shape, so any value for it is stripped and
+    // never validated — relations are written via the links graph, not `data`.
+    expect(shape.safeParse({ name: "Acme", vendor: "anything" }).success).toBe(
+      true,
+    );
+    expect(Object.keys(shape.shape)).not.toContain("vendor");
+  });
+
   it("skips disabled fields", () => {
     const shape = buildRecordShape([
       makeField({ key: "name", type: "text" }),

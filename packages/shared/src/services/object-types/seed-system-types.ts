@@ -36,19 +36,17 @@ type SeedObjectType = {
 };
 
 /**
- * Standard object types every organization is seeded with. Generic business
- * primitives only — no industry specifics (those belong in templates). All are
- * fully editable and deletable EXCEPT `document`, which the delete service
- * protects: it is the anchor for document field definitions and the uploaded-
- * file record mirror, so the upload pipeline depends on it.
+ * The ONLY truly system object type. `document` is delete-protected (the delete
+ * service refuses it): it is the anchor for document field definitions and the
+ * uploaded-file record mirror, so the upload pipeline depends on it. It carries
+ * no fields here — they come from the document-field template applied right
+ * after (org-creation hook).
  *
- * `document` carries no fields here — its fields come from the document-field
- * template applied right after (org-creation hook). The others ship a minimal,
- * generic field set (a title field + a couple of obvious ones) so they are
- * usable out of the box; users add/remove freely.
- *
- * Relations are intentionally NOT seeded — link types are created on demand by
- * users or by the AI (canonicalized to avoid sprawl).
+ * Everything else a team starts with (company, person, note, task) ships as a
+ * deletable, editable STARTER template (`templates/object-types`), not as a
+ * hardcoded system type — a generic B2B workspace must not force a CRM-ish
+ * ontology on every team. Relations are NOT seeded — link types are created on
+ * demand by users / the AI (canonicalized to avoid sprawl).
  */
 const SYSTEM_OBJECT_TYPES: SeedObjectType[] = [
   {
@@ -57,94 +55,6 @@ const SYSTEM_OBJECT_TYPES: SeedObjectType[] = [
     labelPlural: "Documents",
     icon: "file-text",
     fields: [],
-  },
-  {
-    key: "company",
-    label: "Company",
-    labelPlural: "Companies",
-    icon: "building-2",
-    fields: [
-      {
-        key: "name",
-        label: "Name",
-        type: "text",
-        isTitle: true,
-        displayOrder: 0,
-      },
-    ],
-  },
-  {
-    key: "person",
-    label: "Person",
-    labelPlural: "People",
-    icon: "user",
-    fields: [
-      {
-        key: "name",
-        label: "Name",
-        type: "text",
-        isTitle: true,
-        displayOrder: 0,
-      },
-    ],
-  },
-  {
-    key: "note",
-    label: "Note",
-    labelPlural: "Notes",
-    icon: "sticky-note",
-    fields: [
-      {
-        key: "title",
-        label: "Title",
-        type: "text",
-        isTitle: true,
-        displayOrder: 0,
-      },
-      {
-        key: "content",
-        label: "Content",
-        type: "text",
-        config: { multiline: true },
-        displayOrder: 1,
-      },
-    ],
-  },
-  {
-    key: "task",
-    label: "Task",
-    labelPlural: "Tasks",
-    icon: "circle-check",
-    fields: [
-      {
-        key: "title",
-        label: "Title",
-        type: "text",
-        isTitle: true,
-        displayOrder: 0,
-      },
-      {
-        key: "status",
-        label: "Status",
-        type: "select",
-        config: {
-          options: [
-            { value: "todo", label: "To do" },
-            { value: "in_progress", label: "In progress" },
-            { value: "done", label: "Done" },
-          ],
-        },
-        displayInFilters: true,
-        displayOrder: 1,
-      },
-      {
-        key: "due_date",
-        label: "Due date",
-        type: "date",
-        displayInFilters: true,
-        displayOrder: 2,
-      },
-    ],
   },
 ];
 

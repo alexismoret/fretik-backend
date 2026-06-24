@@ -13,45 +13,22 @@ import {
   varchar,
 } from "drizzle-orm/pg-core";
 import { organization, team } from "./auth-schema";
+import { type FieldDefinitionConfig, FIELD_TYPES } from "./field-types";
 import { objectTypes } from "./object-types";
+
+// The field-type catalogue + per-type config shapes live in `./field-types`
+// (the single source of truth that also backs the runtime Zod registry and the
+// frontend renderer registry), re-exported from the schema barrel. The pg enum
+// is built from `FIELD_TYPES` so the DB and TS can never drift.
 
 /**
  * Field value type. Drives the runtime Zod builder used in pre-extract,
  * the dynamic input components on the frontend, and the filter UI.
  */
-export const fieldDefinitionTypeEnum = pgEnum("field_definition_type", [
-  "text",
-  "number",
-  "date",
-  "datetime",
-  "boolean",
-  "select",
-  "multi_select",
-  "url",
-  "email",
-]);
-
-/**
- * Shape of `config` JSONB. Per-type optional configuration.
- *  - select / multi_select: `options` is the closed list of allowed values.
- *  - text: `multiline` switches the frontend renderer to a textarea.
- *  - number: `min` / `max` bound the value in the schema.
- *  - multi_select: `freeform: true` lets users add values outside `options`.
- */
-export type FieldDefinitionOption = {
-  value: string;
-  label: string;
-  color?: string;
-  icon?: string;
-};
-
-export type FieldDefinitionConfig = {
-  options?: FieldDefinitionOption[];
-  multiline?: boolean;
-  min?: number;
-  max?: number;
-  freeform?: boolean;
-};
+export const fieldDefinitionTypeEnum = pgEnum(
+  "field_definition_type",
+  FIELD_TYPES,
+);
 
 /**
  * Field definitions table.
@@ -152,4 +129,5 @@ export const fieldDefinitions = pgTable(
 
 export type FieldDefinition = typeof fieldDefinitions.$inferSelect;
 export type NewFieldDefinition = typeof fieldDefinitions.$inferInsert;
-export type FieldDefinitionType = FieldDefinition["type"];
+// `FieldDefinitionType` is re-exported above from `./field-types` (the source
+// of truth). It is structurally identical to `FieldDefinition["type"]`.

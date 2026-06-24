@@ -92,6 +92,8 @@ export const buildPreExtractCustomShape = (
   const shape: Record<string, z.ZodTypeAny> = {};
   for (const def of definitions) {
     if (!def.aiExtractionEnabled || !def.enabled) continue;
+    // Relations live in the `links` graph, not `data` — never extracted here.
+    if (def.type === "relation") continue;
     shape[def.key] = zodForField(def);
   }
   return shape;

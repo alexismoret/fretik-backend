@@ -192,7 +192,7 @@ objectTypeRoutes.openapi(getRoute, async (c) => {
   const team = c.get("team");
   if (!team) return c.json(teamRequired(), 403);
   const { id } = c.req.valid("param");
-  const type = await getObjectType({ id });
+  const type = await getObjectType({ id, teamId: team.id });
   return c.json(type, 200);
 });
 

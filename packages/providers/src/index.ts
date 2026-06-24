@@ -3,6 +3,7 @@ import { exchangeEntry } from "./exchange";
 import { frontEntry } from "./front";
 import { imapSmtpEntry } from "./imap-smtp";
 import { outlookEntry } from "./outlook";
+import { plannerEntry } from "./planner";
 import { shiptifyEntry } from "./shiptify";
 import { teamsEntry } from "./teams";
 
@@ -25,6 +26,7 @@ setProviders({
   teams: teamsEntry,
   front: frontEntry,
   shiptify: shiptifyEntry,
+  planner: plannerEntry,
 });
 
 export {
@@ -32,6 +34,7 @@ export {
   frontEntry,
   imapSmtpEntry,
   outlookEntry,
+  plannerEntry,
   shiptifyEntry,
   teamsEntry,
 };

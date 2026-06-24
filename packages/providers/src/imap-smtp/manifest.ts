@@ -17,6 +17,8 @@ import type { ProviderManifest } from "@fretik/shared/external-apps/manifest-sch
 export const imapSmtpManifest: ProviderManifest = {
   key: "imap-smtp",
   displayName: "Email (IMAP/SMTP)",
+  description:
+    "Email (IMAP/SMTP) — read, send, and organize email over a generic IMAP/SMTP mailbox",
   nangoProviderConfigKey: "imap-smtp",
   icon: "i-lucide-mail",
   transport: { kind: "custom-handler" },

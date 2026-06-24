@@ -1,7 +1,7 @@
 ---
 name: shiptify
-description: Shiptify — read inbox, send email, manage calendar and contacts
-version: 034f9957c592
+description: Shiptify — manage shipment requests and shipments: book, track, confirm pickup/delivery, exchange documents
+version: 30b033bce920
 ---
 
 # Shiptify — 54 actions

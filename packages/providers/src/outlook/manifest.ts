@@ -15,6 +15,8 @@ import type { ProviderManifest } from "@fretik/shared/external-apps/manifest-sch
 export const outlookManifest: ProviderManifest = {
   key: "outlook",
   displayName: "Microsoft Outlook",
+  description:
+    "Microsoft Outlook — read, send, and organize email; manage calendar events and contacts",
   nangoProviderConfigKey: "outlook",
   icon: "i-simple-icons-microsoftoutlook",
   iconColor: "#0078D4",

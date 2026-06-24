@@ -781,7 +781,7 @@ const emitSkill = async (input: ProviderInput): Promise<string> => {
   const front = [
     "---",
     `name: ${manifest.key}`,
-    `description: ${manifest.displayName} — read inbox, send email, manage calendar and contacts`,
+    `description: ${manifest.description ?? manifest.displayName}`,
     `version: ${version}`,
     "---",
     "",

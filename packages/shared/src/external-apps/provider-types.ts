@@ -17,6 +17,12 @@ export interface ProxyRequestParts {
   query?: Record<string, string>;
   /** JSON request body. */
   body?: unknown;
+  /**
+   * Request headers. Most providers never need these — Nango injects auth.
+   * Use for per-call headers the API mandates: Microsoft Planner requires
+   * `If-Match: <etag>` on PATCH/DELETE (HTTP 412 otherwise).
+   */
+  headers?: Record<string, string>;
 }
 
 /**

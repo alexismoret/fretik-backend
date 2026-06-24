@@ -542,6 +542,13 @@ export const providerManifestSchema = z
     /** Lower-case provider key, e.g. `outlook`. */
     key: z.string().regex(/^[a-z][a-z0-9-]*$/),
     displayName: z.string().min(1),
+    /**
+     * One-line capability summary used as the generated SKILL.md `description`
+     * frontmatter — the L1 relevance hook the agent reads to decide whether to
+     * open the skill. Format: "<DisplayName> — <what it does>". When omitted,
+     * the generator falls back to the display name alone.
+     */
+    description: z.string().min(1).optional(),
     /** Integration ID configured in the Nango dashboard. */
     nangoProviderConfigKey: z.string().min(1),
     /**

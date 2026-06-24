@@ -22,6 +22,8 @@ import type { ProviderManifest } from "@fretik/shared/external-apps/manifest-sch
 export const teamsManifest: ProviderManifest = {
   key: "teams",
   displayName: "Microsoft Teams",
+  description:
+    "Microsoft Teams — read and post chat and channel messages, search conversations, look up people and presence",
   nangoProviderConfigKey: "microsoft-teams",
   icon: "i-logos-microsoft-teams",
   iconColor: "#5059C9",

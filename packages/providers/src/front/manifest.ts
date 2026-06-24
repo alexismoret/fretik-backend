@@ -21,6 +21,8 @@ import type { ProviderManifest } from "@fretik/shared/external-apps/manifest-sch
 export const frontManifest: ProviderManifest = {
   key: "front",
   displayName: "Front",
+  description:
+    "Front — read and reply to shared-inbox conversations; manage tags, assignments, snoozes, and contacts",
   nangoProviderConfigKey: "front",
   // Local SVG asset — AppIcon.vue renders the file at
   // app/public/app-icons/front.svg via <img> with no tint applied.

@@ -29,6 +29,8 @@ export interface NangoProxyCall {
   endpoint: string;
   query?: Record<string, string>;
   body?: unknown;
+  /** Per-call request headers (e.g. Planner's `If-Match: <etag>`). */
+  headers?: Record<string, string>;
 }
 
 export const callNangoProxy = async (
@@ -43,6 +45,7 @@ export const callNangoProxy = async (
       connectionId: call.connectionId,
       params: call.query,
       data: call.body,
+      headers: call.headers,
       retries: 3,
     });
     return res.data;

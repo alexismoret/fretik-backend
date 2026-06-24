@@ -98,6 +98,11 @@ export default {
         country: "Country",
         recipient_name: "Recipient",
         instructions: "Instructions",
+        // Planner-specific field labels.
+        title: "Title",
+        percent_complete: "Progress",
+        assignees: "Assignees",
+        checklist: "Checklist items",
       },
 
       values: {
@@ -221,6 +226,27 @@ export default {
         },
         reply_to_channel_message: {
           title: { default: "Reply in Teams thread" },
+        },
+      },
+
+      planner: {
+        create_task: {
+          title: { default: 'Create task "{{title}}"' },
+        },
+        update_task: {
+          title: { default: "Update task" },
+        },
+        update_task_details: {
+          title: { default: "Update task description" },
+        },
+        delete_task: {
+          title: { default: "Delete task" },
+        },
+        create_bucket: {
+          title: { default: 'Create bucket "{{name}}"' },
+        },
+        create_plan: {
+          title: { default: 'Create plan "{{title}}"' },
         },
       },
 

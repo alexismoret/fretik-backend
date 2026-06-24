@@ -1,7 +1,7 @@
 ---
 name: imap-smtp
-description: Email (IMAP/SMTP) — read inbox, send email, manage calendar and contacts
-version: f9ff28a3cc66
+description: Email (IMAP/SMTP) — read, send, and organize email over a generic IMAP/SMTP mailbox
+version: 489948318b7e
 ---
 
 # Email (IMAP/SMTP) — 19 actions

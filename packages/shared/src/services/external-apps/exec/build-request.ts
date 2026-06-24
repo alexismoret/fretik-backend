@@ -26,6 +26,7 @@ export interface BuiltRequest {
   endpoint: string;
   query?: Record<string, string>;
   body?: unknown;
+  headers?: Record<string, string>;
 }
 
 const substitutePath = (
@@ -112,6 +113,7 @@ export const buildRequest = (
       endpoint: parts.endpoint ?? endpoint,
       query: parts.query,
       body: parts.body,
+      headers: parts.headers,
     };
   }
 

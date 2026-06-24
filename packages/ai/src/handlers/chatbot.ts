@@ -876,8 +876,16 @@ const loadExternalApps = async (
                         : `${f.key}: ${formatted}`;
                     })
                     .filter((s): s is string => s !== null) ?? [];
+                // The manifest description is the "what is this app + when to
+                // use it" signal at decision time — load-bearing for apps the
+                // base model doesn't know (industry / template providers),
+                // cheap-but-redundant for well-known ones.
+                const description = provider?.manifest.description;
                 const parts = [
                   `display_name: "${c.displayName}"`,
+                  ...(description !== undefined
+                    ? [`description: "${description}"`]
+                    : []),
                   `id: ${c.id}`,
                   `categories: [${c.categories.join(", ")}]`,
                   ...exposed,

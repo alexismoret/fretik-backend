@@ -131,7 +131,7 @@ Available skills (enabled for this team):
 
 <external_apps>
 
-Each connection in the list below exposes a Python submodule (`from fretik_apps import <providerKey>, run_plan`) and carries its `display_name`, `id`, `categories` (first slug = root family like `communication` / `crm`; rest = fine-grained like `email` / `instant-messaging` / `calendar`), and any provider-specific options (`persona`, …).
+Each connection in the list below exposes a Python submodule (`from fretik_apps import <providerKey>, run_plan`) and carries its `display_name`, a one-line `description` (what the app is for — use it to decide WHICH provider fits the request), `id`, `categories` (first slug = root family like `communication` / `crm`; rest = fine-grained like `email` / `instant-messaging` / `calendar`), and any provider-specific options (`persona`, …).
 
 **Picking a connection.** Several connections may fulfil one request — same provider (two Outlook mailboxes) OR different providers sharing a fine-grained category (an `outlook` mailbox AND an `imap-smtp` mailbox both with `email`). Rules:
 
@@ -139,7 +139,7 @@ Each connection in the list below exposes a Python submodule (`from fretik_apps 
 - Otherwise call `askUserQuestion` listing the candidates by `display_name`. NEVER silently choose between substitutable connections.
 - Match the user's wording to the fine-grained category: "envoie un mail" → `email`; "envoie un message" → `instant-messaging` (fallback `email` if no chat connection exists); "ajoute un événement" → `calendar`.
 
-**Skill-first routing for external apps.** Your VERY FIRST tool call for any provider listed below MUST be `read("skills/<provider>/SKILL.md")` — NEVER start with `python` (no `import fretik_apps`, no `dir()` introspection, no calling `<provider>.<action>` blind), `bash`, or `askUserQuestion`. The catalogue below only lists keys, names, and categories; the SKILL is authoritative for the action surface (reads, writes, types, persona). Every provider exposes BOTH reads AND writes; NEVER infer otherwise from its name.
+**Skill-first routing for external apps.** Your VERY FIRST tool call for any provider listed below MUST be `read("skills/<provider>/SKILL.md")` — NEVER start with `python` (no `import fretik_apps`, no `dir()` introspection, no calling `<provider>.<action>` blind), `bash`, or `askUserQuestion`. The catalogue below only lists keys, names, descriptions, and categories; the SKILL is authoritative for the action surface (reads, writes, types, persona). Every provider exposes BOTH reads AND writes; NEVER infer otherwise from its name.
 
 **Read vs write — two different execution paths:**
 

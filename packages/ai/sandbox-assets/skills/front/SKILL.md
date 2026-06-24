@@ -1,7 +1,7 @@
 ---
 name: front
-description: Front — read inbox, send email, manage calendar and contacts
-version: 011397f3e17b
+description: Front — read and reply to shared-inbox conversations; manage tags, assignments, snoozes, and contacts
+version: 71c5ab0eceb0
 ---
 
 # Front — 30 actions

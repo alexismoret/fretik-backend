@@ -20,6 +20,8 @@ import type { ProviderManifest } from "@fretik/shared/external-apps/manifest-sch
 export const exchangeManifest: ProviderManifest = {
   key: "exchange",
   displayName: "Microsoft Exchange",
+  description:
+    "Microsoft Exchange — read, send, and organize email; calendar events and contacts over Exchange/EWS",
   nangoProviderConfigKey: "exchange",
   icon: "i-simple-icons-microsoftexchange",
   iconColor: "#0078D4",

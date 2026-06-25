@@ -1,5 +1,6 @@
 import { restartPythonKernel } from "@fretik/shared/services/e2b/restart-python-kernel";
 import { runInSandbox } from "@fretik/shared/services/e2b/run-in-sandbox";
+import { consumeSandboxApprovalPending } from "@fretik/shared/services/external-apps/approvals/sandbox-signal";
 import { tool } from "ai";
 import { z } from "zod";
 import { getRuntimeContext } from "../agents/shared/runtime-context";
@@ -39,6 +40,18 @@ import { mapE2BError } from "./_e2b-errors";
 const E2B_EXEC_HOLD_TIMEOUT_MS = 5 * 60 * 1000 + 30_000;
 const e2bExecMutexKey = (conversationId: string): string =>
   `e2b:exec:${conversationId}`;
+
+/**
+ * Wraps a `restartPythonKernel` failure so the outer catch attributes it to
+ * the kernel restart ("while restarting the Python kernel") rather than the
+ * code run that never executed. `cause` carries the original error so
+ * `mapE2BError` can still detect E2B-typed failures.
+ */
+class KernelRestartError extends Error {
+  constructor(cause: unknown) {
+    super("Python kernel restart failed", { cause });
+  }
+}
 
 /**
  * Aligned with Anthropic's `code_execution_20260120` and OpenAI's
@@ -170,7 +183,13 @@ export const createPythonTool = () =>
           E2B_EXEC_HOLD_TIMEOUT_MS,
           async () => {
             if (restart) {
-              await restartPythonKernel(conversationId);
+              try {
+                await restartPythonKernel(conversationId);
+              } catch (err) {
+                // Tag so the outer mapper attributes the failure to the
+                // kernel restart, not the (never-reached) code run.
+                throw new KernelRestartError(err);
+              }
             }
             return traceExternalCall(
               "e2b-python",
@@ -193,6 +212,9 @@ export const createPythonTool = () =>
           },
         );
       } catch (err) {
+        if (err instanceof KernelRestartError) {
+          return mapE2BError(err.cause, "while restarting the Python kernel");
+        }
         return mapE2BError(err, "while running Python in sandbox");
       }
 
@@ -209,6 +231,15 @@ export const createPythonTool = () =>
           result.deletedPaths,
         );
       }
+
+      // Did `run_plan(...)` create a pending approval during this cell? The
+      // dispatcher stamps an out-of-band signal whenever it returns
+      // `approval_pending`. We consume it (read-once) regardless of how the
+      // cell ended so a swallowed `ApprovalPending` (agent wrapped run_plan
+      // in try/except, or just printed the ops) still surfaces the approval
+      // card and pauses the turn. See `approvals/sandbox-signal.ts`.
+      const dispatchedApprovalId =
+        await consumeSandboxApprovalPending(conversationId);
 
       if (result.error) {
         // `fretik_apps.run_plan(...)` raises `ApprovalPending(approval_id)`
@@ -231,14 +262,10 @@ export const createPythonTool = () =>
         // gives the model a one-liner that explains the pause in plain
         // English.
         if (result.error.name === "ApprovalPending") {
-          const approvalId = extractApprovalId(result.error.value);
+          const approvalId =
+            extractApprovalId(result.error.value) ?? dispatchedApprovalId;
           if (approvalId !== undefined) {
-            return {
-              status: "approval_pending" as const,
-              approvalId,
-              message:
-                "⏸ APPROVAL REQUIRED — execution paused. The user is reviewing your plan in the UI; nothing has been executed yet. Stop now — you will be programmatically resumed once the user decides, with the outcome substituted directly in this tool's result.",
-            };
+            return approvalPending(approvalId);
           }
           // Fall through to the generic error path — message did not
           // carry a UUID, which would indicate a malformed exception
@@ -252,6 +279,13 @@ export const createPythonTool = () =>
         };
       }
 
+      // Cell ran without raising, but `run_plan` still created a pending
+      // approval (the agent swallowed `ApprovalPending` or printed the ops).
+      // Surface it anyway so the approval card renders and the turn pauses.
+      if (dispatchedApprovalId !== undefined) {
+        return approvalPending(dispatchedApprovalId);
+      }
+
       const payload = {
         stdout: result.stdout,
         stderr: result.stderr,
@@ -262,6 +296,19 @@ export const createPythonTool = () =>
       return maybePersistLargeOutput(payload, conversationId, toolCallId);
     },
   });
+
+/**
+ * The `python` tool output that pauses the turn and tells the frontend to
+ * render the approval card (keyed on `status: "approval_pending"` +
+ * `approvalId`). Shared by the uncaught-exception path and the swallowed /
+ * print-only fallback driven by the dispatcher's out-of-band signal.
+ */
+const approvalPending = (approvalId: string) => ({
+  status: "approval_pending" as const,
+  approvalId,
+  message:
+    "⏸ Approval required — paused before any write ran. Stop here; you'll be resumed automatically once the user decides, with the outcome replacing this result.",
+});
 
 /**
  * Pull the approval UUID out of `ApprovalPending`'s error message.

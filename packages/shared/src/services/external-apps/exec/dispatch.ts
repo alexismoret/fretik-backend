@@ -7,6 +7,7 @@ import { getAction } from "../../../external-apps/registry";
 import { claimGrantedApproval } from "../approvals/claim";
 import { createPendingApproval } from "../approvals/create-pending";
 import { findLatestApprovalByHash } from "../approvals/find";
+import { markSandboxApprovalPending } from "../approvals/sandbox-signal";
 import { resolveConnection } from "../connections/resolve";
 import { buildRequest } from "./build-request";
 import { callCustomHandler } from "./call-custom-handler";
@@ -206,6 +207,7 @@ const dispatchPlan = async (
   // 3. Branch on status.
   if (existing !== undefined) {
     if (existing.status === "pending") {
+      await markSandboxApprovalPending(ctx.conversationId, existing.id);
       return { status: "approval_pending", approvalId: existing.id };
     }
     if (existing.status === "executing") {
@@ -270,5 +272,6 @@ const dispatchPlan = async (
     operations: validatedOps,
     summary,
   });
+  await markSandboxApprovalPending(ctx.conversationId, pending.id);
   return { status: "approval_pending", approvalId: pending.id };
 };

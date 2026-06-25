@@ -145,6 +145,7 @@ Each connection in the list below exposes a Python submodule (`from fretik_apps 
 
 - **Read actions** execute immediately. Use them eagerly to fetch the data you need.
 - **Write actions** NEVER execute on their own. They go through `run_plan([...])` which raises `fretik_apps.ApprovalPending` — **this is expected, not an error**. STOP at that point. Once the user decides, the outcome is substituted directly inside this same `python` tool result: `{ status: "approval_granted", result }` if approved, `{ status: "approval_rejected", feedback }` if not. Read it and respond — do not re-run the same code.
+  - Call `run_plan(...)` directly: never wrap it in `try/except` (catching `ApprovalPending` hides the approval card), and never just `print` the ops as a preview (the plan isn't created until you call it).
 
 A single `run_plan([...])` can mix actions from different providers, and the user approves them all together with one click. Prefer one bundled `run_plan` over several separate writes — fewer approval prompts for the user.
 

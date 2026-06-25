@@ -92,6 +92,18 @@ void mock.module("@fretik/shared/services/e2b/restart-python-kernel", () => ({
   },
 }));
 
+// Stub the Redis-backed approval signal so the tool's post-run consume()
+// doesn't reach for a real Redis. `nextPendingApprovalId` lets a test drive
+// the swallowed-ApprovalPending → approval_pending fallback path.
+let nextPendingApprovalId: string | undefined;
+void mock.module(
+  "@fretik/shared/services/external-apps/approvals/sandbox-signal",
+  () => ({
+    consumeSandboxApprovalPending: async () => nextPendingApprovalId,
+    markSandboxApprovalPending: async () => undefined,
+  }),
+);
+
 // --------------------------------------------------------------- //
 // SUT imports — must come AFTER mocks                              //
 // --------------------------------------------------------------- //
@@ -149,6 +161,7 @@ beforeEach(() => {
   restartCalls.length = 0;
   callOrder.length = 0;
   nextRestartError = null;
+  nextPendingApprovalId = undefined;
   setRunResult({});
 });
 
@@ -160,6 +173,31 @@ describe("python tool", () => {
     expect(runCalls).toHaveLength(1);
     expect(runCalls[0]?.toolCallId).toBe("tc-stable-id");
     expect(runCalls[0]?.language).toBe("python");
+  });
+
+  test("surfaces approval_pending from the dispatcher signal even when the cell swallowed ApprovalPending", async () => {
+    // Cell ran without raising (agent wrapped run_plan in try/except), but
+    // the dispatcher created a pending approval and stamped the signal.
+    setRunResult({ stdout: "Résultat run_plan: ApprovalPending: ...\n" });
+    nextPendingApprovalId = "019efa94-fa47-78c3-8547-0cab7d307686";
+
+    const out = await execPython("conv-approval", {
+      code: "try:\n    run_plan([op])\nexcept Exception as e:\n    print(e)",
+    });
+
+    expect(out).toMatchObject({
+      status: "approval_pending",
+      approvalId: "019efa94-fa47-78c3-8547-0cab7d307686",
+    });
+  });
+
+  test("a normal cell with no approval signal returns the stdout payload", async () => {
+    setRunResult({ stdout: "hello\n" });
+
+    const out = await execPython("conv-normal", { code: "print('hello')" });
+
+    expect((out as { status?: unknown }).status).toBeUndefined();
+    expect(out).toMatchObject({ stdout: "hello\n" });
   });
 
   test("rejects with NO_CONVERSATION when no conversationId is in the runtime context", async () => {

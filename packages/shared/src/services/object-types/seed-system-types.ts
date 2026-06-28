@@ -9,6 +9,7 @@ import {
   type NewLinkType,
   objectTypes,
 } from "../../db/schema";
+import { DOCUMENT_TYPE_KEY } from "./constants";
 
 /**
  * Key of the one generic system relation: "document mentions X". The document
@@ -31,16 +32,17 @@ type SeedObjectType = {
   key: string;
   label: string;
   labelPlural: string;
+  description: string;
   icon: string;
   fields: SeedField[];
 };
 
 /**
- * The ONLY truly system object type. `document` is delete-protected (the delete
- * service refuses it): it is the anchor for document field definitions and the
- * uploaded-file record mirror, so the upload pipeline depends on it. It carries
- * no fields here — they come from the document-field template applied right
- * after (org-creation hook).
+ * The ONLY truly system object type. `document_record` is delete-protected (the
+ * delete service refuses it): it is the anchor for document field definitions
+ * and the uploaded-file record mirror, so the upload pipeline depends on it. It
+ * carries no fields here — they come from the document-field template applied
+ * right after (org-creation hook).
  *
  * Everything else a team starts with (company, person, note, task) ships as a
  * deletable, editable STARTER template (`templates/object-types`), not as a
@@ -50,9 +52,11 @@ type SeedObjectType = {
  */
 const SYSTEM_OBJECT_TYPES: SeedObjectType[] = [
   {
-    key: "document",
+    key: DOCUMENT_TYPE_KEY,
     label: "Document",
     labelPlural: "Documents",
+    description:
+      "One record per uploaded file — its extracted metadata and the entities it mentions. Link a record to a file via its document record.",
     icon: "file-text",
     fields: [],
   },
@@ -78,6 +82,7 @@ export const seedSystemOntology = async (
         key: t.key,
         label: t.label,
         labelPlural: t.labelPlural,
+        description: t.description,
         icon: t.icon,
         isSystem: true,
       })),
@@ -124,7 +129,7 @@ export const seedSystemOntology = async (
   // roles. Industry relations (a pricing's carrier, …) are NOT seeded; users
   // and the AI create those, canonicalized to avoid sprawl. Idempotent on the
   // org-scope `(organizationId, normalizedKey) WHERE team_id IS NULL` index.
-  const documentTypeId = idByKey.get("document");
+  const documentTypeId = idByKey.get(DOCUMENT_TYPE_KEY);
   if (documentTypeId) {
     const mentions: NewLinkType = {
       organizationId,

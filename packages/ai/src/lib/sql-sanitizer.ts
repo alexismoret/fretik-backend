@@ -15,13 +15,13 @@ const PARSE_OPTIONS = { database: "postgresql" } as const;
  * a curated view that projects safe columns and is org-scoped by RLS session
  * variable — never the raw `user`/`member` tables.
  */
-// The dynamic-data graph is reached through the typed `v_*` views (the `v_`
-// namespace, allowed below by prefix — never raw `object_records` / `data`) plus
-// the graph relations `links` / `link_types` / `domain_events` /
-// `domain_event_links` (the join + provenance path). `object_records` and
-// `object_types` are deliberately ABSENT: they back the security_invoker views
-// (GRANT + RLS at the DB level) but the model cannot reference them directly, so
-// raw JSONB is never in its SQL surface — maximizing text-to-SQL precision.
+// The dynamic-data graph is reached through the registry `object_records` (joined
+// to `object_types` for the type key) plus one real typed table per type at
+// `data.obj_<typeId>` (allowed by the `data`-schema rule below), and the graph
+// relations `links` / `link_types` / `domain_events` / `domain_event_links` (the
+// join + provenance path). There are NO views anymore — the columns are typed, so
+// the model reads the real tables directly. Every one is RLS-fenced for the
+// `fretik_sql_tool` role (team isolation + sharing grants), so reading them is safe.
 const ALLOWED_RELATIONS = new Set([
   "documents",
   "document_properties",
@@ -30,7 +30,9 @@ const ALLOWED_RELATIONS = new Set([
   "document_labels",
   "field_definitions",
   "chatbot_org_members",
-  // Dynamic-data graph (Phase 3). Typed `v_*` views are allowed by prefix.
+  // Dynamic-data graph. Per-type rows live in `data.obj_*` (data-schema rule).
+  "object_records",
+  "object_types",
   "links",
   "link_types",
   "domain_events",
@@ -38,13 +40,13 @@ const ALLOWED_RELATIONS = new Set([
 ]);
 
 /**
- * Prefix of the typed-view namespace. Any relation named `v_*` (the generic
- * `v_record` + the per-type `v_<key>_<teamhex>` views) is allowed — the names
- * are slug-validated at creation (anti-DDL-injection) and the views are RLS-
- * scoped via `security_invoker`. This is how the model reads typed record data
- * without ever touching raw `object_records`.
+ * Dedicated schema holding the per-type typed tables (`data.obj_<typeId>`). A
+ * `data`-schema reference is allowed ONLY for the `obj_` table prefix — the
+ * names are slug/UUID-validated at creation (anti-DDL-injection) and each table
+ * is RLS-scoped for the read role. No other `data.*` object is reachable.
  */
-const TYPED_VIEW_PREFIX = "v_";
+const DATA_SCHEMA = "data";
+const OBJECT_TABLE_PREFIX = "obj_";
 
 /**
  * Statement types allowed — strictly read-only. Every other statement type
@@ -153,6 +155,15 @@ export const sanitizeSelect = (rawSql: string): string => {
     const schema = parts[1];
     const table = (parts[2] ?? "").toLowerCase();
 
+    // The `data` schema is reachable only for the per-type `obj_*` tables.
+    if (schema === DATA_SCHEMA) {
+      if (table.startsWith(OBJECT_TABLE_PREFIX)) continue;
+      throw new SqlValidationException({
+        code: "SQL_TABLE_NOT_ALLOWED",
+        message: `Table "data.${table}" is not accessible. In the data schema only the per-type tables data.obj_<typeId> (from <team_objects>) are readable.`,
+      });
+    }
+
     if (schema && schema !== "null" && schema !== "public") {
       throw new SqlValidationException({
         code: "SQL_TABLE_NOT_ALLOWED",
@@ -160,16 +171,11 @@ export const sanitizeSelect = (rawSql: string): string => {
       });
     }
 
-    if (
-      cteNames.has(table) ||
-      ALLOWED_RELATIONS.has(table) ||
-      table.startsWith(TYPED_VIEW_PREFIX)
-    )
-      continue;
+    if (cteNames.has(table) || ALLOWED_RELATIONS.has(table)) continue;
 
     throw new SqlValidationException({
       code: "SQL_TABLE_NOT_ALLOWED",
-      message: `Table "${table}" is not accessible. Query the typed views (v_record, v_<type>) and the graph relations (links, link_types, domain_events) listed in the system prompt — never raw object_records.`,
+      message: `Table "${table}" is not accessible. Query the per-type tables data.obj_<typeId> (from <team_objects>), the registry object_records ⋈ object_types, and the graph relations (links, link_types, domain_events) listed in the system prompt.`,
     });
   }
 

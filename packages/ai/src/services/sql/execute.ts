@@ -14,6 +14,43 @@ import {
  */
 const PAGE_SIZE = 15;
 
+/**
+ * Postgres SQLSTATE classes whose message is safe AND actionable to hand back
+ * to the agent: a wrong column/table/function name, a syntax slip, a type
+ * mismatch, an ambiguous column. Showing these lets the model fix the query in
+ * one retry; everything else (permissions, internal) stays a generic message.
+ */
+const FIXABLE_SQLSTATE = new Set([
+  "42703", // undefined_column
+  "42P01", // undefined_table
+  "42883", // undefined_function
+  "42601", // syntax_error
+  "42804", // datatype_mismatch
+  "42702", // ambiguous_column
+  "42P18", // indeterminate_datatype
+  "22P02", // invalid_text_representation (bad cast literal)
+]);
+
+/** Return the Postgres error message when it is an agent-fixable class, else null. */
+export const fixableSqlError = (err: unknown): string | null => {
+  if (typeof err !== "object" || err === null) return null;
+  const code =
+    "code" in err && typeof err.code === "string" ? err.code : undefined;
+  const message =
+    "message" in err && typeof err.message === "string"
+      ? err.message
+      : undefined;
+  if (!message || !code || !FIXABLE_SQLSTATE.has(code)) return null;
+  const trimmed = message.trim().replace(/\s+/g, " ").slice(0, 200);
+  const base = trimmed.endsWith(".") ? trimmed : `${trimmed}.`;
+  // Postgres often names the intended column/table in `hint` (e.g. "Perhaps you
+  // meant to reference the column …") — the most actionable signal for a
+  // mistyped name, so the model stops guessing. Append it when present.
+  const hint =
+    "hint" in err && typeof err.hint === "string" ? err.hint.trim() : "";
+  return hint ? `${base} ${hint.replace(/\s+/g, " ").slice(0, 160)}` : base;
+};
+
 export interface ExecuteSqlArgs {
   sqlQuery: string;
   teamId: string;
@@ -75,13 +112,16 @@ export const executeSql = async (
       organizationId: args.organizationId,
     });
   } catch (err) {
-    // Surface a guiding message but not the raw Postgres error — verbatim
-    // driver text leaks column/table existence and aids schema enumeration.
-    // The full error is kept in server logs / the trace for debugging.
     console.error("[sql-tool] query execution failed", err);
+    // Surface the Postgres message for the agent-fixable classes (a wrong
+    // column/table/function name, a syntax or type slip) so the model can
+    // correct it in one retry instead of guessing. Other classes stay generic
+    // (no schema enumeration beyond what the query already named).
+    const detail = fixableSqlError(err);
     return {
-      error:
-        "Query failed to execute. Check column and table names against the schema in the system prompt, then retry. If it still fails, stop and explain to the user.",
+      error: detail
+        ? `Query failed: ${detail} Check the column and table names against the schema in <database_schema> / <team_objects>, then retry once.`
+        : "Query failed to execute. Check column and table names against the schema in the system prompt, then retry. If it still fails, stop and explain to the user.",
       code: "SQL_EXECUTION_ERROR",
     };
   }

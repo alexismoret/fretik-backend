@@ -1,7 +1,7 @@
-import { and, eq, exists, sql } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import db from "../../db";
 import type { DocumentStatus, FieldDefinition } from "../../db/schema";
-import { documents, objectRecords } from "../../db/schema";
+import { documents, objectTypes, team } from "../../db/schema";
 import {
   buildDocumentOriginalKey,
   buildDocumentThumbnailKey,
@@ -11,6 +11,31 @@ import { getPresignedUrl } from "../../lib/s3";
 import type { FolderBreadcrumb } from "../../schemas/folders";
 import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
 import { getFolderBreadcrumbs } from "../folders/retrieve";
+import { qualifiedObjectTable, SAFE_IDENT } from "../object-schema/identifiers";
+import {
+  readRecordData,
+  readRecordDataBatch,
+} from "../object-schema/record-io";
+import { DOCUMENT_TYPE_KEY } from "../object-types/constants";
+
+/** Resolve a team's org-scoped `document` object-type id (its extension table). */
+const resolveDocumentTypeId = async (
+  teamId: string,
+): Promise<string | null> => {
+  const [row] = await db
+    .select({ id: objectTypes.id })
+    .from(objectTypes)
+    .innerJoin(team, eq(team.organizationId, objectTypes.organizationId))
+    .where(
+      and(
+        eq(team.id, teamId),
+        eq(objectTypes.key, DOCUMENT_TYPE_KEY),
+        isNull(objectTypes.teamId),
+      ),
+    )
+    .limit(1);
+  return row?.id ?? null;
+};
 
 /**
  * Shared document search/list service.
@@ -96,25 +121,20 @@ export const searchDocuments = async (
     includeThumbnailUrl = false,
   } = opts;
 
-  // Custom filter clauses are `EXISTS` sub-selects on the document's 1:1 mirror
-  // record, correlated by `object_records.document_id`. The value now lives at
-  // `data['<fieldKey>']` in the graph; `jsonb_extract_path` keeps the key a bound
-  // text parameter (no injection, no `jsonb -> unknown` operator ambiguity).
-  // Drizzle's relational query API doesn't compose raw sub-selects cleanly, so
-  // we pass them via `AND(RAW)` builders.
-  const customFilterExists = (customFilters ?? []).map((cf) =>
-    exists(
-      db
-        .select({ one: objectRecords.id })
-        .from(objectRecords)
-        .where(
-          and(
-            eq(objectRecords.documentId, documents.id),
-            sql`jsonb_extract_path(${objectRecords.data}, ${cf.fieldKey}) = ${JSON.stringify(cf.value)}::jsonb`,
-          ),
-        ),
-    ),
-  );
+  // Custom filter clauses are `EXISTS` sub-selects correlated on the document's
+  // 1:1 mirror record: join the document type's extension table and compare the
+  // real typed column (as text, so any primitive value works). Keys are
+  // slug-guarded; values parameterized. No-op when the document type is absent.
+  const docTypeId = await resolveDocumentTypeId(teamId);
+  const docTable = docTypeId ? qualifiedObjectTable(docTypeId) : null;
+  const customFilterExists = docTable
+    ? (customFilters ?? [])
+        .filter((cf) => SAFE_IDENT.test(cf.fieldKey))
+        .map(
+          (cf) =>
+            sql`EXISTS (SELECT 1 FROM object_records r JOIN ${sql.raw(docTable)} e ON e."id" = r.id WHERE r.document_id = ${documents.id} AND e.${sql.raw(`"${cf.fieldKey}"`)}::text = ${String(cf.value)})`,
+        )
+    : [];
 
   const rows = await db.query.documents.findMany({
     where: {
@@ -153,7 +173,7 @@ export const searchDocuments = async (
         columns: { pageCount: true },
       },
       mirrorRecord: {
-        columns: { data: true },
+        columns: { id: true },
         with: { outgoingLinks: { columns: { id: true } } },
       },
     },
@@ -164,6 +184,22 @@ export const searchDocuments = async (
 
   const hasMore = rows.length > limit;
   const pageRows = hasMore ? rows.slice(0, limit) : rows;
+
+  // Batch-reconstruct each mirror record's typed field values in one query.
+  const mirrorIds = pageRows
+    .map((r) => r.mirrorRecord?.id)
+    .filter((id): id is string => typeof id === "string");
+  const fieldValuesById =
+    docTypeId && mirrorIds.length > 0
+      ? await readRecordDataBatch({
+          objectTypeId: docTypeId,
+          recordIds: mirrorIds,
+          fields: await getFieldDefinitionsForTeam({
+            teamId,
+            objectTypeId: docTypeId,
+          }),
+        })
+      : new Map<string, Record<string, unknown>>();
 
   const thumbnailMap = new Map<string, string>();
   if (includeThumbnailUrl) {
@@ -187,7 +223,9 @@ export const searchDocuments = async (
         folder: r.folder ? { id: r.folder.id, name: r.folder.name } : null,
         pageCount: r.properties?.pageCount ?? null,
         entityCount: r.mirrorRecord?.outgoingLinks.length ?? 0,
-        fieldValues: r.mirrorRecord?.data ?? {},
+        fieldValues: r.mirrorRecord
+          ? (fieldValuesById.get(r.mirrorRecord.id) ?? {})
+          : {},
         thumbnailUrl: includeThumbnailUrl
           ? (thumbnailMap.get(r.id) ?? null)
           : null,
@@ -254,12 +292,17 @@ export const getDocumentDetails = async (data: {
         )
       : null;
 
-  const fieldValues: Record<string, unknown> =
-    document.mirrorRecord?.data ?? {};
-
   const fieldDefinitions = await getFieldDefinitionsForTeam({
     teamId: data.teamId,
   });
+
+  const fieldValues: Record<string, unknown> = document.mirrorRecord
+    ? await readRecordData({
+        objectTypeId: document.mirrorRecord.objectTypeId,
+        recordId: document.mirrorRecord.id,
+        fields: fieldDefinitions,
+      })
+    : {};
 
   return { document, fileUrl, fieldValues, fieldDefinitions };
 };
@@ -289,7 +332,7 @@ const loadDocument = async (data: { id: string; teamId: string }) => {
         columns: { id: true, name: true, color: true },
       },
       mirrorRecord: {
-        columns: { data: true },
+        columns: { id: true, objectTypeId: true },
       },
     },
   });

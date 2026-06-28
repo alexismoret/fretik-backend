@@ -5,6 +5,7 @@ import type { DocumentVectorMetadata } from "../../db/schema/ai-vectors";
 import { callAiService } from "../../lib/ai-service";
 import { getDocumentSidecarBytes } from "../../lib/document-storage";
 import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
+import { readRecordData } from "../object-schema/record-io";
 import { MENTIONS_LINK_TYPE_KEY } from "../object-types/seed-system-types";
 
 const aiVectorizeResponseSchema = z.object({
@@ -39,7 +40,7 @@ const buildDocumentVectorMetadata = async (
       properties: true,
       labels: { columns: { id: true, name: true } },
       mirrorRecord: {
-        columns: { data: true },
+        columns: { id: true, objectTypeId: true },
         with: {
           outgoingLinks: {
             columns: { id: true },
@@ -76,10 +77,15 @@ const buildDocumentVectorMetadata = async (
   const vectorisableKeys = new Set(
     definitions.filter((d) => d.vectorizeInclude).map((d) => d.key),
   );
+  const recordData = document.mirrorRecord
+    ? await readRecordData({
+        objectTypeId: document.mirrorRecord.objectTypeId,
+        recordId: document.mirrorRecord.id,
+        fields: definitions,
+      })
+    : {};
   const customFields: DocumentVectorMetadata["custom_fields"] = {};
-  for (const [key, value] of Object.entries(
-    document.mirrorRecord?.data ?? {},
-  )) {
+  for (const [key, value] of Object.entries(recordData)) {
     if (!vectorisableKeys.has(key)) continue;
     customFields[key] = value as string | number | boolean | string[] | null;
   }

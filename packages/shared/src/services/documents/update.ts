@@ -9,7 +9,9 @@ import {
 import { notFound, throwHttpError } from "../../lib/errors";
 import { deleteKeysByPrefix } from "../../lib/redis";
 import type { UpdateDocumentInput } from "../../schemas/documents";
+import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
 import { setRecordData } from "../object-records/update";
+import { readRecordData } from "../object-schema/record-io";
 import { triggerDocumentVectorRefresh } from "./vector-refresh";
 
 /**
@@ -96,11 +98,20 @@ export const updateDocument = async (data: {
     // linked records (the former `entities`) moves to the generic object editor.
     if (updates.fieldValues !== undefined) {
       const mirror = await tx.query.objectRecords.findFirst({
-        columns: { id: true, data: true },
+        columns: { id: true, objectTypeId: true, teamId: true },
         where: { documentId: id },
       });
       if (mirror) {
-        const merged: Record<string, unknown> = { ...mirror.data };
+        const current = await readRecordData({
+          tx,
+          objectTypeId: mirror.objectTypeId,
+          recordId: mirror.id,
+          fields: await getFieldDefinitionsForTeam({
+            teamId: mirror.teamId,
+            objectTypeId: mirror.objectTypeId,
+          }),
+        });
+        const merged: Record<string, unknown> = { ...current };
         for (const [key, value] of Object.entries(updates.fieldValues)) {
           if (value === null || value === undefined) delete merged[key];
           else merged[key] = value;

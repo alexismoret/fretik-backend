@@ -1,4 +1,4 @@
-import { and, desc, eq, isNull, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, isNull, or, sql } from "drizzle-orm";
 import db from "../../db";
 import { linkTypes } from "../../db/schema";
 import { FUZZY_MATCH_THRESHOLD } from "../../lib/resolution";
@@ -68,8 +68,8 @@ export const resolveLinkType = async (data: {
   const [trigramMatch] = await db
     .select({ id: linkTypes.id, sim: sim.as("sim") })
     .from(linkTypes)
-    .where(and(scope, sql`${sim} >= ${FUZZY_MATCH_THRESHOLD}`))
-    .orderBy(desc(sql`sim`))
+    .where(and(scope, gte(sim, FUZZY_MATCH_THRESHOLD)))
+    .orderBy(desc(sim))
     .limit(1);
   if (trigramMatch) {
     return { linkTypeId: trigramMatch.id, isNew: false };

@@ -59,6 +59,10 @@ const OUT_DIR = `${ROOT}/../ai/sandbox-assets`;
 const SDK_DIR = `${OUT_DIR}/fretik_apps`;
 const SKILLS_DIR = `${OUT_DIR}/skills`;
 const RUNTIME_TEMPLATE_PATH = `${import.meta.dir}/sdk-templates/_runtime.py`;
+// Hand-maintained, non-manifest modules copied verbatim into the SDK (like
+// `_runtime.py`). `objects` is the code-mode ontology SDK (object types +
+// records); it talks to `/sandbox/exec` `kind: "objects"`, not a provider.
+const STATIC_MODULE_TEMPLATES = ["objects"];
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
@@ -818,6 +822,9 @@ const emitInit = (manifests: ProviderManifest[]): string => {
   lines.push(
     "from ._runtime import ApprovalPending, FretikActionError, Operation, run_plan",
   );
+  for (const name of STATIC_MODULE_TEMPLATES) {
+    lines.push(`from . import ${name}`);
+  }
   for (const m of manifests) {
     lines.push(`from . import ${pyModuleName(m.key)}`);
   }
@@ -827,6 +834,7 @@ const emitInit = (manifests: ProviderManifest[]): string => {
     '"FretikActionError"',
     '"Operation"',
     '"run_plan"',
+    ...STATIC_MODULE_TEMPLATES.map((name) => `"${name}"`),
     ...manifests.map((m) => `"${pyModuleName(m.key)}"`),
   ];
   lines.push(`__all__ = [${exports.join(", ")}]`);
@@ -842,9 +850,20 @@ const main = async (): Promise<void> => {
   // Runtime template — copied verbatim.
   const runtime = await Bun.file(RUNTIME_TEMPLATE_PATH).text();
 
+  // Static (non-manifest) modules — copied verbatim, like `_runtime.py`.
+  const staticModules = await Promise.all(
+    STATIC_MODULE_TEMPLATES.map(async (name) => ({
+      name,
+      source: await Bun.file(
+        `${import.meta.dir}/sdk-templates/${name}.py`,
+      ).text(),
+    })),
+  );
+
   // Write all provider files in parallel (one writer per file).
   await Promise.all([
     Bun.write(`${SDK_DIR}/_runtime.py`, runtime),
+    ...staticModules.map((m) => Bun.write(`${SDK_DIR}/${m.name}.py`, m.source)),
     Bun.write(
       `${SDK_DIR}/__init__.py`,
       emitInit(PROVIDERS.map((p) => p.manifest)),

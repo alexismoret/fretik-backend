@@ -436,6 +436,16 @@ export const sandboxExecRequestSchema = z.discriminatedUnion("kind", [
     operations: z.array(toolApprovalOperationSchema).min(1),
     turnId: z.string().min(1),
   }),
+  z.object({
+    // Code-mode ontology SDK (`fretik_apps.objects`): bulk record writes +
+    // schema migrations. Direct (no approval gate) — validation, grants and
+    // the domain-events journal are enforced server-side in `dispatchObjects`,
+    // exactly like the manageRecord / manageObjectType tools.
+    kind: z.literal("objects"),
+    op: z.string().min(1),
+    args: z.record(z.string(), z.unknown()),
+    turnId: z.string().min(1),
+  }),
 ]);
 export type SandboxExecRequestDto = z.infer<typeof sandboxExecRequestSchema>;
 

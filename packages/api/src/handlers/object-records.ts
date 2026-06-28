@@ -29,6 +29,7 @@ import {
 } from "@fretik/shared/services/object-records/retrieve";
 import { setRecordStatus } from "@fretik/shared/services/object-records/set-status";
 import { setRecordData } from "@fretik/shared/services/object-records/update";
+import { assertCanWriteRecord } from "@fretik/shared/services/object-sharing/write-access";
 import { createRoute, OpenAPIHono } from "@hono/zod-openapi";
 import { z } from "zod";
 
@@ -268,6 +269,11 @@ objectRecordRoutes.openapi(updateRouteDef, async (c) => {
   if (!team) return c.json(teamRequired(), 403);
   const { id } = c.req.valid("param");
   const { data } = c.req.valid("json");
+  await assertCanWriteRecord({
+    recordId: id,
+    teamId: team.id,
+    organizationId: team.organizationId,
+  });
   const updated = await setRecordData({ id, data });
   return c.json(updated, 200);
 });
@@ -277,6 +283,11 @@ objectRecordRoutes.openapi(statusRoute, async (c) => {
   if (!team) return c.json(teamRequired(), 403);
   const { id } = c.req.valid("param");
   const { status } = c.req.valid("json");
+  await assertCanWriteRecord({
+    recordId: id,
+    teamId: team.id,
+    organizationId: team.organizationId,
+  });
   const updated = await setRecordStatus({ id, status });
   return c.json(updated, 200);
 });
@@ -285,6 +296,11 @@ objectRecordRoutes.openapi(deleteRouteDef, async (c) => {
   const team = c.get("team");
   if (!team) return c.json(teamRequired(), 403);
   const { id } = c.req.valid("param");
+  await assertCanWriteRecord({
+    recordId: id,
+    teamId: team.id,
+    organizationId: team.organizationId,
+  });
   const result = await deleteObjectRecord({ id });
   return c.json(result, 200);
 });

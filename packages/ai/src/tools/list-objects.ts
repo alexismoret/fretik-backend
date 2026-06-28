@@ -13,7 +13,7 @@ import { TOOL_ERROR_CODES, toolError } from "../lib/tool-error-codes";
 /**
  * Domain tool (deferred) — browse a type's records without writing SQL.
  *
- * The no-SQL companion to `querySql` over the typed views: full-text search +
+ * The no-SQL companion to `querySql` over the typed tables: full-text search +
  * status filter + pagination over one object type's records, team-scoped.
  * Prefer `querySql` for aggregates, joins, or precise field filters; use this
  * for a quick "show me the <type> records" or to review AI suggestions
@@ -24,9 +24,9 @@ export const createListObjectsTool = () =>
     description: [
       "List a type's records (team-scoped), newest first, with full-text search, status filter, and pagination.",
       "",
-      "Use for a quick browse of an object type's records, or to review AI-extracted records pending confirmation (`status: 'suggested'`). For counts, aggregates, joins, or exact field filters, write `querySql` against the type's `v_<key>` view instead.",
+      "Use for a quick browse of an object type's records, or to review AI-extracted records pending confirmation (`status: 'suggested'`). For counts, aggregates, joins, or exact field filters, write `querySql` against the type's `data.obj_<typeId>` table instead.",
       "",
-      "- typeKey: the object type slug (from listObjectTypes / <team_objects>).",
+      "- typeKey: the object type slug (from <team_objects>).",
       "- search: full-text over the record label + text fields.",
       "- status: 'confirmed' (default), 'suggested' (AI, unreviewed), or 'rejected'.",
       "- limit defaults to 25 (max 50); pass the returned nextOffset on hasMore.",
@@ -75,7 +75,7 @@ export const createListObjectsTool = () =>
         return toolError(
           TOOL_ERROR_CODES.OBJECT_TYPE_NOT_FOUND,
           `No object type '${typeKey}' for this team.`,
-          "Call listObjectTypes to see the available type keys.",
+          "Check the available type keys in <team_objects>.",
         );
       }
 

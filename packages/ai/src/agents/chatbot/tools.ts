@@ -7,14 +7,18 @@ import { createDownloadDriveDocumentTool } from "../../tools/download-drive-docu
 import { createGetObjectTool } from "../../tools/get-object";
 import { createListDocumentsTool } from "../../tools/list-documents";
 import { createListLabelsTool } from "../../tools/list-labels";
-import { createListObjectTypesTool } from "../../tools/list-object-types";
 import { createListObjectsTool } from "../../tools/list-objects";
+import { createManageFieldTool } from "../../tools/manage-field";
+import { createManageLinkTool } from "../../tools/manage-link";
+import { createManageObjectTypeTool } from "../../tools/manage-object-type";
+import { createManageRecordTool } from "../../tools/manage-record";
 import { createManageTasksTool } from "../../tools/manage-tasks";
 import { createMemoryTool } from "../../tools/memory";
 import { createPresentFilesTool } from "../../tools/present-files";
 import { createPythonTool } from "../../tools/python";
 import { createRagSearchTool } from "../../tools/rag-search";
 import { createReadTool } from "../../tools/read";
+import { createSearchIconsTool } from "../../tools/search-icons";
 import { createSearchToolsTool } from "../../tools/search-tools";
 import { createSqlQueryTool } from "../../tools/sql-query";
 import { createUpdateSkillTool } from "../../tools/update-skill";
@@ -212,11 +216,18 @@ export const buildCoreTools = (domainTools: SearchableToolRegistry) => ({
  * - **listDocuments**: paginated browse over the team's documents.
  *   Backed by a shared service in `@fretik/shared/services/*` — the same
  *   code path the API handlers use, so filter semantics stay consistent.
- * - **listObjectTypes / describeObjectType / listObjects / getObject**:
- *   the AI query path over the dynamic-data graph — discover the team's
- *   object types, inspect one type's fields + relations, browse a type's
- *   records, and fetch one record with its links. The no-SQL companions
- *   to `querySql` over the typed `v_*` views.
+ * - **describeObjectType / listObjects / getObject**:
+ *   the AI READ path over the dynamic-data graph — inspect one type's
+ *   fields + relations, browse a type's records, and fetch one record with
+ *   its links. The no-SQL companions to `querySql` over the per-type typed
+ *   tables + registry. The type catalogue itself is the `<team_objects>`
+ *   prompt block, so there is no separate `listObjectTypes` tool.
+ * - **manageRecord / manageLink / manageObjectType / manageField**:
+ *   the AI WRITE path — single-record CRUD + status, relation link/unlink,
+ *   and type/field schema edits. Each routes through the validated shared
+ *   services (field validation, typed table, `domain_events`). Bulk writes
+ *   and type migrations go through the Python `objects` SDK (fretik_apps),
+ *   not these tools.
  * - **webFetch**: pulls a specific public URL as cleaned Markdown
  *   via Tavily `/extract`. Paired with the core `searchWeb` tool —
  *   search first, fetch specific hits second.
@@ -245,13 +256,6 @@ export const buildDomainTools = () => ({
       "search list labels tags categories team filter documents by label",
     maxResultSizeChars: 16_000,
   }),
-  listObjectTypes: buildChatbotTool({
-    ...createListObjectTypesTool(),
-    category: "domain",
-    searchHint:
-      "object types ontology catalogue what kinds of things does the team track companies people custom types schema discovery list types",
-    maxResultSizeChars: 16_000,
-  }),
   describeObjectType: buildChatbotTool({
     ...createDescribeObjectTypeTool(),
     category: "domain",
@@ -272,6 +276,41 @@ export const buildDomainTools = () => ({
     searchHint:
       "get object record by id detail fields linked records relations connections neighbors what is connected to",
     maxResultSizeChars: 16_000,
+  }),
+  manageRecord: buildChatbotTool({
+    ...createManageRecordTool(),
+    category: "domain",
+    searchHint:
+      "create add update edit delete remove record row entity confirm reject accept ai suggestion set status write data object",
+    maxResultSizeChars: 16_000,
+  }),
+  manageLink: buildChatbotTool({
+    ...createManageLinkTool(),
+    category: "domain",
+    searchHint:
+      "link unlink connect disconnect relate records relationship edge association attach detach",
+    maxResultSizeChars: 8_000,
+  }),
+  manageObjectType: buildChatbotTool({
+    ...createManageObjectTypeTool(),
+    category: "domain",
+    searchHint:
+      "create update delete object type schema table model define new kind of thing entity category rename",
+    maxResultSizeChars: 8_000,
+  }),
+  manageField: buildChatbotTool({
+    ...createManageFieldTool(),
+    category: "domain",
+    searchHint:
+      "add edit remove change field column attribute property type schema select options number bounds relation rollup",
+    maxResultSizeChars: 8_000,
+  }),
+  searchIcons: buildChatbotTool({
+    ...createSearchIconsTool(),
+    category: "domain",
+    searchHint:
+      "find icon lucide glyph symbol for object type select option picker visual",
+    maxResultSizeChars: 8_000,
   }),
   webFetch: buildChatbotTool({
     ...createWebFetchTool(),

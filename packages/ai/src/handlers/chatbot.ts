@@ -108,6 +108,7 @@ import { getResumableStreamContext } from "../lib/resumable-stream-context";
 import {
   classifyStreamError,
   FAILOVER_SENTINEL,
+  isRecoverableToolCallError,
   isTransparentlyRecoverable,
   streamWithRetryThenFallback,
   toStructuredError,
@@ -1259,6 +1260,15 @@ const runChatbotTurn = async (
     if (abortController.signal.aborted) {
       console.info(`${params.logPrefix} stream ended after user abort`);
       return "Stopped.";
+    }
+    // A bad tool input / unknown tool is NOT a turn death: the SDK already fed
+    // it back to the model as a recoverable tool-error part (multi-step). Label
+    // the UI part and let the turn continue — never a structured fatal frame.
+    if (isRecoverableToolCallError(err)) {
+      console.info(
+        `${params.logPrefix} recoverable tool-call error (${err instanceof Error ? err.name : "unknown"}) — model self-corrects`,
+      );
+      return "Invalid tool input — adjust the arguments and retry.";
     }
     const classification = classifyStreamError(err);
     console.error(

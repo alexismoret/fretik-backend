@@ -2,7 +2,7 @@ import { and, eq, isNull } from "drizzle-orm";
 import db from "../../db";
 import type { NewFieldDefinition } from "../../db/schema";
 import { fieldDefinitions } from "../../db/schema";
-import { syncAllTypedViewsForTeam } from "../object-types/sync-typed-view";
+import { syncAllObjectTablesForTeam } from "../object-schema/catalog-sync";
 import { invalidateTeamFieldDefinitionsCache } from "./cache";
 
 /**
@@ -61,11 +61,11 @@ export const duplicateOrgDefsToTeam = async (data: {
       inserted = insertedRows.length;
     }
 
-    // Build the team's typed views now that its field defs exist — one per
-    // visible type (its own + org/system). Atomic with the copy and cheap (a
+    // Reconcile the team's extension tables now that its field defs exist — one
+    // per visible type (its own + org/system). Atomic with the copy and cheap (a
     // new team has no records). Runs even when 0 defs were copied so the system
-    // types still get structural-only views.
-    await syncAllTypedViewsForTeam({ tx, organizationId, teamId });
+    // types still get a structural table.
+    await syncAllObjectTablesForTeam({ tx, organizationId, teamId });
 
     return { inserted };
   });

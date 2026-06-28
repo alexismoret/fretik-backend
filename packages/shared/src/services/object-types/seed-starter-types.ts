@@ -64,6 +64,7 @@ export const seedStarterObjectTypes = async (
           objectTypeId,
           key: field.key,
           label: field.label,
+          description: field.description ?? null,
           type: field.type,
           config: field.config ?? {},
           isTitle: field.isTitle ?? false,

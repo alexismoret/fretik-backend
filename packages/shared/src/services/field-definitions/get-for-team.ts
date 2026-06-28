@@ -3,6 +3,7 @@ import db from "../../db";
 import type { FieldDefinition } from "../../db/schema";
 import { fieldDefinitions, objectTypes } from "../../db/schema";
 import { selectOrCache } from "../../lib/redis";
+import { DOCUMENT_TYPE_KEY } from "../object-types/constants";
 import { fieldDefinitionsCacheKeyTeam } from "./cache";
 
 /**
@@ -12,7 +13,7 @@ import { fieldDefinitionsCacheKeyTeam } from "./cache";
  * own snapshot of every field it should see.
  *
  * The object type is resolved by `objectTypeId` when provided, otherwise by
- * `objectTypeKey` (default `"document"`) via an INNER JOIN on `object_types`
+ * `objectTypeKey` (default `document_record`) via an INNER JOIN on `object_types`
  * — which avoids a separate org lookup to map the key to an id.
  *
  * Cached under `team:{teamId}:field-definitions:{objectTypeId|key}:…` with a
@@ -34,7 +35,7 @@ export const getFieldDefinitionsForTeam = async (data: {
   const {
     teamId,
     objectTypeId,
-    objectTypeKey = "document",
+    objectTypeKey = DOCUMENT_TYPE_KEY,
     includeDisabled = false,
   } = data;
 

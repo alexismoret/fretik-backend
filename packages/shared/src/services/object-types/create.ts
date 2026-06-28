@@ -1,8 +1,10 @@
 import db from "../../db";
 import type { ObjectType } from "../../db/schema";
 import { objectTypes } from "../../db/schema";
+import { autoColorForKey } from "../../lib/colors/object-colors";
 import { badRequest, internalError, throwHttpError } from "../../lib/errors";
-import { syncTypedView } from "./sync-typed-view";
+import { reconcileObjectTable } from "../object-schema/table";
+import { invalidateObjectTypeIdCache } from "./resolve";
 
 /**
  * Stable slug grammar for `object_types.key`: lowercase letter first, then
@@ -62,13 +64,11 @@ export const createObjectType = async (input: {
 }): Promise<ObjectType> => {
   const key = prepareObjectTypeKey(input.key);
 
-  // Create the typed view in the SAME tx as the type row — a catalog mutation
-  // and its derived view commit atomically. Cheap: a new type has no records,
-  // so this is metadata-only DDL (no embedding / vectorize work runs here). The
-  // perf-only expression indexes inside `syncTypedView` stay best-effort
-  // (savepoint-isolated) so they can never abort this.
-  return db.transaction(async (tx) => {
-    const [row] = await tx
+  // Create the type's extension table in the SAME tx as the type row — the
+  // catalog mutation and its physical table commit atomically. Cheap: a new type
+  // has no records, so this is metadata-only DDL.
+  const row = await db.transaction(async (tx) => {
+    const [created] = await tx
       .insert(objectTypes)
       .values({
         organizationId: input.organizationId,
@@ -78,14 +78,24 @@ export const createObjectType = async (input: {
         labelPlural: input.labelPlural ?? null,
         description: input.description ?? null,
         icon: input.icon ?? null,
-        color: input.color ?? null,
+        // Server owns the accent color — auto-assign a stable one when unset.
+        color: input.color ?? autoColorForKey(key),
         isSystem: false,
       })
       .returning();
-    if (!row) {
+    if (!created) {
       return throwHttpError(500, internalError());
     }
-    await syncTypedView({ tx, objectTypeId: row.id, teamId: input.teamId });
-    return row;
+    await reconcileObjectTable({ tx, objectTypeId: created.id });
+    return created;
   });
+
+  // Bust any stale key→id cache so a recreate-after-delete (same key) resolves
+  // to THIS new id, not the deleted one.
+  await invalidateObjectTypeIdCache({
+    organizationId: input.organizationId,
+    teamId: input.teamId,
+    key,
+  });
+  return row;
 };

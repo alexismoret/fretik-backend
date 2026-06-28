@@ -230,6 +230,15 @@ export const isFreeform = (config: FieldDefinitionConfig): boolean =>
 export const isMultiMember = (config: FieldDefinitionConfig): boolean =>
   "multiple" in config ? (config.multiple ?? false) : false;
 
+/** Default ISO-4217 currency for a `money` field, if configured. */
+export const defaultCurrencyCode = (
+  config: FieldDefinitionConfig,
+): string | undefined =>
+  "defaultCurrencyCode" in config &&
+  typeof config.defaultCurrencyCode === "string"
+    ? config.defaultCurrencyCode
+    : undefined;
+
 /** Icon count for a `rating` field (default 5). */
 export const ratingMax = (config: FieldDefinitionConfig): number =>
   "ratingMax" in config && typeof config.ratingMax === "number"

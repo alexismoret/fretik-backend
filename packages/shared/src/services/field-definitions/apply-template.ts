@@ -11,9 +11,9 @@ import type {
   DocumentFieldTemplate,
   FieldDefinitionSeed,
 } from "../../templates/document-fields/types";
-import { deleteFieldKeysFromRecords } from "../object-records/field-data";
+import { refreshObjectTableAfterCatalogChange } from "../object-schema/catalog-sync";
+import { DOCUMENT_TYPE_KEY } from "../object-types/constants";
 import { resolveOrgObjectTypeId } from "../object-types/resolve";
-import { refreshTypedViewAfterCatalogChange } from "../object-types/sync-typed-view";
 import { invalidateFieldDefinitionsCache } from "./cache";
 import { FIELD_DEFINITION_LIMITS } from "./constants";
 import { getTeamLocale } from "./get-locale";
@@ -61,11 +61,11 @@ export const applyDocumentFieldTemplate = async (data: {
   const locale =
     localeOverride ?? (teamId ? await getTeamLocale(teamId) : "en");
 
-  // These are document-field templates — resolve the system "document" type
+  // These are document-field templates — resolve the system document type
   // once and stamp every seeded row with it.
   const objectTypeId = await resolveOrgObjectTypeId({
     organizationId,
-    key: "document",
+    key: DOCUMENT_TYPE_KEY,
   });
 
   const template = DOCUMENT_FIELD_TEMPLATES[templateKey];
@@ -94,17 +94,8 @@ export const applyDocumentFieldTemplate = async (data: {
         .where(scopePredicate({ organizationId, teamId }))
         .returning({ key: fieldDefinitions.key });
       dropped = droppedRows.length;
-
-      // Cascade: strip the dropped defs' keys from every document record's
-      // `data`. Only when applying to a team scope — org-scoped defs are
-      // templates and have no values.
-      if (teamId && droppedRows.length > 0) {
-        await deleteFieldKeysFromRecords({
-          tx,
-          objectTypeId,
-          keys: droppedRows.map((r) => r.key),
-        });
-      }
+      // The dropped defs' columns (and their values) are removed by the table
+      // reconcile below — no manual cascade needed.
     } else {
       const existing = await tx
         .select({ key: fieldDefinitions.key })
@@ -141,9 +132,9 @@ export const applyDocumentFieldTemplate = async (data: {
       inserted = insertResult.length;
     }
 
-    // Rebuild the team's typed view + search vectors for the (replaced/merged)
-    // field set, atomic with the template application.
-    await refreshTypedViewAfterCatalogChange({
+    // Reconcile the team's extension table + search vectors for the
+    // (replaced/merged) field set, atomic with the template application.
+    await refreshObjectTableAfterCatalogChange({
       tx,
       organizationId,
       objectTypeId,

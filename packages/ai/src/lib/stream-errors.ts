@@ -1,4 +1,4 @@
-import { APICallError } from "ai";
+import { APICallError, InvalidToolInputError, NoSuchToolError } from "ai";
 
 /**
  * Turn-robustness primitives (chantier C4). A turn must never die in
@@ -68,6 +68,25 @@ export const isTransparentlyRecoverable = (
 ): boolean =>
   classification.kind === "transient" &&
   PRE_OUTPUT_TRANSIENT_REASONS.has(classification.reason);
+
+const TOOL_CALL_ERROR_RE =
+  /AI_InvalidToolInputError|AI_NoSuchToolError|Invalid input for tool|No such tool/i;
+
+/**
+ * A tool-call shaping failure: the model produced input that fails a tool's
+ * `inputSchema`, or named a tool that doesn't exist. In a multi-step run the AI
+ * SDK already turns this into a recoverable `tool-error` part fed back to the
+ * model (it self-corrects on the next step), so it must NOT be classified as a
+ * fatal stream death — that would mislabel a recoverable retry as a turn
+ * failure. Covers every tool, not just one.
+ *
+ * Matches by instance AND by name/message: the same error reaches the OUTER
+ * stream handler re-wrapped (prototype lost), so `isInstance` alone misses it.
+ */
+export const isRecoverableToolCallError = (err: unknown): boolean =>
+  InvalidToolInputError.isInstance(err) ||
+  NoSuchToolError.isInstance(err) ||
+  TOOL_CALL_ERROR_RE.test(errorString(err));
 
 const EMPTY_POOL_RE =
   /No endpoints found|no allowed providers|no available providers/i;

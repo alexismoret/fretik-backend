@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
 import db, { type Transaction } from "../../db";
-import type { ObjectRecord } from "../../db/schema";
+import type { ObjectRecordWithData } from "../../db/schema";
 import { objectRecords } from "../../db/schema";
 import { notFound, throwHttpError } from "../../lib/errors";
 import {
@@ -8,6 +8,11 @@ import {
   emitDomainEvent,
   SYSTEM_ACTOR,
 } from "../domain-events/emit";
+import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
+import {
+  buildExtensionUpdate,
+  readRecordData,
+} from "../object-schema/record-io";
 
 /**
  * Flip a record's trust status — the human curating an AI-fed suggestion.
@@ -20,13 +25,18 @@ export const setRecordStatus = async (input: {
   status: "confirmed" | "rejected";
   tx?: Transaction;
   actor?: EventActor;
-}): Promise<ObjectRecord> => {
+}): Promise<ObjectRecordWithData> => {
   const { id, status } = input;
   const actor = input.actor ?? SYSTEM_ACTOR;
 
-  const run = async (tx: Transaction): Promise<ObjectRecord> => {
+  const run = async (tx: Transaction): Promise<ObjectRecordWithData> => {
     const existing = await tx.query.objectRecords.findFirst({
-      columns: { id: true, organizationId: true, teamId: true },
+      columns: {
+        id: true,
+        organizationId: true,
+        teamId: true,
+        objectTypeId: true,
+      },
       where: { id },
     });
     if (!existing) {
@@ -51,7 +61,27 @@ export const setRecordStatus = async (input: {
     if (!row) {
       return throwHttpError(404, notFound("Record not found"));
     }
-    return row;
+
+    // Keep the extension table's denormalized `status` in sync.
+    const ext = buildExtensionUpdate({
+      objectTypeId: existing.objectTypeId,
+      recordId: id,
+      fields: [],
+      data: {},
+      status,
+    });
+    if (ext) await tx.execute(ext);
+
+    const data = await readRecordData({
+      tx,
+      objectTypeId: existing.objectTypeId,
+      recordId: id,
+      fields: await getFieldDefinitionsForTeam({
+        teamId: existing.teamId,
+        objectTypeId: existing.objectTypeId,
+      }),
+    });
+    return { ...row, data };
   };
 
   return input.tx ? run(input.tx) : db.transaction(run);

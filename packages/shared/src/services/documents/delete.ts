@@ -48,16 +48,15 @@ export const deleteDocuments = async (data: {
   const totalGo = totalFileSize / 1024 ** 3;
 
   const res = await db.transaction(async (tx) => {
-    // Decrement parent's documentCount
-    if (folderIdsToUpdate.length > 0) {
-      await Promise.all(
-        Object.entries(folderIdsCountMap).map(([id, count]) => {
-          return tx
-            .update(folders)
-            .set({ documentCount: sql`${folders.documentCount} - ${count}` })
-            .where(eq(folders.id, id));
-        }),
-      );
+    // Decrement parent's documentCount. Sequential, NOT Promise.all: a
+    // transaction holds a single pg connection, so concurrent queries on `tx`
+    // serialize on one client and trip pg's "client is already executing a
+    // query" deprecation (a hard error in pg@9).
+    for (const [id, count] of Object.entries(folderIdsCountMap)) {
+      await tx
+        .update(folders)
+        .set({ documentCount: sql`${folders.documentCount} - ${count}` })
+        .where(eq(folders.id, id));
     }
 
     // Decrement storageUsedGb

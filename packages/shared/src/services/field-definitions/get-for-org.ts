@@ -3,6 +3,7 @@ import db from "../../db";
 import type { FieldDefinition } from "../../db/schema";
 import { fieldDefinitions, objectTypes } from "../../db/schema";
 import { selectOrCache } from "../../lib/redis";
+import { DOCUMENT_TYPE_KEY } from "../object-types/constants";
 import { fieldDefinitionsCacheKeyOrg } from "./cache";
 
 /**
@@ -11,7 +12,7 @@ import { fieldDefinitionsCacheKeyOrg } from "./cache";
  * editing them never propagates to existing teams.
  *
  * The object type is resolved by `objectTypeId` when provided, otherwise by
- * `objectTypeKey` (default `"document"`) via an INNER JOIN on `object_types`.
+ * `objectTypeKey` (default `document_record`) via an INNER JOIN on `object_types`.
  *
  * Cached under `organization:{orgId}:field-definitions:…` (30 min TTL).
  *
@@ -27,7 +28,7 @@ export const getFieldDefinitionsForOrganization = async (data: {
   const {
     organizationId,
     objectTypeId,
-    objectTypeKey = "document",
+    objectTypeKey = DOCUMENT_TYPE_KEY,
     includeDisabled = false,
   } = data;
 

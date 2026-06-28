@@ -23,6 +23,7 @@ import { emitUploadEvent } from "../../lib/upload-events";
 import { preExtractionResponseSchema } from "../../schemas/pre-extraction";
 import { isImage, isPdf, isSpreadsheet } from "../../utils/mimeTypes";
 import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
+import { readRecordData } from "../object-schema/record-io";
 import { MENTIONS_LINK_TYPE_KEY } from "../object-types/seed-system-types";
 import { convertDocumentToPdf, convertFirstPageToPdf } from "./convert";
 import { joinDocumentPagesMarkdown } from "./markdown";
@@ -539,9 +540,9 @@ const findExistingProcessingByHash = async (
     },
     with: {
       document: {
-        columns: { id: true },
+        columns: { id: true, teamId: true },
         with: {
-          mirrorRecord: { columns: { data: true } },
+          mirrorRecord: { columns: { id: true, objectTypeId: true } },
         },
       },
     },
@@ -551,8 +552,18 @@ const findExistingProcessingByHash = async (
   // Guard against matching the document we're processing (e.g. on retry).
   if (existing.documentId === excludeDocumentId) return null;
 
+  const mirror = existing.document?.mirrorRecord;
   const customFieldValues: Record<string, unknown> =
-    existing.document?.mirrorRecord?.data ?? {};
+    mirror && existing.document
+      ? await readRecordData({
+          objectTypeId: mirror.objectTypeId,
+          recordId: mirror.id,
+          fields: await getFieldDefinitionsForTeam({
+            teamId: existing.document.teamId,
+            objectTypeId: mirror.objectTypeId,
+          }),
+        })
+      : {};
 
   return {
     sourceDocumentId: existing.documentId,

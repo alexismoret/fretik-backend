@@ -10,21 +10,22 @@ import {
 import { TOOL_ERROR_CODES, toolError } from "../lib/tool-error-codes";
 
 /**
- * Domain tool (deferred) — full schema of ONE object type: its typed view name,
- * every field (key, label, type, description, config), and its outgoing
- * relations. Generalizes the old `listFieldDefinitions` (which only knew the
- * document type).
+ * Domain tool (deferred) — full schema of ONE object type: its typed table name,
+ * icon/color, every field (key, label, type, description, config incl. select
+ * options with their icon/color), and its outgoing relations. Generalizes the
+ * old `listFieldDefinitions` (which only knew the document type).
  *
  * Use when `<team_objects>` (key + type only) is not enough: the user-facing
  * label, the `description` (also the LLM extraction hint), the closed list of
- * `select` options, `number` bounds, or which fields are filterable.
+ * `select` options, `number` bounds, which fields are filterable, or the current
+ * icon/color before editing them.
  */
 export const createDescribeObjectTypeTool = () =>
   tool({
     description: [
-      "Full schema of one object type: its typed SQL view, fields (key, label, type, description, config/options), and outgoing relations.",
+      "Full schema of one object type: its typed table, icon/color, fields (key, label, type, description, config/options), and outgoing relations.",
       "",
-      "Use this when you need a field's exact `select` options, `number` bounds, `description`, or user-facing label before writing a `querySql` against the type's `v_<key>` view or filtering `listObjects`. Get type keys from `listObjectTypes` or `<team_objects>`.",
+      "Use this when you need a field's exact `select` options, `number` bounds, `description`, or user-facing label before writing a `querySql` against the type's `data.obj_<typeId>` table or filtering `listObjects`. Get type keys from `<team_objects>`. Also the way to read the full column set of a type that `<team_objects>` shows compacted.",
     ].join("\n"),
     inputSchema: z.object({
       typeKey: z
@@ -32,7 +33,7 @@ export const createDescribeObjectTypeTool = () =>
         .min(1)
         .max(60)
         .describe(
-          "Object type slug (e.g. 'company', 'pricing') from listObjectTypes or <team_objects>.",
+          "Object type slug (e.g. 'company', 'pricing') from <team_objects>.",
         ),
     }),
     execute: async ({ typeKey }, options) => {
@@ -57,7 +58,7 @@ export const createDescribeObjectTypeTool = () =>
         return toolError(
           TOOL_ERROR_CODES.OBJECT_TYPE_NOT_FOUND,
           `No object type '${typeKey}' for this team.`,
-          "Call listObjectTypes to see the available type keys.",
+          "Check the available type keys in <team_objects>.",
         );
       }
 
@@ -78,7 +79,9 @@ export const createDescribeObjectTypeTool = () =>
         key: type.key,
         label: type.label,
         description: type.description,
-        view: type.viewName,
+        icon: type.icon,
+        color: type.color,
+        table: type.viewName,
         fields: fields.map((f) => ({
           key: f.key,
           label: f.label,

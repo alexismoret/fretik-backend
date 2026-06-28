@@ -190,6 +190,16 @@ def _post(payload: dict[str, Any]) -> Any:
     return data.get("data")
 
 
+def _call_objects(op: str, args: dict[str, Any]) -> Any:
+    """Dispatch one objects.* op for the code-mode ontology SDK
+    (`fretik_apps.objects`). Unlike external-app writes, object writes are NOT
+    approval-gated: validation, grants and the domain-events journal are
+    enforced server-side. Returns the op's small result summary (ids, counts,
+    per-row errors) — never the bulk rows themselves.
+    """
+    return _post({"kind": "objects", "op": op, "args": args})
+
+
 def _call_read(action: str, args: dict[str, Any]) -> Any:
     """Eager call for a read action. Consumed by every generated read
     wrapper in `fretik_apps/<provider>.py` (e.g. `outlook.list_messages`,

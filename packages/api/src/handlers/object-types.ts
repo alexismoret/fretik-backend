@@ -16,6 +16,7 @@ import {
   objectTypeResponseSchema,
   updateObjectTypeRequestSchema,
 } from "@fretik/shared/schemas/ontology";
+import { assertCanWriteType } from "@fretik/shared/services/object-sharing/write-access";
 import { createObjectType } from "@fretik/shared/services/object-types/create";
 import { createObjectTypeWithFields } from "@fretik/shared/services/object-types/create-with-fields";
 import { deleteObjectType } from "@fretik/shared/services/object-types/delete";
@@ -236,6 +237,11 @@ objectTypeRoutes.openapi(updateRouteDef, async (c) => {
   if (!team) return c.json(teamRequired(), 403);
   const { id } = c.req.valid("param");
   const patch = c.req.valid("json");
+  await assertCanWriteType({
+    objectTypeId: id,
+    teamId: team.id,
+    organizationId: team.organizationId,
+  });
   const updated = await updateObjectType({ id, patch });
   return c.json(updated, 200);
 });
@@ -244,6 +250,11 @@ objectTypeRoutes.openapi(deleteRouteDef, async (c) => {
   const team = c.get("team");
   if (!team) return c.json(teamRequired(), 403);
   const { id } = c.req.valid("param");
+  await assertCanWriteType({
+    objectTypeId: id,
+    teamId: team.id,
+    organizationId: team.organizationId,
+  });
   const result = await deleteObjectType({ id });
   return c.json(result, 200);
 });

@@ -7,7 +7,8 @@ import type { ToolApprovalOperation } from "../../../db/schema";
 
 export type SandboxExecRequest =
   | { kind: "read"; action: string; args: Record<string, unknown> }
-  | { kind: "plan"; operations: ToolApprovalOperation[] };
+  | { kind: "plan"; operations: ToolApprovalOperation[] }
+  | { kind: "objects"; op: string; args: Record<string, unknown> };
 
 export type SandboxExecResponse =
   | { status: "ok"; data: unknown }

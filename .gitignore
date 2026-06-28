@@ -43,3 +43,7 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 
 # Eval triage analysis artifacts (ai package) — regenerable, large
 **/evals/.triage
+
+# Python bytecode caches (sandbox-assets SDK, bundled skill scripts, sdk-templates)
+__pycache__/
+*.pyc

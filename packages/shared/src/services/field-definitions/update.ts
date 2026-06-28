@@ -3,12 +3,11 @@ import db from "../../db";
 import type { FieldDefinition } from "../../db/schema";
 import { fieldDefinitions } from "../../db/schema";
 import { badRequest, notFound, throwHttpError } from "../../lib/errors";
-import {
-  countRecordsWithFieldKey,
-  deleteFieldKeysFromRecords,
-} from "../object-records/field-data";
-import { refreshTypedViewAfterCatalogChange } from "../object-types/sync-typed-view";
+import { countNonNullColumnValues } from "../object-records/field-data";
+import { refreshObjectTableAfterCatalogChange } from "../object-schema/catalog-sync";
+import { changeFieldColumns, renameFieldColumns } from "../object-schema/table";
 import { invalidateFieldDefinitionsCache } from "./cache";
+import { fillOptionColors } from "./normalize-config";
 import {
   assertScopeEnabledCap,
   type FieldDefinitionPatch,
@@ -54,6 +53,14 @@ export const updateFieldDefinition = async (data: {
       config: patch.config ?? existing.config,
     });
 
+    // Server owns option colors — fill any the writer left unset on a config patch.
+    if (patch.config !== undefined) {
+      patch = {
+        ...patch,
+        config: fillOptionColors(patch.type ?? existing.type, patch.config),
+      };
+    }
+
     const keyChanged = patch.key !== undefined && patch.key !== existing.key;
     const typeChanged =
       patch.type !== undefined && patch.type !== existing.type;
@@ -75,10 +82,10 @@ export const updateFieldDefinition = async (data: {
 
     if (keyChanged || typeChanged) {
       const hasValues =
-        (await countRecordsWithFieldKey({
+        (await countNonNullColumnValues({
           tx,
           objectTypeId: existing.objectTypeId,
-          key: existing.key,
+          field: existing,
         })) > 0;
 
       if (keyChanged && hasValues) {
@@ -89,20 +96,13 @@ export const updateFieldDefinition = async (data: {
           ),
         );
       }
-      if (typeChanged && hasValues) {
-        if (!cascade) {
-          return throwHttpError(
-            400,
-            badRequest(
-              "Changing the field type is not allowed while values exist. Pass cascade=true to drop existing values.",
-            ),
-          );
-        }
-        await deleteFieldKeysFromRecords({
-          tx,
-          objectTypeId: existing.objectTypeId,
-          keys: [existing.key],
-        });
+      if (typeChanged && hasValues && !cascade) {
+        return throwHttpError(
+          400,
+          badRequest(
+            "Changing the field type is not allowed while values exist. Pass cascade=true to drop existing values.",
+          ),
+        );
       }
     }
 
@@ -155,9 +155,30 @@ export const updateFieldDefinition = async (data: {
       return throwHttpError(404, notFound("Field definition not found"));
     }
 
-    // Regenerate the team's typed view (column key/type/set may have changed)
-    // + search vectors, atomically with the field-def change.
-    await refreshTypedViewAfterCatalogChange({
+    // Physical column change (team scope only — org templates have no table).
+    // A type change recreates the column with the new type (resetting its
+    // values); a pure key change renames the column (preserving its data).
+    if (updatedRow.teamId) {
+      if (typeChanged) {
+        await changeFieldColumns({
+          tx,
+          objectTypeId: updatedRow.objectTypeId,
+          oldField: existing,
+          newField: updatedRow,
+        });
+      } else if (keyChanged) {
+        await renameFieldColumns({
+          tx,
+          objectTypeId: updatedRow.objectTypeId,
+          oldField: existing,
+          newKey: updatedRow.key,
+        });
+      }
+    }
+
+    // Reconcile remaining columns + refresh search vectors, atomic with the
+    // field-def change.
+    await refreshObjectTableAfterCatalogChange({
       tx,
       organizationId: updatedRow.organizationId,
       objectTypeId: updatedRow.objectTypeId,

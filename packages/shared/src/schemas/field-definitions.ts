@@ -130,7 +130,7 @@ export const createFieldDefinitionRequestSchema = z
   .object({
     scope: z.enum(["organization", "team"]),
     // The object type the field attaches to. Resolve by id when known,
-    // otherwise by key (the handler defaults to the "document" system type).
+    // otherwise by key (the handler defaults to the document_record system type).
     objectTypeId: z.uuid().optional(),
     objectTypeKey: z.string().optional(),
     // Optional: omitted from the UI and derived server-side from the label.

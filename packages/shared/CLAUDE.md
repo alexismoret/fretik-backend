@@ -18,6 +18,7 @@ This package owns the **generic B2B core** of Fretik. Schemas, services, and lib
 - **Services = one file per operation.** `services/{domain}/` holds `upload.ts`, `delete.ts`, `retrieve.ts`, etc. Each exports a function. No class monoliths, no `index.ts` that re-exports everything.
 - **Every new export must be wired in `package.json` `exports`.** Consumers import `@fretik/shared/services/documents/upload`, not a relative path. If it's not in `exports`, it doesn't exist.
 - **Migration lock.** `db:migrate` holds a PG advisory lock — safe to run concurrently, only one wins. Don't add your own locking on top.
+- **Bulk writes use `@fretik/shared/lib/db-bulk` — never loop a single-row service.** When you write a caller-supplied LIST of rows (records, links, events, …), do it with SET-BASED statements: one multi-row `INSERT` / `DELETE` / `UPDATE … FROM (VALUES …)` per chunk. A `for` loop calling a single-row service over thousands of rows is N round-trips and is a regression. Use `chunkForBulk()` (keeps each statement under Postgres' 65535-param ceiling), `MAX_BULK_ITEMS` (enforce at the request boundary), and `formatBulkRowError()` (per-row error lines). Keep the single-row service (`createObjectRecord`) AND a `bulk*` sibling (`bulkCreateObjectRecords`) — they have different contracts (throw-on-first vs per-row partial success), mirroring `readRecordData` / `readRecordDataBatch`.
 
 ## Pattern reference
 

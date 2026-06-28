@@ -1,128 +1,88 @@
-import { and, count, eq, sql } from "drizzle-orm";
-import db, { type Transaction } from "../../db";
+import { and, eq, sql } from "drizzle-orm";
+import db, { type Executor } from "../../db";
 import type { FieldDefinition } from "../../db/schema";
-import { fieldDefinitions, objectRecords } from "../../db/schema";
-
-/** Anti-injection guard, mirrored from sync-typed-view: keys are slug-validated
- * at write but the recompute composes them into SQL, so re-assert here. */
-const SAFE_IDENT = /^[a-z][a-z0-9_]*$/;
+import { fieldDefinitions } from "../../db/schema";
+import { columnsForField } from "../object-schema/columns";
+import {
+  assertSafeKey,
+  qualifiedObjectTable,
+  SAFE_IDENT,
+} from "../object-schema/identifiers";
 
 /**
- * Field types that contribute to `search_vector` — must stay in lockstep with
- * `TEXT_LIKE_TYPES` in `schemas/record-shape.ts` (`computeRecordIdentity`), so a
- * background recompute produces the same vector the write path would.
+ * Field-data maintenance after a CATALOG change. Field values now live in real
+ * typed columns on the per-type extension table (`data.obj_<typeId>`), so adding
+ * / removing / retyping a field is `ALTER TABLE` (the DDL engine), not a JSONB
+ * rewrite. What remains here:
+ *   - `countNonNullColumnValues` — the "do values exist?" gate (replaces the old
+ *     `jsonb_exists` count) used before a destructive field change.
+ *   - `recomputeSearchVectorsForType` — refresh the registry's `search_vector`
+ *     from the type's text-like columns after a catalog change.
+ */
+
+/**
+ * Field types whose values feed `search_vector` — the genuinely textual ones.
+ * Excludes numeric/date/boolean/money/member/rating (filtered, not searched) and
+ * relation/rollup (virtual). MUST stay in lockstep with the same set in
+ * `schemas/record-shape.ts` so a background recompute matches the write path.
  */
 const TEXT_LIKE_TYPES: ReadonlySet<FieldDefinition["type"]> = new Set([
   "text",
+  "markdown",
   "url",
   "email",
+  "phone",
   "select",
+  "multi_select",
 ]);
 
 /**
- * Maintain the per-field values stored inside records' `data` JSONB when a field
- * DEFINITION changes — the replacement for the old `document_field_values`
- * cascade. Field values now live on `object_records.data` (keyed by the field
- * key), so renaming/dropping a field definition has to rewrite the JSONB of
- * every record of that type.
- *
- * Scoped by `objectTypeId` (records of a type all share it), which is tighter
- * than the old global-by-`fieldKey` delete. JSONB keys are passed as bound text
- * parameters via `jsonb_exists`/`jsonb_extract_path` (function form, no operator
- * ambiguity, no injection). The denormalized `searchVector` is intentionally
- * NOT recomputed here — a catalog change schedules a bounded background recompute
- * (Phase 3), the same seam that refreshes typed views.
+ * How many records of a type carry a non-NULL value for a field — the gate that
+ * blocks a destructive field change (key/type) unless `cascade`. `money` checks
+ * its `<key>_amount` column; virtual fields (relation/rollup) have no column and
+ * always return 0.
  */
-
-/** Count a type's records whose `data` carries `key` (the "do values exist?" gate). */
-export const countRecordsWithFieldKey = async (input: {
-  tx?: Transaction;
+export const countNonNullColumnValues = async (input: {
   objectTypeId: string;
-  key: string;
+  field: FieldDefinition;
+  tx?: Executor;
 }): Promise<number> => {
+  const cols = columnsForField(input.field);
+  const col = cols[0]?.name;
+  if (!col) return 0;
   const exec = input.tx ?? db;
-  const [row] = await exec
-    .select({ n: count() })
-    .from(objectRecords)
-    .where(
-      and(
-        eq(objectRecords.objectTypeId, input.objectTypeId),
-        sql`jsonb_exists(${objectRecords.data}, ${input.key})`,
-      ),
-    );
-  return row?.n ?? 0;
+  const res = await exec.execute(
+    sql`SELECT count(*)::int AS n
+        FROM ${sql.raw(qualifiedObjectTable(input.objectTypeId))} e
+        WHERE e.${sql.raw(`"${col}"`)} IS NOT NULL`,
+  );
+  const n = res.rows[0]?.n;
+  return typeof n === "number" ? n : 0;
 };
 
-/** Drop one or more field keys from every record's `data` for a type. Returns rows touched. */
-export const deleteFieldKeysFromRecords = async (input: {
-  tx?: Transaction;
-  objectTypeId: string;
-  keys: string[];
-}): Promise<number> => {
-  if (input.keys.length === 0) return 0;
-  const exec = input.tx ?? db;
-  const rows = await exec
-    .update(objectRecords)
-    .set({ data: sql`${objectRecords.data} - ${input.keys}::text[]` })
-    .where(
-      and(
-        eq(objectRecords.objectTypeId, input.objectTypeId),
-        sql`jsonb_exists_any(${objectRecords.data}, ${input.keys}::text[])`,
-      ),
-    )
-    .returning({ id: objectRecords.id });
-  return rows.length;
-};
-
-/** Rename a field key in every record's `data` for a type (value carried to the new key). */
-export const renameFieldKeyInRecords = async (input: {
-  tx?: Transaction;
-  objectTypeId: string;
-  fromKey: string;
-  toKey: string;
-}): Promise<number> => {
-  if (input.fromKey === input.toKey) return 0;
-  const exec = input.tx ?? db;
-  const rows = await exec
-    .update(objectRecords)
-    .set({
-      data: sql`(${objectRecords.data} - ${input.fromKey}::text) || jsonb_build_object(${input.toKey}::text, jsonb_extract_path(${objectRecords.data}, ${input.fromKey}))`,
-    })
-    .where(
-      and(
-        eq(objectRecords.objectTypeId, input.objectTypeId),
-        sql`jsonb_exists(${objectRecords.data}, ${input.fromKey})`,
-      ),
-    )
-    .returning({ id: objectRecords.id });
-  return rows.length;
-};
+/** The SQL text for one text-like field column (arrays are flattened). */
+const fieldTextExpr = (key: string, type: FieldDefinition["type"]): string =>
+  type === "multi_select"
+    ? `coalesce(array_to_string(e."${key}", ' '), '')`
+    : `coalesce(e."${key}"::text, '')`;
 
 /**
- * Recompute `search_vector` for every record of a (team, type) after a CATALOG
+ * Recompute `search_vector` for every record of a (team, type) after a catalog
  * change — a field added / removed / retyped leaves the denormalized vector
- * stale (it was computed against the old text-field set). One set-based UPDATE
- * (not N round-trips), the remaining piece of the field-definition cascade.
- *
- * Reads the team's ENABLED field defs DIRECTLY (not the Redis cache): it runs at
- * catalog-change time and must see the post-change truth. The vector formula
- * mirrors `computeRecordIdentity`: `label` plus the text-like field values,
- * tokenized with the `simple` config — so it matches what the write path would
- * produce. Returns the number of records touched.
+ * stale. One set-based UPDATE joining the typed extension table. The vector
+ * formula mirrors `computeRecordIdentity`: `label` plus the text-like field
+ * values, tokenized with the `simple` config. Returns rows touched.
  */
 export const recomputeSearchVectorsForType = async (input: {
   organizationId?: string;
   objectTypeId: string;
   teamId: string;
-  tx?: Transaction;
+  tx?: Executor;
 }): Promise<number> => {
   const exec = input.tx ?? db;
 
   const defs = await exec
-    .select({
-      key: fieldDefinitions.key,
-      type: fieldDefinitions.type,
-    })
+    .select({ key: fieldDefinitions.key, type: fieldDefinitions.type })
     .from(fieldDefinitions)
     .where(
       and(
@@ -132,24 +92,23 @@ export const recomputeSearchVectorsForType = async (input: {
       ),
     );
 
-  // `coalesce(label,'') || ' ' || coalesce(data->>'k1','') || …` — the same
-  // text the write path joins, embedded with slug-validated keys (injection-safe).
-  let textExpr = "coalesce(label, '')";
-  for (const def of defs) {
-    if (!TEXT_LIKE_TYPES.has(def.type)) continue;
-    if (!SAFE_IDENT.test(def.key)) continue;
-    textExpr += ` || ' ' || coalesce(data->>'${def.key}', '')`;
+  const table = qualifiedObjectTable(input.objectTypeId);
+  // `coalesce(r.label,'') || ' ' || <text-like field exprs>` — slug-validated
+  // keys, injection-safe. With no text fields, the label alone seeds the vector.
+  let textExpr = "coalesce(r.label, '')";
+  for (const { key, type } of defs) {
+    if (!TEXT_LIKE_TYPES.has(type) || !SAFE_IDENT.test(key)) continue;
+    assertSafeKey(key, "field key");
+    textExpr += ` || ' ' || ${fieldTextExpr(key, type)}`;
   }
 
-  const rows = await exec
-    .update(objectRecords)
-    .set({ searchVector: sql`to_tsvector('simple', ${sql.raw(textExpr)})` })
-    .where(
-      and(
-        eq(objectRecords.objectTypeId, input.objectTypeId),
-        eq(objectRecords.teamId, input.teamId),
-      ),
-    )
-    .returning({ id: objectRecords.id });
-  return rows.length;
+  const res = await exec.execute(
+    sql`UPDATE object_records r
+        SET search_vector = to_tsvector('simple', ${sql.raw(textExpr)})
+        FROM ${sql.raw(table)} e
+        WHERE e.id = r.id
+          AND r.object_type_id = ${input.objectTypeId}::uuid
+          AND r.team_id = ${input.teamId}::uuid`,
+  );
+  return res.rowCount ?? 0;
 };

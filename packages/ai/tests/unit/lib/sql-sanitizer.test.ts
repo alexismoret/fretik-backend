@@ -171,19 +171,26 @@ describe("sanitizeSelect — table allowlist", () => {
   });
 });
 
-describe("sanitizeSelect — object graph surface (Phase 3)", () => {
-  test("accepts the generic v_record view", () => {
+describe("sanitizeSelect — object graph surface (typed tables)", () => {
+  test("accepts the registry object_records (RLS-fenced, granted)", () => {
     const sql = sanitizeSelect(
-      "SELECT _id, _type_key, _label FROM v_record WHERE _status = 'confirmed'",
+      "SELECT id, label, status FROM object_records WHERE status = 'confirmed'",
     );
-    expect(sql).toContain("v_record");
+    expect(sql).toContain("object_records");
   });
 
-  test("accepts a per-type typed view (v_ namespace, any suffix)", () => {
+  test("accepts object_types (the catalog, joined for the type key)", () => {
     const sql = sanitizeSelect(
-      "SELECT _id, price FROM v_pricing_3f9a2b1c4d5e WHERE _status = 'confirmed'",
+      "SELECT r.label, t.key FROM object_records r JOIN object_types t ON t.id = r.object_type_id",
     );
-    expect(sql).toContain("v_pricing_3f9a2b1c4d5e");
+    expect(sql).toContain("object_types");
+  });
+
+  test("accepts a per-type typed table in the data schema (data.obj_*)", () => {
+    const sql = sanitizeSelect(
+      "SELECT id, price FROM data.obj_3f9a2b1c4d5e WHERE status = 'confirmed'",
+    );
+    expect(sql).toContain("data.obj_3f9a2b1c4d5e");
   });
 
   test("accepts the graph relations (links / link_types / domain_events)", () => {
@@ -193,34 +200,20 @@ describe("sanitizeSelect — object graph surface (Phase 3)", () => {
     expect(sql).toContain("link_types");
   });
 
-  test("accepts the killer-query JOIN shape across typed views + links", () => {
+  test("accepts the killer-query JOIN across typed tables + links", () => {
     const sql = sanitizeSelect(
-      `SELECT p.price, c._label
-       FROM v_pricing_3f9a2b1c4d5e p
-       JOIN links l ON l.from_record_id = p._id AND l.valid_to IS NULL AND l.invalidated_at IS NULL
+      `SELECT p.price, c.label
+       FROM data.obj_3f9a2b1c4d5e p
+       JOIN links l ON l.from_record_id = p.id AND l.valid_to IS NULL AND l.invalidated_at IS NULL
        JOIN link_types lt ON lt.id = l.link_type_id AND lt.key = 'carrier'
-       JOIN v_company_3f9a2b1c4d5e c ON c._id = l.to_record_id
-       WHERE p._status = 'confirmed' AND p.destination_port ILIKE 'shanghai' AND p.year = 2025
+       JOIN data.obj_company_aaaa c ON c.id = l.to_record_id
+       WHERE p.status = 'confirmed' AND p.destination_port ILIKE 'shanghai' AND p.year = 2025
        ORDER BY p.price ASC LIMIT 1`,
     );
-    expect(sql).toContain("v_pricing_3f9a2b1c4d5e");
+    expect(sql).toContain("data.obj_3f9a2b1c4d5e");
   });
 
-  test("REJECTS raw object_records (model must go through the typed views)", () => {
-    expectRejection(
-      "SELECT data->>'price' FROM object_records WHERE object_type_id = 'x'",
-      "SQL_TABLE_NOT_ALLOWED",
-    );
-  });
-
-  test("REJECTS raw object_types (catalog is reached via the views' join, not directly)", () => {
-    expectRejection("SELECT key FROM object_types", "SQL_TABLE_NOT_ALLOWED");
-  });
-
-  test("REJECTS object_records even when joined onto an allowed view", () => {
-    expectRejection(
-      "SELECT r.data FROM v_record v JOIN object_records r ON r.id = v._id",
-      "SQL_TABLE_NOT_ALLOWED",
-    );
+  test("REJECTS a non-obj_ table in the data schema", () => {
+    expectRejection("SELECT * FROM data.secrets", "SQL_TABLE_NOT_ALLOWED");
   });
 });

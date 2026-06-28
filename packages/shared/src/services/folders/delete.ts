@@ -38,16 +38,15 @@ export const deleteFolders = async (data: {
   });
 
   const res = await db.transaction(async (tx) => {
-    // Decrement parent's subFolderCount
-    if (parentFolderIdsToUpdate.length > 0) {
-      await Promise.all(
-        Object.entries(parentFolderIdsCountMap).map(([id, count]) => {
-          return tx
-            .update(folders)
-            .set({ subFolderCount: sql`${folders.subFolderCount} - ${count}` })
-            .where(eq(folders.id, id));
-        }),
-      );
+    // Decrement parent's subFolderCount. Sequential, NOT Promise.all: a
+    // transaction holds a single pg connection, so concurrent queries on `tx`
+    // serialize on one client and trip pg's "client is already executing a
+    // query" deprecation (a hard error in pg@9).
+    for (const [id, count] of Object.entries(parentFolderIdsCountMap)) {
+      await tx
+        .update(folders)
+        .set({ subFolderCount: sql`${folders.subFolderCount} - ${count}` })
+        .where(eq(folders.id, id));
     }
 
     // Get all documents in the folders and subfolders that are not "uploading"

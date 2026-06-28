@@ -1,10 +1,11 @@
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, arrayContains, desc, eq, gte, sql } from "drizzle-orm";
 import db, { type Transaction } from "../../db";
 import type { NewObjectRecord } from "../../db/schema";
 import { objectRecords } from "../../db/schema";
 import { internalError, notFound, throwHttpError } from "../../lib/errors";
 import { FUZZY_MATCH_THRESHOLD } from "../../lib/resolution";
 import { normalizeEntityName } from "../../utils/normalizeEntityName";
+import { buildExtensionInsert } from "../object-schema/record-io";
 
 type ResolveResult = {
   recordId: string;
@@ -63,7 +64,7 @@ export const resolveRecord = async (data: {
         eq(objectRecords.teamId, teamId),
         eq(objectRecords.objectTypeId, objectTypeId),
         eq(objectRecords.status, "confirmed"),
-        sql`${objectRecords.aliases} @> ARRAY[${normalized}]::text[]`,
+        arrayContains(objectRecords.aliases, [normalized]),
       ),
     )
     .limit(1);
@@ -81,10 +82,10 @@ export const resolveRecord = async (data: {
         eq(objectRecords.teamId, teamId),
         eq(objectRecords.objectTypeId, objectTypeId),
         eq(objectRecords.status, "confirmed"),
-        sql`${sim} >= ${FUZZY_MATCH_THRESHOLD}`,
+        gte(sim, FUZZY_MATCH_THRESHOLD),
       ),
     )
-    .orderBy(desc(sql`sim`))
+    .orderBy(desc(sim))
     .limit(1);
   if (trigramMatch) {
     return {
@@ -145,7 +146,6 @@ const createSuggestedRecord = async (data: {
     source: "ai_extraction",
     label: data.rawLabel,
     normalizedLabel: data.normalized,
-    data: {},
     aliases: [],
   };
 
@@ -156,5 +156,19 @@ const createSuggestedRecord = async (data: {
   if (!row) {
     return throwHttpError(500, internalError());
   }
+
+  // The suggested stub still needs its (empty) typed extension row so the id FK
+  // holds and later reads/updates target a real row.
+  await exec.execute(
+    buildExtensionInsert({
+      objectTypeId: data.objectTypeId,
+      recordId: row.id,
+      teamId: data.teamId,
+      label: data.rawLabel,
+      status: "suggested",
+      fields: [],
+      data: {},
+    }),
+  );
   return { recordId: row.id, confidence: 0, isNew: true };
 };

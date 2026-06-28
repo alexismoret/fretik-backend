@@ -6,13 +6,15 @@ import type {
   ObjectType,
 } from "../../db/schema";
 import { fieldDefinitions, objectTypes } from "../../db/schema";
+import { autoColorForKey } from "../../lib/colors/object-colors";
 import { badRequest, internalError, throwHttpError } from "../../lib/errors";
 import { invalidateFieldDefinitionsCache } from "../field-definitions/cache";
 import { FIELD_DEFINITION_LIMITS } from "../field-definitions/constants";
 import { slugifyFieldKey } from "../field-definitions/slugify-key";
 import { validateFieldDefinitionShape } from "../field-definitions/validate";
+import { reconcileObjectTable } from "../object-schema/table";
 import { prepareObjectTypeKey } from "./create";
-import { syncTypedView } from "./sync-typed-view";
+import { invalidateObjectTypeIdCache } from "./resolve";
 
 export type ObjectTypeFieldInput = {
   label: string;
@@ -131,7 +133,7 @@ export const createObjectTypeWithFields = async (
         labelPlural: input.labelPlural ?? null,
         description: input.description ?? null,
         icon: input.icon ?? null,
-        color: input.color ?? null,
+        color: input.color ?? autoColorForKey(key),
         isSystem: false,
       })
       .returning();
@@ -161,13 +163,9 @@ export const createObjectTypeWithFields = async (
       ? await tx.insert(fieldDefinitions).values(rows).returning()
       : [];
 
-    // Regenerate the typed view ONCE with the full column set. A fresh type has
+    // Build the extension table ONCE with the full column set. A fresh type has
     // no records, so no search-vector recompute is needed.
-    await syncTypedView({
-      tx,
-      objectTypeId: typeRow.id,
-      teamId: input.teamId,
-    });
+    await reconcileObjectTable({ tx, objectTypeId: typeRow.id });
 
     return { type: typeRow, fields: inserted };
   });
@@ -175,6 +173,13 @@ export const createObjectTypeWithFields = async (
   await invalidateFieldDefinitionsCache({
     organizationId: input.organizationId,
     teamId: input.teamId,
+  });
+  // Same reason as createObjectType: bust the key→id cache so a recreate after
+  // a delete (same key) resolves to this new id.
+  await invalidateObjectTypeIdCache({
+    organizationId: input.organizationId,
+    teamId: input.teamId,
+    key,
   });
 
   return { ...created.type, fieldDefinitions: created.fields };

@@ -156,6 +156,11 @@ export const CAPABILITIES = [
   // not on whether `vision` was called, so the A/B (native vs
   // tool-mediated) isolates the multimodal accuracy delta from tool-use.
   "multimodal",
+  // Autonomous object management (P8) — proactively reading/writing the team's
+  // structured records, INCLUDING the relevance gate (NOT touching objects on
+  // unrelated turns). Graded on the tool trajectory + outcome, not on a single
+  // expected call.
+  "objects",
 ] as const;
 
 export type Capability = (typeof CAPABILITIES)[number];

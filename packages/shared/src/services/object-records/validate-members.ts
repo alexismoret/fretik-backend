@@ -7,7 +7,7 @@ import { filterTeamMemberIds } from "../team/members";
  * single-assignee field holds a string; a `multiple` one holds an array. Other
  * shapes are ignored here (the Zod record shape already rejected them).
  */
-const collectMemberUserIds = (
+export const collectMemberUserIds = (
   fieldDefs: FieldDefinition[],
   data: Record<string, unknown>,
 ): string[] => {

@@ -130,5 +130,15 @@ export const promoteTrace = async (args: {
 };
 
 if (import.meta.main) {
-  await syncDataset();
+  // Items are uploaded synchronously above (each create is an awaited REST
+  // call). Importing the eval cases opens DB/Redis pools and the Langfuse
+  // bootstrap registers an OTel provider with a batch timer — dangling handles
+  // that would otherwise keep the event loop alive forever. Exit explicitly,
+  // mirroring `run.ts` / `gate.ts`.
+  syncDataset()
+    .then(() => process.exit(0))
+    .catch((err: unknown) => {
+      console.error("[dataset-sync] fatal:", err);
+      process.exit(1);
+    });
 }

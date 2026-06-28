@@ -12,6 +12,7 @@ import { getRecordHistory } from "../services/domain-events/history";
 import { resolveOrgLinkTypeId } from "../services/link-types/resolve";
 import { createObjectRecord } from "../services/object-records/create";
 import { setRecordData } from "../services/object-records/update";
+import { DOCUMENT_TYPE_KEY } from "../services/object-types/constants";
 import { resolveObjectTypeId } from "../services/object-types/resolve";
 import { MENTIONS_LINK_TYPE_KEY } from "../services/object-types/seed-system-types";
 
@@ -38,7 +39,7 @@ const run = async (): Promise<void> => {
   const documentTypeId = await resolveObjectTypeId({
     organizationId,
     teamId,
-    key: "document",
+    key: DOCUMENT_TYPE_KEY,
   });
   const companyTypeId = await resolveObjectTypeId({
     organizationId,

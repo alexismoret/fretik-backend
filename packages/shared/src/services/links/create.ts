@@ -39,25 +39,26 @@ export const createLink = async (input: {
   const actor = input.actor ?? SYSTEM_ACTOR;
 
   const run = async (tx: Transaction): Promise<Link> => {
-    const [linkType, fromRecord, toRecord] = await Promise.all([
-      tx.query.linkTypes.findFirst({
-        columns: {
-          id: true,
-          fromObjectTypeId: true,
-          toObjectTypeId: true,
-          isTemporal: true,
-        },
-        where: { id: input.linkTypeId },
-      }),
-      tx.query.objectRecords.findFirst({
-        columns: { id: true, objectTypeId: true },
-        where: { id: input.fromRecordId },
-      }),
-      tx.query.objectRecords.findFirst({
-        columns: { id: true, objectTypeId: true },
-        where: { id: input.toRecordId },
-      }),
-    ]);
+    // Sequential, NOT Promise.all: a transaction holds a single pg connection,
+    // so concurrent queries on `tx` serialize on one client and trip pg's
+    // "client is already executing a query" deprecation (a hard error in pg@9).
+    const linkType = await tx.query.linkTypes.findFirst({
+      columns: {
+        id: true,
+        fromObjectTypeId: true,
+        toObjectTypeId: true,
+        isTemporal: true,
+      },
+      where: { id: input.linkTypeId },
+    });
+    const fromRecord = await tx.query.objectRecords.findFirst({
+      columns: { id: true, objectTypeId: true },
+      where: { id: input.fromRecordId },
+    });
+    const toRecord = await tx.query.objectRecords.findFirst({
+      columns: { id: true, objectTypeId: true },
+      where: { id: input.toRecordId },
+    });
 
     if (!linkType) {
       return throwHttpError(404, notFound("Link type not found"));

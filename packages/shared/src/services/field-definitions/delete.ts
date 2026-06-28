@@ -1,22 +1,19 @@
 import { eq } from "drizzle-orm";
 import db from "../../db";
 import { fieldDefinitions } from "../../db/schema";
-import { notFound, throwHttpError } from "../../lib/errors";
-import { deleteFieldKeysFromRecords } from "../object-records/field-data";
-import { refreshTypedViewAfterCatalogChange } from "../object-types/sync-typed-view";
+import { badRequest, notFound, throwHttpError } from "../../lib/errors";
+import { countNonNullColumnValues } from "../object-records/field-data";
+import { refreshObjectTableAfterCatalogChange } from "../object-schema/catalog-sync";
 import { invalidateFieldDefinitionsCache } from "./cache";
 
 /**
- * Delete a field definition. When `cascade=true`, also strips the field key
- * from every record's `data` for that object type (this is the only safe way to
- * drop a field with existing values — the key would otherwise dangle in the
- * stored JSONB).
+ * Delete a field definition. Dropping the field drops its real column (and the
+ * stored values with it), so `cascade=false` (default) refuses the delete when
+ * any record still carries a value for the field. `cascade=true` proceeds and
+ * the column — with its data — is dropped by the table reconcile.
  *
- * `cascade=false` (default) protects against accidental data loss:
- * deletion fails if any value still references the key.
- *
- * Wrapped in a transaction so the def + its values are either both gone
- * or both still there. Cache invalidation fires after commit.
+ * Wrapped in a transaction so the def removal and the column drop are atomic.
+ * Cache invalidation fires after commit.
  */
 export const deleteFieldDefinition = async (data: {
   id: string;
@@ -26,33 +23,31 @@ export const deleteFieldDefinition = async (data: {
 
   const result = await db.transaction(async (tx) => {
     const existing = await tx.query.fieldDefinitions.findFirst({
-      columns: {
-        id: true,
-        key: true,
-        objectTypeId: true,
-        organizationId: true,
-        teamId: true,
-      },
       where: { id },
     });
     if (!existing) {
       return throwHttpError(404, notFound("Field definition not found"));
     }
 
-    let deletedValues = 0;
-    if (cascade) {
-      deletedValues = await deleteFieldKeysFromRecords({
-        tx,
-        objectTypeId: existing.objectTypeId,
-        keys: [existing.key],
-      });
+    const valueCount = await countNonNullColumnValues({
+      tx,
+      objectTypeId: existing.objectTypeId,
+      field: existing,
+    });
+    if (valueCount > 0 && !cascade) {
+      return throwHttpError(
+        400,
+        badRequest(
+          `Cannot delete field '${existing.key}' while ${valueCount} record(s) carry a value (pass cascade=true to drop them).`,
+        ),
+      );
     }
 
     await tx.delete(fieldDefinitions).where(eq(fieldDefinitions.id, id));
 
-    // Regenerate the team's typed view (column dropped) + search vectors, in
-    // the SAME tx so the catalog change is atomic.
-    await refreshTypedViewAfterCatalogChange({
+    // Reconcile drops the now-orphaned column (+ refresh search vectors), in the
+    // SAME tx so the catalog change is atomic.
+    await refreshObjectTableAfterCatalogChange({
       tx,
       organizationId: existing.organizationId,
       objectTypeId: existing.objectTypeId,
@@ -61,7 +56,7 @@ export const deleteFieldDefinition = async (data: {
 
     return {
       id,
-      deletedValues,
+      deletedValues: valueCount,
       organizationId: existing.organizationId,
       teamId: existing.teamId,
     };

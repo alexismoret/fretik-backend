@@ -32,6 +32,11 @@ import { getFieldDefinitionsForOrganization } from "@fretik/shared/services/fiel
 import { getFieldDefinitionsForTeam } from "@fretik/shared/services/field-definitions/get-for-team";
 import { reorderFieldDefinitions } from "@fretik/shared/services/field-definitions/reorder";
 import { updateFieldDefinition } from "@fretik/shared/services/field-definitions/update";
+import {
+  assertCanWriteField,
+  assertCanWriteType,
+} from "@fretik/shared/services/object-sharing/write-access";
+import { DOCUMENT_TYPE_KEY } from "@fretik/shared/services/object-types/constants";
 import { resolveOrgObjectTypeId } from "@fretik/shared/services/object-types/resolve";
 import { createRoute, OpenAPIHono } from "@hono/zod-openapi";
 import { z } from "zod";
@@ -288,8 +293,14 @@ fieldDefinitionRoutes.openapi(createRouteDef, async (c) => {
     body.objectTypeId ??
     (await resolveOrgObjectTypeId({
       organizationId: team.organizationId,
-      key: body.objectTypeKey ?? "document",
+      key: body.objectTypeKey ?? DOCUMENT_TYPE_KEY,
     }));
+
+  await assertCanWriteType({
+    objectTypeId,
+    teamId: team.id,
+    organizationId: team.organizationId,
+  });
 
   const created = await createFieldDefinition({
     organizationId: team.organizationId,
@@ -318,6 +329,11 @@ fieldDefinitionRoutes.openapi(updateRouteDef, async (c) => {
   // service rejects scope-crossing updates implicitly.
 
   const { id } = c.req.valid("param");
+  await assertCanWriteField({
+    fieldDefinitionId: id,
+    teamId: team.id,
+    organizationId: team.organizationId,
+  });
   const body = c.req.valid("json");
   const { cascade, ...patch } = body;
   const updated = await updateFieldDefinition({ id, cascade, patch });
@@ -329,6 +345,11 @@ fieldDefinitionRoutes.openapi(deleteRouteDef, async (c) => {
   if (!team) return c.json(teamRequired(), 403);
 
   const { id } = c.req.valid("param");
+  await assertCanWriteField({
+    fieldDefinitionId: id,
+    teamId: team.id,
+    organizationId: team.organizationId,
+  });
   const { cascade } = c.req.valid("query");
   const result = await deleteFieldDefinition({ id, cascade });
   return c.json(result, 200);

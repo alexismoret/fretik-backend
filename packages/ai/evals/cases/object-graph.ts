@@ -4,13 +4,10 @@ import { createFieldDefinition } from "@fretik/shared/services/field-definitions
 import { createLinkType } from "@fretik/shared/services/link-types/create";
 import { createLink } from "@fretik/shared/services/links/create";
 import { createObjectRecord } from "@fretik/shared/services/object-records/create";
+import { reconcileObjectTable } from "@fretik/shared/services/object-schema/table";
 import { createObjectType } from "@fretik/shared/services/object-types/create";
 import { deleteObjectType } from "@fretik/shared/services/object-types/delete";
 import { resolveObjectTypeId } from "@fretik/shared/services/object-types/resolve";
-import {
-  syncRecordView,
-  syncTypedView,
-} from "@fretik/shared/services/object-types/sync-typed-view";
 import { and, eq, inArray } from "drizzle-orm";
 import type { EvalCase, EvalCaseContext, EvalSuite } from "../types";
 
@@ -95,10 +92,9 @@ const seedGraph = async (ctx: EvalCaseContext): Promise<void> => {
     });
   }
 
-  // Ensure the company view + the generic v_record exist (defensive — normally
-  // created at team creation / by the backfill script).
-  await syncTypedView({ objectTypeId: companyId, teamId: ctx.teamId });
-  await syncRecordView();
+  // Ensure the company extension table exists (defensive — normally created at
+  // team creation / by the backfill script).
+  await reconcileObjectTable({ objectTypeId: companyId });
 
   // 2. The pricing → company `vendor` relation.
   const vendorLink = await createLinkType({

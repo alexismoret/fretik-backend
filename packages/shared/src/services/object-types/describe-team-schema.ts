@@ -2,7 +2,7 @@ import { and, asc, eq, isNull, or } from "drizzle-orm";
 import db from "../../db";
 import type { FieldDefinitionType } from "../../db/schema";
 import { fieldDefinitions, linkTypes, objectTypes } from "../../db/schema";
-import { typedViewName } from "./sync-typed-view";
+import { qualifiedObjectTable } from "../object-schema/identifiers";
 
 /** One outgoing relation a type can be JOINed through (`links` → `link_types`). */
 export interface TeamSchemaRelation {
@@ -18,12 +18,21 @@ export interface TeamSchemaObjectType {
   id: string;
   key: string;
   label: string;
+  labelPlural: string | null;
   description: string | null;
   isSystem: boolean;
-  /** The typed SQL view to read in `querySql` (`v_<key>_<teamhex>`). */
+  /** Bare Lucide icon name (or null). */
+  icon: string | null;
+  /** Accent color token (or null). */
+  color: string | null;
+  /** The real SQL table to read in `querySql` (`data.obj_<typeId>`). */
   viewName: string;
-  /** Enabled fields → typed view columns (besides the `_`-prefixed structural ones). */
-  fields: { key: string; type: FieldDefinitionType }[];
+  /**
+   * Enabled fields → typed columns (besides `team_id`/`label`/`status`). The
+   * field flagged `isTitle` is the one whose value feeds the record's `_label`
+   * display name.
+   */
+  fields: { key: string; type: FieldDefinitionType; isTitle: boolean }[];
   /** Outgoing relations (this type is the `from` end). */
   relations: TeamSchemaRelation[];
 }
@@ -51,8 +60,11 @@ export const describeTeamSchema = async (input: {
       id: objectTypes.id,
       key: objectTypes.key,
       label: objectTypes.label,
+      labelPlural: objectTypes.labelPlural,
       description: objectTypes.description,
       isSystem: objectTypes.isSystem,
+      icon: objectTypes.icon,
+      color: objectTypes.color,
     })
     .from(objectTypes)
     .where(
@@ -70,6 +82,7 @@ export const describeTeamSchema = async (input: {
       objectTypeId: fieldDefinitions.objectTypeId,
       key: fieldDefinitions.key,
       type: fieldDefinitions.type,
+      isTitle: fieldDefinitions.isTitle,
     })
     .from(fieldDefinitions)
     .where(
@@ -81,11 +94,11 @@ export const describeTeamSchema = async (input: {
     .orderBy(asc(fieldDefinitions.displayOrder));
   const fieldsByType = new Map<
     string,
-    { key: string; type: FieldDefinitionType }[]
+    { key: string; type: FieldDefinitionType; isTitle: boolean }[]
   >();
   for (const d of defs) {
     const list = fieldsByType.get(d.objectTypeId) ?? [];
-    list.push({ key: d.key, type: d.type });
+    list.push({ key: d.key, type: d.type, isTitle: d.isTitle });
     fieldsByType.set(d.objectTypeId, list);
   }
 
@@ -124,9 +137,12 @@ export const describeTeamSchema = async (input: {
     id: t.id,
     key: t.key,
     label: t.label,
+    labelPlural: t.labelPlural,
     description: t.description,
     isSystem: t.isSystem,
-    viewName: typedViewName(t.key, teamId),
+    icon: t.icon,
+    color: t.color,
+    viewName: qualifiedObjectTable(t.id),
     fields: fieldsByType.get(t.id) ?? [],
     relations: relationsByType.get(t.id) ?? [],
   }));

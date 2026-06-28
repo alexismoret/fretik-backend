@@ -13,6 +13,7 @@ import { callCustomHandler } from "./call-custom-handler";
 import { extractFrameworkArgs } from "./framework-args";
 import { callHttpDirect } from "./http-direct";
 import { callNangoProxy } from "./nango-proxy";
+import { dispatchObjects } from "./objects";
 import { executePlan } from "./plan-executor";
 import type {
   ExecContext,
@@ -34,6 +35,9 @@ export const dispatchSandboxExec = async (
 ): Promise<SandboxExecResponse> => {
   if (request.kind === "read") {
     return dispatchRead(ctx, request.action, request.args);
+  }
+  if (request.kind === "objects") {
+    return dispatchObjects(ctx, request.op, request.args);
   }
   return dispatchPlan(ctx, request.operations);
 };

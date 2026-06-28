@@ -1,7 +1,7 @@
 import { eq, sql } from "drizzle-orm";
 import db, { type Transaction } from "../../db";
 import type {
-  ObjectRecord,
+  ObjectRecordWithData,
   OntologySource,
   OntologyStatus,
 } from "../../db/schema";
@@ -14,6 +14,7 @@ import {
   SYSTEM_ACTOR,
 } from "../domain-events/emit";
 import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
+import { buildExtensionInsert } from "../object-schema/record-io";
 import { validateRecordData } from "./validate";
 import { assertMemberFieldsValid } from "./validate-members";
 
@@ -60,7 +61,7 @@ export const createObjectRecord = async (input: {
   strict?: boolean;
   tx?: Transaction;
   actor?: EventActor;
-}): Promise<ObjectRecord> => {
+}): Promise<ObjectRecordWithData> => {
   const fieldDefs = await getFieldDefinitionsForTeam({
     teamId: input.teamId,
     objectTypeId: input.objectTypeId,
@@ -79,7 +80,11 @@ export const createObjectRecord = async (input: {
   });
   const actor = input.actor ?? SYSTEM_ACTOR;
 
-  const run = async (tx: Transaction): Promise<ObjectRecord> => {
+  const status = input.status ?? "confirmed";
+
+  const run = async (tx: Transaction): Promise<ObjectRecordWithData> => {
+    // 1. Registry row — system columns only (no `data`; typed values go to the
+    //    per-type extension table below).
     const [row] = await tx
       .insert(objectRecords)
       .values({
@@ -87,11 +92,10 @@ export const createObjectRecord = async (input: {
         teamId: input.teamId,
         userId: input.userId ?? null,
         objectTypeId: input.objectTypeId,
-        data,
         label: identity.label,
         normalizedLabel: identity.normalizedLabel,
         searchVector: sql`to_tsvector('simple', ${identity.searchText})`,
-        status: input.status ?? "confirmed",
+        status,
         source: input.source ?? "user_manual",
         confidence: input.confidence == null ? null : String(input.confidence),
         documentId: input.documentId ?? null,
@@ -105,6 +109,19 @@ export const createObjectRecord = async (input: {
     if (!row) {
       return throwHttpError(500, internalError());
     }
+
+    // 2. Typed extension row (same id), with the validated scalar field values.
+    await tx.execute(
+      buildExtensionInsert({
+        objectTypeId: input.objectTypeId,
+        recordId: row.id,
+        teamId: input.teamId,
+        label: identity.label,
+        status,
+        fields: fieldDefs,
+        data,
+      }),
+    );
 
     const event = await emitDomainEvent({
       tx,
@@ -122,7 +139,7 @@ export const createObjectRecord = async (input: {
       .set({ sourceEventId: event.id })
       .where(eq(objectRecords.id, row.id))
       .returning();
-    return withProvenance ?? row;
+    return { ...(withProvenance ?? row), data };
   };
 
   return input.tx ? run(input.tx) : db.transaction(run);

@@ -17,6 +17,7 @@ import {
 import { createLink } from "@fretik/shared/services/links/create";
 import { invalidateLink } from "@fretik/shared/services/links/invalidate";
 import { listLinksForRecord } from "@fretik/shared/services/links/retrieve";
+import { assertCanWriteRecord } from "@fretik/shared/services/object-sharing/write-access";
 import { createRoute, OpenAPIHono } from "@hono/zod-openapi";
 import { z } from "zod";
 
@@ -95,6 +96,14 @@ linkRoutes.openapi(createRouteDef, async (c) => {
   const team = c.get("team");
   if (!team) return c.json(teamRequired(), 403);
   const body = c.req.valid("json");
+  // Boundary write-grant check (owner team or a write grant/share on the record
+  // gaining the edge). Lives here, not in `createLink`, because the document
+  // fold calls that service as a trusted system caller and must bypass grants.
+  await assertCanWriteRecord({
+    recordId: body.fromRecordId,
+    teamId: team.id,
+    organizationId: team.organizationId,
+  });
   const created = await createLink({
     organizationId: team.organizationId,
     teamId: team.id,

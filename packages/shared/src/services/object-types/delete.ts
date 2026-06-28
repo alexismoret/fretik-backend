@@ -2,7 +2,9 @@ import { eq } from "drizzle-orm";
 import db from "../../db";
 import { objectTypes } from "../../db/schema";
 import { badRequest, notFound, throwHttpError } from "../../lib/errors";
-import { dropTypedView } from "./sync-typed-view";
+import { dropObjectTable } from "../object-schema/table";
+import { DOCUMENT_TYPE_KEY } from "./constants";
+import { invalidateObjectTypeIdCache } from "./resolve";
 
 /**
  * Delete an object type. The `document` type is refused — it anchors the
@@ -17,34 +19,35 @@ export const deleteObjectType = async (data: {
   const { id } = data;
 
   const existing = await db.query.objectTypes.findFirst({
-    columns: { id: true, key: true, teamId: true },
+    columns: { id: true, key: true, teamId: true, organizationId: true },
     where: { id },
   });
   if (!existing) {
     return throwHttpError(404, notFound("Object type not found"));
   }
-  if (existing.key === "document") {
+  if (existing.key === DOCUMENT_TYPE_KEY) {
     return throwHttpError(
       400,
       badRequest(
-        "The 'document' object type cannot be deleted: it anchors uploaded files and their field definitions.",
+        "The document object type cannot be deleted: it anchors uploaded files and their field definitions.",
       ),
     );
   }
 
-  // Delete the row and drop its orphaned typed view in ONE tx (idempotent
-  // DROP) — atomic, and cheap (metadata-only). Only team-scoped types own a
-  // single view; org/system types span every team's views, repaired by
-  // `scripts/sync-typed-views.ts` rather than dropped piecemeal here.
-  return db.transaction(async (tx) => {
+  // Delete the row and drop its extension table in ONE tx — atomic, cheap
+  // (metadata-only). One physical table per type id, so this is unconditional.
+  await db.transaction(async (tx) => {
     await tx.delete(objectTypes).where(eq(objectTypes.id, id));
-    if (existing.teamId) {
-      await dropTypedView({
-        tx,
-        typeKey: existing.key,
-        teamId: existing.teamId,
-      });
-    }
-    return { id };
+    await dropObjectTable({ tx, objectTypeId: id });
   });
+
+  // Bust the key→id cache — otherwise `resolveObjectTypeId` keeps handing out
+  // this now-dead id (up to the 30-min TTL), and the next resolve→operate call
+  // 404s on a type that no longer exists.
+  await invalidateObjectTypeIdCache({
+    organizationId: existing.organizationId,
+    teamId: existing.teamId,
+    key: existing.key,
+  });
+  return { id };
 };

@@ -7,8 +7,9 @@ import type {
 } from "../../db/schema";
 import { fieldDefinitions } from "../../db/schema";
 import { internalError, throwHttpError } from "../../lib/errors";
-import { refreshTypedViewAfterCatalogChange } from "../object-types/sync-typed-view";
+import { refreshObjectTableAfterCatalogChange } from "../object-schema/catalog-sync";
 import { invalidateFieldDefinitionsCache } from "./cache";
+import { fillOptionColors } from "./normalize-config";
 import { bindRelationFieldLinkType } from "./relation-link";
 import { slugifyFieldKey } from "./slugify-key";
 import {
@@ -96,7 +97,7 @@ export const createFieldDefinition = async (
 
   // A relation field is backed by a link type (its edges live in `links`, not
   // `data`). Resolve-or-create that binding and carry the key on the config.
-  const config =
+  const resolvedConfig =
     input.type === "relation"
       ? await bindRelationFieldLinkType({
           organizationId: input.organizationId,
@@ -106,6 +107,8 @@ export const createFieldDefinition = async (
           config: input.config ?? {},
         })
       : (input.config ?? {});
+  // Server owns option colors — fill any the writer left unset.
+  const config = fillOptionColors(input.type, resolvedConfig);
 
   const willBeEnabled = input.enabled ?? true;
   if (willBeEnabled) {
@@ -168,9 +171,8 @@ export const createFieldDefinition = async (
     if (!inserted) {
       return throwHttpError(500, internalError());
     }
-    // Add the new column to the team's typed view (+ index if filterable),
-    // atomic with the insert.
-    await refreshTypedViewAfterCatalogChange({
+    // Add the new column to the type's extension table, atomic with the insert.
+    await refreshObjectTableAfterCatalogChange({
       tx,
       organizationId: input.organizationId,
       objectTypeId: input.objectTypeId,

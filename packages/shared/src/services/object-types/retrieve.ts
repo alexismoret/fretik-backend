@@ -3,12 +3,14 @@ import db from "../../db";
 import type { FieldDefinition, ObjectType } from "../../db/schema";
 import { objectTypes } from "../../db/schema";
 import { notFound, throwHttpError } from "../../lib/errors";
+import { typeGrantedExists } from "../object-sharing/access";
 
 /**
- * List the object types a team can see: its own team-scoped types plus the
- * org/system ones (`teamId IS NULL`). This is the double-arm scope the rest of
- * the dynamic-data system uses. Disabled types are hidden unless
- * `includeDisabled` is set. Ordered by label.
+ * List the object types a team can see: its own team-scoped types, the
+ * org/system ones (`teamId IS NULL`), AND types another team has shared with it
+ * (a type-level grant, or org-wide). The shared-in ones carry the OWNER's
+ * `teamId`, so the caller distinguishes them from the team's own. Disabled types
+ * are hidden unless `includeDisabled` is set. Ordered by label.
  */
 export const listObjectTypes = async (data: {
   organizationId: string;
@@ -17,11 +19,12 @@ export const listObjectTypes = async (data: {
 }): Promise<ObjectType[]> => {
   const { organizationId, teamId, includeDisabled = false } = data;
 
-  const scope = or(
-    eq(objectTypes.teamId, teamId),
-    and(
+  const scope = and(
+    eq(objectTypes.organizationId, organizationId),
+    or(
+      eq(objectTypes.teamId, teamId),
       isNull(objectTypes.teamId),
-      eq(objectTypes.organizationId, organizationId),
+      typeGrantedExists(teamId, organizationId),
     ),
   );
   const conditions = includeDisabled
@@ -43,15 +46,18 @@ export const getObjectType = async (data: {
   id: string;
   teamId: string;
 }): Promise<ObjectType & { fieldDefinitions: FieldDefinition[] }> => {
-  const row = await db.query.objectTypes.findFirst({
-    where: { id: data.id },
-    // Scope fields to the team's own copies — a type carries BOTH the org
-    // template (`team_id IS NULL`, the seed source) and each team's copy, so an
-    // unfiltered fetch shows every field twice.
-    with: { fieldDefinitions: { where: { teamId: data.teamId } } },
-  });
+  const row = await db.query.objectTypes.findFirst({ where: { id: data.id } });
   if (!row) {
     return throwHttpError(404, notFound("Object type not found"));
   }
-  return row;
+  // Fields live under the type's OWNER team. For the team's own / a shared-in
+  // foreign type that is the type's `teamId`; for a system type (`teamId IS
+  // NULL`, duplicated per team) it's the viewer's own team. Scoping this way
+  // avoids showing every field twice (org template + team copy) AND renders a
+  // foreign type's fields correctly.
+  const fieldTeamId = row.teamId ?? data.teamId;
+  const fieldDefinitions = await db.query.fieldDefinitions.findMany({
+    where: { objectTypeId: data.id, teamId: fieldTeamId },
+  });
+  return { ...row, fieldDefinitions };
 };

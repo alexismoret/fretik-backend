@@ -11,6 +11,8 @@ import type {
 export type StarterField = {
   key: string;
   label: string;
+  /** One-line gloss of what the field holds — the AI reads it as ground truth. */
+  description?: string;
   type: FieldDefinitionType;
   isTitle?: boolean;
   config?: FieldDefinitionConfig;

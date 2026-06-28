@@ -22,6 +22,15 @@ const db = drizzle(databaseUrl, {
  */
 export type Transaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
+/**
+ * A read/write executor: either the root `db` or an open `Transaction`. The
+ * canonical parameter type for helpers that run a statement on whichever handle
+ * the caller has — declared ONCE here and reused everywhere (no per-file
+ * re-declaration). Services that own their transaction boundary should still
+ * take `tx?: Transaction` and resolve `const exec = tx ?? db`.
+ */
+export type Executor = typeof db | Transaction;
+
 const MIGRATION_LOCK_ID = 4242424242424242n;
 
 export const runMigrationsWithLock = async () => {

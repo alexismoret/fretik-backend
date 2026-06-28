@@ -1,17 +1,20 @@
 import { and, desc, eq, sql } from "drizzle-orm";
 import db from "../../db";
-import type { ObjectRecord } from "../../db/schema";
+import type { ObjectRecordWithData } from "../../db/schema";
 import { objectRecords } from "../../db/schema";
+import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
+import { SAFE_IDENT, qualifiedObjectTable } from "../object-schema/identifiers";
+import { readRecordDataBatch } from "../object-schema/record-io";
 
 /**
- * Equality-filter a type's confirmed records by JSONB attribute values
- * (`data->>'key' = value`). A minimal helper for internal callers — full-text
- * search lives in `listObjectRecords`. Non-string filter values are compared
- * by their string form, matching the `->>'key'` text projection.
+ * Equality-filter a type's confirmed records by typed attribute values. A
+ * minimal helper for internal callers — full-text search lives in
+ * `listObjectRecords`. Each filter becomes an `EXISTS` on the type's extension
+ * table (`e."key"::text = value`), comparing on the text form so any primitive
+ * filter value works; the matched rows then get their `data` map batch-attached.
  *
  * Paginated with the shared convention (`page` zero-indexed, `limit`
- * default 25 / max-50-aligned, `offset = page * limit`) so a handler can pass
- * a parsed `paramsListSchema` query straight through.
+ * default 25 / max-50-aligned, `offset = page * limit`).
  */
 export const queryObjectRecords = async (data: {
   teamId: string;
@@ -19,8 +22,9 @@ export const queryObjectRecords = async (data: {
   filters?: Record<string, unknown>;
   page?: number;
   limit?: number;
-}): Promise<ObjectRecord[]> => {
+}): Promise<ObjectRecordWithData[]> => {
   const { teamId, objectTypeId, filters = {}, page = 0, limit = 25 } = data;
+  const table = qualifiedObjectTable(objectTypeId);
 
   const conditions = [
     eq(objectRecords.teamId, teamId),
@@ -29,17 +33,28 @@ export const queryObjectRecords = async (data: {
   ];
   for (const [key, value] of Object.entries(filters)) {
     const text = toFilterText(value);
-    if (text === null) continue;
-    conditions.push(sql`${objectRecords.data} ->> ${key} = ${text}`);
+    if (text === null || !SAFE_IDENT.test(key)) continue;
+    conditions.push(
+      sql`EXISTS (SELECT 1 FROM ${sql.raw(table)} e WHERE e."id" = ${objectRecords.id} AND e.${sql.raw(`"${key}"`)}::text = ${text})`,
+    );
   }
 
-  return await db
+  const rows = await db
     .select()
     .from(objectRecords)
     .where(and(...conditions))
     .orderBy(desc(objectRecords.createdAt))
     .limit(limit)
     .offset(Math.max(0, page * limit));
+  if (rows.length === 0) return [];
+
+  const fieldDefs = await getFieldDefinitionsForTeam({ teamId, objectTypeId });
+  const dataById = await readRecordDataBatch({
+    objectTypeId,
+    recordIds: rows.map((r) => r.id),
+    fields: fieldDefs,
+  });
+  return rows.map((r) => ({ ...r, data: dataById.get(r.id) ?? {} }));
 };
 
 /**

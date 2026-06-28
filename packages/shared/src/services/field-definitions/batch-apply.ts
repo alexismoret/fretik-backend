@@ -5,13 +5,11 @@ import type { FieldDefinition } from "../../db/schema";
 import { fieldDefinitions } from "../../db/schema";
 import { badRequest, notFound, throwHttpError } from "../../lib/errors";
 import type { FieldDefinitionOperation } from "../../schemas/field-definitions";
-import {
-  countRecordsWithFieldKey,
-  deleteFieldKeysFromRecords,
-  renameFieldKeyInRecords,
-} from "../object-records/field-data";
+import { countNonNullColumnValues } from "../object-records/field-data";
+import { refreshObjectTableAfterCatalogChange } from "../object-schema/catalog-sync";
+import { changeFieldColumns, renameFieldColumns } from "../object-schema/table";
+import { DOCUMENT_TYPE_KEY } from "../object-types/constants";
 import { resolveOrgObjectTypeId } from "../object-types/resolve";
-import { refreshTypedViewAfterCatalogChange } from "../object-types/sync-typed-view";
 import { invalidateFieldDefinitionsCache } from "./cache";
 import { slugifyFieldKey } from "./slugify-key";
 import {
@@ -47,11 +45,11 @@ export const batchApplyFieldDefinitionOperations = async (data: {
     return { created: 0, updated: 0, deleted: 0, renamed: 0 };
   }
 
-  // Only document fields are supported today — resolve the system "document"
+  // Only document fields are supported today — resolve the system document
   // type once for the whole batch.
   const objectTypeId = await resolveOrgObjectTypeId({
     organizationId,
-    key: "document",
+    key: DOCUMENT_TYPE_KEY,
   });
 
   const result = await db.transaction(async (tx) => {
@@ -154,10 +152,10 @@ export const batchApplyFieldDefinitionOperations = async (data: {
           );
         }
         if (typeChanged) {
-          const valueCount = await countRecordsWithFieldKey({
+          const valueCount = await countNonNullColumnValues({
             tx,
             objectTypeId: existing.objectTypeId,
-            key: existing.key,
+            field: existing,
           });
           if (valueCount > 0 && !op.patch.cascade) {
             return throwHttpError(
@@ -167,18 +165,20 @@ export const batchApplyFieldDefinitionOperations = async (data: {
               ),
             );
           }
-          if (valueCount > 0 && op.patch.cascade) {
-            await deleteFieldKeysFromRecords({
-              tx,
-              objectTypeId: existing.objectTypeId,
-              keys: [existing.key],
-            });
-          }
         }
         await tx
           .update(fieldDefinitions)
           .set({ ...op.patch })
           .where(eq(fieldDefinitions.id, op.id));
+        // Recreate the column with the new type (team scope; resets its values).
+        if (existing.teamId && typeChanged) {
+          await changeFieldColumns({
+            tx,
+            objectTypeId: existing.objectTypeId,
+            oldField: existing,
+            newField: { ...existing, ...op.patch },
+          });
+        }
         updated += 1;
       } else if (op.action === "delete") {
         const existing = await assertOwnedById(
@@ -187,13 +187,20 @@ export const batchApplyFieldDefinitionOperations = async (data: {
           organizationId,
           teamId,
         );
-        if (op.cascade) {
-          await deleteFieldKeysFromRecords({
-            tx,
-            objectTypeId: existing.objectTypeId,
-            keys: [existing.key],
-          });
+        const valueCount = await countNonNullColumnValues({
+          tx,
+          objectTypeId: existing.objectTypeId,
+          field: existing,
+        });
+        if (valueCount > 0 && !op.cascade) {
+          return throwHttpError(
+            400,
+            badRequest(
+              `Cannot delete '${existing.key}' while values exist (use cascade=true).`,
+            ),
+          );
         }
+        // The column is dropped by the final reconcile (the def row is gone).
         await tx.delete(fieldDefinitions).where(eq(fieldDefinitions.id, op.id));
         deleted += 1;
       } else if (op.action === "rename_key") {
@@ -204,14 +211,16 @@ export const batchApplyFieldDefinitionOperations = async (data: {
           teamId,
         );
         if (existing.key === op.newKey) continue;
-        // Migrate any record values stored under the old key before changing
-        // the def, so the value carries over to the new key.
-        await renameFieldKeyInRecords({
-          tx,
-          objectTypeId: existing.objectTypeId,
-          fromKey: existing.key,
-          toKey: op.newKey,
-        });
+        // Rename the physical column (team scope; preserves its data), then the
+        // def key.
+        if (existing.teamId) {
+          await renameFieldColumns({
+            tx,
+            objectTypeId: existing.objectTypeId,
+            oldField: existing,
+            newKey: op.newKey,
+          });
+        }
         await tx
           .update(fieldDefinitions)
           .set({ key: op.newKey })
@@ -228,9 +237,9 @@ export const batchApplyFieldDefinitionOperations = async (data: {
       addEnabled: 0,
     });
 
-    // One typed-view + search-vector refresh for the whole batch (every op
+    // One table reconcile + search-vector refresh for the whole batch (every op
     // targets the same object type), atomic with the field-def changes.
-    await refreshTypedViewAfterCatalogChange({
+    await refreshObjectTableAfterCatalogChange({
       tx,
       organizationId,
       objectTypeId,

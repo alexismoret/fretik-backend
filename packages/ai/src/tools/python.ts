@@ -19,7 +19,7 @@ import { mapE2BError } from "./_e2b-errors";
  * `e2b:sandbox:{conversationId}`) and is therefore SHARED between
  * the parent agent and every sub-agent it spawns via `dispatchAgent`.
  * The Jupyter kernel inside that sandbox is NOT thread-safe, and the
- * sandbox itself only has 1 vCPU / 1 GB. When several sub-agents
+ * sandbox itself only has 1 vCPU / 2 GB. When several sub-agents
  * (or parent + sub-agent) issue concurrent `python` / `bash` calls
  * on the same conversation, the kernel serialises them under load
  * and we have observed timeouts on `workspace snapshot` and

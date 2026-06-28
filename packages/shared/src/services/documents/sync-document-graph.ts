@@ -13,6 +13,7 @@ import { createLink } from "../links/create";
 import { createObjectRecord } from "../object-records/create";
 import { resolveRecord } from "../object-records/match";
 import { setRecordData } from "../object-records/update";
+import { DOCUMENT_TYPE_KEY } from "../object-types/constants";
 import { resolveObjectTypeId } from "../object-types/resolve";
 import { MENTIONS_LINK_TYPE_KEY } from "../object-types/seed-system-types";
 
@@ -91,7 +92,7 @@ export const syncDocumentGraph = async (input: {
     const documentTypeId = await resolveObjectTypeId({
       organizationId,
       teamId,
-      key: "document",
+      key: DOCUMENT_TYPE_KEY,
     });
     if (!documentTypeId) {
       return throwHttpError(

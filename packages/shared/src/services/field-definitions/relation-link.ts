@@ -4,6 +4,7 @@ import type { FieldDefinitionConfig } from "../../db/schema";
 import { linkTypes } from "../../db/schema";
 import { badRequest, throwHttpError } from "../../lib/errors";
 import { createLinkType } from "../link-types/create";
+import { DOCUMENT_TYPE_KEY } from "../object-types/constants";
 import { resolveObjectTypeId } from "../object-types/resolve";
 
 /**
@@ -49,7 +50,7 @@ export const bindRelationFieldLinkType = async (input: {
 
   const targetKey =
     "widget" in config && config.widget === "attachment"
-      ? "document"
+      ? DOCUMENT_TYPE_KEY
       : "targetTypeKey" in config
         ? config.targetTypeKey
         : undefined;

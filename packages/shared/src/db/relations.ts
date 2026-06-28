@@ -369,6 +369,7 @@ export const relations = defineRelations(schema, (r) => ({
     outgoingLinks: r.many.links({ alias: "linkFrom" }),
     incomingLinks: r.many.links({ alias: "linkTo" }),
     eventLinks: r.many.domainEventLinks(),
+    shares: r.many.recordShares(),
   },
 
   links: {
@@ -431,6 +432,50 @@ export const relations = defineRelations(schema, (r) => ({
     record: r.one.objectRecords({
       from: r.domainEventLinks.recordId,
       to: r.objectRecords.id,
+    }),
+  },
+
+  objectGrants: {
+    organization: r.one.organization({
+      from: r.objectGrants.organizationId,
+      to: r.organization.id,
+    }),
+    objectType: r.one.objectTypes({
+      from: r.objectGrants.objectTypeId,
+      to: r.objectTypes.id,
+    }),
+    ownerTeam: r.one.team({
+      from: r.objectGrants.ownerTeamId,
+      to: r.team.id,
+      alias: "objectGrantOwnerTeam",
+    }),
+    granteeTeam: r.one.team({
+      from: r.objectGrants.granteeTeamId,
+      to: r.team.id,
+      alias: "objectGrantGranteeTeam",
+      optional: true,
+    }),
+  },
+
+  recordShares: {
+    organization: r.one.organization({
+      from: r.recordShares.organizationId,
+      to: r.organization.id,
+    }),
+    record: r.one.objectRecords({
+      from: r.recordShares.recordId,
+      to: r.objectRecords.id,
+    }),
+    ownerTeam: r.one.team({
+      from: r.recordShares.ownerTeamId,
+      to: r.team.id,
+      alias: "recordShareOwnerTeam",
+    }),
+    granteeTeam: r.one.team({
+      from: r.recordShares.granteeTeamId,
+      to: r.team.id,
+      alias: "recordShareGranteeTeam",
+      optional: true,
     }),
   },
 

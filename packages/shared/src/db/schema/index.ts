@@ -37,6 +37,10 @@ export * from "./object-records";
 export * from "./field-definitions";
 export * from "./field-types";
 
+// Object sharing (cross-team ACL: object_grants = share a type, record_shares =
+// share one record). Consulted by the object_records RLS predicate.
+export * from "./object-sharing";
+
 // Metrics and logs (usage_metrics, activity_logs, webhooks)
 export * from "./metrics";
 

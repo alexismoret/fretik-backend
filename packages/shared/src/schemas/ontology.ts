@@ -5,6 +5,7 @@ import {
   ONTOLOGY_STATUSES,
 } from "../db/schema";
 import { FIELD_DEFINITION_LIMITS } from "../services/field-definitions/constants";
+import { OBJECT_TYPE_LIMITS } from "../services/object-types/constants";
 import { paramsListSchema } from "./common/params";
 import {
   fieldConfigSchema,
@@ -57,7 +58,11 @@ export const createObjectTypeRequestSchema = z.object({
     ),
   label: z.string().trim().min(1),
   labelPlural: z.string().trim().min(1).nullish(),
-  description: z.string().trim().nullish(),
+  description: z
+    .string()
+    .trim()
+    .max(OBJECT_TYPE_LIMITS.MAX_DESCRIPTION_CHARS)
+    .nullish(),
   icon: z.string().trim().max(60).nullish(),
   color: z.string().trim().max(20).nullish(),
 });
@@ -65,7 +70,11 @@ export const createObjectTypeRequestSchema = z.object({
 export const updateObjectTypeRequestSchema = z.object({
   label: z.string().trim().min(1).optional(),
   labelPlural: z.string().trim().min(1).nullish(),
-  description: z.string().trim().nullish(),
+  description: z
+    .string()
+    .trim()
+    .max(OBJECT_TYPE_LIMITS.MAX_DESCRIPTION_CHARS)
+    .nullish(),
   icon: z.string().trim().max(60).nullish(),
   color: z.string().trim().max(20).nullish(),
   enabled: z.boolean().optional(),
@@ -271,15 +280,23 @@ export const linkTypeResponseSchema = z.object({
   updatedAt: z.coerce.date(),
 });
 
+// A link endpoint record carries only its registry columns — never the typed
+// `data` (that lives in the per-type extension table and isn't fetched for link
+// chips). So the nested toRecord/fromRecord omit `data`/`computed`.
+const linkedRecordSchema = objectRecordResponseSchema.omit({
+  data: true,
+  computed: true,
+});
+
 // Nested relations are NOT NULL in the DB, but the relational query types
 // them nullable — mirror that here so the service return validates cleanly.
 const outgoingLinkResponseSchema = linkResponseSchema.extend({
-  toRecord: objectRecordResponseSchema.nullable(),
+  toRecord: linkedRecordSchema.nullable(),
   linkType: linkTypeResponseSchema.nullable(),
 });
 
 const incomingLinkResponseSchema = linkResponseSchema.extend({
-  fromRecord: objectRecordResponseSchema.nullable(),
+  fromRecord: linkedRecordSchema.nullable(),
   linkType: linkTypeResponseSchema.nullable(),
 });
 

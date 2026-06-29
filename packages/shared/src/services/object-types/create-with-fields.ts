@@ -10,6 +10,7 @@ import { autoColorForKey } from "../../lib/colors/object-colors";
 import { badRequest, internalError, throwHttpError } from "../../lib/errors";
 import { invalidateFieldDefinitionsCache } from "../field-definitions/cache";
 import { FIELD_DEFINITION_LIMITS } from "../field-definitions/constants";
+import { fillOptionColors } from "../field-definitions/normalize-config";
 import { slugifyFieldKey } from "../field-definitions/slugify-key";
 import { validateFieldDefinitionShape } from "../field-definitions/validate";
 import { reconcileObjectTable } from "../object-schema/table";
@@ -86,11 +87,11 @@ export const createObjectTypeWithFields = async (
   }
 
   const enabledCount = input.fields.filter((f) => f.enabled ?? true).length;
-  if (enabledCount > FIELD_DEFINITION_LIMITS.MAX_ENABLED_PER_SCOPE) {
+  if (enabledCount > FIELD_DEFINITION_LIMITS.MAX_FIELDS_PER_TYPE) {
     return throwHttpError(
       400,
       badRequest(
-        `Cannot exceed ${FIELD_DEFINITION_LIMITS.MAX_ENABLED_PER_SCOPE} enabled fields per type.`,
+        `Cannot exceed ${FIELD_DEFINITION_LIMITS.MAX_FIELDS_PER_TYPE} enabled fields per type.`,
       ),
     );
   }
@@ -149,7 +150,9 @@ export const createObjectTypeWithFields = async (
       label: f.label,
       description: f.description ?? null,
       type: f.type,
-      config: f.config ?? {},
+      // Server owns option colors — fill any the writer (AI / SDK / composer)
+      // left unset, mirroring the single-field `createFieldDefinition` path.
+      config: fillOptionColors(f.type, f.config ?? {}),
       isTitle: i === titleIndex,
       aiExtractionEnabled: f.aiExtractionEnabled ?? true,
       vectorizeInclude: f.vectorizeInclude ?? true,

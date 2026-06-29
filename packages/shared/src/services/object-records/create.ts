@@ -6,7 +6,7 @@ import type {
   OntologyStatus,
 } from "../../db/schema";
 import { objectRecords } from "../../db/schema";
-import { internalError, throwHttpError } from "../../lib/errors";
+import { badRequest, internalError, throwHttpError } from "../../lib/errors";
 import { computeRecordIdentity } from "../../schemas/record-shape";
 import {
   type EventActor,
@@ -14,31 +14,27 @@ import {
   SYSTEM_ACTOR,
 } from "../domain-events/emit";
 import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
+import { bulkCreateLinks } from "../links/bulk-create";
+import {
+  type RecordRelationInput,
+  type ResolvedRelationTarget,
+  resolveRelationInputs,
+} from "../links/resolve-relation-inputs";
 import { buildExtensionInsert } from "../object-schema/record-io";
+import { buildCreateDiff } from "./create-diff";
 import { validateRecordData } from "./validate";
 import { assertMemberFieldsValid } from "./validate-members";
-
-/**
- * Per-field create diff for the journal: every present attribute as a
- * `null → value` transition. `domain-events/history` folds these into the
- * record's attribute timeline.
- */
-const buildCreateDiff = (
-  data: Record<string, unknown>,
-): Record<string, { from: null; to: unknown }> => {
-  const diff: Record<string, { from: null; to: unknown }> = {};
-  for (const [key, value] of Object.entries(data)) {
-    if (value === undefined) continue;
-    diff[key] = { from: null, to: value };
-  }
-  return diff;
-};
 
 /**
  * Create an object record. Resolves the type's enabled field definitions,
  * validates `data` against them, computes the denormalized identity
  * (label / normalizedLabel / search_vector), inserts, and journals
  * `record.created` in the SAME transaction (the outbox guarantee).
+ *
+ * Optional `relations` attach the new record's outgoing edges in that same
+ * transaction (record first, then its links — like `syncDocumentGraph`): a bad
+ * relation rolls the whole create back, so the record is never half-created with
+ * missing edges. Targets resolve once, before the tx, batched.
  *
  * Defaults match the trust model: user writes are born `confirmed` /
  * `user_manual`. AI extraction passes `status: 'suggested'` and
@@ -59,6 +55,7 @@ export const createObjectRecord = async (input: {
   labelOverride?: string | null;
   documentId?: string | null;
   strict?: boolean;
+  relations?: RecordRelationInput[];
   tx?: Transaction;
   actor?: EventActor;
 }): Promise<ObjectRecordWithData> => {
@@ -81,6 +78,30 @@ export const createObjectRecord = async (input: {
   const actor = input.actor ?? SYSTEM_ACTOR;
 
   const status = input.status ?? "confirmed";
+
+  // Resolve relation targets up front (the source type is known) — batched, and
+  // before any write, so a bad relation fails fast with nothing created.
+  const relations = input.relations ?? [];
+  let resolvedTargets: ResolvedRelationTarget[] = [];
+  if (relations.length > 0) {
+    const { resolved, errors } = await resolveRelationInputs({
+      organizationId: input.organizationId,
+      teamId: input.teamId,
+      fromObjectTypeId: input.objectTypeId,
+      relations,
+    });
+    if (errors.length > 0) {
+      return throwHttpError(
+        400,
+        badRequest(
+          `Invalid relation(s): ${errors.map((e) => e.error).join(" ")}`,
+        ),
+      );
+    }
+    resolvedTargets = resolved.filter(
+      (r): r is ResolvedRelationTarget => r !== null,
+    );
+  }
 
   const run = async (tx: Transaction): Promise<ObjectRecordWithData> => {
     // 1. Registry row — system columns only (no `data`; typed values go to the
@@ -139,6 +160,32 @@ export const createObjectRecord = async (input: {
       .set({ sourceEventId: event.id })
       .where(eq(objectRecords.id, row.id))
       .returning();
+
+    // 3. Outgoing relations — same transaction (the edge writes see the record
+    //    just inserted). A link failure rolls the whole create back.
+    if (resolvedTargets.length > 0) {
+      const { errors: linkErrors } = await bulkCreateLinks({
+        organizationId: input.organizationId,
+        teamId: input.teamId,
+        links: resolvedTargets.map((t) => ({
+          linkTypeId: t.linkTypeId,
+          fromRecordId: row.id,
+          toRecordId: t.toRecordId,
+        })),
+        source: input.source,
+        actor,
+        tx,
+      });
+      if (linkErrors.length > 0) {
+        return throwHttpError(
+          400,
+          badRequest(
+            `Could not link the record: ${linkErrors.map((e) => e.error).join(" ")}`,
+          ),
+        );
+      }
+    }
+
     return { ...(withProvenance ?? row), data };
   };
 

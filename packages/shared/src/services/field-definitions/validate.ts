@@ -4,7 +4,7 @@ import type {
   FieldDefinitionConfig,
   FieldDefinitionType,
 } from "../../db/schema";
-import { fieldDefinitions } from "../../db/schema";
+import { fieldDefinitions, objectTypes } from "../../db/schema";
 import { fieldOptions } from "../../db/schema/field-types";
 import { badRequest, throwHttpError } from "../../lib/errors";
 import {
@@ -144,7 +144,22 @@ export const countEnabledForScope = async (data: {
 };
 
 /**
- * Assert the scope is below the enabled-cap. Pass `addEnabled=1` when
+ * The enabled-field cap for an object type: the `document_record` system type
+ * keeps the tight pre-extract budget, every other type gets the larger cap.
+ */
+const enabledCapForType = async (objectTypeId: string): Promise<number> => {
+  const [row] = await db
+    .select({ key: objectTypes.key })
+    .from(objectTypes)
+    .where(eq(objectTypes.id, objectTypeId))
+    .limit(1);
+  return row?.key === "document_record"
+    ? FIELD_DEFINITION_LIMITS.MAX_ENABLED_PER_SCOPE
+    : FIELD_DEFINITION_LIMITS.MAX_FIELDS_PER_TYPE;
+};
+
+/**
+ * Assert the type is below its enabled-field cap. Pass `addEnabled=1` when
  * inserting a new enabled row, `0` when updating an existing one.
  */
 export const assertScopeEnabledCap = async (data: {
@@ -154,20 +169,20 @@ export const assertScopeEnabledCap = async (data: {
   addEnabled: number;
   excludeId?: string;
 }): Promise<void> => {
-  const current = await countEnabledForScope({
-    organizationId: data.organizationId,
-    teamId: data.teamId,
-    objectTypeId: data.objectTypeId,
-    excludeId: data.excludeId,
-  });
-  if (
-    current + data.addEnabled >
-    FIELD_DEFINITION_LIMITS.MAX_ENABLED_PER_SCOPE
-  ) {
+  const [current, cap] = await Promise.all([
+    countEnabledForScope({
+      organizationId: data.organizationId,
+      teamId: data.teamId,
+      objectTypeId: data.objectTypeId,
+      excludeId: data.excludeId,
+    }),
+    enabledCapForType(data.objectTypeId),
+  ]);
+  if (current + data.addEnabled > cap) {
     return throwHttpError(
       400,
       badRequest(
-        `Cannot exceed ${FIELD_DEFINITION_LIMITS.MAX_ENABLED_PER_SCOPE} enabled fields per scope (current: ${current}).`,
+        `Cannot exceed ${cap} enabled fields on this type (current: ${current}).`,
       ),
     );
   }

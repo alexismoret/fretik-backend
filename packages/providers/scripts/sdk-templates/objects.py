@@ -46,6 +46,14 @@ _FIELD_KEY_MAP = {
     "display_in_filters": "displayInFilters",
 }
 
+# Relation dicts use snake_case; the backend wants camelCase.
+_RELATION_KEY_MAP = {
+    "relation_key": "relationKey",
+    "link_type_id": "linkTypeId",
+    "to_record_id": "toRecordId",
+    "to_document_id": "toDocumentId",
+}
+
 
 def _clean(args: dict[str, Any]) -> dict[str, Any]:
     """Drop None values so optional args fall back to their server defaults."""
@@ -57,6 +65,27 @@ def _field(spec: dict[str, Any]) -> dict[str, Any]:
     return {_FIELD_KEY_MAP.get(k, k): v for k, v in spec.items() if v is not None}
 
 
+def _relation(spec: dict[str, Any]) -> dict[str, Any]:
+    """Normalize one relation spec (snake_case → camelCase)."""
+    return {
+        _RELATION_KEY_MAP.get(k, k): v for k, v in spec.items() if v is not None
+    }
+
+
+def _row(row: dict[str, Any]) -> dict[str, Any]:
+    """Normalize a bulk_create row to {"data", "relations"}. A bare field map IS
+    the record's data; pass {"data": {...}, "relations": [...]} to attach
+    outgoing relations to the new record in the same write."""
+    if "data" in row and isinstance(row["data"], dict):
+        data, rels = row["data"], row.get("relations") or []
+    else:
+        data, rels = row, []
+    out: dict[str, Any] = {"data": data}
+    if rels:
+        out["relations"] = [_relation(r) for r in rels]
+    return out
+
+
 class _Records:
     """Bulk record operations. Each call is ONE backend round-trip that fans out
     to a set-based write — never a row-by-row loop."""
@@ -64,16 +93,22 @@ class _Records:
     def bulk_create(
         self, type_key: str, rows: list[dict[str, Any]]
     ) -> dict[str, Any]:
-        """Create many records of `type_key`. `rows` is a list of field maps
+        """Create many records of `type_key`. Each row is a field map
         (key → value), validated against the type's schema server-side.
 
-        Returns {"ids": [...], "okCount": int, "errors": [{index, error}]}.
-        `ids[i]` is the new id for `rows[i]`, or None if that row failed — keep
-        the result in a variable to map inputs to ids (e.g. to re-point links)
-        and print only counts, not the whole list.
+        To attach outgoing relations in the same write, give a row as
+        {"data": {<field map>}, "relations": [{"relation_key": "client",
+        "to_record_id": "<id>"}]} — target by `to_record_id` or an uploaded
+        file's `to_document_id` (its document record).
+
+        Returns {"ids": [...], "okCount": int, "errors": [{index, error}],
+        "relationErrors": [{index, error}]}. `ids[i]` is the new id for `rows[i]`
+        (None if it failed); `relationErrors` is indexed by row. Keep the result
+        in a variable and print only counts, not the whole list.
         """
         return _call_objects(
-            "records.bulk_create", {"typeKey": type_key, "rows": rows}
+            "records.bulk_create",
+            {"typeKey": type_key, "rows": [_row(r) for r in rows]},
         )
 
     def bulk_update(
@@ -158,12 +193,17 @@ class _Schema:
         one line — what the type is for (required; you read it later as ground
         truth). Pass `fields` to build the whole schema in ONE call (each a dict
         like {"label": "Name", "type": "text", "is_title": True, "description":
-        "..."}; every field needs its own one-line `description`). Exclude
-        relation/rollup fields — add those with `add_field`. Color is
-        auto-assigned.
+        "..."}; every field needs its own one-line `description`). Max 30 fields
+        per type. Exclude relation/rollup fields — add those with `add_field`.
+        Colors are auto-assigned; a select/multi_select option may set an
+        optional `color` (a palette token) to override.
 
         Returns {"id", "key", "fields": [{key, type}]}.
         """
+        if fields and len(fields) > 30:
+            raise ValueError(
+                f"create_type: max 30 fields per type, got {len(fields)}"
+            )
         return _call_objects(
             "schema.create_type",
             _clean(

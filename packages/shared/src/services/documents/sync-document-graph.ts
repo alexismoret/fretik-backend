@@ -4,12 +4,12 @@ import { objectRecords } from "../../db/schema";
 import { internalError, throwHttpError } from "../../lib/errors";
 import { selectOrCache } from "../../lib/redis";
 import {
-  type EventActor,
   emitDomainEvent,
   SYSTEM_ACTOR,
+  type EventActor,
 } from "../domain-events/emit";
 import { resolveOrgLinkTypeId } from "../link-types/resolve";
-import { createLink } from "../links/create";
+import { bulkCreateLinks, type LinkInput } from "../links/bulk-create";
 import { createObjectRecord } from "../object-records/create";
 import { resolveRecord } from "../object-records/match";
 import { setRecordData } from "../object-records/update";
@@ -204,7 +204,10 @@ const linkMentions = async (input: {
   ]);
   if (!targetTypeId || !mentionsLinkTypeId) return [];
 
+  // Resolve each mention to a target record (fuzzy entity matching), deduped,
+  // collecting the edges — then write them all in ONE set-based call.
   const linkedIds = new Set<string>();
+  const linkInputs: LinkInput[] = [];
   for (const mention of mentions) {
     const name = mention.name.trim();
     if (!name) continue;
@@ -218,21 +221,25 @@ const linkMentions = async (input: {
     if (linkedIds.has(resolved.recordId)) continue;
     linkedIds.add(resolved.recordId);
 
-    await createLink({
-      tx,
-      organizationId,
-      teamId,
+    linkInputs.push({
       linkTypeId: mentionsLinkTypeId,
       fromRecordId: mirrorRecordId,
       toRecordId: resolved.recordId,
       props: { rawName: name },
-      source: "ai_extraction",
       confidence: mention.confidence ?? null,
-      actor,
     });
   }
 
-  if (linkedIds.size === 0) return [];
+  if (linkInputs.length === 0) return [];
+
+  await bulkCreateLinks({
+    tx,
+    organizationId,
+    teamId,
+    links: linkInputs,
+    source: "ai_extraction",
+    actor,
+  });
 
   // Read canonical labels once for vectorize metadata (resolveRecord returns
   // only ids; an existing company's label can differ from the raw mention).

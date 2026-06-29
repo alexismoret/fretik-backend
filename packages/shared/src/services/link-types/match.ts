@@ -87,3 +87,59 @@ export const resolveLinkType = async (data: {
   });
   return { linkTypeId: created.id, isNew: true };
 };
+
+/**
+ * Batch resolver of many relation keys against ONE source type. Reads the scope
+ * once and serves exact `normalizedKey` matches in-memory, so the work scales
+ * with the number of DISTINCT relations referenced (a type has a handful), never
+ * with the number of rows referencing them. Only a genuinely new key falls back
+ * to the single {@link resolveLinkType} (trigram canonicalization + create) —
+ * bounded by new-relation count, never per-row. Returns Map(rawKey →
+ * linkTypeId). Use this from the bulk record-with-relations path.
+ */
+export const resolveLinkTypes = async (data: {
+  organizationId: string;
+  teamId: string;
+  fromObjectTypeId: string;
+  rawKeys: string[];
+}): Promise<Map<string, string>> => {
+  const { organizationId, teamId, fromObjectTypeId } = data;
+  const distinct = [...new Set(data.rawKeys)];
+  const map = new Map<string, string>();
+  if (distinct.length === 0) return map;
+
+  const scopeRows = await db
+    .select({ id: linkTypes.id, normalizedKey: linkTypes.normalizedKey })
+    .from(linkTypes)
+    .where(
+      and(
+        eq(linkTypes.fromObjectTypeId, fromObjectTypeId),
+        or(
+          eq(linkTypes.teamId, teamId),
+          and(
+            isNull(linkTypes.teamId),
+            eq(linkTypes.organizationId, organizationId),
+          ),
+        ),
+      ),
+    );
+  const byNormalized = new Map(scopeRows.map((r) => [r.normalizedKey, r.id]));
+
+  for (const rawKey of distinct) {
+    const normalized = slugifyLinkTypeKey(rawKey);
+    const exact = byNormalized.get(normalized);
+    if (exact) {
+      map.set(rawKey, exact);
+      continue;
+    }
+    const { linkTypeId } = await resolveLinkType({
+      organizationId,
+      teamId,
+      rawKey,
+      fromObjectTypeId,
+    });
+    map.set(rawKey, linkTypeId);
+    byNormalized.set(normalized, linkTypeId);
+  }
+  return map;
+};

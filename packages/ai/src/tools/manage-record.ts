@@ -63,6 +63,24 @@ export const manageRecordInputSchema = z.object({
     .string()
     .optional()
     .describe("Force the label instead of deriving it from a field."),
+  relations: z
+    .array(
+      z.object({
+        relationKey: z
+          .string()
+          .max(60)
+          .describe("Relation slug, e.g. 'works_for'."),
+        toRecordId: z.string().optional().describe("Target record id."),
+        toDocumentId: z
+          .string()
+          .optional()
+          .describe("Target = this uploaded file's document record."),
+      }),
+    )
+    .optional()
+    .describe(
+      "On create only: outgoing relations to attach in the same write. Each links the new record to a target record (toRecordId) or uploaded file (toDocumentId).",
+    ),
 });
 
 type RecordDataEntry = { key: string } & Record<string, unknown>;
@@ -110,7 +128,7 @@ export const createManageRecordTool = () =>
     description: [
       "Write ONE object record. Schema-validated and journaled; team-scoped.",
       "",
-      "- create: typeKey + data. Born confirmed.",
+      "- create: typeKey + data (+ optional relations to link in the same write). Born confirmed.",
       "- update: recordId + data. PATCH — only the fields you pass change; omitted ones are kept (value null clears one).",
       "- delete: recordId.",
       "- setStatus: recordId + status ('confirmed' accepts an AI suggestion, 'rejected' retires it).",
@@ -166,6 +184,7 @@ export const createManageRecordTool = () =>
             objectTypeId,
             data: values,
             labelOverride: input.labelOverride ?? null,
+            relations: input.relations,
             actor,
           });
           return { ok: true, record: serializeRecord(record) };

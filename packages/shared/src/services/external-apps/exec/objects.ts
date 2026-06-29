@@ -4,6 +4,7 @@ import {
   fieldConfigSchema,
   fieldDefinitionTypeSchema,
 } from "../../../schemas/field-definitions";
+import { recordRelationInputSchema } from "../../../schemas/ontology";
 import type { EventActor } from "../../domain-events/emit";
 import { FIELD_DEFINITION_LIMITS } from "../../field-definitions/constants";
 import { createFieldDefinition } from "../../field-definitions/create";
@@ -81,7 +82,17 @@ export const dispatchObjects = async (
 
 const bulkCreateArgs = z.object({
   typeKey: z.string().min(1).max(60),
-  rows: z.array(z.record(z.string(), z.unknown())).min(1).max(MAX_BULK_ITEMS),
+  // Each row is its field `data` plus optional outgoing `relations`. Created in
+  // one batched pass (records, then their links).
+  rows: z
+    .array(
+      z.object({
+        data: z.record(z.string(), z.unknown()),
+        relations: z.array(recordRelationInputSchema).optional(),
+      }),
+    )
+    .min(1)
+    .max(MAX_BULK_ITEMS),
 });
 
 const bulkCreate = async (
@@ -107,6 +118,7 @@ const bulkCreate = async (
       ids: result.ids,
       okCount: result.ids.filter((id) => id !== null).length,
       errors: result.errors,
+      relationErrors: result.relationErrors,
     },
   };
 };

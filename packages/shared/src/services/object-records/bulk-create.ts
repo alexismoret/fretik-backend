@@ -10,43 +10,60 @@ import {
 import { computeRecordIdentity } from "../../schemas/record-shape";
 import { type EventActor, SYSTEM_ACTOR } from "../domain-events/emit";
 import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
+import { bulkCreateLinks, type LinkInput } from "../links/bulk-create";
+import {
+  type RecordRelationInput,
+  resolveRelationInputs,
+} from "../links/resolve-relation-inputs";
 import { buildExtensionInsertBatch } from "../object-schema/record-io";
 import { filterTeamMemberIds } from "../team/members";
+import { buildCreateDiff } from "./create-diff";
 import { validateRecordData } from "./validate";
 import { collectMemberUserIds } from "./validate-members";
+
+/** One row of a bulk create: the record's `data`, plus its outgoing relations. */
+export interface BulkCreateRow {
+  data: Record<string, unknown>;
+  relations?: RecordRelationInput[];
+}
 
 /**
  * Positional result of a bulk create: `ids[i]` is the new record id for input
  * row `i`, or `null` when that row failed validation (its reason is in
  * `errors`). The alignment lets an in-sandbox migration map `rows[i] → ids[i]`
  * — e.g. to re-point links — without re-reading anything into agent context.
+ * `relationErrors` reports relation failures, indexed by the ROW whose relation
+ * could not be made (the record itself still succeeded).
  */
 export interface BulkCreateResult {
   ids: (string | null)[];
   errors: { index: number; error: string }[];
+  relationErrors: { index: number; error: string }[];
 }
 
 /**
- * Create MANY records of one object type in a batch. The bulk sibling of
- * `createObjectRecord` (kept separate on purpose — single-row writes throw on
- * the first bad value and enlist in a caller's `tx`; bulk skips bad rows and
- * owns its transaction). Shares every business rule with the single path:
- * `validateRecordData`, member validation, `computeRecordIdentity`,
- * `buildExtensionInsert*`, the `record.created` journal entry.
+ * Create MANY records of one object type in a batch, each with optional outgoing
+ * relations. The bulk sibling of `createObjectRecord` (kept separate on purpose
+ * — single-row writes throw on the first bad value and enlist in a caller's
+ * `tx`; bulk skips bad rows and owns its transaction). Shares every business
+ * rule with the single path: `validateRecordData`, member validation,
+ * `computeRecordIdentity`, `buildExtensionInsert*`, the `record.created` journal
+ * entry, and the same relation resolution + `bulkCreateLinks`.
  *
  * Performance contract — NO per-row SQL. Validation is in-memory; member
  * assignment is checked against ONE team-membership fetch for the whole batch;
- * the surviving rows are written in chunks of {@link INSERT_CHUNK}, each chunk a
- * single transaction of 5 set-based statements (registry INSERT, extension
- * INSERT, events INSERT, links INSERT, one `UPDATE … FROM (VALUES …)` to stamp
- * `source_event_id`). Total round-trips scale with chunk count, not row count.
+ * the surviving rows are written in chunks of {@link DB_BULK_CHUNK_SIZE}, each a
+ * single transaction of set-based statements. Relations are then resolved in two
+ * grouped reads and written set-based. Unlike the single path the relation step
+ * is NOT atomic with its record (partial-success contract): a failed relation is
+ * reported in `relationErrors` without undoing the record.
  */
 export const bulkCreateObjectRecords = async (input: {
   organizationId: string;
   teamId: string;
   userId?: string | null;
   objectTypeId: string;
-  rows: Record<string, unknown>[];
+  rows: BulkCreateRow[];
   status?: OntologyStatus;
   source?: OntologySource;
   strict?: boolean;
@@ -65,7 +82,9 @@ export const bulkCreateObjectRecords = async (input: {
   // fields) — never one per row. `filterTeamMemberIds` returns the subset of
   // requested ids that ARE team members; the complement is invalid.
   const requestedMembers = [
-    ...new Set(input.rows.flatMap((r) => collectMemberUserIds(fieldDefs, r))),
+    ...new Set(
+      input.rows.flatMap((r) => collectMemberUserIds(fieldDefs, r.data)),
+    ),
   ];
   const allowedMembers = new Set(
     requestedMembers.length > 0
@@ -88,7 +107,7 @@ export const bulkCreateObjectRecords = async (input: {
     try {
       const data = validateRecordData({
         fieldDefs,
-        data: raw,
+        data: raw.data,
         strict: input.strict,
       });
       const invalidMembers = collectMemberUserIds(fieldDefs, data).filter(
@@ -190,20 +209,82 @@ export const bulkCreateObjectRecords = async (input: {
     });
   }
 
-  return { ids, errors };
+  // 7. Relations of every successfully-created row — resolved in two grouped
+  //    reads, written set-based. Partial success: failures are reported, never
+  //    fatal to the record. Records are committed, so the edges see them.
+  const relationErrors = await createRowRelations(input, ids);
+
+  return { ids, errors, relationErrors };
 };
 
 /**
- * Per-field create diff for the journal — mirrors `buildCreateDiff` in
- * `create.ts`: every present attribute as a `null → value` transition.
+ * Resolve + write the relations of the rows that were created. Flattens every
+ * surviving row's relations, resolves them in one batched pass, and links them
+ * with `bulkCreateLinks`; maps each failure back to its row index.
  */
-const buildCreateDiff = (
-  data: Record<string, unknown>,
-): Record<string, { from: null; to: unknown }> => {
-  const diff: Record<string, { from: null; to: unknown }> = {};
-  for (const [key, value] of Object.entries(data)) {
-    if (value === undefined) continue;
-    diff[key] = { from: null, to: value };
+const createRowRelations = async (
+  input: {
+    organizationId: string;
+    teamId: string;
+    objectTypeId: string;
+    rows: BulkCreateRow[];
+    source?: OntologySource;
+    actor?: EventActor;
+  },
+  ids: (string | null)[],
+): Promise<{ index: number; error: string }[]> => {
+  const relationErrors: { index: number; error: string }[] = [];
+
+  const flat: { rowIndex: number; rel: RecordRelationInput }[] = [];
+  input.rows.forEach((row, i) => {
+    if (ids[i] == null) return;
+    for (const rel of row.relations ?? []) flat.push({ rowIndex: i, rel });
+  });
+  if (flat.length === 0) return relationErrors;
+
+  const { resolved, errors: resolveErrors } = await resolveRelationInputs({
+    organizationId: input.organizationId,
+    teamId: input.teamId,
+    fromObjectTypeId: input.objectTypeId,
+    relations: flat.map((f) => f.rel),
+  });
+  for (const e of resolveErrors) {
+    relationErrors.push({
+      index: flat[e.index]?.rowIndex ?? -1,
+      error: e.error,
+    });
   }
-  return diff;
+
+  const linkInputs: LinkInput[] = [];
+  const linkRowIndex: number[] = [];
+  resolved.forEach((target, i) => {
+    if (!target) return;
+    const rowIndex = flat[i]?.rowIndex ?? -1;
+    const fromRecordId = ids[rowIndex];
+    if (!fromRecordId) return;
+    linkInputs.push({
+      linkTypeId: target.linkTypeId,
+      fromRecordId,
+      toRecordId: target.toRecordId,
+    });
+    linkRowIndex.push(rowIndex);
+  });
+
+  if (linkInputs.length > 0) {
+    const { errors: linkErrors } = await bulkCreateLinks({
+      organizationId: input.organizationId,
+      teamId: input.teamId,
+      links: linkInputs,
+      source: input.source,
+      actor: input.actor,
+    });
+    for (const e of linkErrors) {
+      relationErrors.push({
+        index: linkRowIndex[e.index] ?? -1,
+        error: e.error,
+      });
+    }
+  }
+
+  return relationErrors;
 };

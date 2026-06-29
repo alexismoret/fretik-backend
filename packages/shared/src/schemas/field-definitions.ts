@@ -230,7 +230,7 @@ export const reorderFieldDefinitionsRequestSchema = z.object({
   ids: z
     .array(z.uuid())
     .min(1)
-    .max(FIELD_DEFINITION_LIMITS.MAX_ENABLED_PER_SCOPE),
+    .max(FIELD_DEFINITION_LIMITS.MAX_FIELDS_PER_TYPE),
 });
 
 export const applyTemplateRequestSchema = z.object({

@@ -18,6 +18,23 @@ import { getRuntimeContext } from "../agents/shared/runtime-context";
 import { TOOL_ERROR_CODES, toolError } from "../lib/tool-error-codes";
 
 /**
+ * Drop any option color the model invented that isn't a valid palette token —
+ * the server then auto-assigns one (via `fillOptionColors`). Silent fallback,
+ * not an error: a bad color shouldn't cost a whole extra tool round-trip.
+ */
+const dropInvalidOptionColors = (
+  config: z.infer<typeof fieldConfigSchema> | undefined,
+): z.infer<typeof fieldConfigSchema> | undefined => {
+  if (!config?.options) return config;
+  return {
+    ...config,
+    options: config.options.map((o) =>
+      o.color && !isValidObjectColor(o.color) ? { ...o, color: undefined } : o,
+    ),
+  };
+};
+
+/**
  * Domain tool (deferred) — manage an object TYPE (the schema, not its rows):
  * create a new type (optionally with all its fields in one call), rename/restyle
  * one, or delete it. Creating provisions the typed table; deleting drops it and
@@ -71,6 +88,7 @@ export const createManageObjectTypeTool = () =>
             displayInFilters: z.boolean().optional(),
           }),
         )
+        .max(FIELD_DEFINITION_LIMITS.MAX_FIELDS_PER_TYPE)
         .optional()
         .describe(
           "create only — the type's fields, created atomically. Exclude relation/rollup (add with manageField).",
@@ -85,12 +103,11 @@ export const createManageObjectTypeTool = () =>
           "Call searchIcons to get valid Lucide icon names.",
         );
       }
-      if (input.color && !isValidObjectColor(input.color)) {
-        return toolError(
-          TOOL_ERROR_CODES.OBJECT_QUERY_ERROR,
-          `Unknown color '${input.color}'. Colors are auto-assigned — omit unless the user names one.`,
-        );
-      }
+      // A color is a palette token; an invalid one silently falls back to an
+      // auto color (on create) or is ignored (on update) — never an error,
+      // which would cost a needless extra tool round-trip.
+      const safeColor =
+        input.color && isValidObjectColor(input.color) ? input.color : null;
       const badOptionIcon = (input.fields ?? [])
         .flatMap((f) => f.config?.options ?? [])
         .map((o) => o.icon)
@@ -119,12 +136,12 @@ export const createManageObjectTypeTool = () =>
               labelPlural: input.labelPlural ?? null,
               description: input.description ?? null,
               icon: input.icon ?? null,
-              color: input.color ?? null,
+              color: safeColor,
               fields: input.fields.map((f) => ({
                 label: f.label,
                 type: f.type,
                 description: f.description ?? null,
-                config: f.config,
+                config: dropInvalidOptionColors(f.config),
                 isTitle: f.isTitle,
                 displayInFilters: f.displayInFilters,
               })),
@@ -146,7 +163,7 @@ export const createManageObjectTypeTool = () =>
             labelPlural: input.labelPlural ?? null,
             description: input.description ?? null,
             icon: input.icon ?? null,
-            color: input.color ?? null,
+            color: safeColor,
           });
           return { ok: true, type: { id: type.id, key: type.key } };
         }
@@ -189,7 +206,12 @@ export const createManageObjectTypeTool = () =>
             labelPlural: input.labelPlural,
             description: input.description,
             icon: input.icon,
-            color: input.color,
+            // Only overwrite the color when a valid token was given; an invalid
+            // or absent one leaves the existing color untouched.
+            color:
+              input.color && isValidObjectColor(input.color)
+                ? input.color
+                : undefined,
             enabled: input.enabled,
           },
         });

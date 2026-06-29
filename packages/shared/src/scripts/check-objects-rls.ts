@@ -12,6 +12,7 @@ import {
 import {
   qualifiedObjectTable,
   SQL_TOOL_ROLE,
+  SYS_COL,
 } from "../services/object-schema/identifiers";
 import {
   dropObjectTable,
@@ -202,9 +203,10 @@ const buildFixture = async (orgId: string): Promise<Fixture> => {
   const recordIds = recs.map((r) => r.id);
 
   const tbl = qualifiedObjectTable(typeId);
+  const cols = sql.raw(`${SYS_COL.id}, ${SYS_COL.team}, ${SYS_COL.label}`);
   for (const id of recordIds) {
     await db.execute(
-      sql`INSERT INTO ${sql.raw(tbl)} (id, team_id, label) VALUES (${id}, ${teamA}, 'row')`,
+      sql`INSERT INTO ${sql.raw(tbl)} (${cols}) VALUES (${id}, ${teamA}, 'row')`,
     );
   }
   return { orgId, teamA, teamB, typeId, recordIds };

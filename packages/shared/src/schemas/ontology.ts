@@ -130,7 +130,7 @@ export const createObjectTypeWithFieldsRequestSchema =
   createObjectTypeRequestSchema.extend({
     fields: z
       .array(objectTypeFieldInputSchema)
-      .max(FIELD_DEFINITION_LIMITS.MAX_ENABLED_PER_SCOPE)
+      .max(FIELD_DEFINITION_LIMITS.MAX_FIELDS_PER_TYPE)
       .default([]),
   });
 
@@ -160,12 +160,28 @@ export const objectRecordResponseSchema = z.object({
   updatedAt: z.coerce.date(),
 });
 
+/**
+ * One outgoing relation to attach when creating a record. Name the relation by
+ * `relationKey` (resolved/created against the new record's type) or an explicit
+ * `linkTypeId`; target it by `toRecordId` or an uploaded file's `toDocumentId`
+ * (its document_record mirror). Shared by the API create body and the code-mode
+ * bulk SDK.
+ */
+export const recordRelationInputSchema = z.object({
+  relationKey: z.string().max(60).optional(),
+  linkTypeId: z.uuid().optional(),
+  toRecordId: z.uuid().optional(),
+  toDocumentId: z.uuid().optional(),
+});
+
 export const createObjectRecordRequestSchema = z.object({
   objectTypeId: z.uuid(),
   data: jsonMap.default({}),
   status: ontologyStatusSchema.optional(),
   source: ontologySourceSchema.optional(),
   labelOverride: z.string().trim().min(1).nullish(),
+  // Outgoing relations created with the record, in one transaction.
+  relations: z.array(recordRelationInputSchema).optional(),
 });
 
 export const updateObjectRecordRequestSchema = z.object({
@@ -188,11 +204,19 @@ export const recordFilterOpSchema = z.enum([
   "lt",
   "gte",
   "lte",
+  "between",
   "is_true",
   "is_false",
   "is_empty",
   "is_not_empty",
 ]);
+
+// `{ start, end }` ISO range for `between` on date / datetime fields. Either
+// bound may be null → an open interval on that side.
+export const dateRangeFilterValueSchema = z.object({
+  start: z.string().nullable(),
+  end: z.string().nullable(),
+});
 
 export const recordFilterSchema = z.object({
   key: z
@@ -201,7 +225,13 @@ export const recordFilterSchema = z.object({
     .max(80),
   op: recordFilterOpSchema,
   value: z
-    .union([z.string(), z.number(), z.boolean(), z.array(z.string())])
+    .union([
+      z.string(),
+      z.number(),
+      z.boolean(),
+      z.array(z.string()),
+      dateRangeFilterValueSchema,
+    ])
     .optional(),
 });
 
@@ -237,6 +267,28 @@ export const recordListQuerySchema = paramsListSchema.extend({
         return [];
       }
     }),
+});
+
+// Group aggregate (kanban column headers): exact count + optional sum per group.
+export const recordAggregateQuerySchema = z.object({
+  objectTypeId: z.uuid(),
+  groupKey: z
+    .string()
+    .regex(/^[a-z][a-z0-9_]*$/)
+    .max(80),
+  status: ontologyStatusSchema.default("confirmed"),
+  sumKey: z
+    .string()
+    .regex(/^[a-z][a-z0-9_]*$/)
+    .max(80)
+    .optional(),
+  sumKind: z.enum(["number", "money"]).optional(),
+});
+
+export const groupAggregateSchema = z.object({
+  value: z.string().nullable(),
+  count: z.number().int(),
+  sum: z.number().nullable(),
 });
 
 // ---------------------------------------------------------------------------

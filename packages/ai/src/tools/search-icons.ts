@@ -29,7 +29,9 @@ export const createSearchIconsTool = () =>
     execute: async ({ queries, limit }) => ({
       results: queries.map((query) => ({
         query,
-        icons: searchIcons(query, limit ?? 8),
+        // The tool exposes bare names (the agent passes a `name` to
+        // manageObjectType / manageField); `searchIcons` returns {name,tags}.
+        icons: searchIcons(query, limit ?? 8).map((r) => r.name),
       })),
     }),
   });

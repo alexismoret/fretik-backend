@@ -24,7 +24,7 @@ import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
 import { computeRelationRollupValues } from "../object-schema/computed";
 import { qualifiedObjectTable } from "../object-schema/identifiers";
 import { readRecordDataBatch } from "../object-schema/record-io";
-import { recordSharedExists, teamHasTypeGrant } from "../object-sharing/access";
+import { recordVisibilityCondition, resolveRecordTypeScope } from "./scope";
 
 /**
  * Lightweight outgoing-relation summary attached to list rows (Twenty-style
@@ -99,12 +99,19 @@ const SORTABLE_COLUMNS = {
   updatedAt: objectRecords.updatedAt,
 } as const;
 
-const resolveSortExpression = (sortBy: string, objectTypeId: string) => {
+const resolveSortExpression = (
+  sortBy: string,
+  objectTypeId: string,
+  fieldType?: FieldDefinitionType,
+) => {
   if (sortBy.startsWith("field:")) {
     const key = sortBy.slice("field:".length);
     if (SLUG.test(key)) {
       const table = qualifiedObjectTable(objectTypeId);
-      return sql`(SELECT e.${sql.raw(`"${key}"`)} FROM ${sql.raw(table)} e WHERE e."id" = ${objectRecords.id})`;
+      // `money` is stored across `<key>_amount` + `<key>_currency` — order by
+      // the numeric amount column (mirrors `buildFilterCondition`).
+      const colName = fieldType === "money" ? `${key}_amount` : key;
+      return sql`(SELECT e.${sql.raw(`"${colName}"`)} FROM ${sql.raw(table)} e WHERE e."id" = ${objectRecords.id})`;
     }
     return objectRecords.createdAt;
   }
@@ -147,13 +154,20 @@ const buildFilterCondition = (
     case "eq": {
       const v = f.value;
       if (typeof v === "boolean") return wrap(sql`${col} = ${v}`);
-      if (v === undefined || Array.isArray(v)) return null;
+      // `object` is the `{ start, end }` range — only valid for `between`.
+      if (v === undefined || Array.isArray(v) || typeof v === "object")
+        return null;
       if (isMoney && typeof v === "number") return wrap(sql`${col} = ${v}`);
       return wrap(sql`${col}::text = ${String(v)}`);
     }
     case "neq": {
       const v = f.value;
-      if (v === undefined || Array.isArray(v) || typeof v === "boolean")
+      if (
+        v === undefined ||
+        Array.isArray(v) ||
+        typeof v === "boolean" ||
+        typeof v === "object"
+      )
         return null;
       if (isMoney && typeof v === "number")
         return wrap(sql`${col} IS DISTINCT FROM ${v}`);
@@ -176,7 +190,12 @@ const buildFilterCondition = (
     case "gte":
     case "lte": {
       const v = f.value;
-      if (v === undefined || Array.isArray(v) || typeof v === "boolean")
+      if (
+        v === undefined ||
+        Array.isArray(v) ||
+        typeof v === "boolean" ||
+        typeof v === "object"
+      )
         return null;
       const opSql =
         f.op === "gt"
@@ -187,6 +206,24 @@ const buildFilterCondition = (
               ? sql`>=`
               : sql`<=`;
       return wrap(sql`${col} ${opSql} ${v}`);
+    }
+    // Date / datetime range. Either bound may be null → open interval; both
+    // null → no predicate. Mirrors the Drive's `customFilterExists`.
+    case "between": {
+      const v = f.value;
+      if (
+        typeof v !== "object" ||
+        v === null ||
+        Array.isArray(v) ||
+        !("start" in v) ||
+        !("end" in v)
+      )
+        return null;
+      const bounds: SQL[] = [];
+      if (v.start) bounds.push(sql`${col} >= ${v.start}`);
+      if (v.end) bounds.push(sql`${col} <= ${v.end}`);
+      if (bounds.length === 0) return null;
+      return wrap(and(...bounds) ?? sql`TRUE`);
     }
     default:
       return null;
@@ -234,19 +271,10 @@ export const listObjectRecords = async (data: {
   // viewing team; for a shared-in foreign type it's the type's `teamId`; for a
   // system type (`teamId IS NULL`) the viewer's own copy. Resolve the owner so
   // field defs / relation projections render a foreign type correctly.
-  const type = await db.query.objectTypes.findFirst({
-    columns: { teamId: true, organizationId: true },
-    where: { id: objectTypeId },
-  });
-  const ownerTeamId = type?.teamId ?? teamId;
-  const organizationId = type?.organizationId;
-  const isForeign = type?.teamId != null && type.teamId !== teamId;
-  // A type-level grant exposes EVERY record of the type; otherwise a foreign
-  // viewer sees only the records individually shared with it.
-  const hasTypeGrant =
-    isForeign && organizationId !== undefined
-      ? await teamHasTypeGrant({ objectTypeId, teamId, organizationId })
-      : false;
+  // Resolve the visibility scope once (owner team + sharing arm) — shared with
+  // the aggregate query so both enforce the same RLS-mirroring rules.
+  const scope = await resolveRecordTypeScope({ objectTypeId, teamId });
+  const ownerTeamId = scope.ownerTeamId;
 
   const fieldDefs = await getFieldDefinitionsForTeam({
     teamId: ownerTeamId,
@@ -257,13 +285,8 @@ export const listObjectRecords = async (data: {
     eq(objectRecords.objectTypeId, objectTypeId),
     eq(objectRecords.status, status),
   ];
-  // Visibility arm (mirrors the RLS): own/system → the viewer's rows;
-  // grant-covered foreign type → all its rows; otherwise → record-shared rows.
-  if (!isForeign) {
-    conditions.push(eq(objectRecords.teamId, teamId));
-  } else if (!hasTypeGrant && organizationId !== undefined) {
-    conditions.push(recordSharedExists(teamId, organizationId));
-  }
+  const visibility = recordVisibilityCondition({ teamId, scope });
+  if (visibility) conditions.push(visibility);
   if (documentId) {
     conditions.push(eq(objectRecords.documentId, documentId));
   }
@@ -274,10 +297,10 @@ export const listObjectRecords = async (data: {
       sql`(${objectRecords.label} ILIKE ${like} OR ${objectRecords.normalizedLabel} ILIKE ${like} OR ${objectRecords.searchVector} @@ plainto_tsquery('simple', ${q}))`,
     );
   }
+  const fieldTypeByKey = new Map<string, FieldDefinitionType>(
+    fieldDefs.map((d) => [d.key, d.type]),
+  );
   if (filters.length > 0) {
-    const fieldTypeByKey = new Map<string, FieldDefinitionType>(
-      fieldDefs.map((d) => [d.key, d.type]),
-    );
     for (const f of filters) {
       const cond = buildFilterCondition(
         f,
@@ -290,7 +313,10 @@ export const listObjectRecords = async (data: {
   const whereClause = and(...conditions);
   const offset = Math.max(0, page * limit);
 
-  const sortExpr = resolveSortExpression(sortBy, objectTypeId);
+  const sortFieldType = sortBy.startsWith("field:")
+    ? fieldTypeByKey.get(sortBy.slice("field:".length))
+    : undefined;
+  const sortExpr = resolveSortExpression(sortBy, objectTypeId, sortFieldType);
   const orderBy = sortDir === "asc" ? asc(sortExpr) : desc(sortExpr);
 
   const [items, [totalResult]] = await Promise.all([

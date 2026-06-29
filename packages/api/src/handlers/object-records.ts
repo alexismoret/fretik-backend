@@ -12,15 +12,18 @@ import {
 } from "@fretik/shared/schemas/common/responses";
 import {
   createObjectRecordRequestSchema,
+  groupAggregateSchema,
   objectRecordListItemSchema,
   objectRecordResponseSchema,
   objectRecordWithLinksResponseSchema,
+  recordAggregateQuerySchema,
   recordHistoryResponseSchema,
   recordListQuerySchema,
   setRecordStatusRequestSchema,
   updateObjectRecordRequestSchema,
 } from "@fretik/shared/schemas/ontology";
 import { getRecordHistory } from "@fretik/shared/services/domain-events/history";
+import { aggregateRecordsByGroup } from "@fretik/shared/services/object-records/aggregate-by-group";
 import { createObjectRecord } from "@fretik/shared/services/object-records/create";
 import { deleteObjectRecord } from "@fretik/shared/services/object-records/delete";
 import {
@@ -55,6 +58,26 @@ const listRoute = createRoute({
         },
       },
       description: "Records retrieved",
+    },
+    ...responseForbiddenSchema,
+    ...responseInternalErrorSchema,
+  },
+});
+
+const aggregateRoute = createRoute({
+  method: "get",
+  path: "/aggregate",
+  summary: "Count (and optionally sum) records grouped by a field",
+  tags: ["ObjectRecords"],
+  request: { query: recordAggregateQuerySchema },
+  responses: {
+    200: {
+      content: {
+        "application/json": {
+          schema: responseListSchema(groupAggregateSchema),
+        },
+      },
+      description: "Group aggregates retrieved",
     },
     ...responseForbiddenSchema,
     ...responseInternalErrorSchema,
@@ -230,6 +253,22 @@ objectRecordRoutes.openapi(listRoute, async (c) => {
   return c.json(result, 200);
 });
 
+objectRecordRoutes.openapi(aggregateRoute, async (c) => {
+  const team = c.get("team");
+  if (!team) return c.json(teamRequired(), 403);
+  const { objectTypeId, groupKey, status, sumKey, sumKind } =
+    c.req.valid("query");
+  const groups = await aggregateRecordsByGroup({
+    teamId: team.id,
+    objectTypeId,
+    groupKey,
+    status,
+    sumKey,
+    sumKind,
+  });
+  return c.json({ count: groups.length, data: groups }, 200);
+});
+
 objectRecordRoutes.openapi(getRoute, async (c) => {
   const team = c.get("team");
   if (!team) return c.json(teamRequired(), 403);
@@ -260,6 +299,7 @@ objectRecordRoutes.openapi(createRouteDef, async (c) => {
     status: body.status,
     source: body.source ?? "user_manual",
     labelOverride: body.labelOverride ?? null,
+    relations: body.relations,
   });
   return c.json(created, 201);
 });

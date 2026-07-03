@@ -68,7 +68,6 @@ export const seedStarterObjectTypes = async (
           type: field.type,
           config: field.config ?? {},
           isTitle: field.isTitle ?? false,
-          displayInFilters: field.displayInFilters ?? false,
           displayOrder: field.displayOrder,
         });
       }

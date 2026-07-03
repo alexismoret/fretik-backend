@@ -27,11 +27,12 @@ export const createManageFieldTool = () =>
       "Manage a field on an object type (the typed column). Get current fields from describeObjectType.",
       "",
       "- add: typeKey + label + type + description (one line — what it holds). Optional config (select options, number bounds, …) and key.",
-      "- update: typeKey + fieldKey + any of label, description, config, displayInFilters, enabled. Keeps stored values.",
+      "- update: typeKey + fieldKey + any of label, description, config, enabled. Keeps stored values.",
       "- changeType: typeKey + fieldKey + type (+ config). RESETS the field's values.",
       "- delete: typeKey + fieldKey. Pass cascade=true to drop a field that holds values.",
       "",
       "type is one of the field types in describeObjectType. relation/rollup are virtual (no column).",
+      "`id` / `created_at` / `updated_at` are reserved system columns every table already has — never add a date field for creation/update time.",
     ].join("\n"),
     inputSchema: z.object({
       action: z.enum(["add", "update", "delete", "changeType"]),
@@ -51,7 +52,6 @@ export const createManageFieldTool = () =>
         .max(FIELD_DEFINITION_LIMITS.MAX_DESCRIPTION_CHARS)
         .nullish()
         .describe("What this field holds, one line. Required on add."),
-      displayInFilters: z.boolean().optional(),
       enabled: z.boolean().optional(),
       cascade: z
         .boolean()
@@ -106,7 +106,6 @@ export const createManageFieldTool = () =>
             type: input.type,
             config: input.config,
             description: input.description ?? null,
-            displayInFilters: input.displayInFilters,
           });
           return { ok: true, field: { id: field.id, key: field.key } };
         }
@@ -161,7 +160,6 @@ export const createManageFieldTool = () =>
             label: input.label,
             description: input.description,
             config: input.config,
-            displayInFilters: input.displayInFilters,
             enabled: input.enabled,
           },
         });

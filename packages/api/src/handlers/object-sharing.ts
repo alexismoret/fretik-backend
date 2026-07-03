@@ -7,38 +7,27 @@ import { paramsIdSchema } from "@fretik/shared/schemas/common/params";
 import {
   responseForbiddenSchema,
   responseInternalErrorSchema,
-  responseNotFoundSchema,
 } from "@fretik/shared/schemas/common/responses";
 import {
   granteeListSchema,
-  revokeResultSchema,
   sharedRecordIdsSchema,
   sharedTypeIdsSchema,
-  shareRequestSchema,
-  unshareRequestSchema,
 } from "@fretik/shared/schemas/object-sharing";
-import {
-  grantObjectType,
-  revokeObjectType,
-} from "@fretik/shared/services/object-sharing/grant-type";
 import {
   listRecordShares,
   listSharedRecordIdsForType,
   listSharedTypeIds,
   listTypeGrants,
 } from "@fretik/shared/services/object-sharing/list";
-import {
-  shareRecord,
-  unshareRecord,
-} from "@fretik/shared/services/object-sharing/share-record";
 import { createRoute, OpenAPIHono } from "@hono/zod-openapi";
 import { z } from "zod";
 
 /**
- * Object-sharing API — the cross-team ACL layer. The owning team (and its
- * organization) come from the session; the body only carries the grantee
- * (`null` = org-wide) and permission. A team may only share types/records it
- * owns (enforced in the service layer).
+ * Object-sharing API — the READ side of the cross-team ACL layer (who a type /
+ * record is shared with, plus the index-page sharing state). Writes go through
+ * the single create/update path: `sharing` on `POST`/`PATCH /object-types` and
+ * `/objects` reconciles `object_grants` / `record_shares` in the same
+ * transaction, so there is no separate grant/share endpoint.
  */
 const objectSharingRoutes = new OpenAPIHono<HonoLoggedAppType>();
 objectSharingRoutes.use("*", authMiddleware);
@@ -59,51 +48,6 @@ const listTypeGrantsRoute = createRoute({
   },
 });
 
-const grantTypeRoute = createRoute({
-  method: "post",
-  path: "/types/{id}/grant",
-  summary: "Share a type with a team (or org-wide)",
-  tags: ["ObjectSharing"],
-  request: {
-    params: paramsIdSchema,
-    body: {
-      content: { "application/json": { schema: shareRequestSchema } },
-      required: true,
-    },
-  },
-  responses: {
-    200: {
-      content: { "application/json": { schema: granteeListSchema } },
-      description: "Type shared; returns the updated grant list",
-    },
-    ...responseNotFoundSchema,
-    ...responseForbiddenSchema,
-    ...responseInternalErrorSchema,
-  },
-});
-
-const revokeTypeRoute = createRoute({
-  method: "post",
-  path: "/types/{id}/revoke",
-  summary: "Stop sharing a type with a team (or org-wide)",
-  tags: ["ObjectSharing"],
-  request: {
-    params: paramsIdSchema,
-    body: {
-      content: { "application/json": { schema: unshareRequestSchema } },
-      required: true,
-    },
-  },
-  responses: {
-    200: {
-      content: { "application/json": { schema: revokeResultSchema } },
-      description: "Grant revoked",
-    },
-    ...responseForbiddenSchema,
-    ...responseInternalErrorSchema,
-  },
-});
-
 const listRecordSharesRoute = createRoute({
   method: "get",
   path: "/records/{id}/shares",
@@ -114,51 +58,6 @@ const listRecordSharesRoute = createRoute({
     200: {
       content: { "application/json": { schema: granteeListSchema } },
       description: "Shares retrieved",
-    },
-    ...responseForbiddenSchema,
-    ...responseInternalErrorSchema,
-  },
-});
-
-const shareRecordRoute = createRoute({
-  method: "post",
-  path: "/records/{id}/share",
-  summary: "Share a record with a team (or org-wide)",
-  tags: ["ObjectSharing"],
-  request: {
-    params: paramsIdSchema,
-    body: {
-      content: { "application/json": { schema: shareRequestSchema } },
-      required: true,
-    },
-  },
-  responses: {
-    200: {
-      content: { "application/json": { schema: granteeListSchema } },
-      description: "Record shared; returns the updated share list",
-    },
-    ...responseNotFoundSchema,
-    ...responseForbiddenSchema,
-    ...responseInternalErrorSchema,
-  },
-});
-
-const unshareRecordRoute = createRoute({
-  method: "post",
-  path: "/records/{id}/unshare",
-  summary: "Stop sharing a record with a team (or org-wide)",
-  tags: ["ObjectSharing"],
-  request: {
-    params: paramsIdSchema,
-    body: {
-      content: { "application/json": { schema: unshareRequestSchema } },
-      required: true,
-    },
-  },
-  responses: {
-    200: {
-      content: { "application/json": { schema: revokeResultSchema } },
-      description: "Share revoked",
     },
     ...responseForbiddenSchema,
     ...responseInternalErrorSchema,
@@ -205,69 +104,11 @@ objectSharingRoutes.openapi(listTypeGrantsRoute, async (c) => {
   return c.json(await listTypeGrants(id), 200);
 });
 
-objectSharingRoutes.openapi(grantTypeRoute, async (c) => {
-  const team = c.get("team");
-  if (!team) return c.json(teamRequired(), 403);
-  const user = c.get("user");
-  const { id } = c.req.valid("param");
-  const body = c.req.valid("json");
-  await grantObjectType({
-    organizationId: team.organizationId,
-    objectTypeId: id,
-    ownerTeamId: team.id,
-    granteeTeamId: body.granteeTeamId,
-    permission: body.permission,
-    createdByUserId: user.id,
-  });
-  return c.json(await listTypeGrants(id), 200);
-});
-
-objectSharingRoutes.openapi(revokeTypeRoute, async (c) => {
-  const team = c.get("team");
-  if (!team) return c.json(teamRequired(), 403);
-  const { id } = c.req.valid("param");
-  const body = c.req.valid("json");
-  const result = await revokeObjectType({
-    objectTypeId: id,
-    granteeTeamId: body.granteeTeamId,
-  });
-  return c.json(result, 200);
-});
-
 objectSharingRoutes.openapi(listRecordSharesRoute, async (c) => {
   const team = c.get("team");
   if (!team) return c.json(teamRequired(), 403);
   const { id } = c.req.valid("param");
   return c.json(await listRecordShares(id), 200);
-});
-
-objectSharingRoutes.openapi(shareRecordRoute, async (c) => {
-  const team = c.get("team");
-  if (!team) return c.json(teamRequired(), 403);
-  const user = c.get("user");
-  const { id } = c.req.valid("param");
-  const body = c.req.valid("json");
-  await shareRecord({
-    organizationId: team.organizationId,
-    recordId: id,
-    ownerTeamId: team.id,
-    granteeTeamId: body.granteeTeamId,
-    permission: body.permission,
-    createdByUserId: user.id,
-  });
-  return c.json(await listRecordShares(id), 200);
-});
-
-objectSharingRoutes.openapi(unshareRecordRoute, async (c) => {
-  const team = c.get("team");
-  if (!team) return c.json(teamRequired(), 403);
-  const { id } = c.req.valid("param");
-  const body = c.req.valid("json");
-  const result = await unshareRecord({
-    recordId: id,
-    granteeTeamId: body.granteeTeamId,
-  });
-  return c.json(result, 200);
 });
 
 objectSharingRoutes.openapi(sharedTypesRoute, async (c) => {

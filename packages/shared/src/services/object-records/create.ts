@@ -7,6 +7,7 @@ import type {
 } from "../../db/schema";
 import { objectRecords } from "../../db/schema";
 import { badRequest, internalError, throwHttpError } from "../../lib/errors";
+import type { RecordSharing } from "../../schemas/object-sharing";
 import { computeRecordIdentity } from "../../schemas/record-shape";
 import {
   type EventActor,
@@ -20,7 +21,9 @@ import {
   type ResolvedRelationTarget,
   resolveRelationInputs,
 } from "../links/resolve-relation-inputs";
+import { resolveLocationRefs } from "../locations/resolve";
 import { buildExtensionInsert } from "../object-schema/record-io";
+import { reconcileRecordShares } from "../object-sharing/reconcile";
 import { buildCreateDiff } from "./create-diff";
 import { validateRecordData } from "./validate";
 import { assertMemberFieldsValid } from "./validate-members";
@@ -56,6 +59,10 @@ export const createObjectRecord = async (input: {
   documentId?: string | null;
   strict?: boolean;
   relations?: RecordRelationInput[];
+  // Cross-team sharing. Omitted (or `{ inherit: true }`) leaves the record
+  // following its type's audience; a custom audience is validated as a subset of
+  // the type's access and persisted as `record_shares` in this same transaction.
+  sharing?: RecordSharing;
   tx?: Transaction;
   actor?: EventActor;
 }): Promise<ObjectRecordWithData> => {
@@ -64,10 +71,17 @@ export const createObjectRecord = async (input: {
     objectTypeId: input.objectTypeId,
   });
 
-  const data = validateRecordData({
+  const validated = validateRecordData({
     fieldDefs,
     data: input.data,
     strict: input.strict,
+  });
+  // Resolve every location value to a FK into the per-team `locations` table
+  // (geocoding a bare address written by an agent/SDK along the way).
+  const data = await resolveLocationRefs({
+    teamId: input.teamId,
+    fieldDefs,
+    data: validated,
   });
   await assertMemberFieldsValid({ teamId: input.teamId, fieldDefs, data });
   const identity = computeRecordIdentity({
@@ -184,6 +198,20 @@ export const createObjectRecord = async (input: {
           ),
         );
       }
+    }
+
+    // 4. Cross-team sharing — same transaction. Only a custom audience does work;
+    //    the default ({ inherit: true }) just confirms the inherit flag.
+    if (input.sharing) {
+      await reconcileRecordShares({
+        recordId: row.id,
+        ownerTeamId: input.teamId,
+        organizationId: input.organizationId,
+        objectTypeId: input.objectTypeId,
+        sharing: input.sharing,
+        createdByUserId: actor.actorUserId ?? null,
+        tx,
+      });
     }
 
     return { ...(withProvenance ?? row), data };

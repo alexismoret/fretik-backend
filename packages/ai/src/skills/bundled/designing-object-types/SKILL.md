@@ -23,10 +23,13 @@ Choose by the data's meaning, not its surface. Each type's config is set via `ma
 - `text` — short freeform (name, ref, note). No config.
 - `markdown` — long / formatted text. No config.
 - `email` / `url` / `phone` — those literal values. No config.
-- `number` — quantities, scores. Config: `min`/`max`; `numberFormat:'percent'`; `display:'bar'` or `'ring'` + `divideBy` for a progress bar/ring.
+- `location` — a geocoded place (address, city, POI…). No config. Write a plain address string; coordinates + place type are resolved server-side.
+- `unique_id` — an auto-assigned sequential reference like "TASK-42". Config: `prefix`. Read-only — never write it.
+- `created_time` / `last_edited_time` / `created_by` / `last_edited_by` — read-only system properties projected from the record's own metadata. No config. Add one only to SHOW/sort/filter it as a column; never write it.
+- `number` — quantities, scores. Config: `min`/`max`; `numberFormat:'plain'|'commas'|'percent'`; `precision` (decimals); `suffix` (unit, e.g. "kg", "cm", "m3"); `display:'bar'` or `'ring'` for a progress bar/ring.
 - `rating` — a 1–N star/icon score. Config: `ratingMax` (default 5), `ratingIcon` (a bare Lucide name, e.g. `star`, `heart`).
 - `money` — an amount in a currency. Config: `defaultCurrencyCode` (e.g. 'EUR').
-- `date` / `datetime` — a day / an instant. No config.
+- `date` — a calendar day, or an instant with `config.hasTime:true` (off by default).
 - `boolean` — yes-no. No config.
 - `select` — exactly one of a closed list. Config: `options:[{value,label,icon?,group?}]`.
 - `multi_select` — any number of that list. Same `options`.
@@ -36,12 +39,13 @@ Choose by the data's meaning, not its surface. Each type's config is set via `ma
 
 Notes that bite:
 
-- **percent + progress:** a completion field → `number` with `numberFormat:'percent'`, `display:'ring'` (or `'bar'`), `divideBy:100` if the source is 0–100.
+- **progress:** a completion field → `number` with `display:'bar'` (or `'ring'`) and `min:0`/`max:100`; the bar fills by the value's position in that range.
 - **`select` vs `multi_select`:** one value (status, priority) → `select`; many (tags, regions) → `multi_select`.
 - **option `group`** (`'todo'|'in_progress'|'done'`) turns a `select` into kanban lanes — set it for status fields.
 - **`relation` vs `member`:** `member` is an internal teammate; `relation` links to another object type's records. A relation is added with `manageField` `type:'relation'`; changing a field to/from relation isn't supported — recreate it. To create a record already linked, pass `manageRecord create` `relations: [{relationKey, toRecordId|toDocumentId}]` (one record) or a bulk row's `relations` (many) — no separate manageLink call.
-- **`rollup`** needs an existing `relation` field on the type (`relationFieldKey`) and the aggregated field on the far side (`targetFieldKey`); `fn` is one of sum/count/avg/min/max/count_not_empty/percent_not_empty.
+- **`rollup`** needs an existing `relation` field on the type (`relationFieldKey`) and the aggregated field on the far side (`targetFieldKey`); `fn` is one of sum/count/avg/min/max/count_not_empty/percent_not_empty/percent_checked. `percent_checked` is task progress: % of linked records whose `boolean` target is true (subtasks + a "done" checkbox).
 - The **first field** of a type is its title automatically; pass `isTitle:true` to promote another. Keys are snake_case and auto-derived from the label when omitted.
+- **Creation / last-edit metadata is automatic:** every record already tracks these — read `created_at` / `updated_at` (and author) directly in `querySql`. Never add a `date` field for them; to SHOW/sort/filter one in a view, add the read-only `created_time` / `last_edited_time` / `created_by` / `last_edited_by` field. Add a `date` field only for a domain date the table doesn't track (due date, signed on, …).
 - **Field cap:** at most 30 fields per type.
 
 ## Icons — set a good one wherever one fits
@@ -54,6 +58,14 @@ A fitting icon sharpens the UI — **give the type an icon, and give every `sele
 ## Colors — set meaningful ones
 
 Give `select`/`multi_select` options a color that carries meaning whenever the values imply one — a status: green=done, amber=in_progress, red=blocked/overdue; a priority: red→orange→amber→green for high→low; categories: a distinct hue each. Pick from the palette: red, orange, amber, yellow, lime, green, emerald, teal, cyan, sky, blue, indigo, violet, purple, fuchsia, pink, rose, zinc. Omit `color` when no meaning applies (and on the type itself unless the user names one) — the system auto-assigns a distinct color. An invalid token is ignored and auto-assigned.
+
+## Sharing — decide who can access it
+
+Types and records are **private to the team by default** — part of designing a type is deciding whether another team should see it. Set it with the `sharing` argument on the same tools (its exact shape is in each tool's description):
+
+- `manageObjectType` takes an audience: private, specific teams, or the whole organization, each `read` or `write`.
+- Records **inherit their type's audience live** — a record left alone follows the table; only override (`manageRecord`'s `sharing`) when it must differ, and only within the teams that already have the type (a record's audience is a subset of its type's).
+- **Owner-only, and never silently:** only the owning team may share; **propose first** with `askUserQuestion` before widening beyond the team — especially `write` or whole-org.
 
 ## Workflow
 
@@ -77,7 +89,7 @@ For MANY records or restructuring a type (merge/move/split, data-preserving rety
 - `objects.records.bulk_create(type_key, rows)` — `rows` = list of field maps. To link a new record in the same write, give a row as `{"data": {…}, "relations": [{"relation_key": "client", "to_record_id": "…"}]}` (target by `to_record_id`, or an uploaded file's `to_document_id`). Returns `{ids, okCount, errors, relationErrors}`; `ids[i]` aligns with `rows[i]`.
 - `objects.records.bulk_update(updates)` / `objects.records.bulk_delete(record_ids)` — `updates` = `[{"id","data"}]`; patches the given keys (pass `merge=False` to replace the whole record, clearing omitted keys).
 - `objects.records.query(type_key, filters=…)` — read a batch to transform then write back.
-- `objects.schema.create_type(key, label, description, fields=[…])` / `update_type(type_key, add_fields=[…])` / `add_field` / `change_field(action="update"|"changeType"|"delete")` / `delete_type`. Type and each field need a one-line `description`.
+- `objects.schema.create_type(key, label, description, fields=[…])` / `update_type(type_key, add_fields=[…])` / `add_field` / `change_field(action="update"|"changeType"|"delete")` / `delete_type`. Type and each field need a one-line `description`. `create_type` / `update_type` also take `sharing` to set the type's audience (see the Sharing section).
 
 A migration is ONE script: `create_type` the target → `query` the source → `bulk_create` into the target → `bulk_delete` the source. Keep results in variables; print only counts.
 

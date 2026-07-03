@@ -11,6 +11,7 @@ import {
   fieldConfigSchema,
   fieldDefinitionTypeSchema,
 } from "./field-definitions";
+import { audienceSchema, recordSharingSchema } from "./object-sharing";
 
 /**
  * Wire schemas for the dynamic-data (ontology) API — object types, records,
@@ -65,6 +66,8 @@ export const createObjectTypeRequestSchema = z.object({
     .nullish(),
   icon: z.string().trim().max(60).nullish(),
   color: z.string().trim().max(20).nullish(),
+  // Initial cross-team audience. Omitted = internal (owning team only).
+  sharing: audienceSchema.optional(),
 });
 
 export const updateObjectTypeRequestSchema = z.object({
@@ -78,6 +81,8 @@ export const updateObjectTypeRequestSchema = z.object({
   icon: z.string().trim().max(60).nullish(),
   color: z.string().trim().max(20).nullish(),
   enabled: z.boolean().optional(),
+  // Change the cross-team audience (owner-only). Reconciles `object_grants`.
+  sharing: audienceSchema.optional(),
 });
 
 /**
@@ -103,7 +108,6 @@ const objectTypeFieldInputSchema = z
     aiExtractionEnabled: z.boolean().optional(),
     vectorizeInclude: z.boolean().optional(),
     displayInPanel: z.boolean().optional(),
-    displayInFilters: z.boolean().optional(),
     enabled: z.boolean().optional(),
     displayOrder: z.number().int().min(0).optional(),
   })
@@ -152,6 +156,10 @@ export const objectRecordResponseSchema = z.object({
   source: ontologySourceSchema,
   confidence: z.string().nullable(),
   documentId: z.uuid().nullable(),
+  // TRUE = the record follows its type's audience live; FALSE = it carries its
+  // own `record_shares` (a subset of the type's). Drives the "same as type" vs
+  // "custom" display.
+  inheritTypeSharing: z.boolean(),
   // Field values not stored in `data` — relations as `[{id,label}]` and rollup
   // aggregates — projected from the team's typed view. Optional: present on the
   // list / detail read paths, absent on write responses.
@@ -182,11 +190,23 @@ export const createObjectRecordRequestSchema = z.object({
   labelOverride: z.string().trim().min(1).nullish(),
   // Outgoing relations created with the record, in one transaction.
   relations: z.array(recordRelationInputSchema).optional(),
+  // Cross-team sharing. Omitted = inherit the type's audience.
+  sharing: recordSharingSchema.optional(),
 });
 
-export const updateObjectRecordRequestSchema = z.object({
-  data: jsonMap,
-});
+/**
+ * Update a record's `data` and/or its `sharing` in one request — at least one
+ * must be present. A data-only patch is the field autosave; a sharing-only patch
+ * is the share popover (reset-to-inherit = `{ inherit: true }`, owner-only).
+ */
+export const updateObjectRecordRequestSchema = z
+  .object({
+    data: jsonMap.optional(),
+    sharing: recordSharingSchema.optional(),
+  })
+  .refine((v) => v.data !== undefined || v.sharing !== undefined, {
+    message: "Provide `data`, `sharing`, or both.",
+  });
 
 export const setRecordStatusRequestSchema = z.object({
   status: z.enum(["confirmed", "rejected"]),
@@ -290,6 +310,54 @@ export const groupAggregateSchema = z.object({
   count: z.number().int(),
   sum: z.number().nullable(),
 });
+
+// Map view: records of a type placed on a map by one of its `location` fields,
+// scoped to the current camera bounding box. Above a cap the server returns
+// grid-aggregated clusters instead of individual points (see `getMapPoints`).
+export const recordMapQuerySchema = z.object({
+  objectTypeId: z.uuid(),
+  fieldKey: z
+    .string()
+    .regex(/^[a-z][a-z0-9_]*$/)
+    .max(80),
+  // Bbox is OPTIONAL: omitted = the whole dataset (the client's first call, to
+  // learn whether it can load everything at once or must page by viewport). All
+  // four must be present together to bound the query.
+  minLng: z.coerce.number().min(-180).max(180).optional(),
+  minLat: z.coerce.number().min(-90).max(90).optional(),
+  maxLng: z.coerce.number().min(-180).max(180).optional(),
+  maxLat: z.coerce.number().min(-90).max(90).optional(),
+});
+
+const locationBboxSchema = z.tuple([
+  z.number(),
+  z.number(),
+  z.number(),
+  z.number(),
+]);
+
+export const mapPointSchema = z.object({
+  id: z.uuid(),
+  label: z.string(),
+  lng: z.number(),
+  lat: z.number(),
+  featureType: z.string().nullable(),
+  bbox: locationBboxSchema.nullable(),
+});
+
+export const mapClusterSchema = z.object({
+  lng: z.number(),
+  lat: z.number(),
+  count: z.number().int(),
+});
+
+export const mapPointsResponseSchema = z.discriminatedUnion("mode", [
+  z.object({ mode: z.literal("points"), points: z.array(mapPointSchema) }),
+  z.object({
+    mode: z.literal("clusters"),
+    clusters: z.array(mapClusterSchema),
+  }),
+]);
 
 // ---------------------------------------------------------------------------
 // Links + link types

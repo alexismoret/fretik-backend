@@ -58,6 +58,12 @@ export interface DocumentProcessingJobData {
   /** S3 key of the original file, written by `uploadDocument` before enqueue. */
   originalKey: string;
   metadata: DocumentFileMetadata;
+  /**
+   * User-triggered re-extraction: skip the content-hash fast-path so this file
+   * runs its OWN OCR + LLM extraction (against the current template / model)
+   * instead of cloning a sibling upload's cached results.
+   */
+  force?: boolean;
 }
 
 // ==================== //
@@ -116,13 +122,19 @@ export const processDocument = async (
   // A retry of an already-completed job is a no-op — bail before redoing
   // OCR / vectorisation that already landed.
   const current = await db.query.documents.findFirst({
-    columns: { status: true },
+    columns: { status: true, uploadedById: true },
     where: { id: documentId },
   });
   if (current?.status === "ready") {
     emitUploadEvent({ documentId, status: "ready" });
     return;
   }
+
+  // Attribute the graph mirror (and its `created_by`) to the uploader, not the
+  // background worker — a document's provenance is the person who added it.
+  const uploadActor = current?.uploadedById
+    ? { actorType: "user" as const, actorUserId: current.uploadedById }
+    : undefined;
 
   const sharedMetadata = {
     documentId,
@@ -176,11 +188,11 @@ export const processDocument = async (
 
   emitUploadEvent({ documentId, status: "processing" });
 
-  // Step 4: Reuse a prior upload's results when the content hash matches.
-  const duplicateResult = await findExistingProcessingByHash(
-    metadata.fileHash,
-    documentId,
-  );
+  // Step 4: Reuse a prior upload's results when the content hash matches —
+  // skipped on a forced re-extraction so this file re-runs its own extraction.
+  const duplicateResult = job.force
+    ? null
+    : await findExistingProcessingByHash(metadata.fileHash, documentId);
 
   if (duplicateResult) {
     await copyDocumentSidecar(duplicateResult.sourceDocumentId, documentId, {
@@ -207,6 +219,7 @@ export const processDocument = async (
         filename: metadata.originalFilename,
         customFields: duplicateResult.customFieldValues,
         mentions: [],
+        actor: uploadActor,
       });
 
       // The whole clone is one atomic transaction: a retry only re-enters
@@ -377,6 +390,7 @@ export const processDocument = async (
         name: e.name,
         confidence: e.confidence,
       })),
+      actor: uploadActor,
     });
 
     await tx
@@ -390,24 +404,11 @@ export const processDocument = async (
   // Step 7: Send document data to @fretik/ai for RAG vector storage.
   // `/internal/vectorize` deletes existing rows for (sourceType, sourceId)
   // before inserting, so a retry replaces rather than duplicates.
-  const docLabels = await db.query.documents.findFirst({
-    where: { id: documentId },
-    columns: { id: true },
-    with: {
-      labels: { columns: { id: true, name: true } },
-    },
-  });
-
   const mentionVectorInfo = graphResult.mentionedRecords.map((c) => ({
     id: c.id,
     name: c.name,
     type: graphResult.mentionTargetTypeKey,
     role: MENTIONS_LINK_TYPE_KEY,
-  }));
-
-  const labelVectorInfo = (docLabels?.labels ?? []).map((l) => ({
-    id: l.id,
-    name: l.name,
   }));
 
   const vectorisableKeys = new Set(
@@ -436,7 +437,6 @@ export const processDocument = async (
           document_language: preExtractResult.documentLanguage ?? null,
           document_summary: preExtractResult.documentSummary ?? null,
           entities: mentionVectorInfo,
-          labels: labelVectorInfo,
           custom_fields: vectorisableCustomFields,
         },
         teamId,

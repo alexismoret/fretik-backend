@@ -1,5 +1,5 @@
 import { inArray } from "drizzle-orm";
-import db from "../../db";
+import db, { type Transaction } from "../../db";
 import { domainEvents, objectRecords } from "../../db/schema";
 import { chunkForBulk } from "../../lib/db-bulk";
 import { type EventActor, SYSTEM_ACTOR } from "../domain-events/emit";
@@ -23,15 +23,21 @@ export interface BulkDeleteResult {
  * Tenancy is enforced HERE: only rows whose `owner_team_id` is `teamId` are
  * touched; any other id (other teams, made-up ids) is returned in `errors`. A
  * caller never needs a separate ownership pre-check.
+ *
+ * Pass `tx` to enlist in a caller's transaction (e.g. deleting a document deletes
+ * its mirror in the same tx); omit it and each chunk gets its own transaction.
  */
 export const bulkDeleteObjectRecords = async (input: {
   teamId: string;
   ids: string[];
   actor?: EventActor;
+  tx?: Transaction;
 }): Promise<BulkDeleteResult> => {
   const actor = input.actor ?? SYSTEM_ACTOR;
   const requestedIds = [...new Set(input.ids)];
   if (requestedIds.length === 0) return { deletedIds: [], errors: [] };
+
+  const exec = input.tx ?? db;
 
   // Fetch the owned rows once (chunked SELECTs keep the IN-list bounded). The
   // event payload keeps id + label so the deletion stays auditable after the
@@ -43,7 +49,7 @@ export const bulkDeleteObjectRecords = async (input: {
     label: string;
   }[] = [];
   for (const idChunk of chunkForBulk(requestedIds)) {
-    const rows = await db
+    const rows = await exec
       .select({
         id: objectRecords.id,
         organizationId: objectRecords.organizationId,
@@ -61,26 +67,31 @@ export const bulkDeleteObjectRecords = async (input: {
     .map((id) => ({ id, error: "Record not found in your team." }));
 
   const deletedIds: string[] = [];
+  const runBatch = async (
+    tx: Transaction,
+    batch: typeof owned,
+  ): Promise<void> => {
+    await tx.insert(domainEvents).values(
+      batch.map((r) => ({
+        organizationId: r.organizationId,
+        teamId: r.teamId,
+        type: "record.deleted",
+        actorType: actor.actorType,
+        actorUserId: actor.actorUserId ?? null,
+        conversationId: actor.conversationId ?? null,
+        payload: { recordId: r.id, label: r.label },
+      })),
+    );
+    await tx.delete(objectRecords).where(
+      inArray(
+        objectRecords.id,
+        batch.map((r) => r.id),
+      ),
+    );
+  };
   for (const batch of chunkForBulk(owned)) {
-    await db.transaction(async (tx) => {
-      await tx.insert(domainEvents).values(
-        batch.map((r) => ({
-          organizationId: r.organizationId,
-          teamId: r.teamId,
-          type: "record.deleted",
-          actorType: actor.actorType,
-          actorUserId: actor.actorUserId ?? null,
-          conversationId: actor.conversationId ?? null,
-          payload: { recordId: r.id, label: r.label },
-        })),
-      );
-      await tx.delete(objectRecords).where(
-        inArray(
-          objectRecords.id,
-          batch.map((r) => r.id),
-        ),
-      );
-    });
+    if (input.tx) await runBatch(input.tx, batch);
+    else await db.transaction((tx) => runBatch(tx, batch));
     for (const r of batch) deletedIds.push(r.id);
   }
 

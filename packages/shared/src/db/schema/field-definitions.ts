@@ -85,7 +85,6 @@ export const fieldDefinitions = pgTable(
       .default(true),
     vectorizeInclude: boolean("vectorize_include").notNull().default(true),
     displayInPanel: boolean("display_in_panel").notNull().default(true),
-    displayInFilters: boolean("display_in_filters").notNull().default(false),
     // Designates the display-label field for the object type. At most one per
     // type per scope (enforced by partial unique index + service). The record's
     // denormalized `label` is computed from this field.

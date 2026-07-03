@@ -1,11 +1,6 @@
 import { eq, sql } from "drizzle-orm";
 import db from "../../db";
-import {
-  documentLabels,
-  documentProperties,
-  documents,
-  folders,
-} from "../../db/schema";
+import { documentProperties, documents, folders } from "../../db/schema";
 import { notFound, throwHttpError } from "../../lib/errors";
 import { deleteKeysByPrefix } from "../../lib/redis";
 import type { UpdateDocumentInput } from "../../schemas/documents";
@@ -17,8 +12,7 @@ import { triggerDocumentVectorRefresh } from "./vector-refresh";
 /**
  * Update a document and its associated data.
  * Handles folder changes (counts), universal property edits (summary,
- * language), label assignments, entity links and dynamic field values
- * (per-team configured fields).
+ * language) and dynamic field values (per-team configured fields).
  */
 export const updateDocument = async (data: {
   id: string;
@@ -77,19 +71,6 @@ export const updateDocument = async (data: {
           documentLanguage: updates.documentLanguage,
         })
         .where(eq(documentProperties.documentId, id));
-    }
-
-    // Reset labels when an explicit list is provided.
-    if (updates.labelIds !== undefined) {
-      await tx.delete(documentLabels).where(eq(documentLabels.documentId, id));
-      if (updates.labelIds.length > 0) {
-        await tx.insert(documentLabels).values(
-          updates.labelIds.map((labelId) => ({
-            documentId: id,
-            labelId,
-          })),
-        );
-      }
     }
 
     // Field values live on the document's 1:1 mirror record. Merge the partial

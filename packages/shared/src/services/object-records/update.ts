@@ -2,7 +2,8 @@ import { eq, sql } from "drizzle-orm";
 import db, { type Transaction } from "../../db";
 import type { ObjectRecordWithData, OntologySource } from "../../db/schema";
 import { objectRecords } from "../../db/schema";
-import { notFound, throwHttpError } from "../../lib/errors";
+import { forbidden, notFound, throwHttpError } from "../../lib/errors";
+import type { RecordSharing } from "../../schemas/object-sharing";
 import { computeRecordIdentity } from "../../schemas/record-shape";
 import {
   type EventActor,
@@ -10,10 +11,12 @@ import {
   SYSTEM_ACTOR,
 } from "../domain-events/emit";
 import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
+import { resolveLocationRefs } from "../locations/resolve";
 import {
   buildExtensionUpdate,
   readRecordData,
 } from "../object-schema/record-io";
+import { reconcileRecordShares } from "../object-sharing/reconcile";
 import { validateRecordData } from "./validate";
 import { assertMemberFieldsValid } from "./validate-members";
 
@@ -52,10 +55,20 @@ const buildUpdateDiff = (
  * `data` is cleared (the bulk / migration contract). Interactive single edits
  * (`manageRecord`) use `merge: true` so "set the phone" never wipes the rest of
  * the record.
+ *
+ * This is the single record-update path: `data` and/or `sharing` may each be
+ * omitted. A data-only edit is the field autosave; a sharing-only edit is the
+ * share popover (reset-to-inherit is `{ inherit: true }`). Sharing is OWNER-ONLY
+ * — a write-grantee may edit the data but never re-share; `callerTeamId` (the
+ * session/JWT team) is checked against the record's owner when `sharing` is set.
  */
 export const setRecordData = async (input: {
   id: string;
-  data: Record<string, unknown>;
+  data?: Record<string, unknown>;
+  /** Cross-team sharing change (subset of the type's access; owner-only). */
+  sharing?: RecordSharing;
+  /** Session team — asserted to own the record when `sharing` is set. */
+  callerTeamId?: string;
   source?: OntologySource;
   strict?: boolean;
   merge?: boolean;
@@ -88,6 +101,42 @@ export const setRecordData = async (input: {
       objectTypeId: existing.objectTypeId,
     });
 
+    // Cross-team sharing (owner-only) — reconciled in this same transaction.
+    if (input.sharing) {
+      if (
+        input.callerTeamId !== undefined &&
+        existing.teamId !== input.callerTeamId
+      ) {
+        return throwHttpError(
+          403,
+          forbidden("Only the owning team can change sharing"),
+        );
+      }
+      await reconcileRecordShares({
+        recordId: existing.id,
+        ownerTeamId: existing.teamId,
+        organizationId: existing.organizationId,
+        objectTypeId: existing.objectTypeId,
+        sharing: input.sharing,
+        createdByUserId: actor.actorUserId ?? null,
+        tx,
+      });
+    }
+
+    // Sharing-only edit (no `data`): the reconcile above already touched the
+    // registry row; return it with its current typed values, untouched.
+    if (data === undefined) {
+      const current = await readRecordData({
+        objectTypeId: existing.objectTypeId,
+        recordId: existing.id,
+        fields: fieldDefs,
+        tx,
+      });
+      const row = await tx.query.objectRecords.findFirst({ where: { id } });
+      if (!row) return throwHttpError(404, notFound("Record not found"));
+      return { ...row, data: current };
+    }
+
     // Prior typed values (from the extension table) — basis of the journal diff,
     // and the base layer when `merge` patches only the provided keys.
     const before = await readRecordData({
@@ -98,10 +147,18 @@ export const setRecordData = async (input: {
     });
 
     const effectiveData = input.merge ? { ...before, ...data } : data;
-    const parsed = validateRecordData({
+    const validated = validateRecordData({
       fieldDefs,
       data: effectiveData,
       strict: input.strict,
+    });
+    // Resolve every location value to a FK into the per-team `locations` table
+    // (geocoding a bare address written by an agent/SDK along the way); a no-op
+    // when the type has no location field.
+    const parsed = await resolveLocationRefs({
+      teamId: existing.teamId,
+      fieldDefs,
+      data: validated,
     });
     await assertMemberFieldsValid({
       teamId: existing.teamId,

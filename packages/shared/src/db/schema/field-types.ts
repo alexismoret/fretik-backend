@@ -35,8 +35,9 @@
 export const FIELD_TYPES = [
   "text",
   "number",
+  // A calendar day, or an instant when `config.hasTime` is set (Notion-style
+  // single date type with an "include time" toggle). Stored as `timestamptz`.
   "date",
-  "datetime",
   "boolean",
   "select",
   "multi_select",
@@ -57,6 +58,19 @@ export const FIELD_TYPES = [
   "rating",
   // Phone-number string.
   "phone",
+  // A geocoded place — `{ address, lat?, lng?, mapboxId? }` in `data` (jsonb).
+  // The address is geocoded to coordinates server-side (see geocode-location).
+  "location",
+  // Auto-incrementing per-type reference (Notion "Unique ID"): a `bigint`
+  // filled by a dedicated sequence on insert; the UI shows `<prefix>-<n>`.
+  // Read-only — never written through record data.
+  "unique_id",
+  // System properties (Notion): read-only projections of the record's registry
+  // columns, surfaced as fields so views can sort/filter/show them. No storage.
+  "created_time",
+  "last_edited_time",
+  "created_by",
+  "last_edited_by",
   // Read-only aggregate over a `relation` field's linked records (Notion
   // rollup). Computed in the typed view; never stored in `data`.
   "rollup",
@@ -80,7 +94,13 @@ export type FieldDefinitionOption = {
 export type FieldRelationCardinality = "one" | "many";
 /** Number display ("Progress" in Notion is a display option of Number). */
 export type FieldNumberDisplay = "plain" | "bar" | "ring";
-export type FieldNumberFormat = "plain" | "percent";
+/**
+ * Text format of a plain number (Notion: Number / Number with commas /
+ * Percent). `commas` groups thousands; `percent` renders the value ×100 with a
+ * `%` (0.25 → "25%") — distinct from a literal `%` suffix. Bar/ring keep
+ * showing their fill percentage regardless. Currencies are the `money` type.
+ */
+export type FieldNumberFormat = "plain" | "commas" | "percent";
 
 /** Types with no extra configuration (the value is self-describing). */
 export type NoFieldConfig = Record<string, never>;
@@ -90,13 +110,29 @@ export type TextFieldConfig = {
   multiline?: boolean;
 };
 
+export type DateFieldConfig = {
+  /**
+   * Capture (and display) a time-of-day, not just a calendar day. Off by
+   * default (Notion-aligned). Toggling it never changes the physical column —
+   * the date family is always stored as `timestamptz`; a time-less value is
+   * midnight UTC.
+   */
+  hasTime?: boolean;
+};
+
 export type NumberFieldConfig = {
   min?: number;
   max?: number;
-  /** `percent` + `divideBy` drive the bar/ring fill ("Progress"). */
+  /** Text format of the value (see `FieldNumberFormat`). */
   numberFormat?: FieldNumberFormat;
+  /** Fixed number of decimal places to show (0–10). Omitted = as typed. */
+  precision?: number;
+  /**
+   * Short unit text rendered after the value (e.g. "kg", "pts"). A prefix/
+   * currency symbol is the `money` type's job — Notion has no generic prefix.
+   */
+  suffix?: string;
   display?: FieldNumberDisplay;
-  divideBy?: number;
   color?: string;
   showNumber?: boolean;
 };
@@ -138,6 +174,63 @@ export type RatingFieldConfig = {
   ratingIcon?: string;
 };
 
+export type UniqueIdFieldConfig = {
+  /** Text shown before the counter, e.g. "TASK" → "TASK-42". */
+  prefix?: string;
+};
+
+/**
+ * Mapbox feature types (Geocoding v6 + Search Box). Open union: known literals
+ * give autocomplete + an icon mapping, `(string & {})` keeps any new Mapbox type
+ * assignable at runtime (the value comes from the API / jsonb).
+ */
+export const MAPBOX_FEATURE_TYPES = [
+  // Geocoding v6, largest → most granular.
+  "country",
+  "region",
+  "postcode",
+  "district",
+  "place",
+  "locality",
+  "neighborhood",
+  "street",
+  "block",
+  "address",
+  "secondary_address",
+  // Search Box points of interest.
+  "poi",
+] as const;
+
+/**
+ * A recognized Mapbox feature type. Closed on purpose: since `featureType` is
+ * optional and only drives a UI icon, an unrecognized Mapbox value is dropped to
+ * `undefined` (never stored) rather than widening the type — data stays clean
+ * and both sides stay fully typed. Extend the list to support a new one.
+ */
+export type MapboxFeatureType = (typeof MAPBOX_FEATURE_TYPES)[number];
+
+/** Bounding box of an area feature, `[minLon, minLat, maxLon, maxLat]`. */
+export type LocationBbox = [number, number, number, number];
+
+/** A geocoded place value, stored as jsonb in `data`. */
+export type LocationValue = {
+  address: string;
+  lat?: number;
+  lng?: number;
+  /** Mapbox feature id, kept so the exact place can be re-resolved. */
+  mapboxId?: string;
+  /**
+   * What kind of place this is, so the UI can show a type-specific icon.
+   * Absent for AI/text writes until geocoded.
+   */
+  featureType?: MapboxFeatureType;
+  /**
+   * Bounding box for area features (city/region/country/…). Lets the map draw
+   * the zone / fit its bounds instead of dropping a lone pin. Absent for points.
+   */
+  bbox?: LocationBbox;
+};
+
 /** Aggregate functions a rollup can apply over a relation's linked records. */
 export type RollupFn =
   | "sum"
@@ -146,7 +239,10 @@ export type RollupFn =
   | "min"
   | "max"
   | "count_not_empty"
-  | "percent_not_empty";
+  | "percent_not_empty"
+  // Share (%) of linked records whose boolean target field is true — Notion
+  // "Percent checked", for task/subtask progress.
+  | "percent_checked";
 
 export type RollupFieldConfig = {
   /**
@@ -166,8 +262,7 @@ export type RollupFieldConfig = {
 export type FieldTypeConfigMap = {
   text: TextFieldConfig;
   number: NumberFieldConfig;
-  date: NoFieldConfig;
-  datetime: NoFieldConfig;
+  date: DateFieldConfig;
   boolean: NoFieldConfig;
   select: SelectFieldConfig;
   multi_select: SelectFieldConfig;
@@ -179,6 +274,12 @@ export type FieldTypeConfigMap = {
   markdown: NoFieldConfig;
   rating: RatingFieldConfig;
   phone: NoFieldConfig;
+  location: NoFieldConfig;
+  unique_id: UniqueIdFieldConfig;
+  created_time: NoFieldConfig;
+  last_edited_time: NoFieldConfig;
+  created_by: NoFieldConfig;
+  last_edited_by: NoFieldConfig;
   rollup: RollupFieldConfig;
 };
 
@@ -202,7 +303,7 @@ export const _fieldTypeConfigCoverage: [
 // Config accessors
 //
 // `config` is stored as the union of every per-type shape, so a property that
-// belongs to one type (e.g. `options`, `divideBy`) can't be read off the union
+// belongs to one type (e.g. `options`, `precision`) can't be read off the union
 // directly. These helpers narrow with the `in` operator — cast-free (the
 // codebase forbids `as`) — and return safe fallbacks, so callers that don't
 // know the field type can still read a config value without a `switch`.
@@ -238,6 +339,14 @@ export const defaultCurrencyCode = (
   typeof config.defaultCurrencyCode === "string"
     ? config.defaultCurrencyCode
     : undefined;
+
+/** Whether a `date` field captures a time-of-day (default false). */
+export const hasTime = (config: FieldDefinitionConfig): boolean =>
+  "hasTime" in config ? (config.hasTime ?? false) : false;
+
+/** Prefix for a `unique_id` field (e.g. "TASK"), empty when unset. */
+export const uniqueIdPrefix = (config: FieldDefinitionConfig): string =>
+  "prefix" in config && typeof config.prefix === "string" ? config.prefix : "";
 
 /** Icon count for a `rating` field (default 5). */
 export const ratingMax = (config: FieldDefinitionConfig): number =>

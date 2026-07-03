@@ -36,7 +36,6 @@ export const legalTemplate: DocumentFieldTemplate = {
         opt("documentType", "opinion_letter"),
         opt("documentType", "other"),
       ],
-      displayInFilters: true,
       displayOrder: 0,
     },
     {
@@ -44,7 +43,6 @@ export const legalTemplate: DocumentFieldTemplate = {
       labelKey: "legal.fields.effectiveDate.label",
       descriptionKey: "legal.fields.effectiveDate.description",
       type: "date",
-      displayInFilters: true,
       displayOrder: 1,
     },
     {
@@ -77,7 +75,6 @@ export const legalTemplate: DocumentFieldTemplate = {
         opt("currency", "CAD"),
         opt("currency", "AUD"),
       ],
-      displayInFilters: true,
       displayOrder: 4,
     },
     {
@@ -85,7 +82,6 @@ export const legalTemplate: DocumentFieldTemplate = {
       labelKey: "legal.fields.jurisdiction.label",
       descriptionKey: "legal.fields.jurisdiction.description",
       type: "text",
-      displayInFilters: true,
       displayOrder: 5,
     },
     {

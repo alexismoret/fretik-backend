@@ -3,6 +3,7 @@ import db, { type Transaction } from "../../db";
 import { objectRecords } from "../../db/schema";
 import { internalError, throwHttpError } from "../../lib/errors";
 import { selectOrCache } from "../../lib/redis";
+import { MENTION_MIN_CONFIDENCE } from "../../lib/resolution";
 import {
   emitDomainEvent,
   SYSTEM_ACTOR,
@@ -107,10 +108,14 @@ export const syncDocumentGraph = async (input: {
       where: { documentId },
     });
     const mirror = existing
-      ? await setRecordData({
+      ? // Re-processing (e.g. re-extraction): PATCH only the extracted fields so
+        // the `name` title (defaults to the filename, may be user-renamed) and any
+        // other non-extracted field survive.
+        await setRecordData({
           tx,
           id: existing.id,
           data: customFields,
+          merge: true,
           strict: false,
           actor,
         })
@@ -119,7 +124,9 @@ export const syncDocumentGraph = async (input: {
           organizationId,
           teamId,
           objectTypeId: documentTypeId,
-          data: customFields,
+          // Seed the `name` title from the filename; `labelOverride` keeps the
+          // record label correct even before the `name` field def exists.
+          data: { ...customFields, name: filename },
           labelOverride: filename,
           status: "confirmed",
           source: "system",
@@ -212,12 +219,17 @@ const linkMentions = async (input: {
     const name = mention.name.trim();
     if (!name) continue;
 
+    // A low-confidence mention may still link to an EXISTING record, but must
+    // not create a fresh `suggested` stub — keeps the review queue signal-heavy.
+    const createIfMissing = (mention.confidence ?? 1) >= MENTION_MIN_CONFIDENCE;
     const resolved = await resolveRecord({
       tx,
       teamId,
       objectTypeId: targetTypeId,
       rawLabel: name,
+      createIfMissing,
     });
+    if (!resolved.recordId) continue;
     if (linkedIds.has(resolved.recordId)) continue;
     linkedIds.add(resolved.recordId);
 

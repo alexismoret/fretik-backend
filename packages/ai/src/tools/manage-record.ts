@@ -1,3 +1,4 @@
+import { recordSharingSchema } from "@fretik/shared/schemas/object-sharing";
 import type { EventActor } from "@fretik/shared/services/domain-events/emit";
 import { createObjectRecord } from "@fretik/shared/services/object-records/create";
 import { deleteObjectRecord } from "@fretik/shared/services/object-records/delete";
@@ -81,6 +82,11 @@ export const manageRecordInputSchema = z.object({
     .describe(
       "On create only: outgoing relations to attach in the same write. Each links the new record to a target record (toRecordId) or uploaded file (toDocumentId).",
     ),
+  sharing: recordSharingSchema
+    .optional()
+    .describe(
+      "Cross-team sharing (owner team only). Omit to follow the type's audience (default). { inherit: false, audience: { mode: 'internal' | 'org' | 'teams', … } } overrides — a record can only be shared with teams that already have the type. Reset with { inherit: true }.",
+    ),
 });
 
 type RecordDataEntry = { key: string } & Record<string, unknown>;
@@ -134,6 +140,7 @@ export const createManageRecordTool = () =>
       "- setStatus: recordId + status ('confirmed' accepts an AI suggestion, 'rejected' retires it).",
       "",
       "`data` is a list of { key, value } — keys are the type's field keys (describeObjectType). For many rows, use the python `objects.records` SDK.",
+      "Records follow their type's audience by default; `sharing` overrides it (owner team only, and only to teams that already have the type). Propose with askUserQuestion before sharing beyond the team.",
     ].join("\n"),
     inputSchema: manageRecordInputSchema,
     execute: async (input, options) => {
@@ -185,6 +192,7 @@ export const createManageRecordTool = () =>
             data: values,
             labelOverride: input.labelOverride ?? null,
             relations: input.relations,
+            sharing: input.sharing,
             actor,
           });
           return { ok: true, record: serializeRecord(record) };
@@ -205,19 +213,23 @@ export const createManageRecordTool = () =>
         });
 
         if (input.action === "update") {
-          if (Object.keys(values).length === 0 && input.labelOverride == null) {
+          const hasData = Object.keys(values).length > 0;
+          if (!hasData && input.labelOverride == null && !input.sharing) {
             return toolError(
               TOOL_ERROR_CODES.OBJECT_QUERY_ERROR,
-              "update requires data naming the field(s) to set, or labelOverride to set the display label.",
+              "update requires data naming the field(s) to set, labelOverride to set the display label, or sharing to change the audience.",
             );
           }
           // Patch: only the named fields change; omitted ones are kept.
-          // labelOverride (optional) forces the display label.
+          // labelOverride forces the display label; sharing changes the audience
+          // (owner team only — enforced via callerTeamId).
           const record = await setRecordData({
             id: input.recordId,
-            data: values,
+            data: hasData || input.labelOverride != null ? values : undefined,
             merge: true,
             labelOverride: input.labelOverride ?? null,
+            sharing: input.sharing,
+            callerTeamId: ctx.teamId,
             actor,
           });
           return { ok: true, record: serializeRecord(record) };

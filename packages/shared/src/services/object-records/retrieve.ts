@@ -22,6 +22,7 @@ import { notFound, throwHttpError } from "../../lib/errors";
 import type { RecordFilter } from "../../schemas/ontology";
 import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
 import { computeRelationRollupValues } from "../object-schema/computed";
+import { buildFieldFilterPredicate } from "../object-schema/field-filter";
 import { qualifiedObjectTable } from "../object-schema/identifiers";
 import { readRecordDataBatch } from "../object-schema/record-io";
 import { recordVisibilityCondition, resolveRecordTypeScope } from "./scope";
@@ -99,12 +100,27 @@ const SORTABLE_COLUMNS = {
   updatedAt: objectRecords.updatedAt,
 } as const;
 
+/**
+ * System-property field types → the `object_records` registry column they
+ * project. Read-only metadata surfaced as fields; both filter and sort target
+ * the registry row directly (no extension column exists for them).
+ */
+const SYSTEM_FIELD_COLUMN: Partial<Record<FieldDefinitionType, SQL>> = {
+  created_time: sql`${objectRecords.createdAt}`,
+  last_edited_time: sql`${objectRecords.updatedAt}`,
+  created_by: sql`${objectRecords.createdByUserId}`,
+  last_edited_by: sql`${objectRecords.updatedByUserId}`,
+};
+
 const resolveSortExpression = (
   sortBy: string,
   objectTypeId: string,
   fieldType?: FieldDefinitionType,
 ) => {
   if (sortBy.startsWith("field:")) {
+    // A system property sorts on its registry column, not an extension one.
+    const sys = fieldType ? SYSTEM_FIELD_COLUMN[fieldType] : undefined;
+    if (sys) return sys;
     const key = sortBy.slice("field:".length);
     if (SLUG.test(key)) {
       const table = qualifiedObjectTable(objectTypeId);
@@ -122,112 +138,25 @@ const resolveSortExpression = (
 };
 
 /**
- * Translate one field filter into an `EXISTS` predicate over the type's
- * extension table — now that field values are real typed columns, comparisons
- * are direct (no JSONB casts or regex guards). `money` compares its
- * `<key>_amount` column; `multi_select` membership uses `= ANY(col)`. Keys are
- * slug-guarded; values parameterized. Returns null for unsupported shapes.
+ * Wrap the shared field-filter predicate in an `EXISTS` correlated to the
+ * record's row on its extension table. The predicate itself (the per-operator
+ * SQL over `e."col"`) lives in `buildFieldFilterPredicate` — the single source
+ * of truth shared with the drive's document filter.
  */
 const buildFilterCondition = (
   f: RecordFilter,
   objectTypeId: string,
   fieldType?: FieldDefinitionType,
 ): SQL | null => {
-  if (!SLUG.test(f.key)) return null;
-  const table = sql.raw(qualifiedObjectTable(objectTypeId));
-  const isMoney = fieldType === "money";
-  const isMulti = fieldType === "multi_select";
-  const colName = isMoney ? `${f.key}_amount` : f.key;
-  const col = sql.raw(`e."${colName}"`);
-  const wrap = (pred: SQL): SQL =>
-    sql`EXISTS (SELECT 1 FROM ${table} e WHERE e."id" = ${objectRecords.id} AND ${pred})`;
+  // System properties filter on the registry row itself — the predicate is built
+  // against the registry column and needs no extension EXISTS.
+  const sysCol = fieldType ? SYSTEM_FIELD_COLUMN[fieldType] : undefined;
+  if (sysCol) return buildFieldFilterPredicate(f, fieldType, sysCol);
 
-  switch (f.op) {
-    case "is_empty":
-      return wrap(sql`${col} IS NULL`);
-    case "is_not_empty":
-      return wrap(sql`${col} IS NOT NULL`);
-    case "is_true":
-      return wrap(sql`${col} = true`);
-    case "is_false":
-      return wrap(sql`${col} = false`);
-    case "eq": {
-      const v = f.value;
-      if (typeof v === "boolean") return wrap(sql`${col} = ${v}`);
-      // `object` is the `{ start, end }` range — only valid for `between`.
-      if (v === undefined || Array.isArray(v) || typeof v === "object")
-        return null;
-      if (isMoney && typeof v === "number") return wrap(sql`${col} = ${v}`);
-      return wrap(sql`${col}::text = ${String(v)}`);
-    }
-    case "neq": {
-      const v = f.value;
-      if (
-        v === undefined ||
-        Array.isArray(v) ||
-        typeof v === "boolean" ||
-        typeof v === "object"
-      )
-        return null;
-      if (isMoney && typeof v === "number")
-        return wrap(sql`${col} IS DISTINCT FROM ${v}`);
-      return wrap(sql`${col}::text IS DISTINCT FROM ${String(v)}`);
-    }
-    case "contains": {
-      const v = f.value;
-      if (typeof v !== "string") return null;
-      if (isMulti)
-        return wrap(sql`${sql.raw(`e."${f.key}"`)} @> ARRAY[${v}]::text[]`);
-      return wrap(sql`${col}::text ILIKE ${`%${v}%`}`);
-    }
-    case "in": {
-      const v = f.value;
-      if (!Array.isArray(v) || v.length === 0) return null;
-      return wrap(sql`${col}::text = ANY(${v.map((x) => String(x))})`);
-    }
-    case "gt":
-    case "lt":
-    case "gte":
-    case "lte": {
-      const v = f.value;
-      if (
-        v === undefined ||
-        Array.isArray(v) ||
-        typeof v === "boolean" ||
-        typeof v === "object"
-      )
-        return null;
-      const opSql =
-        f.op === "gt"
-          ? sql`>`
-          : f.op === "lt"
-            ? sql`<`
-            : f.op === "gte"
-              ? sql`>=`
-              : sql`<=`;
-      return wrap(sql`${col} ${opSql} ${v}`);
-    }
-    // Date / datetime range. Either bound may be null → open interval; both
-    // null → no predicate. Mirrors the Drive's `customFilterExists`.
-    case "between": {
-      const v = f.value;
-      if (
-        typeof v !== "object" ||
-        v === null ||
-        Array.isArray(v) ||
-        !("start" in v) ||
-        !("end" in v)
-      )
-        return null;
-      const bounds: SQL[] = [];
-      if (v.start) bounds.push(sql`${col} >= ${v.start}`);
-      if (v.end) bounds.push(sql`${col} <= ${v.end}`);
-      if (bounds.length === 0) return null;
-      return wrap(and(...bounds) ?? sql`TRUE`);
-    }
-    default:
-      return null;
-  }
+  const pred = buildFieldFilterPredicate(f, fieldType);
+  if (!pred) return null;
+  const table = sql.raw(qualifiedObjectTable(objectTypeId));
+  return sql`EXISTS (SELECT 1 FROM ${table} e WHERE e."id" = ${objectRecords.id} AND ${pred})`;
 };
 
 /**
@@ -324,7 +253,11 @@ export const listObjectRecords = async (data: {
       .select()
       .from(objectRecords)
       .where(whereClause)
-      .orderBy(orderBy)
+      // Tie-break on the primary key so rows with an equal sort value (e.g. the
+      // same `createdAt` from a bulk import) keep a deterministic order — without
+      // it Postgres may reshuffle tied rows after an UPDATE, making an edited row
+      // jump in the grid.
+      .orderBy(orderBy, desc(objectRecords.id))
       .limit(limit)
       .offset(offset),
     db.select({ total: count() }).from(objectRecords).where(whereClause),

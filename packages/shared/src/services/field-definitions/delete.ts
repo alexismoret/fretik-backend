@@ -4,6 +4,7 @@ import { fieldDefinitions } from "../../db/schema";
 import { badRequest, notFound, throwHttpError } from "../../lib/errors";
 import { countNonNullColumnValues } from "../object-records/field-data";
 import { refreshObjectTableAfterCatalogChange } from "../object-schema/catalog-sync";
+import { isDocumentObjectType } from "../object-types/is-document-type";
 import { invalidateFieldDefinitionsCache } from "./cache";
 
 /**
@@ -27,6 +28,24 @@ export const deleteFieldDefinition = async (data: {
     });
     if (!existing) {
       return throwHttpError(404, notFound("Field definition not found"));
+    }
+
+    // The document type's `name` title anchors every record's display name and
+    // cannot be dropped — it must always keep exactly one title.
+    if (
+      existing.isTitle &&
+      (await isDocumentObjectType({
+        organizationId: existing.organizationId,
+        teamId: existing.teamId,
+        objectTypeId: existing.objectTypeId,
+      }))
+    ) {
+      return throwHttpError(
+        400,
+        badRequest(
+          "The document name field is the locked title; it cannot be deleted.",
+        ),
+      );
     }
 
     const valueCount = await countNonNullColumnValues({

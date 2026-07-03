@@ -13,6 +13,7 @@ export const createSqlQueryTool = () =>
       "- For prose content of a document → use `searchKnowledge` instead.",
       "- For paginated browse of documents by metadata → use `listDocuments` instead (it wraps the right query).",
       "- Only SELECT / WITH, and only the tables in `<database_schema>`. No trailing semicolon. Always add LIMIT (default 50, max 100).",
+      "- An object type's columns are already in `<team_objects>` (or call `describeObjectType`) — never probe `information_schema` / `pg_catalog` (blocked).",
       "- Project the specific fields you need rather than `SELECT *`.",
       "- To attribute rows to a member (uploader, author), JOIN `chatbot_org_members m ON m.user_id = d.uploaded_by_id` for their `name`/`email`.",
       "- `offset`: 0 for first page, then `nextOffset` from previous response.",

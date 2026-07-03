@@ -8,12 +8,14 @@ import type {
 import { fieldDefinitions, objectTypes } from "../../db/schema";
 import { autoColorForKey } from "../../lib/colors/object-colors";
 import { badRequest, internalError, throwHttpError } from "../../lib/errors";
+import type { Audience } from "../../schemas/object-sharing";
 import { invalidateFieldDefinitionsCache } from "../field-definitions/cache";
 import { FIELD_DEFINITION_LIMITS } from "../field-definitions/constants";
 import { fillOptionColors } from "../field-definitions/normalize-config";
 import { slugifyFieldKey } from "../field-definitions/slugify-key";
 import { validateFieldDefinitionShape } from "../field-definitions/validate";
 import { reconcileObjectTable } from "../object-schema/table";
+import { reconcileTypeGrants } from "../object-sharing/reconcile";
 import { prepareObjectTypeKey } from "./create";
 import { invalidateObjectTypeIdCache } from "./resolve";
 
@@ -26,7 +28,6 @@ export type ObjectTypeFieldInput = {
   aiExtractionEnabled?: boolean;
   vectorizeInclude?: boolean;
   displayInPanel?: boolean;
-  displayInFilters?: boolean;
   enabled?: boolean;
   displayOrder?: number;
 };
@@ -41,6 +42,9 @@ export type CreateObjectTypeWithFieldsInput = {
   icon?: string | null;
   color?: string | null;
   fields: ObjectTypeFieldInput[];
+  // Initial cross-team audience. Default (omitted) = internal (owning team only).
+  sharing?: Audience;
+  createdByUserId?: string | null;
 };
 
 export type ObjectTypeWithFields = ObjectType & {
@@ -157,7 +161,6 @@ export const createObjectTypeWithFields = async (
       aiExtractionEnabled: f.aiExtractionEnabled ?? true,
       vectorizeInclude: f.vectorizeInclude ?? true,
       displayInPanel: f.displayInPanel ?? true,
-      displayInFilters: f.displayInFilters ?? false,
       enabled: f.enabled ?? true,
       displayOrder: f.displayOrder ?? i,
     }));
@@ -169,6 +172,17 @@ export const createObjectTypeWithFields = async (
     // Build the extension table ONCE with the full column set. A fresh type has
     // no records, so no search-vector recompute is needed.
     await reconcileObjectTable({ tx, objectTypeId: typeRow.id });
+
+    if (input.sharing) {
+      await reconcileTypeGrants({
+        objectTypeId: typeRow.id,
+        ownerTeamId: input.teamId,
+        organizationId: input.organizationId,
+        audience: input.sharing,
+        createdByUserId: input.createdByUserId ?? null,
+        tx,
+      });
+    }
 
     return { type: typeRow, fields: inserted };
   });

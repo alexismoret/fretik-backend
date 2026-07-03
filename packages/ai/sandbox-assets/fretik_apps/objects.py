@@ -187,6 +187,7 @@ class _Schema:
         description: str,
         label_plural: str | None = None,
         icon: str | None = None,
+        sharing: dict[str, Any] | None = None,
         fields: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Create an object type, provisioning its typed table. `description` is
@@ -197,6 +198,11 @@ class _Schema:
         per type. Exclude relation/rollup fields — add those with `add_field`.
         Colors are auto-assigned; a select/multi_select option may set an
         optional `color` (a palette token) to override.
+
+        `sharing` sets the cross-team audience (owner team only). Omit = internal
+        (owning team only). {"mode": "org", "permission": "read"} shares with the
+        whole organization; {"mode": "teams", "teams": [{"teamId": "...",
+        "permission": "read"}]} with specific teams. Records inherit this live.
 
         Returns {"id", "key", "fields": [{key, type}]}.
         """
@@ -213,6 +219,7 @@ class _Schema:
                     "labelPlural": label_plural,
                     "description": description,
                     "icon": icon,
+                    "sharing": sharing,
                     "fields": [_field(f) for f in fields] if fields else None,
                 }
             ),
@@ -226,12 +233,14 @@ class _Schema:
         description: str | None = None,
         icon: str | None = None,
         enabled: bool | None = None,
+        sharing: dict[str, Any] | None = None,
         add_fields: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Patch a type's metadata AND/OR add several new fields in one call
         (`add_fields`, same shape as `create_type`'s `fields` — each needs a
         one-line `description`). Editing or removing existing fields is
-        `change_field`.
+        `change_field`. `sharing` changes the cross-team audience (owner team
+        only; same shape as `create_type`).
 
         Returns {"key", "addedFields": [{key, type}]}.
         """
@@ -245,6 +254,7 @@ class _Schema:
                     "description": description,
                     "icon": icon,
                     "enabled": enabled,
+                    "sharing": sharing,
                     "addFields": (
                         [_field(f) for f in add_fields] if add_fields else None
                     ),

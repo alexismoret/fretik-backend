@@ -3,21 +3,18 @@ import {
   count,
   desc,
   eq,
-  exists,
   ilike,
   inArray,
   isNull,
   ne,
   sql,
+  type SQL,
 } from "drizzle-orm";
 import db from "../../db";
 import {
-  documentLabels,
   documents,
   fieldDefinitions,
   folders,
-  links,
-  objectRecords,
   objectTypes,
   type DocumentStatus,
   type FieldDefinitionType,
@@ -27,14 +24,15 @@ import { buildDocumentThumbnailKey } from "../../lib/document-storage";
 import { notFound, throwHttpError } from "../../lib/errors";
 import { getPresignedUrl } from "../../lib/s3";
 import type {
-  DriveCustomFilter,
   DriveItem,
   DriveListParams,
   FolderBreadcrumb,
   FolderResponse,
 } from "../../schemas/folders";
+import type { RecordFilter } from "../../schemas/ontology";
 import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
-import { qualifiedObjectTable, SAFE_IDENT } from "../object-schema/identifiers";
+import { buildFieldFilterPredicate } from "../object-schema/field-filter";
+import { qualifiedObjectTable } from "../object-schema/identifiers";
 import { readRecordDataBatch } from "../object-schema/record-io";
 import { DOCUMENT_TYPE_KEY } from "../object-types/constants";
 
@@ -186,97 +184,27 @@ const mapDocsToDriveItems = async (
 };
 
 /**
- * True when any cross-folder filter is active (custom field, entity, label).
- * Triggers flat document-only listing mode.
+ * True when any cross-folder field filter is active. Triggers flat
+ * document-only listing mode.
  */
 const hasAdvancedFilter = (params: DriveListParams): boolean =>
-  !!(
-    (params.entityId && params.entityId.length > 0) ||
-    (params.labelIds && params.labelIds.length > 0) ||
-    (params.customFilters && params.customFilters.length > 0)
-  );
+  params.filters.length > 0;
 
 /**
- * Field types whose values are free-form strings — partial substring
- * match is the expected behaviour. Enum-like string fields
- * (`select` / `multi_select`) stay on equality.
+ * EXISTS clause for one `RecordFilter` against the document's 1:1 mirror record,
+ * scoped to the current `documents` row. The per-operator SQL over `e."col"` is
+ * built by the shared `buildFieldFilterPredicate` — the same builder the objects
+ * records list uses — here correlated through `documents → mirror record →
+ * extension table`. Returns null for an unsupported filter shape.
  */
-const TEXT_LIKE_TYPES: ReadonlySet<FieldDefinitionType> = new Set([
-  "text",
-  "url",
-  "email",
-]);
-
-/**
- * Date/datetime field types — accept the `{ start, end }` range shape
- * emitted by the frontend `DateRangePicker`.
- */
-const DATE_LIKE_TYPES: ReadonlySet<FieldDefinitionType> = new Set([
-  "date",
-  "datetime",
-]);
-
-const isDateRangeFilter = (
-  v: unknown,
-): v is { start: string | null; end: string | null } =>
-  typeof v === "object" &&
-  v !== null &&
-  !Array.isArray(v) &&
-  "start" in v &&
-  "end" in v;
-
-/**
- * EXISTS clause for a single `(fieldKey, value)` predicate against the
- * document's 1:1 mirror record `data`, scoped to the current `documents` row.
- *
- * Value shapes:
- *   • array (string[] / number[] / boolean[])   → ANY-of match
- *   • `{ start, end }` on a date/datetime field → range match (either
- *     bound may be null for an open interval)
- *   • scalar on a free-form string field        → case-insensitive
- *     substring match (ILIKE %text%)
- *   • scalar on any other type                  → equality
- */
-const customFilterExists = (
-  cf: DriveCustomFilter,
+const documentFilterExists = (
+  f: RecordFilter,
   fieldType: FieldDefinitionType | undefined,
   docTable: string,
-) => {
-  if (!SAFE_IDENT.test(cf.fieldKey)) return sql`FALSE`;
-  // The value is a real typed column on the document's mirror record — compare
-  // directly (no jsonb casts/guards). The key is slug-guarded; values bound.
-  const col = sql.raw(`e."${cf.fieldKey}"`);
-
-  const valuePredicate = (() => {
-    if (Array.isArray(cf.value)) {
-      if (cf.value.length === 0) return sql`FALSE`;
-      const members = cf.value.map((v) => String(v));
-      // multi_select column is text[] → array overlap; scalars → membership.
-      return fieldType === "multi_select"
-        ? sql`${col} && ${members}::text[]`
-        : sql`${col}::text = ANY(${members})`;
-    }
-    if (
-      fieldType &&
-      DATE_LIKE_TYPES.has(fieldType) &&
-      isDateRangeFilter(cf.value)
-    ) {
-      const bounds = [];
-      if (cf.value.start) bounds.push(sql`${col} >= ${cf.value.start}`);
-      if (cf.value.end) bounds.push(sql`${col} <= ${cf.value.end}`);
-      return bounds.length > 0 ? (and(...bounds) ?? sql`TRUE`) : sql`TRUE`;
-    }
-    if (
-      fieldType &&
-      TEXT_LIKE_TYPES.has(fieldType) &&
-      typeof cf.value === "string" &&
-      cf.value.length > 0
-    ) {
-      return sql`${col}::text ILIKE ${`%${cf.value}%`}`;
-    }
-    return sql`${col}::text = ${String(cf.value)}`;
-  })();
-  return sql`EXISTS (SELECT 1 FROM object_records r JOIN ${sql.raw(docTable)} e ON e."id" = r.id WHERE r.document_id = ${documents.id} AND ${valuePredicate})`;
+): SQL | null => {
+  const pred = buildFieldFilterPredicate(f, fieldType);
+  if (!pred) return null;
+  return sql`EXISTS (SELECT 1 FROM object_records r JOIN ${sql.raw(docTable)} e ON e."id" = r.id WHERE r.document_id = ${documents.id} AND ${pred})`;
 };
 
 /**
@@ -298,8 +226,8 @@ const getFilteredDocuments = async (data: {
     baseConditions.push(ilike(documents.originalFilename, `%${search}%`));
   }
 
-  if (params.customFilters && params.customFilters.length > 0) {
-    const keys = params.customFilters.map((cf) => cf.fieldKey);
+  if (params.filters.length > 0) {
+    const keys = params.filters.map((f) => f.key);
     const defs = await db
       .select({
         key: fieldDefinitions.key,
@@ -320,45 +248,11 @@ const getFilteredDocuments = async (data: {
     const docTypeId = await resolveDocumentTypeId(teamId);
     if (docTypeId) {
       const docTable = qualifiedObjectTable(docTypeId);
-      for (const cf of params.customFilters) {
-        baseConditions.push(
-          customFilterExists(cf, typeByKey.get(cf.fieldKey), docTable),
-        );
+      for (const f of params.filters) {
+        const cond = documentFilterExists(f, typeByKey.get(f.key), docTable);
+        if (cond) baseConditions.push(cond);
       }
     }
-  }
-
-  if (params.entityId && params.entityId.length > 0) {
-    baseConditions.push(
-      exists(
-        db
-          .select({ one: sql`1` })
-          .from(objectRecords)
-          .innerJoin(links, eq(links.fromRecordId, objectRecords.id))
-          .where(
-            and(
-              eq(objectRecords.documentId, documents.id),
-              inArray(links.toRecordId, params.entityId),
-            ),
-          ),
-      ),
-    );
-  }
-
-  if (params.labelIds && params.labelIds.length > 0) {
-    baseConditions.push(
-      exists(
-        db
-          .select({ one: sql`1` })
-          .from(documentLabels)
-          .where(
-            and(
-              eq(documentLabels.documentId, documents.id),
-              inArray(documentLabels.labelId, params.labelIds),
-            ),
-          ),
-      ),
-    );
   }
 
   const whereExpr = and(...baseConditions);

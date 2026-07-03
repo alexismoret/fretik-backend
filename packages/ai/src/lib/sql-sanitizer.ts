@@ -26,8 +26,6 @@ const ALLOWED_RELATIONS = new Set([
   "documents",
   "document_properties",
   "folders",
-  "labels",
-  "document_labels",
   "field_definitions",
   "chatbot_org_members",
   // Dynamic-data graph. Per-type rows live in `data.obj_*` (data-schema rule).
@@ -37,6 +35,11 @@ const ALLOWED_RELATIONS = new Set([
   "link_types",
   "domain_events",
   "domain_event_links",
+  // Per-team geospatial store for `location` fields. A typed table's `location`
+  // column is a bigint FK into it; JOIN `locations` to read the address/point or
+  // run PostGIS (`geom` is geometry(point,4326): `&&`, `ST_DWithin`). Team-scoped
+  // by RLS, so the read role sees only its own rows.
+  "locations",
 ]);
 
 /**

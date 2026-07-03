@@ -92,3 +92,15 @@ export const objectTableName = (objectTypeId: string): string => {
 /** Fully-qualified, quote-free physical table reference (`data.obj_<hex>`). */
 export const qualifiedObjectTable = (objectTypeId: string): string =>
   `${DATA_SCHEMA}.${objectTableName(objectTypeId)}`;
+
+/**
+ * Sequence backing a `unique_id` field: `data.seq_<fieldId-hex>`. Keyed by the
+ * STABLE field-definition id (never the renameable key), so renaming a field —
+ * or deleting one and re-adding another with the same key — can never collide
+ * with or reuse an existing sequence. The sequence is `OWNED BY` its column, so
+ * Postgres drops it with the column; the name is only reconstructed at create.
+ */
+export const uniqueIdSequenceName = (fieldId: string): string => {
+  assertSafeUuid(fieldId, "field id");
+  return `${DATA_SCHEMA}.seq_${hex(fieldId)}`;
+};

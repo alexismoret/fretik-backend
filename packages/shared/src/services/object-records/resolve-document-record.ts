@@ -1,5 +1,5 @@
 import { and, eq, inArray } from "drizzle-orm";
-import db from "../../db";
+import db, { type Transaction } from "../../db";
 import { objectRecords } from "../../db/schema";
 
 /**
@@ -18,12 +18,13 @@ import { objectRecords } from "../../db/schema";
 export const resolveDocumentRecordIds = async (input: {
   documentIds: string[];
   teamId: string;
+  tx?: Transaction;
 }): Promise<Map<string, string>> => {
   const ids = [...new Set(input.documentIds)];
   const map = new Map<string, string>();
   if (ids.length === 0) return map;
 
-  const rows = await db
+  const rows = await (input.tx ?? db)
     .select({ id: objectRecords.id, documentId: objectRecords.documentId })
     .from(objectRecords)
     .where(

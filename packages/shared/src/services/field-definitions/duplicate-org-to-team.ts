@@ -48,7 +48,6 @@ export const duplicateOrgDefsToTeam = async (data: {
         aiExtractionEnabled: def.aiExtractionEnabled,
         vectorizeInclude: def.vectorizeInclude,
         displayInPanel: def.displayInPanel,
-        displayInFilters: def.displayInFilters,
         enabled: def.enabled,
         displayOrder: def.displayOrder,
       }));

@@ -32,7 +32,6 @@ const makeField = (
   aiExtractionEnabled: true,
   vectorizeInclude: true,
   displayInPanel: true,
-  displayInFilters: false,
   isTitle: false,
   enabled: true,
   displayOrder: 0,

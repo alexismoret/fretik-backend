@@ -8,6 +8,7 @@ import type {
 import { fieldDefinitions } from "../../db/schema";
 import { internalError, throwHttpError } from "../../lib/errors";
 import { refreshObjectTableAfterCatalogChange } from "../object-schema/catalog-sync";
+import { isDocumentObjectType } from "../object-types/is-document-type";
 import { invalidateFieldDefinitionsCache } from "./cache";
 import { fillOptionColors } from "./normalize-config";
 import { bindRelationFieldLinkType } from "./relation-link";
@@ -32,7 +33,6 @@ export type CreateFieldDefinitionInput = {
   aiExtractionEnabled?: boolean;
   vectorizeInclude?: boolean;
   displayInPanel?: boolean;
-  displayInFilters?: boolean;
   enabled?: boolean;
   displayOrder?: number;
 };
@@ -120,6 +120,16 @@ export const createFieldDefinition = async (
     });
   }
 
+  // The document type's title is locked to its seeded `name` field: once a title
+  // exists there, no new field may take it. (A document type with no title yet —
+  // e.g. a not-yet-backfilled legacy one — still lets its first `name` land as
+  // the title.)
+  const isDocument = await isDocumentObjectType({
+    organizationId: input.organizationId,
+    teamId: input.teamId,
+    objectTypeId: input.objectTypeId,
+  });
+
   const row = await db.transaction(async (tx) => {
     // Title resolution: every type keeps exactly one title field. The first
     // field of a type becomes its title automatically; an explicit
@@ -139,8 +149,12 @@ export const createFieldDefinition = async (
       .limit(1);
     // Only a text field can be the title (it names the record). A non-text
     // first field is never auto-titled, so it stays a normal, visible field.
+    // On the document type, once its `name` title exists no other field may take
+    // it — keep the title locked.
     const willBeTitle =
-      input.type === "text" && (input.isTitle === true || !existingTitle);
+      input.type === "text" &&
+      (input.isTitle === true || !existingTitle) &&
+      !(isDocument && existingTitle);
     if (willBeTitle && existingTitle) {
       await tx
         .update(fieldDefinitions)
@@ -163,7 +177,6 @@ export const createFieldDefinition = async (
         aiExtractionEnabled: input.aiExtractionEnabled ?? true,
         vectorizeInclude: input.vectorizeInclude ?? true,
         displayInPanel: input.displayInPanel ?? true,
-        displayInFilters: input.displayInFilters ?? false,
         enabled: willBeEnabled,
         displayOrder: input.displayOrder ?? 0,
       })

@@ -74,16 +74,6 @@ type MentionVectorInfo = {
 };
 
 /**
- * Label info embedded into document vectors so the chatbot can filter and
- * cite by label without an extra join at retrieval time. We embed id +
- * name only — color is presentation-only and would bloat the JSONB blob.
- */
-type LabelVectorInfo = {
-  id: string;
-  name: string;
-};
-
-/**
  * Document vector metadata. Universal AI outputs (page count, language,
  * summary, entities) ride as named fields; industry-specific outputs flow
  * through `custom_fields` keyed by the team's field definition slugs.
@@ -97,7 +87,6 @@ type DocumentVectorMetadata = {
   document_language: string | null;
   document_summary: string | null;
   entities: MentionVectorInfo[];
-  labels: LabelVectorInfo[];
   /**
    * Team-configurable custom field values keyed by `fieldDefinitions.key`.
    * Primitives are stored as JSON primitives; multi_select as string[].
@@ -179,7 +168,6 @@ export type AiVectorMetadata =
 export type {
   ContextVectorMetadata,
   DocumentVectorMetadata,
-  LabelVectorInfo,
   MemoryVectorMetadata,
   MentionVectorInfo,
   SkillVectorMetadata,

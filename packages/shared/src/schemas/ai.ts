@@ -53,11 +53,6 @@ export const mentionVectorInfoSchema = z.object({
  * universal fields (team_id, organization_id, user_id, source_type, source_id)
  * — those are plain columns on the table, never duplicated in JSONB.
  */
-export const labelVectorInfoSchema = z.object({
-  id: z.uuid(),
-  name: z.string(),
-});
-
 export const documentVectorMetadataSchema = z.object({
   file_name: z.string(),
   file_type: z.string(),
@@ -65,7 +60,6 @@ export const documentVectorMetadataSchema = z.object({
   document_language: z.string().nullable(),
   document_summary: z.string().nullable(),
   entities: z.array(mentionVectorInfoSchema),
-  labels: z.array(labelVectorInfoSchema).default([]),
   /**
    * Team-configurable custom field values keyed by `fieldDefinitions.key`.
    * The caller (shared/services/documents/upload.ts) pre-filters this to

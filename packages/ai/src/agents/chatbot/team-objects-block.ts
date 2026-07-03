@@ -55,6 +55,9 @@ const columnsForField = (f: {
   if (f.type === "money")
     return `${f.key}_amount, ${f.key}_currency (money${title})`;
   if (f.type === "relation" || f.type === "rollup") return "";
+  // A `location` column is a bigint FK into `locations`; the address/point is
+  // reached by JOIN (see <sql_rules>).
+  if (f.type === "location") return `${f.key} (location fk→locations)`;
   return `${f.key} (${f.type}${title})`;
 };
 

@@ -37,7 +37,6 @@ export type FieldDefinitionSeed = {
   aiExtractionEnabled?: boolean;
   vectorizeInclude?: boolean;
   displayInPanel?: boolean;
-  displayInFilters?: boolean;
   enabled?: boolean;
   displayOrder: number;
 };

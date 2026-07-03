@@ -130,7 +130,7 @@ export const CURATED: Record<string, CuratedCase> = {
   // records), so NOT smoke. Graded on the tool trajectory + judge; the
   // partial-update case asserts DB state (no data loss). See
   // evals/cases/objects-autonomy.ts.
-  // objects (8)
+  // objects (9)
   "obj-explicit-create": { capability: "objects" },
   "obj-implicit-create": { capability: "objects" },
   "obj-relevance-gate": { capability: "objects" },
@@ -139,4 +139,5 @@ export const CURATED: Record<string, CuratedCase> = {
   "obj-rich-create": { capability: "objects" },
   "obj-bulk-csv-import": { capability: "objects" },
   "obj-sql-to-csv": { capability: "objects" },
+  "obj-location-create": { capability: "objects" },
 };

@@ -23,7 +23,7 @@ const aiVectorizeResponseSchema = z.object({
 /**
  * Build the metadata JSON for a document's vectors.
  *
- * Universal AI outputs (page count, language, summary, entities, labels)
+ * Universal AI outputs (page count, language, summary, entities)
  * are emitted as named fields. Industry-specific outputs flow through
  * `custom_fields` keyed by the team's field definition slugs, pre-filtered
  * to `vectorizeInclude=true` so privacy-sensitive or internal fields
@@ -38,7 +38,6 @@ const buildDocumentVectorMetadata = async (
     where: { id: documentId },
     with: {
       properties: true,
-      labels: { columns: { id: true, name: true } },
       mirrorRecord: {
         columns: { id: true, objectTypeId: true },
         with: {
@@ -69,8 +68,6 @@ const buildDocumentVectorMetadata = async (
       role: MENTIONS_LINK_TYPE_KEY,
     }));
 
-  const labels = document.labels.map((l) => ({ id: l.id, name: l.name }));
-
   const definitions = await getFieldDefinitionsForTeam({
     teamId,
   });
@@ -97,7 +94,6 @@ const buildDocumentVectorMetadata = async (
     document_language: properties?.documentLanguage ?? null,
     document_summary: properties?.documentSummary ?? null,
     entities,
-    labels,
     custom_fields: customFields,
   };
 };

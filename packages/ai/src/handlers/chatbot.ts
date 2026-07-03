@@ -247,6 +247,13 @@ const streamChatbotWithFallback = async (params: {
       params.modelProfile,
       buildNativeInputDeps(params.callOptions.conversationId),
     ),
+    // A turn aborted mid-tool-call (user Stop, tab close during a `python`
+    // run) persists an assistant tool part still in `input-streaming` /
+    // `input-available` — a tool call with no result. Sending it verbatim
+    // makes the provider throw `MissingToolResultsError`, wedging the
+    // conversation on every subsequent message. Dropping the incomplete
+    // call is the SDK-sanctioned repair (covers static + dynamic tools).
+    { ignoreIncompleteToolCalls: true },
   );
   // Primary → fallback failover (C4: transient errors earn one retry on
   // the SAME model before spending the fallback). Langfuse trace nesting +
@@ -1449,6 +1456,10 @@ const runChatbotTurn = async (
               modelProfile,
               buildNativeInputDeps(callOptionsWithFiles.conversationId),
             ),
+            // Same dangling-tool-call guard as the primary path above — an
+            // interrupted turn's incomplete tool call must not reach the
+            // model as a resultless call (MissingToolResultsError).
+            { ignoreIncompleteToolCalls: true },
           );
           const fallbackResult = await agentSet.fallback.stream({
             messages: fallbackMessages,

@@ -3,7 +3,9 @@ import type { ObjectType } from "../../db/schema";
 import { objectTypes } from "../../db/schema";
 import { autoColorForKey } from "../../lib/colors/object-colors";
 import { badRequest, internalError, throwHttpError } from "../../lib/errors";
+import type { Audience } from "../../schemas/object-sharing";
 import { reconcileObjectTable } from "../object-schema/table";
+import { reconcileTypeGrants } from "../object-sharing/reconcile";
 import { invalidateObjectTypeIdCache } from "./resolve";
 
 /**
@@ -61,6 +63,9 @@ export const createObjectType = async (input: {
   description?: string | null;
   icon?: string | null;
   color?: string | null;
+  // Initial cross-team audience. Default (omitted) = internal (owning team only).
+  sharing?: Audience;
+  createdByUserId?: string | null;
 }): Promise<ObjectType> => {
   const key = prepareObjectTypeKey(input.key);
 
@@ -87,6 +92,16 @@ export const createObjectType = async (input: {
       return throwHttpError(500, internalError());
     }
     await reconcileObjectTable({ tx, objectTypeId: created.id });
+    if (input.sharing) {
+      await reconcileTypeGrants({
+        objectTypeId: created.id,
+        ownerTeamId: input.teamId,
+        organizationId: input.organizationId,
+        audience: input.sharing,
+        createdByUserId: input.createdByUserId ?? null,
+        tx,
+      });
+    }
     return created;
   });
 

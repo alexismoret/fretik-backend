@@ -6,6 +6,7 @@ import { chunkForBulk, formatBulkRowError } from "../../lib/db-bulk";
 import { computeRecordIdentity } from "../../schemas/record-shape";
 import { type EventActor, SYSTEM_ACTOR } from "../domain-events/emit";
 import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
+import { resolveLocationRefsBatch } from "../locations/resolve-batch";
 import {
   buildExtensionUpdateBatch,
   readRecordDataBatch,
@@ -187,6 +188,18 @@ export const bulkUpdateObjectRecords = async (input: {
         errors.push({ id, error: formatBulkRowError(error) });
       }
     }
+    // Resolve every location value to a FK into the per-team `locations` table —
+    // one batched, cached, best-effort pass per type before the transaction. The
+    // diff above reflects the caller's edit (the LocationValue); the stored value
+    // is the resolved FK.
+    const geocoded = await resolveLocationRefsBatch({
+      teamId: input.teamId,
+      fieldDefs: fds,
+      rows: prep.map((p) => p.data),
+    });
+    geocoded.forEach((data, i) => {
+      prep[i]!.data = data;
+    });
     preparedByType.set(typeId, prep);
   }
 

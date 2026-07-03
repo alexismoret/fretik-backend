@@ -5,6 +5,7 @@ import {
 import { teamRequired } from "@fretik/shared/lib/errors";
 import { paramsIdSchema } from "@fretik/shared/schemas/common/params";
 import {
+  responseBadRequestSchema,
   responseForbiddenSchema,
   responseInternalErrorSchema,
   responseListSchema,
@@ -13,12 +14,14 @@ import {
 import {
   createObjectRecordRequestSchema,
   groupAggregateSchema,
+  mapPointsResponseSchema,
   objectRecordListItemSchema,
   objectRecordResponseSchema,
   objectRecordWithLinksResponseSchema,
   recordAggregateQuerySchema,
   recordHistoryResponseSchema,
   recordListQuerySchema,
+  recordMapQuerySchema,
   setRecordStatusRequestSchema,
   updateObjectRecordRequestSchema,
 } from "@fretik/shared/schemas/ontology";
@@ -26,6 +29,7 @@ import { getRecordHistory } from "@fretik/shared/services/domain-events/history"
 import { aggregateRecordsByGroup } from "@fretik/shared/services/object-records/aggregate-by-group";
 import { createObjectRecord } from "@fretik/shared/services/object-records/create";
 import { deleteObjectRecord } from "@fretik/shared/services/object-records/delete";
+import { getMapPoints } from "@fretik/shared/services/object-records/map-points";
 import {
   getObjectRecord,
   listObjectRecords,
@@ -79,6 +83,23 @@ const aggregateRoute = createRoute({
       },
       description: "Group aggregates retrieved",
     },
+    ...responseForbiddenSchema,
+    ...responseInternalErrorSchema,
+  },
+});
+
+const mapRoute = createRoute({
+  method: "get",
+  path: "/map",
+  summary: "Records placed on a map by a location field, scoped to a bbox",
+  tags: ["ObjectRecords"],
+  request: { query: recordMapQuerySchema },
+  responses: {
+    200: {
+      content: { "application/json": { schema: mapPointsResponseSchema } },
+      description: "Points (or clusters when dense) in the viewport",
+    },
+    ...responseBadRequestSchema,
     ...responseForbiddenSchema,
     ...responseInternalErrorSchema,
   },
@@ -269,6 +290,27 @@ objectRecordRoutes.openapi(aggregateRoute, async (c) => {
   return c.json({ count: groups.length, data: groups }, 200);
 });
 
+objectRecordRoutes.openapi(mapRoute, async (c) => {
+  const team = c.get("team");
+  if (!team) return c.json(teamRequired(), 403);
+  const { objectTypeId, fieldKey, minLng, minLat, maxLng, maxLat } =
+    c.req.valid("query");
+  const bbox =
+    minLng !== undefined &&
+    minLat !== undefined &&
+    maxLng !== undefined &&
+    maxLat !== undefined
+      ? { minLng, minLat, maxLng, maxLat }
+      : undefined;
+  const result = await getMapPoints({
+    teamId: team.id,
+    objectTypeId,
+    fieldKey,
+    bbox,
+  });
+  return c.json(result, 200);
+});
+
 objectRecordRoutes.openapi(getRoute, async (c) => {
   const team = c.get("team");
   if (!team) return c.json(teamRequired(), 403);
@@ -300,6 +342,9 @@ objectRecordRoutes.openapi(createRouteDef, async (c) => {
     source: body.source ?? "user_manual",
     labelOverride: body.labelOverride ?? null,
     relations: body.relations,
+    sharing: body.sharing,
+    // Stamp created_by / last_edited_by with the acting user.
+    actor: { actorType: "user", actorUserId: user.id },
   });
   return c.json(created, 201);
 });
@@ -307,14 +352,23 @@ objectRecordRoutes.openapi(createRouteDef, async (c) => {
 objectRecordRoutes.openapi(updateRouteDef, async (c) => {
   const team = c.get("team");
   if (!team) return c.json(teamRequired(), 403);
+  const user = c.get("user");
   const { id } = c.req.valid("param");
-  const { data } = c.req.valid("json");
+  const { data, sharing } = c.req.valid("json");
   await assertCanWriteRecord({
     recordId: id,
     teamId: team.id,
     organizationId: team.organizationId,
   });
-  const updated = await setRecordData({ id, data });
+  // `sharing` is owner-only — enforced inside the service via `callerTeamId`.
+  const updated = await setRecordData({
+    id,
+    data,
+    sharing,
+    callerTeamId: team.id,
+    // Stamp last_edited_by with the acting user.
+    actor: { actorType: "user", actorUserId: user.id },
+  });
   return c.json(updated, 200);
 });
 

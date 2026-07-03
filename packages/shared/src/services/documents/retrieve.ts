@@ -49,7 +49,6 @@ const resolveDocumentTypeId = async (
  * - `folderId`: restrict to a specific folder; pass `null` to restrict
  *   to team-root documents. Omit to search across every folder.
  * - `status`: processing status. Omit to return every status.
- * - `labelIds`: any-of match on the `documents.labels` M2M.
  * - `entityIds`: any-of match on the records the document mentions
  *   (its mirror record's `mentions` links).
  * - `customFilters`: equality on `(fieldKey, value)` against the document
@@ -66,7 +65,6 @@ export interface SearchDocumentsFilters {
   search?: string;
   folderId?: string | null;
   status?: DocumentStatus;
-  labelIds?: string[];
   entityIds?: string[];
   customFilters?: { fieldKey: string; value: unknown }[];
 }
@@ -113,7 +111,6 @@ export const searchDocuments = async (
     search,
     folderId,
     status,
-    labelIds,
     entityIds,
     customFilters,
     limit = 20,
@@ -146,9 +143,6 @@ export const searchDocuments = async (
         : typeof folderId === "string"
           ? { folderId }
           : {}),
-      ...(labelIds && labelIds.length > 0
-        ? { documentLabels: { labelId: { in: labelIds } } }
-        : {}),
       ...(entityIds && entityIds.length > 0
         ? { mirrorRecord: { outgoingLinks: { toRecordId: { in: entityIds } } } }
         : {}),
@@ -327,9 +321,6 @@ const loadDocument = async (data: { id: string; teamId: string }) => {
           completedAt: true,
           createdAt: true,
         },
-      },
-      labels: {
-        columns: { id: true, name: true, color: true },
       },
       mirrorRecord: {
         columns: { id: true, objectTypeId: true },

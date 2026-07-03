@@ -6,7 +6,6 @@ import type { createDispatchAgentTool } from "../../tools/dispatch-agent";
 import { createDownloadDriveDocumentTool } from "../../tools/download-drive-document";
 import { createGetObjectTool } from "../../tools/get-object";
 import { createListDocumentsTool } from "../../tools/list-documents";
-import { createListLabelsTool } from "../../tools/list-labels";
 import { createListObjectsTool } from "../../tools/list-objects";
 import { createManageFieldTool } from "../../tools/manage-field";
 import { createManageLinkTool } from "../../tools/manage-link";
@@ -247,13 +246,6 @@ export const buildDomainTools = () => ({
     category: "domain",
     searchHint:
       "search filter list team documents by type folder status filename",
-    maxResultSizeChars: 16_000,
-  }),
-  listLabels: buildChatbotTool({
-    ...createListLabelsTool(),
-    category: "domain",
-    searchHint:
-      "search list labels tags categories team filter documents by label",
     maxResultSizeChars: 16_000,
   }),
   describeObjectType: buildChatbotTool({

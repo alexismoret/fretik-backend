@@ -2,61 +2,36 @@ import { z } from "zod";
 import { paramsListSchema } from "./common/params";
 import { responseListSchema } from "./common/responses";
 import { documentStatusSchema } from "./documents";
+import { recordFilterSchema, type RecordFilter } from "./ontology";
 
 /**
  * Drive list params: pagination + search + advanced filters.
  *
- * Universal filters (search, entityId, labelIds) stay typed. Custom
- * filters target the per-team field definitions and are passed as
- * `customFilters[<fieldKey>]=value` (parsed by the handler into a list
- * of `{fieldKey, value}` predicates joined to `documentFieldValues`).
+ * `search` stays typed. Advanced filters use the same `RecordFilter[]` model as
+ * the objects records list — the drive filters documents by the typed fields of
+ * their `document` object mirror, so the field → operator → value shape and the
+ * server-side predicate builder are shared, not duplicated.
  */
-const toArray = <T>(val: unknown): T[] | undefined => {
-  if (val === undefined || val === null || val === "") return undefined;
-  return (Array.isArray(val) ? val : [val]) as T[];
-};
-
-/**
- * A single dynamic filter predicate: equality on a `(fieldKey, value)`
- * pair stored in `document_field_values`. `value` is `unknown` because
- * the type is declared on the corresponding field definition; the
- * handler validates the shape before passing it to the search service.
- */
-export const driveCustomFilterSchema = z.object({
-  fieldKey: z.string().min(1).max(60),
-  value: z.unknown(),
-});
-
-export type DriveCustomFilter = z.infer<typeof driveCustomFilterSchema>;
-
 export const driveListParamsSchema = paramsListSchema.extend({
-  entityId: z.preprocess(toArray, z.array(z.uuid()).optional()).openapi({
-    description:
-      "Filter to documents linked to one or more entities (any role). OR semantics within the filter.",
-  }),
-  labelIds: z.preprocess(toArray, z.array(z.uuid()).optional()).openapi({
-    description:
-      "Filter to documents tagged with one or more labels. OR semantics within the filter.",
-  }),
-  customFilters: z
-    .preprocess((val) => {
-      // The frontend serialises customFilters to JSON because ofetch can't
-      // represent an array of objects in a query string (it collapses each
-      // entry to "[object Object]"). Decode the JSON back to an array
-      // before Zod validates the inner shape.
-      if (val === undefined || val === null || val === "") return undefined;
-      if (typeof val === "string") {
-        try {
-          return JSON.parse(val);
-        } catch {
-          return val; // let Zod produce a useful error
-        }
+  // JSON-encoded `RecordFilter[]` (query params are strings; ofetch can't carry
+  // an array of objects). Malformed input degrades to "no filters" rather than
+  // erroring the list — matches `recordListQuerySchema`.
+  filters: z
+    .string()
+    .optional()
+    .transform((raw): RecordFilter[] => {
+      if (!raw) return [];
+      try {
+        const parsed: unknown = JSON.parse(raw);
+        const res = z.array(recordFilterSchema).max(20).safeParse(parsed);
+        return res.success ? res.data : [];
+      } catch {
+        return [];
       }
-      return val;
-    }, z.array(driveCustomFilterSchema).optional())
+    })
     .openapi({
       description:
-        "Equality filters on dynamic document fields. JSON-encoded array of `{fieldKey, value}` pairs. `value` may be a scalar (eq match) or an array (ANY-of match for enum filters).",
+        "Field filters on the documents' `document` object mirror. JSON-encoded `RecordFilter[]` — each `{ key, op, value }`, AND across entries.",
     }),
 });
 

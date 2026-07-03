@@ -8,7 +8,8 @@ import { normalizeEntityName } from "../../utils/normalizeEntityName";
 import { buildExtensionInsert } from "../object-schema/record-io";
 
 type ResolveResult = {
-  recordId: string;
+  /** null only when nothing matched and `createIfMissing` was false. */
+  recordId: string | null;
   confidence: number;
   isNew: boolean;
 };
@@ -26,6 +27,11 @@ type ResolveResult = {
  * Pre-existing `rejected` / `suggested` rows with the same normalized label
  * are returned as-is (never duplicated, never silently re-created).
  *
+ * `createIfMissing` (default true): when false, an unmatched label returns
+ * `{ recordId: null }` instead of spawning a `suggested` stub — the caller gates
+ * creation (e.g. a low-confidence mention still links to an existing record but
+ * must not create a new one).
+ *
  * Pass `tx` to resolve inside a caller's transaction (the document-processing
  * fold): the dedup reads then see suggested records created earlier in the same
  * transaction, so two extracted mentions of the same name collapse to one stub.
@@ -34,9 +40,11 @@ export const resolveRecord = async (data: {
   teamId: string;
   objectTypeId: string;
   rawLabel: string;
+  createIfMissing?: boolean;
   tx?: Transaction;
 }): Promise<ResolveResult> => {
   const { teamId, objectTypeId, rawLabel, tx } = data;
+  const createIfMissing = data.createIfMissing ?? true;
   const exec = tx ?? db;
   const normalized =
     normalizeEntityName(rawLabel) || rawLabel.toLowerCase().trim();
@@ -107,6 +115,11 @@ export const resolveRecord = async (data: {
   });
   if (existing) {
     return { recordId: existing.id, confidence: 0, isNew: false };
+  }
+
+  // Nothing matched. Gate creation to the caller (confidence floor, dry-run).
+  if (!createIfMissing) {
+    return { recordId: null, confidence: 0, isNew: false };
   }
 
   return await createSuggestedRecord({

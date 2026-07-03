@@ -1,6 +1,7 @@
 import { type SQL, sql } from "drizzle-orm";
 import db, { type Executor } from "../../db";
 import type { FieldDefinition } from "../../db/schema";
+import { hasTime } from "../../db/schema/field-types";
 import { columnsForField, isVirtualField } from "./columns";
 import { assertSafeKey, qualifiedObjectTable, SYS_COL } from "./identifiers";
 
@@ -39,6 +40,9 @@ const columnValues = (
   data: Record<string, unknown>,
 ): ColumnValue[] => {
   if (isVirtualField(def)) return [];
+  // `unique_id` is filled by its sequence DEFAULT on insert and is read-only —
+  // never write it (omitting the column lets the DEFAULT assign the next value).
+  if (def.type === "unique_id") return [];
   assertSafeKey(def.key, "field key");
   const v = data[def.key] ?? null;
   if (def.type === "money") {
@@ -64,6 +68,8 @@ const valueParam = (sqlType: string, value: unknown): SQL => {
       sql`, `,
     )}]::${sql.raw(elem)}[]`;
   }
+  // jsonb: bind the JSON text so the driver doesn't guess the shape.
+  if (sqlType === "jsonb") return sql`${JSON.stringify(value)}::jsonb`;
   return sql`${value}::${sql.raw(sqlType)}`;
 };
 
@@ -281,6 +287,22 @@ export const dataJsonbExpr = (
     if (def.type === "money") {
       pairs.push(
         `'${def.key}', CASE WHEN ${alias}."${def.key}_amount" IS NULL AND ${alias}."${def.key}_currency" IS NULL THEN NULL ELSE jsonb_build_object('amount', ${alias}."${def.key}_amount", 'currencyCode', ${alias}."${def.key}_currency") END`,
+      );
+    } else if (def.type === "location") {
+      // The column holds a FK into `locations`; reconstruct the LocationValue
+      // shape the API/frontend expects via a PK-lookup subquery (self-contained,
+      // so every dataJsonbExpr caller stays a single query with no join plumbing).
+      pairs.push(
+        `'${def.key}', (SELECT jsonb_build_object('address', l.resolved_address, 'lat', ST_Y(l.geom), 'lng', ST_X(l.geom), 'mapboxId', l.mapbox_id, 'featureType', l.feature_type, 'bbox', l.bbox) FROM public.locations l WHERE l.id = ${alias}."${def.key}")`,
+      );
+    } else if (def.type === "date" && !hasTime(def.config)) {
+      // The date family is a `timestamptz` column, but a time-less `date` reads
+      // back as its UTC calendar day: the write is midnight UTC, so casting the
+      // UTC wall-clock to `date` yields the intended day regardless of session
+      // tz, and jsonb serializes a date as ISO "YYYY-MM-DD". Projection-only —
+      // filters/sorts still hit the bare indexed column (see field-filter.ts).
+      pairs.push(
+        `'${def.key}', (${alias}."${def.key}" AT TIME ZONE 'UTC')::date`,
       );
     } else {
       pairs.push(`'${def.key}', ${alias}."${def.key}"`);

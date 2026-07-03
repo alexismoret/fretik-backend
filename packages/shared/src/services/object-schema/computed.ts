@@ -19,6 +19,17 @@ import { assertSafeKey, qualifiedObjectTable, SAFE_IDENT } from "./identifiers";
 
 type LinkTargetMap = Map<string, string | null>;
 
+/**
+ * System property field types → the `object_records` (aliased `r`) column they
+ * project. Read-only, surfaced as fields so views can sort/filter/show them.
+ */
+const SYSTEM_PROJECTION: Partial<Record<FieldDefinition["type"], string>> = {
+  created_time: "r.created_at",
+  last_edited_time: "r.updated_at",
+  created_by: "r.created_by_user_id",
+  last_edited_by: "r.updated_by_user_id",
+};
+
 /** Relation field → jsonb array of `{id,label}` for its active edges. */
 const relationProjection = (def: FieldDefinition, teamId: string): string => {
   const linkTypeKey =
@@ -61,7 +72,11 @@ const rollupProjection = (
   if (!linkTypeKey || !SAFE_IDENT.test(linkTypeKey)) return `NULL`;
 
   const needsTarget =
-    fn === "sum" || fn === "avg" || fn === "min" || fn === "max";
+    fn === "sum" ||
+    fn === "avg" ||
+    fn === "min" ||
+    fn === "max" ||
+    fn === "percent_checked";
   if (needsTarget && (!targetFieldKey || !SAFE_IDENT.test(targetFieldKey))) {
     return `NULL`;
   }
@@ -88,6 +103,11 @@ const rollupProjection = (
       agg = targetCol
         ? `round(100.0 * count(*) FILTER (WHERE ${targetCol} IS NOT NULL) / NULLIF(count(*), 0), 2)`
         : `100`;
+      break;
+    // Notion "Percent checked": share of linked records whose boolean target
+    // is true. Guarded to a boolean target in the config UI + schema.
+    case "percent_checked":
+      agg = `round(100.0 * count(*) FILTER (WHERE ${targetCol} IS TRUE) / NULLIF(count(*), 0), 2)`;
       break;
     case "sum":
       agg = `COALESCE(sum(${targetCol}), 0)`;
@@ -161,7 +181,10 @@ export const computeRelationRollupValues = async (input: {
       ),
     );
   const computed = fields.filter(
-    (f) => f.type === "relation" || f.type === "rollup",
+    (f) =>
+      f.type === "relation" ||
+      f.type === "rollup" ||
+      f.type in SYSTEM_PROJECTION,
   );
   if (computed.length === 0) return empty;
 
@@ -169,8 +192,10 @@ export const computeRelationRollupValues = async (input: {
   const cols = ["r.id::text AS _id"];
   for (const def of computed) {
     assertSafeKey(def.key, "field key");
-    const expr =
-      def.type === "relation"
+    const system = SYSTEM_PROJECTION[def.type];
+    const expr = system
+      ? system
+      : def.type === "relation"
         ? relationProjection(def, input.teamId)
         : rollupProjection(def, fields, linkTargets, input.teamId);
     cols.push(`${expr} AS "${def.key}"`);

@@ -1,4 +1,4 @@
-import { eq, type SQL } from "drizzle-orm";
+import { eq, or, type SQL } from "drizzle-orm";
 import db from "../../db";
 import { objectRecords } from "../../db/schema";
 import { recordSharedExists, teamHasTypeGrant } from "../object-sharing/access";
@@ -42,8 +42,11 @@ export const resolveRecordTypeScope = async (data: {
 
 /**
  * The `WHERE` predicate that scopes `object_records` rows to what the viewing
- * team may see. `undefined` for a grant-covered foreign type (every row of the
- * type is visible, so no extra predicate).
+ * team may see — the service-layer mirror of the `fretik_record_visible` RLS
+ * helper. A foreign type covered by a grant exposes its records only while each
+ * record INHERITS the type's sharing (`inherit_type_sharing = true`); a custom
+ * record (inherit=false) is visible solely via its own share. So even with a
+ * type grant the predicate is `inherit OR shared`, never unconditional.
  */
 export const recordVisibilityCondition = (data: {
   teamId: string;
@@ -51,8 +54,10 @@ export const recordVisibilityCondition = (data: {
 }): SQL | undefined => {
   const { teamId, scope } = data;
   if (!scope.isForeign) return eq(objectRecords.teamId, teamId);
-  if (!scope.hasTypeGrant && scope.organizationId !== undefined) {
-    return recordSharedExists(teamId, scope.organizationId);
+  if (scope.organizationId === undefined) return undefined;
+  const shared = recordSharedExists(teamId, scope.organizationId);
+  if (scope.hasTypeGrant) {
+    return or(eq(objectRecords.inheritTypeSharing, true), shared);
   }
-  return undefined;
+  return shared;
 };

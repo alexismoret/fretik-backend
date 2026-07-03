@@ -3,8 +3,10 @@ import type { FieldDefinition } from "../db/schema";
 import {
   defaultCurrencyCode,
   fieldOptions,
+  hasTime,
   isFreeform,
   isMultiMember,
+  MAPBOX_FEATURE_TYPES,
   numberBounds,
   ratingMax,
 } from "../db/schema/field-types";
@@ -29,8 +31,8 @@ import { normalizeEntityName } from "../utils/normalizeEntityName";
  *   - email               → z.email() (strict) | z.string() (lenient)
  *   - url                 → z.url() (strict) | z.string() (lenient)
  *   - number              → z.number() (+ min/max bounds when strict)
- *   - date                → z.string() YYYY-MM-DD
- *   - datetime            → z.string() ISO 8601
+ *   - date                → z.string() YYYY-MM-DD, or ISO 8601 when
+ *                           `config.hasTime` (a single date type, Notion-style)
  *   - boolean             → z.boolean()
  *   - select              → z.enum(values) when options exist, else string
  *   - multi_select        → z.array(z.enum(values)) when options exist
@@ -87,35 +89,62 @@ export const zodForField = (
         .nullish()
         .describe(description);
     }
+    case "location": {
+      // The geocoded place object. Lenient callers (the LLM / pre-extract) may
+      // emit a bare address string — coercion wraps it into `{ address }` and
+      // the coords are filled server-side by the geocoder.
+      const place = z.looseObject({
+        address: z.string(),
+        lat: z.number().nullish(),
+        lng: z.number().nullish(),
+        mapboxId: z.string().nullish(),
+        // Unrecognized Mapbox type → undefined (dropped), never a hard failure.
+        featureType: z.enum(MAPBOX_FEATURE_TYPES).nullish().catch(undefined),
+        // Area bounding box `[minLon, minLat, maxLon, maxLat]`; UI-captured.
+        bbox: z
+          .tuple([z.number(), z.number(), z.number(), z.number()])
+          .nullish(),
+      });
+      const base = strict ? place : z.union([z.string(), place]);
+      return base.nullish().describe(description);
+    }
     case "relation":
-    case "rollup": {
-      // Neither is stored in `data`: relations live in the `links` graph and
-      // rollups are aggregates computed in the typed view. `buildRecordShape`
-      // skips both; this branch only keeps the switch exhaustive.
+    case "rollup":
+    case "unique_id":
+    case "created_time":
+    case "last_edited_time":
+    case "created_by":
+    case "last_edited_by": {
+      // None is written through `data`: relations live in the `links` graph,
+      // rollups + system properties are computed from the registry, and
+      // `unique_id` is filled by its sequence. `buildRecordShape` skips them;
+      // this keeps the switch exhaustive.
       return z.unknown().nullish().describe(description);
     }
     case "boolean": {
       return z.boolean().nullish().describe(description);
     }
     case "date": {
+      // One date type: `config.hasTime` decides whether a time component is
+      // expected (ISO 8601 datetime) or a calendar date only (YYYY-MM-DD).
+      if (hasTime(def.config)) {
+        return z
+          .string()
+          .regex(
+            /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?(Z|[+-]\d{2}:?\d{2})?$/,
+            "Expected ISO 8601 datetime",
+          )
+          .nullish()
+          .describe(
+            `${description} Format: ISO 8601 datetime (e.g. 2025-01-15T10:30:00Z).`,
+          );
+      }
       return z
         .string()
         .regex(/^\d{4}-\d{2}-\d{2}$/, "Expected YYYY-MM-DD")
         .nullish()
         .describe(
           `${description} Format: YYYY-MM-DD (calendar date only, no time component).`,
-        );
-    }
-    case "datetime": {
-      return z
-        .string()
-        .regex(
-          /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?(Z|[+-]\d{2}:?\d{2})?$/,
-          "Expected ISO 8601 datetime",
-        )
-        .nullish()
-        .describe(
-          `${description} Format: ISO 8601 datetime (e.g. 2025-01-15T10:30:00Z).`,
         );
     }
     case "select": {
@@ -188,9 +217,9 @@ export const describeFieldExpectation = (def: FieldDefinition): string => {
     case "boolean":
       return `${key} (boolean): "true" or "false"`;
     case "date":
-      return `${key} (date): "YYYY-MM-DD", e.g. "2025-01-31"`;
-    case "datetime":
-      return `${key} (datetime): ISO 8601, e.g. "2025-01-15T10:30:00Z"`;
+      return hasTime(def.config)
+        ? `${key} (date): ISO 8601 datetime, e.g. "2025-01-15T10:30:00Z"`
+        : `${key} (date): "YYYY-MM-DD", e.g. "2025-01-31"`;
     case "select":
       return optionValues(def).length > 0
         ? `${key} (select): one of ${optionList(def)}`
@@ -205,8 +234,16 @@ export const describeFieldExpectation = (def: FieldDefinition): string => {
         : `${key} (member): a user id`;
     case "money":
       return `${key} (money): amount + currency, e.g. "1500 EUR"`;
+    case "location":
+      return `${key} (location): an address string, e.g. "10 Downing St, London" (coordinates are added server-side)`;
+    case "unique_id":
+      return `${key} (unique_id): auto-assigned reference, read-only`;
     case "relation":
     case "rollup":
+    case "created_time":
+    case "last_edited_time":
+    case "created_by":
+    case "last_edited_by":
       return `${key} (${def.type}): not set through record data`;
     default: {
       const _exhaustive: never = def.type;
@@ -266,14 +303,12 @@ export const coerceRecordValue = (
       return `https://${s}`;
     }
     case "date": {
-      // YYYY-MM-DD. Accept a datetime (take its date part) or any parseable
-      // form; leave the unparseable for Zod's regex to flag.
-      return typeof value === "string" ? toCalendarDate(value) : value;
-    }
-    case "datetime": {
-      // ISO 8601 UTC. Accept a date-only value (→ midnight), a zone offset, or
-      // a bare local datetime — normalize to the canonical `…Z` form.
-      return typeof value === "string" ? toIsoDateTime(value) : value;
+      if (typeof value !== "string") return value;
+      // With time: ISO 8601 UTC (accept a date-only value → midnight, a zone
+      // offset, or a bare local datetime → canonical `…Z`). Without time:
+      // YYYY-MM-DD (accept a datetime → its date part, or any parseable form).
+      // The unparseable is left for Zod's regex to flag.
+      return hasTime(def.config) ? toIsoDateTime(value) : toCalendarDate(value);
     }
     case "number":
     case "rating": {
@@ -345,10 +380,22 @@ export const coerceRecordValue = (
       }
       return value;
     }
+    case "location": {
+      // Tools / pre-extract pass a plain address string; the SDK/UI pass the
+      // full `{ address, lat, lng, … }` object. Wrap the string; the geocoder
+      // fills the coordinates + feature type before the write.
+      if (typeof value === "string") return { address: value };
+      return value;
+    }
     // Semantic value (email) or structured/non-data field: leave to Zod.
     case "email":
     case "relation":
-    case "rollup": {
+    case "rollup":
+    case "unique_id":
+    case "created_time":
+    case "last_edited_time":
+    case "created_by":
+    case "last_edited_by": {
       return value;
     }
     default: {
@@ -443,9 +490,18 @@ export const buildRecordShape = (
   const shape: Record<string, z.ZodTypeAny> = {};
   for (const def of fieldDefs) {
     if (!def.enabled) continue;
-    // Relations are graph edges (`links`) and rollups are view-computed
-    // aggregates — neither lives in `data`.
-    if (def.type === "relation" || def.type === "rollup") continue;
+    // Relations are graph edges (`links`), rollups are view-computed aggregates,
+    // and `unique_id` is sequence-filled — none is written through `data`.
+    if (
+      def.type === "relation" ||
+      def.type === "rollup" ||
+      def.type === "unique_id" ||
+      def.type === "created_time" ||
+      def.type === "last_edited_time" ||
+      def.type === "created_by" ||
+      def.type === "last_edited_by"
+    )
+      continue;
     shape[def.key] = zodForField(def, { strict });
   }
   return z.object(shape);

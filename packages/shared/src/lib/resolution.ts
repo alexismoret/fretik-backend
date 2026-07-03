@@ -14,3 +14,13 @@
  * missed). Tune here — single source for both resolvers.
  */
 export const FUZZY_MATCH_THRESHOLD = 0.8;
+
+/**
+ * Minimum LLM confidence (0..1) for an AI-extracted mention to CREATE a new
+ * `suggested` record. Below it, the mention still links to an already-existing
+ * record (any confidence) but never spawns a fresh stub — keeps the review queue
+ * from filling with low-confidence guesses. A mention with no confidence value is
+ * treated as passing (the model simply omitted its self-assessment). Governs only
+ * the create path; matching is unaffected.
+ */
+export const MENTION_MIN_CONFIDENCE = 0.5;

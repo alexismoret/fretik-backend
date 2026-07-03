@@ -24,7 +24,8 @@ type SeedField = {
   type: FieldDefinitionType;
   isTitle?: boolean;
   config?: FieldDefinitionConfig;
-  displayInFilters?: boolean;
+  aiExtractionEnabled?: boolean;
+  vectorizeInclude?: boolean;
   displayOrder: number;
 };
 
@@ -40,9 +41,11 @@ type SeedObjectType = {
 /**
  * The ONLY truly system object type. `document_record` is delete-protected (the
  * delete service refuses it): it is the anchor for document field definitions
- * and the uploaded-file record mirror, so the upload pipeline depends on it. It
- * carries no fields here — they come from the document-field template applied
- * right after (org-creation hook).
+ * and the uploaded-file record mirror, so the upload pipeline depends on it. Its
+ * only seeded field is the locked `name` title (defaults to the filename — the
+ * one title a document may have; field create/update/delete refuse to move or
+ * drop it). The rest come from the document-field template applied right after
+ * (org-creation hook).
  *
  * Everything else a team starts with (company, person, note, task) ships as a
  * deletable, editable STARTER template (`templates/object-types`), not as a
@@ -58,7 +61,35 @@ const SYSTEM_OBJECT_TYPES: SeedObjectType[] = [
     description:
       "One record per uploaded file — its extracted metadata and the entities it mentions. Link a record to a file via its document record.",
     icon: "file-text",
-    fields: [],
+    fields: [
+      // The locked title — defaults to the filename, the one title a document may
+      // have (field create/update/delete refuse to move or drop it).
+      {
+        key: "name",
+        label: "Name",
+        type: "text",
+        isTitle: true,
+        displayOrder: 0,
+      },
+      // Provenance, computed from the record row (no stored column). Never fed to
+      // the AI / RAG — they describe the upload, not the document's content.
+      {
+        key: "created_time",
+        label: "Created time",
+        type: "created_time",
+        aiExtractionEnabled: false,
+        vectorizeInclude: false,
+        displayOrder: 100,
+      },
+      {
+        key: "created_by",
+        label: "Created by",
+        type: "created_by",
+        aiExtractionEnabled: false,
+        vectorizeInclude: false,
+        displayOrder: 101,
+      },
+    ],
   },
 ];
 
@@ -114,7 +145,8 @@ export const seedSystemOntology = async (
         type: field.type,
         config: field.config ?? {},
         isTitle: field.isTitle ?? false,
-        displayInFilters: field.displayInFilters ?? false,
+        aiExtractionEnabled: field.aiExtractionEnabled ?? true,
+        vectorizeInclude: field.vectorizeInclude ?? true,
         displayOrder: field.displayOrder,
       });
     }

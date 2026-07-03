@@ -8,6 +8,8 @@ import {
 } from "../../lib/document-storage";
 import { notFound, throwHttpError } from "../../lib/errors";
 import { deleteFilesFromS3 } from "../../lib/s3";
+import { bulkDeleteObjectRecords } from "../object-records/bulk-delete";
+import { resolveDocumentRecordIds } from "../object-records/resolve-document-record";
 
 /**
  * Deletes multiple folders and updates parent folder counts.
@@ -62,6 +64,23 @@ export const deleteFolders = async (data: {
         ],
       },
     });
+
+    // Delete each doc's 1:1 graph mirror (+ its `mentions` links / typed row via
+    // FK cascade) BEFORE the folder delete cascades the documents away —
+    // otherwise the mirror's `document_id` FK nulls (ON DELETE SET NULL) and the
+    // record survives as a fileless "Document" orphan.
+    const mirrorIds = [
+      ...(
+        await resolveDocumentRecordIds({
+          documentIds: documentsToDelete.map((d) => d.id),
+          teamId,
+          tx,
+        })
+      ).values(),
+    ];
+    if (mirrorIds.length > 0) {
+      await bulkDeleteObjectRecords({ teamId, ids: mirrorIds, tx });
+    }
 
     // Delete folder (documents will be deleted by cascade)
     const deleteResult = await tx

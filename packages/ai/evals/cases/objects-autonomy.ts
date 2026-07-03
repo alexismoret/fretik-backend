@@ -339,7 +339,7 @@ const seedRichType = async (ctx: EvalCaseContext): Promise<void> => {
     { key: "website", type: "url" },
     { key: "headcount", type: "number" },
     { key: "signed_on", type: "date" },
-    { key: "last_contact", type: "datetime" },
+    { key: "last_contact", type: "date", config: { hasTime: true } },
     {
       key: "annual_value",
       type: "money",
@@ -358,6 +358,7 @@ const seedRichType = async (ctx: EvalCaseContext): Promise<void> => {
     },
     { key: "active", type: "boolean" },
     { key: "phone", type: "phone" },
+    { key: "priority", type: "rating", config: { ratingMax: 5 } },
     {
       key: "regions",
       type: "multi_select",
@@ -393,7 +394,7 @@ const richCreate: EvalCase = {
   // Values are deliberately phrased the way a user speaks (scheme-less site,
   // a label not a slug for the tier, plain-language regions, a date for a
   // datetime, an amount with a currency word) — coercion must absorb all of it.
-  prompt: `Add an account to our records: ${RICH_NAME}. Website northwind.example, 320 people, signed on 2026-03-15, last contact on 2026-06-27, annual value 75000 euros, Gold tier, it's active, phone +33145678901, regions EMEA and APAC.`,
+  prompt: `Add an account to our records: ${RICH_NAME}. Website northwind.example, 320 people, signed on 2026-03-15, last contact on 2026-06-27, annual value 75000 euros, Gold tier, it's active, phone +33145678901, priority 4 out of 5, regions EMEA and APAC.`,
   tags: ["objects", "coercion", "data-quality"],
   seed: retryingSeed(seedRichType),
   cleanup: (ctx) => dropType(ctx, ACCOUNT_RICH_KEY),
@@ -449,6 +450,8 @@ const richCreate: EvalCase = {
         // url: a scheme-less host gained https://.
         if (typeof d.website !== "string" || !/^https?:\/\//.test(d.website))
           return fail("website missing scheme");
+        // rating: a plain number from "4 out of 5".
+        if (Number(d.priority) !== 4) return fail("priority not coerced to 4");
         // number + money survived as their typed values.
         if (Number(d.headcount) !== 320) return fail("headcount wrong");
         const money = d.annual_value;
@@ -714,10 +717,102 @@ const sqlToCsv: EvalCase = {
   ],
 };
 
+// ── Case 9: location field — address → geocoded FK, zero errors ───────────────
+
+const PLACE_KEY = "eval_location_place";
+const PLACE_NAME = "Eval North Office";
+const PLACE_ADDRESS = "1600 Amphitheatre Parkway, Mountain View, CA";
+
+const locationCreate: EvalCase = {
+  id: "obj-location-create",
+  description:
+    "Create a record with a location field from a natural-language address → the address is stored (geocoded to a per-team locations row), other fields survive, zero tool errors.",
+  // A location value is written as a plain address STRING; coercion wraps it and
+  // the server geocodes it into the `locations` table (FK on the typed column).
+  prompt: `Add a ${PLACE_KEY} to our records: "${PLACE_NAME}", located at ${PLACE_ADDRESS}. Add a note: main regional office.`,
+  tags: ["objects", "location", "field-types"],
+  seed: retryingSeed(async (ctx) => {
+    await dropType(ctx, PLACE_KEY);
+    const type = await createObjectType({
+      organizationId: ctx.organizationId,
+      teamId: ctx.teamId,
+      key: PLACE_KEY,
+      label: "Eval Location Place",
+    });
+    const fields: {
+      key: string;
+      type: FieldDefinitionType;
+      isTitle?: boolean;
+    }[] = [
+      { key: "name", type: "text", isTitle: true },
+      { key: "location", type: "location" },
+      { key: "note", type: "text" },
+    ];
+    for (const [i, f] of fields.entries()) {
+      await createFieldDefinition({
+        organizationId: ctx.organizationId,
+        teamId: ctx.teamId,
+        objectTypeId: type.id,
+        key: f.key,
+        label: f.key,
+        type: f.type,
+        isTitle: f.isTitle,
+        displayOrder: i,
+      });
+    }
+    await reconcileObjectTable({ objectTypeId: type.id });
+  }),
+  cleanup: (ctx) => dropType(ctx, PLACE_KEY),
+  budget: {
+    expectedTools: ["manageRecord", "describeObjectType", "searchTools"],
+  },
+  assertions: [
+    { type: "noError" },
+    { type: "toolUsed", tools: ["manageRecord"] },
+    {
+      type: "custom",
+      name: "location-address-stored-and-note-survived",
+      // Coords depend on a live Mapbox call (best-effort), so assert only that
+      // the address landed on the location field and the other field survived.
+      fn: async (_result, ctx) => {
+        const typeId = await resolveObjectTypeId({
+          organizationId: ctx.organizationId,
+          teamId: ctx.teamId,
+          key: PLACE_KEY,
+        });
+        if (!typeId) return "place type missing after run";
+        const rows = await db
+          .select({ id: objectRecords.id })
+          .from(objectRecords)
+          .where(
+            and(
+              eq(objectRecords.teamId, ctx.teamId),
+              eq(objectRecords.objectTypeId, typeId),
+              eq(objectRecords.label, PLACE_NAME),
+            ),
+          );
+        const id = rows[0]?.id;
+        if (!id) return "place record not found after run";
+        const d = (await getObjectRecord({ id })).data;
+        const loc = d.location;
+        const address =
+          typeof loc === "object" && loc !== null
+            ? (loc as { address?: unknown }).address
+            : undefined;
+        if (typeof address !== "string" || address.length === 0)
+          return `location address not stored: ${JSON.stringify(d)}`;
+        if (typeof d.note !== "string" || d.note.length === 0)
+          return `note not preserved alongside location: ${JSON.stringify(d)}`;
+        return true;
+      },
+    },
+  ],
+};
+
 export const objectsAutonomySuite: EvalSuite = {
   name: "objects-autonomy",
   summary:
-    "Autonomous object management — proactive create, propose-don't-act on schema, no-data-loss updates, the relevance gate, tolerant value coercion, bulk CSV import, and SQL→CSV export.",
+    "Autonomous object management — proactive create, propose-don't-act on schema, no-data-loss updates, the relevance gate, tolerant value coercion (incl. rating + location), bulk CSV import, and SQL→CSV export.",
   cases: [
     explicitCreate,
     implicitCreate,
@@ -727,5 +822,6 @@ export const objectsAutonomySuite: EvalSuite = {
     richCreate,
     bulkCsvImport,
     sqlToCsv,
+    locationCreate,
   ],
 };

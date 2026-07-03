@@ -202,7 +202,6 @@ const buildRowFromSeed = (data: {
     aiExtractionEnabled: seed.aiExtractionEnabled ?? true,
     vectorizeInclude: seed.vectorizeInclude ?? true,
     displayInPanel: seed.displayInPanel ?? true,
-    displayInFilters: seed.displayInFilters ?? false,
     enabled: seed.enabled ?? true,
     displayOrder: seed.displayOrder,
   };

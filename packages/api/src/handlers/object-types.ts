@@ -200,6 +200,7 @@ objectTypeRoutes.openapi(getRoute, async (c) => {
 objectTypeRoutes.openapi(createRouteDef, async (c) => {
   const team = c.get("team");
   if (!team) return c.json(teamRequired(), 403);
+  const user = c.get("user");
   const body = c.req.valid("json");
   const created = await createObjectType({
     organizationId: team.organizationId,
@@ -210,6 +211,8 @@ objectTypeRoutes.openapi(createRouteDef, async (c) => {
     description: body.description ?? null,
     icon: body.icon ?? null,
     color: body.color ?? null,
+    sharing: body.sharing,
+    createdByUserId: user.id,
   });
   return c.json(created, 201);
 });
@@ -217,6 +220,7 @@ objectTypeRoutes.openapi(createRouteDef, async (c) => {
 objectTypeRoutes.openapi(createWithFieldsRouteDef, async (c) => {
   const team = c.get("team");
   if (!team) return c.json(teamRequired(), 403);
+  const user = c.get("user");
   const body = c.req.valid("json");
   const created = await createObjectTypeWithFields({
     organizationId: team.organizationId,
@@ -228,6 +232,8 @@ objectTypeRoutes.openapi(createWithFieldsRouteDef, async (c) => {
     icon: body.icon ?? null,
     color: body.color ?? null,
     fields: body.fields,
+    sharing: body.sharing,
+    createdByUserId: user.id,
   });
   return c.json(created, 201);
 });
@@ -235,14 +241,21 @@ objectTypeRoutes.openapi(createWithFieldsRouteDef, async (c) => {
 objectTypeRoutes.openapi(updateRouteDef, async (c) => {
   const team = c.get("team");
   if (!team) return c.json(teamRequired(), 403);
+  const user = c.get("user");
   const { id } = c.req.valid("param");
-  const patch = c.req.valid("json");
+  const { sharing, ...patch } = c.req.valid("json");
   await assertCanWriteType({
     objectTypeId: id,
     teamId: team.id,
     organizationId: team.organizationId,
   });
-  const updated = await updateObjectType({ id, patch });
+  const updated = await updateObjectType({
+    id,
+    patch,
+    sharing,
+    callerTeamId: team.id,
+    createdByUserId: user.id,
+  });
   return c.json(updated, 200);
 });
 

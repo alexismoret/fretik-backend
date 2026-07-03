@@ -36,7 +36,6 @@ const makeField = (
   aiExtractionEnabled: true,
   vectorizeInclude: true,
   displayInPanel: true,
-  displayInFilters: false,
   isTitle: false,
   enabled: true,
   displayOrder: 0,
@@ -305,18 +304,19 @@ describe("coerceRecordValue", () => {
     ).toBe("2026-06-27");
   });
 
-  it("normalizes a datetime field to canonical ISO 8601 UTC", () => {
+  it("normalizes a date field with hasTime to canonical ISO 8601 UTC", () => {
+    const dt = { hasTime: true } as FieldDefinitionConfig;
     // Date only → midnight UTC (the reported 'Expected ISO 8601' case).
-    expect(coerceRecordValue(fieldOf("datetime"), "2026-06-27")).toBe(
+    expect(coerceRecordValue(fieldOf("date", dt), "2026-06-27")).toBe(
       "2026-06-27T00:00:00.000Z",
     );
     // A zone offset is converted to Z (the second reported failure).
     expect(
-      coerceRecordValue(fieldOf("datetime"), "2026-06-27T19:31:00+02:00"),
+      coerceRecordValue(fieldOf("date", dt), "2026-06-27T19:31:00+02:00"),
     ).toBe("2026-06-27T17:31:00.000Z");
     // Already canonical → unchanged.
     expect(
-      coerceRecordValue(fieldOf("datetime"), "2025-01-15T10:30:00.000Z"),
+      coerceRecordValue(fieldOf("date", dt), "2025-01-15T10:30:00.000Z"),
     ).toBe("2025-01-15T10:30:00.000Z");
   });
 
@@ -391,7 +391,11 @@ describe("coerceRecordValue", () => {
   });
 
   it("a date-only or offset datetime passes the shape after coercion (the reported bug)", () => {
-    const def = makeField({ key: "added_on", type: "datetime" });
+    const def = makeField({
+      key: "added_on",
+      type: "date",
+      config: { hasTime: true },
+    });
     const shape = buildRecordShape([def]);
     // Both raw forms the agent sent originally were rejected outright.
     expect(shape.safeParse({ added_on: "2026-06-27" }).success).toBe(false);

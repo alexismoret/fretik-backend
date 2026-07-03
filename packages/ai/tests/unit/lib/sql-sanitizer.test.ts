@@ -193,6 +193,16 @@ describe("sanitizeSelect — object graph surface (typed tables)", () => {
     expect(sql).toContain("data.obj_3f9a2b1c4d5e");
   });
 
+  test("accepts a JOIN to locations with a PostGIS spatial filter", () => {
+    const sql = sanitizeSelect(
+      `SELECT o.id, loc.resolved_address
+       FROM data.obj_3f9a2b1c4d5e o
+       JOIN locations loc ON loc.id = o."site"
+       WHERE loc.geom && ST_MakeEnvelope(2.2, 48.8, 2.4, 48.9, 4326)`,
+    );
+    expect(sql).toContain("locations");
+  });
+
   test("accepts the graph relations (links / link_types / domain_events)", () => {
     const sql = sanitizeSelect(
       "SELECT l.id FROM links l JOIN link_types lt ON lt.id = l.link_type_id JOIN domain_events de ON de.subject_record_id = l.from_record_id",

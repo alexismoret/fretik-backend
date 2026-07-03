@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import {
   type AnyPgColumn,
+  boolean,
   customType,
   decimal,
   halfvec,
@@ -107,6 +108,13 @@ export const objectRecords = pgTable(
     documentId: uuid("document_id").references(() => documents.id, {
       onDelete: "set null",
     }),
+
+    // Cross-team sharing mode. TRUE (default) = the record follows its TYPE's
+    // audience live (a type grant makes it visible); FALSE = the record carries
+    // its OWN audience via `record_shares` (always a subset of the type's), so a
+    // custom record can be narrower than its type. The RLS policy gates the
+    // type-grant arm on this flag — see the object_records policy + `scope.ts`.
+    inheritTypeSharing: boolean("inherit_type_sharing").notNull().default(true),
 
     // Denormalized actor stamps (Notion's Created-by / Last-edited-by). Cheap
     // "who touched this" display + filtering ("my records", "AI-created"); the

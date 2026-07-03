@@ -36,7 +36,6 @@ export const accountingTemplate: DocumentFieldTemplate = {
         opt("documentType", "payslip"),
         opt("documentType", "other"),
       ],
-      displayInFilters: true,
       displayOrder: 0,
     },
     {
@@ -44,7 +43,6 @@ export const accountingTemplate: DocumentFieldTemplate = {
       labelKey: "accounting.fields.invoiceNumber.label",
       descriptionKey: "accounting.fields.invoiceNumber.description",
       type: "text",
-      displayInFilters: true,
       displayOrder: 1,
     },
     {
@@ -52,7 +50,6 @@ export const accountingTemplate: DocumentFieldTemplate = {
       labelKey: "accounting.fields.invoiceDate.label",
       descriptionKey: "accounting.fields.invoiceDate.description",
       type: "date",
-      displayInFilters: true,
       displayOrder: 2,
     },
     {
@@ -60,7 +57,6 @@ export const accountingTemplate: DocumentFieldTemplate = {
       labelKey: "accounting.fields.dueDate.label",
       descriptionKey: "accounting.fields.dueDate.description",
       type: "date",
-      displayInFilters: true,
       displayOrder: 3,
     },
     {
@@ -78,7 +74,6 @@ export const accountingTemplate: DocumentFieldTemplate = {
         opt("currency", "CAD"),
         opt("currency", "AUD"),
       ],
-      displayInFilters: true,
       displayOrder: 4,
     },
     {

@@ -25,6 +25,11 @@ export type ColumnSpec = {
 const VIRTUAL_TYPES: ReadonlySet<FieldDefinitionType> = new Set([
   "relation",
   "rollup",
+  // System properties — read-only projections of the registry's own columns.
+  "created_time",
+  "last_edited_time",
+  "created_by",
+  "last_edited_by",
 ]);
 
 export const isVirtualField = (def: FieldDefinition): boolean =>
@@ -36,14 +41,23 @@ const scalarSqlType = (type: FieldDefinitionType): string => {
     case "number":
     case "rating":
       return "numeric";
+    // The date family is always an instant (`config.hasTime` only toggles
+    // display/coercion) so a time-less value is midnight UTC — one column type,
+    // no DDL when the toggle flips.
     case "date":
-      return "date";
-    case "datetime":
       return "timestamptz";
     case "boolean":
       return "boolean";
     case "multi_select":
       return "text[]";
+    // Auto-increment counter — the DDL engine attaches a per-field sequence and
+    // a `DEFAULT nextval(...)` (see table.ts); the write path never sets it.
+    case "unique_id":
+      return "bigint";
+    // Geocoded place — a FK (bigint) into the per-team `locations` table. The
+    // LocationValue is reconstructed on read via a LEFT JOIN (see record-io).
+    case "location":
+      return "bigint";
     // text / markdown / phone / url / email / select → text.
     default:
       return "text";

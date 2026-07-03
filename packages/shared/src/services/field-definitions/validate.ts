@@ -22,7 +22,6 @@ export type FieldDefinitionPatch = {
   aiExtractionEnabled?: boolean;
   vectorizeInclude?: boolean;
   displayInPanel?: boolean;
-  displayInFilters?: boolean;
   enabled?: boolean;
   displayOrder?: number;
 };

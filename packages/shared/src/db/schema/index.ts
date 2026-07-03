@@ -13,7 +13,7 @@ export * from "./organization-extensions";
 // Per-team AI model selection (chantier C8)
 export * from "./team-ai-settings";
 
-// Folders and labels (folders, labels, document_labels)
+// Folders (document hierarchy)
 export * from "./folders";
 
 // Documents (file storage and pre-extraction)
@@ -36,6 +36,13 @@ export * from "./object-records";
 // `field-types` is the registry: the field-type catalogue + per-type config.
 export * from "./field-definitions";
 export * from "./field-types";
+
+// Global (org-agnostic) geocode cache for `location` fields.
+export * from "./mapbox-geocode-cache";
+
+// Per-team geospatial store for `location` fields (PostGIS-backed). Typed
+// `location` columns FK into it; the map view + spatial filters query its geom.
+export * from "./locations";
 
 // Object sharing (cross-team ACL: object_grants = share a type, record_shares =
 // share one record). Consulted by the object_records RLS predicate.

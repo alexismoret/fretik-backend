@@ -42,7 +42,6 @@ export const defaultTemplate: DocumentFieldTemplate = {
           labelKey: "default.fields.documentType.options.other",
         },
       ],
-      displayInFilters: true,
       displayOrder: 0,
     },
     {

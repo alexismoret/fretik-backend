@@ -89,7 +89,6 @@ export const createDescribeObjectTypeTool = () =>
           description: f.description,
           config: f.config,
           isTitle: f.isTitle,
-          displayInFilters: f.displayInFilters,
         })),
         relations: type.relations.map((r) => ({
           key: r.key,

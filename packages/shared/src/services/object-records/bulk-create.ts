@@ -15,6 +15,7 @@ import {
   type RecordRelationInput,
   resolveRelationInputs,
 } from "../links/resolve-relation-inputs";
+import { resolveLocationRefsBatch } from "../locations/resolve-batch";
 import { buildExtensionInsertBatch } from "../object-schema/record-io";
 import { filterTeamMemberIds } from "../team/members";
 import { buildCreateDiff } from "./create-diff";
@@ -124,6 +125,19 @@ export const bulkCreateObjectRecords = async (input: {
       errors.push({ index, error: formatBulkRowError(error) });
     }
   }
+
+  // 1b. Resolve every location value to a FK into the per-team `locations` table
+  //     — one batched, cached, best-effort pass before the transaction (geocode
+  //     network is never held open inside the tx). Location isn't an identity
+  //     field, so the labels computed above stand.
+  const geocoded = await resolveLocationRefsBatch({
+    teamId: input.teamId,
+    fieldDefs,
+    rows: prepared.map((p) => p.data),
+  });
+  geocoded.forEach((data, i) => {
+    prepared[i]!.data = data;
+  });
 
   const ids: (string | null)[] = input.rows.map(() => null);
 

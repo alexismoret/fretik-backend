@@ -16,7 +16,6 @@ export type StarterField = {
   type: FieldDefinitionType;
   isTitle?: boolean;
   config?: FieldDefinitionConfig;
-  displayInFilters?: boolean;
   displayOrder: number;
 };
 

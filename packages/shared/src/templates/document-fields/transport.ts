@@ -51,7 +51,6 @@ export const transportTemplate: DocumentFieldTemplate = {
         opt("documentType", "record"),
         opt("documentType", "unknown"),
       ],
-      displayInFilters: true,
       displayOrder: 0,
     },
     {
@@ -67,7 +66,6 @@ export const transportTemplate: DocumentFieldTemplate = {
         opt("transportMode", "inland_waterway"),
         opt("transportMode", "multimodal"),
       ],
-      displayInFilters: true,
       displayOrder: 1,
     },
     {
@@ -123,7 +121,6 @@ export const transportTemplate: DocumentFieldTemplate = {
         opt("transportType", "tracking_report"),
         opt("transportType", "special_instruction"),
       ],
-      displayInFilters: true,
       displayOrder: 2,
     },
     {
@@ -139,7 +136,6 @@ export const transportTemplate: DocumentFieldTemplate = {
       descriptionKey: "transport.fields.documentNumber.description",
       type: "text",
       configExtras: { max: 100 },
-      displayInFilters: true,
       displayOrder: 4,
     },
   ],

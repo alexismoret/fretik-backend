@@ -23,7 +23,7 @@ import { TOOL_ERROR_CODES } from "../lib/tool-error-codes";
  * `{ fieldKey, value }` pairs. The model can discover available keys
  * via `describeObjectType("document")` (or by inspecting field values
  * returned here) and use them to refine searches. Universal filters
- * (label, entity) remain typed.
+ * (linked records) remain typed.
  */
 
 export const createListDocumentsTool = () =>
@@ -37,7 +37,6 @@ export const createListDocumentsTool = () =>
       "- search: substring match on the original filename (case-insensitive).",
       "- folderId: restrict to a single folder.",
       "- status: processing status ('ready' for usable docs).",
-      "- labelIds: any-of match on the team's labels.",
       "- entityIds: any-of match on linked organizations (record ids the document mentions).",
       "- customFilters: equality on the team's configured dynamic fields. Each entry is `{ fieldKey, value }`. Field keys (`document_type`, `category`, `invoice_number`, …) come from the team's field definitions and are visible on each returned document's `fieldValues` map. AND semantics across entries.",
       "",
@@ -59,10 +58,6 @@ export const createListDocumentsTool = () =>
         .enum(documentStatusEnum.enumValues)
         .optional()
         .describe("Processing status — usually 'ready' for usable documents"),
-      labelIds: z
-        .array(z.string().uuid())
-        .optional()
-        .describe("Filter to documents tagged with any of these label ids"),
       entityIds: z
         .array(z.string().uuid())
         .optional()
@@ -100,16 +95,7 @@ export const createListDocumentsTool = () =>
       offset: z.number().int().nonnegative().optional(),
     }),
     execute: async (
-      {
-        search,
-        folderId,
-        status,
-        labelIds,
-        entityIds,
-        customFilters,
-        limit,
-        offset,
-      },
+      { search, folderId, status, entityIds, customFilters, limit, offset },
       options,
     ) => {
       const ctx = getRuntimeContext(options);
@@ -124,7 +110,6 @@ export const createListDocumentsTool = () =>
           search,
           folderId,
           status,
-          labelIds,
           entityIds,
           customFilters,
           limit: effectiveLimit,

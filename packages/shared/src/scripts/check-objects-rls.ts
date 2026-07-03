@@ -89,10 +89,13 @@ const structural = async (): Promise<void> => {
     );
   }
 
-  // Registry + catalog sharing-aware policies.
-  for (const [tbl, policy] of [
-    ["object_records", "sql_tool_team_isolation"],
-    ["object_types", "sql_tool_team_isolation"],
+  // Registry + catalog sharing-aware policies. The catalog policy calls
+  // `fretik_type_granted` directly; the registry policy delegates to
+  // `fretik_record_visible` (the inherit-aware helper that folds the type grant
+  // and the per-record share).
+  for (const [tbl, policy, helper] of [
+    ["object_records", "sql_tool_team_isolation", "fretik_record_visible"],
+    ["object_types", "sql_tool_team_isolation", "fretik_type_granted"],
   ] as const) {
     const r = await db.execute<{ rowsecurity: boolean }>(
       sql`SELECT rowsecurity FROM pg_tables WHERE schemaname = 'public' AND tablename = ${tbl}`,
@@ -110,15 +113,15 @@ const structural = async (): Promise<void> => {
       grant.rows[0]?.has === true,
       `${tbl}: SELECT granted to ${SQL_TOOL_ROLE}`,
     );
-    // Both catalog/registry policies must be grant-aware (call fretik_type_granted),
-    // else a shared foreign type's rows are invisible to the SQL role.
+    // Each policy must reference its sharing helper, else a shared foreign
+    // type's rows are invisible to the SQL role.
     const qual = await db.execute<{ qual: string | null }>(
       sql`SELECT qual FROM pg_policies
           WHERE schemaname = 'public' AND tablename = ${tbl} AND policyname = ${policy}`,
     );
     check(
-      (qual.rows[0]?.qual ?? "").includes("fretik_type_granted"),
-      `${tbl}: ${policy} is grant-aware (fretik_type_granted)`,
+      (qual.rows[0]?.qual ?? "").includes(helper),
+      `${tbl}: ${policy} is sharing-aware (${helper})`,
     );
   }
 
@@ -128,6 +131,7 @@ const structural = async (): Promise<void> => {
     "fretik_org",
     "fretik_type_granted",
     "fretik_record_shared",
+    "fretik_record_visible",
   ]) {
     const r = await db.execute<{ n: number }>(
       sql`SELECT count(*)::int AS n FROM pg_proc WHERE proname = ${fn}`,

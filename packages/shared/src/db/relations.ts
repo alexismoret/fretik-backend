@@ -96,7 +96,6 @@ export const relations = defineRelations(schema, (r) => ({
       to: r.teamAiSettings.teamId,
     }),
     folders: r.many.folders(),
-    labels: r.many.labels(),
     documents: r.many.documents(),
     activityLogs: r.many.activityLogs(),
     webhooks: r.many.webhooks(),
@@ -203,30 +202,6 @@ export const relations = defineRelations(schema, (r) => ({
     documents: r.many.documents(),
   },
 
-  labels: {
-    team: r.one.team({
-      from: r.labels.teamId,
-      to: r.team.id,
-    }),
-    documentLabels: r.many.documentLabels(),
-    // Many-to-many through documentLabels
-    documents: r.many.documents({
-      from: r.labels.id.through(r.documentLabels.labelId),
-      to: r.documents.id.through(r.documentLabels.documentId),
-    }),
-  },
-
-  documentLabels: {
-    document: r.one.documents({
-      from: r.documentLabels.documentId,
-      to: r.documents.id,
-    }),
-    label: r.one.labels({
-      from: r.documentLabels.labelId,
-      to: r.labels.id,
-    }),
-  },
-
   // ============================================================================
   // Documents Relations
   // ============================================================================
@@ -258,12 +233,6 @@ export const relations = defineRelations(schema, (r) => ({
       from: r.documents.id,
       to: r.objectRecords.documentId,
       optional: true,
-    }),
-    documentLabels: r.many.documentLabels(),
-    // Many-to-many through documentLabels
-    labels: r.many.labels({
-      from: r.documents.id.through(r.documentLabels.documentId),
-      to: r.labels.id.through(r.documentLabels.labelId),
     }),
     chatFiles: r.many.aiChatFiles(),
   },

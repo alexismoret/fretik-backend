@@ -87,7 +87,6 @@ const seedGraph = async (ctx: EvalCaseContext): Promise<void> => {
       key: f.key,
       label: f.key,
       type: f.type,
-      displayInFilters: true,
       displayOrder: i,
     });
   }

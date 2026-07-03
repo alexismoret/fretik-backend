@@ -4,6 +4,7 @@ import {
   fieldConfigSchema,
   fieldDefinitionTypeSchema,
 } from "@fretik/shared/schemas/field-definitions";
+import { audienceSchema } from "@fretik/shared/schemas/object-sharing";
 import { FIELD_DEFINITION_LIMITS } from "@fretik/shared/services/field-definitions/constants";
 import { assertCanWriteType } from "@fretik/shared/services/object-sharing/write-access";
 import { OBJECT_TYPE_LIMITS } from "@fretik/shared/services/object-types/constants";
@@ -49,6 +50,9 @@ export const createManageObjectTypeTool = () =>
       "- update: typeKey + any of label, labelPlural, description, icon, enabled.",
       "- delete: typeKey. Drops the type and all its records.",
       "",
+      "Types are private to the team by default. `sharing` widens the audience (records inherit it live). Owner team only; propose with askUserQuestion before sharing beyond the team — especially write or whole-org.",
+      "",
+      "Every table auto-includes DB-maintained `created_at` / `updated_at` (reserved keys) — don't add a date field for creation/update time; query those columns.",
       "`description` (the type and each field) is one line — what it is for. Required on create.",
     ].join("\n"),
     inputSchema: z.object({
@@ -73,6 +77,11 @@ export const createManageObjectTypeTool = () =>
       icon: z.string().nullish(),
       color: z.string().nullish(),
       enabled: z.boolean().optional().describe("update only — disable/enable."),
+      sharing: audienceSchema
+        .optional()
+        .describe(
+          "Cross-team audience (owner team only). { mode: 'internal' } (default, owning team only), { mode: 'org', permission } (whole organization), or { mode: 'teams', teams: [{ teamId, permission }] }. Records of the type inherit this live.",
+        ),
       fields: z
         .array(
           z.object({
@@ -85,7 +94,6 @@ export const createManageObjectTypeTool = () =>
               .describe("What this field holds, one line."),
             config: fieldConfigSchema.optional(),
             isTitle: z.boolean().optional(),
-            displayInFilters: z.boolean().optional(),
           }),
         )
         .max(FIELD_DEFINITION_LIMITS.MAX_FIELDS_PER_TYPE)
@@ -137,13 +145,14 @@ export const createManageObjectTypeTool = () =>
               description: input.description ?? null,
               icon: input.icon ?? null,
               color: safeColor,
+              sharing: input.sharing,
+              createdByUserId: ctx.userId ?? null,
               fields: input.fields.map((f) => ({
                 label: f.label,
                 type: f.type,
                 description: f.description ?? null,
                 config: dropInvalidOptionColors(f.config),
                 isTitle: f.isTitle,
-                displayInFilters: f.displayInFilters,
               })),
             });
             return {
@@ -164,6 +173,8 @@ export const createManageObjectTypeTool = () =>
             description: input.description ?? null,
             icon: input.icon ?? null,
             color: safeColor,
+            sharing: input.sharing,
+            createdByUserId: ctx.userId ?? null,
           });
           return { ok: true, type: { id: type.id, key: type.key } };
         }
@@ -214,6 +225,9 @@ export const createManageObjectTypeTool = () =>
                 : undefined,
             enabled: input.enabled,
           },
+          sharing: input.sharing,
+          callerTeamId: ctx.teamId,
+          createdByUserId: ctx.userId ?? null,
         });
         return { ok: true, type: { id: type.id, key: type.key } };
       } catch (err) {

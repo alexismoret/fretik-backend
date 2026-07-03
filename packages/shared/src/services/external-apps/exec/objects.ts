@@ -4,6 +4,7 @@ import {
   fieldConfigSchema,
   fieldDefinitionTypeSchema,
 } from "../../../schemas/field-definitions";
+import { audienceSchema } from "../../../schemas/object-sharing";
 import { recordRelationInputSchema } from "../../../schemas/ontology";
 import type { EventActor } from "../../domain-events/emit";
 import { FIELD_DEFINITION_LIMITS } from "../../field-definitions/constants";
@@ -235,7 +236,6 @@ const fieldInputSchema = z.object({
     .max(FIELD_DEFINITION_LIMITS.MAX_DESCRIPTION_CHARS),
   config: fieldConfigSchema.optional(),
   isTitle: z.boolean().optional(),
-  displayInFilters: z.boolean().optional(),
 });
 
 const createTypeArgs = z.object({
@@ -245,6 +245,8 @@ const createTypeArgs = z.object({
   // One line — what this type is for. Required on create.
   description: z.string().min(1).max(OBJECT_TYPE_LIMITS.MAX_DESCRIPTION_CHARS),
   icon: z.string().nullish(),
+  // Cross-team audience. Omit = internal (owning team only).
+  sharing: audienceSchema.optional(),
   fields: z.array(fieldInputSchema).optional(),
 });
 
@@ -268,13 +270,14 @@ const createType = async (
       description: args.description ?? null,
       icon: args.icon ?? null,
       color: null,
+      sharing: args.sharing,
+      createdByUserId: ctx.userId,
       fields: args.fields.map((f) => ({
         label: f.label,
         type: f.type,
         description: f.description ?? null,
         config: f.config,
         isTitle: f.isTitle,
-        displayInFilters: f.displayInFilters,
       })),
     });
     return {
@@ -298,6 +301,8 @@ const createType = async (
     description: args.description ?? null,
     icon: args.icon ?? null,
     color: null,
+    sharing: args.sharing,
+    createdByUserId: ctx.userId,
   });
   return { status: "ok", data: { id: type.id, key: type.key, fields: [] } };
 };
@@ -312,6 +317,8 @@ const updateTypeArgs = z.object({
     .nullish(),
   icon: z.string().nullish(),
   enabled: z.boolean().optional(),
+  // Change the cross-team audience (owner team only).
+  sharing: audienceSchema.optional(),
   addFields: z.array(fieldInputSchema).optional(),
 });
 
@@ -334,7 +341,7 @@ const updateType = async (
     args.description !== undefined ||
     args.icon !== undefined ||
     args.enabled !== undefined;
-  if (hasMetadata) {
+  if (hasMetadata || args.sharing) {
     await updateObjectType({
       id: objectTypeId,
       patch: {
@@ -344,6 +351,9 @@ const updateType = async (
         icon: args.icon,
         enabled: args.enabled,
       },
+      sharing: args.sharing,
+      callerTeamId: ctx.teamId,
+      createdByUserId: ctx.userId,
     });
   }
 
@@ -358,7 +368,6 @@ const updateType = async (
       config: f.config,
       description: f.description ?? null,
       isTitle: f.isTitle,
-      displayInFilters: f.displayInFilters,
     });
     addedFields.push({ key: field.key, type: field.type });
   }
@@ -376,7 +385,6 @@ const addFieldArgs = z.object({
     .min(1)
     .max(FIELD_DEFINITION_LIMITS.MAX_DESCRIPTION_CHARS),
   config: fieldConfigSchema.optional(),
-  displayInFilters: z.boolean().optional(),
 });
 
 const addField = async (
@@ -395,7 +403,6 @@ const addField = async (
     type: args.type,
     config: args.config,
     description: args.description ?? null,
-    displayInFilters: args.displayInFilters,
   });
   return { status: "ok", data: { key: field.key, type: field.type } };
 };
@@ -411,7 +418,6 @@ const changeFieldArgs = z.object({
     .nullish(),
   config: fieldConfigSchema.optional(),
   type: fieldDefinitionTypeSchema.optional(),
-  displayInFilters: z.boolean().optional(),
   enabled: z.boolean().optional(),
   cascade: z.boolean().optional(),
 });
@@ -468,7 +474,6 @@ const changeField = async (
       label: args.label ?? undefined,
       description: args.description,
       config: args.config,
-      displayInFilters: args.displayInFilters,
       enabled: args.enabled,
     },
   });

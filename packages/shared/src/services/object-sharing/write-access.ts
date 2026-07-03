@@ -116,20 +116,29 @@ export const assertCanWriteRecord = async (input: {
 }): Promise<void> => {
   const exec = input.tx ?? db;
   const record = await exec.query.objectRecords.findFirst({
-    columns: { teamId: true, organizationId: true, objectTypeId: true },
+    columns: {
+      teamId: true,
+      organizationId: true,
+      objectTypeId: true,
+      inheritTypeSharing: true,
+    },
     where: { id: input.recordId },
   });
   if (!record || record.organizationId !== input.organizationId) {
     return throwHttpError(404, notFound("Record not found"));
   }
   if (record.teamId === input.teamId) return;
+  // A type `write` grant only opens a record that still INHERITS the type's
+  // sharing; a custom record (inherit=false) is reachable only through its own
+  // `write` share — mirrors `fretik_record_visible`.
   if (
-    (await hasTypeWriteGrant({
-      objectTypeId: record.objectTypeId,
-      teamId: input.teamId,
-      organizationId: input.organizationId,
-      exec,
-    })) ||
+    (record.inheritTypeSharing &&
+      (await hasTypeWriteGrant({
+        objectTypeId: record.objectTypeId,
+        teamId: input.teamId,
+        organizationId: input.organizationId,
+        exec,
+      }))) ||
     (await hasRecordWriteShare({
       recordId: input.recordId,
       teamId: input.teamId,

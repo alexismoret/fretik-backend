@@ -12,10 +12,8 @@ import {
   SQL_TOOL_ROLE,
   SYS_COL,
   SYSTEM_COLUMN_NAMES,
+  uniqueIdSequenceName,
 } from "./identifiers";
-
-/** Structural columns every extension table owns (never field-derived). */
-const SYSTEM_COLUMNS = SYSTEM_COLUMN_NAMES;
 
 /**
  * Physical-table lifecycle for object types — the DDL engine. Driven by the
@@ -37,8 +35,8 @@ const SYSTEM_COLUMNS = SYSTEM_COLUMN_NAMES;
  * There is NO per-type view: the chatbot's read tool queries these tables (and
  * the registry) directly. Safety is row-level security: the SQL read role
  * (`fretik_sql_tool`) is SELECT-only and every table is armed at creation with
- * `_team_id = fretik_team() OR fretik_type_granted(<typeId>) OR
- * fretik_record_shared(id)`. The `fretik_*` helpers live in the foundation
+ * `_team_id = fretik_team() OR fretik_record_visible(id)` (the helper folds the
+ * inherit-aware type grant and the record share). The `fretik_*` helpers live in the foundation
  * migration. The dedicated `data` schema is created once by migration (global to
  * the SaaS), never at runtime. DDL composes raw identifiers, every one
  * slug/UUID-guarded upstream (`identifiers.ts`) — the anti-injection boundary.
@@ -51,9 +49,9 @@ const ddl = async (exec: Executor, stmt: string): Promise<void> => {
 /**
  * Arm row-level security on a freshly-created (or re-synced) extension table:
  * enable RLS, (re)create the read policy for the SQL tool role, grant SELECT.
- * Idempotent — `DROP POLICY IF EXISTS` then `CREATE`. The object-type id is a
- * constant for the whole table, so `fretik_type_granted(<id>)` is constant-folded
- * (no per-row lookup).
+ * Idempotent — `DROP POLICY IF EXISTS` then `CREATE`. The policy text is
+ * type-independent (`fretik_record_visible(id)` resolves the type + inherit flag
+ * from the registry), so it is identical across every extension table.
  */
 const armTableSecurity = async (
   exec: Executor,
@@ -67,8 +65,7 @@ const armTableSecurity = async (
     `CREATE POLICY sql_tool_read ON ${table} FOR SELECT TO ${SQL_TOOL_ROLE}
        USING (
          ${SYS_COL.team} = fretik_team()
-         OR fretik_type_granted('${objectTypeId}'::uuid)
-         OR fretik_record_shared(${SYS_COL.id})
+         OR fretik_record_visible(${SYS_COL.id})
        )`,
   );
   await ddl(exec, `GRANT SELECT ON ${table} TO ${SQL_TOOL_ROLE}`);
@@ -159,7 +156,7 @@ export const reconcileObjectTable = async (input: {
   const table = qualifiedObjectTable(input.objectTypeId);
   for (const row of existing.rows) {
     const name = String(row.column_name);
-    if (SYSTEM_COLUMNS.has(name) || desired.has(name)) continue;
+    if (SYSTEM_COLUMN_NAMES.has(name) || desired.has(name)) continue;
     await ddl(exec, `ALTER TABLE ${table} DROP COLUMN IF EXISTS "${name}"`);
   }
 };
@@ -172,6 +169,22 @@ export const addFieldColumns = async (input: {
 }): Promise<void> => {
   const exec = input.tx ?? db;
   const table = qualifiedObjectTable(input.objectTypeId);
+  // `unique_id`: a dedicated sequence fills the column (Notion "Unique ID" — a
+  // sequential per-type counter). Adding a NOT NULL column with a volatile
+  // default backfills every existing row with a distinct value; `OWNED BY` ties
+  // the sequence's lifetime to the column, so a drop/retype removes it too.
+  if (input.field.type === "unique_id") {
+    const [c] = columnsForField(input.field);
+    if (!c) return;
+    const seq = uniqueIdSequenceName(input.field.id);
+    await ddl(exec, `CREATE SEQUENCE IF NOT EXISTS ${seq}`);
+    await ddl(
+      exec,
+      `ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS "${c.name}" bigint NOT NULL DEFAULT nextval('${seq}')`,
+    );
+    await ddl(exec, `ALTER SEQUENCE ${seq} OWNED BY ${table}."${c.name}"`);
+    return;
+  }
   for (const c of columnsForField(input.field)) {
     await ddl(
       exec,

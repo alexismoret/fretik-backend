@@ -6,6 +6,7 @@ import { badRequest, notFound, throwHttpError } from "../../lib/errors";
 import { countNonNullColumnValues } from "../object-records/field-data";
 import { refreshObjectTableAfterCatalogChange } from "../object-schema/catalog-sync";
 import { changeFieldColumns, renameFieldColumns } from "../object-schema/table";
+import { isDocumentObjectType } from "../object-types/is-document-type";
 import { invalidateFieldDefinitionsCache } from "./cache";
 import { fillOptionColors } from "./normalize-config";
 import {
@@ -104,6 +105,17 @@ export const updateFieldDefinition = async (data: {
           ),
         );
       }
+    }
+
+    // The document type's title is locked to its `name` field — neither promote
+    // another field nor demote `name`. Drop any isTitle change there.
+    const isDocument = await isDocumentObjectType({
+      organizationId: existing.organizationId,
+      teamId: existing.teamId,
+      objectTypeId: existing.objectTypeId,
+    });
+    if (isDocument && patch.isTitle !== undefined) {
+      patch = { ...patch, isTitle: undefined };
     }
 
     // Only a text field can be the title. Ignore a promotion of any other type.

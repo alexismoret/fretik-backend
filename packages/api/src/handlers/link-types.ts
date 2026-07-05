@@ -79,6 +79,7 @@ linkTypeRoutes.openapi(listRoute, async (c) => {
 linkTypeRoutes.openapi(createRouteDef, async (c) => {
   const team = c.get("team");
   if (!team) return c.json(teamRequired(), 403);
+  const user = c.get("user");
   const body = c.req.valid("json");
   const created = await createLinkType({
     organizationId: team.organizationId,
@@ -90,6 +91,7 @@ linkTypeRoutes.openapi(createRouteDef, async (c) => {
     inverseKey: body.inverseKey ?? null,
     inverseLabel: body.inverseLabel ?? null,
     cardinality: body.cardinality,
+    actor: { actorType: "user", actorUserId: user.id },
   });
   return c.json(created, 201);
 });

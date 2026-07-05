@@ -6,18 +6,24 @@ import type {
 } from "../../db/schema";
 import { domainEvents } from "../../db/schema";
 import { internalError, throwHttpError } from "../../lib/errors";
+import {
+  assertValidDomainEventType,
+  type DomainEventType,
+} from "./event-types";
 import { type EventRecordLink, linkEventToRecords } from "./link-records";
 
 /**
  * Who/what is performing a mutation. Carried onto every domain event so the
  * journal records provenance: user CRUD (`user`), an agent tool-call (`agent`,
  * with its conversation), the document pipeline / seeds (`system`), or an
- * external connector (`connector`).
+ * external connector (`connector`). `agentKey` names the agent when actorType
+ * is agent/workflow — "chatbot" today, "workflow:<key>" later.
  */
 export interface EventActor {
   actorType: DomainEventActor;
   actorUserId?: string | null;
   conversationId?: string | null;
+  agentKey?: string | null;
 }
 
 /**
@@ -27,6 +33,23 @@ export interface EventActor {
  * unowned mutations identically.
  */
 export const SYSTEM_ACTOR: EventActor = { actorType: "system" };
+
+/**
+ * Map the ai-memory actor vocabulary (`agent` | `human`) onto the journal's —
+ * the journal enum is canonical; `ai_memories` keeps its two-value audit enum
+ * for its own UI. Today only the chatbot's memory tool writes as `agent`, hence
+ * the fixed agentKey; a future workflow memory path passes its own EventActor.
+ */
+export const toDomainEventActor = (input: {
+  byActor: "agent" | "human";
+  userId?: string | null;
+  conversationId?: string | null;
+}): EventActor => ({
+  actorType: input.byActor === "human" ? "user" : "agent",
+  actorUserId: input.userId ?? null,
+  conversationId: input.conversationId ?? null,
+  ...(input.byActor === "agent" ? { agentKey: "chatbot" } : {}),
+});
 
 /**
  * Append one entry to the durable journal — the transactional outbox. ALWAYS
@@ -44,7 +67,7 @@ export const emitDomainEvent = async (input: {
   tx?: Transaction;
   organizationId: string;
   teamId: string;
-  type: string;
+  type: DomainEventType;
   actor: EventActor;
   subjectType?: string | null;
   subjectRecordId?: string | null;
@@ -53,6 +76,7 @@ export const emitDomainEvent = async (input: {
   dedupKey?: string | null;
   recordLinks?: EventRecordLink[];
 }): Promise<DomainEvent> => {
+  assertValidDomainEventType(input.type);
   const exec = input.tx ?? db;
 
   const values: NewDomainEvent = {
@@ -61,6 +85,7 @@ export const emitDomainEvent = async (input: {
     type: input.type,
     actorType: input.actor.actorType,
     actorUserId: input.actor.actorUserId ?? null,
+    agentKey: input.actor.agentKey ?? null,
     conversationId: input.actor.conversationId ?? null,
     subjectType: input.subjectType ?? null,
     subjectRecordId: input.subjectRecordId ?? null,

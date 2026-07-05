@@ -15,7 +15,10 @@ import { resolveObjectTypeId } from "@fretik/shared/services/object-types/resolv
 import { updateObjectType } from "@fretik/shared/services/object-types/update";
 import { tool } from "ai";
 import { z } from "zod";
-import { getRuntimeContext } from "../agents/shared/runtime-context";
+import {
+  agentEventActor,
+  getRuntimeContext,
+} from "../agents/shared/runtime-context";
 import { TOOL_ERROR_CODES, toolError } from "../lib/tool-error-codes";
 
 /**
@@ -175,6 +178,7 @@ export const createManageObjectTypeTool = () =>
             color: safeColor,
             sharing: input.sharing,
             createdByUserId: ctx.userId ?? null,
+            actor: agentEventActor(ctx),
           });
           return { ok: true, type: { id: type.id, key: type.key } };
         }
@@ -206,7 +210,10 @@ export const createManageObjectTypeTool = () =>
         });
 
         if (input.action === "delete") {
-          const result = await deleteObjectType({ id: objectTypeId });
+          const result = await deleteObjectType({
+            id: objectTypeId,
+            actor: agentEventActor(ctx),
+          });
           return { ok: true, ...result };
         }
 
@@ -228,6 +235,7 @@ export const createManageObjectTypeTool = () =>
           sharing: input.sharing,
           callerTeamId: ctx.teamId,
           createdByUserId: ctx.userId ?? null,
+          actor: agentEventActor(ctx),
         });
         return { ok: true, type: { id: type.id, key: type.key } };
       } catch (err) {

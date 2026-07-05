@@ -1,4 +1,4 @@
-import db from "@fretik/shared/db";
+import db, { type Transaction } from "@fretik/shared/db";
 import { aiChatFiles, aiMessages } from "@fretik/shared/db/schema";
 import { getProvider } from "@fretik/shared/external-apps/registry";
 import {
@@ -116,10 +116,6 @@ import {
 } from "../lib/stream-errors";
 import { chatbotRateLimitMiddleware } from "../middlewares/chatbot-rate-limit";
 import { internalMiddleware } from "../middlewares/internal";
-import {
-  buildActiveMemoryRecentTail,
-  runActiveMemoryRecall,
-} from "../services/active-memory/recall";
 import { buildChatbotContextManifest } from "../services/chatbot-context/build-manifest";
 import { sendChatbotFinishedEmailIfEnabled } from "../services/chatbot-finished-email";
 import { compactConversation } from "../services/compaction/compact";
@@ -128,6 +124,10 @@ import {
   prepareModelMessages,
   type PrepareModelMessagesDeps,
 } from "../services/native-input";
+import {
+  buildRecallRecentTail,
+  runUnifiedRecall,
+} from "../services/recall/recall";
 import type { HonoInternalAppType } from "../types/hono";
 
 const InternalInvokeSchema = z.object({
@@ -319,13 +319,14 @@ const persistAssistantMessages = async (
   conversationId: string | undefined,
   history: UIMessage[],
   finalMessages: UIMessage[],
-): Promise<void> => {
-  if (!conversationId) return;
+  tx?: Transaction,
+): Promise<UIMessage[]> => {
+  if (!conversationId) return [];
   const known = new Set(history.map((m) => m.id));
   const assistantMessages = finalMessages.filter(
     (m) => !known.has(m.id) && m.role === "assistant",
   );
-  if (assistantMessages.length === 0) return;
+  if (assistantMessages.length === 0) return [];
   await saveMessages(
     conversationId,
     assistantMessages.map((m) => ({
@@ -333,7 +334,45 @@ const persistAssistantMessages = async (
       parts: m.parts,
       metadata: narrowMetadata(m),
     })),
+    tx,
   );
+  return assistantMessages;
+};
+
+/**
+ * The `chat.turn` journal payload: enough for the memory pipeline to distill
+ * an episode without reloading the conversation (previews + tools used), while
+ * staying a few hundred bytes. Full text stays in `ai_messages`.
+ */
+const CHAT_TURN_USER_PREVIEW_MAX = 300;
+const CHAT_TURN_ASSISTANT_PREVIEW_MAX = 500;
+
+const buildChatTurnPayload = (
+  history: UIMessage[],
+  assistantMessages: UIMessage[],
+  lastMessageId: string | undefined,
+): Record<string, unknown> => {
+  const lastUser = [...history].reverse().find((m) => m.role === "user");
+  const toolNames = new Set<string>();
+  let assistantText = "";
+  for (const m of assistantMessages) {
+    for (const p of m.parts) {
+      if (p.type === "dynamic-tool") toolNames.add(p.toolName);
+      else if (p.type.startsWith("tool-"))
+        toolNames.add(p.type.slice("tool-".length));
+    }
+    const text = uiMessageText(m);
+    if (text.length > 0) assistantText = text;
+  }
+  return {
+    ...(lastMessageId ? { lastMessageId } : {}),
+    userMessagePreview: (lastUser ? uiMessageText(lastUser) : "").slice(
+      0,
+      CHAT_TURN_USER_PREVIEW_MAX,
+    ),
+    assistantPreview: assistantText.slice(0, CHAT_TURN_ASSISTANT_PREVIEW_MAX),
+    toolNames: [...toolNames],
+  };
 };
 
 /**
@@ -588,7 +627,7 @@ const inferMimeTypeFromFilename = (filename: string): string => {
 };
 
 /**
- * Build the input bundle for `runActiveMemoryRecall` from the
+ * Build the input bundle for `runUnifiedRecall` from the
  * conversation history. Pure function — never throws, always
  * returns a usable shape (empty strings / arrays when there is
  * nothing to extract). The recall service applies its own skip
@@ -618,7 +657,7 @@ const buildActiveMemoryInputs = (
     )
     .map((m) => ({ role: m.role, text: uiMessageText(m) }))
     .filter((m) => m.text.length > 0);
-  const recentTail = buildActiveMemoryRecentTail(tailMessages);
+  const recentTail = buildRecallRecentTail(tailMessages);
   return { userMessage, attachedFiles, recentTail };
 };
 
@@ -1021,13 +1060,15 @@ const buildTurnCallOptions = async (
           },
           () =>
             withSoftTimeout(
-              runActiveMemoryRecall({
+              runUnifiedRecall({
                 userMessage: activeMemoryInputs.userMessage,
                 attachedFiles: activeMemoryInputs.attachedFiles,
                 recentTail: activeMemoryInputs.recentTail,
                 teamId: params.callOptions.teamId,
                 organizationId: params.callOptions.organizationId,
                 userId: activeMemoryUserId,
+                conversationId: params.conversationId,
+                agentType: "chatbot",
               }),
               // ABOVE the recall's own 15s judge budget (RECALL_TIMEOUT_MS)
               // + RAG headroom — only fires on a true RAG hang, never on a
@@ -1317,20 +1358,23 @@ const runChatbotTurn = async (
     // other error becomes a structured retryable frame.
     onError: recordStreamError,
     onFinish: async ({ messages: finalMessages }) => {
-      await persistAssistantMessages(
-        params.conversationId,
-        params.history,
-        finalMessages,
-      );
-
-      // Journal the turn boundary: a durable `chat.turn` domain event for
-      // memory recall + future workflows (their Phase 5+ consumers). Persisted
-      // conversations only; fire-and-forget and dedup-keyed on the final
-      // message id so a re-fired `onFinish` never double-journals. Advisory in
-      // V1 — not yet co-transactional with the message rows persisted above.
-      if (params.conversationId) {
+      // Persist the turn's messages AND journal its `chat.turn` boundary in
+      // ONE transaction — the outbox guarantee (both commit or neither). The
+      // event feeds memory recall + future workflow triggers; dedup-keyed on
+      // the final message id so a re-fired `onFinish` never double-journals.
+      // Payload carries previews + tool names so the distiller can build an
+      // episode without reloading the turn.
+      await db.transaction(async (tx) => {
+        const persisted = await persistAssistantMessages(
+          params.conversationId,
+          params.history,
+          finalMessages,
+          tx,
+        );
+        if (!params.conversationId) return;
         const lastMessageId = finalMessages[finalMessages.length - 1]?.id;
-        void emitDomainEvent({
+        await emitDomainEvent({
+          tx,
           organizationId: params.callOptions.organizationId,
           teamId: params.callOptions.teamId,
           type: "chat.turn",
@@ -1338,16 +1382,16 @@ const runChatbotTurn = async (
             actorType: "agent",
             actorUserId: params.callOptions.userId ?? null,
             conversationId: params.conversationId,
+            agentKey: "chatbot",
           },
-          payload: lastMessageId ? { lastMessageId } : {},
+          payload: buildChatTurnPayload(
+            params.history,
+            persisted,
+            lastMessageId,
+          ),
           dedupKey: lastMessageId ? `chat.turn:${lastMessageId}` : null,
-        }).catch((err: unknown) => {
-          console.error(
-            `${params.logPrefix} failed to journal chat.turn:`,
-            err,
-          );
         });
-      }
+      });
       // Per-turn observability (tool calls, RAG hits, latency, cost) is
       // captured by Langfuse via `experimental_telemetry` — see
       // `lib/langfuse.ts`. No custom DB telemetry blob or structured log

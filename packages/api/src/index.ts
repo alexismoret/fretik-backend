@@ -4,7 +4,6 @@ import "@fretik/providers";
 
 import { auth } from "@fretik/shared/lib/auth";
 import { errorHandler } from "@fretik/shared/lib/error-handler";
-import { startDocumentProcessingWorker } from "@fretik/shared/services/documents/processing-queue";
 import { OpenAPIHono } from "@hono/zod-openapi";
 import figlet from "figlet";
 import { getConnInfo } from "hono/bun";
@@ -87,11 +86,9 @@ app.route("/skills", skillsRoutes);
 app.route("/external-apps", externalAppsRoutes);
 app.route("/sandbox", sandboxRoutes);
 
-// Start the in-process document-processing worker. Every API replica
-// consumes the shared `document-processing` BullMQ queue, so OCR /
-// extraction / vectorisation scale by adding replicas and never block
-// the AI service. Idempotent + crash-safe (BullMQ reclaims stalled jobs).
-startDocumentProcessingWorker();
+// The document-processing Worker lives in @fretik/jobs (with the memory
+// pipeline) — API replicas only PRODUCE onto the queue. Background CPU
+// (OCR, extraction, vectorise) scales by adding jobs replicas, not API ones.
 
 // Init log
 const text = await figlet.text("fretik API");

@@ -8,6 +8,11 @@ import type {
 } from "../../db/schema";
 import { linkTypes } from "../../db/schema";
 import { badRequest, internalError, throwHttpError } from "../../lib/errors";
+import {
+  emitDomainEvent,
+  type EventActor,
+  SYSTEM_ACTOR,
+} from "../domain-events/emit";
 
 /**
  * Slug grammar for `link_types.normalized_key`: lowercase letter first, then
@@ -77,7 +82,9 @@ export const createLinkType = async (input: {
   status?: OntologyStatus;
   source?: OntologySource;
   confidence?: number | null;
+  actor?: EventActor;
 }): Promise<LinkType> => {
+  const actor = input.actor ?? SYSTEM_ACTOR;
   const normalizedKey = input.key
     ? slugifyLinkTypeKey(input.key)
     : await resolveUniqueLinkKey({
@@ -97,26 +104,44 @@ export const createLinkType = async (input: {
     );
   }
 
-  const [row] = await db
-    .insert(linkTypes)
-    .values({
+  return db.transaction(async (tx) => {
+    const [row] = await tx
+      .insert(linkTypes)
+      .values({
+        organizationId: input.organizationId,
+        teamId: input.teamId,
+        key: input.key ?? normalizedKey,
+        normalizedKey,
+        label: input.label,
+        fromObjectTypeId: input.fromObjectTypeId,
+        toObjectTypeId: input.toObjectTypeId ?? null,
+        cardinality: input.cardinality ?? "many_to_many",
+        inverseKey: input.inverseKey ?? null,
+        inverseLabel: input.inverseLabel ?? null,
+        status: input.status ?? "confirmed",
+        source: input.source ?? "user_manual",
+        confidence: input.confidence == null ? null : String(input.confidence),
+      })
+      .returning();
+    if (!row) {
+      return throwHttpError(500, internalError());
+    }
+    await emitDomainEvent({
+      tx,
       organizationId: input.organizationId,
       teamId: input.teamId,
-      key: input.key ?? normalizedKey,
-      normalizedKey,
-      label: input.label,
-      fromObjectTypeId: input.fromObjectTypeId,
-      toObjectTypeId: input.toObjectTypeId ?? null,
-      cardinality: input.cardinality ?? "many_to_many",
-      inverseKey: input.inverseKey ?? null,
-      inverseLabel: input.inverseLabel ?? null,
-      status: input.status ?? "confirmed",
-      source: input.source ?? "user_manual",
-      confidence: input.confidence == null ? null : String(input.confidence),
-    })
-    .returning();
-  if (!row) {
-    return throwHttpError(500, internalError());
-  }
-  return row;
+      type: "link_type.created",
+      actor,
+      subjectType: "link_type",
+      payload: {
+        linkTypeId: row.id,
+        key: row.normalizedKey,
+        label: row.label,
+        fromObjectTypeId: row.fromObjectTypeId,
+        toObjectTypeId: row.toObjectTypeId,
+      },
+      dedupKey: `link_type.created:${row.id}`,
+    });
+    return row;
+  });
 };

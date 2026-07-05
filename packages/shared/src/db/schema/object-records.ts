@@ -4,7 +4,6 @@ import {
   boolean,
   customType,
   decimal,
-  halfvec,
   index,
   pgTable,
   text,
@@ -100,9 +99,6 @@ export const objectRecords = pgTable(
       (): AnyPgColumn => objectRecords.id,
       { onDelete: "set null" },
     ),
-
-    // RESERVED, UNUSED in V1 (semantic search goes via ai_vectors; no HNSW yet).
-    embedding: halfvec("embedding", { dimensions: 2560 }),
 
     // 1:1 anchor to the uploaded file for `document` records.
     documentId: uuid("document_id").references(() => documents.id, {

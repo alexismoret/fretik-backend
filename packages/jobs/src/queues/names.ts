@@ -1,0 +1,70 @@
+/**
+ * Queue names + typed job payloads — the single source for every queue this
+ * package owns. `document-processing` is NOT here: its queue/worker pair
+ * stays factored in `@fretik/shared/services/documents/processing-queue`
+ * (producers live in api/ai); this package only hosts its Worker.
+ *
+ * Job payloads stay thin (ids + routing fields): workers re-read fresh rows
+ * from the DB, so a payload never goes stale in Redis.
+ */
+
+export const MEMORY_RESOLVE_QUEUE = "memory-resolve";
+export const MEMORY_DISTILL_QUEUE = "memory-distill";
+export const MEMORY_MAINTENANCE_QUEUE = "memory-maintenance";
+export const RECORD_CARD_QUEUE = "record-card";
+// Dedicated queue for the nightly per-team dreaming jobs (P6) — they hold
+// dozens of sequential LLM calls each and must never block the 15s journal
+// sweep on the maintenance queue. Concurrency is the scale knob.
+export const MEMORY_DREAMING_QUEUE = "memory-dreaming";
+
+/** One journal event to resolve against the object graph (P3). */
+export interface MemoryResolveJobData {
+  eventId: string;
+  organizationId: string;
+  teamId: string;
+  type: string;
+}
+
+/** One conversation to (re-)distill into its episode (P4). */
+export interface MemoryDistillJobData {
+  conversationId: string;
+  organizationId: string;
+  teamId: string;
+}
+
+/** One record card to refresh in — or drop from — the recall index (P4). */
+export interface RecordCardJobData {
+  recordId: string;
+  organizationId: string;
+  teamId: string;
+  op: "upsert" | "delete";
+}
+
+/** One team's nightly dreaming pass (P6) — jobId `dreaming-{teamId}-{date}`. */
+export interface DreamingTeamJobData {
+  teamId: string;
+  organizationId: string;
+}
+
+/**
+ * Eager consolidation of the cluster overlapping one just-distilled episode
+ * (P8.3) — jobId `consolidate-{episodeId}`, on the dreaming queue so it never
+ * blocks the 15s sweep. Catches cross-conversation contradictions within the
+ * distill debounce instead of waiting for the nightly cron.
+ */
+export interface EagerConsolidateJobData {
+  episodeId: string;
+  teamId: string;
+  organizationId: string;
+}
+
+/** Maintenance job names (scheduled on MEMORY_MAINTENANCE_QUEUE). */
+export const JOURNAL_SWEEP_JOB = "journal-sweep";
+/** 03:00 UTC cron — lists active teams and fans out DREAMING_TEAM_JOBs. */
+export const DREAMING_SWEEP_JOB = "dreaming-sweep";
+/** 04:00 UTC cron — demotes stale episodes out of the recall index. */
+export const GC_DEMOTE_JOB = "gc-demote";
+
+/** Job names on MEMORY_DREAMING_QUEUE. */
+export const DREAMING_TEAM_JOB = "dreaming-team";
+export const EAGER_CONSOLIDATE_JOB = "eager-consolidate";

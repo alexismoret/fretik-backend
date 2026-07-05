@@ -2,6 +2,11 @@ import { eq } from "drizzle-orm";
 import db from "../../db";
 import { fieldDefinitions } from "../../db/schema";
 import { badRequest, notFound, throwHttpError } from "../../lib/errors";
+import {
+  emitDomainEvent,
+  type EventActor,
+  SYSTEM_ACTOR,
+} from "../domain-events/emit";
 import { countNonNullColumnValues } from "../object-records/field-data";
 import { refreshObjectTableAfterCatalogChange } from "../object-schema/catalog-sync";
 import { isDocumentObjectType } from "../object-types/is-document-type";
@@ -19,8 +24,10 @@ import { invalidateFieldDefinitionsCache } from "./cache";
 export const deleteFieldDefinition = async (data: {
   id: string;
   cascade?: boolean;
+  actor?: EventActor;
 }): Promise<{ id: string; deletedValues: number }> => {
   const { id, cascade = false } = data;
+  const actor = data.actor ?? SYSTEM_ACTOR;
 
   const result = await db.transaction(async (tx) => {
     const existing = await tx.query.fieldDefinitions.findFirst({
@@ -60,6 +67,26 @@ export const deleteFieldDefinition = async (data: {
           `Cannot delete field '${existing.key}' while ${valueCount} record(s) carry a value (pass cascade=true to drop them).`,
         ),
       );
+    }
+
+    // Journal first (org-scope templates — teamId null — are outside the
+    // team-scoped journal). The def row is gone after this tx; the payload
+    // keeps id + key so the deletion stays auditable.
+    if (existing.teamId) {
+      await emitDomainEvent({
+        tx,
+        organizationId: existing.organizationId,
+        teamId: existing.teamId,
+        type: "field.deleted",
+        actor,
+        subjectType: "field",
+        payload: {
+          fieldDefinitionId: id,
+          objectTypeId: existing.objectTypeId,
+          key: existing.key,
+        },
+        dedupKey: `field.deleted:${id}`,
+      });
     }
 
     await tx.delete(fieldDefinitions).where(eq(fieldDefinitions.id, id));

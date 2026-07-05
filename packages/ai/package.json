@@ -13,6 +13,8 @@
     "test": "NODE_ENV=test bun test tests/unit",
     "test:integration": "NODE_ENV=test bun test tests/integration",
     "evals:langfuse": "bun run evals/run.ts",
+    "evals:recall": "bun run evals/recall/run.ts",
+    "evals:memory": "bun run evals/memory/run.ts",
     "evals:gate": "bun run evals/langfuse/gate.ts",
     "check": "bun run typecheck && bun run lint && bun run format:check",
     "langfuse:seed-prompts": "bun run scripts/seed-langfuse-prompts.ts",

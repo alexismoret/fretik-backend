@@ -191,6 +191,7 @@ folderRoutes.openapi(createFolderRoute, async (c) => {
     parentFolderId,
     teamId: team.id,
     userId: user.id,
+    actor: { actorType: "user", actorUserId: user.id },
   });
 
   return c.json(newFolder, 201);
@@ -227,6 +228,7 @@ folderRoutes.openapi(getFolderExplorerRoute, async (c) => {
 });
 
 folderRoutes.openapi(updateFolderRoute, async (c) => {
+  const user = c.get("user");
   const team = c.get("team");
   if (!team) {
     return throwHttpError(403, teamRequired());
@@ -239,12 +241,14 @@ folderRoutes.openapi(updateFolderRoute, async (c) => {
     id,
     teamId: team.id,
     updates,
+    actor: { actorType: "user", actorUserId: user.id },
   });
 
   return c.json(updatedFolder, 200);
 });
 
 folderRoutes.openapi(deleteFoldersRoute, async (c) => {
+  const user = c.get("user");
   const team = c.get("team");
   if (!team) {
     return throwHttpError(403, teamRequired());
@@ -255,6 +259,7 @@ folderRoutes.openapi(deleteFoldersRoute, async (c) => {
   const res = await deleteFolders({
     ids,
     teamId: team.id,
+    actor: { actorType: "user", actorUserId: user.id },
   });
 
   return c.json({ rowCount: res.rowCount }, 200);

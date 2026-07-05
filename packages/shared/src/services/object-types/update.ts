@@ -4,6 +4,11 @@ import type { ObjectType } from "../../db/schema";
 import { objectTypes } from "../../db/schema";
 import { forbidden, notFound, throwHttpError } from "../../lib/errors";
 import type { Audience } from "../../schemas/object-sharing";
+import {
+  emitDomainEvent,
+  type EventActor,
+  SYSTEM_ACTOR,
+} from "../domain-events/emit";
 import { reconcileTypeGrants } from "../object-sharing/reconcile";
 
 /**
@@ -31,8 +36,10 @@ export const updateObjectType = async (data: {
   /** Session team — asserted to own the type when `sharing` is set. */
   callerTeamId?: string;
   createdByUserId?: string | null;
+  actor?: EventActor;
 }): Promise<ObjectType> => {
   const { id, patch } = data;
+  const actor = data.actor ?? SYSTEM_ACTOR;
   // A sharing-only edit sends an empty patch — Drizzle's `.set({})` throws
   // "No values to set", so only run the UPDATE when a field actually changes;
   // otherwise just load the row (for the owner check + return).
@@ -70,6 +77,29 @@ export const updateObjectType = async (data: {
         audience: data.sharing,
         createdByUserId: data.createdByUserId ?? null,
         tx,
+      });
+    }
+
+    // Journal the catalog change. Org/system types (teamId null) are outside
+    // the team-scoped journal — skipped.
+    if (row.teamId && (hasPatch || data.sharing)) {
+      await emitDomainEvent({
+        tx,
+        organizationId: row.organizationId,
+        teamId: row.teamId,
+        type: "object_type.updated",
+        actor,
+        subjectType: "object_type",
+        payload: {
+          objectTypeId: row.id,
+          key: row.key,
+          changed: [
+            ...Object.keys(patch).filter(
+              (k) => patch[k as keyof typeof patch] !== undefined,
+            ),
+            ...(data.sharing ? ["sharing"] : []),
+          ],
+        },
       });
     }
     return row;

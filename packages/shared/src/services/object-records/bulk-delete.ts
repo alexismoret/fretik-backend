@@ -1,8 +1,9 @@
 import { inArray } from "drizzle-orm";
 import db, { type Transaction } from "../../db";
-import { domainEvents, objectRecords } from "../../db/schema";
+import { objectRecords } from "../../db/schema";
 import { chunkForBulk } from "../../lib/db-bulk";
 import { type EventActor, SYSTEM_ACTOR } from "../domain-events/emit";
+import { emitDomainEventsBulk } from "../domain-events/emit-bulk";
 
 /**
  * Result of a bulk delete. `deletedIds` are the records actually removed (owned
@@ -71,17 +72,19 @@ export const bulkDeleteObjectRecords = async (input: {
     tx: Transaction,
     batch: typeof owned,
   ): Promise<void> => {
-    await tx.insert(domainEvents).values(
-      batch.map((r) => ({
-        organizationId: r.organizationId,
-        teamId: r.teamId,
+    // No recordLinks: the row is deleted below, a provenance edge would only
+    // cascade away with it. Dedup-keyed — a record can be deleted once.
+    await emitDomainEventsBulk({
+      tx,
+      organizationId: batch[0]!.organizationId,
+      teamId: input.teamId,
+      actor,
+      events: batch.map((r) => ({
         type: "record.deleted",
-        actorType: actor.actorType,
-        actorUserId: actor.actorUserId ?? null,
-        conversationId: actor.conversationId ?? null,
         payload: { recordId: r.id, label: r.label },
+        dedupKey: `record.deleted:${r.id}`,
       })),
-    );
+    });
     await tx.delete(objectRecords).where(
       inArray(
         objectRecords.id,

@@ -183,10 +183,10 @@ export const buildCoreTools = (domainTools: SearchableToolRegistry) => ({
     ...createMemoryTool(),
     category: "core",
     searchHint:
-      "memory remember persistent file user team vendors clients partners conventions preferences view create overwrite delete rename grep search",
-    // `view` of a directory + `grep` results are the largest payloads
-    // — both are bounded server-side (depth-2 listing, line-truncation,
-    // 30K total cap on grep). Aligned with the SQL/web cap.
+      "memory remember persistent file user team vendors clients partners conventions preferences view create overwrite delete rename search",
+    // `view` of a directory is the largest payload — bounded server-side
+    // (depth-2 listing, line-truncation, 30K total cap). Aligned with the
+    // SQL/web cap.
     maxResultSizeChars: 32_000,
     // memory mutates the durable `ai_memories` table — not read-only.
     isReadOnly: false,

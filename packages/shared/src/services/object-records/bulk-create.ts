@@ -1,7 +1,7 @@
 import { sql } from "drizzle-orm";
 import db from "../../db";
 import type { OntologySource, OntologyStatus } from "../../db/schema";
-import { domainEventLinks, domainEvents, objectRecords } from "../../db/schema";
+import { objectRecords } from "../../db/schema";
 import {
   chunkForBulk,
   DB_BULK_CHUNK_SIZE,
@@ -9,6 +9,7 @@ import {
 } from "../../lib/db-bulk";
 import { computeRecordIdentity } from "../../schemas/record-shape";
 import { type EventActor, SYSTEM_ACTOR } from "../domain-events/emit";
+import { emitDomainEventsBulk } from "../domain-events/emit-bulk";
 import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
 import { bulkCreateLinks, type LinkInput } from "../links/bulk-create";
 import {
@@ -180,35 +181,25 @@ export const bulkCreateObjectRecords = async (input: {
       });
       if (extension) await tx.execute(extension);
 
-      // 4. `record.created` journal entries — one per record, with its diff.
-      const events = await tx
-        .insert(domainEvents)
-        .values(
-          batch.map((p, i) => ({
-            organizationId: input.organizationId,
-            teamId: input.teamId,
-            type: "record.created",
-            actorType: actor.actorType,
-            actorUserId: actor.actorUserId ?? null,
-            conversationId: actor.conversationId ?? null,
-            subjectRecordId: inserted[i]?.id ?? null,
-            payload: { diff: buildCreateDiff(p.data) },
-          })),
-        )
-        .returning({ id: domainEvents.id });
-
-      // 5. Event↔record provenance edges (role: subject).
-      await tx.insert(domainEventLinks).values(
-        batch.map((_, i) => ({
-          eventId: events[i]?.id ?? "",
-          recordId: inserted[i]?.id ?? "",
-          role: "subject",
+      // 4. `record.created` journal entries + provenance edges (role: subject)
+      //    — the set-based emit sibling, dedup-keyed per record id.
+      const { ids: eventIds } = await emitDomainEventsBulk({
+        tx,
+        organizationId: input.organizationId,
+        teamId: input.teamId,
+        actor,
+        events: batch.map((p, i) => ({
+          type: "record.created",
+          subjectRecordId: inserted[i]?.id ?? null,
+          payload: { diff: buildCreateDiff(p.data) },
+          dedupKey: `record.created:${inserted[i]?.id ?? ""}`,
+          recordLinks: [{ recordId: inserted[i]?.id ?? "", role: "subject" }],
         })),
-      );
+      });
 
-      // 6. Stamp each registry row's source_event_id in ONE UPDATE … FROM VALUES.
+      // 5. Stamp each registry row's source_event_id in ONE UPDATE … FROM VALUES.
       const provenance = batch.map(
-        (_, i) => sql`(${inserted[i]?.id}::uuid, ${events[i]?.id}::uuid)`,
+        (_, i) => sql`(${inserted[i]?.id}::uuid, ${eventIds[i]}::uuid)`,
       );
       await tx.execute(
         sql`UPDATE object_records AS r

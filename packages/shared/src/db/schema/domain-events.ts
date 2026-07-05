@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
+  decimal,
   index,
   jsonb,
   pgTable,
@@ -16,7 +17,11 @@ import { objectRecords } from "./object-records";
 // use it for actor stamps without a circular import — this module imports
 // `object_records` for its provenance FK). The schema barrel exports it once,
 // from there.
-import { domainEventActorEnum } from "./ontology-enums";
+import {
+  domainEventActorEnum,
+  ontologySourceEnum,
+  ontologyStatusEnum,
+} from "./ontology-enums";
 
 /**
  * Domain events — the DURABLE, append-only journal / transactional outbox. Not
@@ -53,6 +58,10 @@ export const domainEvents = pgTable(
     actorUserId: uuid("actor_user_id").references(() => user.id, {
       onDelete: "set null",
     }),
+    // Which agent produced the event when actorType is agent/workflow —
+    // "chatbot" today, "workflow:<key>" once the engine lands (run ids go in
+    // `payload`, not a column: no workflow tables exist to FK against).
+    agentKey: varchar("agent_key", { length: 60 }),
     conversationId: uuid("conversation_id").references(
       () => aiConversations.id,
       { onDelete: "set null" },
@@ -112,6 +121,13 @@ export const domainEventLinks = pgTable(
       .references(() => objectRecords.id, { onDelete: "cascade" }),
     // subject | mentioned | created | affected
     role: varchar("role", { length: 60 }).notNull().default("mentioned"),
+    // Trust of the edge. Links written at the mutation source are exact
+    // (confidence NULL, confirmed/system). The async resolver's inferred
+    // mentions carry their match confidence and land `confirmed` at
+    // ≥ RESOLUTION_AUTO_THRESHOLD, `suggested` in the review band below it.
+    confidence: decimal("confidence", { precision: 4, scale: 3 }),
+    status: ontologyStatusEnum("status").notNull().default("confirmed"),
+    source: ontologySourceEnum("source").notNull().default("system"),
   },
   (table) => [
     uniqueIndex("domain_event_links_uniq").on(

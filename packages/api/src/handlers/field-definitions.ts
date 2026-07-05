@@ -252,6 +252,7 @@ fieldDefinitionRoutes.openapi(createRouteDef, async (c) => {
     displayInPanel: body.displayInPanel,
     enabled: body.enabled,
     displayOrder: body.displayOrder,
+    actor: { actorType: "user", actorUserId: user.id },
   });
   return c.json(created, 201);
 });
@@ -259,6 +260,7 @@ fieldDefinitionRoutes.openapi(createRouteDef, async (c) => {
 fieldDefinitionRoutes.openapi(updateRouteDef, async (c) => {
   const team = c.get("team");
   if (!team) return c.json(teamRequired(), 403);
+  const user = c.get("user");
   // Org-vs-team scope is enforced by the existing row's teamId — the
   // service rejects scope-crossing updates implicitly.
 
@@ -270,13 +272,19 @@ fieldDefinitionRoutes.openapi(updateRouteDef, async (c) => {
   });
   const body = c.req.valid("json");
   const { cascade, ...patch } = body;
-  const updated = await updateFieldDefinition({ id, cascade, patch });
+  const updated = await updateFieldDefinition({
+    id,
+    cascade,
+    patch,
+    actor: { actorType: "user", actorUserId: user.id },
+  });
   return c.json(updated, 200);
 });
 
 fieldDefinitionRoutes.openapi(deleteRouteDef, async (c) => {
   const team = c.get("team");
   if (!team) return c.json(teamRequired(), 403);
+  const user = c.get("user");
 
   const { id } = c.req.valid("param");
   await assertCanWriteField({
@@ -285,7 +293,11 @@ fieldDefinitionRoutes.openapi(deleteRouteDef, async (c) => {
     organizationId: team.organizationId,
   });
   const { cascade } = c.req.valid("query");
-  const result = await deleteFieldDefinition({ id, cascade });
+  const result = await deleteFieldDefinition({
+    id,
+    cascade,
+    actor: { actorType: "user", actorUserId: user.id },
+  });
   return c.json(result, 200);
 });
 

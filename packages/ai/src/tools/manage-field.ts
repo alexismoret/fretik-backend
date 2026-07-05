@@ -12,7 +12,10 @@ import { assertCanWriteType } from "@fretik/shared/services/object-sharing/write
 import { resolveObjectTypeId } from "@fretik/shared/services/object-types/resolve";
 import { tool } from "ai";
 import { z } from "zod";
-import { getRuntimeContext } from "../agents/shared/runtime-context";
+import {
+  agentEventActor,
+  getRuntimeContext,
+} from "../agents/shared/runtime-context";
 import { TOOL_ERROR_CODES, toolError } from "../lib/tool-error-codes";
 
 /**
@@ -106,6 +109,7 @@ export const createManageFieldTool = () =>
             type: input.type,
             config: input.config,
             description: input.description ?? null,
+            actor: agentEventActor(ctx),
           });
           return { ok: true, field: { id: field.id, key: field.key } };
         }
@@ -135,6 +139,7 @@ export const createManageFieldTool = () =>
           const result = await deleteFieldDefinition({
             id: field.id,
             cascade: input.cascade ?? false,
+            actor: agentEventActor(ctx),
           });
           return { ok: true, ...result };
         }
@@ -150,6 +155,7 @@ export const createManageFieldTool = () =>
             id: field.id,
             cascade: true,
             patch: { type: input.type, config: input.config },
+            actor: agentEventActor(ctx),
           });
           return { ok: true, field: { id: updated.id, key: updated.key } };
         }
@@ -162,6 +168,7 @@ export const createManageFieldTool = () =>
             config: input.config,
             enabled: input.enabled,
           },
+          actor: agentEventActor(ctx),
         });
         return { ok: true, field: { id: updated.id, key: updated.key } };
       } catch (err) {

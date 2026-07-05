@@ -1,24 +1,24 @@
 import { describe, expect, test } from "bun:test";
 import {
-  buildActiveMemoryRecentTail,
-  runActiveMemoryRecall,
-} from "../../../src/services/active-memory/recall";
+  buildRecallRecentTail,
+  runUnifiedRecall,
+} from "../../../src/services/recall/recall";
 
 /**
- * Unit tests for the deterministic surface of the Active Memory
- * recall service:
+ * Unit tests for the deterministic surface of the unified recall
+ * service (P5 — evolution of Active Memory):
  *
- *   - `buildActiveMemoryRecentTail` is a pure helper — no DB / LLM
+ *   - `buildRecallRecentTail` is a pure helper — no DB / LLM
  *     dependencies, so we cover its truncation + role-filtering
  *     behaviour exhaustively.
  *
- *   - `runActiveMemoryRecall` triggers `searchRAG` + the judge LLM
+ *   - `runUnifiedRecall` triggers the gather arms + the judge LLM
  *     call when invoked on a non-trivial message. We can't exercise
  *     that path in a unit test without standing up the whole stack,
- *     so the only `runActiveMemoryRecall` cases here check the
+ *     so the only `runUnifiedRecall` cases here check the
  *     `isTrivialMessage` SKIP path: it MUST return `null` without
- *     touching any I/O, satisfying the "Active Memory must never
- *     block a turn" contract for messages that don't merit recall.
+ *     touching any I/O, satisfying the "recall must never block a
+ *     turn" contract for messages that don't merit recall.
  *
  * The end-to-end behaviour (judge picks the right candidate, NONE
  * verdict, attachments-as-signal, etc.) is covered by the
@@ -37,11 +37,12 @@ const SCOPE = {
   teamId: "11111111-1111-1111-1111-111111111111",
   organizationId: "22222222-2222-2222-2222-222222222222",
   userId: "33333333-3333-3333-3333-333333333333",
+  agentType: "chatbot",
 };
 
-describe("runActiveMemoryRecall — skip path (trivial messages)", () => {
+describe("runUnifiedRecall — skip path (trivial messages)", () => {
   test("returns null on a short ack with no attachments ('ok')", async () => {
-    const result = await runActiveMemoryRecall({
+    const result = await runUnifiedRecall({
       userMessage: "ok",
       attachedFiles: [],
       recentTail: "",
@@ -51,7 +52,7 @@ describe("runActiveMemoryRecall — skip path (trivial messages)", () => {
   });
 
   test("returns null on French acknowledgements ('merci')", async () => {
-    const result = await runActiveMemoryRecall({
+    const result = await runUnifiedRecall({
       userMessage: "merci",
       attachedFiles: [],
       recentTail: "",
@@ -61,7 +62,7 @@ describe("runActiveMemoryRecall — skip path (trivial messages)", () => {
   });
 
   test("returns null on emoji-only acknowledgements ('👍')", async () => {
-    const result = await runActiveMemoryRecall({
+    const result = await runUnifiedRecall({
       userMessage: "👍",
       attachedFiles: [],
       recentTail: "",
@@ -73,20 +74,20 @@ describe("runActiveMemoryRecall — skip path (trivial messages)", () => {
   // Note: the "does NOT skip when files are attached" branch is
   // covered by the `dispatch-agent` + `auto-memory` eval suites
   // (live stack). Unit-testing it here would require firing the
-  // real `searchRAG` + judge LLM path (since the function falls
+  // real gather + judge LLM path (since the function falls
   // through after the trivial check), which would either timeout
   // the test or pull DB + OpenRouter into the unit harness. The
   // skip cases above are sufficient to lock the deterministic
   // branch contract.
 });
 
-describe("buildActiveMemoryRecentTail", () => {
+describe("buildRecallRecentTail", () => {
   test("returns empty string when message history is empty", () => {
-    expect(buildActiveMemoryRecentTail([])).toBe("");
+    expect(buildRecallRecentTail([])).toBe("");
   });
 
   test("keeps only the last 2 user turns + last 1 assistant turn", () => {
-    const tail = buildActiveMemoryRecentTail([
+    const tail = buildRecallRecentTail([
       { role: "user", text: "very old user turn" },
       { role: "assistant", text: "very old assistant turn" },
       { role: "user", text: "older user turn" },
@@ -107,7 +108,7 @@ describe("buildActiveMemoryRecentTail", () => {
   });
 
   test("ignores system messages", () => {
-    const tail = buildActiveMemoryRecentTail([
+    const tail = buildRecallRecentTail([
       { role: "system", text: "system bootstrap noise" },
       { role: "user", text: "real user turn" },
     ]);
@@ -118,7 +119,7 @@ describe("buildActiveMemoryRecentTail", () => {
   test("truncates each user turn to ~220 chars and assistant turn to ~180 chars", () => {
     const longUserText = "u".repeat(500);
     const longAssistantText = "a".repeat(500);
-    const tail = buildActiveMemoryRecentTail([
+    const tail = buildRecallRecentTail([
       { role: "user", text: longUserText },
       { role: "assistant", text: longAssistantText },
     ]);
@@ -136,7 +137,7 @@ describe("buildActiveMemoryRecentTail", () => {
     // Push the per-turn caps to the limit and verify the overall
     // tail still respects the global hard cap. OpenClaw mirrors
     // this envelope to keep judge-prompt latency bounded.
-    const tail = buildActiveMemoryRecentTail([
+    const tail = buildRecallRecentTail([
       { role: "user", text: "u".repeat(220) },
       { role: "assistant", text: "a".repeat(180) },
       { role: "user", text: "u".repeat(220) },

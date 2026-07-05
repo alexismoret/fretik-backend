@@ -404,6 +404,48 @@ export const relations = defineRelations(schema, (r) => ({
     }),
   },
 
+  aiEpisodes: {
+    organization: r.one.organization({
+      from: r.aiEpisodes.organizationId,
+      to: r.organization.id,
+    }),
+    team: r.one.team({
+      from: r.aiEpisodes.teamId,
+      to: r.team.id,
+    }),
+    user: r.one.user({
+      from: r.aiEpisodes.userId,
+      to: r.user.id,
+      optional: true,
+    }),
+    conversation: r.one.aiConversations({
+      from: r.aiEpisodes.conversationId,
+      to: r.aiConversations.id,
+      optional: true,
+    }),
+    anchorRecord: r.one.objectRecords({
+      from: r.aiEpisodes.anchorRecordId,
+      to: r.objectRecords.id,
+      optional: true,
+    }),
+    supersededBy: r.one.aiEpisodes({
+      from: r.aiEpisodes.supersededById,
+      to: r.aiEpisodes.id,
+      optional: true,
+    }),
+    episodeRecords: r.many.aiEpisodeRecords(),
+  },
+  aiEpisodeRecords: {
+    episode: r.one.aiEpisodes({
+      from: r.aiEpisodeRecords.episodeId,
+      to: r.aiEpisodes.id,
+    }),
+    record: r.one.objectRecords({
+      from: r.aiEpisodeRecords.recordId,
+      to: r.objectRecords.id,
+    }),
+  },
+
   objectGrants: {
     organization: r.one.organization({
       from: r.objectGrants.organizationId,

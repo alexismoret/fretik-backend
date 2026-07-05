@@ -132,6 +132,35 @@ export const contextVectorMetadataSchema = z.object({
   updated_at: z.string(),
 });
 
+/**
+ * Zod counterpart of `EpisodeVectorMetadata` (db/schema/ai-vectors.ts).
+ * Used by the `/internal/vectorize` endpoint to validate `episodes`
+ * payloads. `kind` + `title` + the occurrence window are duplicated from
+ * `ai_episodes` so recall can render citations and filter by time
+ * without joining back; `team_id`, `organization_id`, `user_id`,
+ * `source_type`, `source_id` stay on dedicated columns.
+ */
+export const episodeVectorMetadataSchema = z.object({
+  kind: z.enum(["conversation", "record_activity", "consolidated"]),
+  title: z.string().min(1),
+  conversation_id: z.uuid().nullable(),
+  anchor_record_id: z.uuid().nullable(),
+  occurred_from: z.string().nullable(),
+  occurred_to: z.string().nullable(),
+});
+
+/**
+ * Zod counterpart of `RecordVectorMetadata` (db/schema/ai-vectors.ts).
+ * One "card" per CONFIRMED object record — content is built by
+ * `services/object-records/build-card.ts`, single chunk per record.
+ * `object_type_key` + `label` ride along for citation rendering.
+ */
+export const recordVectorMetadataSchema = z.object({
+  object_type_id: z.uuid(),
+  object_type_key: z.string().min(1),
+  label: z.string().min(1),
+});
+
 // ==================== //
 // Conversation CRUD    //
 // ==================== //

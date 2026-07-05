@@ -1,6 +1,7 @@
 import db from "../../db";
 import { aiConversationMembers, aiConversations } from "../../db/schema";
 import type { AiAgentType } from "../../schemas/ai";
+import { emitDomainEvent } from "../domain-events/emit";
 import { getTeamAiSettings } from "../team-ai-settings/get-for-team";
 import type { SerializedConversation } from "./conversation-serializer";
 import { getConversation } from "./get";
@@ -57,6 +58,19 @@ export const createConversation = async (data: {
       userId,
       role: "owner",
       lastReadAt: new Date(),
+    });
+
+    // The id goes in the payload — the event's own conversation FK column is
+    // set-null on delete, the payload survives.
+    await emitDomainEvent({
+      tx,
+      organizationId,
+      teamId,
+      type: "conversation.created",
+      actor: { actorType: "user", actorUserId: userId },
+      subjectType: "conversation",
+      payload: { conversationId: row.id, agentType: agentType ?? "chatbot" },
+      dedupKey: `conversation.created:${row.id}`,
     });
 
     return row.id;

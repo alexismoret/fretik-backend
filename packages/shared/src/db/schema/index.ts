@@ -32,6 +32,9 @@ export * from "./domain-events";
 export * from "./links";
 export * from "./object-records";
 
+// Named journal-consumption cursors (memory sweep, future trigger engine)
+export * from "./worker-cursors";
+
 // Field definitions (per-object-type configurable fields — the field catalog)
 // `field-types` is the registry: the field-type catalogue + per-type config.
 export * from "./field-definitions";
@@ -69,6 +72,10 @@ export * from "./ai-context";
 
 // AI memory (agent-writable memory store — Anthropic memory_20250818-style)
 export * from "./ai-memory";
+
+// AI episodes (distilled episodic memory: conversations, record activity,
+// consolidation merges — vectorized into ai_vectors as source_type=episodes)
+export * from "./ai-episodes";
 
 // Skills (chatbot SKILL.md catalogue + per-team enable/disable overrides)
 export * from "./skills";

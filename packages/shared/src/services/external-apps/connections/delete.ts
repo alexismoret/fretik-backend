@@ -2,6 +2,7 @@ import { eq } from "drizzle-orm";
 import db from "../../../db";
 import { externalAppConnections } from "../../../db/schema";
 import { getNangoClient } from "../../../lib/external-apps/nango-client";
+import { emitDomainEvent } from "../../domain-events/emit";
 import { getConnectionForCaller } from "./get-by-id";
 
 /**
@@ -39,7 +40,21 @@ export const deleteConnection = async (params: {
     );
   }
 
-  await db
-    .delete(externalAppConnections)
-    .where(eq(externalAppConnections.id, params.id));
+  // Journal + delete commit atomically; the payload keeps the id/provider
+  // since the row is gone after this tx.
+  await db.transaction(async (tx) => {
+    await emitDomainEvent({
+      tx,
+      organizationId: conn.organizationId,
+      teamId: conn.teamId,
+      type: "connector.disconnected",
+      actor: { actorType: "user", actorUserId: params.userId },
+      subjectType: "connector",
+      payload: { providerKey: conn.providerKey, connectionId: conn.id },
+      dedupKey: `connector.disconnected:${conn.id}`,
+    });
+    await tx
+      .delete(externalAppConnections)
+      .where(eq(externalAppConnections.id, params.id));
+  });
 };

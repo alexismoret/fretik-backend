@@ -1,0 +1,1 @@
+ALTER TABLE "links" ADD COLUMN "status" "ontology_status" DEFAULT 'confirmed'::"ontology_status" NOT NULL;

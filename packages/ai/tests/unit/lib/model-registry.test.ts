@@ -70,15 +70,21 @@ describe("settingsForRole — parity with historical settings objects", () => {
     ).toEqual(expected);
   });
 
-  test("active-memory envelope matches the legacy activeMemoryModelSettings", () => {
+  test("active-memory envelope = the P5-bis recall envelope (throughput sort + quality floor)", () => {
     expect(
       settingsForRole(
         ROLE_BINDINGS["active-memory"],
         getProfileForRole("active-memory"),
       ),
     ).toEqual({
-      provider: { require_parameters: true, zdr: true },
-      reasoning: { effort: "low" },
+      provider: {
+        require_parameters: true,
+        zdr: true,
+        sort: "throughput",
+        ignore: ["fireworks"],
+        quantizations: ["bf16", "fp16", "unknown"],
+      },
+      reasoning: { effort: "medium" },
     });
   });
 
@@ -114,7 +120,10 @@ describe("role bindings — default model ids pinned (chat: gated M3 flip)", () 
     "dispatch-cheap": "deepseek/deepseek-v4-flash",
     "pre-extract": "deepseek/deepseek-v4-flash",
     "pre-extract-fallback": "openai/gpt-oss-120b",
-    "active-memory": "openai/gpt-oss-20b",
+    // P5-bis (2026-07): 120b @ medium = 16/16 recall evals; 20b unstable.
+    "active-memory": "openai/gpt-oss-120b",
+    "memory-extract": "openai/gpt-oss-20b",
+    "memory-distill": "openai/gpt-oss-20b",
     "compaction-summarizer": "deepseek/deepseek-v4-flash",
     "cheap-tasks": "openai/gpt-oss-20b",
     vision: "google/gemini-3.1-flash-lite",

@@ -136,7 +136,7 @@ export const ChatbotCallOptionsSchema = z.object({
   /**
    * Active Memory recall block — a 1-3 bullet markdown summary of
    * memories already judged relevant for the current turn (see
-   * `services/active-memory/recall.ts`). Threaded into
+   * `services/recall/recall.ts`). Threaded into
    * `AgentRuntimeContext.activeMemoryBlock` and substituted into the
    * `{{activeMemoryBlock}}` placeholder at the very bottom of the
    * dynamic suffix. Omitted when no candidate was relevant or when

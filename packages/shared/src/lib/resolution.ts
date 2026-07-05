@@ -21,6 +21,20 @@ export const FUZZY_MATCH_THRESHOLD = 0.8;
  * record (any confidence) but never spawns a fresh stub — keeps the review queue
  * from filling with low-confidence guesses. A mention with no confidence value is
  * treated as passing (the model simply omitted its self-assessment). Governs only
- * the create path; matching is unaffected.
+ * the create path; matching is unaffected. Distinct from the RESOLUTION_*
+ * bands below, which govern how the async resolver TRUSTS a match against an
+ * EXISTING record (linking regime, not creation).
  */
 export const MENTION_MIN_CONFIDENCE = 0.5;
+
+/**
+ * The async event→graph resolver's trust bands for `domain_event_links` it
+ * infers (`source='ai_inference'`):
+ *   match confidence ≥ AUTO    → `status='confirmed'` (auto-linked)
+ *   AUTO > confidence ≥ SUGGEST → `status='suggested'` (review band)
+ *   below SUGGEST              → dropped.
+ * Precision-first, like FUZZY_MATCH_THRESHOLD above: memory recall treats
+ * confirmed links as facts, so a wrong auto-link pollutes every future recall.
+ */
+export const RESOLUTION_AUTO_THRESHOLD = 0.85;
+export const RESOLUTION_SUGGEST_THRESHOLD = 0.5;

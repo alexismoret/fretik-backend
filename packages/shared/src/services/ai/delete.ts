@@ -2,6 +2,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import db from "../../db";
 import { aiConversationMembers, aiConversations } from "../../db/schema";
 import { deleteSessionFolder } from "../../lib/chatbot-session-storage";
+import { emitDomainEventsBulk } from "../domain-events/emit-bulk";
 import { killSandbox } from "../e2b/kill-sandbox";
 
 /**
@@ -21,7 +22,11 @@ export const deleteConversations = async (data: {
   }
 
   const ownedRows = await db
-    .select({ conversationId: aiConversationMembers.conversationId })
+    .select({
+      conversationId: aiConversationMembers.conversationId,
+      organizationId: aiConversations.organizationId,
+      agentType: aiConversations.agentType,
+    })
     .from(aiConversationMembers)
     .innerJoin(
       aiConversations,
@@ -41,10 +46,30 @@ export const deleteConversations = async (data: {
     return { rowCount: 0 };
   }
 
-  const deleted = await db
-    .delete(aiConversations)
-    .where(inArray(aiConversations.id, ownedIds))
-    .returning({ id: aiConversations.id });
+  const deleted = await db.transaction(async (tx) => {
+    // Journal first — the rows are gone after this tx, and the events' own
+    // conversation FK column nulls on delete; the payload keeps the id. One
+    // team per call, so one org for the whole batch.
+    await emitDomainEventsBulk({
+      tx,
+      organizationId: ownedRows[0]!.organizationId,
+      teamId,
+      actor: { actorType: "user", actorUserId: userId },
+      events: ownedRows.map((row) => ({
+        type: "conversation.deleted",
+        subjectType: "conversation",
+        payload: {
+          conversationId: row.conversationId,
+          agentType: row.agentType,
+        },
+        dedupKey: `conversation.deleted:${row.conversationId}`,
+      })),
+    });
+    return tx
+      .delete(aiConversations)
+      .where(inArray(aiConversations.id, ownedIds))
+      .returning({ id: aiConversations.id });
+  });
 
   // The FK cascade just reaped every `ai_chat_files` row for these
   // conversations; the S3 session folders have no such relationship

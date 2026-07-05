@@ -3,7 +3,9 @@ import type {
   AiVectorSourceType,
   ContextVectorMetadata,
   DocumentVectorMetadata,
+  EpisodeVectorMetadata,
   MemoryVectorMetadata,
+  RecordVectorMetadata,
   SkillVectorMetadata,
 } from "@fretik/shared/db/schema";
 import { withPipelineTrace } from "../../lib/trace-tool";
@@ -119,6 +121,16 @@ const isContextMetadata = (
   _metadata: AiVectorMetadata,
 ): _metadata is ContextVectorMetadata => sourceType === "context";
 
+const isEpisodeMetadata = (
+  sourceType: AiVectorSourceType,
+  _metadata: AiVectorMetadata,
+): _metadata is EpisodeVectorMetadata => sourceType === "episodes";
+
+const isRecordMetadata = (
+  sourceType: AiVectorSourceType,
+  _metadata: AiVectorMetadata,
+): _metadata is RecordVectorMetadata => sourceType === "records";
+
 /**
  * Source-aware contextual header injected into every chunk's
  * `contextualPrefix` before embedding. Anthropic Contextual Retrieval
@@ -168,6 +180,30 @@ const buildContextSemanticHeader = (
 };
 
 /**
+ * Source-aware contextual header for episodes. Same rationale as the
+ * memory/context tags: the discriminator lets retrieval match "what
+ * happened" queries onto the right episode kind even when the summary
+ * chunk itself is dense narrative.
+ *
+ *   `[EPISODE:conversation] Q3 vendor pricing negotiation`
+ *   `[EPISODE:record_activity] Acme Corp — recent activity`
+ */
+const buildEpisodeSemanticHeader = (metadata: EpisodeVectorMetadata): string =>
+  `[EPISODE:${metadata.kind}] ${metadata.title}`;
+
+/**
+ * Source-aware contextual header for record cards. The card body already
+ * opens with `{type label}: {record label}` (human-facing, possibly
+ * localised); the tag adds the stable `object_type_key` discriminator so
+ * key-based queries and retrieval-log greps stay aligned with the other
+ * source kinds.
+ *
+ *   `[RECORD:company] Acme Corp`
+ */
+const buildRecordSemanticHeader = (metadata: RecordVectorMetadata): string =>
+  `[RECORD:${metadata.object_type_key}] ${metadata.label}`;
+
+/**
  * Dispatcher for the source-aware semantic header injected into every
  * chunk's contextual prefix before embedding. Returns `null` for
  * source kinds that intentionally skip the header.
@@ -190,6 +226,10 @@ const buildSourceSemanticHeader = (
     return buildSkillSemanticHeader(metadata);
   if (isContextMetadata(sourceType, metadata))
     return buildContextSemanticHeader(metadata);
+  if (isEpisodeMetadata(sourceType, metadata))
+    return buildEpisodeSemanticHeader(metadata);
+  if (isRecordMetadata(sourceType, metadata))
+    return buildRecordSemanticHeader(metadata);
   return null;
 };
 
@@ -316,8 +356,15 @@ const vectorizeSourceImpl = async (
   }
 
   // Stage 2 — contextual enrichment (individual-chunk failures soften
-  // to an empty prefix; stage-wide failure propagates).
-  const enriched = await enrichChunks(content, chunks);
+  // to an empty prefix; stage-wide failure propagates). Record cards
+  // skip it: a card is ONE self-describing chunk (label + type + fields)
+  // — there is no surrounding document to situate it in, so the LLM
+  // call would only add cost. The semantic header (stage 2b) still
+  // applies.
+  const enriched: EnrichedChunk[] =
+    sourceType === "records"
+      ? chunks.map((c) => ({ ...c, contextualPrefix: "" }))
+      : await enrichChunks(content, chunks);
   const enrichedCount = enriched.filter(
     (c) => c.contextualPrefix.length > 0,
   ).length;

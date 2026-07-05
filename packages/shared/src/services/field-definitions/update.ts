@@ -3,6 +3,11 @@ import db from "../../db";
 import type { FieldDefinition } from "../../db/schema";
 import { fieldDefinitions } from "../../db/schema";
 import { badRequest, notFound, throwHttpError } from "../../lib/errors";
+import {
+  emitDomainEvent,
+  type EventActor,
+  SYSTEM_ACTOR,
+} from "../domain-events/emit";
 import { countNonNullColumnValues } from "../object-records/field-data";
 import { refreshObjectTableAfterCatalogChange } from "../object-schema/catalog-sync";
 import { changeFieldColumns, renameFieldColumns } from "../object-schema/table";
@@ -34,8 +39,10 @@ export const updateFieldDefinition = async (data: {
   id: string;
   cascade?: boolean;
   patch: FieldDefinitionPatch;
+  actor?: EventActor;
 }): Promise<FieldDefinition> => {
   const { id, cascade = false } = data;
+  const actor = data.actor ?? SYSTEM_ACTOR;
   let patch = data.patch;
 
   const updated = await db.transaction(async (tx) => {
@@ -196,6 +203,27 @@ export const updateFieldDefinition = async (data: {
       objectTypeId: updatedRow.objectTypeId,
       teamId: updatedRow.teamId,
     });
+
+    // Journal the catalog change. Org-scope templates (teamId null) are outside
+    // the team-scoped journal — skipped.
+    if (updatedRow.teamId) {
+      await emitDomainEvent({
+        tx,
+        organizationId: updatedRow.organizationId,
+        teamId: updatedRow.teamId,
+        type: "field.updated",
+        actor,
+        subjectType: "field",
+        payload: {
+          fieldDefinitionId: updatedRow.id,
+          objectTypeId: updatedRow.objectTypeId,
+          key: updatedRow.key,
+          changed: Object.keys(patch).filter(
+            (k) => patch[k as keyof typeof patch] !== undefined,
+          ),
+        },
+      });
+    }
 
     return updatedRow;
   });

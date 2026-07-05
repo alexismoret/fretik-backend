@@ -33,15 +33,18 @@ export type OntologySource = (typeof ONTOLOGY_SOURCES)[number];
 
 /**
  * Who/what produced a mutation: a user CRUD (`user`), an agent tool-call
- * (`agent`), the document pipeline / seeds (`system`), or an external connector
- * (`connector`). Carried on every `domain_events` row AND denormalized as the
- * actor stamps on `object_records`. Lives here (not in `domain-events.ts`) so
- * `object-records.ts` can use it without a circular import — `domain-events.ts`
- * already imports `object_records` for its provenance FK.
+ * (`agent`), the document pipeline / seeds (`system`), an external connector
+ * (`connector`), or the future autonomous-agent engine (`workflow` — reserved,
+ * nothing emits it yet). Carried on every `domain_events` row AND denormalized
+ * as the actor stamps on `object_records`. Lives here (not in
+ * `domain-events.ts`) so `object-records.ts` can use it without a circular
+ * import — `domain-events.ts` already imports `object_records` for its
+ * provenance FK.
  */
 export const domainEventActorEnum = pgEnum("domain_event_actor", [
   "user",
   "agent",
   "system",
   "connector",
+  "workflow",
 ]);

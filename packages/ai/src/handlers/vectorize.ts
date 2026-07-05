@@ -2,7 +2,9 @@ import type { AiVectorSourceType } from "@fretik/shared/db/schema";
 import {
   contextVectorMetadataSchema,
   documentVectorMetadataSchema,
+  episodeVectorMetadataSchema,
   memoryVectorMetadataSchema,
+  recordVectorMetadataSchema,
 } from "@fretik/shared/schemas/ai";
 import { OpenAPIHono } from "@hono/zod-openapi";
 import { z } from "zod";
@@ -39,6 +41,8 @@ import type { HonoInternalAppType } from "../types/hono";
 const DOCUMENTS_SOURCE: AiVectorSourceType = "documents";
 const MEMORIES_SOURCE: AiVectorSourceType = "memories";
 const CONTEXT_SOURCE: AiVectorSourceType = "context";
+const EPISODES_SOURCE: AiVectorSourceType = "episodes";
+const RECORDS_SOURCE: AiVectorSourceType = "records";
 
 /**
  * Discriminated union on sourceType: a `documents` source must ship a
@@ -97,6 +101,31 @@ const VectorizeRequestSchema = z.discriminatedUnion("sourceType", [
      * partial index as memories.
      */
     userId: z.uuid().nullable(),
+  }),
+  z.object({
+    sourceType: z.literal(EPISODES_SOURCE),
+    sourceId: z.uuid(),
+    /** `title + "\n\n" + summary` — built by the distiller (≤ ~4.2KB). */
+    content: z.string().min(1),
+    metadata: episodeVectorMetadataSchema,
+    teamId: z.uuid(),
+    organizationId: z.uuid(),
+    /**
+     * NULL for team-visible episodes (multi-member conversations,
+     * record-activity digests, consolidations), UUID for private ones
+     * (single-member conversation episodes). Mirrors
+     * `ai_episodes.user_id`.
+     */
+    userId: z.uuid().nullable(),
+  }),
+  z.object({
+    sourceType: z.literal(RECORDS_SOURCE),
+    sourceId: z.uuid(),
+    /** The record "card" built by `buildRecordCard` — one chunk. */
+    content: z.string().min(1),
+    metadata: recordVectorMetadataSchema,
+    teamId: z.uuid(),
+    organizationId: z.uuid(),
   }),
 ]);
 

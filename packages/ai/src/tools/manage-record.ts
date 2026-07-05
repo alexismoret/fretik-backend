@@ -1,5 +1,4 @@
 import { recordSharingSchema } from "@fretik/shared/schemas/object-sharing";
-import type { EventActor } from "@fretik/shared/services/domain-events/emit";
 import { createObjectRecord } from "@fretik/shared/services/object-records/create";
 import { deleteObjectRecord } from "@fretik/shared/services/object-records/delete";
 import { setRecordStatus } from "@fretik/shared/services/object-records/set-status";
@@ -8,7 +7,10 @@ import { assertCanWriteRecord } from "@fretik/shared/services/object-sharing/wri
 import { resolveObjectTypeId } from "@fretik/shared/services/object-types/resolve";
 import { tool } from "ai";
 import { z } from "zod";
-import { getRuntimeContext } from "../agents/shared/runtime-context";
+import {
+  agentEventActor,
+  getRuntimeContext,
+} from "../agents/shared/runtime-context";
 import { TOOL_ERROR_CODES, toolError } from "../lib/tool-error-codes";
 
 /**
@@ -145,11 +147,7 @@ export const createManageRecordTool = () =>
     inputSchema: manageRecordInputSchema,
     execute: async (input, options) => {
       const ctx = getRuntimeContext(options);
-      const actor: EventActor = {
-        actorType: "agent",
-        actorUserId: ctx.userId ?? null,
-        conversationId: ctx.conversationId ?? null,
-      };
+      const actor = agentEventActor(ctx);
       // The model passes values as a { key, value } list (reliable to fill);
       // the services take a map. `resolveRecordValues` recovers a value the
       // model put under a stray key and flags entries with no value at all.

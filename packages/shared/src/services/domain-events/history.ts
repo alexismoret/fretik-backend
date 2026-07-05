@@ -1,8 +1,15 @@
-import { asc, eq } from "drizzle-orm";
+import { and, desc, eq, lt } from "drizzle-orm";
 import { z } from "zod";
 import db from "../../db";
 import type { DomainEventActor } from "../../db/schema";
 import { domainEventLinks, domainEvents, user } from "../../db/schema";
+
+/**
+ * Hard ceiling on one history page. A hot record touched thousands of times
+ * must never fold its whole journal into app memory in one call.
+ */
+const HISTORY_DEFAULT_LIMIT = 200;
+const HISTORY_MAX_LIMIT = 500;
 
 /**
  * The `payload.diff` shape written by the record create/update outbox:
@@ -35,19 +42,29 @@ interface HistoryEvent {
  * `object_records` row stores only the CURRENT value of each field; every prior
  * value is derived here — there is no record-level bi-temporal column.
  *
- * Reads every event that touched the record (via `domain_event_links`),
- * oldest-first, and replays each event's `payload.diff` (`{ field: { from, to }
- * }`, written by the record create/update outbox) into a per-field timeline.
- * Events without a diff (e.g. `document.uploaded`, `link.created`) still appear
- * in `events` for the activity view but contribute no field changes.
+ * Reads the record's latest events (via `domain_event_links`), bounded by
+ * `limit` with uuid-v7 cursor pagination (`before` = an event id from a prior
+ * page; ids are time-ordered), then replays each event's `payload.diff`
+ * (`{ field: { from, to } }`, written by the record create/update outbox)
+ * oldest-first into a per-field timeline. Events without a diff (e.g.
+ * `document.uploaded`, `link.created`) still appear in `events` for the
+ * activity view but contribute no field changes. `nextCursor` is non-null when
+ * older events remain — a paged fold only covers the fetched window.
  */
 export const getRecordHistory = async (data: {
   recordId: string;
+  limit?: number;
+  before?: string;
 }): Promise<{
   recordId: string;
   fields: Record<string, FieldChange[]>;
   events: HistoryEvent[];
+  nextCursor: string | null;
 }> => {
+  const limit = Math.min(
+    data.limit ?? HISTORY_DEFAULT_LIMIT,
+    HISTORY_MAX_LIMIT,
+  );
   const rows = await db
     .select({
       id: domainEvents.id,
@@ -60,14 +77,26 @@ export const getRecordHistory = async (data: {
     .from(domainEventLinks)
     .innerJoin(domainEvents, eq(domainEventLinks.eventId, domainEvents.id))
     .leftJoin(user, eq(domainEvents.actorUserId, user.id))
-    .where(eq(domainEventLinks.recordId, data.recordId))
-    .orderBy(asc(domainEvents.occurredAt));
+    .where(
+      and(
+        eq(domainEventLinks.recordId, data.recordId),
+        ...(data.before ? [lt(domainEvents.id, data.before)] : []),
+      ),
+    )
+    // Newest-first + one extra row to detect a further page; folded oldest-first
+    // below (uuid v7 ids order like occurred_at).
+    .orderBy(desc(domainEvents.id))
+    .limit(limit + 1);
+
+  const hasMore = rows.length > limit;
+  const page = hasMore ? rows.slice(0, limit) : rows;
+  page.reverse();
 
   const fields: Record<string, FieldChange[]> = {};
   const events: HistoryEvent[] = [];
   const seen = new Set<string>();
 
-  for (const row of rows) {
+  for (const row of page) {
     // A record can link to the same event in more than one role — fold once.
     if (seen.has(row.id)) continue;
     seen.add(row.id);
@@ -95,5 +124,11 @@ export const getRecordHistory = async (data: {
     }
   }
 
-  return { recordId: data.recordId, fields, events };
+  return {
+    recordId: data.recordId,
+    fields,
+    events,
+    // Oldest id of this page = the `before` cursor of the next (older) one.
+    nextCursor: hasMore ? (page[0]?.id ?? null) : null,
+  };
 };

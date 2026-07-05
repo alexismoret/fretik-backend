@@ -1,15 +1,10 @@
 import { and, inArray, isNull, sql } from "drizzle-orm";
 import db, { type Executor, type Transaction } from "../../db";
-import type { OntologySource } from "../../db/schema";
-import {
-  domainEventLinks,
-  domainEvents,
-  links,
-  linkTypes,
-  objectRecords,
-} from "../../db/schema";
+import type { OntologySource, OntologyStatus } from "../../db/schema";
+import { links, linkTypes, objectRecords } from "../../db/schema";
 import { chunkForBulk, DB_BULK_CHUNK_SIZE } from "../../lib/db-bulk";
 import { type EventActor, SYSTEM_ACTOR } from "../domain-events/emit";
+import { emitDomainEventsBulk } from "../domain-events/emit-bulk";
 
 /** One edge to create, addressed by ids (resolution happens before this). */
 export interface LinkInput {
@@ -18,6 +13,8 @@ export interface LinkInput {
   toRecordId: string;
   props?: Record<string, unknown>;
   confidence?: number | null;
+  /** Trust band; omit → `confirmed` (the column default). */
+  status?: OntologyStatus;
 }
 
 export interface BulkCreateLinksResult {
@@ -34,6 +31,7 @@ interface ValidLink {
   toRecordId: string;
   props: Record<string, unknown>;
   confidence: string | null;
+  status: OntologyStatus | undefined;
   recordedAt: Date | null;
 }
 
@@ -128,6 +126,7 @@ export const bulkCreateLinks = async (input: {
       toRecordId: l.toRecordId,
       props: l.props ?? {},
       confidence: l.confidence == null ? null : String(l.confidence),
+      status: l.status,
       recordedAt: lt.isTemporal ? new Date() : null,
     });
   }
@@ -142,7 +141,7 @@ export const bulkCreateLinks = async (input: {
   }
 
   const writeChunk = async (
-    exec: Executor,
+    exec: Transaction,
     chunk: ValidLink[],
   ): Promise<void> => {
     const inserted = await exec
@@ -156,6 +155,7 @@ export const bulkCreateLinks = async (input: {
           toRecordId: v.toRecordId,
           props: v.props,
           source,
+          ...(v.status ? { status: v.status } : {}),
           confidence: v.confidence,
           recordedAt: v.recordedAt,
         })),
@@ -172,43 +172,31 @@ export const bulkCreateLinks = async (input: {
       });
     if (inserted.length === 0) return;
 
-    const events = await exec
-      .insert(domainEvents)
-      .values(
-        inserted.map((l) => ({
-          organizationId: input.organizationId,
-          teamId: input.teamId,
-          type: "link.created",
-          actorType: actor.actorType,
-          actorUserId: actor.actorUserId ?? null,
-          conversationId: actor.conversationId ?? null,
-          payload: {
-            linkId: l.id,
-            linkTypeId: l.linkTypeId,
-            fromRecordId: l.fromRecordId,
-            toRecordId: l.toRecordId,
-          },
-        })),
-      )
-      .returning({ id: domainEvents.id });
-
-    await exec.insert(domainEventLinks).values(
-      inserted.flatMap((l, i) => [
-        {
-          eventId: events[i]?.id ?? "",
-          recordId: l.fromRecordId,
-          role: "affected",
+    // `link.created` journal rows + provenance edges — the set-based emit
+    // sibling, dedup-keyed per edge id (an edge is created once).
+    const { ids: eventIds } = await emitDomainEventsBulk({
+      tx: exec,
+      organizationId: input.organizationId,
+      teamId: input.teamId,
+      actor,
+      events: inserted.map((l) => ({
+        type: "link.created",
+        payload: {
+          linkId: l.id,
+          linkTypeId: l.linkTypeId,
+          fromRecordId: l.fromRecordId,
+          toRecordId: l.toRecordId,
         },
-        {
-          eventId: events[i]?.id ?? "",
-          recordId: l.toRecordId,
-          role: "affected",
-        },
-      ]),
-    );
+        dedupKey: `link.created:${l.id}`,
+        recordLinks: [
+          { recordId: l.fromRecordId, role: "affected" },
+          { recordId: l.toRecordId, role: "affected" },
+        ],
+      })),
+    });
 
     const provenance = inserted.map(
-      (l, i) => sql`(${l.id}::uuid, ${events[i]?.id}::uuid)`,
+      (l, i) => sql`(${l.id}::uuid, ${eventIds[i]}::uuid)`,
     );
     await exec.execute(
       sql`UPDATE links AS l

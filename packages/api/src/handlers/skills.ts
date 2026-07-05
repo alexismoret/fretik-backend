@@ -212,6 +212,7 @@ skillsRoutes.openapi(createRouteDef, async (c) => {
     name: body.name,
     description: body.description,
     body: body.body,
+    actor: { actorType: "user", actorUserId: user.id },
   });
   return c.json(created, 201);
 });
@@ -238,6 +239,7 @@ skillsRoutes.openapi(updateRouteDef, async (c) => {
     description: patch.description,
     body: patch.body,
     enabled: patch.enabled,
+    actor: { actorType: "user", actorUserId: user.id },
   });
   return c.json(updated, 200);
 });
@@ -256,7 +258,11 @@ skillsRoutes.openapi(deleteRouteDef, async (c) => {
   });
 
   const { id } = c.req.valid("param");
-  await deleteSkill({ id, teamId: team.id });
+  await deleteSkill({
+    id,
+    teamId: team.id,
+    actor: { actorType: "user", actorUserId: user.id },
+  });
   return c.body(null, 204);
 });
 

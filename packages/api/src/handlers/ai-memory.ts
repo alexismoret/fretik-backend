@@ -24,6 +24,12 @@ import {
   responseNotFoundSchema,
   responseSuccessSchemaBuilder,
 } from "@fretik/shared/schemas/common/responses";
+import {
+  episodeDetailSchema,
+  episodeIdParamSchema,
+  episodeListQuerySchema,
+  episodeListResponseSchema,
+} from "@fretik/shared/schemas/episodes";
 import { createMemory } from "@fretik/shared/services/ai-memory/create";
 import { deleteMemory } from "@fretik/shared/services/ai-memory/delete";
 import {
@@ -36,6 +42,10 @@ import { listMemoriesForUi } from "@fretik/shared/services/ai-memory/list-for-ui
 import { overwriteMemory } from "@fretik/shared/services/ai-memory/overwrite";
 import { formatMemoryPath } from "@fretik/shared/services/ai-memory/paths";
 import { suggestMemoryPath } from "@fretik/shared/services/ai-memory/suggest-path";
+import {
+  getEpisode,
+  listEpisodes,
+} from "@fretik/shared/services/episodes/list";
 import { createRoute, OpenAPIHono } from "@hono/zod-openapi";
 
 // ==================== //
@@ -183,6 +193,35 @@ const getHistoryRoute = createRoute({
   },
 });
 
+const listEpisodesRoute = createRoute({
+  method: "get",
+  path: "/episodes",
+  summary: "List distilled episodic memories visible to the session",
+  description:
+    "Read-only window onto `ai_episodes` (conversation / record-activity / consolidated). Team episodes plus the caller's own private ones, newest first. Filter by `?kind=` / `?state=` (default state omitted = all). `summary` is omitted here — fetch it via `/ai-memory/episodes/{id}`.",
+  tags: ["AiMemory"],
+  request: { query: episodeListQuerySchema },
+  responses: {
+    ...responseSuccessSchemaBuilder(episodeListResponseSchema, "Episodes"),
+    ...responseForbiddenSchema,
+    ...responseInternalErrorSchema,
+  },
+});
+
+const getEpisodeRoute = createRoute({
+  method: "get",
+  path: "/episodes/{id}",
+  summary: "One episode with its distilled body + anchored records",
+  tags: ["AiMemory"],
+  request: { params: episodeIdParamSchema },
+  responses: {
+    ...responseSuccessSchemaBuilder(episodeDetailSchema, "Episode"),
+    ...responseNotFoundSchema,
+    ...responseForbiddenSchema,
+    ...responseInternalErrorSchema,
+  },
+});
+
 const getFeedbackRoute = createRoute({
   method: "get",
   path: "/feedback",
@@ -204,6 +243,83 @@ const getFeedbackRoute = createRoute({
 // ==================== //
 // HANDLERS             //
 // ==================== //
+
+aiMemoryRoutes.openapi(listEpisodesRoute, async (c) => {
+  const ctx = requireSession(c);
+  const { kind, state, limit, offset } = c.req.valid("query");
+  const { episodes } = await listEpisodes({
+    teamId: ctx.teamId,
+    userId: ctx.userId,
+    kind,
+    state,
+    limit,
+    offset,
+  });
+  return c.json(
+    {
+      episodes: episodes.map((e) => ({
+        id: e.id,
+        kind: e.kind,
+        state: e.state,
+        title: e.title,
+        isPrivate: e.userId !== null,
+        conversationId: e.conversationId,
+        occurredFrom: e.occurredFrom,
+        occurredTo: e.occurredTo,
+        recallCount: e.recallCount,
+        lastRecalledAt: e.lastRecalledAt,
+        createdAt: e.createdAt,
+        updatedAt: e.updatedAt,
+      })),
+    },
+    200,
+  );
+});
+
+aiMemoryRoutes.openapi(getEpisodeRoute, async (c) => {
+  const ctx = requireSession(c);
+  const { id } = c.req.valid("param");
+  const episode = await getEpisode({
+    episodeId: id,
+    teamId: ctx.teamId,
+    userId: ctx.userId,
+  });
+  if (!episode) {
+    return throwHttpError(404, notFound("Episode not found"));
+  }
+  return c.json(
+    {
+      id: episode.id,
+      kind: episode.kind,
+      state: episode.state,
+      title: episode.title,
+      isPrivate: episode.userId !== null,
+      conversationId: episode.conversationId,
+      occurredFrom: episode.occurredFrom,
+      occurredTo: episode.occurredTo,
+      recallCount: episode.recallCount,
+      lastRecalledAt: episode.lastRecalledAt,
+      createdAt: episode.createdAt,
+      updatedAt: episode.updatedAt,
+      summary: episode.summary,
+      records: episode.episodeRecords.flatMap((r) =>
+        r.record && r.record.objectType
+          ? [
+              {
+                id: r.record.id,
+                label: r.record.label,
+                typeKey: r.record.objectType.key,
+              },
+            ]
+          : [],
+      ),
+      conversation: episode.conversation
+        ? { id: episode.conversation.id, title: episode.conversation.title }
+        : null,
+    },
+    200,
+  );
+});
 
 aiMemoryRoutes.openapi(getFeedbackRoute, async (c) => {
   const ctx = requireSession(c);

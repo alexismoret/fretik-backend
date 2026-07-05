@@ -11,6 +11,7 @@ import { getProvider } from "../../../external-apps/registry";
 import { throwHttpError } from "../../../lib/errors";
 import { getNangoClient } from "../../../lib/external-apps/nango-client";
 import { ERROR_CODES } from "../../../schemas/errors";
+import { emitDomainEvent } from "../../domain-events/emit";
 
 /**
  * Confirm a connection created via Connect UI (for `nango-proxy` OAuth
@@ -134,28 +135,42 @@ export const confirmConnection = async (params: {
     }
   }
 
-  const [row] = await db
-    .insert(externalAppConnections)
-    .values({
+  // Wrap the insert so the journal entry is co-transactional with it.
+  return db.transaction(async (tx) => {
+    const [row] = await tx
+      .insert(externalAppConnections)
+      .values({
+        organizationId: params.organizationId,
+        teamId: params.teamId,
+        userId: params.scope === "user" ? params.userId : null,
+        providerKey: params.providerKey,
+        displayName: params.displayName,
+        nangoConnectionId: params.nangoConnectionId,
+        nangoProviderConfigKey: provider.manifest.nangoProviderConfigKey,
+        createdByUserId: params.userId,
+        status: initialStatus,
+        lastErrorMessage: initialError,
+        options: validatedOptions,
+      })
+      .returning();
+
+    if (row === undefined) {
+      return throwHttpError(500, {
+        code: ERROR_CODES.DATABASE_ERROR,
+        message: "Failed to insert connection row",
+      });
+    }
+
+    await emitDomainEvent({
+      tx,
       organizationId: params.organizationId,
       teamId: params.teamId,
-      userId: params.scope === "user" ? params.userId : null,
-      providerKey: params.providerKey,
-      displayName: params.displayName,
-      nangoConnectionId: params.nangoConnectionId,
-      nangoProviderConfigKey: provider.manifest.nangoProviderConfigKey,
-      createdByUserId: params.userId,
-      status: initialStatus,
-      lastErrorMessage: initialError,
-      options: validatedOptions,
-    })
-    .returning();
-
-  if (row === undefined) {
-    return throwHttpError(500, {
-      code: ERROR_CODES.DATABASE_ERROR,
-      message: "Failed to insert connection row",
+      type: "connector.connected",
+      actor: { actorType: "user", actorUserId: params.userId },
+      subjectType: "connector",
+      payload: { providerKey: params.providerKey, connectionId: row.id },
+      dedupKey: `connector.connected:${row.id}`,
     });
-  }
-  return row;
+    return row;
+  });
 };

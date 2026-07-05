@@ -40,16 +40,20 @@ import type { ExecContext, SandboxExecResponse } from "./types";
  * record id not owned by the JWT's team, so a script can never reach another
  * team's data.
  */
+// Ops executed through the external-apps exec seam attribute as `connector`,
+// keeping the driving user + conversation for provenance.
+const execActor = (ctx: ExecContext): EventActor => ({
+  actorType: "connector",
+  actorUserId: ctx.userId,
+  conversationId: ctx.conversationId,
+});
+
 export const dispatchObjects = async (
   ctx: ExecContext,
   op: string,
   rawArgs: Record<string, unknown>,
 ): Promise<SandboxExecResponse> => {
-  const actor: EventActor = {
-    actorType: "agent",
-    actorUserId: ctx.userId,
-    conversationId: ctx.conversationId,
-  };
+  const actor = execActor(ctx);
 
   try {
     switch (op) {
@@ -303,6 +307,7 @@ const createType = async (
     color: null,
     sharing: args.sharing,
     createdByUserId: ctx.userId,
+    actor: execActor(ctx),
   });
   return { status: "ok", data: { id: type.id, key: type.key, fields: [] } };
 };
@@ -354,6 +359,7 @@ const updateType = async (
       sharing: args.sharing,
       callerTeamId: ctx.teamId,
       createdByUserId: ctx.userId,
+      actor: execActor(ctx),
     });
   }
 
@@ -368,6 +374,7 @@ const updateType = async (
       config: f.config,
       description: f.description ?? null,
       isTitle: f.isTitle,
+      actor: execActor(ctx),
     });
     addedFields.push({ key: field.key, type: field.type });
   }
@@ -403,6 +410,7 @@ const addField = async (
     type: args.type,
     config: args.config,
     description: args.description ?? null,
+    actor: execActor(ctx),
   });
   return { status: "ok", data: { key: field.key, type: field.type } };
 };
@@ -452,6 +460,7 @@ const changeField = async (
     const result = await deleteFieldDefinition({
       id: field.id,
       cascade: args.cascade ?? false,
+      actor: execActor(ctx),
     });
     return { status: "ok", data: result };
   }
@@ -464,6 +473,7 @@ const changeField = async (
       id: field.id,
       cascade: true,
       patch: { type: args.type, config: args.config },
+      actor: execActor(ctx),
     });
     return { status: "ok", data: { key: updated.key, type: updated.type } };
   }
@@ -476,6 +486,7 @@ const changeField = async (
       config: args.config,
       enabled: args.enabled,
     },
+    actor: execActor(ctx),
   });
   return { status: "ok", data: { key: updated.key, type: updated.type } };
 };
@@ -491,7 +502,10 @@ const deleteType = async (
   const objectTypeId = await resolveTeamType(ctx, typeKey);
   if (objectTypeId === null) return unknownType(typeKey);
 
-  const result = await deleteObjectType({ id: objectTypeId });
+  const result = await deleteObjectType({
+    id: objectTypeId,
+    actor: execActor(ctx),
+  });
   return { status: "ok", data: result };
 };
 

@@ -4,6 +4,11 @@ import { objectTypes } from "../../db/schema";
 import { autoColorForKey } from "../../lib/colors/object-colors";
 import { badRequest, internalError, throwHttpError } from "../../lib/errors";
 import type { Audience } from "../../schemas/object-sharing";
+import {
+  emitDomainEvent,
+  type EventActor,
+  SYSTEM_ACTOR,
+} from "../domain-events/emit";
 import { reconcileObjectTable } from "../object-schema/table";
 import { reconcileTypeGrants } from "../object-sharing/reconcile";
 import { invalidateObjectTypeIdCache } from "./resolve";
@@ -66,8 +71,14 @@ export const createObjectType = async (input: {
   // Initial cross-team audience. Default (omitted) = internal (owning team only).
   sharing?: Audience;
   createdByUserId?: string | null;
+  actor?: EventActor;
 }): Promise<ObjectType> => {
   const key = prepareObjectTypeKey(input.key);
+  const actor =
+    input.actor ??
+    (input.createdByUserId
+      ? { actorType: "user" as const, actorUserId: input.createdByUserId }
+      : SYSTEM_ACTOR);
 
   // Create the type's extension table in the SAME tx as the type row — the
   // catalog mutation and its physical table commit atomically. Cheap: a new type
@@ -102,6 +113,16 @@ export const createObjectType = async (input: {
         tx,
       });
     }
+    await emitDomainEvent({
+      tx,
+      organizationId: input.organizationId,
+      teamId: input.teamId,
+      type: "object_type.created",
+      actor,
+      subjectType: "object_type",
+      payload: { objectTypeId: created.id, key, label: input.label },
+      dedupKey: `object_type.created:${created.id}`,
+    });
     return created;
   });
 

@@ -64,6 +64,25 @@ export const openrouter = createOpenRouter({
  * fastest provider), not a model fact — do not source it from the
  * profile here or `dispatch-cheap` would silently gain it.
  */
+/**
+ * Speed-first routing with a QUALITY floor for the memory-utility judges
+ * (P5 recall bench, 2026-07): the same gpt-oss-20b flipped correct↔broken
+ * across OpenRouter upstreams. fp4/fp8 quantized servings are excluded (a
+ * quantized 20b loses the judge's format discipline) and Fireworks is
+ * ignored (empirically broken there — injected blocks on noise 6/6 —
+ * while quant-listed as "unknown"). `sort: "throughput"` then picks the
+ * fastest of what remains (Groq p50 ~0.5s); fallbacks stay enabled.
+ */
+const memoryUtilityProvider = (
+  zdr: boolean | undefined,
+): NonNullable<OpenRouterChatSettings["provider"]> => ({
+  require_parameters: true,
+  zdr,
+  sort: "throughput",
+  ignore: ["fireworks"],
+  quantizations: ["bf16", "fp16", "unknown"],
+});
+
 export const settingsForRole = (
   binding: RoleBinding,
   profile: ModelProfile,
@@ -95,8 +114,13 @@ export const settingsForRole = (
       };
     case "active-memory":
       return {
-        provider: { require_parameters: true, zdr },
+        provider: memoryUtilityProvider(zdr),
         reasoning: { effort: "low" },
+      };
+    case "recall":
+      return {
+        provider: memoryUtilityProvider(zdr),
+        reasoning: { effort: "medium" },
       };
     case "bare":
       return undefined;
@@ -400,7 +424,17 @@ export const ROLE_TIER: Record<ModelRole, ModelTier | "fixed"> = {
   "dispatch-cheap": "workhorse",
   "pre-extract": "workhorse",
   "pre-extract-fallback": "fixed",
-  "active-memory": "utility",
+  // FIXED since P5-bis (2026-07): the recall judge is a SYSTEM quality
+  // component — the eval suite showed gpt-oss-20b unstable on it at every
+  // effort level, so a team's utility pick must not silently degrade the
+  // memory of every turn. Code default only (gpt-oss-120b).
+  "active-memory": "fixed",
+  "memory-extract": "utility",
+  "memory-distill": "utility",
+  // FIXED (P8.2): the consolidation judge is a system quality component (like
+  // the recall judge) — a team's utility pick must not degrade it below the
+  // 120b that makes temporal re-anchoring reliable.
+  "memory-consolidate": "fixed",
   "compaction-summarizer": "workhorse",
   "cheap-tasks": "utility",
   vision: "fixed",

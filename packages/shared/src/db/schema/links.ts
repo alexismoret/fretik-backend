@@ -12,7 +12,7 @@ import {
 import { organization, team } from "./auth-schema";
 import { linkTypes } from "./link-types";
 import { objectRecords } from "./object-records";
-import { ontologySourceEnum } from "./ontology-enums";
+import { ontologySourceEnum, ontologyStatusEnum } from "./ontology-enums";
 
 /**
  * Links — the typed edges of the unified graph. The relation semantics live in
@@ -57,6 +57,10 @@ export const links = pgTable(
       .default({}),
 
     source: ontologySourceEnum("source").notNull().default("user_manual"),
+    // Trust band, mirroring records/link-types: user edges are born `confirmed`,
+    // AI-inferred ones `suggested` until reviewed (P8.4). Default keeps every
+    // existing edge (and the UI/user write path) `confirmed`.
+    status: ontologyStatusEnum("status").notNull().default("confirmed"),
     confidence: decimal("confidence", { precision: 4, scale: 3 }),
     // Soft ref to domain_events (append-only; see object_records.sourceEventId).
     sourceEventId: uuid("source_event_id"),

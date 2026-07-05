@@ -886,7 +886,40 @@ export const ROLE_BINDINGS: Record<ModelRole, RoleBinding> = {
   },
   "active-memory": {
     role: "active-memory",
+    // P5-bis recall-eval decision (2026-07, 16-case suite × 3 repeats):
+    // gpt-oss-120b @ effort medium @ 10k output budget → 16/16 at
+    // p50 ~1.3s; gpt-oss-20b topped out at 15/16 with double latency;
+    // deepseek-v4-flash timed out (13-15s). The judge is a SYSTEM
+    // quality component — ROLE_TIER pins it "fixed" so a team's utility
+    // pick can't degrade it. NOTE: the old 3k judge output budget
+    // silently truncated gpt-oss REASONING at medium/high effort and
+    // collapsed both models to NONE — budget sits in recall.ts now.
+    profileKey: "gpt-oss-120b",
+    settingsKind: "recall",
+    wrapCache: false,
+  },
+  "memory-extract": {
+    role: "memory-extract",
     profileKey: "gpt-oss-20b",
+    settingsKind: "active-memory",
+    wrapCache: false,
+  },
+  "memory-distill": {
+    role: "memory-distill",
+    profileKey: "gpt-oss-20b",
+    settingsKind: "active-memory",
+    wrapCache: false,
+  },
+  "memory-consolidate": {
+    role: "memory-consolidate",
+    // P8.2 memory-eval decision: the consolidation judge (MERGE/REVISE/NOOP +
+    // temporal re-anchoring of a plan whose date is now past) needs judgment
+    // gpt-oss-20b delivers unreliably — the reanchor case NOOP'd 1-2/3.
+    // gpt-oss-120b @ effort low → reanchor 5/5, merge/revise/noop stable.
+    // Split from `memory-distill` on purpose: consolidation is low-volume
+    // (nightly per-cluster + eager per just-distilled episode), so the ~3x
+    // model cost lands on a fraction of the (high-volume) distill traffic.
+    profileKey: "gpt-oss-120b",
     settingsKind: "active-memory",
     wrapCache: false,
   },

@@ -7,6 +7,11 @@ import type {
 } from "../../db/schema";
 import { fieldDefinitions } from "../../db/schema";
 import { internalError, throwHttpError } from "../../lib/errors";
+import {
+  emitDomainEvent,
+  type EventActor,
+  SYSTEM_ACTOR,
+} from "../domain-events/emit";
 import { refreshObjectTableAfterCatalogChange } from "../object-schema/catalog-sync";
 import { isDocumentObjectType } from "../object-types/is-document-type";
 import { invalidateFieldDefinitionsCache } from "./cache";
@@ -35,6 +40,7 @@ export type CreateFieldDefinitionInput = {
   displayInPanel?: boolean;
   enabled?: boolean;
   displayOrder?: number;
+  actor?: EventActor;
 };
 
 /**
@@ -78,6 +84,7 @@ const resolveUniqueFieldKey = async (data: {
 export const createFieldDefinition = async (
   input: CreateFieldDefinitionInput,
 ): Promise<FieldDefinition> => {
+  const actor = input.actor ?? SYSTEM_ACTOR;
   const key = input.key
     ? input.key
     : await resolveUniqueFieldKey({
@@ -191,6 +198,24 @@ export const createFieldDefinition = async (
       objectTypeId: input.objectTypeId,
       teamId: input.teamId,
     });
+    // Journal the catalog change. Org-scope templates (teamId null) are outside
+    // the team-scoped journal — skipped.
+    if (input.teamId) {
+      await emitDomainEvent({
+        tx,
+        organizationId: input.organizationId,
+        teamId: input.teamId,
+        type: "field.created",
+        actor,
+        subjectType: "field",
+        payload: {
+          fieldDefinitionId: inserted.id,
+          objectTypeId: input.objectTypeId,
+          key,
+        },
+        dedupKey: `field.created:${inserted.id}`,
+      });
+    }
     return inserted;
   });
   await invalidateFieldDefinitionsCache({

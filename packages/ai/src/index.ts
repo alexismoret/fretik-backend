@@ -17,6 +17,7 @@ import { cors } from "hono/cors";
 import packagejson from "../package.json";
 import { chatFilesRoutes } from "./handlers/chat-files";
 import { chatbotInternalRoutes, chatbotRoutes } from "./handlers/chatbot";
+import { memoryRoutes } from "./handlers/memory";
 import { modelProfilesRoutes } from "./handlers/model-profiles";
 import { preExtractRoutes } from "./handlers/pre-extract";
 import { vectorizeRoutes } from "./handlers/vectorize";
@@ -63,6 +64,9 @@ app.route("/internal/vectorize", vectorizeRoutes);
 // Internal pre-extraction endpoint — OCR + structured classification +
 // entity extraction. Consumed by @fretik/shared upload pipeline.
 app.route("/internal/pre-extract", preExtractRoutes);
+
+// Internal mention extraction for the @fretik/jobs event→graph resolver.
+app.route("/internal/memory", memoryRoutes);
 
 // Load the bundled-skills catalog into memory so the system-prompt
 // renderer can advertise the L1 listing (skill name + description).

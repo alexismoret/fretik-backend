@@ -213,6 +213,7 @@ objectTypeRoutes.openapi(createRouteDef, async (c) => {
     color: body.color ?? null,
     sharing: body.sharing,
     createdByUserId: user.id,
+    actor: { actorType: "user", actorUserId: user.id },
   });
   return c.json(created, 201);
 });
@@ -255,6 +256,7 @@ objectTypeRoutes.openapi(updateRouteDef, async (c) => {
     sharing,
     callerTeamId: team.id,
     createdByUserId: user.id,
+    actor: { actorType: "user", actorUserId: user.id },
   });
   return c.json(updated, 200);
 });
@@ -262,13 +264,17 @@ objectTypeRoutes.openapi(updateRouteDef, async (c) => {
 objectTypeRoutes.openapi(deleteRouteDef, async (c) => {
   const team = c.get("team");
   if (!team) return c.json(teamRequired(), 403);
+  const user = c.get("user");
   const { id } = c.req.valid("param");
   await assertCanWriteType({
     objectTypeId: id,
     teamId: team.id,
     organizationId: team.organizationId,
   });
-  const result = await deleteObjectType({ id });
+  const result = await deleteObjectType({
+    id,
+    actor: { actorType: "user", actorUserId: user.id },
+  });
   return c.json(result, 200);
 });
 

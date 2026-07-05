@@ -4,6 +4,7 @@
   "workspaces": [
     "packages/shared",
     "packages/providers",
+    "packages/jobs",
     "packages/api",
     "packages/ai"
   ],

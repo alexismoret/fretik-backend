@@ -1,3 +1,4 @@
+import type { EventActor } from "@fretik/shared/services/domain-events/emit";
 import type { ModelProfile } from "../../lib/model-registry/types";
 import type { DynamicToolManager } from "./dynamic-tools";
 import type { TaskManager } from "./task-manager";
@@ -60,6 +61,13 @@ export interface AgentRuntimeContext {
   teamId: string;
   userId?: string;
   userName?: string;
+  /**
+   * Journal identity of the agent driving this turn (`domain_events.agent_key`).
+   * Unset today — `agentEventActor` falls back to `"chatbot"`, the only agent.
+   * A future runner reusing these tools (workflow engine) sets its own key
+   * (`workflow:<key>`) when building its context; tools pick it up untouched.
+   */
+  agentKey?: string;
   /**
    * Profile of the model serving THIS agent instance (primary or
    * fallback), injected by `buildToolLoopAgent`'s `prepareCall` —
@@ -142,8 +150,8 @@ export interface AgentRuntimeContext {
    * Rendered `{{activeMemoryBlock}}` fragment for the system prompt —
    * a 1-3 bullet markdown summary of the persistent memories already
    * judged relevant for the current turn. Built by the handler before
-   * the main `streamText` call via `runActiveMemoryRecall`
-   * (`services/active-memory/recall.ts`). When `undefined` the prompt
+   * the main `streamText` call via `runUnifiedRecall`
+   * (`services/recall/recall.ts`). When `undefined` the prompt
    * omits the `<active_memory>` block entirely (which is itself a
    * signal — see `<memory_protocol>`). NEVER blocks the turn: a
    * recall failure or "NONE" verdict simply leaves this undefined.
@@ -297,3 +305,16 @@ export const getRuntimeContext = (options: {
   // line. Call sites never perform casts of their own.
   return raw as BrandedRuntimeContext;
 };
+
+/**
+ * The journal `EventActor` for a write performed by THIS agent turn — the
+ * single seam mapping runtime identity onto `domain_events` attribution.
+ * Tools pass this to the shared mutation services instead of building their
+ * own literal, so a future non-chatbot runner only has to set `ctx.agentKey`.
+ */
+export const agentEventActor = (ctx: AgentRuntimeContext): EventActor => ({
+  actorType: "agent",
+  actorUserId: ctx.userId ?? null,
+  conversationId: ctx.conversationId ?? null,
+  agentKey: ctx.agentKey ?? "chatbot",
+});

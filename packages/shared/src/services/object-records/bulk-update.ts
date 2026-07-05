@@ -1,10 +1,11 @@
 import { inArray, sql } from "drizzle-orm";
 import db from "../../db";
 import type { FieldDefinition } from "../../db/schema";
-import { domainEventLinks, domainEvents, objectRecords } from "../../db/schema";
+import { objectRecords } from "../../db/schema";
 import { chunkForBulk, formatBulkRowError } from "../../lib/db-bulk";
 import { computeRecordIdentity } from "../../schemas/record-shape";
 import { type EventActor, SYSTEM_ACTOR } from "../domain-events/emit";
+import { emitDomainEventsBulk } from "../domain-events/emit-bulk";
 import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
 import { resolveLocationRefsBatch } from "../locations/resolve-batch";
 import {
@@ -209,35 +210,26 @@ export const bulkUpdateObjectRecords = async (input: {
     const fds = fieldDefsByType.get(typeId) ?? [];
     for (const batch of chunkForBulk(prep)) {
       await db.transaction(async (tx) => {
-        const events = await tx
-          .insert(domainEvents)
-          .values(
-            batch.map((p) => ({
-              organizationId: p.organizationId,
-              teamId: input.teamId,
-              type: "record.updated",
-              actorType: actor.actorType,
-              actorUserId: actor.actorUserId ?? null,
-              conversationId: actor.conversationId ?? null,
-              subjectRecordId: p.id,
-              payload: { diff: p.diff },
-            })),
-          )
-          .returning({ id: domainEvents.id });
-
-        await tx.insert(domainEventLinks).values(
-          batch.map((p, i) => ({
-            eventId: events[i]?.id ?? "",
-            recordId: p.id,
-            role: "subject",
+        // `record.updated` has no natural once-only token — no dedupKey. One
+        // team ⇒ one organization, so the batch's first row's org stands in.
+        const { ids: eventIds } = await emitDomainEventsBulk({
+          tx,
+          organizationId: batch[0]!.organizationId,
+          teamId: input.teamId,
+          actor,
+          events: batch.map((p) => ({
+            type: "record.updated",
+            subjectRecordId: p.id,
+            payload: { diff: p.diff },
+            recordLinks: [{ recordId: p.id, role: "subject" }],
           })),
-        );
+        });
 
         // Registry: label / normalized_label / search_vector / source_event_id
         // per row; updated-by stamp is constant across the batch.
         const regTuples = batch.map(
           (p, i) =>
-            sql`(${p.id}::uuid, ${p.label}::text, ${p.normalizedLabel}::text, ${p.searchText}::text, ${events[i]?.id}::uuid)`,
+            sql`(${p.id}::uuid, ${p.label}::text, ${p.normalizedLabel}::text, ${p.searchText}::text, ${eventIds[i]}::uuid)`,
         );
         await tx.execute(
           sql`UPDATE object_records AS r

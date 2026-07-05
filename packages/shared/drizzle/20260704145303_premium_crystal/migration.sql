@@ -1,0 +1,1 @@
+DROP INDEX "ai_memories_content_trgm_idx";

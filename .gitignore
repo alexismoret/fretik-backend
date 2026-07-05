@@ -1,6 +1,10 @@
 # dependencies (bun install)
 node_modules
 
+# Trigger.dev local dev state
+.trigger
+**/.trigger
+
 # output
 out
 dist

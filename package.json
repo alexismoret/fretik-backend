@@ -5,6 +5,7 @@
     "packages/shared",
     "packages/providers",
     "packages/jobs",
+    "packages/workflows",
     "packages/api",
     "packages/ai"
   ],

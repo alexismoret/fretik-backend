@@ -1,0 +1,33 @@
+{
+  "name": "@fretik/workflows",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "trigger dev",
+    "deploy": "trigger deploy",
+    "typecheck": "tsgo --noEmit",
+    "lint": "oxlint --type-aware",
+    "lint:fix": "oxlint --type-aware --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "check": "bun run typecheck && bun run lint && bun run format:check"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "@fretik/shared": "workspace:*",
+    "@trigger.dev/sdk": "4.5.0"
+  },
+  "devDependencies": {
+    "@trigger.dev/build": "4.5.0",
+    "trigger.dev": "4.5.0",
+    "@types/bun": "latest",
+    "@typescript/native-preview": "^7.0.0-dev.20260618.1",
+    "oxlint": "^1.70.0",
+    "oxlint-tsgolint": "^0.23.0",
+    "prettier": "^3.8.4",
+    "prettier-plugin-organize-imports": "^4.3.0"
+  }
+}

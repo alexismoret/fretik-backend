@@ -101,7 +101,7 @@ const collectPresentedFiles = (message: UIMessage): PresentedFileFromTool[] => {
  * NOT end on an `askUserQuestion` call — the caller then takes the
  * normal "chatbot finished replying" path.
  *
- * Source of truth for the shape: `tools/ask-user.ts` `QuestionSchema`
+ * Source of truth for the shape: `tools/ask-user/schema.ts` `askUserQuestionSchema`
  * (question + header ≤ 12 chars + options[2-4] + multiSelect bool).
  * We re-validate every field here because the runtime payload is
  * `unknown` at the part boundary.
@@ -333,8 +333,8 @@ export const sendChatbotFinishedEmailIfEnabled = async (
 
   // Branch 0 — turn paused on a write-plan approval gate.
   //
-  // The chatbot agent's `stopWhen` includes `pythonAwaitingApproval`
-  // (see `agents/chatbot/index.ts`), so any python tool returning
+  // The chatbot agent's `stopWhen` includes `anyToolAwaitingApproval`
+  // (see `agents/chatbot/index.ts`), so any tool returning
   // `{ status: "approval_pending", approvalId }` ends the turn there.
   // We branch BEFORE `askUserQuestion` (and before the generic
   // "finished" path) so the user gets the right call-to-action:
@@ -360,7 +360,8 @@ export const sendChatbotFinishedEmailIfEnabled = async (
     if (
       approval !== undefined &&
       approval.conversationId === conversationId &&
-      approval.status === "pending"
+      approval.status === "pending" &&
+      approval.summary !== null
     ) {
       const lang = await getTeamLocale(conversation.teamId);
       const rendered = renderApprovalSummary(approval.summary, lang);

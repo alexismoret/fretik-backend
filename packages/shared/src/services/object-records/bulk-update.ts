@@ -61,6 +61,12 @@ export const bulkUpdateObjectRecords = async (input: {
   updates: { id: string; data: Record<string, unknown> }[];
   merge?: boolean;
   strict?: boolean;
+  /**
+   * Validate every update (with the same merge/member rules) and return the
+   * per-id `errors` WITHOUT writing (no geocode, no transaction). Used as the
+   * pre-approval dry-run. `updatedIds` comes back empty.
+   */
+  dryRun?: boolean;
   actor?: EventActor;
 }): Promise<BulkUpdateResult> => {
   const actor = input.actor ?? SYSTEM_ACTOR;
@@ -192,17 +198,22 @@ export const bulkUpdateObjectRecords = async (input: {
     // Resolve every location value to a FK into the per-team `locations` table —
     // one batched, cached, best-effort pass per type before the transaction. The
     // diff above reflects the caller's edit (the LocationValue); the stored value
-    // is the resolved FK.
-    const geocoded = await resolveLocationRefsBatch({
-      teamId: input.teamId,
-      fieldDefs: fds,
-      rows: prep.map((p) => p.data),
-    });
-    geocoded.forEach((data, i) => {
-      prep[i]!.data = data;
-    });
+    // is the resolved FK. Skipped on dry-run (no write follows).
+    if (!input.dryRun) {
+      const geocoded = await resolveLocationRefsBatch({
+        teamId: input.teamId,
+        fieldDefs: fds,
+        rows: prep.map((p) => p.data),
+      });
+      geocoded.forEach((data, i) => {
+        prep[i]!.data = data;
+      });
+    }
     preparedByType.set(typeId, prep);
   }
+
+  // Dry-run: validation done — report errors without touching the DB.
+  if (input.dryRun) return { updatedIds: [], errors };
 
   // 5. Write per type, chunked.
   const updatedIds: string[] = [];

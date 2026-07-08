@@ -1,16 +1,24 @@
-import { DREAMING_SWEEP_JOB, GC_DEMOTE_JOB, JOURNAL_SWEEP_JOB } from "./names";
+import {
+  DREAMING_SWEEP_JOB,
+  GC_DEMOTE_JOB,
+  JOURNAL_SWEEP_JOB,
+  WORKFLOW_STALL_SWEEP_JOB,
+  WORKFLOW_TRIGGER_SWEEP_JOB,
+} from "./names";
 import { getMemoryMaintenanceQueue } from "./queues";
 
 /**
  * Repeatable-job registration. BullMQ job schedulers are queue-level state
  * keyed by scheduler id — every replica upserts the same ids, so N replicas
- * still produce ONE job per interval. All three land on the maintenance
- * queue: the journal sweep and the two nightly triggers are cheap (the
- * dreaming cron only fans out per-team jobs onto the dedicated
- * memory-dreaming queue; GC is chunked SQL).
+ * still produce ONE job per interval. All land on the maintenance queue: the
+ * journal + workflow-trigger sweeps are cheap (reads + enqueue), the nightly
+ * triggers fan work out elsewhere, and the stall sweep is one bounded UPDATE.
  */
 
 const SWEEP_INTERVAL_MS = 15_000;
+/** Reclaim stalled workflow runs every 5 min (backs the orchestrator's own
+ * onFailure finalize; heartbeat-gap is 20 min, so 5 min is timely enough). */
+const STALL_SWEEP_INTERVAL_MS = 5 * 60_000;
 /** Dreaming at 03:00 UTC, GC an hour later — both in the quiet window. */
 const DREAMING_CRON = "0 3 * * *";
 const GC_CRON = "0 4 * * *";
@@ -42,5 +50,21 @@ export const registerSchedulers = async (): Promise<void> => {
     GC_DEMOTE_JOB,
     { pattern: GC_CRON, tz: "UTC" },
     { name: GC_DEMOTE_JOB, opts: CRON_OPTS },
+  );
+  await maintenance.upsertJobScheduler(
+    WORKFLOW_TRIGGER_SWEEP_JOB,
+    { every: SWEEP_INTERVAL_MS },
+    {
+      name: WORKFLOW_TRIGGER_SWEEP_JOB,
+      opts: {
+        removeOnComplete: { count: 20 },
+        removeOnFail: { count: 100 },
+      },
+    },
+  );
+  await maintenance.upsertJobScheduler(
+    WORKFLOW_STALL_SWEEP_JOB,
+    { every: STALL_SWEEP_INTERVAL_MS },
+    { name: WORKFLOW_STALL_SWEEP_JOB, opts: CRON_OPTS },
   );
 };

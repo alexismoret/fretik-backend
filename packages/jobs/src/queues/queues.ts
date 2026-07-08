@@ -6,11 +6,13 @@ import {
   MEMORY_MAINTENANCE_QUEUE,
   MEMORY_RESOLVE_QUEUE,
   RECORD_CARD_QUEUE,
+  WORKFLOW_TRIGGER_QUEUE,
   type DreamingTeamJobData,
   type EagerConsolidateJobData,
   type MemoryDistillJobData,
   type MemoryResolveJobData,
   type RecordCardJobData,
+  type WorkflowRunCreateJobData,
 } from "./names";
 
 /** Both job shapes ride the dreaming queue (see EAGER_CONSOLIDATE_JOB). */
@@ -61,4 +63,14 @@ export const getMemoryDreamingQueue = (): Queue<DreamingJobData> => {
     connection: getProducerConnection(),
   });
   return dreamingQueue;
+};
+
+let workflowTriggerQueue: Queue<WorkflowRunCreateJobData> | null = null;
+
+export const getWorkflowTriggerQueue = (): Queue<WorkflowRunCreateJobData> => {
+  workflowTriggerQueue ??= new Queue<WorkflowRunCreateJobData>(
+    WORKFLOW_TRIGGER_QUEUE,
+    { connection: getProducerConnection() },
+  );
+  return workflowTriggerQueue;
 };

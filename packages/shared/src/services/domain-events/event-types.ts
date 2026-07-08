@@ -92,6 +92,40 @@ export const isValidDomainEventType = (type: string): boolean =>
   );
 
 /**
+ * The subset of journal events a workflow may TRIGGER on — "things that happen
+ * to the team's content". Excludes internal plumbing (catalog/config/memory
+ * churn, chat turns) and, deliberately, `workflow.*` (a run's own lifecycle —
+ * triggering on it would risk self-firing loops). `connector.*` provider
+ * activity (an inbound email/task/etc.) is matched by prefix because those
+ * kinds are minted at runtime. Used to validate a workflow's event trigger so
+ * a typo'd type can't silently create a workflow that never fires.
+ */
+export const WORKFLOW_TRIGGERABLE_EVENT_TYPES = [
+  "document.uploaded",
+  "document.deleted",
+  "document.reextracted",
+  "record.created",
+  "record.updated",
+  "record.deleted",
+  "record.confirmed",
+  "record.rejected",
+  "link.created",
+  "link.invalidated",
+  "folder.created",
+  "folder.renamed",
+  "folder.deleted",
+] as const;
+
+const TRIGGERABLE_TYPES: ReadonlySet<string> = new Set(
+  WORKFLOW_TRIGGERABLE_EVENT_TYPES,
+);
+
+/** True for a curated workspace event type or any `connector.*` provider kind. */
+export const isTriggerableEventType = (type: string): boolean =>
+  TRIGGERABLE_TYPES.has(type) ||
+  (type.startsWith("connector.") && type.length > "connector.".length);
+
+/**
  * Emit-time guard: throw in dev/test (fail fast on a typo), warn in prod (a
  * mislabeled journal entry beats a failed user mutation).
  */

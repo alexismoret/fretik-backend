@@ -508,9 +508,14 @@ describe("describeFieldExpectation", () => {
         }),
       ),
     ).toBe('amount (number): a quoted number between 0 and 100, e.g. "1500"');
-    expect(
-      describeFieldExpectation(makeField({ key: "total", type: "money" })),
-    ).toContain("1500 EUR");
+    const moneyHint = describeFieldExpectation(
+      makeField({ key: "total", type: "money" }),
+    );
+    // Names BOTH forms and the exact object key so a bulk-create row never
+    // slips `{ amount, currency }` (the 4.32M-token incident's root cause).
+    expect(moneyHint).toContain("1500 EUR");
+    expect(moneyHint).toContain("currencyCode");
+    expect(moneyHint).toContain('NOT "currency"');
   });
 
   it("distinguishes single vs multi member", () => {

@@ -1,14 +1,18 @@
 import { createWorkerConnection } from "@fretik/shared/lib/queue/connection";
+import { markStalledRuns } from "@fretik/shared/services/workflows/mark-stalled-runs";
 import { type Job, Worker } from "bullmq";
 import {
   DREAMING_SWEEP_JOB,
   GC_DEMOTE_JOB,
   JOURNAL_SWEEP_JOB,
   MEMORY_MAINTENANCE_QUEUE,
+  WORKFLOW_STALL_SWEEP_JOB,
+  WORKFLOW_TRIGGER_SWEEP_JOB,
 } from "../queues/names";
 import { runDreamingSweep } from "./dreaming";
 import { runGcDemote } from "./gc-demote";
 import { runJournalSweep } from "./journal-sweep";
+import { runWorkflowTriggerSweep } from "./workflow-trigger-sweep";
 
 /**
  * Scheduled-job dispatcher: one worker, concurrency 1, routing by job name.
@@ -41,6 +45,24 @@ export const startMaintenanceWorker = (): Worker => {
           console.info(
             `[gc-demote] demoted ${demoted.toString()} stale episodes`,
           );
+          return;
+        }
+        case WORKFLOW_TRIGGER_SWEEP_JOB: {
+          const { created } = await runWorkflowTriggerSweep();
+          if (created > 0) {
+            console.info(
+              `[workflow-trigger-sweep] enqueued ${created.toString()} event runs`,
+            );
+          }
+          return;
+        }
+        case WORKFLOW_STALL_SWEEP_JOB: {
+          const reclaimed = await markStalledRuns();
+          if (reclaimed > 0) {
+            console.info(
+              `[workflow-stall-sweep] reclaimed ${reclaimed.toString()} stalled runs`,
+            );
+          }
           return;
         }
         default:

@@ -80,5 +80,12 @@ export * from "./ai-episodes";
 // Skills (chatbot SKILL.md catalogue + per-team enable/disable overrides)
 export * from "./skills";
 
-// External apps (Nango connections + write-action approval gate)
+// External apps (Nango connections)
 export * from "./external-apps";
+
+// Approvals (generic human-in-the-loop decision gate — external-app plans,
+// record writes, questions — shared by the chatbot + the workflow executor)
+export * from "./approvals";
+
+// Workflows (autonomous agents: definitions + runs, Trigger.dev-driven)
+export * from "./workflows";

@@ -11,6 +11,7 @@ import {
   agentEventActor,
   getRuntimeContext,
 } from "../agents/shared/runtime-context";
+import { workflowWriteBackstop } from "../agents/shared/workflow-write-backstop";
 import { TOOL_ERROR_CODES, toolError } from "../lib/tool-error-codes";
 
 /**
@@ -147,6 +148,8 @@ export const createManageRecordTool = () =>
     inputSchema: manageRecordInputSchema,
     execute: async (input, options) => {
       const ctx = getRuntimeContext(options);
+      const backstop = workflowWriteBackstop(ctx);
+      if (backstop !== null) return backstop;
       const actor = agentEventActor(ctx);
       // The model passes values as a { key, value } list (reliable to fill);
       // the services take a map. `resolveRecordValues` recovers a value the

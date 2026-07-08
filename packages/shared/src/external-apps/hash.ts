@@ -1,4 +1,5 @@
-import type { ToolApprovalOperation } from "../db/schema/external-apps";
+import type { ToolApprovalOperation } from "../db/schema/approvals";
+import { canonicalHash } from "../services/approvals/hash";
 import { isRecord } from "./json-access";
 import type { ParamSpec } from "./manifest-schema";
 import { getAction } from "./registry";
@@ -49,20 +50,6 @@ const stripExcludedValue = (value: unknown, spec: ParamSpec): unknown => {
   return value;
 };
 
-/** Canonical JSON: keys sorted at every level, `undefined` dropped. */
-const canonical = (value: unknown): unknown => {
-  if (Array.isArray(value)) return value.map(canonical);
-  if (isRecord(value)) {
-    const sorted: Record<string, unknown> = {};
-    for (const key of Object.keys(value).sort()) {
-      const v = value[key];
-      if (v !== undefined) sorted[key] = canonical(v);
-    }
-    return sorted;
-  }
-  return value;
-};
-
 export const computeLookupHash = (
   operations: ToolApprovalOperation[],
 ): string => {
@@ -76,8 +63,5 @@ export const computeLookupHash = (
       args: stripExcluded(op.args, resolved.action.params),
     };
   });
-  const json = JSON.stringify(canonical(stable));
-  const hasher = new Bun.CryptoHasher("sha256");
-  hasher.update(json);
-  return hasher.digest("hex");
+  return canonicalHash(stable);
 };

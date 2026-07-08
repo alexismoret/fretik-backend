@@ -6,8 +6,8 @@ import {
 import {
   sandboxExecRequestSchema,
   sandboxExecResponseSchema,
-} from "@fretik/shared/schemas/external-apps";
-import { dispatchSandboxExec } from "@fretik/shared/services/external-apps/exec/dispatch";
+} from "@fretik/shared/schemas/sandbox";
+import { dispatchSandboxExec } from "@fretik/shared/services/sandbox/dispatch";
 import { createRoute, OpenAPIHono } from "@hono/zod-openapi";
 
 /**

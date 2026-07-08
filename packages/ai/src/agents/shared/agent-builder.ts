@@ -5,6 +5,7 @@ import {
   type LanguageModel,
   type PrepareStepFunction,
   type StopCondition,
+  type ToolCallRepairFunction,
   type ToolLoopAgentOnStepFinishCallback,
   type ToolSet,
 } from "ai";
@@ -119,6 +120,15 @@ export interface BuildAgentSetConfig<CALL_OPTIONS, TTools extends ToolSet> {
    */
   buildRuntimeContextBase: (options: CALL_OPTIONS) => AgentRuntimeContextBase;
   /**
+   * Optional hook fired inside `prepareCall` right after the runtime ctx is
+   * assembled (managers included) and BEFORE the system prompt renders. The
+   * seam for per-call ctx preparation that needs the managers — e.g. the
+   * workflow agent pre-activates the playbook's `toolHints` on
+   * `ctx.dynamicToolManager` so hinted domain tools are live from step 0.
+   * Mutations must respect the runtime-context mutation contract.
+   */
+  onRuntimeContext?: (ctx: AgentRuntimeContext, options: CALL_OPTIONS) => void;
+  /**
    * Optional Zod (or compatible) schema validated by the framework
    * on every `.stream()` / `.generate()` call. Keeps runtime
    * drift from leaking into tool executions.
@@ -135,6 +145,20 @@ export interface BuildAgentSetConfig<CALL_OPTIONS, TTools extends ToolSet> {
    * silence the default.
    */
   onStepFinish?: ToolLoopAgentOnStepFinishCallback<TTools>;
+  /**
+   * Optional hard cap on tokens generated PER STEP. A step that hits the cap
+   * ends with `finishReason: 'length'`: pure text stops the loop cleanly (the
+   * partial survives in history, the next turn resumes it) — it does NOT fail
+   * the run; a truncated tool-call surfaces as `InvalidToolInputError`, healed
+   * by `repairToolCall` when set. Guards against a single runaway generation.
+   */
+  maxOutputTokens?: number;
+  /**
+   * Optional repair for a malformed tool call (`InvalidToolInputError` /
+   * `NoSuchToolError`). Returning a fixed call retries it; returning `null`
+   * falls back to the framework's default (surface the error to the model).
+   */
+  repairToolCall?: ToolCallRepairFunction<TTools>;
 }
 
 /**
@@ -269,6 +293,17 @@ const buildToolLoopAgent = <CALL_OPTIONS, TTools extends ToolSet>(
     prepareStep,
     onStepFinish,
     callOptionsSchema: config.callOptionsSchema,
+    // Both survive `prepareCall`'s wholesale settings replacement: they ride
+    // in `settingsWithoutCallback` → `baseCallArgs`, which `prepareCall`
+    // spreads. `maxOutputTokens` is also in the `prepareCall` return `Pick`;
+    // `repairToolCall` is not typed there but passes through at runtime
+    // (verified: ai@6 `index.js` ToolLoopAgent.prepareCall + streamText).
+    ...(config.maxOutputTokens !== undefined
+      ? { maxOutputTokens: config.maxOutputTokens }
+      : {}),
+    ...(config.repairToolCall !== undefined
+      ? { experimental_repairToolCall: config.repairToolCall }
+      : {}),
     // Langfuse tracing: emit OpenTelemetry spans for every model call +
     // tool call. `prepareCall` spreads `...baseCallArgs` (which carries
     // this construction setting), so the telemetry config survives the
@@ -345,6 +380,7 @@ const buildToolLoopAgent = <CALL_OPTIONS, TTools extends ToolSet>(
         // model actually serving the call.
         modelProfile: resolved.profile,
       };
+      config.onRuntimeContext?.(ctx, options);
       const instructions = await config.systemPrompt(ctx, tools);
       const branded = wrapRuntimeContext(ctx);
 

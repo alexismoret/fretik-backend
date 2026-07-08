@@ -16,6 +16,13 @@ export const TOOL_ERROR_CODES = {
   NO_CONVERSATION: "NO_CONVERSATION",
   MEMORY_REQUIRES_USER: "MEMORY_REQUIRES_USER",
 
+  // Workflow (headless workflow-agent tools)
+  NO_WORKFLOW_RUN: "NO_WORKFLOW_RUN",
+  // Workflow builder (manageWorkflow domain tool)
+  WORKFLOW_ERROR: "WORKFLOW_ERROR",
+  WORKFLOW_NOT_FOUND: "WORKFLOW_NOT_FOUND",
+  WORKFLOW_NOT_TESTED: "WORKFLOW_NOT_TESTED",
+
   // User-initiated Stop — the turn was aborted mid-tool (POST /:id/stop).
   // The model never reads this (the tool loop is aborted with it); it
   // documents intent and keeps the failure envelope canonical.

@@ -192,10 +192,13 @@ def _post(payload: dict[str, Any]) -> Any:
 
 def _call_objects(op: str, args: dict[str, Any]) -> Any:
     """Dispatch one objects.* op for the code-mode ontology SDK
-    (`fretik_apps.objects`). Unlike external-app writes, object writes are NOT
-    approval-gated: validation, grants and the domain-events journal are
-    enforced server-side. Returns the op's small result summary (ids, counts,
-    per-row errors) — never the bulk rows themselves.
+    (`fretik_apps.objects`). Record writes are gated by workflow autonomy: an
+    `approval_required` run pauses on a record_write approval (this call raises
+    ApprovalPending); a read_only run is refused; plain chat and autonomous runs
+    write directly. Schema changes are blocked for any workflow run. Validation,
+    grants and the domain-events journal are always enforced server-side.
+    Returns the op's small result summary (ids, counts, per-row errors) — never
+    the bulk rows themselves.
     """
     return _post({"kind": "objects", "op": op, "args": args})
 

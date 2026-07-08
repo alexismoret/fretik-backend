@@ -216,6 +216,7 @@ export const processDocument = async (
         organizationId,
         teamId,
         documentId,
+        folderId: metadata.folderId,
         filename: metadata.originalFilename,
         customFields: duplicateResult.customFieldValues,
         mentions: [],
@@ -384,6 +385,7 @@ export const processDocument = async (
       organizationId,
       teamId,
       documentId,
+      folderId: metadata.folderId,
       filename: metadata.originalFilename,
       customFields: preExtractResult.customFields,
       mentions: preExtractResult.entities.map((e) => ({

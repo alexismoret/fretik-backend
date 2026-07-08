@@ -217,6 +217,26 @@ export interface AgentRuntimeContext {
    * Empty / undefined renders as `_No external apps connected._`.
    */
   externalAppsBlock?: string;
+  /**
+   * ID of the `workflow_runs` row this turn belongs to — set ONLY for the
+   * headless workflow agent. The `updateWorkflowTask` / `completeWorkflowRun`
+   * tools key their writes on it; absent for the chatbot (those tools aren't
+   * in its set).
+   */
+  workflowRunId?: string;
+  /**
+   * Autonomy of the running workflow. Gates the write path: `read_only`
+   * rejects write plans, `approval_required` pauses on `run_plan` for HITL,
+   * `autonomous` executes without pausing. Undefined for the chatbot.
+   */
+  workflowAutonomy?: "read_only" | "approval_required" | "autonomous";
+  /**
+   * Rendered `{{playbookBlock}}` fragment for the workflow system prompt —
+   * the structured plan (goal + ordered tasks with per-task instructions +
+   * the trigger payload) the executor follows. The reliability lever.
+   * Undefined for the chatbot (which has no playbook).
+   */
+  playbookBlock?: string;
 }
 
 /**

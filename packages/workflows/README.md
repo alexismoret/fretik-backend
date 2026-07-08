@@ -1,24 +1,32 @@
 # @fretik/workflows
 
-Durable, long-running, multi-step workflows on **Trigger.dev** (Bun runtime).
-Distinct from `@fretik/jobs` (BullMQ short queue jobs) and from any future
-external-apps event-`trigger` system.
+Durable, long-running, multi-step workflows on **Trigger.dev** (Bun runtime),
+**self-hosted at `https://triggerdev.fretik.com`** (not cloud). Distinct from
+`@fretik/jobs` (BullMQ short queue jobs) and from any future external-apps
+event-`trigger` system.
 
 - Tasks live in `src/tasks/` (`dirs` in `trigger.config.ts`).
 - Tasks may import other workspaces (`@fretik/shared`, `@fretik/ai`) via `workspace:*`.
-- Deploys to Trigger.dev cloud independently of the Dokploy backend image.
+- Deploys to the self-hosted instance independently of the Dokploy backend image.
 
 ## Remaining setup (human-only, do once)
 
-1. **Log in the CLI** (opens a browser):
+1. **Log in the CLI against the self-hosted instance** (opens a browser):
    ```bash
-   cd backend/packages/workflows && npx trigger.dev@latest login
+   cd backend/packages/workflows && npx trigger.dev@latest login --api-url https://triggerdev.fretik.com
    ```
-2. **Project ref** — paste your `proj_...` (dashboard) into `trigger.config.ts`
-   (replaces `"<project ref>"`).
-3. **Secret key** — copy the **DEV** `TRIGGER_SECRET_KEY` from the dashboard
-   (Project → API Keys) into a local `.env` (see `.env.example`). Only needed to
-   trigger tasks from backend code; `trigger dev` itself only needs the login.
+   Verify with `npx trigger.dev@latest whoami` — it should show the
+   `triggerdev.fretik.com` API URL, not `api.trigger.dev`.
+2. **Project ref** — already set in `trigger.config.ts` (`proj_dczsvzhbmtgdsxrxhppx`).
+   `trigger.config.ts` has no URL field; the CLI/SDK always resolve the target
+   instance from the login profile or the `TRIGGER_API_URL` env var, never from
+   this file.
+3. **Secret key + API URL** — both already set in `.env` (see `.env.example`).
+   **Every other service that calls the SDK (directly, or via
+   `@fretik/shared/lib/trigger-client.ts`) needs the same two vars in its own
+   env** — `TRIGGER_SECRET_KEY` and `TRIGGER_API_URL=https://triggerdev.fretik.com`.
+   Without `TRIGGER_API_URL`, the SDK silently falls back to cloud and rejects
+   a self-hosted key.
 
 ## Run
 

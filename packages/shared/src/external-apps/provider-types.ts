@@ -1,4 +1,4 @@
-import type { ToolApprovalSummaryField } from "../db/schema/external-apps";
+import type { ToolApprovalSummaryField } from "../db/schema/approvals";
 
 /**
  * Contracts a provider module contributes alongside its declarative

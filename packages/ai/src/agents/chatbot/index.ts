@@ -1,3 +1,5 @@
+import { workflowAutonomySchema } from "@fretik/shared/schemas/workflows";
+import { approvalPendingId } from "@fretik/shared/services/ai/approval-pending";
 import {
   hasToolCall,
   stepCountIs,
@@ -23,6 +25,7 @@ import {
   getRuntimeContext,
   type AgentRuntimeContext,
 } from "../shared/runtime-context";
+import { workflowSubAgentHiddenToolNames } from "../shared/workflow-tool-gate";
 import { buildChatbotSystemPrompt } from "./system-prompt";
 import {
   buildChatbotTools,
@@ -206,6 +209,13 @@ export const ChatbotCallOptionsSchema = z.object({
    * external apps; the prompt then shows the placeholder.
    */
   externalAppsBlock: z.string().optional(),
+  /**
+   * Autonomy of the enclosing workflow run, when this conversation belongs to
+   * one. Poured into dispatched sub-agents (`dispatchAgent`) so they inherit
+   * the run's write gate — same rules as the main workflow agent. Undefined for
+   * plain chat (and its sub-agents), which then expose the full tool menu.
+   */
+  workflowAutonomy: workflowAutonomySchema.optional(),
 });
 
 export type ChatbotCallOptions = z.infer<typeof ChatbotCallOptionsSchema>;
@@ -281,7 +291,7 @@ const chatbotPrepareStep = (
  * `AgentRuntimeContext`. `buildAgentSet` injects the per-request
  * managers (`dynamicToolManager`, `taskManager`) on top.
  */
-const buildChatbotRuntimeContextBase = (
+export const buildChatbotRuntimeContextBase = (
   options: ChatbotCallOptions,
 ): AgentRuntimeContextBase => ({
   organizationId: options.organizationId,
@@ -299,6 +309,9 @@ const buildChatbotRuntimeContextBase = (
   externalAppConnections: options.externalAppConnections,
   externalAppsBlock: options.externalAppsBlock,
   traceId: options.traceId,
+  // Carried so a workflow-dispatched sub-agent inherits the run's write gate;
+  // undefined for plain chat.
+  workflowAutonomy: options.workflowAutonomy,
 });
 
 /**
@@ -340,13 +353,33 @@ const subAgentSystemPrompt = (ctx: AgentRuntimeContext): Promise<string> =>
   buildSubAgentSystemPrompt(ctx);
 
 /**
+ * Sub-agent tool gate. Plain-chat sub-agents expose every tool (no Progressive
+ * Disclosure inside a sub-agent run). A sub-agent dispatched INSIDE a workflow
+ * inherits the run's `workflowAutonomy` (poured in via `dispatchAgent`) and
+ * prunes the same tools the main workflow agent would — writes/memory by mode,
+ * plus the schema/meta tools the main agent omits at the registry level. Keeps
+ * delegation from bypassing the run's write gate.
+ */
+const subAgentPrepareStep = (
+  tools: SubAgentTools,
+): PrepareStepFunction<SubAgentTools> => {
+  const allNames = Object.keys(tools) as (keyof SubAgentTools)[];
+  return (stepContext) => {
+    const ctx = getRuntimeContext(stepContext);
+    if (ctx.workflowAutonomy === undefined) return { activeTools: allNames };
+    const hidden = workflowSubAgentHiddenToolNames(ctx.workflowAutonomy);
+    return { activeTools: allNames.filter((n) => !hidden.has(n)) };
+  };
+};
+
+/**
  * Sub-agent set on the PRIMARY model — same model as the main agent
  * with the same fallback. Used when `dispatchAgent({ model: 'primary' })`
  * (the default) is called.
  *
- * No `prepareStep` hook → the framework defaults to "every tool name
- * in the registry is active on every step", which is what we want
- * for a sub-agent (no Progressive Disclosure inside a sub-agent run).
+ * `prepareStep` (`subAgentPrepareStep`) exposes every tool for a plain-chat
+ * sub-agent (no Progressive Disclosure inside a sub-agent run) but applies the
+ * workflow write gate when the sub-agent runs inside a workflow.
  */
 const subAgentPrimarySet = buildAgentSet<ChatbotCallOptions, SubAgentTools>({
   id: "chatbot.sub.primary",
@@ -358,6 +391,7 @@ const subAgentPrimarySet = buildAgentSet<ChatbotCallOptions, SubAgentTools>({
     stepCountIs(parseSubAgentMaxSteps()),
     hasToolCall("askUserQuestion"),
   ],
+  prepareStep: subAgentPrepareStep,
   buildRuntimeContextBase: buildChatbotRuntimeContextBase,
   callOptionsSchema: ChatbotCallOptionsSchema,
 });
@@ -384,6 +418,7 @@ const subAgentCheapSet = buildAgentSet<ChatbotCallOptions, SubAgentTools>({
     stepCountIs(parseSubAgentMaxSteps()),
     hasToolCall("askUserQuestion"),
   ],
+  prepareStep: subAgentPrepareStep,
   buildRuntimeContextBase: buildChatbotRuntimeContextBase,
   callOptionsSchema: ChatbotCallOptionsSchema,
 });
@@ -396,37 +431,29 @@ const subAgentCheapSet = buildAgentSet<ChatbotCallOptions, SubAgentTools>({
  * in `buildChatbotTools` so it's always available to the parent
  * without going through Progressive Disclosure.
  */
-const dispatchAgentTool = createDispatchAgentTool({
+export const dispatchAgentTool = createDispatchAgentTool({
   primary: subAgentPrimarySet.primary,
   cheap: subAgentCheapSet.primary,
 });
 
 /**
- * Custom `stopWhen` predicate — halts the agent loop the moment a
- * `python` tool call comes back with `{ status: "approval_pending" }`.
+ * Custom `stopWhen` predicate — halts the agent loop the moment a tool call
+ * comes back with `{ status: "approval_pending" }` (today only `python`, via a
+ * `run_plan` plan or a gated `records.bulk_*` write).
  *
- * `hasToolCall("python")` would fire on every step that ran python, not
- * just the ones where execution paused waiting for a HITL approval, so
- * we walk the last step's `toolResults` and look at the output shape
- * instead. Symmetric to `hasToolCall("askUserQuestion")` (which is also
- * load-bearing): without it, the agent would loop python → ApprovalPending
- * → python forever, since each retry re-emits the same code, hits the
- * same dispatch path, and the approval row is still `pending`.
- *
- * Defining this in TypeScript with `unknown` narrowing (not `as`) keeps
- * the codebase's no-cast rule intact.
+ * `hasToolCall("python")` would fire on every step that ran python, not just
+ * the ones that paused for a HITL approval, so we match the last step's tool
+ * results by output SHAPE (`approvalPendingId`) instead — kind- and tool-
+ * agnostic. Symmetric to `hasToolCall("askUserQuestion")` (also load-bearing):
+ * without it, the agent would loop python → ApprovalPending → python forever,
+ * since each retry re-emits the same code and the approval row is still pending.
  */
-const pythonAwaitingApproval: StopCondition<ChatbotTools> = ({ steps }) => {
+const anyToolAwaitingApproval: StopCondition<ChatbotTools> = ({ steps }) => {
   const lastStep = steps.at(-1);
   if (lastStep === undefined) return false;
-  for (const tr of lastStep.toolResults) {
-    if (tr.toolName !== "python") continue;
-    const output: unknown = tr.output;
-    if (output === null || typeof output !== "object") continue;
-    if (!("status" in output)) continue;
-    if (output.status === "approval_pending") return true;
-  }
-  return false;
+  return lastStep.toolResults.some(
+    (tr) => approvalPendingId(tr.output) !== null,
+  );
 };
 
 /**
@@ -464,12 +491,12 @@ const makeChatbotAgentSet = (
     stopWhen: [
       stepCountIs(parseChatbotMaxSteps()),
       hasToolCall("askUserQuestion"),
-      // Pause the loop when a write plan submitted via `run_plan(...)` is
-      // waiting for the user's approval in the UI. The next user message
-      // (sent by the frontend after grant/modify/reject) starts a fresh
-      // turn — the agent re-runs the same code and the dispatch path
+      // Pause the loop when a tool call is waiting for the user's approval in
+      // the UI (a `run_plan` plan or a gated `records.bulk_*` write). The next
+      // user message (sent by the frontend after grant/modify/reject) starts a
+      // fresh turn — the agent re-runs the same code and the dispatch path
       // matches the grant by `lookupHash`.
-      pythonAwaitingApproval,
+      anyToolAwaitingApproval,
     ],
     prepareStep: chatbotPrepareStep,
     buildRuntimeContextBase: buildChatbotRuntimeContextBase,

@@ -69,6 +69,13 @@ export const bulkCreateObjectRecords = async (input: {
   status?: OntologyStatus;
   source?: OntologySource;
   strict?: boolean;
+  /**
+   * Validate every row and return the per-row `errors` WITHOUT writing (no
+   * geocode, no transaction, no relations). Used as the pre-approval dry-run
+   * so a format error bounces to the agent before a human grants the write.
+   * `ids`/`relationErrors` come back empty.
+   */
+  dryRun?: boolean;
   actor?: EventActor;
 }): Promise<BulkCreateResult> => {
   const actor = input.actor ?? SYSTEM_ACTOR;
@@ -125,6 +132,11 @@ export const bulkCreateObjectRecords = async (input: {
     } catch (error) {
       errors.push({ index, error: formatBulkRowError(error) });
     }
+  }
+
+  // Dry-run: validation done — report errors without touching the DB.
+  if (input.dryRun) {
+    return { ids: input.rows.map(() => null), errors, relationErrors: [] };
   }
 
   // 1b. Resolve every location value to a FK into the per-team `locations` table

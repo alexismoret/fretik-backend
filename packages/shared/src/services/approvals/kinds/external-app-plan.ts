@@ -1,0 +1,26 @@
+import { executePlan } from "../../external-apps/exec/plan-executor";
+import type { ApprovalKindHandler } from "./types";
+
+const iso = (d: Date | null): string => (d ?? new Date()).toISOString();
+
+/**
+ * `external_app_plan` — a `run_plan([...])` write plan executed via Nango on
+ * grant. `executePlan` writes partial results incrementally and marks the row
+ * `consumed`; the sandbox wire shape is the raw per-op result array.
+ */
+export const externalAppPlanHandler: ApprovalKindHandler = {
+  kind: "external_app_plan",
+  execute: ({ approval }) =>
+    executePlan({
+      approval,
+      teamId: approval.teamId,
+      userId: approval.userId,
+    }),
+  toSandboxData: (_approval, result) => result,
+  toToolOutput: (approval) => ({
+    status: "approval_granted",
+    approvalId: approval.id,
+    result: approval.result ?? [],
+    grantedAt: iso(approval.decisionAt),
+  }),
+};

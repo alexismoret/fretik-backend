@@ -1,11 +1,9 @@
 import db, { type Transaction } from "@fretik/shared/db";
 import { aiChatFiles, aiMessages } from "@fretik/shared/db/schema";
-import { getProvider } from "@fretik/shared/external-apps/registry";
 import {
   authMiddleware,
   type HonoLoggedAppType,
 } from "@fretik/shared/lib/auth-middleware";
-import { renderSnapshot } from "@fretik/shared/lib/chat-file-snapshot";
 import {
   getSessionFilePresignedUrl,
   readSessionFile,
@@ -15,7 +13,6 @@ import {
   teamRequired,
   throwHttpError,
 } from "@fretik/shared/lib/errors";
-import { signSandboxJwt } from "@fretik/shared/lib/external-apps/sandbox-jwt";
 import { redis } from "@fretik/shared/lib/redis";
 import { ANTI_BUFFERING_HEADERS } from "@fretik/shared/lib/sse-headers";
 import {
@@ -49,9 +46,6 @@ import {
 import { updateConversation } from "@fretik/shared/services/ai/update";
 import { emitDomainEvent } from "@fretik/shared/services/domain-events/emit";
 import { releaseSandbox } from "@fretik/shared/services/e2b/release-sandbox";
-import { listConnections } from "@fretik/shared/services/external-apps/connections/list";
-import { describeTeamSchema } from "@fretik/shared/services/object-types/describe-team-schema";
-import { listEnabledSkillsForTeam } from "@fretik/shared/services/skills/list-enabled-for-team";
 import { MAX_FILES_PER_MESSAGE } from "@fretik/shared/utils/chatbot-limits";
 import { OpenAPIHono } from "@hono/zod-openapi";
 import {
@@ -75,7 +69,6 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { HTTPException } from "hono/http-exception";
 import { streamSSE } from "hono/streaming";
 import { buildSpeakerContext } from "../agents/chatbot/speaker-context";
-import { formatTeamObjectsBlock } from "../agents/chatbot/team-objects-block";
 import { summariseMissedMessages } from "../services/catch-up-summary";
 import { notifyMentionedMembers } from "../services/chatbot-mention-email";
 // Use node:stream/web's TransformStream rather than the DOM global:
@@ -94,7 +87,11 @@ import {
 } from "../agents/chatbot";
 import type { ChatbotTools } from "../agents/chatbot/tools";
 import type { AgentSet } from "../agents/shared/agent-builder";
-import { writeSandboxAuthFile } from "../lib/conversation-storage";
+import {
+  assembleContextFragments,
+  buildAttachedFilesBlock,
+  loadExternalApps,
+} from "../agents/shared/fragments";
 import { flushLangfuse, langfuseEnabled } from "../lib/langfuse";
 import { deleteScore, recordScore } from "../lib/langfuse-scores";
 import {
@@ -116,7 +113,6 @@ import {
 } from "../lib/stream-errors";
 import { chatbotRateLimitMiddleware } from "../middlewares/chatbot-rate-limit";
 import { internalMiddleware } from "../middlewares/internal";
-import { buildChatbotContextManifest } from "../services/chatbot-context/build-manifest";
 import { sendChatbotFinishedEmailIfEnabled } from "../services/chatbot-finished-email";
 import { compactConversation } from "../services/compaction/compact";
 import { generateConversationTitle } from "../services/conversation-title/generate";
@@ -662,89 +658,6 @@ const buildActiveMemoryInputs = (
 };
 
 /**
- * Build the `{{attachedFilesBlock}}` fragment for the system prompt.
- * JOINs the filenames from the last user message's file parts
- * against `ai_chat_files` so every entry carries the authoritative
- * metadata (MIME type, size, sidecar availability). Returns an
- * empty string when nothing is attached — the prompt renderer
- * substitutes a fallback notice.
- */
-const buildAttachedFilesBlock = async (
-  conversationId: string | undefined,
-  filenames: string[],
-): Promise<string> => {
-  if (!conversationId || filenames.length === 0) return "";
-
-  const rows = await db
-    .select({
-      filename: aiChatFiles.filename,
-      mimeType: aiChatFiles.mimeType,
-      size: aiChatFiles.size,
-      hasMarkdown: aiChatFiles.hasMarkdown,
-      status: aiChatFiles.status,
-      snapshot: aiChatFiles.snapshot,
-    })
-    .from(aiChatFiles)
-    .where(
-      and(
-        eq(aiChatFiles.conversationId, conversationId),
-        inArray(aiChatFiles.filename, filenames),
-      ),
-    );
-
-  if (rows.length === 0) return "";
-
-  const byFilename = new Map(rows.map((r) => [r.filename, r]));
-  const blocks: string[] = [];
-  for (const filename of filenames) {
-    const row = byFilename.get(filename);
-    if (!row) continue;
-    const sizeKb = (row.size / 1024).toFixed(1);
-    // The filename is the on-disk basename (sanitized at upload
-    // time — see services/chat-files/upload.ts). Every attachment
-    // lives at `/workspace/attachments/{filename}` inside the
-    // conversation sandbox. Emit a workspace-relative path the agent
-    // can copy-paste verbatim into `read(...)` /
-    // `pandas.read_excel('attachments/...')` without having to guess
-    // where the sandbox is mounted.
-    const relativePath = `attachments/${filename}`;
-
-    // <attached_file> XML-style block per file. Pattern verbatim from
-    // Claude.ai's `<notes_on_user_uploaded_files>` (model is trained
-    // on this delimiter). Snapshot inside is a net-new affordance
-    // sized to our tool surface — see `lib/chat-file-snapshot.ts`.
-    const headerLine = `<attached_file path="${relativePath}" mime="${row.mimeType}" size_kb="${sizeKb}" status="${row.status}">`;
-    const body: string[] = [headerLine];
-    if (row.snapshot) {
-      body.push(renderSnapshot(row.snapshot));
-    }
-    if (row.hasMarkdown) {
-      body.push(
-        `\`read({ file_path: '${relativePath}' })\` returns its text. For visual layout / signatures / diagrams use \`vision({ file_path: '${relativePath}', question: '...' })\`.`,
-      );
-    } else if (row.mimeType.startsWith("image/")) {
-      body.push(
-        `Call \`vision({ file_path: '${relativePath}', question: '...' })\` for visual questions (\`read\` has no text for this image).`,
-      );
-    } else if (
-      row.mimeType.includes("spreadsheet") ||
-      row.mimeType.includes("excel")
-    ) {
-      body.push(
-        `Spreadsheet — open in \`python\` with \`pandas.read_excel('${relativePath}')\` / \`openpyxl\`.`,
-      );
-    } else {
-      body.push(
-        `\`read({ file_path: '${relativePath}' })\` for the full content.`,
-      );
-    }
-    body.push(`</attached_file>`);
-    blocks.push(body.join("\n"));
-  }
-  return blocks.join("\n\n");
-};
-
-/**
  * Bind every `ai_chat_files` row referenced by a freshly-persisted
  * user message to that message's id. Rows that were created during
  * the draft upload carry `messageId = NULL` — this is where the
@@ -849,133 +762,24 @@ const rejectTooManyFiles = async (
 };
 
 /**
- * Per-turn external-app setup. Two things happen, both soft-failing so
- * a failure never blocks the turn:
- *
- *  (1) Load the active external-app connections (Outlook, …) the caller
- *      can see — surfaced to the agent via the `{{externalAppsBlock}}`
- *      prompt line and the runtime context.
- *  (2) Mint a fresh sandbox JWT (HS256, 1 h TTL) and write it to
- *      `/workspace/.fretik/auth.json` so `fretik_apps` calls
- *      authenticate this turn. The Python SDK re-reads the file every
- *      call, so the JWT rotates between turns without restarting the
- *      kernel. Skipped when `SANDBOX_JWT_SECRET` is unset.
- *
- * No-op (returns empty) for stateless `/invoke` callers without a
- * conversationId / userId.
+ * Per-turn external-app setup — shared with the workflow handler, extracted
+ * to `agents/shared/fragments.ts`. This thin adapter maps the chatbot's
+ * per-turn param bag onto the shared signature.
  */
-const loadExternalApps = async (
+const loadChatbotExternalApps = (
   params: RunChatbotTurnParams,
 ): Promise<{
   externalAppConnections: ChatbotCallOptions["externalAppConnections"];
   externalAppsBlock: string | undefined;
-}> => {
-  let externalAppConnections: ChatbotCallOptions["externalAppConnections"];
-  let externalAppsBlock: string | undefined;
-  if (
-    params.conversationId !== undefined &&
-    params.callOptions.userId !== undefined
-  ) {
-    try {
-      const rows = await listConnections(
-        params.callOptions.teamId,
-        params.callOptions.userId,
-      );
-      const active = rows.filter((r) => r.status === "active");
-      externalAppConnections = active.map((r) => {
-        const provider = getProvider(r.providerKey);
-        return {
-          id: r.id,
-          providerKey: r.providerKey,
-          displayName: r.displayName,
-          scope: r.userId === null ? ("team" as const) : ("user" as const),
-          categories: provider?.manifest.categories ?? [],
-          options: r.options,
-        };
-      });
-      externalAppsBlock =
-        externalAppConnections.length === 0
-          ? undefined
-          : externalAppConnections
-              .map((c) => {
-                // Surface only the options the provider opted to expose to
-                // the agent (e.g. `persona` on communication providers).
-                // Other options stay server-side.
-                const provider = getProvider(c.providerKey);
-                const formatOptionValue = (v: unknown): string | null => {
-                  if (v === undefined || v === null) return null;
-                  if (
-                    typeof v === "string" ||
-                    typeof v === "number" ||
-                    typeof v === "boolean"
-                  ) {
-                    return String(v);
-                  }
-                  // Complex shapes (object / array) — drop from the system
-                  // prompt rather than spilling JSON the agent doesn't need.
-                  return null;
-                };
-                const exposed =
-                  provider?.manifest.connectionOptions?.fields
-                    .filter((f) => f.exposeToAgent)
-                    .map((f) => {
-                      const formatted = formatOptionValue(c.options?.[f.key]);
-                      return formatted === null
-                        ? null
-                        : `${f.key}: ${formatted}`;
-                    })
-                    .filter((s): s is string => s !== null) ?? [];
-                const parts = [
-                  `display_name: "${c.displayName}"`,
-                  `id: ${c.id}`,
-                  `categories: [${c.categories.join(", ")}]`,
-                  ...exposed,
-                ];
-                return `- ${c.providerKey} (${parts.join(", ")})`;
-              })
-              .join("\n");
-    } catch (error) {
-      console.warn(
-        `${params.logPrefix} listConnections failed, proceeding without external apps:`,
-        error instanceof Error ? error.message : error,
-      );
-    }
-
-    const sandboxJwtSecret = Bun.env.SANDBOX_JWT_SECRET;
-    const backendUrl = Bun.env.FRETIK_BACKEND_INTERNAL_URL;
-    if (
-      sandboxJwtSecret !== undefined &&
-      sandboxJwtSecret !== "" &&
-      backendUrl !== undefined &&
-      backendUrl !== ""
-    ) {
-      try {
-        const jwt = await signSandboxJwt({
-          conversationId: params.conversationId,
-          teamId: params.callOptions.teamId,
-          userId: params.callOptions.userId,
-          organizationId: params.callOptions.organizationId,
-          turnId: params.callOptions.traceId ?? params.conversationId,
-        });
-        await writeSandboxAuthFile(params.conversationId, {
-          jwt,
-          backendUrl,
-          turnId: params.callOptions.traceId ?? params.conversationId,
-        });
-      } catch (error) {
-        console.warn(
-          `${params.logPrefix} writeSandboxAuthFile failed — fretik_apps calls will fail until next turn:`,
-          error instanceof Error ? error.message : error,
-        );
-      }
-    } else if (externalAppConnections && externalAppConnections.length > 0) {
-      console.warn(
-        `${params.logPrefix} external-app connections exist but SANDBOX_JWT_SECRET/FRETIK_BACKEND_INTERNAL_URL is missing — fretik_apps calls will fail`,
-      );
-    }
-  }
-  return { externalAppConnections, externalAppsBlock };
-};
+}> =>
+  loadExternalApps({
+    conversationId: params.conversationId,
+    organizationId: params.callOptions.organizationId,
+    teamId: params.callOptions.teamId,
+    userId: params.callOptions.userId,
+    turnId: params.callOptions.traceId,
+    logPrefix: params.logPrefix,
+  });
 
 /**
  * Build all per-turn system-prompt fragments in parallel (attached
@@ -1000,149 +804,76 @@ const buildTurnCallOptions = async (
   const activeMemoryInputs = activeMemoryUserId
     ? buildActiveMemoryInputs(params.history, filenames)
     : null;
-  const [
-    attachedFilesBlock,
-    chatbotContextManifest,
-    activeMemoryRecall,
-    teamObjectsBlock,
-    enabledSkillsBlock,
-  ] = await Promise.all([
-    // C4 — each fragment already soft-fails to an empty value; the soft
-    // timeout adds the missing TIME bound so one slow source can't hang
-    // the whole turn. These are HANG backstops, NOT latency caps: set
-    // them above realistic p99 so a transient DB/Redis/LLM spike doesn't
-    // needlessly drop context. The DB/Redis fragments resolve in well
-    // under a second normally; active-memory is the heavy one (a RAG
-    // sweep + an LLM judge with its OWN 15s internal budget — see
-    // `RECALL_TIMEOUT_MS`), so its bound sits ABOVE that 15s, catching
-    // only a true RAG hang (the RAG search has no internal timeout).
-    withSoftTimeout(
-      buildAttachedFilesBlock(params.conversationId, filenames),
-      4000,
-      "",
-      "attached-files",
-    ),
-    withSoftTimeout(
-      buildChatbotContextManifest({
+  // The three scope-based fragments (context manifest, team objects, skills)
+  // are assembled by the shared `assembleContextFragments` — same soft
+  // timeouts and soft-fail semantics as the historical inline version (C4:
+  // HANG backstops, not latency caps). The two history-dependent fragments
+  // (attached files, active-memory recall) stay here and run in the same
+  // parallel batch.
+  const [attachedFilesBlock, activeMemoryRecall, fragments] = await Promise.all(
+    [
+      withSoftTimeout(
+        buildAttachedFilesBlock(params.conversationId, filenames),
+        4000,
+        "",
+        "attached-files",
+      ),
+      activeMemoryInputs && activeMemoryUserId
+        ? // Sibling trace linked to the conversation's session: the pre-turn
+          // recall judge runs before `execute`, so it can't nest under
+          // `chatbot-turn` — `propagateAttributes` keeps it navigable per
+          // session instead of producing an orphan trace.
+          propagateAttributes(
+            {
+              traceName: "active-memory-recall",
+              ...(params.conversationId !== undefined
+                ? { sessionId: params.conversationId }
+                : {}),
+              userId: activeMemoryUserId,
+              tags: [`team:${params.callOptions.teamId}`],
+            },
+            () =>
+              withSoftTimeout(
+                runUnifiedRecall({
+                  userMessage: activeMemoryInputs.userMessage,
+                  attachedFiles: activeMemoryInputs.attachedFiles,
+                  recentTail: activeMemoryInputs.recentTail,
+                  teamId: params.callOptions.teamId,
+                  organizationId: params.callOptions.organizationId,
+                  userId: activeMemoryUserId,
+                  conversationId: params.conversationId,
+                  agentType: "chatbot",
+                }),
+                // ABOVE the recall's own 15s judge budget (RECALL_TIMEOUT_MS)
+                // + RAG headroom — only fires on a true RAG hang, never on a
+                // normal (multi-second) judge generation.
+                18000,
+                null,
+                "active-memory",
+              ),
+          )
+        : Promise.resolve(null),
+      assembleContextFragments({
+        organizationId: params.callOptions.organizationId,
+        teamId: params.callOptions.teamId,
         userId: params.callOptions.userId,
-        teamId: params.callOptions.teamId,
-        organizationId: params.callOptions.organizationId,
-      }).catch((error: unknown) => {
-        // Never let a missing/corrupt manifest block a turn.
-        console.warn(
-          `${params.logPrefix} buildChatbotContextManifest failed, continuing without persistent context:`,
-          error,
-        );
-        return {
-          manifest: "",
-          totalChars: 0,
-          fileCount: 0,
-          inlinedFileCount: 0,
-        };
+        logPrefix: params.logPrefix,
       }),
-      4000,
-      { manifest: "", totalChars: 0, fileCount: 0, inlinedFileCount: 0 },
-      "context-manifest",
-    ),
-    activeMemoryInputs && activeMemoryUserId
-      ? // Sibling trace linked to the conversation's session: the pre-turn
-        // recall judge runs before `execute`, so it can't nest under
-        // `chatbot-turn` — `propagateAttributes` keeps it navigable per
-        // session instead of producing an orphan trace.
-        propagateAttributes(
-          {
-            traceName: "active-memory-recall",
-            ...(params.conversationId !== undefined
-              ? { sessionId: params.conversationId }
-              : {}),
-            userId: activeMemoryUserId,
-            tags: [`team:${params.callOptions.teamId}`],
-          },
-          () =>
-            withSoftTimeout(
-              runUnifiedRecall({
-                userMessage: activeMemoryInputs.userMessage,
-                attachedFiles: activeMemoryInputs.attachedFiles,
-                recentTail: activeMemoryInputs.recentTail,
-                teamId: params.callOptions.teamId,
-                organizationId: params.callOptions.organizationId,
-                userId: activeMemoryUserId,
-                conversationId: params.conversationId,
-                agentType: "chatbot",
-              }),
-              // ABOVE the recall's own 15s judge budget (RECALL_TIMEOUT_MS)
-              // + RAG headroom — only fires on a true RAG hang, never on a
-              // normal (multi-second) judge generation.
-              18000,
-              null,
-              "active-memory",
-            ),
-        )
-      : Promise.resolve(null),
-    // Compact `- key (type)` catalogue for the dynamic suffix.
-    // Redis-cached (30 min TTL) so the per-turn cost is one HGET. A
-    // failure must never block the turn — fall back to an empty block
-    // and let the prompt render the "no dynamic fields" placeholder.
-    withSoftTimeout(
-      describeTeamSchema({
-        organizationId: params.callOptions.organizationId,
-        teamId: params.callOptions.teamId,
-      })
-        .then((types) => formatTeamObjectsBlock(types))
-        .catch((error: unknown) => {
-          console.warn(
-            `${params.logPrefix} describeTeamSchema failed, continuing without team objects:`,
-            error instanceof Error ? error.message : error,
-          );
-          return "";
-        }),
-      3000,
-      "",
-      "team-objects",
-    ),
-    // Team-filtered L1 skills listing. Always-on skills are always
-    // present; team-configurable skills appear only when no override
-    // exists or the team opted in. Disabled skills are absent entirely
-    // — the agent has no path to invoke them. Failure falls back to an
-    // empty block so the prompt renders the "no skills" placeholder
-    // and the turn still ships.
-    withSoftTimeout(
-      listEnabledSkillsForTeam(params.callOptions.teamId)
-        .then((skills) =>
-          skills
-            .map((skill) => `- **${skill.name}** — ${skill.description}`)
-            .join("\n"),
-        )
-        .catch((error: unknown) => {
-          console.warn(
-            `${params.logPrefix} listEnabledSkillsForTeam failed, continuing without skills catalogue:`,
-            error instanceof Error ? error.message : error,
-          );
-          return "";
-        }),
-      3000,
-      "",
-      "enabled-skills",
-    ),
-  ]);
+    ],
+  );
 
   console.info(
-    `${params.logPrefix} contextManifestChars=${chatbotContextManifest.totalChars.toString()} files=${chatbotContextManifest.fileCount.toString()} inlined=${chatbotContextManifest.inlinedFileCount.toString()} activeMemory=${activeMemoryRecall ? "hit" : "miss"} teamObjectsChars=${teamObjectsBlock.length.toString()} enabledSkillsChars=${enabledSkillsBlock.length.toString()}`,
+    `${params.logPrefix} contextManifestChars=${(fragments.chatbotContextManifest ?? "").length.toString()} activeMemory=${activeMemoryRecall ? "hit" : "miss"} teamObjectsChars=${(fragments.teamObjectsBlock ?? "").length.toString()} enabledSkillsChars=${(fragments.enabledSkillsBlock ?? "").length.toString()}`,
   );
 
   return {
     ...params.callOptions,
     attachedFilesBlock:
       attachedFilesBlock.length > 0 ? attachedFilesBlock : undefined,
-    chatbotContextManifest:
-      chatbotContextManifest.manifest.length > 0
-        ? chatbotContextManifest.manifest
-        : undefined,
+    chatbotContextManifest: fragments.chatbotContextManifest,
     activeMemoryBlock: activeMemoryRecall?.block,
-    teamObjectsBlock:
-      teamObjectsBlock.length > 0 ? teamObjectsBlock : undefined,
-    enabledSkillsBlock:
-      enabledSkillsBlock.length > 0 ? enabledSkillsBlock : undefined,
+    teamObjectsBlock: fragments.teamObjectsBlock,
+    enabledSkillsBlock: fragments.enabledSkillsBlock,
     externalAppConnections: externalApps.externalAppConnections,
     externalAppsBlock: externalApps.externalAppsBlock,
   };
@@ -1239,7 +970,7 @@ const runChatbotTurn = async (
 
   // External apps: active connections (surfaced to the agent) + a fresh
   // per-turn sandbox JWT for `fretik_apps`. See loadExternalApps.
-  const externalApps = await loadExternalApps(params);
+  const externalApps = await loadChatbotExternalApps(params);
 
   // Assemble the per-turn system-prompt fragments + external apps into
   // the final call options handed to the agent. See buildTurnCallOptions.

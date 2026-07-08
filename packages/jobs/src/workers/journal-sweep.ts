@@ -1,3 +1,4 @@
+import { redis } from "@fretik/shared/lib/redis";
 import {
   advanceWorkerCursor,
   ensureWorkerCursor,
@@ -57,9 +58,26 @@ const DISTILL_DEBOUNCE_MS = intFromEnv(
  * (a user filling five fields in a row) into one vectorize roundtrip.
  */
 const CARD_DEBOUNCE_MS = intFromEnv("MEMORY_CARD_DEBOUNCE_MS", 60_000);
+/**
+ * A cron workflow distills at most once per this window (per workflow). A
+ * schedule firing many times a day would otherwise mint ~24 near-identical
+ * episodes daily, skewing recall scoring toward the crons.
+ */
+const CRON_DISTILL_TTL_S = intFromEnv(
+  "MEMORY_CRON_DISTILL_TTL_S",
+  24 * 60 * 60,
+);
 
-/** Event types the resolver has nothing to do with — linked at source. */
-const RESOLVE_SKIP_PREFIXES = ["record.", "link.", "link_type.", "episode."];
+/** Event types the resolver has nothing to do with — linked at source, or
+ * (`workflow.`) carrying only ids the LLM mention-extraction would waste a
+ * call on. */
+const RESOLVE_SKIP_PREFIXES = [
+  "record.",
+  "link.",
+  "link_type.",
+  "episode.",
+  "workflow.",
+];
 
 const needsResolve = (type: string): boolean =>
   !RESOLVE_SKIP_PREFIXES.some((p) => type.startsWith(p));
@@ -98,7 +116,11 @@ export const runJournalSweep = async (): Promise<{ swept: number }> => {
 
   // Debounced distillation — one pending job per conversation, pushed back on
   // every new turn. Remove-then-add: an already-running job can't be removed
-  // (caught + skipped); the nightly consolidation safety net covers that edge.
+  // (caught + skipped — the add then no-ops on the live jobId); the nightly
+  // consolidation safety net covers that edge. The `add` itself is NOT
+  // caught: a real Redis failure must fail the sweep so the cursor stays put
+  // and the batch replays — swallowing it would mark the event consumed with
+  // its side-effect silently lost.
   const conversations = new Map<
     string,
     { organizationId: string; teamId: string }
@@ -115,25 +137,83 @@ export const runJournalSweep = async (): Promise<{ swept: number }> => {
   for (const [conversationId, scope] of conversations) {
     const jobId = `distill-${conversationId}`;
     await distillQueue.remove(jobId).catch(() => {});
-    await distillQueue
-      .add(
+    await distillQueue.add(
+      "distill",
+      { conversationId, ...scope },
+      {
+        jobId,
+        delay: DISTILL_DEBOUNCE_MS,
+        attempts: 3,
+        backoff: { type: "exponential", delay: 10_000 },
+        removeOnComplete: { count: 500 },
+        removeOnFail: { count: 500 },
+      },
+    );
+  }
+
+  // Workflow runs are headless — they emit no `chat.turn`, so there is no
+  // debounce to ride. A SUCCEEDED run's conversation distills IMMEDIATELY when
+  // its terminal event is swept (the run is over, its transcript complete).
+  // Failed/canceled runs are skipped: they rarely hold anything worth
+  // remembering, and skipping them saves the distill LLM call.
+  //
+  // Two gates keep the episode store clean (a workflow can run far more often
+  // than a human chats):
+  //   - test runs are builder scratch (synthetic payloads, throwaway) — never
+  //     distilled;
+  //   - cron runs distill at most once per `CRON_DISTILL_TTL_S` per workflow
+  //     (Redis SET NX), so an hourly schedule doesn't mint ~24 near-identical
+  //     episodes a day. The dropped runs' transcripts still live on the run
+  //     page, and the daily consolidation pass covers the residual.
+  for (const e of events) {
+    if (
+      e.type !== "workflow.run.completed" ||
+      !e.conversationId ||
+      e.payload["status"] !== "succeeded"
+    ) {
+      continue;
+    }
+    if (e.payload["isTest"] === true) continue;
+    let cronKey: string | null = null;
+    if (e.payload["triggerType"] === "cron") {
+      const workflowId = e.payload["workflowId"];
+      if (typeof workflowId === "string") {
+        cronKey = `workflow-distill-cron:${workflowId}`;
+        const acquired = await redis.set(
+          cronKey,
+          "1",
+          "EX",
+          CRON_DISTILL_TTL_S,
+          "NX",
+        );
+        // Already distilled a cron run for this workflow inside the window.
+        if (acquired !== "OK") continue;
+      }
+    }
+    const jobId = `distill-${e.conversationId}`;
+    await distillQueue.remove(jobId).catch(() => {});
+    try {
+      await distillQueue.add(
         "distill",
-        { conversationId, ...scope },
+        {
+          conversationId: e.conversationId,
+          organizationId: e.organizationId,
+          teamId: e.teamId,
+        },
         {
           jobId,
-          delay: DISTILL_DEBOUNCE_MS,
           attempts: 3,
           backoff: { type: "exponential", delay: 10_000 },
           removeOnComplete: { count: 500 },
           removeOnFail: { count: 500 },
         },
-      )
-      .catch((err: unknown) => {
-        console.warn(
-          `[journal-sweep] distill debounce skipped for ${conversationId}:`,
-          err instanceof Error ? err.message : err,
-        );
-      });
+      );
+    } catch (err) {
+      // Give the 24h cron slot back before failing the sweep — the cursor
+      // has not advanced, so the replayed batch re-acquires it and retries.
+      if (cronKey) await redis.del(cronKey).catch(() => {});
+      throw err;
+    }
   }
 
   // Record-card refreshes. One pending op per record, in event order — a
@@ -168,25 +248,19 @@ export const runJournalSweep = async (): Promise<{ swept: number }> => {
   for (const [recordId, { op, ...scope }] of cardOps) {
     const jobId = `card-${recordId}`;
     await cardQueue.remove(jobId).catch(() => {});
-    await cardQueue
-      .add(
-        "card",
-        { recordId, op, ...scope },
-        {
-          jobId,
-          ...(op === "upsert" ? { delay: CARD_DEBOUNCE_MS } : {}),
-          attempts: 3,
-          backoff: { type: "exponential", delay: 10_000 },
-          removeOnComplete: { count: 1_000 },
-          removeOnFail: { count: 1_000 },
-        },
-      )
-      .catch((err: unknown) => {
-        console.warn(
-          `[journal-sweep] card ${op} skipped for ${recordId}:`,
-          err instanceof Error ? err.message : err,
-        );
-      });
+    // Not caught — same rationale as the distill adds above.
+    await cardQueue.add(
+      "card",
+      { recordId, op, ...scope },
+      {
+        jobId,
+        ...(op === "upsert" ? { delay: CARD_DEBOUNCE_MS } : {}),
+        attempts: 3,
+        backoff: { type: "exponential", delay: 10_000 },
+        removeOnComplete: { count: 1_000 },
+        removeOnFail: { count: 1_000 },
+      },
+    );
   }
 
   const last = events[events.length - 1];

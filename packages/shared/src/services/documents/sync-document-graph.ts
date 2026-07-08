@@ -71,6 +71,10 @@ export const syncDocumentGraph = async (input: {
   organizationId: string;
   teamId: string;
   documentId: string;
+  /** The uploaded document's parent folder (NULL = Drive root). Journaled into
+   * the `document.uploaded` payload so an event trigger can scope to a folder
+   * (`event.filter.folderId`). */
+  folderId?: string | null;
   filename: string;
   customFields: Record<string, unknown>;
   mentions: DocumentGraphMention[];
@@ -160,6 +164,7 @@ export const syncDocumentGraph = async (input: {
       payload: {
         documentId,
         filename,
+        folderId: input.folderId ?? null,
         mentionCount: mentionedRecords.length,
       },
       dedupKey: `document.uploaded:${documentId}`,

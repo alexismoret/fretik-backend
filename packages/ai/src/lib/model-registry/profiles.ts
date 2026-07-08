@@ -866,6 +866,17 @@ export const ROLE_BINDINGS: Record<ModelRole, RoleBinding> = {
     settingsKind: "chat",
     wrapCache: true,
   },
+  // Autonomous workflow executor. Defaults to the SAME profile as `chat`
+  // (reliability first — the priority order is precision > cost) and follows
+  // the team's flagship tier pick; a workflow may override per-run via its
+  // `modelProfileKey`. The agent already delegates mechanical sub-tasks to the
+  // cheap model via `dispatchAgent`, so the default need not be the cheap one.
+  workflow: {
+    role: "workflow",
+    profileKey: "minimax-m3",
+    settingsKind: "chat",
+    wrapCache: true,
+  },
   "dispatch-cheap": {
     role: "dispatch-cheap",
     profileKey: "deepseek-v4-flash",

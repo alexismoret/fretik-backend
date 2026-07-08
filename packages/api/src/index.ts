@@ -12,6 +12,7 @@ import { cors } from "hono/cors";
 import packagejson from "../package.json";
 import { accountRoutes } from "./handlers/account";
 import { aiMemoryRoutes } from "./handlers/ai-memory";
+import { approvalsRoutes } from "./handlers/approvals";
 import { chatbotContextRoutes } from "./handlers/chatbot-context";
 import { conversationRoutes } from "./handlers/conversations";
 import { documentRoutes } from "./handlers/documents";
@@ -29,6 +30,7 @@ import { organizationRoutes } from "./handlers/organization";
 import { signupAccessRoutes } from "./handlers/signup-access";
 import { skillsRoutes } from "./handlers/skills";
 import { superAdminRoutes } from "./handlers/super-admins";
+import { workflowRoutes } from "./handlers/workflows";
 
 const VERSION = packagejson.version;
 
@@ -84,6 +86,8 @@ app.route("/link-types", linkTypeRoutes);
 app.route("/invitations", invitationRoutes);
 app.route("/skills", skillsRoutes);
 app.route("/external-apps", externalAppsRoutes);
+app.route("/approvals", approvalsRoutes);
+app.route("/workflows", workflowRoutes);
 app.route("/sandbox", sandboxRoutes);
 
 // The document-processing Worker lives in @fretik/jobs (with the memory

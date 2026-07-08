@@ -2,7 +2,7 @@ import { defineConfig } from "@trigger.dev/sdk";
 
 export default defineConfig({
   // TODO: paste your project ref (proj_...) from the Trigger.dev dashboard.
-  project: "proj_vdpokgcsplbmmcapqngm",
+  project: "proj_dczsvzhbmtgdsxrxhppx",
   runtime: "bun",
   dirs: ["./src/tasks"],
   maxDuration: 3600,

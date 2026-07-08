@@ -142,6 +142,7 @@
         "@hono/zod-openapi": "^1.4.0",
         "@mistralai/mistralai": "^2.2.6",
         "@nangohq/node": "^0.70.7",
+        "@trigger.dev/sdk": "4.5.0",
         "ai": "^6.0.208",
         "better-auth": "^1.6.19",
         "bullmq": "^5.79.0",
@@ -179,6 +180,7 @@
       "dependencies": {
         "@fretik/shared": "workspace:*",
         "@trigger.dev/sdk": "4.5.0",
+        "zod": "^4.4.3",
       },
       "devDependencies": {
         "@trigger.dev/build": "4.5.0",

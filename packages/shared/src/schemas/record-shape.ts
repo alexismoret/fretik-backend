@@ -233,7 +233,7 @@ export const describeFieldExpectation = (def: FieldDefinition): string => {
         ? `${key} (member): a list of user ids`
         : `${key} (member): a user id`;
     case "money":
-      return `${key} (money): amount + currency, e.g. "1500 EUR"`;
+      return `${key} (money): the string "1500 EUR" (tools), or the object { "amount": 1500, "currencyCode": "EUR" } (Python SDK / API). NOT "currency" — the key is "currencyCode".`;
     case "location":
       return `${key} (location): an address string, e.g. "10 Downing St, London" (coordinates are added server-side)`;
     case "unique_id":

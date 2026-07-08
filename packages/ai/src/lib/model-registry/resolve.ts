@@ -421,6 +421,9 @@ export const resolveChatModelForProfile = (
 export const ROLE_TIER: Record<ModelRole, ModelTier | "fixed"> = {
   chat: "flagship",
   "chat-fallback": "fixed",
+  // Tracks the team's flagship pick by default (same as chat), overridable
+  // per-workflow via `modelProfileKey`.
+  workflow: "flagship",
   "dispatch-cheap": "workhorse",
   "pre-extract": "workhorse",
   "pre-extract-fallback": "fixed",

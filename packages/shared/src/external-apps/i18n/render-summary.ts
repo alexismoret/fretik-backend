@@ -2,7 +2,7 @@ import type {
   ToolApprovalOperationSummary,
   ToolApprovalSummary,
   ToolApprovalSummaryField,
-} from "../../db/schema/external-apps";
+} from "../../db/schema/approvals";
 import { i18n } from "./index";
 
 /**

@@ -134,6 +134,8 @@ export const createDispatchAgentTool = <TTools extends ToolSet>(deps: {
       conversationId: ctx.conversationId,
       timeZone: ctx.timeZone,
       traceId: ctx.traceId ? `${ctx.traceId}.sub` : undefined,
+      // Inherit the enclosing workflow run's write gate (undefined for chat).
+      workflowAutonomy: ctx.workflowAutonomy,
     }),
     formatResult: formatSubAgentResult,
   });
@@ -154,6 +156,8 @@ export const createDispatchAgentTool = <TTools extends ToolSet>(deps: {
       conversationId: ctx.conversationId,
       timeZone: ctx.timeZone,
       traceId: ctx.traceId ? `${ctx.traceId}.sub-cheap` : undefined,
+      // Inherit the enclosing workflow run's write gate (undefined for chat).
+      workflowAutonomy: ctx.workflowAutonomy,
     }),
     formatResult: formatSubAgentResult,
   });

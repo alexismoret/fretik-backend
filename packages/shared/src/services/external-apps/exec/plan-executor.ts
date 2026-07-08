@@ -4,7 +4,7 @@ import type {
 } from "../../../db/schema";
 import { isRecord } from "../../../external-apps/json-access";
 import { getAction } from "../../../external-apps/registry";
-import { markConsumed, updatePartialResult } from "../approvals/complete";
+import { markConsumed, updatePartialResult } from "../../approvals/complete";
 import { resolveConnection } from "../connections/resolve";
 import { buildRequest } from "./build-request";
 import { callCustomHandler } from "./call-custom-handler";
@@ -34,7 +34,9 @@ export const executePlan = async (params: {
   teamId: string;
   userId: string;
 }): Promise<ToolApprovalOpResult[]> => {
-  const operations = params.approval.operations;
+  // `operations` is nullable on the row (only `external_app_plan` rows set it);
+  // this executor is only ever called for that kind, so a null here is a bug.
+  const operations = params.approval.operations ?? [];
   const results: (ToolApprovalOpResult | null)[] = Array.from(
     { length: operations.length },
     () => null,

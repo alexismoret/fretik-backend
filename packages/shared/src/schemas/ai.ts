@@ -1,6 +1,7 @@
 import { z } from "@hono/zod-openapi";
 import type { UIMessage } from "ai";
 import {
+  aiAgentTypeEnum,
   aiConversationMemberRoleEnum,
   aiVectorSourceTypeEnum,
 } from "../db/schema";
@@ -9,8 +10,13 @@ import {
  * Agent types supported in ai_conversations. Kept in sync with the
  * `ai_agent_type` pg enum in db/schema/ai.ts.
  */
-export const aiAgentTypeSchema = z.enum(["chatbot"]);
+// Derived from the pg enum so a new agent kind (workflow, …) propagates
+// to every response schema without re-declaration. Conversation CREATION
+// stays chatbot-only below — workflow conversations are created by the
+// engine, never through the chat API.
+export const aiAgentTypeSchema = z.enum(aiAgentTypeEnum.enumValues);
 export type AiAgentType = z.infer<typeof aiAgentTypeSchema>;
+export const chatbotAgentTypeSchema = z.enum(["chatbot"]);
 
 /**
  * Role of an AI message. Same values as the `ai_message_role` pg enum.
@@ -170,7 +176,7 @@ export const CreateConversationSchema = z.object({
     example: "Q2 budget review",
     description: "Conversation title shown in the sidebar",
   }),
-  agentType: aiAgentTypeSchema.optional().default("chatbot").openapi({
+  agentType: chatbotAgentTypeSchema.optional().default("chatbot").openapi({
     example: "chatbot",
     description: "Agent responsible for this conversation",
   }),

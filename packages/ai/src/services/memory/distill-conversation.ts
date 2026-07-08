@@ -25,6 +25,9 @@ import { vectorizeSource } from "../vectorize";
  */
 
 const MIN_MESSAGES = 4;
+/** Workflow-run floor: steering + final summary = 2 text lines is already a
+ * complete short run — the chat threshold would skip it entirely. */
+const WORKFLOW_MIN_MESSAGES = 2;
 /** Transcript tail — mirrors `loadConversationForAgent`'s window ×2. */
 const MAX_MESSAGES = 60;
 /** Per-message clip: enough to carry intent, not full tool dumps. */
@@ -74,6 +77,16 @@ interface TranscriptLine {
   text: string;
 }
 
+/** Workflow steering messages stamp their turn in metadata
+ * (`workflowTurnIndex`, see the workflow turn handler) — turn ≥2 ones are
+ * pure harness recitation, dropped from the distill transcript. */
+const isLaterSteeringMessage = (metadata: unknown): boolean => {
+  if (metadata === null || typeof metadata !== "object") return false;
+  if (!("workflowTurnIndex" in metadata)) return false;
+  const turn: unknown = metadata.workflowTurnIndex;
+  return typeof turn === "number" && turn > 1;
+};
+
 const textOfParts = (parts: UIMessage["parts"]): string => {
   const chunks: string[] = [];
   for (const part of parts) {
@@ -121,6 +134,26 @@ export const distillConversation = async (input: {
   });
   if (!conversation) return { distilled: false };
 
+  // Workflow-run conversations distill with workflow-aware rules: the
+  // episode inherits the WORKFLOW's visibility (not the run's bot-user
+  // identity, which would silo team memory away from every human), carries
+  // workflow attribution in metadata, drops the per-turn steering
+  // recitation, and accepts a shorter transcript (a short successful run
+  // still ends with a substantive final summary).
+  const workflowRun =
+    conversation.agentType === "workflow"
+      ? await db.query.workflowRuns.findFirst({
+          where: { conversationId },
+          columns: { id: true, workflowId: true, triggerType: true },
+        })
+      : undefined;
+  const workflowOwner = workflowRun
+    ? await db.query.workflows.findFirst({
+        where: { id: workflowRun.workflowId },
+        columns: { userId: true },
+      })
+    : undefined;
+
   // Transcript tail, oldest first. Rows are read directly (not through
   // `loadConversationForAgent`) because the distiller needs `createdAt`
   // for the episode's occurrence window.
@@ -133,11 +166,24 @@ export const distillConversation = async (input: {
   const lines: TranscriptLine[] = [];
   for (const row of rows) {
     if (row.role !== "user" && row.role !== "assistant") continue;
+    // Workflow steering recitations (turn ≥2) are near-identical harness
+    // boilerplate ("Continue the run. Current task: …") — they'd bias the
+    // episode toward playbook recitation. Turn 1 stays: it names the trigger.
+    if (
+      workflowRun &&
+      row.role === "user" &&
+      isLaterSteeringMessage(row.metadata)
+    ) {
+      continue;
+    }
     const text = textOfParts(row.parts);
     if (text.length === 0) continue;
     lines.push({ role: row.role, text });
   }
-  if (lines.length < MIN_MESSAGES) return { distilled: false };
+  // A workflow run is steering + final summary at minimum — 2 lines is a
+  // real, distillable run; the chat threshold would skip every short run.
+  const minLines = workflowRun ? WORKFLOW_MIN_MESSAGES : MIN_MESSAGES;
+  if (lines.length < minLines) return { distilled: false };
 
   const first = rows[0];
   const last = rows[rows.length - 1];
@@ -146,12 +192,18 @@ export const distillConversation = async (input: {
 
   // Privacy scope: exactly one member → private episode; the legacy
   // memberless shape falls back to the creator; otherwise team-visible.
+  // Workflow runs override this entirely: their conversations are memberless
+  // and owned by the acting identity (team bot for team workflows), which
+  // would make every team workflow's memory PRIVATE TO THE BOT — invisible
+  // to all humans. The episode inherits the workflow's own visibility
+  // instead: owned workflow → private to the owner, team workflow → NULL.
   const members = await db.query.aiConversationMembers.findMany({
     where: { conversationId },
     columns: { userId: true },
   });
-  const episodeUserId =
-    members.length === 1
+  const episodeUserId = workflowRun
+    ? (workflowOwner?.userId ?? null)
+    : members.length === 1
       ? (members[0]?.userId ?? null)
       : members.length === 0
         ? (conversation.userId ?? null)
@@ -235,6 +287,17 @@ export const distillConversation = async (input: {
     occurredFrom,
     occurredTo,
     recordIds,
+    // Workflow attribution — lets future consolidation/dedup group a
+    // workflow's episodes and the UI trace an episode back to its run.
+    ...(workflowRun
+      ? {
+          metadata: {
+            workflowId: workflowRun.workflowId,
+            workflowRunId: workflowRun.id,
+            triggerType: workflowRun.triggerType,
+          },
+        }
+      : {}),
   });
 
   if (contentChanged) {

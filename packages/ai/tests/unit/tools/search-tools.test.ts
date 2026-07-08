@@ -68,6 +68,7 @@ interface SearchToolsResult {
   query: string;
   total_deferred_tools: number;
   notFound?: string[];
+  gated?: string[];
 }
 
 /**
@@ -103,8 +104,119 @@ const runSearchTools = async (
     query: record.query as string,
     total_deferred_tools: record.total_deferred_tools as number,
     notFound: record.notFound as string[] | undefined,
+    gated: record.gated as string[] | undefined,
   };
 };
+
+/**
+ * Registry with a gated write tool (`manageRecord`) alongside a plain read
+ * tool, for the autonomy-gate tests. `runGated` drives the same execute with a
+ * ctx whose `workflowAutonomy` is set.
+ */
+const GATED_DOMAIN: SearchableToolRegistry = {
+  ...DOMAIN,
+  manageRecord: {
+    description: "Create or update one record.",
+    searchHint: "create update record write object",
+    category: "domain",
+  },
+};
+
+const runGated = async (
+  input: { query: string },
+  autonomy: AgentRuntimeContext["workflowAutonomy"],
+): Promise<{ result: SearchToolsResult; manager: DynamicToolManager }> => {
+  const manager = new DynamicToolManager();
+  const ctx: AgentRuntimeContext = {
+    organizationId: "org-1",
+    teamId: "team-1",
+    dynamicToolManager: manager,
+    taskManager: new TaskManager(),
+    modelProfile: getProfileForRole("chat"),
+    workflowAutonomy: autonomy,
+  };
+  const tool = createSearchToolsTool(GATED_DOMAIN);
+  const execute = tool.execute;
+  if (!execute) throw new Error("searchTools has no execute fn");
+  type ExecOptions = Parameters<NonNullable<typeof tool.execute>>[1];
+  const options: ExecOptions = {
+    toolCallId: "call-g",
+    messages: [],
+    experimental_context: wrapRuntimeContext(ctx),
+  };
+  const result = await execute(input, options);
+  const record = result as Record<string, unknown>;
+  return {
+    result: {
+      matches: record.matches as string[],
+      query: record.query as string,
+      total_deferred_tools: record.total_deferred_tools as number,
+      notFound: record.notFound as string[] | undefined,
+      gated: record.gated as string[] | undefined,
+    },
+    manager,
+  };
+};
+
+describe("searchTools autonomy gate", () => {
+  test("approval_required: select:manageRecord is gated, never activated", async () => {
+    const { result, manager } = await runGated(
+      { query: "select:manageRecord" },
+      "approval_required",
+    );
+    expect(result.matches).toEqual([]);
+    expect(result.gated).toEqual(["manageRecord"]);
+    expect(manager.getSnapshot()).toEqual([]);
+  });
+
+  test("read_only: bare manageRecord (fast path) is gated", async () => {
+    const { result, manager } = await runGated(
+      { query: "manageRecord" },
+      "read_only",
+    );
+    expect(result.matches).toEqual([]);
+    expect(result.gated).toEqual(["manageRecord"]);
+    expect(manager.getSnapshot()).toEqual([]);
+  });
+
+  test("approval_required: keyword search drops the gated tool", async () => {
+    const { result, manager } = await runGated(
+      { query: "write record object" },
+      "approval_required",
+    );
+    expect(result.matches).not.toContain("manageRecord");
+    expect(manager.getSnapshot()).not.toContain("manageRecord");
+  });
+
+  test("autonomous: manageRecord is NOT gated (activates normally)", async () => {
+    const { result, manager } = await runGated(
+      { query: "select:manageRecord" },
+      "autonomous",
+    );
+    expect(result.matches).toEqual(["manageRecord"]);
+    expect(result.gated).toBeUndefined();
+    expect(manager.getSnapshot()).toEqual(["manageRecord"]);
+  });
+
+  test("chat (workflowAutonomy undefined): manageRecord activates normally", async () => {
+    const { result, manager } = await runGated(
+      { query: "select:manageRecord" },
+      undefined,
+    );
+    expect(result.matches).toEqual(["manageRecord"]);
+    expect(manager.getSnapshot()).toEqual(["manageRecord"]);
+  });
+
+  test("gated select still activates the non-gated names in the same call", async () => {
+    const { result, manager } = await runGated(
+      { query: "select:listDocuments,manageRecord" },
+      "approval_required",
+    );
+    expect(result.matches).toEqual(["listDocuments"]);
+    expect(result.gated).toEqual(["manageRecord"]);
+    expect(manager.getSnapshot()).toEqual(["listDocuments"]);
+  });
+});
 
 describe("searchTools parser", () => {
   test("select:<exact name> activates that one tool", async () => {

@@ -24,6 +24,13 @@
  * Usage: `bun run langfuse:seed-prompts` (needs LANGFUSE_* in `.env`).
  */
 import { LangfuseClient } from "@langfuse/client";
+// PURE module (zero imports) — safe here: pulls none of the agent module
+// graph (DB / Redis / OTel). It is the SINGLE resolver shared with the
+// runtime fallback path, so seed-time and fallback resolution can't drift.
+import {
+  resolveAgentBlocks,
+  type PromptAgentKind,
+} from "../src/agents/shared/prompt-blocks";
 
 const PROJECT_ROOT = `${import.meta.dir}/..`;
 
@@ -38,10 +45,30 @@ const HTML_COMMENT_RE = /<!--[\s\S]*?-->\n?/g;
 const toStoredPrompt = (raw: string): string =>
   raw.replace(HTML_COMMENT_RE, "").trim();
 
-const PROMPTS = [
+/**
+ * The unified agent template is resolved PER AGENT here, at seed time — the
+ * stored Langfuse prompts (`fretik-chatbot-system`, `fretik-workflow-system`)
+ * are the final per-agent texts, byte-identical to what the runtime renders
+ * (minus per-turn `{{variables}}`): easy to debug in the Playground, and the
+ * OpenRouter prefix cache stays keyed on stable per-agent prompts. The
+ * runtime never resolves blocks on fetched text.
+ */
+const UNIFIED_PROMPT_PATH = `${PROJECT_ROOT}/src/agents/shared/agent-system-prompt.md`;
+
+const PROMPTS: readonly {
+  name: string;
+  path: string;
+  agent?: PromptAgentKind;
+}[] = [
   {
     name: "fretik-chatbot-system",
-    path: `${PROJECT_ROOT}/src/agents/chatbot/system-prompt.md`,
+    path: UNIFIED_PROMPT_PATH,
+    agent: "chatbot",
+  },
+  {
+    name: "fretik-workflow-system",
+    path: UNIFIED_PROMPT_PATH,
+    agent: "workflow",
   },
   {
     name: "fretik-chatbot-sub-agent",
@@ -67,8 +94,11 @@ const hasProductionVersion = async (name: string): Promise<boolean> => {
 };
 
 const seed = async (): Promise<void> => {
-  for (const { name, path } of PROMPTS) {
-    const text = toStoredPrompt(await Bun.file(path).text());
+  for (const { name, path, agent } of PROMPTS) {
+    const raw = await Bun.file(path).text();
+    const text = toStoredPrompt(
+      agent === undefined ? raw : resolveAgentBlocks(raw, agent),
+    );
     const exists = await hasProductionVersion(name);
     if (exists) {
       const current = await client.prompt.get(name, {

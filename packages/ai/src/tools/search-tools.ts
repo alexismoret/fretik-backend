@@ -5,6 +5,7 @@ import type {
   SearchableToolRegistry,
 } from "../agents/shared/chatbot-tool";
 import { getRuntimeContext } from "../agents/shared/runtime-context";
+import { workflowMainHiddenToolNames } from "../agents/shared/workflow-tool-gate";
 
 /**
  * Progressive Disclosure entry point.
@@ -252,6 +253,15 @@ export const createSearchToolsTool = (domainTools: SearchableToolRegistry) =>
       const totalDeferred = Object.keys(domainTools).length;
       const maxResults = max_results ?? DEFAULT_MAX_RESULTS;
 
+      // In a gated workflow run (`read_only` / `approval_required`) the write
+      // tools are withheld from the menu; searchTools must not resurface or
+      // activate them (the model would see them as callable but the step-gate
+      // strips them — wasted turn). No-op in chat (`workflowAutonomy` unset).
+      const gated = ctx.workflowAutonomy
+        ? workflowMainHiddenToolNames(ctx.workflowAutonomy)
+        : undefined;
+      const isGated = (name: string): boolean => gated?.has(name) ?? false;
+
       // Direct select path: `select:A,B,C`.
       const selectMatch = query.match(/^select:(.+)$/i);
       if (selectMatch) {
@@ -263,8 +273,11 @@ export const createSearchToolsTool = (domainTools: SearchableToolRegistry) =>
 
         const found: string[] = [];
         const notFound: string[] = [];
+        const gatedNames: string[] = [];
         for (const name of requested) {
-          if (name in domainTools) {
+          if (isGated(name)) {
+            gatedNames.push(name);
+          } else if (name in domainTools) {
             if (!found.includes(name)) found.push(name);
           } else {
             notFound.push(name);
@@ -278,6 +291,7 @@ export const createSearchToolsTool = (domainTools: SearchableToolRegistry) =>
           query,
           total_deferred_tools: totalDeferred,
           ...(notFound.length > 0 ? { notFound } : {}),
+          ...(gatedNames.length > 0 ? { gated: gatedNames } : {}),
         };
       }
 
@@ -289,6 +303,14 @@ export const createSearchToolsTool = (domainTools: SearchableToolRegistry) =>
       // term that fails to match any parsed tool name part.
       const trimmed = query.trim();
       if (trimmed in domainTools) {
+        if (isGated(trimmed)) {
+          return {
+            matches: [],
+            query,
+            total_deferred_tools: totalDeferred,
+            gated: [trimmed],
+          };
+        }
         manager.activate([trimmed]);
         return {
           matches: [trimmed],
@@ -298,7 +320,11 @@ export const createSearchToolsTool = (domainTools: SearchableToolRegistry) =>
       }
 
       // Keyword search path.
-      const matches = searchToolsWithKeywords(query, domainTools, maxResults);
+      const matches = searchToolsWithKeywords(
+        query,
+        domainTools,
+        maxResults,
+      ).filter((name) => !isGated(name));
       if (matches.length > 0) manager.activate(matches);
       return {
         matches,

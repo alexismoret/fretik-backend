@@ -1,4 +1,4 @@
-import { createAskUserQuestionTool } from "../../tools/ask-user";
+import { createAskUserQuestionTool } from "../../tools/ask-user/chat";
 import { createBashTool } from "../../tools/bash";
 import { createCreateSkillTool } from "../../tools/create-skill";
 import { createDescribeObjectTypeTool } from "../../tools/describe-object-type";
@@ -12,6 +12,7 @@ import { createManageLinkTool } from "../../tools/manage-link";
 import { createManageObjectTypeTool } from "../../tools/manage-object-type";
 import { createManageRecordTool } from "../../tools/manage-record";
 import { createManageTasksTool } from "../../tools/manage-tasks";
+import { createManageWorkflowTool } from "../../tools/manage-workflow";
 import { createMemoryTool } from "../../tools/memory";
 import { createPresentFilesTool } from "../../tools/present-files";
 import { createPythonTool } from "../../tools/python";
@@ -344,6 +345,15 @@ export const buildDomainTools = () => ({
       "update existing skill edit improve refine extend rewrite adjust modify enhance",
     maxResultSizeChars: 2_000,
     isReadOnly: true,
+  }),
+  manageWorkflow: buildChatbotTool({
+    ...createManageWorkflowTool(),
+    category: "domain",
+    searchHint:
+      "create build manage workflow automation autonomous agent scheduled recurring cron trigger event playbook tasks run test activate pause draft",
+    maxResultSizeChars: 8_000,
+    // Mutates workflow definitions + fires test runs — not read-only.
+    isReadOnly: false,
   }),
 });
 

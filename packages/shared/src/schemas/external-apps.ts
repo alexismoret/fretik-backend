@@ -7,15 +7,19 @@ import {
 } from "../external-apps/manifest-schema";
 
 /**
- * HTTP schemas for `/external-apps/*` and `/sandbox/exec` routes.
+ * HTTP schemas for `/external-apps/*` routes — the provider catalogue and
+ * per-tenant Nango connections.
  *
- * The wire shape is intentionally **distinct** from the DB row types
- * (`ExternalAppConnection`, `ToolApprovalRequest`): we strip Nango-internal
- * columns (`nangoProviderConfigKey`) and surface a friendlier `scope` enum
- * derived from `userId IS NULL`.
+ * The wire shape is intentionally **distinct** from the DB row type
+ * (`ExternalAppConnection`): we strip Nango-internal columns
+ * (`nangoProviderConfigKey`) and surface a friendlier `scope` enum derived
+ * from `userId IS NULL`.
  *
  * The provider catalogue (`GET /external-apps/providers`) is built from
  * the in-memory registry — no DB row, no manifest YAML on the wire.
+ *
+ * The generic approval schemas moved to `schemas/approvals.ts`; the
+ * `/sandbox/exec` wire contract moved to `schemas/sandbox.ts`.
  */
 
 // ============================================================================
@@ -326,139 +330,3 @@ export const dynamicOptionsResponseSchema = z.object({
 export type DynamicOptionsResponse = z.infer<
   typeof dynamicOptionsResponseSchema
 >;
-
-// ============================================================================
-// Tool approval requests (GET/POST /external-apps/approvals/:id/*)
-// ============================================================================
-
-export const toolApprovalStatusSchema = z.enum([
-  "pending",
-  "granted",
-  "executing",
-  "consumed",
-  "rejected",
-]);
-export type ToolApprovalStatusValue = z.infer<typeof toolApprovalStatusSchema>;
-
-/** A single op as stored in `tool_approval_requests.operations`. */
-export const toolApprovalOperationSchema = z.object({
-  action: z.string().min(1).openapi({
-    example: "outlook.send_email",
-    description: "Fully-qualified action name (provider.action).",
-  }),
-  args: z.record(z.string(), z.unknown()).openapi({
-    description:
-      "Executable args. Validated server-side against the manifest at modify-time.",
-  }),
-});
-export type ToolApprovalOperationDto = z.infer<
-  typeof toolApprovalOperationSchema
->;
-
-/** A field on the approval card, after backend i18n rendering. */
-export const renderedApprovalFieldSchema = z.object({
-  label: z.string(),
-  value: z.string(),
-  kind: z.enum(["text", "html"]).optional(),
-});
-export type RenderedApprovalFieldDto = z.infer<
-  typeof renderedApprovalFieldSchema
->;
-
-export const renderedApprovalOperationSchema = z.object({
-  providerKey: z.string(),
-  action: z.string(),
-  title: z.string(),
-  fields: z.array(renderedApprovalFieldSchema),
-});
-export type RenderedApprovalOperationDto = z.infer<
-  typeof renderedApprovalOperationSchema
->;
-
-export const renderedApprovalSummarySchema = z.object({
-  title: z.string(),
-  operations: z.array(renderedApprovalOperationSchema),
-});
-export type RenderedApprovalSummaryDto = z.infer<
-  typeof renderedApprovalSummarySchema
->;
-
-/** Outcome of a single op after execution — mirrors `ToolApprovalOpResult`. */
-export const toolApprovalOpResultSchema = z.union([
-  z.object({ ok: z.literal(true), data: z.record(z.string(), z.unknown()) }),
-  z.object({ ok: z.literal(false), error: z.string() }),
-]);
-export type ToolApprovalOpResultDto = z.infer<
-  typeof toolApprovalOpResultSchema
->;
-
-export const approvalResponseSchema = z.object({
-  id: z.uuid(),
-  conversationId: z.uuid(),
-  turnId: z.string(),
-  status: toolApprovalStatusSchema,
-  itemCount: z.int(),
-  /** Translated, ready-to-render. */
-  summary: renderedApprovalSummarySchema,
-  /** Raw ops (mutable via modify-and-grant). */
-  operations: z.array(toolApprovalOperationSchema),
-  result: z.array(toolApprovalOpResultSchema).nullable(),
-  decisionFeedback: z.string().nullable(),
-  decisionAt: z.coerce.date().nullable(),
-  executedAt: z.coerce.date().nullable(),
-  createdAt: z.coerce.date(),
-});
-export type ApprovalResponse = z.infer<typeof approvalResponseSchema>;
-
-export const modifyAndGrantRequestSchema = z.object({
-  operations: z.array(toolApprovalOperationSchema).min(1),
-});
-export type ModifyAndGrantRequest = z.infer<typeof modifyAndGrantRequestSchema>;
-
-export const rejectApprovalRequestSchema = z.object({
-  feedback: z.string().max(4096).optional(),
-});
-export type RejectApprovalRequest = z.infer<typeof rejectApprovalRequestSchema>;
-
-// ============================================================================
-// Sandbox dispatch (POST /sandbox/exec) — called by `_runtime.py`
-// ============================================================================
-
-export const sandboxExecRequestSchema = z.discriminatedUnion("kind", [
-  z.object({
-    kind: z.literal("read"),
-    action: z.string().min(1),
-    args: z.record(z.string(), z.unknown()),
-    turnId: z.string().min(1),
-  }),
-  z.object({
-    kind: z.literal("plan"),
-    operations: z.array(toolApprovalOperationSchema).min(1),
-    turnId: z.string().min(1),
-  }),
-  z.object({
-    // Code-mode ontology SDK (`fretik_apps.objects`): bulk record writes +
-    // schema migrations. Direct (no approval gate) — validation, grants and
-    // the domain-events journal are enforced server-side in `dispatchObjects`,
-    // exactly like the manageRecord / manageObjectType tools.
-    kind: z.literal("objects"),
-    op: z.string().min(1),
-    args: z.record(z.string(), z.unknown()),
-    turnId: z.string().min(1),
-  }),
-]);
-export type SandboxExecRequestDto = z.infer<typeof sandboxExecRequestSchema>;
-
-export const sandboxExecResponseSchema = z.union([
-  z.object({ status: z.literal("ok"), data: z.unknown() }),
-  z.object({
-    status: z.literal("approval_pending"),
-    approvalId: z.uuid(),
-  }),
-  z.object({
-    status: z.literal("error"),
-    message: z.string(),
-    data: z.unknown().optional(),
-  }),
-]);
-export type SandboxExecResponseDto = z.infer<typeof sandboxExecResponseSchema>;

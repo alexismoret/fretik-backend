@@ -846,4 +846,60 @@ export const relations = defineRelations(schema, (r) => ({
       to: r.aiConversations.id,
     }),
   },
+
+  workflows: {
+    organization: r.one.organization({
+      from: r.workflows.organizationId,
+      to: r.organization.id,
+    }),
+    team: r.one.team({
+      from: r.workflows.teamId,
+      to: r.team.id,
+    }),
+    user: r.one.user({
+      from: r.workflows.userId,
+      to: r.user.id,
+      alias: "workflowOwner",
+      optional: true,
+    }),
+    createdBy: r.one.user({
+      from: r.workflows.createdByUserId,
+      to: r.user.id,
+      alias: "workflowCreator",
+      optional: true,
+    }),
+    runs: r.many.workflowRuns(),
+  },
+
+  workflowRuns: {
+    workflow: r.one.workflows({
+      from: r.workflowRuns.workflowId,
+      to: r.workflows.id,
+    }),
+    organization: r.one.organization({
+      from: r.workflowRuns.organizationId,
+      to: r.organization.id,
+    }),
+    team: r.one.team({
+      from: r.workflowRuns.teamId,
+      to: r.team.id,
+    }),
+    actingUser: r.one.user({
+      from: r.workflowRuns.actingUserId,
+      to: r.user.id,
+      alias: "workflowRunActor",
+      optional: true,
+    }),
+    triggeredBy: r.one.user({
+      from: r.workflowRuns.triggeredByUserId,
+      to: r.user.id,
+      alias: "workflowRunTrigger",
+      optional: true,
+    }),
+    conversation: r.one.aiConversations({
+      from: r.workflowRuns.conversationId,
+      to: r.aiConversations.id,
+      optional: true,
+    }),
+  },
 }));

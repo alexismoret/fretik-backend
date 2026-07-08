@@ -96,6 +96,10 @@ class _Records:
         """Create many records of `type_key`. Each row is a field map
         (key → value), validated against the type's schema server-side.
 
+        Encode each value in its field's type — describeObjectType shows every
+        field's `writeFormat`. Money is {"amount": 1500, "currencyCode": "EUR"}
+        (the key is "currencyCode", NOT "currency").
+
         To attach outgoing relations in the same write, give a row as
         {"data": {<field map>}, "relations": [{"relation_key": "client",
         "to_record_id": "<id>"}]} — target by `to_record_id` or an uploaded

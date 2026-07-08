@@ -21,6 +21,7 @@ import { memoryRoutes } from "./handlers/memory";
 import { modelProfilesRoutes } from "./handlers/model-profiles";
 import { preExtractRoutes } from "./handlers/pre-extract";
 import { vectorizeRoutes } from "./handlers/vectorize";
+import { workflowTriggerRoutes } from "./handlers/workflow";
 import { registerOrphanCleanupCron } from "./services/chat-files/orphan-cron";
 import {
   loadSkillCatalog,
@@ -67,6 +68,10 @@ app.route("/internal/pre-extract", preExtractRoutes);
 
 // Internal mention extraction for the @fretik/jobs event→graph resolver.
 app.route("/internal/memory", memoryRoutes);
+
+// Trigger.dev-facing workflow engine (turn loop, finalize, cron-fire) —
+// authenticated by TRIGGER_CALLBACK_KEY, the only public surface in prod.
+app.route("/internal/trigger", workflowTriggerRoutes);
 
 // Load the bundled-skills catalog into memory so the system-prompt
 // renderer can advertise the L1 listing (skill name + description).

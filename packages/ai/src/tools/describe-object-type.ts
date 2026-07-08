@@ -1,3 +1,4 @@
+import { describeFieldExpectation } from "@fretik/shared/schemas/record-shape";
 import { getFieldDefinitionsForTeam } from "@fretik/shared/services/field-definitions/get-for-team";
 import { describeTeamSchema } from "@fretik/shared/services/object-types/describe-team-schema";
 import { tool } from "ai";
@@ -89,6 +90,9 @@ export const createDescribeObjectTypeTool = () =>
           description: f.description,
           config: f.config,
           isTitle: f.isTitle,
+          // Exact value encoding for a write (tool or Python SDK) — the shared
+          // hint, so e.g. money reads `{ amount, currencyCode }`, not "currency".
+          writeFormat: describeFieldExpectation(f),
         })),
         relations: type.relations.map((r) => ({
           key: r.key,

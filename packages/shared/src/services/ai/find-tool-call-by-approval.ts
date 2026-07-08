@@ -3,18 +3,17 @@ import db from "../../db";
 import { aiMessages } from "../../db/schema";
 
 /**
- * Locate the `tool-python` part in this conversation's recent assistant
- * messages whose output is `{ status: "approval_pending", approvalId }`
- * matching the given approvalId. Used by the external-apps approval
- * handlers to find which tool call needs its output mutated after the
- * user's decision.
+ * Locate the tool part in this conversation's recent assistant messages
+ * whose output is `{ status: "approval_pending", approvalId }` matching the
+ * given approvalId. Matches on the OUTPUT SHAPE, not the tool name — the same
+ * pause marker is emitted by `python` (`run_plan`), `proposeRecords`, and the
+ * workflow `askUserQuestion`, so any of their parts can be the one to mutate
+ * after the user's decision.
  *
  * Returns `undefined` when no match is found — either the message has
  * scrolled past the 20-message lookback window, or the part has
  * already been mutated to its final state (idempotent recovery path).
  */
-const PYTHON_PART_TYPE = "tool-python";
-
 export const findToolCallIdForApproval = async (params: {
   conversationId: string;
   approvalId: string;
@@ -34,13 +33,9 @@ export const findToolCallIdForApproval = async (params: {
   for (const row of rows) {
     const parts = row.parts;
     for (const part of parts) {
-      if (
-        typeof part !== "object" ||
-        part === null ||
-        (part as { type?: unknown }).type !== PYTHON_PART_TYPE
-      ) {
-        continue;
-      }
+      if (typeof part !== "object" || part === null) continue;
+      const type = (part as { type?: unknown }).type;
+      if (typeof type !== "string" || !type.startsWith("tool-")) continue;
       const output = (part as { output?: unknown }).output;
       if (output === null || typeof output !== "object") continue;
       const status = (output as { status?: unknown }).status;

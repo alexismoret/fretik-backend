@@ -1,0 +1,184 @@
+import type { DomainEvent, Workflow } from "@fretik/shared/db/schema";
+import {
+  advanceWorkerCursor,
+  ensureWorkerCursor,
+  readEventsAfter,
+} from "@fretik/shared/services/domain-events/consume";
+import { countRecentEventRuns } from "@fretik/shared/services/workflows/count-recent-event-runs";
+import { filterWorkflowConversationIds } from "@fretik/shared/services/workflows/filter-workflow-conversation-ids";
+import { listActiveEventWorkflows } from "@fretik/shared/services/workflows/list-active-event-workflows";
+import { listExistingEventRuns } from "@fretik/shared/services/workflows/list-existing-event-runs";
+import { WORKFLOW_RUN_CREATE_JOB } from "../queues/names";
+import { getWorkflowTriggerQueue } from "../queues/queues";
+
+/**
+ * The journal→workflow bridge — the event-trigger engine. Its own cursor
+ * ("workflow-triggers") sweeps `domain_events` and, for every active
+ * event-triggered workflow whose config matches an event, enqueues ONE run
+ * creation on the dedicated `workflow-trigger` queue. The sweep itself is
+ * fast (reads + BullMQ enqueue only); the slow `createWorkflowRun`
+ * (Trigger.dev network call) runs off the queue.
+ *
+ * Same journal-as-outbox design as the memory sweep: a worker/Redis outage
+ * never loses events (the cursor just resumes). Three guards keep it safe:
+ *   - anti-loop: events a workflow itself emitted (`actorType 'workflow'` or
+ *     `agentKey 'workflow:*'`) are skipped, so a run's own journal writes
+ *     can never trigger another run.
+ *   - dedup: the partial unique index on `(workflow_id, source_event_id)` is
+ *     the truth; the batched `listExistingEventRuns` set + the
+ *     `wfrun-{wf}-{event}` jobId skip it earlier so a re-swept event never
+ *     double-fires.
+ *   - rate cap: `WORKFLOW_EVENT_RUNS_PER_HOUR` per workflow. A local per-sweep
+ *     budget stops one bulk-import batch from enqueuing thousands at once; the
+ *     create worker re-checks the cap authoritatively (runs created since this
+ *     sweep are now visible), so the storm is bounded across sweeps too.
+ */
+
+const CURSOR_NAME = "workflow-triggers";
+
+const intFromEnv = (name: string, fallback: number): number => {
+  const raw = Number.parseInt(process.env[name] ?? "", 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : fallback;
+};
+
+/** Shares the memory sweep's consistency-lag rationale (late-commit safety). */
+const WATERMARK_MS = intFromEnv("MEMORY_SWEEP_WATERMARK_MS", 15_000);
+const SWEEP_BATCH = intFromEnv("MEMORY_SWEEP_BATCH", 500);
+const RUNS_PER_HOUR_CAP = intFromEnv("WORKFLOW_EVENT_RUNS_PER_HOUR", 20);
+const ONE_HOUR_MS = 60 * 60 * 1000;
+
+/** A run's own journal writes must never trigger another run. */
+const isWorkflowOriginated = (event: DomainEvent): boolean =>
+  event.actorType === "workflow" ||
+  (event.agentKey !== null && event.agentKey.startsWith("workflow:"));
+
+/** Config match: event type equal + every filter entry equal on the payload. */
+const matchesEvent = (workflow: Workflow, event: DomainEvent): boolean => {
+  const config = workflow.triggerConfig.event;
+  if (!config || config.type !== event.type) return false;
+  if (!config.filter) return true;
+  return Object.entries(config.filter).every(
+    ([key, value]) => event.payload[key] === value,
+  );
+};
+
+export const runWorkflowTriggerSweep = async (): Promise<{
+  created: number;
+}> => {
+  const cursor = await ensureWorkerCursor(CURSOR_NAME);
+  const events = await readEventsAfter({
+    after: cursor,
+    watermarkMs: WATERMARK_MS,
+    limit: SWEEP_BATCH,
+  });
+  if (events.length === 0) return { created: 0 };
+
+  const nonSelf = events.filter((e) => !isWorkflowOriginated(e));
+  // A run's SDK/sub-agent writes journal under the run's OWN conversation —
+  // `actorType`/`agentKey` miss those, so exclude any event whose conversation
+  // is a workflow run's. This is what actually closes the self-trigger loop.
+  const convIds = [
+    ...new Set(
+      nonSelf
+        .map((e) => e.conversationId)
+        .filter((id): id is string => id !== null),
+    ),
+  ];
+  const workflowConvIds = await filterWorkflowConversationIds({
+    conversationIds: convIds,
+  });
+  const candidates = nonSelf.filter(
+    (e) => e.conversationId === null || !workflowConvIds.has(e.conversationId),
+  );
+
+  const teamIds = [...new Set(candidates.map((e) => e.teamId))];
+  const workflows = await listActiveEventWorkflows({ teamIds });
+
+  const byTeam = new Map<string, Workflow[]>();
+  for (const workflow of workflows) {
+    const list = byTeam.get(workflow.teamId) ?? [];
+    list.push(workflow);
+    byTeam.set(workflow.teamId, list);
+  }
+
+  // Match pairs IN MEMORY first — the expensive part of a sweep must be a
+  // fixed handful of batch queries, never one round trip per (event ×
+  // workflow) pair (500 events × 200 workflows would be 100k SELECTs and
+  // starve the whole maintenance worker).
+  const pairs: { workflow: Workflow; event: DomainEvent }[] = [];
+  for (const event of candidates) {
+    for (const workflow of byTeam.get(event.teamId) ?? []) {
+      if (matchesEvent(workflow, event)) pairs.push({ workflow, event });
+    }
+  }
+
+  let created = 0;
+  if (pairs.length > 0) {
+    const matchedWorkflowIds = [...new Set(pairs.map((p) => p.workflow.id))];
+    // ONE query answers existence for every matched pair (replay dedup).
+    const existing = await listExistingEventRuns({
+      workflowIds: matchedWorkflowIds,
+      sourceEventIds: [...new Set(pairs.map((p) => p.event.id))],
+    });
+
+    // Per-workflow enqueue budget for THIS sweep (cap minus runs already
+    // started in the last hour) — one count per MATCHED workflow, so a
+    // bulk-import batch can't enqueue thousands. The create worker re-checks
+    // the cap authoritatively for the cross-sweep race.
+    const since = new Date(Date.now() - ONE_HOUR_MS);
+    const budget = new Map<string, number>();
+    for (const workflowId of matchedWorkflowIds) {
+      budget.set(
+        workflowId,
+        RUNS_PER_HOUR_CAP - (await countRecentEventRuns({ workflowId, since })),
+      );
+    }
+
+    const jobs: Parameters<
+      ReturnType<typeof getWorkflowTriggerQueue>["addBulk"]
+    >[0] = [];
+    for (const { workflow, event } of pairs) {
+      if (existing.has(`${workflow.id}:${event.id}`)) continue;
+      const remaining = budget.get(workflow.id) ?? 0;
+      if (remaining <= 0) {
+        console.warn(
+          `[workflow-trigger-sweep] rate cap (${RUNS_PER_HOUR_CAP.toString()}/h) reached for workflow ${workflow.id} — skipping event ${event.id}`,
+        );
+        continue;
+      }
+      budget.set(workflow.id, remaining - 1);
+      jobs.push({
+        name: WORKFLOW_RUN_CREATE_JOB,
+        data: {
+          workflowId: workflow.id,
+          teamId: workflow.teamId,
+          sourceEventId: event.id,
+          triggerPayload: event.payload,
+        },
+        opts: {
+          jobId: `wfrun-${workflow.id}-${event.id}`,
+          attempts: 3,
+          backoff: { type: "exponential", delay: 5_000 },
+          removeOnComplete: { count: 500 },
+          removeOnFail: { count: 500 },
+        },
+      });
+    }
+    // No .catch: a Redis enqueue failure must throw so the sweep fails and
+    // the cursor (advanced only at the end) stays put — the next sweep
+    // replays the batch, and the jobId + the existence set dedup the rest.
+    if (jobs.length > 0) {
+      await getWorkflowTriggerQueue().addBulk(jobs);
+      created = jobs.length;
+    }
+  }
+
+  // Advance past the WHOLE batch — every event was evaluated; the ones we
+  // skipped (workflow-originated, unmatched, capped) are permanently skipped.
+  const last = events[events.length - 1];
+  if (last) {
+    await advanceWorkerCursor({ name: CURSOR_NAME, position: last.id });
+  }
+
+  return { created };
+};

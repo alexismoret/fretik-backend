@@ -117,6 +117,8 @@ describe("role bindings — default model ids pinned (chat: gated M3 flip)", () 
   const expectedIds: Record<ModelRole, string> = {
     chat: "minimax/minimax-m3",
     "chat-fallback": "deepseek/deepseek-v4-pro",
+    // Workflow executor defaults to the chat profile (reliability first).
+    workflow: "minimax/minimax-m3",
     "dispatch-cheap": "deepseek/deepseek-v4-flash",
     "pre-extract": "deepseek/deepseek-v4-flash",
     "pre-extract-fallback": "openai/gpt-oss-120b",
@@ -140,6 +142,7 @@ describe("role bindings — default model ids pinned (chat: gated M3 flip)", () 
     const wrapped: ModelRole[] = [
       "chat",
       "chat-fallback",
+      "workflow",
       "dispatch-cheap",
       "pre-extract",
       "pre-extract-fallback",

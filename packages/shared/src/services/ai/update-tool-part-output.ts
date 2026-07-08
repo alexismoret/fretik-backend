@@ -3,21 +3,22 @@ import db from "../../db";
 import { aiMessages } from "../../db/schema";
 
 /**
- * Replace the `output` of a single `tool-python` part in an existing
- * persisted assistant message, identified by its `toolCallId`. Used by
- * the external-apps approval handlers to substitute the placeholder
- * `{ status: "approval_pending", ... }` payload with the final
- * `approval_granted` / `approval_rejected` outcome BEFORE the next
- * chatbot turn runs — that way the agent sees the actual result in
- * its history and doesn't need to re-call `python`.
+ * Replace the `output` of a single tool part in an existing persisted
+ * assistant message, identified by its `toolCallId`. Used by the approval
+ * handlers to substitute the placeholder `{ status: "approval_pending", ... }`
+ * payload with the final `approval_granted` / `approval_rejected` /
+ * `answered` outcome BEFORE the next agent turn runs — that way the agent
+ * sees the actual result in its history and doesn't re-call the tool. Works
+ * for any tool that emits the pause marker (`python`, `proposeRecords`, the
+ * workflow `askUserQuestion`) — matched by `toolCallId`, not tool name.
  *
  * Scans the last 20 assistant messages of the conversation (in reverse
- * chronological order) because a python tool call is always in a recent
- * assistant turn — the agent stopped via `pythonAwaitingApproval`
- * immediately after producing it.
+ * chronological order) because the paused tool call is always in a recent
+ * assistant turn — the agent stopped on the approval marker immediately
+ * after producing it.
  *
  * Throws `MessagePartNotFoundError` if no message in that window
- * contains a `tool-python` part with the given `toolCallId`. Callers
+ * contains a tool part with the given `toolCallId`. Callers
  * that tolerate this case (recovery / second-write scenarios) should
  * call `findToolCallIdForApproval` first to gate the update.
  */
@@ -27,13 +28,11 @@ export class MessagePartNotFoundError extends Error {
     public readonly toolCallId: string,
   ) {
     super(
-      `No tool-python part with toolCallId=${toolCallId} found in last 20 assistant messages of conversation ${conversationId}`,
+      `No tool part with toolCallId=${toolCallId} found in last 20 assistant messages of conversation ${conversationId}`,
     );
     this.name = "MessagePartNotFoundError";
   }
 }
-
-const PYTHON_PART_TYPE = "tool-python";
 
 export const updateToolPartOutputByToolCallId = async (params: {
   conversationId: string;
@@ -57,14 +56,11 @@ export const updateToolPartOutputByToolCallId = async (params: {
     let mutated = false;
     const nextParts = parts.map((part) => {
       // Defensive narrowing — UIMessage parts are loosely typed (we
-      // can't `instanceof` a structural type).
-      if (
-        typeof part !== "object" ||
-        part === null ||
-        (part as { type?: unknown }).type !== PYTHON_PART_TYPE
-      ) {
-        return part;
-      }
+      // can't `instanceof` a structural type). Match any tool part by its
+      // toolCallId (unique per call), independent of tool name.
+      if (typeof part !== "object" || part === null) return part;
+      const type = (part as { type?: unknown }).type;
+      if (typeof type !== "string" || !type.startsWith("tool-")) return part;
       const callId = (part as { toolCallId?: unknown }).toolCallId;
       if (callId !== params.toolCallId) return part;
       mutated = true;

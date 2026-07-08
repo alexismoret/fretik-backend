@@ -8,6 +8,7 @@ import { assertCanWriteRecord } from "@fretik/shared/services/object-sharing/wri
 import { tool } from "ai";
 import { z } from "zod";
 import { getRuntimeContext } from "../agents/shared/runtime-context";
+import { workflowWriteBackstop } from "../agents/shared/workflow-write-backstop";
 import { TOOL_ERROR_CODES, toolError } from "../lib/tool-error-codes";
 
 /**
@@ -50,6 +51,8 @@ export const createManageLinkTool = () =>
     }),
     execute: async (input, options) => {
       const ctx = getRuntimeContext(options);
+      const backstop = workflowWriteBackstop(ctx);
+      if (backstop !== null) return backstop;
       const actor: EventActor = {
         actorType: "agent",
         actorUserId: ctx.userId ?? null,

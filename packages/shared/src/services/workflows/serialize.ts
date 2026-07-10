@@ -1,8 +1,22 @@
 import type { Workflow, WorkflowRun } from "../../db/schema";
-import type {
-  WorkflowResponse,
-  WorkflowRunResponse,
+import {
+  WORKFLOW_DEFAULT_MAX_TOTAL_TOKENS,
+  WORKFLOW_MAX_DURATION_MINUTES,
+  type WorkflowResponse,
+  type WorkflowRunResponse,
 } from "../../schemas/workflows";
+
+/**
+ * Absolute, shareable URL to a form workflow's public page, derived from its
+ * token + the app origin (`APP_URL`, the same env the invitation links use).
+ * Null when there's no token (non-form workflows) or no configured origin.
+ */
+const buildFormUrl = (token: string | null): string | null => {
+  if (!token) return null;
+  const appUrl = process.env.APP_URL;
+  if (!appUrl) return null;
+  return `${appUrl.replace(/\/+$/, "")}/f/${token}`;
+};
 
 /**
  * Map a `workflows` row to its API DTO. The jsonb columns are already the
@@ -25,7 +39,13 @@ export const serializeWorkflow = (row: Workflow): WorkflowResponse => ({
   autonomy: row.autonomy,
   modelProfileKey: row.modelProfileKey,
   limits: row.limits,
+  defaultLimits: {
+    maxTotalTokens: WORKFLOW_DEFAULT_MAX_TOTAL_TOKENS,
+    maxDurationMinutes: WORKFLOW_MAX_DURATION_MINUTES,
+  },
   pausedReason: row.pausedReason,
+  formToken: row.formToken,
+  formUrl: buildFormUrl(row.formToken),
   createdByUserId: row.createdByUserId,
   lastRunAt: row.lastRunAt,
   createdAt: row.createdAt,

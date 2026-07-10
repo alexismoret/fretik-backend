@@ -106,6 +106,12 @@ export const workflows = pgTable(
     // has a live schedule; NULL otherwise.
     triggerScheduleId: text("trigger_schedule_id"),
 
+    // Opaque token keying the public form URL (`/f/<token>`), set only for
+    // `form` triggers. Decoupled from the workflow id (which appears in many
+    // authed responses/logs), unique-indexed for O(1) public lookup, and
+    // rotatable. NULL for every other trigger type.
+    formToken: uuid("form_token").unique(),
+
     // Why the workflow is paused, when it wasn't a plain manual pause — the
     // circuit breaker stamps `circuit_breaker:<N>` on auto-pause after N
     // consecutive failed runs. NULL for active/manually-paused workflows;

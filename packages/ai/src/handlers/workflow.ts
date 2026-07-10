@@ -8,6 +8,7 @@ import { redis } from "@fretik/shared/lib/redis";
 import { applyAntiBufferingHeaders } from "@fretik/shared/lib/sse-headers";
 import { workflowAbortChannel } from "@fretik/shared/lib/workflow-abort";
 import {
+  WORKFLOW_DEFAULT_MAX_TOTAL_TOKENS,
   WorkflowFinalizeRequestSchema,
   WorkflowTurnRequestSchema,
   WorkflowTurnResultSchema,
@@ -46,6 +47,7 @@ import {
 import {
   convertToModelMessages,
   createUIMessageStream,
+  isToolUIPart,
   type LanguageModelUsage,
   type UIMessage,
 } from "ai";
@@ -53,6 +55,7 @@ import { randomUUIDv7 } from "bun";
 import { streamSSE } from "hono/streaming";
 import {
   assembleContextFragments,
+  buildConversationAttachedFilesBlock,
   loadExternalApps,
 } from "../agents/shared/fragments";
 import { formatCurrentDate } from "../agents/shared/prompt-renderer";
@@ -104,43 +107,34 @@ const WORKFLOW_HISTORY_LIMIT = 40;
  * the run is failed — the anti-stall guard behind `completeTask`. */
 const WORKFLOW_MAX_NO_PROGRESS_TURNS = 2;
 
-/**
- * Default run token budget when a workflow sets no explicit `maxTotalTokens`
- * — a coarse runaway backstop, not a product constraint (the incident burned
- * 4.32M). Enforced MID-TURN via abort so a runaway turn stops immediately,
- * not only at the turn boundary. Tunable via `WORKFLOW_DEFAULT_MAX_TOTAL_TOKENS`.
- */
-const parseWorkflowDefaultMaxTotalTokens = (): number => {
-  const raw = process.env.WORKFLOW_DEFAULT_MAX_TOTAL_TOKENS;
-  if (raw === undefined || raw === "") return 4_000_000;
-  const parsed = Number.parseInt(raw, 10);
-  if (!Number.isFinite(parsed) || parsed < 1000) {
-    throw new Error(
-      `Invalid WORKFLOW_DEFAULT_MAX_TOTAL_TOKENS: "${raw}" — expected an integer >= 1000.`,
-    );
-  }
-  return parsed;
-};
-const WORKFLOW_DEFAULT_MAX_TOTAL_TOKENS = parseWorkflowDefaultMaxTotalTokens();
-
 const taskStatusFingerprint = (tasks: WorkflowTaskState[]): string =>
   tasks.map((t) => `${t.key}:${t.status}`).join("|");
 
-const uiMessageText = (m: UIMessage): string => {
+/**
+ * Trailing visible text of the turn's LAST assistant message, taken only
+ * from AFTER that message's last tool call — the final run summary once
+ * every task is closed. An agent that narrates between tool calls
+ * ("Checking X… <tool> Now Y… <tool> Done: <final answer>") should surface
+ * only the true final answer, not every narration chunk concatenated.
+ * Messages with no tool call use the whole text (nothing to be "after").
+ */
+const trailingAssistantText = (messages: UIMessage[]): string => {
+  const last = [...messages].reverse().find((m) => m.role === "assistant");
+  if (!last) return "";
+  let lastToolIndex = -1;
+  last.parts.forEach((part, index) => {
+    if (isToolUIPart(part)) {
+      lastToolIndex = index;
+    }
+  });
   const chunks: string[] = [];
-  for (const part of m.parts) {
+  last.parts.forEach((part, index) => {
+    if (index <= lastToolIndex) return;
     if (part.type === "text" && typeof part.text === "string") {
       chunks.push(part.text);
     }
-  }
+  });
   return chunks.join("\n").trim();
-};
-
-/** Trailing visible text of the turn's LAST assistant message — the final
- * run summary once every task is closed. */
-const trailingAssistantText = (messages: UIMessage[]): string => {
-  const last = [...messages].reverse().find((m) => m.role === "assistant");
-  return last ? uiMessageText(last) : "";
 };
 
 /**
@@ -291,52 +285,55 @@ const executeTurn = async (params: {
   const runForPrompt: WorkflowRun = { ...run, taskStates };
   params.emitTaskUpdate(taskStates);
 
-  const [fragments, externalApps, recall] = await Promise.all([
-    assembleContextFragments({
-      organizationId: run.organizationId,
-      teamId: run.teamId,
-      userId: actingUserId,
-      logPrefix,
-    }),
-    loadExternalApps({
-      conversationId,
-      organizationId: run.organizationId,
-      teamId: run.teamId,
-      userId: actingUserId,
-      turnId: traceId,
-      logPrefix,
-    }),
-    // Memory recall on the FIRST turn only. It rides in turn 1's steering
-    // message (NOT the system prompt, which is byte-stable per run) and then
-    // persists via the replayed message history — later turns re-render from
-    // the same inputs would re-pay the judge for nothing.
-    isFirstTurn && actingUserId !== undefined
-      ? propagateAttributes(
-          {
-            traceName: "active-memory-recall",
-            sessionId: conversationId,
-            userId: actingUserId,
-            tags: [`team:${run.teamId}`],
-          },
-          () =>
-            withSoftTimeout(
-              runUnifiedRecall({
-                userMessage: `${workflow.name}\n${workflow.playbook.goal}`,
-                attachedFiles: [],
-                recentTail: JSON.stringify(run.triggerPayload).slice(0, 2000),
-                teamId: run.teamId,
-                organizationId: run.organizationId,
-                userId: actingUserId,
-                conversationId,
-                agentType: "workflow",
-              }),
-              18000,
-              null,
-              "active-memory",
-            ),
-        )
-      : Promise.resolve(null),
-  ]);
+  const [fragments, externalApps, recall, attachedFilesBlock] =
+    await Promise.all([
+      assembleContextFragments({
+        organizationId: run.organizationId,
+        teamId: run.teamId,
+        userId: actingUserId,
+        logPrefix,
+      }),
+      loadExternalApps({
+        conversationId,
+        organizationId: run.organizationId,
+        teamId: run.teamId,
+        userId: actingUserId,
+        turnId: traceId,
+        logPrefix,
+      }),
+      // Memory recall on the FIRST turn only. It rides in turn 1's steering
+      // message (NOT the system prompt, which is byte-stable per run) and then
+      // persists via the replayed message history — later turns re-render from
+      // the same inputs would re-pay the judge for nothing.
+      isFirstTurn && actingUserId !== undefined
+        ? propagateAttributes(
+            {
+              traceName: "active-memory-recall",
+              sessionId: conversationId,
+              userId: actingUserId,
+              tags: [`team:${run.teamId}`],
+            },
+            () =>
+              withSoftTimeout(
+                runUnifiedRecall({
+                  userMessage: `${workflow.name}\n${workflow.playbook.goal}`,
+                  attachedFiles: [],
+                  recentTail: JSON.stringify(run.triggerPayload).slice(0, 2000),
+                  teamId: run.teamId,
+                  organizationId: run.organizationId,
+                  userId: actingUserId,
+                  conversationId,
+                  agentType: "workflow",
+                }),
+                18000,
+                null,
+                "active-memory",
+              ),
+          )
+        : Promise.resolve(null),
+      // Files handed to the run (form/email trigger uploads) → `<file_attachments>`.
+      buildConversationAttachedFilesBlock(conversationId),
+    ]);
 
   // Steering carries everything that mutates per turn (date, live statuses,
   // current-task pin, turn-1 recall) so the system prompt stays byte-stable.
@@ -367,6 +364,7 @@ const executeTurn = async (params: {
     enabledSkillsBlock: fragments.enabledSkillsBlock,
     externalAppConnections: externalApps.externalAppConnections,
     externalAppsBlock: externalApps.externalAppsBlock,
+    ...(attachedFilesBlock ? { attachedFilesBlock } : {}),
   };
 
   // ---- Stop plumbing (the user's Stop button → cancel-run publishes) ----

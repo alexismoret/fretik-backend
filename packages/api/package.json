@@ -26,6 +26,7 @@
     "figlet": "^1.11.0",
     "file-type": "^22.0.1",
     "hono": "^4.12.26",
+    "hono-rate-limiter": "^0.5.3",
     "node-poppler": "^9.1.2",
     "zod": "^4.4.3"
   },

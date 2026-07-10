@@ -3,6 +3,7 @@ import db from "../../db";
 import { workflows } from "../../db/schema";
 import { badRequest, throwHttpError } from "../../lib/errors";
 import { createWorkflowCronSchedule } from "../../lib/trigger-client";
+import { workflowFormActivationError } from "../../schemas/workflow-forms";
 import type { WorkflowResponse } from "../../schemas/workflows";
 import { getWorkflowRow } from "./get";
 import { serializeWorkflow } from "./serialize";
@@ -38,6 +39,23 @@ export const activateWorkflow = async (params: {
       ...(cron.timezone !== undefined ? { timezone: cron.timezone } : {}),
     });
     triggerScheduleId = created.scheduleId;
+  }
+
+  // A form trigger autosaves incomplete drafts; the completeness gate (title +
+  // at least one labelled field, options on every choice field) runs here, at
+  // the moment the public URL goes live — mirrors the cron pattern check.
+  if (row.triggerType === "form") {
+    const form = row.triggerConfig.form;
+    if (!form) {
+      return throwHttpError(
+        400,
+        badRequest(
+          "A form trigger requires a form definition in triggerConfig.",
+        ),
+      );
+    }
+    const formError = workflowFormActivationError(form);
+    if (formError) return throwHttpError(400, badRequest(formError));
   }
 
   const [updated] = await db

@@ -28,9 +28,19 @@ describe("workflowMainHiddenToolNames", () => {
     expect(hidden.has("memory")).toBe(false);
   });
 
+  test("read_only and approval_required hide the Drive write tools (no gated escalation)", () => {
+    for (const mode of ["read_only", "approval_required"] as const) {
+      const hidden = workflowMainHiddenToolNames(mode);
+      expect(hidden.has("manageDrive")).toBe(true);
+      expect(hidden.has("uploadToDrive")).toBe(true);
+    }
+  });
+
   test("autonomous hides nothing", () => {
     const hidden = workflowMainHiddenToolNames("autonomous");
     expect(hidden.size).toBe(0);
+    expect(hidden.has("manageDrive")).toBe(false);
+    expect(hidden.has("uploadToDrive")).toBe(false);
   });
 
   test("never hides schema/meta tools (the main registry already omits them)", () => {

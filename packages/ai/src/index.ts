@@ -8,6 +8,7 @@ import "./lib/langfuse";
 import "@fretik/providers";
 
 import { errorHandler } from "@fretik/shared/lib/error-handler";
+import { globalRateLimiter } from "@fretik/shared/lib/rate-limit";
 import { reclaimOrphanSandboxes } from "@fretik/shared/services/e2b/reclaim-orphans";
 import { syncBundledSkillsCatalogue } from "@fretik/shared/services/skills/sync-bundled-catalogue";
 import { OpenAPIHono } from "@hono/zod-openapi";
@@ -43,6 +44,11 @@ app.use(
     credentials: true,
   }),
 );
+
+// Broad per-IP anti-abuse backstop (Redis-backed, shared across instances).
+// Exempts `/internal/*` (Trigger.dev callbacks + API→AI service calls) and
+// `/health` so automatic traffic is never throttled.
+app.use("*", globalRateLimiter());
 
 // Health check
 app.get("/health", (c) => c.json({ status: "ok" }, 200));

@@ -17,9 +17,16 @@ import type { WorkflowAutonomy } from "@fretik/shared/schemas/workflows";
  *    (`workflowSubAgentHiddenToolNames`).
  */
 
-/** Direct object-write tools — withheld unless the run is `autonomous`; writes
- * otherwise go through the gated Python objects SDK (`records.bulk_*`). */
-export const WORKFLOW_WRITE_TOOLS = ["manageRecord", "manageLink"] as const;
+/** Direct team-data write tools — withheld unless the run is `autonomous`.
+ * Object writes otherwise go through the gated Python objects SDK
+ * (`records.bulk_*`); the Drive tools (`manageDrive`/`uploadToDrive`) have no
+ * gated escalation, so a non-autonomous run simply cannot reorganise the Drive. */
+export const WORKFLOW_WRITE_TOOLS = [
+  "manageRecord",
+  "manageLink",
+  "manageDrive",
+  "uploadToDrive",
+] as const;
 
 /** Tools removed when a run is `read_only` — no data OR memory writes. */
 export const WORKFLOW_READ_ONLY_HIDDEN_TOOLS = [

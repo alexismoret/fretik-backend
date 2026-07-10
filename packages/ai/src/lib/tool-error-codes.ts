@@ -70,6 +70,9 @@ export const TOOL_ERROR_CODES = {
   // Domain query tools
   LIST_DOCUMENTS_ERROR: "LIST_DOCUMENTS_ERROR",
   RAG_ERROR: "RAG_ERROR",
+  // Drive management tools (uploadToDrive / manageDrive / listFolders):
+  // invalid action args or a failed folder/document operation.
+  DRIVE_ERROR: "DRIVE_ERROR",
   // Object graph (ontology) query tools
   OBJECT_QUERY_ERROR: "OBJECT_QUERY_ERROR",
   OBJECT_TYPE_NOT_FOUND: "OBJECT_TYPE_NOT_FOUND",

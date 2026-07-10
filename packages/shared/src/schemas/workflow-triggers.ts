@@ -1,6 +1,10 @@
 import { z } from "zod";
 import { WORKFLOW_TRIGGERABLE_EVENT_TYPES } from "../services/domain-events/event-types";
 import {
+  WORKFLOW_FORM_FIELD_DESCRIPTORS,
+  WorkflowFormFieldDescriptorSchema,
+} from "./workflow-forms";
+import {
   WORKFLOW_TRIGGER_TYPE_VALUES,
   WorkflowTriggerConfigSchema,
   workflowTriggerTypeSchema,
@@ -53,7 +57,6 @@ export const TRIGGER_PARAMETER_KINDS = [
   "number",
   "boolean",
   "select",
-  "key_value",
   "json_schema",
   "connection",
 ] as const;
@@ -100,7 +103,7 @@ export const WorkflowTriggerKindDescriptorSchema = z.object({
   labelKey: z.string(),
   descriptionKey: z.string(),
   /** Where this kind's params live inside `triggerConfig` (absent for manual). */
-  configKey: z.enum(["cron", "event"]).optional(),
+  configKey: z.enum(["cron", "event", "form"]).optional(),
   /** cron → a Trigger.dev schedule is attached on activation. */
   requiresSchedule: z.boolean(),
   /** Base params. An event kind's contextual params come from the event-type
@@ -177,19 +180,32 @@ export const WORKFLOW_TRIGGER_KINDS: Record<
         required: true,
         agentHint: `Journal event type to match — one of ${WORKFLOW_TRIGGERABLE_EVENT_TYPES.join(", ")} or a connector.<app>.<kind> event.`,
       }),
-      param({
-        key: "event.filter",
-        kind: "key_value",
-        labelKey: "workflows.triggerParams.filter",
-        icon: "i-lucide-filter",
-        required: false,
-        agentHint:
-          "Optional equality filter on the event payload — every entry must match (payload[key] === value). The meaningful keys per event type are in the catalog's eventTypes.",
-      }),
     ],
     defaultConfig: { event: { type: "document.uploaded" } },
     agentSummary:
       "event — fires when a workspace event occurs. triggerConfig.event = { type (required), filter (payload equality, optional) }. Per-event-type filter keys are in the trigger catalog.",
+  },
+  form: {
+    type: "form",
+    icon: "i-lucide-clipboard-list",
+    labelKey: "workflows.trigger.form",
+    descriptionKey: "workflows.triggerCard.formSub",
+    configKey: "form",
+    requiresSchedule: false,
+    params: [
+      param({
+        key: "form",
+        kind: "json_schema",
+        labelKey: "workflows.triggerParams.form",
+        icon: "i-lucide-clipboard-list",
+        required: true,
+        agentHint:
+          "The form definition: { title, description?, fields[], visibility ('public'|'private'), submitLabel?, successMessage? }. Each field = { key (snake_case), type, label, required, ...per-type constraints }. See get_trigger_catalog `formFieldTypes` for the field types.",
+      }),
+    ],
+    defaultConfig: { form: { title: "", fields: [], visibility: "private" } },
+    agentSummary:
+      "form — a person fills a form; each submission starts a run whose triggerPayload is the answers (uploaded files attach to the run). triggerConfig.form = { title, description?, fields[] (min 1 to activate), visibility ('public' = anyone with the link, 'private' = the workflow's team/owner), submitLabel?, successMessage? }. Activating generates a shareable URL (formUrl).",
   },
 };
 
@@ -321,6 +337,9 @@ export const WORKFLOW_TRIGGERABLE_EVENT_DESCRIPTORS: WorkflowEventTypeDescriptor
 export const TriggerCatalogSchema = z.object({
   triggerTypes: z.array(WorkflowTriggerKindDescriptorSchema),
   eventTypes: z.array(WorkflowEventTypeDescriptorSchema),
+  /** Form trigger — the field types (+ which constraints apply) a form can
+   * carry. Read by the front form builder and the agent. */
+  formFieldTypes: z.array(WorkflowFormFieldDescriptorSchema),
 });
 export type TriggerCatalog = z.infer<typeof TriggerCatalogSchema>;
 
@@ -335,6 +354,7 @@ export const buildTriggerCatalog = (): TriggerCatalog => ({
     (t) => WORKFLOW_TRIGGER_KINDS[t],
   ),
   eventTypes: WORKFLOW_TRIGGERABLE_EVENT_DESCRIPTORS,
+  formFieldTypes: WORKFLOW_FORM_FIELD_DESCRIPTORS,
 });
 
 /** Compact trigger reference for the `manageWorkflow` tool — generated from the

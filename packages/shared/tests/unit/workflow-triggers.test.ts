@@ -22,12 +22,13 @@ const basePlaybook = {
 };
 
 describe("trigger catalog", () => {
-  test("exposes the three kinds with their config defaults", () => {
+  test("exposes every kind with its config defaults", () => {
     const catalog = buildTriggerCatalog();
     expect(catalog.triggerTypes.map((k) => k.type)).toEqual([
       "manual",
       "cron",
       "event",
+      "form",
     ]);
     expect(WORKFLOW_TRIGGER_KINDS.cron.requiresSchedule).toBe(true);
     expect(WORKFLOW_TRIGGER_KINDS.cron.defaultConfig.cron?.pattern).toMatch(
@@ -36,6 +37,19 @@ describe("trigger catalog", () => {
     expect(WORKFLOW_TRIGGER_KINDS.event.defaultConfig.event?.type).toBe(
       "document.uploaded",
     );
+    expect(WORKFLOW_TRIGGER_KINDS.form.requiresSchedule).toBe(false);
+    expect(WORKFLOW_TRIGGER_KINDS.form.defaultConfig.form?.visibility).toBe(
+      "private",
+    );
+  });
+
+  test("exposes the form field type catalog", () => {
+    const catalog = buildTriggerCatalog();
+    const types = catalog.formFieldTypes.map((f) => f.type);
+    expect(types).toContain("short_text");
+    expect(types).toContain("file");
+    const file = catalog.formFieldTypes.find((f) => f.type === "file");
+    expect(file?.constraints).toContain("maxFiles");
   });
 
   test("document.uploaded declares an available folder filter param", () => {
@@ -60,6 +74,7 @@ describe("trigger catalog", () => {
     expect(describe).toContain("manual");
     expect(describe).toContain("cron");
     expect(describe).toContain("event");
+    expect(describe).toContain("form");
     expect(describe).toContain("document.uploaded");
     expect(describe).toContain("folderId");
   });
@@ -94,6 +109,11 @@ describe("trigger type ↔ config consistency", () => {
         event: { type: "document.uploaded" },
       }),
     ).toContain("triggerConfig.event");
+    expect(
+      triggerConfigConsistencyError("cron", {
+        form: { title: "T", fields: [], visibility: "public" },
+      }),
+    ).toContain("triggerConfig.form");
   });
 
   test("CreateWorkflowSchema enforces the same check", () => {

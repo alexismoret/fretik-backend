@@ -1,6 +1,6 @@
 import { and, eq } from "drizzle-orm";
 import db from "../../db";
-import { workflows } from "../../db/schema";
+import { workflows, type Workflow } from "../../db/schema";
 import { badRequest, throwHttpError } from "../../lib/errors";
 import {
   UpdateWorkflowSchema,
@@ -38,13 +38,28 @@ export const updateWorkflow = async (params: {
 
   // Visible-but-not-mutable-by-id-alone: reuse the same visibility predicate
   // as reads so a private workflow can't be patched by guessing its id.
+  let existingRow: Workflow | undefined;
   if (params.requester) {
-    const visible = await getWorkflowRow({
+    existingRow = await getWorkflowRow({
       id: params.id,
       teamId: params.teamId,
       requester: params.requester,
     });
-    if (!visible) return undefined;
+    if (!existingRow) return undefined;
+  }
+
+  // A workflow that becomes a form (or already is one) needs a public token.
+  // Reuse the existing token when there is one — the link stays stable across
+  // edits — and only mint a fresh one when it's missing.
+  let formToken: string | undefined;
+  if (input.triggerType === "form") {
+    const current =
+      existingRow ??
+      (await db.query.workflows.findFirst({
+        where: { id: params.id, teamId: params.teamId },
+        columns: { formToken: true },
+      }));
+    if (current && !current.formToken) formToken = Bun.randomUUIDv7();
   }
 
   const [row] = await db
@@ -69,6 +84,7 @@ export const updateWorkflow = async (params: {
         : {}),
       ...(input.limits !== undefined ? { limits: input.limits } : {}),
       ...(input.userId !== undefined ? { userId: input.userId } : {}),
+      ...(formToken !== undefined ? { formToken } : {}),
     })
     .where(
       and(eq(workflows.id, params.id), eq(workflows.teamId, params.teamId)),

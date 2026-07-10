@@ -10,6 +10,7 @@ import type {
 } from "../../schemas/workflows";
 import { WORKFLOW_MAX_DURATION_MINUTES } from "../../schemas/workflows";
 import { getTeamBotUserId } from "../auth/bot-user";
+import { attachRunFiles, type RunAttachment } from "./attach-run-files";
 import { serializeWorkflowRun } from "./serialize";
 
 /**
@@ -48,6 +49,10 @@ export const createWorkflowRun = async (params: {
   /** The CHAT conversation that launched this run (builder `run_test`), so the
    * run posts its completion notice back there. NULL for cron/event/API runs. */
   sourceConversationId?: string | null;
+  /** Files handed to the run (a form submission's uploads) — stored on the
+   * run's conversation as `ai_chat_files` so the agent reads them via
+   * `<file_attachments>`. Written before the task fires. */
+  attachments?: RunAttachment[];
   isTest?: boolean;
 }): Promise<WorkflowRunResponse> => {
   const { workflow } = params;
@@ -58,7 +63,7 @@ export const createWorkflowRun = async (params: {
   const actingUserId =
     workflow.userId ?? (await getTeamBotUserId(workflow.teamId));
 
-  const runId = await db.transaction(async (tx) => {
+  const { runId, conversationId } = await db.transaction(async (tx) => {
     const [conversation] = await tx
       .insert(aiConversations)
       .values({
@@ -91,8 +96,15 @@ export const createWorkflowRun = async (params: {
       })
       .returning({ id: workflowRuns.id });
     if (!run) return throwHttpError(500, internalError());
-    return run.id;
+    return { runId: run.id, conversationId: conversation.id };
   });
+
+  // Store any trigger files on the run's conversation BEFORE the task fires,
+  // so the first turn sees them in `<file_attachments>` (S3 write is a network
+  // call — kept out of the DB transaction).
+  if (params.attachments?.length) {
+    await attachRunFiles(conversationId, params.attachments);
+  }
 
   // Hand off to Trigger.dev outside the DB transaction (a network call must
   // not hold a row lock). On failure, mark the run failed so it never hangs

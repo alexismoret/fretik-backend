@@ -1,4 +1,5 @@
 import { isValidIcon } from "@fretik/shared/lib/icons/search";
+import { describeFormFieldsForAgent } from "@fretik/shared/schemas/workflow-forms";
 import {
   buildTriggerCatalog,
   describeTriggerConfigForAgent,
@@ -64,7 +65,7 @@ export const createManageWorkflowTool = () =>
     description: [
       "Build and manage workflows — autonomous agents that run a playbook of tasks on a schedule, an event, or on demand, with the same tools you have.",
       "",
-      "- create_draft: name + playbook (one goal + 1-20 ordered tasks; each task = title + instructions, optional expectedOutput + toolHints). Optional icon (from searchIcons), color, description, triggerType (manual|cron|event) + triggerConfig, autonomy (read_only|approval_required|autonomous, default approval_required), modelProfileKey, scope (team|private, default team). Starts as draft. The user sets run time/token limits themselves on the workflow page.",
+      "- create_draft: name + playbook (one goal + 1-20 ordered tasks; each task = title + instructions, optional expectedOutput + toolHints). Optional icon (from searchIcons), color, description, triggerType (manual|cron|event|form) + triggerConfig, autonomy (read_only|approval_required|autonomous, default approval_required), modelProfileKey, scope (team|private, default team). Starts as draft. The user sets run time/token limits themselves on the workflow page.",
       "- update: workflowId + any field, including scope (re-scope anytime). Safe anytime — runs snapshot the playbook, so edits never disturb a running or past run.",
       "- list / get: the team's workflows (+ your private ones) / one workflow's full playbook. Each result carries `scope`.",
       "- get_trigger_catalog: the machine-readable catalog of trigger kinds + each event type's editable filter params. Read it before setting triggerType/triggerConfig.",
@@ -74,6 +75,10 @@ export const createManageWorkflowTool = () =>
       "",
       "Loop: create_draft → run_test → get_run → adjust with update → activate.",
       "Activation gate: activate needs ≥1 succeeded run. To skip testing, confirm with the user first (askUserQuestion), then pass confirm: true.",
+      "",
+      "Form trigger (triggerType 'form'): a person fills a form; each submission starts a run whose triggerPayload is the answers, with uploaded files attached to the run — write the playbook to consume triggerPayload. triggerConfig.form = { title, description?, fields[] (≥1 to activate), visibility ('public' = anyone with the link, 'private' = the workflow's team/owner), submitLabel?, successMessage? }. Each field = { key (snake_case, unique), type, label, required, +per-type constraints (minLength/maxLength, min/max/step, options[{value,label}], accept/maxFiles/maxFileSizeMb) }.",
+      describeFormFieldsForAgent(),
+      "After activate, `get` returns `formUrl` — the shareable link to hand the user.",
       "",
       "Writing a playbook (the run has no user to ask — be specific, stay industry-agnostic):",
       "- Task `instructions` state the GOAL and the expected output — WHAT to achieve, never a tool name or its arguments. The executor picks the tool and its exact argument shape from the live schema (`describeObjectType`). A playbook that dictates `manageRecord` calls or field formats goes stale and breaks.",
@@ -204,6 +209,7 @@ export const createManageWorkflowTool = () =>
                 name: workflow.name,
                 status: workflow.status,
                 scope: scopeOf(workflow.userId),
+                ...(workflow.formUrl ? { formUrl: workflow.formUrl } : {}),
               },
               next: "Test it with run_test, then get_run to review, before activate.",
             };
@@ -332,6 +338,7 @@ export const createManageWorkflowTool = () =>
                 playbook: workflow.playbook,
                 scope: scopeOf(workflow.userId),
                 mine: workflow.userId === userId,
+                ...(workflow.formUrl ? { formUrl: workflow.formUrl } : {}),
               },
             };
           }

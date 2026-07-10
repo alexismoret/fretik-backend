@@ -38,6 +38,14 @@ interface PromoteArgs {
   organizationId: string;
   teamId: string;
   userId: string;
+  /**
+   * Destination Drive folder for the promoted documents. `null` (default)
+   * drops them at the drive root — the behaviour the "Save to Drive" toggle
+   * relies on. The `uploadToDrive` tool passes a folder id to file the upload
+   * directly. Caller is responsible for validating the folder belongs to the
+   * team.
+   */
+  folderId?: string | null;
 }
 
 /** Why a file could not be promoted — lets the UI pick the right copy. */
@@ -54,7 +62,14 @@ const buildAttachmentPath = (filename: string): string =>
 export const promoteChatFilesToDrive = async (
   args: PromoteArgs,
 ): Promise<PromoteResult> => {
-  const { fileIds, conversationId, organizationId, teamId, userId } = args;
+  const {
+    fileIds,
+    conversationId,
+    organizationId,
+    teamId,
+    userId,
+    folderId = null,
+  } = args;
 
   const promoted: PromoteResult["promoted"] = [];
   const failed: PromoteResult["failed"] = [];
@@ -135,7 +150,7 @@ export const promoteChatFilesToDrive = async (
       const documentId = randomUUIDv7();
       const metadata = {
         id: documentId,
-        folderId: null,
+        folderId,
         originalFilename: row.filename,
         fileSize: row.size,
         mimeType: row.mimeType,

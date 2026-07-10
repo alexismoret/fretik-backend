@@ -6,7 +6,7 @@ import { signSandboxJwt } from "@fretik/shared/lib/external-apps/sandbox-jwt";
 import { listConnections } from "@fretik/shared/services/external-apps/connections/list";
 import { describeTeamSchema } from "@fretik/shared/services/object-types/describe-team-schema";
 import { listEnabledSkillsForTeam } from "@fretik/shared/services/skills/list-enabled-for-team";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, ne } from "drizzle-orm";
 import { writeSandboxAuthFile } from "../../lib/conversation-storage";
 import { withSoftTimeout } from "../../lib/stream-errors";
 import { buildChatbotContextManifest } from "../../services/chatbot-context/build-manifest";
@@ -322,4 +322,30 @@ export const buildAttachedFilesBlock = async (
     blocks.push(body.join("\n"));
   }
   return blocks.join("\n\n");
+};
+
+/**
+ * Conversation-scoped `{{attachedFilesBlock}}` — for a run whose files were NOT
+ * carried by a user message (a workflow seeded by a form/email trigger, whose
+ * uploads `attachRunFiles` wrote straight onto the run's conversation).
+ * Enumerates every non-error attachment on the conversation, then renders them
+ * through `buildAttachedFilesBlock`.
+ */
+export const buildConversationAttachedFilesBlock = async (
+  conversationId: string | undefined,
+): Promise<string> => {
+  if (!conversationId) return "";
+  const rows = await db
+    .select({ filename: aiChatFiles.filename })
+    .from(aiChatFiles)
+    .where(
+      and(
+        eq(aiChatFiles.conversationId, conversationId),
+        ne(aiChatFiles.status, "error"),
+      ),
+    );
+  return buildAttachedFilesBlock(
+    conversationId,
+    rows.map((r) => r.filename),
+  );
 };

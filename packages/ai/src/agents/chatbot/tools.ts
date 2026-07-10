@@ -6,7 +6,9 @@ import type { createDispatchAgentTool } from "../../tools/dispatch-agent";
 import { createDownloadDriveDocumentTool } from "../../tools/download-drive-document";
 import { createGetObjectTool } from "../../tools/get-object";
 import { createListDocumentsTool } from "../../tools/list-documents";
+import { createListFoldersTool } from "../../tools/list-folders";
 import { createListObjectsTool } from "../../tools/list-objects";
+import { createManageDriveTool } from "../../tools/manage-drive";
 import { createManageFieldTool } from "../../tools/manage-field";
 import { createManageLinkTool } from "../../tools/manage-link";
 import { createManageObjectTypeTool } from "../../tools/manage-object-type";
@@ -22,6 +24,7 @@ import { createSearchIconsTool } from "../../tools/search-icons";
 import { createSearchToolsTool } from "../../tools/search-tools";
 import { createSqlQueryTool } from "../../tools/sql-query";
 import { createUpdateSkillTool } from "../../tools/update-skill";
+import { createUploadToDriveTool } from "../../tools/upload-to-drive";
 import { createVisionTool } from "../../tools/vision";
 import { createWebFetchTool } from "../../tools/web-fetch";
 import { createWebSearchTool } from "../../tools/web-search";
@@ -236,6 +239,13 @@ export const buildCoreTools = (domainTools: SearchableToolRegistry) => ({
  *   only when `searchKnowledge` (RAG) isn't enough — typically for
  *   `vision` on layout/signatures, structural parsing
  *   (pandas/openpyxl/pypdf), or template-driven generation.
+ * - **uploadToDrive / manageDrive / listFolders**: the Drive WRITE +
+ *   folder-navigation path. `uploadToDrive` saves a conversation
+ *   attachment into the Drive (inverse of `downloadDriveDocument`);
+ *   `manageDrive` creates/renames/moves/deletes folders and moves
+ *   documents; `listFolders` discovers folder ids (incl. empty ones
+ *   `listDocuments` never shows). All route through the validated
+ *   shared folder/document services.
  *
  * Every tool here has `category: "domain"` so `buildChatbotTool`
  * auto-sets `shouldDefer: true` and `prepareStep` in `./index.ts`
@@ -322,6 +332,32 @@ export const buildDomainTools = () => ({
     // Mutates `/workspace/drive/` and (potentially) the conversation
     // sandbox quota — not strictly read-only.
     isReadOnly: false,
+  }),
+  uploadToDrive: buildChatbotTool({
+    ...createUploadToDriveTool(),
+    category: "domain",
+    searchHint:
+      "upload save file to drive promote attachment conversation store persist archive keep document",
+    // Output is a small descriptor (documentId / filename / status) — never large.
+    maxResultSizeChars: 8_000,
+    // Copies bytes into the Drive + enqueues processing — not read-only.
+    isReadOnly: false,
+  }),
+  manageDrive: buildChatbotTool({
+    ...createManageDriveTool(),
+    category: "domain",
+    searchHint:
+      "create rename move delete folder directory organize drive tree relocate document into folder file structure",
+    maxResultSizeChars: 8_000,
+    // Mutates the folder tree + document locations — not read-only.
+    isReadOnly: false,
+  }),
+  listFolders: buildChatbotTool({
+    ...createListFoldersTool(),
+    category: "domain",
+    searchHint:
+      "list browse folders directories drive tree navigate discover folder ids subfolders",
+    maxResultSizeChars: 8_000,
   }),
   createSkill: buildChatbotTool({
     ...createCreateSkillTool(),

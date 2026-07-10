@@ -4,6 +4,7 @@ import "@fretik/providers";
 
 import { auth } from "@fretik/shared/lib/auth";
 import { errorHandler } from "@fretik/shared/lib/error-handler";
+import { globalRateLimiter } from "@fretik/shared/lib/rate-limit";
 import { OpenAPIHono } from "@hono/zod-openapi";
 import figlet from "figlet";
 import { getConnInfo } from "hono/bun";
@@ -27,6 +28,7 @@ import { objectRecordRoutes } from "./handlers/object-records";
 import { objectSharingRoutes } from "./handlers/object-sharing";
 import { objectTypeRoutes } from "./handlers/object-types";
 import { organizationRoutes } from "./handlers/organization";
+import { publicFormRoutes } from "./handlers/public-forms";
 import { signupAccessRoutes } from "./handlers/signup-access";
 import { skillsRoutes } from "./handlers/skills";
 import { superAdminRoutes } from "./handlers/super-admins";
@@ -48,6 +50,11 @@ app.use(
     exposeHeaders: ["Content-Disposition", "x-filename"],
   }),
 );
+
+// Broad per-IP anti-abuse backstop (Redis-backed, shared across instances).
+// Exempts `/internal/*` + `/health` so service-to-service and automatic
+// traffic is never throttled; `/auth/*` keeps its own tighter Better Auth cap.
+app.use("*", globalRateLimiter());
 
 // Auth. Better Auth reads the client IP from `x-forwarded-for` (see auth.ts
 // `advanced.ipAddress`). Behind a proxy (e.g. Vercel) that header is set for
@@ -88,6 +95,7 @@ app.route("/skills", skillsRoutes);
 app.route("/external-apps", externalAppsRoutes);
 app.route("/approvals", approvalsRoutes);
 app.route("/workflows", workflowRoutes);
+app.route("/forms", publicFormRoutes);
 app.route("/sandbox", sandboxRoutes);
 
 // The document-processing Worker lives in @fretik/jobs (with the memory

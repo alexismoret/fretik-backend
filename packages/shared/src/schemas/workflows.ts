@@ -3,6 +3,7 @@ import {
   isTriggerableEventType,
   WORKFLOW_TRIGGERABLE_EVENT_TYPES,
 } from "../services/domain-events/event-types";
+import { WorkflowFormConfigSchema } from "./workflow-forms";
 
 /**
  * Workflow schemas + shared constants — the SINGLE source of truth for
@@ -46,6 +47,7 @@ export const WORKFLOW_TRIGGER_TYPE_VALUES = [
   "manual",
   "cron",
   "event",
+  "form",
 ] as const;
 export const WORKFLOW_RUN_STATUS_VALUES = [
   "queued",
@@ -170,6 +172,7 @@ export const WorkflowEventConfigSchema = z.object({
 export const WorkflowTriggerConfigSchema = z.object({
   cron: WorkflowCronConfigSchema.optional(),
   event: WorkflowEventConfigSchema.optional(),
+  form: WorkflowFormConfigSchema.optional(),
 });
 export type WorkflowTriggerConfig = z.infer<typeof WorkflowTriggerConfigSchema>;
 
@@ -190,6 +193,9 @@ export const triggerConfigConsistencyError = (
   }
   if (config.event && type !== "event") {
     return `triggerConfig.event is set but triggerType is "${type}" — clear it or switch triggerType to "event".`;
+  }
+  if (config.form && type !== "form") {
+    return `triggerConfig.form is set but triggerType is "${type}" — clear it or switch triggerType to "form".`;
   }
   return null;
 };
@@ -215,6 +221,38 @@ export const WorkflowLimitsSchema = z.object({
   maxTotalTokens: z.number().int().min(1000).optional(),
 });
 export type WorkflowLimits = z.infer<typeof WorkflowLimitsSchema>;
+
+/**
+ * Platform-wide fallback token budget when a workflow sets no explicit
+ * `maxTotalTokens` — a coarse runaway backstop, not a product constraint (see
+ * `WORKFLOW_DEFAULT_MAX_TOTAL_TOKENS` usage in the turn handler for the
+ * mid-turn abort). Env-overridable so ops can tune it without a code change.
+ */
+const parseWorkflowDefaultMaxTotalTokens = (): number => {
+  const raw = process.env.WORKFLOW_DEFAULT_MAX_TOTAL_TOKENS;
+  if (raw === undefined || raw === "") return 6_000_000;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < 1000) {
+    throw new Error(
+      `Invalid WORKFLOW_DEFAULT_MAX_TOTAL_TOKENS: "${raw}" — expected an integer >= 1000.`,
+    );
+  }
+  return parsed;
+};
+export const WORKFLOW_DEFAULT_MAX_TOTAL_TOKENS =
+  parseWorkflowDefaultMaxTotalTokens();
+
+/**
+ * Platform ceilings applied whenever a workflow's own `limits` leaves a
+ * field unset — surfaced on every `Workflow` response so the frontend can
+ * show run progress against the REAL enforced ceiling instead of hiding
+ * the bar when there's no explicit override.
+ */
+export const WorkflowDefaultLimitsSchema = z.object({
+  maxTotalTokens: z.number().int(),
+  maxDurationMinutes: z.number().int(),
+});
+export type WorkflowDefaultLimits = z.infer<typeof WorkflowDefaultLimitsSchema>;
 
 // ==================== //
 // RUN STATE (jsonb)    //
@@ -429,9 +467,19 @@ export const WorkflowResponseSchema = z.object({
   autonomy: workflowAutonomySchema,
   modelProfileKey: z.string().nullable(),
   limits: WorkflowLimitsSchema,
+  /** Platform ceilings used whenever `limits` doesn't set an explicit value
+   * — the frontend shows run progress against these when the workflow has
+   * no override, since that's what's actually enforced server-side. */
+  defaultLimits: WorkflowDefaultLimitsSchema,
   /** Why a paused workflow stopped, when not a plain manual pause — e.g.
    * `circuit_breaker:<N>` after N consecutive failed runs. NULL otherwise. */
   pausedReason: z.string().nullable(),
+  /** Opaque token keying the public form URL, present only for `form`
+   * triggers. NULL for every other trigger type. */
+  formToken: z.string().nullable(),
+  /** Ready-to-share absolute URL to the form page (`<APP_URL>/f/<token>`),
+   * derived from `formToken` server-side. NULL when there's no token. */
+  formUrl: z.string().nullable(),
   createdByUserId: z.uuid().nullable(),
   lastRunAt: isoDate.nullable(),
   createdAt: isoDate,

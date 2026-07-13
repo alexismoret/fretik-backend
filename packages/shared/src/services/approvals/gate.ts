@@ -5,6 +5,7 @@ import { claimGrantedApproval } from "./claim";
 import { findLatestApprovalByHash } from "./find";
 import { grantApproval } from "./grant";
 import { APPROVAL_KIND_HANDLERS } from "./kinds";
+import { markSandboxApprovalPending } from "./sandbox-signal";
 
 /** Minimal tenant context the gate needs — a structural subset of the sandbox
  * `ExecContext`, so any producer can drive it. */
@@ -112,6 +113,11 @@ export const runApprovalGate = async (params: {
 
   if (existing !== undefined) {
     if (existing.status === "pending") {
+      // Out-of-band Redis bridge to the `python` tool: if the agent swallows
+      // the sandbox's `ApprovalPending` exception (try/except, or just
+      // prints it), the tool still surfaces the approval card via this
+      // signal instead of silently hanging. See `sandbox-signal.ts`.
+      await markSandboxApprovalPending(ctx.conversationId, existing.id);
       return { status: "approval_pending", approvalId: existing.id };
     }
     if (existing.status === "executing") {
@@ -159,5 +165,6 @@ export const runApprovalGate = async (params: {
     });
     return claimAndExecute(granted);
   }
+  await markSandboxApprovalPending(ctx.conversationId, pending.id);
   return { status: "approval_pending", approvalId: pending.id };
 };

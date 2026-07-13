@@ -37,6 +37,7 @@ export const executeReadAction = async (
       endpoint: req.endpoint,
       query: req.query,
       body: req.body,
+      paginate: req.paginate,
     });
     return resolved.responseMapper !== undefined
       ? resolved.responseMapper(raw)

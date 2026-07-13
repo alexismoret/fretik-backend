@@ -47,7 +47,7 @@ type SeedObjectType = {
  * drop it). The rest come from the document-field template applied right after
  * (org-creation hook).
  *
- * Everything else a team starts with (company, person, note, task) ships as a
+ * Everything else a team starts with (company, note, task) ships as a
  * deletable, editable STARTER template (`templates/object-types`), not as a
  * hardcoded system type — a generic B2B workspace must not force a CRM-ish
  * ontology on every team. Relations are NOT seeded — link types are created on

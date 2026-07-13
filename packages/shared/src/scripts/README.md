@@ -12,6 +12,7 @@ boot (`db/index.ts` → `runMigrationsWithLock`, advisory-locked).
 | `reseed-system-ontology.ts`                    | **keep**                | Seed system + starter object types for every org, propagate org-scope field defs to every team. Idempotent. The dev **re-seed** primitive.                                                                                    |
 | `sync-object-tables.ts`                        | **keep**                | Reconcile every team's `data.obj_*` extension tables to their field defs + (re)arm RLS. The existing-tenant **provisioning / backfill / repair** primitive (was `sync-typed-views.ts` — renamed; there are no views anymore). |
 | `check-objects-rls.ts`                         | **keep**                | Deterministic RLS/grant verification (see below). Run after migrate + seed.                                                                                                                                                   |
+| `drop-empty-starter-person-type.ts`            | **keep (one-off)**      | Drop the org-scope `person` starter type (removed from `STARTER_OBJECT_TYPE_TEMPLATE`) for every existing org, but only where it holds zero records — orgs with data are skipped and logged for a manual call. Idempotent.    |
 | `build-icon-catalog.ts` + `icon-essentials.ts` | **keep**                | Regenerate the curated Lucide icon catalog (backend `lib/icons/catalog.ts` **and** the frontend mirror `app/.../objectIconCatalog.json`).                                                                                     |
 | `grant-super-admin.ts`                         | **keep**                | Admin utility — unrelated to objects.                                                                                                                                                                                         |
 | `smoke-phase2-fold.ts`                         | **keep (manual smoke)** | Drives the document→graph fold + domain-events outbox + attribute history against the dev DB and asserts invariants, then cleans up. Still exercises live services (the fold survived the refonte); run it as a manual smoke. |
@@ -120,7 +121,22 @@ bun --env-file=<env> run src/scripts/sync-object-tables.ts        # create + RLS
 
 `reseed-system-ontology.ts` is what gives every existing org/team its **default
 objects** (system + starter types); `sync-object-tables.ts` provisions and arms
-their physical tables.
+their physical tables. Because `reseed-system-ontology.ts` inserts missing
+fields with `onConflictDoNothing()` per (org, type, field key), it also
+backfills a field newly added to an EXISTING starter type — e.g. `company`'s
+new `address` (`location`) field — onto every org that already has that type;
+re-run `sync-object-tables.ts` after so the physical column gets created.
+
+If this deploy also removes the `person` starter type (dropped from
+`STARTER_OBJECT_TYPE_TEMPLATE` — a generic workspace shouldn't force it), run
+once, after the two steps above:
+
+```
+bun --env-file=<env> run src/scripts/drop-empty-starter-person-type.ts        # drop the org-scope `person` type where it has zero records
+```
+
+Orgs where a team actually put data in `person` are left untouched and logged
+— decide manually (keep it, or delete after confirming with that org).
 
 #### 4. Verify
 

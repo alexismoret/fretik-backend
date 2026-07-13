@@ -8,7 +8,7 @@ import {
 import { STARTER_OBJECT_TYPE_TEMPLATE } from "../../templates/object-types/starter";
 
 /**
- * Seed the starter object types (company, person, note, task) and their fields
+ * Seed the starter object types (company, note, task) and their fields
  * at org-template scope (`teamId IS NULL`, `isSystem: false`) for a new
  * organization. Unlike `seedSystemOntology` (the one required `document` type),
  * every type here is fully editable and deletable — a generic workspace must

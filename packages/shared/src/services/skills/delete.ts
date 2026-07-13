@@ -3,11 +3,17 @@ import db from "../../db";
 import { skills } from "../../db/schema";
 import { throwHttpError } from "../../lib/errors";
 import { ERROR_CODES } from "../../schemas/errors";
+import {
+  emitDomainEvent,
+  type EventActor,
+  SYSTEM_ACTOR,
+} from "../domain-events/emit";
 import { getSkillForTeamById } from "./get-by-id";
 
 export interface DeleteSkillInput {
   id: string;
   teamId: string;
+  actor?: EventActor;
 }
 
 /**
@@ -33,8 +39,29 @@ export const deleteSkill = async (input: DeleteSkillInput): Promise<void> => {
     });
   }
 
-  await db
-    .update(skills)
-    .set({ deletedAt: new Date() })
-    .where(and(eq(skills.id, input.id), eq(skills.teamId, input.teamId)));
+  // Wrap the soft-delete so the journal entry is co-transactional with it.
+  await db.transaction(async (tx) => {
+    await tx
+      .update(skills)
+      .set({ deletedAt: new Date() })
+      .where(and(eq(skills.id, input.id), eq(skills.teamId, input.teamId)));
+
+    // Skills carry no org column — resolve the team's org for the journal.
+    const teamRow = await tx.query.team.findFirst({
+      columns: { organizationId: true },
+      where: { id: input.teamId },
+    });
+    if (teamRow) {
+      await emitDomainEvent({
+        tx,
+        organizationId: teamRow.organizationId,
+        teamId: input.teamId,
+        type: "skill.deleted",
+        actor: input.actor ?? SYSTEM_ACTOR,
+        subjectType: "skill",
+        payload: { skillId: input.id, name: existing.name },
+        dedupKey: `skill.deleted:${input.id}`,
+      });
+    }
+  });
 };

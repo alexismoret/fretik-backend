@@ -1,6 +1,7 @@
 import { z } from "@hono/zod-openapi";
 import type { UIMessage } from "ai";
 import {
+  aiAgentTypeEnum,
   aiConversationMemberRoleEnum,
   aiVectorSourceTypeEnum,
 } from "../db/schema";
@@ -9,8 +10,13 @@ import {
  * Agent types supported in ai_conversations. Kept in sync with the
  * `ai_agent_type` pg enum in db/schema/ai.ts.
  */
-export const aiAgentTypeSchema = z.enum(["chatbot"]);
+// Derived from the pg enum so a new agent kind (workflow, …) propagates
+// to every response schema without re-declaration. Conversation CREATION
+// stays chatbot-only below — workflow conversations are created by the
+// engine, never through the chat API.
+export const aiAgentTypeSchema = z.enum(aiAgentTypeEnum.enumValues);
 export type AiAgentType = z.infer<typeof aiAgentTypeSchema>;
+export const chatbotAgentTypeSchema = z.enum(["chatbot"]);
 
 /**
  * Role of an AI message. Same values as the `ai_message_role` pg enum.
@@ -35,10 +41,10 @@ export const aiVectorSourceTypeSchema = z.enum(
 // ==================== //
 
 /**
- * Shape of an entity reference embedded inside a document vector's metadata.
- * Mirrors the TypeScript `EntityVectorInfo` type from db/schema/ai-vectors.ts.
+ * Shape of a mentioned-record reference embedded inside a document vector's
+ * metadata. Mirrors `MentionVectorInfo` from db/schema/ai-vectors.ts.
  */
-export const entityVectorInfoSchema = z.object({
+export const mentionVectorInfoSchema = z.object({
   id: z.string(),
   name: z.string(),
   type: z.string(),
@@ -53,19 +59,13 @@ export const entityVectorInfoSchema = z.object({
  * universal fields (team_id, organization_id, user_id, source_type, source_id)
  * — those are plain columns on the table, never duplicated in JSONB.
  */
-export const labelVectorInfoSchema = z.object({
-  id: z.uuid(),
-  name: z.string(),
-});
-
 export const documentVectorMetadataSchema = z.object({
   file_name: z.string(),
   file_type: z.string(),
   page_count: z.number().nullable(),
   document_language: z.string().nullable(),
   document_summary: z.string().nullable(),
-  entities: z.array(entityVectorInfoSchema),
-  labels: z.array(labelVectorInfoSchema).default([]),
+  entities: z.array(mentionVectorInfoSchema),
   /**
    * Team-configurable custom field values keyed by `fieldDefinitions.key`.
    * The caller (shared/services/documents/upload.ts) pre-filters this to
@@ -138,6 +138,35 @@ export const contextVectorMetadataSchema = z.object({
   updated_at: z.string(),
 });
 
+/**
+ * Zod counterpart of `EpisodeVectorMetadata` (db/schema/ai-vectors.ts).
+ * Used by the `/internal/vectorize` endpoint to validate `episodes`
+ * payloads. `kind` + `title` + the occurrence window are duplicated from
+ * `ai_episodes` so recall can render citations and filter by time
+ * without joining back; `team_id`, `organization_id`, `user_id`,
+ * `source_type`, `source_id` stay on dedicated columns.
+ */
+export const episodeVectorMetadataSchema = z.object({
+  kind: z.enum(["conversation", "record_activity", "consolidated"]),
+  title: z.string().min(1),
+  conversation_id: z.uuid().nullable(),
+  anchor_record_id: z.uuid().nullable(),
+  occurred_from: z.string().nullable(),
+  occurred_to: z.string().nullable(),
+});
+
+/**
+ * Zod counterpart of `RecordVectorMetadata` (db/schema/ai-vectors.ts).
+ * One "card" per CONFIRMED object record — content is built by
+ * `services/object-records/build-card.ts`, single chunk per record.
+ * `object_type_key` + `label` ride along for citation rendering.
+ */
+export const recordVectorMetadataSchema = z.object({
+  object_type_id: z.uuid(),
+  object_type_key: z.string().min(1),
+  label: z.string().min(1),
+});
+
 // ==================== //
 // Conversation CRUD    //
 // ==================== //
@@ -147,7 +176,7 @@ export const CreateConversationSchema = z.object({
     example: "Q2 budget review",
     description: "Conversation title shown in the sidebar",
   }),
-  agentType: aiAgentTypeSchema.optional().default("chatbot").openapi({
+  agentType: chatbotAgentTypeSchema.optional().default("chatbot").openapi({
     example: "chatbot",
     description: "Agent responsible for this conversation",
   }),

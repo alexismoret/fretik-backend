@@ -208,7 +208,7 @@ const runSummariser = async (
     // Nests this summariser generation under the turn's `chatbot-turn`
     // span (it runs inside `execute`'s active observation). No-op when
     // Langfuse is unconfigured.
-    experimental_telemetry: telemetryFor("compaction"),
+    telemetry: telemetryFor("compaction"),
   });
   // `result.text` resolves once the stream finishes — the AI SDK
   // accumulates deltas internally so we get the full final string

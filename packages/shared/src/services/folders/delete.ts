@@ -8,6 +8,10 @@ import {
 } from "../../lib/document-storage";
 import { notFound, throwHttpError } from "../../lib/errors";
 import { deleteFilesFromS3 } from "../../lib/s3";
+import { type EventActor, SYSTEM_ACTOR } from "../domain-events/emit";
+import { emitDomainEventsBulk } from "../domain-events/emit-bulk";
+import { bulkDeleteObjectRecords } from "../object-records/bulk-delete";
+import { resolveDocumentRecordIds } from "../object-records/resolve-document-record";
 
 /**
  * Deletes multiple folders and updates parent folder counts.
@@ -15,11 +19,13 @@ import { deleteFilesFromS3 } from "../../lib/s3";
 export const deleteFolders = async (data: {
   ids: string[];
   teamId: string;
+  actor?: EventActor;
 }) => {
   const { ids, teamId } = data;
+  const actor = data.actor ?? SYSTEM_ACTOR;
 
   const existingFolders = await db.query.folders.findMany({
-    columns: { id: true, parentFolderId: true, fullPath: true },
+    columns: { id: true, name: true, parentFolderId: true, fullPath: true },
     where: { id: { in: ids }, teamId },
   });
 
@@ -38,16 +44,15 @@ export const deleteFolders = async (data: {
   });
 
   const res = await db.transaction(async (tx) => {
-    // Decrement parent's subFolderCount
-    if (parentFolderIdsToUpdate.length > 0) {
-      await Promise.all(
-        Object.entries(parentFolderIdsCountMap).map(([id, count]) => {
-          return tx
-            .update(folders)
-            .set({ subFolderCount: sql`${folders.subFolderCount} - ${count}` })
-            .where(eq(folders.id, id));
-        }),
-      );
+    // Decrement parent's subFolderCount. Sequential, NOT Promise.all: a
+    // transaction holds a single pg connection, so concurrent queries on `tx`
+    // serialize on one client and trip pg's "client is already executing a
+    // query" deprecation (a hard error in pg@9).
+    for (const [id, count] of Object.entries(parentFolderIdsCountMap)) {
+      await tx
+        .update(folders)
+        .set({ subFolderCount: sql`${folders.subFolderCount} - ${count}` })
+        .where(eq(folders.id, id));
     }
 
     // Get all documents in the folders and subfolders that are not "uploading"
@@ -63,6 +68,44 @@ export const deleteFolders = async (data: {
         ],
       },
     });
+
+    // Delete each doc's 1:1 graph mirror (+ its `mentions` links / typed row via
+    // FK cascade) BEFORE the folder delete cascades the documents away —
+    // otherwise the mirror's `document_id` FK nulls (ON DELETE SET NULL) and the
+    // record survives as a fileless "Document" orphan.
+    const mirrorIds = [
+      ...(
+        await resolveDocumentRecordIds({
+          documentIds: documentsToDelete.map((d) => d.id),
+          teamId,
+          tx,
+        })
+      ).values(),
+    ];
+    if (mirrorIds.length > 0) {
+      await bulkDeleteObjectRecords({ teamId, ids: mirrorIds, tx });
+    }
+
+    // Journal the folders before the rows vanish — one set-based emit.
+    // Folders carry no org column, so resolve the team's org once.
+    const teamRow = await tx.query.team.findFirst({
+      columns: { organizationId: true },
+      where: { id: teamId },
+    });
+    if (teamRow) {
+      await emitDomainEventsBulk({
+        tx,
+        organizationId: teamRow.organizationId,
+        teamId,
+        actor,
+        events: existingFolders.map((folder) => ({
+          type: "folder.deleted",
+          subjectType: "folder",
+          payload: { folderId: folder.id, name: folder.name },
+          dedupKey: `folder.deleted:${folder.id}`,
+        })),
+      });
+    }
 
     // Delete folder (documents will be deleted by cascade)
     const deleteResult = await tx

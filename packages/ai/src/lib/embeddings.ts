@@ -65,7 +65,7 @@ export const embedQuery = async (value: string): Promise<number[]> => {
   const { embedding } = await embed({
     model: embeddingModel,
     value,
-    experimental_telemetry: telemetryFor("embeddings"),
+    telemetry: telemetryFor("embeddings"),
   });
 
   if (embedding.length !== EMBEDDING_DIMENSIONS) {
@@ -91,7 +91,7 @@ export const embedBatch = async (texts: string[]): Promise<number[][]> => {
     model: embeddingModel,
     values: texts,
     maxParallelCalls: EMBEDDING_PARALLEL_CALLS,
-    experimental_telemetry: telemetryFor("embeddings"),
+    telemetry: telemetryFor("embeddings"),
   });
 
   for (const v of embeddings) {

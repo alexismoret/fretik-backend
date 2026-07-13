@@ -2,6 +2,7 @@ import { eq } from "drizzle-orm";
 import db from "../../../db";
 import { externalAppConnections } from "../../../db/schema";
 import { getNangoClient } from "../../../lib/external-apps/nango-client";
+import { emitDomainEvent } from "../../domain-events/emit";
 import { getConnectionForCaller } from "./get-by-id";
 
 /**
@@ -24,22 +25,39 @@ export const deleteConnection = async (params: {
     params.userId,
   );
 
-  try {
-    const nango = getNangoClient();
-    await nango.deleteConnection(
-      conn.nangoProviderConfigKey,
-      conn.nangoConnectionId,
-    );
-  } catch (error) {
-    // Log but keep going — the user wants the connection gone from
-    // Fretik regardless of whether Nango cleanup succeeded.
-    console.warn(
-      `[external-apps] Failed to delete Nango connection ${conn.nangoConnectionId}:`,
-      error instanceof Error ? error.message : error,
-    );
+  // A no-auth MCP server has no Nango connection to revoke.
+  if (conn.nangoConnectionId !== null && conn.nangoProviderConfigKey !== null) {
+    try {
+      const nango = getNangoClient();
+      await nango.deleteConnection(
+        conn.nangoProviderConfigKey,
+        conn.nangoConnectionId,
+      );
+    } catch (error) {
+      // Log but keep going — the user wants the connection gone from
+      // Fretik regardless of whether Nango cleanup succeeded.
+      console.warn(
+        `[external-apps] Failed to delete Nango connection ${conn.nangoConnectionId}:`,
+        error instanceof Error ? error.message : error,
+      );
+    }
   }
 
-  await db
-    .delete(externalAppConnections)
-    .where(eq(externalAppConnections.id, params.id));
+  // Journal + delete commit atomically; the payload keeps the id/provider
+  // since the row is gone after this tx.
+  await db.transaction(async (tx) => {
+    await emitDomainEvent({
+      tx,
+      organizationId: conn.organizationId,
+      teamId: conn.teamId,
+      type: "connector.disconnected",
+      actor: { actorType: "user", actorUserId: params.userId },
+      subjectType: "connector",
+      payload: { providerKey: conn.providerKey, connectionId: conn.id },
+      dedupKey: `connector.disconnected:${conn.id}`,
+    });
+    await tx
+      .delete(externalAppConnections)
+      .where(eq(externalAppConnections.id, params.id));
+  });
 };

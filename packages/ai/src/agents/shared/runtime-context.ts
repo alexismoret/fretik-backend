@@ -1,3 +1,6 @@
+import type { ToolPolicyLevel } from "@fretik/shared/schemas/tool-policies";
+import type { EventActor } from "@fretik/shared/services/domain-events/emit";
+import type { LangfusePromptRef } from "../../lib/langfuse-prompts";
 import type { ModelProfile } from "../../lib/model-registry/types";
 import type { DynamicToolManager } from "./dynamic-tools";
 import type { TaskManager } from "./task-manager";
@@ -5,10 +8,11 @@ import type { TaskManager } from "./task-manager";
 /**
  * @warning MUTATION CONTRACT — READ BEFORE ADDING A NEW TOOL
  *
- * AI SDK v6 documents `experimental_context` as immutable inside
- * tools ("Mutating the context object can lead to race conditions
- * and unexpected results when tools are called in parallel" —
- * `@ai-sdk/provider-utils` `ToolExecutionOptions` docblock).
+ * AI SDK v7 documents a tool's `context` as immutable inside tools
+ * ("Treat the context object as immutable inside tools. Mutating the
+ * context object can lead to race conditions … If you need to mutate
+ * the context, analyze the tool calls in `prepareStep` and update it
+ * there." — `@ai-sdk/provider-utils` `ToolExecutionOptions` docblock).
  *
  * Fretik INTENTIONALLY deviates from this: `searchTools.execute`
  * mutates `ctx.dynamicToolManager` and `manageTasks.execute` mutates
@@ -42,14 +46,15 @@ import type { TaskManager } from "./task-manager";
  */
 
 /**
- * Per-request runtime context propagated through every tool call via
- * AI SDK v6's `experimental_context` channel.
+ * Per-request runtime context propagated to every tool call. AI SDK v7
+ * delivers a tool's context ONLY through `toolsContext[toolName]`, so
+ * `prepareCall` returns this branded ctx as the agent's `runtimeContext`
+ * and each `prepareStep` fans it out to every tool via `toolsContext`.
  *
  * The agent is a singleton constructed at boot; tools cannot close
  * over per-request state. `prepareCall` instantiates a fresh context
- * on every `.stream()` call and hands it to the framework as
- * `experimental_context`; tools recover it inside their `execute`
- * function via `getRuntimeContext`.
+ * on every `.stream()` call; tools recover it inside their `execute`
+ * function via `getRuntimeContext(options)` (which reads `options.context`).
  *
  * `dynamicToolManager` and `taskManager` are required (not optional):
  * `prepareCall` instantiates them unconditionally so tools never have
@@ -60,6 +65,13 @@ export interface AgentRuntimeContext {
   teamId: string;
   userId?: string;
   userName?: string;
+  /**
+   * Journal identity of the agent driving this turn (`domain_events.agent_key`).
+   * Unset today — `agentEventActor` falls back to `"chatbot"`, the only agent.
+   * A future runner reusing these tools (workflow engine) sets its own key
+   * (`workflow:<key>`) when building its context; tools pick it up untouched.
+   */
+  agentKey?: string;
   /**
    * Profile of the model serving THIS agent instance (primary or
    * fallback), injected by `buildToolLoopAgent`'s `prepareCall` —
@@ -85,14 +97,17 @@ export interface AgentRuntimeContext {
    */
   traceId?: string;
   /**
-   * `prompt.toJSON()` of the managed Langfuse prompt that produced this
+   * `{ name, version }` of the managed Langfuse prompt that produced this
    * turn's instructions, or `undefined` when the prompt resolved from the
    * embedded `.md` fallback (or Langfuse is off). Set once by the system-
    * prompt renderer inside `prepareCall` — before the agent loop, so never
-   * races a tool call — and read back by the builder to link the generation
-   * to its prompt version via `experimental_telemetry.metadata.langfusePrompt`.
+   * races a tool call. The `@langfuse/vercel-ai-sdk` integration reads this
+   * `langfusePrompt` runtime-context key (opted in via the agent's
+   * `telemetry.includeRuntimeContext`) to link the generation to its version.
+   * The key MUST be named `langfusePrompt` — that is what the integration
+   * destructures.
    */
-  langfusePromptLink?: string;
+  langfusePrompt?: LangfusePromptRef;
   /**
    * IANA time-zone identifier of the requesting client (e.g.
    * `Europe/Paris`). Forwarded from `X-Client-Timezone` on the
@@ -142,25 +157,24 @@ export interface AgentRuntimeContext {
    * Rendered `{{activeMemoryBlock}}` fragment for the system prompt —
    * a 1-3 bullet markdown summary of the persistent memories already
    * judged relevant for the current turn. Built by the handler before
-   * the main `streamText` call via `runActiveMemoryRecall`
-   * (`services/active-memory/recall.ts`). When `undefined` the prompt
+   * the main `streamText` call via `runUnifiedRecall`
+   * (`services/recall/recall.ts`). When `undefined` the prompt
    * omits the `<active_memory>` block entirely (which is itself a
    * signal — see `<memory_protocol>`). NEVER blocks the turn: a
    * recall failure or "NONE" verdict simply leaves this undefined.
    */
   activeMemoryBlock?: string;
   /**
-   * Rendered `{{teamFieldDefinitions}}` fragment for the system prompt
-   * — one line per enabled field definition (`- key (type)`), ordered
-   * by `displayOrder`. Compact on purpose: `type` is the only bit the
-   * LLM needs to write the right JSONB filter; the user-facing label,
-   * description, and full config are fetched on demand via the
-   * `listFieldDefinitions` tool. Built by the handler from
-   * `getFieldDefinitionsForTeam` (Redis-cached). Empty string when the
-   * team has no enabled fields — the prompt section then renders as
-   * `_No dynamic fields configured for this team._`.
+   * Rendered `{{teamObjects}}` fragment for the system prompt — one line
+   * per object type the team can query (`- **key** (view …) — columns: ….
+   * relations: …`). The AI query path's schema-discovery block: it names
+   * each type's typed SQL view + columns + outgoing relations. Full field
+   * metadata is fetched on demand via `describeObjectType`. Built by the
+   * handler from `describeTeamSchema`. Empty string when the team has no
+   * types — the prompt section then renders as
+   * `_No object types configured for this team._`.
    */
-  teamFieldDefinitionsBlock?: string;
+  teamObjectsBlock?: string;
   /**
    * Rendered `{{skillsCatalog}}` fragment for the system prompt — one
    * line per skill enabled for this team (`- **name** — description`),
@@ -210,6 +224,36 @@ export interface AgentRuntimeContext {
    * Empty / undefined renders as `_No external apps connected._`.
    */
   externalAppsBlock?: string;
+  /**
+   * ID of the `workflow_runs` row this turn belongs to — set ONLY for the
+   * headless workflow agent. The `updateWorkflowTask` / `completeWorkflowRun`
+   * tools key their writes on it; absent for the chatbot (those tools aren't
+   * in its set).
+   */
+  workflowRunId?: string;
+  /**
+   * Autonomy of the running workflow. Gates the write path: `read_only`
+   * rejects write plans, `approval_required` pauses on `run_plan` for HITL,
+   * `autonomous` executes without pausing. Undefined for the chatbot.
+   */
+  workflowAutonomy?: "read_only" | "approval_required" | "autonomous";
+  /**
+   * Rendered `{{playbookBlock}}` fragment for the workflow system prompt —
+   * the structured plan (goal + ordered tasks with per-task instructions +
+   * the trigger payload) the executor follows. The reliability lever.
+   * Undefined for the chatbot (which has no playbook).
+   */
+  playbookBlock?: string;
+  /**
+   * The team's builtin-tool permission overrides (`{ [toolName]: level }`),
+   * loaded per turn by the handler (`getTeamToolPolicies`, Redis-cached). Read
+   * by the policy gate (`policy-tool-gate.ts`) to prune `blocked` tools from
+   * `activeTools` + the prompt, and by each gated write tool's `execute` to
+   * route an `approval`-level call through the approval gate. Immutable for the
+   * turn — no mutation-contract concern. Empty/undefined = every tool at its
+   * catalog default.
+   */
+  toolPolicies?: Record<string, ToolPolicyLevel>;
 }
 
 /**
@@ -256,9 +300,12 @@ interface BrandedRuntimeContext extends AgentRuntimeContext {
 
 /**
  * Wrap an `AgentRuntimeContext` so it carries the brand symbol.
- * `prepareCall` passes the result to `experimental_context`; the
- * framework forwards it opaquely to every tool `execute`, and the
- * brand lets `getRuntimeContext` validate + narrow at runtime.
+ * `prepareCall` returns the result as the agent's `runtimeContext`;
+ * `prepareStep` then fans that same reference out to every tool via
+ * `toolsContext` (AI SDK v7 delivers a tool's context ONLY through
+ * `toolsContext[toolName]` — there is no `runtimeContext` on the tool
+ * `execute` options). The brand lets `getRuntimeContext` validate +
+ * narrow the erased (`{}`/`unknown`) context back at runtime.
  */
 export const wrapRuntimeContext = (
   ctx: AgentRuntimeContext,
@@ -268,11 +315,12 @@ export const wrapRuntimeContext = (
 });
 
 /**
- * Recover the runtime context from a tool `execute` options bag (or
- * from a `prepareStep` argument, which exposes the same
- * `experimental_context` key). Throws if the brand is missing — that
- * can only happen if somebody skipped `wrapRuntimeContext` inside
- * `prepareCall`, which is a programming bug and must fail loudly.
+ * Recover the runtime context from a tool `execute` options bag (reads
+ * `options.context`) or from a `prepareStep` argument (reads
+ * `options.runtimeContext`). Throws if the brand is missing — that can
+ * only happen if `prepareCall` skipped `wrapRuntimeContext` or a
+ * `prepareStep` failed to fan the ctx out via `toolsContext`, both
+ * programming bugs that must fail loudly.
  *
  * Tools MUST read the context at call time via this helper. They
  * MUST NOT close over `ctx` at construction time — the agent is a
@@ -280,21 +328,58 @@ export const wrapRuntimeContext = (
  * concurrent request.
  */
 export const getRuntimeContext = (options: {
-  experimental_context?: unknown;
+  context?: unknown;
+  runtimeContext?: unknown;
 }): AgentRuntimeContext => {
-  const raw = options.experimental_context;
+  const ctx = tryGetRuntimeContext(options);
+  if (ctx === undefined) {
+    throw new Error(
+      "Missing AgentRuntimeContext — prepareCall must return the branded ctx as `runtimeContext`, and prepareStep must fan it out to every tool via `toolsContext`.",
+    );
+  }
+  return ctx;
+};
+
+/**
+ * Non-throwing variant of {@link getRuntimeContext} for read-only
+ * observability seams (step loggers) that must degrade gracefully
+ * rather than crash a callback when the brand is somehow absent.
+ *
+ * Reads `options.context` (tool `execute` channel — fed by
+ * `toolsContext`) first, then `options.runtimeContext` (prepareStep /
+ * step-callback channel). Returns `undefined` when neither carries a
+ * branded context.
+ */
+export const tryGetRuntimeContext = (options: {
+  context?: unknown;
+  runtimeContext?: unknown;
+}): AgentRuntimeContext | undefined => {
+  const raw = options.context ?? options.runtimeContext;
   if (
     raw === null ||
     typeof raw !== "object" ||
     !(RUNTIME_CONTEXT_BRAND in raw)
   ) {
-    throw new Error(
-      "Missing AgentRuntimeContext in experimental_context — prepareCall must wrap the ctx with wrapRuntimeContext() before returning it.",
-    );
+    return undefined;
   }
   // Single `as` cast in the whole runtime-context module. The brand
   // symbol check above is the guard that makes this safe: only
   // objects produced by `wrapRuntimeContext` can ever reach this
-  // line. Call sites never perform casts of their own.
+  // line. Call sites never perform casts of their own — the SDK
+  // erases the per-tool context type to `{}`/`unknown` (no
+  // `contextSchema`), so this brand narrowing is unavoidable.
   return raw as BrandedRuntimeContext;
 };
+
+/**
+ * The journal `EventActor` for a write performed by THIS agent turn — the
+ * single seam mapping runtime identity onto `domain_events` attribution.
+ * Tools pass this to the shared mutation services instead of building their
+ * own literal, so a future non-chatbot runner only has to set `ctx.agentKey`.
+ */
+export const agentEventActor = (ctx: AgentRuntimeContext): EventActor => ({
+  actorType: "agent",
+  actorUserId: ctx.userId ?? null,
+  conversationId: ctx.conversationId ?? null,
+  agentKey: ctx.agentKey ?? "chatbot",
+});

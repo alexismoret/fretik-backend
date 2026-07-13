@@ -52,6 +52,9 @@ export const skillSummarySchema = z.object({
   enabled: z.boolean(),
   version: z.string().min(1).max(SKILL_VERSION_MAX_LENGTH),
   source: skillSourceSchema,
+  /** Provenance of a catalog-installed skill (`skills.sh:<owner>/<repo>/<slug>`),
+   * or null. Lets the hub mark a catalog entry as already installed. */
+  sourceUrl: z.string().nullable(),
 });
 export type SkillSummary = z.infer<typeof skillSummarySchema>;
 
@@ -80,6 +83,10 @@ export const skillDetailSchema = z.object({
   enabled: z.boolean(),
   version: z.string().min(1).max(SKILL_VERSION_MAX_LENGTH),
   source: skillSourceSchema,
+  sourceUrl: z.string().nullable(),
+  /** Companion files in the source bundle that were NOT installed (0 for
+   * single-file / hand-authored skills). >0 surfaces a warning in the UI. */
+  skippedFiles: z.number(),
   teamId: z.uuid().nullable(),
   createdAt: z.coerce.date(),
   updatedAt: z.coerce.date(),
@@ -127,3 +134,85 @@ export type UpdateSkillRequest = z.infer<typeof updateSkillRequestSchema>;
 export const skillIdParamSchema = z.object({
   id: z.uuid().openapi({ param: { name: "id", in: "path" } }),
 });
+
+// ============================================================================
+// Skills discovery catalog (skills.sh) — browse/search + install to the team.
+// ============================================================================
+
+/**
+ * One discoverable skill from the skills.sh catalog. `id` (`owner/repo/slug`) is
+ * the install handle; `description` is hydrated from the skill's SKILL.md (empty
+ * when hydration failed). `official` marks the Anthropic/OpenAI shelves.
+ * `filesCount > 1` ⇒ the skill ships companion files a body-only install skips.
+ */
+export const skillCatalogEntrySchema = z.object({
+  id: z.string(),
+  owner: z.string(),
+  repo: z.string(),
+  slug: z.string(),
+  displayName: z.string(),
+  description: z.string(),
+  installs: z.number(),
+  official: z.boolean(),
+  filesCount: z.number(),
+});
+export type SkillCatalogEntry = z.infer<typeof skillCatalogEntrySchema>;
+
+export const skillCatalogPaginationSchema = z.object({
+  currentPage: z.number(),
+  pageSize: z.number(),
+  totalPages: z.number(),
+  totalCount: z.number(),
+});
+
+export const skillCatalogResponseSchema = z.object({
+  entries: z.array(skillCatalogEntrySchema),
+  pagination: skillCatalogPaginationSchema,
+});
+export type SkillCatalogResponse = z.infer<typeof skillCatalogResponseSchema>;
+
+export const skillCatalogQuerySchema = z.object({
+  q: z.string().max(200).optional(),
+  page: z.coerce.number().int().min(1).optional(),
+  pageSize: z.coerce.number().int().min(1).max(24).optional(),
+});
+export type SkillCatalogQuery = z.infer<typeof skillCatalogQuerySchema>;
+
+/** One auditor's advisory verdict (never blocks install). */
+export const skillAuditSchema = z.object({
+  risk: z.string().optional(),
+  score: z.number().optional(),
+  alerts: z.number().optional(),
+  analyzedAt: z.string().optional(),
+});
+
+/**
+ * `GET /skills/catalog/detail` — license + audits for the detail panel.
+ * `restrictedLicense` disables install (proprietary content may not be stored).
+ */
+export const skillCatalogDetailSchema = z.object({
+  id: z.string(),
+  description: z.string(),
+  license: z.string().nullable(),
+  restrictedLicense: z.boolean(),
+  filesCount: z.number(),
+  hash: z.string(),
+  audits: z.record(z.string(), skillAuditSchema).nullable(),
+});
+export type SkillCatalogDetail = z.infer<typeof skillCatalogDetailSchema>;
+
+export const skillCatalogDetailQuerySchema = z.object({
+  owner: z.string().min(1).max(128),
+  repo: z.string().min(1).max(128),
+  slug: z.string().min(1).max(128),
+});
+export type SkillCatalogDetailQuery = z.infer<
+  typeof skillCatalogDetailQuerySchema
+>;
+
+export const installSkillRequestSchema = z.object({
+  owner: z.string().min(1).max(128),
+  repo: z.string().min(1).max(128),
+  slug: z.string().min(1).max(128),
+});
+export type InstallSkillRequest = z.infer<typeof installSkillRequestSchema>;

@@ -4,7 +4,7 @@ import "@fretik/providers";
 
 import { auth } from "@fretik/shared/lib/auth";
 import { errorHandler } from "@fretik/shared/lib/error-handler";
-import { startDocumentProcessingWorker } from "@fretik/shared/services/documents/processing-queue";
+import { globalRateLimiter } from "@fretik/shared/lib/rate-limit";
 import { OpenAPIHono } from "@hono/zod-openapi";
 import figlet from "figlet";
 import { getConnInfo } from "hono/bun";
@@ -13,21 +13,27 @@ import { cors } from "hono/cors";
 import packagejson from "../package.json";
 import { accountRoutes } from "./handlers/account";
 import { aiMemoryRoutes } from "./handlers/ai-memory";
+import { approvalsRoutes } from "./handlers/approvals";
 import { chatbotContextRoutes } from "./handlers/chatbot-context";
 import { conversationRoutes } from "./handlers/conversations";
 import { documentRoutes } from "./handlers/documents";
-import { entityRoutes } from "./handlers/entities";
 import { externalAppsRoutes } from "./handlers/external-apps";
 import { sandboxRoutes } from "./handlers/external-apps/sandbox-exec";
 import { fieldDefinitionRoutes } from "./handlers/field-definitions";
-import { fieldTemplateRoutes } from "./handlers/field-templates";
 import { folderRoutes } from "./handlers/folders";
 import { invitationRoutes } from "./handlers/invitations";
-import { labelRoutes } from "./handlers/labels";
+import { linkTypeRoutes } from "./handlers/link-types";
+import { linkRoutes } from "./handlers/links";
+import { objectRecordRoutes } from "./handlers/object-records";
+import { objectSharingRoutes } from "./handlers/object-sharing";
+import { objectTypeRoutes } from "./handlers/object-types";
 import { organizationRoutes } from "./handlers/organization";
+import { publicFormRoutes } from "./handlers/public-forms";
 import { signupAccessRoutes } from "./handlers/signup-access";
 import { skillsRoutes } from "./handlers/skills";
 import { superAdminRoutes } from "./handlers/super-admins";
+import { toolPoliciesRoutes } from "./handlers/tool-policies";
+import { workflowRoutes } from "./handlers/workflows";
 
 const VERSION = packagejson.version;
 
@@ -45,6 +51,11 @@ app.use(
     exposeHeaders: ["Content-Disposition", "x-filename"],
   }),
 );
+
+// Broad per-IP anti-abuse backstop (Redis-backed, shared across instances).
+// Exempts `/internal/*` + `/health` so service-to-service and automatic
+// traffic is never throttled; `/auth/*` keeps its own tighter Better Auth cap.
+app.use("*", globalRateLimiter());
 
 // Auth. Better Auth reads the client IP from `x-forwarded-for` (see auth.ts
 // `advanced.ipAddress`). Behind a proxy (e.g. Vercel) that header is set for
@@ -70,24 +81,28 @@ app.route("/organization", organizationRoutes);
 app.route("/signup-access", signupAccessRoutes);
 app.route("/super-admins", superAdminRoutes);
 app.route("/document", documentRoutes);
-app.route("/entity", entityRoutes);
 app.route("/folder", folderRoutes);
 app.route("/conversation", conversationRoutes);
 app.route("/chatbot-context", chatbotContextRoutes);
 app.route("/ai-memory", aiMemoryRoutes);
 app.route("/field-definitions", fieldDefinitionRoutes);
-app.route("/field-templates", fieldTemplateRoutes);
-app.route("/label", labelRoutes);
+app.route("/object-types", objectTypeRoutes);
+app.route("/objects", objectRecordRoutes);
+app.route("/object-sharing", objectSharingRoutes);
+app.route("/links", linkRoutes);
+app.route("/link-types", linkTypeRoutes);
 app.route("/invitations", invitationRoutes);
 app.route("/skills", skillsRoutes);
 app.route("/external-apps", externalAppsRoutes);
+app.route("/approvals", approvalsRoutes);
+app.route("/tool-policies", toolPoliciesRoutes);
+app.route("/workflows", workflowRoutes);
+app.route("/forms", publicFormRoutes);
 app.route("/sandbox", sandboxRoutes);
 
-// Start the in-process document-processing worker. Every API replica
-// consumes the shared `document-processing` BullMQ queue, so OCR /
-// extraction / vectorisation scale by adding replicas and never block
-// the AI service. Idempotent + crash-safe (BullMQ reclaims stalled jobs).
-startDocumentProcessingWorker();
+// The document-processing Worker lives in @fretik/jobs (with the memory
+// pipeline) — API replicas only PRODUCE onto the queue. Background CPU
+// (OCR, extraction, vectorise) scales by adding jobs replicas, not API ones.
 
 // Init log
 const text = await figlet.text("fretik API");

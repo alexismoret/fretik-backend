@@ -86,7 +86,7 @@ const callExecute = async (
   const options: ExecOptions = {
     toolCallId: "call-test",
     messages: [],
-    experimental_context: wrapRuntimeContext(ctx),
+    context: wrapRuntimeContext(ctx),
   };
   const raw = await Promise.resolve(
     execute({ tasks: [...tasksInput] }, options),

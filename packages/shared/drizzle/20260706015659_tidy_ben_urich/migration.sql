@@ -1,0 +1,2 @@
+CREATE INDEX "workflow_runs_running_idx" ON "workflow_runs" ("last_heartbeat_at") WHERE status = 'running';--> statement-breakpoint
+CREATE INDEX "workflow_runs_conversation_idx" ON "workflow_runs" ("conversation_id");

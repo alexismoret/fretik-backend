@@ -128,7 +128,7 @@ export const summariseMissedMessages = async (params: {
       temperature: 0.3,
       maxOutputTokens: 500,
       abortSignal: AbortSignal.timeout(30_000),
-      experimental_telemetry: telemetryFor("catch-up-summary"),
+      telemetry: telemetryFor("catch-up-summary"),
     });
     const text = (await result.text).trim();
     return text.length > 0

@@ -1,0 +1,1 @@
+ALTER TYPE "field_definition_type" ADD VALUE 'rollup';

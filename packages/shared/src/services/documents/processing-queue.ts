@@ -77,6 +77,30 @@ export const enqueueDocumentProcessing = async (
 };
 
 /**
+ * Re-enqueue a document for a forced re-extraction. `jobId = documentId` is
+ * retained after completion, so BullMQ would silently dedup a plain re-`add`;
+ * drop the retained job first, then add with `force` set. If the job is still
+ * active the remove is a no-op and the caller should retry once it settles.
+ */
+export const reenqueueDocumentProcessing = async (
+  data: DocumentProcessingJobData,
+): Promise<void> => {
+  const q = getQueue();
+  await q.remove(data.documentId).catch(() => {});
+  await q.add(
+    JOB_NAME,
+    { ...data, force: true },
+    {
+      jobId: data.documentId,
+      attempts: MAX_ATTEMPTS,
+      backoff: { type: "exponential", delay: 5_000 },
+      removeOnComplete: { count: 50 },
+      removeOnFail: { count: 200 },
+    },
+  );
+};
+
+/**
  * Start the in-process document-processing Worker. Idempotent — safe to
  * call once at `@fretik/api` boot on every replica. Only API replicas
  * should call this; `@fretik/ai` is a producer only.

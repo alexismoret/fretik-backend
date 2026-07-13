@@ -30,6 +30,7 @@ import type {
   SandboxLease,
 } from "@fretik/shared/services/e2b/types";
 import { listActiveProviderKeysForConversation } from "@fretik/shared/services/external-apps/connections/list-active-providers-for-conversation";
+import { listMcpSnapshotsForConversation } from "@fretik/shared/services/external-apps/mcp/list-snapshots-for-conversation";
 import { listEnabledTeamUploadedSkillsWithBodyForConversation } from "@fretik/shared/services/skills/list-enabled-team-uploaded-with-body";
 import { randomUUID } from "node:crypto";
 import { readdir, stat } from "node:fs/promises";
@@ -503,6 +504,12 @@ const runFullBootstrap = async (conversationId: string): Promise<void> => {
     pushExternalAppProviderSkills(conversationId),
     restoreFromS3(conversationId),
   ]);
+  // MCP overlay runs AFTER the fan-out, not inside it: it writes stubs into
+  // /workspace/fretik_apps/ — the same top-level dir `pushExternalAppsSdk`
+  // untars into — so keeping it out of the parallel batch avoids sharing a
+  // destination and guarantees the base `_runtime.py`/`__init__.py` are
+  // already in place. Soft-fails internally, so it never blocks the marker.
+  await pushMcpConnectionOverlay(conversationId);
   await touchFretikInitMarker(conversationId);
 };
 
@@ -940,6 +947,81 @@ const pushExternalAppProviderSkills = async (
   const duration = Date.now() - startedAt;
   console.log(
     `[conversation-storage] pushed external-app skills for [${providerKeys.join(", ")}], ${duration.toString()}ms`,
+  );
+};
+
+/**
+ * Overlay the MCP connections' generated tool surface onto the base SDK.
+ *
+ * Manifest providers ship their stubs + SKILLs in the committed tarball
+ * (`pushExternalAppsSdk` / `pushExternalAppProviderSkills`). MCP connections
+ * are introspected at connect time and their compiled surface (Python stub +
+ * SKILL index) lives in `external_app_tool_snapshots`, so we materialise it
+ * per team here:
+ *
+ *   - `fretik_apps/<moduleName>.py`  — the generated stub (imports `_runtime`
+ *     from the base tarball; a bare submodule, not registered in the base
+ *     `__init__.py`, so the agent reaches it via `from fretik_apps import
+ *     <moduleName>` as the SKILL instructs).
+ *   - `skills/<providerKey>/SKILL.md` — the deterministic tool index.
+ *
+ * Runs once per sandbox bootstrap. A connection added mid-conversation
+ * surfaces on the next conversation's sandbox (identical to the manifest
+ * provider-skill contract). Soft-fail throughout: a snapshot fetch or write
+ * error is logged and skipped so a single bad connection never wedges the
+ * bootstrap.
+ */
+const pushMcpConnectionOverlay = async (
+  conversationId: string,
+): Promise<void> => {
+  let overlays: Awaited<ReturnType<typeof listMcpSnapshotsForConversation>>;
+  try {
+    overlays = await listMcpSnapshotsForConversation(conversationId);
+  } catch (err) {
+    console.warn(
+      "[conversation-storage] failed to list MCP snapshots:",
+      err instanceof Error ? err.message : err,
+    );
+    return;
+  }
+
+  if (overlays.length === 0) return;
+
+  const startedAt = Date.now();
+  const sdkDir = `${WORKSPACE_ROOT}/fretik_apps`;
+  const skillsDir = `${WORKSPACE_ROOT}/${WORKSPACE_DIRS.skills}`;
+  const encoder = new TextEncoder();
+
+  // Distinct paths per overlay (unique provider key) → parallel-safe.
+  // allSettled so one bad connection doesn't poison the rest.
+  const results = await Promise.allSettled(
+    overlays.flatMap((overlay) => [
+      writeSandboxFile(
+        conversationId,
+        `${sdkDir}/${overlay.moduleName}.py`,
+        encoder.encode(overlay.sdkPy),
+      ),
+      writeSandboxFile(
+        conversationId,
+        `${skillsDir}/${overlay.providerKey}/SKILL.md`,
+        encoder.encode(overlay.skillMd),
+      ),
+    ]),
+  );
+
+  for (const [i, r] of results.entries()) {
+    if (r.status === "rejected") {
+      const overlay = overlays[Math.floor(i / 2)];
+      console.warn(
+        `[conversation-storage] failed to write MCP overlay for "${overlay?.providerKey ?? "?"}":`,
+        r.reason instanceof Error ? r.reason.message : r.reason,
+      );
+    }
+  }
+
+  const duration = Date.now() - startedAt;
+  console.log(
+    `[conversation-storage] pushed MCP overlay for [${overlays.map((o) => o.providerKey).join(", ")}], ${duration.toString()}ms`,
   );
 };
 

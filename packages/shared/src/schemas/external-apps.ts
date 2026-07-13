@@ -1,21 +1,29 @@
 import { z } from "@hono/zod-openapi";
-import { externalAppConnectionStatusEnum } from "../db/schema/external-apps";
+import {
+  externalAppConnectionStatusEnum,
+  externalAppMcpAuthKindEnum,
+} from "../db/schema/external-apps";
 import {
   connectionOptionsDescriptorSchema,
   credentialsFormDescriptorSchema,
   providerTransportSchema,
 } from "../external-apps/manifest-schema";
+import { toolPolicyLevelSchema } from "./tool-policies";
 
 /**
- * HTTP schemas for `/external-apps/*` and `/sandbox/exec` routes.
+ * HTTP schemas for `/external-apps/*` routes — the provider catalogue and
+ * per-tenant Nango connections.
  *
- * The wire shape is intentionally **distinct** from the DB row types
- * (`ExternalAppConnection`, `ToolApprovalRequest`): we strip Nango-internal
- * columns (`nangoProviderConfigKey`) and surface a friendlier `scope` enum
- * derived from `userId IS NULL`.
+ * The wire shape is intentionally **distinct** from the DB row type
+ * (`ExternalAppConnection`): we strip Nango-internal columns
+ * (`nangoProviderConfigKey`) and surface a friendlier `scope` enum derived
+ * from `userId IS NULL`.
  *
  * The provider catalogue (`GET /external-apps/providers`) is built from
  * the in-memory registry — no DB row, no manifest YAML on the wire.
+ *
+ * The generic approval schemas moved to `schemas/approvals.ts`; the
+ * `/sandbox/exec` wire contract moved to `schemas/sandbox.ts`.
  */
 
 // ============================================================================
@@ -119,6 +127,16 @@ export const connectSessionRequestSchema = z.object({
     description:
       "Forward `prompt=consent` to the OAuth provider so a tenant admin can grant scopes org-wide. Only meaningful for providers with `requiresAdminConsent: true`.",
   }),
+  /**
+   * The MCP server URL, already known to the caller (a hub-discovered app or a
+   * custom entry). Pre-seeds the `mcp-generic` connection config so Nango's
+   * Connect UI does not re-ask for a URL the user has effectively already
+   * chosen. Ignored for every non-`mcp-generic` provider.
+   */
+  mcpServerUrl: z.string().min(1).optional().openapi({
+    description:
+      "Pre-seed the `mcp-generic` server URL so Connect UI doesn't re-prompt for it. Ignored for other providers.",
+  }),
 });
 export type ConnectSessionRequest = z.infer<typeof connectSessionRequestSchema>;
 
@@ -155,10 +173,49 @@ export type ConnectionConfigResponse = z.infer<
   typeof connectionConfigResponseSchema
 >;
 
+/**
+ * MCP-specific confirm params for a custom server. `serverUrl` is required for
+ * the api-key / basic / no-auth flows (a curated vendor's URL comes from the
+ * catalog, a custom OAuth server's from Nango). `apiKeyHeader` is honored only
+ * for the api-key flow (absent → `Authorization: Bearer`). The auth kind itself
+ * is NEVER on the wire — the server derives it from the posted `providerKey`.
+ */
+export const confirmMcpParamsSchema = z.object({
+  serverUrl: z.url().max(2048).optional(),
+  apiKeyHeader: z
+    .string()
+    .regex(/^[A-Za-z][A-Za-z0-9-]*$/)
+    .max(128)
+    .optional(),
+  /** Remote transport of the chosen endpoint. Defaults to `http`. */
+  transport: z.enum(["http", "sse"]).optional(),
+  /** Logo URL from the discovery catalog. Favicon fallback otherwise. */
+  iconUrl: z.string().max(2048).optional(),
+  /** One-line app description from the discovery catalog. */
+  description: z.string().max(2000).optional(),
+  /**
+   * Discovery-catalog metadata. `verified` only grants auto-run trust when a
+   * `qualifiedName` is present (a real catalog app) — the server re-clamps it.
+   */
+  catalogMeta: z
+    .object({
+      qualifiedName: z.string().max(256).optional(),
+      homepage: z.string().max(2048).optional(),
+      categories: z.array(z.string().max(64)).max(20).optional(),
+      verified: z.boolean().optional(),
+    })
+    .optional(),
+});
+export type ConfirmMcpParams = z.infer<typeof confirmMcpParamsSchema>;
+
 export const confirmConnectionRequestSchema = z.object({
   providerKey: z.string().min(1),
   displayName: z.string().min(1).max(128),
-  nangoConnectionId: z.string().min(1).max(128),
+  /**
+   * The Nango connection id. Absent ONLY for a no-auth custom MCP server
+   * (`mcp-custom-none`), which has no Nango row at all.
+   */
+  nangoConnectionId: z.string().min(1).max(128).optional(),
   scope: connectionScopeSchema,
   /**
    * Per-provider runtime options keyed by the provider's
@@ -167,10 +224,15 @@ export const confirmConnectionRequestSchema = z.object({
    * ignored otherwise.
    */
   options: z.record(z.string(), z.unknown()).optional(),
+  /** Custom MCP server params (URL + optional key header). */
+  mcp: confirmMcpParamsSchema.optional(),
 });
 export type ConfirmConnectionRequest = z.infer<
   typeof confirmConnectionRequestSchema
 >;
+
+export const mcpAuthKindSchema = z.enum(externalAppMcpAuthKindEnum.enumValues);
+export type McpAuthKindValue = z.infer<typeof mcpAuthKindSchema>;
 
 export const externalAppConnectionStatusSchema = z.enum(
   externalAppConnectionStatusEnum.enumValues,
@@ -179,13 +241,56 @@ export type ExternalAppConnectionStatusValue = z.infer<
   typeof externalAppConnectionStatusSchema
 >;
 
+/**
+ * One tool of a connection, surfaced so Settings → Tool permissions can render
+ * a per-tool policy row. For MCP connections these come from the connection's
+ * introspected snapshot (the static provider catalog carries no MCP actions);
+ * `defaultLevel` is the descriptor's `approvalDefault` — curated reads auto-run,
+ * custom actions gate — so the UI shows the true baseline and keeps the override
+ * map sparse.
+ */
+export const connectionActionEntrySchema = z.object({
+  name: z.string(),
+  kind: z.enum(["read", "write"]),
+  summary: z.string(),
+  defaultLevel: toolPolicyLevelSchema,
+});
+export type ConnectionActionEntry = z.infer<typeof connectionActionEntrySchema>;
+
 export const externalAppConnectionResponseSchema = z.object({
   id: z.uuid(),
   providerKey: z.string(),
   displayName: z.string(),
   scope: connectionScopeSchema,
   status: externalAppConnectionStatusSchema,
+  /**
+   * MCP connections only: state of the tool snapshot. `ready` = tools compiled
+   * and usable; `preparing` = introspection hasn't landed yet; `error` =
+   * introspection failed (see `lastErrorMessage`). `null` for manifest providers
+   * (no snapshot concept).
+   */
+  toolStatus: z.enum(["ready", "preparing", "error"]).nullable(),
+  /** MCP connections only — how the direct transport authenticates. `null` for manifest providers. */
+  mcpAuthKind: mcpAuthKindSchema.nullable(),
+  /** MCP connections only — the server endpoint. `null` for manifest providers. */
+  mcpServerUrl: z.string().nullable(),
+  /**
+   * MCP connections only — the app's logo (Iconify name or image URL). `null`
+   * for manifest providers (their icon comes from the provider catalogue).
+   */
+  iconUrl: z.string().nullable(),
+  /** MCP connections only — one-line app description. `null` for manifest providers. */
+  description: z.string().nullable(),
   options: z.record(z.string(), z.unknown()).nullable(),
+  /** Per-action permission overrides on this connection (absent = defaults). */
+  actionPolicies: z.record(z.string(), toolPolicyLevelSchema).nullable(),
+  /**
+   * MCP connections only — the introspected tools of this connection's current
+   * snapshot, so the tool-permissions UI can render a per-tool policy row.
+   * `null` for manifest providers (their tools come from the provider catalogue)
+   * and for MCP connections still preparing / errored (no snapshot yet).
+   */
+  actions: z.array(connectionActionEntrySchema).nullable(),
   lastErrorMessage: z.string().nullable(),
   createdByUserId: z.uuid(),
   createdAt: z.coerce.date(),
@@ -202,6 +307,79 @@ export type ExternalAppConnectionsListResponse = z.infer<
   typeof externalAppConnectionsListResponseSchema
 >;
 
+/**
+ * One discoverable MCP app in the catalog — an Official MCP Registry server
+ * (metadata only; discovery). `qualifiedName` is the id the connect flow
+ * inspects; the app is connected direct to its own first-party endpoint.
+ * `verified` = the namespace is DNS-verified (official).
+ */
+export const mcpCatalogEntrySchema = z.object({
+  qualifiedName: z.string(),
+  displayName: z.string(),
+  description: z.string(),
+  iconUrl: z.string().nullable(),
+  homepage: z.string().nullable(),
+  verified: z.boolean(),
+});
+export type McpCatalogEntryDto = z.infer<typeof mcpCatalogEntrySchema>;
+
+export const mcpCatalogPaginationSchema = z.object({
+  currentPage: z.number(),
+  pageSize: z.number(),
+  totalPages: z.number(),
+  totalCount: z.number(),
+});
+
+export const mcpCatalogResponseSchema = z.object({
+  entries: z.array(mcpCatalogEntrySchema),
+  pagination: mcpCatalogPaginationSchema,
+});
+export type McpCatalogResponse = z.infer<typeof mcpCatalogResponseSchema>;
+
+/** Query for `GET /external-apps/mcp-catalog` (registry-backed search). */
+export const mcpCatalogQuerySchema = z.object({
+  q: z.string().max(200).optional(),
+  page: z.coerce.number().int().min(1).optional(),
+  pageSize: z.coerce.number().int().min(1).max(100).optional(),
+});
+export type McpCatalogQuery = z.infer<typeof mcpCatalogQuerySchema>;
+
+/**
+ * Inspect a discovered server before connecting: resolve its direct endpoint
+ * and auto-detect the auth mode. One of `qualifiedName` (catalog app) or
+ * `serverUrl` (raw custom URL) is required.
+ */
+export const mcpInspectRequestSchema = z
+  .object({
+    qualifiedName: z.string().max(256).optional(),
+    serverUrl: z.url().max(2048).optional(),
+  })
+  .refine((v) => v.qualifiedName !== undefined || v.serverUrl !== undefined, {
+    message: "Provide a qualifiedName or a serverUrl.",
+  });
+export type McpInspectRequest = z.infer<typeof mcpInspectRequestSchema>;
+
+export const mcpInspectResponseSchema = z.object({
+  /** True when the server exposes a reachable endpoint. */
+  connectable: z.boolean(),
+  serverUrl: z.string().nullable(),
+  /** Remote transport of the resolved endpoint (`sse` needs the SSE transport). */
+  transport: z.enum(["http", "sse"]).nullable(),
+  suggestedAuthMode: z.enum(["oauth", "none", "manual"]),
+  /** API-key header the server template declares, to pre-fill the manual form. */
+  suggestedApiKeyHeader: z.string().nullable(),
+  displayName: z.string().nullable(),
+  description: z.string().nullable(),
+  iconUrl: z.string().nullable(),
+  verified: z.boolean(),
+  homepage: z.string().nullable(),
+  qualifiedName: z.string().nullable(),
+  tools: z.array(
+    z.object({ name: z.string(), description: z.string().nullable() }),
+  ),
+});
+export type McpInspectResponse = z.infer<typeof mcpInspectResponseSchema>;
+
 export const updateConnectionRequestSchema = z
   .object({
     displayName: z.string().min(1).max(128).optional(),
@@ -211,15 +389,23 @@ export const updateConnectionRequestSchema = z
      * re-validated against the provider's `connectionOptions` descriptor.
      */
     options: z.record(z.string(), z.unknown()).optional(),
+    /**
+     * Sparse per-action policy patch — a level sets the override, `null` resets
+     * to the manifest default. Team-scoped connections require admin.
+     */
+    actionPolicies: z
+      .record(z.string(), toolPolicyLevelSchema.nullable())
+      .optional(),
   })
   .refine(
     (val) =>
       val.displayName !== undefined ||
       val.status !== undefined ||
-      val.options !== undefined,
+      val.options !== undefined ||
+      val.actionPolicies !== undefined,
     {
       message:
-        "At least one of displayName, status or options must be provided",
+        "At least one of displayName, status, options or actionPolicies must be provided",
     },
   );
 export type UpdateConnectionRequest = z.infer<
@@ -326,129 +512,3 @@ export const dynamicOptionsResponseSchema = z.object({
 export type DynamicOptionsResponse = z.infer<
   typeof dynamicOptionsResponseSchema
 >;
-
-// ============================================================================
-// Tool approval requests (GET/POST /external-apps/approvals/:id/*)
-// ============================================================================
-
-export const toolApprovalStatusSchema = z.enum([
-  "pending",
-  "granted",
-  "executing",
-  "consumed",
-  "rejected",
-]);
-export type ToolApprovalStatusValue = z.infer<typeof toolApprovalStatusSchema>;
-
-/** A single op as stored in `tool_approval_requests.operations`. */
-export const toolApprovalOperationSchema = z.object({
-  action: z.string().min(1).openapi({
-    example: "outlook.send_email",
-    description: "Fully-qualified action name (provider.action).",
-  }),
-  args: z.record(z.string(), z.unknown()).openapi({
-    description:
-      "Executable args. Validated server-side against the manifest at modify-time.",
-  }),
-});
-export type ToolApprovalOperationDto = z.infer<
-  typeof toolApprovalOperationSchema
->;
-
-/** A field on the approval card, after backend i18n rendering. */
-export const renderedApprovalFieldSchema = z.object({
-  label: z.string(),
-  value: z.string(),
-  kind: z.enum(["text", "html"]).optional(),
-});
-export type RenderedApprovalFieldDto = z.infer<
-  typeof renderedApprovalFieldSchema
->;
-
-export const renderedApprovalOperationSchema = z.object({
-  providerKey: z.string(),
-  action: z.string(),
-  title: z.string(),
-  fields: z.array(renderedApprovalFieldSchema),
-});
-export type RenderedApprovalOperationDto = z.infer<
-  typeof renderedApprovalOperationSchema
->;
-
-export const renderedApprovalSummarySchema = z.object({
-  title: z.string(),
-  operations: z.array(renderedApprovalOperationSchema),
-});
-export type RenderedApprovalSummaryDto = z.infer<
-  typeof renderedApprovalSummarySchema
->;
-
-/** Outcome of a single op after execution — mirrors `ToolApprovalOpResult`. */
-export const toolApprovalOpResultSchema = z.union([
-  z.object({ ok: z.literal(true), data: z.record(z.string(), z.unknown()) }),
-  z.object({ ok: z.literal(false), error: z.string() }),
-]);
-export type ToolApprovalOpResultDto = z.infer<
-  typeof toolApprovalOpResultSchema
->;
-
-export const approvalResponseSchema = z.object({
-  id: z.uuid(),
-  conversationId: z.uuid(),
-  turnId: z.string(),
-  status: toolApprovalStatusSchema,
-  itemCount: z.int(),
-  /** Translated, ready-to-render. */
-  summary: renderedApprovalSummarySchema,
-  /** Raw ops (mutable via modify-and-grant). */
-  operations: z.array(toolApprovalOperationSchema),
-  result: z.array(toolApprovalOpResultSchema).nullable(),
-  decisionFeedback: z.string().nullable(),
-  decisionAt: z.coerce.date().nullable(),
-  executedAt: z.coerce.date().nullable(),
-  createdAt: z.coerce.date(),
-});
-export type ApprovalResponse = z.infer<typeof approvalResponseSchema>;
-
-export const modifyAndGrantRequestSchema = z.object({
-  operations: z.array(toolApprovalOperationSchema).min(1),
-});
-export type ModifyAndGrantRequest = z.infer<typeof modifyAndGrantRequestSchema>;
-
-export const rejectApprovalRequestSchema = z.object({
-  feedback: z.string().max(4096).optional(),
-});
-export type RejectApprovalRequest = z.infer<typeof rejectApprovalRequestSchema>;
-
-// ============================================================================
-// Sandbox dispatch (POST /sandbox/exec) — called by `_runtime.py`
-// ============================================================================
-
-export const sandboxExecRequestSchema = z.discriminatedUnion("kind", [
-  z.object({
-    kind: z.literal("read"),
-    action: z.string().min(1),
-    args: z.record(z.string(), z.unknown()),
-    turnId: z.string().min(1),
-  }),
-  z.object({
-    kind: z.literal("plan"),
-    operations: z.array(toolApprovalOperationSchema).min(1),
-    turnId: z.string().min(1),
-  }),
-]);
-export type SandboxExecRequestDto = z.infer<typeof sandboxExecRequestSchema>;
-
-export const sandboxExecResponseSchema = z.union([
-  z.object({ status: z.literal("ok"), data: z.unknown() }),
-  z.object({
-    status: z.literal("approval_pending"),
-    approvalId: z.uuid(),
-  }),
-  z.object({
-    status: z.literal("error"),
-    message: z.string(),
-    data: z.unknown().optional(),
-  }),
-]);
-export type SandboxExecResponseDto = z.infer<typeof sandboxExecResponseSchema>;

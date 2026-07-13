@@ -2,7 +2,21 @@ import { fetchManagedPrompt } from "../../lib/langfuse-prompts";
 import type { NativeInputPolicy } from "../../lib/model-registry/types";
 import { buildSessionStateBlock } from "../../services/session-state/build-block";
 import type { SearchableToolRegistry } from "./chatbot-tool";
+import { policyHiddenToolNames } from "./policy-tool-gate";
+import { resolveAgentBlocks } from "./prompt-blocks";
 import type { AgentRuntimeContext } from "./runtime-context";
+
+/**
+ * Dynamic-suffix note listing the tools the team disabled via tool-permission
+ * settings — so the model can tell the user WHY it can't do something instead
+ * of silently lacking the tool. Empty (byte-identical to today) when nothing is
+ * blocked. Below the cache marker; the tools are already pruned from the menu.
+ */
+const buildBlockedToolsNote = (ctx: AgentRuntimeContext): string => {
+  const blocked = [...policyHiddenToolNames(ctx)];
+  if (blocked.length === 0) return "";
+  return `These tools are disabled by the team's permission settings and cannot be called: ${blocked.join(", ")}. If the user asks for one, say it is disabled and can be re-enabled in Settings → Tool permissions.`;
+};
 
 /**
  * Dynamic-suffix note (C5) telling the model that attachments of the
@@ -42,7 +56,17 @@ const buildNativeMediaNote = (nativeInput: NativeInputPolicy): string => {
  * documentation doesn't cost model tokens at runtime.
  */
 
-const TEMPLATE_URL = new URL("../chatbot/system-prompt.md", import.meta.url);
+/**
+ * ONE unified template serves the chatbot AND the workflow executor —
+ * agent-specific paragraphs are wrapped in `<!-- AGENT:… -->` blocks and
+ * resolved per agent by `resolveAgentBlocks` (see `prompt-blocks.ts`). Each
+ * resolved variant is its own Langfuse prompt (and its own byte-stable
+ * cached prefix); improving a shared section improves both agents.
+ */
+const UNIFIED_TEMPLATE_URL = new URL(
+  "./agent-system-prompt.md",
+  import.meta.url,
+);
 const SUB_AGENT_TEMPLATE_URL = new URL(
   "../chatbot/sub-agent-system-prompt.md",
   import.meta.url,
@@ -62,18 +86,29 @@ const HTML_COMMENT_RE = /<!--[\s\S]*?-->\n?/g;
  * `scripts/seed-langfuse-prompts.ts`.
  */
 export const MANAGED_PROMPTS = {
-  system: { name: "fretik-chatbot-system", url: TEMPLATE_URL },
+  system: { name: "fretik-chatbot-system", url: UNIFIED_TEMPLATE_URL },
+  workflow: { name: "fretik-workflow-system", url: UNIFIED_TEMPLATE_URL },
   subAgent: { name: "fretik-chatbot-sub-agent", url: SUB_AGENT_TEMPLATE_URL },
 } as const;
 
 /**
- * Raw `.md` text (HTML comments INTACT) — the Langfuse fallback used when the
- * managed prompt can't be fetched, and the seed source. Comments are stripped
- * per turn after fetch, so keeping them in the stored/fallback text leaves the
- * architecture docblock + DYNAMIC SUFFIX marker visible to whoever edits the
- * prompt in the Langfuse UI.
+ * Per-agent fallbacks, resolved from the unified source ONCE at module load
+ * (HTML comments still INTACT — stripped per turn after fetch, so the
+ * DYNAMIC SUFFIX marker stays visible in the fallback text). The Langfuse
+ * STORED prompts are published per agent, ALREADY resolved, by
+ * `scripts/seed-langfuse-prompts.ts` — the runtime never resolves blocks on
+ * the fetched text; this fallback path (Langfuse off / unreachable /
+ * LANGFUSE_PROMPTS_LOCAL) is the only consumer of `resolveAgentBlocks` here.
  */
-const SYSTEM_PROMPT_FALLBACK = await Bun.file(TEMPLATE_URL).text();
+const UNIFIED_TEMPLATE_RAW = await Bun.file(UNIFIED_TEMPLATE_URL).text();
+const SYSTEM_PROMPT_FALLBACK = resolveAgentBlocks(
+  UNIFIED_TEMPLATE_RAW,
+  "chatbot",
+);
+const WORKFLOW_PROMPT_FALLBACK = resolveAgentBlocks(
+  UNIFIED_TEMPLATE_RAW,
+  "workflow",
+);
 const SUB_AGENT_FALLBACK = await Bun.file(SUB_AGENT_TEMPLATE_URL).text();
 
 /**
@@ -87,11 +122,11 @@ const SUB_AGENT_FALLBACK = await Bun.file(SUB_AGENT_TEMPLATE_URL).text();
 export const buildSubAgentSystemPrompt = async (
   ctx: AgentRuntimeContext,
 ): Promise<string> => {
-  const { text, link } = await fetchManagedPrompt(
+  const { text, promptRef } = await fetchManagedPrompt(
     MANAGED_PROMPTS.subAgent.name,
     SUB_AGENT_FALLBACK,
   );
-  ctx.langfusePromptLink = link;
+  ctx.langfusePrompt = promptRef;
   return text.replace(HTML_COMMENT_RE, "").trim();
 };
 
@@ -130,7 +165,7 @@ const formatWithZone = (date: Date, timeZone: string): string => {
   return `${date_}, ${time} (${timeZone}, ${offset})`;
 };
 
-const formatCurrentDate = (
+export const formatCurrentDate = (
   date: Date,
   timeZone: string | undefined,
 ): string => {
@@ -271,11 +306,11 @@ export const buildChatbotSystemPrompt = async (
   ctx: AgentRuntimeContext,
   deferredTools: SearchableToolRegistry = {},
 ): Promise<string> => {
-  const { text, link } = await fetchManagedPrompt(
+  const { text, promptRef } = await fetchManagedPrompt(
     MANAGED_PROMPTS.system.name,
     SYSTEM_PROMPT_FALLBACK,
   );
-  ctx.langfusePromptLink = link;
+  ctx.langfusePrompt = promptRef;
   const overlay = await loadPromptOverlay(
     ctx.modelProfile.assessment.promptOverlayKey,
   );
@@ -293,6 +328,7 @@ export const buildChatbotSystemPrompt = async (
       organizationId: ctx.organizationId,
       conversationId: ctx.conversationId ?? "unknown",
       deferredToolList: formatDeferredToolList(deferredTools),
+      blockedToolsNote: buildBlockedToolsNote(ctx),
       skillsCatalog:
         ctx.enabledSkillsBlock && ctx.enabledSkillsBlock.length > 0
           ? ctx.enabledSkillsBlock
@@ -319,11 +355,10 @@ export const buildChatbotSystemPrompt = async (
         ctx.activeMemoryBlock && ctx.activeMemoryBlock.length > 0
           ? ctx.activeMemoryBlock
           : "_No relevant memory recalled for this turn._",
-      teamFieldDefinitions:
-        ctx.teamFieldDefinitionsBlock &&
-        ctx.teamFieldDefinitionsBlock.length > 0
-          ? ctx.teamFieldDefinitionsBlock
-          : "_No dynamic fields configured for this team._",
+      teamObjects:
+        ctx.teamObjectsBlock && ctx.teamObjectsBlock.length > 0
+          ? ctx.teamObjectsBlock
+          : "_No object types configured for this team._",
       externalAppsBlock:
         ctx.externalAppsBlock && ctx.externalAppsBlock.length > 0
           ? ctx.externalAppsBlock
@@ -335,6 +370,70 @@ export const buildChatbotSystemPrompt = async (
         ctx.participantsBlock && ctx.participantsBlock.length > 0
           ? `This conversation is shared by several teammates:\n${ctx.participantsBlock}\n\nEach user message is prefixed with its sender in brackets — \`[Name]: …\`. Address people by name when it helps, and suggest @mentioning a teammate when their input is needed.`
           : "",
+    },
+  );
+};
+
+/**
+ * Build the workflow executor's system prompt — the `workflow` variant of
+ * the unified template. Same render pipeline as the chatbot (managed prompt
+ * → overlay → comment strip → variables); the variable map only covers the
+ * placeholders present in the workflow variant (no userName / userId /
+ * collaborationBlock — those live in chatbot-only blocks).
+ */
+export const buildWorkflowSystemPrompt = async (
+  ctx: AgentRuntimeContext,
+  deferredTools: SearchableToolRegistry = {},
+): Promise<string> => {
+  const { text, promptRef } = await fetchManagedPrompt(
+    MANAGED_PROMPTS.workflow.name,
+    WORKFLOW_PROMPT_FALLBACK,
+  );
+  ctx.langfusePrompt = promptRef;
+  const overlay = await loadPromptOverlay(
+    ctx.modelProfile.assessment.promptOverlayKey,
+  );
+  // The workflow variant is byte-stable per run: everything that mutates
+  // between turns (current date, task statuses, turn-1 recall) rides in the
+  // steering message, NOT here. So `currentDate`, `sessionStateBlock`, and
+  // `activeMemoryBlock` are intentionally absent from this map — their
+  // placeholders were removed from the `workflow` blocks of the template.
+  return renderPrompt(
+    insertPromptOverlay(text, overlay).replace(HTML_COMMENT_RE, "").trim(),
+    {
+      teamId: ctx.teamId,
+      organizationId: ctx.organizationId,
+      conversationId: ctx.conversationId ?? "unknown",
+      workflowRunId: ctx.workflowRunId ?? "unknown",
+      playbookBlock:
+        ctx.playbookBlock && ctx.playbookBlock.length > 0
+          ? ctx.playbookBlock
+          : "_No playbook provided — mark the current task failed._",
+      deferredToolList: formatDeferredToolList(deferredTools),
+      skillsCatalog:
+        ctx.enabledSkillsBlock && ctx.enabledSkillsBlock.length > 0
+          ? ctx.enabledSkillsBlock
+          : "_No skills enabled for this team._",
+      attachedFilesBlock:
+        ctx.attachedFilesBlock && ctx.attachedFilesBlock.length > 0
+          ? ctx.attachedFilesBlock
+          : "_No files handed to this run._",
+      nativeMediaNote: buildNativeMediaNote(
+        ctx.modelProfile.assessment.nativeInput,
+      ),
+      blockedToolsNote: buildBlockedToolsNote(ctx),
+      chatbotContextManifest:
+        ctx.chatbotContextManifest && ctx.chatbotContextManifest.length > 0
+          ? ctx.chatbotContextManifest
+          : "_No persistent context configured._",
+      teamObjects:
+        ctx.teamObjectsBlock && ctx.teamObjectsBlock.length > 0
+          ? ctx.teamObjectsBlock
+          : "_No object types configured for this team._",
+      externalAppsBlock:
+        ctx.externalAppsBlock && ctx.externalAppsBlock.length > 0
+          ? ctx.externalAppsBlock
+          : "_No external apps connected._",
     },
   );
 };

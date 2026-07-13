@@ -15,10 +15,10 @@ import {
   throwHttpError,
 } from "@fretik/shared/lib/errors";
 import { getPresignedUrl } from "@fretik/shared/lib/s3";
+import { promoteChatFilesToDrive } from "@fretik/shared/services/chat-files/promote-to-drive";
 import { OpenAPIHono } from "@hono/zod-openapi";
 import { and, desc, eq, ne } from "drizzle-orm";
 import { deleteFile, WORKSPACE_DIRS } from "../lib/conversation-storage";
-import { promoteChatFilesToDrive } from "../services/chat-files/promote-to-drive";
 import { uploadChatFile } from "../services/chat-files/upload";
 
 /**

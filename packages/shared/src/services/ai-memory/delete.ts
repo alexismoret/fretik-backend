@@ -2,6 +2,7 @@ import { eq } from "drizzle-orm";
 import db from "../../db";
 import { aiMemories } from "../../db/schema/ai-memory";
 import { createApiError, throwHttpError } from "../../lib/errors";
+import { emitDomainEvent, toDomainEventActor } from "../domain-events/emit";
 import { writeHistoryRow } from "./history";
 import { findMemoryByPath } from "./lookup";
 import { formatMemoryPath, parseMemoryPath } from "./paths";
@@ -56,6 +57,21 @@ export const deleteMemory = async (args: {
       previousContent: existing.content,
       previousPath: existing.path,
       reason: args.reason ?? null,
+    });
+
+    await emitDomainEvent({
+      tx,
+      organizationId: args.scopeKey.organizationId,
+      teamId: args.scopeKey.teamId,
+      type: "memory.deleted",
+      actor: toDomainEventActor({
+        byActor: args.actor.actor,
+        userId: args.actor.userId,
+        conversationId: args.actor.conversationId,
+      }),
+      subjectType: "memory",
+      payload: { path: existing.path, scope: existing.scope },
+      dedupKey: `memory.deleted:${existing.id}`,
     });
 
     await tx.delete(aiMemories).where(eq(aiMemories.id, existing.id));

@@ -1,9 +1,6 @@
-import {
-  hasToolCall,
-  stepCountIs,
-  type PrepareStepFunction,
-  type StopCondition,
-} from "ai";
+import { toolPolicyLevelSchema } from "@fretik/shared/schemas/tool-policies";
+import { workflowAutonomySchema } from "@fretik/shared/schemas/workflows";
+import { hasToolCall, isStepCount, type PrepareStepFunction } from "ai";
 import { z } from "zod";
 import {
   resolveChatModelForProfile,
@@ -14,15 +11,25 @@ import { areWebToolsEnabled } from "../../lib/web-egress";
 import { createDispatchAgentTool } from "../../tools/dispatch-agent";
 import {
   buildAgentSet,
+  buildToolsContext,
   type AgentRuntimeContextBase,
   type AgentSet,
 } from "../shared/agent-builder";
-import type { SearchableToolRegistry } from "../shared/chatbot-tool";
+import { memoizeAgentSets, stopOnPendingApproval } from "../shared/agent-set";
+import { parseIntEnv } from "../shared/env";
+import { policyHiddenToolNames } from "../shared/policy-tool-gate";
+import {
+  computeCoreToolNames,
+  pickDomainRegistry,
+  progressiveActiveTools,
+} from "../shared/progressive-disclosure";
 import { buildSubAgentSystemPrompt } from "../shared/prompt-renderer";
+import { llmRepairToolCall } from "../shared/repair-tool-call";
 import {
   getRuntimeContext,
   type AgentRuntimeContext,
 } from "../shared/runtime-context";
+import { workflowSubAgentHiddenToolNames } from "../shared/workflow-tool-gate";
 import { buildChatbotSystemPrompt } from "./system-prompt";
 import {
   buildChatbotTools,
@@ -43,50 +50,19 @@ import {
  * outside `[1, 200]` are rejected at boot to avoid silent
  * misconfiguration.
  */
-const parseChatbotMaxSteps = (): number => {
-  const raw = process.env.CHATBOT_MAX_STEPS;
-  if (raw === undefined || raw === "") return 30;
-  const parsed = Number.parseInt(raw, 10);
-  if (!Number.isFinite(parsed) || parsed < 1 || parsed > 200) {
-    throw new Error(
-      `Invalid CHATBOT_MAX_STEPS: "${raw}" — expected an integer in [1, 200].`,
-    );
-  }
-  return parsed;
-};
+const parseChatbotMaxSteps = (): number =>
+  parseIntEnv("CHATBOT_MAX_STEPS", { fallback: 30, min: 1, max: 200 });
 
-/**
- * Single source of truth for "what counts as a core tool name in the
- * chatbot tool set". Used by `chatbotPrepareStep` to compute
- * `activeTools` on every step. Also historically used as an
- * `initialActiveTools` hook for `buildAgentSet`, but that hook is
- * dead code in the chatbot flow because `prepareStep` runs on step
- * zero too and always overrides `activeTools`. Kept DRY here so any
- * future divergence between "initial" and "per-step" gating is an
- * intentional choice rather than an accidental drift.
- */
 /**
  * Names of the web tools, suppressed entirely when an operator sets
  * `AI_WEB_TOOLS_ENABLED=false` (the disable lever in `lib/web-egress.ts`).
- * Filtering here keeps them out of both `activeTools` and the prompt's
- * domain-tool catalogue, so the model never sees a tool it cannot use.
+ * Passing this as the `suppress` gate to the shared Progressive-Disclosure
+ * helpers keeps them out of both `activeTools` and the prompt's domain-tool
+ * catalogue, so the model never sees a tool it cannot use.
  */
 const WEB_TOOL_NAMES = new Set<string>(["searchWeb", "webFetch"]);
 const isToolSuppressed = (name: string): boolean =>
   !areWebToolsEnabled() && WEB_TOOL_NAMES.has(name);
-
-const computeCoreToolNames = (tools: ChatbotTools): (keyof ChatbotTools)[] => {
-  const isToolName = (name: string): name is keyof ChatbotTools =>
-    name in tools;
-  const result: (keyof ChatbotTools)[] = [];
-  for (const entry of Object.entries(tools)) {
-    const [name, t] = entry;
-    if (t.category === "core" && isToolName(name) && !isToolSuppressed(name)) {
-      result.push(name);
-    }
-  }
-  return result;
-};
 
 /**
  * Chatbot agent — Fretik's general-purpose data assistant.
@@ -95,8 +71,8 @@ const computeCoreToolNames = (tools: ChatbotTools): (keyof ChatbotTools)[] => {
  * a `{ primary, fallback }` pair of `ToolLoopAgent` singletons — the
  * handler tries `primary.stream()` first and falls back to
  * `fallback.stream()` on a primary error. Per-request state is
- * threaded through `experimental_context` via
- * `AgentRuntimeContext` (see `../shared/runtime-context.ts`).
+ * carried by `AgentRuntimeContext` (the agent's `runtimeContext`, fanned
+ * out to tools via `toolsContext` — see `../shared/runtime-context.ts`).
  */
 
 /**
@@ -136,7 +112,7 @@ export const ChatbotCallOptionsSchema = z.object({
   /**
    * Active Memory recall block — a 1-3 bullet markdown summary of
    * memories already judged relevant for the current turn (see
-   * `services/active-memory/recall.ts`). Threaded into
+   * `services/recall/recall.ts`). Threaded into
    * `AgentRuntimeContext.activeMemoryBlock` and substituted into the
    * `{{activeMemoryBlock}}` placeholder at the very bottom of the
    * dynamic suffix. Omitted when no candidate was relevant or when
@@ -144,18 +120,15 @@ export const ChatbotCallOptionsSchema = z.object({
    */
   activeMemoryBlock: z.string().optional(),
   /**
-   * Compact catalogue of the team's enabled dynamic field definitions
-   * — one line per field (`- key (type)`), ordered by `displayOrder`.
-   * The handler builds it via `getFieldDefinitionsForTeam`
-   * (Redis-cached). Threaded into
-   * `AgentRuntimeContext.teamFieldDefinitionsBlock` and substituted
-   * into the `{{teamFieldDefinitions}}` placeholder under
-   * `<team_fields>` in the dynamic suffix. Lets the LLM write correct
-   * `document_field_values.field_key` queries and
-   * `customFilters[].fieldKey` for `listDocuments` without an extra
-   * tool call. Omitted when the team has no enabled fields.
+   * Catalogue of the team's object types for the AI query path — one line
+   * per type (typed view + field columns + outgoing relations). The
+   * handler builds it via `describeTeamSchema`. Threaded into
+   * `AgentRuntimeContext.teamObjectsBlock` and substituted into the
+   * `{{teamObjects}}` placeholder under `<team_objects>` in the dynamic
+   * suffix. Lets the LLM write correct typed-view + `links` queries
+   * without an extra tool call. Omitted when the team has no types.
    */
-  teamFieldDefinitionsBlock: z.string().optional(),
+  teamObjectsBlock: z.string().optional(),
   /**
    * Catalogue of skills enabled for this team — one line per skill
    * (`- **name** — description`). The handler builds it via
@@ -209,48 +182,47 @@ export const ChatbotCallOptionsSchema = z.object({
    * external apps; the prompt then shows the placeholder.
    */
   externalAppsBlock: z.string().optional(),
+  /**
+   * Autonomy of the enclosing workflow run, when this conversation belongs to
+   * one. Poured into dispatched sub-agents (`dispatchAgent`) so they inherit
+   * the run's write gate — same rules as the main workflow agent. Undefined for
+   * plain chat (and its sub-agents), which then expose the full tool menu.
+   */
+  workflowAutonomy: workflowAutonomySchema.optional(),
+  /**
+   * The team's builtin-tool permission overrides (`{ [toolName]: level }`),
+   * loaded per turn by the handler. Drives blocking (prune from the menu +
+   * prompt) and per-tool approval routing. Omitted = every tool at its default.
+   */
+  toolPolicies: z.record(z.string(), toolPolicyLevelSchema).optional(),
 });
 
 export type ChatbotCallOptions = z.infer<typeof ChatbotCallOptionsSchema>;
 
 /**
- * Narrow down `ChatbotTools` to the `{ name → SearchableTool }` shape
- * the prompt renderer consumes for the `{{deferredToolList}}`
- * placeholder. Single source of truth: any domain tool registered in
- * `buildDomainTools` shows up in the prompt automatically.
- *
- * Memoized per-tool-set-reference: the chatbot tool set is built once
- * at agent construction and never mutated, so we can cache the
- * derived registry behind a `WeakMap` keyed on the tool set. First
- * call does the filter; subsequent calls (one per turn through
- * `chatbotSystemPrompt`) hit the cache.
- */
-const domainRegistryCache = new WeakMap<ChatbotTools, SearchableToolRegistry>();
-const pickDomainRegistry = (tools: ChatbotTools): SearchableToolRegistry => {
-  const cached = domainRegistryCache.get(tools);
-  if (cached) return cached;
-  const domainTools: SearchableToolRegistry = {};
-  for (const [name, t] of Object.entries(tools)) {
-    if (t.category === "domain" && !isToolSuppressed(name)) {
-      domainTools[name] = {
-        description: t.description,
-        searchHint: t.searchHint,
-        category: t.category,
-      };
-    }
-  }
-  domainRegistryCache.set(tools, domainTools);
-  return domainTools;
-};
-
-/**
  * System prompt renderer wrapping `buildChatbotSystemPrompt`. Called
  * by `buildAgentSet`'s `prepareCall` on every turn with a fresh ctx.
+ * The domain-tool registry (for the `{{deferredToolList}}` placeholder) is
+ * filtered by the shared `pickDomainRegistry`, minus the web tools when
+ * disabled — memoized per tool-set reference so per-turn renders hit the cache.
  */
 const chatbotSystemPrompt = (
   ctx: AgentRuntimeContext,
   tools: ChatbotTools,
-): Promise<string> => buildChatbotSystemPrompt(ctx, pickDomainRegistry(tools));
+): Promise<string> => {
+  // `pickDomainRegistry` is memoized on the static tool set, so per-team policy
+  // filtering happens HERE (downstream) — a `blocked` domain tool must not
+  // appear in `{{deferredToolList}}`.
+  const domain = pickDomainRegistry(tools, isToolSuppressed);
+  const hidden = policyHiddenToolNames(ctx);
+  const visible =
+    hidden.size === 0
+      ? domain
+      : Object.fromEntries(
+          Object.entries(domain).filter(([name]) => !hidden.has(name)),
+        );
+  return buildChatbotSystemPrompt(ctx, visible);
+};
 
 /**
  * Progressive Disclosure hook. Receives the static tool set at
@@ -266,16 +238,19 @@ const chatbotSystemPrompt = (
 const chatbotPrepareStep = (
   tools: ChatbotTools,
 ): PrepareStepFunction<ChatbotTools> => {
-  const isToolName = (name: string): name is keyof ChatbotTools =>
-    name in tools;
-  const coreNames = computeCoreToolNames(tools);
+  const coreNames = computeCoreToolNames(tools, isToolSuppressed);
 
   return (stepContext) => {
     const ctx = getRuntimeContext(stepContext);
-    const activatedDomainNames = ctx.dynamicToolManager
-      .getSnapshot()
-      .filter(isToolName);
-    return { activeTools: [...coreNames, ...activatedDomainNames] };
+    return {
+      activeTools: progressiveActiveTools(
+        ctx,
+        tools,
+        coreNames,
+        policyHiddenToolNames(ctx),
+      ),
+      toolsContext: buildToolsContext(tools, ctx),
+    };
   };
 };
 
@@ -284,7 +259,7 @@ const chatbotPrepareStep = (
  * `AgentRuntimeContext`. `buildAgentSet` injects the per-request
  * managers (`dynamicToolManager`, `taskManager`) on top.
  */
-const buildChatbotRuntimeContextBase = (
+export const buildChatbotRuntimeContextBase = (
   options: ChatbotCallOptions,
 ): AgentRuntimeContextBase => ({
   organizationId: options.organizationId,
@@ -296,12 +271,16 @@ const buildChatbotRuntimeContextBase = (
   attachedFilesBlock: options.attachedFilesBlock,
   chatbotContextManifest: options.chatbotContextManifest,
   activeMemoryBlock: options.activeMemoryBlock,
-  teamFieldDefinitionsBlock: options.teamFieldDefinitionsBlock,
+  teamObjectsBlock: options.teamObjectsBlock,
   enabledSkillsBlock: options.enabledSkillsBlock,
   participantsBlock: options.participantsBlock,
   externalAppConnections: options.externalAppConnections,
   externalAppsBlock: options.externalAppsBlock,
   traceId: options.traceId,
+  // Carried so a workflow-dispatched sub-agent inherits the run's write gate;
+  // undefined for plain chat.
+  workflowAutonomy: options.workflowAutonomy,
+  toolPolicies: options.toolPolicies,
 });
 
 /**
@@ -320,17 +299,12 @@ const buildChatbotRuntimeContextBase = (
  * exhausted]" marker so the parent agent can decide whether to
  * retry with a tighter task scope or accept the partial result.
  */
-const parseSubAgentMaxSteps = (): number => {
-  const raw = process.env.CHATBOT_SUB_AGENT_MAX_STEPS;
-  if (raw === undefined || raw === "") return 25;
-  const parsed = Number.parseInt(raw, 10);
-  if (!Number.isFinite(parsed) || parsed < 1 || parsed > 100) {
-    throw new Error(
-      `Invalid CHATBOT_SUB_AGENT_MAX_STEPS: "${raw}" — expected an integer in [1, 100].`,
-    );
-  }
-  return parsed;
-};
+const parseSubAgentMaxSteps = (): number =>
+  parseIntEnv("CHATBOT_SUB_AGENT_MAX_STEPS", {
+    fallback: 25,
+    min: 1,
+    max: 100,
+  });
 
 /**
  * Sub-agent system prompt — pure static text, no per-turn variables.
@@ -343,13 +317,38 @@ const subAgentSystemPrompt = (ctx: AgentRuntimeContext): Promise<string> =>
   buildSubAgentSystemPrompt(ctx);
 
 /**
+ * Sub-agent tool gate. Plain-chat sub-agents expose every tool (no Progressive
+ * Disclosure inside a sub-agent run). A sub-agent dispatched INSIDE a workflow
+ * inherits the run's `workflowAutonomy` (poured in via `dispatchAgent`) and
+ * prunes the same tools the main workflow agent would — writes/memory by mode,
+ * plus the schema/meta tools the main agent omits at the registry level. Keeps
+ * delegation from bypassing the run's write gate.
+ */
+const subAgentPrepareStep = (
+  tools: SubAgentTools,
+): PrepareStepFunction<SubAgentTools> => {
+  const allNames = Object.keys(tools) as (keyof SubAgentTools)[];
+  return (stepContext) => {
+    const ctx = getRuntimeContext(stepContext);
+    // Team-policy blocked tools are hidden in every context (chat + workflow);
+    // a workflow sub-agent additionally prunes writes/memory + schema by mode.
+    const hidden = new Set<string>(policyHiddenToolNames(ctx));
+    if (ctx.workflowAutonomy !== undefined) {
+      for (const n of workflowSubAgentHiddenToolNames(ctx.workflowAutonomy))
+        hidden.add(n);
+    }
+    return { activeTools: allNames.filter((n) => !hidden.has(String(n))) };
+  };
+};
+
+/**
  * Sub-agent set on the PRIMARY model — same model as the main agent
  * with the same fallback. Used when `dispatchAgent({ model: 'primary' })`
  * (the default) is called.
  *
- * No `prepareStep` hook → the framework defaults to "every tool name
- * in the registry is active on every step", which is what we want
- * for a sub-agent (no Progressive Disclosure inside a sub-agent run).
+ * `prepareStep` (`subAgentPrepareStep`) exposes every tool for a plain-chat
+ * sub-agent (no Progressive Disclosure inside a sub-agent run) but applies the
+ * workflow write gate when the sub-agent runs inside a workflow.
  */
 const subAgentPrimarySet = buildAgentSet<ChatbotCallOptions, SubAgentTools>({
   id: "chatbot.sub.primary",
@@ -358,9 +357,11 @@ const subAgentPrimarySet = buildAgentSet<ChatbotCallOptions, SubAgentTools>({
   model: resolveModel("chat"),
   fallbackModel: resolveModel("chat-fallback"),
   stopWhen: [
-    stepCountIs(parseSubAgentMaxSteps()),
+    isStepCount(parseSubAgentMaxSteps()),
     hasToolCall("askUserQuestion"),
   ],
+  repairToolCall: llmRepairToolCall<SubAgentTools>(),
+  prepareStep: subAgentPrepareStep,
   buildRuntimeContextBase: buildChatbotRuntimeContextBase,
   callOptionsSchema: ChatbotCallOptionsSchema,
 });
@@ -384,9 +385,11 @@ const subAgentCheapSet = buildAgentSet<ChatbotCallOptions, SubAgentTools>({
   model: resolveModel("dispatch-cheap"),
   fallbackModel: resolveModel("chat"),
   stopWhen: [
-    stepCountIs(parseSubAgentMaxSteps()),
+    isStepCount(parseSubAgentMaxSteps()),
     hasToolCall("askUserQuestion"),
   ],
+  repairToolCall: llmRepairToolCall<SubAgentTools>(),
+  prepareStep: subAgentPrepareStep,
   buildRuntimeContextBase: buildChatbotRuntimeContextBase,
   callOptionsSchema: ChatbotCallOptionsSchema,
 });
@@ -399,38 +402,10 @@ const subAgentCheapSet = buildAgentSet<ChatbotCallOptions, SubAgentTools>({
  * in `buildChatbotTools` so it's always available to the parent
  * without going through Progressive Disclosure.
  */
-const dispatchAgentTool = createDispatchAgentTool({
+export const dispatchAgentTool = createDispatchAgentTool({
   primary: subAgentPrimarySet.primary,
   cheap: subAgentCheapSet.primary,
 });
-
-/**
- * Custom `stopWhen` predicate — halts the agent loop the moment a
- * `python` tool call comes back with `{ status: "approval_pending" }`.
- *
- * `hasToolCall("python")` would fire on every step that ran python, not
- * just the ones where execution paused waiting for a HITL approval, so
- * we walk the last step's `toolResults` and look at the output shape
- * instead. Symmetric to `hasToolCall("askUserQuestion")` (which is also
- * load-bearing): without it, the agent would loop python → ApprovalPending
- * → python forever, since each retry re-emits the same code, hits the
- * same dispatch path, and the approval row is still `pending`.
- *
- * Defining this in TypeScript with `unknown` narrowing (not `as`) keeps
- * the codebase's no-cast rule intact.
- */
-const pythonAwaitingApproval: StopCondition<ChatbotTools> = ({ steps }) => {
-  const lastStep = steps.at(-1);
-  if (lastStep === undefined) return false;
-  for (const tr of lastStep.toolResults) {
-    if (tr.toolName !== "python") continue;
-    const output: unknown = tr.output;
-    if (output === null || typeof output !== "object") continue;
-    if (!("status" in output)) continue;
-    if (output.status === "approval_pending") return true;
-  }
-  return false;
-};
 
 /**
  * The chatbot agent pair. Instantiated once at module init; reused
@@ -438,13 +413,6 @@ const pythonAwaitingApproval: StopCondition<ChatbotTools> = ({ steps }) => {
  * `chatbotAgentSet.primary.stream({ messages, options, abortSignal })`
  * with a try/catch falling back to `chatbotAgentSet.fallback.stream(...)`.
  */
-// Note: we intentionally do NOT pass `initialActiveTools` here.
-// `prepareStep` fires on every step including step 0 and always
-// returns an explicit `{ activeTools }`, so any value supplied to
-// `initialActiveTools` would be immediately overridden. Keeping the
-// initial gating logic in one place (`chatbotPrepareStep`) avoids
-// the risk of those two lists drifting apart over time. See the
-// `computeCoreToolNames` docblock above for the DRY rationale.
 const makeChatbotAgentSet = (
   model: ResolvedModel,
 ): AgentSet<ChatbotCallOptions, ChatbotTools> =>
@@ -465,52 +433,38 @@ const makeChatbotAgentSet = (
     //      starts fresh once the frontend posts the user's reply as a
     //      new user message.
     stopWhen: [
-      stepCountIs(parseChatbotMaxSteps()),
+      isStepCount(parseChatbotMaxSteps()),
       hasToolCall("askUserQuestion"),
-      // Pause the loop when a write plan submitted via `run_plan(...)` is
-      // waiting for the user's approval in the UI. The next user message
-      // (sent by the frontend after grant/modify/reject) starts a fresh
-      // turn — the agent re-runs the same code and the dispatch path
+      // Pause the loop when a tool call is waiting for the user's approval in
+      // the UI (a `run_plan` plan or a gated `records.bulk_*` write). The next
+      // user message (sent by the frontend after grant/modify/reject) starts a
+      // fresh turn — the agent re-runs the same code and the dispatch path
       // matches the grant by `lookupHash`.
-      pythonAwaitingApproval,
+      stopOnPendingApproval<ChatbotTools>(),
     ],
+    repairToolCall: llmRepairToolCall<ChatbotTools>(),
     prepareStep: chatbotPrepareStep,
     buildRuntimeContextBase: buildChatbotRuntimeContextBase,
     callOptionsSchema: ChatbotCallOptionsSchema,
   });
 
 /**
- * Per-replica memoization of chatbot agent sets, one per serving
- * profile. AgentSets are STATELESS singletons (per-request state is
- * created inside `prepareCall`), so every replica builds identical
- * sets from code — no cross-replica coordination. Bounded by the
- * registry: `resolveChatModelForProfile` throws on unknown keys.
- */
-const chatbotAgentSets = new Map<
-  string,
-  AgentSet<ChatbotCallOptions, ChatbotTools>
->();
-
-/**
  * Chatbot agent set for an arbitrary registry profile — the seam the
  * C3 eval header (`X-Model-Profile-Key`) and the C8 per-team /
  * per-conversation selection call. No `profileKey` → the default
  * `chat` role binding. The fallback agent stays on the shared
- * `chat-fallback` binding regardless of the primary profile.
+ * `chat-fallback` binding regardless of the primary profile. Memoized
+ * per profile (`memoizeAgentSets`) — mirrors `getWorkflowAgentSet`.
  */
+const memoChatbotAgentSet = memoizeAgentSets(makeChatbotAgentSet);
+
 export const getChatbotAgentSet = (
   profileKey?: string,
-): AgentSet<ChatbotCallOptions, ChatbotTools> => {
-  const resolved =
+): AgentSet<ChatbotCallOptions, ChatbotTools> =>
+  memoChatbotAgentSet(
     profileKey === undefined
       ? resolveModel("chat")
-      : resolveChatModelForProfile(profileKey);
-  const key = resolved.profile.key;
-  const cached = chatbotAgentSets.get(key);
-  if (cached) return cached;
-  const set = makeChatbotAgentSet(resolved);
-  chatbotAgentSets.set(key, set);
-  return set;
-};
+      : resolveChatModelForProfile(profileKey),
+  );
 
 export const chatbotAgentSet = getChatbotAgentSet();

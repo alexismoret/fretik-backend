@@ -5,6 +5,7 @@ import { extractNangoErrorDetails } from "../../../lib/external-apps/extract-nan
 import { getNangoClient } from "../../../lib/external-apps/nango-client";
 import { ERROR_CODES } from "../../../schemas/errors";
 import { getConnectionForCaller } from "./get-by-id";
+import { requireNangoRef } from "./nango-ref";
 
 /**
  * Mint a Nango Connect Session bound to an EXISTING connection so the
@@ -45,6 +46,7 @@ export const createReconnectSession = async (params: {
     });
   }
 
+  const { nangoProviderConfigKey, nangoConnectionId } = requireNangoRef(row);
   const nango = getNangoClient();
   const integrationsConfigDefaults = buildIntegrationsConfigDefaults({
     providerKey: row.providerKey,
@@ -54,8 +56,8 @@ export const createReconnectSession = async (params: {
   let session;
   try {
     session = await nango.createReconnectSession({
-      connection_id: row.nangoConnectionId,
-      integration_id: row.nangoProviderConfigKey,
+      connection_id: nangoConnectionId,
+      integration_id: nangoProviderConfigKey,
       ...(integrationsConfigDefaults
         ? { integrations_config_defaults: integrationsConfigDefaults }
         : {}),
@@ -63,7 +65,7 @@ export const createReconnectSession = async (params: {
   } catch (error) {
     return throwHttpError(400, {
       code: ERROR_CODES.EXTERNAL_APP_NANGO_VERIFY_FAILED,
-      message: `Nango refused the reconnect session for "${row.nangoProviderConfigKey}".`,
+      message: `Nango refused the reconnect session for "${nangoProviderConfigKey}".`,
       details: extractNangoErrorDetails(error),
     });
   }

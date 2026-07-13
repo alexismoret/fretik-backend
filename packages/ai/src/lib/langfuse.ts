@@ -27,8 +27,9 @@
  */
 import { LangfuseClient } from "@langfuse/client";
 import { LangfuseSpanProcessor } from "@langfuse/otel";
+import { LangfuseVercelAiSdkIntegration } from "@langfuse/vercel-ai-sdk";
 import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
-import type { TelemetrySettings } from "ai";
+import { registerTelemetry, type TelemetryOptions } from "ai";
 import { langfuseMask } from "./langfuse-mask";
 
 const publicKey = process.env.LANGFUSE_PUBLIC_KEY;
@@ -76,11 +77,18 @@ export const langfuseSpanProcessor = langfuseEnabled
   : undefined;
 
 if (langfuseSpanProcessor) {
-  // Register globally so the AI SDK's `experimental_telemetry` spans flow
-  // into this processor via the global OTel tracer.
+  // Register the span processor globally so exported spans reach Langfuse
+  // via the global OTel tracer.
   new NodeTracerProvider({
     spanProcessors: [langfuseSpanProcessor],
   }).register();
+  // AI SDK v7 uses a callback-based telemetry system: register the
+  // Langfuse-owned integration so `generateText`/`streamText`/`ToolLoopAgent`
+  // telemetry events become costed Langfuse observations (model + tool spans),
+  // nested under whatever parent span `propagateAttributes` opened
+  // (`chatbot-turn`, `workflow-turn`, pipeline traces). Telemetry is then ON by
+  // default for every SDK call; `telemetry.isEnabled: false` opts a call out.
+  registerTelemetry(new LangfuseVercelAiSdkIntegration());
   console.log(
     `[langfuse] tracing enabled — environment=${langfuseEnvironment} host=${baseUrl ?? "?"}`,
   );
@@ -88,19 +96,32 @@ if (langfuseSpanProcessor) {
 
 /**
  * Telemetry config for a model call. Pass the result straight to a
- * `streamText` / `generateText` / `ToolLoopAgent` `experimental_telemetry`
- * field. Returns `undefined` (telemetry off) when Langfuse is unconfigured.
+ * `streamText` / `generateText` / `ToolLoopAgent` `telemetry` field.
+ * Returns `undefined` (telemetry off) when Langfuse is unconfigured.
  *
  * `functionId` groups telemetry by call site in the Langfuse UI — use a
  * stable, descriptive id (`agent:chatbot`, `compaction`, `pre-extract`).
  * Session / user / tags are attached separately via `propagateAttributes`
- * at the call site (they vary per request).
+ * at the call site (they vary per request). `isEnabled` is omitted: v7
+ * telemetry is on by default once the integration above is registered.
  */
 export const telemetryFor = (
   functionId: string,
-): TelemetrySettings | undefined =>
+  /**
+   * Top-level `runtimeContext` keys to expose to telemetry (all excluded by
+   * default in v7). The agent passes `{ langfusePrompt: true }` so the Langfuse
+   * integration can link the generation to its managed prompt version; no other
+   * key is opted in, so nothing else leaks onto the span.
+   */
+  includeRuntimeContext?: TelemetryOptions["includeRuntimeContext"],
+): TelemetryOptions | undefined =>
   langfuseEnabled
-    ? { isEnabled: true, functionId, recordInputs: true, recordOutputs: true }
+    ? {
+        functionId,
+        recordInputs: true,
+        recordOutputs: true,
+        ...(includeRuntimeContext ? { includeRuntimeContext } : {}),
+      }
     : undefined;
 
 /**

@@ -8,7 +8,7 @@ This package owns the **generic B2B core** of Fretik. Schemas, services, and lib
 
 - Industry specialisation lives in `src/templates/document-fields/` (`transport.ts`, `legal.ts`, `accounting.ts`, `default.ts`, and future siblings). A team picks a template; the template configures their fields and document types. This package will grow more templates over time — keep them isolated to that directory.
 - The E2B network policy (`src/services/e2b/network-policy.ts`) uses a generic `b2b` allowlist (Google Workspace, Slack, Notion, Stripe, Linear, etc.) — not an industry-specific one.
-- **Legacy enums in `db/schema/entities.ts`** (`entity_type` includes `carrier`; `entity_role` includes `broker`/`consignee`/`shipper`) are transport-specific values inherited from the previous positioning. They stay for now because the pilot team operates in transport. A future chantier will move this to a per-team configurable enum (like document-field templates). Until then: don't add new transport-specific values, and avoid surfacing the legacy names in user-facing strings — prefer generic terminology in copy.
+- The old `entities` model (`entity_type`/`entity_role` enums) is **gone** — mentioned parties are now `object_records` linked to the document mirror. The only transport heritage left: the `transport` document-field template (above) and the default mention-target type `company` in `services/documents/sync-document-graph.ts` (overridable per org via `organization_settings.document_mention_target_type_key`). Keep new schema/service/lib code industry-agnostic.
 
 ## Conventions
 
@@ -18,6 +18,7 @@ This package owns the **generic B2B core** of Fretik. Schemas, services, and lib
 - **Services = one file per operation.** `services/{domain}/` holds `upload.ts`, `delete.ts`, `retrieve.ts`, etc. Each exports a function. No class monoliths, no `index.ts` that re-exports everything.
 - **Every new export must be wired in `package.json` `exports`.** Consumers import `@fretik/shared/services/documents/upload`, not a relative path. If it's not in `exports`, it doesn't exist.
 - **Migration lock.** `db:migrate` holds a PG advisory lock — safe to run concurrently, only one wins. Don't add your own locking on top.
+- **Bulk writes use `@fretik/shared/lib/db-bulk` — never loop a single-row service.** When you write a caller-supplied LIST of rows (records, links, events, …), do it with SET-BASED statements: one multi-row `INSERT` / `DELETE` / `UPDATE … FROM (VALUES …)` per chunk. A `for` loop calling a single-row service over thousands of rows is N round-trips and is a regression. Use `chunkForBulk()` (keeps each statement under Postgres' 65535-param ceiling), `MAX_BULK_ITEMS` (enforce at the request boundary), and `formatBulkRowError()` (per-row error lines). Keep the single-row service (`createObjectRecord`) AND a `bulk*` sibling (`bulkCreateObjectRecords`) — they have different contracts (throw-on-first vs per-row partial success), mirroring `readRecordData` / `readRecordDataBatch`.
 
 ## Pattern reference
 

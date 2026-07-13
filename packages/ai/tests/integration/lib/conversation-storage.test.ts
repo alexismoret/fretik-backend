@@ -87,7 +87,7 @@ describe("WORKSPACE_DIRS / WORKSPACE_ROOT exports", () => {
 });
 
 describe("attachUserFile", () => {
-  test("writes the file under attachments/ and queues an S3 backup", async () => {
+  test("uploads the file to S3 under attachments/ (sandbox picks it up lazily on next hydration)", async () => {
     const result = await attachUserFile(
       "conv-1",
       "invoice.pdf",
@@ -96,10 +96,11 @@ describe("attachUserFile", () => {
 
     expect(result.path).toBe("attachments/invoice.pdf");
     expect(result.absolutePath).toBe("/workspace/attachments/invoice.pdf");
-    expect(sandboxFs.exists("conv-1", "attachments/invoice.pdf")).toBe(true);
-
-    // S3 backup queue is fire-and-forget — give it a microtask to drain.
-    await new Promise((r) => setImmediate(r));
+    // `attachUserFile` writes straight to S3 (the source of truth) and bumps
+    // the attachment generation counter — it does NOT touch a live sandbox
+    // directly. A sandbox not yet created for this conversation restores
+    // attachments from S3 on its next bootstrap; an already-running one
+    // reconciles on its next `ensureSandboxReady` call.
     expect(sandboxFs.existsS3("conv-1", "attachments/invoice.pdf")).toBe(true);
   });
 

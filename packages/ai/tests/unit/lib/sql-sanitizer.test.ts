@@ -71,8 +71,8 @@ describe("sanitizeSelect — happy path", () => {
   });
 
   test("accepts a subquery on an allowed table", () => {
-    const sql = sanitizeSelect("SELECT * FROM (SELECT id FROM entities) s");
-    expect(sql).toContain("entities");
+    const sql = sanitizeSelect("SELECT * FROM (SELECT id FROM folders) s");
+    expect(sql).toContain("folders");
   });
 
   test("MAX_SQL_LIMIT is a sensible positive integer", () => {
@@ -168,5 +168,62 @@ describe("sanitizeSelect — table allowlist", () => {
       "WITH leak AS (SELECT password FROM account) SELECT * FROM leak",
       "SQL_TABLE_NOT_ALLOWED",
     );
+  });
+});
+
+describe("sanitizeSelect — object graph surface (typed tables)", () => {
+  test("accepts the registry object_records (RLS-fenced, granted)", () => {
+    const sql = sanitizeSelect(
+      "SELECT id, label, status FROM object_records WHERE status = 'confirmed'",
+    );
+    expect(sql).toContain("object_records");
+  });
+
+  test("accepts object_types (the catalog, joined for the type key)", () => {
+    const sql = sanitizeSelect(
+      "SELECT r.label, t.key FROM object_records r JOIN object_types t ON t.id = r.object_type_id",
+    );
+    expect(sql).toContain("object_types");
+  });
+
+  test("accepts a per-type typed table in the data schema (data.obj_*)", () => {
+    const sql = sanitizeSelect(
+      "SELECT id, price FROM data.obj_3f9a2b1c4d5e WHERE status = 'confirmed'",
+    );
+    expect(sql).toContain("data.obj_3f9a2b1c4d5e");
+  });
+
+  test("accepts a JOIN to locations with a PostGIS spatial filter", () => {
+    const sql = sanitizeSelect(
+      `SELECT o.id, loc.resolved_address
+       FROM data.obj_3f9a2b1c4d5e o
+       JOIN locations loc ON loc.id = o."site"
+       WHERE loc.geom && ST_MakeEnvelope(2.2, 48.8, 2.4, 48.9, 4326)`,
+    );
+    expect(sql).toContain("locations");
+  });
+
+  test("accepts the graph relations (links / link_types / domain_events)", () => {
+    const sql = sanitizeSelect(
+      "SELECT l.id FROM links l JOIN link_types lt ON lt.id = l.link_type_id JOIN domain_events de ON de.subject_record_id = l.from_record_id",
+    );
+    expect(sql).toContain("link_types");
+  });
+
+  test("accepts the killer-query JOIN across typed tables + links", () => {
+    const sql = sanitizeSelect(
+      `SELECT p.price, c.label
+       FROM data.obj_3f9a2b1c4d5e p
+       JOIN links l ON l.from_record_id = p.id AND l.valid_to IS NULL AND l.invalidated_at IS NULL
+       JOIN link_types lt ON lt.id = l.link_type_id AND lt.key = 'carrier'
+       JOIN data.obj_company_aaaa c ON c.id = l.to_record_id
+       WHERE p.status = 'confirmed' AND p.destination_port ILIKE 'shanghai' AND p.year = 2025
+       ORDER BY p.price ASC LIMIT 1`,
+    );
+    expect(sql).toContain("data.obj_3f9a2b1c4d5e");
+  });
+
+  test("REJECTS a non-obj_ table in the data schema", () => {
+    expectRejection("SELECT * FROM data.secrets", "SQL_TABLE_NOT_ALLOWED");
   });
 });

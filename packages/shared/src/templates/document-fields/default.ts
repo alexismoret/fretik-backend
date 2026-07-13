@@ -11,7 +11,6 @@ export const defaultTemplate: DocumentFieldTemplate = {
   descriptionKey: "default.description",
   fields: [
     {
-      resourceType: "document",
       key: "document_type",
       labelKey: "default.fields.documentType.label",
       descriptionKey: "default.fields.documentType.description",
@@ -43,11 +42,9 @@ export const defaultTemplate: DocumentFieldTemplate = {
           labelKey: "default.fields.documentType.options.other",
         },
       ],
-      displayInFilters: true,
       displayOrder: 0,
     },
     {
-      resourceType: "document",
       key: "document_date",
       labelKey: "default.fields.documentDate.label",
       descriptionKey: "default.fields.documentDate.description",

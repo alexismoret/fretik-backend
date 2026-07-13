@@ -8,6 +8,7 @@ import "./lib/langfuse";
 import "@fretik/providers";
 
 import { errorHandler } from "@fretik/shared/lib/error-handler";
+import { globalRateLimiter } from "@fretik/shared/lib/rate-limit";
 import { reclaimOrphanSandboxes } from "@fretik/shared/services/e2b/reclaim-orphans";
 import { syncBundledSkillsCatalogue } from "@fretik/shared/services/skills/sync-bundled-catalogue";
 import { OpenAPIHono } from "@hono/zod-openapi";
@@ -17,10 +18,11 @@ import { cors } from "hono/cors";
 import packagejson from "../package.json";
 import { chatFilesRoutes } from "./handlers/chat-files";
 import { chatbotInternalRoutes, chatbotRoutes } from "./handlers/chatbot";
-import { fieldDefinitionsRoutes } from "./handlers/field-definitions";
+import { memoryRoutes } from "./handlers/memory";
 import { modelProfilesRoutes } from "./handlers/model-profiles";
 import { preExtractRoutes } from "./handlers/pre-extract";
 import { vectorizeRoutes } from "./handlers/vectorize";
+import { workflowTriggerRoutes } from "./handlers/workflow";
 import { registerOrphanCleanupCron } from "./services/chat-files/orphan-cron";
 import {
   loadSkillCatalog,
@@ -42,6 +44,11 @@ app.use(
     credentials: true,
   }),
 );
+
+// Broad per-IP anti-abuse backstop (Redis-backed, shared across instances).
+// Exempts `/internal/*` (Trigger.dev callbacks + API→AI service calls) and
+// `/health` so automatic traffic is never throttled.
+app.use("*", globalRateLimiter());
 
 // Health check
 app.get("/health", (c) => c.json({ status: "ok" }, 200));
@@ -65,10 +72,12 @@ app.route("/internal/vectorize", vectorizeRoutes);
 // entity extraction. Consumed by @fretik/shared upload pipeline.
 app.route("/internal/pre-extract", preExtractRoutes);
 
-// Internal field-definitions assistant endpoint — translates a user's
-// plain-language request into a coherent set of create/update/delete
-// operations on their team or organization's field definitions.
-app.route("/internal/field-definitions", fieldDefinitionsRoutes);
+// Internal mention extraction for the @fretik/jobs event→graph resolver.
+app.route("/internal/memory", memoryRoutes);
+
+// Trigger.dev-facing workflow engine (turn loop, finalize, cron-fire) —
+// authenticated by TRIGGER_CALLBACK_KEY, the only public surface in prod.
+app.route("/internal/trigger", workflowTriggerRoutes);
 
 // Load the bundled-skills catalog into memory so the system-prompt
 // renderer can advertise the L1 listing (skill name + description).

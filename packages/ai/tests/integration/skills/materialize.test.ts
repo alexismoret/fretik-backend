@@ -30,6 +30,7 @@ const NAME_MAX = 64;
 
 const EXPECTED_SKILL_NAMES = [
   "data-viz",
+  "designing-object-types",
   "doc-coauthoring",
   "docx",
   "pdf",

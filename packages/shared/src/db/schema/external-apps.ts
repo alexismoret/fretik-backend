@@ -1,7 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
   index,
-  integer,
   jsonb,
   pgEnum,
   pgTable,
@@ -11,18 +10,20 @@ import {
   uuid,
   varchar,
 } from "drizzle-orm/pg-core";
-import { aiConversations } from "./ai";
+import type { ExternalAppDescriptor } from "../../schemas/external-app-descriptor";
+import type { ToolPolicyLevel } from "../../schemas/tool-policies";
 import { organization, team, user } from "./auth-schema";
 
 /**
  * External apps — connections to third-party SaaS (Outlook, Gmail, …) via
- * Nango, and the human-in-the-loop approval gate for write actions the
- * chatbot performs on them.
- *
- * The provider catalogue itself (which apps exist, which actions, their
+ * Nango. The provider catalogue itself (which apps exist, which actions, their
  * endpoints) is NOT in the database — it lives as YAML manifests under
  * `src/external-apps/providers/<key>/manifest.yaml`, loaded into a registry
- * at boot. The DB only stores per-tenant connections and approval state.
+ * at boot. The DB only stores per-tenant connections.
+ *
+ * The write-action approval gate these connections feed lives in the generic
+ * `approvals` schema (`./approvals`) — external-app plans are one approval
+ * kind among several (record writes, questions).
  */
 
 /**
@@ -37,6 +38,43 @@ export const externalAppConnectionStatusEnum = pgEnum(
   "external_app_connection_status",
   ["active", "disabled", "error"],
 );
+
+/**
+ * How a direct-transport MCP connection authenticates to its server. NULL on a
+ * connection row means "not an MCP connection" (a manifest provider) — this
+ * column is the single discriminator for MCP-ness (see `mcp/connection-kind`).
+ *
+ *  - `none`        : no auth — the server is public. No Nango row.
+ *  - `api-key`     : a bearer/custom-header key, stored in the Nango vault
+ *                    (`mcp-custom-key` integration, `private-api-bearer`).
+ *  - `basic`       : username+password (HTTP Basic), stored in the Nango vault
+ *                    (`mcp-custom-basic` integration, `private-api-basic`).
+ *  - `nango-oauth` : OAuth handled by Nango (curated `*-mcp` + `mcp-generic`);
+ *                    the access token is read via `nango.getConnection` and
+ *                    injected as `Authorization: Bearer`.
+ *  - `oauth-direct`: reserved — a future in-house OAuth client. Not implemented.
+ */
+export const externalAppMcpAuthKindEnum = pgEnum("external_app_mcp_auth_kind", [
+  "none",
+  "api-key",
+  "basic",
+  "nango-oauth",
+  "oauth-direct",
+]);
+
+/**
+ * Discovery-catalog metadata for an MCP connection, captured at confirm and
+ * stored on the row. `verified` drives trust (auto-run reads); the rest is
+ * display/link context for the hub.
+ */
+export interface McpCatalogMeta {
+  /** Registry qualified name, e.g. `com.notion/mcp`. */
+  qualifiedName?: string;
+  homepage?: string;
+  categories?: string[];
+  /** Official (DNS-verified/curated) server ⇒ reads auto-run (`trust: "curated"`). */
+  verified?: boolean;
+}
 
 /**
  * One connection to an external app for one tenant.
@@ -72,13 +110,77 @@ export const externalAppConnections = pgTable(
     /** Human label chosen at creation, e.g. "Ops mailbox". */
     displayName: varchar("display_name", { length: 128 }).notNull(),
 
-    /** Identifiers of the Nango connection backing this row. */
-    nangoConnectionId: varchar("nango_connection_id", {
-      length: 128,
-    }).notNull(),
+    /**
+     * Identifiers of the Nango connection backing this row. NULL only for a
+     * `none`-auth MCP connection (a public server with no Nango row at all);
+     * always set for manifest providers and every Nango-backed MCP kind.
+     */
+    nangoConnectionId: varchar("nango_connection_id", { length: 128 }),
     nangoProviderConfigKey: varchar("nango_provider_config_key", {
       length: 64,
-    }).notNull(),
+    }),
+
+    /**
+     * MCP connections only — how the direct transport authenticates to the
+     * server. NULL ⇔ this is NOT an MCP connection (a manifest provider). This
+     * is the single MCP discriminator (`mcp/connection-kind.isMcpConnection`).
+     */
+    mcpAuthKind: externalAppMcpAuthKindEnum("mcp_auth_kind"),
+
+    /**
+     * MCP connections only — the server's Streamable-HTTP endpoint the direct
+     * transport POSTs to. Set for every MCP connection created after the
+     * direct-transport migration; NULL on a pre-migration MCP row (the
+     * resolver rejects it with a "reconnect" error).
+     */
+    mcpServerUrl: varchar("mcp_server_url", { length: 2048 }),
+
+    /**
+     * `api-key` MCP connections only — the HTTP header to carry the key. NULL
+     * means the default `Authorization: Bearer <key>`; a value (e.g.
+     * `X-Api-Key`) sends the raw key under that header instead.
+     */
+    mcpApiKeyHeader: varchar("mcp_api_key_header", { length: 128 }),
+
+    /**
+     * MCP connections only — the remote transport. `http` (Streamable-HTTP,
+     * the default) or `sse`. NULL is read as `http` for rows created before the
+     * column existed; the resolver passes it straight to `@ai-sdk/mcp`.
+     */
+    mcpTransport: varchar("mcp_transport", { length: 16 }),
+
+    /**
+     * MCP connections only — the app's logo. Either an Iconify name (`i-…`) or
+     * an absolute image URL (registry `iconUrl`, or a Google-favicon URL for a
+     * custom server). NULL for manifest providers (their icon lives in the
+     * manifest). Rendered on the connection card, in chatbot tool steps, and on
+     * approval cards — the one place MCP app identity is persisted.
+     */
+    iconUrl: varchar("icon_url", { length: 2048 }),
+
+    /**
+     * MCP connections only — a one-line description of the app (from the
+     * discovery catalog). NULL for manifest providers (theirs is in the
+     * manifest). Shown in the hub detail and as card context.
+     */
+    description: text("description"),
+
+    /**
+     * MCP connections only — discovery-catalog metadata captured at confirm.
+     * `verified` is the trust signal that decides whether this server's reads
+     * auto-run (introspection maps it to `trust: "curated"`) vs gate; the rest
+     * is display context for the hub. NULL for manifest providers and custom
+     * servers added by raw URL.
+     */
+    catalogMeta: jsonb("catalog_meta").$type<McpCatalogMeta>(),
+
+    /**
+     * MCP connections only — fingerprint of the tool snapshot this connection
+     * currently uses (`external_app_tool_snapshots.fingerprint`). NULL for
+     * manifest providers, and for an MCP connection still being introspected
+     * (the UI reads NULL as "preparing"). Bumped when drift is adopted.
+     */
+    toolFingerprint: varchar("tool_fingerprint", { length: 64 }),
 
     status: externalAppConnectionStatusEnum("status")
       .notNull()
@@ -97,6 +199,19 @@ export const externalAppConnections = pgTable(
      */
     options: jsonb("options").$type<Record<string, unknown>>(),
 
+    /**
+     * Per-action permission policy for THIS connection — a sparse map keyed by
+     * action name → level (`auto | approval | blocked`). Absent key falls back
+     * to the action's manifest default (`kind: "read"` → `auto`,
+     * `"write"` → `approval`). NULL = every action at its default.
+     *
+     * Edited by the connection's controller: team admins for a team-scoped
+     * connection, the owner for a personal one. Resolved at dispatch on the
+     * concrete connection the call targets (`services/tool-policies/resolve`).
+     */
+    actionPolicies:
+      jsonb("action_policies").$type<Record<string, ToolPolicyLevel>>(),
+
     /** Last Nango/provider error surfaced to the user (set with `error`). */
     lastErrorMessage: text("last_error_message"),
 
@@ -113,7 +228,9 @@ export const externalAppConnections = pgTable(
       .notNull(),
   },
   (t) => [
-    // A Nango connection maps to exactly one row.
+    // A Nango connection maps to exactly one row. Postgres NULLS DISTINCT
+    // (the default) means `none`-auth MCP rows (both columns NULL) never
+    // collide with each other, so no partial-index guard is needed.
     uniqueIndex("uniq_eac_nango").on(
       t.nangoConnectionId,
       t.nangoProviderConfigKey,
@@ -123,167 +240,78 @@ export const externalAppConnections = pgTable(
   ],
 );
 
-/**
- * Status of a write-action approval request.
- *
- *  - `pending`   : awaiting the user's decision. Never expires — a request
- *                  stays actionable indefinitely (the user can approve it
- *                  days later; the card re-renders on conversation reload).
- *  - `granted`   : the user approved; not yet executed.
- *  - `executing` : claimed atomically from `granted` — execution in progress.
- *                  A re-run that lands here gets an explicit error (never a
- *                  silent NULL result), closing the crash window between
- *                  "consume the grant" and "store the result".
- *  - `consumed`  : executed; `result` holds the per-op outcomes. A re-run of
- *                  the identical plan returns this cached `result` — no
- *                  double-send.
- *  - `rejected`  : the user refused; `decisionFeedback` carries their note.
- */
-export const toolApprovalStatusEnum = pgEnum("tool_approval_status", [
-  "pending",
-  "granted",
-  "executing",
-  "consumed",
-  "rejected",
-]);
-
-/**
- * One row = ONE write-action plan submitted via `run_plan([...])` from the
- * chatbot sandbox. A plan bundles N independent write operations (possibly
- * across actions and providers) behind a single user approval.
- *
- * `lookup_hash` is the gate key: sha256 over every operation's *stable* args
- * (volatile fields such as message bodies are excluded — see the manifest's
- * `excludeFromHash`). It is frozen at creation. On re-run the agent re-emits
- * the same code → same operations → same hash → the grant is matched and the
- * stored (approved, possibly modified) `operations` are executed.
- *
- * Requests never expire: there is no `expires_at`. The durable state lives
- * here; the E2B sandbox may be recycled between turns without consequence.
- */
-export const toolApprovalRequests = pgTable(
-  "tool_approval_requests",
-  {
-    id: uuid("id")
-      .default(sql`uuid_generate_v7()`)
-      .primaryKey(),
-
-    organizationId: uuid("organization_id")
-      .notNull()
-      .references(() => organization.id, { onDelete: "cascade" }),
-    teamId: uuid("team_id")
-      .notNull()
-      .references(() => team.id, { onDelete: "cascade" }),
-    userId: uuid("user_id")
-      .notNull()
-      .references(() => user.id, { onDelete: "cascade" }),
-    conversationId: uuid("conversation_id")
-      .notNull()
-      .references(() => aiConversations.id, { onDelete: "cascade" }),
-
-    /** Sandbox turn that produced this plan — UI correlation only. */
-    turnId: varchar("turn_id", { length: 128 }).notNull(),
-
-    /** Gate key — sha256 of the plan's stable args, frozen at creation. */
-    lookupHash: varchar("lookup_hash", { length: 64 }).notNull(),
-
-    /**
-     * The plan: `[{ action, args }, …]`. `args` are the executable args,
-     * mutable via `modify-and-grant`. Execution always uses these stored
-     * args, never the args of a re-run call.
-     */
-    operations: jsonb("operations").$type<ToolApprovalOperation[]>().notNull(),
-    itemCount: integer("item_count").notNull(),
-
-    /** Display payload for the approval card — built by the summary fns. */
-    summary: jsonb("summary").$type<ToolApprovalSummary>().notNull(),
-
-    /**
-     * Per-operation outcomes, written incrementally as ops complete so a
-     * crash mid-execution still leaves a partial trace. NULL until the
-     * first op finishes.
-     */
-    result: jsonb("result").$type<ToolApprovalOpResult[]>(),
-
-    status: toolApprovalStatusEnum("status").notNull().default("pending"),
-
-    decisionAt: timestamp("decision_at", {
-      mode: "date",
-      withTimezone: true,
-    }),
-    decidedByUserId: uuid("decided_by_user_id").references(() => user.id, {
-      onDelete: "set null",
-    }),
-    decisionFeedback: text("decision_feedback"),
-
-    executedAt: timestamp("executed_at", {
-      mode: "date",
-      withTimezone: true,
-    }),
-
-    createdAt: timestamp("created_at", { mode: "date", withTimezone: true })
-      .defaultNow()
-      .notNull(),
-  },
-  (t) => [
-    index("idx_tar_lookup").on(t.conversationId, t.lookupHash, t.status),
-    index("idx_tar_conversation").on(t.conversationId),
-  ],
-);
-
-/** One write operation inside a plan. */
-export interface ToolApprovalOperation {
-  /** Fully-qualified action name, e.g. `outlook.send_email`. */
-  action: string;
-  /** Executable args (validated against the manifest at dispatch). */
-  args: Record<string, unknown>;
-}
-
-/**
- * A field shown on the approval card. The label is referenced by i18n key
- * (`chatbot.approvals.fields.<labelKey>`) so the frontend can translate it;
- * the value is data (recipients, subject, etc.) and is shown as-is.
- */
-export interface ToolApprovalSummaryField {
-  /** i18n key suffix under `chatbot.approvals.fields.*`. */
-  labelKey: string;
-  value: string;
-  /** `text` (default) or `html` (rendered) for rich values like email bodies. */
-  kind?: "text" | "html";
-}
-
-/**
- * Approval card payload — fully translatable. Every human string is an
- * i18n key + interpolation params; the backend never composes display
- * strings.
- */
-export interface ToolApprovalSummary {
-  /** i18n key for the plan-level title (e.g. `chatbot.approvals.plan.title`). */
-  titleKey: string;
-  /** Interpolation values for the plan title (e.g. `{ count: 3 }`). */
-  titleParams?: Record<string, string | number>;
-  operations: ToolApprovalOperationSummary[];
-}
-
-export interface ToolApprovalOperationSummary {
-  providerKey: string;
-  action: string;
-  /** i18n key under `chatbot.approvals.<providerKey>.<action>.title`. */
-  titleKey: string;
-  titleParams?: Record<string, string | number>;
-  fields: ToolApprovalSummaryField[];
-}
-
-/** Outcome of a single operation after execution. */
-export type ToolApprovalOpResult =
-  | { ok: true; data: Record<string, unknown> }
-  | { ok: false; error: string };
-
 export type ExternalAppConnection = typeof externalAppConnections.$inferSelect;
 export type NewExternalAppConnection =
   typeof externalAppConnections.$inferInsert;
 export type ExternalAppConnectionStatus = ExternalAppConnection["status"];
 
-export type ToolApprovalRequest = typeof toolApprovalRequests.$inferSelect;
-export type NewToolApprovalRequest = typeof toolApprovalRequests.$inferInsert;
-export type ToolApprovalStatus = ToolApprovalRequest["status"];
+/**
+ * Compiled tool surface of an MCP server, produced at connection time by
+ * introspecting `tools/list` → classifying → running the deterministic codegen.
+ * Holds the descriptor IR plus the generated Python stub and SKILL, so the
+ * sandbox bootstrap can materialize them without re-introspecting each turn.
+ *
+ * Scope:
+ *  - curated vendor (`*-mcp`): the tool surface is identical for everyone →
+ *    ONE shared row keyed `(provider_key, fingerprint)`, `connection_id` NULL.
+ *  - team's own `mcp-generic` server: the surface is private to that server →
+ *    keyed `(connection_id, fingerprint)`, `connection_id` set.
+ */
+export const externalAppToolSnapshots = pgTable(
+  "external_app_tool_snapshots",
+  {
+    id: uuid("id")
+      .default(sql`uuid_generate_v7()`)
+      .primaryKey(),
+
+    /** Nango provider config key, e.g. `notion-mcp` or `mcp-generic`. */
+    providerKey: varchar("provider_key", { length: 64 }).notNull(),
+
+    /**
+     * Set only for `mcp-generic` custom servers (whose tool list is private to
+     * the connection). NULL for curated vendors (shared snapshot).
+     */
+    connectionId: uuid("connection_id").references(
+      () => externalAppConnections.id,
+      { onDelete: "cascade" },
+    ),
+
+    /** `fingerprintTools(tools)` — content hash of the tool surface. */
+    fingerprint: varchar("fingerprint", { length: 64 }).notNull(),
+
+    /** The unified descriptor IR (actions, classification, mcpToolName map). */
+    descriptor: jsonb("descriptor").$type<ExternalAppDescriptor>().notNull(),
+
+    /** Generated Python stub (`fretik_apps/<key>.py`). */
+    sdkPy: text("sdk_py").notNull(),
+    /** Generated `SKILL.md`. */
+    skillMd: text("skill_md").notNull(),
+
+    /** Set when the one-shot LLM SKILL enrichment has run for this fingerprint. */
+    polishedAt: timestamp("polished_at", { mode: "date", withTimezone: true }),
+
+    createdAt: timestamp("created_at", { mode: "date", withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { mode: "date", withTimezone: true })
+      .defaultNow()
+      .$onUpdate(() => new Date())
+      .notNull(),
+  },
+  (t) => [
+    // Curated vendors: one shared snapshot per (provider, fingerprint).
+    uniqueIndex("uniq_eats_curated")
+      .on(t.providerKey, t.fingerprint)
+      .where(sql`${t.connectionId} IS NULL`),
+    // Custom mcp-generic: one snapshot per (connection, fingerprint).
+    uniqueIndex("uniq_eats_custom")
+      .on(t.connectionId, t.fingerprint)
+      .where(sql`${t.connectionId} IS NOT NULL`),
+    index("idx_eats_provider").on(t.providerKey),
+  ],
+);
+
+export type ExternalAppToolSnapshot =
+  typeof externalAppToolSnapshots.$inferSelect;
+export type NewExternalAppToolSnapshot =
+  typeof externalAppToolSnapshots.$inferInsert;

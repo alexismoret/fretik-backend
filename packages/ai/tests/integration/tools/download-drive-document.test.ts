@@ -105,7 +105,7 @@ const buildOptions = (conversationId: string, teamId: string) => {
   return {
     toolCallId: `tc-${Date.now().toString()}`,
     messages: [] as never[],
-    experimental_context: wrapRuntimeContext(ctx),
+    context: wrapRuntimeContext(ctx),
   };
 };
 

@@ -2,6 +2,7 @@ import { eq } from "drizzle-orm";
 import db from "../../db";
 import { aiMemories, type AiMemory } from "../../db/schema/ai-memory";
 import { createApiError, throwHttpError } from "../../lib/errors";
+import { emitDomainEvent, toDomainEventActor } from "../domain-events/emit";
 import { trimMemoryHistory, writeHistoryRow } from "./history";
 import { findMemoryByPath } from "./lookup";
 import { formatMemoryPath, parseMemoryPath } from "./paths";
@@ -103,6 +104,24 @@ export const renameMemory = async (args: {
         actor: args.actor,
         previousPath: source.path,
         newPath: updated.path,
+      });
+
+      await emitDomainEvent({
+        tx,
+        organizationId: args.scopeKey.organizationId,
+        teamId: args.scopeKey.teamId,
+        type: "memory.renamed",
+        actor: toDomainEventActor({
+          byActor: args.actor.actor,
+          userId: args.actor.userId,
+          conversationId: args.actor.conversationId,
+        }),
+        subjectType: "memory",
+        payload: {
+          fromPath: source.path,
+          toPath: updated.path,
+          scope: updated.scope,
+        },
       });
 
       return updated;

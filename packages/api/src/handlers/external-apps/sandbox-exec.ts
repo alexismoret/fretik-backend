@@ -6,8 +6,8 @@ import {
 import {
   sandboxExecRequestSchema,
   sandboxExecResponseSchema,
-} from "@fretik/shared/schemas/external-apps";
-import { dispatchSandboxExec } from "@fretik/shared/services/external-apps/exec/dispatch";
+} from "@fretik/shared/schemas/sandbox";
+import { dispatchSandboxExec } from "@fretik/shared/services/sandbox/dispatch";
 import { createRoute, OpenAPIHono } from "@hono/zod-openapi";
 
 /**
@@ -121,21 +121,30 @@ sandboxRoutes.openapi(execRoute, async (c) => {
     );
   }
 
+  const dispatchDetail =
+    body.kind === "read"
+      ? `action=${body.action}`
+      : body.kind === "objects"
+        ? `op=${body.op}`
+        : `ops=${body.operations.length.toString()}`;
   console.info(
-    `[sandbox/exec] dispatch kind=${body.kind} conversationId=${claims.conversationId} ${body.kind === "read" ? `action=${body.action}` : `ops=${body.operations.length.toString()}`}`,
+    `[sandbox/exec] dispatch kind=${body.kind} conversationId=${claims.conversationId} ${dispatchDetail}`,
   );
 
+  const ctx = {
+    organizationId: claims.organizationId,
+    teamId: claims.teamId,
+    userId: claims.userId,
+    conversationId: claims.conversationId,
+    turnId: claims.turnId,
+  };
   const result = await dispatchSandboxExec(
-    {
-      organizationId: claims.organizationId,
-      teamId: claims.teamId,
-      userId: claims.userId,
-      conversationId: claims.conversationId,
-      turnId: claims.turnId,
-    },
+    ctx,
     body.kind === "read"
       ? { kind: "read", action: body.action, args: body.args }
-      : { kind: "plan", operations: body.operations },
+      : body.kind === "objects"
+        ? { kind: "objects", op: body.op, args: body.args }
+        : { kind: "plan", operations: body.operations },
   );
 
   console.info(`[sandbox/exec] → status=${result.status}`);

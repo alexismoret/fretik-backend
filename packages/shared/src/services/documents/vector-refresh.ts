@@ -5,6 +5,8 @@ import type { DocumentVectorMetadata } from "../../db/schema/ai-vectors";
 import { callAiService } from "../../lib/ai-service";
 import { getDocumentSidecarBytes } from "../../lib/document-storage";
 import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
+import { readRecordData } from "../object-schema/record-io";
+import { MENTIONS_LINK_TYPE_KEY } from "../object-types/seed-system-types";
 
 const aiVectorizeResponseSchema = z.object({
   success: z.boolean(),
@@ -21,7 +23,7 @@ const aiVectorizeResponseSchema = z.object({
 /**
  * Build the metadata JSON for a document's vectors.
  *
- * Universal AI outputs (page count, language, summary, entities, labels)
+ * Universal AI outputs (page count, language, summary, entities)
  * are emitted as named fields. Industry-specific outputs flow through
  * `custom_fields` keyed by the team's field definition slugs, pre-filtered
  * to `vectorizeInclude=true` so privacy-sensitive or internal fields
@@ -36,9 +38,15 @@ const buildDocumentVectorMetadata = async (
     where: { id: documentId },
     with: {
       properties: true,
-      documentEntities: { with: { entity: true } },
-      labels: { columns: { id: true, name: true } },
-      fieldValues: { columns: { fieldKey: true, value: true } },
+      mirrorRecord: {
+        columns: { id: true, objectTypeId: true },
+        with: {
+          outgoingLinks: {
+            columns: { id: true },
+            with: { toRecord: { columns: { id: true, label: true } } },
+          },
+        },
+      },
     },
   });
 
@@ -48,33 +56,35 @@ const buildDocumentVectorMetadata = async (
 
   const properties = document.properties;
 
-  const entities = document.documentEntities
-    .filter((de) => de.entity !== null)
-    .map((de) => ({
-      id: de.entity!.id,
-      name: de.entity!.name,
-      type: de.entity!.type,
-      role: de.role,
+  // Mentioned parties are now `company` records linked from the document mirror
+  // via the generic `mentions` relation (the only document-outgoing link type).
+  const entities = (document.mirrorRecord?.outgoingLinks ?? [])
+    .map((l) => l.toRecord)
+    .filter((r): r is NonNullable<typeof r> => r !== null)
+    .map((r) => ({
+      id: r.id,
+      name: r.label,
+      type: "company",
+      role: MENTIONS_LINK_TYPE_KEY,
     }));
-
-  const labels = document.labels.map((l) => ({ id: l.id, name: l.name }));
 
   const definitions = await getFieldDefinitionsForTeam({
     teamId,
-    resourceType: "document",
   });
   const vectorisableKeys = new Set(
     definitions.filter((d) => d.vectorizeInclude).map((d) => d.key),
   );
+  const recordData = document.mirrorRecord
+    ? await readRecordData({
+        objectTypeId: document.mirrorRecord.objectTypeId,
+        recordId: document.mirrorRecord.id,
+        fields: definitions,
+      })
+    : {};
   const customFields: DocumentVectorMetadata["custom_fields"] = {};
-  for (const fv of document.fieldValues) {
-    if (!vectorisableKeys.has(fv.fieldKey)) continue;
-    customFields[fv.fieldKey] = fv.value as
-      | string
-      | number
-      | boolean
-      | string[]
-      | null;
+  for (const [key, value] of Object.entries(recordData)) {
+    if (!vectorisableKeys.has(key)) continue;
+    customFields[key] = value as string | number | boolean | string[] | null;
   }
 
   return {
@@ -84,7 +94,6 @@ const buildDocumentVectorMetadata = async (
     document_language: properties?.documentLanguage ?? null,
     document_summary: properties?.documentSummary ?? null,
     entities,
-    labels,
     custom_fields: customFields,
   };
 };
@@ -143,37 +152,5 @@ export const triggerDocumentVectorRefresh = async (
     }
   } catch (error) {
     console.error(`[VectorRefresh] Failed for document ${documentId}:`, error);
-  }
-};
-
-/**
- * Triggers vector refresh for all documents linked to a specific entity.
- * Used when an entity is updated, merged, or its document links change.
- *
- * Fire-and-forget: errors are logged per document but not thrown.
- */
-export const triggerEntityDocumentsVectorRefresh = async (
-  entityId: string,
-  teamId: string,
-  organizationId: string,
-): Promise<void> => {
-  try {
-    const documentEntities = await db.query.documentEntities.findMany({
-      where: { entityId },
-      columns: { documentId: true },
-    });
-
-    const uniqueDocumentIds = [
-      ...new Set(documentEntities.map((de) => de.documentId)),
-    ];
-
-    for (const docId of uniqueDocumentIds) {
-      await triggerDocumentVectorRefresh(docId, teamId, organizationId);
-    }
-  } catch (error) {
-    console.error(
-      `[VectorRefresh] Failed to refresh documents for entity ${entityId}:`,
-      error,
-    );
   }
 };

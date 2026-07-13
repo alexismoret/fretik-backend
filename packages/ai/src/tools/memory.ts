@@ -36,7 +36,7 @@ import { TOOL_ERROR_CODES } from "../lib/tool-error-codes";
  *  - **Discovery via RAG**: writes are vectorised into `ai_vectors`
  *    with `[TEAM_MEMORY]` / `[USER_MEMORY]` contextual prefixes —
  *    `searchKnowledge` is the canonical way to find existing entries
- *    before creating a new file. The previous `grep` command is gone.
+ *    before creating a new file.
  */
 const MEMORY_TOOL_DESCRIPTION = [
   "Persistent file store at `/memories/` shared across conversations. Use for generic, repeatable business knowledge — processes, conventions, durable preferences. NEVER for file-specific facts (invoice/BL/PO numbers, totals, dates, line items, single-doc party names).",

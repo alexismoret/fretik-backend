@@ -38,16 +38,22 @@ const tsvector = customType<{ data: string }>({
  * inline.
  *
  * Source kinds:
- *   - 'documents': team-owned uploaded documents (BL, contracts, etc.)
+ *   - 'documents': team-owned uploaded documents (contracts, invoices, etc.)
  *   - 'memories' : agent-writable memory store (team or user-scoped)
  *   - 'skills'   : SKILL.md content for progressive skill discovery
  *   - 'context'  : Projects-style persistent context files (team or user)
+ *   - 'episodes' : distilled episodic memory (`ai_episodes` is the source of
+ *                  truth; team or user-scoped)
+ *   - 'records'  : record "cards" (label + aliases + type + key text fields)
+ *                  for semantic record search — confirmed records only
  */
 export const aiVectorSourceTypeEnum = pgEnum("ai_vector_source_type", [
   "documents",
   "memories",
   "skills",
   "context",
+  "episodes",
+  "records",
 ]);
 
 export const AI_VECTOR_SOURCE_TYPES = aiVectorSourceTypeEnum.enumValues;
@@ -62,21 +68,15 @@ export type AiVectorSourceType = (typeof AI_VECTOR_SOURCE_TYPES)[number];
  * JSONB.
  */
 
-type EntityVectorInfo = {
+// A record mentioned by a document, embedded into the document's vectors so RAG
+// can filter / cite by it. `type` is the object-type key (e.g. "company") and
+// `role` the relation key (e.g. "mentions"). The JSONB field stays named
+// `entities` for back-compat with already-indexed vectors.
+type MentionVectorInfo = {
   id: string;
   name: string;
   type: string;
   role: string;
-};
-
-/**
- * Label info embedded into document vectors so the chatbot can filter and
- * cite by label without an extra join at retrieval time. We embed id +
- * name only — color is presentation-only and would bloat the JSONB blob.
- */
-type LabelVectorInfo = {
-  id: string;
-  name: string;
 };
 
 /**
@@ -92,8 +92,7 @@ type DocumentVectorMetadata = {
   page_count: number | null;
   document_language: string | null;
   document_summary: string | null;
-  entities: EntityVectorInfo[];
-  labels: LabelVectorInfo[];
+  entities: MentionVectorInfo[];
   /**
    * Team-configurable custom field values keyed by `fieldDefinitions.key`.
    * Primitives are stored as JSON primitives; multi_select as string[].
@@ -166,18 +165,48 @@ type ContextVectorMetadata = {
   updated_at: string;
 };
 
+/*
+ * Metadata for `source_type='episodes'` rows. `ai_episodes` is the source of
+ * truth; these fields ride along for citation rendering + recall filtering
+ * without a join back. `source_id` = the episode id.
+ */
+type EpisodeVectorMetadata = {
+  kind: "conversation" | "record_activity" | "consolidated";
+  title: string;
+  conversation_id: string | null;
+  anchor_record_id: string | null;
+  occurred_from: string | null;
+  occurred_to: string | null;
+};
+
+/*
+ * Metadata for `source_type='records'` rows — one "card" per CONFIRMED
+ * object record (label + aliases + type + key text fields), refreshed
+ * async on record create/update, deleted with the record. Powers semantic
+ * record search ("the client in Lyon") in recall + `searchKnowledge`.
+ * `source_id` = the record id; single chunk per record.
+ */
+type RecordVectorMetadata = {
+  object_type_id: string;
+  object_type_key: string;
+  label: string;
+};
+
 export type AiVectorMetadata =
   | DocumentVectorMetadata
   | MemoryVectorMetadata
   | SkillVectorMetadata
-  | ContextVectorMetadata;
+  | ContextVectorMetadata
+  | EpisodeVectorMetadata
+  | RecordVectorMetadata;
 
 export type {
   ContextVectorMetadata,
   DocumentVectorMetadata,
-  EntityVectorInfo,
-  LabelVectorInfo,
+  EpisodeVectorMetadata,
   MemoryVectorMetadata,
+  MentionVectorInfo,
+  RecordVectorMetadata,
   SkillVectorMetadata,
 };
 

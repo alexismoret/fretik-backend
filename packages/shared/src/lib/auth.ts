@@ -16,6 +16,8 @@ import {
 } from "../services/auth/signup-gate";
 import { applyDocumentFieldTemplate } from "../services/field-definitions/apply-template";
 import { duplicateOrgDefsToTeam } from "../services/field-definitions/duplicate-org-to-team";
+import { seedStarterObjectTypes } from "../services/object-types/seed-starter-types";
+import { seedSystemOntology } from "../services/object-types/seed-system-types";
 import { OTP_EXPIRY_SECONDS } from "./auth-constants";
 import { sendEmail } from "./email";
 import { redis } from "./redis";
@@ -194,6 +196,12 @@ const options = {
           await db.insert(schema.organizationSettings).values({
             organizationId: data.organization.id,
           });
+          // Seed the one required system type (`document`) + the `mentions`
+          // link type FIRST — the document-field template below resolves the
+          // `document` object type and throws if it is missing.
+          await seedSystemOntology(data.organization.id);
+          // Seed the deletable starter ontology (company, person, note, task).
+          await seedStarterObjectTypes(data.organization.id);
           // Seed the org-scope document field definitions with the
           // default template. New teams created under this org inherit
           // this set at creation time.

@@ -25,7 +25,6 @@ export const transportTemplate: DocumentFieldTemplate = {
   descriptionKey: "transport.description",
   fields: [
     {
-      resourceType: "document",
       key: "document_type",
       labelKey: "transport.fields.documentType.label",
       descriptionKey: "transport.fields.documentType.description",
@@ -52,11 +51,9 @@ export const transportTemplate: DocumentFieldTemplate = {
         opt("documentType", "record"),
         opt("documentType", "unknown"),
       ],
-      displayInFilters: true,
       displayOrder: 0,
     },
     {
-      resourceType: "document",
       key: "transport_mode",
       labelKey: "transport.fields.transportMode.label",
       descriptionKey: "transport.fields.transportMode.description",
@@ -69,11 +66,9 @@ export const transportTemplate: DocumentFieldTemplate = {
         opt("transportMode", "inland_waterway"),
         opt("transportMode", "multimodal"),
       ],
-      displayInFilters: true,
       displayOrder: 1,
     },
     {
-      resourceType: "document",
       key: "transport_type",
       labelKey: "transport.fields.transportType.label",
       descriptionKey: "transport.fields.transportType.description",
@@ -126,11 +121,9 @@ export const transportTemplate: DocumentFieldTemplate = {
         opt("transportType", "tracking_report"),
         opt("transportType", "special_instruction"),
       ],
-      displayInFilters: true,
       displayOrder: 2,
     },
     {
-      resourceType: "document",
       key: "document_date",
       labelKey: "transport.fields.documentDate.label",
       descriptionKey: "transport.fields.documentDate.description",
@@ -138,13 +131,11 @@ export const transportTemplate: DocumentFieldTemplate = {
       displayOrder: 3,
     },
     {
-      resourceType: "document",
       key: "document_number",
       labelKey: "transport.fields.documentNumber.label",
       descriptionKey: "transport.fields.documentNumber.description",
       type: "text",
       configExtras: { max: 100 },
-      displayInFilters: true,
       displayOrder: 4,
     },
   ],

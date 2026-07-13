@@ -112,7 +112,7 @@ const { wrapRuntimeContext } =
 type ExecuteOptions = {
   toolCallId: string;
   messages: never[];
-  experimental_context: unknown;
+  context: unknown;
 };
 
 const isRecord = (v: unknown): v is Record<string, unknown> =>
@@ -135,7 +135,7 @@ const buildExecuteOptions = (conversationId: string): ExecuteOptions => {
   return {
     toolCallId: `tc-${Date.now().toString()}-${Math.random().toString(36).slice(2, 8)}`,
     messages: [],
-    experimental_context: wrapRuntimeContext(ctx),
+    context: wrapRuntimeContext(ctx),
   };
 };
 

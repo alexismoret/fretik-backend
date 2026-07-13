@@ -2,7 +2,7 @@ import type {
   ToolApprovalOperationSummary,
   ToolApprovalSummary,
   ToolApprovalSummaryField,
-} from "../../db/schema/external-apps";
+} from "../../db/schema/approvals";
 import { i18n } from "./index";
 
 /**
@@ -49,6 +49,16 @@ const renderOperation = (
   op: ToolApprovalOperationSummary,
   lang: string,
 ): RenderedApprovalOperation => {
+  // Dynamic vendor content (MCP tool) carries its own literal title — no i18n
+  // key exists for it, so use it verbatim.
+  if (op.titleText !== undefined) {
+    return {
+      providerKey: op.providerKey,
+      action: op.action,
+      title: op.titleText,
+      fields: op.fields.map((f) => renderField(f, lang)),
+    };
+  }
   const title = i18n.t(
     `external_apps.approvals.${op.providerKey}.${op.action}.title.${op.titleKey}`,
     {

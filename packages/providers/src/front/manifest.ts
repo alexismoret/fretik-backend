@@ -22,7 +22,7 @@ export const frontManifest: ProviderManifest = {
   key: "front",
   displayName: "Front",
   description:
-    "Front — read and reply to shared-inbox conversations; manage tags, assignments, snoozes, and contacts",
+    "Front — read, triage, and reply to conversations across the team's shared inboxes on the connected Front account.",
   nangoProviderConfigKey: "front",
   // Local SVG asset — AppIcon.vue renders the file at
   // app/public/app-icons/front.svg via <img> with no tint applied.

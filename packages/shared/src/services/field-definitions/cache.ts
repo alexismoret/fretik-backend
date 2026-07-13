@@ -1,4 +1,3 @@
-import type { FieldDefinition } from "../../db/schema";
 import { deleteKeysByPrefix } from "../../lib/redis";
 
 /**
@@ -11,8 +10,10 @@ import { deleteKeysByPrefix } from "../../lib/redis";
  * wipes every field-definition variant for that team WITHOUT dropping the
  * team row itself from cache.
  *
- *   • `organization:{orgId}:field-definitions:{resourceType}:{enabled|all}`
- *   • `team:{teamId}:field-definitions:{resourceType}:{enabled|all}`
+ *   • `organization:{orgId}:field-definitions:{objectTypeKey}:{enabled|all}`
+ *   • `team:{teamId}:field-definitions:{objectTypeKey}:{enabled|all}`
+ *
+ * `objectTypeKey` is the object-type key or id the read was scoped to.
  *
  * Writes (create, update, delete, reorder, apply-template, batch-apply,
  * duplicate-org-to-team) call `invalidateFieldDefinitionsCache` AFTER the
@@ -21,17 +22,17 @@ import { deleteKeysByPrefix } from "../../lib/redis";
 
 export const fieldDefinitionsCacheKeyOrg = (
   organizationId: string,
-  resourceType: FieldDefinition["resourceType"],
+  objectTypeKey: string,
   includeDisabled: boolean,
 ): string =>
-  `organization:${organizationId}:field-definitions:${resourceType}:${includeDisabled ? "all" : "enabled"}`;
+  `organization:${organizationId}:field-definitions:${objectTypeKey}:${includeDisabled ? "all" : "enabled"}`;
 
 export const fieldDefinitionsCacheKeyTeam = (
   teamId: string,
-  resourceType: FieldDefinition["resourceType"],
+  objectTypeKey: string,
   includeDisabled: boolean,
 ): string =>
-  `team:${teamId}:field-definitions:${resourceType}:${includeDisabled ? "all" : "enabled"}`;
+  `team:${teamId}:field-definitions:${objectTypeKey}:${includeDisabled ? "all" : "enabled"}`;
 
 const orgFieldDefsPrefix = (organizationId: string): string =>
   `organization:${organizationId}:field-definitions:`;

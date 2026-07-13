@@ -15,9 +15,11 @@ import { Nango } from "@nangohq/node";
 
 let cached: Nango | undefined;
 
-export const getNangoClient = (): Nango => {
-  if (cached !== undefined) return cached;
-
+/**
+ * Raw Nango host + secret key. Exposed for code paths the `@nangohq/node`
+ * SDK doesn't cover cleanly. Same env contract as `getNangoClient()`.
+ */
+export const getNangoConfig = (): { host: string; secretKey: string } => {
   const host = Bun.env.NANGO_HOST;
   const secretKey = Bun.env.NANGO_SECRET_KEY;
   if (host === undefined || host === "") {
@@ -26,7 +28,12 @@ export const getNangoClient = (): Nango => {
   if (secretKey === undefined || secretKey === "") {
     throw new Error("NANGO_SECRET_KEY env var must be set");
   }
+  return { host: host.replace(/\/$/, ""), secretKey };
+};
 
+export const getNangoClient = (): Nango => {
+  if (cached !== undefined) return cached;
+  const { host, secretKey } = getNangoConfig();
   cached = new Nango({ host, secretKey });
   return cached;
 };

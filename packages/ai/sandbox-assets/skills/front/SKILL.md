@@ -1,7 +1,7 @@
 ---
 name: front
-description: Front — read and reply to shared-inbox conversations; manage tags, assignments, snoozes, and contacts
-version: 71c5ab0eceb0
+description: Front — read, triage, and reply to conversations across the team's shared inboxes on the connected Front account.
+version: 48f58f48be09
 ---
 
 # Front — 30 actions

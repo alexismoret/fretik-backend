@@ -41,6 +41,14 @@ process.env.OPENROUTER_VISION_FALLBACK_MODEL ??= "openai/gpt-4o-mini";
 
 const sandboxStore = new Map<string, Uint8Array>();
 const s3Store = new Map<string, Uint8Array>();
+/**
+ * Conversations with at least one sandbox file write — backs the
+ * `getSandboxIdFromRegistry` mock below so callers that guard on "is a
+ * sandbox actually registered for this conversation" (e.g.
+ * `conversation-storage::deleteFile`) see the same registered/unregistered
+ * transition a real sandbox would produce.
+ */
+const registeredSandboxes = new Set<string>();
 
 const buildKey = (conversationId: string, path: string): string =>
   `${conversationId}::${path.replace(/^\/+workspace\/+/, "").replace(/^\/+/, "")}`;
@@ -57,6 +65,7 @@ export const sandboxFs = {
   reset(): void {
     sandboxStore.clear();
     s3Store.clear();
+    registeredSandboxes.clear();
   },
   /** Write a file into the in-memory sandbox at `path` (workspace-relative). */
   write(
@@ -67,6 +76,7 @@ export const sandboxFs = {
     const bytes =
       typeof content === "string" ? new TextEncoder().encode(content) : content;
     sandboxStore.set(buildKey(conversationId, path), bytes);
+    registeredSandboxes.add(conversationId);
   },
   /** True iff a file exists in the sandbox at `path`. */
   exists(conversationId: string, path: string): boolean {
@@ -129,6 +139,7 @@ export const installSandboxMocks = (): void => {
       bytes: Uint8Array,
     ): Promise<void> => {
       sandboxStore.set(buildKey(conversationId, path), bytes);
+      registeredSandboxes.add(conversationId);
     },
     readSandboxFile: async (
       conversationId: string,
@@ -203,7 +214,8 @@ export const installSandboxMocks = (): void => {
     releaseSandboxLock: async () => {
       /* no-op */
     },
-    getSandboxIdFromRegistry: async () => null,
+    getSandboxIdFromRegistry: async (conversationId: string) =>
+      registeredSandboxes.has(conversationId) ? `mock-${conversationId}` : null,
     setSandboxIdInRegistry: async () => {
       /* no-op */
     },

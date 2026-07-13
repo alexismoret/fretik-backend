@@ -120,4 +120,24 @@ export const CURATED: Record<string, CuratedCase> = {
   "mm-chart-reading": { capability: "multimodal" },
   "mm-image-plus-text": { capability: "multimodal" },
   "mm-video-qa": { capability: "multimodal" },
+  // ── Dynamic-data AI query path (2026-06-20) — the typed-view + links
+  // "killer query". Seeds its own object-graph dataset (industry-agnostic),
+  // so NOT smoke (needs a DB seed). See evals/cases/object-graph.ts.
+  // tool-use (1)
+  "graph-killer-query": { capability: "tool-use" },
+  // ── Objects autonomy (P8) — proactive object management + the relevance
+  // gate. Seeds its own ontology (dedicated throwaway types / labelled company
+  // records), so NOT smoke. Graded on the tool trajectory + judge; the
+  // partial-update case asserts DB state (no data loss). See
+  // evals/cases/objects-autonomy.ts.
+  // objects (9)
+  "obj-explicit-create": { capability: "objects" },
+  "obj-implicit-create": { capability: "objects" },
+  "obj-relevance-gate": { capability: "objects" },
+  "obj-propose-schema": { capability: "objects" },
+  "obj-partial-update-no-data-loss": { capability: "objects" },
+  "obj-rich-create": { capability: "objects" },
+  "obj-bulk-csv-import": { capability: "objects" },
+  "obj-sql-to-csv": { capability: "objects" },
+  "obj-location-create": { capability: "objects" },
 };

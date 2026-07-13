@@ -1,14 +1,12 @@
 import { z } from "zod";
-import {
-  entityRoleEnum,
-  entityTypeEnum,
-  type FieldDefinition,
-} from "../db/schema";
+import { type FieldDefinition } from "../db/schema";
+import { zodForField } from "./record-shape";
 
 /**
- * Entity extracted from a document by the LLM. Multiple entries with the
- * same `name` but different `role` are expected when an organisation plays
- * several roles in the same document (e.g. issuer + consignee).
+ * Organisation/company extracted from a document by the LLM, by name. The
+ * pipeline resolves each to a `company` record and links it to the document via
+ * the generic `mentions` relation. No role/type classification — that was
+ * transport-domain heritage; the generic core only records who is mentioned.
  */
 export const preExtractionEntitySchema = z.object({
   name: z
@@ -17,24 +15,13 @@ export const preExtractionEntitySchema = z.object({
     .describe(
       "Exact company/organization name as written on the document (do not normalise casing or expand acronyms).",
     ),
-  role: z
-    .enum(entityRoleEnum.enumValues)
-    .describe(
-      "Role of the entity in the document context. issuer = the organisation that issued/created the document; customer = the customer/client/buyer/recipient party; broker = intermediary agent acting between two other parties (e.g. freight forwarder, customs broker, sales agent); consignee = party receiving goods or services (only if distinct from customer); shipper = party sending goods or services (only if distinct from issuer); mentioned = any other organisation mentioned that does not fit the above.",
-    ),
-  type: z
-    .enum(entityTypeEnum.enumValues)
-    .optional()
-    .describe(
-      "Entity category. client = end customers / buyers / recipients; carrier = transportation operator (used only when a team's domain is transport/logistics — leave empty otherwise); other = anything else (government bodies, certification authorities, banks, insurance companies, generic vendors, partners, …).",
-    ),
   confidence: z
     .number()
     .min(0)
     .max(1)
     .optional()
     .describe(
-      "Confidence level (0..1) in the accuracy of this specific entity/role extraction.",
+      "Confidence level (0..1) in the accuracy of this specific entity extraction.",
     ),
 });
 
@@ -63,7 +50,7 @@ const preExtractionUniversalSchema = z.object({
     .array(preExtractionEntitySchema)
     .default([])
     .describe(
-      "ALL organisations/companies mentioned in the document. Do NOT limit the number of entities. If the SAME organisation plays SEVERAL roles in the document (e.g. the same company is both ISSUER and CONSIGNEE), emit ONE entry PER role (same `name`, different `role`, with the appropriate `confidence` for each) — do NOT pick a single 'best' role.",
+      "ALL organisations/companies mentioned in the document, by name. Do NOT limit the number. List each distinct organisation once.",
     ),
   confidenceScore: z
     .number()
@@ -105,72 +92,11 @@ export const buildPreExtractCustomShape = (
   const shape: Record<string, z.ZodTypeAny> = {};
   for (const def of definitions) {
     if (!def.aiExtractionEnabled || !def.enabled) continue;
+    // Relations live in the `links` graph, not `data` — never extracted here.
+    if (def.type === "relation") continue;
     shape[def.key] = zodForField(def);
   }
   return shape;
-};
-
-const zodForField = (def: FieldDefinition): z.ZodTypeAny => {
-  const description = def.description ?? def.label;
-  switch (def.type) {
-    case "text":
-    case "url":
-    case "email": {
-      return z.string().nullish().describe(description);
-    }
-    case "number": {
-      return z.number().nullish().describe(description);
-    }
-    case "boolean": {
-      return z.boolean().nullish().describe(description);
-    }
-    case "date": {
-      return z
-        .string()
-        .regex(/^\d{4}-\d{2}-\d{2}$/, "Expected YYYY-MM-DD")
-        .nullish()
-        .describe(
-          `${description} Format: YYYY-MM-DD (calendar date only, no time component).`,
-        );
-    }
-    case "datetime": {
-      return z
-        .string()
-        .regex(
-          /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{3})?Z?$/,
-          "Expected ISO 8601 datetime",
-        )
-        .nullish()
-        .describe(
-          `${description} Format: ISO 8601 datetime (e.g. 2025-01-15T10:30:00Z).`,
-        );
-    }
-    case "select": {
-      const values = optionValues(def);
-      if (values.length === 0)
-        return z.string().nullish().describe(description);
-      return z
-        .enum(values as [string, ...string[]])
-        .nullish()
-        .describe(description);
-    }
-    case "multi_select": {
-      const values = optionValues(def);
-      if (values.length === 0) {
-        return z.array(z.string()).nullish().describe(description);
-      }
-      return z
-        .array(z.enum(values as [string, ...string[]]))
-        .nullish()
-        .describe(description);
-    }
-  }
-};
-
-const optionValues = (def: FieldDefinition): string[] => {
-  const options = def.config?.options;
-  if (!options) return [];
-  return options.map((o) => o.value);
 };
 
 /**
@@ -214,8 +140,8 @@ export const preExtractionResponseSchema = z.object({
   confidenceScore: z.number().nullish(),
   /**
    * Custom field values keyed by `fieldDefinitions.key`. Stored as-is
-   * (JSON primitives or arrays) — the persistence layer just hands them
-   * to the JSONB column on `document_field_values`.
+   * (JSON primitives or arrays) — the pipeline writes them to the `data` JSONB
+   * of the document's mirror object-record.
    */
   customFields: z.record(z.string(), z.unknown()).default({}),
 });

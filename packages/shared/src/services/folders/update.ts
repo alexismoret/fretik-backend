@@ -3,6 +3,11 @@ import db from "../../db";
 import { folders } from "../../db/schema";
 import { internalError, notFound, throwHttpError } from "../../lib/errors";
 import type { UpdateFolderInput } from "../../schemas/folders";
+import {
+  emitDomainEvent,
+  type EventActor,
+  SYSTEM_ACTOR,
+} from "../domain-events/emit";
 
 /**
  * Updates a folder, handling name changes, parent changes, and path updates.
@@ -11,8 +16,10 @@ export const updateFolder = async (data: {
   id: string;
   teamId: string;
   updates: UpdateFolderInput;
+  actor?: EventActor;
 }) => {
   const { id, teamId, updates } = data;
+  const actor = data.actor ?? SYSTEM_ACTOR;
 
   // Check if folder exists
   const existingFolder = await db.query.folders.findFirst({
@@ -88,6 +95,31 @@ export const updateFolder = async (data: {
             eq(folders.teamId, teamId),
           ),
         );
+    }
+
+    if (updated) {
+      // Folders carry no org column — resolve the team's org for the journal.
+      const teamRow = await tx.query.team.findFirst({
+        columns: { organizationId: true },
+        where: { id: teamId },
+      });
+      if (teamRow) {
+        await emitDomainEvent({
+          tx,
+          organizationId: teamRow.organizationId,
+          teamId,
+          type: "folder.renamed",
+          actor,
+          subjectType: "folder",
+          payload: {
+            folderId: id,
+            name: updated.name,
+            changed: Object.keys(updates).filter(
+              (k) => updates[k as keyof typeof updates] !== undefined,
+            ),
+          },
+        });
+      }
     }
 
     return updated;

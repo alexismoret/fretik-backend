@@ -4,12 +4,14 @@ import type {
 } from "../../../db/schema";
 import { isRecord } from "../../../external-apps/json-access";
 import { getAction } from "../../../external-apps/registry";
-import { markConsumed, updatePartialResult } from "../approvals/complete";
+import { markConsumed, updatePartialResult } from "../../approvals/complete";
+import { requireNangoRef } from "../connections/nango-ref";
 import { resolveConnection } from "../connections/resolve";
 import { buildRequest } from "./build-request";
 import { callCustomHandler } from "./call-custom-handler";
 import { extractFrameworkArgs } from "./framework-args";
 import { callHttpDirect } from "./http-direct";
+import { executeMcpWriteOp } from "./mcp-plan";
 import { callNangoProxy } from "./nango-proxy";
 
 /**
@@ -34,7 +36,9 @@ export const executePlan = async (params: {
   teamId: string;
   userId: string;
 }): Promise<ToolApprovalOpResult[]> => {
-  const operations = params.approval.operations;
+  // `operations` is nullable on the row (only `external_app_plan` rows set it);
+  // this executor is only ever called for that kind, so a null here is a bug.
+  const operations = params.approval.operations ?? [];
   const results: (ToolApprovalOpResult | null)[] = Array.from(
     { length: operations.length },
     () => null,
@@ -46,9 +50,15 @@ export const executePlan = async (params: {
     try {
       const resolved = getAction(op.action);
       if (resolved === undefined) {
+        // MCP write op — snapshot-backed sibling of the manifest transports.
+        const mcpData = await executeMcpWriteOp({
+          op,
+          teamId: params.teamId,
+          userId: params.userId,
+        });
         results[index] = {
-          ok: false,
-          error: `Unknown action: ${op.action}`,
+          ok: true,
+          data: isRecord(mcpData) ? mcpData : { value: mcpData },
         };
         return;
       }
@@ -59,13 +69,17 @@ export const executePlan = async (params: {
         userId: params.userId,
         explicitId: framework.connection_id,
       });
+      // Manifest transports are always Nango-backed (a no-auth MCP server never
+      // resolves a manifest action).
+      const { nangoProviderConfigKey, nangoConnectionId } =
+        requireNangoRef(connection);
 
       let data: unknown;
       if (resolved.transport.kind === "nango-proxy") {
         const req = buildRequest(resolved, cleanArgs);
         const raw = await callNangoProxy({
-          providerConfigKey: connection.nangoProviderConfigKey,
-          connectionId: connection.nangoConnectionId,
+          providerConfigKey: nangoProviderConfigKey,
+          connectionId: nangoConnectionId,
           method: req.method,
           endpoint: req.endpoint,
           query: req.query,
@@ -82,8 +96,8 @@ export const executePlan = async (params: {
         const raw = await callHttpDirect({
           manifest: resolved.manifest,
           transport: resolved.transport,
-          providerConfigKey: connection.nangoProviderConfigKey,
-          connectionId: connection.nangoConnectionId,
+          providerConfigKey: nangoProviderConfigKey,
+          connectionId: nangoConnectionId,
           method: req.method,
           endpoint: req.endpoint,
           query: req.query,
@@ -103,8 +117,8 @@ export const executePlan = async (params: {
         }
         data = await callCustomHandler({
           manifest: resolved.manifest,
-          providerConfigKey: connection.nangoProviderConfigKey,
-          connectionId: connection.nangoConnectionId,
+          providerConfigKey: nangoProviderConfigKey,
+          connectionId: nangoConnectionId,
           handler: resolved.handler,
           args: cleanArgs,
         });

@@ -257,15 +257,6 @@ export const actionSchema = z.object({
    */
   response: z.string().optional(),
   /**
-   * Follow OData `@odata.nextLink` and aggregate every page's `value[]`
-   * before the response mapper runs (`nango-proxy` only). Set on collection
-   * reads of APIs that page server-side — notably Microsoft Graph Planner,
-   * which caps task lists at ~400/page, so an un-paginated read silently
-   * drops everything past the first page. Leave off for single-object reads
-   * and intentionally-bounded lists (e.g. Outlook `$top`).
-   */
-  paginate: z.boolean().optional(),
-  /**
    * Name of a handler function in the provider's `handlers` module
    * (`custom-handler` transport only). The handler receives
    * `(args, ctx: { credentials, connection_config })` and returns the
@@ -552,10 +543,11 @@ export const providerManifestSchema = z
     key: z.string().regex(/^[a-z][a-z0-9-]*$/),
     displayName: z.string().min(1),
     /**
-     * One-line capability summary used as the generated SKILL.md `description`
-     * frontmatter — the L1 relevance hook the agent reads to decide whether to
-     * open the skill. Format: "<DisplayName> — <what it does>". When omitted,
-     * the generator falls back to the display name alone.
+     * One-line, agent-facing summary of what this app does — becomes the
+     * generated `SKILL.md` front-matter `description`, which the skill
+     * catalogue reads for discovery (`materialize.ts`). Say what the app
+     * IS and what the agent can do with it, so the agent knows when to
+     * reach for it. Optional; falls back to `displayName` when absent.
      */
     description: z.string().min(1).optional(),
     /** Integration ID configured in the Nango dashboard. */

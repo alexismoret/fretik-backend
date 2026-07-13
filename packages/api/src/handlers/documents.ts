@@ -27,13 +27,14 @@ import {
 } from "@fretik/shared/schemas/common/responses";
 import { deleteDocuments } from "@fretik/shared/services/documents/delete";
 import { streamUploadProgress } from "@fretik/shared/services/documents/progress";
+import { reextractDocument } from "@fretik/shared/services/documents/reextract";
 import {
   getDocumentBreadcrumbs,
   getDocumentDetails,
 } from "@fretik/shared/services/documents/retrieve";
 import { updateDocument } from "@fretik/shared/services/documents/update";
 import { uploadDocument } from "@fretik/shared/services/documents/upload";
-import { createRoute, OpenAPIHono } from "@hono/zod-openapi";
+import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import { streamSSE } from "hono/streaming";
 
 // ==================== //
@@ -176,6 +177,30 @@ const getDocumentDetailsRoute = createRoute({
   },
 });
 
+const reextractDocumentRoute = createRoute({
+  method: "post",
+  path: "/{id}/reextract",
+  summary: "Re-extract a document",
+  description:
+    "Re-runs classification and entity extraction against the team's current field definitions (OCR is reused from cache). The document returns to `processing`; progress streams over the existing upload SSE.",
+  tags: ["Documents"],
+  request: {
+    params: paramsIdSchema,
+  },
+  responses: {
+    202: {
+      content: {
+        "application/json": { schema: z.object({ success: z.boolean() }) },
+      },
+      description: "Re-extraction enqueued",
+    },
+    ...responseBadRequestSchema,
+    ...responseNotFoundSchema,
+    ...responseForbiddenSchema,
+    ...responseInternalErrorSchema,
+  },
+});
+
 // ==================== //
 // ROUTE HANDLERS       //
 // ==================== //
@@ -265,6 +290,29 @@ documentRoutes.openapi(updateDocumentRoute, async (c) => {
 });
 
 /**
+ * -- RE-EXTRACT DOCUMENT
+ * --
+ * Re-runs the extraction pipeline for a settled document (after a failed run,
+ * a field-template change, or a model upgrade). Enqueues a forced re-run and
+ * returns immediately; the document flips back to `processing`.
+ */
+documentRoutes.openapi(reextractDocumentRoute, async (c) => {
+  const team = c.get("team");
+  if (!team) {
+    return throwHttpError(403, teamRequired());
+  }
+
+  const { id } = c.req.valid("param");
+  await reextractDocument({
+    documentId: id,
+    teamId: team.id,
+    organizationId: team.organizationId,
+  });
+
+  return c.json({ success: true }, 202);
+});
+
+/**
  * -- GET DOCUMENT DETAILS
  * --
  * Returns document details including a presigned file URL, the team's
@@ -319,7 +367,6 @@ documentRoutes.openapi(getDocumentDetailsRoute, async (c) => {
       uploadedBy: document.uploadedBy,
       folder: document.folder,
       properties,
-      labels: document.labels,
       breadcrumbs,
       fileUrl,
       fieldValues,

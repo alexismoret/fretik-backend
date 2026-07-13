@@ -46,9 +46,9 @@ import { EMBEDDING_DIMENSIONS } from "../../lib/embeddings";
  *
  * Filter surface is intentionally minimal: `sourceTypes` and
  * `sourceIds`. Every other metadata filter (document_type,
- * document_date, uploaded_at, entity id, category…) is already
- * reachable via the dedicated domain tools (`listDocuments`,
- * `listEntities`) or `querySql`. The expected two-step pattern is:
+ * document_date, uploaded_at, category…) is already reachable via
+ * the dedicated domain tool (`listDocuments`) or `querySql`. The
+ * expected two-step pattern is:
  * model calls the right list tool with its own rich filters →
  * collects the matching ids → calls rag-search with `sourceIds:
  * [...]`. This keeps the RAG tool surface small and avoids
@@ -85,7 +85,7 @@ export interface HybridSearchFilters {
   /**
    * Narrow the candidate pool to specific source rows — the
    * documents the model has already pre-selected via
-   * `listDocuments` / `listEntities`. This is the universal bridge
+   * `listDocuments`. This is the universal bridge
    * between the structured domain tools and the semantic RAG tool:
    * pre-filter structurally via the domain tools, then
    * semantic-search ONLY inside the returned ids. Indexed on

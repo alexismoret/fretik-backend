@@ -16,6 +16,13 @@ export const TOOL_ERROR_CODES = {
   NO_CONVERSATION: "NO_CONVERSATION",
   MEMORY_REQUIRES_USER: "MEMORY_REQUIRES_USER",
 
+  // Workflow (headless workflow-agent tools)
+  NO_WORKFLOW_RUN: "NO_WORKFLOW_RUN",
+  // Workflow builder (manageWorkflow domain tool)
+  WORKFLOW_ERROR: "WORKFLOW_ERROR",
+  WORKFLOW_NOT_FOUND: "WORKFLOW_NOT_FOUND",
+  WORKFLOW_NOT_TESTED: "WORKFLOW_NOT_TESTED",
+
   // User-initiated Stop — the turn was aborted mid-tool (POST /:id/stop).
   // The model never reads this (the tool loop is aborted with it); it
   // documents intent and keeps the failure envelope canonical.
@@ -61,10 +68,14 @@ export const TOOL_ERROR_CODES = {
   S3_UPLOAD_FAILED: "S3_UPLOAD_FAILED",
 
   // Domain query tools
-  GET_ENTITY_DETAILS_ERROR: "GET_ENTITY_DETAILS_ERROR",
-  LIST_ENTITIES_ERROR: "LIST_ENTITIES_ERROR",
   LIST_DOCUMENTS_ERROR: "LIST_DOCUMENTS_ERROR",
   RAG_ERROR: "RAG_ERROR",
+  // Drive management tools (uploadToDrive / manageDrive / listFolders):
+  // invalid action args or a failed folder/document operation.
+  DRIVE_ERROR: "DRIVE_ERROR",
+  // Object graph (ontology) query tools
+  OBJECT_QUERY_ERROR: "OBJECT_QUERY_ERROR",
+  OBJECT_TYPE_NOT_FOUND: "OBJECT_TYPE_NOT_FOUND",
 
   // Memory
   MEMORY_INVALID_INPUT: "MEMORY_INVALID_INPUT",
@@ -78,6 +89,9 @@ export const TOOL_ERROR_CODES = {
   // Egress hardening (web-egress.ts): scheme/private-IP/length vs domain policy.
   WEB_FETCH_BLOCKED_TARGET: "WEB_FETCH_BLOCKED_TARGET",
   WEB_FETCH_DOMAIN_BLOCKED: "WEB_FETCH_DOMAIN_BLOCKED",
+  // Tool-permission policy: the team set this tool to `blocked` (Settings →
+  // Tool permissions). A backstop for a guessed/pruned tool name.
+  TOOL_DISABLED_BY_POLICY: "TOOL_DISABLED_BY_POLICY",
 } as const;
 
 export type ToolErrorCode =

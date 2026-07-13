@@ -1,6 +1,5 @@
 import { z } from "zod";
 import { documentStatusEnum } from "../db/schema";
-import { entityRoleSchema } from "./entities";
 import { fieldDefinitionResponseSchema } from "./field-definitions";
 import { FolderBreadcrumbSchema } from "./folders";
 
@@ -77,13 +76,6 @@ export const GetDocumentDetailsResponseSchema = DocumentResponseSchema.extend({
     })
     .nullable(),
   breadcrumbs: z.array(FolderBreadcrumbSchema),
-  labels: z.array(
-    z.object({
-      id: z.uuid(),
-      name: z.string(),
-      color: z.string().nullable(),
-    }),
-  ),
   /**
    * Per-document custom field values, keyed by `fieldDefinitions.key`.
    * Values are JSON primitives or arrays (multi_select) — the type is
@@ -111,15 +103,6 @@ export const UpdateDocumentSchema = z.object({
   folderId: z.uuid().nullish(),
   documentSummary: z.string().min(1).max(500).optional(),
   documentLanguage: z.string().length(2).nullish(),
-  labelIds: z.array(z.uuid()).optional(),
-  entities: z
-    .array(
-      z.object({
-        entityId: z.uuid(),
-        role: entityRoleSchema,
-      }),
-    )
-    .optional(),
   fieldValues: z.record(z.string(), z.unknown()).optional(),
 });
 

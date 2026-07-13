@@ -19,6 +19,8 @@ export interface SkillDetail {
   enabled: boolean;
   version: string;
   source: "bundled" | "team_uploaded";
+  sourceUrl: string | null;
+  skippedFiles: number;
   teamId: string | null;
   createdAt: Date;
   updatedAt: Date;
@@ -43,6 +45,8 @@ export const getSkillForTeamById = async (
       isDefault: skills.isDefault,
       version: skills.version,
       source: skills.source,
+      sourceUrl: skills.sourceUrl,
+      skippedFiles: skills.sourceSkippedFiles,
       teamId: skills.teamId,
       createdAt: skills.createdAt,
       updatedAt: skills.updatedAt,
@@ -81,6 +85,8 @@ export const getSkillForTeamById = async (
     enabled: computeEffectiveEnabled(row.isDefault, row.overrideEnabled),
     version: row.version,
     source: row.source,
+    sourceUrl: row.sourceUrl,
+    skippedFiles: row.skippedFiles,
     teamId: row.teamId,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,

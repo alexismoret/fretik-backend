@@ -28,6 +28,16 @@
 import { langfuseClient, langfuseEnvironment } from "./langfuse";
 
 /**
+ * Local prompt-source override. Set `LANGFUSE_PROMPTS_LOCAL=true` in a dev
+ * `.env` to read the in-repo `.md` directly and SKIP Langfuse entirely: local
+ * then runs whatever the `.md` currently says (your latest edit, picked up on
+ * the next dev-server reload) while NOTHING is published to Langfuse — so the
+ * `production` label, and therefore prod, stays exactly as it is. Tracing is
+ * unaffected (this gates only the prompt source). NEVER set it in prod.
+ */
+const USE_LOCAL_PROMPTS = process.env.LANGFUSE_PROMPTS_LOCAL === "true";
+
+/**
  * Per-environment fetch options. Production pins the promoted `production`
  * label (cached); every other environment tracks `latest` uncached so a UI
  * edit is visible on the next turn.
@@ -36,6 +46,18 @@ const FETCH_OPTIONS =
   langfuseEnvironment === "production"
     ? { label: "production", type: "text" as const }
     : { label: "latest", type: "text" as const, cacheTtlSeconds: 0 };
+
+/**
+ * A managed-prompt version reference the `@langfuse/vercel-ai-sdk` integration
+ * links to a model-call observation. Read off the agent's `runtimeContext`
+ * under the `langfusePrompt` key (opted in via `telemetry.includeRuntimeContext`);
+ * the integration normalizes exactly `{ name, version, isFallback? }`.
+ */
+export interface LangfusePromptRef {
+  name: string;
+  version: number;
+  isFallback?: boolean;
+}
 
 /** A managed prompt's resolved template text plus its trace-link payload. */
 export interface ManagedPrompt {
@@ -46,12 +68,11 @@ export interface ManagedPrompt {
    */
   text: string;
   /**
-   * `prompt.toJSON()` (a string) when the text came from a real Langfuse
-   * version, for `experimental_telemetry.metadata.langfusePrompt`.
-   * `undefined` on fallback resolution — linking a trace to a non-existent
-   * version would mislead.
+   * `{ name, version }` of the resolved Langfuse version, surfaced to the
+   * telemetry integration for prompt-version linking. `undefined` on fallback
+   * resolution — linking a trace to a non-existent version would mislead.
    */
-  link?: string;
+  promptRef?: LangfusePromptRef;
 }
 
 /**
@@ -64,7 +85,7 @@ export const fetchManagedPrompt = async (
   name: string,
   fallbackText: string,
 ): Promise<ManagedPrompt> => {
-  if (!langfuseClient) return { text: fallbackText };
+  if (USE_LOCAL_PROMPTS || !langfuseClient) return { text: fallbackText };
   try {
     const prompt = await langfuseClient.prompt.get(name, {
       ...FETCH_OPTIONS,
@@ -72,7 +93,10 @@ export const fetchManagedPrompt = async (
     });
     return prompt.isFallback
       ? { text: prompt.prompt }
-      : { text: prompt.prompt, link: prompt.toJSON() };
+      : {
+          text: prompt.prompt,
+          promptRef: { name: prompt.name, version: prompt.version },
+        };
   } catch (err) {
     console.warn(
       `[langfuse] fetchManagedPrompt(${name}) failed, using fallback:`,

@@ -1,7 +1,7 @@
 ---
 name: shiptify
-description: Shiptify — manage shipment requests and shipments: book, track, confirm pickup/delivery, exchange documents
-version: 30b033bce920
+description: Shiptify — manage transport shipments, addresses, and related records on the connected Shiptify TMS account (shipper or carrier).
+version: 31d82efacb84
 ---
 
 # Shiptify — 54 actions

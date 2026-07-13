@@ -19,7 +19,6 @@ export const accountingTemplate: DocumentFieldTemplate = {
   descriptionKey: "accounting.description",
   fields: [
     {
-      resourceType: "document",
       key: "document_type",
       labelKey: "accounting.fields.documentType.label",
       descriptionKey: "accounting.fields.documentType.description",
@@ -37,38 +36,30 @@ export const accountingTemplate: DocumentFieldTemplate = {
         opt("documentType", "payslip"),
         opt("documentType", "other"),
       ],
-      displayInFilters: true,
       displayOrder: 0,
     },
     {
-      resourceType: "document",
       key: "invoice_number",
       labelKey: "accounting.fields.invoiceNumber.label",
       descriptionKey: "accounting.fields.invoiceNumber.description",
       type: "text",
-      displayInFilters: true,
       displayOrder: 1,
     },
     {
-      resourceType: "document",
       key: "invoice_date",
       labelKey: "accounting.fields.invoiceDate.label",
       descriptionKey: "accounting.fields.invoiceDate.description",
       type: "date",
-      displayInFilters: true,
       displayOrder: 2,
     },
     {
-      resourceType: "document",
       key: "due_date",
       labelKey: "accounting.fields.dueDate.label",
       descriptionKey: "accounting.fields.dueDate.description",
       type: "date",
-      displayInFilters: true,
       displayOrder: 3,
     },
     {
-      resourceType: "document",
       key: "currency",
       labelKey: "accounting.fields.currency.label",
       descriptionKey: "accounting.fields.currency.description",
@@ -83,11 +74,9 @@ export const accountingTemplate: DocumentFieldTemplate = {
         opt("currency", "CAD"),
         opt("currency", "AUD"),
       ],
-      displayInFilters: true,
       displayOrder: 4,
     },
     {
-      resourceType: "document",
       key: "total_amount",
       labelKey: "accounting.fields.totalAmount.label",
       descriptionKey: "accounting.fields.totalAmount.description",
@@ -96,7 +85,6 @@ export const accountingTemplate: DocumentFieldTemplate = {
       displayOrder: 5,
     },
     {
-      resourceType: "document",
       key: "subtotal_amount",
       labelKey: "accounting.fields.subtotalAmount.label",
       descriptionKey: "accounting.fields.subtotalAmount.description",
@@ -105,7 +93,6 @@ export const accountingTemplate: DocumentFieldTemplate = {
       displayOrder: 6,
     },
     {
-      resourceType: "document",
       key: "tax_amount",
       labelKey: "accounting.fields.taxAmount.label",
       descriptionKey: "accounting.fields.taxAmount.description",
@@ -114,7 +101,6 @@ export const accountingTemplate: DocumentFieldTemplate = {
       displayOrder: 7,
     },
     {
-      resourceType: "document",
       key: "vat_rate",
       labelKey: "accounting.fields.vatRate.label",
       descriptionKey: "accounting.fields.vatRate.description",
@@ -123,7 +109,6 @@ export const accountingTemplate: DocumentFieldTemplate = {
       displayOrder: 8,
     },
     {
-      resourceType: "document",
       key: "payment_terms",
       labelKey: "accounting.fields.paymentTerms.label",
       descriptionKey: "accounting.fields.paymentTerms.description",
@@ -131,7 +116,6 @@ export const accountingTemplate: DocumentFieldTemplate = {
       displayOrder: 9,
     },
     {
-      resourceType: "document",
       key: "vendor_tax_id",
       labelKey: "accounting.fields.vendorTaxId.label",
       descriptionKey: "accounting.fields.vendorTaxId.description",

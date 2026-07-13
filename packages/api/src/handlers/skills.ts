@@ -17,15 +17,23 @@ import {
 import { ERROR_CODES } from "@fretik/shared/schemas/errors";
 import {
   createSkillRequestSchema,
+  installSkillRequestSchema,
+  skillCatalogDetailQuerySchema,
+  skillCatalogDetailSchema,
+  skillCatalogQuerySchema,
+  skillCatalogResponseSchema,
   skillDetailSchema,
   skillIdParamSchema,
   skillsListResponseSchema,
   updateSkillRequestSchema,
 } from "@fretik/shared/schemas/skills";
+import { getSkillCatalogDetail } from "@fretik/shared/services/skills/catalog-detail";
 import { createSkill } from "@fretik/shared/services/skills/create";
 import { deleteSkill } from "@fretik/shared/services/skills/delete";
 import { getSkillForTeamById } from "@fretik/shared/services/skills/get-by-id";
+import { installSkillFromCatalog } from "@fretik/shared/services/skills/install-from-catalog";
 import { listSkillsForTeam } from "@fretik/shared/services/skills/list-for-team";
+import { searchSkillCatalog } from "@fretik/shared/services/skills/search-catalog";
 import { updateSkill } from "@fretik/shared/services/skills/update";
 import { createRoute, OpenAPIHono } from "@hono/zod-openapi";
 
@@ -165,6 +173,67 @@ const deleteRouteDef = createRoute({
   },
 });
 
+const catalogRouteDef = createRoute({
+  method: "get",
+  path: "/catalog",
+  summary: "Search the skill catalog (skills.sh, discovery-only)",
+  description:
+    "Searches the skills.sh catalog (metadata only — no user data transits it). Paginated and searchable via `q`. With no `q`, returns the official shelf (Anthropic + OpenAI skills). Each entry's `description` is hydrated from the skill's SKILL.md; `official` and `filesCount` come from the same source.",
+  tags: ["Skills"],
+  request: { query: skillCatalogQuerySchema },
+  responses: {
+    200: {
+      content: { "application/json": { schema: skillCatalogResponseSchema } },
+      description: "Skill catalog page",
+    },
+    ...responseForbiddenSchema,
+    ...responseInternalErrorSchema,
+  },
+});
+
+const catalogDetailRouteDef = createRoute({
+  method: "get",
+  path: "/catalog/detail",
+  summary: "Fetch a catalog skill's license + advisory audits",
+  description:
+    "Returns the skill's license (with a `restrictedLicense` flag the UI uses to block install of proprietary content) and advisory security audits for the detail panel. Never installs anything.",
+  tags: ["Skills"],
+  request: { query: skillCatalogDetailQuerySchema },
+  responses: {
+    200: {
+      content: { "application/json": { schema: skillCatalogDetailSchema } },
+      description: "Skill catalog detail",
+    },
+    ...responseForbiddenSchema,
+    ...responseNotFoundSchema,
+    ...responseInternalErrorSchema,
+  },
+});
+
+const installRouteDef = createRoute({
+  method: "post",
+  path: "/install",
+  summary: "Install a catalog skill to the active team",
+  description:
+    "Requires admin/owner role. Downloads the catalog skill's full SKILL.md body and creates a team_uploaded skill stamped with its `skills.sh:<owner>/<repo>/<slug>` provenance. Idempotent — re-installing the same skill returns the existing row. Refuses skills whose license forbids storing/redistributing their content.",
+  tags: ["Skills"],
+  request: {
+    body: {
+      content: { "application/json": { schema: installSkillRequestSchema } },
+      required: true,
+    },
+  },
+  responses: {
+    201: {
+      content: { "application/json": { schema: skillDetailSchema } },
+      description: "Skill installed",
+    },
+    ...responseBadRequestSchema,
+    ...responseForbiddenSchema,
+    ...responseInternalErrorSchema,
+  },
+});
+
 // ============================================================================
 // Handlers
 // ============================================================================
@@ -175,6 +244,49 @@ skillsRoutes.openapi(listRoute, async (c) => {
 
   const skills = await listSkillsForTeam(team.id);
   return c.json({ skills }, 200);
+});
+
+skillsRoutes.openapi(catalogRouteDef, async (c) => {
+  const team = c.get("team");
+  if (!team) return c.json(teamRequired(), 403);
+
+  const { q, page, pageSize } = c.req.valid("query");
+  const result = await searchSkillCatalog({ q, page, pageSize });
+  return c.json(result, 200);
+});
+
+skillsRoutes.openapi(catalogDetailRouteDef, async (c) => {
+  const team = c.get("team");
+  if (!team) return c.json(teamRequired(), 403);
+
+  const { owner, repo, slug } = c.req.valid("query");
+  const detail = await getSkillCatalogDetail({ owner, repo, slug });
+  return c.json(detail, 200);
+});
+
+skillsRoutes.openapi(installRouteDef, async (c) => {
+  const team = c.get("team");
+  if (!team) return c.json(teamRequired(), 403);
+
+  const user = c.get("user");
+  if (!user) return c.json(forbidden("Authentication required"), 403);
+
+  await assertOrgAdmin({
+    userId: user.id,
+    organizationId: team.organizationId,
+    message: "Installing skills requires admin or owner role",
+  });
+
+  const { owner, repo, slug } = c.req.valid("json");
+  const installed = await installSkillFromCatalog({
+    teamId: team.id,
+    organizationId: team.organizationId,
+    owner,
+    repo,
+    slug,
+    actor: { actorType: "user", actorUserId: user.id },
+  });
+  return c.json(installed, 201);
 });
 
 skillsRoutes.openapi(getRoute, async (c) => {
@@ -212,6 +324,7 @@ skillsRoutes.openapi(createRouteDef, async (c) => {
     name: body.name,
     description: body.description,
     body: body.body,
+    actor: { actorType: "user", actorUserId: user.id },
   });
   return c.json(created, 201);
 });
@@ -238,6 +351,7 @@ skillsRoutes.openapi(updateRouteDef, async (c) => {
     description: patch.description,
     body: patch.body,
     enabled: patch.enabled,
+    actor: { actorType: "user", actorUserId: user.id },
   });
   return c.json(updated, 200);
 });
@@ -256,7 +370,11 @@ skillsRoutes.openapi(deleteRouteDef, async (c) => {
   });
 
   const { id } = c.req.valid("param");
-  await deleteSkill({ id, teamId: team.id });
+  await deleteSkill({
+    id,
+    teamId: team.id,
+    actor: { actorType: "user", actorUserId: user.id },
+  });
   return c.body(null, 204);
 });
 

@@ -10,6 +10,7 @@ import { extractNangoErrorDetails } from "../../../lib/external-apps/extract-nan
 import { getNangoClient } from "../../../lib/external-apps/nango-client";
 import { ERROR_CODES } from "../../../schemas/errors";
 import { getConnectionForCaller } from "./get-by-id";
+import { requireNangoRef } from "./nango-ref";
 
 /**
  * Finalise a reconnect started by `createReconnectSession`. Called after
@@ -51,12 +52,11 @@ export const confirmReconnect = async (params: {
     });
   }
 
+  const { nangoProviderConfigKey, nangoConnectionId } =
+    requireNangoRef(current);
   const nango = getNangoClient();
   try {
-    await nango.getConnection(
-      current.nangoProviderConfigKey,
-      current.nangoConnectionId,
-    );
+    await nango.getConnection(nangoProviderConfigKey, nangoConnectionId);
   } catch (error) {
     return throwHttpError(400, {
       code: ERROR_CODES.EXTERNAL_APP_NANGO_VERIFY_FAILED,

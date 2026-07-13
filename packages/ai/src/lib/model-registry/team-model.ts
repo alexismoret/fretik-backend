@@ -55,6 +55,22 @@ export const resolveModelForTeam = async (
 };
 
 /**
+ * Resolve a role for a memory pipeline, with an eval-only profile override:
+ * when `profileOverride` is set the model is forced onto that registry profile
+ * under the role's own envelope (the model bake-off across recall + the
+ * distillers); otherwise it honours the team's pick like `resolveModelForTeam`.
+ * Prod call sites pass `undefined` and behave exactly as before.
+ */
+export const resolveMemoryModel = async (
+  role: ModelRole,
+  teamId: string | undefined,
+  profileOverride?: string,
+): Promise<ResolvedModel> =>
+  profileOverride
+    ? resolveModelForRoleProfile(role, profileOverride)
+    : resolveModelForTeam(role, teamId);
+
+/**
  * The utility-tier model ID a team should use for `bare` one-shot call sites
  * (titles, catch-up, multi-query) that build their own
  * `openrouter.chat(id, settings)` and need the catalog ID string, not a

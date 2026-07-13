@@ -1,11 +1,9 @@
-import db from "@fretik/shared/db";
+import db, { type Transaction } from "@fretik/shared/db";
 import { aiChatFiles, aiMessages } from "@fretik/shared/db/schema";
-import { getProvider } from "@fretik/shared/external-apps/registry";
 import {
   authMiddleware,
   type HonoLoggedAppType,
 } from "@fretik/shared/lib/auth-middleware";
-import { renderSnapshot } from "@fretik/shared/lib/chat-file-snapshot";
 import {
   getSessionFilePresignedUrl,
   readSessionFile,
@@ -15,7 +13,6 @@ import {
   teamRequired,
   throwHttpError,
 } from "@fretik/shared/lib/errors";
-import { signSandboxJwt } from "@fretik/shared/lib/external-apps/sandbox-jwt";
 import { redis } from "@fretik/shared/lib/redis";
 import { ANTI_BUFFERING_HEADERS } from "@fretik/shared/lib/sse-headers";
 import {
@@ -47,10 +44,9 @@ import {
   removePresent,
 } from "@fretik/shared/services/ai/presence";
 import { updateConversation } from "@fretik/shared/services/ai/update";
+import { emitDomainEvent } from "@fretik/shared/services/domain-events/emit";
 import { releaseSandbox } from "@fretik/shared/services/e2b/release-sandbox";
-import { listConnections } from "@fretik/shared/services/external-apps/connections/list";
-import { getFieldDefinitionsForTeam } from "@fretik/shared/services/field-definitions/get-for-team";
-import { listEnabledSkillsForTeam } from "@fretik/shared/services/skills/list-enabled-for-team";
+import { getTeamToolPolicies } from "@fretik/shared/services/tool-policies/get-for-team";
 import { MAX_FILES_PER_MESSAGE } from "@fretik/shared/utils/chatbot-limits";
 import { OpenAPIHono } from "@hono/zod-openapi";
 import {
@@ -63,8 +59,9 @@ import {
   convertToModelMessages,
   createUIMessageStream,
   createUIMessageStreamResponse,
+  toUIMessageStream,
   UI_MESSAGE_STREAM_HEADERS,
-  type ToolLoopAgentOnStepFinishCallback,
+  type GenerateTextOnStepEndCallback,
   type UIMessage,
   type UIMessageChunk,
   type UIMessageStreamWriter,
@@ -92,7 +89,12 @@ import {
 } from "../agents/chatbot";
 import type { ChatbotTools } from "../agents/chatbot/tools";
 import type { AgentSet } from "../agents/shared/agent-builder";
-import { writeSandboxAuthFile } from "../lib/conversation-storage";
+import {
+  assembleContextFragments,
+  buildAttachedFilesBlock,
+  loadExternalApps,
+} from "../agents/shared/fragments";
+import { subscribeAbort } from "../lib/abort-subscriber";
 import { flushLangfuse, langfuseEnabled } from "../lib/langfuse";
 import { deleteScore, recordScore } from "../lib/langfuse-scores";
 import {
@@ -106,6 +108,7 @@ import { getResumableStreamContext } from "../lib/resumable-stream-context";
 import {
   classifyStreamError,
   FAILOVER_SENTINEL,
+  isRecoverableToolCallError,
   isTransparentlyRecoverable,
   streamWithRetryThenFallback,
   toStructuredError,
@@ -113,11 +116,6 @@ import {
 } from "../lib/stream-errors";
 import { chatbotRateLimitMiddleware } from "../middlewares/chatbot-rate-limit";
 import { internalMiddleware } from "../middlewares/internal";
-import {
-  buildActiveMemoryRecentTail,
-  runActiveMemoryRecall,
-} from "../services/active-memory/recall";
-import { buildChatbotContextManifest } from "../services/chatbot-context/build-manifest";
 import { sendChatbotFinishedEmailIfEnabled } from "../services/chatbot-finished-email";
 import { compactConversation } from "../services/compaction/compact";
 import { generateConversationTitle } from "../services/conversation-title/generate";
@@ -125,7 +123,16 @@ import {
   prepareModelMessages,
   type PrepareModelMessagesDeps,
 } from "../services/native-input";
+import {
+  buildRecallRecentTail,
+  runUnifiedRecall,
+} from "../services/recall/recall";
 import type { HonoInternalAppType } from "../types/hono";
+import {
+  buildTurnMessageMetadata,
+  filterNewAssistantMessages,
+  narrowMessageMetadata,
+} from "./turn-helpers";
 
 const InternalInvokeSchema = z.object({
   conversationId: z.uuid().optional(),
@@ -228,7 +235,7 @@ const streamChatbotWithFallback = async (params: {
    * Per-step hook forwarded to whichever agent serves the call, so the
    * caller can track `toolExecuted` / `visibleText` live (C4 failover).
    */
-  onStepFinish?: ToolLoopAgentOnStepFinishCallback<ChatbotTools>;
+  onStepFinish?: GenerateTextOnStepEndCallback<ChatbotTools>;
   /**
    * Per-turn reasoning override (C7 "deep thinking"). When set, sent as
    * `providerOptions.openrouter.reasoning` to whichever agent serves the
@@ -244,6 +251,13 @@ const streamChatbotWithFallback = async (params: {
       params.modelProfile,
       buildNativeInputDeps(params.callOptions.conversationId),
     ),
+    // A turn aborted mid-tool-call (user Stop, tab close during a `python`
+    // run) persists an assistant tool part still in `input-streaming` /
+    // `input-available` — a tool call with no result. Sending it verbatim
+    // makes the provider throw `MissingToolResultsError`, wedging the
+    // conversation on every subsequent message. Dropping the incomplete
+    // call is the SDK-sanctioned repair (covers static + dynamic tools).
+    { ignoreIncompleteToolCalls: true },
   );
   // Primary → fallback failover (C4: transient errors earn one retry on
   // the SAME model before spending the fallback). Langfuse trace nesting +
@@ -262,7 +276,7 @@ const streamChatbotWithFallback = async (params: {
       messages: modelMessages,
       options: params.callOptions,
       abortSignal: params.abortSignal,
-      onStepFinish: params.onStepFinish,
+      onStepEnd: params.onStepFinish,
       // Spread the override only when set, so a turn without the toggle
       // sends no `providerOptions` at all (byte-identical to pre-C7).
       ...(params.reasoningOverride !== undefined
@@ -293,37 +307,61 @@ const streamChatbotWithFallback = async (params: {
  * plan), so writes made during the stream are tagged with the
  * conversation directly — no need for a pre-stream message stub.
  */
-/**
- * Narrow a UIMessage's `unknown` metadata to a plain object for
- * persistence — keeps whatever the `messageMetadata` stream callback
- * attached (`langfuseTraceId`, `usage`, `finishReason`). Per-turn
- * observability (tool calls, RAG hits, latency, cost) now lives in
- * Langfuse, not in the DB row.
- */
-const narrowMetadata = (m: UIMessage): Record<string, unknown> | undefined =>
-  m.metadata && typeof m.metadata === "object"
-    ? (m.metadata as Record<string, unknown>)
-    : undefined;
-
 const persistAssistantMessages = async (
   conversationId: string | undefined,
   history: UIMessage[],
   finalMessages: UIMessage[],
-): Promise<void> => {
-  if (!conversationId) return;
-  const known = new Set(history.map((m) => m.id));
-  const assistantMessages = finalMessages.filter(
-    (m) => !known.has(m.id) && m.role === "assistant",
-  );
-  if (assistantMessages.length === 0) return;
+  tx?: Transaction,
+): Promise<UIMessage[]> => {
+  if (!conversationId) return [];
+  const assistantMessages = filterNewAssistantMessages(history, finalMessages);
+  if (assistantMessages.length === 0) return [];
   await saveMessages(
     conversationId,
     assistantMessages.map((m) => ({
       role: "assistant" as const,
       parts: m.parts,
-      metadata: narrowMetadata(m),
+      metadata: narrowMessageMetadata(m),
     })),
+    tx,
   );
+  return assistantMessages;
+};
+
+/**
+ * The `chat.turn` journal payload: enough for the memory pipeline to distill
+ * an episode without reloading the conversation (previews + tools used), while
+ * staying a few hundred bytes. Full text stays in `ai_messages`.
+ */
+const CHAT_TURN_USER_PREVIEW_MAX = 300;
+const CHAT_TURN_ASSISTANT_PREVIEW_MAX = 500;
+
+const buildChatTurnPayload = (
+  history: UIMessage[],
+  assistantMessages: UIMessage[],
+  lastMessageId: string | undefined,
+): Record<string, unknown> => {
+  const lastUser = [...history].reverse().find((m) => m.role === "user");
+  const toolNames = new Set<string>();
+  let assistantText = "";
+  for (const m of assistantMessages) {
+    for (const p of m.parts) {
+      if (p.type === "dynamic-tool") toolNames.add(p.toolName);
+      else if (p.type.startsWith("tool-"))
+        toolNames.add(p.type.slice("tool-".length));
+    }
+    const text = uiMessageText(m);
+    if (text.length > 0) assistantText = text;
+  }
+  return {
+    ...(lastMessageId ? { lastMessageId } : {}),
+    userMessagePreview: (lastUser ? uiMessageText(lastUser) : "").slice(
+      0,
+      CHAT_TURN_USER_PREVIEW_MAX,
+    ),
+    assistantPreview: assistantText.slice(0, CHAT_TURN_ASSISTANT_PREVIEW_MAX),
+    toolNames: [...toolNames],
+  };
 };
 
 /**
@@ -578,7 +616,7 @@ const inferMimeTypeFromFilename = (filename: string): string => {
 };
 
 /**
- * Build the input bundle for `runActiveMemoryRecall` from the
+ * Build the input bundle for `runUnifiedRecall` from the
  * conversation history. Pure function — never throws, always
  * returns a usable shape (empty strings / arrays when there is
  * nothing to extract). The recall service applies its own skip
@@ -608,91 +646,8 @@ const buildActiveMemoryInputs = (
     )
     .map((m) => ({ role: m.role, text: uiMessageText(m) }))
     .filter((m) => m.text.length > 0);
-  const recentTail = buildActiveMemoryRecentTail(tailMessages);
+  const recentTail = buildRecallRecentTail(tailMessages);
   return { userMessage, attachedFiles, recentTail };
-};
-
-/**
- * Build the `{{attachedFilesBlock}}` fragment for the system prompt.
- * JOINs the filenames from the last user message's file parts
- * against `ai_chat_files` so every entry carries the authoritative
- * metadata (MIME type, size, sidecar availability). Returns an
- * empty string when nothing is attached — the prompt renderer
- * substitutes a fallback notice.
- */
-const buildAttachedFilesBlock = async (
-  conversationId: string | undefined,
-  filenames: string[],
-): Promise<string> => {
-  if (!conversationId || filenames.length === 0) return "";
-
-  const rows = await db
-    .select({
-      filename: aiChatFiles.filename,
-      mimeType: aiChatFiles.mimeType,
-      size: aiChatFiles.size,
-      hasMarkdown: aiChatFiles.hasMarkdown,
-      status: aiChatFiles.status,
-      snapshot: aiChatFiles.snapshot,
-    })
-    .from(aiChatFiles)
-    .where(
-      and(
-        eq(aiChatFiles.conversationId, conversationId),
-        inArray(aiChatFiles.filename, filenames),
-      ),
-    );
-
-  if (rows.length === 0) return "";
-
-  const byFilename = new Map(rows.map((r) => [r.filename, r]));
-  const blocks: string[] = [];
-  for (const filename of filenames) {
-    const row = byFilename.get(filename);
-    if (!row) continue;
-    const sizeKb = (row.size / 1024).toFixed(1);
-    // The filename is the on-disk basename (sanitized at upload
-    // time — see services/chat-files/upload.ts). Every attachment
-    // lives at `/workspace/attachments/{filename}` inside the
-    // conversation sandbox. Emit a workspace-relative path the agent
-    // can copy-paste verbatim into `read(...)` /
-    // `pandas.read_excel('attachments/...')` without having to guess
-    // where the sandbox is mounted.
-    const relativePath = `attachments/${filename}`;
-
-    // <attached_file> XML-style block per file. Pattern verbatim from
-    // Claude.ai's `<notes_on_user_uploaded_files>` (model is trained
-    // on this delimiter). Snapshot inside is a net-new affordance
-    // sized to our tool surface — see `lib/chat-file-snapshot.ts`.
-    const headerLine = `<attached_file path="${relativePath}" mime="${row.mimeType}" size_kb="${sizeKb}" status="${row.status}">`;
-    const body: string[] = [headerLine];
-    if (row.snapshot) {
-      body.push(renderSnapshot(row.snapshot));
-    }
-    if (row.hasMarkdown) {
-      body.push(
-        `\`read({ file_path: '${relativePath}' })\` returns its text. For visual layout / signatures / diagrams use \`vision({ file_path: '${relativePath}', question: '...' })\`.`,
-      );
-    } else if (row.mimeType.startsWith("image/")) {
-      body.push(
-        `Call \`vision({ file_path: '${relativePath}', question: '...' })\` for visual questions (\`read\` has no text for this image).`,
-      );
-    } else if (
-      row.mimeType.includes("spreadsheet") ||
-      row.mimeType.includes("excel")
-    ) {
-      body.push(
-        `Spreadsheet — open in \`python\` with \`pandas.read_excel('${relativePath}')\` / \`openpyxl\`.`,
-      );
-    } else {
-      body.push(
-        `\`read({ file_path: '${relativePath}' })\` for the full content.`,
-      );
-    }
-    body.push(`</attached_file>`);
-    blocks.push(body.join("\n"));
-  }
-  return blocks.join("\n\n");
 };
 
 /**
@@ -800,141 +755,24 @@ const rejectTooManyFiles = async (
 };
 
 /**
- * Per-turn external-app setup. Two things happen, both soft-failing so
- * a failure never blocks the turn:
- *
- *  (1) Load the active external-app connections (Outlook, …) the caller
- *      can see — surfaced to the agent via the `{{externalAppsBlock}}`
- *      prompt line and the runtime context.
- *  (2) Mint a fresh sandbox JWT (HS256, 1 h TTL) and write it to
- *      `/workspace/.fretik/auth.json` so `fretik_apps` calls
- *      authenticate this turn. The Python SDK re-reads the file every
- *      call, so the JWT rotates between turns without restarting the
- *      kernel. Skipped when `SANDBOX_JWT_SECRET` is unset.
- *
- * No-op (returns empty) for stateless `/invoke` callers without a
- * conversationId / userId.
+ * Per-turn external-app setup — shared with the workflow handler, extracted
+ * to `agents/shared/fragments.ts`. This thin adapter maps the chatbot's
+ * per-turn param bag onto the shared signature.
  */
-const loadExternalApps = async (
+const loadChatbotExternalApps = (
   params: RunChatbotTurnParams,
 ): Promise<{
   externalAppConnections: ChatbotCallOptions["externalAppConnections"];
   externalAppsBlock: string | undefined;
-}> => {
-  let externalAppConnections: ChatbotCallOptions["externalAppConnections"];
-  let externalAppsBlock: string | undefined;
-  if (
-    params.conversationId !== undefined &&
-    params.callOptions.userId !== undefined
-  ) {
-    try {
-      const rows = await listConnections(
-        params.callOptions.teamId,
-        params.callOptions.userId,
-      );
-      const active = rows.filter((r) => r.status === "active");
-      externalAppConnections = active.map((r) => {
-        const provider = getProvider(r.providerKey);
-        return {
-          id: r.id,
-          providerKey: r.providerKey,
-          displayName: r.displayName,
-          scope: r.userId === null ? ("team" as const) : ("user" as const),
-          categories: provider?.manifest.categories ?? [],
-          options: r.options,
-        };
-      });
-      externalAppsBlock =
-        externalAppConnections.length === 0
-          ? undefined
-          : externalAppConnections
-              .map((c) => {
-                // Surface only the options the provider opted to expose to
-                // the agent (e.g. `persona` on communication providers).
-                // Other options stay server-side.
-                const provider = getProvider(c.providerKey);
-                const formatOptionValue = (v: unknown): string | null => {
-                  if (v === undefined || v === null) return null;
-                  if (
-                    typeof v === "string" ||
-                    typeof v === "number" ||
-                    typeof v === "boolean"
-                  ) {
-                    return String(v);
-                  }
-                  // Complex shapes (object / array) — drop from the system
-                  // prompt rather than spilling JSON the agent doesn't need.
-                  return null;
-                };
-                const exposed =
-                  provider?.manifest.connectionOptions?.fields
-                    .filter((f) => f.exposeToAgent)
-                    .map((f) => {
-                      const formatted = formatOptionValue(c.options?.[f.key]);
-                      return formatted === null
-                        ? null
-                        : `${f.key}: ${formatted}`;
-                    })
-                    .filter((s): s is string => s !== null) ?? [];
-                // The manifest description is the "what is this app + when to
-                // use it" signal at decision time — load-bearing for apps the
-                // base model doesn't know (industry / template providers),
-                // cheap-but-redundant for well-known ones.
-                const description = provider?.manifest.description;
-                const parts = [
-                  `display_name: "${c.displayName}"`,
-                  ...(description !== undefined
-                    ? [`description: "${description}"`]
-                    : []),
-                  `id: ${c.id}`,
-                  `categories: [${c.categories.join(", ")}]`,
-                  ...exposed,
-                ];
-                return `- ${c.providerKey} (${parts.join(", ")})`;
-              })
-              .join("\n");
-    } catch (error) {
-      console.warn(
-        `${params.logPrefix} listConnections failed, proceeding without external apps:`,
-        error instanceof Error ? error.message : error,
-      );
-    }
-
-    const sandboxJwtSecret = Bun.env.SANDBOX_JWT_SECRET;
-    const backendUrl = Bun.env.FRETIK_BACKEND_INTERNAL_URL;
-    if (
-      sandboxJwtSecret !== undefined &&
-      sandboxJwtSecret !== "" &&
-      backendUrl !== undefined &&
-      backendUrl !== ""
-    ) {
-      try {
-        const jwt = await signSandboxJwt({
-          conversationId: params.conversationId,
-          teamId: params.callOptions.teamId,
-          userId: params.callOptions.userId,
-          organizationId: params.callOptions.organizationId,
-          turnId: params.callOptions.traceId ?? params.conversationId,
-        });
-        await writeSandboxAuthFile(params.conversationId, {
-          jwt,
-          backendUrl,
-          turnId: params.callOptions.traceId ?? params.conversationId,
-        });
-      } catch (error) {
-        console.warn(
-          `${params.logPrefix} writeSandboxAuthFile failed — fretik_apps calls will fail until next turn:`,
-          error instanceof Error ? error.message : error,
-        );
-      }
-    } else if (externalAppConnections && externalAppConnections.length > 0) {
-      console.warn(
-        `${params.logPrefix} external-app connections exist but SANDBOX_JWT_SECRET/FRETIK_BACKEND_INTERNAL_URL is missing — fretik_apps calls will fail`,
-      );
-    }
-  }
-  return { externalAppConnections, externalAppsBlock };
-};
+}> =>
+  loadExternalApps({
+    conversationId: params.conversationId,
+    organizationId: params.callOptions.organizationId,
+    teamId: params.callOptions.teamId,
+    userId: params.callOptions.userId,
+    turnId: params.callOptions.traceId,
+    logPrefix: params.logPrefix,
+  });
 
 /**
  * Build all per-turn system-prompt fragments in parallel (attached
@@ -959,148 +797,79 @@ const buildTurnCallOptions = async (
   const activeMemoryInputs = activeMemoryUserId
     ? buildActiveMemoryInputs(params.history, filenames)
     : null;
-  const [
-    attachedFilesBlock,
-    chatbotContextManifest,
-    activeMemoryRecall,
-    teamFieldDefinitionsBlock,
-    enabledSkillsBlock,
-  ] = await Promise.all([
-    // C4 — each fragment already soft-fails to an empty value; the soft
-    // timeout adds the missing TIME bound so one slow source can't hang
-    // the whole turn. These are HANG backstops, NOT latency caps: set
-    // them above realistic p99 so a transient DB/Redis/LLM spike doesn't
-    // needlessly drop context. The DB/Redis fragments resolve in well
-    // under a second normally; active-memory is the heavy one (a RAG
-    // sweep + an LLM judge with its OWN 15s internal budget — see
-    // `RECALL_TIMEOUT_MS`), so its bound sits ABOVE that 15s, catching
-    // only a true RAG hang (the RAG search has no internal timeout).
-    withSoftTimeout(
-      buildAttachedFilesBlock(params.conversationId, filenames),
-      4000,
-      "",
-      "attached-files",
-    ),
-    withSoftTimeout(
-      buildChatbotContextManifest({
-        userId: params.callOptions.userId,
-        teamId: params.callOptions.teamId,
+  // The three scope-based fragments (context manifest, team objects, skills)
+  // are assembled by the shared `assembleContextFragments` — same soft
+  // timeouts and soft-fail semantics as the historical inline version (C4:
+  // HANG backstops, not latency caps). The two history-dependent fragments
+  // (attached files, active-memory recall) stay here and run in the same
+  // parallel batch.
+  const [attachedFilesBlock, activeMemoryRecall, fragments, toolPolicies] =
+    await Promise.all([
+      withSoftTimeout(
+        buildAttachedFilesBlock(params.conversationId, filenames),
+        4000,
+        "",
+        "attached-files",
+      ),
+      activeMemoryInputs && activeMemoryUserId
+        ? // Sibling trace linked to the conversation's session: the pre-turn
+          // recall judge runs before `execute`, so it can't nest under
+          // `chatbot-turn` — `propagateAttributes` keeps it navigable per
+          // session instead of producing an orphan trace.
+          propagateAttributes(
+            {
+              traceName: "active-memory-recall",
+              ...(params.conversationId !== undefined
+                ? { sessionId: params.conversationId }
+                : {}),
+              userId: activeMemoryUserId,
+              tags: [`team:${params.callOptions.teamId}`],
+            },
+            () =>
+              withSoftTimeout(
+                runUnifiedRecall({
+                  userMessage: activeMemoryInputs.userMessage,
+                  attachedFiles: activeMemoryInputs.attachedFiles,
+                  recentTail: activeMemoryInputs.recentTail,
+                  teamId: params.callOptions.teamId,
+                  organizationId: params.callOptions.organizationId,
+                  userId: activeMemoryUserId,
+                  conversationId: params.conversationId,
+                  agentType: "chatbot",
+                }),
+                // ABOVE the recall's own 15s judge budget (RECALL_TIMEOUT_MS)
+                // + RAG headroom — only fires on a true RAG hang, never on a
+                // normal (multi-second) judge generation.
+                18000,
+                null,
+                "active-memory",
+              ),
+          )
+        : Promise.resolve(null),
+      assembleContextFragments({
         organizationId: params.callOptions.organizationId,
-      }).catch((error: unknown) => {
-        // Never let a missing/corrupt manifest block a turn.
-        console.warn(
-          `${params.logPrefix} buildChatbotContextManifest failed, continuing without persistent context:`,
-          error,
-        );
-        return {
-          manifest: "",
-          totalChars: 0,
-          fileCount: 0,
-          inlinedFileCount: 0,
-        };
+        teamId: params.callOptions.teamId,
+        userId: params.callOptions.userId,
+        logPrefix: params.logPrefix,
       }),
-      4000,
-      { manifest: "", totalChars: 0, fileCount: 0, inlinedFileCount: 0 },
-      "context-manifest",
-    ),
-    activeMemoryInputs && activeMemoryUserId
-      ? // Sibling trace linked to the conversation's session: the pre-turn
-        // recall judge runs before `execute`, so it can't nest under
-        // `chatbot-turn` — `propagateAttributes` keeps it navigable per
-        // session instead of producing an orphan trace.
-        propagateAttributes(
-          {
-            traceName: "active-memory-recall",
-            ...(params.conversationId !== undefined
-              ? { sessionId: params.conversationId }
-              : {}),
-            userId: activeMemoryUserId,
-            tags: [`team:${params.callOptions.teamId}`],
-          },
-          () =>
-            withSoftTimeout(
-              runActiveMemoryRecall({
-                userMessage: activeMemoryInputs.userMessage,
-                attachedFiles: activeMemoryInputs.attachedFiles,
-                recentTail: activeMemoryInputs.recentTail,
-                teamId: params.callOptions.teamId,
-                organizationId: params.callOptions.organizationId,
-                userId: activeMemoryUserId,
-              }),
-              // ABOVE the recall's own 15s judge budget (RECALL_TIMEOUT_MS)
-              // + RAG headroom — only fires on a true RAG hang, never on a
-              // normal (multi-second) judge generation.
-              18000,
-              null,
-              "active-memory",
-            ),
-        )
-      : Promise.resolve(null),
-    // Compact `- key (type)` catalogue for the dynamic suffix.
-    // Redis-cached (30 min TTL) so the per-turn cost is one HGET. A
-    // failure must never block the turn — fall back to an empty block
-    // and let the prompt render the "no dynamic fields" placeholder.
-    withSoftTimeout(
-      getFieldDefinitionsForTeam({ teamId: params.callOptions.teamId })
-        .then((defs) => defs.map((fd) => `- ${fd.key} (${fd.type})`).join("\n"))
-        .catch((error: unknown) => {
-          console.warn(
-            `${params.logPrefix} getFieldDefinitionsForTeam failed, continuing without team fields:`,
-            error instanceof Error ? error.message : error,
-          );
-          return "";
-        }),
-      3000,
-      "",
-      "field-defs",
-    ),
-    // Team-filtered L1 skills listing. Always-on skills are always
-    // present; team-configurable skills appear only when no override
-    // exists or the team opted in. Disabled skills are absent entirely
-    // — the agent has no path to invoke them. Failure falls back to an
-    // empty block so the prompt renders the "no skills" placeholder
-    // and the turn still ships.
-    withSoftTimeout(
-      listEnabledSkillsForTeam(params.callOptions.teamId)
-        .then((skills) =>
-          skills
-            .map((skill) => `- **${skill.name}** — ${skill.description}`)
-            .join("\n"),
-        )
-        .catch((error: unknown) => {
-          console.warn(
-            `${params.logPrefix} listEnabledSkillsForTeam failed, continuing without skills catalogue:`,
-            error instanceof Error ? error.message : error,
-          );
-          return "";
-        }),
-      3000,
-      "",
-      "enabled-skills",
-    ),
-  ]);
+      getTeamToolPolicies(params.callOptions.teamId),
+    ]);
 
   console.info(
-    `${params.logPrefix} contextManifestChars=${chatbotContextManifest.totalChars.toString()} files=${chatbotContextManifest.fileCount.toString()} inlined=${chatbotContextManifest.inlinedFileCount.toString()} activeMemory=${activeMemoryRecall ? "hit" : "miss"} teamFieldsChars=${teamFieldDefinitionsBlock.length.toString()} enabledSkillsChars=${enabledSkillsBlock.length.toString()}`,
+    `${params.logPrefix} contextManifestChars=${(fragments.chatbotContextManifest ?? "").length.toString()} activeMemory=${activeMemoryRecall ? "hit" : "miss"} teamObjectsChars=${(fragments.teamObjectsBlock ?? "").length.toString()} enabledSkillsChars=${(fragments.enabledSkillsBlock ?? "").length.toString()}`,
   );
 
   return {
     ...params.callOptions,
     attachedFilesBlock:
       attachedFilesBlock.length > 0 ? attachedFilesBlock : undefined,
-    chatbotContextManifest:
-      chatbotContextManifest.manifest.length > 0
-        ? chatbotContextManifest.manifest
-        : undefined,
+    chatbotContextManifest: fragments.chatbotContextManifest,
     activeMemoryBlock: activeMemoryRecall?.block,
-    teamFieldDefinitionsBlock:
-      teamFieldDefinitionsBlock.length > 0
-        ? teamFieldDefinitionsBlock
-        : undefined,
-    enabledSkillsBlock:
-      enabledSkillsBlock.length > 0 ? enabledSkillsBlock : undefined,
+    teamObjectsBlock: fragments.teamObjectsBlock,
+    enabledSkillsBlock: fragments.enabledSkillsBlock,
     externalAppConnections: externalApps.externalAppConnections,
     externalAppsBlock: externalApps.externalAppsBlock,
+    toolPolicies,
   };
 };
 
@@ -1127,27 +896,18 @@ const setupAbortChannel = async (
   releaseAbortSubscriber: () => Promise<void>;
 }> => {
   const abortController = new AbortController();
-  const abortSubscriber =
-    params.resumableStreamId !== undefined ? redis.duplicate() : null;
-  if (abortSubscriber && params.resumableStreamId !== undefined) {
-    const channel = getAbortChannel(params.resumableStreamId);
-    await abortSubscriber.subscribe(channel);
-    abortSubscriber.on("message", (_ch, _msg) => {
-      console.info(
-        `${params.logPrefix} stop signal received streamId=${params.resumableStreamId ?? "?"}`,
-      );
-      abortController.abort();
-    });
+  // Non-resumable callers (stateless /internal/invoke) have no Stop channel.
+  if (params.resumableStreamId === undefined) {
+    return { abortController, releaseAbortSubscriber: async () => undefined };
   }
-  const releaseAbortSubscriber = async (): Promise<void> => {
-    if (!abortSubscriber) return;
-    try {
-      await abortSubscriber.quit();
-    } catch (err) {
-      console.warn("[chatbot] abort subscriber cleanup failed", err);
-    }
-  };
-  return { abortController, releaseAbortSubscriber };
+  const streamId = params.resumableStreamId;
+  const { release } = await subscribeAbort(getAbortChannel(streamId), () => {
+    console.info(
+      `${params.logPrefix} stop signal received streamId=${streamId}`,
+    );
+    abortController.abort();
+  });
+  return { abortController, releaseAbortSubscriber: release };
 };
 
 /**
@@ -1195,7 +955,7 @@ const runChatbotTurn = async (
 
   // External apps: active connections (surfaced to the agent) + a fresh
   // per-turn sandbox JWT for `fretik_apps`. See loadExternalApps.
-  const externalApps = await loadExternalApps(params);
+  const externalApps = await loadChatbotExternalApps(params);
 
   // Assemble the per-turn system-prompt fragments + external apps into
   // the final call options handed to the agent. See buildTurnCallOptions.
@@ -1236,9 +996,7 @@ const runChatbotTurn = async (
     visibleText: false,
     failoverAttempted: false,
   };
-  const onTurnStep: ToolLoopAgentOnStepFinishCallback<ChatbotTools> = (
-    step,
-  ) => {
+  const onTurnStep: GenerateTextOnStepEndCallback<ChatbotTools> = (step) => {
     if (step.toolCalls.length > 0 || step.toolResults.length > 0) {
       turnFlags.toolExecuted = true;
     }
@@ -1264,6 +1022,15 @@ const runChatbotTurn = async (
     if (abortController.signal.aborted) {
       console.info(`${params.logPrefix} stream ended after user abort`);
       return "Stopped.";
+    }
+    // A bad tool input / unknown tool is NOT a turn death: the SDK already fed
+    // it back to the model as a recoverable tool-error part (multi-step). Label
+    // the UI part and let the turn continue — never a structured fatal frame.
+    if (isRecoverableToolCallError(err)) {
+      console.info(
+        `${params.logPrefix} recoverable tool-call error (${err instanceof Error ? err.name : "unknown"}) — model self-corrects`,
+      );
+      return "Invalid tool input — adjust the arguments and retry.";
     }
     const classification = classifyStreamError(err);
     console.error(
@@ -1305,11 +1072,40 @@ const runChatbotTurn = async (
     // other error becomes a structured retryable frame.
     onError: recordStreamError,
     onFinish: async ({ messages: finalMessages }) => {
-      await persistAssistantMessages(
-        params.conversationId,
-        params.history,
-        finalMessages,
-      );
+      // Persist the turn's messages AND journal its `chat.turn` boundary in
+      // ONE transaction — the outbox guarantee (both commit or neither). The
+      // event feeds memory recall + future workflow triggers; dedup-keyed on
+      // the final message id so a re-fired `onFinish` never double-journals.
+      // Payload carries previews + tool names so the distiller can build an
+      // episode without reloading the turn.
+      await db.transaction(async (tx) => {
+        const persisted = await persistAssistantMessages(
+          params.conversationId,
+          params.history,
+          finalMessages,
+          tx,
+        );
+        if (!params.conversationId) return;
+        const lastMessageId = finalMessages[finalMessages.length - 1]?.id;
+        await emitDomainEvent({
+          tx,
+          organizationId: params.callOptions.organizationId,
+          teamId: params.callOptions.teamId,
+          type: "chat.turn",
+          actor: {
+            actorType: "agent",
+            actorUserId: params.callOptions.userId ?? null,
+            conversationId: params.conversationId,
+            agentKey: "chatbot",
+          },
+          payload: buildChatTurnPayload(
+            params.history,
+            persisted,
+            lastMessageId,
+          ),
+          dedupKey: lastMessageId ? `chat.turn:${lastMessageId}` : null,
+        });
+      });
       // Per-turn observability (tool calls, RAG hits, latency, cost) is
       // captured by Langfuse via `experimental_telemetry` — see
       // `lib/langfuse.ts`. No custom DB telemetry blob or structured log
@@ -1418,12 +1214,16 @@ const runChatbotTurn = async (
               modelProfile,
               buildNativeInputDeps(callOptionsWithFiles.conversationId),
             ),
+            // Same dangling-tool-call guard as the primary path above — an
+            // interrupted turn's incomplete tool call must not reach the
+            // model as a resultless call (MissingToolResultsError).
+            { ignoreIncompleteToolCalls: true },
           );
           const fallbackResult = await agentSet.fallback.stream({
             messages: fallbackMessages,
             options: callOptionsWithFiles,
             abortSignal: abortController.signal,
-            onStepFinish: onTurnStep,
+            onStepEnd: onTurnStep,
             // Mirror the primary path's per-turn reasoning depth (C7).
             ...(reasoningOverride !== undefined
               ? {
@@ -1435,34 +1235,19 @@ const runChatbotTurn = async (
           });
           writer.merge(
             dropChunksAfterAbort(
-              fallbackResult.toUIMessageStream<UIMessage>({
+              toUIMessageStream<ChatbotTools>({
+                stream: fallbackResult.stream,
                 onError: recordStreamError,
                 messageMetadata: ({ part }) => {
                   if (part.type !== "finish") return undefined;
-                  const fbUsage = part.totalUsage;
-                  const traceId = getActiveTraceId();
-                  return {
-                    ...(traceId !== undefined
-                      ? { langfuseTraceId: traceId }
-                      : {}),
-                    telemetry: {
-                      finishReason: part.finishReason,
-                      rawFinishReason: part.rawFinishReason,
-                      // Failover (zombie or transparent) always serves the
-                      // fallback agent — flagged for the eval harness.
-                      servedBy: "fallback",
-                      modelProfileKey: modelProfile.key,
-                      usage: {
-                        inputTokens: fbUsage.inputTokens,
-                        outputTokens: fbUsage.outputTokens,
-                        totalTokens: fbUsage.totalTokens,
-                        reasoningTokens:
-                          fbUsage.outputTokenDetails?.reasoningTokens,
-                        cachedInputTokens:
-                          fbUsage.inputTokenDetails?.cacheReadTokens,
-                      },
-                    },
-                  };
+                  // Failover (zombie or transparent) always serves the fallback
+                  // agent — flagged for the eval harness.
+                  return buildTurnMessageMetadata(
+                    part,
+                    "fallback",
+                    modelProfile.key,
+                    getActiveTraceId(),
+                  );
                 },
               }),
               abortController.signal,
@@ -1602,42 +1387,25 @@ const runChatbotTurn = async (
         // tool calls, RAG hits, latency, cost — lives in Langfuse.
         writer.merge(
           dropChunksAfterAbort(
-            result.toUIMessageStream<UIMessage>({
+            toUIMessageStream<ChatbotTools>({
+              stream: result.stream,
               // A provider `error` part (e.g. empty pool) surfaces through
               // the INNER stream's onError, not the outer one — route it to
               // the same mapper so both surfaces agree on the wire frame.
               onError: recordStreamError,
               messageMetadata: ({ part }) => {
                 if (part.type !== "finish") return undefined;
-                const usage = part.totalUsage;
-                // Trace id of this turn (active span context) — sent to the
-                // client live AND folded into the persisted message metadata,
-                // so the feedback control can score the right Langfuse trace.
-                const traceId = getActiveTraceId();
-                return {
-                  ...(traceId !== undefined
-                    ? { langfuseTraceId: traceId }
-                    : {}),
-                  telemetry: {
-                    finishReason: part.finishReason,
-                    rawFinishReason: part.rawFinishReason,
-                    // Which agent answered + under which profile. The eval
-                    // harness reads these over SSE: a candidate run where a
-                    // silent failover served the fallback model must be
-                    // flagged, not scored as the candidate.
-                    servedBy,
-                    modelProfileKey: modelProfile.key,
-                    usage: {
-                      inputTokens: usage.inputTokens,
-                      outputTokens: usage.outputTokens,
-                      totalTokens: usage.totalTokens,
-                      reasoningTokens:
-                        usage.outputTokenDetails?.reasoningTokens,
-                      cachedInputTokens:
-                        usage.inputTokenDetails?.cacheReadTokens,
-                    },
-                  },
-                };
+                // `servedBy` reports which agent answered under which profile;
+                // the eval harness reads it over SSE so a silent failover to
+                // the fallback model is flagged, not scored as the candidate.
+                // `getActiveTraceId()` is this turn's active span, sent live AND
+                // persisted so the feedback control scores the right trace.
+                return buildTurnMessageMetadata(
+                  part,
+                  servedBy,
+                  modelProfile.key,
+                  getActiveTraceId(),
+                );
               },
             }),
             abortController.signal,

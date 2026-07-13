@@ -4,6 +4,11 @@ import { buildIntegrationsConfigDefaults } from "../../../lib/external-apps/buil
 import { extractNangoErrorDetails } from "../../../lib/external-apps/extract-nango-error";
 import { getNangoClient } from "../../../lib/external-apps/nango-client";
 import { ERROR_CODES } from "../../../schemas/errors";
+import {
+  MCP_CUSTOM_API_KEY_PROVIDER_KEY,
+  MCP_CUSTOM_BASIC_PROVIDER_KEY,
+  MCP_GENERIC_PROVIDER_KEY,
+} from "../mcp/catalog";
 
 /**
  * Mint a Nango Connect Session for the frontend to open Connect UI with.
@@ -42,8 +47,67 @@ export const createConnectSession = async (params: {
    * Ref: https://learn.microsoft.com/en-us/entra/identity-platform/v2-protocols-oidc
    */
   adminConsent?: boolean;
+  /**
+   * For `mcp-generic` only: the server URL the caller already resolved (from
+   * the discovery hub or a custom entry). Pre-seeded into the Connect session's
+   * `connection_config.mcp_server_url` so Nango's Connect UI does not re-ask the
+   * user for a URL they already picked. Ignored for every other provider.
+   */
+  mcpServerUrl?: string;
 }): Promise<{ token: string; connectLink: string; expiresAt: string }> => {
   const provider = getProvider(params.providerKey);
+
+  // MCP connect flows that go through a Nango Connect session / headless auth:
+  // custom OAuth (`mcp-generic`, DCR) opens the Connect UI; custom api-key /
+  // basic (`mcp-custom-{key,basic}`) run a headless `nango.auth` against the
+  // shared vault integration. A no-auth server (`mcp-custom-none`) never mints
+  // a session — it falls through to the 404.
+  const needsMcpSession =
+    provider === undefined &&
+    (params.providerKey === MCP_GENERIC_PROVIDER_KEY ||
+      params.providerKey === MCP_CUSTOM_API_KEY_PROVIDER_KEY ||
+      params.providerKey === MCP_CUSTOM_BASIC_PROVIDER_KEY);
+  if (needsMcpSession) {
+    const nango = getNangoClient();
+    // Pre-fill the server URL so Connect UI never re-asks for a URL the user
+    // already chose in the hub. Only `mcp-generic` collects a URL in Connect
+    // UI (the api-key / basic flows collect it in Fretik's own form).
+    const mcpConfigDefaults =
+      params.providerKey === MCP_GENERIC_PROVIDER_KEY &&
+      params.mcpServerUrl !== undefined &&
+      params.mcpServerUrl !== ""
+        ? {
+            [MCP_GENERIC_PROVIDER_KEY]: {
+              connection_config: { mcp_server_url: params.mcpServerUrl },
+            },
+          }
+        : undefined;
+    try {
+      const session = await nango.createConnectSession({
+        allowed_integrations: [params.providerKey],
+        tags: {
+          team_id: params.teamId,
+          user_id: params.userId,
+          user_email: params.userEmail,
+        },
+        ...(mcpConfigDefaults
+          ? { integrations_config_defaults: mcpConfigDefaults }
+          : {}),
+      });
+      return {
+        token: session.data.token,
+        connectLink: session.data.connect_link,
+        expiresAt: session.data.expires_at,
+      };
+    } catch (error) {
+      return throwHttpError(400, {
+        code: ERROR_CODES.EXTERNAL_APP_NANGO_VERIFY_FAILED,
+        message: `Nango refused the Connect session for "${params.providerKey}". Make sure the MCP integration is created in the Nango admin dashboard.`,
+        details: extractNangoErrorDetails(error),
+      });
+    }
+  }
+
   if (provider === undefined) {
     return throwHttpError(404, {
       code: ERROR_CODES.EXTERNAL_APP_PROVIDER_NOT_FOUND,

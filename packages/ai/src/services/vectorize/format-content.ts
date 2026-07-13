@@ -38,9 +38,6 @@ export const buildSemanticHeader = (
     const formatted = formatScalar(value);
     if (formatted !== null) parts.push(`${key}: ${formatted}`);
   }
-  if (metadata.labels && metadata.labels.length > 0) {
-    parts.push(`labels: ${metadata.labels.map((l) => l.name).join(", ")}`);
-  }
   for (const entity of metadata.entities) {
     parts.push(`${entity.role}: ${entity.name} (${entity.type})`);
   }
@@ -71,9 +68,6 @@ export const buildMetadataOnlyText = (
   for (const [key, value] of Object.entries(metadata.custom_fields ?? {})) {
     const formatted = formatScalar(value);
     if (formatted !== null) lines.push(`${key}: ${formatted}`);
-  }
-  if (metadata.labels && metadata.labels.length > 0) {
-    lines.push(`Labels: ${metadata.labels.map((l) => l.name).join(", ")}`);
   }
   for (const entity of metadata.entities) {
     lines.push(`${entity.role}: ${entity.name} (${entity.type})`);

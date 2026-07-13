@@ -22,7 +22,6 @@ export type FieldDefinitionSeedOption = {
 };
 
 export type FieldDefinitionSeed = {
-  resourceType: (typeof fieldDefinitions.$inferInsert)["resourceType"];
   key: string;
   /** i18n key for the field's display label. */
   labelKey: string;
@@ -38,7 +37,6 @@ export type FieldDefinitionSeed = {
   aiExtractionEnabled?: boolean;
   vectorizeInclude?: boolean;
   displayInPanel?: boolean;
-  displayInFilters?: boolean;
   enabled?: boolean;
   displayOrder: number;
 };

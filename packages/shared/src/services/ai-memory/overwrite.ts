@@ -2,6 +2,7 @@ import { eq } from "drizzle-orm";
 import db from "../../db";
 import { aiMemories, type AiMemory } from "../../db/schema/ai-memory";
 import { createApiError, throwHttpError } from "../../lib/errors";
+import { emitDomainEvent, toDomainEventActor } from "../domain-events/emit";
 import { trimMemoryHistory, writeHistoryRow } from "./history";
 import { findMemoryByPath } from "./lookup";
 import { MEMORY_MAX_BYTES, memoryByteSize, parseMemoryPath } from "./paths";
@@ -80,6 +81,20 @@ export const overwriteMemory = async (args: {
         newContent: args.content,
       });
 
+      await emitDomainEvent({
+        tx,
+        organizationId: args.scopeKey.organizationId,
+        teamId: args.scopeKey.teamId,
+        type: "memory.updated",
+        actor: toDomainEventActor({
+          byActor: args.actor.actor,
+          userId: args.actor.userId,
+          conversationId: args.actor.conversationId,
+        }),
+        subjectType: "memory",
+        payload: { path: updated.path, scope: updated.scope },
+      });
+
       return { memory: updated, created: false };
     }
 
@@ -114,6 +129,23 @@ export const overwriteMemory = async (args: {
       operation: "create",
       actor: args.actor,
       newContent: args.content,
+    });
+
+    // Fresh insert through the overwrite path — same journal semantics as
+    // `create.ts`, mirroring the history row's `operation: "create"`.
+    await emitDomainEvent({
+      tx,
+      organizationId: args.scopeKey.organizationId,
+      teamId: args.scopeKey.teamId,
+      type: "memory.created",
+      actor: toDomainEventActor({
+        byActor: args.actor.actor,
+        userId: args.actor.userId,
+        conversationId: args.actor.conversationId,
+      }),
+      subjectType: "memory",
+      payload: { path: created.path, scope: created.scope },
+      dedupKey: `memory.created:${created.id}`,
     });
 
     return { memory: created, created: true };

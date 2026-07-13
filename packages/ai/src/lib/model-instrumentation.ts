@@ -15,7 +15,7 @@
  * exists. So wrapping an untraced model is a harmless no-op. No-op too
  * when Langfuse is unconfigured.
  */
-import { type EmbeddingModelV3, type LanguageModelV3 } from "@ai-sdk/provider";
+import { type EmbeddingModelV4, type LanguageModelV4 } from "@ai-sdk/provider";
 import { wrapEmbeddingModel, wrapLanguageModel } from "ai";
 import { langfuseEnabled } from "./langfuse";
 import {
@@ -28,7 +28,7 @@ import {
  * compose OUTSIDE the cache wrapper:
  * `instrumentModel(wrapModelWithCache(openrouter.chat(...)))`.
  */
-export const instrumentModel = (model: LanguageModelV3): LanguageModelV3 =>
+export const instrumentModel = (model: LanguageModelV4): LanguageModelV4 =>
   langfuseEnabled
     ? wrapLanguageModel({ model, middleware: [costCaptureMiddleware] })
     : model;
@@ -40,8 +40,8 @@ export const instrumentModel = (model: LanguageModelV3): LanguageModelV3 =>
  * A no-op when Langfuse is unconfigured.
  */
 export const instrumentEmbeddingModel = (
-  model: EmbeddingModelV3,
-): EmbeddingModelV3 =>
+  model: EmbeddingModelV4,
+): EmbeddingModelV4 =>
   langfuseEnabled
     ? wrapEmbeddingModel({
         model,

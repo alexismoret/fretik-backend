@@ -1,11 +1,11 @@
 import { and, eq, isNull, ne } from "drizzle-orm";
 import db from "../../db";
 import type {
-  FieldDefinition,
   FieldDefinitionConfig,
   FieldDefinitionType,
 } from "../../db/schema";
-import { fieldDefinitions } from "../../db/schema";
+import { fieldDefinitions, objectTypes } from "../../db/schema";
+import { fieldOptions } from "../../db/schema/field-types";
 import { badRequest, throwHttpError } from "../../lib/errors";
 import {
   FIELD_DEFINITION_KEY_REGEX,
@@ -18,10 +18,10 @@ export type FieldDefinitionPatch = {
   description?: string | null;
   type?: FieldDefinitionType;
   config?: FieldDefinitionConfig;
+  isTitle?: boolean;
   aiExtractionEnabled?: boolean;
   vectorizeInclude?: boolean;
   displayInPanel?: boolean;
-  displayInFilters?: boolean;
   enabled?: boolean;
   displayOrder?: number;
 };
@@ -63,11 +63,8 @@ export const validateFieldDefinitionShape = (
       ),
     );
   }
-  const options = patch.config?.options;
-  if (
-    options !== undefined &&
-    options.length > FIELD_DEFINITION_LIMITS.MAX_OPTIONS_PER_FIELD
-  ) {
+  const options = patch.config ? fieldOptions(patch.config) : [];
+  if (options.length > FIELD_DEFINITION_LIMITS.MAX_OPTIONS_PER_FIELD) {
     return throwHttpError(
       400,
       badRequest(
@@ -77,7 +74,7 @@ export const validateFieldDefinitionShape = (
   }
   if (
     (patch.type === "select" || patch.type === "multi_select") &&
-    (options === undefined || options.length === 0)
+    options.length === 0
   ) {
     return throwHttpError(
       400,
@@ -85,6 +82,32 @@ export const validateFieldDefinitionShape = (
         "Select / multi_select fields require at least one option in config.options.",
       ),
     );
+  }
+  if (patch.type === "rollup" && patch.config) {
+    const cfg = patch.config;
+    const relationFieldKey =
+      "relationFieldKey" in cfg ? cfg.relationFieldKey : undefined;
+    const fn = "fn" in cfg ? cfg.fn : undefined;
+    const targetFieldKey =
+      "targetFieldKey" in cfg ? cfg.targetFieldKey : undefined;
+    if (!relationFieldKey || !fn) {
+      return throwHttpError(
+        400,
+        badRequest(
+          "Rollup fields require config.relationFieldKey and config.fn.",
+        ),
+      );
+    }
+    const numericFn =
+      fn === "sum" || fn === "avg" || fn === "min" || fn === "max";
+    if (numericFn && !targetFieldKey) {
+      return throwHttpError(
+        400,
+        badRequest(
+          `Rollup fn '${fn}' requires config.targetFieldKey (the field to aggregate).`,
+        ),
+      );
+    }
   }
 };
 
@@ -97,13 +120,13 @@ export const validateFieldDefinitionShape = (
 export const countEnabledForScope = async (data: {
   organizationId: string;
   teamId: string | null;
-  resourceType: FieldDefinition["resourceType"];
+  objectTypeId: string;
   excludeId?: string;
 }): Promise<number> => {
-  const { organizationId, teamId, resourceType, excludeId } = data;
+  const { organizationId, teamId, objectTypeId, excludeId } = data;
   const conditions = [
     eq(fieldDefinitions.organizationId, organizationId),
-    eq(fieldDefinitions.resourceType, resourceType),
+    eq(fieldDefinitions.objectTypeId, objectTypeId),
     eq(fieldDefinitions.enabled, true),
     teamId === null
       ? isNull(fieldDefinitions.teamId)
@@ -120,30 +143,45 @@ export const countEnabledForScope = async (data: {
 };
 
 /**
- * Assert the scope is below the enabled-cap. Pass `addEnabled=1` when
+ * The enabled-field cap for an object type: the `document_record` system type
+ * keeps the tight pre-extract budget, every other type gets the larger cap.
+ */
+const enabledCapForType = async (objectTypeId: string): Promise<number> => {
+  const [row] = await db
+    .select({ key: objectTypes.key })
+    .from(objectTypes)
+    .where(eq(objectTypes.id, objectTypeId))
+    .limit(1);
+  return row?.key === "document_record"
+    ? FIELD_DEFINITION_LIMITS.MAX_ENABLED_PER_SCOPE
+    : FIELD_DEFINITION_LIMITS.MAX_FIELDS_PER_TYPE;
+};
+
+/**
+ * Assert the type is below its enabled-field cap. Pass `addEnabled=1` when
  * inserting a new enabled row, `0` when updating an existing one.
  */
 export const assertScopeEnabledCap = async (data: {
   organizationId: string;
   teamId: string | null;
-  resourceType: FieldDefinition["resourceType"];
+  objectTypeId: string;
   addEnabled: number;
   excludeId?: string;
 }): Promise<void> => {
-  const current = await countEnabledForScope({
-    organizationId: data.organizationId,
-    teamId: data.teamId,
-    resourceType: data.resourceType,
-    excludeId: data.excludeId,
-  });
-  if (
-    current + data.addEnabled >
-    FIELD_DEFINITION_LIMITS.MAX_ENABLED_PER_SCOPE
-  ) {
+  const [current, cap] = await Promise.all([
+    countEnabledForScope({
+      organizationId: data.organizationId,
+      teamId: data.teamId,
+      objectTypeId: data.objectTypeId,
+      excludeId: data.excludeId,
+    }),
+    enabledCapForType(data.objectTypeId),
+  ]);
+  if (current + data.addEnabled > cap) {
     return throwHttpError(
       400,
       badRequest(
-        `Cannot exceed ${FIELD_DEFINITION_LIMITS.MAX_ENABLED_PER_SCOPE} enabled fields per scope (current: ${current}).`,
+        `Cannot exceed ${cap} enabled fields on this type (current: ${current}).`,
       ),
     );
   }

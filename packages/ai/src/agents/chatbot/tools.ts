@@ -1,22 +1,32 @@
-import { createAskUserQuestionTool } from "../../tools/ask-user";
+import { createAskUserQuestionTool } from "../../tools/ask-user/chat";
 import { createBashTool } from "../../tools/bash";
 import { createCreateSkillTool } from "../../tools/create-skill";
+import { createDescribeObjectTypeTool } from "../../tools/describe-object-type";
 import type { createDispatchAgentTool } from "../../tools/dispatch-agent";
 import { createDownloadDriveDocumentTool } from "../../tools/download-drive-document";
-import { createGetEntityDetailsTool } from "../../tools/get-entity-details";
+import { createGetObjectTool } from "../../tools/get-object";
+import { createInstallSkillTool } from "../../tools/install-skill";
 import { createListDocumentsTool } from "../../tools/list-documents";
-import { createListEntitiesTool } from "../../tools/list-entities";
-import { createListFieldDefinitionsTool } from "../../tools/list-field-definitions";
-import { createListLabelsTool } from "../../tools/list-labels";
+import { createListFoldersTool } from "../../tools/list-folders";
+import { createListObjectsTool } from "../../tools/list-objects";
+import { createManageDriveTool } from "../../tools/manage-drive";
+import { createManageFieldTool } from "../../tools/manage-field";
+import { createManageLinkTool } from "../../tools/manage-link";
+import { createManageObjectTypeTool } from "../../tools/manage-object-type";
+import { createManageRecordTool } from "../../tools/manage-record";
 import { createManageTasksTool } from "../../tools/manage-tasks";
+import { createManageWorkflowTool } from "../../tools/manage-workflow";
 import { createMemoryTool } from "../../tools/memory";
 import { createPresentFilesTool } from "../../tools/present-files";
 import { createPythonTool } from "../../tools/python";
 import { createRagSearchTool } from "../../tools/rag-search";
 import { createReadTool } from "../../tools/read";
+import { createSearchIconsTool } from "../../tools/search-icons";
+import { createSearchSkillCatalogTool } from "../../tools/search-skill-catalog";
 import { createSearchToolsTool } from "../../tools/search-tools";
 import { createSqlQueryTool } from "../../tools/sql-query";
 import { createUpdateSkillTool } from "../../tools/update-skill";
+import { createUploadToDriveTool } from "../../tools/upload-to-drive";
 import { createVisionTool } from "../../tools/vision";
 import { createWebFetchTool } from "../../tools/web-fetch";
 import { createWebSearchTool } from "../../tools/web-search";
@@ -47,8 +57,8 @@ import {
  *
  * Tool factories do NOT take a `ctx`. The `ToolLoopAgent` singleton
  * constructs its tools once at boot; per-request state is threaded
- * to each tool's `execute` via `experimental_context` (recovered
- * with `getRuntimeContext`). See `../shared/runtime-context.ts` for
+ * to each tool's `execute` via `toolsContext` (recovered with
+ * `getRuntimeContext`). See `../shared/runtime-context.ts` for
  * the DI helper. Closing over ctx at construction would leak
  * per-request state across concurrent requests.
  *
@@ -179,10 +189,10 @@ export const buildCoreTools = (domainTools: SearchableToolRegistry) => ({
     ...createMemoryTool(),
     category: "core",
     searchHint:
-      "memory remember persistent file user team vendors clients partners conventions preferences view create overwrite delete rename grep search",
-    // `view` of a directory + `grep` results are the largest payloads
-    // — both are bounded server-side (depth-2 listing, line-truncation,
-    // 30K total cap on grep). Aligned with the SQL/web cap.
+      "memory remember persistent file user team vendors clients partners conventions preferences view create overwrite delete rename search",
+    // `view` of a directory is the largest payload — bounded server-side
+    // (depth-2 listing, line-truncation, 30K total cap). Aligned with the
+    // SQL/web cap.
     maxResultSizeChars: 32_000,
     // memory mutates the durable `ai_memories` table — not read-only.
     isReadOnly: false,
@@ -208,12 +218,21 @@ export const buildCoreTools = (domainTools: SearchableToolRegistry) => ({
  * Domain tools — not loaded by default, activated on demand via
  * `searchTools`. Currently registered:
  *
- * - **listDocuments / listEntities**: paginated browse operations over
- *   the SaaS core objects. Backed by shared services in
- *   `@fretik/shared/services/*` — the same code paths the API handlers
- *   use, so filter semantics stay consistent across every caller.
- * - **getEntityDetails**: single-row read that carries the full payload
- *   (entity's linked documents), again via a shared service.
+ * - **listDocuments**: paginated browse over the team's documents.
+ *   Backed by a shared service in `@fretik/shared/services/*` — the same
+ *   code path the API handlers use, so filter semantics stay consistent.
+ * - **describeObjectType / listObjects / getObject**:
+ *   the AI READ path over the dynamic-data graph — inspect one type's
+ *   fields + relations, browse a type's records, and fetch one record with
+ *   its links. The no-SQL companions to `querySql` over the per-type typed
+ *   tables + registry. The type catalogue itself is the `<team_objects>`
+ *   prompt block, so there is no separate `listObjectTypes` tool.
+ * - **manageRecord / manageLink / manageObjectType / manageField**:
+ *   the AI WRITE path — single-record CRUD + status, relation link/unlink,
+ *   and type/field schema edits. Each routes through the validated shared
+ *   services (field validation, typed table, `domain_events`). Bulk writes
+ *   and type migrations go through the Python `objects` SDK (fretik_apps),
+ *   not these tools.
  * - **webFetch**: pulls a specific public URL as cleaned Markdown
  *   via Tavily `/extract`. Paired with the core `searchWeb` tool —
  *   search first, fetch specific hits second.
@@ -222,6 +241,13 @@ export const buildCoreTools = (domainTools: SearchableToolRegistry) => ({
  *   only when `searchKnowledge` (RAG) isn't enough — typically for
  *   `vision` on layout/signatures, structural parsing
  *   (pandas/openpyxl/pypdf), or template-driven generation.
+ * - **uploadToDrive / manageDrive / listFolders**: the Drive WRITE +
+ *   folder-navigation path. `uploadToDrive` saves a conversation
+ *   attachment into the Drive (inverse of `downloadDriveDocument`);
+ *   `manageDrive` creates/renames/moves/deletes folders and moves
+ *   documents; `listFolders` discovers folder ids (incl. empty ones
+ *   `listDocuments` never shows). All route through the validated
+ *   shared folder/document services.
  *
  * Every tool here has `category: "domain"` so `buildChatbotTool`
  * auto-sets `shouldDefer: true` and `prepareStep` in `./index.ts`
@@ -235,33 +261,61 @@ export const buildDomainTools = () => ({
       "search filter list team documents by type folder status filename",
     maxResultSizeChars: 16_000,
   }),
-  listEntities: buildChatbotTool({
-    ...createListEntitiesTool(),
+  describeObjectType: buildChatbotTool({
+    ...createDescribeObjectTypeTool(),
     category: "domain",
     searchHint:
-      "search filter list entities organizations people vendors clients partners companies by type country",
+      "describe object type fields columns schema metadata key label type description config options enum allowed values choices select multi_select bounds min max relations typed view what fields",
     maxResultSizeChars: 16_000,
   }),
-  listLabels: buildChatbotTool({
-    ...createListLabelsTool(),
+  listObjects: buildChatbotTool({
+    ...createListObjectsTool(),
     category: "domain",
     searchHint:
-      "search list labels tags categories team filter documents by label",
+      "list browse object records of a type rows entities companies people custom records search status confirmed suggested pending pagination",
     maxResultSizeChars: 16_000,
   }),
-  listFieldDefinitions: buildChatbotTool({
-    ...createListFieldDefinitionsTool(),
+  getObject: buildChatbotTool({
+    ...createGetObjectTool(),
     category: "domain",
     searchHint:
-      "field definitions custom dynamic schema metadata attributes properties key label type description config options enum allowed values choices select multi_select bounds min max what fields does the team have configured",
+      "get object record by id detail fields linked records relations connections neighbors what is connected to",
     maxResultSizeChars: 16_000,
   }),
-  getEntityDetails: buildChatbotTool({
-    ...createGetEntityDetailsTool(),
+  manageRecord: buildChatbotTool({
+    ...createManageRecordTool(),
     category: "domain",
     searchHint:
-      "read entity details linked documents organization person vendor client one specific id",
+      "create add update edit delete remove record row entity confirm reject accept ai suggestion set status write data object",
     maxResultSizeChars: 16_000,
+  }),
+  manageLink: buildChatbotTool({
+    ...createManageLinkTool(),
+    category: "domain",
+    searchHint:
+      "link unlink connect disconnect relate records relationship edge association attach detach",
+    maxResultSizeChars: 8_000,
+  }),
+  manageObjectType: buildChatbotTool({
+    ...createManageObjectTypeTool(),
+    category: "domain",
+    searchHint:
+      "create update delete object type schema table model define new kind of thing entity category rename",
+    maxResultSizeChars: 8_000,
+  }),
+  manageField: buildChatbotTool({
+    ...createManageFieldTool(),
+    category: "domain",
+    searchHint:
+      "add edit remove change field column attribute property type schema select options number bounds relation rollup",
+    maxResultSizeChars: 8_000,
+  }),
+  searchIcons: buildChatbotTool({
+    ...createSearchIconsTool(),
+    category: "domain",
+    searchHint:
+      "find icon lucide glyph symbol for object type select option picker visual",
+    maxResultSizeChars: 8_000,
   }),
   webFetch: buildChatbotTool({
     ...createWebFetchTool(),
@@ -280,6 +334,32 @@ export const buildDomainTools = () => ({
     // Mutates `/workspace/drive/` and (potentially) the conversation
     // sandbox quota — not strictly read-only.
     isReadOnly: false,
+  }),
+  uploadToDrive: buildChatbotTool({
+    ...createUploadToDriveTool(),
+    category: "domain",
+    searchHint:
+      "upload save file to drive promote attachment conversation store persist archive keep document",
+    // Output is a small descriptor (documentId / filename / status) — never large.
+    maxResultSizeChars: 8_000,
+    // Copies bytes into the Drive + enqueues processing — not read-only.
+    isReadOnly: false,
+  }),
+  manageDrive: buildChatbotTool({
+    ...createManageDriveTool(),
+    category: "domain",
+    searchHint:
+      "create rename move delete folder directory organize drive tree relocate document into folder file structure",
+    maxResultSizeChars: 8_000,
+    // Mutates the folder tree + document locations — not read-only.
+    isReadOnly: false,
+  }),
+  listFolders: buildChatbotTool({
+    ...createListFoldersTool(),
+    category: "domain",
+    searchHint:
+      "list browse folders directories drive tree navigate discover folder ids subfolders",
+    maxResultSizeChars: 8_000,
   }),
   createSkill: buildChatbotTool({
     ...createCreateSkillTool(),
@@ -303,6 +383,32 @@ export const buildDomainTools = () => ({
       "update existing skill edit improve refine extend rewrite adjust modify enhance",
     maxResultSizeChars: 2_000,
     isReadOnly: true,
+  }),
+  searchSkills: buildChatbotTool({
+    ...createSearchSkillCatalogTool(),
+    category: "domain",
+    searchHint:
+      "find discover search skill catalog marketplace capability playbook ability ready-made install add",
+    maxResultSizeChars: 4_000,
+    isReadOnly: true,
+  }),
+  installSkill: buildChatbotTool({
+    ...createInstallSkillTool(),
+    category: "domain",
+    searchHint:
+      "install add skill from catalog marketplace capability playbook to team enable",
+    maxResultSizeChars: 2_000,
+    // Persists a skill to the team (behind the write-approval gate).
+    isReadOnly: false,
+  }),
+  manageWorkflow: buildChatbotTool({
+    ...createManageWorkflowTool(),
+    category: "domain",
+    searchHint:
+      "create build manage workflow automation autonomous agent scheduled recurring cron trigger event playbook tasks run test activate pause draft",
+    maxResultSizeChars: 8_000,
+    // Mutates workflow definitions + fires test runs — not read-only.
+    isReadOnly: false,
   }),
 });
 

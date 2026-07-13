@@ -4,7 +4,9 @@ import type {
   SearchableTool,
   SearchableToolRegistry,
 } from "../agents/shared/chatbot-tool";
+import { policyHiddenToolNames } from "../agents/shared/policy-tool-gate";
 import { getRuntimeContext } from "../agents/shared/runtime-context";
+import { workflowMainHiddenToolNames } from "../agents/shared/workflow-tool-gate";
 
 /**
  * Progressive Disclosure entry point.
@@ -180,7 +182,9 @@ const searchToolsWithKeywords = (
       continue;
     }
     const parsed = parseToolName(name);
-    const description = (candidate.description ?? "").toLowerCase();
+    const description = (
+      typeof candidate.description === "string" ? candidate.description : ""
+    ).toLowerCase();
     const hint = candidate.searchHint.toLowerCase();
     const matchesAllRequired = requiredTerms.every((term) => {
       const pattern = termPatterns.get(term);
@@ -202,7 +206,7 @@ const searchToolsWithKeywords = (
     score: scoreTool(
       name,
       entry.searchHint,
-      entry.description ?? "",
+      typeof entry.description === "string" ? entry.description : "",
       allScoringTerms,
       termPatterns,
     ),
@@ -252,6 +256,18 @@ export const createSearchToolsTool = (domainTools: SearchableToolRegistry) =>
       const totalDeferred = Object.keys(domainTools).length;
       const maxResults = max_results ?? DEFAULT_MAX_RESULTS;
 
+      // A withheld tool must not be resurfaced or activated (the model would
+      // see it as callable but the step-gate strips it — wasted turn). Two
+      // sources: the workflow autonomy write-gate (`read_only` /
+      // `approval_required`) AND the team's `blocked` tool policy (chat OR
+      // workflow). Union both.
+      const gated = new Set<string>(policyHiddenToolNames(ctx));
+      if (ctx.workflowAutonomy) {
+        for (const n of workflowMainHiddenToolNames(ctx.workflowAutonomy))
+          gated.add(n);
+      }
+      const isGated = (name: string): boolean => gated.has(name);
+
       // Direct select path: `select:A,B,C`.
       const selectMatch = query.match(/^select:(.+)$/i);
       if (selectMatch) {
@@ -263,8 +279,11 @@ export const createSearchToolsTool = (domainTools: SearchableToolRegistry) =>
 
         const found: string[] = [];
         const notFound: string[] = [];
+        const gatedNames: string[] = [];
         for (const name of requested) {
-          if (name in domainTools) {
+          if (isGated(name)) {
+            gatedNames.push(name);
+          } else if (name in domainTools) {
             if (!found.includes(name)) found.push(name);
           } else {
             notFound.push(name);
@@ -278,6 +297,7 @@ export const createSearchToolsTool = (domainTools: SearchableToolRegistry) =>
           query,
           total_deferred_tools: totalDeferred,
           ...(notFound.length > 0 ? { notFound } : {}),
+          ...(gatedNames.length > 0 ? { gated: gatedNames } : {}),
         };
       }
 
@@ -289,6 +309,14 @@ export const createSearchToolsTool = (domainTools: SearchableToolRegistry) =>
       // term that fails to match any parsed tool name part.
       const trimmed = query.trim();
       if (trimmed in domainTools) {
+        if (isGated(trimmed)) {
+          return {
+            matches: [],
+            query,
+            total_deferred_tools: totalDeferred,
+            gated: [trimmed],
+          };
+        }
         manager.activate([trimmed]);
         return {
           matches: [trimmed],
@@ -298,7 +326,11 @@ export const createSearchToolsTool = (domainTools: SearchableToolRegistry) =>
       }
 
       // Keyword search path.
-      const matches = searchToolsWithKeywords(query, domainTools, maxResults);
+      const matches = searchToolsWithKeywords(
+        query,
+        domainTools,
+        maxResults,
+      ).filter((name) => !isGated(name));
       if (matches.length > 0) manager.activate(matches);
       return {
         matches,

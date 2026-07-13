@@ -274,10 +274,14 @@ export interface ModelProfile {
 export type ModelRole =
   | "chat"
   | "chat-fallback"
+  | "workflow"
   | "dispatch-cheap"
   | "pre-extract"
   | "pre-extract-fallback"
   | "active-memory"
+  | "memory-extract"
+  | "memory-distill"
+  | "memory-consolidate"
   | "compaction-summarizer"
   | "cheap-tasks"
   | "vision"
@@ -295,7 +299,12 @@ export type ModelRole =
  * - `bare`: no settings object at all (vision, compaction, cheap-tasks
  *   call sites own their per-call options).
  */
-export type RoleSettingsKind = "chat" | "preextract" | "active-memory" | "bare";
+export type RoleSettingsKind =
+  | "chat"
+  | "preextract"
+  | "active-memory"
+  | "recall"
+  | "bare";
 
 export interface RoleBinding {
   role: ModelRole;

@@ -1,0 +1,37 @@
+{
+  "name": "@fretik/jobs",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun run --hot src/index.ts",
+    "backfill:episodes": "bun run src/scripts/backfill-episodes.ts",
+    "backfill:record-cards": "bun run src/scripts/backfill-record-cards.ts",
+    "dreaming:run": "bun run src/scripts/run-dreaming.ts",
+    "gc:run": "bun run src/scripts/run-gc.ts",
+    "typecheck": "tsgo --noEmit",
+    "lint": "oxlint --type-aware",
+    "lint:fix": "oxlint --type-aware --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "check": "bun run typecheck && bun run lint && bun run format:check"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "@fretik/providers": "workspace:*",
+    "@fretik/shared": "workspace:*",
+    "bullmq": "^5.79.0",
+    "hono": "^4.12.26",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@typescript/native-preview": "^7.0.0-dev.20260618.1",
+    "oxlint": "^1.70.0",
+    "oxlint-tsgolint": "^0.23.0",
+    "prettier": "^3.8.4",
+    "prettier-plugin-organize-imports": "^4.3.0"
+  }
+}

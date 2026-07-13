@@ -160,23 +160,6 @@ export const aiMemories = pgTable(
     index("ai_memories_team_user_idx").on(t.teamId, t.userId),
 
     /**
-     * Trigram GIN index for `grep` (ILIKE) over `content`. Requires
-     * `CREATE EXTENSION IF NOT EXISTS pg_trgm;` to run before the
-     * migration applies the index — it is included at the top of the
-     * generated SQL file, edit by hand if `db:generate` does not
-     * detect the dependency.
-     *
-     * Tradeoff: a GIN trigram index typically weighs 3-5× the indexed
-     * content, and slows down INSERT/UPDATE proportionally. Negligible
-     * for a few thousand memories; revisit (drop or partial-index it
-     * by team) if we cross 100k rows or write latency dérive.
-     */
-    index("ai_memories_content_trgm_idx").using(
-      "gin",
-      sql`${t.content} gin_trgm_ops`,
-    ),
-
-    /**
      * Enforce the user/scope coupling at the DB level. The service
      * layer already validates this, but the constraint protects
      * against any future code path that bypasses the service.

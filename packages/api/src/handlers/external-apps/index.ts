@@ -1,11 +1,10 @@
 import type { HonoLoggedAppType } from "@fretik/shared/lib/auth-middleware";
 import { OpenAPIHono } from "@hono/zod-openapi";
-import { approvalsRoutes } from "./approvals";
 import { connectionsRoutes } from "./connections";
 import { providersRoutes } from "./providers";
 
 /**
- * Composite `/external-apps/*` router. Mounts the three sub-routers:
+ * Composite `/external-apps/*` router. Mounts the connection sub-routers:
  *
  *   GET    /external-apps/providers              ← providersRoutes
  *   POST   /external-apps/connect-session        ← connectionsRoutes
@@ -14,12 +13,10 @@ import { providersRoutes } from "./providers";
  *   GET    /external-apps/connections/:id        ← connectionsRoutes
  *   PATCH  /external-apps/connections/:id        ← connectionsRoutes
  *   DELETE /external-apps/connections/:id        ← connectionsRoutes
- *   GET    /external-apps/approvals/:id          ← approvalsRoutes
- *   POST   /external-apps/approvals/:id/grant    ← approvalsRoutes
- *   POST   /external-apps/approvals/:id/modify-and-grant ← approvalsRoutes
- *   POST   /external-apps/approvals/:id/reject   ← approvalsRoutes
  *
- * `/sandbox/exec` lives in `sandbox-exec.ts` and is mounted separately
+ * The approval flow moved to the top-level `/approvals` router — it now
+ * serves every kind (plans, record writes, questions), not just external
+ * apps. `/sandbox/exec` lives in `sandbox-exec.ts` and is mounted separately
  * because it carries a custom JWT auth, not the Better Auth cookie.
  */
 
@@ -29,6 +26,5 @@ externalAppsRoutes.route("/providers", providersRoutes);
 // connectionsRoutes declares its own `/connect-session`, `/connections`,
 // `/connections/{id}` paths internally, so it mounts at the root.
 externalAppsRoutes.route("/", connectionsRoutes);
-externalAppsRoutes.route("/approvals", approvalsRoutes);
 
 export { externalAppsRoutes };

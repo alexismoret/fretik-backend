@@ -1,7 +1,7 @@
 ---
 name: teams
-description: Microsoft Teams — read and post chat and channel messages, search conversations, look up people and presence
-version: 9f6050574c6b
+description: Microsoft Teams — read and send chat messages, and manage meetings and calls on the user's connected Teams account.
+version: 968ed00ba1e1
 ---
 
 # Microsoft Teams — 20 actions

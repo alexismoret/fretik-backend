@@ -10,6 +10,10 @@ import { buildConnectionOptionsZod } from "../../../external-apps/connection-opt
 import { getProvider } from "../../../external-apps/registry";
 import { throwHttpError } from "../../../lib/errors";
 import { ERROR_CODES } from "../../../schemas/errors";
+import {
+  type ToolPolicyLevel,
+  toolPolicyLevelSchema,
+} from "../../../schemas/tool-policies";
 import { getConnectionForCaller } from "./get-by-id";
 
 /**
@@ -36,6 +40,12 @@ export const updateConnection = async (params: {
   displayName?: string;
   status?: ExternalAppConnectionStatus;
   options?: Record<string, unknown>;
+  /** Sparse per-action policy patch (level sets, `null` resets to default). */
+  actionPolicies?: Record<string, ToolPolicyLevel | null>;
+  /** Whether the caller is an org admin — required to edit `actionPolicies` on
+   * a TEAM-scoped connection (any member can see it, only admins may change its
+   * permissions). Personal connections are owner-only via `getConnectionForCaller`. */
+  isOrgAdmin?: boolean;
 }): Promise<ExternalAppConnection> => {
   const current = await getConnectionForCaller(
     params.id,
@@ -48,6 +58,48 @@ export const updateConnection = async (params: {
   if (params.status !== undefined) {
     patch.status = params.status;
     if (params.status !== "error") patch.lastErrorMessage = null;
+  }
+
+  if (params.actionPolicies !== undefined) {
+    // Team-scoped connection: only admins may change its permissions.
+    if (current.userId === null && params.isOrgAdmin !== true) {
+      return throwHttpError(403, {
+        code: ERROR_CODES.FORBIDDEN,
+        message: "Only an admin can change a team connection's permissions.",
+      });
+    }
+    const provider = getProvider(current.providerKey);
+    if (provider === undefined) {
+      return throwHttpError(404, {
+        code: ERROR_CODES.EXTERNAL_APP_PROVIDER_NOT_FOUND,
+        message: `Unknown provider: ${current.providerKey}`,
+      });
+    }
+    const actionNames = new Set(provider.manifest.actions.map((a) => a.name));
+    const merged: Record<string, ToolPolicyLevel> = {
+      ...(current.actionPolicies ?? {}),
+    };
+    for (const [name, level] of Object.entries(params.actionPolicies)) {
+      if (!actionNames.has(name)) {
+        return throwHttpError(400, {
+          code: ERROR_CODES.VALIDATION_ERROR,
+          message: `Unknown action "${name}" for provider ${current.providerKey}`,
+        });
+      }
+      if (level === null) {
+        delete merged[name];
+        continue;
+      }
+      const parsed = toolPolicyLevelSchema.safeParse(level);
+      if (!parsed.success) {
+        return throwHttpError(400, {
+          code: ERROR_CODES.VALIDATION_ERROR,
+          message: `Invalid policy level for action "${name}"`,
+        });
+      }
+      merged[name] = parsed.data;
+    }
+    patch.actionPolicies = merged;
   }
 
   if (params.options !== undefined) {

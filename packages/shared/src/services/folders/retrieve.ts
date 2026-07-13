@@ -3,34 +3,57 @@ import {
   count,
   desc,
   eq,
-  exists,
   ilike,
   inArray,
   isNull,
   ne,
   sql,
+  type SQL,
 } from "drizzle-orm";
 import db from "../../db";
 import {
-  documentEntities,
-  documentFieldValues,
-  documentLabels,
   documents,
   fieldDefinitions,
   folders,
+  objectTypes,
   type DocumentStatus,
   type FieldDefinitionType,
 } from "../../db/schema";
+import { team } from "../../db/schema/auth-schema";
 import { buildDocumentThumbnailKey } from "../../lib/document-storage";
 import { notFound, throwHttpError } from "../../lib/errors";
 import { getPresignedUrl } from "../../lib/s3";
 import type {
-  DriveCustomFilter,
   DriveItem,
   DriveListParams,
   FolderBreadcrumb,
   FolderResponse,
 } from "../../schemas/folders";
+import type { RecordFilter } from "../../schemas/ontology";
+import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
+import { buildFieldFilterPredicate } from "../object-schema/field-filter";
+import { qualifiedObjectTable } from "../object-schema/identifiers";
+import { readRecordDataBatch } from "../object-schema/record-io";
+import { DOCUMENT_TYPE_KEY } from "../object-types/constants";
+
+/** Resolve a team's org-scoped `document` object-type id (its extension table). */
+const resolveDocumentTypeId = async (
+  teamId: string,
+): Promise<string | null> => {
+  const [row] = await db
+    .select({ id: objectTypes.id })
+    .from(objectTypes)
+    .innerJoin(team, eq(team.organizationId, objectTypes.organizationId))
+    .where(
+      and(
+        eq(team.id, teamId),
+        eq(objectTypes.key, DOCUMENT_TYPE_KEY),
+        isNull(objectTypes.teamId),
+      ),
+    )
+    .limit(1);
+  return row?.id ?? null;
+};
 
 /**
  * Retrieves the root drive for a team.
@@ -106,11 +129,12 @@ type DocWithRelations = {
   status: DocumentStatus;
   createdAt: Date;
   updatedAt: Date;
-  fieldValues: { fieldKey: string; value: unknown }[];
+  mirrorRecord: { id: string; objectTypeId: string } | null;
 };
 
 const mapDocsToDriveItems = async (
   docs: DocWithRelations[],
+  teamId: string,
 ): Promise<DriveItem[]> => {
   const readyDocs = docs.filter((d) => d.status === "ready");
   const thumbnailUrls = await Promise.all(
@@ -122,9 +146,24 @@ const mapDocsToDriveItems = async (
     urlMap.set(d.id, thumbnailUrls[i] ?? "");
   }
 
+  // Batch-reconstruct each mirror record's typed field values in one query.
+  const docTypeId = await resolveDocumentTypeId(teamId);
+  const mirrorIds = docs
+    .map((d) => d.mirrorRecord?.id)
+    .filter((id): id is string => typeof id === "string");
+  const fieldValuesById =
+    docTypeId && mirrorIds.length > 0
+      ? await readRecordDataBatch({
+          objectTypeId: docTypeId,
+          recordIds: mirrorIds,
+          fields: await getFieldDefinitionsForTeam({
+            teamId,
+            objectTypeId: docTypeId,
+          }),
+        })
+      : new Map<string, Record<string, unknown>>();
+
   return docs.map((d) => {
-    const fieldValues: Record<string, unknown> = {};
-    for (const fv of d.fieldValues) fieldValues[fv.fieldKey] = fv.value;
     return {
       type: "document" as const,
       data: {
@@ -134,7 +173,9 @@ const mapDocsToDriveItems = async (
         mimeType: d.mimeType,
         status: d.status,
         thumbnailUrl: urlMap.get(d.id) ?? null,
-        fieldValues,
+        fieldValues: d.mirrorRecord
+          ? (fieldValuesById.get(d.mirrorRecord.id) ?? {})
+          : {},
         createdAt: d.createdAt,
         updatedAt: d.updatedAt,
       },
@@ -143,124 +184,27 @@ const mapDocsToDriveItems = async (
 };
 
 /**
- * True when any cross-folder filter is active (custom field, entity, label).
- * Triggers flat document-only listing mode.
+ * True when any cross-folder field filter is active. Triggers flat
+ * document-only listing mode.
  */
 const hasAdvancedFilter = (params: DriveListParams): boolean =>
-  !!(
-    (params.entityId && params.entityId.length > 0) ||
-    (params.labelIds && params.labelIds.length > 0) ||
-    (params.customFilters && params.customFilters.length > 0)
-  );
+  params.filters.length > 0;
 
 /**
- * Field types whose values are free-form strings — partial substring
- * match is the expected behaviour. Enum-like string fields
- * (`select` / `multi_select`) stay on equality.
+ * EXISTS clause for one `RecordFilter` against the document's 1:1 mirror record,
+ * scoped to the current `documents` row. The per-operator SQL over `e."col"` is
+ * built by the shared `buildFieldFilterPredicate` — the same builder the objects
+ * records list uses — here correlated through `documents → mirror record →
+ * extension table`. Returns null for an unsupported filter shape.
  */
-const TEXT_LIKE_TYPES: ReadonlySet<FieldDefinitionType> = new Set([
-  "text",
-  "url",
-  "email",
-]);
-
-/**
- * Date/datetime field types — accept the `{ start, end }` range shape
- * emitted by the frontend `DateRangePicker`.
- */
-const DATE_LIKE_TYPES: ReadonlySet<FieldDefinitionType> = new Set([
-  "date",
-  "datetime",
-]);
-
-const isDateRangeFilter = (
-  v: unknown,
-): v is { start: string | null; end: string | null } =>
-  typeof v === "object" &&
-  v !== null &&
-  !Array.isArray(v) &&
-  "start" in v &&
-  "end" in v;
-
-/**
- * EXISTS clause for a single `(fieldKey, value)` predicate on the
- * `document_field_values` table, scoped to the current `documents` row.
- *
- * Value shapes:
- *   • array (string[] / number[] / boolean[])   → ANY-of match
- *   • `{ start, end }` on a date/datetime field → range match (either
- *     bound may be null for an open interval)
- *   • scalar on a free-form string field        → case-insensitive
- *     substring match (ILIKE %text%)
- *   • scalar on any other type                  → equality
- */
-const customFilterExists = (
-  cf: DriveCustomFilter,
+const documentFilterExists = (
+  f: RecordFilter,
   fieldType: FieldDefinitionType | undefined,
-) => {
-  const valuePredicate = (() => {
-    if (Array.isArray(cf.value)) {
-      return inArray(documentFieldValues.value, cf.value as never[]);
-    }
-    if (
-      fieldType &&
-      DATE_LIKE_TYPES.has(fieldType) &&
-      isDateRangeFilter(cf.value)
-    ) {
-      // Compare directly in JSONB space — the `(fieldKey, value)`
-      // B-tree covers the range because JSONB has a total order and
-      // JSON-string comparison is lexicographic (which matches
-      // chronological order for ISO date / datetime strings stored as
-      // JSON primitive strings).
-      //
-      // We send each bound already wrapped as a JSON string literal
-      // (`"2025-01-01..."`) and cast to `jsonb` so the right side has
-      // the same type as the column. This keeps the index in play —
-      // any approach that extracts the value first (e.g.
-      // `value #>> '{}'`) is a functional expression and forces a
-      // sequential scan.
-      const bounds = [];
-      if (cf.value.start) {
-        bounds.push(
-          sql`${documentFieldValues.value} >= ${JSON.stringify(cf.value.start)}::jsonb`,
-        );
-      }
-      if (cf.value.end) {
-        bounds.push(
-          sql`${documentFieldValues.value} <= ${JSON.stringify(cf.value.end)}::jsonb`,
-        );
-      }
-      // Both bounds null → no constraint (filter is effectively
-      // inactive); fall back to a tautology so the outer `eq` on
-      // `fieldKey` still narrows.
-      return bounds.length > 0 ? and(...bounds) : sql`TRUE`;
-    }
-    if (
-      fieldType &&
-      TEXT_LIKE_TYPES.has(fieldType) &&
-      typeof cf.value === "string" &&
-      cf.value.length > 0
-    ) {
-      // `documentFieldValues.value` is JSONB — `ILIKE` doesn't have a
-      // jsonb operator. `#>> '{}'` extracts the value as text (strips
-      // outer quotes for JSON primitive strings) so we can substring-
-      // match cleanly.
-      return sql`${documentFieldValues.value} #>> '{}' ILIKE ${`%${cf.value}%`}`;
-    }
-    return eq(documentFieldValues.value, cf.value as never);
-  })();
-  return exists(
-    db
-      .select({ one: sql`1` })
-      .from(documentFieldValues)
-      .where(
-        and(
-          eq(documentFieldValues.documentId, documents.id),
-          eq(documentFieldValues.fieldKey, cf.fieldKey),
-          valuePredicate,
-        ),
-      ),
-  );
+  docTable: string,
+): SQL | null => {
+  const pred = buildFieldFilterPredicate(f, fieldType);
+  if (!pred) return null;
+  return sql`EXISTS (SELECT 1 FROM object_records r JOIN ${sql.raw(docTable)} e ON e."id" = r.id WHERE r.document_id = ${documents.id} AND ${pred})`;
 };
 
 /**
@@ -282,59 +226,33 @@ const getFilteredDocuments = async (data: {
     baseConditions.push(ilike(documents.originalFilename, `%${search}%`));
   }
 
-  if (params.customFilters && params.customFilters.length > 0) {
-    const keys = params.customFilters.map((cf) => cf.fieldKey);
+  if (params.filters.length > 0) {
+    const keys = params.filters.map((f) => f.key);
     const defs = await db
       .select({
         key: fieldDefinitions.key,
         type: fieldDefinitions.type,
       })
       .from(fieldDefinitions)
+      .innerJoin(objectTypes, eq(fieldDefinitions.objectTypeId, objectTypes.id))
       .where(
         and(
           eq(fieldDefinitions.teamId, teamId),
-          eq(fieldDefinitions.resourceType, "document"),
+          eq(objectTypes.key, DOCUMENT_TYPE_KEY),
           inArray(fieldDefinitions.key, keys),
         ),
       );
     const typeByKey = new Map<string, FieldDefinitionType>(
       defs.map((d) => [d.key, d.type]),
     );
-    for (const cf of params.customFilters) {
-      baseConditions.push(customFilterExists(cf, typeByKey.get(cf.fieldKey)));
+    const docTypeId = await resolveDocumentTypeId(teamId);
+    if (docTypeId) {
+      const docTable = qualifiedObjectTable(docTypeId);
+      for (const f of params.filters) {
+        const cond = documentFilterExists(f, typeByKey.get(f.key), docTable);
+        if (cond) baseConditions.push(cond);
+      }
     }
-  }
-
-  if (params.entityId && params.entityId.length > 0) {
-    baseConditions.push(
-      exists(
-        db
-          .select({ one: sql`1` })
-          .from(documentEntities)
-          .where(
-            and(
-              eq(documentEntities.documentId, documents.id),
-              inArray(documentEntities.entityId, params.entityId),
-            ),
-          ),
-      ),
-    );
-  }
-
-  if (params.labelIds && params.labelIds.length > 0) {
-    baseConditions.push(
-      exists(
-        db
-          .select({ one: sql`1` })
-          .from(documentLabels)
-          .where(
-            and(
-              eq(documentLabels.documentId, documents.id),
-              inArray(documentLabels.labelId, params.labelIds),
-            ),
-          ),
-      ),
-    );
   }
 
   const whereExpr = and(...baseConditions);
@@ -374,8 +292,8 @@ const getFilteredDocuments = async (data: {
     },
     where: { id: { in: ids } },
     with: {
-      fieldValues: {
-        columns: { fieldKey: true, value: true },
+      mirrorRecord: {
+        columns: { id: true, objectTypeId: true },
       },
     },
   });
@@ -387,7 +305,7 @@ const getFilteredDocuments = async (data: {
 
   return {
     count: totalCount,
-    data: await mapDocsToDriveItems(orderedDocs),
+    data: await mapDocsToDriveItems(orderedDocs, teamId),
   };
 };
 
@@ -505,13 +423,13 @@ const getFolderExplorer = async (data: {
         columns: docColumns,
         where: docWhere,
         with: {
-          fieldValues: { columns: { fieldKey: true, value: true } },
+          mirrorRecord: { columns: { id: true, objectTypeId: true } },
         },
         orderBy: { updatedAt: "desc" },
         limit: remainingLimit,
       });
 
-      children.push(...(await mapDocsToDriveItems(subDocs)));
+      children.push(...(await mapDocsToDriveItems(subDocs, teamId)));
     }
   } else {
     const docOffset = offset - totalFoldersCount;
@@ -519,14 +437,14 @@ const getFolderExplorer = async (data: {
       columns: docColumns,
       where: docWhere,
       with: {
-        fieldValues: { columns: { fieldKey: true, value: true } },
+        mirrorRecord: { columns: { id: true, objectTypeId: true } },
       },
       orderBy: { updatedAt: "desc" },
       limit: limit,
       offset: docOffset,
     });
 
-    children.push(...(await mapDocsToDriveItems(subDocs)));
+    children.push(...(await mapDocsToDriveItems(subDocs, teamId)));
   }
 
   return {

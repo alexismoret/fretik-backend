@@ -96,13 +96,10 @@ void mock.module("@fretik/shared/services/e2b/restart-python-kernel", () => ({
 // doesn't reach for a real Redis. `nextPendingApprovalId` lets a test drive
 // the swallowed-ApprovalPending → approval_pending fallback path.
 let nextPendingApprovalId: string | undefined;
-void mock.module(
-  "@fretik/shared/services/external-apps/approvals/sandbox-signal",
-  () => ({
-    consumeSandboxApprovalPending: async () => nextPendingApprovalId,
-    markSandboxApprovalPending: async () => undefined,
-  }),
-);
+void mock.module("@fretik/shared/services/approvals/sandbox-signal", () => ({
+  consumeSandboxApprovalPending: async () => nextPendingApprovalId,
+  markSandboxApprovalPending: async () => undefined,
+}));
 
 // --------------------------------------------------------------- //
 // SUT imports — must come AFTER mocks                              //
@@ -127,7 +124,7 @@ const buildOptions = (conversationId: string, toolCallId: string) => {
   return {
     toolCallId,
     messages: [] as never[],
-    experimental_context: wrapRuntimeContext(ctx),
+    context: wrapRuntimeContext(ctx),
   };
 };
 
@@ -218,7 +215,7 @@ describe("python tool", () => {
       {
         toolCallId: "tc-1",
         messages: [] as never[],
-        experimental_context: wrapRuntimeContext(ctx),
+        context: wrapRuntimeContext(ctx),
       },
     );
     expect(result).toEqual({

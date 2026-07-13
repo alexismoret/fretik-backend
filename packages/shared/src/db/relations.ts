@@ -69,6 +69,12 @@ export const relations = defineRelations(schema, (r) => ({
     aiContextFiles: r.many.aiContextFiles(),
     aiMemories: r.many.aiMemories(),
     fieldDefinitions: r.many.fieldDefinitions(),
+    objectTypes: r.many.objectTypes(),
+    linkTypes: r.many.linkTypes(),
+    actionTypes: r.many.actionTypes(),
+    objectRecords: r.many.objectRecords(),
+    links: r.many.links(),
+    domainEvents: r.many.domainEvents(),
     externalAppConnections: r.many.externalAppConnections(),
     toolApprovalRequests: r.many.toolApprovalRequests(),
     fileExtractions: r.many.fileExtractions(),
@@ -89,10 +95,12 @@ export const relations = defineRelations(schema, (r) => ({
       from: r.team.id,
       to: r.teamAiSettings.teamId,
     }),
+    toolPolicies: r.one.teamToolPolicies({
+      from: r.team.id,
+      to: r.teamToolPolicies.teamId,
+    }),
     folders: r.many.folders(),
-    labels: r.many.labels(),
     documents: r.many.documents(),
-    entities: r.many.entities(),
     activityLogs: r.many.activityLogs(),
     webhooks: r.many.webhooks(),
     usageMetrics: r.many.usageMetrics(),
@@ -102,6 +110,12 @@ export const relations = defineRelations(schema, (r) => ({
     aiMemories: r.many.aiMemories(),
     aiMemoryHistory: r.many.aiMemoryHistory(),
     fieldDefinitions: r.many.fieldDefinitions(),
+    objectTypes: r.many.objectTypes(),
+    linkTypes: r.many.linkTypes(),
+    actionTypes: r.many.actionTypes(),
+    objectRecords: r.many.objectRecords(),
+    links: r.many.links(),
+    domainEvents: r.many.domainEvents(),
     teamSkills: r.many.teamSkills(),
     ownedSkills: r.many.skills({ alias: "skillTeamOwner" }),
     externalAppConnections: r.many.externalAppConnections(),
@@ -166,6 +180,13 @@ export const relations = defineRelations(schema, (r) => ({
     }),
   },
 
+  teamToolPolicies: {
+    team: r.one.team({
+      from: r.teamToolPolicies.teamId,
+      to: r.team.id,
+    }),
+  },
+
   // ============================================================================
   // Folders Relations
   // ============================================================================
@@ -192,30 +213,6 @@ export const relations = defineRelations(schema, (r) => ({
     documents: r.many.documents(),
   },
 
-  labels: {
-    team: r.one.team({
-      from: r.labels.teamId,
-      to: r.team.id,
-    }),
-    documentLabels: r.many.documentLabels(),
-    // Many-to-many through documentLabels
-    documents: r.many.documents({
-      from: r.labels.id.through(r.documentLabels.labelId),
-      to: r.documents.id.through(r.documentLabels.documentId),
-    }),
-  },
-
-  documentLabels: {
-    document: r.one.documents({
-      from: r.documentLabels.documentId,
-      to: r.documents.id,
-    }),
-    label: r.one.labels({
-      from: r.documentLabels.labelId,
-      to: r.labels.id,
-    }),
-  },
-
   // ============================================================================
   // Documents Relations
   // ============================================================================
@@ -240,18 +237,13 @@ export const relations = defineRelations(schema, (r) => ({
       to: r.documentProperties.documentId,
       optional: true,
     }),
-    documentLabels: r.many.documentLabels(),
-    documentEntities: r.many.documentEntities(),
-    fieldValues: r.many.documentFieldValues(),
-    // Many-to-many through documentEntities
-    entities: r.many.entities({
-      from: r.documents.id.through(r.documentEntities.documentId),
-      to: r.entities.id.through(r.documentEntities.entityId),
-    }),
-    // Many-to-many through documentLabels
-    labels: r.many.labels({
-      from: r.documents.id.through(r.documentLabels.documentId),
-      to: r.labels.id.through(r.documentLabels.labelId),
+    // The 1:1 mirror of this document in the unified graph (object_records of
+    // type `document`). Its `data` holds the extracted custom field values and
+    // its outgoing links are the `mentions` edges to referenced records.
+    mirrorRecord: r.one.objectRecords({
+      from: r.documents.id,
+      to: r.objectRecords.documentId,
+      optional: true,
     }),
     chatFiles: r.many.aiChatFiles(),
   },
@@ -277,12 +269,235 @@ export const relations = defineRelations(schema, (r) => ({
       to: r.team.id,
       optional: true,
     }),
+    objectType: r.one.objectTypes({
+      from: r.fieldDefinitions.objectTypeId,
+      to: r.objectTypes.id,
+    }),
   },
 
-  documentFieldValues: {
+  // ============================================================================
+  // Dynamic data system (ontology) — catalog relations
+  // ============================================================================
+
+  objectTypes: {
+    organization: r.one.organization({
+      from: r.objectTypes.organizationId,
+      to: r.organization.id,
+    }),
+    team: r.one.team({
+      from: r.objectTypes.teamId,
+      to: r.team.id,
+      optional: true,
+    }),
+    fieldDefinitions: r.many.fieldDefinitions(),
+    actionTypes: r.many.actionTypes(),
+    objectRecords: r.many.objectRecords(),
+  },
+
+  linkTypes: {
+    organization: r.one.organization({
+      from: r.linkTypes.organizationId,
+      to: r.organization.id,
+    }),
+    team: r.one.team({
+      from: r.linkTypes.teamId,
+      to: r.team.id,
+      optional: true,
+    }),
+    links: r.many.links(),
+  },
+
+  actionTypes: {
+    organization: r.one.organization({
+      from: r.actionTypes.organizationId,
+      to: r.organization.id,
+    }),
+    team: r.one.team({
+      from: r.actionTypes.teamId,
+      to: r.team.id,
+      optional: true,
+    }),
+    objectType: r.one.objectTypes({
+      from: r.actionTypes.objectTypeId,
+      to: r.objectTypes.id,
+    }),
+  },
+
+  objectRecords: {
+    organization: r.one.organization({
+      from: r.objectRecords.organizationId,
+      to: r.organization.id,
+    }),
+    team: r.one.team({
+      from: r.objectRecords.teamId,
+      to: r.team.id,
+    }),
+    owner: r.one.user({
+      from: r.objectRecords.userId,
+      to: r.user.id,
+      optional: true,
+    }),
+    objectType: r.one.objectTypes({
+      from: r.objectRecords.objectTypeId,
+      to: r.objectTypes.id,
+    }),
     document: r.one.documents({
-      from: r.documentFieldValues.documentId,
+      from: r.objectRecords.documentId,
       to: r.documents.id,
+      optional: true,
+    }),
+    outgoingLinks: r.many.links({ alias: "linkFrom" }),
+    incomingLinks: r.many.links({ alias: "linkTo" }),
+    eventLinks: r.many.domainEventLinks(),
+    shares: r.many.recordShares(),
+  },
+
+  links: {
+    organization: r.one.organization({
+      from: r.links.organizationId,
+      to: r.organization.id,
+    }),
+    team: r.one.team({
+      from: r.links.teamId,
+      to: r.team.id,
+    }),
+    linkType: r.one.linkTypes({
+      from: r.links.linkTypeId,
+      to: r.linkTypes.id,
+    }),
+    fromRecord: r.one.objectRecords({
+      from: r.links.fromRecordId,
+      to: r.objectRecords.id,
+      alias: "linkFrom",
+    }),
+    toRecord: r.one.objectRecords({
+      from: r.links.toRecordId,
+      to: r.objectRecords.id,
+      alias: "linkTo",
+    }),
+  },
+
+  domainEvents: {
+    organization: r.one.organization({
+      from: r.domainEvents.organizationId,
+      to: r.organization.id,
+    }),
+    team: r.one.team({
+      from: r.domainEvents.teamId,
+      to: r.team.id,
+    }),
+    actor: r.one.user({
+      from: r.domainEvents.actorUserId,
+      to: r.user.id,
+      optional: true,
+    }),
+    conversation: r.one.aiConversations({
+      from: r.domainEvents.conversationId,
+      to: r.aiConversations.id,
+      optional: true,
+    }),
+    subjectRecord: r.one.objectRecords({
+      from: r.domainEvents.subjectRecordId,
+      to: r.objectRecords.id,
+      optional: true,
+    }),
+    eventLinks: r.many.domainEventLinks(),
+  },
+
+  domainEventLinks: {
+    event: r.one.domainEvents({
+      from: r.domainEventLinks.eventId,
+      to: r.domainEvents.id,
+    }),
+    record: r.one.objectRecords({
+      from: r.domainEventLinks.recordId,
+      to: r.objectRecords.id,
+    }),
+  },
+
+  aiEpisodes: {
+    organization: r.one.organization({
+      from: r.aiEpisodes.organizationId,
+      to: r.organization.id,
+    }),
+    team: r.one.team({
+      from: r.aiEpisodes.teamId,
+      to: r.team.id,
+    }),
+    user: r.one.user({
+      from: r.aiEpisodes.userId,
+      to: r.user.id,
+      optional: true,
+    }),
+    conversation: r.one.aiConversations({
+      from: r.aiEpisodes.conversationId,
+      to: r.aiConversations.id,
+      optional: true,
+    }),
+    anchorRecord: r.one.objectRecords({
+      from: r.aiEpisodes.anchorRecordId,
+      to: r.objectRecords.id,
+      optional: true,
+    }),
+    supersededBy: r.one.aiEpisodes({
+      from: r.aiEpisodes.supersededById,
+      to: r.aiEpisodes.id,
+      optional: true,
+    }),
+    episodeRecords: r.many.aiEpisodeRecords(),
+  },
+  aiEpisodeRecords: {
+    episode: r.one.aiEpisodes({
+      from: r.aiEpisodeRecords.episodeId,
+      to: r.aiEpisodes.id,
+    }),
+    record: r.one.objectRecords({
+      from: r.aiEpisodeRecords.recordId,
+      to: r.objectRecords.id,
+    }),
+  },
+
+  objectGrants: {
+    organization: r.one.organization({
+      from: r.objectGrants.organizationId,
+      to: r.organization.id,
+    }),
+    objectType: r.one.objectTypes({
+      from: r.objectGrants.objectTypeId,
+      to: r.objectTypes.id,
+    }),
+    ownerTeam: r.one.team({
+      from: r.objectGrants.ownerTeamId,
+      to: r.team.id,
+      alias: "objectGrantOwnerTeam",
+    }),
+    granteeTeam: r.one.team({
+      from: r.objectGrants.granteeTeamId,
+      to: r.team.id,
+      alias: "objectGrantGranteeTeam",
+      optional: true,
+    }),
+  },
+
+  recordShares: {
+    organization: r.one.organization({
+      from: r.recordShares.organizationId,
+      to: r.organization.id,
+    }),
+    record: r.one.objectRecords({
+      from: r.recordShares.recordId,
+      to: r.objectRecords.id,
+    }),
+    ownerTeam: r.one.team({
+      from: r.recordShares.ownerTeamId,
+      to: r.team.id,
+      alias: "recordShareOwnerTeam",
+    }),
+    granteeTeam: r.one.team({
+      from: r.recordShares.granteeTeamId,
+      to: r.team.id,
+      alias: "recordShareGranteeTeam",
+      optional: true,
     }),
   },
 
@@ -300,34 +515,6 @@ export const relations = defineRelations(schema, (r) => ({
       from: r.aiVectors.organizationId,
       to: r.organization.id,
       optional: true,
-    }),
-  },
-
-  // ============================================================================
-  // Entities Relations
-  // ============================================================================
-
-  entities: {
-    team: r.one.team({
-      from: r.entities.teamId,
-      to: r.team.id,
-    }),
-    documentEntities: r.many.documentEntities(),
-    // Many-to-many through documentEntities
-    documents: r.many.documents({
-      from: r.entities.id.through(r.documentEntities.entityId),
-      to: r.documents.id.through(r.documentEntities.documentId),
-    }),
-  },
-
-  documentEntities: {
-    document: r.one.documents({
-      from: r.documentEntities.documentId,
-      to: r.documents.id,
-    }),
-    entity: r.one.entities({
-      from: r.documentEntities.entityId,
-      to: r.entities.id,
     }),
   },
 
@@ -668,6 +855,62 @@ export const relations = defineRelations(schema, (r) => ({
     conversation: r.one.aiConversations({
       from: r.toolApprovalRequests.conversationId,
       to: r.aiConversations.id,
+    }),
+  },
+
+  workflows: {
+    organization: r.one.organization({
+      from: r.workflows.organizationId,
+      to: r.organization.id,
+    }),
+    team: r.one.team({
+      from: r.workflows.teamId,
+      to: r.team.id,
+    }),
+    user: r.one.user({
+      from: r.workflows.userId,
+      to: r.user.id,
+      alias: "workflowOwner",
+      optional: true,
+    }),
+    createdBy: r.one.user({
+      from: r.workflows.createdByUserId,
+      to: r.user.id,
+      alias: "workflowCreator",
+      optional: true,
+    }),
+    runs: r.many.workflowRuns(),
+  },
+
+  workflowRuns: {
+    workflow: r.one.workflows({
+      from: r.workflowRuns.workflowId,
+      to: r.workflows.id,
+    }),
+    organization: r.one.organization({
+      from: r.workflowRuns.organizationId,
+      to: r.organization.id,
+    }),
+    team: r.one.team({
+      from: r.workflowRuns.teamId,
+      to: r.team.id,
+    }),
+    actingUser: r.one.user({
+      from: r.workflowRuns.actingUserId,
+      to: r.user.id,
+      alias: "workflowRunActor",
+      optional: true,
+    }),
+    triggeredBy: r.one.user({
+      from: r.workflowRuns.triggeredByUserId,
+      to: r.user.id,
+      alias: "workflowRunTrigger",
+      optional: true,
+    }),
+    conversation: r.one.aiConversations({
+      from: r.workflowRuns.conversationId,
+      to: r.aiConversations.id,
+      optional: true,
     }),
   },
 }));

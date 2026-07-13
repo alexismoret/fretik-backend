@@ -25,8 +25,8 @@ import { WORKSPACE_DIRS, writeFile } from "./conversation-storage";
  *     wasted turn). 48K keeps the typical top-20 chunk result inline
  *     while still capping pathological cases.
  *   - **Domain tools (16K)** — `listDocuments`, `listExtractions`,
- *     `getExtractionData`, `getEntityDetails`, `listEntities`,
- *     `querySql`. Tighter cap nudges the agent to paginate / refine
+ *     `getExtractionData`, `querySql`. Tighter cap nudges the agent
+ *     to paginate / refine
  *     filters instead of digesting a 100-row JSON dump inline.
  *
  * Everything else uses the default. New tools should NOT add custom
@@ -141,7 +141,7 @@ export const buildPersistedOutputMessage = (
  * `DEFAULT_THRESHOLD_CHARS`. The two documented exceptions
  * (`RAG_THRESHOLD_CHARS` for `searchKnowledge`,
  * `DOMAIN_TOOL_THRESHOLD_CHARS` for `listDocuments` /
- * `getExtractionData` / `querySql` / `listEntities` / etc.) pass an
+ * `getExtractionData` / `querySql` / etc.) pass an
  * explicit `threshold`. New tools should NOT introduce new custom
  * thresholds without justification.
  *

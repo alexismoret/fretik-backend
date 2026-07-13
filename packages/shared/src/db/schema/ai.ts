@@ -19,7 +19,7 @@ import { organization, team, user } from "./auth-schema";
  * Add new values here when we introduce new agents (workflow-builder,
  * extraction assistant, document pre-processor, …).
  */
-export const aiAgentTypeEnum = pgEnum("ai_agent_type", ["chatbot"]);
+export const aiAgentTypeEnum = pgEnum("ai_agent_type", ["chatbot", "workflow"]);
 
 /**
  * Role of an AI message. Tool parts live inside `parts`, not as a separate role,

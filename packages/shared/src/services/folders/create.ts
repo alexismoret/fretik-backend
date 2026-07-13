@@ -2,6 +2,11 @@ import { eq, sql } from "drizzle-orm";
 import db from "../../db";
 import { folders } from "../../db/schema";
 import { internalError, throwHttpError } from "../../lib/errors";
+import {
+  emitDomainEvent,
+  type EventActor,
+  SYSTEM_ACTOR,
+} from "../domain-events/emit";
 
 /**
  * Creates a new folder with proper path computation and parent updates.
@@ -11,8 +16,10 @@ export const createFolder = async (data: {
   parentFolderId: string | null | undefined;
   teamId: string;
   userId: string;
+  actor?: EventActor;
 }) => {
   const { name, parentFolderId, teamId, userId } = data;
+  const actor = data.actor ?? SYSTEM_ACTOR;
 
   // Assert parent folder + Get full path
   const parentFolderFullPath = parentFolderId
@@ -45,6 +52,24 @@ export const createFolder = async (data: {
           subFolderCount: sql`${folders.subFolderCount} + 1`,
         })
         .where(eq(folders.id, parentFolderId));
+    }
+
+    // Folders carry no org column — resolve the team's org for the journal.
+    const teamRow = await tx.query.team.findFirst({
+      columns: { organizationId: true },
+      where: { id: teamId },
+    });
+    if (teamRow) {
+      await emitDomainEvent({
+        tx,
+        organizationId: teamRow.organizationId,
+        teamId,
+        type: "folder.created",
+        actor,
+        subjectType: "folder",
+        payload: { folderId: inserted.id, name },
+        dedupKey: `folder.created:${inserted.id}`,
+      });
     }
 
     return inserted;

@@ -1,6 +1,6 @@
 import type { UIMessage } from "ai";
 import { and, asc, desc, eq, gt, lte } from "drizzle-orm";
-import db from "../../db";
+import db, { type Transaction } from "../../db";
 import { aiConversations, aiMessages } from "../../db/schema";
 
 type Role = "user" | "assistant" | "system";
@@ -29,8 +29,11 @@ const rowToUiMessage = (row: typeof aiMessages.$inferSelect): UIMessage => {
  * that drives list ordering and per-member unread detection. Inserting a
  * message doesn't touch the parent row on its own.
  */
-const touchConversation = async (conversationId: string): Promise<void> => {
-  await db
+const touchConversation = async (
+  conversationId: string,
+  tx?: Transaction,
+): Promise<void> => {
+  await (tx ?? db)
     .update(aiConversations)
     .set({ updatedAt: new Date() })
     .where(eq(aiConversations.id, conversationId));
@@ -176,6 +179,9 @@ export const saveMessage = async (data: {
 /**
  * Batch insert. More efficient when the agent produces several assistant
  * messages in one turn (tool calls + final text across multiple steps).
+ * Pass `tx` to enlist in a caller's transaction — the chatbot handler uses
+ * this to commit the turn's messages and its `chat.turn` journal entry
+ * atomically (the outbox guarantee).
  */
 export const saveMessages = async (
   conversationId: string,
@@ -185,10 +191,11 @@ export const saveMessages = async (
     metadata?: unknown;
     authorId?: string | null;
   }[],
+  tx?: Transaction,
 ) => {
   if (messages.length === 0) return [];
 
-  const rows = await db
+  const rows = await (tx ?? db)
     .insert(aiMessages)
     .values(
       messages.map((m) => ({
@@ -201,7 +208,7 @@ export const saveMessages = async (
     )
     .returning();
 
-  await touchConversation(conversationId);
+  await touchConversation(conversationId, tx);
 
   return rows;
 };

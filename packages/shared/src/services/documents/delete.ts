@@ -8,6 +8,8 @@ import {
   buildDocumentThumbnailKey,
 } from "../../lib/document-storage";
 import { deleteFilesFromS3 } from "../../lib/s3";
+import { bulkDeleteObjectRecords } from "../object-records/bulk-delete";
+import { resolveDocumentRecordIds } from "../object-records/resolve-document-record";
 
 /**
  * Deletes multiple documents and updates parent folder counts.
@@ -48,16 +50,28 @@ export const deleteDocuments = async (data: {
   const totalGo = totalFileSize / 1024 ** 3;
 
   const res = await db.transaction(async (tx) => {
-    // Decrement parent's documentCount
-    if (folderIdsToUpdate.length > 0) {
-      await Promise.all(
-        Object.entries(folderIdsCountMap).map(([id, count]) => {
-          return tx
-            .update(folders)
-            .set({ documentCount: sql`${folders.documentCount} - ${count}` })
-            .where(eq(folders.id, id));
-        }),
-      );
+    // Remove each file's 1:1 graph mirror (and, by FK cascade, its `mentions`
+    // links + typed row) BEFORE the `documents` rows go — otherwise the mirror's
+    // `document_id` FK nulls (ON DELETE SET NULL) and the record survives as a
+    // fileless "Document" orphan. Same tx, so both commit or neither does.
+    const mirrorIds = [
+      ...(
+        await resolveDocumentRecordIds({ documentIds: ids, teamId, tx })
+      ).values(),
+    ];
+    if (mirrorIds.length > 0) {
+      await bulkDeleteObjectRecords({ teamId, ids: mirrorIds, tx });
+    }
+
+    // Decrement parent's documentCount. Sequential, NOT Promise.all: a
+    // transaction holds a single pg connection, so concurrent queries on `tx`
+    // serialize on one client and trip pg's "client is already executing a
+    // query" deprecation (a hard error in pg@9).
+    for (const [id, count] of Object.entries(folderIdsCountMap)) {
+      await tx
+        .update(folders)
+        .set({ documentCount: sql`${folders.documentCount} - ${count}` })
+        .where(eq(folders.id, id));
     }
 
     // Decrement storageUsedGb

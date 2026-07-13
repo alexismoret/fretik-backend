@@ -14,18 +14,19 @@ import {
  * the "never throw" convention a guarantee. Streaming (async-iterable)
  * results are passed through untouched.
  */
-const guardToolExecute = <TInput, TOutput>(
-  execute: ToolExecuteFunction<TInput, TOutput>,
-): ToolExecuteFunction<TInput, TOutput> => {
+const guardToolExecute = <TInput, TOutput, TContext>(
+  execute: ToolExecuteFunction<TInput, TOutput, TContext>,
+): ToolExecuteFunction<TInput, TOutput, TContext> => {
   const internalError = (): ToolErrorOutput =>
     toolError(
       TOOL_ERROR_CODES.INTERNAL_ERROR,
       "The tool hit an unexpected internal error. Retry once; if it persists, tell the user this action is temporarily unavailable.",
     );
-  const guarded: ToolExecuteFunction<TInput, TOutput | ToolErrorOutput> = (
-    input,
-    options,
-  ) => {
+  const guarded: ToolExecuteFunction<
+    TInput,
+    TOutput | ToolErrorOutput,
+    TContext
+  > = (input, options) => {
     let result: AsyncIterable<TOutput> | PromiseLike<TOutput> | TOutput;
     try {
       result = execute(input, options);
@@ -50,7 +51,7 @@ const guardToolExecute = <TInput, TOutput>(
   // adds a `ToolErrorOutput` runtime return on unexpected failure, which is
   // serialised opaquely downstream. Same sanctioned escape hatch as
   // `injectCaptionField` below.
-  return guarded as unknown as ToolExecuteFunction<TInput, TOutput>;
+  return guarded as unknown as ToolExecuteFunction<TInput, TOutput, TContext>;
 };
 
 /**
@@ -262,7 +263,12 @@ export type ChatbotToolSet = Record<string, ChatbotTool>;
  * forbid it.
  */
 export interface SearchableTool {
-  description?: string;
+  // v7 widens `Tool.description` to `string | ((options) => string)`. Fretik
+  // tools always use a plain string; readers (searchTools) coerce non-strings
+  // to "" so the search index stays a string. Mirroring the SDK type here lets
+  // a concrete tool registry be passed where a `SearchableToolRegistry` is
+  // expected without narrowing every call site.
+  description?: ChatbotTool["description"];
   searchHint: string;
   category: ChatbotToolCategory;
 }

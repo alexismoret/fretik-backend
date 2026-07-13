@@ -1,6 +1,7 @@
 import db from "../../db";
 import { aiMemories, type AiMemory } from "../../db/schema/ai-memory";
 import { createApiError, throwHttpError } from "../../lib/errors";
+import { emitDomainEvent, toDomainEventActor } from "../domain-events/emit";
 import { trimMemoryHistory, writeHistoryRow } from "./history";
 import { findMemoryByPath } from "./lookup";
 import {
@@ -96,6 +97,21 @@ export const createMemory = async (args: {
         operation: "create",
         actor: args.actor,
         newContent: args.content,
+      });
+
+      await emitDomainEvent({
+        tx,
+        organizationId: args.scopeKey.organizationId,
+        teamId: args.scopeKey.teamId,
+        type: "memory.created",
+        actor: toDomainEventActor({
+          byActor: args.actor.actor,
+          userId: args.actor.userId,
+          conversationId: args.actor.conversationId,
+        }),
+        subjectType: "memory",
+        payload: { path: created.path, scope: created.scope },
+        dedupKey: `memory.created:${created.id}`,
       });
 
       // Fire trim AFTER the transaction commits — handled by the caller

@@ -21,6 +21,8 @@ import { longContextSuite } from "./long-context";
 import { memorySuite } from "./memory";
 import { multiStepSuite } from "./multi-step";
 import { multimodalSuite } from "./multimodal";
+import { objectGraphSuite } from "./object-graph";
+import { objectsAutonomySuite } from "./objects-autonomy";
 import { ragMetadataSuite } from "./rag-metadata";
 import { ragPrecisionSuite } from "./rag-precision";
 import { securitySuite } from "./security";
@@ -44,4 +46,6 @@ export const allSuites: EvalSuite[] = [
   securitySuite,
   b2bEfficiencySuite,
   multimodalSuite,
+  objectGraphSuite,
+  objectsAutonomySuite,
 ];

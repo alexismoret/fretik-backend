@@ -29,7 +29,7 @@ import { Glob } from "bun";
 import { encode } from "gpt-tokenizer/encoding/o200k_base";
 
 const PROJECT_ROOT = `${import.meta.dir}/..`;
-const SYSTEM_PROMPT_PATH = `${PROJECT_ROOT}/src/agents/chatbot/system-prompt.md`;
+const SYSTEM_PROMPT_PATH = `${PROJECT_ROOT}/src/agents/shared/agent-system-prompt.md`;
 const TOOLS_DIR = `${PROJECT_ROOT}/src/tools`;
 const SKILLS_DIR = `${PROJECT_ROOT}/src/skills/bundled`;
 

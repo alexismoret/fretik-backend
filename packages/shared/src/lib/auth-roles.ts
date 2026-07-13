@@ -7,7 +7,7 @@ import { selectOrCache } from "./redis";
  *
  * Single source of truth for "is this user an admin/owner of the
  * organization that owns this team". Handlers that gate writes on
- * org-admin role (field-definitions, field-templates, team-skills, …)
+ * org-admin role (field-definitions, team-skills, …)
  * MUST call `assertOrgAdmin` rather than re-implementing the
  * `member.role` lookup. Re-implementations drift (TTL, cache key,
  * error message) and have to be patched in N places when policy

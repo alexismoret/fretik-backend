@@ -13,54 +13,22 @@ import {
   varchar,
 } from "drizzle-orm/pg-core";
 import { organization, team } from "./auth-schema";
+import { type FieldDefinitionConfig, FIELD_TYPES } from "./field-types";
+import { objectTypes } from "./object-types";
 
-/**
- * Resource type that this field definition applies to.
- * Currently only "document" — kept as an enum so future scopes
- * (workflow, task, …) plug in without column reshapes.
- */
-export const fieldDefinitionResourceTypeEnum = pgEnum(
-  "field_definition_resource_type",
-  ["document"],
-);
+// The field-type catalogue + per-type config shapes live in `./field-types`
+// (the single source of truth that also backs the runtime Zod registry and the
+// frontend renderer registry), re-exported from the schema barrel. The pg enum
+// is built from `FIELD_TYPES` so the DB and TS can never drift.
 
 /**
  * Field value type. Drives the runtime Zod builder used in pre-extract,
  * the dynamic input components on the frontend, and the filter UI.
  */
-export const fieldDefinitionTypeEnum = pgEnum("field_definition_type", [
-  "text",
-  "number",
-  "date",
-  "datetime",
-  "boolean",
-  "select",
-  "multi_select",
-  "url",
-  "email",
-]);
-
-/**
- * Shape of `config` JSONB. Per-type optional configuration.
- *  - select / multi_select: `options` is the closed list of allowed values.
- *  - text: `multiline` switches the frontend renderer to a textarea.
- *  - number: `min` / `max` bound the value in the schema.
- *  - multi_select: `freeform: true` lets users add values outside `options`.
- */
-export type FieldDefinitionOption = {
-  value: string;
-  label: string;
-  color?: string;
-  icon?: string;
-};
-
-export type FieldDefinitionConfig = {
-  options?: FieldDefinitionOption[];
-  multiline?: boolean;
-  min?: number;
-  max?: number;
-  freeform?: boolean;
-};
+export const fieldDefinitionTypeEnum = pgEnum(
+  "field_definition_type",
+  FIELD_TYPES,
+);
 
 /**
  * Field definitions table.
@@ -90,13 +58,14 @@ export const fieldDefinitions = pgTable(
     // NULL = organization scope (template), set = team scope (runtime)
     teamId: uuid("team_id").references(() => team.id, { onDelete: "cascade" }),
 
-    resourceType: fieldDefinitionResourceTypeEnum("resource_type")
+    // The object type this field belongs to (was the document-only
+    // `resourceType` enum). A field now attaches to ANY object type.
+    objectTypeId: uuid("object_type_id")
       .notNull()
-      .default("document"),
+      .references(() => objectTypes.id, { onDelete: "cascade" }),
 
     // Stable slug. Immutable post-create when values exist (enforced in the
-    // service layer). Maps 1:1 with the `fieldKey` column of
-    // `document_field_values`.
+    // service layer). Maps 1:1 with a key inside `object_records.data`.
     key: varchar("key", { length: 60 }).notNull(),
     label: text("label").notNull(),
     // User-facing description AND `.describe()` source for the pre-extract
@@ -116,7 +85,10 @@ export const fieldDefinitions = pgTable(
       .default(true),
     vectorizeInclude: boolean("vectorize_include").notNull().default(true),
     displayInPanel: boolean("display_in_panel").notNull().default(true),
-    displayInFilters: boolean("display_in_filters").notNull().default(false),
+    // Designates the display-label field for the object type. At most one per
+    // type per scope (enforced by partial unique index + service). The record's
+    // denormalized `label` is computed from this field.
+    isTitle: boolean("is_title").notNull().default(false),
     enabled: boolean("enabled").notNull().default(true),
     displayOrder: integer("display_order").notNull().default(0),
 
@@ -131,24 +103,30 @@ export const fieldDefinitions = pgTable(
   (table) => [
     // Two partial unique indexes — Postgres treats NULLs as distinct in a
     // standard UNIQUE so we need explicit partials to enforce "one (key) per
-    // (org, resourceType)" at org scope and "one (key) per (team,
-    // resourceType)" at team scope.
+    // object type" at org scope and "one (key) per (team, object type)" at
+    // team scope.
     uniqueIndex("field_definitions_org_key_uniq")
-      .on(table.organizationId, table.resourceType, table.key)
+      .on(table.objectTypeId, table.key)
       .where(sql`team_id IS NULL`),
     uniqueIndex("field_definitions_team_key_uniq")
-      .on(table.teamId, table.resourceType, table.key)
+      .on(table.teamId, table.objectTypeId, table.key)
       .where(sql`team_id IS NOT NULL`),
-    index("field_definitions_org_resource_idx")
-      .on(table.organizationId, table.resourceType)
-      .where(sql`team_id IS NULL`),
-    index("field_definitions_team_resource_idx")
-      .on(table.teamId, table.resourceType)
+    // At most one title field per object type per scope.
+    uniqueIndex("field_definitions_org_title_uniq")
+      .on(table.objectTypeId)
+      .where(sql`is_title AND team_id IS NULL`),
+    uniqueIndex("field_definitions_team_title_uniq")
+      .on(table.teamId, table.objectTypeId)
+      .where(sql`is_title AND team_id IS NOT NULL`),
+    // Runtime lookup hot path: a team's enabled fields for an object type.
+    index("field_definitions_object_type_idx").on(table.objectTypeId),
+    index("field_definitions_team_object_type_idx")
+      .on(table.teamId, table.objectTypeId)
       .where(sql`team_id IS NOT NULL`),
   ],
 );
 
 export type FieldDefinition = typeof fieldDefinitions.$inferSelect;
 export type NewFieldDefinition = typeof fieldDefinitions.$inferInsert;
-export type FieldDefinitionType = FieldDefinition["type"];
-export type FieldDefinitionResourceType = FieldDefinition["resourceType"];
+// `FieldDefinitionType` is re-exported above from `./field-types` (the source
+// of truth). It is structurally identical to `FieldDefinition["type"]`.

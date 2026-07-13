@@ -99,7 +99,7 @@ export const createDispatchAgentTool = <TTools extends ToolSet>(deps: {
    *   - other         → provider error / content filter / etc.
    */
   const formatSubAgentResult = (
-    result: GenerateTextResult<TTools, never>,
+    result: GenerateTextResult<TTools, Record<string, unknown>, never>,
   ): { summary: string; incomplete?: boolean; finishReason?: string } => {
     const text = result.text.trim();
     const finishReason = result.finishReason;
@@ -134,6 +134,8 @@ export const createDispatchAgentTool = <TTools extends ToolSet>(deps: {
       conversationId: ctx.conversationId,
       timeZone: ctx.timeZone,
       traceId: ctx.traceId ? `${ctx.traceId}.sub` : undefined,
+      // Inherit the enclosing workflow run's write gate (undefined for chat).
+      workflowAutonomy: ctx.workflowAutonomy,
     }),
     formatResult: formatSubAgentResult,
   });
@@ -154,6 +156,8 @@ export const createDispatchAgentTool = <TTools extends ToolSet>(deps: {
       conversationId: ctx.conversationId,
       timeZone: ctx.timeZone,
       traceId: ctx.traceId ? `${ctx.traceId}.sub-cheap` : undefined,
+      // Inherit the enclosing workflow run's write gate (undefined for chat).
+      workflowAutonomy: ctx.workflowAutonomy,
     }),
     formatResult: formatSubAgentResult,
   });

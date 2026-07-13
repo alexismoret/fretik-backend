@@ -3,6 +3,11 @@ import db from "../../db";
 import { skills, teamSkills } from "../../db/schema";
 import { throwHttpError } from "../../lib/errors";
 import { ERROR_CODES } from "../../schemas/errors";
+import {
+  emitDomainEvent,
+  type EventActor,
+  SYSTEM_ACTOR,
+} from "../domain-events/emit";
 import { getSkillForTeamById, type SkillDetail } from "./get-by-id";
 import { validateSkillShape } from "./validate";
 
@@ -15,6 +20,7 @@ export interface UpdateSkillInput {
   description?: string;
   body?: string;
   enabled?: boolean;
+  actor?: EventActor;
 }
 
 /**
@@ -97,60 +103,83 @@ export const updateSkill = async (
     });
   }
 
-  // Content patch (team_uploaded only at this point).
-  if (wantsContentChange) {
-    if (existing.body === null) {
-      return throwHttpError(500, {
-        code: ERROR_CODES.INTERNAL_ERROR,
-        message:
-          "Existing team-uploaded skill has no body — data invariant violated",
-      });
-    }
-    const nextDescription = input.description ?? existing.description;
-    const nextBody = input.body ?? existing.body;
-
-    validateSkillShape({
-      name: existing.name,
-      description: nextDescription,
-      body: nextBody,
+  if (wantsContentChange && existing.body === null) {
+    return throwHttpError(500, {
+      code: ERROR_CODES.INTERNAL_ERROR,
+      message:
+        "Existing team-uploaded skill has no body — data invariant violated",
     });
+  }
 
-    const bodyChanged =
-      input.body !== undefined && input.body !== existing.body;
-    const nextVersion = bodyChanged
-      ? bumpPatchVersion(existing.version)
-      : existing.version;
+  // Both patches + the journal entry commit atomically.
+  await db.transaction(async (tx) => {
+    // Content patch (team_uploaded only at this point).
+    if (wantsContentChange && existing.body !== null) {
+      const nextDescription = input.description ?? existing.description;
+      const nextBody = input.body ?? existing.body;
 
-    await db
-      .update(skills)
-      .set({
+      validateSkillShape({
+        name: existing.name,
         description: nextDescription,
         body: nextBody,
-        version: nextVersion,
-      })
-      .where(and(eq(skills.id, input.id), eq(skills.teamId, input.teamId)));
-  }
+      });
 
-  // Enabled patch — upsert the override row. Idempotent across
-  // repeated toggles; refreshes the audit fields on every call.
-  if (wantsEnabledChange && input.enabled !== undefined) {
-    await db
-      .insert(teamSkills)
-      .values({
-        teamId: input.teamId,
-        skillId: input.id,
-        enabled: input.enabled,
-        updatedById: input.updatedById,
-      })
-      .onConflictDoUpdate({
-        target: [teamSkills.teamId, teamSkills.skillId],
-        set: {
+      const bodyChanged =
+        input.body !== undefined && input.body !== existing.body;
+      const nextVersion = bodyChanged
+        ? bumpPatchVersion(existing.version)
+        : existing.version;
+
+      await tx
+        .update(skills)
+        .set({
+          description: nextDescription,
+          body: nextBody,
+          version: nextVersion,
+        })
+        .where(and(eq(skills.id, input.id), eq(skills.teamId, input.teamId)));
+    }
+
+    // Enabled patch — upsert the override row. Idempotent across
+    // repeated toggles; refreshes the audit fields on every call.
+    if (wantsEnabledChange && input.enabled !== undefined) {
+      await tx
+        .insert(teamSkills)
+        .values({
+          teamId: input.teamId,
+          skillId: input.id,
           enabled: input.enabled,
           updatedById: input.updatedById,
-          enabledAt: new Date(),
-        },
+        })
+        .onConflictDoUpdate({
+          target: [teamSkills.teamId, teamSkills.skillId],
+          set: {
+            enabled: input.enabled,
+            updatedById: input.updatedById,
+            enabledAt: new Date(),
+          },
+        });
+    }
+
+    if (wantsContentChange || wantsEnabledChange) {
+      // Skills carry no org column — resolve the team's org for the journal.
+      const teamRow = await tx.query.team.findFirst({
+        columns: { organizationId: true },
+        where: { id: input.teamId },
       });
-  }
+      if (teamRow) {
+        await emitDomainEvent({
+          tx,
+          organizationId: teamRow.organizationId,
+          teamId: input.teamId,
+          type: "skill.updated",
+          actor: input.actor ?? SYSTEM_ACTOR,
+          subjectType: "skill",
+          payload: { skillId: input.id, name: existing.name },
+        });
+      }
+    }
+  });
 
   const updated = await getSkillForTeamById(input.id, input.teamId);
   if (!updated) {

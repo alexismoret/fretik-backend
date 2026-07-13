@@ -285,8 +285,6 @@ const runPreExtractImpl = async (
     documentLanguage: llm.output.documentLanguage,
     entities: llm.output.entities.map((e) => ({
       name: e.name,
-      role: e.role as PreExtractionResponse["entities"][number]["role"],
-      type: e.type as PreExtractionResponse["entities"][number]["type"],
       confidence: e.confidence,
     })),
     confidenceScore: llm.output.confidenceScore,

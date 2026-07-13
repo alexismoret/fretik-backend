@@ -54,14 +54,24 @@ const EXPECTED_CORE_TOOL_NAMES: readonly string[] = [
 
 const EXPECTED_DOMAIN_TOOL_NAMES: readonly string[] = [
   "listDocuments",
-  "listEntities",
-  "listLabels",
-  "listFieldDefinitions",
-  "getEntityDetails",
+  "describeObjectType",
+  "listObjects",
+  "getObject",
+  "manageRecord",
+  "manageLink",
+  "manageObjectType",
+  "manageField",
+  "searchIcons",
   "webFetch",
   "downloadDriveDocument",
+  "uploadToDrive",
+  "manageDrive",
+  "listFolders",
   "createSkill",
   "updateSkill",
+  "searchSkills",
+  "installSkill",
+  "manageWorkflow",
 ];
 
 /**
@@ -119,7 +129,7 @@ const runSearchTools = async (
   const options: ExecOptions = {
     toolCallId: "call-test",
     messages: [],
-    experimental_context: wrapRuntimeContext(ctx),
+    context: wrapRuntimeContext(ctx),
   };
   const result = await execute(input, options);
   if (typeof result !== "object" || result === null) {
@@ -136,7 +146,7 @@ const runSearchTools = async (
 };
 
 describe("Chatbot Progressive Disclosure — end-to-end", () => {
-  test("tool registry: 13 core tools + 9 domain tools, categories correct", () => {
+  test("tool registry: 13 core tools + 19 domain tools, categories correct", () => {
     const tools = chatbotAgentSet.primary.tools;
     const coreNames = Object.entries(tools)
       .filter(([, t]) => t.category === "core")
@@ -184,12 +194,12 @@ describe("Chatbot Progressive Disclosure — end-to-end", () => {
       expect(stepOne).toContain(coreName);
     }
     // Other domain tools remain hidden until explicitly activated.
-    // `listEntities` is a REAL registered domain tool (guarded below), so
+    // `listObjects` is a REAL registered domain tool (guarded below), so
     // this isolation assertion is meaningful — not a vacuous check against
     // a tool name that doesn't exist.
-    expect(Object.keys(tools)).toContain("listEntities");
-    expect(stepOne).not.toContain("listEntities");
-    expect(stepOne).not.toContain("getEntityDetails");
+    expect(Object.keys(tools)).toContain("listObjects");
+    expect(stepOne).not.toContain("listObjects");
+    expect(stepOne).not.toContain("getObject");
   });
 
   test("full cycle: searchTools with free-form keyword query also activates", async () => {
@@ -278,7 +288,7 @@ describe("Chatbot Progressive Disclosure — end-to-end", () => {
     const stepZero = computeActiveTools(tools, manager);
     expect(stepZero).toContain("listDocuments");
     // Other (real) domain tools are still gated.
-    expect(stepZero).not.toContain("listEntities");
+    expect(stepZero).not.toContain("listObjects");
   });
 
   test("replay is idempotent — running the same history twice does not duplicate activations", () => {
@@ -295,8 +305,8 @@ describe("Chatbot Progressive Disclosure — end-to-end", () => {
             output: {
               type: "json",
               value: {
-                matches: ["listDocuments", "listEntities"],
-                query: "select:listDocuments,listEntities",
+                matches: ["listDocuments", "listObjects"],
+                query: "select:listDocuments,listObjects",
                 total_deferred_tools: 6,
               },
             },
@@ -310,7 +320,7 @@ describe("Chatbot Progressive Disclosure — end-to-end", () => {
     // genuine multi-tool set (not phantom names the active-tools filter
     // would silently drop).
     expect(new Set(manager.getSnapshot())).toEqual(
-      new Set(["listDocuments", "listEntities"]),
+      new Set(["listDocuments", "listObjects"]),
     );
     const active = computeActiveTools(tools, manager);
     // No duplicate entries either.

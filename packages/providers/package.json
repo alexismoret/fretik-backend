@@ -10,11 +10,14 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "check": "bun run typecheck && bun run lint && bun run format:check",
+    "test": "bun test",
     "smoke": "bun src/index.ts",
     "gen:sdk": "bun run scripts/generate-sdk.ts"
   },
   "exports": {
     ".": "./src/index.ts",
+    "./codegen": "./src/codegen/index.ts",
+    "./mcp": "./src/mcp/introspect.ts",
     "./outlook": "./src/outlook/index.ts",
     "./imap-smtp": "./src/imap-smtp/index.ts",
     "./exchange": "./src/exchange/index.ts",

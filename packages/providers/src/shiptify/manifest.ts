@@ -214,7 +214,7 @@ export const shiptifyManifest: ProviderManifest = {
   key: "shiptify",
   displayName: "Shiptify",
   description:
-    "Shiptify — manage shipment requests and shipments: book, track, confirm pickup/delivery, exchange documents",
+    "Shiptify — manage transport shipments, addresses, and related records on the connected Shiptify TMS account (shipper or carrier).",
   // Nango integration key — points at a `private-api-key` template, used
   // purely as encrypted credential storage. No proxy, no scopes.
   nangoProviderConfigKey: "shiptify",

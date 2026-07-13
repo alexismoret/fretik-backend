@@ -36,6 +36,22 @@ export const listTeamMembers = async (
 };
 
 /**
+ * Whether a user belongs to a team (bot users included — the caller decides
+ * whether that matters). Used by the public form gate to authorize a private,
+ * team-shared form for members of the workflow's team.
+ */
+export const isTeamMember = async (
+  teamId: string,
+  userId: string,
+): Promise<boolean> => {
+  const row = await db.query.teamMember.findFirst({
+    where: { teamId, userId },
+    columns: { userId: true },
+  });
+  return row !== undefined && row !== null;
+};
+
+/**
  * Narrow a set of user ids to those that are real (non-bot) members of the
  * team — deduplicated. Used to validate who may be added to a conversation so
  * a caller can't seat someone from another team or the bot itself.

@@ -13,20 +13,46 @@ export * from "./organization-extensions";
 // Per-team AI model selection (chantier C8)
 export * from "./team-ai-settings";
 
-// Folders and labels (folders, labels, document_labels)
+// Per-team tool permission policy (auto | approval | blocked per builtin tool)
+export * from "./team-tool-policies";
+
+// Folders (document hierarchy)
 export * from "./folders";
 
 // Documents (file storage and pre-extraction)
 export * from "./documents";
 
-// Field definitions (per-org/team configurable fields for documents and beyond)
+// Dynamic data system (ontology) — runtime-defined object types, fields,
+// relations, and governed actions. The catalog half of the unified graph.
+export * from "./action-types";
+export * from "./link-types";
+export * from "./object-types";
+export * from "./ontology-enums";
+
+// Dynamic data system — the data plane: typed nodes (object_records), typed
+// edges (links), and the durable journal (domain_events) feeding memory + audit.
+export * from "./domain-events";
+export * from "./links";
+export * from "./object-records";
+
+// Named journal-consumption cursors (memory sweep, future trigger engine)
+export * from "./worker-cursors";
+
+// Field definitions (per-object-type configurable fields — the field catalog)
+// `field-types` is the registry: the field-type catalogue + per-type config.
 export * from "./field-definitions";
+export * from "./field-types";
 
-// Document field values (per-document custom values keyed by field definition slug)
-export * from "./document-field-values";
+// Global (org-agnostic) geocode cache for `location` fields.
+export * from "./mapbox-geocode-cache";
 
-// Entities (organizations referenced in documents)
-export * from "./entities";
+// Per-team geospatial store for `location` fields (PostGIS-backed). Typed
+// `location` columns FK into it; the map view + spatial filters query its geom.
+export * from "./locations";
+
+// Object sharing (cross-team ACL: object_grants = share a type, record_shares =
+// share one record). Consulted by the object_records RLS predicate.
+export * from "./object-sharing";
 
 // Metrics and logs (usage_metrics, activity_logs, webhooks)
 export * from "./metrics";
@@ -50,8 +76,19 @@ export * from "./ai-context";
 // AI memory (agent-writable memory store — Anthropic memory_20250818-style)
 export * from "./ai-memory";
 
+// AI episodes (distilled episodic memory: conversations, record activity,
+// consolidation merges — vectorized into ai_vectors as source_type=episodes)
+export * from "./ai-episodes";
+
 // Skills (chatbot SKILL.md catalogue + per-team enable/disable overrides)
 export * from "./skills";
 
-// External apps (Nango connections + write-action approval gate)
+// External apps (Nango connections)
 export * from "./external-apps";
+
+// Approvals (generic human-in-the-loop decision gate — external-app plans,
+// record writes, questions — shared by the chatbot + the workflow executor)
+export * from "./approvals";
+
+// Workflows (autonomous agents: definitions + runs, Trigger.dev-driven)
+export * from "./workflows";

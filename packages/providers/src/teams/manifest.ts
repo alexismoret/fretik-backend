@@ -23,7 +23,7 @@ export const teamsManifest: ProviderManifest = {
   key: "teams",
   displayName: "Microsoft Teams",
   description:
-    "Microsoft Teams — read and post chat and channel messages, search conversations, look up people and presence",
+    "Microsoft Teams — read and send chat messages, and manage meetings and calls on the user's connected Teams account.",
   nangoProviderConfigKey: "microsoft-teams",
   icon: "i-logos-microsoft-teams",
   iconColor: "#5059C9",

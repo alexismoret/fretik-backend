@@ -5,7 +5,17 @@ import type {
   FieldDefinitionConfig,
   FieldDefinitionType,
 } from "../../src/db/schema";
-import { buildExtensionUpdateBatch } from "../../src/services/object-schema/record-io";
+
+// `record-io.ts` also exports `readRecordData(Batch)`, which default to the
+// real `db` client — importing the module (for the pure SQL builder under
+// test here) pulls in `../../db`, which throws eagerly if `DATABASE_URL` is
+// unset. This suite never opens a connection, so a placeholder is enough.
+// Static imports are hoisted before module body code runs, so the stub must
+// land BEFORE a dynamic `import()` of the SUT, not a static one.
+process.env.DATABASE_URL ??= "postgres://test:test@localhost:5432/test";
+
+const { buildExtensionUpdateBatch } =
+  await import("../../src/services/object-schema/record-io");
 
 /**
  * Regression: `bulkUpdateObjectRecords` builds `UPDATE … AS e SET … FROM

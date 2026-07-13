@@ -146,7 +146,6 @@
         "@hono/zod-openapi": "^1.4.0",
         "@mistralai/mistralai": "^2.2.6",
         "@nangohq/node": "^0.70.7",
-        "@smithery/api": "^0.67.1",
         "@trigger.dev/sdk": "4.5.0",
         "ai": "^7.0.19",
         "better-auth": "^1.6.19",
@@ -592,8 +591,6 @@
     "@s2-dev/streamstore": ["@s2-dev/streamstore@0.22.10", "", { "dependencies": { "@protobuf-ts/runtime": "^2.11.1", "debug": "^4.4.3" } }, "sha512-dtm+oFHVE8szINwOUoNQdx9xpGSJOrcAEvsxspPFvomjYKGnmhIRmU4OX8o6kxcPoiK76S1tPeU0smjZdmOngA=="],
 
     "@selderee/plugin-htmlparser2": ["@selderee/plugin-htmlparser2@0.12.0", "", { "dependencies": { "domelementtype": "~2.3.0", "domhandler": "~5.0.3" }, "peerDependencies": { "selderee": "~0.12.0" } }, "sha512-oELmoyA6ML9jDRMV3kgcMQFKxUfBU0yFVn6yTctVaLT5ygXnxH52I3TZEgV9EhXJC68/uFvE5Daj1/25c0Xa/A=="],
-
-    "@smithery/api": ["@smithery/api@0.67.1", "", { "peerDependencies": { "@modelcontextprotocol/sdk": ">=1.0.0" }, "optionalPeers": ["@modelcontextprotocol/sdk"] }, "sha512-MyCPVY7bvZustmDDuwbIvkCu0LI593Evo1TLYo1NjBEjCGSnk4f1nCQgSlRSsYbbdXO07ezp1qInpjgljzs9ug=="],
 
     "@smithy/core": ["@smithy/core@3.25.1", "", { "dependencies": { "@aws-crypto/crc32": "5.2.0", "@smithy/types": "^4.15.0", "tslib": "^2.6.2" } }, "sha512-zpDbpXBCBsxfLtG2GEUyfgvHvSFrw5CwDZSNzL0v52gx/c3oPlPbm+7W7num8xs6vyiUBn+bvYPHcQDOXZynCQ=="],
 

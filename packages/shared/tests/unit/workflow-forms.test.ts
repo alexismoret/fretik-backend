@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type { z } from "zod";
 import {
   WorkflowFormConfigSchema,
   workflowFormActivationError,
@@ -12,7 +13,9 @@ import { validateFormSubmission } from "../../src/services/workflows/validate-fo
  * submission validator (the browser is never trusted).
  */
 
-const form = (fields: WorkflowFormConfig["fields"]): WorkflowFormConfig =>
+const form = (
+  fields: z.input<typeof WorkflowFormConfigSchema>["fields"],
+): WorkflowFormConfig =>
   WorkflowFormConfigSchema.parse({
     title: "Form",
     fields,

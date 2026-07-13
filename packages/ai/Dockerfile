@@ -22,6 +22,11 @@ COPY packages/shared/package.json packages/shared/
 COPY packages/api/package.json packages/api/
 COPY packages/ai/package.json packages/ai/
 COPY packages/providers/package.json packages/providers/
+# `bun install` validates every workspace declared in the root package.json,
+# even ones this image doesn't build — their package.json must exist in the
+# build context or it fails with "Workspace not found".
+COPY packages/jobs/package.json packages/jobs/
+COPY packages/workflows/package.json packages/workflows/
 COPY .husky .husky
 # `bun install` applies patchedDependencies (the ews-javascript-api XML-escaping
 # fix used by the Exchange provider) — the patch file must be present beforehand.

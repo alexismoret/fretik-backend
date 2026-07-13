@@ -29,6 +29,11 @@ COPY packages/shared/package.json packages/shared/
 COPY packages/api/package.json packages/api/
 COPY packages/ai/package.json packages/ai/
 COPY packages/providers/package.json packages/providers/
+# `bun install` validates every workspace declared in the root package.json,
+# even ones this image doesn't build — their package.json must exist in the
+# build context or it fails with "Workspace not found".
+COPY packages/jobs/package.json packages/jobs/
+COPY packages/workflows/package.json packages/workflows/
 # The root `prepare` script literally execs `node .husky/install.mjs`,
 # so the file must be present. The script self-exits on CI=true, so
 # husky binaries are not installed. .husky is removed below before

@@ -20,6 +20,10 @@ COPY packages/api/package.json packages/api/
 COPY packages/ai/package.json packages/ai/
 COPY packages/providers/package.json packages/providers/
 COPY packages/jobs/package.json packages/jobs/
+# `bun install` validates every workspace declared in the root package.json,
+# even ones this image doesn't build — its package.json must exist in the
+# build context or it fails with "Workspace not found".
+COPY packages/workflows/package.json packages/workflows/
 COPY .husky .husky
 COPY patches patches
 ENV CI=true

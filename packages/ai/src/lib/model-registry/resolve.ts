@@ -1,8 +1,8 @@
 import type {
-  LanguageModelV3,
-  LanguageModelV3Content,
-  LanguageModelV3Middleware,
-  LanguageModelV3StreamPart,
+  LanguageModelV4,
+  LanguageModelV4Content,
+  LanguageModelV4Middleware,
+  LanguageModelV4StreamPart,
 } from "@ai-sdk/provider";
 import {
   createOpenRouter,
@@ -171,7 +171,7 @@ export const reasoningParamForProfile = (
 };
 
 export interface ResolvedModel {
-  model: LanguageModelV3;
+  model: LanguageModelV4;
   profile: ModelProfile;
   binding: RoleBinding;
 }
@@ -268,12 +268,12 @@ export const createOrphanThinkStreamStripper = () => {
  * sees the raw output first and pulls paired `<think>…</think>` into
  * reasoning before we clean whatever dangling tag remains.
  */
-const orphanTagMiddleware: LanguageModelV3Middleware = {
-  specificationVersion: "v3",
+const orphanTagMiddleware: LanguageModelV4Middleware = {
+  specificationVersion: "v4",
   wrapGenerate: async ({ doGenerate }) => {
     const result = await doGenerate();
     const content = result.content.map(
-      (part): LanguageModelV3Content =>
+      (part): LanguageModelV4Content =>
         part.type === "text"
           ? { ...part, text: stripOrphanThinkTags(part.text) }
           : part,
@@ -287,7 +287,7 @@ const orphanTagMiddleware: LanguageModelV3Middleware = {
       ReturnType<typeof createOrphanThinkStreamStripper>
     >();
     const cleaned = stream.pipeThrough(
-      new TransformStream<LanguageModelV3StreamPart, LanguageModelV3StreamPart>(
+      new TransformStream<LanguageModelV4StreamPart, LanguageModelV4StreamPart>(
         {
           transform: (part, controller) => {
             if (part.type === "text-delta") {

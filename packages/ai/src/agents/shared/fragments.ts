@@ -4,6 +4,7 @@ import { getProvider } from "@fretik/shared/external-apps/registry";
 import { renderSnapshot } from "@fretik/shared/lib/chat-file-snapshot";
 import { signSandboxJwt } from "@fretik/shared/lib/external-apps/sandbox-jwt";
 import { listConnections } from "@fretik/shared/services/external-apps/connections/list";
+import { isMcpConnection } from "@fretik/shared/services/external-apps/mcp/connection-kind";
 import { describeTeamSchema } from "@fretik/shared/services/object-types/describe-team-schema";
 import { listEnabledSkillsForTeam } from "@fretik/shared/services/skills/list-enabled-for-team";
 import { and, eq, inArray, ne } from "drizzle-orm";
@@ -153,24 +154,44 @@ export const loadExternalApps = async (params: {
       const active = rows.filter((r) => r.status === "active");
       externalAppConnections = active.map((r) => {
         const provider = getProvider(r.providerKey);
+        // MCP connections have no manifest provider — take their categories from
+        // the persisted discovery metadata (`catalogMeta`) when present; a
+        // custom server has none and its SKILL carries the detail.
         return {
           id: r.id,
           providerKey: r.providerKey,
           displayName: r.displayName,
           scope: r.userId === null ? ("team" as const) : ("user" as const),
-          categories: provider?.manifest.categories ?? [],
+          categories:
+            provider?.manifest.categories ?? r.catalogMeta?.categories ?? [],
           options: r.options,
         };
       });
       externalAppsBlock =
-        externalAppConnections.length === 0
+        active.length === 0
           ? undefined
-          : externalAppConnections
-              .map((c) => {
+          : active
+              .map((r) => {
+                // An MCP connection whose snapshot hasn't been introspected has
+                // NO stub/SKILL in the sandbox — presenting it as usable makes
+                // the agent chase a tool that isn't there. Flag it instead, so
+                // the agent tells the user rather than failing silently.
+                if (isMcpConnection(r) && r.toolFingerprint === null) {
+                  const reason =
+                    r.lastErrorMessage !== null
+                      ? `failed to load (${r.lastErrorMessage})`
+                      : "still loading — retry later";
+                  return `- ${r.providerKey} (display_name: "${r.displayName}", id: ${r.id}) — UNAVAILABLE this turn: its tools ${reason}. Do NOT use it; tell the user it is still setting up${r.lastErrorMessage !== null ? " (or failed and may need reconnecting)" : ""}.`;
+                }
+
                 // Surface only the options the provider opted to expose to
                 // the agent (e.g. `persona` on communication providers).
                 // Other options stay server-side.
-                const provider = getProvider(c.providerKey);
+                const provider = getProvider(r.providerKey);
+                const categories =
+                  provider?.manifest.categories ??
+                  r.catalogMeta?.categories ??
+                  [];
                 const formatOptionValue = (v: unknown): string | null => {
                   if (v === undefined || v === null) return null;
                   if (
@@ -188,19 +209,19 @@ export const loadExternalApps = async (params: {
                   provider?.manifest.connectionOptions?.fields
                     .filter((f) => f.exposeToAgent)
                     .map((f) => {
-                      const formatted = formatOptionValue(c.options?.[f.key]);
+                      const formatted = formatOptionValue(r.options?.[f.key]);
                       return formatted === null
                         ? null
                         : `${f.key}: ${formatted}`;
                     })
                     .filter((s): s is string => s !== null) ?? [];
                 const parts = [
-                  `display_name: "${c.displayName}"`,
-                  `id: ${c.id}`,
-                  `categories: [${c.categories.join(", ")}]`,
+                  `display_name: "${r.displayName}"`,
+                  `id: ${r.id}`,
+                  `categories: [${categories.join(", ")}]`,
                   ...exposed,
                 ];
-                return `- ${c.providerKey} (${parts.join(", ")})`;
+                return `- ${r.providerKey} (${parts.join(", ")})`;
               })
               .join("\n");
     } catch (error) {

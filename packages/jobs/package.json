@@ -20,6 +20,7 @@
     "typescript": "^5"
   },
   "dependencies": {
+    "@fretik/providers": "workspace:*",
     "@fretik/shared": "workspace:*",
     "bullmq": "^5.79.0",
     "hono": "^4.12.26",

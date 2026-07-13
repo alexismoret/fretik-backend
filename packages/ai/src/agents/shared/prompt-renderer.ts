@@ -2,8 +2,21 @@ import { fetchManagedPrompt } from "../../lib/langfuse-prompts";
 import type { NativeInputPolicy } from "../../lib/model-registry/types";
 import { buildSessionStateBlock } from "../../services/session-state/build-block";
 import type { SearchableToolRegistry } from "./chatbot-tool";
+import { policyHiddenToolNames } from "./policy-tool-gate";
 import { resolveAgentBlocks } from "./prompt-blocks";
 import type { AgentRuntimeContext } from "./runtime-context";
+
+/**
+ * Dynamic-suffix note listing the tools the team disabled via tool-permission
+ * settings — so the model can tell the user WHY it can't do something instead
+ * of silently lacking the tool. Empty (byte-identical to today) when nothing is
+ * blocked. Below the cache marker; the tools are already pruned from the menu.
+ */
+const buildBlockedToolsNote = (ctx: AgentRuntimeContext): string => {
+  const blocked = [...policyHiddenToolNames(ctx)];
+  if (blocked.length === 0) return "";
+  return `These tools are disabled by the team's permission settings and cannot be called: ${blocked.join(", ")}. If the user asks for one, say it is disabled and can be re-enabled in Settings → Tool permissions.`;
+};
 
 /**
  * Dynamic-suffix note (C5) telling the model that attachments of the
@@ -109,11 +122,11 @@ const SUB_AGENT_FALLBACK = await Bun.file(SUB_AGENT_TEMPLATE_URL).text();
 export const buildSubAgentSystemPrompt = async (
   ctx: AgentRuntimeContext,
 ): Promise<string> => {
-  const { text, link } = await fetchManagedPrompt(
+  const { text, promptRef } = await fetchManagedPrompt(
     MANAGED_PROMPTS.subAgent.name,
     SUB_AGENT_FALLBACK,
   );
-  ctx.langfusePromptLink = link;
+  ctx.langfusePrompt = promptRef;
   return text.replace(HTML_COMMENT_RE, "").trim();
 };
 
@@ -293,11 +306,11 @@ export const buildChatbotSystemPrompt = async (
   ctx: AgentRuntimeContext,
   deferredTools: SearchableToolRegistry = {},
 ): Promise<string> => {
-  const { text, link } = await fetchManagedPrompt(
+  const { text, promptRef } = await fetchManagedPrompt(
     MANAGED_PROMPTS.system.name,
     SYSTEM_PROMPT_FALLBACK,
   );
-  ctx.langfusePromptLink = link;
+  ctx.langfusePrompt = promptRef;
   const overlay = await loadPromptOverlay(
     ctx.modelProfile.assessment.promptOverlayKey,
   );
@@ -315,6 +328,7 @@ export const buildChatbotSystemPrompt = async (
       organizationId: ctx.organizationId,
       conversationId: ctx.conversationId ?? "unknown",
       deferredToolList: formatDeferredToolList(deferredTools),
+      blockedToolsNote: buildBlockedToolsNote(ctx),
       skillsCatalog:
         ctx.enabledSkillsBlock && ctx.enabledSkillsBlock.length > 0
           ? ctx.enabledSkillsBlock
@@ -371,11 +385,11 @@ export const buildWorkflowSystemPrompt = async (
   ctx: AgentRuntimeContext,
   deferredTools: SearchableToolRegistry = {},
 ): Promise<string> => {
-  const { text, link } = await fetchManagedPrompt(
+  const { text, promptRef } = await fetchManagedPrompt(
     MANAGED_PROMPTS.workflow.name,
     WORKFLOW_PROMPT_FALLBACK,
   );
-  ctx.langfusePromptLink = link;
+  ctx.langfusePrompt = promptRef;
   const overlay = await loadPromptOverlay(
     ctx.modelProfile.assessment.promptOverlayKey,
   );
@@ -407,6 +421,7 @@ export const buildWorkflowSystemPrompt = async (
       nativeMediaNote: buildNativeMediaNote(
         ctx.modelProfile.assessment.nativeInput,
       ),
+      blockedToolsNote: buildBlockedToolsNote(ctx),
       chatbotContextManifest:
         ctx.chatbotContextManifest && ctx.chatbotContextManifest.length > 0
           ? ctx.chatbotContextManifest

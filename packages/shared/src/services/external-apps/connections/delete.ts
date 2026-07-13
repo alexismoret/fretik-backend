@@ -25,19 +25,22 @@ export const deleteConnection = async (params: {
     params.userId,
   );
 
-  try {
-    const nango = getNangoClient();
-    await nango.deleteConnection(
-      conn.nangoProviderConfigKey,
-      conn.nangoConnectionId,
-    );
-  } catch (error) {
-    // Log but keep going — the user wants the connection gone from
-    // Fretik regardless of whether Nango cleanup succeeded.
-    console.warn(
-      `[external-apps] Failed to delete Nango connection ${conn.nangoConnectionId}:`,
-      error instanceof Error ? error.message : error,
-    );
+  // A no-auth MCP server has no Nango connection to revoke.
+  if (conn.nangoConnectionId !== null && conn.nangoProviderConfigKey !== null) {
+    try {
+      const nango = getNangoClient();
+      await nango.deleteConnection(
+        conn.nangoProviderConfigKey,
+        conn.nangoConnectionId,
+      );
+    } catch (error) {
+      // Log but keep going — the user wants the connection gone from
+      // Fretik regardless of whether Nango cleanup succeeded.
+      console.warn(
+        `[external-apps] Failed to delete Nango connection ${conn.nangoConnectionId}:`,
+        error instanceof Error ? error.message : error,
+      );
+    }
   }
 
   // Journal + delete commit atomically; the payload keeps the id/provider

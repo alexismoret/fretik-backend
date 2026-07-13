@@ -13,6 +13,9 @@ export * from "./organization-extensions";
 // Per-team AI model selection (chantier C8)
 export * from "./team-ai-settings";
 
+// Per-team tool permission policy (auto | approval | blocked per builtin tool)
+export * from "./team-tool-policies";
+
 // Folders (document hierarchy)
 export * from "./folders";
 

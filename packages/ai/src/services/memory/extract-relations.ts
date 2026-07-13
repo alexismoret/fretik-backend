@@ -167,12 +167,12 @@ export const extractRelations = async (input: {
   );
   const { text: raw } = await generateText({
     model,
-    system: SYSTEM_PROMPT,
+    instructions: SYSTEM_PROMPT,
     prompt,
     temperature: EXTRACT_TEMPERATURE,
     maxOutputTokens: EXTRACT_MAX_OUTPUT_TOKENS,
     abortSignal: AbortSignal.timeout(EXTRACT_TIMEOUT_MS),
-    experimental_telemetry: telemetryFor("memory-extract"),
+    telemetry: telemetryFor("memory-extract"),
   });
   const parsed = relationsOutputSchema.safeParse(parseLlmJsonObject(raw));
   if (!parsed.success) return ZERO;

@@ -3,6 +3,7 @@ import {
   boolean,
   check,
   index,
+  integer,
   pgEnum,
   pgTable,
   primaryKey,
@@ -101,6 +102,28 @@ export const skills = pgTable(
     isMeta: boolean("is_meta").notNull().default(false),
 
     source: skillSourceEnum("source").notNull().default("bundled"),
+
+    /**
+     * Provenance for a catalog-installed skill (`team_uploaded` from the skills
+     * hub / the agent's install tool), e.g. `skills.sh:<owner>/<repo>/<slug>`.
+     * NULL for hand-authored and bundled skills. Used to dedupe re-installs and,
+     * later, to check the source for updates.
+     */
+    sourceUrl: varchar("source_url", { length: 2048 }),
+
+    /**
+     * Content hash of the skill bundle at install time (skills.sh `hash`).
+     * NULL for hand-authored/bundled skills. Provenance + lets a later upstream
+     * edit be detected without re-reading the whole body.
+     */
+    sourceHash: varchar("source_hash", { length: 128 }),
+
+    /**
+     * Number of companion files in the source bundle that were NOT installed
+     * (we store the SKILL.md body only). >0 surfaces a "this skill ships N extra
+     * files" warning in the UI. 0 for single-file and hand-authored skills.
+     */
+    sourceSkippedFiles: integer("source_skipped_files").notNull().default(0),
 
     /**
      * NULL for `source = 'bundled'` (global catalogue). Set for

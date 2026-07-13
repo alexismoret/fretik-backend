@@ -113,12 +113,12 @@ export const distillRecordActivity = async (input: {
       );
       const { text: raw } = await generateText({
         model,
-        system: SYSTEM_PROMPT,
+        instructions: SYSTEM_PROMPT,
         prompt,
         temperature: DIGEST_TEMPERATURE,
         maxOutputTokens: DIGEST_MAX_OUTPUT_TOKENS,
         abortSignal: AbortSignal.timeout(DIGEST_TIMEOUT_MS),
-        experimental_telemetry: telemetryFor("memory-distill"),
+        telemetry: telemetryFor("memory-distill"),
       });
       const parsed = parseDigestOutput(raw);
       if (!parsed) {

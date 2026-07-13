@@ -1,12 +1,13 @@
 import {
   ToolLoopAgent,
-  stepCountIs,
+  isStepCount,
   type FlexibleSchema,
+  type GenerateTextOnStepEndCallback,
   type LanguageModel,
   type PrepareStepFunction,
   type StopCondition,
   type ToolCallRepairFunction,
-  type ToolLoopAgentOnStepFinishCallback,
+  type ToolLoopAgentSettings,
   type ToolSet,
 } from "ai";
 import { telemetryFor } from "../../lib/langfuse";
@@ -16,6 +17,7 @@ import {
   replayActivationFromHistory,
 } from "./dynamic-tools";
 import {
+  tryGetRuntimeContext,
   wrapRuntimeContext,
   type AgentRuntimeContext,
 } from "./runtime-context";
@@ -40,9 +42,9 @@ import { TaskManager } from "./task-manager";
  *    the typed `CALL_OPTIONS` (e.g. `ChatbotCallOptions`) from the
  *    handler, instantiates a fresh `DynamicToolManager` +
  *    `TaskManager`, assembles an `AgentRuntimeContext`, renders the
- *    system prompt against it, and hands the ctx off through
- *    `experimental_context` (branded via `wrapRuntimeContext` so
- *    tools can recover it without an `as` cast).
+ *    system prompt against it, and returns the ctx (branded via
+ *    `wrapRuntimeContext`) as the agent's `runtimeContext`; each
+ *    `prepareStep` fans it out to every tool via `toolsContext`.
  *
  * 3. `prepareStep` is handed the static tool set at construction and
  *    returns a `PrepareStepFunction` that reads the runtime ctx via
@@ -106,14 +108,6 @@ export interface BuildAgentSetConfig<CALL_OPTIONS, TTools extends ToolSet> {
    */
   prepareStep?: (tools: TTools) => PrepareStepFunction<TTools>;
   /**
-   * Optional hook that computes the initial `activeTools` list
-   * returned by `prepareCall` on every turn. Defaults to all tool
-   * names (= no gating). The chatbot overrides this to return only
-   * `category === "core"` tools so Progressive Disclosure (Phase 2)
-   * stays gated until `searchTools` activates a domain tool.
-   */
-  initialActiveTools?: (tools: TTools) => (keyof TTools)[];
-  /**
    * Map typed `CALL_OPTIONS` → the pure-data part of
    * `AgentRuntimeContext`. The builder appends
    * `dynamicToolManager` + `taskManager` to finalise the ctx.
@@ -141,10 +135,15 @@ export interface BuildAgentSetConfig<CALL_OPTIONS, TTools extends ToolSet> {
    * `[agent:{id}] step N tools=[...] duration=Xms reason=Y` to
    * `console.info` so every turn leaves a minimal step trace in
    * the container logs without the caller having to wire anything.
-   * Pass a custom function (or explicit `null` via an override) to
-   * silence the default.
+   * Pass a custom function to silence the default.
+   *
+   * v7: this is the `onStepEnd` callback (the `onStepFinish` name is a
+   * deprecated alias). It is a CONSTRUCTION-level setting — `prepareCall`
+   * can no longer return it (callbacks are stripped from the prepareCall
+   * channel and merged separately), so the per-request trace id is read
+   * from `event.runtimeContext` instead of a closure.
    */
-  onStepFinish?: ToolLoopAgentOnStepFinishCallback<TTools>;
+  onStepEnd?: GenerateTextOnStepEndCallback<TTools>;
   /**
    * Optional hard cap on tokens generated PER STEP. A step that hits the cap
    * ends with `finishReason: 'length'`: pure text stops the loop cleanly (the
@@ -196,21 +195,19 @@ export interface AgentSet<CALL_OPTIONS, TTools extends ToolSet> {
  * back to the original `tokens=N` shape when the details are
  * missing. Pure read-only logging — no behaviour change.
  */
-const defaultOnStepFinish = <TTools extends ToolSet>(
+const defaultOnStepEnd = <TTools extends ToolSet>(
   agentId: string,
-  /**
-   * Optional per-request trace id captured by the closure inside
-   * `prepareCall`. When set, prefixes every step log + zombie warning
-   * with `trace=<id>` so a single user turn can be reconstructed end-
-   * to-end from the container logs without correlating timestamps.
-   * Safe to capture in a closure even though the agent is a singleton:
-   * `prepareCall` runs once per request, so each request gets a fresh
-   * onStepFinish carrying its own traceId.
-   */
-  traceId?: string,
-): ToolLoopAgentOnStepFinishCallback<TTools> => {
-  const tracePrefix = traceId !== undefined ? ` trace=${traceId}` : "";
+): GenerateTextOnStepEndCallback<TTools> => {
   return (event) => {
+    // Per-request trace id, read from the step's runtime context (the
+    // branded ctx `prepareCall` returned as `runtimeContext`). v7 strips
+    // callbacks from the `prepareCall` channel, so the closure-captured
+    // traceId of v6 is gone — the event carries it instead. Safe-read:
+    // a logging callback must never crash a turn.
+    const traceId = tryGetRuntimeContext({
+      runtimeContext: event.runtimeContext,
+    })?.traceId;
+    const tracePrefix = traceId !== undefined ? ` trace=${traceId}` : "";
     const toolNames = event.toolCalls.map((c) => c.toolName).join(",") || "-";
     const usage = event.usage;
     const cacheRead = usage?.inputTokenDetails?.cacheReadTokens;
@@ -265,6 +262,32 @@ const defaultOnStepFinish = <TTools extends ToolSet>(
   };
 };
 
+/**
+ * Fan the per-request branded runtime context out to every tool name. AI SDK v7
+ * delivers a tool's context ONLY through `toolsContext[toolName]`
+ * (`ToolExecutionOptions` has no `runtimeContext`), so every concrete
+ * `prepareStep` returns this map alongside `activeTools`. All entries point at
+ * the SAME reference — which is also the agent's `runtimeContext` — so the
+ * mutation contract holds (searchTools/manageTasks mutate mid-step, the next
+ * `prepareStep` reads the mutation). Kept at the concrete tool-set call site
+ * because `InferToolSetContext<TTools>` only reduces to the permissive `{}` for
+ * the concrete, `contextSchema`-free registries — not under a generic `TTools`.
+ */
+export const buildToolsContext = (
+  tools: ToolSet,
+  ctx: AgentRuntimeContext,
+): Record<string, AgentRuntimeContext> =>
+  Object.fromEntries(Object.keys(tools).map((name) => [name, ctx]));
+
+/**
+ * The argument type the framework hands to `prepareCall` — derived from the
+ * SDK settings so the callback body stays fully typed even though the settings
+ * object is asserted past the generic `ToolsContextParameter` conditional.
+ */
+type PrepareCallArgs<CALL_OPTIONS, TTools extends ToolSet> = Parameters<
+  NonNullable<ToolLoopAgentSettings<CALL_OPTIONS, TTools>["prepareCall"]>
+>[0];
+
 const buildToolLoopAgent = <CALL_OPTIONS, TTools extends ToolSet>(
   config: BuildAgentSetConfig<CALL_OPTIONS, TTools>,
   resolved: ResolvedModel,
@@ -272,76 +295,73 @@ const buildToolLoopAgent = <CALL_OPTIONS, TTools extends ToolSet>(
   const model: LanguageModel = resolved.model;
   const tools = config.buildTools();
   const prepareStep = config.prepareStep?.(tools);
-  const stopWhen = config.stopWhen ?? stepCountIs(12);
-  const onStepFinish =
-    config.onStepFinish ?? defaultOnStepFinish<TTools>(config.id);
-  // `initialActiveTools` is an escape hatch for agents that do NOT
-  // set a `prepareStep` hook. When both are set, prepareStep runs on
-  // step 0 too and overrides whatever prepareCall returns — the
-  // chatbot relies on this and omits the hook entirely. Default
-  // (when neither is set): all tools active.
+  const stopWhen = config.stopWhen ?? isStepCount(12);
+  const onStepEnd = config.onStepEnd ?? defaultOnStepEnd<TTools>(config.id);
+  // Step-0 fallback tool menu for agents WITHOUT a Progressive-Disclosure
+  // `prepareStep` (all tools active). Every Fretik agent DOES set a
+  // `prepareStep` — which fires on step 0 too and supersedes this — so the
+  // fallback is only the type-level default for a prepareStep-less agent.
+  //
+  // Tool-context fan-out (v7): a tool's context arrives ONLY through
+  // `toolsContext[toolName]` (`ToolExecutionOptions` has no `runtimeContext`),
+  // so each agent's concrete `prepareStep` returns a `toolsContext` mapping
+  // every tool name to the branded ctx via `buildToolsContext` — done at the
+  // concrete tool-set site because `InferToolSetContext<TTools>` only reduces
+  // to the permissive `{}` there, not under the generic `TTools`.
   const hasPrepareStep = prepareStep !== undefined;
-  const fallbackActiveTools = config.initialActiveTools
-    ? config.initialActiveTools(tools)
-    : (Object.keys(tools) as (keyof TTools)[]);
+  const fallbackActiveTools = Object.keys(tools) as (keyof TTools)[];
 
+  // `ToolLoopAgentSettings` intersects a distributive conditional
+  // `ToolsContextParameter<TTools>` (`IsEmptyObject<InferToolSetContext<TTools>>
+  // extends true ? { toolsContext?: never } : { toolsContext: … }`). For a
+  // GENERIC `TTools` that conditional is unresolvable, so TS cannot prove this
+  // settings object — which supplies no per-tool `toolsContext` because Fretik
+  // tools declare no `contextSchema` — satisfies it, even though it does at
+  // every concrete instantiation (`buildAgentSet<…, ChatbotToolSet>`). The cast
+  // below absorbs that generic-only limitation; every field value is still
+  // individually typed via the vars it references, and the runtime shape is
+  // unchanged. Same sanctioned SDK-type-erasure escape hatch as the brand cast
+  // in `runtime-context.ts` and the guard cast in `chatbot-tool.ts`.
   return new ToolLoopAgent<CALL_OPTIONS, TTools>({
     id: config.id,
     model,
     tools,
     stopWhen,
     prepareStep,
-    onStepFinish,
+    onStepEnd,
     callOptionsSchema: config.callOptionsSchema,
-    // Both survive `prepareCall`'s wholesale settings replacement: they ride
-    // in `settingsWithoutCallback` → `baseCallArgs`, which `prepareCall`
-    // spreads. `maxOutputTokens` is also in the `prepareCall` return `Pick`;
-    // `repairToolCall` is not typed there but passes through at runtime
-    // (verified: ai@6 `index.js` ToolLoopAgent.prepareCall + streamText).
     ...(config.maxOutputTokens !== undefined
       ? { maxOutputTokens: config.maxOutputTokens }
       : {}),
     ...(config.repairToolCall !== undefined
       ? { experimental_repairToolCall: config.repairToolCall }
       : {}),
-    // Langfuse tracing: emit OpenTelemetry spans for every model call +
-    // tool call. `prepareCall` spreads `...baseCallArgs` (which carries
-    // this construction setting), so the telemetry config survives the
-    // wholesale settings replacement. No-op when Langfuse is unconfigured.
-    experimental_telemetry: telemetryFor(`agent:${config.id}`),
-    prepareCall: async (baseCallArgs) => {
-      // **Critical semantics of `ToolLoopAgent.prepareCall`**: the
-      // return value is **NOT** merged with the agent's construction
-      // settings — it REPLACES them wholesale before being forwarded
-      // to `streamText` / `generateText`. See the AI SDK source at
-      // `ai/dist/index.mjs:8116`:
-      //
-      //     const preparedCallArgs =
-      //       (await this.settings.prepareCall?.(baseCallArgs))
-      //       ?? baseCallArgs;
-      //
-      // If our callback returns any non-null object, that object is
-      // used as-is. The type system's `Pick<ToolLoopAgentSettings, ...>`
-      // return type looks permissive (all fields optional), but any
-      // field we omit from the return is LOST. Specifically: `tools`,
-      // `prepareStep`, `stopWhen`, `onStepFinish`, `callOptionsSchema`
-      // are all dropped if we don't re-emit them. This is the exact
-      // regression that shipped in Phase 7.5 and caused the 2026-04-16
-      // "No tools are available" failure across MiniMax, GPT-5-mini
-      // and every other model — `reqTools=<no-field>` in the logs and
-      // `prepareStep` never fired because none of those fields made
-      // it into the downstream `streamText` call.
-      //
-      // Fix: spread `baseCallArgs` first, then override only the
-      // fields we actually want to customize (instructions,
-      // experimental_context, activeTools when there's no
-      // prepareStep). This mirrors what the default (no-op) branch
-      // would return if `prepareCall` were not set at all.
-      //
-      // `baseCallArgs` is assembled by the agent at `index.mjs:8110`
-      // as `{ ...settingsWithoutCallback, stopWhen, ...agentCallParams }`.
-      // It is a flat object containing every agent setting plus the
-      // per-call `{ options, messages|prompt, abortSignal, timeout }`.
+    // Langfuse tracing: the `@langfuse/vercel-ai-sdk` integration turns
+    // these AI-SDK telemetry events into costed Langfuse observations.
+    // `includeRuntimeContext: { langfusePrompt: true }` opts the per-request
+    // `ctx.langfusePrompt` ({ name, version }) into telemetry so the
+    // integration links each generation to its managed prompt version (v7's
+    // replacement for v6's `telemetry.metadata.langfusePrompt`); no other ctx
+    // key is exposed. `prepareCall` spreads `...baseCallArgs` (which carries
+    // this setting) under v7's REPLACE semantics. No-op when Langfuse is off.
+    telemetry: telemetryFor(`agent:${config.id}`, {
+      langfusePrompt: true,
+    }),
+    // `baseCallArgs` is annotated explicitly because the settings object is
+    // asserted (`as unknown as` below, to absorb the generic `ToolsContextParameter`
+    // conditional), which strips the contextual typing the callback would
+    // otherwise inherit.
+    prepareCall: async (
+      baseCallArgs: PrepareCallArgs<CALL_OPTIONS, TTools>,
+    ) => {
+      // v7 `prepareCall` still REPLACES the call settings wholesale
+      // (`preparedCallArgs = (await prepareCall(baseCallArgs)) ?? baseCallArgs`
+      // — verified in `ai@7` `dist/index.js`), so we spread `...baseCallArgs`
+      // first and override only the per-request deltas. Lifecycle callbacks
+      // (`onStepEnd`, `onFinish`, …) are the exception: v7 strips them from
+      // this channel and merges them separately, so they are NOT returnable
+      // here — the construction-level `onStepEnd` reads the per-request trace
+      // id from `event.runtimeContext` instead of a closure.
       const { options, messages } = baseCallArgs;
       if (options === undefined) {
         // `AgentCallParameters.options` is only optional at the type
@@ -384,55 +404,23 @@ const buildToolLoopAgent = <CALL_OPTIONS, TTools extends ToolSet>(
       const instructions = await config.systemPrompt(ctx, tools);
       const branded = wrapRuntimeContext(ctx);
 
-      // Link this generation to the managed prompt version that rendered
-      // `instructions`. The renderer set `ctx.langfusePromptLink` to
-      // `prompt.toJSON()` (a string) just above; surface it in the
-      // telemetry metadata under the `langfusePrompt` key Langfuse reads.
-      // Only override when both the link and the base telemetry exist (they
-      // co-exist: a link implies Langfuse is configured).
-      const baseTelemetry = baseCallArgs.experimental_telemetry;
-      const telemetryOverride =
-        ctx.langfusePromptLink !== undefined && baseTelemetry !== undefined
-          ? {
-              experimental_telemetry: {
-                ...baseTelemetry,
-                metadata: {
-                  ...baseTelemetry.metadata,
-                  langfusePrompt: ctx.langfusePromptLink,
-                },
-              },
-            }
-          : {};
-
-      // Per-request `onStepFinish` so step + zombie log lines can
-      // carry the runtime ctx's `traceId`. The closure is created
-      // here (per-request inside `prepareCall`), not on the singleton
-      // agent — no cross-request leakage. If the caller passed a
-      // custom `config.onStepFinish` we honour it as-is (they're then
-      // responsible for surfacing traceId themselves).
-      const stepFinishOverride =
-        config.onStepFinish === undefined && ctx.traceId !== undefined
-          ? defaultOnStepFinish<TTools>(config.id, ctx.traceId)
-          : undefined;
-
+      // Hand the per-request branded ctx to the framework as `runtimeContext`
+      // (v7's shared-orchestration channel, in the `prepareCall` return Pick).
+      // `prepareStep` fans it out to every tool via `toolsContext`; the
+      // construction-level `onStepEnd` reads it from `event.runtimeContext`.
+      // The Langfuse prompt-version link (`ctx.langfusePromptLink`) is surfaced
+      // to telemetry in WS2 via `telemetry.includeRuntimeContext` — v7's
+      // `TelemetryOptions` no longer carries a `metadata` field.
       return {
         ...baseCallArgs,
         instructions,
-        experimental_context: branded,
-        ...telemetryOverride,
-        ...(stepFinishOverride !== undefined
-          ? { onStepFinish: stepFinishOverride }
-          : {}),
-        // Keep the fallback `activeTools` override when there is no
-        // `prepareStep`. When `prepareStep` IS set, it will fire on
-        // every step (including step 0) and override whatever we put
-        // here — so leaving `activeTools` out of this branch would be
-        // equivalent. We set it conditionally to keep the intent
-        // explicit.
+        runtimeContext: branded,
+        // Fallback `activeTools` for agents WITHOUT a `prepareStep`. When a
+        // `prepareStep` is set it fires on step 0 and supersedes this.
         ...(hasPrepareStep ? {} : { activeTools: fallbackActiveTools }),
       };
     },
-  });
+  } as unknown as ToolLoopAgentSettings<CALL_OPTIONS, TTools>);
 };
 
 /**

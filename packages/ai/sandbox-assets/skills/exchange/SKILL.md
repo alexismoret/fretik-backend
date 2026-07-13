@@ -1,7 +1,7 @@
 ---
 name: exchange
-description: Microsoft Exchange — read inbox, send email, manage calendar and contacts
-version: e164434bb0d0
+description: Microsoft Exchange (EWS) — read and send email, and manage calendar and contacts on the user's connected on-premises or hosted Exchange account.
+version: 70099c2efe67
 ---
 
 # Microsoft Exchange — 33 actions

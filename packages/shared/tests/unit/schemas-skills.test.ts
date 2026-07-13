@@ -43,6 +43,7 @@ describe("skillSummarySchema name regex", () => {
     enabled: true,
     version: "1.0.0",
     source: "bundled" as const,
+    sourceUrl: null,
   });
 
   test.each(VALID_SKILL_NAMES)("accepts valid slug %s", (name) => {
@@ -117,6 +118,7 @@ describe("skillSummarySchema", () => {
     enabled: true,
     version: "1.0.0",
     source: "bundled" as const,
+    sourceUrl: null,
   };
 
   test("accepts a complete, valid summary", () => {

@@ -1,6 +1,7 @@
 import { getProducerConnection } from "@fretik/shared/lib/queue/connection";
 import { Queue } from "bullmq";
 import {
+  MCP_REFRESH_QUEUE,
   MEMORY_DISTILL_QUEUE,
   MEMORY_DREAMING_QUEUE,
   MEMORY_MAINTENANCE_QUEUE,
@@ -73,4 +74,13 @@ export const getWorkflowTriggerQueue = (): Queue<WorkflowRunCreateJobData> => {
     { connection: getProducerConnection() },
   );
   return workflowTriggerQueue;
+};
+
+let mcpRefreshQueue: Queue | null = null;
+
+export const getMcpRefreshQueue = (): Queue => {
+  mcpRefreshQueue ??= new Queue(MCP_REFRESH_QUEUE, {
+    connection: getProducerConnection(),
+  });
+  return mcpRefreshQueue;
 };

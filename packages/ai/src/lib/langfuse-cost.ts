@@ -20,10 +20,10 @@
  * model call that emits no generation span (see `writeCost`).
  */
 import type {
-  EmbeddingModelV3Middleware,
-  LanguageModelV3Middleware,
-  LanguageModelV3StreamPart,
-  SharedV3ProviderMetadata,
+  EmbeddingModelV4Middleware,
+  LanguageModelV4Middleware,
+  LanguageModelV4StreamPart,
+  SharedV4ProviderMetadata,
 } from "@ai-sdk/provider";
 import { getActiveSpanId, updateActiveObservation } from "@langfuse/tracing";
 import { TransformStream } from "node:stream/web";
@@ -34,7 +34,7 @@ import { TransformStream } from "node:stream/web";
  * absent / non-numeric (e.g. usage accounting disabled).
  */
 const extractOpenRouterCost = (
-  providerMetadata: SharedV3ProviderMetadata | undefined,
+  providerMetadata: SharedV4ProviderMetadata | undefined,
 ): number | undefined => {
   const usage = providerMetadata?.openrouter?.usage;
   if (usage === null || typeof usage !== "object" || Array.isArray(usage)) {
@@ -49,7 +49,7 @@ const extractOpenRouterCost = (
  * telemetry must never break a model call.
  */
 const writeCost = (
-  providerMetadata: SharedV3ProviderMetadata | undefined,
+  providerMetadata: SharedV4ProviderMetadata | undefined,
   asType: "generation" | "embedding" = "generation",
 ): void => {
   const cost = extractOpenRouterCost(providerMetadata);
@@ -84,8 +84,8 @@ const writeCost = (
  * AI SDK middleware that ingests OpenRouter's exact per-call cost onto the
  * Langfuse generation span. Attach only when Langfuse is configured.
  */
-export const costCaptureMiddleware: LanguageModelV3Middleware = {
-  specificationVersion: "v3",
+export const costCaptureMiddleware: LanguageModelV4Middleware = {
+  specificationVersion: "v4",
   wrapGenerate: async ({ doGenerate }) => {
     const result = await doGenerate();
     writeCost(result.providerMetadata);
@@ -94,7 +94,7 @@ export const costCaptureMiddleware: LanguageModelV3Middleware = {
   wrapStream: async ({ doStream }) => {
     const { stream, ...rest } = await doStream();
     const tapped = stream.pipeThrough(
-      new TransformStream<LanguageModelV3StreamPart, LanguageModelV3StreamPart>(
+      new TransformStream<LanguageModelV4StreamPart, LanguageModelV4StreamPart>(
         {
           transform: (part, controller) => {
             // The terminal `finish` part carries the aggregated usage +
@@ -120,8 +120,8 @@ export const costCaptureMiddleware: LanguageModelV3Middleware = {
  * chunk → Langfuse aggregates them at the trace level). Attach via
  * `instrumentEmbeddingModel` only when Langfuse is configured.
  */
-export const embeddingCostCaptureMiddleware: EmbeddingModelV3Middleware = {
-  specificationVersion: "v3",
+export const embeddingCostCaptureMiddleware: EmbeddingModelV4Middleware = {
+  specificationVersion: "v4",
   overrideMaxEmbeddingsPerCall: () => 20,
   wrapEmbed: async ({ doEmbed }) => {
     const result = await doEmbed();

@@ -51,15 +51,24 @@ export const toolApprovalStatusEnum = pgEnum("tool_approval_status", [
  * lifecycle serves all three; the `kind` selects the payload shape and how
  * `grant` executes:
  *  - `external_app_plan` : `run_plan([...])` write plan → executed via Nango.
+ *  - `external_app_read` : ONE gated external-app read action (a connection
+ *                          whose policy escalated the read to `approval`) →
+ *                          the read runs on grant, its raw data replayed.
  *  - `record_write`      : object records the agent proposes → written via
  *                          `bulk{Create,Update,Delete}ObjectRecords` on grant
  *                          (the user may select a subset).
+ *  - `tool_call`         : ONE gated builtin write tool (manageLink, manageDrive,
+ *                          uploadToDrive, manageWorkflow, manageObjectType,
+ *                          manageField, and non-record manageRecord variants) →
+ *                          applied on grant via the shared apply map.
  *  - `question`          : a structured question (askUserQuestion shape) →
  *                          no execution; grant just records the answers.
  */
 export const toolApprovalKindEnum = pgEnum("tool_approval_kind", [
   "external_app_plan",
+  "external_app_read",
   "record_write",
+  "tool_call",
   "question",
 ]);
 
@@ -206,6 +215,12 @@ export interface ToolApprovalOperationSummary {
   /** i18n key under `chatbot.approvals.<providerKey>.<action>.title`. */
   titleKey: string;
   titleParams?: Record<string, string | number>;
+  /**
+   * Literal, pre-composed title for a dynamic source with no i18n key — an MCP
+   * vendor tool whose only human label is the server-supplied description. When
+   * present the renderer uses it verbatim and skips the i18n lookup.
+   */
+  titleText?: string;
   fields: ToolApprovalSummaryField[];
 }
 
@@ -276,9 +291,35 @@ export interface ToolApprovalRecordWritePayload {
   note?: string;
 }
 
+// ---- Tool-call payload (one gated builtin write tool) ---------------------
+
+/**
+ * Which builtin write tool a `tool_call` approval gates. The `execute` handler
+ * applies it on grant via the shared apply map (`services/tool-policies/
+ * builtin-apply`), which calls the SAME shared services the tool's direct path
+ * uses — so a grant runs API-side without importing `@fretik/ai`. `args` are
+ * the normalized, post-validation args captured at proposal time (execution
+ * always uses these, never a re-run's args). `summaryFields` is an optional
+ * i18n-keyed preview for the card. */
+export interface ToolApprovalToolCallPayload {
+  toolName: string;
+  args: Record<string, unknown>;
+  /** Optional one-line rationale from the agent. */
+  note?: string;
+  /** Optional key/value preview fields for the card (label = i18n key). */
+  summaryFields?: ToolApprovalSummaryField[];
+}
+
+/** Outcome of a `tool_call` grant — the applied tool's return data, or an
+ * error. `data` mirrors what the tool's direct path returns. */
+export type ToolApprovalToolCallResult =
+  | { ok: true; data: Record<string, unknown> }
+  | { ok: false; error: string };
+
 export type ToolApprovalPayload =
   | ToolApprovalQuestionPayload
-  | ToolApprovalRecordWritePayload;
+  | ToolApprovalRecordWritePayload
+  | ToolApprovalToolCallPayload;
 
 /** Answers captured on a `question` grant, keyed by question header. */
 export type ToolApprovalAnswers = Record<string, string>;
@@ -291,11 +332,15 @@ export type ToolApprovalRecordResult =
   | { ok: false; error: string }
   | { skipped: true };
 
-/** Union of what `result` holds, keyed by the row's `kind`. */
+/** Union of what `result` holds, keyed by the row's `kind`. `external_app_plan`
+ * → per-op array; `external_app_read` → single-element op array (the read's raw
+ * data replayed on re-run); `record_write` → per-record array; `question` →
+ * answers; `tool_call` → the applied tool's result. */
 export type ToolApprovalResult =
   | ToolApprovalOpResult[]
   | ToolApprovalRecordResult[]
-  | ToolApprovalAnswers;
+  | ToolApprovalAnswers
+  | ToolApprovalToolCallResult;
 
 export type ToolApprovalRequest = typeof toolApprovalRequests.$inferSelect;
 export type NewToolApprovalRequest = typeof toolApprovalRequests.$inferInsert;

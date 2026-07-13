@@ -225,7 +225,7 @@ ${SCHEMA_BLOCK_TRAILER}`;
     temperature: PREEXTRACT_TEMPERATURE,
     maxOutputTokens: PREEXTRACT_MAX_OUTPUT_TOKENS,
     abortSignal: AbortSignal.timeout(PREEXTRACT_LLM_TIMEOUT_MS),
-    experimental_telemetry: telemetryFor("pre-extract"),
+    telemetry: telemetryFor("pre-extract"),
   });
 
   return output;

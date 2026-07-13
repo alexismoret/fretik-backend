@@ -18,9 +18,9 @@ export const createFooTool = () =>
       query: z.string().describe("..."),
     }),
     execute: async ({ query }, options) => {
-      // Read per-request state from experimental_context. NEVER close over
-      // ctx at construction — the ToolLoopAgent is a singleton shared
-      // across every request.
+      // Read per-request state from `options.context` (v7 delivers it there,
+      // fanned out by prepareStep's toolsContext). NEVER close over ctx at
+      // construction — the ToolLoopAgent is a singleton shared across requests.
       const ctx = getRuntimeContext(options);
       // Access teamId / organizationId / userId via the runtime ctx.
       // Return a serializable object — it's rendered by <UChatTool>.
@@ -33,13 +33,13 @@ export const createFooTool = () =>
 
 1. **One tool per file.** File name matches the feature (`rag-search.ts`,
    `sql-query.ts`, `web-search.ts`). Reusable helpers go in `src/lib/`.
-2. **Context comes from `experimental_context`, not from closures.** The
+2. **Context comes from `options.context`, not from closures.** The
    LLM must never be able to pass `teamId` / `organizationId` / `userId`
    itself — those live on the `AgentRuntimeContext` that `prepareCall`
-   attaches to every agent invocation. Tools read it at call time via
-   `getRuntimeContext(options)`. Closing over ctx at construction would
-   leak per-request state across concurrent requests on the singleton
-   agent instance.
+   returns as `runtimeContext` and `prepareStep` fans out to every tool via
+   `toolsContext`. Tools read it at call time via `getRuntimeContext(options)`.
+   Closing over ctx at construction would leak per-request state across
+   concurrent requests on the singleton agent instance.
 3. **Return JSON-serializable data.** Frontend renders tool parts inside
    `<UChatTool>`, and anything non-serializable breaks the stream.
 4. **Never throw for expected failures.** Return a structured

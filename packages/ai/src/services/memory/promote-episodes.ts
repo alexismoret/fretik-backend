@@ -164,12 +164,12 @@ export const promoteEpisodes = async (input: {
       );
       const { text: raw } = await generateText({
         model,
-        system: SYSTEM_PROMPT,
+        instructions: SYSTEM_PROMPT,
         prompt,
         temperature: PROMOTE_TEMPERATURE,
         maxOutputTokens: PROMOTE_MAX_OUTPUT_TOKENS,
         abortSignal: AbortSignal.timeout(PROMOTE_TIMEOUT_MS),
-        experimental_telemetry: telemetryFor("memory-consolidate"),
+        telemetry: telemetryFor("memory-consolidate"),
       });
       const parsed = promoteOutputSchema.safeParse(parseLlmJsonObject(raw));
       return parsed.success ? parsed.data : null;

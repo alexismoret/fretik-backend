@@ -5,6 +5,7 @@ import { createDescribeObjectTypeTool } from "../../tools/describe-object-type";
 import type { createDispatchAgentTool } from "../../tools/dispatch-agent";
 import { createDownloadDriveDocumentTool } from "../../tools/download-drive-document";
 import { createGetObjectTool } from "../../tools/get-object";
+import { createInstallSkillTool } from "../../tools/install-skill";
 import { createListDocumentsTool } from "../../tools/list-documents";
 import { createListFoldersTool } from "../../tools/list-folders";
 import { createListObjectsTool } from "../../tools/list-objects";
@@ -21,6 +22,7 @@ import { createPythonTool } from "../../tools/python";
 import { createRagSearchTool } from "../../tools/rag-search";
 import { createReadTool } from "../../tools/read";
 import { createSearchIconsTool } from "../../tools/search-icons";
+import { createSearchSkillCatalogTool } from "../../tools/search-skill-catalog";
 import { createSearchToolsTool } from "../../tools/search-tools";
 import { createSqlQueryTool } from "../../tools/sql-query";
 import { createUpdateSkillTool } from "../../tools/update-skill";
@@ -55,8 +57,8 @@ import {
  *
  * Tool factories do NOT take a `ctx`. The `ToolLoopAgent` singleton
  * constructs its tools once at boot; per-request state is threaded
- * to each tool's `execute` via `experimental_context` (recovered
- * with `getRuntimeContext`). See `../shared/runtime-context.ts` for
+ * to each tool's `execute` via `toolsContext` (recovered with
+ * `getRuntimeContext`). See `../shared/runtime-context.ts` for
  * the DI helper. Closing over ctx at construction would leak
  * per-request state across concurrent requests.
  *
@@ -381,6 +383,23 @@ export const buildDomainTools = () => ({
       "update existing skill edit improve refine extend rewrite adjust modify enhance",
     maxResultSizeChars: 2_000,
     isReadOnly: true,
+  }),
+  searchSkills: buildChatbotTool({
+    ...createSearchSkillCatalogTool(),
+    category: "domain",
+    searchHint:
+      "find discover search skill catalog marketplace capability playbook ability ready-made install add",
+    maxResultSizeChars: 4_000,
+    isReadOnly: true,
+  }),
+  installSkill: buildChatbotTool({
+    ...createInstallSkillTool(),
+    category: "domain",
+    searchHint:
+      "install add skill from catalog marketplace capability playbook to team enable",
+    maxResultSizeChars: 2_000,
+    // Persists a skill to the team (behind the write-approval gate).
+    isReadOnly: false,
   }),
   manageWorkflow: buildChatbotTool({
     ...createManageWorkflowTool(),

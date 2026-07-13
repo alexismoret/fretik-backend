@@ -22,6 +22,12 @@ export interface CreateSkillInput {
   name: string;
   description: string;
   body: string;
+  /** Provenance for a catalog-installed skill, e.g. `skills.sh:<owner>/<repo>/<slug>`. */
+  sourceUrl?: string;
+  /** Content hash of the source bundle at install time. */
+  sourceHash?: string;
+  /** Companion files in the source bundle not installed (body-only). */
+  skippedFiles?: number;
   actor?: EventActor;
 }
 
@@ -70,6 +76,9 @@ export const createSkill = async (
         source: "team_uploaded",
         teamId: input.teamId,
         version: "1.0.0",
+        sourceUrl: input.sourceUrl,
+        sourceHash: input.sourceHash,
+        sourceSkippedFiles: input.skippedFiles ?? 0,
       })
       .returning({ id: skills.id });
 

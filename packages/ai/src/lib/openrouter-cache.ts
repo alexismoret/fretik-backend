@@ -1,9 +1,9 @@
 import {
-  type LanguageModelV3,
-  type LanguageModelV3Message,
-  type LanguageModelV3Middleware,
-  type LanguageModelV3Prompt,
-  type SharedV3ProviderOptions,
+  type LanguageModelV4,
+  type LanguageModelV4Message,
+  type LanguageModelV4Middleware,
+  type LanguageModelV4Prompt,
+  type SharedV4ProviderOptions,
 } from "@ai-sdk/provider";
 import { wrapLanguageModel } from "ai";
 import type { ModelProfile } from "./model-registry/types";
@@ -11,11 +11,10 @@ import type { ModelProfile } from "./model-registry/types";
 /**
  * Manual prompt-caching middleware for OpenRouter chat models.
  *
- * Some OpenRouter upstreams cache automatically (Deepseek non-v3.2,
- * OpenAI, Gemini 2.5, Grok, Moonshot, Groq Kimi). Others require
- * explicit `cache_control: { type: "ephemeral" }` breakpoints on
- * message content blocks (Anthropic Claude, Alibaba Qwen, and
- * `deepseek/deepseek-v3.2` which routes through Alibaba on OpenRouter).
+ * Some OpenRouter upstreams cache automatically (DeepSeek, OpenAI,
+ * Gemini 2.5, Grok, Moonshot, Groq Kimi). Others require explicit
+ * `cache_control: { type: "ephemeral" }` breakpoints on message
+ * content blocks (Anthropic Claude, Alibaba Qwen).
  *
  * This middleware injects breakpoints for the explicit-caching family
  * only — letting the chat role binding (`model-registry/profiles.ts`)
@@ -90,13 +89,11 @@ const CACHE_CONTROL_VALUE = { type: "ephemeral" } as const;
  * Verified against the live OpenRouter docs on 2026-05-06. Notable
  * absentees:
  *   - `minimax/*` — no caching is documented for the MiniMax family.
- *   - `deepseek/*` other than v3.2 — DeepSeek caches automatically;
- *     only v3.2 is routed through Alibaba and needs explicit breakpoints.
+ *   - `deepseek/*` — DeepSeek caches automatically upstream.
  */
 const EXPLICIT_CACHE_MODEL_PATTERNS: readonly RegExp[] = [
   /^anthropic\//i,
   /^qwen\//i,
-  /^deepseek\/deepseek-v3\.2/i,
 ];
 
 /** Below this prompt length we skip the mid anchor entirely. */
@@ -119,7 +116,7 @@ const MANUAL_PROMPT_CACHE_ENABLED = process.env.MANUAL_PROMPT_CACHE !== "false";
 /** Optional verbose logging of breakpoint placement. Read once at module load. */
 const CACHE_DEBUG = process.env.AI_CACHE_DEBUG === "true";
 
-const isStableMessage = (msg: LanguageModelV3Message | undefined): boolean =>
+const isStableMessage = (msg: LanguageModelV4Message | undefined): boolean =>
   msg !== undefined && (msg.role === "assistant" || msg.role === "tool");
 
 /**
@@ -128,7 +125,7 @@ const isStableMessage = (msg: LanguageModelV3Message | undefined): boolean =>
  * completed agentic steps that won't be rewritten).
  */
 const findLastStableInRange = (
-  prompt: LanguageModelV3Prompt,
+  prompt: LanguageModelV4Prompt,
   start: number,
   end: number,
 ): number => {
@@ -152,7 +149,7 @@ export const shouldInjectCacheControl = (modelId: string): boolean =>
   EXPLICIT_CACHE_MODEL_PATTERNS.some((re) => re.test(modelId));
 
 export const selectBreakpointIndices = (
-  prompt: LanguageModelV3Prompt,
+  prompt: LanguageModelV4Prompt,
 ): readonly number[] => {
   const n = prompt.length;
   if (n === 0) return [];
@@ -198,8 +195,8 @@ export const selectBreakpointIndices = (
  * (everything else) breakpoints — the merge logic is identical.
  */
 const withCacheControl = (
-  existing: SharedV3ProviderOptions | undefined,
-): SharedV3ProviderOptions => ({
+  existing: SharedV4ProviderOptions | undefined,
+): SharedV4ProviderOptions => ({
   ...existing,
   openrouter: {
     ...existing?.openrouter,
@@ -240,12 +237,12 @@ const withCacheControl = (
  * with reasoning + text + tool_call parts, it's whichever comes last.
  */
 export const applyCacheControl = (
-  prompt: LanguageModelV3Prompt,
+  prompt: LanguageModelV4Prompt,
   indices: readonly number[],
-): LanguageModelV3Prompt => {
+): LanguageModelV4Prompt => {
   if (indices.length === 0) return prompt;
   const targets = new Set(indices);
-  return prompt.map((msg, i): LanguageModelV3Message => {
+  return prompt.map((msg, i): LanguageModelV4Message => {
     if (!targets.has(i)) return msg;
     if (msg.role === "system") {
       // System content is `string` per V3 type; attach at message level.
@@ -261,14 +258,14 @@ export const applyCacheControl = (
         ? { ...part, providerOptions: withCacheControl(part.providerOptions) }
         : part,
     );
-    return { ...msg, content: newContent } as LanguageModelV3Message;
+    return { ...msg, content: newContent } as LanguageModelV4Message;
   });
 };
 
 const buildCacheMiddleware = (
   shouldInject: (modelId: string) => boolean,
-): LanguageModelV3Middleware => ({
-  specificationVersion: "v3",
+): LanguageModelV4Middleware => ({
+  specificationVersion: "v4",
   transformParams: async ({ params, model }) => {
     if (!shouldInject(model.modelId)) return params;
     const indices = selectBreakpointIndices(params.prompt);
@@ -298,9 +295,9 @@ const patternCacheMiddleware = buildCacheMiddleware(shouldInjectCacheControl);
 // profile-less callers. The breakpoint algorithm emits at most 4 markers;
 // a profile declaring fewer is not supported yet (warned at wrap time).
 export const wrapModelWithCache = (
-  model: LanguageModelV3,
+  model: LanguageModelV4,
   profile?: ModelProfile,
-): LanguageModelV3 => {
+): LanguageModelV4 => {
   if (!MANUAL_PROMPT_CACHE_ENABLED) return model;
   if (profile) {
     if (profile.assessment.cache.strategy !== "explicit-breakpoints") {

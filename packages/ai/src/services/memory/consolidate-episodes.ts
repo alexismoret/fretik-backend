@@ -175,12 +175,12 @@ export const consolidateEpisodes = async (input: {
       );
       const { text: raw } = await generateText({
         model,
-        system: SYSTEM_PROMPT,
+        instructions: SYSTEM_PROMPT,
         prompt,
         temperature: CONSOLIDATE_TEMPERATURE,
         maxOutputTokens: CONSOLIDATE_MAX_OUTPUT_TOKENS,
         abortSignal: AbortSignal.timeout(CONSOLIDATE_TIMEOUT_MS),
-        experimental_telemetry: telemetryFor("memory-consolidate"),
+        telemetry: telemetryFor("memory-consolidate"),
       });
       const parsed = parseJudgeOutput(raw);
       if (!parsed) {

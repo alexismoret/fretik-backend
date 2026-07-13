@@ -47,6 +47,18 @@ const FETCH_OPTIONS =
     ? { label: "production", type: "text" as const }
     : { label: "latest", type: "text" as const, cacheTtlSeconds: 0 };
 
+/**
+ * A managed-prompt version reference the `@langfuse/vercel-ai-sdk` integration
+ * links to a model-call observation. Read off the agent's `runtimeContext`
+ * under the `langfusePrompt` key (opted in via `telemetry.includeRuntimeContext`);
+ * the integration normalizes exactly `{ name, version, isFallback? }`.
+ */
+export interface LangfusePromptRef {
+  name: string;
+  version: number;
+  isFallback?: boolean;
+}
+
 /** A managed prompt's resolved template text plus its trace-link payload. */
 export interface ManagedPrompt {
   /**
@@ -56,12 +68,11 @@ export interface ManagedPrompt {
    */
   text: string;
   /**
-   * `prompt.toJSON()` (a string) when the text came from a real Langfuse
-   * version, for `experimental_telemetry.metadata.langfusePrompt`.
-   * `undefined` on fallback resolution — linking a trace to a non-existent
-   * version would mislead.
+   * `{ name, version }` of the resolved Langfuse version, surfaced to the
+   * telemetry integration for prompt-version linking. `undefined` on fallback
+   * resolution — linking a trace to a non-existent version would mislead.
    */
-  link?: string;
+  promptRef?: LangfusePromptRef;
 }
 
 /**
@@ -82,7 +93,10 @@ export const fetchManagedPrompt = async (
     });
     return prompt.isFallback
       ? { text: prompt.prompt }
-      : { text: prompt.prompt, link: prompt.toJSON() };
+      : {
+          text: prompt.prompt,
+          promptRef: { name: prompt.name, version: prompt.version },
+        };
   } catch (err) {
     console.warn(
       `[langfuse] fetchManagedPrompt(${name}) failed, using fallback:`,

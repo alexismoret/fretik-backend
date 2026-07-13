@@ -484,12 +484,12 @@ export const runUnifiedRecall = async (
       ).model;
       const judged = await generateText({
         model: judgeModel,
-        system: RECALL_JUDGE_SYSTEM_PROMPT,
+        instructions: RECALL_JUDGE_SYSTEM_PROMPT,
         prompt: judgeInput.prompt,
         temperature: JUDGE_TEMPERATURE,
         maxOutputTokens: JUDGE_MAX_OUTPUT_TOKENS,
         abortSignal: judgeAbort,
-        experimental_telemetry: telemetryFor("active-memory"),
+        telemetry: telemetryFor("active-memory"),
       });
 
       if (judged.finishReason === "length") {

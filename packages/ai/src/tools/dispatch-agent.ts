@@ -99,7 +99,7 @@ export const createDispatchAgentTool = <TTools extends ToolSet>(deps: {
    *   - other         → provider error / content filter / etc.
    */
   const formatSubAgentResult = (
-    result: GenerateTextResult<TTools, never>,
+    result: GenerateTextResult<TTools, Record<string, unknown>, never>,
   ): { summary: string; incomplete?: boolean; finishReason?: string } => {
     const text = result.text.trim();
     const finishReason = result.finishReason;

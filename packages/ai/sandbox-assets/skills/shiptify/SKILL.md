@@ -1,7 +1,7 @@
 ---
 name: shiptify
-description: Shiptify — read inbox, send email, manage calendar and contacts
-version: 034f9957c592
+description: Shiptify — manage transport shipments, addresses, and related records on the connected Shiptify TMS account (shipper or carrier).
+version: 31d82efacb84
 ---
 
 # Shiptify — 54 actions

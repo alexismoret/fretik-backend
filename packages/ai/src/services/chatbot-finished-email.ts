@@ -333,7 +333,7 @@ export const sendChatbotFinishedEmailIfEnabled = async (
 
   // Branch 0 — turn paused on a write-plan approval gate.
   //
-  // The chatbot agent's `stopWhen` includes `anyToolAwaitingApproval`
+  // The chatbot agent's `stopWhen` includes `stopOnPendingApproval`
   // (see `agents/chatbot/index.ts`), so any tool returning
   // `{ status: "approval_pending", approvalId }` ends the turn there.
   // We branch BEFORE `askUserQuestion` (and before the generic

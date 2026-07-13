@@ -1,7 +1,7 @@
 ---
 name: front
-description: Front — read inbox, send email, manage calendar and contacts
-version: 011397f3e17b
+description: Front — read, triage, and reply to conversations across the team's shared inboxes on the connected Front account.
+version: 48f58f48be09
 ---
 
 # Front — 30 actions

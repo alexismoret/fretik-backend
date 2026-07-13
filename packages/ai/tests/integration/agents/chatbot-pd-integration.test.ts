@@ -119,7 +119,7 @@ const runSearchTools = async (
   const options: ExecOptions = {
     toolCallId: "call-test",
     messages: [],
-    experimental_context: wrapRuntimeContext(ctx),
+    context: wrapRuntimeContext(ctx),
   };
   const result = await execute(input, options);
   if (typeof result !== "object" || result === null) {

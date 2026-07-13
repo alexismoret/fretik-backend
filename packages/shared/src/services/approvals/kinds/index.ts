@@ -1,7 +1,9 @@
 import type { ToolApprovalKind } from "../../../db/schema";
 import { externalAppPlanHandler } from "./external-app-plan";
+import { externalAppReadHandler } from "./external-app-read";
 import { questionHandler } from "./question";
 import { recordWriteHandler } from "./record-write";
+import { toolCallHandler } from "./tool-call";
 import type { ApprovalKindHandler } from "./types";
 
 /**
@@ -14,6 +16,8 @@ export const APPROVAL_KIND_HANDLERS: Record<
   ApprovalKindHandler
 > = {
   external_app_plan: externalAppPlanHandler,
+  external_app_read: externalAppReadHandler,
   record_write: recordWriteHandler,
+  tool_call: toolCallHandler,
   question: questionHandler,
 };

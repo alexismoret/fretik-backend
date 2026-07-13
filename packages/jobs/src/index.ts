@@ -8,6 +8,7 @@ import { healthApp } from "./health";
 import { registerSchedulers } from "./queues/schedulers";
 import { startDreamingWorker } from "./workers/dreaming";
 import { startMaintenanceWorker } from "./workers/maintenance";
+import { startMcpRefreshWorker } from "./workers/mcp-refresh";
 import { startMemoryDistillWorker } from "./workers/memory-distill";
 import { startMemoryResolveWorker } from "./workers/memory-resolve";
 import { startRecordCardWorker } from "./workers/record-card";
@@ -30,12 +31,13 @@ startRecordCardWorker();
 startDreamingWorker();
 startWorkflowRunCreateWorker();
 startMaintenanceWorker();
+startMcpRefreshWorker();
 await registerSchedulers();
 
 console.log(`
 ---------------------------
 fretik jobs v${packagejson.version}
-workers: document-processing · memory-resolve · memory-distill · record-card · memory-dreaming · memory-maintenance · workflow-trigger
+workers: document-processing · memory-resolve · memory-distill · record-card · memory-dreaming · memory-maintenance · workflow-trigger · mcp-refresh
 ---------------------------
 `);
 

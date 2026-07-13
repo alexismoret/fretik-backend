@@ -89,6 +89,9 @@ export const TOOL_ERROR_CODES = {
   // Egress hardening (web-egress.ts): scheme/private-IP/length vs domain policy.
   WEB_FETCH_BLOCKED_TARGET: "WEB_FETCH_BLOCKED_TARGET",
   WEB_FETCH_DOMAIN_BLOCKED: "WEB_FETCH_DOMAIN_BLOCKED",
+  // Tool-permission policy: the team set this tool to `blocked` (Settings →
+  // Tool permissions). A backstop for a guessed/pruned tool name.
+  TOOL_DISABLED_BY_POLICY: "TOOL_DISABLED_BY_POLICY",
 } as const;
 
 export type ToolErrorCode =

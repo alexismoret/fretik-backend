@@ -5,6 +5,7 @@ import { deleteFolders } from "@fretik/shared/services/folders/delete";
 import { updateFolder } from "@fretik/shared/services/folders/update";
 import { tool } from "ai";
 import { z } from "zod";
+import { gateBuiltinWriteTool } from "../agents/shared/policy-tool-gate";
 import {
   agentEventActor,
   getRuntimeContext,
@@ -91,6 +92,21 @@ export const createManageDriveTool = () =>
       const backstop = workflowWriteBackstop(ctx);
       if (backstop !== null) return backstop;
       const actor = agentEventActor(ctx);
+
+      // Tool-permission gate: `blocked` → error, `approval` → pause with the
+      // normalized args (the apply map reads only the keys each action needs),
+      // `auto` → proceed. Ids are already model-supplied, so no resolution step.
+      const gate = await gateBuiltinWriteTool(ctx, {
+        toolName: "manageDrive",
+        args: {
+          action: input.action,
+          name: input.name,
+          folderId: input.folderId,
+          documentId: input.documentId,
+          parentFolderId: input.parentFolderId ?? null,
+        },
+      });
+      if (gate !== null) return gate;
 
       try {
         if (input.action === "createFolder") {

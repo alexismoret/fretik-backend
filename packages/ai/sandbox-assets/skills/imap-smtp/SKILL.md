@@ -1,7 +1,7 @@
 ---
 name: imap-smtp
-description: Email (IMAP/SMTP) — read inbox, send email, manage calendar and contacts
-version: f9ff28a3cc66
+description: Email over IMAP/SMTP — read, search, and send email on the user's connected mailbox for any standards-based provider (Gmail app password, OVH, Fastmail, custom servers, …).
+version: abaf82c829ef
 ---
 
 # Email (IMAP/SMTP) — 19 actions

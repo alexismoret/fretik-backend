@@ -7,6 +7,7 @@ import { getObjectRecord } from "@fretik/shared/services/object-records/retrieve
 import { assertCanWriteRecord } from "@fretik/shared/services/object-sharing/write-access";
 import { tool } from "ai";
 import { z } from "zod";
+import { gateBuiltinWriteTool } from "../agents/shared/policy-tool-gate";
 import { getRuntimeContext } from "../agents/shared/runtime-context";
 import { workflowWriteBackstop } from "../agents/shared/workflow-write-backstop";
 import { TOOL_ERROR_CODES, toolError } from "../lib/tool-error-codes";
@@ -67,6 +68,11 @@ export const createManageLinkTool = () =>
               "unlink requires linkId.",
             );
           }
+          const gate = await gateBuiltinWriteTool(ctx, {
+            toolName: "manageLink",
+            args: { action: "unlink", linkId: input.linkId },
+          });
+          if (gate !== null) return gate;
           const link = await invalidateLink({ id: input.linkId, actor });
           return { ok: true, unlinked: link.id };
         }
@@ -102,6 +108,11 @@ export const createManageLinkTool = () =>
           rawKey: input.relationKey,
           fromObjectTypeId: fromRecord.objectTypeId,
         });
+        const gate = await gateBuiltinWriteTool(ctx, {
+          toolName: "manageLink",
+          args: { action: "link", linkTypeId, fromRecordId, toRecordId },
+        });
+        if (gate !== null) return gate;
         const link = await createLink({
           organizationId: ctx.organizationId,
           teamId: ctx.teamId,

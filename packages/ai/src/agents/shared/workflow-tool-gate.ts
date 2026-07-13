@@ -52,6 +52,8 @@ export const WORKFLOW_FORBIDDEN_DOMAIN_TOOLS = [
   "manageField",
   "createSkill",
   "updateSkill",
+  "searchSkills",
+  "installSkill",
   "manageWorkflow",
 ] as const;
 

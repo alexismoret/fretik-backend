@@ -56,7 +56,9 @@ export const computeLookupHash = (
   const stable = operations.map((op) => {
     const resolved = getAction(op.action);
     if (resolved === undefined) {
-      throw new Error(`Unknown action while hashing plan: ${op.action}`);
+      // MCP-sourced action — no manifest params, so there's no `excludeFromHash`
+      // to strip; the full args discriminate the plan.
+      return { action: op.action, args: op.args };
     }
     return {
       action: op.action,

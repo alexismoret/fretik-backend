@@ -21,6 +21,10 @@ export const MEMORY_DREAMING_QUEUE = "memory-dreaming";
 // enqueues here; the slow part (createWorkflowRun → Trigger.dev network call)
 // runs on this queue so it never blocks the 15s journal/trigger sweeps.
 export const WORKFLOW_TRIGGER_QUEUE = "workflow-trigger";
+// Dedicated queue for the nightly MCP tool-snapshot drift refresh — each pass
+// re-introspects every active MCP connection over the network (Nango proxy), so
+// it must never share the 15s maintenance queue.
+export const MCP_REFRESH_QUEUE = "mcp-refresh";
 
 /** One journal event to resolve against the object graph (P3). */
 export interface MemoryResolveJobData {
@@ -86,6 +90,10 @@ export const GC_DEMOTE_JOB = "gc-demote";
 export const WORKFLOW_TRIGGER_SWEEP_JOB = "workflow-trigger-sweep";
 /** 5min — reclaims stalled (heartbeat-dead) workflow runs. */
 export const WORKFLOW_STALL_SWEEP_JOB = "workflow-stall-sweep";
+
+/** Job name on MCP_REFRESH_QUEUE — 05:00 UTC cron, re-introspects every active
+ * MCP connection and adopts any tool-surface change. */
+export const MCP_SNAPSHOT_REFRESH_JOB = "mcp-snapshot-refresh";
 
 /** Job names on MEMORY_DREAMING_QUEUE. */
 export const DREAMING_TEAM_JOB = "dreaming-team";

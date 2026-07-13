@@ -89,7 +89,7 @@ const runSearchTools = async (
   const options: ExecOptions = {
     toolCallId: "call-1",
     messages: [],
-    experimental_context: wrapRuntimeContext(ctx),
+    context: wrapRuntimeContext(ctx),
   };
   const result = await execute(input, options);
   // The tool returns a plain object matching SearchToolsResult in
@@ -142,7 +142,7 @@ const runGated = async (
   const options: ExecOptions = {
     toolCallId: "call-g",
     messages: [],
-    experimental_context: wrapRuntimeContext(ctx),
+    context: wrapRuntimeContext(ctx),
   };
   const result = await execute(input, options);
   const record = result as Record<string, unknown>;

@@ -33,6 +33,7 @@
     "./external-apps/*": "./src/external-apps/*.ts"
   },
   "dependencies": {
+    "@ai-sdk/mcp": "^2.0.10",
     "@aws-sdk/client-s3": "^3.1072.0",
     "@aws-sdk/s3-request-presigner": "^3.1072.0",
     "@better-auth/drizzle-adapter": "^1.6.19",
@@ -42,7 +43,7 @@
     "@mistralai/mistralai": "^2.2.6",
     "@nangohq/node": "^0.70.7",
     "@trigger.dev/sdk": "4.5.0",
-    "ai": "^6.0.208",
+    "ai": "^7.0.19",
     "better-auth": "^1.6.19",
     "bullmq": "^5.79.0",
     "chromiumly": "^5.2.1",

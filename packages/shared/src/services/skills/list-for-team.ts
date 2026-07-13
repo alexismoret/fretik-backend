@@ -24,6 +24,8 @@ export interface EffectiveSkill {
   enabled: boolean;
   version: string;
   source: "bundled" | "team_uploaded";
+  /** Provenance of a catalog-installed skill, or null. */
+  sourceUrl: string | null;
 }
 
 /**
@@ -53,6 +55,7 @@ export const listSkillsForTeam = async (
       isDefault: skills.isDefault,
       version: skills.version,
       source: skills.source,
+      sourceUrl: skills.sourceUrl,
       // Overrides: null when no row exists for (team, skill); otherwise
       // the explicit boolean the team set.
       overrideEnabled: teamSkills.enabled,
@@ -90,5 +93,6 @@ export const listSkillsForTeam = async (
     enabled: computeEffectiveEnabled(row.isDefault, row.overrideEnabled),
     version: row.version,
     source: row.source,
+    sourceUrl: row.sourceUrl,
   }));
 };

@@ -1,4 +1,5 @@
 import type {
+  ExternalAppConnection,
   ToolApprovalOperation,
   ToolApprovalSummary,
 } from "../../../db/schema";
@@ -7,8 +8,11 @@ import { getAction } from "../../../external-apps/registry";
 import { createPendingApproval } from "../../approvals/create-pending";
 import { runApprovalGate } from "../../approvals/gate";
 import type { ExecContext, SandboxExecResponse } from "../../sandbox/types";
+import { resolveConnectionActionPolicy } from "../../tool-policies/resolve";
 import { getWorkflowAutonomyForConversation } from "../../workflows/get-run-autonomy";
+import { resolveConnection } from "../connections/resolve";
 import { extractFrameworkArgs } from "./framework-args";
+import { resolveMcpWriteOp } from "./mcp-plan";
 import { validateActionArgs } from "./validate-args";
 
 /**
@@ -27,17 +31,72 @@ export const dispatchPlan = async (
     return { status: "error", message: "Empty plan." };
   }
 
-  // Validate every op against the registry + manifest. Any failure rejects the
-  // WHOLE plan — atomicity at the approval level.
+  // Workflow autonomy gate: a `read_only` run may never perform external writes.
+  const autonomy = await getWorkflowAutonomyForConversation(ctx.conversationId);
+  if (autonomy === "read_only") {
+    return {
+      status: "error",
+      message:
+        "READ_ONLY_WORKFLOW: this run cannot perform external write actions. Note in the task summary what would have been written.",
+    };
+  }
+
+  // Per-plan connection cache (dedupe resolution by provider + connection_id).
+  const connCache = new Map<string, ExternalAppConnection>();
+  const resolveOpConnection = async (
+    providerKey: string,
+    explicitId: string | undefined,
+  ): Promise<ExternalAppConnection> => {
+    const key = `${providerKey}:${explicitId ?? ""}`;
+    const cached = connCache.get(key);
+    if (cached !== undefined) return cached;
+    const conn = await resolveConnection({
+      providerKey,
+      teamId: ctx.teamId,
+      userId: ctx.userId,
+      explicitId,
+    });
+    connCache.set(key, conn);
+    return conn;
+  };
+
+  // Validate every op against the registry + manifest, resolve its connection
+  // policy. Any failure (or a `blocked` action) rejects the WHOLE plan —
+  // atomicity at the approval level. `autoGrant` only when EVERY op resolves to
+  // `auto` (a connection opted its writes into no-approval); otherwise the plan
+  // pauses for a human (today's behaviour under chat / approval_required).
   const validatedOps: ToolApprovalOperation[] = [];
   const summaryOps: ToolApprovalSummary["operations"] = [];
+  let allAuto = true;
   for (const op of operations) {
     const resolved = getAction(op.action);
     if (resolved === undefined) {
-      return {
-        status: "error",
-        message: `Unknown action in plan: ${op.action}`,
-      };
+      // Not a hand-written manifest action — resolve it against the connection's
+      // MCP snapshot (generic summary, schema enforced by the server + Pydantic).
+      let mcp;
+      try {
+        mcp = await resolveMcpWriteOp({
+          op,
+          teamId: ctx.teamId,
+          userId: ctx.userId,
+          autonomy,
+        });
+      } catch (error) {
+        return {
+          status: "error",
+          message: error instanceof Error ? error.message : String(error),
+        };
+      }
+      if (mcp.level === "blocked") {
+        return {
+          status: "error",
+          message: `ACTION_DISABLED: ${op.action} is disabled on connection "${mcp.connection.displayName}" by its permission settings. Tell the user it can be re-enabled in Settings → Tool permissions.`,
+        };
+      }
+      if (mcp.level !== "auto") allAuto = false;
+      validatedOps.push({ action: op.action, args: mcp.storedArgs });
+      summaryOps.push(mcp.summaryOp);
+      continue;
     }
     if (resolved.action.kind !== "write") {
       return {
@@ -61,6 +120,32 @@ export const dispatchPlan = async (
         message: `Invalid args for ${op.action}: ${error instanceof Error ? error.message : String(error)}`,
       };
     }
+
+    let connection: ExternalAppConnection;
+    try {
+      connection = await resolveOpConnection(
+        resolved.providerKey,
+        framework.connection_id,
+      );
+    } catch (error) {
+      return {
+        status: "error",
+        message: error instanceof Error ? error.message : String(error),
+      };
+    }
+    const level = resolveConnectionActionPolicy({
+      action: { name: resolved.action.name, kind: "write" },
+      actionPolicies: connection.actionPolicies,
+      autonomy,
+    });
+    if (level === "blocked") {
+      return {
+        status: "error",
+        message: `ACTION_DISABLED: ${op.action} is disabled on connection "${connection.displayName}" by its permission settings. Tell the user it can be re-enabled in Settings → Tool permissions.`,
+      };
+    }
+    if (level !== "auto") allAuto = false;
+
     const storedArgs: Record<string, unknown> = { ...validated };
     if (framework.connection_id !== undefined) {
       storedArgs.connection_id = framework.connection_id;
@@ -77,16 +162,6 @@ export const dispatchPlan = async (
     });
   }
 
-  // Workflow autonomy gate: a `read_only` run may never perform external writes.
-  const autonomy = await getWorkflowAutonomyForConversation(ctx.conversationId);
-  if (autonomy === "read_only") {
-    return {
-      status: "error",
-      message:
-        "READ_ONLY_WORKFLOW: this run cannot perform external write actions. Note in the task summary what would have been written.",
-    };
-  }
-
   const lookupHash = computeLookupHash(validatedOps);
   const summary: ToolApprovalSummary = {
     titleKey: "default",
@@ -98,6 +173,7 @@ export const dispatchPlan = async (
     ctx,
     kind: "external_app_plan",
     autonomy,
+    autoGrant: allAuto,
     lookupHash,
     createPending: () =>
       createPendingApproval({

@@ -46,6 +46,7 @@ import {
 import { updateConversation } from "@fretik/shared/services/ai/update";
 import { emitDomainEvent } from "@fretik/shared/services/domain-events/emit";
 import { releaseSandbox } from "@fretik/shared/services/e2b/release-sandbox";
+import { getTeamToolPolicies } from "@fretik/shared/services/tool-policies/get-for-team";
 import { MAX_FILES_PER_MESSAGE } from "@fretik/shared/utils/chatbot-limits";
 import { OpenAPIHono } from "@hono/zod-openapi";
 import {
@@ -58,8 +59,9 @@ import {
   convertToModelMessages,
   createUIMessageStream,
   createUIMessageStreamResponse,
+  toUIMessageStream,
   UI_MESSAGE_STREAM_HEADERS,
-  type ToolLoopAgentOnStepFinishCallback,
+  type GenerateTextOnStepEndCallback,
   type UIMessage,
   type UIMessageChunk,
   type UIMessageStreamWriter,
@@ -92,6 +94,7 @@ import {
   buildAttachedFilesBlock,
   loadExternalApps,
 } from "../agents/shared/fragments";
+import { subscribeAbort } from "../lib/abort-subscriber";
 import { flushLangfuse, langfuseEnabled } from "../lib/langfuse";
 import { deleteScore, recordScore } from "../lib/langfuse-scores";
 import {
@@ -125,6 +128,11 @@ import {
   runUnifiedRecall,
 } from "../services/recall/recall";
 import type { HonoInternalAppType } from "../types/hono";
+import {
+  buildTurnMessageMetadata,
+  filterNewAssistantMessages,
+  narrowMessageMetadata,
+} from "./turn-helpers";
 
 const InternalInvokeSchema = z.object({
   conversationId: z.uuid().optional(),
@@ -227,7 +235,7 @@ const streamChatbotWithFallback = async (params: {
    * Per-step hook forwarded to whichever agent serves the call, so the
    * caller can track `toolExecuted` / `visibleText` live (C4 failover).
    */
-  onStepFinish?: ToolLoopAgentOnStepFinishCallback<ChatbotTools>;
+  onStepFinish?: GenerateTextOnStepEndCallback<ChatbotTools>;
   /**
    * Per-turn reasoning override (C7 "deep thinking"). When set, sent as
    * `providerOptions.openrouter.reasoning` to whichever agent serves the
@@ -268,7 +276,7 @@ const streamChatbotWithFallback = async (params: {
       messages: modelMessages,
       options: params.callOptions,
       abortSignal: params.abortSignal,
-      onStepFinish: params.onStepFinish,
+      onStepEnd: params.onStepFinish,
       // Spread the override only when set, so a turn without the toggle
       // sends no `providerOptions` at all (byte-identical to pre-C7).
       ...(params.reasoningOverride !== undefined
@@ -299,18 +307,6 @@ const streamChatbotWithFallback = async (params: {
  * plan), so writes made during the stream are tagged with the
  * conversation directly — no need for a pre-stream message stub.
  */
-/**
- * Narrow a UIMessage's `unknown` metadata to a plain object for
- * persistence — keeps whatever the `messageMetadata` stream callback
- * attached (`langfuseTraceId`, `usage`, `finishReason`). Per-turn
- * observability (tool calls, RAG hits, latency, cost) now lives in
- * Langfuse, not in the DB row.
- */
-const narrowMetadata = (m: UIMessage): Record<string, unknown> | undefined =>
-  m.metadata && typeof m.metadata === "object"
-    ? (m.metadata as Record<string, unknown>)
-    : undefined;
-
 const persistAssistantMessages = async (
   conversationId: string | undefined,
   history: UIMessage[],
@@ -318,17 +314,14 @@ const persistAssistantMessages = async (
   tx?: Transaction,
 ): Promise<UIMessage[]> => {
   if (!conversationId) return [];
-  const known = new Set(history.map((m) => m.id));
-  const assistantMessages = finalMessages.filter(
-    (m) => !known.has(m.id) && m.role === "assistant",
-  );
+  const assistantMessages = filterNewAssistantMessages(history, finalMessages);
   if (assistantMessages.length === 0) return [];
   await saveMessages(
     conversationId,
     assistantMessages.map((m) => ({
       role: "assistant" as const,
       parts: m.parts,
-      metadata: narrowMetadata(m),
+      metadata: narrowMessageMetadata(m),
     })),
     tx,
   );
@@ -810,8 +803,8 @@ const buildTurnCallOptions = async (
   // HANG backstops, not latency caps). The two history-dependent fragments
   // (attached files, active-memory recall) stay here and run in the same
   // parallel batch.
-  const [attachedFilesBlock, activeMemoryRecall, fragments] = await Promise.all(
-    [
+  const [attachedFilesBlock, activeMemoryRecall, fragments, toolPolicies] =
+    await Promise.all([
       withSoftTimeout(
         buildAttachedFilesBlock(params.conversationId, filenames),
         4000,
@@ -859,8 +852,8 @@ const buildTurnCallOptions = async (
         userId: params.callOptions.userId,
         logPrefix: params.logPrefix,
       }),
-    ],
-  );
+      getTeamToolPolicies(params.callOptions.teamId),
+    ]);
 
   console.info(
     `${params.logPrefix} contextManifestChars=${(fragments.chatbotContextManifest ?? "").length.toString()} activeMemory=${activeMemoryRecall ? "hit" : "miss"} teamObjectsChars=${(fragments.teamObjectsBlock ?? "").length.toString()} enabledSkillsChars=${(fragments.enabledSkillsBlock ?? "").length.toString()}`,
@@ -876,6 +869,7 @@ const buildTurnCallOptions = async (
     enabledSkillsBlock: fragments.enabledSkillsBlock,
     externalAppConnections: externalApps.externalAppConnections,
     externalAppsBlock: externalApps.externalAppsBlock,
+    toolPolicies,
   };
 };
 
@@ -902,27 +896,18 @@ const setupAbortChannel = async (
   releaseAbortSubscriber: () => Promise<void>;
 }> => {
   const abortController = new AbortController();
-  const abortSubscriber =
-    params.resumableStreamId !== undefined ? redis.duplicate() : null;
-  if (abortSubscriber && params.resumableStreamId !== undefined) {
-    const channel = getAbortChannel(params.resumableStreamId);
-    await abortSubscriber.subscribe(channel);
-    abortSubscriber.on("message", (_ch, _msg) => {
-      console.info(
-        `${params.logPrefix} stop signal received streamId=${params.resumableStreamId ?? "?"}`,
-      );
-      abortController.abort();
-    });
+  // Non-resumable callers (stateless /internal/invoke) have no Stop channel.
+  if (params.resumableStreamId === undefined) {
+    return { abortController, releaseAbortSubscriber: async () => undefined };
   }
-  const releaseAbortSubscriber = async (): Promise<void> => {
-    if (!abortSubscriber) return;
-    try {
-      await abortSubscriber.quit();
-    } catch (err) {
-      console.warn("[chatbot] abort subscriber cleanup failed", err);
-    }
-  };
-  return { abortController, releaseAbortSubscriber };
+  const streamId = params.resumableStreamId;
+  const { release } = await subscribeAbort(getAbortChannel(streamId), () => {
+    console.info(
+      `${params.logPrefix} stop signal received streamId=${streamId}`,
+    );
+    abortController.abort();
+  });
+  return { abortController, releaseAbortSubscriber: release };
 };
 
 /**
@@ -1011,9 +996,7 @@ const runChatbotTurn = async (
     visibleText: false,
     failoverAttempted: false,
   };
-  const onTurnStep: ToolLoopAgentOnStepFinishCallback<ChatbotTools> = (
-    step,
-  ) => {
+  const onTurnStep: GenerateTextOnStepEndCallback<ChatbotTools> = (step) => {
     if (step.toolCalls.length > 0 || step.toolResults.length > 0) {
       turnFlags.toolExecuted = true;
     }
@@ -1240,7 +1223,7 @@ const runChatbotTurn = async (
             messages: fallbackMessages,
             options: callOptionsWithFiles,
             abortSignal: abortController.signal,
-            onStepFinish: onTurnStep,
+            onStepEnd: onTurnStep,
             // Mirror the primary path's per-turn reasoning depth (C7).
             ...(reasoningOverride !== undefined
               ? {
@@ -1252,34 +1235,19 @@ const runChatbotTurn = async (
           });
           writer.merge(
             dropChunksAfterAbort(
-              fallbackResult.toUIMessageStream<UIMessage>({
+              toUIMessageStream<ChatbotTools>({
+                stream: fallbackResult.stream,
                 onError: recordStreamError,
                 messageMetadata: ({ part }) => {
                   if (part.type !== "finish") return undefined;
-                  const fbUsage = part.totalUsage;
-                  const traceId = getActiveTraceId();
-                  return {
-                    ...(traceId !== undefined
-                      ? { langfuseTraceId: traceId }
-                      : {}),
-                    telemetry: {
-                      finishReason: part.finishReason,
-                      rawFinishReason: part.rawFinishReason,
-                      // Failover (zombie or transparent) always serves the
-                      // fallback agent — flagged for the eval harness.
-                      servedBy: "fallback",
-                      modelProfileKey: modelProfile.key,
-                      usage: {
-                        inputTokens: fbUsage.inputTokens,
-                        outputTokens: fbUsage.outputTokens,
-                        totalTokens: fbUsage.totalTokens,
-                        reasoningTokens:
-                          fbUsage.outputTokenDetails?.reasoningTokens,
-                        cachedInputTokens:
-                          fbUsage.inputTokenDetails?.cacheReadTokens,
-                      },
-                    },
-                  };
+                  // Failover (zombie or transparent) always serves the fallback
+                  // agent — flagged for the eval harness.
+                  return buildTurnMessageMetadata(
+                    part,
+                    "fallback",
+                    modelProfile.key,
+                    getActiveTraceId(),
+                  );
                 },
               }),
               abortController.signal,
@@ -1419,42 +1387,25 @@ const runChatbotTurn = async (
         // tool calls, RAG hits, latency, cost — lives in Langfuse.
         writer.merge(
           dropChunksAfterAbort(
-            result.toUIMessageStream<UIMessage>({
+            toUIMessageStream<ChatbotTools>({
+              stream: result.stream,
               // A provider `error` part (e.g. empty pool) surfaces through
               // the INNER stream's onError, not the outer one — route it to
               // the same mapper so both surfaces agree on the wire frame.
               onError: recordStreamError,
               messageMetadata: ({ part }) => {
                 if (part.type !== "finish") return undefined;
-                const usage = part.totalUsage;
-                // Trace id of this turn (active span context) — sent to the
-                // client live AND folded into the persisted message metadata,
-                // so the feedback control can score the right Langfuse trace.
-                const traceId = getActiveTraceId();
-                return {
-                  ...(traceId !== undefined
-                    ? { langfuseTraceId: traceId }
-                    : {}),
-                  telemetry: {
-                    finishReason: part.finishReason,
-                    rawFinishReason: part.rawFinishReason,
-                    // Which agent answered + under which profile. The eval
-                    // harness reads these over SSE: a candidate run where a
-                    // silent failover served the fallback model must be
-                    // flagged, not scored as the candidate.
-                    servedBy,
-                    modelProfileKey: modelProfile.key,
-                    usage: {
-                      inputTokens: usage.inputTokens,
-                      outputTokens: usage.outputTokens,
-                      totalTokens: usage.totalTokens,
-                      reasoningTokens:
-                        usage.outputTokenDetails?.reasoningTokens,
-                      cachedInputTokens:
-                        usage.inputTokenDetails?.cacheReadTokens,
-                    },
-                  },
-                };
+                // `servedBy` reports which agent answered under which profile;
+                // the eval harness reads it over SSE so a silent failover to
+                // the fallback model is flagged, not scored as the candidate.
+                // `getActiveTraceId()` is this turn's active span, sent live AND
+                // persisted so the feedback control scores the right trace.
+                return buildTurnMessageMetadata(
+                  part,
+                  servedBy,
+                  modelProfile.key,
+                  getActiveTraceId(),
+                );
               },
             }),
             abortController.signal,

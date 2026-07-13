@@ -1,36 +1,37 @@
-import db from "@fretik/shared/db";
-import { aiChatFiles } from "@fretik/shared/db/schema";
-import { buildSessionKey } from "@fretik/shared/lib/chatbot-session-storage";
-import { buildDocumentOriginalKey } from "@fretik/shared/lib/document-storage";
-import { copyObject } from "@fretik/shared/lib/s3";
-import { finalizeFailedDocument } from "@fretik/shared/services/documents/process";
-import { enqueueDocumentProcessing } from "@fretik/shared/services/documents/processing-queue";
-import { createDocumentRecord } from "@fretik/shared/services/documents/upload";
-import { isDriveSupported } from "@fretik/shared/utils/mimeTypes";
 import { randomUUIDv7 } from "bun";
 import { eq, inArray } from "drizzle-orm";
-import { WORKSPACE_DIRS } from "../../lib/conversation-storage";
+import db from "../../db";
+import { aiChatFiles } from "../../db/schema";
+import { buildSessionKey } from "../../lib/chatbot-session-storage";
+import { buildDocumentOriginalKey } from "../../lib/document-storage";
+import { copyObject } from "../../lib/s3";
+import { isDriveSupported } from "../../utils/mimeTypes";
+import { finalizeFailedDocument } from "../documents/process";
+import { enqueueDocumentProcessing } from "../documents/processing-queue";
+import { createDocumentRecord } from "../documents/upload";
 
 /**
- * Promote already-uploaded chat-files to the team's Drive (`documents`
- * table). Called from the POST `/conversation/:id/files/promote-to-drive`
- * route so the toggle's value is read at message-send time, not at
- * file-selection time (the latter raced with the eager upload and made
- * the toggle look broken).
+ * Promote already-uploaded chat-files to the team's Drive (`documents` table).
+ * Called from the "Save to Drive" toggle route, the `uploadToDrive` tool, and
+ * the tool's approval-grant path (which is why it lives in `@fretik/shared`:
+ * the grant runs in the API process without importing `@fretik/ai`).
  *
  * For each fileId:
  *  1. Verify the row belongs to `conversationId` + `teamId`.
  *  2. Skip if `documentId` is already set (idempotent).
- *  3. Insert the `documents` row, server-side COPY the attachment's S3
- *     object onto the document's original key (no bytes pulled into the
- *     AI process), then enqueue the shared document-processing job.
+ *  3. Insert the `documents` row, server-side COPY the attachment's S3 object
+ *     onto the document's original key, then enqueue the processing job.
  *  4. Persist the resulting `documents.id` back on the chat-file row.
  *
- * The heavy work (OCR / conversion / vectorisation) runs in the API-side
- * BullMQ worker, so promotion never blocks the chat stream. Best-effort:
- * per-file failures are collected in `failed` instead of aborting the
- * whole batch.
+ * The heavy work (OCR / conversion / vectorisation) runs in the API-side BullMQ
+ * worker, so promotion never blocks the chat stream. Best-effort: per-file
+ * failures are collected in `failed` instead of aborting the whole batch.
  */
+
+/** Sandbox workspace dir holding a conversation's uploads — the S3 session-key
+ * prefix under which chat attachments are stored (mirrors the AI package's
+ * `WORKSPACE_DIRS.attachments`). */
+const ATTACHMENTS_DIR = "attachments";
 
 interface PromoteArgs {
   fileIds: string[];
@@ -57,7 +58,7 @@ export interface PromoteResult {
 }
 
 const buildAttachmentPath = (filename: string): string =>
-  `${WORKSPACE_DIRS.attachments}/${filename}`;
+  `${ATTACHMENTS_DIR}/${filename}`;
 
 export const promoteChatFilesToDrive = async (
   args: PromoteArgs,

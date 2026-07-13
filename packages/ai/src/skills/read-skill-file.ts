@@ -1,4 +1,5 @@
 import { listActiveProviderKeysForConversation } from "@fretik/shared/services/external-apps/connections/list-active-providers-for-conversation";
+import { listMcpSnapshotsForConversation } from "@fretik/shared/services/external-apps/mcp/list-snapshots-for-conversation";
 import { listEnabledTeamUploadedSkillsWithBodyForConversation } from "@fretik/shared/services/skills/list-enabled-team-uploaded-with-body";
 import { resolve, sep } from "node:path";
 import { materializeTeamSkillMd } from "./materialize-team-skill";
@@ -12,6 +13,9 @@ import { BUNDLED_SKILLS_DIR, EXTERNAL_APP_SKILLS_DIR } from "./paths";
  *  - **bundled**  → on disk at `bundled/<name>/...` (this package).
  *  - **provider** → on disk at `sandbox-assets/skills/<providerKey>/...`,
  *                   served only for providers active on this conversation.
+ *  - **mcp**      → the SKILL.md is the introspected tool snapshot in the DB
+ *                   (`external_app_tool_snapshots`); MCP apps ship no
+ *                   reference/script files.
  *  - **team**     → the SKILL.md body lives in the `skills` DB row;
  *                   reference/script files are not supported (none ship).
  *
@@ -73,7 +77,16 @@ export const readSkillWorkspaceFile = async (
     }
   }
 
-  // 3. Team-uploaded (DB body → materialised SKILL.md). Only SKILL.md
+  // 3. MCP snapshot (introspected tool index → SKILL.md). Keyed by the
+  // provider key; the same visibility gate as the sandbox overlay push
+  // (team-scoped, ready connections only). MCP apps ship SKILL.md only.
+  if (fileSegments.length === 1 && fileSegments[0] === "SKILL.md") {
+    const overlays = await listMcpSnapshotsForConversation(conversationId);
+    const overlay = overlays.find((o) => o.providerKey === skillName);
+    if (overlay) return overlay.skillMd;
+  }
+
+  // 4. Team-uploaded (DB body → materialised SKILL.md). Only SKILL.md
   // is materialised for team skills; they ship no reference/script files.
   if (fileSegments.length === 1 && fileSegments[0] === "SKILL.md") {
     const teamSkills =

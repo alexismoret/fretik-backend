@@ -97,12 +97,12 @@ export const generateConversationTitle = async (
       () =>
         generateText({
           model: titleModel,
-          system: SYSTEM_PROMPT,
+          instructions: SYSTEM_PROMPT,
           prompt: trimmed,
           temperature: TITLE_TEMPERATURE,
           maxOutputTokens: TITLE_MAX_TOKENS,
           abortSignal: AbortSignal.timeout(TITLE_TIMEOUT_MS),
-          experimental_telemetry: telemetryFor("conversation-title"),
+          telemetry: telemetryFor("conversation-title"),
         }),
     );
     rawText = text;

@@ -11,7 +11,10 @@ import { getProvider } from "../../../external-apps/registry";
 import { throwHttpError } from "../../../lib/errors";
 import { getNangoClient } from "../../../lib/external-apps/nango-client";
 import { ERROR_CODES } from "../../../schemas/errors";
+import type { ConfirmMcpParams } from "../../../schemas/external-apps";
 import { emitDomainEvent } from "../../domain-events/emit";
+import { isMcpConnectKey } from "../mcp/catalog";
+import { confirmMcpConnection } from "./confirm-mcp";
 
 /**
  * Confirm a connection created via Connect UI (for `nango-proxy` OAuth
@@ -41,14 +44,43 @@ export const confirmConnection = async (params: {
   scope: "team" | "user";
   providerKey: string;
   displayName: string;
-  nangoConnectionId: string;
+  /** Absent only for a no-auth custom MCP server (`mcp-custom-none`). */
+  nangoConnectionId?: string;
   options?: Record<string, unknown>;
+  mcp?: ConfirmMcpParams;
 }): Promise<ExternalAppConnection> => {
   const provider = getProvider(params.providerKey);
+
+  // MCP connections have no hand-written manifest — `getProvider` is undefined.
+  // Their whole confirm flow (auth-kind derivation, server-URL sourcing, SSRF
+  // check, insert) lives in `confirm-mcp` — the api handler then introspects.
+  if (provider === undefined && isMcpConnectKey(params.providerKey)) {
+    return confirmMcpConnection({
+      organizationId: params.organizationId,
+      teamId: params.teamId,
+      userId: params.userId,
+      scope: params.scope,
+      providerKey: params.providerKey,
+      displayName: params.displayName,
+      nangoConnectionId: params.nangoConnectionId,
+      mcp: params.mcp,
+    });
+  }
+
   if (provider === undefined) {
     return throwHttpError(404, {
       code: ERROR_CODES.EXTERNAL_APP_PROVIDER_NOT_FOUND,
       message: `Unknown provider: ${params.providerKey}`,
+    });
+  }
+
+  // Every manifest provider is Nango-backed (only a no-auth MCP server omits
+  // the connection id) — narrow it here.
+  const nangoConnectionId = params.nangoConnectionId;
+  if (nangoConnectionId === undefined) {
+    return throwHttpError(400, {
+      code: ERROR_CODES.EXTERNAL_APP_NANGO_VERIFY_FAILED,
+      message: "Missing Nango connection id",
     });
   }
 
@@ -81,7 +113,7 @@ export const confirmConnection = async (params: {
   try {
     nangoConnection = await nango.getConnection(
       provider.manifest.nangoProviderConfigKey,
-      params.nangoConnectionId,
+      nangoConnectionId,
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -145,7 +177,7 @@ export const confirmConnection = async (params: {
         userId: params.scope === "user" ? params.userId : null,
         providerKey: params.providerKey,
         displayName: params.displayName,
-        nangoConnectionId: params.nangoConnectionId,
+        nangoConnectionId,
         nangoProviderConfigKey: provider.manifest.nangoProviderConfigKey,
         createdByUserId: params.userId,
         status: initialStatus,

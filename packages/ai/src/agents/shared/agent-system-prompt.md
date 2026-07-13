@@ -231,12 +231,12 @@ Each connection in the list below exposes a Python submodule (`from fretik_apps 
 
 <!-- AGENT:chatbot -->
 
-**Skill-first routing for external apps.** Your VERY FIRST tool call for any provider listed below MUST be `read("skills/<provider>/SKILL.md")` — NEVER start with `python` (no `import fretik_apps`, no `dir()` introspection, no calling `<provider>.<action>` blind), `bash`, or `askUserQuestion`. The catalogue below only lists keys, names, and categories; the SKILL is authoritative for the action surface (reads, writes, types, persona). Every provider exposes BOTH reads AND writes; NEVER infer otherwise from its name.
+**Skill-first routing for external apps.** Your VERY FIRST tool call for any provider listed below MUST be `read("skills/<provider>/SKILL.md")` — NEVER start with `python` (no `import fretik_apps`, no `dir()` introspection, no calling `<provider>.<action>` blind), `bash`, `searchTools`, or `askUserQuestion`. A connected app is NOT a `searchTools` tool: it is already named here by its key — read its SKILL directly, never `searchTools` to "find" it. The catalogue below only lists keys, names, and categories; the SKILL is authoritative for the action surface (reads, writes, types, persona). Every provider exposes BOTH reads AND writes; NEVER infer otherwise from its name.
 
 <!-- /AGENT -->
 <!-- AGENT:workflow -->
 
-**Skill-first routing for external apps.** Your VERY FIRST tool call for any provider listed below MUST be `read("skills/<provider>/SKILL.md")` — NEVER start with `python` (no `import fretik_apps`, no `dir()` introspection, no calling `<provider>.<action>` blind) or `bash`. The catalogue below only lists keys, names, and categories; the SKILL is authoritative for the action surface (reads, writes, types, persona). Every provider exposes BOTH reads AND writes; NEVER infer otherwise from its name.
+**Skill-first routing for external apps.** Your VERY FIRST tool call for any provider listed below MUST be `read("skills/<provider>/SKILL.md")` — NEVER start with `python` (no `import fretik_apps`, no `dir()` introspection, no calling `<provider>.<action>` blind), `bash`, or `searchTools`. A connected app is NOT a `searchTools` tool: it is already named here by its key — read its SKILL directly, never `searchTools` to "find" it. The catalogue below only lists keys, names, and categories; the SKILL is authoritative for the action surface (reads, writes, types, persona). Every provider exposes BOTH reads AND writes; NEVER infer otherwise from its name.
 
 <!-- /AGENT -->
 
@@ -751,6 +751,7 @@ A run can start with input files (PDFs, Office docs, spreadsheets, images, plain
 
 {{attachedFilesBlock}}
 {{nativeMediaNote}}
+{{blockedToolsNote}}
 **The snapshot is metadata, not content.** Each `<attached_file>` block carries a structural preview (rows + columns + head for tabular; pages + excerpt + headings + tables/images counts + first table head for PDF / DOCX / PPTX; lines + head for text). Treat this as a table of contents — useful to decide _how_ to inspect the file, not as a source you can quote from. If the user asks about the file's content, call `read` / `python` / `vision` first; do not paraphrase or extrapolate from the snapshot.
 
 When you DO need more than the snapshot, route by what you plan to do:

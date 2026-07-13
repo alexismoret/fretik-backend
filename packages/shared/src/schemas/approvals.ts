@@ -18,7 +18,9 @@ export type ToolApprovalStatusValue = z.infer<typeof toolApprovalStatusSchema>;
 
 export const toolApprovalKindSchema = z.enum([
   "external_app_plan",
+  "external_app_read",
   "record_write",
+  "tool_call",
   "question",
 ]);
 export type ToolApprovalKindValue = z.infer<typeof toolApprovalKindSchema>;
@@ -82,9 +84,29 @@ export type ApprovalRecordWritePayloadDto = z.infer<
   typeof approvalRecordWritePayloadSchema
 >;
 
+// ---- `tool_call` payload (one gated builtin write tool) -------------------
+
+/** A key/value preview field on the card — label referenced by i18n key. */
+export const approvalSummaryFieldSchema = z.object({
+  labelKey: z.string(),
+  value: z.string(),
+  kind: z.enum(["text", "html"]).optional(),
+});
+
+export const approvalToolCallPayloadSchema = z.object({
+  toolName: z.string().min(1),
+  args: z.record(z.string(), z.unknown()),
+  note: z.string().max(1000).optional(),
+  summaryFields: z.array(approvalSummaryFieldSchema).optional(),
+});
+export type ApprovalToolCallPayloadDto = z.infer<
+  typeof approvalToolCallPayloadSchema
+>;
+
 export const approvalPayloadSchema = z.union([
   approvalQuestionPayloadSchema,
   approvalRecordWritePayloadSchema,
+  approvalToolCallPayloadSchema,
 ]);
 export type ApprovalPayloadDto = z.infer<typeof approvalPayloadSchema>;
 
@@ -171,13 +193,15 @@ export const approvalResponseSchema = z.object({
   operations: z.array(toolApprovalOperationSchema).nullable(),
   /** Structured payload for `record_write` / `question` (else null). */
   payload: approvalPayloadSchema.nullable(),
-  /** Per-kind outcome after a decision: plan ops results, record-write
-   * results, or `question` answers. */
+  /** Per-kind outcome after a decision: plan/read op results (array),
+   * record-write results (array), `question` answers, or a single `tool_call`
+   * result (op-result shape). */
   result: z
     .union([
       z.array(toolApprovalOpResultSchema),
       z.array(toolApprovalRecordResultSchema),
       toolApprovalAnswersSchema,
+      toolApprovalOpResultSchema,
     ])
     .nullable(),
   decisionFeedback: z.string().nullable(),

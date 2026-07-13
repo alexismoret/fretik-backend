@@ -4,7 +4,6 @@ import {
   getSessionFilePresignedUrl,
   readSessionFile,
 } from "@fretik/shared/lib/chatbot-session-storage";
-import { redis } from "@fretik/shared/lib/redis";
 import { applyAntiBufferingHeaders } from "@fretik/shared/lib/sse-headers";
 import { workflowAbortChannel } from "@fretik/shared/lib/workflow-abort";
 import {
@@ -25,6 +24,7 @@ import {
   saveMessages,
 } from "@fretik/shared/services/ai/messages";
 import { releaseSandbox } from "@fretik/shared/services/e2b/release-sandbox";
+import { getTeamToolPolicies } from "@fretik/shared/services/tool-policies/get-for-team";
 import { createWorkflowRun } from "@fretik/shared/services/workflows/create-run";
 import { evaluateCircuitBreaker } from "@fretik/shared/services/workflows/evaluate-circuit-breaker";
 import { finalizeRun } from "@fretik/shared/services/workflows/finalize-run";
@@ -40,6 +40,7 @@ import { startCurrentTask } from "@fretik/shared/services/workflows/start-curren
 import { startRunning } from "@fretik/shared/services/workflows/start-running";
 import { OpenAPIHono } from "@hono/zod-openapi";
 import {
+  getActiveTraceId,
   propagateAttributes,
   startActiveObservation,
   updateActiveObservation,
@@ -48,6 +49,7 @@ import {
   convertToModelMessages,
   createUIMessageStream,
   isToolUIPart,
+  toUIMessageStream,
   type LanguageModelUsage,
   type UIMessage,
 } from "ai";
@@ -68,6 +70,8 @@ import {
   buildPlaybookBlock,
   buildSteeringMessage,
 } from "../agents/workflow/playbook-block";
+import type { WorkflowTools } from "../agents/workflow/tools";
+import { subscribeAbort } from "../lib/abort-subscriber";
 import { flushLangfuse, langfuseEnabled } from "../lib/langfuse";
 import {
   getProfileForRole,
@@ -80,6 +84,11 @@ import {
 import { triggerCallbackMiddleware } from "../middlewares/trigger-callback";
 import { prepareModelMessages } from "../services/native-input";
 import { runUnifiedRecall } from "../services/recall/recall";
+import {
+  buildTurnMessageMetadata,
+  filterNewAssistantMessages,
+  narrowMessageMetadata,
+} from "./turn-helpers";
 
 /**
  * Trigger.dev-facing routes — the workflow engine's server side. The
@@ -285,7 +294,7 @@ const executeTurn = async (params: {
   const runForPrompt: WorkflowRun = { ...run, taskStates };
   params.emitTaskUpdate(taskStates);
 
-  const [fragments, externalApps, recall, attachedFilesBlock] =
+  const [fragments, externalApps, recall, attachedFilesBlock, toolPolicies] =
     await Promise.all([
       assembleContextFragments({
         organizationId: run.organizationId,
@@ -333,6 +342,7 @@ const executeTurn = async (params: {
         : Promise.resolve(null),
       // Files handed to the run (form/email trigger uploads) → `<file_attachments>`.
       buildConversationAttachedFilesBlock(conversationId),
+      getTeamToolPolicies(run.teamId),
     ]);
 
   // Steering carries everything that mutates per turn (date, live statuses,
@@ -364,17 +374,19 @@ const executeTurn = async (params: {
     enabledSkillsBlock: fragments.enabledSkillsBlock,
     externalAppConnections: externalApps.externalAppConnections,
     externalAppsBlock: externalApps.externalAppsBlock,
+    toolPolicies,
     ...(attachedFilesBlock ? { attachedFilesBlock } : {}),
   };
 
   // ---- Stop plumbing (the user's Stop button → cancel-run publishes) ----
   const abortController = new AbortController();
-  const abortSubscriber = redis.duplicate();
-  await abortSubscriber.subscribe(workflowAbortChannel(run.id));
-  abortSubscriber.on("message", () => {
-    console.info(`${logPrefix} stop signal received run=${run.id}`);
-    abortController.abort();
-  });
+  const { release: releaseAbortSubscriber } = await subscribeAbort(
+    workflowAbortChannel(run.id),
+    () => {
+      console.info(`${logPrefix} stop signal received run=${run.id}`);
+      abortController.abort();
+    },
+  );
 
   const agentSet = getWorkflowAgentSet(workflow.modelProfileKey ?? undefined);
 
@@ -384,7 +396,7 @@ const executeTurn = async (params: {
 
   // ---- Mid-turn token-budget enforcement ----
   // `stopWhen` can't read the per-run budget (it gets only `{ steps }`, and the
-  // agent is a singleton), so enforce via abort in `onStepFinish`: accumulate
+  // agent is a singleton), so enforce via abort in `onStepEnd`: accumulate
   // per-step usage and stop the turn the moment the run total crosses the
   // ceiling — not only at the turn boundary. Some providers under-report
   // per-step `totalTokens` (MiniMax); the end-of-turn check below is the
@@ -393,7 +405,7 @@ const executeTurn = async (params: {
     workflow.limits.maxTotalTokens ?? WORKFLOW_DEFAULT_MAX_TOTAL_TOKENS;
   let turnAccumTokens = 0;
   let budgetAborted = false;
-  const onWorkflowStepFinish = (step: {
+  const onWorkflowStepEnd = (step: {
     toolCalls: readonly unknown[];
     usage?: { totalTokens?: number };
   }): void => {
@@ -432,14 +444,14 @@ const executeTurn = async (params: {
           messages: modelMessages,
           options: callOptions,
           abortSignal: abortController.signal,
-          onStepFinish: onWorkflowStepFinish,
+          onStepEnd: onWorkflowStepEnd,
         }),
       fallback: () =>
         agentSet.fallback.stream({
           messages: modelMessages,
           options: callOptions,
           abortSignal: abortController.signal,
-          onStepFinish: onWorkflowStepFinish,
+          onStepEnd: onWorkflowStepEnd,
         }),
       abortSignal: abortController.signal,
       log: (message) => console.warn(`${logPrefix} ${message}`),
@@ -457,7 +469,23 @@ const executeTurn = async (params: {
         finalMessages = messages;
       },
       execute: ({ writer }) => {
-        writer.merge(result.toUIMessageStream<UIMessage>());
+        writer.merge(
+          toUIMessageStream<WorkflowTools>({
+            stream: result.stream,
+            // Telemetry parity with the chatbot: tag each persisted assistant
+            // message with the trace id + finish/usage blob so a run's messages
+            // carry the same observability the chat UI's do.
+            messageMetadata: ({ part }) => {
+              if (part.type !== "finish") return undefined;
+              return buildTurnMessageMetadata(
+                part,
+                streamOutcome.servedBy,
+                modelProfile.key,
+                getActiveTraceId(),
+              );
+            },
+          }),
+        );
       },
     });
     const reader = uiStream.getReader();
@@ -484,9 +512,10 @@ const executeTurn = async (params: {
         }
       }
     }
-    turnUsage = await result.totalUsage;
+    // v7: `result.usage` is the all-steps turn total (v6's `totalUsage`).
+    turnUsage = await result.usage;
   } finally {
-    await abortSubscriber.quit().catch(() => undefined);
+    await releaseAbortSubscriber();
     // Pause the sandbox between turns — same billing discipline as chat.
     void releaseSandbox(conversationId).catch((err: unknown) => {
       console.warn(
@@ -600,19 +629,16 @@ const executeTurn = async (params: {
   // ---- Atomic persistence: messages + turn cursor (+ finalize) ----
   let terminal = false;
   await db.transaction(async (tx) => {
-    const known = new Set(history.map((m) => m.id));
-    const assistantMessages = finalMessages.filter(
-      (m) => !known.has(m.id) && m.role === "assistant",
+    const assistantMessages = filterNewAssistantMessages(
+      history,
+      finalMessages,
     );
     await saveMessages(
       conversationId,
       assistantMessages.map((m) => ({
         role: "assistant" as const,
         parts: m.parts,
-        metadata:
-          m.metadata && typeof m.metadata === "object"
-            ? (m.metadata as Record<string, unknown>)
-            : undefined,
+        metadata: narrowMessageMetadata(m),
       })),
       tx,
     );

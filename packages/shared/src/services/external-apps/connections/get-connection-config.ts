@@ -6,6 +6,7 @@ import { extractNangoErrorDetails } from "../../../lib/external-apps/extract-nan
 import { getNangoClient } from "../../../lib/external-apps/nango-client";
 import { ERROR_CODES } from "../../../schemas/errors";
 import { getConnectionForCaller } from "./get-by-id";
+import { requireNangoRef } from "./nango-ref";
 
 /**
  * Fetch the non-sensitive `connection_config` of a custom-handler
@@ -56,12 +57,13 @@ export const getConnectionConfigForReconnect = async (params: {
     return {};
   }
 
+  const { nangoProviderConfigKey, nangoConnectionId } = requireNangoRef(row);
   const nango = getNangoClient();
   let nangoConnection;
   try {
     nangoConnection = await nango.getConnection(
-      row.nangoProviderConfigKey,
-      row.nangoConnectionId,
+      nangoProviderConfigKey,
+      nangoConnectionId,
     );
   } catch (error) {
     return throwHttpError(400, {

@@ -24,7 +24,7 @@ COPY .husky .husky
 COPY patches patches
 ENV CI=true
 RUN --mount=type=cache,target=/root/.bun/install/cache \
-    bun install --frozen-lockfile --filter '@fretik/jobs' --filter '@fretik/shared'
+    bun install --frozen-lockfile --filter '@fretik/jobs' --filter '@fretik/shared' --filter '@fretik/providers'
 
 # ---- release: extend install (symlinks stay in place) ---------------
 FROM install AS release
@@ -36,7 +36,12 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends poppler-utils ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
+# Source last so source-only changes don't invalidate the install layer.
+# @fretik/providers ships as workspace source: the mcp-refresh worker imports
+# @fretik/providers/mcp, so a missing source dir would leave a dangling symlink
+# and crash the process at boot.
 COPY packages/shared packages/shared
+COPY packages/providers packages/providers
 COPY packages/jobs packages/jobs
 
 RUN rm -rf .husky

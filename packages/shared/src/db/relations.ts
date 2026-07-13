@@ -95,6 +95,10 @@ export const relations = defineRelations(schema, (r) => ({
       from: r.team.id,
       to: r.teamAiSettings.teamId,
     }),
+    toolPolicies: r.one.teamToolPolicies({
+      from: r.team.id,
+      to: r.teamToolPolicies.teamId,
+    }),
     folders: r.many.folders(),
     documents: r.many.documents(),
     activityLogs: r.many.activityLogs(),
@@ -172,6 +176,13 @@ export const relations = defineRelations(schema, (r) => ({
   teamAiSettings: {
     team: r.one.team({
       from: r.teamAiSettings.teamId,
+      to: r.team.id,
+    }),
+  },
+
+  teamToolPolicies: {
+    team: r.one.team({
+      from: r.teamToolPolicies.teamId,
       to: r.team.id,
     }),
   },

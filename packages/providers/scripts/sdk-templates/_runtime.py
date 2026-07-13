@@ -16,11 +16,31 @@ the JWT rotates without restarting the Jupyter kernel.
 import base64
 import json
 import os
+import re
 import urllib.error
 import urllib.request
 import uuid
 from dataclasses import dataclass
 from typing import Any
+
+
+def _safe_pattern(pattern: str) -> str | None:
+    """Return `pattern` if Python's `re` can compile it, else None.
+
+    MCP `inputSchema`s carry ECMAScript regexes, and JS-only constructs
+    (e.g. `\\p{...}`, some named-group spellings) raise `re.error` under
+    Python's `re`. Pydantic compiles a `Field(pattern=...)` eagerly at class
+    definition, so a bad pattern would crash the whole generated module's
+    import and take every tool of that app offline. Degrading to `None` (no
+    local constraint) keeps the module importable — the MCP server still
+    enforces the real pattern on its side.
+    """
+    try:
+        re.compile(pattern)
+    except re.error:
+        return None
+    return pattern
+
 
 # Canonical sandbox directory for downloaded attachments. Same path the
 # rest of the agent's file tools already speak (`vision`, `read`,

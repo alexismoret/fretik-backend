@@ -258,12 +258,12 @@ export const distillConversation = async (input: {
       );
       const { text: raw } = await generateText({
         model,
-        system: SYSTEM_PROMPT,
+        instructions: SYSTEM_PROMPT,
         prompt,
         temperature: DISTILL_TEMPERATURE,
         maxOutputTokens: DISTILL_MAX_OUTPUT_TOKENS,
         abortSignal: AbortSignal.timeout(DISTILL_TIMEOUT_MS),
-        experimental_telemetry: telemetryFor("memory-distill"),
+        telemetry: telemetryFor("memory-distill"),
       });
       return parseDistillOutput(raw);
     },

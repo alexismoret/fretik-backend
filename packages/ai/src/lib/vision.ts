@@ -1,4 +1,4 @@
-import { type LanguageModelV3 } from "@ai-sdk/provider";
+import { type LanguageModelV4 } from "@ai-sdk/provider";
 import { generateText } from "ai";
 import { telemetryFor } from "./langfuse";
 import { resolveModel } from "./model-registry/resolve";
@@ -14,7 +14,9 @@ import { resolveModel } from "./model-registry/resolve";
  * and an optional filename. We send those straight to OpenRouter —
  * no local disk roundtrip.
  *
- *  - Images (.png/.jpg/.webp) go as a `type: "image"` content part.
+ *  - Images (.png/.jpg/.webp) go as a `type: "file"` content part with an
+ *    `image/*` mediaType — the OpenRouter provider maps it to an `image_url`
+ *    block (v7 deprecates the standalone `image` part).
  *  - PDFs go as a `type: "file"` content part, with OpenRouter's
  *    `file-parser` plugin pinned to `engine: "native"` so Gemini
  *    receives the raw PDF instead of OpenRouter's default
@@ -57,7 +59,7 @@ const visionFallbackModel = visionFallback.model;
  * so the agent can see which one actually answered.
  */
 const runWithVisionFallback = async <T>(
-  builder: (model: LanguageModelV3, modelId: string) => Promise<T>,
+  builder: (model: LanguageModelV4, modelId: string) => Promise<T>,
 ): Promise<T> => {
   try {
     return await builder(visionModel, VISION_MODEL_ID);
@@ -95,14 +97,19 @@ export const describeImage = async (
       maxOutputTokens: MAX_OUTPUT_TOKENS,
       abortSignal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
       // Nests under the `vision` tool call → under `chatbot-turn`.
-      experimental_telemetry: telemetryFor("vision"),
+      telemetry: telemetryFor("vision"),
       messages: [
         {
           role: "user",
           content: [
             {
-              type: "image",
-              image: args.bytes,
+              // v7 deprecates the `image` content part → unified `file` part
+              // (`ImagePart` is @deprecated). The OpenRouter provider branches
+              // on `mediaType`: `image/*` → an `image_url` block for the vision
+              // model, exactly as the old `image` part did. (Same `file` part as
+              // the PDF/video paths below — the mediaType is what distinguishes.)
+              type: "file",
+              data: args.bytes,
               mediaType: args.mimeType,
             },
             {
@@ -155,7 +162,7 @@ export const describePdf = async (
       maxOutputTokens: MAX_OUTPUT_TOKENS,
       abortSignal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
       // Nests under the `vision` tool call → under `chatbot-turn`.
-      experimental_telemetry: telemetryFor("vision"),
+      telemetry: telemetryFor("vision"),
       messages: [
         {
           role: "user",
@@ -223,7 +230,7 @@ export const describeVideo = async (
     maxOutputTokens: MAX_OUTPUT_TOKENS,
     abortSignal: AbortSignal.timeout(VIDEO_TIMEOUT_MS),
     // Nests under the `vision` tool call → under `chatbot-turn`.
-    experimental_telemetry: telemetryFor("vision"),
+    telemetry: telemetryFor("vision"),
     messages: [
       {
         role: "user",

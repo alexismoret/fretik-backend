@@ -44,10 +44,18 @@ export const runApprovalGate = async (params: {
    * agent gets the per-row errors instantly instead of after the grant.
    */
   validateBeforePending?: () => Promise<{ index: number; error: string }[]>;
+  /**
+   * Force auto-grant (skip the human, grant + execute in place) regardless of
+   * autonomy. Defaults to `autonomy === "autonomous"`. Set `true` when a
+   * per-tool/per-action policy resolved to `auto` in plain chat — the write
+   * still flows through the gate (keeping the audit row + replay cache), it
+   * just never pauses.
+   */
+  autoGrant?: boolean;
 }): Promise<SandboxExecResponse> => {
   const { ctx, kind, autonomy, lookupHash, createPending } = params;
   const handler = APPROVAL_KIND_HANDLERS[kind];
-  const autoGrant = autonomy === "autonomous";
+  const autoGrant = params.autoGrant ?? autonomy === "autonomous";
 
   // Claim a `granted` row atomically, execute it (per kind), return the wire
   // result. A lost claim race re-reads: a peer that already consumed it wins

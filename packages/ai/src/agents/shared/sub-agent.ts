@@ -99,7 +99,9 @@ export interface CreateSubAgentExecuteConfig<
    * payload returned to the parent. Keep it tight — the parent will
    * see this verbatim in its own context window.
    */
-  formatResult: (result: GenerateTextResult<TOOLS, never>) => OUTPUT;
+  formatResult: (
+    result: GenerateTextResult<TOOLS, Record<string, unknown>, never>,
+  ) => OUTPUT;
 }
 
 /**
@@ -118,7 +120,7 @@ export const createSubAgentExecute = <
 ) => {
   return async (
     input: INPUT,
-    options: ToolExecutionOptions,
+    options: ToolExecutionOptions<unknown>,
   ): Promise<OUTPUT> => {
     const ctx = getRuntimeContext(options);
     const messages = config.buildMessages(input, ctx);

@@ -173,11 +173,11 @@ const enrichOne = async (
       () =>
         generateText({
           model: cheapModel,
-          system: ENRICHMENT_SYSTEM_PROMPT,
+          instructions: ENRICHMENT_SYSTEM_PROMPT,
           prompt: buildPrompt(docContent, chunk),
           temperature: ENRICHMENT_TEMPERATURE,
           maxOutputTokens: ENRICHMENT_MAX_TOKENS,
-          experimental_telemetry: telemetryFor("vectorize-enrichment"),
+          telemetry: telemetryFor("vectorize-enrichment"),
         }),
     );
     return {

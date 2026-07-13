@@ -10,6 +10,7 @@ import {
 } from "../../schemas/field-definitions";
 import { audienceSchema } from "../../schemas/object-sharing";
 import { recordRelationInputSchema } from "../../schemas/ontology";
+import type { ToolPolicyLevel } from "../../schemas/tool-policies";
 import type { WorkflowAutonomy } from "../../schemas/workflows";
 import { createPendingRecordWriteApproval } from "../approvals/create-pending-record-write";
 import { runApprovalGate } from "../approvals/gate";
@@ -31,6 +32,8 @@ import { createObjectTypeWithFields } from "../object-types/create-with-fields";
 import { deleteObjectType } from "../object-types/delete";
 import { resolveObjectTypeId } from "../object-types/resolve";
 import { updateObjectType } from "../object-types/update";
+import { getTeamToolPolicies } from "../tool-policies/get-for-team";
+import { resolveBuiltinToolPolicy } from "../tool-policies/resolve";
 import { getWorkflowAutonomyForConversation } from "../workflows/get-run-autonomy";
 import type { ExecContext, SandboxExecResponse } from "./types";
 
@@ -71,6 +74,10 @@ export const dispatchObjects = async (
   // Resolve the run's write-autonomy once: `null` = plain chat (direct writes),
   // else a workflow run whose mode gates record writes + schema changes.
   const autonomy = await getWorkflowAutonomyForConversation(ctx.conversationId);
+  // The team's tool-permission map — the Python objects SDK bypasses the domain
+  // tools, so it must consult the SAME policy (`manageRecord` for record writes,
+  // `manageObjectType`/`manageField` for schema) to stay coherent.
+  const teamPolicies = await getTeamToolPolicies(ctx.teamId);
 
   // A run never changes the team's object schema — hard rule, mirrors the
   // workflow executor excluding `manageObjectType`/`manageField`.
@@ -81,15 +88,34 @@ export const dispatchObjects = async (
         "SCHEMA_LOCKED_IN_WORKFLOW: a run never changes the team's object schema. Do schema migrations from chat.",
     };
   }
+  // In chat, a team may have blocked schema edits via the config-tool policy.
+  if (op.startsWith("schema.")) {
+    const schemaTool =
+      op === "schema.add_field" || op === "schema.change_field"
+        ? "manageField"
+        : "manageObjectType";
+    if (
+      resolveBuiltinToolPolicy({
+        toolName: schemaTool,
+        teamPolicies,
+        autonomy,
+      }) === "blocked"
+    ) {
+      return {
+        status: "error",
+        message: `SCHEMA_DISABLED: the team disabled ${schemaTool} (Settings → Tool permissions).`,
+      };
+    }
+  }
 
   try {
     switch (op) {
       case "records.bulk_create":
-        return await bulkCreate(ctx, actor, autonomy, rawArgs);
+        return await bulkCreate(ctx, actor, autonomy, teamPolicies, rawArgs);
       case "records.bulk_update":
-        return await bulkUpdate(ctx, actor, autonomy, rawArgs);
+        return await bulkUpdate(ctx, actor, autonomy, teamPolicies, rawArgs);
       case "records.bulk_delete":
-        return await bulkDelete(ctx, actor, autonomy, rawArgs);
+        return await bulkDelete(ctx, actor, autonomy, teamPolicies, rawArgs);
       case "records.query":
         return await queryRecords(ctx, rawArgs);
       case "schema.create_type":
@@ -114,16 +140,19 @@ const READ_ONLY_MSG =
   "READ_ONLY_WORKFLOW: this run cannot write records. Note in the task summary what would have been written.";
 
 /**
- * Gate one bulk record write by autonomy: `read_only` rejects; `autonomous` and
- * plain chat (`null`) write directly (no approval row); `approval_required`
- * routes through the generic approval gate — a pending `record_write` approval
- * that pauses the run, and on a re-run of the same code replays the consumed
- * result. `buildPayload` is LAZY (its snapshot/metadata reads run only when a
+ * Gate one bulk record write by the resolved `manageRecord` policy level
+ * (`resolveBuiltinToolPolicy` folds the team override AND workflow autonomy):
+ * `blocked` rejects (workflow `read_only`, or a team that turned record writes
+ * off); `auto` writes directly (no approval row — plain chat with the tool at
+ * `auto`, or an `autonomous` run); `approval` routes through the generic gate —
+ * a pending `record_write` the user reviews, replayed on a re-run of the same
+ * code. `buildPayload` is LAZY (its snapshot/metadata reads run only when a
  * fresh pending is actually created).
  */
 const gateRecordWrite = (params: {
   ctx: ExecContext;
   autonomy: WorkflowAutonomy | null;
+  teamPolicies: Record<string, ToolPolicyLevel>;
   op: ToolApprovalRecordWritePayload["op"];
   objectTypeId?: string;
   merge?: boolean;
@@ -135,10 +164,21 @@ const gateRecordWrite = (params: {
    * own validation via their `dryRun` flag. */
   validateBeforePending?: () => Promise<{ index: number; error: string }[]>;
 }): Promise<SandboxExecResponse> => {
-  if (params.autonomy === "read_only") {
-    return Promise.resolve({ status: "error", message: READ_ONLY_MSG });
+  const level = resolveBuiltinToolPolicy({
+    toolName: "manageRecord",
+    teamPolicies: params.teamPolicies,
+    autonomy: params.autonomy,
+  });
+  if (level === "blocked") {
+    return Promise.resolve({
+      status: "error",
+      message:
+        params.autonomy === "read_only"
+          ? READ_ONLY_MSG
+          : "RECORD_WRITES_DISABLED: the team disabled record writes for the assistant (Settings → Tool permissions).",
+    });
   }
-  if (params.autonomy !== "approval_required") {
+  if (level === "auto") {
     return params.directWrite();
   }
   const lookupHash = recordWriteLookupHash({
@@ -151,6 +191,7 @@ const gateRecordWrite = (params: {
     ctx: params.ctx,
     kind: "record_write",
     autonomy: params.autonomy,
+    autoGrant: false,
     lookupHash,
     createPending: async () =>
       createPendingRecordWriteApproval({
@@ -189,6 +230,7 @@ const bulkCreate = async (
   ctx: ExecContext,
   actor: EventActor,
   autonomy: WorkflowAutonomy | null,
+  teamPolicies: Record<string, ToolPolicyLevel>,
   rawArgs: Record<string, unknown>,
 ): Promise<SandboxExecResponse> => {
   const { typeKey, rows } = bulkCreateArgs.parse(rawArgs);
@@ -198,6 +240,7 @@ const bulkCreate = async (
   return gateRecordWrite({
     ctx,
     autonomy,
+    teamPolicies,
     op: "create",
     objectTypeId,
     hashItems: rows.map((r) => ({ data: r.data, relations: r.relations })),
@@ -263,6 +306,7 @@ const bulkUpdate = async (
   ctx: ExecContext,
   actor: EventActor,
   autonomy: WorkflowAutonomy | null,
+  teamPolicies: Record<string, ToolPolicyLevel>,
   rawArgs: Record<string, unknown>,
 ): Promise<SandboxExecResponse> => {
   const { updates, merge } = bulkUpdateArgs.parse(rawArgs);
@@ -270,6 +314,7 @@ const bulkUpdate = async (
   return gateRecordWrite({
     ctx,
     autonomy,
+    teamPolicies,
     op: "update",
     merge,
     hashItems: updates.map((u) => ({ recordId: u.id, data: u.data })),
@@ -335,6 +380,7 @@ const bulkDelete = async (
   ctx: ExecContext,
   actor: EventActor,
   autonomy: WorkflowAutonomy | null,
+  teamPolicies: Record<string, ToolPolicyLevel>,
   rawArgs: Record<string, unknown>,
 ): Promise<SandboxExecResponse> => {
   const { recordIds } = bulkDeleteArgs.parse(rawArgs);
@@ -342,6 +388,7 @@ const bulkDelete = async (
   return gateRecordWrite({
     ctx,
     autonomy,
+    teamPolicies,
     op: "delete",
     hashItems: recordIds.map((id) => ({ recordId: id })),
     buildPayload: async () => {

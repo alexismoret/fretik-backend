@@ -7,6 +7,7 @@ import { assertCanWriteRecord } from "@fretik/shared/services/object-sharing/wri
 import { resolveObjectTypeId } from "@fretik/shared/services/object-types/resolve";
 import { tool } from "ai";
 import { z } from "zod";
+import { gateBuiltinWriteTool } from "../agents/shared/policy-tool-gate";
 import {
   agentEventActor,
   getRuntimeContext,
@@ -185,6 +186,18 @@ export const createManageRecordTool = () =>
               "Check the available type keys in <team_objects>.",
             );
           }
+          const gate = await gateBuiltinWriteTool(ctx, {
+            toolName: "manageRecord",
+            args: {
+              action: "create",
+              objectTypeId,
+              data: values,
+              labelOverride: input.labelOverride ?? null,
+              relations: input.relations,
+              sharing: input.sharing,
+            },
+          });
+          if (gate !== null) return gate;
           const record = await createObjectRecord({
             organizationId: ctx.organizationId,
             teamId: ctx.teamId,
@@ -224,6 +237,17 @@ export const createManageRecordTool = () =>
           // Patch: only the named fields change; omitted ones are kept.
           // labelOverride forces the display label; sharing changes the audience
           // (owner team only — enforced via callerTeamId).
+          const gate = await gateBuiltinWriteTool(ctx, {
+            toolName: "manageRecord",
+            args: {
+              action: "update",
+              recordId: input.recordId,
+              data: values,
+              labelOverride: input.labelOverride ?? null,
+              sharing: input.sharing,
+            },
+          });
+          if (gate !== null) return gate;
           const record = await setRecordData({
             id: input.recordId,
             data: hasData || input.labelOverride != null ? values : undefined,
@@ -237,6 +261,11 @@ export const createManageRecordTool = () =>
         }
 
         if (input.action === "delete") {
+          const gate = await gateBuiltinWriteTool(ctx, {
+            toolName: "manageRecord",
+            args: { action: "delete", recordId: input.recordId },
+          });
+          if (gate !== null) return gate;
           const result = await deleteObjectRecord({
             id: input.recordId,
             actor,
@@ -250,6 +279,15 @@ export const createManageRecordTool = () =>
             "setStatus requires status ('confirmed' | 'rejected').",
           );
         }
+        const statusGate = await gateBuiltinWriteTool(ctx, {
+          toolName: "manageRecord",
+          args: {
+            action: "setStatus",
+            recordId: input.recordId,
+            status: input.status,
+          },
+        });
+        if (statusGate !== null) return statusGate;
         const record = await setRecordStatus({
           id: input.recordId,
           status: input.status,

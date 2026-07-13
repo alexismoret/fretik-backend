@@ -1,10 +1,11 @@
 import db from "@fretik/shared/db";
+import { promoteChatFilesToDrive } from "@fretik/shared/services/chat-files/promote-to-drive";
 import { tool } from "ai";
 import { z } from "zod";
+import { gateBuiltinWriteTool } from "../agents/shared/policy-tool-gate";
 import { getRuntimeContext } from "../agents/shared/runtime-context";
 import { workflowWriteBackstop } from "../agents/shared/workflow-write-backstop";
 import { TOOL_ERROR_CODES, toolError } from "../lib/tool-error-codes";
-import { promoteChatFilesToDrive } from "../services/chat-files/promote-to-drive";
 
 /**
  * `uploadToDrive` — the inverse of `downloadDriveDocument`: persist a file the
@@ -106,6 +107,12 @@ export const createUploadToDriveTool = () =>
           );
         }
       }
+
+      const gate = await gateBuiltinWriteTool(ctx, {
+        toolName: "uploadToDrive",
+        args: { fileId: chatFile.id, folderId: parentFolderId ?? null },
+      });
+      if (gate !== null) return gate;
 
       const { promoted, failed } = await promoteChatFilesToDrive({
         fileIds: [chatFile.id],

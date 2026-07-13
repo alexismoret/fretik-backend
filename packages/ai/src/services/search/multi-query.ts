@@ -142,13 +142,13 @@ export const generateQueryVariants = async (
       () =>
         generateText({
           model: cheapModel,
-          system: SYSTEM_PROMPT,
+          instructions: SYSTEM_PROMPT,
           prompt: trimmed,
           temperature: MULTI_QUERY_TEMPERATURE,
           maxOutputTokens: MULTI_QUERY_MAX_TOKENS,
           abortSignal: AbortSignal.timeout(MULTI_QUERY_TIMEOUT_MS),
           // Nests under the `searchKnowledge` tool call → `chatbot-turn`.
-          experimental_telemetry: telemetryFor("rag-multi-query"),
+          telemetry: telemetryFor("rag-multi-query"),
         }),
     );
     rawText = text;

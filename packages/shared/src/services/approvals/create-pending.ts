@@ -1,5 +1,6 @@
 import db from "../../db";
 import {
+  type ToolApprovalKind,
   type ToolApprovalOperation,
   type ToolApprovalRequest,
   type ToolApprovalSummary,
@@ -9,8 +10,10 @@ import { throwHttpError } from "../../lib/errors";
 import { ERROR_CODES } from "../../schemas/errors";
 
 /**
- * INSERT a fresh `pending` row for a plan submission. Called by the
- * dispatcher when `findLatestApprovalByHash` returned `undefined`.
+ * INSERT a fresh `pending` row for an operations-based submission — a plan
+ * (`external_app_plan`, default) or one gated read (`external_app_read`). Both
+ * render from `operations` + `summary`. Called by the dispatcher when
+ * `findLatestApprovalByHash` returned `undefined`.
  *
  * No `expires_at` — pending approvals never expire (a user can come back
  * 3 days later, click Approve, and the same lookupHash matches their
@@ -25,6 +28,7 @@ export const createPendingApproval = async (params: {
   lookupHash: string;
   operations: ToolApprovalOperation[];
   summary: ToolApprovalSummary;
+  kind?: ToolApprovalKind;
 }): Promise<ToolApprovalRequest> => {
   const [row] = await db
     .insert(toolApprovalRequests)
@@ -34,6 +38,7 @@ export const createPendingApproval = async (params: {
       userId: params.userId,
       conversationId: params.conversationId,
       turnId: params.turnId,
+      kind: params.kind ?? "external_app_plan",
       lookupHash: params.lookupHash,
       operations: params.operations,
       itemCount: params.operations.length,

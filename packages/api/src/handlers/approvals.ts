@@ -38,6 +38,7 @@ import { grantApproval } from "@fretik/shared/services/approvals/grant";
 import { modifyAndGrantApproval } from "@fretik/shared/services/approvals/modify-and-grant";
 import { rejectApproval } from "@fretik/shared/services/approvals/reject";
 import { extractFrameworkArgs } from "@fretik/shared/services/external-apps/exec/framework-args";
+import { resolveMcpWriteOp } from "@fretik/shared/services/external-apps/exec/mcp-plan";
 import { validateActionArgs } from "@fretik/shared/services/external-apps/exec/validate-args";
 import { getTeamLocale } from "@fretik/shared/services/field-definitions/get-locale";
 import { resumeRunFromApproval } from "@fretik/shared/services/workflows/resume-from-approval";
@@ -100,22 +101,35 @@ const toDto = async (
  * plans. Rejects the whole plan on any single failure so a user cannot
  * partially apply an invalid edit.
  */
-const validateModifiedPlan = (
+const validateModifiedPlan = async (
   operations: ToolApprovalOperation[],
-): {
+  teamId: string,
+  userId: string,
+): Promise<{
   operations: ToolApprovalOperation[];
   summary: ToolApprovalSummary;
-} => {
+}> => {
   const validatedOps: ToolApprovalOperation[] = [];
   const summaryOps: ToolApprovalSummary["operations"] = [];
 
   for (const op of operations) {
     const resolved = getAction(op.action);
     if (resolved === undefined) {
-      return throwHttpError(400, {
-        code: ERROR_CODES.EXTERNAL_APP_INVALID_ACTION,
-        message: `Unknown action in plan: ${op.action}`,
-      });
+      // MCP write op — re-resolve against the connection snapshot (generic
+      // summary). Autonomy is irrelevant here (validation only), so pass null.
+      let mcp;
+      try {
+        // eslint-disable-next-line no-await-in-loop -- sequential per-op resolve
+        mcp = await resolveMcpWriteOp({ op, teamId, userId, autonomy: null });
+      } catch (error) {
+        return throwHttpError(400, {
+          code: ERROR_CODES.EXTERNAL_APP_INVALID_ACTION,
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+      validatedOps.push({ action: op.action, args: mcp.storedArgs });
+      summaryOps.push(mcp.summaryOp);
+      continue;
     }
     if (resolved.action.kind !== "write") {
       return throwHttpError(400, {
@@ -368,7 +382,11 @@ approvalsRoutes.openapi(modifyAndGrantRoute, async (c) => {
   const { id } = c.req.valid("param");
   const body = c.req.valid("json");
 
-  const { operations, summary } = validateModifiedPlan(body.operations);
+  const { operations, summary } = await validateModifiedPlan(
+    body.operations,
+    team.id,
+    user.id,
+  );
 
   // Same idempotent recovery shape as grant.
   let approval: ToolApprovalRequest;

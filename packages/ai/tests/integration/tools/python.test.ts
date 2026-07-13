@@ -115,7 +115,7 @@ const buildOptions = (conversationId: string, toolCallId: string) => {
   return {
     toolCallId,
     messages: [] as never[],
-    experimental_context: wrapRuntimeContext(ctx),
+    context: wrapRuntimeContext(ctx),
   };
 };
 
@@ -180,7 +180,7 @@ describe("python tool", () => {
       {
         toolCallId: "tc-1",
         messages: [] as never[],
-        experimental_context: wrapRuntimeContext(ctx),
+        context: wrapRuntimeContext(ctx),
       },
     );
     expect(result).toEqual({

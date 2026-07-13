@@ -1,7 +1,7 @@
 ---
 name: teams
-description: Microsoft Teams — read inbox, send email, manage calendar and contacts
-version: a66452ebf766
+description: Microsoft Teams — read and send chat messages, and manage meetings and calls on the user's connected Teams account.
+version: 968ed00ba1e1
 ---
 
 # Microsoft Teams — 20 actions

@@ -213,6 +213,8 @@ const cargoLine: ParamSpec = {
 export const shiptifyManifest: ProviderManifest = {
   key: "shiptify",
   displayName: "Shiptify",
+  description:
+    "Shiptify — manage transport shipments, addresses, and related records on the connected Shiptify TMS account (shipper or carrier).",
   // Nango integration key — points at a `private-api-key` template, used
   // purely as encrypted credential storage. No proxy, no scopes.
   nangoProviderConfigKey: "shiptify",

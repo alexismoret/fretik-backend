@@ -13,19 +13,25 @@ import {
   bodyIdListSchema,
   DocumentResponseSchema,
   GetDocumentDetailsResponseSchema,
+  RecentDocumentSchema,
   UpdateDocumentSchema,
   UploadDocumentSchema,
 } from "@fretik/shared/schemas";
-import { paramsIdSchema } from "@fretik/shared/schemas/common/params";
+import {
+  paramsIdSchema,
+  paramsListSchema,
+} from "@fretik/shared/schemas/common/params";
 import {
   responseBadRequestSchema,
   responseCreatedSchemaBuilder,
   responseForbiddenSchema,
   responseInternalErrorSchema,
+  responseListSchema,
   responseNotFoundSchema,
   responseSuccessDeletedSchema,
 } from "@fretik/shared/schemas/common/responses";
 import { deleteDocuments } from "@fretik/shared/services/documents/delete";
+import { listRecentDocuments } from "@fretik/shared/services/documents/list-recent";
 import { streamUploadProgress } from "@fretik/shared/services/documents/progress";
 import { reextractDocument } from "@fretik/shared/services/documents/reextract";
 import {
@@ -89,6 +95,28 @@ const uploadDocumentRoute = createRoute({
       "Document created and processing started",
     ),
     ...responseBadRequestSchema,
+    ...responseForbiddenSchema,
+    ...responseInternalErrorSchema,
+  },
+});
+
+const listRecentDocumentsRoute = createRoute({
+  method: "get",
+  path: "",
+  summary: "List recent documents",
+  description:
+    "The team's most recently added documents, newest first — a lightweight projection (name, kind, size, status, when) for the home dashboard. Paginated with an exact total.",
+  tags: ["Documents"],
+  request: { query: paramsListSchema },
+  responses: {
+    200: {
+      content: {
+        "application/json": {
+          schema: responseListSchema(RecentDocumentSchema),
+        },
+      },
+      description: "Recent documents retrieved",
+    },
     ...responseForbiddenSchema,
     ...responseInternalErrorSchema,
   },
@@ -310,6 +338,23 @@ documentRoutes.openapi(reextractDocumentRoute, async (c) => {
   });
 
   return c.json({ success: true }, 202);
+});
+
+/**
+ * -- LIST RECENT DOCUMENTS
+ * --
+ * Team-wide recent documents for the home "Recent files" card.
+ */
+documentRoutes.openapi(listRecentDocumentsRoute, async (c) => {
+  const team = c.get("team");
+  if (!team) {
+    return throwHttpError(403, teamRequired());
+  }
+
+  const params = c.req.valid("query");
+  const result = await listRecentDocuments({ teamId: team.id, params });
+
+  return c.json(result, 200);
 });
 
 /**

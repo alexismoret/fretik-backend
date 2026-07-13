@@ -47,6 +47,23 @@ export const DocumentResponseSchema = z.object({
 export type DocumentResponse = z.infer<typeof DocumentResponseSchema>;
 
 /**
+ * Lightweight recent-document row for the home "Recent files" card — the
+ * columns needed to render a file row (name, kind, size, status, when) without
+ * the presigned URL / properties / field-value payload of the detail route.
+ */
+export const RecentDocumentSchema = z.object({
+  id: z.uuid(),
+  originalFilename: z.string(),
+  mimeType: z.string(),
+  fileSize: z.number(),
+  status: documentStatusSchema,
+  folderId: z.uuid().nullable(),
+  createdAt: z.date(),
+});
+
+export type RecentDocument = z.infer<typeof RecentDocumentSchema>;
+
+/**
  * Document details response schema (with universal properties, uploader, folder,
  * dynamic field values + their definitions for rendering).
  */

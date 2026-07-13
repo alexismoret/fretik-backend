@@ -47,6 +47,29 @@ export const objectTypeResponseSchema = z.object({
   updatedAt: z.coerce.date(),
 });
 
+/**
+ * One object type plus its live record counts — the home "Your objects" grid
+ * and the "AI suggestions to review" tally. `total` = confirmed records the
+ * team owns; `suggested` = AI-proposed records still awaiting confirmation.
+ */
+export const objectTypeOverviewItemSchema = z.object({
+  id: z.uuid(),
+  key: z.string(),
+  label: z.string(),
+  icon: z.string().nullable(),
+  color: z.string().nullable(),
+  total: z.number(),
+  suggested: z.number(),
+});
+
+export const objectTypeOverviewResponseSchema = z.object({
+  types: z.array(objectTypeOverviewItemSchema),
+});
+
+export type ObjectTypeOverviewItem = z.infer<
+  typeof objectTypeOverviewItemSchema
+>;
+
 export const createObjectTypeRequestSchema = z.object({
   key: z
     .string()

@@ -13,6 +13,7 @@ import { fieldDefinitionResponseSchema } from "@fretik/shared/schemas/field-defi
 import {
   createObjectTypeRequestSchema,
   createObjectTypeWithFieldsRequestSchema,
+  objectTypeOverviewResponseSchema,
   objectTypeResponseSchema,
   updateObjectTypeRequestSchema,
 } from "@fretik/shared/schemas/ontology";
@@ -20,6 +21,7 @@ import { assertCanWriteType } from "@fretik/shared/services/object-sharing/write
 import { createObjectType } from "@fretik/shared/services/object-types/create";
 import { createObjectTypeWithFields } from "@fretik/shared/services/object-types/create-with-fields";
 import { deleteObjectType } from "@fretik/shared/services/object-types/delete";
+import { getObjectTypesOverview } from "@fretik/shared/services/object-types/overview";
 import {
   getObjectType,
   listObjectTypes,
@@ -53,6 +55,25 @@ const listRoute = createRoute({
         "application/json": { schema: z.array(objectTypeResponseSchema) },
       },
       description: "Object types retrieved",
+    },
+    ...responseForbiddenSchema,
+    ...responseInternalErrorSchema,
+  },
+});
+
+const overviewRoute = createRoute({
+  method: "get",
+  path: "/overview",
+  summary: "List object types with record counts",
+  description:
+    "The team's visible object types, each with its confirmed-record total and its count of AI-suggested records awaiting review — the home dashboard's objects grid in one round-trip.",
+  tags: ["ObjectTypes"],
+  responses: {
+    200: {
+      content: {
+        "application/json": { schema: objectTypeOverviewResponseSchema },
+      },
+      description: "Object types overview retrieved",
     },
     ...responseForbiddenSchema,
     ...responseInternalErrorSchema,
@@ -187,6 +208,16 @@ objectTypeRoutes.openapi(listRoute, async (c) => {
     includeDisabled: true,
   });
   return c.json(types, 200);
+});
+
+objectTypeRoutes.openapi(overviewRoute, async (c) => {
+  const team = c.get("team");
+  if (!team) return c.json(teamRequired(), 403);
+  const overview = await getObjectTypesOverview({
+    organizationId: team.organizationId,
+    teamId: team.id,
+  });
+  return c.json(overview, 200);
 });
 
 objectTypeRoutes.openapi(getRoute, async (c) => {

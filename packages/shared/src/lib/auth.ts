@@ -1,3 +1,4 @@
+import { electron } from "@better-auth/electron";
 import { redisStorage } from "@better-auth/redis-storage";
 import { betterAuth, type BetterAuthOptions } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
@@ -33,6 +34,13 @@ if (!appUrl) {
 // Set `COOKIE_DOMAIN=.fretik.com` (leading dot) in production. In dev,
 // leave it unset — localhost cookies work across ports without this.
 const cookieDomain = process.env.BETTER_AUTH_COOKIE_DOMAIN;
+
+// Desktop (Electron) app origins that must be trusted alongside the web app.
+// The main-process Better Auth client tags its requests with
+// `electron-origin: <scheme>:/` (the electron() plugin promotes it to Origin),
+// and the renderer loads the SPA from `app://fretik` — so both are trusted here.
+const electronScheme = process.env.ELECTRON_PROTOCOL_SCHEME ?? "com.fretik.app";
+const electronOrigins = [`${electronScheme}:/`, "app://fretik"];
 
 /**
  * Best-effort write to the auth security audit trail. Never throws into the
@@ -83,7 +91,7 @@ const options = {
   },
 
   basePath: "/auth",
-  trustedOrigins: [appUrl],
+  trustedOrigins: [appUrl, ...electronOrigins],
 
   // NOTE: experimental.joins is intentionally disabled.
   // Better-Auth's drizzle adapter passes the output of convertWhereClause()
@@ -276,6 +284,12 @@ const options = {
     twoFactor({
       issuer: "Fretik",
     }),
+
+    // Desktop (Electron) support. Adds the /electron/token + OAuth-proxy
+    // endpoints and the redirect-cookie hand-off used by the desktop app's
+    // system-browser sign-in flow. Defaults (cookiePrefix "better-auth",
+    // clientID "electron") match the frontend's electronClient/electronProxyClient.
+    electron(),
   ],
 } satisfies BetterAuthOptions;
 

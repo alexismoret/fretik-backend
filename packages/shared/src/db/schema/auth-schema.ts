@@ -2,6 +2,7 @@ import { sql } from "drizzle-orm";
 import {
   boolean,
   index,
+  integer,
   pgTable,
   text,
   timestamp,
@@ -198,6 +199,16 @@ export const twoFactor = pgTable(
     secret: text("secret").notNull(),
     backupCodes: text("backup_codes").notNull(),
     verified: boolean("verified").notNull(),
+    // Added by the Better Auth `twoFactor` plugin's account-lockout feature
+    // (1.6.23). Shared across TOTP/OTP/backup-code challenges; a successful
+    // verification resets the counter.
+    failedVerificationCount: integer("failed_verification_count")
+      .default(0)
+      .notNull(),
+    lockedUntil: timestamp("locked_until", {
+      mode: "date",
+      withTimezone: true,
+    }),
   },
   (table) => [index("twoFactor_userId_idx").on(table.userId)],
 );

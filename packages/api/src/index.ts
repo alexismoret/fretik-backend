@@ -17,6 +17,7 @@ import { approvalsRoutes } from "./handlers/approvals";
 import { chatbotContextRoutes } from "./handlers/chatbot-context";
 import { conversationRoutes } from "./handlers/conversations";
 import { dashboardRoutes } from "./handlers/dashboard";
+import { desktopReleaseRoutes } from "./handlers/desktop-releases";
 import { documentRoutes } from "./handlers/documents";
 import { externalAppsRoutes } from "./handlers/external-apps";
 import { sandboxRoutes } from "./handlers/external-apps/sandbox-exec";
@@ -100,6 +101,7 @@ app.route("/approvals", approvalsRoutes);
 app.route("/tool-policies", toolPoliciesRoutes);
 app.route("/workflows", workflowRoutes);
 app.route("/forms", publicFormRoutes);
+app.route("/desktop-releases", desktopReleaseRoutes);
 app.route("/sandbox", sandboxRoutes);
 
 // The document-processing Worker lives in @fretik/jobs (with the memory

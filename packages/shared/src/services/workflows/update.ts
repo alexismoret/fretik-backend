@@ -7,6 +7,7 @@ import {
   type UpdateWorkflowInput,
   type WorkflowResponse,
 } from "../../schemas/workflows";
+import { filterTeamMemberIds } from "../team/members";
 import { getWorkflowRow } from "./get";
 import { serializeWorkflow } from "./serialize";
 import { workflowOwnerWriteError, type WorkflowRequester } from "./visibility";
@@ -62,6 +63,20 @@ export const updateWorkflow = async (params: {
     if (current && !current.formToken) formToken = Bun.randomUUIDv7();
   }
 
+  // Email recipients must be current human team members — silently drop
+  // anyone else (stale picker, departed member, bot), same contract as
+  // conversation seating. Re-checked again at send time.
+  let notifications = input.notifications;
+  if (notifications !== undefined) {
+    notifications = {
+      ...notifications,
+      recipientUserIds: await filterTeamMemberIds(
+        params.teamId,
+        notifications.recipientUserIds,
+      ),
+    };
+  }
+
   const [row] = await db
     .update(workflows)
     .set({
@@ -83,6 +98,7 @@ export const updateWorkflow = async (params: {
         ? { modelProfileKey: input.modelProfileKey }
         : {}),
       ...(input.limits !== undefined ? { limits: input.limits } : {}),
+      ...(notifications !== undefined ? { notifications } : {}),
       ...(input.userId !== undefined ? { userId: input.userId } : {}),
       ...(formToken !== undefined ? { formToken } : {}),
     })

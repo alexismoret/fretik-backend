@@ -37,6 +37,29 @@ export const hasPendingInvitation = async (email: string): Promise<boolean> => {
 };
 
 /**
+ * The team id of this email's pending invitation, if any. Used by the
+ * `user.create.before` hook so an invited user inherits their team's UI
+ * language at account creation. Returns null when there is no pending
+ * invitation or it is an org-level invitation with no team.
+ */
+export const getPendingInvitationTeamId = async (
+  email: string,
+): Promise<string | null> => {
+  const normalized = email.trim().toLowerCase();
+  if (!normalized) return null;
+
+  const rows = await db
+    .select({ teamId: invitation.teamId })
+    .from(invitation)
+    .where(
+      and(eq(invitation.email, normalized), eq(invitation.status, "pending")),
+    )
+    .limit(1);
+
+  return rows[0]?.teamId ?? null;
+};
+
+/**
  * True when the email may create an account during the closed beta: it is on
  * the per-email allowlist OR its domain is on the allowed-domains list.
  * Invitation-based access is handled separately by `hasPendingInvitation`.

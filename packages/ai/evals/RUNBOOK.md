@@ -145,11 +145,11 @@ The toggle is shown per-model via `STEERABLE_REASONING_KEYS` (`profiles.ts`) and
 lever is `reasoning.style` (`effort` for OpenAI / Anthropic / Google / Mistral / DeepSeek;
 `none`/adaptive otherwise — Claude 4.x rejects `max-tokens`/`budget_tokens`). Docs are
 PRIORS only — confirm at RUNTIME, the param is frequently inert: minimax-m3 lists
-`reasoning` yet ignores both `effort` and `max_tokens` (self-regulating ~3-5k). Probe with a
+`reasoning` yet ignores both `effort` and `max_tokens` (self-regulating ~~3-5k). Probe with a
 direct OpenRouter call comparing `usage.completion_tokens_details.reasoning_tokens` at
 `effort: low` vs `high` (plus `xhigh` for budget models, but note OpenRouter strips
 DeepSeek's `xhigh→max`, LiteLLM #27439): a clear monotonic rise ⇒ steerable (add to the set);
-flat ⇒ adaptive (leave out). Tune `defaultLevel` to a sensible B2B baseline (~`medium`,
+flat ⇒ adaptive (leave out). Tune `defaultLevel` to a sensible B2B baseline (~~`medium`,
 ≈ the provider's own default) and let the gate eval confirm no regression — only `low` is
 eval-validated today.
 

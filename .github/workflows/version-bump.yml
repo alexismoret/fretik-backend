@@ -1,0 +1,68 @@
+name: version-bump
+
+# Auto-bumps every workspace package.json in lockstep on each push to `main`
+# (patch by default; put `#minor` or `#major` in the commit message for a
+# bigger bump). The root package.json is the version source of truth.
+#
+# Versions here are informational — images are tagged by SHA; services expose
+# the version via their package.json import (health/OpenAPI). bun.lock embeds
+# workspace package versions but does NOT validate them (`--frozen-lockfile`
+# passes with a mismatch — verified with bun 1.x), so the lock is left alone;
+# it resyncs on the next real dependency change. The bump commit is tagged
+# `vX.Y.Z` and pushed with [skip ci] so it triggers nothing.
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: version-bump
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Checkout the branch tip (not the trigger SHA) so a queued run
+          # that starts after another push still bumps on top of main.
+          ref: main
+
+      - name: Bump versions (lockstep)
+        env:
+          # Passed via env (not inline) so a commit message can't inject shell.
+          HEAD_MSG: ${{ github.event.head_commit.message }}
+        run: |
+          TYPE=patch
+          case "$HEAD_MSG" in
+            *"#major"*) TYPE=major ;;
+            *"#minor"*) TYPE=minor ;;
+          esac
+          NEW=$(node -e '
+            const fs = require("fs");
+            const type = process.argv[1];
+            const root = JSON.parse(fs.readFileSync("package.json", "utf8"));
+            let [maj, min, pat] = root.version.split(".").map(Number);
+            if (type === "major") { maj += 1; min = 0; pat = 0; }
+            else if (type === "minor") { min += 1; pat = 0; }
+            else pat += 1;
+            const version = [maj, min, pat].join(".");
+            const write = (path) => {
+              const pkg = JSON.parse(fs.readFileSync(path, "utf8"));
+              pkg.version = version;
+              fs.writeFileSync(path, JSON.stringify(pkg, null, 2) + "\n");
+            };
+            write("package.json");
+            for (const dir of fs.readdirSync("packages")) {
+              const path = `packages/${dir}/package.json`;
+              if (fs.existsSync(path)) write(path);
+            }
+            console.log(version);
+          ' "$TYPE")
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "chore: release v$NEW [skip ci]"
+          git tag -a "v$NEW" -m "v$NEW"
+          git push origin HEAD:main --follow-tags

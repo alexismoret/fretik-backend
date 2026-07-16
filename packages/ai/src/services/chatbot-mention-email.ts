@@ -1,5 +1,6 @@
 import { generateChatbotMention } from "@fretik/shared/emails/generators";
 import { sendEmail } from "@fretik/shared/lib/email";
+import { getUserLocaleByEmail } from "@fretik/shared/services/auth/get-user-locale";
 import type { TeamMember } from "@fretik/shared/services/team/members";
 
 /**
@@ -25,12 +26,16 @@ export const notifyMentionedMembers = async (params: {
   for (const member of mentioned) {
     if (!member.email) continue;
     try {
-      const { subject, html } = await generateChatbotMention({
-        userName: member.name,
-        mentionedByName,
-        conversationId,
-        conversationTitle,
-      });
+      const lang = await getUserLocaleByEmail(member.email);
+      const { subject, html } = await generateChatbotMention(
+        {
+          userName: member.name,
+          mentionedByName,
+          conversationId,
+          conversationTitle,
+        },
+        lang,
+      );
       await sendEmail({
         to: { email: member.email, name: member.name },
         subject,

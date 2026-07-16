@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import db from "../../db";
 import { workflowRuns } from "../../db/schema";
 
@@ -29,13 +29,25 @@ export const heartbeatRun = async (params: {
  * Record the approval wait-token id on a run as it enters `needs_approval`.
  * The approval-decision path reads it back to `wait.completeToken`, resuming
  * the orchestrator loop.
+ *
+ * Guarded on `status = 'running'`: a retried/late wait-token POST must not
+ * flip an already-canceled (or otherwise closed) run back to
+ * `needs_approval`. Returns whether THIS call parked the run — the
+ * exactly-once signal the approval notification email keys on.
  */
 export const setRunWaitToken = async (params: {
   runId: string;
   waitTokenId: string;
-}): Promise<void> => {
-  await db
+}): Promise<{ parked: boolean }> => {
+  const updated = await db
     .update(workflowRuns)
     .set({ waitTokenId: params.waitTokenId, status: "needs_approval" })
-    .where(eq(workflowRuns.id, params.runId));
+    .where(
+      and(
+        eq(workflowRuns.id, params.runId),
+        eq(workflowRuns.status, "running"),
+      ),
+    )
+    .returning({ id: workflowRuns.id });
+  return { parked: updated.length > 0 };
 };

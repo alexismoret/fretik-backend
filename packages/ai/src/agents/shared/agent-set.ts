@@ -1,14 +1,19 @@
-import { approvalPendingId } from "@fretik/shared/services/ai/approval-pending";
+import {
+  approvalDeferred,
+  approvalPendingId,
+} from "@fretik/shared/services/ai/approval-pending";
 import type { StopCondition, ToolSet } from "ai";
 import type { ResolvedModel } from "../../lib/model-registry/resolve";
 
 /**
- * Stop the agent loop the moment a tool result parks on a HITL approval.
- * Matched by output SHAPE (`approvalPendingId`), never by tool name, so every
- * approval kind stops the turn identically — `python` (a `run_plan` plan or a
- * gated `record_write` write) and the workflow `askUserQuestion`. Load-bearing:
- * without it the agent re-emits the same call and the still-pending approval
- * loops forever. Shared verbatim by the chatbot and workflow agents.
+ * Stop the agent loop the moment a tool result parks on a HITL approval OR was
+ * single-flight-deferred (another approval already pending). Matched by output
+ * SHAPE (`approvalPendingId` / `approvalDeferred`), never by tool name, so every
+ * kind stops the turn identically — `python` (a `run_plan` plan or a gated
+ * `record_write` write) and the workflow `askUserQuestion`. Deferred is included
+ * for the all-deferred edge (e.g. a sub-agent racing a turn that already has a
+ * pending row): without it the agent would re-emit the deferred call and loop.
+ * Load-bearing; shared verbatim by the chatbot and workflow agents.
  */
 export const stopOnPendingApproval = <
   TTools extends ToolSet,
@@ -17,7 +22,9 @@ export const stopOnPendingApproval = <
     const lastStep = steps.at(-1);
     if (lastStep === undefined) return false;
     return lastStep.toolResults.some(
-      (tr) => approvalPendingId(tr.output) !== null,
+      (tr) =>
+        approvalPendingId(tr.output) !== null ||
+        approvalDeferred(tr.output) !== null,
     );
   };
 };

@@ -1,5 +1,6 @@
 {
   "name": "fretik-monorepo",
+  "version": "0.5.0",
   "private": true,
   "workspaces": [
     "packages/shared",
@@ -25,10 +26,11 @@
   "devDependencies": {
     "husky": "^9.1.7",
     "lint-staged": "^17.0.7",
-    "oxlint": "^1.70.0",
-    "oxlint-tsgolint": "^0.23.0",
-    "prettier": "3.8.4",
-    "prettier-plugin-organize-imports": "^4.3.0"
+    "oxlint": "^1.74.0",
+    "oxlint-tsgolint": "^0.24.0",
+    "prettier": "3.9.5",
+    "prettier-plugin-organize-imports": "^4.3.0",
+    "typescript": "^6.0.3"
   },
   "patchedDependencies": {
     "ews-javascript-api@0.15.3": "patches/ews-javascript-api@0.15.3.patch"

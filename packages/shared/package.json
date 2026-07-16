@@ -1,9 +1,10 @@
 {
   "name": "@fretik/shared",
+  "version": "0.5.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "typecheck": "tsgo --noEmit",
+    "typecheck": "tsc --noEmit",
     "lint": "oxlint --type-aware",
     "lint:fix": "oxlint --type-aware --fix",
     "format": "prettier --write .",
@@ -68,11 +69,12 @@
     "@types/bun": "latest",
     "@types/mjml": "^5.0.0",
     "@types/pg": "^8.20.0",
-    "@typescript/native-preview": "^7.0.0-dev.20260618.1",
+    "@typescript/native": "npm:typescript@^7.0.2",
     "drizzle-kit": "^1.0.0-rc.4-5d5b77c",
-    "oxlint": "^1.70.0",
-    "oxlint-tsgolint": "^0.23.0",
-    "prettier": "3.8.4",
-    "prettier-plugin-organize-imports": "^4.3.0"
+    "oxlint": "^1.74.0",
+    "oxlint-tsgolint": "^0.24.0",
+    "prettier": "3.9.5",
+    "prettier-plugin-organize-imports": "^4.3.0",
+    "typescript": "^6.0.3"
   }
 }

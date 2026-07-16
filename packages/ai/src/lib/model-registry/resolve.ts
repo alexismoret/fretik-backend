@@ -272,11 +272,10 @@ const orphanTagMiddleware: LanguageModelV4Middleware = {
   specificationVersion: "v4",
   wrapGenerate: async ({ doGenerate }) => {
     const result = await doGenerate();
-    const content = result.content.map(
-      (part): LanguageModelV4Content =>
-        part.type === "text"
-          ? { ...part, text: stripOrphanThinkTags(part.text) }
-          : part,
+    const content = result.content.map((part): LanguageModelV4Content =>
+      part.type === "text"
+        ? { ...part, text: stripOrphanThinkTags(part.text) }
+        : part,
     );
     return { ...result, content };
   },

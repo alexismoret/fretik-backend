@@ -28,10 +28,7 @@ import ExcelJS from "exceljs";
  *      preview pixel data.
  */
 export type ChatFileSnapshot =
-  | TabularSnapshot
-  | DocumentSnapshot
-  | TextSnapshot
-  | OpaqueSnapshot;
+  TabularSnapshot | DocumentSnapshot | TextSnapshot | OpaqueSnapshot;
 
 export interface TabularSnapshot {
   kind: "tabular";

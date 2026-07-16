@@ -68,6 +68,7 @@ export default {
       '{{mentionedBy}} mentioned you in the conversation "{{conversationTitle}}".',
     cta: "Open the conversation",
     untitledConversation: "a conversation",
+    someone: "A teammate",
   },
 
   chatbotFinishedAwaitingAnswers: {
@@ -93,5 +94,40 @@ export default {
       'The Fretik chatbot prepared a plan in your conversation "{{conversationTitle}}" that needs your review before it can be executed.',
     cta: "Review and approve",
     untitledConversation: "your conversation",
+  },
+
+  workflowRunFinished: {
+    subject: "Workflow finished: {{workflowName}}",
+    greetingNamed: "Hello {{name}},",
+    greetingAnonymous: "Hello,",
+    intro:
+      'The workflow "{{workflowName}}" finished a run. The result is below; any files it produced are attached.',
+    cta: "Open the run",
+    resultHeader: "Run result",
+    oversizedAttachments:
+      "Some files produced by this run were too large to attach (>20 MB total). Open the run to download them.",
+  },
+
+  workflowRunFailed: {
+    subject: "Workflow run failed: {{workflowName}}",
+    greetingNamed: "Hello {{name}},",
+    greetingAnonymous: "Hello,",
+    intro: 'A run of the workflow "{{workflowName}}" failed.',
+    cta: "Open the run",
+    errorHeader: "Error",
+    resultHeader: "Last output",
+    unknownError: "The run stopped before reporting a detailed error.",
+  },
+
+  workflowRunApproval: {
+    subject: "Approval needed: {{workflowName}}",
+    greetingNamed: "Hello {{name}},",
+    greetingAnonymous: "Hello,",
+    intro:
+      'The workflow "{{workflowName}}" paused a run — it needs a review before it can continue.',
+    cta: "Review and continue the run",
+    questionsHeader: "Questions awaiting an answer",
+    multiSelectHint: "Multiple answers possible.",
+    genericDetail: "Open the run to review the pending action.",
   },
 };

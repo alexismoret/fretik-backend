@@ -226,8 +226,7 @@ export interface ToolApprovalOperationSummary {
 
 /** Outcome of a single operation after execution. */
 export type ToolApprovalOpResult =
-  | { ok: true; data: Record<string, unknown> }
-  | { ok: false; error: string };
+  { ok: true; data: Record<string, unknown> } | { ok: false; error: string };
 
 // ---- Question payload -----------------------------------------------------
 
@@ -313,8 +312,7 @@ export interface ToolApprovalToolCallPayload {
 /** Outcome of a `tool_call` grant — the applied tool's return data, or an
  * error. `data` mirrors what the tool's direct path returns. */
 export type ToolApprovalToolCallResult =
-  | { ok: true; data: Record<string, unknown> }
-  | { ok: false; error: string };
+  { ok: true; data: Record<string, unknown> } | { ok: false; error: string };
 
 export type ToolApprovalPayload =
   | ToolApprovalQuestionPayload

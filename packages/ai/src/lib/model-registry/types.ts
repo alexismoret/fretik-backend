@@ -87,12 +87,7 @@ export type ReasoningStyle = "max-tokens" | "effort" | "none";
  * evals, never guessed.
  */
 export type ReasoningLevel =
-  | "none"
-  | "minimal"
-  | "low"
-  | "medium"
-  | "high"
-  | "xhigh";
+  "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
 export type ModelFamily =
   | "anthropic"
@@ -300,11 +295,7 @@ export type ModelRole =
  *   call sites own their per-call options).
  */
 export type RoleSettingsKind =
-  | "chat"
-  | "preextract"
-  | "active-memory"
-  | "recall"
-  | "bare";
+  "chat" | "preextract" | "active-memory" | "recall" | "bare";
 
 export interface RoleBinding {
   role: ModelRole;

@@ -6,33 +6,12 @@ import {
   type AskUserQuestionForEmail,
 } from "@fretik/shared/emails/generators";
 import { renderApprovalSummary } from "@fretik/shared/external-apps/i18n/render-summary";
-import { readSessionFile } from "@fretik/shared/lib/chatbot-session-storage";
 import { sendEmail } from "@fretik/shared/lib/email";
-import { getTeamLocale } from "@fretik/shared/services/field-definitions/get-locale";
+import {
+  buildSessionFileAttachments,
+  type BuiltEmailAttachment,
+} from "@fretik/shared/lib/email-attachments";
 import type { UIMessage } from "ai";
-
-/**
- * Hard cap on the total raw byte size of `presentFiles` outputs we
- * are willing to attach to the completion email. Scaleway TEM caps
- * the entire request payload at 25 MB *including* base64 expansion
- * (≈1.37×) and the JSON envelope; Gmail/Outlook bounce anything
- * larger downstream of Scaleway anyway. 20 MB raw → ≈27 MB encoded
- * which leaves us comfortable headroom in both directions.
- */
-const MAX_ATTACHMENT_BYTES_TOTAL = 20 * 1024 * 1024;
-
-/**
- * Tighten a filename so it can ride safely in an email header. The
- * `presentFiles` tool already sanitises path segments, but a defence
- * in depth here keeps unrelated upstream changes (e.g. an admin tool
- * uploading something raw) from leaking weird characters into MIME
- * headers and breaking the message.
- */
-const sanitizeAttachmentFilename = (filename: string): string => {
-  const base = filename.split("/").pop() ?? filename;
-  const trimmed = base.replace(/[^A-Za-z0-9._-]/g, "_");
-  return trimmed.length > 0 ? trimmed : "attachment";
-};
 
 /**
  * Concatenate every `text` part of an assistant `UIMessage` into one
@@ -163,60 +142,6 @@ const extractAskUserQuestion = (
   return null;
 };
 
-interface BuiltAttachment {
-  name: string;
-  type: string;
-  /** base64-encoded content — what Scaleway expects on the wire. */
-  content: string;
-}
-
-/**
- * Download the listed files from the conversation's S3 session mirror,
- * stop early if the running total exceeds the budget, and return the
- * encoded attachments plus a flag telling the generator to render the
- * "files too large" notice.
- *
- * We use the **raw** byte total to decide — even though the wire
- * payload will be base64. The cap already accounts for the encoding
- * blowup (see `MAX_ATTACHMENT_BYTES_TOTAL`). This keeps the budgeting
- * loop simple and lets us short-circuit before encoding huge buffers.
- */
-const buildAttachments = async (
-  conversationId: string,
-  files: PresentedFileFromTool[],
-  logPrefix: string,
-): Promise<{ attachments: BuiltAttachment[]; oversized: boolean }> => {
-  if (files.length === 0) return { attachments: [], oversized: false };
-
-  let runningTotal = 0;
-  for (const file of files) {
-    runningTotal += file.size;
-    if (runningTotal > MAX_ATTACHMENT_BYTES_TOTAL) {
-      console.info(
-        `${logPrefix} email-on-finish: total attachments (${runningTotal.toString()}B reported) exceed ${MAX_ATTACHMENT_BYTES_TOTAL.toString()}B cap — skipping attachments`,
-      );
-      return { attachments: [], oversized: true };
-    }
-  }
-
-  const attachments: BuiltAttachment[] = [];
-  for (const file of files) {
-    const bytes = await readSessionFile(conversationId, file.path);
-    if (!bytes) {
-      console.warn(
-        `${logPrefix} email-on-finish: missing S3 mirror for ${file.path} — skipping`,
-      );
-      continue;
-    }
-    attachments.push({
-      name: sanitizeAttachmentFilename(file.filename),
-      type: file.mimeType,
-      content: Buffer.from(bytes).toString("base64"),
-    });
-  }
-  return { attachments, oversized: false };
-};
-
 /**
  * Detect that the last assistant message ends with a python tool call
  * whose output is `{ status: "approval_pending", approvalId }`. Returns
@@ -281,7 +206,9 @@ export const sendChatbotFinishedEmailIfEnabled = async (
       // opted in are notified. Each gets the same content, greeted by name.
       members: {
         where: { emailOnCompletion: true },
-        with: { user: { columns: { email: true, name: true } } },
+        with: {
+          user: { columns: { email: true, name: true, language: true } },
+        },
       },
     },
   });
@@ -295,7 +222,9 @@ export const sendChatbotFinishedEmailIfEnabled = async (
 
   const recipients = conversation.members
     .map((m) => m.user)
-    .filter((u): u is { email: string; name: string } => Boolean(u?.email));
+    .filter((u): u is { email: string; name: string; language: string } =>
+      Boolean(u?.email),
+    );
   if (recipients.length === 0) return;
 
   const lastAssistant = [...finalMessages]
@@ -310,15 +239,15 @@ export const sendChatbotFinishedEmailIfEnabled = async (
    * happens per recipient.
    */
   const sendToRecipients = async (
-    build: (recipientName: string | null) => Promise<{
+    build: (recipient: { name: string; language: string }) => Promise<{
       subject: string;
       html: string;
-      attachments?: BuiltAttachment[];
+      attachments?: BuiltEmailAttachment[];
     }>,
     label: string,
   ): Promise<void> => {
     for (const recipient of recipients) {
-      const { subject, html, attachments } = await build(recipient.name);
+      const { subject, html, attachments } = await build(recipient);
       await sendEmail({
         to: { email: recipient.email, name: recipient.name },
         subject,
@@ -363,16 +292,23 @@ export const sendChatbotFinishedEmailIfEnabled = async (
       approval.status === "pending" &&
       approval.summary !== null
     ) {
-      const lang = await getTeamLocale(conversation.teamId);
-      const rendered = renderApprovalSummary(approval.summary, lang);
+      // Render the approval summary per recipient in their own language
+      // (the same `lang` is passed to the generator so header/body match).
+      const approvalSummary = approval.summary;
       await sendToRecipients(
-        (recipientName) =>
-          generateChatbotApprovalPending({
-            userName: recipientName,
-            conversationId,
-            conversationTitle: conversation.title,
-            summary: rendered,
-          }),
+        (recipient) =>
+          generateChatbotApprovalPending(
+            {
+              userName: recipient.name,
+              conversationId,
+              conversationTitle: conversation.title,
+              summary: renderApprovalSummary(
+                approvalSummary,
+                recipient.language,
+              ),
+            },
+            recipient.language,
+          ),
         "email-on-approval-pending",
       );
       return;
@@ -395,13 +331,16 @@ export const sendChatbotFinishedEmailIfEnabled = async (
   const awaitingQuestions = extractAskUserQuestion(lastAssistant);
   if (awaitingQuestions !== null && awaitingQuestions.length > 0) {
     await sendToRecipients(
-      (recipientName) =>
-        generateChatbotFinishedAwaitingAnswers({
-          userName: recipientName,
-          conversationId,
-          conversationTitle: conversation.title,
-          questions: awaitingQuestions,
-        }),
+      (recipient) =>
+        generateChatbotFinishedAwaitingAnswers(
+          {
+            userName: recipient.name,
+            conversationId,
+            conversationTitle: conversation.title,
+            questions: awaitingQuestions,
+          },
+          recipient.language,
+        ),
       "email-on-finish-awaiting",
     );
     return;
@@ -416,20 +355,23 @@ export const sendChatbotFinishedEmailIfEnabled = async (
 
   // Build the attachments once — they're identical for every recipient.
   const presentedFiles = collectPresentedFiles(lastAssistant);
-  const { attachments, oversized } = await buildAttachments(
+  const { attachments, oversized } = await buildSessionFileAttachments({
     conversationId,
-    presentedFiles,
+    files: presentedFiles,
     logPrefix,
-  );
+  });
 
-  await sendToRecipients(async (recipientName) => {
-    const { subject, html } = await generateChatbotFinished({
-      userName: recipientName,
-      conversationId,
-      conversationTitle: conversation.title,
-      assistantMarkdown,
-      oversizedAttachments: oversized,
-    });
+  await sendToRecipients(async (recipient) => {
+    const { subject, html } = await generateChatbotFinished(
+      {
+        userName: recipient.name,
+        conversationId,
+        conversationTitle: conversation.title,
+        assistantMarkdown,
+        oversizedAttachments: oversized,
+      },
+      recipient.language,
+    );
     return { subject, html, attachments };
   }, "email-on-finish");
 };

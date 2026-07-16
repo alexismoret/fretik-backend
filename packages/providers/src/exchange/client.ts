@@ -55,10 +55,7 @@ import {
 
 /** Supported on-prem schema versions (matches the credentials-form select). */
 export type EwsVersionId =
-  | "Exchange2010_SP2"
-  | "Exchange2013"
-  | "Exchange2013_SP1"
-  | "Exchange2016";
+  "Exchange2010_SP2" | "Exchange2013" | "Exchange2013_SP1" | "Exchange2016";
 
 export interface EwsConnectionConfig {
   /** Email — Autodiscover key + identity + default login. */
@@ -313,12 +310,7 @@ export const withService = async <T>(
 // ── Well-known folders ────────────────────────────────────────────────
 
 export type EwsWellKnownFolder =
-  | "inbox"
-  | "sentitems"
-  | "drafts"
-  | "deleteditems"
-  | "archive"
-  | "junkemail";
+  "inbox" | "sentitems" | "drafts" | "deleteditems" | "archive" | "junkemail";
 
 const WELL_KNOWN: Record<EwsWellKnownFolder, WellKnownFolderName> = {
   inbox: WellKnownFolderName.Inbox,

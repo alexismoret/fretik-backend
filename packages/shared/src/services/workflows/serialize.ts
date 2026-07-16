@@ -39,6 +39,7 @@ export const serializeWorkflow = (row: Workflow): WorkflowResponse => ({
   autonomy: row.autonomy,
   modelProfileKey: row.modelProfileKey,
   limits: row.limits,
+  notifications: row.notifications,
   defaultLimits: {
     maxTotalTokens: WORKFLOW_DEFAULT_MAX_TOTAL_TOKENS,
     maxDurationMinutes: WORKFLOW_MAX_DURATION_MINUTES,

@@ -147,6 +147,23 @@ sandboxRoutes.openapi(execRoute, async (c) => {
         : { kind: "plan", operations: body.operations },
   );
 
+  // Single-flight deferral is a chat-side concept; the sandbox SDK only knows
+  // ok / approval_pending / error. Surface it as a clear error so the model
+  // waits for the pending review and re-runs, without teaching the SDK a new
+  // status (no template rebuild). Early return keeps `result` narrowed to the
+  // three wire statuses for the normal path.
+  if (result.status === "approval_deferred") {
+    console.info("[sandbox/exec] → status=approval_deferred (→ error)");
+    return c.json(
+      {
+        status: "error" as const,
+        message:
+          "APPROVAL_DEFERRED: a review is already pending in this conversation. Stop and wait for it to be resolved, then re-run this.",
+      },
+      200,
+    );
+  }
+
   console.info(`[sandbox/exec] → status=${result.status}`);
   return c.json(result, 200);
 });

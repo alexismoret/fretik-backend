@@ -3,6 +3,7 @@ import {
   BUILTIN_TOOL_POLICY_CATALOG,
   type ToolPolicyLevel,
 } from "@fretik/shared/schemas/tool-policies";
+import { deferredToolOutput } from "@fretik/shared/services/ai/approval-pending";
 import { createPendingToolCallApproval } from "@fretik/shared/services/approvals/create-pending-tool-call";
 import { runApprovalGate } from "@fretik/shared/services/approvals/gate";
 import { canonicalHash } from "@fretik/shared/services/approvals/hash";
@@ -81,7 +82,12 @@ export const gateBuiltinWriteTool = async (
     note?: string;
     summaryFields?: ToolApprovalSummaryField[];
   },
-): Promise<ApprovalPendingOutput | ReturnType<typeof toolError> | null> => {
+): Promise<
+  | ApprovalPendingOutput
+  | ReturnType<typeof deferredToolOutput>
+  | ReturnType<typeof toolError>
+  | null
+> => {
   const level = resolveBuiltinPolicy(ctx, params.toolName);
   if (level === "blocked") {
     return toolError(
@@ -135,6 +141,11 @@ export const gateBuiltinWriteTool = async (
 
   if (resp.status === "approval_pending") {
     return { status: "approval_pending", approvalId: resp.approvalId };
+  }
+  // Single-flight: another approval is already pending — do not open a second
+  // card; tell the model to wait and re-issue after it's resolved.
+  if (resp.status === "approval_deferred") {
+    return deferredToolOutput(resp.blockingApprovalId);
   }
   if (resp.status === "error") {
     return toolError(

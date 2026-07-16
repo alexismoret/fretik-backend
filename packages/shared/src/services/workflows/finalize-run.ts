@@ -17,6 +17,10 @@ export type FinalRunStatus = "succeeded" | "failed" | "canceled";
  * (which the memory pipeline distills into an episode), and bump the
  * workflow's `lastRunAt` — all in ONE transaction. Idempotent: a run
  * already in a terminal state is left untouched.
+ *
+ * Returns whether THIS call performed the terminal transition — the
+ * exactly-once signal completion side effects (the notification email)
+ * key on. The loser of a finalize race gets `transitioned: false`.
  */
 export const finalizeRun = async (params: {
   tx?: Transaction;
@@ -27,9 +31,9 @@ export const finalizeRun = async (params: {
   error?: WorkflowRunError | null;
   usage?: WorkflowRunUsage;
   now?: Date;
-}): Promise<void> => {
+}): Promise<{ transitioned: boolean }> => {
   const now = params.now ?? new Date();
-  const run = async (tx: Transaction): Promise<void> => {
+  const run = async (tx: Transaction): Promise<boolean> => {
     // Atomic idempotent close: the terminal-status guard lives in the UPDATE
     // itself, so two concurrent finalizes (a cancel racing the turn's own
     // close) can't both pass a read-then-write check — exactly one wins, the
@@ -63,7 +67,7 @@ export const finalizeRun = async (params: {
         isTest: workflowRuns.isTest,
       });
     // Missing run or already terminal — nothing to do.
-    if (!updated) return;
+    if (!updated) return false;
     const existing = updated;
 
     await tx
@@ -94,11 +98,11 @@ export const finalizeRun = async (params: {
       },
       dedupKey: `workflow.run.completed:${params.runId}`,
     });
+    return true;
   };
 
   if (params.tx) {
-    await run(params.tx);
-    return;
+    return { transitioned: await run(params.tx) };
   }
-  await db.transaction(run);
+  return { transitioned: await db.transaction(run) };
 };

@@ -28,13 +28,14 @@ const getCompiledTemplate = async (
   return compiled;
 };
 
-const getBaseData = (): Record<string, string> => ({
+const getBaseData = (lang: string): Record<string, string> => ({
   logoUrl: LOGO_URL,
-  appName: i18n.t("base.appName"),
+  appName: i18n.t("base.appName", { lng: lang }),
   footerCopyright: i18n.t("base.footer.copyright", {
+    lng: lang,
     year: String(new Date().getFullYear()),
   }),
-  footerSentBy: i18n.t("base.footer.sentBy"),
+  footerSentBy: i18n.t("base.footer.sentBy", { lng: lang }),
 });
 
 /**
@@ -48,8 +49,9 @@ const getBaseData = (): Record<string, string> => ({
 export const renderEmail = async (
   templateName: string,
   data: Record<string, unknown>,
+  lang: string,
 ): Promise<string> => {
-  const baseData = getBaseData();
+  const baseData = getBaseData(lang);
   const mergedData = { ...baseData, ...data };
 
   const childTemplate = await getCompiledTemplate(templateName);

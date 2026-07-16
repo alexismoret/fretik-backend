@@ -20,6 +20,7 @@ import {
 // type-only, erased at runtime).
 import type {
   WorkflowLimits,
+  WorkflowNotifications,
   WorkflowPlaybook,
   WorkflowRunError,
   WorkflowRunOutput,
@@ -29,6 +30,7 @@ import type {
 } from "../../schemas/workflows";
 import {
   WORKFLOW_AUTONOMY_VALUES,
+  WORKFLOW_NOTIFICATIONS_DEFAULT,
   WORKFLOW_RUN_STATUS_VALUES,
   WORKFLOW_STATUS_VALUES,
   WORKFLOW_TRIGGER_TYPE_VALUES,
@@ -102,6 +104,13 @@ export const workflows = pgTable(
     // User-visible run limits (wall-clock + optional token budget).
     limits: jsonb("limits").$type<WorkflowLimits>().notNull().default({}),
 
+    // Completion-email rule (`{emailOnCompletion, notifyTriggeredBy,
+    // recipientUserIds}`) — see `WorkflowNotificationsSchema`.
+    notifications: jsonb("notifications")
+      .$type<WorkflowNotifications>()
+      .notNull()
+      .default(WORKFLOW_NOTIFICATIONS_DEFAULT),
+
     // Trigger.dev schedule id (`sched_...`) while an active cron workflow
     // has a live schedule; NULL otherwise.
     triggerScheduleId: text("trigger_schedule_id"),
@@ -167,7 +176,8 @@ export const workflowRuns = pgTable(
     actingUserId: uuid("acting_user_id").references(() => user.id, {
       onDelete: "set null",
     }),
-    // Who fired a manual/test run (NULL for cron/event runs).
+    // Who started the run: the user behind a manual/test run or a logged-in
+    // public-form submission (NULL for cron/event runs and anonymous forms).
     triggeredByUserId: uuid("triggered_by_user_id").references(() => user.id, {
       onDelete: "set null",
     }),

@@ -1,8 +1,9 @@
 import type { ToolApprovalKind, ToolApprovalRequest } from "../../db/schema";
+import { withConversationLock } from "../../lib/redis-lock";
 import type { WorkflowAutonomy } from "../../schemas/workflows";
 import type { SandboxExecResponse } from "../sandbox/types";
 import { claimGrantedApproval } from "./claim";
-import { findLatestApprovalByHash } from "./find";
+import { findLatestApprovalByHash, findPendingApprovals } from "./find";
 import { grantApproval } from "./grant";
 import { APPROVAL_KIND_HANDLERS } from "./kinds";
 import { markSandboxApprovalPending } from "./sandbox-signal";
@@ -156,8 +157,10 @@ export const runApprovalGate = async (params: {
     }
   }
 
-  const pending = await createPending();
+  // Autonomous runs never pause and never single-flight: create + grant +
+  // execute in place. Parallel autonomous writes each keep their own row.
   if (autoGrant) {
+    const pending = await createPending();
     const granted = await grantApproval({
       id: pending.id,
       teamId: ctx.teamId,
@@ -165,6 +168,29 @@ export const runApprovalGate = async (params: {
     });
     return claimAndExecute(granted);
   }
-  await markSandboxApprovalPending(ctx.conversationId, pending.id);
-  return { status: "approval_pending", approvalId: pending.id };
+
+  // Human review: enforce exactly ONE pending approval per conversation. The
+  // lock serializes the "already pending?" check + the INSERT across the two
+  // producer processes (AI + API), so N parallel tool calls or sub-agents can't
+  // each open their own card. The first wins; the rest defer (any kind blocks
+  // any kind — a pending read blocks a later write and vice versa) and are told
+  // to re-issue after the pending one is resolved.
+  return withConversationLock(ctx.conversationId, async () => {
+    const pendings = await findPendingApprovals(ctx.conversationId);
+    // A peer with the SAME write may have created it in the lock's shadow —
+    // dedup to that row instead of a duplicate (or a false self-block).
+    const sameHash = pendings.find((p) => p.lookupHash === lookupHash);
+    if (sameHash !== undefined) {
+      await markSandboxApprovalPending(ctx.conversationId, sameHash.id);
+      return { status: "approval_pending", approvalId: sameHash.id };
+    }
+    // Any OTHER pending approval blocks this one — defer without inserting.
+    const blocking = pendings[0];
+    if (blocking !== undefined) {
+      return { status: "approval_deferred", blockingApprovalId: blocking.id };
+    }
+    const pending = await createPending();
+    await markSandboxApprovalPending(ctx.conversationId, pending.id);
+    return { status: "approval_pending", approvalId: pending.id };
+  });
 };

@@ -1,8 +1,4 @@
 import { z } from "zod";
-import type {
-  ToolApprovalRecordWriteItem,
-  ToolApprovalRecordWritePayload,
-} from "../../db/schema";
 import { MAX_BULK_ITEMS } from "../../lib/db-bulk";
 import {
   fieldConfigSchema,
@@ -12,9 +8,7 @@ import { audienceSchema } from "../../schemas/object-sharing";
 import { recordRelationInputSchema } from "../../schemas/ontology";
 import type { ToolPolicyLevel } from "../../schemas/tool-policies";
 import type { WorkflowAutonomy } from "../../schemas/workflows";
-import { createPendingRecordWriteApproval } from "../approvals/create-pending-record-write";
-import { runApprovalGate } from "../approvals/gate";
-import { recordWriteLookupHash } from "../approvals/hash";
+import { gateRecordWriteApproval } from "../approvals/gate-record-write";
 import type { EventActor } from "../domain-events/emit";
 import { FIELD_DEFINITION_LIMITS } from "../field-definitions/constants";
 import { createFieldDefinition } from "../field-definitions/create";
@@ -136,79 +130,6 @@ export const dispatchObjects = async (
   }
 };
 
-const READ_ONLY_MSG =
-  "READ_ONLY_WORKFLOW: this run cannot write records. Note in the task summary what would have been written.";
-
-/**
- * Gate one bulk record write by the resolved `manageRecord` policy level
- * (`resolveBuiltinToolPolicy` folds the team override AND workflow autonomy):
- * `blocked` rejects (workflow `read_only`, or a team that turned record writes
- * off); `auto` writes directly (no approval row — plain chat with the tool at
- * `auto`, or an `autonomous` run); `approval` routes through the generic gate —
- * a pending `record_write` the user reviews, replayed on a re-run of the same
- * code. `buildPayload` is LAZY (its snapshot/metadata reads run only when a
- * fresh pending is actually created).
- */
-const gateRecordWrite = (params: {
-  ctx: ExecContext;
-  autonomy: WorkflowAutonomy | null;
-  teamPolicies: Record<string, ToolPolicyLevel>;
-  op: ToolApprovalRecordWritePayload["op"];
-  objectTypeId?: string;
-  merge?: boolean;
-  hashItems: ToolApprovalRecordWriteItem[];
-  buildPayload: () => Promise<ToolApprovalRecordWritePayload>;
-  directWrite: () => Promise<SandboxExecResponse>;
-  /** Pre-approval dry-run: validate the rows before a human is asked to grant
-   * (create/update; delete has nothing to validate). Reuses the bulk services'
-   * own validation via their `dryRun` flag. */
-  validateBeforePending?: () => Promise<{ index: number; error: string }[]>;
-}): Promise<SandboxExecResponse> => {
-  const level = resolveBuiltinToolPolicy({
-    toolName: "manageRecord",
-    teamPolicies: params.teamPolicies,
-    autonomy: params.autonomy,
-  });
-  if (level === "blocked") {
-    return Promise.resolve({
-      status: "error",
-      message:
-        params.autonomy === "read_only"
-          ? READ_ONLY_MSG
-          : "RECORD_WRITES_DISABLED: the team disabled record writes for the assistant (Settings → Tool permissions).",
-    });
-  }
-  if (level === "auto") {
-    return params.directWrite();
-  }
-  const lookupHash = recordWriteLookupHash({
-    op: params.op,
-    objectTypeId: params.objectTypeId,
-    merge: params.merge,
-    items: params.hashItems,
-  });
-  return runApprovalGate({
-    ctx: params.ctx,
-    kind: "record_write",
-    autonomy: params.autonomy,
-    autoGrant: false,
-    lookupHash,
-    createPending: async () =>
-      createPendingRecordWriteApproval({
-        organizationId: params.ctx.organizationId,
-        teamId: params.ctx.teamId,
-        userId: params.ctx.userId,
-        conversationId: params.ctx.conversationId,
-        turnId: params.ctx.turnId,
-        lookupHash,
-        payload: await params.buildPayload(),
-      }),
-    ...(params.validateBeforePending !== undefined
-      ? { validateBeforePending: params.validateBeforePending }
-      : {}),
-  });
-};
-
 // ── Record ops (fully batched — one set-based statement per chunk) ─────
 
 const bulkCreateArgs = z.object({
@@ -237,7 +158,7 @@ const bulkCreate = async (
   const objectTypeId = await resolveTeamType(ctx, typeKey);
   if (objectTypeId === null) return unknownType(typeKey);
 
-  return gateRecordWrite({
+  return gateRecordWriteApproval({
     ctx,
     autonomy,
     teamPolicies,
@@ -311,7 +232,7 @@ const bulkUpdate = async (
 ): Promise<SandboxExecResponse> => {
   const { updates, merge } = bulkUpdateArgs.parse(rawArgs);
 
-  return gateRecordWrite({
+  return gateRecordWriteApproval({
     ctx,
     autonomy,
     teamPolicies,
@@ -385,7 +306,7 @@ const bulkDelete = async (
 ): Promise<SandboxExecResponse> => {
   const { recordIds } = bulkDeleteArgs.parse(rawArgs);
 
-  return gateRecordWrite({
+  return gateRecordWriteApproval({
     ctx,
     autonomy,
     teamPolicies,

@@ -147,28 +147,26 @@ export const listMemoriesForUi = async (
   ]);
 
   return {
-    memories: rows.map(
-      (row): MemorySummary => ({
-        id: row.id,
-        scope: row.scope,
-        path: row.path,
-        sizeBytes: row.sizeBytes,
-        createdAt: row.createdAt,
-        updatedAt: row.updatedAt,
-        createdBy: {
-          userId: row.createdByUserId,
-          name: row.createdBy?.name ?? null,
-          actor: row.createdByActor,
-          conversationId: row.createdByConversationId,
-        },
-        lastModifiedBy: {
-          userId: row.lastModifiedByUserId,
-          name: row.lastModifiedBy?.name ?? null,
-          actor: row.lastModifiedByActor,
-          conversationId: row.lastModifiedByConversationId,
-        },
-      }),
-    ),
+    memories: rows.map((row): MemorySummary => ({
+      id: row.id,
+      scope: row.scope,
+      path: row.path,
+      sizeBytes: row.sizeBytes,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+      createdBy: {
+        userId: row.createdByUserId,
+        name: row.createdBy?.name ?? null,
+        actor: row.createdByActor,
+        conversationId: row.createdByConversationId,
+      },
+      lastModifiedBy: {
+        userId: row.lastModifiedByUserId,
+        name: row.lastModifiedBy?.name ?? null,
+        actor: row.lastModifiedByActor,
+        conversationId: row.lastModifiedByConversationId,
+      },
+    })),
     total: totalRow[0]?.count ?? 0,
   };
 };

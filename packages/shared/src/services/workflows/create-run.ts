@@ -11,6 +11,8 @@ import type {
 import { WORKFLOW_MAX_DURATION_MINUTES } from "../../schemas/workflows";
 import { getTeamBotUserId } from "../auth/bot-user";
 import { attachRunFiles, type RunAttachment } from "./attach-run-files";
+import { finalizeRun } from "./finalize-run";
+import { sendRunCompletionEmailIfEnabled } from "./send-run-completion-email";
 import { serializeWorkflowRun } from "./serialize";
 
 /**
@@ -129,15 +131,21 @@ export const createWorkflowRun = async (params: {
     return serializeWorkflowRun(row);
   } catch (error) {
     const message = error instanceof Error ? error.message : "trigger failed";
-    const [row] = await db
-      .update(workflowRuns)
-      .set({
-        status: "failed",
-        error: { code: "TRIGGER_FAILED", message },
-        finishedAt: new Date(),
-      })
-      .where(eq(workflowRuns.id, runId))
-      .returning();
+    // Close through `finalizeRun` (not a direct UPDATE) so this terminal path
+    // journals `workflow.run.completed` and notifies like every other one.
+    const { transitioned } = await finalizeRun({
+      runId,
+      status: "failed",
+      error: { code: "TRIGGER_FAILED", message },
+    });
+    if (transitioned) {
+      void sendRunCompletionEmailIfEnabled({ runId }).catch((err: unknown) => {
+        console.warn(`[workflow-run ${runId}] completion email failed:`, err);
+      });
+    }
+    const row = await db.query.workflowRuns.findFirst({
+      where: { id: runId },
+    });
     if (!row) return throwHttpError(500, internalError());
     return serializeWorkflowRun(row);
   }

@@ -1,6 +1,7 @@
 import { createInstance } from "i18next";
 
 import en from "./locales/en";
+import fr from "./locales/fr";
 
 /**
  * Dedicated i18next instance for external-app content (approval summaries
@@ -18,6 +19,7 @@ await i18n.init({
   interpolation: { escapeValue: false },
   resources: {
     en: { translation: en },
+    fr: { translation: fr },
   },
 });
 

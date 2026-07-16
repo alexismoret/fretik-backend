@@ -1,11 +1,11 @@
 {
   "name": "@fretik/ai",
-  "version": "0.0.1",
+  "version": "0.5.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "bun run --hot src/index.ts",
-    "typecheck": "tsgo --noEmit",
+    "typecheck": "tsc --noEmit",
     "lint": "oxlint --type-aware",
     "lint:fix": "oxlint --type-aware --fix",
     "format": "prettier --write .",
@@ -24,9 +24,6 @@
     "measure:tokens": "bun run scripts/measure-system-prompt-tokens.ts",
     "models:check": "bun run scripts/check-model-catalog.ts",
     "backfill:orphan-think": "bun run scripts/backfill-orphan-think-tags.ts"
-  },
-  "peerDependencies": {
-    "typescript": "^5"
   },
   "dependencies": {
     "@ai-sdk/provider": "^4.0.3",
@@ -59,10 +56,11 @@
     "@types/bun": "latest",
     "@types/figlet": "^1.7.0",
     "@types/pg": "^8.20.0",
-    "@typescript/native-preview": "^7.0.0-dev.20260618.1",
-    "oxlint": "^1.70.0",
-    "oxlint-tsgolint": "^0.23.0",
-    "prettier": "3.8.4",
-    "prettier-plugin-organize-imports": "^4.3.0"
+    "@typescript/native": "npm:typescript@^7.0.2",
+    "oxlint": "^1.74.0",
+    "oxlint-tsgolint": "^0.24.0",
+    "prettier": "3.9.5",
+    "prettier-plugin-organize-imports": "^4.3.0",
+    "typescript": "^6.0.3"
   }
 }

@@ -222,6 +222,32 @@ export const WorkflowLimitsSchema = z.object({
 });
 export type WorkflowLimits = z.infer<typeof WorkflowLimitsSchema>;
 
+// ==================== //
+// NOTIFICATIONS (jsonb)//
+// ==================== //
+
+/**
+ * Per-workflow completion-email rule. One switch covers every notable run
+ * state (succeeded, failed, needs_approval park); canceled and test runs
+ * never email. Effective recipients = `recipientUserIds` ∪ the run's
+ * `triggeredByUserId` (when `notifyTriggeredBy`), re-intersected with the
+ * team roster at send time — content never leaves the team.
+ */
+export const WorkflowNotificationsSchema = z.object({
+  emailOnCompletion: z.boolean().default(false),
+  /** Also email whoever started the run (manual run / logged-in form
+   * submitter). Cron/event runs have no trigger actor. */
+  notifyTriggeredBy: z.boolean().default(true),
+  recipientUserIds: z.array(z.uuid()).max(50).default([]),
+});
+export type WorkflowNotifications = z.infer<typeof WorkflowNotificationsSchema>;
+
+export const WORKFLOW_NOTIFICATIONS_DEFAULT: WorkflowNotifications = {
+  emailOnCompletion: false,
+  notifyTriggeredBy: true,
+  recipientUserIds: [],
+};
+
 /**
  * Platform-wide fallback token budget when a workflow sets no explicit
  * `maxTotalTokens` — a coarse runaway backstop, not a product constraint (see
@@ -427,6 +453,7 @@ export const UpdateWorkflowSchema = z
     autonomy: workflowAutonomySchema.optional(),
     modelProfileKey: z.string().max(64).nullable().optional(),
     limits: WorkflowLimitsSchema.optional(),
+    notifications: WorkflowNotificationsSchema.optional(),
     /** Re-scope: NULL = team-shared, set = private to that user. The service
      * layer enforces it can only be `null` or the requester's own id — never
      * an arbitrary teammate (that would be impersonation). */
@@ -467,6 +494,7 @@ export const WorkflowResponseSchema = z.object({
   autonomy: workflowAutonomySchema,
   modelProfileKey: z.string().nullable(),
   limits: WorkflowLimitsSchema,
+  notifications: WorkflowNotificationsSchema,
   /** Platform ceilings used whenever `limits` doesn't set an explicit value
    * — the frontend shows run progress against these when the workflow has
    * no override, since that's what's actually enforced server-side. */

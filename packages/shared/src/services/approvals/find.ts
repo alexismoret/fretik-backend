@@ -25,3 +25,21 @@ export const findLatestApprovalByHash = async (params: {
     },
     orderBy: { createdAt: "desc" },
   });
+
+/**
+ * Every `pending` row in a conversation, oldest first. The single-flight guard
+ * in `runApprovalGate` uses this to enforce ONE pending approval per
+ * conversation: kind-agnostic (a pending read blocks a later write and vice
+ * versa) and NULL-`lookupHash`-safe (a pending `question` still counts), which
+ * a `lookupHash <> …` filter would silently miss.
+ */
+export const findPendingApprovals = async (
+  conversationId: string,
+): Promise<ToolApprovalRequest[]> =>
+  db.query.toolApprovalRequests.findMany({
+    where: {
+      conversationId,
+      status: "pending",
+    },
+    orderBy: { createdAt: "asc" },
+  });

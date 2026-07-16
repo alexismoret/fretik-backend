@@ -1,14 +1,24 @@
 import { recordSharingSchema } from "@fretik/shared/schemas/object-sharing";
+import { deferredToolOutput } from "@fretik/shared/services/ai/approval-pending";
+import { gateRecordWriteApproval } from "@fretik/shared/services/approvals/gate-record-write";
+import { bulkCreateObjectRecords } from "@fretik/shared/services/object-records/bulk-create";
+import { bulkUpdateObjectRecords } from "@fretik/shared/services/object-records/bulk-update";
 import { createObjectRecord } from "@fretik/shared/services/object-records/create";
 import { deleteObjectRecord } from "@fretik/shared/services/object-records/delete";
 import { setRecordStatus } from "@fretik/shared/services/object-records/set-status";
+import { getRecordSnapshots } from "@fretik/shared/services/object-records/snapshot-batch";
 import { setRecordData } from "@fretik/shared/services/object-records/update";
 import { assertCanWriteRecord } from "@fretik/shared/services/object-sharing/write-access";
 import { resolveObjectTypeId } from "@fretik/shared/services/object-types/resolve";
+import type {
+  ExecContext,
+  SandboxExecResponse,
+} from "@fretik/shared/services/sandbox/types";
 import { tool } from "ai";
 import { z } from "zod";
 import { gateBuiltinWriteTool } from "../agents/shared/policy-tool-gate";
 import {
+  type AgentRuntimeContext,
   agentEventActor,
   getRuntimeContext,
 } from "../agents/shared/runtime-context";
@@ -127,23 +137,59 @@ export const resolveRecordValues = (
   return { values, missing };
 };
 
+/** Build the shared record-write gate's ExecContext from the agent runtime ctx.
+ * Returns null when the turn has no conversation/user to attach an approval to
+ * — the caller then falls back to the direct (non-carded) write. */
+const toExecCtx = (ctx: AgentRuntimeContext): ExecContext | null => {
+  if (ctx.conversationId === undefined || ctx.userId === undefined) return null;
+  return {
+    organizationId: ctx.organizationId,
+    teamId: ctx.teamId,
+    userId: ctx.userId,
+    conversationId: ctx.conversationId,
+    turnId: ctx.traceId ?? ctx.conversationId,
+  };
+};
+
+/** Map the shared record-write gate's response to a manageRecord tool output:
+ * the pending/deferred approval marker (single-flight enforced at the gate), an
+ * error, or the direct/replayed write result. */
+const mapRecordWriteResp = (resp: SandboxExecResponse) => {
+  if (resp.status === "approval_pending") {
+    return { status: "approval_pending" as const, approvalId: resp.approvalId };
+  }
+  if (resp.status === "approval_deferred") {
+    return deferredToolOutput(resp.blockingApprovalId);
+  }
+  if (resp.status === "error") {
+    return toolError(TOOL_ERROR_CODES.OBJECT_QUERY_ERROR, resp.message);
+  }
+  const data =
+    typeof resp.data === "object" && resp.data !== null ? resp.data : {};
+  return { ok: true as const, ...data };
+};
+
 /**
  * Domain tool (deferred) — write ONE object record (create / update / delete /
  * setStatus) through the validated shared services, so field validation, the
- * typed table, and the `domain_events` journal stay consistent. Bulk writes go
- * through the Python `objects.records` SDK (fretik_apps), not this tool.
+ * typed table, and the `domain_events` journal stay consistent. Record writes
+ * (create / update / delete) park the SAME `record_write` approval + editable
+ * card as the Python bulk path; only `setStatus` and label/sharing-bearing
+ * writes stay on the generic `tool_call` gate. Many rows → the Python
+ * `objects.records` SDK (fretik_apps), not repeated calls to this tool.
  */
 export const createManageRecordTool = () =>
   tool({
     description: [
       "Write ONE object record. Schema-validated and journaled; team-scoped.",
+      "≥2 records of a type → ONE python `objects.records.bulk_create` / `bulk_update` / `bulk_delete` call (one approval card for all rows), NEVER repeated or parallel manageRecord calls.",
       "",
       "- create: typeKey + data (+ optional relations to link in the same write). Born confirmed.",
       "- update: recordId + data. PATCH — only the fields you pass change; omitted ones are kept (value null clears one).",
       "- delete: recordId.",
       "- setStatus: recordId + status ('confirmed' accepts an AI suggestion, 'rejected' retires it).",
       "",
-      "`data` is a list of { key, value } — keys are the type's field keys (describeObjectType). For many rows, use the python `objects.records` SDK.",
+      "`data` is a list of { key, value } — keys are the type's field keys (describeObjectType).",
       "Records follow their type's audience by default; `sharing` overrides it (owner team only, and only to teams that already have the type). Propose with askUserQuestion before sharing beyond the team.",
     ].join("\n"),
     inputSchema: manageRecordInputSchema,
@@ -186,6 +232,71 @@ export const createManageRecordTool = () =>
               "Check the available type keys in <team_objects>.",
             );
           }
+          // Plain data write → rich `record_write` card (single item), same as
+          // the Python bulk path. The gate writes directly at policy `auto`.
+          const execCtx = toExecCtx(ctx);
+          if (execCtx !== null && !input.labelOverride && !input.sharing) {
+            return mapRecordWriteResp(
+              await gateRecordWriteApproval({
+                ctx: execCtx,
+                autonomy: ctx.workflowAutonomy ?? null,
+                teamPolicies: ctx.toolPolicies ?? {},
+                op: "create",
+                objectTypeId,
+                hashItems: [
+                  {
+                    data: values,
+                    relations: input.relations,
+                    objectTypeId,
+                    typeKey: input.typeKey,
+                  },
+                ],
+                validateBeforePending: async () => {
+                  const { errors } = await bulkCreateObjectRecords({
+                    organizationId: ctx.organizationId,
+                    teamId: ctx.teamId,
+                    userId: ctx.userId ?? null,
+                    objectTypeId,
+                    rows: [{ data: values, relations: input.relations }],
+                    dryRun: true,
+                  });
+                  return errors;
+                },
+                buildPayload: () =>
+                  Promise.resolve({
+                    op: "create",
+                    typeKey: input.typeKey,
+                    objectTypeId,
+                    items: [
+                      {
+                        data: values,
+                        relations: input.relations,
+                        objectTypeId,
+                        typeKey: input.typeKey,
+                      },
+                    ],
+                  }),
+                directWrite: async () => {
+                  const record = await createObjectRecord({
+                    organizationId: ctx.organizationId,
+                    teamId: ctx.teamId,
+                    userId: ctx.userId ?? null,
+                    objectTypeId,
+                    data: values,
+                    labelOverride: null,
+                    relations: input.relations,
+                    actor,
+                  });
+                  return {
+                    status: "ok",
+                    data: { record: serializeRecord(record) },
+                  };
+                },
+              }),
+            );
+          }
+          // labelOverride / sharing (or no conversation) → generic tool_call
+          // gate, which preserves those args verbatim through the grant.
           const gate = await gateBuiltinWriteTool(ctx, {
             toolName: "manageRecord",
             args: {
@@ -237,6 +348,70 @@ export const createManageRecordTool = () =>
           // Patch: only the named fields change; omitted ones are kept.
           // labelOverride forces the display label; sharing changes the audience
           // (owner team only — enforced via callerTeamId).
+          const recordId = input.recordId;
+          const execCtx = toExecCtx(ctx);
+          // Plain data patch → rich `record_write` card (before→after view).
+          if (
+            execCtx !== null &&
+            hasData &&
+            input.labelOverride == null &&
+            !input.sharing
+          ) {
+            return mapRecordWriteResp(
+              await gateRecordWriteApproval({
+                ctx: execCtx,
+                autonomy: ctx.workflowAutonomy ?? null,
+                teamPolicies: ctx.toolPolicies ?? {},
+                op: "update",
+                merge: true,
+                hashItems: [{ recordId, data: values }],
+                validateBeforePending: async () => {
+                  const { errors } = await bulkUpdateObjectRecords({
+                    teamId: ctx.teamId,
+                    updates: [{ id: recordId, data: values }],
+                    merge: true,
+                    dryRun: true,
+                  });
+                  return errors.map((e) => ({ index: 0, error: e.error }));
+                },
+                buildPayload: async () => {
+                  const snapshots = await getRecordSnapshots({
+                    teamId: ctx.teamId,
+                    ids: [recordId],
+                  });
+                  const snap = snapshots.get(recordId);
+                  return {
+                    op: "update",
+                    merge: true,
+                    items: [
+                      {
+                        recordId,
+                        data: values,
+                        currentLabel: snap?.label,
+                        currentData: snap?.data,
+                        objectTypeId: snap?.objectTypeId,
+                      },
+                    ],
+                  };
+                },
+                directWrite: async () => {
+                  const record = await setRecordData({
+                    id: recordId,
+                    data: values,
+                    merge: true,
+                    labelOverride: null,
+                    callerTeamId: ctx.teamId,
+                    actor,
+                  });
+                  return {
+                    status: "ok",
+                    data: { record: serializeRecord(record) },
+                  };
+                },
+              }),
+            );
+          }
+          // labelOverride / sharing (or no conversation) → tool_call gate.
           const gate = await gateBuiltinWriteTool(ctx, {
             toolName: "manageRecord",
             args: {
@@ -261,6 +436,45 @@ export const createManageRecordTool = () =>
         }
 
         if (input.action === "delete") {
+          const recordId = input.recordId;
+          const execCtx = toExecCtx(ctx);
+          // Delete → rich `record_write` card (full-record preview).
+          if (execCtx !== null) {
+            return mapRecordWriteResp(
+              await gateRecordWriteApproval({
+                ctx: execCtx,
+                autonomy: ctx.workflowAutonomy ?? null,
+                teamPolicies: ctx.toolPolicies ?? {},
+                op: "delete",
+                hashItems: [{ recordId }],
+                buildPayload: async () => {
+                  const snapshots = await getRecordSnapshots({
+                    teamId: ctx.teamId,
+                    ids: [recordId],
+                  });
+                  const snap = snapshots.get(recordId);
+                  return {
+                    op: "delete",
+                    items: [
+                      {
+                        recordId,
+                        currentLabel: snap?.label,
+                        currentData: snap?.data,
+                        objectTypeId: snap?.objectTypeId,
+                      },
+                    ],
+                  };
+                },
+                directWrite: async () => {
+                  const result = await deleteObjectRecord({
+                    id: recordId,
+                    actor,
+                  });
+                  return { status: "ok", data: { ...result } };
+                },
+              }),
+            );
+          }
           const gate = await gateBuiltinWriteTool(ctx, {
             toolName: "manageRecord",
             args: { action: "delete", recordId: input.recordId },

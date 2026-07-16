@@ -627,22 +627,7 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
         defaultLevel: "low",
         maxTokens: 5_000,
       },
-      // zdr:false — M3's only ZDR provider that supports tool-calling is
-      // Morph (2× the price, no prompt caching). Enforcing ZDR collapses
-      // the pool to Morph; disabling it lets OpenRouter reach the cheaper,
-      // cache-capable MiniMax first-party endpoint. M3 isn't a RGPD-grade
-      // choice anyway — ZDR teams pick an EU model (e.g. Mistral).
-      //
-      // order:["minimax"] — M3 is served by 6 upstreams (MiniMax, Novita,
-      // Parasail, Together, AtlasCloud, Morph), each with its OWN prompt
-      // cache. Unpinned, OpenRouter load-balances them, so consecutive
-      // tool-loop calls land on different providers and re-prefill the full
-      // ~100K-token context cold (measured: cache hit on only ~half the
-      // steps, ~200s wasted on a form→CSV turn). Pinning the cache-capable
-      // first-party MiniMax endpoint first keeps the implicit cache warm
-      // across the loop; fallbacks stay on so a MiniMax blip degrades to
-      // normal routing, not a failed turn.
-      provider: { requireParameters: true, zdr: undefined, order: ["minimax"] },
+      provider: { requireParameters: true, zdr: true, order: ["venice"] },
       // Promoted via the C3 gate, 2026-06-12. All capabilities at or
       // above the M2.7 baseline; cost $0.0134/turn (budget envelope).
       // The avg-latency criterion of this run pair passed only after

@@ -10,6 +10,10 @@ if (!appUrl) {
   throw "Missing APP_URL env";
 }
 
+/** BCP-47 tag for date formatting, derived from the email locale. */
+const dateLocale = (lang: string): string =>
+  lang === "fr" ? "fr-FR" : "en-US";
+
 export interface EmailData {
   subject: string;
   html: string;
@@ -27,10 +31,13 @@ interface OrganizationInvitationParams {
 /**
  * Generate the email data for an organization invitation.
  * If a teamId is provided, the team name is fetched and displayed.
+ * `lang` is the invitee's team language (falls back to `en`).
  */
 export const generateOrganizationInvitation = async (
   params: OrganizationInvitationParams,
+  lang: string,
 ): Promise<EmailData> => {
+  const t = i18n.getFixedT(lang);
   const acceptUrl = `${appUrl}/invitation?id=${params.invitationId}`;
 
   let teamName: string | undefined;
@@ -43,43 +50,50 @@ export const generateOrganizationInvitation = async (
   }
 
   const message = teamName
-    ? i18n.t("organizationInvitation.messageWithTeam", {
+    ? t("organizationInvitation.messageWithTeam", {
         inviterName: params.inviterName,
         teamName,
         organizationName: params.organizationName,
       })
-    : i18n.t("organizationInvitation.message", {
+    : t("organizationInvitation.message", {
         inviterName: params.inviterName,
         organizationName: params.organizationName,
       });
 
-  const formattedExpiresAt = params.expiresAt.toLocaleDateString("en-US", {
-    year: "numeric",
-    month: "long",
-    day: "numeric",
-  });
+  const formattedExpiresAt = params.expiresAt.toLocaleDateString(
+    dateLocale(lang),
+    {
+      year: "numeric",
+      month: "long",
+      day: "numeric",
+    },
+  );
 
-  const html = await renderEmail("organization-invitation", {
-    greeting: i18n.t("organizationInvitation.greeting"),
-    message,
-    organizationLabel: i18n.t("organizationInvitation.organizationLabel", {
-      organizationName: params.organizationName,
-    }),
-    teamLabel: teamName
-      ? i18n.t("organizationInvitation.teamLabel", { teamName })
-      : "",
-    roleLabel: i18n.t("organizationInvitation.roleLabel", {
-      roleName: params.role,
-    }),
-    acceptUrl,
-    cta: i18n.t("organizationInvitation.cta"),
-    expiration: i18n.t("organizationInvitation.expiration", {
-      expiresAt: formattedExpiresAt,
-    }),
-    ignore: i18n.t("organizationInvitation.ignore"),
-  });
+  const html = await renderEmail(
+    "organization-invitation",
+    {
+      greeting: t("organizationInvitation.greeting"),
+      message,
+      organizationLabel: t("organizationInvitation.organizationLabel", {
+        organizationName: params.organizationName,
+      }),
+      teamLabel: teamName
+        ? t("organizationInvitation.teamLabel", { teamName })
+        : "",
+      roleLabel: t("organizationInvitation.roleLabel", {
+        roleName: params.role,
+      }),
+      acceptUrl,
+      cta: t("organizationInvitation.cta"),
+      expiration: t("organizationInvitation.expiration", {
+        expiresAt: formattedExpiresAt,
+      }),
+      ignore: t("organizationInvitation.ignore"),
+    },
+    lang,
+  );
 
-  const subject = i18n.t("organizationInvitation.subject", {
+  const subject = t("organizationInvitation.subject", {
     organizationName: params.organizationName,
   });
 
@@ -91,22 +105,21 @@ export const generateOrganizationInvitation = async (
  * `sendVerificationOTP({ type })` callback.
  */
 type OtpEmailType =
-  | "sign-in"
-  | "email-verification"
-  | "forget-password"
-  | "change-email";
+  "sign-in" | "email-verification" | "forget-password" | "change-email";
 
 /**
  * Build a one-time-password email (email verification, password reset, or
  * sign-in). The email-otp plugin calls this from its single
  * `sendVerificationOTP` callback; `type` selects the copy. Expiry copy is
  * derived from the shared `OTP_EXPIRY_MINUTES` so it always matches the
- * plugin's `expiresIn`.
+ * plugin's `expiresIn`. `lang` is the recipient's stored language.
  */
 export const generateOtpEmail = async (
   type: OtpEmailType,
   otp: string,
+  lang: string,
 ): Promise<EmailData> => {
+  const t = i18n.getFixedT(lang);
   const copyKey =
     type === "forget-password"
       ? "otp.forgetPassword"
@@ -116,18 +129,22 @@ export const generateOtpEmail = async (
           ? "otp.changeEmail"
           : "otp.emailVerification";
 
-  const html = await renderEmail("email-otp", {
-    greeting: i18n.t("otp.greeting"),
-    intro: i18n.t(`${copyKey}.intro`),
-    codeLabel: i18n.t("otp.codeLabel"),
-    code: otp,
-    expiration: i18n.t("otp.expiration", {
-      minutes: String(OTP_EXPIRY_MINUTES),
-    }),
-    ignore: i18n.t("otp.ignore"),
-  });
+  const html = await renderEmail(
+    "email-otp",
+    {
+      greeting: t("otp.greeting"),
+      intro: t(`${copyKey}.intro`),
+      codeLabel: t("otp.codeLabel"),
+      code: otp,
+      expiration: t("otp.expiration", {
+        minutes: String(OTP_EXPIRY_MINUTES),
+      }),
+      ignore: t("otp.ignore"),
+    },
+    lang,
+  );
 
-  return { subject: i18n.t(`${copyKey}.subject`), html };
+  return { subject: t(`${copyKey}.subject`), html };
 };
 
 interface ChatbotFinishedParams {
@@ -149,42 +166,48 @@ interface ChatbotFinishedParams {
  * and Gmail's prose-stripping does not erase it), then injected into the
  * MJML template via Handlebars' triple-stache. Pair with `sendEmail` from
  * `@fretik/shared/lib/email`, optionally with `attachments` built from any
- * `presentFiles` outputs.
+ * `presentFiles` outputs. `lang` is the recipient's stored language.
  */
 export const generateChatbotFinished = async (
   params: ChatbotFinishedParams,
+  lang: string,
 ): Promise<EmailData> => {
+  const t = i18n.getFixedT(lang);
   const conversationUrl = `${appUrl}/chatbot/${params.conversationId}`;
   const trimmedTitle = params.conversationTitle?.trim();
   const title =
     trimmedTitle && trimmedTitle.length > 0
       ? trimmedTitle
-      : i18n.t("chatbotFinished.untitledConversation");
+      : t("chatbotFinished.untitledConversation");
 
   const trimmedName = params.userName?.trim();
   const greeting =
     trimmedName && trimmedName.length > 0
-      ? i18n.t("chatbotFinished.greetingNamed", { name: trimmedName })
-      : i18n.t("chatbotFinished.greetingAnonymous");
+      ? t("chatbotFinished.greetingNamed", { name: trimmedName })
+      : t("chatbotFinished.greetingAnonymous");
 
   const assistantHtml = renderMarkdownToEmailHtml(
     params.assistantMarkdown,
     appUrl,
   );
 
-  const html = await renderEmail("chatbot-finished", {
-    greeting,
-    intro: i18n.t("chatbotFinished.intro", { conversationTitle: title }),
-    conversationUrl,
-    cta: i18n.t("chatbotFinished.cta"),
-    replyHeader: i18n.t("chatbotFinished.replyHeader"),
-    assistantHtml,
-    oversizedAttachmentsNotice: params.oversizedAttachments
-      ? i18n.t("chatbotFinished.oversizedAttachments")
-      : "",
-  });
+  const html = await renderEmail(
+    "chatbot-finished",
+    {
+      greeting,
+      intro: t("chatbotFinished.intro", { conversationTitle: title }),
+      conversationUrl,
+      cta: t("chatbotFinished.cta"),
+      replyHeader: t("chatbotFinished.replyHeader"),
+      assistantHtml,
+      oversizedAttachmentsNotice: params.oversizedAttachments
+        ? t("chatbotFinished.oversizedAttachments")
+        : "",
+    },
+    lang,
+  );
 
-  const subject = i18n.t("chatbotFinished.subject", {
+  const subject = t("chatbotFinished.subject", {
     conversationTitle: title,
   });
 
@@ -204,37 +227,44 @@ interface ChatbotMentionParams {
 /**
  * Build the "a teammate mentioned you" email, sent when a user is @mentioned
  * in a collaborative conversation. Pulls the recipient straight into the
- * thread via the CTA.
+ * thread via the CTA. `lang` is the recipient's stored language.
  */
 export const generateChatbotMention = async (
   params: ChatbotMentionParams,
+  lang: string,
 ): Promise<EmailData> => {
+  const t = i18n.getFixedT(lang);
   const conversationUrl = `${appUrl}/chatbot/${params.conversationId}`;
   const trimmedTitle = params.conversationTitle?.trim();
   const title =
     trimmedTitle && trimmedTitle.length > 0
       ? trimmedTitle
-      : i18n.t("chatbotMention.untitledConversation");
+      : t("chatbotMention.untitledConversation");
 
   const trimmedName = params.userName?.trim();
   const greeting =
     trimmedName && trimmedName.length > 0
-      ? i18n.t("chatbotMention.greetingNamed", { name: trimmedName })
-      : i18n.t("chatbotMention.greetingAnonymous");
+      ? t("chatbotMention.greetingNamed", { name: trimmedName })
+      : t("chatbotMention.greetingAnonymous");
 
-  const mentionedBy = params.mentionedByName?.trim() || "A teammate";
+  const mentionedBy =
+    params.mentionedByName?.trim() || t("chatbotMention.someone");
 
-  const html = await renderEmail("chatbot-mention", {
-    greeting,
-    intro: i18n.t("chatbotMention.intro", {
-      mentionedBy,
-      conversationTitle: title,
-    }),
-    conversationUrl,
-    cta: i18n.t("chatbotMention.cta"),
-  });
+  const html = await renderEmail(
+    "chatbot-mention",
+    {
+      greeting,
+      intro: t("chatbotMention.intro", {
+        mentionedBy,
+        conversationTitle: title,
+      }),
+      conversationUrl,
+      cta: t("chatbotMention.cta"),
+    },
+    lang,
+  );
 
-  const subject = i18n.t("chatbotMention.subject", { mentionedBy });
+  const subject = t("chatbotMention.subject", { mentionedBy });
 
   return { subject, html };
 };
@@ -272,41 +302,216 @@ interface ChatbotFinishedAwaitingAnswersParams {
  * UI presents the questions inline through `ToolAskUserQuestion.vue`,
  * but users who enabled `emailOnCompletion` would otherwise miss the
  * pending prompt — this email surfaces the questions + options so they
- * know the conversation needs their input to resume.
+ * know the conversation needs their input to resume. `lang` is the
+ * recipient's stored language.
  */
 export const generateChatbotFinishedAwaitingAnswers = async (
   params: ChatbotFinishedAwaitingAnswersParams,
+  lang: string,
 ): Promise<EmailData> => {
+  const t = i18n.getFixedT(lang);
   const conversationUrl = `${appUrl}/chatbot/${params.conversationId}`;
   const trimmedTitle = params.conversationTitle?.trim();
   const title =
     trimmedTitle && trimmedTitle.length > 0
       ? trimmedTitle
-      : i18n.t("chatbotFinishedAwaitingAnswers.untitledConversation");
+      : t("chatbotFinishedAwaitingAnswers.untitledConversation");
 
   const trimmedName = params.userName?.trim();
   const greeting =
     trimmedName && trimmedName.length > 0
-      ? i18n.t("chatbotFinishedAwaitingAnswers.greetingNamed", {
+      ? t("chatbotFinishedAwaitingAnswers.greetingNamed", {
           name: trimmedName,
         })
-      : i18n.t("chatbotFinishedAwaitingAnswers.greetingAnonymous");
+      : t("chatbotFinishedAwaitingAnswers.greetingAnonymous");
 
-  const html = await renderEmail("chatbot-finished-awaiting-answers", {
-    greeting,
-    intro: i18n.t("chatbotFinishedAwaitingAnswers.intro", {
-      conversationTitle: title,
-    }),
-    conversationUrl,
-    cta: i18n.t("chatbotFinishedAwaitingAnswers.cta"),
-    questionsHeader: i18n.t("chatbotFinishedAwaitingAnswers.questionsHeader"),
-    multiSelectHint: i18n.t("chatbotFinishedAwaitingAnswers.multiSelectHint"),
-    freeTextHint: i18n.t("chatbotFinishedAwaitingAnswers.freeTextHint"),
-    questions: params.questions,
+  const html = await renderEmail(
+    "chatbot-finished-awaiting-answers",
+    {
+      greeting,
+      intro: t("chatbotFinishedAwaitingAnswers.intro", {
+        conversationTitle: title,
+      }),
+      conversationUrl,
+      cta: t("chatbotFinishedAwaitingAnswers.cta"),
+      questionsHeader: t("chatbotFinishedAwaitingAnswers.questionsHeader"),
+      multiSelectHint: t("chatbotFinishedAwaitingAnswers.multiSelectHint"),
+      freeTextHint: t("chatbotFinishedAwaitingAnswers.freeTextHint"),
+      questions: params.questions,
+    },
+    lang,
+  );
+
+  const subject = t("chatbotFinishedAwaitingAnswers.subject", {
+    conversationTitle: title,
   });
 
-  const subject = i18n.t("chatbotFinishedAwaitingAnswers.subject", {
-    conversationTitle: title,
+  return { subject, html };
+};
+
+interface WorkflowRunEmailBaseParams {
+  /** Display name of the user receiving the email. Falls back to a generic greeting when null/empty. */
+  userName: string | null;
+  workflowId: string;
+  runId: string;
+  workflowName: string;
+}
+
+/** Deep link to the run: the workflow page seeds its selected run from the
+ * `run` query param (`pages/workflows/[id].vue`). */
+const workflowRunUrl = (params: WorkflowRunEmailBaseParams): string =>
+  `${appUrl}/workflows/${params.workflowId}?run=${params.runId}`;
+
+const workflowGreeting = (
+  userName: string | null,
+  t: ReturnType<typeof i18n.getFixedT>,
+  keyPrefix: string,
+): string => {
+  const trimmedName = userName?.trim();
+  return trimmedName && trimmedName.length > 0
+    ? t(`${keyPrefix}.greetingNamed`, { name: trimmedName })
+    : t(`${keyPrefix}.greetingAnonymous`);
+};
+
+/**
+ * Build the "workflow run finished" email, sent to the recipients configured
+ * in `workflows.notifications` when a run succeeds. The final summary
+ * Markdown is rendered to email-safe HTML; produced files ride along as
+ * attachments built by the caller. `lang` is the recipient's stored language.
+ */
+export const generateWorkflowRunFinished = async (
+  params: WorkflowRunEmailBaseParams & {
+    /** Final assistant summary as Markdown. Empty = no result box. */
+    outputSummaryMarkdown: string;
+    /** True when the run's files were too large to attach (rendered as a footer notice). */
+    oversizedAttachments: boolean;
+  },
+  lang: string,
+): Promise<EmailData> => {
+  const t = i18n.getFixedT(lang);
+  const trimmedSummary = params.outputSummaryMarkdown.trim();
+
+  const html = await renderEmail(
+    "workflow-run-finished",
+    {
+      greeting: workflowGreeting(params.userName, t, "workflowRunFinished"),
+      intro: t("workflowRunFinished.intro", {
+        workflowName: params.workflowName,
+      }),
+      runUrl: workflowRunUrl(params),
+      cta: t("workflowRunFinished.cta"),
+      resultHeader: t("workflowRunFinished.resultHeader"),
+      summaryHtml:
+        trimmedSummary.length > 0
+          ? renderMarkdownToEmailHtml(trimmedSummary, appUrl)
+          : "",
+      oversizedAttachmentsNotice: params.oversizedAttachments
+        ? t("workflowRunFinished.oversizedAttachments")
+        : "",
+    },
+    lang,
+  );
+
+  const subject = t("workflowRunFinished.subject", {
+    workflowName: params.workflowName,
+  });
+
+  return { subject, html };
+};
+
+/**
+ * Build the "workflow run failed" email. Surfaces the run error (code +
+ * message) plus the last summary when the agent produced one before dying,
+ * so the recipient can triage without opening the app. `lang` is the
+ * recipient's stored language.
+ */
+export const generateWorkflowRunFailed = async (
+  params: WorkflowRunEmailBaseParams & {
+    errorCode: string | null;
+    errorMessage: string | null;
+    /** Last assistant summary, when the run produced one before failing. */
+    outputSummaryMarkdown: string | null;
+  },
+  lang: string,
+): Promise<EmailData> => {
+  const t = i18n.getFixedT(lang);
+  const trimmedSummary = params.outputSummaryMarkdown?.trim() ?? "";
+
+  const html = await renderEmail(
+    "workflow-run-failed",
+    {
+      greeting: workflowGreeting(params.userName, t, "workflowRunFailed"),
+      intro: t("workflowRunFailed.intro", {
+        workflowName: params.workflowName,
+      }),
+      runUrl: workflowRunUrl(params),
+      cta: t("workflowRunFailed.cta"),
+      errorHeader: t("workflowRunFailed.errorHeader"),
+      errorCode: params.errorCode ?? "",
+      errorMessage:
+        params.errorMessage?.trim() || t("workflowRunFailed.unknownError"),
+      resultHeader: t("workflowRunFailed.resultHeader"),
+      summaryHtml:
+        trimmedSummary.length > 0
+          ? renderMarkdownToEmailHtml(trimmedSummary, appUrl)
+          : "",
+    },
+    lang,
+  );
+
+  const subject = t("workflowRunFailed.subject", {
+    workflowName: params.workflowName,
+  });
+
+  return { subject, html };
+};
+
+/**
+ * Build the "workflow run needs your approval" email, sent when a run parks
+ * in `needs_approval`. Kind-aware detail: an external-app plan renders its
+ * localized operation list (`summary`), an `askUserQuestion` park renders
+ * the questions, anything else falls back to a generic "open the run" line.
+ * `lang` is the recipient's stored language and must match the language the
+ * `summary` was rendered in.
+ */
+export const generateWorkflowRunApproval = async (
+  params: WorkflowRunEmailBaseParams & {
+    /** Localized plan summary (external-app plans only). */
+    summary?: RenderedApprovalSummary;
+    /** Questions captured from an `askUserQuestion` park. */
+    questions?: AskUserQuestionForEmail[];
+  },
+  lang: string,
+): Promise<EmailData> => {
+  const t = i18n.getFixedT(lang);
+  const operations = params.summary?.operations.map((op) => ({
+    title: op.title,
+  }));
+  const hasDetail =
+    (operations && operations.length > 0) ||
+    (params.questions && params.questions.length > 0);
+
+  const html = await renderEmail(
+    "workflow-run-approval",
+    {
+      greeting: workflowGreeting(params.userName, t, "workflowRunApproval"),
+      intro: t("workflowRunApproval.intro", {
+        workflowName: params.workflowName,
+      }),
+      runUrl: workflowRunUrl(params),
+      cta: t("workflowRunApproval.cta"),
+      planHeader: params.summary?.title ?? "",
+      operations: operations ?? [],
+      questionsHeader: t("workflowRunApproval.questionsHeader"),
+      multiSelectHint: t("workflowRunApproval.multiSelectHint"),
+      questions: params.questions ?? [],
+      genericDetail: hasDetail ? "" : t("workflowRunApproval.genericDetail"),
+    },
+    lang,
+  );
+
+  const subject = t("workflowRunApproval.subject", {
+    workflowName: params.workflowName,
   });
 
   return { subject, html };
@@ -337,33 +542,41 @@ interface ChatbotApprovalPendingParams {
  * `run_plan(...)` and stopped pending the user's decision. Mirrors the
  * "awaiting answers" pattern: surfaces the action needed and links back
  * to the conversation so the user can review and approve in the card.
+ * `lang` is the recipient's stored language and must match the language
+ * the `summary` was rendered in.
  */
 export const generateChatbotApprovalPending = async (
   params: ChatbotApprovalPendingParams,
+  lang: string,
 ): Promise<EmailData> => {
+  const t = i18n.getFixedT(lang);
   const conversationUrl = `${appUrl}/chatbot/${params.conversationId}`;
   const trimmedTitle = params.conversationTitle?.trim();
   const title =
     trimmedTitle && trimmedTitle.length > 0
       ? trimmedTitle
-      : i18n.t("chatbotApprovalPending.untitledConversation");
+      : t("chatbotApprovalPending.untitledConversation");
 
   const trimmedName = params.userName?.trim();
   const greeting =
     trimmedName && trimmedName.length > 0
-      ? i18n.t("chatbotApprovalPending.greetingNamed", { name: trimmedName })
-      : i18n.t("chatbotApprovalPending.greetingAnonymous");
+      ? t("chatbotApprovalPending.greetingNamed", { name: trimmedName })
+      : t("chatbotApprovalPending.greetingAnonymous");
 
-  const html = await renderEmail("chatbot-approval-pending", {
-    greeting,
-    intro: i18n.t("chatbotApprovalPending.intro", { conversationTitle: title }),
-    conversationUrl,
-    cta: i18n.t("chatbotApprovalPending.cta"),
-    planHeader: params.summary.title,
-    operations: params.summary.operations.map((op) => ({ title: op.title })),
-  });
+  const html = await renderEmail(
+    "chatbot-approval-pending",
+    {
+      greeting,
+      intro: t("chatbotApprovalPending.intro", { conversationTitle: title }),
+      conversationUrl,
+      cta: t("chatbotApprovalPending.cta"),
+      planHeader: params.summary.title,
+      operations: params.summary.operations.map((op) => ({ title: op.title })),
+    },
+    lang,
+  );
 
-  const subject = i18n.t("chatbotApprovalPending.subject", {
+  const subject = t("chatbotApprovalPending.subject", {
     conversationTitle: title,
   });
 

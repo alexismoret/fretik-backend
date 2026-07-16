@@ -8,6 +8,7 @@ import {
   timestamp,
   uniqueIndex,
   uuid,
+  varchar,
 } from "drizzle-orm/pg-core";
 
 export const user = pgTable("user", {
@@ -26,6 +27,12 @@ export const user = pgTable("user", {
   // never be set through a sign-up/update payload). Granted only via the
   // super-admins service or the one-off `grant:super-admin` bootstrap script.
   isSuperAdmin: boolean("is_super_admin").default(false).notNull(),
+  // UI language preference (BCP-47 short code, e.g. "en"/"fr"). Storage column
+  // for the Better Auth `user.additionalFields.language`. Set at sign-up from
+  // the inviting team's language (see the `user.create.before` hook), then
+  // user-settable from the profile settings. The app applies it via i18n on
+  // load; the DB value is the source of truth for authenticated sessions.
+  language: varchar("language", { length: 8 }).default("en").notNull(),
   createdAt: timestamp("created_at", { mode: "date", withTimezone: true })
     .defaultNow()
     .notNull(),

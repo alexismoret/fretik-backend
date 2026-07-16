@@ -11,14 +11,18 @@ import {
   generateOtpEmail,
 } from "../emails/generators";
 import { bootstrapTeamWithBotUser } from "../services/auth/bot-user";
+import { getUserLocaleByEmail } from "../services/auth/get-user-locale";
 import {
+  getPendingInvitationTeamId,
   hasPendingInvitation,
   isEmailAllowlisted,
 } from "../services/auth/signup-gate";
 import { applyDocumentFieldTemplate } from "../services/field-definitions/apply-template";
 import { duplicateOrgDefsToTeam } from "../services/field-definitions/duplicate-org-to-team";
+import { getTeamLocale } from "../services/field-definitions/get-locale";
 import { seedStarterObjectTypes } from "../services/object-types/seed-starter-types";
 import { seedSystemOntology } from "../services/object-types/seed-system-types";
+import { scrubWorkflowNotificationRecipient } from "../services/workflows/scrub-notification-recipient";
 import { OTP_EXPIRY_SECONDS } from "./auth-constants";
 import { sendEmail } from "./email";
 import { redis } from "./redis";
@@ -60,6 +64,27 @@ const recordAuthEvent = async (
     });
   } catch (err) {
     console.warn(`[auth-audit] failed to record ${event}:`, err);
+  }
+};
+
+/**
+ * Best-effort scrub of workflow email-recipient lists when a user loses
+ * access (leaves a team / the org, or deletes their account). Never blocks
+ * the removal itself — the send path re-checks the team roster anyway
+ * (`filterTeamMemberIds`), so a missed scrub can't leak an email.
+ */
+const scrubNotificationRecipient = async (params: {
+  userId: string;
+  teamId?: string;
+  organizationId?: string;
+}): Promise<void> => {
+  try {
+    await scrubWorkflowNotificationRecipient(params);
+  } catch (err) {
+    console.warn(
+      `[workflow-notifications] failed to scrub recipient ${params.userId}:`,
+      err,
+    );
   }
 };
 
@@ -123,6 +148,9 @@ const options = {
   user: {
     deleteUser: {
       enabled: true,
+      afterDelete: async (user) => {
+        await scrubNotificationRecipient({ userId: user.id });
+      },
     },
     additionalFields: {
       // Platform operator flag (cross-org). `input: false` makes Better Auth
@@ -135,6 +163,16 @@ const options = {
         required: false,
         defaultValue: false,
         input: false,
+      },
+      // UI language preference. User-settable (input allowed) via
+      // `updateUser({ language })`. Set at sign-up from the inviting team's
+      // language in the `user.create.before` hook below; defaults to "en"
+      // for self-serve sign-ups. Rides on `session.user` so the frontend
+      // applies it via i18n on load.
+      language: {
+        type: "string",
+        required: false,
+        defaultValue: "en",
       },
     },
   },
@@ -163,9 +201,15 @@ const options = {
         before: async (newUser) => {
           const email = newUser.email.toLowerCase();
           // Invited users proved email ownership by clicking the emailed link
-          // — auto-verify them so the invitation flow never stalls.
+          // — auto-verify them so the invitation flow never stalls. They also
+          // inherit their inviting team's UI language (falls back to "en" for
+          // org-level invitations with no team).
           if (await hasPendingInvitation(email)) {
-            return { data: { ...newUser, emailVerified: true } };
+            const teamId = await getPendingInvitationTeamId(email);
+            const language = teamId ? await getTeamLocale(teamId) : "en";
+            return {
+              data: { ...newUser, emailVerified: true, language },
+            };
           }
           // Closed beta: only allowlisted emails may self-register.
           if (!(await isEmailAllowlisted(email))) {
@@ -232,17 +276,40 @@ const options = {
             teamId: data.team.id,
           });
         },
+        // Workflow notification recipients are stored as jsonb userId lists
+        // (no FK) — drop the departing user from them so the config doesn't
+        // accumulate stale ids.
+        afterRemoveMember: async (data) => {
+          await scrubNotificationRecipient({
+            userId: data.member.userId,
+            organizationId: data.organization.id,
+          });
+        },
+        afterRemoveTeamMember: async (data) => {
+          await scrubNotificationRecipient({
+            userId: data.teamMember.userId,
+            teamId: data.team.id,
+          });
+        },
       },
 
       sendInvitationEmail: async (data) => {
-        const { subject, html } = await generateOrganizationInvitation({
-          invitationId: data.id,
-          inviterName: data.inviter.user.name,
-          organizationName: data.organization.name,
-          role: data.role,
-          teamId: data.invitation.teamId,
-          expiresAt: data.invitation.expiresAt,
-        });
+        // Localize to the inviting team's language (the invitee usually has
+        // no account yet, so per-user language isn't available).
+        const lang = data.invitation.teamId
+          ? await getTeamLocale(data.invitation.teamId)
+          : "en";
+        const { subject, html } = await generateOrganizationInvitation(
+          {
+            invitationId: data.id,
+            inviterName: data.inviter.user.name,
+            organizationName: data.organization.name,
+            role: data.role,
+            teamId: data.invitation.teamId,
+            expiresAt: data.invitation.expiresAt,
+          },
+          lang,
+        );
 
         await sendEmail({
           to: { email: data.email },
@@ -276,7 +343,11 @@ const options = {
       storeOTP: "hashed",
       changeEmail: { enabled: true },
       sendVerificationOTP: async ({ email, otp, type }) => {
-        const { subject, html } = await generateOtpEmail(type, otp);
+        // The callback only has the address, so resolve the recipient's
+        // stored language by email (falls back to "en" — e.g. the new
+        // address of a change-email OTP, or a not-yet-created user).
+        const lang = await getUserLocaleByEmail(email);
+        const { subject, html } = await generateOtpEmail(type, otp, lang);
         void sendEmail({ to: { email }, subject, html });
       },
     }),

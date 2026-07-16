@@ -1,0 +1,1 @@
+ALTER TABLE "workflows" ADD COLUMN "notifications" jsonb DEFAULT '{"emailOnCompletion":false,"notifyTriggeredBy":true,"recipientUserIds":[]}' NOT NULL;

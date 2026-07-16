@@ -36,6 +36,8 @@ import {
 } from "@fretik/shared/services/workflows/heartbeat-run";
 import { notifySourceConversation } from "@fretik/shared/services/workflows/notify-source-conversation";
 import { recordTurnResult } from "@fretik/shared/services/workflows/record-turn-result";
+import { sendRunApprovalEmailIfEnabled } from "@fretik/shared/services/workflows/send-run-approval-email";
+import { sendRunCompletionEmailIfEnabled } from "@fretik/shared/services/workflows/send-run-completion-email";
 import { startCurrentTask } from "@fretik/shared/services/workflows/start-current-task";
 import { startRunning } from "@fretik/shared/services/workflows/start-running";
 import { OpenAPIHono } from "@hono/zod-openapi";
@@ -504,7 +506,7 @@ const executeTurn = async (params: {
           output !== null &&
           typeof output === "object" &&
           "taskStates" in output &&
-          Array.isArray((output as { taskStates: unknown }).taskStates)
+          Array.isArray(output.taskStates)
         ) {
           params.emitTaskUpdate(
             (output as { taskStates: WorkflowTaskState[] }).taskStates,
@@ -628,6 +630,7 @@ const executeTurn = async (params: {
 
   // ---- Atomic persistence: messages + turn cursor (+ finalize) ----
   let terminal = false;
+  let runTransitioned = false;
   await db.transaction(async (tx) => {
     const assistantMessages = filterNewAssistantMessages(
       history,
@@ -652,7 +655,7 @@ const executeTurn = async (params: {
       result.status === "failed" ||
       result.status === "canceled"
     ) {
-      await finalizeRun({
+      const { transitioned } = await finalizeRun({
         tx,
         runId: run.id,
         status: result.status === "completed" ? "succeeded" : result.status,
@@ -662,6 +665,7 @@ const executeTurn = async (params: {
         usage,
       });
       terminal = true;
+      runTransitioned = transitioned;
     }
   });
 
@@ -675,6 +679,18 @@ const executeTurn = async (params: {
         err instanceof Error ? err.message : err,
       );
     });
+  }
+  // Notification email — only from the finalize that actually performed the
+  // terminal transition (exactly-once), after the commit, fire-and-forget.
+  if (runTransitioned) {
+    void sendRunCompletionEmailIfEnabled({ runId: run.id }).catch(
+      (err: unknown) => {
+        console.warn(
+          `${logPrefix} completion email failed:`,
+          err instanceof Error ? err.message : err,
+        );
+      },
+    );
   }
 
   return { result, noProgressTurns };
@@ -843,7 +859,7 @@ workflowTriggerRoutes.post("/runs/:runId/turn", async (c) => {
         // The turn threw before its own atomic persistence committed, so the
         // run is still `running`. Close it NOW (idempotent) instead of leaving
         // a zombie for the 20-min stall sweeper — and with the RIGHT code.
-        await finalizeRun({
+        const finalized = await finalizeRun({
           runId,
           status: "failed",
           error: { code: "TURN_ERROR", message },
@@ -852,7 +868,13 @@ workflowTriggerRoutes.post("/runs/:runId/turn", async (c) => {
             `${logPrefix} finalize-on-error failed run=${runId}:`,
             err instanceof Error ? err.message : err,
           );
+          return { transitioned: false };
         });
+        if (finalized.transitioned) {
+          void sendRunCompletionEmailIfEnabled({ runId }).catch(
+            () => undefined,
+          );
+        }
         void evaluateCircuitBreaker({ runId }).catch(() => undefined);
         await send("result", {
           status: "failed",
@@ -881,7 +903,20 @@ workflowTriggerRoutes.post("/runs/:runId/wait-token", async (c) => {
   if (!parsed.success) {
     return c.json({ code: "VALIDATION_ERROR", message: "Invalid body" }, 400);
   }
-  await setRunWaitToken({ runId, waitTokenId: parsed.data.waitTokenId });
+  const { parked } = await setRunWaitToken({
+    runId,
+    waitTokenId: parsed.data.waitTokenId,
+  });
+  // Approval email — only from the POST that actually parked the run (a
+  // retried callback must not double-send). Fire-and-forget.
+  if (parked) {
+    void sendRunApprovalEmailIfEnabled({ runId }).catch((err: unknown) => {
+      console.warn(
+        `${logPrefix} approval email failed run=${runId}:`,
+        err instanceof Error ? err.message : err,
+      );
+    });
+  }
   return c.json({ ok: true }, 200);
 });
 
@@ -893,7 +928,7 @@ workflowTriggerRoutes.post("/runs/:runId/finalize", async (c) => {
   if (!parsed.success) {
     return c.json({ code: "VALIDATION_ERROR", message: "Invalid body" }, 400);
   }
-  await finalizeRun({
+  const { transitioned } = await finalizeRun({
     runId,
     status: parsed.data.status,
     error: parsed.data.error ?? null,
@@ -901,6 +936,11 @@ workflowTriggerRoutes.post("/runs/:runId/finalize", async (c) => {
   // Notify the launching chat for orchestrator-side terminal closes too
   // (deadline, approval timeout, onFailure) — idempotent with the turn-close path.
   void notifySourceConversation({ runId }).catch(() => undefined);
+  // Notification email (the service itself drops `canceled`) — only from the
+  // finalize that performed the transition. Fire-and-forget.
+  if (transitioned) {
+    void sendRunCompletionEmailIfEnabled({ runId }).catch(() => undefined);
+  }
   // Orchestrator-side terminal failures (onFailure, deadline, approval timeout)
   // feed the circuit breaker too.
   if (parsed.data.status === "failed") {

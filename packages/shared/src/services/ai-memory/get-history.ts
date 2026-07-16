@@ -61,22 +61,20 @@ export const getMemoryHistory = async (args: {
     limit: 20,
   });
 
-  return rows.map(
-    (row): MemoryHistoryEntry => ({
-      id: row.id,
-      operation: parseMemoryOperation(row.operation),
-      previousContent: row.previousContent,
-      newContent: row.newContent,
-      previousPath: row.previousPath,
-      newPath: row.newPath,
-      byUser: {
-        userId: row.byUserId,
-        name: row.byUser?.name ?? null,
-      },
-      byActor: row.byActor,
-      byConversationId: row.byConversationId,
-      reason: row.reason,
-      createdAt: row.createdAt,
-    }),
-  );
+  return rows.map((row): MemoryHistoryEntry => ({
+    id: row.id,
+    operation: parseMemoryOperation(row.operation),
+    previousContent: row.previousContent,
+    newContent: row.newContent,
+    previousPath: row.previousPath,
+    newPath: row.newPath,
+    byUser: {
+      userId: row.byUserId,
+      name: row.byUser?.name ?? null,
+    },
+    byActor: row.byActor,
+    byConversationId: row.byConversationId,
+    reason: row.reason,
+    createdAt: row.createdAt,
+  }));
 };

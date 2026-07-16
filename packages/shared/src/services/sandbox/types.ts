@@ -14,6 +14,11 @@ export type SandboxExecRequest =
 export type SandboxExecResponse =
   | { status: "ok"; data: unknown }
   | { status: "approval_pending"; approvalId: string }
+  // Single-flight: another approval is already pending in this conversation, so
+  // this one was NOT created. AI-side callers map it to a `deferredToolOutput`
+  // marker (stops the turn, renders no card); the sandbox HTTP boundary maps it
+  // to `error` (the sandbox SDK never sees this status).
+  | { status: "approval_deferred"; blockingApprovalId: string }
   | { status: "error"; message: string; data?: unknown };
 
 /** Execution context derived from the sandbox JWT. */

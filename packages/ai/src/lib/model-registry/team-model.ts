@@ -9,6 +9,7 @@
  */
 
 import { getTeamAiSettings } from "@fretik/shared/services/team-ai-settings/get-for-team";
+import { withSoftTimeout } from "../stream-errors";
 import {
   ROLE_TIER,
   resolveModel,
@@ -27,7 +28,9 @@ import type { ModelRole } from "./types";
  *
  * The settings read is wrapped defensively: a Redis/DB hiccup on this
  * personalization read must never break a chat turn or a background pipeline,
- * so any failure degrades to the code default rather than throwing.
+ * so any failure — including a Redis connection that hangs instead of
+ * erroring (`maxRetriesPerRequest: null` queues forever rather than
+ * rejecting) — degrades to the code default rather than blocking.
  */
 export const resolveModelForTeam = async (
   role: ModelRole,
@@ -36,7 +39,12 @@ export const resolveModelForTeam = async (
   const tier = ROLE_TIER[role];
   if (tier === "fixed" || teamId === undefined) return resolveModel(role);
   try {
-    const settings = await getTeamAiSettings(teamId);
+    const settings = await withSoftTimeout(
+      getTeamAiSettings(teamId),
+      3000,
+      null,
+      "team-ai-settings",
+    );
     const storedKey =
       tier === "flagship"
         ? settings?.flagshipProfileKey

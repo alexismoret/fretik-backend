@@ -17,6 +17,9 @@
  * separate `test:integration` script.
  */
 
+import { mock } from "bun:test";
+import { getTeamAiSettings } from "./lib/team-ai-settings-double";
+
 // OpenRouter — src/lib/openrouter.ts, src/lib/embeddings.ts,
 // src/services/search/reranker.ts
 process.env.OPENROUTER_API_KEY ??= "test-openrouter";
@@ -55,3 +58,18 @@ process.env.DATABASE_URL ??= "postgres://test:test@127.0.0.1:1/test";
 // when this is absent (C10 hardening). The pg Pool is lazy, so the fake URL
 // only satisfies the presence check; no connection happens in unit tests.
 process.env.AI_DB_READONLY_URL ??= "postgres://test:test@127.0.0.1:1/test";
+
+// `resolveModelForTeam` / `cheapModelIdForTeam` (src/lib/model-registry/
+// team-model.ts) are reachable from many unrelated unit tests (memory
+// services, compaction, search, pre-extract, the full chatbot agent set).
+// Whichever test file imports that chain FIRST in this shared bun test
+// process permanently binds team-model.ts's `getTeamAiSettings` reference —
+// a mock.module() call from an individual test file only wins if nothing
+// upstream already cached the real module, which is execution-order
+// dependent (confirmed to differ between local runs and CI). Preloading
+// this stub here, before any test file runs, makes it order-independent:
+// see tests/lib/team-ai-settings-double.ts for the mutable per-test state.
+void mock.module(
+  "@fretik/shared/services/team-ai-settings/get-for-team",
+  () => ({ getTeamAiSettings }),
+);

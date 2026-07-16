@@ -9,35 +9,21 @@
  *   - `minimax-m3` is flagship-only → wrong-tier for workhorse.
  */
 
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
+import { setTeamAiSettingsDouble } from "../../lib/team-ai-settings-double";
 
-// Drive the mocked settings read. MUST be registered before importing
-// `team-model` (which transitively imports `@fretik/shared/db`).
-let settings: {
-  flagshipProfileKey: string | null;
-  workhorseProfileKey: string | null;
-  utilityProfileKey: string | null;
-} | null = null;
-let shouldThrow = false;
-
-void mock.module(
-  "@fretik/shared/services/team-ai-settings/get-for-team",
-  () => ({
-    getTeamAiSettings: (_teamId: string) => {
-      if (shouldThrow) throw new Error("settings store down");
-      return Promise.resolve(settings);
-    },
-  }),
-);
-
+// The settings read is stubbed globally from `tests/preload.ts` (see that
+// file + `tests/lib/team-ai-settings-double.ts` for why a per-file
+// `mock.module()` here isn't reliable — team-model.ts is reachable from many
+// other test files' import chains, so whichever one runs first wins the
+// module cache). `setTeamAiSettingsDouble` drives that shared stub.
 const { resolveModel, resolveModelForRoleProfile, resolveTierProfileKey } =
   await import("../../../src/lib/model-registry/resolve");
 const { resolveModelForTeam, cheapModelIdForTeam } =
   await import("../../../src/lib/model-registry/team-model");
 
 beforeEach(() => {
-  settings = null;
-  shouldThrow = false;
+  setTeamAiSettingsDouble(null);
 });
 
 describe("resolveTierProfileKey", () => {
@@ -105,11 +91,11 @@ describe("resolveModelForTeam", () => {
   });
 
   test("fixed-tier role ignores team settings → code default", async () => {
-    settings = {
+    setTeamAiSettingsDouble({
       flagshipProfileKey: "deepseek-v4-pro",
       workhorseProfileKey: "gpt-oss-120b",
       utilityProfileKey: "gpt-4o-mini",
-    };
+    });
     // `vision` is a fixed role (never user-overridable).
     expect(await resolveModelForTeam("vision", "team-1")).toBe(
       resolveModel("vision"),
@@ -117,40 +103,40 @@ describe("resolveModelForTeam", () => {
   });
 
   test("team with no settings row → code default", async () => {
-    settings = null;
+    setTeamAiSettingsDouble(null);
     expect(await resolveModelForTeam("pre-extract", "team-1")).toBe(
       resolveModel("pre-extract"),
     );
   });
 
   test("null override field → code default", async () => {
-    settings = {
+    setTeamAiSettingsDouble({
       flagshipProfileKey: null,
       workhorseProfileKey: null,
       utilityProfileKey: null,
-    };
+    });
     expect(await resolveModelForTeam("pre-extract", "team-1")).toBe(
       resolveModel("pre-extract"),
     );
   });
 
   test("unknown override → code default", async () => {
-    settings = {
+    setTeamAiSettingsDouble({
       flagshipProfileKey: null,
       workhorseProfileKey: "nope-9000",
       utilityProfileKey: null,
-    };
+    });
     expect(await resolveModelForTeam("pre-extract", "team-1")).toBe(
       resolveModel("pre-extract"),
     );
   });
 
   test("valid workhorse override → the override instance, not the default", async () => {
-    settings = {
+    setTeamAiSettingsDouble({
       flagshipProfileKey: null,
       workhorseProfileKey: "gpt-oss-120b",
       utilityProfileKey: null,
-    };
+    });
     const resolved = await resolveModelForTeam("pre-extract", "team-1");
     expect(resolved).toBe(
       resolveModelForRoleProfile("pre-extract", "gpt-oss-120b"),
@@ -159,7 +145,7 @@ describe("resolveModelForTeam", () => {
   });
 
   test("settings read throwing → code default (defensive)", async () => {
-    shouldThrow = true;
+    setTeamAiSettingsDouble(null, true);
     expect(await resolveModelForTeam("pre-extract", "team-1")).toBe(
       resolveModel("pre-extract"),
     );
@@ -174,11 +160,11 @@ describe("cheapModelIdForTeam", () => {
   });
 
   test("valid utility override → that profile's catalog id", async () => {
-    settings = {
+    setTeamAiSettingsDouble({
       flagshipProfileKey: null,
       workhorseProfileKey: null,
       utilityProfileKey: "gemini-3.1-flash-lite",
-    };
+    });
     expect(await cheapModelIdForTeam("team-1")).toBe(
       resolveModelForRoleProfile("cheap-tasks", "gemini-3.1-flash-lite").profile
         .catalog.id,

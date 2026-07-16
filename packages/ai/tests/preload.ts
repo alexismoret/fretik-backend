@@ -47,6 +47,17 @@ process.env.INTERNAL_KEY ??= "test-internal";
 process.env.AI_SERVICE_URL ??= "http://127.0.0.1:1";
 process.env.APP_URL ??= "http://127.0.0.1:1";
 
+// Transactional email — @fretik/shared/lib/email validates at load
+// (SCW_SECRET_KEY is already stubbed above). Reachable from unit tests via
+// tools/manage-workflow → shared/services/workflows/create-run →
+// send-run-completion-email. `sendEmail` is a plain fetch called on demand,
+// so these stubs never cause a network call. Locally a .env side-load masks
+// the gap; CI has no .env file and threw at email.ts load time.
+process.env.SCW_PROJECT_ID ??= "test-project";
+process.env.SCW_EMAIL_REGION ??= "fr-par";
+process.env.EMAIL_FROM_NAME ??= "Test";
+process.env.EMAIL_FROM_ADDRESS ??= "test@example.com";
+
 // Postgres — `@fretik/shared/db` validates this env var at module
 // load. The actual `runMigrationsWithLock()` call is gated on
 // `NODE_ENV !== "test"` inside db/index.ts, so the fake URL below

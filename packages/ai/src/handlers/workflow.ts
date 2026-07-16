@@ -7,12 +7,12 @@ import {
 import { applyAntiBufferingHeaders } from "@fretik/shared/lib/sse-headers";
 import { workflowAbortChannel } from "@fretik/shared/lib/workflow-abort";
 import {
+  currentWorkflowTask,
   WORKFLOW_DEFAULT_MAX_TOTAL_TOKENS,
   WorkflowFinalizeRequestSchema,
   WorkflowTurnRequestSchema,
   WorkflowTurnResultSchema,
   WorkflowWaitTokenRequestSchema,
-  currentWorkflowTask,
   type WorkflowRunUsage,
   type WorkflowTaskState,
   type WorkflowTurnResult,
@@ -84,7 +84,11 @@ import {
   withSoftTimeout,
 } from "../lib/stream-errors";
 import { triggerCallbackMiddleware } from "../middlewares/trigger-callback";
-import { prepareModelMessages } from "../services/native-input";
+import {
+  hasNativeFileParts,
+  NATIVE_FILE_PARSER_PLUGINS,
+  prepareModelMessages,
+} from "../services/native-input";
 import { runUnifiedRecall } from "../services/recall/recall";
 import {
   buildTurnMessageMetadata,
@@ -440,6 +444,17 @@ const executeTurn = async (params: {
       { ignoreIncompleteToolCalls: true },
     );
 
+    // C5v2: pin the raw PDF past OpenRouter's default Mistral-OCR pass
+    // when a native file rides this turn; otherwise send no
+    // `providerOptions` at all (byte-identical to today).
+    const providerOptionsSpread = hasNativeFileParts(history, modelProfile)
+      ? {
+          providerOptions: {
+            openrouter: { plugins: NATIVE_FILE_PARSER_PLUGINS },
+          },
+        }
+      : {};
+
     const streamOutcome = await streamWithRetryThenFallback({
       primary: () =>
         agentSet.primary.stream({
@@ -447,6 +462,7 @@ const executeTurn = async (params: {
           options: callOptions,
           abortSignal: abortController.signal,
           onStepEnd: onWorkflowStepEnd,
+          ...providerOptionsSpread,
         }),
       fallback: () =>
         agentSet.fallback.stream({
@@ -454,6 +470,7 @@ const executeTurn = async (params: {
           options: callOptions,
           abortSignal: abortController.signal,
           onStepEnd: onWorkflowStepEnd,
+          ...providerOptionsSpread,
         }),
       abortSignal: abortController.signal,
       log: (message) => console.warn(`${logPrefix} ${message}`),

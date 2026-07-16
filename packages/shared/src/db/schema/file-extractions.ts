@@ -42,10 +42,11 @@ export const fileExtractionStatusEnum = pgEnum("file_extraction_status", [
  * GDPR deletion trivial.
  *
  * The extracted markdown lives on S3 at the content-addressed key
- * `file-extractions/{organizationId}/{fileHash}.md` (and, for
- * multi-page OCR routes, `…/{fileHash}.pages.json` so the Drive
- * pre-extract pipeline keeps its per-page down-selection). This row
- * tracks status + location + counts; the bytes are NEVER stored here.
+ * `file-extractions/{organizationId}/{fileHash}.md`; embedded images
+ * extracted by OCR live under `…/{fileHash}/{imageId}` (ids listed in
+ * `imageIds`). This row tracks status + location + counts; the bytes
+ * are NEVER stored here. Per-page shape is reconstructed by splitting
+ * the flattened markdown — there is no separate pages artifact.
  *
  * Historical / cost-safe: NEVER deleted when a source file/document is
  * deleted — one extraction may back several sources. A refcounted GC
@@ -85,6 +86,15 @@ export const fileExtractions = pgTable(
 
     /** Page count for OCR routes; NULL otherwise. */
     pageCount: integer("page_count"),
+
+    /**
+     * Ids of the embedded images extracted by OCR (`img-N.ext`, as
+     * emitted by Mistral), stored at
+     * `file-extractions/{org}/{hash}/{imageId}`. NULL = extracted
+     * before image support, or a route without images — legacy rows
+     * are NEVER re-extracted (the NULL itself is the version signal).
+     */
+    imageIds: text("image_ids").array(),
 
     /** Char count of the full extracted markdown. */
     charCount: integer("char_count"),

@@ -19,6 +19,8 @@ interface ChatFileRow {
 const chatFileRows = new Map<string, ChatFileRow>();
 /** Extraction markdown keyed by fileHash (null markdown = image-skip). */
 const extractions = new Map<string, string | null>();
+/** Stored embedded-image ids keyed by fileHash ([] = legacy/no images). */
+const extractionImageIds = new Map<string, string[]>();
 
 const rowKey = (conversationId: string, filename: string): string =>
   `${conversationId}::${filename}`;
@@ -57,6 +59,7 @@ void mock.module("@fretik/shared/services/file-extraction/extract", () => ({
       pageCount: null,
       charCount: markdown?.length ?? null,
       sidecarS3Key: null,
+      imageIds: extractionImageIds.get(input.fileHash) ?? [],
     };
   },
 }));
@@ -174,6 +177,8 @@ const seedAttachment = (args: {
   fileHash?: string;
   textContent?: string;
   extractionMarkdown?: string | null;
+  /** Stored embedded-image ids (omit = legacy/no images). */
+  imageIds?: string[];
 }): void => {
   const fileHash = args.fileHash ?? `hash-${args.filename}`;
   chatFileRows.set(rowKey(args.conversationId, args.filename), {
@@ -191,12 +196,16 @@ const seedAttachment = (args: {
   if (args.extractionMarkdown !== undefined) {
     extractions.set(fileHash, args.extractionMarkdown);
   }
+  if (args.imageIds !== undefined) {
+    extractionImageIds.set(fileHash, args.imageIds);
+  }
 };
 
 beforeEach(() => {
   sandboxFs.reset();
   chatFileRows.clear();
   extractions.clear();
+  extractionImageIds.clear();
   contextFiles.length = 0;
   contextOriginals.clear();
   contextSidecars.clear();
@@ -355,6 +364,58 @@ describe("read tool — attachments (transparent)", () => {
   test("missing attachment row returns FILE_NOT_FOUND", async () => {
     const out = expectRecord(await execRead("conv-x", "attachments/ghost.md"));
     expect(out["code"]).toBe("FILE_NOT_FOUND");
+  });
+});
+
+describe("read tool — extracted figures", () => {
+  test("figure refs are rewritten to virtual paths when images are stored", async () => {
+    seedAttachment({
+      conversationId: "conv-fig",
+      filename: "report.pdf",
+      mimeType: "application/pdf",
+      extractionMarkdown: "Intro\n\n![chart](img-0.jpeg)\n\n![logo](img-1.png)",
+      imageIds: ["img-0.jpeg"],
+    });
+    const out = expectRecord(
+      await execRead("conv-fig", "attachments/report.pdf"),
+    );
+    const content = readString(out, "content");
+    // Manifest id rewritten; non-stored id untouched.
+    expect(content).toContain("attachments/report.pdf/img-0.jpeg");
+    expect(content).toContain("![logo](img-1.png)");
+    expect(content).not.toContain("attachments/report.pdf/img-1.png");
+  });
+
+  test("legacy extraction (no stored images) keeps refs untouched", async () => {
+    seedAttachment({
+      conversationId: "conv-legacy",
+      filename: "old.pdf",
+      mimeType: "application/pdf",
+      extractionMarkdown: "![chart](img-0.jpeg)",
+    });
+    const out = expectRecord(
+      await execRead("conv-legacy", "attachments/old.pdf"),
+    );
+    expect(readString(out, "content")).toContain("![chart](img-0.jpeg)");
+    expect(readString(out, "content")).not.toContain(
+      "attachments/old.pdf/img-0.jpeg",
+    );
+  });
+
+  test("read on a figure path steers to vision", async () => {
+    seedAttachment({
+      conversationId: "conv-figread",
+      filename: "report.pdf",
+      mimeType: "application/pdf",
+      extractionMarkdown: "![chart](img-0.jpeg)",
+      imageIds: ["img-0.jpeg"],
+    });
+    const out = expectRecord(
+      await execRead("conv-figread", "attachments/report.pdf/img-0.jpeg"),
+    );
+    expect(out["code"]).toBe("NO_TEXT_CONTENT");
+    expect(out["hint"]).toBe("vision");
+    expect(readString(out, "error")).toContain("vision(");
   });
 });
 

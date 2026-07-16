@@ -1,3 +1,10 @@
+import db from "@fretik/shared/db";
+import { parseExtractedImagePath } from "@fretik/shared/services/file-extraction/image-refs";
+import {
+  buildExtractionImageKey,
+  extractedImageContentType,
+  readExtractionImage,
+} from "@fretik/shared/services/file-extraction/storage";
 import { tool } from "ai";
 import { z } from "zod";
 import { getRuntimeContext } from "../agents/shared/runtime-context";
@@ -16,11 +23,12 @@ import { describeVisionFile } from "../lib/vision";
  * question, and returns the description.
  *
  * Designed to be RARE. Most uploaded files in the Fretik chatbot are
- * scans of documents — the OCR sidecar covers them at zero
- * incremental cost and `read(file_path)` is the cheaper default. Use
- * this tool only when the user's question is explicitly visual
- * (layout, diagram, colours, signatures, photo content, document
- * structure) and `read` cannot plausibly answer.
+ * documents — lazy OCR (cached content-addressed) serves their text
+ * through `read`, the cheaper default. This tool is for explicitly
+ * visual questions (layout, diagram, colours, signatures, photo
+ * content) that `read` cannot plausibly answer — preferably on ONE
+ * extracted figure (`attachments/<file>/img-N.ext`, resolved from the
+ * extraction cache, no sandbox) rather than a whole PDF.
  *
  * PDF handling uses the OpenRouter `file-parser` plugin pinned to
  * `engine: "native"` so Gemini receives the raw PDF instead of the
@@ -84,23 +92,28 @@ const guessMimeFromExtension = (ext: string): string | null => {
 export const createVisionTool = () =>
   tool({
     description: [
-      "Invokes a vision model to look at an image, PDF, or video file in the conversation's sandbox and answer a specific visual question about it.",
+      "Invokes a vision model to look at an image, an extracted document figure, a PDF, or a video and answer a specific visual question about it.",
       "",
-      "USE SPARINGLY. For scans or screenshots of documents (invoices, receipts, contracts), try `read(file_path)` first — OCR has already extracted the text into a markdown sidecar. Only call vision when the question is explicitly visual: layout, diagrams, colours, photo content, positional details, signatures, the overall document structure as a picture, or what happens in a video.",
+      "For document text, `read` is cheaper and exact — call vision only when the question is explicitly visual: layout, diagrams, colours, photo content, positional details, signatures, or what happens in a video.",
+      "",
+      "Target the smallest thing that answers the question:",
+      "- One figure inside a document → its extracted-figure path from `read` output (e.g. 'attachments/report.pdf/img-2.jpeg'), NOT the whole PDF.",
+      "- A standalone image or video → its file path.",
+      "- The whole PDF → only when the question spans the document's layout (multi-page structure, where a signature sits).",
+      "- A page region with no extracted figure → render/crop the page with `python` (pdfplumber/pypdf) first, then vision the output image.",
       "",
       "Inputs:",
-      "- file_path (required): workspace-relative or absolute path under `/workspace/` (e.g. 'attachments/chart.png', 'drive/uuid-report.pdf', 'attachments/clip.mp4').",
-      "- question (required): the specific visual question to ask. Be precise — 'Describe the chart in the bottom-right, including colours and values' works better than 'Describe this file'.",
+      "- file_path (required): workspace-relative or absolute path under `/workspace/` (e.g. 'attachments/chart.png', 'attachments/report.pdf/img-2.jpeg', 'drive/uuid-report.pdf', 'attachments/clip.mp4').",
+      "- question (required): the specific visual question. 'Describe the chart in the bottom-right, including colours and values' works better than 'Describe this file'.",
       "",
-      "Accepted formats: .png, .jpg, .jpeg, .webp, .pdf, .mp4, .webm, .mov. Anything else returns an error.",
-      "PDFs and videos are sent natively to the vision model (not OCR-converted) so layout, motion, diagrams, and signatures are preserved.",
+      "Accepted formats: .png, .jpg, .jpeg, .webp, .pdf, .mp4, .webm, .mov, plus extracted-figure paths. PDFs and videos are sent natively (not OCR-converted) so layout, motion, diagrams, and signatures are preserved.",
     ].join("\n"),
     inputSchema: z.object({
       file_path: z
         .string()
         .min(1)
         .describe(
-          "Workspace-relative or absolute path under '/workspace/'. Accepts .png, .jpg, .jpeg, .webp, .pdf, .mp4, .webm, .mov.",
+          "Workspace-relative or absolute path under '/workspace/'. Accepts .png, .jpg, .jpeg, .webp, .pdf, .mp4, .webm, .mov, and extracted-figure paths ('attachments/<file>/img-N.jpeg').",
         ),
       question: z
         .string()
@@ -126,6 +139,61 @@ export const createVisionTool = () =>
           error: `Path is outside the conversation's sandbox (/workspace/).`,
           code: TOOL_ERROR_CODES.PATH_OUT_OF_SANDBOX,
         };
+      }
+
+      // Extracted figure (`attachments/<file>/img-N.ext`): a virtual
+      // path minted by `read` — the pixels live in the extraction cache
+      // on S3, not in the sandbox. Resolved DB-first, zero E2B.
+      const figure = parseExtractedImagePath(resolved.relative);
+      if (figure) {
+        const figureMiss = {
+          error: `No extracted figure ${figure.imageId} for ${figure.attachmentFilename}. read("attachments/${figure.attachmentFilename}") shows the available figure refs.`,
+          code: TOOL_ERROR_CODES.FILE_NOT_FOUND,
+        };
+        const fileRow = await db.query.aiChatFiles.findFirst({
+          where: { conversationId, filename: figure.attachmentFilename },
+          columns: { fileHash: true },
+        });
+        if (!fileRow?.fileHash) return figureMiss;
+        const extractionRow = await db.query.fileExtractions.findFirst({
+          where: {
+            organizationId: ctx.organizationId,
+            fileHash: fileRow.fileHash,
+          },
+          columns: { imageIds: true },
+        });
+        if (!extractionRow?.imageIds?.includes(figure.imageId)) {
+          return figureMiss;
+        }
+        const imageBytes = await readExtractionImage(
+          buildExtractionImageKey(
+            ctx.organizationId,
+            fileRow.fileHash,
+            figure.imageId,
+          ),
+        );
+        if (!imageBytes) return figureMiss;
+        const figureMime = extractedImageContentType(figure.imageId);
+        try {
+          const result = await describeVisionFile({
+            bytes: imageBytes,
+            mimeType: figureMime,
+            question,
+            filename: figure.imageId,
+          });
+          return {
+            filePath: resolved.absolute,
+            mimeType: figureMime,
+            question: result.question,
+            model: result.model,
+            description: result.description,
+          };
+        } catch (err) {
+          return {
+            error: `Vision call failed: ${err instanceof Error ? err.message : String(err)}`,
+            code: TOOL_ERROR_CODES.VISION_ERROR,
+          };
+        }
       }
 
       const ext = getExtension(resolved.relative);

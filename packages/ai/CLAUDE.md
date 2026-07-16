@@ -45,5 +45,5 @@ Invariants:
 
 - Tool errors must be returned as `{ error, code }` objects, not thrown. A thrown error hides the failure from the model and surfaces as a 500 on the client. Throw only for unexpected bugs.
 - Large tool outputs (>30k chars) need `maybePersistLargeOutput()` — it writes the result to a temp file and returns a `<persisted-output>` marker. Without it, the stream truncates and the model sees garbage.
-- File parts in messages must be stripped (`stripFilePartsForModel()`) before `convertToModelMessages()`. The model reaches files only through the `read`/`vision` tools — it never sees raw bytes or URLs.
+- Message histories go through `prepareModelMessages()` (services/native-input) before `convertToModelMessages()`: attachments the active profile's `nativeInput` policy covers (image/video/PDF where activated) ride natively; everything else is stripped to tool-mediated (`read`/`vision`/`python`). Never bypass it — a raw history leaks file parts the provider can't resolve.
 - Resumable streams spin up two ioredis connections per context. Use `maxRetriesPerRequest: null` or the subscriber gets stuck after the first failure.

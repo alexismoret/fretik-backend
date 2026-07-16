@@ -329,7 +329,7 @@ export const buildAttachedFilesBlock = async (
     }
     if (row.hasMarkdown) {
       body.push(
-        `\`read({ file_path: '${relativePath}' })\` returns its text. For visual layout / signatures / diagrams use \`vision({ file_path: '${relativePath}', question: '...' })\`.`,
+        `\`read({ file_path: '${relativePath}' })\` returns its text; figure refs in it are vision-targetable. For layout / signature questions use \`vision\`; to modify the file use \`python\` on '${relativePath}'.`,
       );
     } else if (row.mimeType.startsWith("image/")) {
       body.push(

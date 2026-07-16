@@ -11,6 +11,10 @@ import {
 } from "@fretik/shared/lib/chatbot-session-storage";
 import { getOrCreateExtraction } from "@fretik/shared/services/file-extraction/extract";
 import {
+  parseExtractedImagePath,
+  rewriteExtractedImageRefs,
+} from "@fretik/shared/services/file-extraction/image-refs";
+import {
   isImageMime,
   isOcrDocumentMime,
   isSpreadsheetMime,
@@ -176,7 +180,7 @@ const resolveAttachmentContent = async (args: {
 
   const row = await db.query.aiChatFiles.findFirst({
     where: { conversationId, filename: name },
-    columns: { id: true, fileHash: true, mimeType: true },
+    columns: { id: true, fileHash: true, mimeType: true, size: true },
   });
   if (!row) {
     return {
@@ -265,6 +269,7 @@ const resolveAttachmentContent = async (args: {
           fileHash: contentHash,
           mimeType,
           filename: name,
+          fileSizeBytes: row.size,
           getBytes: async () => {
             const bytes = await readSessionFile(conversationId, relative);
             if (!bytes) throw new Error(`Original bytes missing for ${name}`);
@@ -301,7 +306,19 @@ const resolveAttachmentContent = async (args: {
         },
       };
     }
-    return { text: extraction.markdown };
+    // Point figure refs at their stored extracted images so the agent
+    // can hand ONE figure to `vision` instead of the whole document.
+    // Legacy cache rows (no stored images) keep their refs untouched.
+    return {
+      text:
+        extraction.imageIds.length > 0
+          ? rewriteExtractedImageRefs({
+              markdown: extraction.markdown,
+              virtualDir: `attachments/${name}`,
+              imageIds: extraction.imageIds,
+            })
+          : extraction.markdown,
+    };
   }
 
   return {
@@ -431,10 +448,11 @@ export const createReadTool = () =>
       "- View a file you already know exists (filename came from an attachment, `listDocuments`, or a previous tool result).",
       "- `read(path, offset, limit)` targets a section in a large file (`offset` is 1-indexed, `limit` defaults to 2000 lines).",
       "- Searching across multiple files → use `bash` (`grep`, `find`, `head`, pipelines).",
-      "- Spreadsheets (`.xlsx` / `.xls`) and programmatic / page-by-page processing → use `python` (pandas, openpyxl, pdfplumber).",
+      "- Spreadsheets (`.xlsx` / `.xls`), programmatic processing, and MODIFYING a file (docx / pptx / xlsx editing) → use `python` (pandas, openpyxl, pdfplumber, python-docx, python-pptx) — the original bytes are at `attachments/<filename>`.",
       "- Visual questions (layout, signatures, diagrams, photos) → use `vision`.",
       "- Finding by topic when you don't know the path → use `searchKnowledge`.",
       "- Path inputs: `attachments/invoice.pdf` (workspace-relative, preferred), `/workspace/attachments/invoice.pdf` (absolute), or bare `invoice.pdf` (assumed under `attachments/`). Documents and images are made readable transparently — just pass the original filename.",
+      "- Document text may contain figure refs like `![chart](attachments/report.pdf/img-2.jpeg)` — pass that path to `vision` to look at THAT figure (it is not readable or python-openable).",
       `- A byte safety cap (~${(MAX_READ_CHARS / 1000).toFixed(0)}K chars) fires on dense content; when it does, \`truncatedByBytes: true\` + a \`notice\` field tell you exactly how to paginate.`,
       "",
       "Output: `{ filePath, source, startLine, numLines, totalLines, content, truncatedByBytes?, notice? }`. When the slice is oversized it is saved to a `<persisted-output>` file and the envelope is returned instead — page through the rest with `offset` + `limit`.",
@@ -498,6 +516,16 @@ export const createReadTool = () =>
       let finalAbsolute = resolved.absolute;
 
       if (isAttachment) {
+        // Extracted figure (`attachments/<file>/img-N.ext`): pixels, not
+        // text — steer to `vision`, which resolves this exact path.
+        const figure = parseExtractedImagePath(resolved.relative);
+        if (figure) {
+          return {
+            error: `${resolved.relative} is an extracted figure, not text. View it with vision("${resolved.relative}", "<question>").`,
+            code: TOOL_ERROR_CODES.NO_TEXT_CONTENT,
+            hint: "vision",
+          };
+        }
         // Chat attachments: transparent, Bun-side extraction (no E2B).
         const result = await resolveAttachmentContent({
           conversationId,

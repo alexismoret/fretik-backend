@@ -1,6 +1,9 @@
 import { sanitizeSessionPath } from "@fretik/shared/lib/chatbot-session-storage";
 import { type FileUIPart, isFileUIPart, type UIMessage } from "ai";
-import type { ModelProfile } from "../../lib/model-registry/types";
+import {
+  type ModelProfile,
+  NATIVE_FILE_MAX_BYTES,
+} from "../../lib/model-registry/types";
 import {
   mediaModality,
   type NativeModality,
@@ -28,6 +31,11 @@ import {
  *     - image → base64 data URL (inlined; small, re-resolved every turn).
  *     - video → fresh presigned URL (by reference; avoids re-inlining a
  *       multi-MB clip every turn — OpenRouter passes it as `video_url`).
+ *     - file (C5v2, PDF) → base64 data URL like images (the provider-portable
+ *       transport for `file` parts), bounded by `limits.maxFileBytes` —
+ *       an oversized file demotes to tool-mediated, never errors. The
+ *       stream call sites add the OpenRouter `file-parser` plugin
+ *       (request-level) when `hasNativeFileParts` is true.
  *
  * NEVER mutates the input: the base64/URL lives ONLY in the transient
  * model messages, never written back to the persisted history. Any I/O
@@ -95,11 +103,13 @@ const capForModality = (
   if (!limits) return undefined;
   if (modality === "image") return limits.maxImagesPerRequest;
   if (modality === "video") return limits.maxVideosPerRequest;
+  if (modality === "file") return limits.maxFilesPerRequest;
   return undefined;
 };
 
 const toNativeFilePart = async (
   part: FileUIPart,
+  profile: ModelProfile,
   deps: PrepareModelMessagesDeps,
 ): Promise<FileUIPart | null> => {
   const { conversationId } = deps;
@@ -115,6 +125,16 @@ const toNativeFilePart = async (
     }
     const bytes = await deps.readSessionFile(conversationId, relative);
     if (!bytes) return null;
+    // Files (PDF) are heavy when inlined and re-sent every turn — an
+    // oversized one demotes to tool-mediated instead of bloating the
+    // request. `filename` is preserved by the spread (providers need it
+    // on file parts).
+    if (mediaModality(mediaType) === "file") {
+      const maxBytes =
+        profile.assessment.nativeInput.limits?.maxFileBytes ??
+        NATIVE_FILE_MAX_BYTES;
+      if (bytes.byteLength > maxBytes) return null;
+    }
     const base64 = Buffer.from(bytes).toString("base64");
     return { ...part, url: `data:${mediaType};base64,${base64}` };
   } catch (err) {
@@ -126,6 +146,38 @@ const toNativeFilePart = async (
     return null;
   }
 };
+
+/**
+ * OpenRouter `file-parser` plugin pinned to the native engine — sent
+ * request-level when the turn carries a native PDF, so OpenRouter hands
+ * the raw file to the model instead of running its default Mistral-OCR
+ * conversion (which would silently charge AND flatten the document).
+ * Providers that don't support the plugin drop unknown ids silently
+ * (same behavior as the `vision` tool's PDF path in `lib/vision.ts`).
+ */
+export const NATIVE_FILE_PARSER_PLUGINS = [
+  { id: "file-parser", pdf: { engine: "native" } },
+];
+
+/**
+ * True when at least one file part in the history rides natively as a
+ * `file`-modality part for this profile. The stream call sites use it to
+ * attach the OpenRouter `file-parser` plugin (request-level) ONLY on
+ * requests that actually carry a native PDF — everything else keeps its
+ * exact current provider options (byte-identical inert guard).
+ */
+export const hasNativeFileParts = (
+  messages: UIMessage[],
+  profile: ModelProfile,
+): boolean =>
+  messages.some((message) =>
+    message.parts.some(
+      (part) =>
+        isFileUIPart(part) &&
+        mediaModality(part.mediaType) === "file" &&
+        resolveAttachmentIngestion(part, profile) === "native",
+    ),
+  );
 
 export const prepareModelMessages = async (
   history: UIMessage[],
@@ -177,7 +229,7 @@ export const prepareModelMessages = async (
         message.parts.map(async (part): Promise<Part | null> => {
           if (!isFileUIPart(part)) return part;
           if (!keepNative.has(part)) return null;
-          return toNativeFilePart(part, deps);
+          return toNativeFilePart(part, profile, deps);
         }),
       );
       return {

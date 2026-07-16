@@ -1,4 +1,9 @@
-import type { ModelProfile, ModelRole, RoleBinding } from "./types";
+import {
+  NATIVE_FILE_MAX_BYTES,
+  type ModelProfile,
+  type ModelRole,
+  type RoleBinding,
+} from "./types";
 
 /**
  * Seed profiles — a curated brand × tier matrix, PRUNED for
@@ -53,8 +58,14 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
       nativeInput: {
         image: false,
         video: false,
-        fileMimeTypes: [],
+        // C5v2 native PDF — application/pdf only (docx/pptx native support
+        // is provider-inconsistent). Inert for the default minimax-m3 chat
+        // model; exercised when a team/model override selects this profile.
+        // Beyond the recency caps, older parts demote to tool-mediated
+        // (read/vision) — never dropped, never an error.
+        fileMimeTypes: ["application/pdf"],
         audio: false,
+        limits: { maxFilesPerRequest: 2, maxFileBytes: NATIVE_FILE_MAX_BYTES },
       },
       cache: { strategy: "explicit-breakpoints", maxBreakpoints: 4 },
       // effort-style: Claude 4.x steers thinking via the `effort` knob +
@@ -94,8 +105,10 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
       nativeInput: {
         image: false,
         video: false,
-        fileMimeTypes: [],
+        // C5v2 native PDF (see claude-opus-4.8).
+        fileMimeTypes: ["application/pdf"],
         audio: false,
+        limits: { maxFilesPerRequest: 2, maxFileBytes: NATIVE_FILE_MAX_BYTES },
       },
       cache: { strategy: "explicit-breakpoints", maxBreakpoints: 4 },
       // effort-style (see claude-opus-4.8): Claude 4.x uses `effort` + adaptive
@@ -134,8 +147,10 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
       nativeInput: {
         image: false,
         video: false,
-        fileMimeTypes: [],
+        // C5v2 native PDF (see claude-opus-4.8).
+        fileMimeTypes: ["application/pdf"],
         audio: false,
+        limits: { maxFilesPerRequest: 2, maxFileBytes: NATIVE_FILE_MAX_BYTES },
       },
       cache: { strategy: "explicit-breakpoints", maxBreakpoints: 4 },
       reasoning: { style: "max-tokens", defaultLevel: "low" },
@@ -171,8 +186,10 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
       nativeInput: {
         image: false,
         video: false,
-        fileMimeTypes: [],
+        // C5v2 native PDF (see claude-opus-4.8).
+        fileMimeTypes: ["application/pdf"],
         audio: false,
+        limits: { maxFilesPerRequest: 2, maxFileBytes: NATIVE_FILE_MAX_BYTES },
       },
       cache: { strategy: "implicit" },
       reasoning: { style: "effort", defaultLevel: "low" },
@@ -353,8 +370,10 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
       nativeInput: {
         image: false,
         video: false,
-        fileMimeTypes: [],
+        // C5v2 native PDF (see claude-opus-4.8).
+        fileMimeTypes: ["application/pdf"],
         audio: false,
+        limits: { maxFilesPerRequest: 2, maxFileBytes: NATIVE_FILE_MAX_BYTES },
       },
       cache: { strategy: "implicit" },
       reasoning: { style: "effort", defaultLevel: "low" },
@@ -388,8 +407,10 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
       nativeInput: {
         image: false,
         video: false,
-        fileMimeTypes: [],
+        // C5v2 native PDF (see claude-opus-4.8).
+        fileMimeTypes: ["application/pdf"],
         audio: false,
+        limits: { maxFilesPerRequest: 2, maxFileBytes: NATIVE_FILE_MAX_BYTES },
       },
       cache: { strategy: "implicit" },
       reasoning: { style: "effort", defaultLevel: "low" },
@@ -436,8 +457,10 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
       nativeInput: {
         image: false,
         video: false,
-        fileMimeTypes: [],
+        // C5v2 native PDF (see claude-opus-4.8).
+        fileMimeTypes: ["application/pdf"],
         audio: false,
+        limits: { maxFilesPerRequest: 2, maxFileBytes: NATIVE_FILE_MAX_BYTES },
       },
       cache: { strategy: "implicit" },
       reasoning: { style: "effort", defaultLevel: "none" },
@@ -474,8 +497,10 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
       nativeInput: {
         image: false,
         video: false,
-        fileMimeTypes: [],
+        // C5v2 native PDF (see claude-opus-4.8).
+        fileMimeTypes: ["application/pdf"],
         audio: false,
+        limits: { maxFilesPerRequest: 2, maxFileBytes: NATIVE_FILE_MAX_BYTES },
       },
       cache: { strategy: "none" },
       reasoning: { style: "effort", defaultLevel: "low" },
@@ -576,8 +601,8 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
     tiers: ["flagship"],
     catalog: {
       id: "minimax/minimax-m3",
-      contextLength: 1_048_576,
-      maxCompletionTokens: 512_000,
+      contextLength: 524_000,
+      maxCompletionTokens: 65_000,
       // Native image + video input, NO file input — verified 2026-06-11.
       inputModalities: ["text", "image", "video"],
       outputModalities: ["text"],

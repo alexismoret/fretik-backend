@@ -29,8 +29,17 @@ const buildNativeMediaNote = (nativeInput: NativeInputPolicy): string => {
   const kinds: string[] = [];
   if (nativeInput.image) kinds.push("images");
   if (nativeInput.video) kinds.push("videos");
+  const nativePdf = nativeInput.fileMimeTypes.includes("application/pdf");
+  if (nativePdf) kinds.push("PDFs");
   if (kinds.length === 0) return "";
-  return `**Attached ${kinds.join(" and ")} are directly visible to you in this message** — describe and answer from what you see. Call \`vision\` only for a finer visual sub-question (a region of an image, a specific moment of a video).`;
+  const joined =
+    kinds.length > 2
+      ? `${kinds.slice(0, -1).join(", ")}, and ${kinds[kinds.length - 1]}`
+      : kinds.join(" and ");
+  const pdfNote = nativePdf
+    ? " Use `read` when you need exact text to quote or line-precise navigation in a long document."
+    : "";
+  return `**Attached ${joined} are directly visible to you in this message** — describe and answer from what you see. Call \`vision\` only for a finer visual sub-question (a region of an image, a specific moment of a video).${pdfNote}`;
 };
 
 /**

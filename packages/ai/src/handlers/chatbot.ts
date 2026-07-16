@@ -120,6 +120,8 @@ import { sendChatbotFinishedEmailIfEnabled } from "../services/chatbot-finished-
 import { compactConversation } from "../services/compaction/compact";
 import { generateConversationTitle } from "../services/conversation-title/generate";
 import {
+  hasNativeFileParts,
+  NATIVE_FILE_PARSER_PLUGINS,
   prepareModelMessages,
   type PrepareModelMessagesDeps,
 } from "../services/native-input";
@@ -269,6 +271,19 @@ const streamChatbotWithFallback = async (params: {
   // `servedBy` reports which agent actually answered: an eval run with a
   // candidate profile must know when a silent failover served the
   // FALLBACK model instead, or the candidate's scores are polluted.
+  // Request-level OpenRouter options: the C7 reasoning override + the
+  // C5v2 `file-parser` plugin (only when a native PDF rides this turn —
+  // it pins the raw file past OpenRouter's default Mistral-OCR pass).
+  // Omitted entirely when neither applies, so a plain turn sends no
+  // `providerOptions` at all (byte-identical to pre-C7).
+  const openrouterOptions = {
+    ...(params.reasoningOverride !== undefined
+      ? { reasoning: params.reasoningOverride }
+      : {}),
+    ...(hasNativeFileParts(params.history, params.modelProfile)
+      ? { plugins: NATIVE_FILE_PARSER_PLUGINS }
+      : {}),
+  };
   const streamWith = (
     agent: AgentSet<ChatbotCallOptions, ChatbotTools>["primary"],
   ) =>
@@ -277,14 +292,8 @@ const streamChatbotWithFallback = async (params: {
       options: params.callOptions,
       abortSignal: params.abortSignal,
       onStepEnd: params.onStepFinish,
-      // Spread the override only when set, so a turn without the toggle
-      // sends no `providerOptions` at all (byte-identical to pre-C7).
-      ...(params.reasoningOverride !== undefined
-        ? {
-            providerOptions: {
-              openrouter: { reasoning: params.reasoningOverride },
-            },
-          }
+      ...(Object.keys(openrouterOptions).length > 0
+        ? { providerOptions: { openrouter: openrouterOptions } }
         : {}),
     });
   return streamWithRetryThenFallback({

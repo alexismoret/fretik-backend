@@ -12,5 +12,10 @@ if (!apiKey) {
  */
 export const mistralClient = new Mistral({ apiKey });
 
-/** Mistral OCR model name, exported for traceability in logs. */
-export const MISTRAL_OCR_MODEL = "mistral-ocr-latest";
+/**
+ * Mistral OCR model, deliberately pinned (NOT the `mistral-ocr-latest`
+ * alias — the alias silently flipped to OCR 4 on 2026-06-23, doubling
+ * the per-page price). Re-pin explicitly when adopting a new version,
+ * and keep the traced price in `@fretik/ai` lib/mistral-ocr.ts in sync.
+ */
+export const MISTRAL_OCR_MODEL = "mistral-ocr-4-0";

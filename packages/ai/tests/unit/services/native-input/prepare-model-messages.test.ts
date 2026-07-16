@@ -7,10 +7,11 @@ import type {
   NativeInputPolicy,
 } from "../../../../src/lib/model-registry/types";
 import {
-  type PrepareModelMessagesDeps,
+  hasNativeFileParts,
   prepareModelMessages,
   stripFilePartsForModel,
   stripReasoningPartsForModel,
+  type PrepareModelMessagesDeps,
 } from "../../../../src/services/native-input/prepare-model-messages";
 
 const profileWith = (
@@ -216,6 +217,103 @@ describe("prepareModelMessages — recency cap + failure handling", () => {
     const result = await prepareModelMessages(history, profile, deps);
     expect(result[0]?.parts).toHaveLength(1);
     expect(deps.calls.read).toHaveLength(0);
+  });
+});
+
+describe("prepareModelMessages — native file (C5v2, PDF)", () => {
+  const pdfProfile = (limits?: NativeInputPolicy["limits"]): ModelProfile =>
+    profileWith(["text", "file"], {
+      fileMimeTypes: ["application/pdf"],
+      ...(limits ? { limits } : {}),
+    });
+
+  test("PDF native → base64 data URL with filename preserved", async () => {
+    const history = [mediaMsg("1", "application/pdf", "doc.pdf")];
+    const deps = makeDeps();
+    const result = await prepareModelMessages(history, pdfProfile(), deps);
+    expect(result[0]?.parts[1]).toMatchObject({
+      type: "file",
+      mediaType: "application/pdf",
+      filename: "doc.pdf",
+      url: "data:application/pdf;base64,AQID",
+    });
+    expect(deps.calls.read).toEqual([["conv-1", "attachments/doc.pdf"]]);
+    expect(deps.calls.presign).toHaveLength(0);
+  });
+
+  test("maxFilesPerRequest keeps the most-recent PDFs, demotes the older", async () => {
+    const history = [
+      mediaMsg("1", "application/pdf", "old.pdf"),
+      mediaMsg("2", "application/pdf", "mid.pdf"),
+      mediaMsg("3", "application/pdf", "new.pdf"),
+    ];
+    const result = await prepareModelMessages(
+      history,
+      pdfProfile({ maxFilesPerRequest: 2 }),
+      makeDeps(),
+    );
+    // oldest demoted to tool-mediated (text part only)
+    expect(result[0]?.parts).toHaveLength(1);
+    expect(result[1]?.parts[1]).toMatchObject({ filename: "mid.pdf" });
+    expect(result[2]?.parts[1]).toMatchObject({ filename: "new.pdf" });
+  });
+
+  test("an oversized PDF demotes to tool-mediated, never errors", async () => {
+    const history = [mediaMsg("1", "application/pdf", "big.pdf")];
+    const deps = makeDeps({
+      readSessionFile: async () => new Uint8Array(10),
+    });
+    const result = await prepareModelMessages(
+      history,
+      pdfProfile({ maxFileBytes: 5 }),
+      deps,
+    );
+    expect(result[0]?.parts).toHaveLength(1);
+    expect(result[0]?.parts[0]).toMatchObject({ type: "text" });
+  });
+
+  test("catalog `file` alone is not enough — empty fileMimeTypes stays tool-mediated", async () => {
+    const history = [mediaMsg("1", "application/pdf", "doc.pdf")];
+    const profile = profileWith(["text", "file"], {}); // fileMimeTypes: []
+    const deps = makeDeps();
+    const result = await prepareModelMessages(history, profile, deps);
+    expect(result).toEqual(stripFilePartsForModel(history));
+    expect(deps.calls.read).toHaveLength(0);
+  });
+
+  test("activated registry profile (claude-sonnet-4.6) ingests a PDF natively; minimax-m3 does not", async () => {
+    const history = [mediaMsg("1", "application/pdf", "doc.pdf")];
+    const sonnet = MODEL_PROFILES["claude-sonnet-4.6"];
+    const m3 = MODEL_PROFILES["minimax-m3"];
+    expect(sonnet).toBeDefined();
+    expect(m3).toBeDefined();
+    if (!sonnet || !m3) return;
+    const sonnetOut = await prepareModelMessages(history, sonnet, makeDeps());
+    expect(sonnetOut[0]?.parts[1]).toMatchObject({
+      mediaType: "application/pdf",
+      url: "data:application/pdf;base64,AQID",
+    });
+    // M3's catalog has no "file" → byte-identical strip (inert guard).
+    const m3Deps = makeDeps();
+    const m3Out = await prepareModelMessages(history, m3, m3Deps);
+    expect(m3Out).toEqual(stripFilePartsForModel(history));
+    expect(m3Deps.calls.read).toHaveLength(0);
+  });
+
+  test("hasNativeFileParts: true only when a PDF rides natively", () => {
+    const pdfHistory = [mediaMsg("1", "application/pdf", "doc.pdf")];
+    const imageHistory = [mediaMsg("1", "image/png", "a.png")];
+    expect(hasNativeFileParts(pdfHistory, pdfProfile())).toBe(true);
+    expect(
+      hasNativeFileParts(pdfHistory, profileWith(["text", "file"], {})),
+    ).toBe(false);
+    // A native IMAGE is not a file part — the file-parser plugin stays off.
+    expect(
+      hasNativeFileParts(
+        imageHistory,
+        profileWith(["text", "image"], { image: true }),
+      ),
+    ).toBe(false);
   });
 });
 

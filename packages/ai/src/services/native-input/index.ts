@@ -1,4 +1,6 @@
 export {
+  NATIVE_FILE_PARSER_PLUGINS,
+  hasNativeFileParts,
   prepareModelMessages,
   stripFilePartsForModel,
   stripReasoningPartsForModel,

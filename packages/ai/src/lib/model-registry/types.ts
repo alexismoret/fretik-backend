@@ -127,8 +127,8 @@ export type ModelTier = "flagship" | "workhorse" | "utility";
  *
  * Ships INERT — every flag is `false`/empty until a gated activation PR,
  * so `prepareModelMessages` is byte-identical to `stripFilePartsForModel`.
- * v1 wires `image` + `video`; `fileMimeTypes` (native PDF, absorbs the
- * old `nativeFileMimeTypes`) and `audio` are forward-declared for v2.
+ * v1 wired `image` + `video`; v2 (C5v2) wires `fileMimeTypes` (native
+ * PDF, on catalog-`file` profiles only). `audio` stays forward-declared.
  */
 export interface NativeInputPolicy {
   image: boolean;
@@ -151,10 +151,21 @@ export interface NativeInputPolicy {
   limits?: {
     maxImagesPerRequest?: number;
     maxVideosPerRequest?: number;
+    /** Files are heavy (inlined as data URLs) — default 2 at activation. */
+    maxFilesPerRequest?: number;
     maxFileBytes?: number;
     maxPdfPages?: number;
   };
 }
+
+/**
+ * Single source for the native-file byte ceiling: the value profiles set
+ * as `limits.maxFileBytes` at C5v2 activation AND the fallback
+ * `prepareModelMessages` applies when a profile omits it. A native file
+ * is inlined as a base64 data URL and re-sent every turn — beyond this,
+ * the tool-mediated path (read/vision) is objectively better.
+ */
+export const NATIVE_FILE_MAX_BYTES = 10_000_000;
 
 /** Product decisions about a model — ours, never synced from any API. */
 export interface ModelAssessment {

@@ -199,19 +199,31 @@ describe("registry integrity", () => {
     }
   });
 
-  test("only the gate-passed flagship (M3) has native input activated (C5)", () => {
-    // C5 shipped inert; the activation PR (2026-06-15) switched M3 — the only
-    // profile with native input on. Every other profile stays fully disabled
-    // until its own A/B activation. A new `image:true`/`video:true` elsewhere
-    // must come with its eval evidence, so this guards accidental flips.
+  test("native input activation matches the gated set (C5 media, C5v2 PDF)", () => {
+    // C5 (2026-06-15) activated image+video on M3 only; C5v2 (2026-07-17)
+    // activated native PDF on the catalog-`file` chat-capable profiles.
+    // Any new activation elsewhere must come with its eval evidence, so
+    // this guards accidental flips in both directions.
+    const NATIVE_PDF_PROFILES = new Set([
+      "claude-opus-4.8",
+      "claude-sonnet-4.6",
+      "claude-haiku-4.5",
+      "gpt-5.5",
+      "gemini-3.1-pro",
+      "gemini-3.5-flash",
+      "gemini-3.1-flash-lite",
+      "mistral-medium-3.5",
+    ]);
     for (const [key, profile] of Object.entries(MODEL_PROFILES)) {
       const { nativeInput } = profile.assessment;
-      const active =
-        nativeInput.image ||
-        nativeInput.video ||
-        nativeInput.audio ||
-        nativeInput.fileMimeTypes.length > 0;
-      expect(`${key}:${active}`).toBe(`${key}:${key === "minimax-m3"}`);
+      const mediaActive =
+        nativeInput.image || nativeInput.video || nativeInput.audio;
+      expect(`${key}:media:${mediaActive}`).toBe(
+        `${key}:media:${key === "minimax-m3"}`,
+      );
+      expect(`${key}:pdf:${nativeInput.fileMimeTypes.join(",")}`).toBe(
+        `${key}:pdf:${NATIVE_PDF_PROFILES.has(key) ? "application/pdf" : ""}`,
+      );
     }
   });
 

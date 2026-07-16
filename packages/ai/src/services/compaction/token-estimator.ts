@@ -37,10 +37,12 @@ export const estimateTokens = (text: string): number =>
  * native image/video by orders of magnitude; without this the compaction
  * threshold would never account for the real prompt weight. Constants are
  * deliberately conservative-high (fire a hair early) — same bias as the
- * chars/4 heuristic; an image ≈ 1 000 tokens, a video clip far more.
+ * chars/4 heuristic; an image ≈ 1 000 tokens, a video clip far more; a
+ * native PDF (C5v2) sits between the two.
  */
 const NATIVE_IMAGE_TOKENS = 1_000;
 const NATIVE_VIDEO_TOKENS = 10_000;
+const NATIVE_FILE_TOKENS = 2_000;
 
 const nativeMediaSurcharge = (
   messages: UIMessage[],
@@ -54,6 +56,7 @@ const nativeMediaSurcharge = (
       const modality = mediaModality(part.mediaType);
       if (modality === "image") surcharge += NATIVE_IMAGE_TOKENS;
       else if (modality === "video") surcharge += NATIVE_VIDEO_TOKENS;
+      else if (modality === "file") surcharge += NATIVE_FILE_TOKENS;
     }
   }
   return surcharge;

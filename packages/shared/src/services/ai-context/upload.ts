@@ -171,6 +171,7 @@ const runExtractionForFile = async (args: {
       fileHash: args.fileHash,
       mimeType: args.mimeType,
       filename: args.filename,
+      fileSizeBytes: args.bytes.byteLength,
       getBytes: () => Promise.resolve(args.bytes),
       getPresignedUrl: () => getPresignedUrl(args.s3Key, 60 * 10),
     });

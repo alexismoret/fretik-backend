@@ -1,4 +1,4 @@
-import type { OcrPage, OcrResult } from "../../lib/mistral-ocr";
+import type { OcrPage, OcrResult, RunOcrArgs } from "../../lib/mistral-ocr";
 
 /**
  * Content-addressed file extraction — the shared layer that turns an
@@ -10,9 +10,10 @@ import type { OcrPage, OcrResult } from "../../lib/mistral-ocr";
  * cached in the `file_extractions` table + a single content-addressed
  * S3 `.md` sidecar (the same flattened markdown the agent reads — no
  * separate per-page JSON; page boundaries are reconstructed inline via
- * `splitFlattenedMarkdown` when needed). The cheap `text` route is
- * parsed inline on every call (no cache row) so callers can use one
- * entry point for all MIME types.
+ * `splitFlattenedMarkdown` when needed). Embedded images extracted by
+ * the `mistral-ocr` route are stored alongside the sidecar and listed
+ * in `imageIds`. The cheap `text` route is parsed inline on every call
+ * (no cache row) so callers can use one entry point for all MIME types.
  */
 
 export type ExtractionRoute =
@@ -36,6 +37,14 @@ export interface ExtractFileInput {
   fileHash: string;
   mimeType: string;
   filename: string;
+  /**
+   * Byte size of the original file when the caller knows it (chat
+   * attachments, Drive documents, context files all do). Used as a
+   * defensive guard against the Mistral OCR file-size limit BEFORE
+   * paying for a doomed call — today every Fretik upload cap is below
+   * it, so this only fires if upload caps are raised past Mistral's.
+   */
+  fileSizeBytes?: number;
   /** Raw bytes — used by spreadsheet / text routes and as a fallback. */
   getBytes: () => Promise<Uint8Array>;
   /** Presigned S3 URL reachable from Mistral's servers (OCR routes). */
@@ -45,7 +54,7 @@ export interface ExtractFileInput {
    * `@fretik/ai` pass the traced wrapper wrapped in `withTraceSession` /
    * `withPipelineTrace` to keep cost attribution.
    */
-  onOcr?: (args: { url: string; mimeType: string }) => Promise<OcrResult>;
+  onOcr?: (args: RunOcrArgs) => Promise<OcrResult>;
   /**
    * Optional back-compat hook: returns the markdown of a pre-refonte
    * sidecar already sitting in a legacy location (e.g. the chatbot
@@ -71,6 +80,12 @@ export interface ExtractionResult {
   charCount: number | null;
   /** Content-addressed S3 key of the markdown sidecar, or `null`. */
   sidecarS3Key: string | null;
+  /**
+   * Ids of the stored embedded images (`img-N.ext`), living at
+   * `file-extractions/{org}/{hash}/{id}`. `[]` for routes without
+   * images and for legacy cache rows extracted before image support.
+   */
+  imageIds: string[];
   /** Set when extraction failed (the caller turns this into its own error). */
   error?: string;
 }

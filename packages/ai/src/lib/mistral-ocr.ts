@@ -1,3 +1,4 @@
+import { MISTRAL_OCR_MODEL } from "@fretik/shared/lib/mistral";
 import {
   runMistralOcr as runMistralOcrRaw,
   type OcrResult,
@@ -11,16 +12,18 @@ import { langfuseEnabled } from "./langfuse";
 
 export {
   flattenOcrMarkdown,
+  type OcrExtractedImage,
   type OcrPage,
   type OcrResult,
   type RunOcrArgs,
 } from "@fretik/shared/lib/mistral-ocr";
 
 /**
- * Mistral OCR list price — $2 / 1000 pages. Mistral OCR returns no per-call
- * cost, so we derive it from the page count (Mistral bills per page).
+ * Mistral OCR 4 list price — $4 / 1000 pages. Mistral OCR returns no per-call
+ * cost, so we derive it from the page count (Mistral bills per page). Keep in
+ * sync with the pinned MISTRAL_OCR_MODEL in @fretik/shared/lib/mistral.
  */
-const MISTRAL_OCR_PRICE_PER_PAGE = 0.002;
+const MISTRAL_OCR_PRICE_PER_PAGE = 0.004;
 
 /**
  * Mistral OCR with Langfuse tracing. Wraps the shared client (the Mistral SDK
@@ -40,8 +43,11 @@ export const runMistralOcr = async (args: RunOcrArgs): Promise<OcrResult> => {
         updateActiveObservation(
           {
             input: { mimeType: args.mimeType },
-            output: { pageCount: result.pageCount },
-            model: "mistral-ocr-latest",
+            output: {
+              pageCount: result.pageCount,
+              imageCount: result.images.length,
+            },
+            model: MISTRAL_OCR_MODEL,
             usageDetails: { pages: result.pageCount },
             costDetails: {
               total: result.pageCount * MISTRAL_OCR_PRICE_PER_PAGE,

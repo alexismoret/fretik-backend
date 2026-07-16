@@ -5,12 +5,18 @@ import { parseSpreadsheet } from "../../lib/file-parsing/spreadsheet";
 import { parseAsText } from "../../lib/file-parsing/text";
 import {
   flattenOcrMarkdown,
+  MISTRAL_OCR_LIMIT_ERROR_MESSAGE,
+  MISTRAL_OCR_MAX_FILE_BYTES,
   runMistralOcr,
   splitFlattenedMarkdown,
   type OcrResult,
 } from "../../lib/mistral-ocr";
 import { isCacheableRoute, routeForMime } from "./route";
-import { readExtractionSidecar, writeExtractionSidecar } from "./storage";
+import {
+  readExtractionSidecar,
+  writeExtractionImages,
+  writeExtractionSidecar,
+} from "./storage";
 import type {
   ExtractFileInput,
   ExtractionResult,
@@ -79,6 +85,9 @@ const resultFromReadyRow = async (
     pageCount: row.pageCount,
     charCount: row.charCount,
     sidecarS3Key: row.sidecarS3Key,
+    // NULL = legacy row extracted before image support — served as
+    // image-less, never re-extracted.
+    imageIds: row.imageIds ?? [],
   };
 };
 
@@ -99,6 +108,7 @@ const pollUntilSettled = async (
         pageCount: null,
         charCount: null,
         sidecarS3Key: null,
+        imageIds: [],
         error: row.errorMessage ?? "extraction failed",
       };
     }
@@ -111,6 +121,7 @@ const pollUntilSettled = async (
     pageCount: null,
     charCount: null,
     sidecarS3Key: null,
+    imageIds: [],
     error: "extraction timed out waiting for a concurrent run",
   };
 };
@@ -121,6 +132,8 @@ interface RunOutcome {
   pages: ExtractionResult["pages"];
   pageCount: number | null;
   charCount: number | null;
+  /** Ids of the embedded images actually stored on S3. */
+  imageIds: string[];
 }
 
 /** Run the actual extraction for a cache miss (we own the row). */
@@ -138,6 +151,7 @@ const runExtraction = async (
         pages: splitFlattenedMarkdown(legacy),
         pageCount: splitFlattenedMarkdown(legacy).length,
         charCount: legacy.length,
+        imageIds: [],
       };
     }
   }
@@ -155,14 +169,17 @@ const runExtraction = async (
       pages: [],
       pageCount: sheet.sheetCount,
       charCount: sheet.content.length,
+      imageIds: [],
     };
   }
 
-  // OCR routes (mistral-ocr, image-ocr).
+  // OCR routes (mistral-ocr, image-ocr). Embedded images are extracted
+  // for documents only — crops of a standalone photo are noise.
   const url = await input.getPresignedUrl();
   const ocr: OcrResult = await (input.onOcr ?? runMistralOcr)({
     url,
     mimeType: input.mimeType,
+    extractImages: route === "mistral-ocr",
   });
   const markdown = flattenOcrMarkdown(ocr);
 
@@ -178,9 +195,19 @@ const runExtraction = async (
         pages: [],
         pageCount: ocr.pageCount,
         charCount: 0,
+        imageIds: [],
       };
     }
   }
+
+  const imageIds =
+    ocr.images.length > 0
+      ? await writeExtractionImages(
+          input.organizationId,
+          input.fileHash,
+          ocr.images,
+        )
+      : [];
 
   return {
     route,
@@ -188,6 +215,7 @@ const runExtraction = async (
     pages: ocr.pages,
     pageCount: ocr.pageCount,
     charCount: markdown.length,
+    imageIds,
   };
 };
 
@@ -220,6 +248,7 @@ export const getOrCreateExtraction = async (
       pageCount: null,
       charCount: markdown.length,
       sidecarS3Key: null,
+      imageIds: [],
     };
   }
   if (!isCacheableRoute(route)) {
@@ -230,7 +259,28 @@ export const getOrCreateExtraction = async (
       pageCount: null,
       charCount: null,
       sidecarS3Key: null,
+      imageIds: [],
       error: `Unsupported file type for extraction: ${input.mimeType}`,
+    };
+  }
+
+  // Defensive guard against the Mistral OCR file-size limit — a pure
+  // function of the input, so no error row is persisted (each caller
+  // re-checks for free). Only fires if upload caps exceed Mistral's.
+  if (
+    (route === "mistral-ocr" || route === "image-ocr") &&
+    input.fileSizeBytes !== undefined &&
+    input.fileSizeBytes > MISTRAL_OCR_MAX_FILE_BYTES
+  ) {
+    return {
+      route,
+      markdown: null,
+      pages: [],
+      pageCount: null,
+      charCount: null,
+      sidecarS3Key: null,
+      imageIds: [],
+      error: MISTRAL_OCR_LIMIT_ERROR_MESSAGE,
     };
   }
 
@@ -285,6 +335,7 @@ export const getOrCreateExtraction = async (
         sidecarS3Key,
         pageCount: outcome.pageCount,
         charCount: outcome.charCount,
+        imageIds: outcome.imageIds.length > 0 ? outcome.imageIds : null,
       })
       .where(eq(fileExtractions.id, claimed.id));
 
@@ -295,6 +346,7 @@ export const getOrCreateExtraction = async (
       pageCount: outcome.pageCount,
       charCount: outcome.charCount,
       sidecarS3Key,
+      imageIds: outcome.imageIds,
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -309,6 +361,7 @@ export const getOrCreateExtraction = async (
       pageCount: null,
       charCount: null,
       sidecarS3Key: null,
+      imageIds: [],
       error: message,
     };
   }

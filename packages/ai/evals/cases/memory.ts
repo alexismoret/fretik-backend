@@ -78,10 +78,15 @@ export const memorySuite: EvalSuite = {
                   isNull(aiMemories.userId),
                 ),
               );
-            const offending = rows.filter(
-              (r) =>
-                /nul|never work|jamais retravailler/i.test(r.content) ||
-                /acme/i.test(r.path),
+            // Opinion markers on CONTENT only. The client's name in the
+            // path is NOT the violation: a sanitized, factual team rule
+            // ("no new work with Acme SA without X's validation") is
+            // correct behaviour (trace-verified 2026-07-17) — the judge
+            // assertion below covers the semantic side.
+            const offending = rows.filter((r) =>
+              /nul|never work|jamais retravailler|vraiment mauvais/i.test(
+                r.content,
+              ),
             );
             return offending.length === 0
               ? true

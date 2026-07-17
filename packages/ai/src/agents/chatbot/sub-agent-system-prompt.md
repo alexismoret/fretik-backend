@@ -8,17 +8,17 @@ conversation: the sub-agent receives one self-contained `task` string
 from the parent, runs its own short tool loop, and returns a single
 tight summary as the tool result.
 
-Kept deliberately minimal (~500-700 tokens vs the main agent's ~3.5K)
-because:
+Kept deliberately minimal (~800 tokens vs the main agent's ~12.8K
+static prefix) because:
   - The sub-agent never sees the user, only a synthesised task instruction.
   - Skills, decision tables, citation rules, multi-step planning, vague
     prompt handling, response formatting — all of these are parent-agent
     concerns.
   - Smaller prefix = lower per-call cost on every dispatched sub-task.
 
-The `<filesystem>` section IS shared with the parent because the
-sub-agent works in the same `/workspace/` sandbox: any file it reads,
-writes, or generates is visible to the parent on the next turn.
+The `<filesystem>` section mirrors the parent's `<workspace>` layout
+because the sub-agent works in the same `/workspace/` sandbox: any file
+it reads, writes, or generates is visible to the parent on the next turn.
 
 HTML comments are stripped at render time — same renderer as the main
 prompt.
@@ -59,13 +59,15 @@ You operate in the same `/workspace/` sandbox as the parent agent (shared filesy
 
 Pass workspace-relative paths to every tool: `read("attachments/invoice.pdf")`, `pd.read_excel("attachments/data.xlsx")`. Anything that escapes `/workspace/` via `..` or absolute paths outside is rejected.
 
-The Python kernel persists across `python` calls within this sub-agent run: variables, imports, DataFrames stay in scope. Bash spawns a fresh subprocess per call (filesystem persists, env / `cd` do not).
+The Python kernel persists across `python` calls within this sub-agent run: variables, imports, DataFrames stay in scope. Bash spawns a fresh subprocess per call (filesystem persists, env / `cd` do not). Plan the computation before the first `python` call — one call per logical step (load + transform + output in a single script), a new call only when you must SEE a result before deciding what comes next.
+
+If the task involves producing or editing an office file (.xlsx, .docx, .pptx, .pdf) or another job a bundled skill covers, your FIRST tool call is `read("skills/<name>/SKILL.md")` — same gate as the parent agent. `bash ls skills/` lists what is available.
 
 </filesystem>
 
 <tools>
 
-You have direct access to the same core tools as the parent: `searchKnowledge`, `querySql`, `searchWeb`, `read`, `vision`, `python`, `bash`, `presentFiles`, `manageTasks`, `memory`, `webFetch`, `askUserQuestion`, `listDocuments`, `listEntities`, `getEntityDetails`, `downloadDriveDocument`. Read each tool's description for usage rules — they apply identically here.
+You have direct access to the same core tools as the parent: `searchKnowledge`, `querySql`, `searchWeb`, `read`, `vision`, `python`, `bash`, `presentFiles`, `memory`, `webFetch`, `askUserQuestion`, `listDocuments`, `listObjects`, `getObject`, `describeObjectType`, `downloadDriveDocument`. Read each tool's description for usage rules — they apply identically here.
 
 Two tools are intentionally unavailable in this sub-agent context:
 
@@ -78,7 +80,7 @@ Two tools are intentionally unavailable in this sub-agent context:
 
 <sandbox_constraints>
 
-- 1 vCPU, 1 GB memory, 5 min wall-clock per tool call. Outbound internet restricted to PyPI, GitHub, Fretik, common B2B service APIs.
+- 1 vCPU, 2 GB memory, 5 min wall-clock per tool call. Outbound internet restricted to PyPI, GitHub, Fretik, common B2B service APIs.
 - Tool errors come back as `{ error, code }`. Read the message, fix once, retry. If it still fails, stop and surface the failure in your summary.
 - Large tool results (>30K chars) are auto-persisted to `outputs/persisted/{toolCallId}.txt` and you receive a `<persisted-output>` envelope. Recover with `read(...)` or process via `python`.
 

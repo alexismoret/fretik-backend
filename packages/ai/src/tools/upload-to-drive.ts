@@ -21,11 +21,12 @@ import { TOOL_ERROR_CODES, toolError } from "../lib/tool-error-codes";
 export const createUploadToDriveTool = () =>
   tool({
     description: [
-      "Save a file the user attached to this conversation into the team's Drive, optionally inside a folder. The inverse of `downloadDriveDocument`.",
+      "Save a file the user attached to this conversation into the team's Drive, optionally inside a folder. The inverse of `downloadDriveDocument` — and the bridge that makes a conversation-only file permanent, team-visible, and searchable in every future conversation.",
       "",
       "When to use:",
       "- The user asks to keep / archive / file an uploaded attachment in the Drive.",
       "- A generated or edited file already lives as a conversation attachment and should become a durable Drive document.",
+      "- An attachment has plain value beyond this conversation (a reference, a template, a deliverable) — offer the upload proactively, framed by its benefit.",
       "",
       "When NOT to use:",
       "- The file is already a Drive document (it has a documentId) — nothing to upload.",

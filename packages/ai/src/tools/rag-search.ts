@@ -49,15 +49,11 @@ export const createRagSearchTool = () =>
     description: [
       "Semantic search across team knowledge: documents, memories, skills, context. Returns up to 20 most-relevant text chunks with source metadata.",
       "",
-      "Usage:",
-      '- Use when the answer lives in the prose of a document, memory, skill, or context file ("what does the contract say about demurrage", "summarize this BL", "find shipments for container Z").',
-      "- For counts, sums, group-by, or filtering by exact field values → use `querySql` instead.",
-      "- For paginated metadata listing (filename, type, folder, status, date) → use `listDocuments` instead.",
-      "- For external / public knowledge → use `searchWeb` instead.",
-      "- When you already know the exact memory file path → use `memory` with `command: 'view'` instead.",
+      'THE first move whenever the answer lives in the text of a document, memory, skill, or context file — "what does this contract say about penalties", "summarize the latest audit report", "do we have a process for onboarding". This works even when you already know exactly WHICH document: pass its id in `filters.sourceIds` and ask — cheaper and faster than downloading the file. Reach for `downloadDriveDocument` ONLY when you need the original bytes (parsing, vision, template reuse), never to answer a content question.',
+      "",
       "- `question` must be natural language. Put ids in `filters.sourceIds`, never in the question.",
       "- `filters.sourceTypes` (optional): documents, memories, skills, context. Defaults to all.",
-      "- `filters.sourceIds` (optional): narrow to pre-selected row UUIDs. Chain with `listDocuments` first to apply structural filters (type, date) — this tool does not accept structural filters directly.",
+      "- `filters.sourceIds` (optional): narrow to specific row UUIDs (e.g. from `listDocuments`) — the way to search INSIDE one or a few known documents. This tool takes no structural filters (type, date, folder) directly; pre-select ids with `listDocuments` first.",
     ].join("\n"),
     inputSchema: z.object({
       question: z
@@ -80,7 +76,7 @@ export const createRagSearchTool = () =>
             .max(100)
             .optional()
             .describe(
-              "Narrow to specific row UUIDs pre-selected via listDocuments / listExtractions. Max 100 ids per call.",
+              "Narrow to specific row UUIDs pre-selected via listDocuments. Max 100 ids per call.",
             ),
         })
         .optional(),

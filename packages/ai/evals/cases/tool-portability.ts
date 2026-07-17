@@ -23,7 +23,7 @@ import type { EvalSuite } from "../types";
 export const toolPortabilitySuite: EvalSuite = {
   name: "tool-portability",
   summary:
-    "Per-tool argument-precision probes (sql quoting/aggregates, python multi-line, read offset/limit, memory, searchTools activation, manageTasks, presentFiles, dispatchAgent cheap, webSearch date, vision) + parallel-batching probes.",
+    "Per-tool argument-precision probes (sql quoting/aggregates, python multi-line, read offset/limit, memory, searchTools activation, presentFiles, dispatchAgent cheap, webSearch date) + parallel-batching probes.",
   cases: [
     {
       id: "tp-sql-quoting",
@@ -210,35 +210,6 @@ export const toolPortabilitySuite: EvalSuite = {
       ],
     },
     {
-      id: "tp-manage-tasks",
-      description: "Multi-step ask with explicit planning → manageTasks plan",
-      prompt:
-        "J'ai trois petites choses à te faire faire, planifie-les d'abord dans ta liste de tâches puis exécute-les dans l'ordre : (1) calcule 17 × 23, (2) donne le nombre de jours dans une année bissextile, (3) écris « terminé » en majuscules.",
-      tags: ["tool-portability", "tasks"],
-      assertions: [
-        { type: "noError" },
-        { type: "toolUsed", tools: ["manageTasks"], mode: "any" },
-        { type: "contains", value: "391" },
-        { type: "contains", value: "366" },
-        { type: "contains", value: "TERMINÉ" },
-        {
-          type: "custom",
-          name: "a manageTasks call registers at least 3 tasks",
-          fn: (result) => {
-            const calls = result.toolCalls.filter(
-              (c) => c.name === "manageTasks",
-            );
-            if (calls.length === 0) return "no manageTasks call observed";
-            const planned = calls.some((call) => {
-              const input = call.input as { tasks?: unknown };
-              return Array.isArray(input?.tasks) && input.tasks.length >= 3;
-            });
-            return planned || "no manageTasks call carried ≥3 tasks";
-          },
-        },
-      ],
-    },
-    {
       id: "tp-present-files",
       description:
         "Generated deliverable → file written in sandbox + presentFiles card",
@@ -321,34 +292,17 @@ export const toolPortabilitySuite: EvalSuite = {
         },
       ],
     },
-    {
-      // C5: with a native-multimodal flagship (M3) the model SEES marina.jpg
-      // directly and answers without routing to the `vision` tool, so this
-      // no longer asserts the tool was called — it grades the answer. A
-      // non-multimodal profile reaches the same answer via `vision`; either
-      // path passes. Native-vs-tool accuracy is the `multimodal` suite's job.
-      id: "tp-vision-image",
-      description: "Image attachment question → correct visual answer",
-      prompt:
-        "Décris-moi en une phrase ce qu'on voit sur l'image jointe marina.jpg.",
-      tags: ["tool-portability", "vision"],
-      fixtures: ["marina.jpg"],
-      assertions: [
-        { type: "noError" },
-        {
-          type: "judge",
-          rubric:
-            "The image is an aerial view of a marina / harbour full of moored boats (sailboats) in front of a city. The assistant's one-sentence description must reflect that scene (a port / marina / boats / harbour). The model MAY answer directly (native multimodal) or via the vision tool — do not penalise either. An answer describing something unrelated to a marina, or an error, is a FAIL.",
-        },
-      ],
-    },
     // ── Parallel-batching probes (informational — see suite docblock) ──
+    // NOTE: the former `tp-vision-image` probe was removed — since C5 it
+    // graded only the answer (never the tool), making it a duplicate of
+    // `mm-image-scene-qa` on the same fixture. The multimodal suite owns
+    // visual-answer accuracy.
     {
       id: "par-two-sql",
       description:
         "Two independent counts asked at once → ideally batched in parallel",
       prompt:
-        "Donne-moi deux chiffres, si possible en lançant les deux requêtes en parallèle : (1) le nombre total de documents de l'équipe, (2) le nombre total d'entités (organisations/personnes) de l'équipe.",
+        "Donne-moi deux chiffres, si possible en lançant les deux requêtes en parallèle : (1) le nombre total de documents de l'équipe, (2) le nombre total de fiches dans nos objets d'équipe (tous types confondus).",
       tags: ["tool-portability", "parallel"],
       assertions: [
         { type: "noError" },
@@ -357,7 +311,7 @@ export const toolPortabilitySuite: EvalSuite = {
           name: "both counts were actually looked up (≥2 data lookups)",
           fn: (result) => {
             const lookups = result.toolCalls.filter((c) =>
-              ["querySql", "listDocuments", "listEntities"].includes(c.name),
+              ["querySql", "listDocuments", "listObjects"].includes(c.name),
             );
             return (
               lookups.length >= 2 ||

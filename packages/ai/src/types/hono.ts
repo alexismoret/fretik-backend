@@ -13,8 +13,8 @@ export type { HonoLoggedAppType };
  * team/org/user context explicitly via X-Context-* headers.
  *
  * The internal middleware only has access to the pure-data fields of
- * the runtime context — per-request managers (`dynamicToolManager`,
- * `taskManager`) are instantiated later by the agent's `prepareCall`
+ * the runtime context — the per-request manager (`dynamicToolManager`)
+ * is instantiated later by the agent's `prepareCall`
  * hook. See `agents/shared/agent-builder.ts`.
  */
 export type HonoInternalAppType = {

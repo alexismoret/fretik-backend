@@ -5,6 +5,7 @@ import type {
 } from "../../../db/schema";
 import { computeLookupHash } from "../../../external-apps/hash";
 import { getAction } from "../../../external-apps/registry";
+import { TOOL_PERMISSIONS_REMEDIATION } from "../../ai/remediation";
 import { createPendingApproval } from "../../approvals/create-pending";
 import { runApprovalGate } from "../../approvals/gate";
 import type { ExecContext, SandboxExecResponse } from "../../sandbox/types";
@@ -90,7 +91,7 @@ export const dispatchPlan = async (
       if (mcp.level === "blocked") {
         return {
           status: "error",
-          message: `ACTION_DISABLED: ${op.action} is disabled on connection "${mcp.connection.displayName}" by its permission settings. Tell the user it can be re-enabled in Settings → Tool permissions.`,
+          message: `ACTION_DISABLED: ${op.action} is disabled on connection "${mcp.connection.displayName}" by its permission settings. ${TOOL_PERMISSIONS_REMEDIATION}`,
         };
       }
       if (mcp.level !== "auto") allAuto = false;
@@ -141,7 +142,7 @@ export const dispatchPlan = async (
     if (level === "blocked") {
       return {
         status: "error",
-        message: `ACTION_DISABLED: ${op.action} is disabled on connection "${connection.displayName}" by its permission settings. Tell the user it can be re-enabled in Settings → Tool permissions.`,
+        message: `ACTION_DISABLED: ${op.action} is disabled on connection "${connection.displayName}" by its permission settings. ${TOOL_PERMISSIONS_REMEDIATION}`,
       };
     }
     if (level !== "auto") allAuto = false;

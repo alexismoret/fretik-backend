@@ -1,5 +1,30 @@
 # Eval backlog — failure modes removed in the Langfuse-only cleanup
 
+## 2026-07-17 review (post prompt-refonte) — 4 case removals + tiering
+
+Full audit of the 76 curated cases against the refonte doctrine. Removed (recover
+from git history at the commit before this review; `langfuse:sync-datasets` now
+ARCHIVES the decurated dataset items, preserving old run comparability):
+
+- **`edge-empty-corpus`** — near-duplicate of `rag-no-match` (same failure mode:
+  fabrication on a no-match lookup; both judge-graded). `rag-no-match` (smoke) keeps
+  the coverage.
+- **`lat-sql-simple`** — the last case of the `latency-stress` suite (deleted);
+  its 30s ceiling moved onto `multi-no-overkill` (`latencyUnder`), which asks the
+  same simple-count question. Per-trace latency stays in Langfuse.
+- **`tp-vision-image`** — duplicate of `mm-image-scene-qa` since C5 made it
+  answer-graded (same fixture, same rubric intent). The multimodal suite owns
+  visual-answer accuracy.
+- **`dispatch-no-recursion`** — probed a REGISTRY invariant (sub-agent toolset
+  excludes `dispatchAgent`) with an expensive multi-dispatch e2e turn. Replaced by
+  the deterministic unit test `tests/integration/agents/sub-agent-registry.test.ts`.
+
+Same review: cases were split into **core** vs **`tier: "model-gate"`**
+(see `curation.ts` + RUNBOOK "Run tiers") so the everyday baseline runs ~45 cases
+instead of 76; stale `listEntities` references and the last industry-flavoured
+prompts (`BL-…` identifiers) were rewritten; the orphaned DAE fixture sidecar was
+deleted and `fixtures/README.md` rebuilt from actual usage.
+
 The harness is now **Langfuse-only**: `evals/run.ts` runs the curated cases as a
 `chatbot-eval` dataset run; there is no local JSON-report path. The gold set grows
 from production failures via `promoteTrace` (see `RUNBOOK.md`), not from synthetic

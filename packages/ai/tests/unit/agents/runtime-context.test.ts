@@ -5,7 +5,6 @@ import {
   wrapRuntimeContext,
   type AgentRuntimeContext,
 } from "../../../src/agents/shared/runtime-context";
-import { TaskManager } from "../../../src/agents/shared/task-manager";
 import { getProfileForRole } from "../../../src/lib/model-registry/resolve";
 
 /**
@@ -22,7 +21,6 @@ const makeCtx = (): AgentRuntimeContext => ({
   timeZone: "Europe/Paris",
   modelProfile: getProfileForRole("chat"),
   dynamicToolManager: new DynamicToolManager(),
-  taskManager: new TaskManager(),
 });
 
 describe("runtime-context brand symbol round-trip", () => {
@@ -41,7 +39,6 @@ describe("runtime-context brand symbol round-trip", () => {
     expect(recovered.conversationId).toBe("conv-1");
     expect(recovered.timeZone).toBe("Europe/Paris");
     expect(recovered.dynamicToolManager).toBe(ctx.dynamicToolManager);
-    expect(recovered.taskManager).toBe(ctx.taskManager);
   });
 
   test("wrap → get via `runtimeContext` (prepareStep channel) works too", () => {
@@ -64,11 +61,6 @@ describe("runtime-context brand symbol round-trip", () => {
     expect(fromPrepareStep.dynamicToolManager.getSnapshot()).toEqual([
       "listDocuments",
     ]);
-
-    fromTool.taskManager.setTasks([
-      { content: "do X", activeForm: "doing X", status: "pending" },
-    ]);
-    expect(fromPrepareStep.taskManager.getSnapshot()).toHaveLength(1);
   });
 });
 
@@ -97,7 +89,6 @@ describe("getRuntimeContext rejects unbranded values", () => {
           teamId: "team-1",
           modelProfile: getProfileForRole("chat"),
           dynamicToolManager: new DynamicToolManager(),
-          taskManager: new TaskManager(),
         },
       }),
     ).toThrow(/Missing AgentRuntimeContext/);

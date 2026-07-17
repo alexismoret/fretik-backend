@@ -21,7 +21,7 @@ import { workflowMainHiddenToolNames } from "../agents/shared/workflow-tool-gate
  * single `query` string supports two forms:
  *
  * - **Direct select**: `select:listDocuments` or
- *   `select:listDocuments,getDocumentContent` — exact names, comma
+ *   `select:listDocuments,downloadDriveDocument` — exact names, comma
  *   separated. Unknown names are reported in `notFound` but the call
  *   does not fail so the model can retry with a different form.
  * - **Keyword search**: plain space-separated terms scored against
@@ -226,7 +226,7 @@ export const createSearchToolsTool = (domainTools: SearchableToolRegistry) =>
       "",
       "Query forms:",
       '- "select:listDocuments" — fetch this exact tool by name (preferred when you already know the name).',
-      '- "select:listDocuments,getDocumentContent" — comma-separated multi-select.',
+      '- "select:listDocuments,downloadDriveDocument" — comma-separated multi-select.',
       '- "listDocuments" — bare tool name also works (fast-path exact-match), but `select:listDocuments` is more explicit and reliable.',
       '- "documents folder" — keyword search; returns up to max_results best matches and activates them all. Keywords are split on spaces and matched against tool name parts.',
       '- "+entity vendor" — require "entity" in the match, rank the rest.',

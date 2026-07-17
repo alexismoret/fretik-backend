@@ -4,6 +4,7 @@ import type {
 } from "../../db/schema";
 import type { ToolPolicyLevel } from "../../schemas/tool-policies";
 import type { WorkflowAutonomy } from "../../schemas/workflows";
+import { TOOL_PERMISSIONS_REMEDIATION } from "../ai/remediation";
 import type { ExecContext, SandboxExecResponse } from "../sandbox/types";
 import { resolveBuiltinToolPolicy } from "../tool-policies/resolve";
 import { createPendingRecordWriteApproval } from "./create-pending-record-write";
@@ -55,7 +56,7 @@ export const gateRecordWriteApproval = (params: {
       message:
         params.autonomy === "read_only"
           ? READ_ONLY_MSG
-          : "RECORD_WRITES_DISABLED: the team disabled record writes for the assistant (Settings → Tool permissions).",
+          : `RECORD_WRITES_DISABLED: the team disabled record writes for the assistant. ${TOOL_PERMISSIONS_REMEDIATION}`,
     });
   }
   if (level === "auto") {

@@ -411,6 +411,8 @@ export const buildJudgeInput = (
     // Trailing reminders — the position small utility models obey best:
     // format discipline, the per-source inclusion contract, false-match
     // discrimination (mid-prompt versions of these were consistently skipped).
+    // DELIBERATE REPETITION of RECALL_JUDGE_SYSTEM_PROMPT rules (prompt.ts) —
+    // keep the two in sync when editing either.
     `Reply with exactly NONE when nothing overlaps the message. Otherwise reply with the sectioned block — the first line must be FACTS:, EPISODES:, or GRAPH:. Every source that overlaps gets its own bullet: a matching Working memory AND the entity's Records card in FACTS, an overlapping "Past episodes" in EPISODES (decisions and outcomes), a genuine anchor's graph line in GRAPH. Drop any match the message does not actually refer to (a name used as an ordinary word matches coincidentally; near-identical spellings are the same entity). Never answer the user message itself.`;
 
   return { prompt, episodeIdCandidates, empty };

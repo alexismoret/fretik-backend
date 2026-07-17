@@ -1,32 +1,48 @@
 #!/usr/bin/env bun
 /**
- * Token-usage measurer for the chatbot's static prefix.
+ * Token-usage measurer for the agent context surfaces.
  *
- * Three independent surfaces compose the cacheable static prefix:
- *  - the rendered system prompt (HTML comments stripped, like the
- *    runtime renderer in agents/shared/prompt-renderer.ts)
- *  - every chatbot tool's `description` field plus its Zod
- *    `.describe()` strings (tracked separately)
- *  - the `description` line in each bundled SKILL.md frontmatter
- *    (the L1 catalog injected as `- **name** — description`)
+ * Measures the three surfaces that compose what the model reads every
+ * turn, per agent:
+ *  - the system prompt, resolved PER AGENT via `resolveAgentBlocks`
+ *    (chatbot vs workflow — the raw template contains both variants and
+ *    overstates each), HTML comments stripped like the runtime renderer,
+ *    then split at the DYNAMIC SUFFIX marker into the cacheable static
+ *    prefix and the per-turn dynamic suffix. Suffix numbers are
+ *    TEMPLATE-side: `{{placeholders}}` are unexpanded, so the runtime
+ *    suffix is larger (attachments, context manifest, memory block...).
+ *  - every tool's `description` field plus its Zod `.describe()` strings
+ *    (tracked separately; all of src/tools/, both agents mixed)
+ *  - the `description` in each bundled SKILL.md frontmatter (the L1
+ *    catalog injected as `- **name** — description`; runtime catalog
+ *    also carries provider skills from the DB, not measured here)
  *
- * Token counts use the `o200k_base` encoder (GPT-4o / recent OpenAI
- * models). Although MiniMax M2.7 and DeepSeek have their own BPEs,
- * o200k_base is publicly available, stable across measurements, and
- * gives realistic numbers for English/French text — exactly what a
- * delta tracker needs.
+ * The per-section breakdown maps 1:1 to the section registry in
+ * `.agent/agent-context-framework.md` §2 — use it to enforce the
+ * declared token budgets after any prompt edit.
+ *
+ * Token counts use the `o200k_base` encoder: publicly available, stable
+ * across measurements, realistic for English/French text — what a delta
+ * tracker needs. Snapshots before 2026-07-17 measured the RAW unified
+ * template (both agent variants) and are ~3-4K tokens higher than the
+ * per-agent numbers here; don't compare across that boundary.
  *
  * Usage: `bun run measure:tokens` (writes a JSON snapshot to stdout).
  *
- * Implementation note: the script reads source files as text and
- * extracts description literals with regex. Importing the tool
- * factories would be cleaner but would also pull in DB / Redis /
- * S3 setup at module init through their `@fretik/shared` deps — the
- * script must stay runnable in a fresh shell with no env file.
+ * Implementation note: tool source files are read as text and the
+ * description literals extracted with regex. Importing the tool
+ * factories would be cleaner but would pull in DB / Redis / S3 setup at
+ * module init through their `@fretik/shared` deps — the script must stay
+ * runnable in a fresh shell with no env file. `prompt-blocks.ts` is a
+ * PURE module (no imports) and is safe to import directly.
  */
 
 import { Glob } from "bun";
 import { encode } from "gpt-tokenizer/encoding/o200k_base";
+import {
+  resolveAgentBlocks,
+  type PromptAgentKind,
+} from "../src/agents/shared/prompt-blocks";
 
 const PROJECT_ROOT = `${import.meta.dir}/..`;
 const SYSTEM_PROMPT_PATH = `${PROJECT_ROOT}/src/agents/shared/agent-system-prompt.md`;
@@ -35,8 +51,98 @@ const SKILLS_DIR = `${PROJECT_ROOT}/src/skills/bundled`;
 
 const HTML_COMMENT_RE = /<!--[\s\S]*?-->\n?/g;
 
+/** Must stay in sync with `scripts/seed-langfuse-prompts.ts`. */
+const DYNAMIC_MARKER = "DYNAMIC SUFFIX — every section below";
+
 const tokensOf = (text: string): number =>
   text.length === 0 ? 0 : encode(text).length;
+
+const stripComments = (text: string): string =>
+  text.replace(HTML_COMMENT_RE, "");
+
+interface ZoneSnapshot {
+  chars: number;
+  tokens: number;
+  /** Tokens per top-level `<section>` block, in document order. */
+  sections: Record<string, number>;
+}
+
+interface AgentPromptSnapshot {
+  resolved_tokens: number;
+  static_prefix: ZoneSnapshot;
+  dynamic_suffix_template: ZoneSnapshot;
+}
+
+/**
+ * Tokens per top-level `<tag>`…`</tag>` block. Only lines that are
+ * exactly an opening tag open a section; nested sub-tags (different
+ * names, e.g. `<language>` inside `<communication>`) are section
+ * content. Text outside any section lands in `_untagged`.
+ */
+const measureSections = (text: string): Record<string, number> => {
+  const sections: Record<string, number> = {};
+  const untagged: string[] = [];
+  let current: string | null = null;
+  let buffer: string[] = [];
+
+  const flush = (name: string): void => {
+    sections[name] = (sections[name] ?? 0) + tokensOf(buffer.join("\n"));
+    buffer = [];
+  };
+
+  for (const line of text.split("\n")) {
+    if (current === null) {
+      const open = line.match(/^<([a-z_]+)>\s*$/);
+      if (open?.[1]) {
+        current = open[1];
+        buffer = [line];
+      } else {
+        untagged.push(line);
+      }
+      continue;
+    }
+    buffer.push(line);
+    if (line.trimEnd() === `</${current}>`) {
+      flush(current);
+      current = null;
+    }
+  }
+  if (current !== null) flush(current); // unclosed tag — count anyway
+
+  const untaggedText = untagged.join("\n").trim();
+  if (untaggedText.length > 0) sections._untagged = tokensOf(untaggedText);
+  return sections;
+};
+
+const measureZone = (raw: string): ZoneSnapshot => {
+  const stripped = stripComments(raw);
+  return {
+    chars: stripped.length,
+    tokens: tokensOf(stripped),
+    sections: measureSections(stripped),
+  };
+};
+
+const measureAgentPrompt = (
+  template: string,
+  agent: PromptAgentKind,
+): AgentPromptSnapshot => {
+  const resolved = resolveAgentBlocks(template, agent);
+  const markerIdx = resolved.indexOf(DYNAMIC_MARKER);
+  if (markerIdx === -1) {
+    throw new Error(`DYNAMIC SUFFIX marker not found in resolved ${agent}`);
+  }
+  // The marker sits inside an HTML comment — split at the comment's
+  // opening so neither half carries an unterminated `<!--`.
+  const splitAt = resolved.lastIndexOf("<!--", markerIdx);
+  const staticPrefix = measureZone(resolved.slice(0, splitAt));
+  const dynamicSuffix = measureZone(resolved.slice(splitAt));
+  return {
+    resolved_tokens: staticPrefix.tokens + dynamicSuffix.tokens,
+    static_prefix: staticPrefix,
+    dynamic_suffix_template: dynamicSuffix,
+  };
+};
 
 /**
  * Tool source files are TS, but the description literal is always
@@ -149,15 +255,6 @@ const extractSchemaDescribesText = (source: string): string => {
   return parts.join("\n");
 };
 
-const measureSystemPrompt = async (): Promise<{
-  chars: number;
-  tokens: number;
-}> => {
-  const raw = await Bun.file(SYSTEM_PROMPT_PATH).text();
-  const stripped = raw.replace(HTML_COMMENT_RE, "");
-  return { chars: stripped.length, tokens: tokensOf(stripped) };
-};
-
 const measureTools = async (): Promise<{
   per_tool: Record<string, ToolSnapshot>;
   total_desc_tokens: number;
@@ -199,6 +296,27 @@ const measureTools = async (): Promise<{
   };
 };
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
+
+/**
+ * Frontmatter descriptions can be YAML block scalars (multi-line) —
+ * parse with Bun.YAML like the runtime catalogue sync does, never with
+ * a single-line regex.
+ */
+const readFrontmatterDescription = (source: string): string | null => {
+  const match = source.match(/^---\n([\s\S]*?)\n---/);
+  if (!match) return null;
+  let parsed: unknown;
+  try {
+    parsed = Bun.YAML.parse(match[1] ?? "");
+  } catch {
+    return null;
+  }
+  if (!isRecord(parsed) || typeof parsed.description !== "string") return null;
+  return parsed.description.trim();
+};
+
 const measureSkills = async (): Promise<{
   per_skill: Record<string, SkillSnapshot>;
   total_tokens: number;
@@ -223,11 +341,11 @@ const measureSkills = async (): Promise<{
   for (let i = 0; i < skills.length; i++) {
     const source = sources[i];
     if (source === null) continue;
-    const frontmatterMatch = source.match(/^---\n([\s\S]*?)\n---/);
-    if (!frontmatterMatch) continue;
-    const frontmatter = frontmatterMatch[1];
-    const descMatch = frontmatter.match(/^description:\s*(.+)$/m);
-    const description = descMatch ? descMatch[1].trim() : "";
+    const description = readFrontmatterDescription(source);
+    if (description === null) {
+      console.error(`[measure] ${skills[i]}: unreadable frontmatter, skipped`);
+      continue;
+    }
     const tokens = tokensOf(description);
     per_skill[skills[i]] = { desc_tokens: tokens };
     total += tokens;
@@ -236,16 +354,16 @@ const measureSkills = async (): Promise<{
 };
 
 const main = async (): Promise<void> => {
-  const system_prompt = await measureSystemPrompt();
+  const template = await Bun.file(SYSTEM_PROMPT_PATH).text();
+  const chatbot = measureAgentPrompt(template, "chatbot");
+  const workflow = measureAgentPrompt(template, "workflow");
   const tools = await measureTools();
   const skills = await measureSkills();
-  const grand_total =
-    system_prompt.tokens + tools.total_tokens + skills.total_tokens;
 
   const output = {
     tokenizer: "o200k_base (gpt-tokenizer)",
     measured_at: new Date().toISOString(),
-    system_prompt,
+    agents: { chatbot, workflow },
     tools: {
       per_tool: tools.per_tool,
       _total_desc_tokens: tools.total_desc_tokens,
@@ -256,7 +374,11 @@ const main = async (): Promise<void> => {
       per_skill: skills.per_skill,
       _total_tokens: skills.total_tokens,
     },
-    grand_total_tokens: grand_total,
+    // Chatbot's turn-0 static surface: resolved prompt + every tool
+    // description + the L1 skills catalog. Runtime adds the expanded
+    // dynamic suffix on top.
+    grand_total_tokens:
+      chatbot.resolved_tokens + tools.total_tokens + skills.total_tokens,
   };
 
   console.log(JSON.stringify(output, null, 2));

@@ -177,7 +177,7 @@ export const createDispatchAgentTool = <TTools extends ToolSet>(deps: {
       "Delegate an encapsulated sub-task to a fresh sub-agent that runs in isolation and returns a tight summary as the tool result. The sub-agent has its own short context, its own tool loop (read, searchKnowledge, querySql, python, bash, …), and does not see the main conversation.",
       "",
       "Usage:",
-      '- Use when a sub-task would otherwise pollute the main context with thousands of tokens of intermediate tool results — e.g. "analyse these 5 documents in parallel and compare them", "find the best matching shipment across 200 rows", "explore three angles of this question and bring back a synthesis".',
+      '- Use when a sub-task would otherwise pollute the main context with thousands of tokens of intermediate tool results — e.g. "analyse these 5 documents in parallel and compare them", "find the best matching record across 200 rows", "explore three angles of this question and bring back a synthesis".',
       "- Use when the sub-task is well-scoped and can be expressed as a single self-contained instruction.",
       "- For parallelism, launch multiple `dispatchAgent` calls in the same step for independent sub-tasks.",
       "- Don't use for a single tool call — call the tool directly.",

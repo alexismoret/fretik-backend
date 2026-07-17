@@ -29,12 +29,30 @@ Needs a **live `@fretik/ai` service** and `AI_SERVICE_URL` (it is NOT in `.env` 
 ```bash
 cd backend/packages/ai
 # 1. start the service in another pane (dev DB): bun run dev   (or ../../dev.sh)
-AI_SERVICE_URL=http://localhost:8083 bun run evals:langfuse                 # full baseline (~57 cases)
-AI_SERVICE_URL=http://localhost:8083 bun run evals:langfuse -- --smoke      # smoke subset (~17)
+AI_SERVICE_URL=http://localhost:8083 bun run evals:langfuse                 # CORE baseline (~45 cases)
+AI_SERVICE_URL=http://localhost:8083 bun run evals:langfuse -- --all        # + model-gate probes (~72, model promotions / deep re-baseline)
+AI_SERVICE_URL=http://localhost:8083 bun run evals:langfuse -- --smoke      # smoke subset (~17, both tiers)
 AI_SERVICE_URL=http://localhost:8083 bun run evals:langfuse -- --capability external-actions
 AI_SERVICE_URL=http://localhost:8083 bun run evals:langfuse -- --deterministic-only   # no judge (free of judge cost)
 AI_SERVICE_URL=http://localhost:8083 bun run evals:langfuse -- --run-name <name>      # explicit dataset-run name
 ```
+
+**Model pinning.** Every `evals:langfuse` run pins the turn model via
+`X-Model-Profile-Key` — default = the CODE `chat` binding in
+`src/lib/model-registry/profiles.ts` (the flagship held to 1.000), overridden by
+`--candidate <profileKey>`. Without the pin, the EVAL team's C8 picker choice
+silently overrides the code binding (the 2026-07-17 runs measured `gpt-oss-20b`
+that way). The `evals:memory` / `evals:recall` harnesses are separate and keep
+their own gpt-oss-20b/120b defaults (`--profile` / `--judge-profile`).
+
+**Run tiers.** Every curated case is either **core** (behavioral regression — the
+prompt/tool/harness signal, runs on every full baseline) or **`tier: "model-gate"`**
+(per-MODEL probes: BFCL-style tool mechanics, IFEval validators, long-context,
+native multimodal — they measure the model, not the prose, and are the slow half
+of the suite). The default `evals:langfuse` runs core only; `--all` and every
+`evals:gate` promotion run include both. `--smoke` / `--capability` select
+explicitly across both tiers. Changing a prompt or tool description → core run.
+Changing a model binding → the gate (which is always full).
 
 The run prints a per-capability summary + a **dataset-run URL** → open it in Langfuse to
 compare against previous runs. The baseline = a frozen dataset-run; a change is good when
@@ -65,6 +83,8 @@ Every change of a model-registry binding (`src/lib/model-registry/profiles.ts`) 
 through the promotion gate — never a hand swap. The gate runs the curated suite twice
 **back-to-back** (baseline = current `chat` binding, then candidate, both pinned via the
 `X-Model-Profile-Key` header on `/invoke`) and compares paired same-data/same-day runs.
+Gate runs always include the `model-gate` tier (the per-model probes are the point);
+a stored `--baseline-run` must therefore be a full (`--all`-equivalent) run.
 
 ```bash
 cd backend/packages/ai
@@ -217,7 +237,7 @@ follow-up).
   (a) The model genuinely missed → fix the **system** (prompt line, tool description, routing, or even the base structure of the chatbot).
   (b) The model behaved correctly but was penalized → fix the **eval** (an over-strict assertion,
   a mis-specified expected tool, or a bad judge rubric). Example: demanding a `LIMIT` on a
-  `COUNT(*)` query, or asserting `searchKnowledge` when a structured `listEntities`/`querySql`
+  `COUNT(*)` query, or asserting `searchKnowledge` when a structured `listObjects`/`querySql`
   path answers the prompt just as correctly. Keep iterating until M3 is at 1.000 with no
   capability regression.
 - The **online billing rule** is created in the UI (verify its observation filter against live

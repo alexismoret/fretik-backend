@@ -1,10 +1,13 @@
 /**
  * Multi-step requests. We care about the end result, not the tool-call
  * shape: if the agent delivers a correct end-to-end answer with a single
- * tool, shortcutting a checklist is the right call.
+ * tool, shortcutting is the right call.
  *
  * Curated case: `multi-no-overkill` guards the negative — a single-step
- * question must NOT over-trigger `manageTasks`.
+ * question must go straight to the one right tool, no planning overhead.
+ * It also carries the simple-lookup latency ceiling (absorbed from the
+ * former single-case `latency-stress` suite): per-trace turn/model/tool
+ * latency stays recorded in Langfuse for drill-down.
  */
 
 import type { EvalSuite } from "../types";
@@ -16,13 +19,14 @@ export const multiStepSuite: EvalSuite = {
   cases: [
     {
       id: "multi-no-overkill",
-      description: "Single-step question should NOT trigger manageTasks",
+      description:
+        "Single-step question goes straight to the one right tool — no planning overhead",
       prompt: "Combien ai-je de documents PDF ?",
       tags: ["multi-step", "negative"],
       assertions: [
         { type: "noError" },
-        { type: "toolNotUsed", tools: ["manageTasks"] },
         { type: "toolUsed", tools: ["querySql", "listDocuments"] },
+        { type: "latencyUnder", ms: 30_000 },
       ],
     },
   ],

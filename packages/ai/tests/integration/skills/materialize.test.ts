@@ -34,6 +34,7 @@ const EXPECTED_SKILL_NAMES = [
   "doc-coauthoring",
   "docx",
   "pdf",
+  "platform-guide",
   "pptx",
   "skill-author",
   "tabular-extraction",

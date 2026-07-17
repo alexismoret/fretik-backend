@@ -5,7 +5,6 @@ import {
   wrapRuntimeContext,
   type AgentRuntimeContext,
 } from "../../../src/agents/shared/runtime-context";
-import { TaskManager } from "../../../src/agents/shared/task-manager";
 import { getProfileForRole } from "../../../src/lib/model-registry/resolve";
 import { createSearchToolsTool } from "../../../src/tools/search-tools";
 
@@ -52,7 +51,6 @@ const buildCtx = (): {
     organizationId: "org-1",
     teamId: "team-1",
     dynamicToolManager: manager,
-    taskManager: new TaskManager(),
     modelProfile: getProfileForRole("chat"),
   };
   return { ctx, manager };
@@ -131,7 +129,6 @@ const runGated = async (
     organizationId: "org-1",
     teamId: "team-1",
     dynamicToolManager: manager,
-    taskManager: new TaskManager(),
     modelProfile: getProfileForRole("chat"),
     workflowAutonomy: autonomy,
   };

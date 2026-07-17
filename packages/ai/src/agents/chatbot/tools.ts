@@ -14,7 +14,6 @@ import { createManageFieldTool } from "../../tools/manage-field";
 import { createManageLinkTool } from "../../tools/manage-link";
 import { createManageObjectTypeTool } from "../../tools/manage-object-type";
 import { createManageRecordTool } from "../../tools/manage-record";
-import { createManageTasksTool } from "../../tools/manage-tasks";
 import { createManageWorkflowTool } from "../../tools/manage-workflow";
 import { createMemoryTool } from "../../tools/memory";
 import { createPresentFilesTool } from "../../tools/present-files";
@@ -173,17 +172,6 @@ export const buildCoreTools = (domainTools: SearchableToolRegistry) => ({
     // the model loses track of which domain tools it already activated
     // and re-runs `searchTools` on every turn.
     microcompactable: false,
-  }),
-  manageTasks: buildChatbotTool({
-    ...createManageTasksTool(),
-    category: "core",
-    searchHint:
-      "manage session task checklist multi-step plan track progress todo",
-    // manageTasks returns the current task list only — always small.
-    // Matches keyDecisions.persistedOutputThreshold for manageTasks (8K).
-    maxResultSizeChars: 8_000,
-    // The tool mutates ctx.taskManager state; not strictly read-only.
-    isReadOnly: false,
   }),
   memory: buildChatbotTool({
     ...createMemoryTool(),

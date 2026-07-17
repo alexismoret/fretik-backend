@@ -39,26 +39,23 @@ Add the following into this directory. For each file the "source"
 column is a hint on how to obtain or fabricate one — the exact content
 doesn't matter, only the shape and whether an OCR sidecar is present.
 
-| Filename                          | Format | Content hint                                                                                                  | OCR sidecar (`<stem>.md`)                                                                       | Used by                            |
-| --------------------------------- | ------ | ------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- | ---------------------------------- |
-| `invoice.pdf`                     | PDF    | Any scanned invoice with a TTC total + itemised lines                                                         | **Required.** Put the OCR text (French) in `invoice.md`                                         | `file-pdf-read`                    |
-| `data.xlsx`                       | XLSX   | Spreadsheet with a column literally named `amount` (numeric, ≥10 rows)                                        | N/A — no sidecar for spreadsheets                                                               | `file-xlsx-python`                 |
-| `receipt.jpg`                     | JPEG   | Photo/scan of a receipt with a total + a date                                                                 | **Required.** Put the OCR text in `receipt.md`                                                  | `file-image-doc-read`              |
-| `diagram.png`                     | PNG    | Any image with a schema / diagram in its bottom-right quadrant, coloured arrows                               | **Must be ABSENT.** This case validates that the agent reaches for `vision`, not `read`         | `file-image-visual-view`           |
-| `marina.jpg`                      | JPEG   | Aerial photo of a marina / harbour full of moored boats (no text content)                                     | **Must be ABSENT.** Validates the "no OCR sidecar" path + `vision` describe (`tp-vision-image`) | `file-image-non-document`          |
-| `long-report.md`                  | MD     | Long markdown report — ≥ 35 KB so `read` returns a `<persisted-output>` envelope; include ≥ 200 real lines    | N/A — already markdown                                                                          | `file-oversized-read-pagination`   |
-| `notes.txt`                       | TXT    | Short plain-text notes (anything)                                                                             | N/A                                                                                             | `file-vision-rejects-text`         |
-| `26FRS8592110000744702_1_dae.pdf` | PDF    | Real DAE customs declaration with 43 wine articles (sourced from conv `019df045-f39a-76a5-a7fa-c74c7de68551`) | **Required.** Sibling Mistral OCR sidecar `26FRS8592110000744702_1_dae.md`                      | `tabular-multidoc-cross-reference` |
-| `ilovepdf_merged.pdf`             | PDF    | 8 merged invoices with `TOTAL HT €` columns matching the DAE articles above                                   | **Required.** Sibling Mistral OCR sidecar `ilovepdf_merged.md`                                  | `tabular-multidoc-cross-reference` |
+| Filename              | Format | Content hint                                                                                             | OCR sidecar (`<stem>.md`)                                      | Used by                                   |
+| --------------------- | ------ | -------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- | ----------------------------------------- |
+| `invoice.pdf`         | PDF    | Any scanned invoice with a TTC total + itemised lines (the rubric expects 10 364,32 USD)                 | **Required.** Put the OCR text (French) in `invoice.md`        | `file-pdf-read`, `par-two-reads`          |
+| `data.xlsx`           | XLSX   | Spreadsheet with a column literally named `amount` (numeric, ≥10 rows)                                   | N/A — no sidecar for spreadsheets                              | `tp-xlsx-python`, `doc-python-one-call`   |
+| `marina.jpg`          | JPEG   | Aerial photo of a marina / harbour full of moored boats (no text content)                                | **Must be ABSENT.** Validates the "no OCR sidecar" path        | `mm-image-scene-qa`, `mm-image-plus-text` |
+| `long-report.md`      | MD     | 500 numbered lines each carrying `note #<n>` (assertions target lines 40 and 437 — keep that shape)      | N/A — already markdown                                         | `tp-read-offset`, `lc-deep-retrieval`     |
+| `notes.txt`           | TXT    | Short plain-text notes (anything generic)                                                                | N/A                                                            | `par-two-reads`                           |
+| `ilovepdf_merged.pdf` | PDF    | Several merged invoices; the main issuer is Vivavin with VAT 432 826 832 (rubric expects those literals) | **Required.** Sibling Mistral OCR sidecar `ilovepdf_merged.md` | `lc-multidoc-qa`                          |
 
 Quick ways to generate the synthetic ones:
 
 ```bash
 # long-report.md — 500 lines of realistic report-looking content
-for i in $(seq 1 500); do echo "Line $i — Transport sector note #$i. Lorem ipsum dolor sit amet, consectetur adipiscing elit."; done > long-report.md
+for i in $(seq 1 500); do echo "Line $i — Operations note #$i. Lorem ipsum dolor sit amet, consectetur adipiscing elit."; done > long-report.md
 
 # notes.txt
-printf "Shipping notes — Q1 2026\nSee attached BL for carrier confirmation.\n" > notes.txt
+printf "Meeting notes — Q1 2026\nFollow up with the vendor on the renewal quote.\n" > notes.txt
 
 # data.xlsx — via Python if you don't have one on hand
 python3 -c "

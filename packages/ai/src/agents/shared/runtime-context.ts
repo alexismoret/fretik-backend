@@ -3,7 +3,6 @@ import type { EventActor } from "@fretik/shared/services/domain-events/emit";
 import type { LangfusePromptRef } from "../../lib/langfuse-prompts";
 import type { ModelProfile } from "../../lib/model-registry/types";
 import type { DynamicToolManager } from "./dynamic-tools";
-import type { TaskManager } from "./task-manager";
 
 /**
  * @warning MUTATION CONTRACT — READ BEFORE ADDING A NEW TOOL
@@ -15,24 +14,18 @@ import type { TaskManager } from "./task-manager";
  * there." — `@ai-sdk/provider-utils` `ToolExecutionOptions` docblock).
  *
  * Fretik INTENTIONALLY deviates from this: `searchTools.execute`
- * mutates `ctx.dynamicToolManager` and `manageTasks.execute` mutates
- * `ctx.taskManager`. This is only safe because both mutations are
- * idempotent and commutative under the parallel-tool-calls that the
- * SDK can fire inside a single step:
+ * mutates `ctx.dynamicToolManager`. This is only safe because the
+ * mutation is idempotent and commutative under the parallel-tool-calls
+ * that the SDK can fire inside a single step:
  *
  *  - `DynamicToolManager.activate(names)` adds to a `Set<string>`.
  *    Re-adding the same name is a no-op. Two parallel activations
  *    with overlapping name sets end in the same final state.
  *
- *  - `TaskManager.setTasks(tasks)` is full-replacement semantics.
- *    Two parallel `setTasks` calls end in the state of whichever
- *    one executed last — identical to a single call with that list,
- *    so no unobservable intermediate state is produced.
- *
  * Any NEW tool that mutates the runtime context MUST preserve this
  * invariant. If you need a non-idempotent mutation (counter,
  * accumulator, ordered log, stateful reducer), either:
- *   (a) route the mutation through `DynamicToolManager` / `TaskManager`
+ *   (a) route the mutation through `DynamicToolManager`,
  *       which already has the idempotence guarantee baked in,
  *   (b) or wrap the mutation in an async mutex keyed on the
  *       conversation id before writing,
@@ -56,9 +49,9 @@ import type { TaskManager } from "./task-manager";
  * on every `.stream()` call; tools recover it inside their `execute`
  * function via `getRuntimeContext(options)` (which reads `options.context`).
  *
- * `dynamicToolManager` and `taskManager` are required (not optional):
- * `prepareCall` instantiates them unconditionally so tools never have
- * to defend against missing fields.
+ * `dynamicToolManager` is required (not optional): `prepareCall`
+ * instantiates it unconditionally so tools never have to defend
+ * against a missing field.
  */
 export interface AgentRuntimeContext {
   organizationId: string;
@@ -123,12 +116,6 @@ export interface AgentRuntimeContext {
    * rebuild the `activeTools` allow-list.
    */
   dynamicToolManager: DynamicToolManager;
-  /**
-   * Per-request task checklist. Mutated by `manageTasks.execute()`;
-   * discarded when the turn ends — no cross-request leakage because
-   * each request gets a fresh instance from `prepareCall`.
-   */
-  taskManager: TaskManager;
   /**
    * Rendered `{{attachedFilesBlock}}` fragment for the system
    * prompt. Computed by the handler from the last user message's
@@ -226,9 +213,8 @@ export interface AgentRuntimeContext {
   externalAppsBlock?: string;
   /**
    * ID of the `workflow_runs` row this turn belongs to — set ONLY for the
-   * headless workflow agent. The `updateWorkflowTask` / `completeWorkflowRun`
-   * tools key their writes on it; absent for the chatbot (those tools aren't
-   * in its set).
+   * headless workflow agent. The `completeTask` tool keys its writes on it;
+   * absent for the chatbot (that tool isn't in its set).
    */
   workflowRunId?: string;
   /**

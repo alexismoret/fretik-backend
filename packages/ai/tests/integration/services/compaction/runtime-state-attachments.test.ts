@@ -24,14 +24,13 @@ const assistantWithToolPart = (
     state: "output-available",
     input: { dummy: true },
     output: p.output,
-  })) as UIMessage["parts"],
+  })),
 });
 
 describe("extractRuntimeState — activatedTools", () => {
   test("empty history → empty snapshot", () => {
     expect(extractRuntimeState([])).toEqual({
       activatedTools: [],
-      pendingTasks: [],
     });
   });
 
@@ -92,123 +91,17 @@ describe("extractRuntimeState — activatedTools", () => {
   });
 });
 
-describe("extractRuntimeState — pendingTasks", () => {
-  test("filters completed, keeps in_progress + pending", () => {
-    const messages = [
-      assistantWithToolPart("a1", [
-        {
-          toolName: "manageTasks",
-          toolCallId: "call-1",
-          output: {
-            tasks: [
-              {
-                content: "Step 1",
-                activeForm: "Step 1ing",
-                status: "completed",
-              },
-              {
-                content: "Step 2",
-                activeForm: "Step 2ing",
-                status: "in_progress",
-              },
-              { content: "Step 3", activeForm: "Step 3ing", status: "pending" },
-            ],
-          },
-        },
-      ]),
-    ];
-    const state = extractRuntimeState(messages);
-    expect(state.pendingTasks).toHaveLength(2);
-    expect(state.pendingTasks[0]?.content).toBe("Step 2");
-    expect(state.pendingTasks[1]?.content).toBe("Step 3");
-  });
-
-  test("latest manageTasks result wins (full-replacement semantics)", () => {
-    const messages = [
-      assistantWithToolPart("a1", [
-        {
-          toolName: "manageTasks",
-          toolCallId: "call-1",
-          output: {
-            tasks: [
-              {
-                content: "Old task",
-                activeForm: "Doing old",
-                status: "in_progress",
-              },
-            ],
-          },
-        },
-      ]),
-      assistantWithToolPart("a2", [
-        {
-          toolName: "manageTasks",
-          toolCallId: "call-2",
-          output: {
-            tasks: [
-              {
-                content: "New task",
-                activeForm: "Doing new",
-                status: "pending",
-              },
-            ],
-          },
-        },
-      ]),
-    ];
-    const state = extractRuntimeState(messages);
-    expect(state.pendingTasks).toHaveLength(1);
-    expect(state.pendingTasks[0]?.content).toBe("New task");
-  });
-
-  test("malformed task entries are skipped silently", () => {
-    const messages = [
-      assistantWithToolPart("a1", [
-        {
-          toolName: "manageTasks",
-          toolCallId: "call-1",
-          output: {
-            tasks: [
-              { content: "Valid", activeForm: "Validing", status: "pending" },
-              { content: "Missing activeForm", status: "pending" },
-              { content: "Bad status", activeForm: "x", status: "weird" },
-            ],
-          },
-        },
-      ]),
-    ];
-    const state = extractRuntimeState(messages);
-    expect(state.pendingTasks).toHaveLength(1);
-    expect(state.pendingTasks[0]?.content).toBe("Valid");
-  });
-});
-
 describe("formatRuntimeStateForSummary", () => {
   test("returns empty string for an empty snapshot", () => {
-    expect(
-      formatRuntimeStateForSummary({ activatedTools: [], pendingTasks: [] }),
-    ).toBe("");
+    expect(formatRuntimeStateForSummary({ activatedTools: [] })).toBe("");
   });
 
   test("formats activatedTools as a single comma-joined line", () => {
     const out = formatRuntimeStateForSummary({
       activatedTools: ["listDocuments", "querySql"],
-      pendingTasks: [],
     });
     expect(out).toContain("Active domain tools");
     expect(out).toContain("listDocuments, querySql");
-  });
-
-  test("formats pendingTasks as a numbered list with status labels", () => {
-    const out = formatRuntimeStateForSummary({
-      activatedTools: [],
-      pendingTasks: [
-        { content: "Step A", activeForm: "Doing A", status: "in_progress" },
-        { content: "Step B", activeForm: "Doing B", status: "pending" },
-      ],
-    });
-    expect(out).toContain("1. Step A (in_progress)");
-    expect(out).toContain("2. Step B (pending)");
   });
 });
 

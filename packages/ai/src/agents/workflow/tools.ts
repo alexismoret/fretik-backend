@@ -11,8 +11,6 @@ import { buildChatbotTool } from "../shared/chatbot-tool";
  * - `askUserQuestion` — the chat (non-blocking) variant OUT; a BLOCKING
  *   variant IN (`tools/ask-user/workflow.ts`): it parks the run on a
  *   `question` approval and the answer arrives substituted on resume.
- * - `manageTasks` OUT — the playbook + `completeTask` replace the ad-hoc
- *   per-turn checklist.
  * - `createSkill` / `updateSkill` OUT — both return drafts a user must
  *   confirm in chat; meaningless headless.
  * - `manageObjectType` / `manageField` OUT — hard gate behind the prompt
@@ -38,11 +36,8 @@ export const buildWorkflowTools = (extras: {
     manageWorkflow: _manageWorkflow,
     ...domainTools
   } = buildDomainTools();
-  const {
-    askUserQuestion: _askUserQuestion,
-    manageTasks: _manageTasks,
-    ...coreTools
-  } = buildCoreTools(domainTools);
+  const { askUserQuestion: _askUserQuestion, ...coreTools } =
+    buildCoreTools(domainTools);
   // The domain tools destructured out above are the canonical
   // `WORKFLOW_FORBIDDEN_DOMAIN_TOOLS` (see `../shared/workflow-tool-gate`): a
   // run never edits schema, drafts skills, or builds workflows. Keep the two
@@ -94,11 +89,8 @@ export const workflowToolHintNames = (): ReadonlySet<string> => {
     manageWorkflow: _manageWorkflow,
     ...domainTools
   } = buildDomainTools();
-  const {
-    askUserQuestion: _askUserQuestion,
-    manageTasks: _manageTasks,
-    ...coreTools
-  } = buildCoreTools(domainTools);
+  const { askUserQuestion: _askUserQuestion, ...coreTools } =
+    buildCoreTools(domainTools);
   cachedHintNames = new Set<string>([
     ...Object.keys(coreTools),
     ...Object.keys(domainTools),

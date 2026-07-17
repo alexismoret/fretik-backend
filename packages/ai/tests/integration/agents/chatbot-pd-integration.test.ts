@@ -10,7 +10,6 @@ import {
   wrapRuntimeContext,
   type AgentRuntimeContext,
 } from "../../../src/agents/shared/runtime-context";
-import { TaskManager } from "../../../src/agents/shared/task-manager";
 import { getProfileForRole } from "../../../src/lib/model-registry/resolve";
 
 /**
@@ -46,7 +45,6 @@ const EXPECTED_CORE_TOOL_NAMES: readonly string[] = [
   "bash",
   "presentFiles",
   "searchTools",
-  "manageTasks",
   "memory",
   "askUserQuestion",
   "dispatchAgent",
@@ -102,7 +100,6 @@ const buildCtx = (
     organizationId: "org-1",
     teamId: "team-1",
     dynamicToolManager: manager,
-    taskManager: new TaskManager(),
     modelProfile: getProfileForRole("chat"),
   };
   return { ctx, branded: wrapRuntimeContext(ctx) };

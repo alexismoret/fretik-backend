@@ -11,7 +11,7 @@ import { z } from "zod";
 export const createSearchIconsTool = () =>
   tool({
     description:
-      "Find icon names from the curated Lucide catalog. Pass every concept you need icons for at once (e.g. ['shipping','invoice','urgent']); returns ranked names per concept. Use the chosen `name` with manageObjectType / manageField, which reject names outside the catalog.",
+      "Find icon names from the curated Lucide catalog. Pass every concept you need icons for at once (e.g. ['project','invoice','urgent']); returns ranked names per concept. Use the chosen `name` with manageObjectType / manageField, which reject names outside the catalog.",
     inputSchema: z.object({
       queries: z
         .array(z.string().min(1).max(60))

@@ -1,5 +1,4 @@
 import type { UIMessage } from "ai";
-import type { Task } from "../../agents/shared/task-manager";
 
 /**
  * Runtime-state attachments — Fretik's equivalent of Claude Code's
@@ -16,20 +15,15 @@ import type { Task } from "../../agents/shared/task-manager";
  *     `buildChatbotContextManifest`) reconstruct the file index from
  *     scratch on every turn.
  *
- * The two pieces that DO live in the message history and would be
- * lost without explicit help are:
- *   1. `DynamicToolManager.activatedTools` — reconstructed from past
- *      `searchTools` tool-result payloads by
- *      `replayActivationFromHistory`. After full compaction, those
- *      payloads are gone.
- *   2. `TaskManager.tasks` — the in-flight checklist the model
- *      maintains via `manageTasks`. The TaskManager is per-request
- *      anyway, but the most-recent state is needed in the summary so
- *      the model knows where it left off.
+ * The one piece that DOES live in the message history and would be
+ * lost without explicit help is `DynamicToolManager.activatedTools` —
+ * reconstructed from past `searchTools` tool-result payloads by
+ * `replayActivationFromHistory`. After full compaction, those
+ * payloads are gone.
  *
  * This module:
- *   - Extracts both states from a `UIMessage[]` history.
- *   - Formats them as a plain-text block to be appended to the
+ *   - Extracts that state from a `UIMessage[]` history.
+ *   - Formats it as a plain-text block to be appended to the
  *     compaction summary (`getCompactUserSummaryMessage`).
  *   - Synthesises a fake `tool-searchTools` UIMessage that preserves
  *     activatedTools through `convertToModelMessages` so the existing
@@ -40,13 +34,11 @@ import type { Task } from "../../agents/shared/task-manager";
  *     the text block in the summary is for the model's awareness only.
  *
  * @see agents/shared/dynamic-tools.ts
- * @see agents/shared/task-manager.ts
  * @see claude-code/src/services/compact/compact.ts createPlanAttachmentIfNeeded
  */
 
 const TOOL_PART_PREFIX = "tool-";
 const SEARCH_TOOLS_PART_TYPE = "tool-searchTools";
-const MANAGE_TASKS_PART_TYPE = "tool-manageTasks";
 
 export interface RuntimeStateSnapshot {
   /**
@@ -55,13 +47,6 @@ export interface RuntimeStateSnapshot {
    * for short / pure-Q&A conversations.
    */
   activatedTools: string[];
-  /**
-   * Latest `manageTasks` snapshot at compaction time, filtered to
-   * tasks that are not yet `completed` (the model only needs to know
-   * what is still outstanding). Empty when the conversation never
-   * called `manageTasks` or every task has been completed.
-   */
-  pendingTasks: Task[];
 }
 
 /**
@@ -81,48 +66,14 @@ const extractMatchesFromSearchToolsOutput = (
 };
 
 /**
- * Type guard for the structured payload returned by `manageTasks.execute`
- * (`tools/manage-tasks.ts::execute`).
- */
-const extractTasksFromManageTasksOutput = (output: unknown): Task[] | null => {
-  if (output === null || output === undefined) return null;
-  if (typeof output !== "object" || Array.isArray(output)) return null;
-  const maybeTasks = (output as { tasks?: unknown }).tasks;
-  if (!Array.isArray(maybeTasks)) return null;
-  const tasks: Task[] = [];
-  for (const t of maybeTasks) {
-    if (t === null || typeof t !== "object" || Array.isArray(t)) continue;
-    const obj = t as Record<string, unknown>;
-    const content = obj.content;
-    const activeForm = obj.activeForm;
-    const status = obj.status;
-    if (
-      typeof content !== "string" ||
-      typeof activeForm !== "string" ||
-      (status !== "pending" &&
-        status !== "in_progress" &&
-        status !== "completed")
-    ) {
-      continue;
-    }
-    tasks.push({ content, activeForm, status });
-  }
-  return tasks;
-};
-
-/**
- * Walk the conversation messages and extract both the cumulative
- * activated-tool set and the latest pending-task list.
- *
- * Activated tools accumulate across every `searchTools` result
- * encountered (mirrors `replayActivationFromHistory`). Pending tasks
- * are the LATEST `manageTasks` snapshot, filtered to non-completed.
+ * Walk the conversation messages and extract the cumulative
+ * activated-tool set. Activated tools accumulate across every
+ * `searchTools` result encountered (mirrors `replayActivationFromHistory`).
  */
 export const extractRuntimeState = (
   messages: UIMessage[],
 ): RuntimeStateSnapshot => {
   const activated = new Set<string>();
-  let latestTasks: Task[] = [];
 
   for (const msg of messages) {
     if (!Array.isArray(msg.parts)) continue;
@@ -145,25 +96,12 @@ export const extractRuntimeState = (
         if (matches) {
           for (const name of matches) activated.add(name);
         }
-        continue;
-      }
-
-      if (part.type === MANAGE_TASKS_PART_TYPE) {
-        const tasks = extractTasksFromManageTasksOutput(output);
-        if (tasks) {
-          // Latest call wins — keep overwriting as we walk forward.
-          latestTasks = tasks;
-        }
-        continue;
       }
     }
   }
 
-  const pendingTasks = latestTasks.filter((t) => t.status !== "completed");
-
   return {
     activatedTools: [...activated],
-    pendingTasks,
   };
 };
 
@@ -176,26 +114,8 @@ export const extractRuntimeState = (
 export const formatRuntimeStateForSummary = (
   state: RuntimeStateSnapshot,
 ): string => {
-  const lines: string[] = [];
-
-  if (state.activatedTools.length > 0) {
-    lines.push(
-      `Active domain tools (already unlocked via searchTools — call them directly without re-running searchTools): ${state.activatedTools.join(", ")}`,
-    );
-  }
-
-  if (state.pendingTasks.length > 0) {
-    const taskLines = state.pendingTasks.map((t, i) => {
-      const idx = (i + 1).toString();
-      const statusLabel =
-        t.status === "in_progress" ? "in_progress" : "pending";
-      return `  ${idx}. ${t.content} (${statusLabel})`;
-    });
-    lines.push(`Pending tasks (from manageTasks at compaction time):`);
-    lines.push(...taskLines);
-  }
-
-  return lines.join("\n");
+  if (state.activatedTools.length === 0) return "";
+  return `Active domain tools (already unlocked via searchTools — call them directly without re-running searchTools): ${state.activatedTools.join(", ")}`;
 };
 
 /**

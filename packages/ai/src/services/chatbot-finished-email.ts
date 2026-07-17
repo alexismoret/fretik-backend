@@ -348,7 +348,7 @@ export const sendChatbotFinishedEmailIfEnabled = async (
 
   const assistantMarkdown = extractAssistantMarkdown(lastAssistant);
   if (assistantMarkdown.length === 0) {
-    // Tool-only turn (e.g. the model called `manageTasks` and stopped)
+    // Tool-only turn (e.g. the model called `searchTools` and stopped)
     // with NO `askUserQuestion` either. No prose to email — silent.
     return;
   }

@@ -19,7 +19,9 @@ Interpret the criterion charitably — it describes the SPIRIT of a good answer,
 
 ## Grounding on tool outputs
 
-The prompt includes every tool output the assistant saw. Use them ONLY to check the assistant's facts/numbers are grounded — do not require the answer to quote them verbatim. Summarising, translating status labels ("processing" → "En cours"), reformatting, or omitting noise is `CORRECT`. When the outputs are empty and the criterion allows it, an honest "no data found" is `CORRECT`.
+The prompt includes the tool outputs the assistant saw. Use them ONLY to check the assistant's facts/numbers are grounded — do not require the answer to quote them verbatim. Summarising, translating status labels ("processing" → "En cours"), reformatting, or omitting noise is `CORRECT`. When the outputs are empty and the criterion allows it, an honest "no data found" is `CORRECT`.
+
+Outputs may be TRUNCATED (`[truncated N chars]`) or shown as a `<persisted-output>` envelope — the assistant read the FULL content, you see only part of it. The assistant may also draw on team context provided outside tools (memory, records). A specific detail missing from what YOU can see is UNVERIFIABLE, not invented: judge fabrication only when a claim CONTRADICTS the visible outputs, or invents content with no plausible source anywhere in them.
 
 ### Fuzzy matches ≠ presence
 

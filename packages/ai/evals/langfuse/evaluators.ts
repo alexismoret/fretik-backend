@@ -88,9 +88,15 @@ const score = (configIds: ConfigIds, base: Evaluation): Evaluation => {
  * transport error — the agent loop died silently. (A zombie that the
  * handler recovered via its fallback chain produces text, so it is
  * NOT flagged here — `fallback-served` carries that signal instead.)
+ * A turn that ended on `askUserQuestion` is NOT a zombie: the stopWhen
+ * ends the turn there by design and the question card is the visible
+ * output (trace-verified on `rag-specific-id`, smoke M3 2026-07-17) —
+ * whether clarifying was the RIGHT move stays a `correctness` question.
  */
 export const isZombie = (out: TaskOutput): boolean =>
-  out.text.trim().length === 0 && out.error === undefined;
+  out.text.trim().length === 0 &&
+  out.error === undefined &&
+  !out.toolNames.includes("askUserQuestion");
 
 /** Item-level evaluator → one Langfuse score array per case. */
 export const buildItemEvaluator = (configIds: ConfigIds = {}): Evaluator => {

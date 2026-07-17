@@ -94,6 +94,28 @@ export const stripReasoningPartsForModel = (
     parts: message.parts.filter((part) => part.type !== "reasoning"),
   }));
 
+/**
+ * Tool parts of RETIRED tools, stripped from the history the model sees.
+ * A stored conversation may carry tool calls for a tool that no longer
+ * exists in any registry — replaying such a part would reference a tool
+ * the provider has no definition for. Stripping is lossless for these
+ * tools: their outputs were ephemeral UI state, never load-bearing facts.
+ *
+ *  - `tool-manageTasks` — the per-turn checklist tool, removed 2026-07
+ *    (the workflows feature replaced the need; see the refonte plan).
+ */
+const RETIRED_TOOL_PART_TYPES = new Set(["tool-manageTasks"]);
+
+export const stripRetiredToolPartsForModel = (
+  messages: UIMessage[],
+): UIMessage[] =>
+  messages.map((message) => ({
+    ...message,
+    parts: message.parts.filter(
+      (part) => !RETIRED_TOOL_PART_TYPES.has(part.type),
+    ),
+  }));
+
 const ATTACHMENTS_DIR = "attachments";
 
 const capForModality = (
@@ -186,7 +208,11 @@ export const prepareModelMessages = async (
 ): Promise<UIMessage[]> => {
   // Reasoning is never re-sent (provider signature bug #423 + zombie risk):
   // strip it from the persisted history before any file/native handling.
-  const base = stripReasoningPartsForModel(history);
+  // Retired-tool parts (tools removed from the registry) are stripped in
+  // the same pass — a provider must never see a call to an undefined tool.
+  const base = stripRetiredToolPartsForModel(
+    stripReasoningPartsForModel(history),
+  );
 
   // Plan pass — native-eligible file parts per modality, in conversation
   // order (array order == chronological).

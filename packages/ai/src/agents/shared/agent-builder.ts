@@ -21,7 +21,6 @@ import {
   wrapRuntimeContext,
   type AgentRuntimeContext,
 } from "./runtime-context";
-import { TaskManager } from "./task-manager";
 
 /**
  * Factory for a pair of `ToolLoopAgent` singletons (primary + fallback)
@@ -40,8 +39,8 @@ import { TaskManager } from "./task-manager";
  *
  * 2. `prepareCall` is where per-request state is born. It receives
  *    the typed `CALL_OPTIONS` (e.g. `ChatbotCallOptions`) from the
- *    handler, instantiates a fresh `DynamicToolManager` +
- *    `TaskManager`, assembles an `AgentRuntimeContext`, renders the
+ *    handler, instantiates a fresh `DynamicToolManager`,
+ *    assembles an `AgentRuntimeContext`, renders the
  *    system prompt against it, and returns the ctx (branded via
  *    `wrapRuntimeContext`) as the agent's `runtimeContext`; each
  *    `prepareStep` fans it out to every tool via `toolsContext`.
@@ -59,14 +58,13 @@ import { TaskManager } from "./task-manager";
 
 /**
  * Subset of `AgentRuntimeContext` that `buildAgentSet` expects the
- * caller to derive from its `CALL_OPTIONS`. The two per-request
- * managers (`dynamicToolManager`, `taskManager`) are instantiated by
- * the builder itself and injected into the final ctx, so callers
- * never deal with them.
+ * caller to derive from its `CALL_OPTIONS`. The per-request manager
+ * (`dynamicToolManager`) is instantiated by the builder itself and
+ * injected into the final ctx, so callers never deal with it.
  */
 export type AgentRuntimeContextBase = Omit<
   AgentRuntimeContext,
-  "dynamicToolManager" | "taskManager" | "modelProfile"
+  "dynamicToolManager" | "modelProfile"
 >;
 
 /**
@@ -110,7 +108,7 @@ export interface BuildAgentSetConfig<CALL_OPTIONS, TTools extends ToolSet> {
   /**
    * Map typed `CALL_OPTIONS` → the pure-data part of
    * `AgentRuntimeContext`. The builder appends
-   * `dynamicToolManager` + `taskManager` to finalise the ctx.
+   * `dynamicToolManager` to finalise the ctx.
    */
   buildRuntimeContextBase: (options: CALL_OPTIONS) => AgentRuntimeContextBase;
   /**
@@ -268,7 +266,7 @@ const defaultOnStepEnd = <TTools extends ToolSet>(
  * (`ToolExecutionOptions` has no `runtimeContext`), so every concrete
  * `prepareStep` returns this map alongside `activeTools`. All entries point at
  * the SAME reference — which is also the agent's `runtimeContext` — so the
- * mutation contract holds (searchTools/manageTasks mutate mid-step, the next
+ * mutation contract holds (searchTools mutates mid-step, the next
  * `prepareStep` reads the mutation). Kept at the concrete tool-set call site
  * because `InferToolSetContext<TTools>` only reduces to the permissive `{}` for
  * the concrete, `contextSchema`-free registries — not under a generic `TTools`.
@@ -393,7 +391,6 @@ const buildToolLoopAgent = <CALL_OPTIONS, TTools extends ToolSet>(
       const ctx: AgentRuntimeContext = {
         ...base,
         dynamicToolManager,
-        taskManager: new TaskManager(),
         // The profile of THIS instance's model — the fallback agent
         // carries the fallback profile, so capability-aware reads
         // (modalities, strict schemas, compaction) always describe the

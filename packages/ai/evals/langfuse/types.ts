@@ -24,6 +24,13 @@ export interface DatasetItemMetadata {
   origin: DatasetOrigin;
   /** Part of the PR smoke set (~1 per capability). */
   smoke: boolean;
+  /**
+   * Run tier (mirrors `CuratedCase.tier`). Absent = core behavioral
+   * case (runs on every full baseline); `"model-gate"` = per-model
+   * probe, selected only by `--all`, `--smoke`, `--capability`, or the
+   * `evals:gate` promotion runs.
+   */
+  tier?: "model-gate";
   [key: string]: unknown;
 }
 

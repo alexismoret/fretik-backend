@@ -1,0 +1,36 @@
+# Workflows
+
+A workflow is this assistant running unattended: a trigger fires, the playbook's tasks execute one by one, writes pause for approval when the mode says so, and the user reads the run's summary. Built and managed entirely through `manageWorkflow` (domain tool — activate via `searchTools`).
+
+## Build order
+
+1. `get_trigger_catalog` — the authoritative list of triggers, their `triggerConfig` shapes, and per-event filter keys. Never guess a config shape.
+2. `create_draft` — name, description, trigger, playbook, autonomy, scope. The tool's own description carries the playbook-authoring rules (goal-oriented instructions, never tool names).
+3. `run_test` — a workflow CANNOT be activated until one test run has succeeded. Inspect with `get_run`; iterate with `update`.
+4. `activate` — the trigger goes live. `pause` stops it without deleting anything.
+
+## Triggers
+
+- **manual** — the user clicks Run. Right for "on demand but too long/repeatable for chat".
+- **cron** — 5-field pattern + optional IANA timezone ("every Monday 9am" → `0 9 * * 1`).
+- **event** — fires on a workspace event: `document.uploaded` (filterable by folder), `record.created` (filterable by object type), or a connector event (`connector.<app>.<kind>`). The backbone of ingest pipelines.
+- **form** — Fretik hosts a shareable public form; each submission (answers + attached files) starts a run. Right for collecting structured input from people outside the conversation — clients, field staff, other departments.
+
+## Autonomy modes
+
+- `read_only` — analysis and deliverables only; every write is refused. Right for reports and digests.
+- `approval_required` (safe default for writes) — record writes and external-app writes pause the run for a human decision; the run resumes alone afterwards, even days later.
+- `autonomous` — writes execute directly, nobody reviews. Reserve for well-tested, low-blast-radius workflows.
+
+## Options worth proposing
+
+- **Notifications** — the run can email chosen members (plus whoever launched it) on success (with produced files attached), on failure, and when an approval is waiting. Most users want at least the failure email.
+- **Scope** — `team` (default; sees team connections) or `private` (also sees the creator's personal connections — required when the playbook uses a personal mailbox).
+- **toolHints** — pre-activate the domain tools the playbook needs, saving the run a discovery step.
+
+## Traps
+
+- The executor cannot create or modify object types, fields, skills, or workflows mid-run. Build schema and skills in the conversation FIRST; the workflow only fills them.
+- A playbook that needs data from an object type should name the type by its human label and let the run resolve it — hardcoding table names breaks on schema evolution.
+- Bulk record writes inside a run go through the Python objects SDK in ONE script (one approval covers all rows).
+- When a proposal replaces something the team does by hand, run the first execution as a test on real recent data and show the user the run before activating — trust comes from the visible run, not the description.

@@ -106,6 +106,8 @@ export const createVisionTool = () =>
       "- file_path (required): workspace-relative or absolute path under `/workspace/` (e.g. 'attachments/chart.png', 'attachments/report.pdf/img-2.jpeg', 'drive/uuid-report.pdf', 'attachments/clip.mp4').",
       "- question (required): the specific visual question. 'Describe the chart in the bottom-right, including colours and values' works better than 'Describe this file'.",
       "",
+      "Do NOT call vision to extract text from a scan (`read` returns it), to summarise textual content (`read` suffices), or out of curiosity when nothing visual was asked — vision is a paid model call.",
+      "",
       "Accepted formats: .png, .jpg, .jpeg, .webp, .pdf, .mp4, .webm, .mov, plus extracted-figure paths. PDFs and videos are sent natively (not OCR-converted) so layout, motion, diagrams, and signatures are preserved.",
     ].join("\n"),
     inputSchema: z.object({

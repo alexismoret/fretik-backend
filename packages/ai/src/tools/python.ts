@@ -33,7 +33,7 @@ import { mapE2BError } from "./_e2b-errors";
  * affected — they don't go through this mutex.
  *
  * Hold timeout: 5 min wall-clock cap per E2B call (cf. CLAUDE.md
- * `<sandbox_constraints>`) + 30 s grace for snapshot / mirror
+ * `<workspace>`) + 30 s grace for snapshot / mirror
  * overhead. If a replica crashes mid-call, the slot self-reclaims
  * after this timeout so the next caller is not stuck forever.
  */
@@ -104,6 +104,8 @@ export const createPythonTool = () =>
   tool({
     description: [
       "Executes Python 3 in the conversation's persistent Jupyter kernel (E2B sandbox).",
+      "",
+      "Plan the complete computation BEFORE calling: ONE call per logical step — load + transform + output in a single script, with intermediate `print`s inside it for visibility. Start a new call only when you must SEE a result to decide what comes next; never re-run code that already succeeded (the kernel keeps its state). And if the task matches a `<skills>` entry (xlsx / docx / pptx / pdf deliverables above all), read that skill FIRST — python written before the skill body looks right and ships subtle bugs.",
       "",
       "Reach for `python` whenever the work involves structured or tabular data — parse the source programmatically rather than transcribing rows from a previous tool result. If you are about to embed values you just read into Python list/tuple literals, stop and open the source file directly: load the file with the right library (`pdfplumber`, `pandas`, `openpyxl`, `json`, …) and bind it to a variable. Transcribed literals drift from the source as soon as anything is reformatted, and silently mis-match downstream.",
       "",

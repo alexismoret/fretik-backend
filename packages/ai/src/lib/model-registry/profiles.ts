@@ -652,7 +652,7 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
         defaultLevel: "low",
         maxTokens: 5_000,
       },
-      provider: { requireParameters: true, zdr: true, order: ["venice"] },
+      provider: { requireParameters: true, zdr: true, order: ["Novita"] },
       // Promoted via the C3 gate, 2026-06-12. All capabilities at or
       // above the M2.7 baseline; cost $0.0134/turn (budget envelope).
       // The avg-latency criterion of this run pair passed only after

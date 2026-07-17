@@ -93,9 +93,42 @@ const hasProductionVersion = async (name: string): Promise<boolean> => {
   return list.data.some((p) => p.name === name);
 };
 
+/**
+ * Cache-stability guard: the static prefix must stay byte-identical across
+ * turns, so the only `{{placeholders}}` allowed ABOVE the DYNAMIC SUFFIX
+ * marker are the team-stable ones (constant within a conversation). Any new
+ * placeholder in the static zone silently kills the OpenRouter prefix cache —
+ * fail the seed instead.
+ */
+const STATIC_ZONE_ALLOWED_PLACEHOLDERS = new Set([
+  "deferredToolList",
+  "skillsCatalog",
+  "externalAppsBlock",
+]);
+const DYNAMIC_MARKER = "DYNAMIC SUFFIX — every section below";
+
+const assertStaticPrefixStable = (name: string, resolved: string): void => {
+  const markerIdx = resolved.indexOf(DYNAMIC_MARKER);
+  if (markerIdx === -1) {
+    throw new Error(`${name}: DYNAMIC SUFFIX marker not found in template`);
+  }
+  const staticZone = resolved.slice(0, markerIdx);
+  const offenders = [...staticZone.matchAll(/\{\{([a-zA-Z][a-zA-Z0-9]*)\}\}/g)]
+    .map((m) => m[1] ?? "")
+    .filter((p) => !STATIC_ZONE_ALLOWED_PLACEHOLDERS.has(p));
+  if (offenders.length > 0) {
+    throw new Error(
+      `${name}: placeholder(s) above the DYNAMIC SUFFIX marker break the cache prefix: ${offenders.join(", ")}`,
+    );
+  }
+};
+
 const seed = async (): Promise<void> => {
   for (const { name, path, agent } of PROMPTS) {
     const raw = await Bun.file(path).text();
+    if (agent !== undefined) {
+      assertStaticPrefixStable(name, resolveAgentBlocks(raw, agent));
+    }
     const text = toStoredPrompt(
       agent === undefined ? raw : resolveAgentBlocks(raw, agent),
     );

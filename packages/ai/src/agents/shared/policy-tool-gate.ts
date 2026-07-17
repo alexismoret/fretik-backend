@@ -4,6 +4,7 @@ import {
   type ToolPolicyLevel,
 } from "@fretik/shared/schemas/tool-policies";
 import { deferredToolOutput } from "@fretik/shared/services/ai/approval-pending";
+import { TOOL_PERMISSIONS_REMEDIATION } from "@fretik/shared/services/ai/remediation";
 import { createPendingToolCallApproval } from "@fretik/shared/services/approvals/create-pending-tool-call";
 import { runApprovalGate } from "@fretik/shared/services/approvals/gate";
 import { canonicalHash } from "@fretik/shared/services/approvals/hash";
@@ -93,7 +94,7 @@ export const gateBuiltinWriteTool = async (
     return toolError(
       TOOL_ERROR_CODES.TOOL_DISABLED_BY_POLICY,
       `${params.toolName} is disabled by the team's tool-permission settings.`,
-      "Tell the user it can be re-enabled in Settings → Tool permissions.",
+      TOOL_PERMISSIONS_REMEDIATION,
     );
   }
   if (level === "auto") return null;

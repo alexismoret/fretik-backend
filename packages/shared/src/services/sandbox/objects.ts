@@ -8,6 +8,7 @@ import { audienceSchema } from "../../schemas/object-sharing";
 import { recordRelationInputSchema } from "../../schemas/ontology";
 import type { ToolPolicyLevel } from "../../schemas/tool-policies";
 import type { WorkflowAutonomy } from "../../schemas/workflows";
+import { TOOL_PERMISSIONS_REMEDIATION } from "../ai/remediation";
 import { gateRecordWriteApproval } from "../approvals/gate-record-write";
 import type { EventActor } from "../domain-events/emit";
 import { FIELD_DEFINITION_LIMITS } from "../field-definitions/constants";
@@ -97,7 +98,7 @@ export const dispatchObjects = async (
     ) {
       return {
         status: "error",
-        message: `SCHEMA_DISABLED: the team disabled ${schemaTool} (Settings → Tool permissions).`,
+        message: `SCHEMA_DISABLED: the team disabled ${schemaTool}. ${TOOL_PERMISSIONS_REMEDIATION}`,
       };
     }
   }

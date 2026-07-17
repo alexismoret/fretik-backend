@@ -300,6 +300,9 @@ const runModelGate = async (opts: ModelGateOptions): Promise<void> => {
     );
     const baseResult = await runChatbotExperiment({
       smoke: opts.smoke,
+      // Model promotion needs the per-model probes — include the
+      // model-gate item tier (the default baseline excludes it).
+      includeModelGate: true,
       candidateProfileKey: baselineKey,
       runName: baseRunName,
       ...(opts.concurrency !== undefined
@@ -321,6 +324,7 @@ const runModelGate = async (opts: ModelGateOptions): Promise<void> => {
   );
   const candResult = await runChatbotExperiment({
     smoke: opts.smoke,
+    includeModelGate: true,
     candidateProfileKey: opts.candidate,
     runName: candRunName,
     ...(opts.concurrency !== undefined

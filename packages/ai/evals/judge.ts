@@ -37,8 +37,13 @@ const DEFAULT_JUDGE_MODEL =
 
 const JUDGE_TIMEOUT_MS = 25_000;
 const JUDGE_MAX_TOKENS = 400;
-/** High cap — preserves grounding while bounding judge token cost. */
-const JUDGE_TOOL_OUTPUT_CHARS = 4_000;
+/**
+ * High cap — preserves grounding while bounding judge token cost.
+ * 12K (~3K tokens/output on Gemini Flash): resolved `<persisted-output>`
+ * payloads (RAG results up to 48K) get real coverage — at 4K the judge
+ * missed grounded chunks and graded them "fabricated" (2026-07-17).
+ */
+const JUDGE_TOOL_OUTPUT_CHARS = 12_000;
 
 let cachedJudge: ReturnType<
   ReturnType<typeof createOpenRouter>["chat"]

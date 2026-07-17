@@ -89,7 +89,7 @@ Your summary should include the following sections:
 4. Errors and fixes: List all errors encountered (tool errors, schema mismatches, missing data, user corrections) and how they were resolved. Pay special attention to specific user feedback — especially when the user told you to do something differently.
 5. Problem Solving: Document problems solved and any ongoing troubleshooting efforts.
 6. All user messages: List ALL non-tool-result user messages chronologically. These are critical for understanding the user's evolving intent and feedback.
-7. Pending Tasks: Outline any tasks the user has explicitly asked you to work on that are NOT yet complete. Mirror any in-progress / pending entries from the manageTasks state if present.
+7. Pending Tasks: Outline any tasks the user has explicitly asked you to work on that are NOT yet complete.
 8. Current Work: Describe in detail precisely what was being worked on immediately before this summary request, paying special attention to the most recent messages from both user and assistant. Include file names, paths, and key data points.
 9. Optional Next Step: List the next step that you would take, directly in line with the user's most recent explicit request and the task you were working on immediately before this summary. If there is a next step, include direct quotes from the most recent conversation showing exactly what task you were working on and where you left off — verbatim, to ensure no drift in task interpretation.
 

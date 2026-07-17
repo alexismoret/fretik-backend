@@ -35,7 +35,7 @@ export const WRITE_SELECTABLE_LEVELS = ["auto", "approval", "blocked"] as const;
  * validation at the settings boundary, the resolver, the GET catalog, and the
  * frontend rows. Tools NOT listed in `BUILTIN_TOOL_POLICY_CATALOG` are
  * infrastructure/core (`python`, `bash`, `memory`, `searchTools`,
- * `dispatchAgent`, `manageTasks`, `askUserQuestion`, `presentFiles`,
+ * `dispatchAgent`, `askUserQuestion`, `presentFiles`,
  * `searchKnowledge`, `querySql`, `read`, `vision`, `completeTask`): always
  * available, never blockable — the assistant cannot function without them, and
  * `python`/`bash` side effects are gated downstream per external-app action.

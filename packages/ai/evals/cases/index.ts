@@ -13,10 +13,10 @@ import type { EvalSuite } from "../types";
 import { b2bEfficiencySuite } from "./b2b-efficiency";
 import { bashExecutionSuite } from "./bash-execution";
 import { dispatchAgentSuite } from "./dispatch-agent";
+import { doctrineSuite } from "./doctrine";
 import { edgeCasesSuite } from "./edge-cases";
 import { fileAttachmentsSuite } from "./file-attachments";
 import { instructionFollowingSuite } from "./instruction-following";
-import { latencyStressSuite } from "./latency-stress";
 import { longContextSuite } from "./long-context";
 import { memorySuite } from "./memory";
 import { multiStepSuite } from "./multi-step";
@@ -35,11 +35,11 @@ export const allSuites: EvalSuite[] = [
   ragMetadataSuite,
   multiStepSuite,
   edgeCasesSuite,
-  latencyStressSuite,
   fileAttachmentsSuite,
   bashExecutionSuite,
   memorySuite,
   dispatchAgentSuite,
+  doctrineSuite,
   toolPortabilitySuite,
   instructionFollowingSuite,
   longContextSuite,

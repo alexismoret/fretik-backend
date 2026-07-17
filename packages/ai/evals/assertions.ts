@@ -11,6 +11,7 @@
  * `./judge.ts`). Every other type is pure, deterministic, local.
  */
 
+import { readSessionFile } from "@fretik/shared/lib/chatbot-session-storage";
 import { judge } from "./judge";
 import type {
   Assertion,
@@ -18,6 +19,38 @@ import type {
   EvalCaseContext,
   InvokeResult,
 } from "./types";
+
+const PERSISTED_PATH_RE = /Full output saved to: (\S+)/;
+
+/**
+ * Resolve a `<persisted-output>` envelope back to its stored payload so
+ * the judge grades against the evidence the assistant actually read.
+ * The envelope only carries a 2K preview — grading on it alone made the
+ * judge flag GROUNDED facts as fabricated (dbg-4 `doc-rag-first-content`,
+ * 2026-07-17: the charte + sea-waybill chunks lived in the persisted
+ * file). Falls back to the raw envelope on any miss.
+ */
+const resolvePersistedOutput = async (
+  output: unknown,
+  conversationId: string,
+): Promise<unknown> => {
+  if (
+    typeof output !== "string" ||
+    !output.includes("<persisted-output>") ||
+    conversationId.length === 0
+  ) {
+    return output;
+  }
+  const path = PERSISTED_PATH_RE.exec(output)?.[1];
+  if (!path) return output;
+  try {
+    const bytes = await readSessionFile(conversationId, path);
+    if (bytes === null) return output;
+    return new TextDecoder().decode(bytes);
+  } catch {
+    return output;
+  }
+};
 
 const runOne = async (
   assertion: Assertion,
@@ -112,14 +145,27 @@ const runOne = async (
       };
     }
     case "judge": {
+      // A turn that ends on `askUserQuestion` has empty text BY DESIGN —
+      // the user-visible product is the question card, carried in that
+      // call's INPUT (the harness only forwards outputs). Surface it as
+      // the final answer so the judge grades what the user actually saw;
+      // whether clarifying was the right move stays the rubric's call.
+      const lastCall = result.toolCalls[result.toolCalls.length - 1];
+      const askCardAnswer =
+        result.text.trim().length === 0 && lastCall?.name === "askUserQuestion"
+          ? `(no prose — the assistant ended the turn by showing the user this question card): ${JSON.stringify(lastCall.input)}`
+          : undefined;
+      const judgeToolCalls = await Promise.all(
+        result.toolCalls.map(async (c) => ({
+          name: c.name,
+          output: await resolvePersistedOutput(c.output, ctx.conversationId),
+        })),
+      );
       const verdict = await judge({
         rubric: assertion.rubric,
         userPrompt: prompt,
-        assistantOutput: result.text,
-        toolCalls: result.toolCalls.map((c) => ({
-          name: c.name,
-          output: c.output,
-        })),
+        assistantOutput: askCardAnswer ?? result.text,
+        toolCalls: judgeToolCalls,
       });
       const expected = assertion.expectPass ?? true;
       const passed = verdict.passed === expected;

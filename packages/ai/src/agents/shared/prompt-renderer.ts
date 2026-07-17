@@ -1,3 +1,4 @@
+import { TOOL_PERMISSIONS_REMEDIATION } from "@fretik/shared/services/ai/remediation";
 import { fetchManagedPrompt } from "../../lib/langfuse-prompts";
 import type { NativeInputPolicy } from "../../lib/model-registry/types";
 import { buildSessionStateBlock } from "../../services/session-state/build-block";
@@ -15,7 +16,7 @@ import type { AgentRuntimeContext } from "./runtime-context";
 const buildBlockedToolsNote = (ctx: AgentRuntimeContext): string => {
   const blocked = [...policyHiddenToolNames(ctx)];
   if (blocked.length === 0) return "";
-  return `These tools are disabled by the team's permission settings and cannot be called: ${blocked.join(", ")}. If the user asks for one, say it is disabled and can be re-enabled in Settings → Tool permissions.`;
+  return `These tools are disabled by the team's permission settings and cannot be called: ${blocked.join(", ")}. If the user asks for one: ${TOOL_PERMISSIONS_REMEDIATION}`;
 };
 
 /**
@@ -45,7 +46,7 @@ const buildNativeMediaNote = (nativeInput: NativeInputPolicy): string => {
 /**
  * Pure prompt template renderer used by the chatbot agent.
  *
- * The Markdown template lives at `agents/chatbot/system-prompt.md` and
+ * The Markdown template lives at `agents/shared/agent-system-prompt.md` and
  * is loaded once at module init through `Bun.file()` + top-level await.
  * Renders are then synchronous `{{variable}}` substitutions against the
  * cached string. Keeping the renderer side-effect free makes it
@@ -267,7 +268,7 @@ const formatDeferredToolList = (
  *
  * Overlays start EMPTY for every family — write one only when a C3
  * eval failure demonstrates a family-specific need
- * (`.agent/agent-facing-prose.md`: growth without sharpening is a
+ * (`.agent/agent-context-framework.md`: growth without sharpening is a
  * regression).
  */
 const overlayCache = new Map<string, Promise<string>>();
@@ -356,7 +357,6 @@ export const buildChatbotSystemPrompt = async (
       sessionStateBlock: (() => {
         const block = buildSessionStateBlock({
           dynamicToolManager: ctx.dynamicToolManager,
-          taskManager: ctx.taskManager,
         });
         return block.length > 0 ? block : "_No active session state._";
       })(),

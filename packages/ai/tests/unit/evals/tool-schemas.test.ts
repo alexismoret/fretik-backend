@@ -63,7 +63,6 @@ describe("validateToolCalls", () => {
       "bash",
       "presentFiles",
       "searchTools",
-      "manageTasks",
       "memory",
       "askUserQuestion",
       "listDocuments",

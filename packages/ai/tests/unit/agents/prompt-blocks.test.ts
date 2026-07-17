@@ -45,13 +45,13 @@ describe("resolveAgentBlocks", () => {
     expect(chatbot).not.toContain("AGENT:");
     // Interactive essentials present.
     expect(chatbot).toContain("askUserQuestion");
-    expect(chatbot).toContain("manageTasks");
+    expect(chatbot).toContain("<proactive_partnership>");
     expect(chatbot).toContain("{{collaborationBlock}}");
   });
 
   test("workflow variant of the real template has no chatbot leakage", () => {
     const workflow = strip(resolveAgentBlocks(UNIFIED, "workflow"));
-    expect(workflow).not.toContain("manageTasks");
+    expect(workflow).not.toContain("<proactive_partnership>");
     expect(workflow).not.toContain("{{collaborationBlock}}");
     expect(workflow).not.toContain("{{userName}}");
     expect(workflow).not.toContain("AGENT:");
@@ -78,17 +78,21 @@ describe("resolveAgentBlocks", () => {
     const chatbot = strip(resolveAgentBlocks(UNIFIED, "chatbot"));
     const workflow = strip(resolveAgentBlocks(UNIFIED, "workflow"));
     for (const section of [
-      "<filesystem>",
+      "<identity>",
+      "<working_method>",
+      "<communication>",
+      "<workspace>",
+      "<tool_routing>",
       "<skills>",
       "<external_apps>",
-      "<tool_selection>",
-      "<sandbox_constraints>",
       "<drive_documents>",
       "<domain_tools>",
       "<citations>",
       "<objects>",
       "<sql_rules>",
       "<database_schema>",
+      "<platform_map>",
+      "<critical_reminders>",
       "{{teamObjects}}",
     ]) {
       expect(chatbot).toContain(section);

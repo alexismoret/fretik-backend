@@ -31,7 +31,7 @@ export const createListDocumentsTool = () =>
     description: [
       "List documents for the current team with optional filters and pagination.",
       "",
-      "Use this when the user asks for a listing of documents (by type, folder, status, name, label, linked organization, or any custom field) or needs document IDs to feed into another tool (getDocumentContent, getExtractionData, …).",
+      "Use this when the user asks for a listing of documents (by type, folder, status, name, label, linked organization, or any custom field) or needs document IDs to feed into another tool (searchKnowledge `filters.sourceIds`, downloadDriveDocument, …).",
       "",
       "Filters:",
       "- search: substring match on the original filename (case-insensitive).",
@@ -42,7 +42,7 @@ export const createListDocumentsTool = () =>
       "",
       "Pagination: `limit` defaults to 20, max 50. Pass the returned `nextOffset` on `hasMore: true` to fetch the next page.",
       "",
-      "Returns id, filename, status, folder, fieldValues (custom fields), pageCount, entityCount, createdAt. Does NOT include the markdown body — call `getDocumentContent` for that.",
+      "Returns id, filename, status, folder, fieldValues (custom fields), pageCount, entityCount, createdAt. Does NOT include the document's text — for content, `searchKnowledge` with `filters.sourceIds`; for the original bytes, `downloadDriveDocument`.",
     ].join("\n"),
     inputSchema: z.object({
       search: z

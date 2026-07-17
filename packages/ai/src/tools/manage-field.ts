@@ -27,7 +27,7 @@ import { TOOL_ERROR_CODES, toolError } from "../lib/tool-error-codes";
 export const createManageFieldTool = () =>
   tool({
     description: [
-      "Manage a field on an object type (the typed column). Get current fields from describeObjectType.",
+      "Manage a field on an object type (the typed column). Get current fields from describeObjectType. The field TYPE decides what the team can filter, sum, and view on — when unsure which type fits (select vs text, relation vs field, number config), read `skills/designing-object-types/SKILL.md` first.",
       "",
       "- add: typeKey + label + type + description (one line — what it holds). Optional config (select options, number bounds, …) and key.",
       "- update: typeKey + fieldKey + any of label, description, config, enabled. Keeps stored values.",

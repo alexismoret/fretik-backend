@@ -7,12 +7,37 @@ import {
 } from "../../lib/tool-error-codes";
 
 /**
+ * Force a tool output down to PURE JSON (Date → ISO string, `undefined`
+ * props dropped). AI SDK v7 re-validates the assembled ModelMessages
+ * against `modelMessageSchema` on EVERY tool-loop step; a live `Date`
+ * inside a tool result (e.g. a Postgres timestamp column returned by
+ * `querySql`) passes JSON.stringify on the wire but fails that live
+ * validation, killing the turn with `InvalidPromptError` at the NEXT
+ * step (classified fatal/schema_validation — the 2026-07-17 ~12% abort
+ * regression). Primitives pass through untouched; an unstringifiable
+ * output (circular ref) is returned raw — no worse than before.
+ */
+const toJsonSafeOutput = <TOutput>(result: TOutput): TOutput => {
+  if (result === null || typeof result !== "object") return result;
+  try {
+    // JSON.parse is typed `any`; the round-trip preserves the declared
+    // output shape for JSON-compatible values. Same sanctioned escape
+    // hatch as `injectCaptionField` below.
+    return JSON.parse(JSON.stringify(result)) as TOutput;
+  } catch (err) {
+    console.error("[chatbot-tool] output not JSON-serializable", err);
+    return result;
+  }
+};
+
+/**
  * Wrap a tool's `execute` so an UNEXPECTED throw (or promise rejection)
  * becomes a canonical `ToolErrorOutput` the model reads as a normal result,
  * instead of a raw stream error. Tools still RETURN `{ error, code }` for
  * expected failures — this is the backstop for the unexpected ones, making
- * the "never throw" convention a guarantee. Streaming (async-iterable)
- * results are passed through untouched.
+ * the "never throw" convention a guarantee. Resolved outputs are forced to
+ * pure JSON (`toJsonSafeOutput`). Streaming (async-iterable) results are
+ * passed through untouched.
  */
 const guardToolExecute = <TInput, TOutput, TContext>(
   execute: ToolExecuteFunction<TInput, TOutput, TContext>,
@@ -42,7 +67,7 @@ const guardToolExecute = <TInput, TOutput, TContext>(
     ) {
       return result;
     }
-    return Promise.resolve(result).catch((err: unknown) => {
+    return Promise.resolve(result).then(toJsonSafeOutput, (err: unknown) => {
       console.error("[chatbot-tool] rejected promise in tool execute", err);
       return internalError();
     });

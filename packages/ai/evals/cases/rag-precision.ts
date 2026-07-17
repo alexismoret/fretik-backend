@@ -18,23 +18,23 @@ export const ragPrecisionSuite: EvalSuite = {
   cases: [
     {
       id: "rag-specific-id",
-      description: "Transport-specific identifier triggers BM25 strength",
-      prompt: "Que sais-tu sur le dossier BL-2024-0342 ?",
+      description: "Uncommon literal identifier triggers BM25 strength",
+      prompt: "Que sais-tu sur le dossier CONTRAT-2024-0342 ?",
       tags: ["rag", "bm25-anchor"],
       assertions: [
         { type: "noError" },
         { type: "toolUsed", tools: ["searchKnowledge"] },
         {
           type: "custom",
-          name: "non-empty output (skip judge if MiniMax timed out)",
+          name: "non-empty output (skip judge if the provider timed out)",
           fn: (result) =>
             result.text.trim().length > 0 ||
-            "empty output — likely MiniMax provider timeout on a long multi-search turn; re-run to confirm",
+            "empty output — likely provider timeout on a long multi-search turn; re-run to confirm",
         },
         {
           type: "judge",
           rubric:
-            "PASS if either: (a) the assistant cites a document whose content contains the LITERAL string 'BL-2024-0342' (exact substring), or (b) the tool outputs do NOT contain that literal string (only fuzzy/semantic matches with different identifiers) and the assistant states the identifier was not found. Fuzzy matches on tokens like 'BL' or '2024' alone do NOT count as finding the identifier. If the assistant text is empty due to a model timeout, PASS (the quality is untestable).",
+            "PASS if either: (a) the assistant cites a document whose content contains the LITERAL string 'CONTRAT-2024-0342' (exact substring), or (b) the tool outputs do NOT contain that literal string (only fuzzy/semantic matches with different identifiers) and the assistant states the identifier was not found. Fuzzy matches on tokens like 'CONTRAT' or '2024' alone do NOT count as finding the identifier. If the assistant text is empty due to a model timeout, PASS (the quality is untestable).",
         },
       ],
     },

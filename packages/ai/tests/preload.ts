@@ -84,3 +84,9 @@ void mock.module(
   "@fretik/shared/services/team-ai-settings/get-for-team",
   () => ({ getTeamAiSettings }),
 );
+
+// Capture the REAL `@fretik/shared/db` export values before any test
+// file loads (and before any per-file db mock registers), so tests that
+// mock the db can restore it for the rest of the process. Dynamic
+// import — it must run AFTER the DATABASE_URL stub above.
+await import("./lib/real-db");

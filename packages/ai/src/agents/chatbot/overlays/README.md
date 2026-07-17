@@ -10,7 +10,7 @@ Rules:
 - **Start empty.** Write an overlay only when a C3 eval failure
   demonstrates a family-specific need (tool-call formatting quirk,
   "respond directly" calibration, …). Growth without sharpening is a
-  regression (`.agent/agent-facing-prose.md` applies — this is
+  regression (`.agent/agent-context-framework.md` applies — this is
   agent-facing prose).
 - One overlay per FAMILY, not per model. Keep it under ~15 lines.
 - Cache-safe by construction: prompt caches are namespaced per upstream

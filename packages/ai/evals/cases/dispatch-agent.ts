@@ -20,11 +20,11 @@
  *     single LLM call + tool call is always preferred for trivial
  *     intents.
  *
- *   - **No recursion**: a `dispatchAgent` call inside the parent
- *     turn must not appear inside the sub-agent's own steps. The
- *     sub-agent tool registry intentionally omits `dispatchAgent`,
- *     so this should be impossible — but we assert it explicitly so
- *     a future regression on the registry definition is caught.
+ *   - **No recursion** is NOT probed here anymore: the sub-agent tool
+ *     registry structurally omits `dispatchAgent`, and that invariant
+ *     is asserted by the cheap deterministic unit test
+ *     `tests/integration/agents/sub-agent-registry.test.ts` — an
+ *     e2e turn added nothing over it.
  *
  * The LLM is non-deterministic, so positive-trigger cases use a soft
  * judge rubric ("the agent should have considered delegation given the
@@ -57,7 +57,7 @@ export const dispatchAgentSuite: EvalSuite = {
         {
           type: "judge",
           rubric:
-            "The answer states a client count (including zero). It must be a direct number derived from a single tool call (querySql or listEntities), not a meta-explanation about delegation. PASS if a count is given. FAIL if the answer talks about sub-agents, delegation, or refuses to answer.",
+            "The answer states a client count (including zero). It must be a direct number derived from a single tool call (querySql or listObjects), not a meta-explanation about delegation. PASS if a count is given. FAIL if the answer talks about sub-agents, delegation, or refuses to answer.",
         },
       ],
     },
@@ -80,39 +80,6 @@ export const dispatchAgentSuite: EvalSuite = {
           type: "judge",
           rubric:
             "The answer addresses both halves explicitly: (1) what internal documents say about payment terms (or 'no internal data found' if nothing matched), AND (2) what the web sources show. The form must be a synthesis (not a raw dump). PASS if both halves are present. FAIL if only one source is referenced or the answer is empty.",
-        },
-      ],
-    },
-
-    {
-      id: "dispatch-no-recursion",
-      description:
-        "Hard guarantee: the sub-agent tool registry excludes dispatchAgent. Even if the parent agent dispatches, no nested dispatchAgent call may appear in the same turn's tool trace. Catches a future regression on the buildSubAgentTools filter.",
-      prompt:
-        "Analyse en profondeur les 3 derniers documents importés et fais-moi un résumé.",
-      tags: ["dispatch-agent", "anti-recursion"],
-      assertions: [
-        { type: "noError" },
-        {
-          type: "custom",
-          name: "no-nested-dispatch-in-trace",
-          fn: (result) => {
-            // The parent turn may call dispatchAgent at most a few
-            // times. The sub-agent's own internal tool calls are NOT
-            // visible at the parent's trace level (they're absorbed
-            // into the dispatchAgent tool result), so this check is
-            // really a sanity guard: the parent must not see
-            // dispatchAgent calls happen during a step that was
-            // already inside another dispatchAgent run. In practice
-            // we just count parent-level dispatch calls and assert
-            // it stays sane (≤3 — anything higher signals the model
-            // is fanning out instead of consolidating).
-            const calls = result.toolCalls.filter((c) => c.name === DISPATCH);
-            if (calls.length > 3) {
-              return `parent dispatched ${calls.length.toString()} sub-agents in one turn — likely a recursion / fan-out regression`;
-            }
-            return true;
-          },
         },
       ],
     },

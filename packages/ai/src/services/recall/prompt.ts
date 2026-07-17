@@ -18,6 +18,13 @@
  *     deeper with those ids (`searchKnowledge`, `getObject`, SQL).
  *   - Never invents: only distills candidate/graph content.
  *
+ * DELIBERATE REPETITION: the user-message trailer built in `recall.ts`
+ * (`buildJudgeInput`) restates three of these rules (format discipline,
+ * per-source inclusion, false-match discrimination) in compressed form —
+ * trailing position is what small utility models obey; mid-prompt-only
+ * versions were consistently skipped. Editing a rule here means updating
+ * that trailer in the same change, and vice versa.
+ *
  * The rules encode a PER-SOURCE INCLUSION CONTRACT (eval-derived, 2026-07):
  * every input section maps to an output section, and each overlapping
  * candidate earns its own bullet (sources complement, never substitute) —

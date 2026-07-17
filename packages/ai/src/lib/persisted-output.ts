@@ -24,8 +24,8 @@ import { WORKSPACE_DIRS, writeFile } from "./conversation-storage";
  *     tool. Tripping persistence forces a follow-up `read` call (one
  *     wasted turn). 48K keeps the typical top-20 chunk result inline
  *     while still capping pathological cases.
- *   - **Domain tools (16K)** — `listDocuments`, `listExtractions`,
- *     `getExtractionData`, `querySql`. Tighter cap nudges the agent
+ *   - **Domain tools (16K)** — `listDocuments`, `listObjects`,
+ *     `describeObjectType`, … Tighter cap nudges the agent
  *     to paginate / refine
  *     filters instead of digesting a 100-row JSON dump inline.
  *
@@ -141,7 +141,7 @@ export const buildPersistedOutputMessage = (
  * `DEFAULT_THRESHOLD_CHARS`. The two documented exceptions
  * (`RAG_THRESHOLD_CHARS` for `searchKnowledge`,
  * `DOMAIN_TOOL_THRESHOLD_CHARS` for `listDocuments` /
- * `getExtractionData` / `querySql` / etc.) pass an
+ * `listObjects` / etc.) pass an
  * explicit `threshold`. New tools should NOT introduce new custom
  * thresholds without justification.
  *

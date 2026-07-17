@@ -18,7 +18,7 @@
  * narrative so the agent doesn't loop forever on curl errors.
  *
  * Live-stack requirement: these cases assume a seeded conversation
- * with at least one CSV attachment (`shipments.csv`, `invoices/*.csv`,
+ * with at least one CSV attachment (`data.csv`, `exports/*.csv`,
  * or any team-loaded CSV). When no files are present the model should
  * either state that the workspace is empty (acceptable) or surface a
  * FILE_NOT_FOUND — rubrics accept both.
@@ -34,9 +34,14 @@ export const bashExecutionSuite: EvalSuite = {
     {
       id: "bash-list-workspace",
       description:
-        "List files in the workspace → bash(ls ...), NOT read / python",
+        "List the conversation's attached files → bash(ls ...), NOT read / python",
+      // Anchored on real attachments: without them, "mon espace de
+      // travail" legitimately reads as the team's Drive (the model
+      // listed documents via querySql on an empty sandbox — correct
+      // for the user, wrong for this routing probe; 2026-07-17).
       prompt:
-        "Liste les fichiers disponibles dans mon espace de travail et donne-moi la taille de chacun.",
+        "Liste les fichiers joints à cette conversation et donne-moi la taille exacte de chacun.",
+      fixtures: ["notes.txt", "data.xlsx"],
       tags: ["bash", "routing"],
       assertions: [
         { type: "noError" },
@@ -45,7 +50,7 @@ export const bashExecutionSuite: EvalSuite = {
         {
           type: "judge",
           rubric:
-            "The assistant uses bash with an `ls`-style command (ls, ls -la, find /workspace -maxdepth 1, etc.) to enumerate files and surface their sizes. Using python (os.listdir, pathlib, subprocess) for the same task is WRONG — that's what the tool boundary rule exists to prevent. An empty workspace answered honestly ('no files yet') is a PASS.",
+            "The assistant uses bash with an `ls`-style command (ls -la, find, du) to enumerate the conversation's attached files (under attachments/) and surface their sizes. Using python (os.listdir, pathlib, subprocess) for the same task is WRONG — that's what the tool boundary rule exists to prevent.",
         },
       ],
     },
@@ -69,8 +74,13 @@ export const bashExecutionSuite: EvalSuite = {
       id: "bash-description-field",
       description:
         "bash `description` field should be populated with a short human-readable gloss",
+      // Same anchoring as bash-list-workspace: on an empty sandbox,
+      // "mon workspace" legitimately reads as the team's Drive and the
+      // model answers via querySql — attach real files so bash is the
+      // grounded route.
       prompt:
-        "Donne-moi la taille totale de tous les fichiers de mon workspace en octets.",
+        "Donne-moi la taille totale en octets des fichiers joints à cette conversation.",
+      fixtures: ["notes.txt", "data.xlsx"],
       tags: ["bash", "ux"],
       assertions: [
         { type: "noError" },

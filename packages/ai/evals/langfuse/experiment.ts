@@ -2,10 +2,12 @@
  * Run the chatbot eval as a Langfuse experiment (dataset run).
  *
  * Two paths, both validated against the SDK:
- * - No filter (the nightly BASELINE) → `dataset.runExperiment(...)`, the
- *   guaranteed dataset-run path (all curated items, comparable over time).
- * - Filtered (PR smoke set or one capability) → `experiment.run({ data })`
- *   with the filtered hosted dataset items.
+ * - `includeModelGate: true` (gate runs / `--all`) → `dataset.runExperiment(...)`,
+ *   the guaranteed dataset-run path (every curated item, comparable over time).
+ * - Everything else → `experiment.run({ data })` with filtered hosted
+ *   dataset items: the default full baseline = CORE tier only (model-gate
+ *   probes excluded); `--smoke` / `--capability` select explicitly across
+ *   both tiers.
  *
  * The judge runs in-process (the authoritative loop judge); the managed
  * online evaluator is separate (production traces). Scores link to their
@@ -33,6 +35,18 @@ export interface ExperimentOptions {
   smoke?: boolean;
   /** Run only one capability stratum. */
   capability?: Capability;
+  /** Run only one suite (`metadata.suite`, e.g. "doctrine"). */
+  suite?: string;
+  /**
+   * Include `tier: "model-gate"` items (per-model probes). Default
+   * false: the everyday full baseline runs CORE cases only — model
+   * probes measure the model, not the prompt/tool prose, and they are
+   * the slow half of the suite (long-context, media fixtures, per-tool
+   * micro-probes). `evals:gate` and `--all` set this to true. Ignored
+   * when `smoke` or `capability` is set (explicit selections span both
+   * tiers).
+   */
+  includeModelGate?: boolean;
   /** Skip the judge (PR tier — deterministic checks only). */
   deterministicOnly?: boolean;
   /**
@@ -121,7 +135,7 @@ const buildCostRunEvaluator = (): RunEvaluator => {
 
 const readMeta = (item: {
   metadata?: unknown;
-}): { smoke?: boolean; capability?: string } => {
+}): { smoke?: boolean; capability?: string; tier?: string; suite?: string } => {
   const m = item.metadata;
   if (!m || typeof m !== "object") return {};
   const smoke =
@@ -130,7 +144,10 @@ const readMeta = (item: {
     "capability" in m && typeof m.capability === "string"
       ? m.capability
       : undefined;
-  return { smoke, capability };
+  const tier = "tier" in m && typeof m.tier === "string" ? m.tier : undefined;
+  const suite =
+    "suite" in m && typeof m.suite === "string" ? m.suite : undefined;
+  return { smoke, capability, tier, suite };
 };
 
 export const runChatbotExperiment = async (
@@ -147,7 +164,12 @@ export const runChatbotExperiment = async (
   const evaluators = [buildItemEvaluator(configIds)];
   const runEvaluators = [buildRunEvaluator(configIds), buildCostRunEvaluator()];
   const maxConcurrency = opts.maxConcurrency ?? DEFAULT_CONCURRENCY;
-  const filtered = Boolean(opts.smoke || opts.capability);
+  const explicitSelection = Boolean(
+    opts.smoke || opts.capability || opts.suite,
+  );
+  // Default full run = CORE tier only; `includeModelGate` (gate / --all)
+  // restores the true unfiltered dataset run.
+  const filtered = explicitSelection || opts.includeModelGate !== true;
   const dataset = await langfuseClient.dataset.get(DATASET_NAME);
 
   const metadata = {
@@ -174,6 +196,10 @@ export const runChatbotExperiment = async (
       const meta = readMeta(item);
       if (opts.smoke && meta.smoke !== true) return false;
       if (opts.capability && meta.capability !== opts.capability) return false;
+      if (opts.suite && meta.suite !== opts.suite) return false;
+      // Core-only default: skip model-gate probes unless the caller
+      // selected explicitly (smoke / capability span both tiers).
+      if (!explicitSelection && meta.tier === "model-gate") return false;
       return true;
     });
     result = await langfuseClient.experiment.run({ ...common, data });

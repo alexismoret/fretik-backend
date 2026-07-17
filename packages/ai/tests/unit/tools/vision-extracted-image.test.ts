@@ -1,8 +1,16 @@
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
 import { getProfileForRole } from "../../../src/lib/model-registry/resolve";
+import { realDbExports } from "../../lib/real-db";
 import { installSandboxMocks } from "../../lib/sandbox-fixture";
 
 installSandboxMocks();
+
+// The db fake below only implements `query.*.findFirst` and is
+// process-global — restore the real module (preload-captured, see
+// tests/lib/real-db.ts) for the test files that run after this one.
+afterAll(() => {
+  void mock.module("@fretik/shared/db", () => realDbExports);
+});
 
 // --------------------------------------------------------------- //
 // Extracted-figure resolution: `vision` on a virtual path          //
@@ -103,7 +111,6 @@ void mock.module("../../../src/lib/vision", () => ({
 const { createVisionTool } = await import("../../../src/tools/vision");
 const { DynamicToolManager } =
   await import("../../../src/agents/shared/dynamic-tools");
-const { TaskManager } = await import("../../../src/agents/shared/task-manager");
 const { wrapRuntimeContext } =
   await import("../../../src/agents/shared/runtime-context");
 
@@ -122,7 +129,6 @@ const execVision = async (
     conversationId,
     modelProfile: getProfileForRole("chat"),
     dynamicToolManager: new DynamicToolManager(),
-    taskManager: new TaskManager(),
   };
   const result = await tool.execute(
     { file_path, question },

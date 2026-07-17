@@ -108,7 +108,6 @@ void mock.module("@fretik/shared/services/approvals/sandbox-signal", () => ({
 const { createPythonTool } = await import("../../../src/tools/python");
 const { DynamicToolManager } =
   await import("../../../src/agents/shared/dynamic-tools");
-const { TaskManager } = await import("../../../src/agents/shared/task-manager");
 const { wrapRuntimeContext } =
   await import("../../../src/agents/shared/runtime-context");
 
@@ -119,7 +118,6 @@ const buildOptions = (conversationId: string, toolCallId: string) => {
     conversationId,
     modelProfile: getProfileForRole("chat"),
     dynamicToolManager: new DynamicToolManager(),
-    taskManager: new TaskManager(),
   };
   return {
     toolCallId,
@@ -208,7 +206,6 @@ describe("python tool", () => {
       conversationId: undefined,
       modelProfile: getProfileForRole("chat"),
       dynamicToolManager: new DynamicToolManager(),
-      taskManager: new TaskManager(),
     };
     const result = await tool.execute(
       { code: "print(1)" },

@@ -36,15 +36,18 @@
  * ── Invocation ─────────────────────────────────────────────────────
  *
  *   cd backend/packages/ai
- *   AI_SERVICE_URL=http://localhost:8083 bun run evals:langfuse
- *   ...  -- --smoke                 # PR smoke subset
- *   ...  -- --capability extraction # one capability stratum
+ *   AI_SERVICE_URL=http://localhost:8083 bun run evals:langfuse   # CORE tier (default baseline)
+ *   ...  -- --all                   # + model-gate tier probes (true full suite)
+ *   ...  -- --smoke                 # PR smoke subset (both tiers)
+ *   ...  -- --capability extraction # one capability stratum (both tiers)
+ *   ...  -- --suite doctrine        # one suite (both tiers)
  *   ...  -- --deterministic-only    # skip the judge
  *   ...  -- --run-name <name>       # explicit dataset-run name
  *   ...  -- --candidate <profileKey> # pin turns to a registry profile (C3 gate)
  * ==================================================================
  */
 
+import { ROLE_BINDINGS } from "../src/lib/model-registry/profiles";
 import { runChatbotExperiment } from "./langfuse/experiment";
 import type { Capability } from "./types";
 import { CAPABILITIES } from "./types";
@@ -55,12 +58,16 @@ interface CliOptions {
   smoke: boolean;
   /** One capability stratum. */
   capability?: Capability;
+  /** One suite (e.g. "doctrine"). */
+  suite?: string;
   /** Skip the judge (deterministic only). */
   deterministicOnly: boolean;
   /** Explicit dataset-run name. */
   runName?: string;
   /** Pin every turn to this registry profile (C3 gate candidate). */
   candidate?: string;
+  /** Include model-gate tier probes (the true full suite). */
+  all: boolean;
 }
 
 const isCapability = (v: string): v is Capability =>
@@ -71,6 +78,7 @@ const parseArgs = (argv: string[]): CliOptions => {
     concurrency: 3,
     smoke: false,
     deterministicOnly: false,
+    all: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const flag = argv[i];
@@ -85,12 +93,21 @@ const parseArgs = (argv: string[]): CliOptions => {
       opts.smoke = true;
       continue;
     }
+    if (flag === "--all") {
+      opts.all = true;
+      continue;
+    }
     if (flag === "--deterministic-only") {
       opts.deterministicOnly = true;
       continue;
     }
     if (flag === "--capability" && next && isCapability(next)) {
       opts.capability = next;
+      i++;
+      continue;
+    }
+    if (flag === "--suite" && next) {
+      opts.suite = next;
       i++;
       continue;
     }
@@ -110,13 +127,23 @@ const parseArgs = (argv: string[]): CliOptions => {
 
 const main = async (): Promise<void> => {
   const opts = parseArgs(process.argv.slice(2));
+  // ALWAYS pin the turn's model profile. Without a pin, the EVAL team's
+  // C8 picker choice silently overrides the code binding — the 2026-07-17
+  // runs measured gpt-oss-20b instead of the flagship for exactly that
+  // reason. Default = the CODE `chat` binding (the flagship the RUNBOOK
+  // holds to 1.000); `--candidate` overrides for gate runs. The
+  // memory/recall harnesses (`evals:memory`, `evals:recall`) are separate
+  // and keep their own gpt-oss defaults.
+  const pinnedProfileKey = opts.candidate ?? ROLE_BINDINGS.chat.profileKey;
   const result = await runChatbotExperiment({
     smoke: opts.smoke,
     deterministicOnly: opts.deterministicOnly,
+    includeModelGate: opts.all,
     maxConcurrency: opts.concurrency,
     ...(opts.capability ? { capability: opts.capability } : {}),
+    ...(opts.suite ? { suite: opts.suite } : {}),
     ...(opts.runName ? { runName: opts.runName } : {}),
-    ...(opts.candidate ? { candidateProfileKey: opts.candidate } : {}),
+    candidateProfileKey: pinnedProfileKey,
     metadata: {
       release: process.env.LANGFUSE_RELEASE ?? "(dev)",
       smoke: opts.smoke,

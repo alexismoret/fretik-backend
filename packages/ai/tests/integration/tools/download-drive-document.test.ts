@@ -64,7 +64,6 @@ const { createDownloadDriveDocumentTool } =
   await import("../../../src/tools/download-drive-document");
 const { DynamicToolManager } =
   await import("../../../src/agents/shared/dynamic-tools");
-const { TaskManager } = await import("../../../src/agents/shared/task-manager");
 const { wrapRuntimeContext } =
   await import("../../../src/agents/shared/runtime-context");
 
@@ -100,7 +99,6 @@ const buildOptions = (conversationId: string, teamId: string) => {
     conversationId,
     modelProfile: getProfileForRole("chat"),
     dynamicToolManager: new DynamicToolManager(),
-    taskManager: new TaskManager(),
   };
   return {
     toolCallId: `tc-${Date.now().toString()}`,

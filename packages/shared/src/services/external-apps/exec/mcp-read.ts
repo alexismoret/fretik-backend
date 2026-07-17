@@ -1,4 +1,5 @@
 import type { ToolApprovalSummary } from "../../../db/schema";
+import { TOOL_PERMISSIONS_REMEDIATION } from "../../ai/remediation";
 import { createPendingApproval } from "../../approvals/create-pending";
 import { runApprovalGate } from "../../approvals/gate";
 import { canonicalHash } from "../../approvals/hash";
@@ -83,7 +84,7 @@ export const dispatchMcpRead = async (
   if (level === "blocked") {
     return {
       status: "error",
-      message: `ACTION_DISABLED: ${qualifiedName} is disabled on connection "${connection.displayName}" by its permission settings. Tell the user it can be re-enabled in Settings → Tool permissions.`,
+      message: `ACTION_DISABLED: ${qualifiedName} is disabled on connection "${connection.displayName}" by its permission settings. ${TOOL_PERMISSIONS_REMEDIATION}`,
     };
   }
 

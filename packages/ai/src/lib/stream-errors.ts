@@ -24,12 +24,16 @@ export interface StreamErrorClassification {
  * `errorText` (JSON), shows a retry affordance keyed on `retryable`, and
  * uses `resume` to decide whether to CONTINUE the turn (a tool already
  * ran — replaying it would repeat side effects) or regenerate fresh.
+ * `traceId` carries the turn's Langfuse trace even when the turn dies
+ * before its `finish` frame — without it an errored turn is untraceable
+ * from the client/eval side (no messageMetadata ever arrives).
  */
 export interface StructuredStreamError {
   readonly retryable: boolean;
   readonly code: string;
   readonly message: string;
   readonly resume: boolean;
+  readonly traceId?: string;
 }
 
 /**
@@ -197,7 +201,7 @@ export const retryAfterMs = (err: unknown): number | undefined => {
  */
 export const toStructuredError = (
   classification: StreamErrorClassification,
-  opts: { resume: boolean },
+  opts: { resume: boolean; traceId?: string },
 ): StructuredStreamError => ({
   retryable: classification.kind === "transient",
   code: classification.reason,
@@ -206,7 +210,22 @@ export const toStructuredError = (
       ? "The model connection dropped before finishing. Retry to continue."
       : "The model could not complete this turn.",
   resume: opts.resume,
+  ...(opts.traceId !== undefined ? { traceId: opts.traceId } : {}),
 });
+
+/**
+ * Full diagnostic string for a stream error: flattened name/message/
+ * codes (+ one level of cause) AND the stack. For logs and the Langfuse
+ * ERROR event — never for the wire (the client gets the structured
+ * error above).
+ */
+export const describeStreamError = (err: unknown): string => {
+  const text = errorString(err);
+  if (err instanceof Error && err.stack !== undefined) {
+    return `${text}\n${err.stack}`;
+  }
+  return text.length > 0 ? text : String(err);
+};
 
 /**
  * Race a promise against a soft timeout. On timeout, RESOLVES to

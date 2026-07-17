@@ -53,8 +53,10 @@ import {
   getActiveTraceId,
   propagateAttributes,
   startActiveObservation,
+  startObservation,
   updateActiveObservation,
 } from "@langfuse/tracing";
+import type { SpanContext } from "@opentelemetry/api";
 import {
   convertToModelMessages,
   createUIMessageStream,
@@ -107,6 +109,7 @@ import type { ModelProfile, ReasoningLevel } from "../lib/model-registry/types";
 import { getResumableStreamContext } from "../lib/resumable-stream-context";
 import {
   classifyStreamError,
+  describeStreamError,
   FAILOVER_SENTINEL,
   isRecoverableToolCallError,
   isTransparentlyRecoverable,
@@ -1005,6 +1008,19 @@ const runChatbotTurn = async (
     visibleText: false,
     failoverAttempted: false,
   };
+  // Langfuse anchor for the turn, captured the moment the `chatbot-turn`
+  // span opens. `recordStreamError` fires inside stream callbacks where
+  // the OTel async context is NOT guaranteed — the explicit spanContext
+  // lets it attach an ERROR event to the right trace deterministically,
+  // and `traceId` rides the structured error frame so a dead turn stays
+  // traceable from the client / eval harness (Bug: errored turns had no
+  // Langfuse observation and no captured traceId at all).
+  const turnTrace: {
+    traceId?: string;
+    spanContext?: SpanContext;
+    /** First fatal/structured classification put on the wire, for the parent span. */
+    errorStatus?: string;
+  } = {};
   const onTurnStep: GenerateTextOnStepEndCallback<ChatbotTools> = (step) => {
     if (step.toolCalls.length > 0 || step.toolResults.length > 0) {
       turnFlags.toolExecuted = true;
@@ -1042,13 +1058,43 @@ const runChatbotTurn = async (
       return "Invalid tool input — adjust the arguments and retry.";
     }
     const classification = classifyStreamError(err);
+    // Log the full error OBJECT (stack + cause chain) — a name/message
+    // string is not enough to root-cause a mid-stream validation error.
     console.error(
       `${params.logPrefix} mid-stream ${classification.kind}/${classification.reason}:`,
-      err instanceof Error ? `${err.name}: ${err.message}` : err,
+      err,
     );
-    if (isTransparentFailure(err)) return FAILOVER_SENTINEL;
+    const transparent = isTransparentFailure(err);
+    // Land the raw error on the Langfuse trace: a WARNING event when the
+    // failover absorbs it transparently, an ERROR event when a structured
+    // frame reaches the wire. Without this, an errored turn has zero
+    // ERROR observation and every debug session restarts from the dev
+    // console. Point-in-time event, parented explicitly (see turnTrace).
+    if (turnTrace.spanContext !== undefined) {
+      startObservation(
+        "turn-error",
+        {
+          level: transparent ? "WARNING" : "ERROR",
+          statusMessage: `${classification.kind}/${classification.reason}`,
+          input: describeStreamError(err),
+          metadata: {
+            reason: classification.reason,
+            kind: classification.kind,
+            transparentFailover: String(transparent),
+          },
+        },
+        { asType: "event", parentSpanContext: turnTrace.spanContext },
+      );
+    }
+    if (transparent) return FAILOVER_SENTINEL;
+    turnTrace.errorStatus ??= `${classification.kind}/${classification.reason}`;
     return JSON.stringify(
-      toStructuredError(classification, { resume: turnFlags.toolExecuted }),
+      toStructuredError(classification, {
+        resume: turnFlags.toolExecuted,
+        ...(turnTrace.traceId !== undefined
+          ? { traceId: turnTrace.traceId }
+          : {}),
+      }),
     );
   };
 
@@ -1459,7 +1505,8 @@ const runChatbotTurn = async (
             // wire; partial messages persist via `onFinish`. Log only.
             recoveryKind = "structured-error";
             console.error(
-              `${params.logPrefix} pre-output ${classification.kind}/${classification.reason} — structured retryable error on the wire`,
+              `${params.logPrefix} pre-output ${classification.kind}/${classification.reason} — structured retryable error on the wire:`,
+              streamRejection,
             );
           }
         } else {
@@ -1475,7 +1522,19 @@ const runChatbotTurn = async (
           const isBudgetExhausted =
             finishReason === "other" || finishReason === "length";
           const hasNoVisibleText = (finalText ?? "").trim().length === 0;
-          const primaryZombied = isBudgetExhausted && hasNoVisibleText;
+          // Reasoning-only stop: the model spends its whole output on
+          // reasoning and finishes `stop` with no visible text and no
+          // tool side-effect (observed on MiniMax M3, doctrine run
+          // 2026-07-17). From the user's perspective that turn is as
+          // dead as a budget-exhausted one — chain the fallback. Turns
+          // that ran a tool are excluded: askUserQuestion / pending
+          // approval end the turn with legitimately empty text.
+          const reasoningOnlyStop =
+            finishReason === "stop" &&
+            !turnFlags.toolExecuted &&
+            hasNoVisibleText;
+          const primaryZombied =
+            (isBudgetExhausted || reasoningOnlyStop) && hasNoVisibleText;
           if (primaryZombied) {
             // Zombie: the primary finished with no answer. Chain the
             // fallback with a visible notice (this fires regardless of
@@ -1531,7 +1590,10 @@ const runChatbotTurn = async (
 
       await startActiveObservation(
         "chatbot-turn",
-        async () => {
+        async (turnObservation) => {
+          // Anchor for out-of-context error reporting (see turnTrace).
+          turnTrace.traceId = turnObservation.traceId;
+          turnTrace.spanContext = turnObservation.otelSpan.spanContext();
           await propagateAttributes(
             {
               traceName: "chatbot-turn",
@@ -1566,8 +1628,20 @@ const runChatbotTurn = async (
               if (recoveryErrorReason !== undefined) {
                 turnMetadata.errorReason = recoveryErrorReason;
               }
+              // A structured error reached the wire → the whole turn is
+              // marked ERROR so it is filterable by level in Langfuse
+              // (the raw payload is on the `turn-error` child event).
               updateActiveObservation(
-                { output: visibleOutput, metadata: turnMetadata },
+                {
+                  output: visibleOutput,
+                  metadata: turnMetadata,
+                  ...(turnTrace.errorStatus !== undefined
+                    ? {
+                        level: "ERROR" as const,
+                        statusMessage: turnTrace.errorStatus,
+                      }
+                    : {}),
+                },
                 { asType: "agent" },
               );
             },
@@ -1741,11 +1815,10 @@ chatbotRoutes.use("/stream", chatbotRateLimitMiddleware);
  *  7. In `onFinish`, persist every assistant message produced this turn.
  *  8. Return the AI SDK's native UIMessage stream response.
  *
- * Per-request state (DynamicToolManager + TaskManager) is owned by
+ * Per-request state (DynamicToolManager) is owned by
  * the agent's `prepareCall` hook — see `agents/shared/agent-builder.ts`.
- * No need to clear the `TaskManager` in `onFinish`: each request gets
- * its own instance inside `prepareCall`'s closure, and it's garbage-
- * collected when the stream ends. No cross-request leakage is
+ * Each request gets its own instance inside `prepareCall`'s closure,
+ * garbage-collected when the stream ends. No cross-request leakage is
  * possible because nothing outside that closure holds a reference.
  */
 chatbotRoutes.post("/stream", async (c) => {

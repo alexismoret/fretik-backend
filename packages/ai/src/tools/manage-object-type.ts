@@ -47,7 +47,9 @@ const dropInvalidOptionColors = (
 export const createManageObjectTypeTool = () =>
   tool({
     description: [
-      "Create, update, or delete an object type (the schema).",
+      "Create, update, or delete an object type (the schema — a new kind of thing the team tracks). To change ONE column on an existing type, use `manageField` instead.",
+      "",
+      "Read `skills/designing-object-types/SKILL.md` BEFORE creating or reshaping a type — it carries the modeling rules (field-type choices, relations, select options, bulk import). Check `<team_objects>` first: extending an existing type usually beats creating a near-duplicate. Schema changes are proposed to the user via `askUserQuestion` before building — never silently.",
       "",
       "- create: key (snake_case) + label + description + icon. Pass `fields` to build the whole schema in ONE call. Add relation/rollup fields after with manageField.",
       "- update: typeKey + any of label, labelPlural, description, icon, enabled.",

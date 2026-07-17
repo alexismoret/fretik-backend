@@ -14,7 +14,6 @@ const { createPresentFilesTool } =
   await import("../../../src/tools/present-files");
 const { DynamicToolManager } =
   await import("../../../src/agents/shared/dynamic-tools");
-const { TaskManager } = await import("../../../src/agents/shared/task-manager");
 const { wrapRuntimeContext } =
   await import("../../../src/agents/shared/runtime-context");
 
@@ -31,7 +30,6 @@ const buildOptions = (conversationId: string) => {
     conversationId,
     modelProfile: getProfileForRole("chat"),
     dynamicToolManager: new DynamicToolManager(),
-    taskManager: new TaskManager(),
   };
   return {
     toolCallId: `tc-${Date.now().toString()}`,

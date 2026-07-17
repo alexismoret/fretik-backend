@@ -158,6 +158,20 @@ const absorbChunk = (chunk: UnknownRecord, state: StreamState): void => {
       // fallback's answer follows — so ignore it (else a recovered turn
       // would score as failed and `servedBy:"fallback"` already flags it).
       if (text === FAILOVER_SENTINEL) return;
+      // A structured error frame carries the turn's `traceId` — the only
+      // chance to capture it on an errored turn (no finish metadata ever
+      // arrives), so the failing trace stays reachable from TaskOutput.
+      if (text !== undefined) {
+        try {
+          const parsed: unknown = JSON.parse(text);
+          if (isRecord(parsed)) {
+            const errTraceId = readString(parsed, "traceId");
+            if (errTraceId !== undefined) state.traceId ??= errTraceId;
+          }
+        } catch {
+          // Not a JSON structured error — keep the raw text as-is.
+        }
+      }
       state.error ??= text ?? "stream error frame without errorText";
       return;
     }

@@ -28,8 +28,8 @@ import { estimateMessagesTokens } from "./token-estimator";
  *      drops oldest 20% of API rounds and retries on context-overflow,
  *      max 3 attempts). Returns `null` on any non-recoverable failure.
  *   4. **Runtime-state attachments**: extract `activatedTools` (from
- *      past `searchTools` results) and pending `manageTasks` snapshot.
- *      Inject them into the summary text AND synthesize a fake
+ *      past `searchTools` results). Inject it into the summary text
+ *      AND synthesize a fake
  *      `tool-searchTools` message so `replayActivationFromHistory`
  *      finds the cumulative activation set after compaction —
  *      without any code changes in `dynamic-tools.ts`.
@@ -252,7 +252,7 @@ export const compactConversation = async (
   const reductionPct =
     totalTokens > 0 ? Math.round((1 - tokensAfter / totalTokens) * 100) : 0;
   console.info(
-    `[compaction] succeeded tokensBefore=${totalTokens.toString()} tokensAfter=${tokensAfter.toString()} reduction=${reductionPct.toString()}% summarisedMessages=${microcompacted.length.toString()} activatedToolsPreserved=${runtimeState.activatedTools.length.toString()} pendingTasksMentioned=${runtimeState.pendingTasks.length.toString()}`,
+    `[compaction] succeeded tokensBefore=${totalTokens.toString()} tokensAfter=${tokensAfter.toString()} reduction=${reductionPct.toString()}% summarisedMessages=${microcompacted.length.toString()} activatedToolsPreserved=${runtimeState.activatedTools.length.toString()}`,
   );
   safeProgress(onProgress, {
     phase: "succeeded",

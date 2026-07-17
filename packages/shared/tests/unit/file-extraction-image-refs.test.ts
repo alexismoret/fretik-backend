@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import {
+  EXTRACTED_IMAGE_ID_RE,
   parseExtractedImagePath,
   rewriteExtractedImageRefs,
 } from "../../src/services/file-extraction/image-refs";
-import { EXTRACTED_IMAGE_ID_RE } from "../../src/services/file-extraction/storage";
 
 /**
  * Contract of the virtual extracted-figure paths: `read` rewrites ONLY

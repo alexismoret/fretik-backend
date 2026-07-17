@@ -66,7 +66,6 @@ void mock.module("@fretik/shared/db", () => ({
 // process-global — see read.test.ts); only `readExtractionImage` is
 // backed by the in-memory map, the pure helpers keep real behavior.
 void mock.module("@fretik/shared/services/file-extraction/storage", () => ({
-  EXTRACTED_IMAGE_ID_RE: /^img-\d+\.(jpe?g|png|webp|gif)$/i,
   MAX_EXTRACTED_IMAGES: 12,
   MAX_EXTRACTED_IMAGE_BYTES: 3 * 1024 * 1024,
   extractedImageContentType: (imageId: string) =>

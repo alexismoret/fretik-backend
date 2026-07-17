@@ -1,7 +1,7 @@
-import { EXTRACTED_IMAGE_ID_RE } from "./storage";
-
 /**
  * Pure helpers for the virtual extracted-figure paths the agent sees.
+ * No I/O, no env — safe to import anywhere (S3-backed ops live in
+ * `./storage`, which imports the regex from here).
  *
  * The cached sidecar keeps Mistral's canonical refs (`![…](img-0.jpeg)`)
  * — it is content-addressed and shared across surfaces, so it must stay
@@ -11,6 +11,14 @@ import { EXTRACTED_IMAGE_ID_RE } from "./storage";
  * path back with `parseExtractedImagePath` and resolves the bytes from
  * the extraction cache (Bun-side, no sandbox).
  */
+
+/**
+ * Shape of a Mistral-emitted embedded-image id (`img-3.jpeg`). Guards
+ * both S3 key construction (`./storage`) and the virtual-path resolver
+ * in `read` / `vision` — anything else is skipped, never stored, never
+ * resolved.
+ */
+export const EXTRACTED_IMAGE_ID_RE = /^img-\d+\.(jpe?g|png|webp|gif)$/i;
 
 const IMAGE_REF_RE = /!\[([^\]]*)\]\(\s*(img-[^)\s]+)\s*\)/g;
 

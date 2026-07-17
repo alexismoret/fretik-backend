@@ -1,5 +1,6 @@
 import type { OcrExtractedImage } from "../../lib/mistral-ocr";
 import { getObjectBytes, putObject } from "../../lib/s3";
+import { EXTRACTED_IMAGE_ID_RE } from "./image-refs";
 
 /**
  * Content-addressed S3 layout for the shared extraction cache. Keyed by
@@ -21,13 +22,6 @@ import { getObjectBytes, putObject } from "../../lib/s3";
  */
 
 const PREFIX = "file-extractions";
-
-/**
- * Shape of a Mistral-emitted embedded-image id (`img-3.jpeg`). Guards
- * both S3 key construction and the virtual-path resolver in `read` /
- * `vision` — anything else is skipped, never stored, never resolved.
- */
-export const EXTRACTED_IMAGE_ID_RE = /^img-\d+\.(jpe?g|png|webp|gif)$/i;
 
 /** Persistence bounds for embedded images (per file). */
 export const MAX_EXTRACTED_IMAGES = 12;

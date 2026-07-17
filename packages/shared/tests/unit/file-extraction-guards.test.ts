@@ -53,6 +53,25 @@ void mock.module("../../src/db", () => ({
   },
 }));
 
+// `lib/s3` throws at import when S3 env vars are absent (CI). The guarded
+// paths under test never touch S3 — mirror the full export surface with
+// no-ops (mock.module is process-global; an incomplete mock breaks other
+// files' imports with "Export named ... not found").
+void mock.module("../../src/lib/s3", () => ({
+  putObject: async () => undefined,
+  publicUrl: (key: string) => `https://s3.test/${key}`,
+  getObject: async () => null,
+  getObjectBytes: async () => null,
+  copyObject: async () => undefined,
+  listObjects: async () => [],
+  deleteObject: async () => undefined,
+  deleteObjects: async () => undefined,
+  getPresignedUrl: async () => "https://s3.test/presigned",
+  uploadToS3: async () => "unused",
+  getFileFromS3: async () => null,
+  deleteFilesFromS3: async () => undefined,
+}));
+
 const {
   runMistralOcr,
   MISTRAL_OCR_LIMIT_ERROR_MESSAGE,

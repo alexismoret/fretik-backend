@@ -3,9 +3,8 @@
  * exposes to the agent — kernel-restart wiring, rich-result
  * forwarding, toolCallId propagation, error mapping. The actual
  * "kernel state persists across calls" claim is exercised by the
- * tabular-extraction eval against the real E2B sandbox; here we
- * stub the sandbox layer and assert the tool calls it the right
- * way.
+ * live evals against the real E2B sandbox; here we stub the sandbox
+ * layer and assert the tool calls it the right way.
  */
 import { beforeEach, describe, expect, mock, test } from "bun:test";
 import { getProfileForRole } from "../../../src/lib/model-registry/resolve";

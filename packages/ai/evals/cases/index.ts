@@ -15,6 +15,7 @@ import { bashExecutionSuite } from "./bash-execution";
 import { dispatchAgentSuite } from "./dispatch-agent";
 import { doctrineSuite } from "./doctrine";
 import { edgeCasesSuite } from "./edge-cases";
+import { extractionSuite } from "./extraction";
 import { fileAttachmentsSuite } from "./file-attachments";
 import { instructionFollowingSuite } from "./instruction-following";
 import { longContextSuite } from "./long-context";
@@ -35,6 +36,7 @@ export const allSuites: EvalSuite[] = [
   ragMetadataSuite,
   multiStepSuite,
   edgeCasesSuite,
+  extractionSuite,
   fileAttachmentsSuite,
   bashExecutionSuite,
   memorySuite,

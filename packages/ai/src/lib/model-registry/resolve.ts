@@ -441,6 +441,8 @@ export const ROLE_TIER: Record<ModelRole, ModelTier | "fixed"> = {
   "cheap-tasks": "utility",
   vision: "fixed",
   "vision-fallback": "fixed",
+  extract: "fixed",
+  "extract-fallback": "fixed",
 };
 
 /** Representative role whose code-default profile is the tier's recommendation. */

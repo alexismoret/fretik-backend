@@ -37,7 +37,6 @@ const EXPECTED_SKILL_NAMES = [
   "platform-guide",
   "pptx",
   "skill-author",
-  "tabular-extraction",
   "xlsx",
 ];
 

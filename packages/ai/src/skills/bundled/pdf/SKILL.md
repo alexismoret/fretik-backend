@@ -1,6 +1,6 @@
 ---
 name: pdf
-description: Use this skill whenever the user wants to do anything with PDF files. This includes reading or extracting text/tables from PDFs, combining or merging multiple PDFs into one, splitting PDFs apart, rotating pages, adding watermarks, creating new PDFs, filling PDF forms, encrypting/decrypting PDFs, extracting images, and OCR on scanned PDFs to make them searchable. If the user mentions a .pdf file or asks to produce one, use this skill.
+description: Use this skill whenever the user wants to transform or produce PDF files. This includes combining or merging multiple PDFs into one, splitting PDFs apart, rotating pages, adding watermarks, creating new PDFs, filling PDF forms, encrypting/decrypting PDFs, extracting embedded images, and OCR on scanned PDFs to make them searchable. If the user asks to produce or rework a .pdf file, use this skill. Reading a PDF's text is `read` and structured data out of one is `extract` — neither needs this skill.
 ---
 
 > **Fretik sandbox conventions.** Helper script paths in this guide

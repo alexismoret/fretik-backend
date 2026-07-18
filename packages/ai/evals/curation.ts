@@ -41,9 +41,15 @@ export interface CuratedCase {
 }
 
 export const CURATED: Record<string, CuratedCase> = {
-  // extraction (2)
+  // extraction (5)
   "rag-specific-id": { capability: "extraction", smoke: true },
   "file-pdf-read": { capability: "extraction", smoke: true },
+  // Structured-extraction chantier (2026-07): the `extract` tool replaces
+  // ad-hoc python parsing on documents. Light fixture (invoice.pdf) —
+  // heavier real-document cases still grow via promoteTrace.
+  "ex-pdf-line-items": { capability: "extraction", smoke: true },
+  "ex-record-header-fields": { capability: "extraction" },
+  "ex-extract-not-python": { capability: "extraction" },
   // generation (3)
   "edge-unicode-identifier": { capability: "generation", smoke: true },
   "qa-clarify": { capability: "generation", smoke: true },

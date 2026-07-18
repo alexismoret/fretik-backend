@@ -1,7 +1,8 @@
 import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
+import { PDFDocument } from "pdf-lib";
 import { getProfileForRole } from "../../../src/lib/model-registry/resolve";
 import { realDbExports } from "../../lib/real-db";
-import { installSandboxMocks } from "../../lib/sandbox-fixture";
+import { installSandboxMocks, sandboxFs } from "../../lib/sandbox-fixture";
 
 installSandboxMocks();
 
@@ -88,6 +89,11 @@ void mock.module("@fretik/shared/services/file-extraction/storage", () => ({
   readExtractionImage: async (key: string) => s3Images.get(key) ?? null,
 }));
 
+/** Flip per-test to simulate the model stopping at its output cap. */
+let nextTruncated = false;
+/** Raw bytes of the last describeVisionFile call, for slice assertions. */
+let lastVisionBytes: Uint8Array | null = null;
+
 void mock.module("../../../src/lib/vision", () => ({
   describeVisionFile: async (args: {
     bytes: Uint8Array;
@@ -100,10 +106,12 @@ void mock.module("../../../src/lib/vision", () => ({
       filename: args.filename,
       bytes: args.bytes.byteLength,
     });
+    lastVisionBytes = args.bytes;
     return {
       question: args.question,
       model: "test/vision-model",
       description: `described ${args.filename ?? "?"}`,
+      truncated: nextTruncated,
     };
   },
 }));
@@ -118,6 +126,7 @@ const execVision = async (
   conversationId: string,
   file_path: string,
   question = "what does it show?",
+  pages?: string,
 ): Promise<Record<string, unknown>> => {
   const tool = createVisionTool();
   if (typeof tool.execute !== "function") {
@@ -131,7 +140,7 @@ const execVision = async (
     dynamicToolManager: new DynamicToolManager(),
   };
   const result = await tool.execute(
-    { file_path, question },
+    { file_path, question, pages },
     {
       toolCallId: `tc-${Math.random().toString(36).slice(2, 8)}`,
       messages: [],
@@ -164,10 +173,76 @@ const seedFigure = (args: {
 };
 
 beforeEach(() => {
+  sandboxFs.reset();
   chatFileRows.clear();
   extractionRows.clear();
   s3Images.clear();
   visionCalls.length = 0;
+  nextTruncated = false;
+  lastVisionBytes = null;
+});
+
+const buildPdf = async (pageCount: number): Promise<Uint8Array> => {
+  const doc = await PDFDocument.create();
+  for (let index = 0; index < pageCount; index++) {
+    doc.addPage([200, 200]);
+  }
+  return doc.save();
+};
+
+describe("vision tool — truncation signal + page targeting", () => {
+  test("a capped description surfaces truncated:true and a notice", async () => {
+    sandboxFs.write("conv-v", "attachments/photo.png", new Uint8Array([1, 2]));
+    nextTruncated = true;
+    const out = await execVision("conv-v", "attachments/photo.png");
+    expect(out["truncated"]).toBe(true);
+    expect(String(out["notice"])).toContain("output cap");
+  });
+
+  test("a complete description carries truncated:false and no notice", async () => {
+    sandboxFs.write("conv-v", "attachments/photo.png", new Uint8Array([1, 2]));
+    const out = await execVision("conv-v", "attachments/photo.png");
+    expect(out["truncated"]).toBe(false);
+    expect(out["notice"]).toBeUndefined();
+  });
+
+  test("pages slices the PDF before the vision call", async () => {
+    sandboxFs.write("conv-v", "attachments/doc.pdf", await buildPdf(3));
+    const out = await execVision(
+      "conv-v",
+      "attachments/doc.pdf",
+      "layout?",
+      "1-2",
+    );
+    expect(out["description"]).toContain("described");
+    expect(lastVisionBytes).not.toBeNull();
+    const sliced = await PDFDocument.load(lastVisionBytes as Uint8Array);
+    expect(sliced.getPageCount()).toBe(2);
+  });
+
+  test("out-of-bounds pages → INVALID_PAGE_RANGE, no vision call", async () => {
+    sandboxFs.write("conv-v", "attachments/doc.pdf", await buildPdf(3));
+    const out = await execVision(
+      "conv-v",
+      "attachments/doc.pdf",
+      "layout?",
+      "7",
+    );
+    expect(out["code"]).toBe("INVALID_PAGE_RANGE");
+    expect(visionCalls).toHaveLength(0);
+  });
+
+  test("pages on a non-PDF → INVALID_PAGE_RANGE", async () => {
+    sandboxFs.write("conv-v", "attachments/photo.png", new Uint8Array([1, 2]));
+    const out = await execVision(
+      "conv-v",
+      "attachments/photo.png",
+      "colours?",
+      "1",
+    );
+    expect(out["code"]).toBe("INVALID_PAGE_RANGE");
+    expect(visionCalls).toHaveLength(0);
+  });
 });
 
 describe("vision tool — extracted figures (cache-resolved, no sandbox)", () => {

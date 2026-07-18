@@ -968,4 +968,23 @@ export const ROLE_BINDINGS: Record<ModelRole, RoleBinding> = {
     settingsKind: "bare",
     wrapCache: false,
   },
+  // Structured document extraction (the `extract` tool). Separate from
+  // `vision` on purpose: extraction quality tunes independently — if
+  // flash-lite proves weak on complex tables, flipping this profileKey
+  // to gemini-3.5-flash is a one-line change with no impact on vision.
+  extract: {
+    role: "extract",
+    profileKey: "gemini-3.1-flash-lite",
+    settingsKind: "bare",
+    wrapCache: false,
+  },
+  // Same-family-but-stronger fallback: the observed failure class is
+  // schema/parse/truncation on the small model, and Gemini is the only
+  // family here with a reliable native-PDF contract via OpenRouter.
+  "extract-fallback": {
+    role: "extract-fallback",
+    profileKey: "gemini-3.5-flash",
+    settingsKind: "bare",
+    wrapCache: false,
+  },
 };

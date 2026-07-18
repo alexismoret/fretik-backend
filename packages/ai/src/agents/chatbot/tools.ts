@@ -4,6 +4,7 @@ import { createCreateSkillTool } from "../../tools/create-skill";
 import { createDescribeObjectTypeTool } from "../../tools/describe-object-type";
 import type { createDispatchAgentTool } from "../../tools/dispatch-agent";
 import { createDownloadDriveDocumentTool } from "../../tools/download-drive-document";
+import { createExtractTool } from "../../tools/extract";
 import { createGetObjectTool } from "../../tools/get-object";
 import { createInstallSkillTool } from "../../tools/install-skill";
 import { createListDocumentsTool } from "../../tools/list-documents";
@@ -103,6 +104,27 @@ export const buildCoreTools = (domainTools: SearchableToolRegistry) => ({
     // The tool self-bounds via its own MAX_READ_CHARS (see
     // tools/read.ts).
     maxResultSizeChars: Number.POSITIVE_INFINITY,
+  }),
+  extract: buildChatbotTool({
+    ...createExtractTool(),
+    // Core, deliberately: this tool exists to replace the model's
+    // reflex (ad-hoc python parsing) on a top-frequency flow, and a
+    // reflex can only be redirected to a tool that is active when the
+    // instinct fires — a searchTools round-trip would leave read+python
+    // as the path of least resistance. Its file-routing siblings
+    // (read/vision/python/bash) are all core; the ~500-token
+    // description rides the cached static prefix.
+    category: "core",
+    searchHint:
+      "extract structured data fields line items table rows records document pdf docx invoice json schema",
+    // Row sets can get big — same threshold as querySql; oversized
+    // results land in a <persisted-output> file the agent reads back
+    // or processes with python.
+    maxResultSizeChars: 32_000,
+    // Paid remote model call, but stateless and re-derivable from the
+    // same file + schema — same microcompact stance as vision.
+    isReadOnly: false,
+    microcompactable: true,
   }),
   vision: buildChatbotTool({
     ...createVisionTool(),

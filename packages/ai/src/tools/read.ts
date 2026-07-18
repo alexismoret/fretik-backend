@@ -447,7 +447,7 @@ export const createReadTool = () =>
       "Usage:",
       "- View a file you already know exists (filename came from an attachment, `listDocuments`, or a previous tool result). Cross-tool routing (bash for multi-file scans, vision for visual questions, searchKnowledge for topic discovery) lives in `<tool_routing>`.",
       "- `read(path, offset, limit)` targets a section in a large file (`offset` is 1-indexed, `limit` defaults to 2000 lines).",
-      "- Spreadsheets (`.xlsx` / `.xls`), programmatic processing, and MODIFYING a file (docx / pptx / xlsx editing) → use `python` (pandas, openpyxl, pdfplumber, python-docx, python-pptx) — the original bytes are at `attachments/<filename>`; spreadsheets are NOT readable as text here.",
+      "- Spreadsheets (`.xlsx` / `.xls`), programmatic processing, and MODIFYING a file (docx / pptx / xlsx editing) → use `python` (pandas, openpyxl, python-docx, python-pptx) — the original bytes are at `attachments/<filename>`; spreadsheets are NOT readable as text here.",
       "- Path inputs: `attachments/invoice.pdf` (workspace-relative, preferred), `/workspace/attachments/invoice.pdf` (absolute), or bare `invoice.pdf` (assumed under `attachments/`). Documents and images are made readable transparently — just pass the original filename.",
       "- Document text may contain figure refs like `![chart](attachments/report.pdf/img-2.jpeg)` — pass that path to `vision` to look at THAT figure (it is not readable or python-openable).",
       `- A byte safety cap (~${(MAX_READ_CHARS / 1000).toFixed(0)}K chars) fires on dense content; when it does, \`truncatedByBytes: true\` + a \`notice\` field tell you exactly how to paginate.`,
@@ -587,7 +587,7 @@ export const createReadTool = () =>
             !(await fileExists(conversationId, sidecarResolved.relative))
           ) {
             return {
-              error: `Binary ${ext} files can't be read directly here. For tables use python (pdfplumber / python-docx / python-pptx); for visual layout use vision(file_path, question).`,
+              error: `Binary ${ext} files can't be read directly here. For structured data use extract(file_path, schema, shape); to modify the file use python (python-docx / python-pptx); for visual layout use vision(file_path, question).`,
               code: TOOL_ERROR_CODES.BINARY_NOT_READABLE,
               hint: ext === ".pdf" ? "python-or-vision" : "python",
             };
@@ -713,7 +713,7 @@ export const createReadTool = () =>
 
       if (numLines < totalLines) {
         const nextOffset = startLine + numLines;
-        payload.notice = `Returned ${numLines.toString()} of ${totalLines.toString()} lines (lines ${startLine.toString()}–${(startLine + numLines - 1).toString()}).${truncatedByBytes ? ` Byte safety cap fired (${(MAX_READ_CHARS / 1000).toFixed(0)}K chars).` : ""} Call \`read("${finalRelative}", offset=${nextOffset.toString()})\` to continue, or process the file directly in \`python\` (e.g. \`pdfplumber.open(...)\`, \`pd.read_csv(...)\`) for full-doc work.`;
+        payload.notice = `Returned ${numLines.toString()} of ${totalLines.toString()} lines (lines ${startLine.toString()}–${(startLine + numLines - 1).toString()}).${truncatedByBytes ? ` Byte safety cap fired (${(MAX_READ_CHARS / 1000).toFixed(0)}K chars).` : ""} Call \`read("${finalRelative}", offset=${nextOffset.toString()})\` to continue, use \`extract\` for structured data across the whole document, or \`pd.read_csv(...)\` in \`python\` for tabular files.`;
       }
 
       return maybePersistLargeOutput(

@@ -16,6 +16,16 @@ A workflow is this assistant running unattended: a trigger fires, the playbook's
 - **event** — fires on a workspace event: `document.uploaded` (filterable by folder), `record.created` (filterable by object type), or a connector event (`connector.<app>.<kind>`). The backbone of ingest pipelines.
 - **form** — Fretik hosts a shareable public form; each submission (answers + attached files) starts a run. Right for collecting structured input from people outside the conversation — clients, field staff, other departments.
 
+## Design for the input space
+
+A playbook is a program: each run executes against whatever the trigger delivers THAT run — not against the files shown while building. Before writing tasks, decide from the user's request how variable the input is:
+
+- **Fixed template** — the user says every run carries the same document, same layout (a system export, their own generated form). Tailoring tasks to that exact structure is correct.
+- **Stable format, varying content** — same document type each run, but the values, rows, and page counts differ. Tasks describe WHICH data to obtain (fields, records, bounds) — never positions, counts, or wording observed in one example.
+- **Open input** — layout, length, even document type can differ run to run (a public form, a mailbox). Tasks state the goal and the data contract; the executor adapts per run (`extract` with a schema rather than any layout-specific parsing).
+
+Example files in the conversation are ONE point in the input space, not its definition — unless the user says they are the fixed template. When the request leaves the variability ambiguous ("here are some invoices" — always this supplier? always this layout?), `askUserQuestion` before building: one question up front beats a workflow that breaks on its second run.
+
 ## Autonomy modes
 
 - `read_only` — analysis and deliverables only; every write is refused. Right for reports and digests.

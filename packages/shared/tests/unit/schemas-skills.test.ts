@@ -17,7 +17,6 @@ import {
 const VALID_SKILL_NAMES = [
   "docx",
   "data-viz",
-  "tabular-extraction",
   "doc-coauthoring",
   "x", // single char allowed
   "a-b-c-d-e-f",

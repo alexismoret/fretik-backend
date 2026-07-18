@@ -58,6 +58,7 @@ describe("validateToolCalls", () => {
       "querySql",
       "searchWeb",
       "read",
+      "extract",
       "vision",
       "python",
       "bash",

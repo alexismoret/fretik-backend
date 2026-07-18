@@ -44,7 +44,14 @@ const VISION_FALLBACK_MODEL_ID = visionFallback.profile.catalog.id;
 const DEFAULT_TIMEOUT_MS = 60_000;
 /** Video decoding/inference runs longer than a still image. */
 const VIDEO_TIMEOUT_MS = 120_000;
-const MAX_OUTPUT_TOKENS = 1_500;
+/**
+ * Output ceiling for a description. Raised from 1500 after a live case
+ * where a JSON-ish answer was cut mid-object at 1423 tokens with no
+ * signal to the agent — the cap is now paired with `truncated` (from
+ * `finishReason`) so a capped answer is always visible to the caller.
+ * Bulk structured extraction does not belong here (that's `extract`).
+ */
+const MAX_OUTPUT_TOKENS = 3_000;
 const TEMPERATURE = 0.2;
 
 const visionModel = visionPrimary.model;
@@ -76,6 +83,8 @@ export interface DescribeFileResult {
   description: string;
   model: string;
   question: string;
+  /** True when the model hit the output-token cap (`finishReason === "length"`). */
+  truncated: boolean;
 }
 
 export interface DescribeImageArgs {
@@ -91,7 +100,7 @@ export const describeImage = async (
   args: DescribeImageArgs,
 ): Promise<DescribeFileResult> => {
   return runWithVisionFallback(async (model, modelId) => {
-    const { text } = await generateText({
+    const { text, finishReason } = await generateText({
       model,
       temperature: TEMPERATURE,
       maxOutputTokens: MAX_OUTPUT_TOKENS,
@@ -125,6 +134,7 @@ export const describeImage = async (
       description: text.trim(),
       model: modelId,
       question: args.question,
+      truncated: finishReason === "length",
     };
   });
 };
@@ -156,7 +166,7 @@ export const describePdf = async (
   args: DescribePdfArgs,
 ): Promise<DescribeFileResult> => {
   return runWithVisionFallback(async (model, modelId) => {
-    const { text } = await generateText({
+    const { text, finishReason } = await generateText({
       model,
       temperature: TEMPERATURE,
       maxOutputTokens: MAX_OUTPUT_TOKENS,
@@ -196,6 +206,7 @@ export const describePdf = async (
       description: text.trim(),
       model: modelId,
       question: args.question,
+      truncated: finishReason === "length",
     };
   });
 };
@@ -224,7 +235,7 @@ export interface DescribeVideoArgs {
 export const describeVideo = async (
   args: DescribeVideoArgs,
 ): Promise<DescribeFileResult> => {
-  const { text } = await generateText({
+  const { text, finishReason } = await generateText({
     model: visionModel,
     temperature: TEMPERATURE,
     maxOutputTokens: MAX_OUTPUT_TOKENS,
@@ -254,6 +265,7 @@ export const describeVideo = async (
     description: text.trim(),
     model: VISION_MODEL_ID,
     question: args.question,
+    truncated: finishReason === "length",
   };
 };
 

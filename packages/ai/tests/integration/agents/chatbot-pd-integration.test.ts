@@ -40,6 +40,7 @@ const EXPECTED_CORE_TOOL_NAMES: readonly string[] = [
   "querySql",
   "searchWeb",
   "read",
+  "extract",
   "vision",
   "python",
   "bash",
@@ -143,7 +144,7 @@ const runSearchTools = async (
 };
 
 describe("Chatbot Progressive Disclosure — end-to-end", () => {
-  test("tool registry: 13 core tools + 19 domain tools, categories correct", () => {
+  test("tool registry: 14 core tools + 19 domain tools, categories correct", () => {
     const tools = chatbotAgentSet.primary.tools;
     const coreNames = Object.entries(tools)
       .filter(([, t]) => t.category === "core")

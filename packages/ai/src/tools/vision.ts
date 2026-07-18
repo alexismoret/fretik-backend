@@ -13,8 +13,44 @@ import {
   readFile,
   resolveWorkspacePath,
 } from "../lib/conversation-storage";
+import {
+  getPdfPageCount,
+  parsePageSelection,
+  slicePdfPages,
+} from "../lib/pdf-pages";
 import { TOOL_ERROR_CODES } from "../lib/tool-error-codes";
-import { describeVisionFile } from "../lib/vision";
+import { describeVisionFile, type DescribeFileResult } from "../lib/vision";
+
+/**
+ * Agent-facing guidance appended when the vision model stopped at its
+ * output cap — without it a capped description is indistinguishable
+ * from a complete one (the exact silent-truncation failure observed
+ * live before this notice existed).
+ */
+const TRUNCATED_NOTICE =
+  "Description hit the output cap — ask a narrower question, target specific pages with `pages`, or use `extract` for structured data.";
+
+const buildVisionPayload = (
+  filePath: string,
+  mimeType: string,
+  result: DescribeFileResult,
+  notices: string[],
+) => ({
+  filePath,
+  mimeType,
+  question: result.question,
+  model: result.model,
+  description: result.description,
+  truncated: result.truncated,
+  ...(result.truncated || notices.length > 0
+    ? {
+        notice: [
+          ...notices,
+          ...(result.truncated ? [TRUNCATED_NOTICE] : []),
+        ].join(" "),
+      }
+    : {}),
+});
 
 /**
  * `vision` tool — sends an image or PDF from the conversation's
@@ -100,15 +136,18 @@ export const createVisionTool = () =>
       "- One figure inside a document → its extracted-figure path from `read` output (e.g. 'attachments/report.pdf/img-2.jpeg'), NOT the whole PDF.",
       "- A standalone image or video → its file path.",
       "- The whole PDF → only when the question spans the document's layout (multi-page structure, where a signature sits).",
-      "- A page region with no extracted figure → render/crop the page with `python` (pdfplumber/pypdf) first, then vision the output image.",
+      "- A specific page or range → the `pages` param ('3', '2-9') instead of the whole document.",
       "",
       "Inputs:",
       "- file_path (required): workspace-relative or absolute path under `/workspace/` (e.g. 'attachments/chart.png', 'attachments/report.pdf/img-2.jpeg', 'drive/uuid-report.pdf', 'attachments/clip.mp4').",
       "- question (required): the specific visual question. 'Describe the chart in the bottom-right, including colours and values' works better than 'Describe this file'.",
+      "- pages (optional, PDF only): 1-based selection like '2-9' — sends just those pages (cheaper, more focused).",
       "",
-      "Do NOT call vision to extract text from a scan (`read` returns it), to summarise textual content (`read` suffices), or out of curiosity when nothing visual was asked — vision is a paid model call.",
+      "Do NOT call vision to extract text from a scan (`read` returns it), to pull structured fields or rows out of a document (`extract` returns validated JSON), or out of curiosity when nothing visual was asked — vision is a paid model call.",
       "",
       "Accepted formats: .png, .jpg, .jpeg, .webp, .pdf, .mp4, .webm, .mov, plus extracted-figure paths. PDFs and videos are sent natively (not OCR-converted) so layout, motion, diagrams, and signatures are preserved.",
+      "",
+      "Output: { description, model, truncated, notice? }. `truncated: true` means the description hit the output cap — narrow the question or target fewer pages.",
     ].join("\n"),
     inputSchema: z.object({
       file_path: z
@@ -123,8 +162,14 @@ export const createVisionTool = () =>
         .describe(
           "The specific visual question to ask about the file. Required.",
         ),
+      pages: z
+        .string()
+        .optional()
+        .describe(
+          "PDF only: 1-based page selection like '3', '2-9' or '1,4-6' — sends just those pages instead of the whole document (cheaper, more focused).",
+        ),
     }),
-    execute: async ({ file_path, question }, options) => {
+    execute: async ({ file_path, question, pages }, options) => {
       const ctx = getRuntimeContext(options);
       if (!ctx.conversationId) {
         return {
@@ -183,13 +228,7 @@ export const createVisionTool = () =>
             question,
             filename: figure.imageId,
           });
-          return {
-            filePath: resolved.absolute,
-            mimeType: figureMime,
-            question: result.question,
-            model: result.model,
-            description: result.description,
-          };
+          return buildVisionPayload(resolved.absolute, figureMime, result, []);
         } catch (err) {
           return {
             error: `Vision call failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -231,6 +270,40 @@ export const createVisionTool = () =>
         };
       }
 
+      // Page targeting (PDF only): slice the requested pages so the
+      // model sees just those instead of the whole document.
+      const notices: string[] = [];
+      if (pages !== undefined) {
+        if (mimeType !== "application/pdf") {
+          return {
+            error: `"pages" only applies to PDFs — ${ext} files are sent whole.`,
+            code: TOOL_ERROR_CODES.INVALID_PAGE_RANGE,
+          };
+        }
+        const pagesTotal = await getPdfPageCount(bytes);
+        if (pagesTotal === null) {
+          notices.push(
+            "This PDF could not be split into pages (encrypted or non-standard structure) — the whole document was sent instead of the requested range.",
+          );
+        } else {
+          const selection = parsePageSelection(pages, pagesTotal);
+          if ("error" in selection) {
+            return {
+              error: selection.error,
+              code: TOOL_ERROR_CODES.INVALID_PAGE_RANGE,
+            };
+          }
+          const sliced = await slicePdfPages(bytes, selection);
+          if (sliced === null) {
+            notices.push(
+              "This PDF could not be split into pages — the whole document was sent instead of the requested range.",
+            );
+          } else {
+            bytes = sliced;
+          }
+        }
+      }
+
       try {
         const result = await describeVisionFile({
           bytes,
@@ -238,13 +311,7 @@ export const createVisionTool = () =>
           question,
           filename: resolved.relative.split("/").pop(),
         });
-        return {
-          filePath: resolved.absolute,
-          mimeType,
-          question: result.question,
-          model: result.model,
-          description: result.description,
-        };
+        return buildVisionPayload(resolved.absolute, mimeType, result, notices);
       } catch (err) {
         return {
           error: `Vision call failed: ${err instanceof Error ? err.message : String(err)}`,

@@ -23,7 +23,7 @@ import { resolveModel } from "../../lib/model-registry/resolve";
  * `toolCall.toolName` / `inputSchema` / `error`, so it is fully tool-agnostic:
  * generic over the tool set and wired on the workflow, chatbot, and sub-agents.
  */
-const REPAIR_TIMEOUT_MS = 20_000;
+const REPAIR_TIMEOUT_MS = 10_000;
 
 export const llmRepairToolCall = <
   TTools extends ToolSet,
@@ -42,7 +42,7 @@ export const llmRepairToolCall = <
 
     try {
       const { text } = await generateText({
-        model: resolveModel("dispatch-cheap").model,
+        model: resolveModel("tool-repair").model,
         instructions:
           "Fix the tool-call arguments so they satisfy the JSON schema. Output ONLY the corrected JSON object — no prose, no code fences.",
         prompt: [

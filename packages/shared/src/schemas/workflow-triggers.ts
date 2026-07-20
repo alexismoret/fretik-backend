@@ -8,6 +8,7 @@ import {
   WORKFLOW_TRIGGER_TYPE_VALUES,
   WorkflowTriggerConfigSchema,
   workflowTriggerTypeSchema,
+  type WorkflowTriggerConfig,
   type WorkflowTriggerType,
 } from "./workflows";
 
@@ -356,6 +357,31 @@ export const buildTriggerCatalog = (): TriggerCatalog => ({
   eventTypes: WORKFLOW_TRIGGERABLE_EVENT_DESCRIPTORS,
   formFieldTypes: WORKFLOW_FORM_FIELD_DESCRIPTORS,
 });
+
+/**
+ * File inputs a run of this workflow REQUIRES from its trigger — the generic
+ * contract `createWorkflowRun` fail-fasts on (INPUT_MISSING) and the builder's
+ * `run_test` validates before launching. Returns the required input keys
+ * (empty = the trigger demands no files). Per-kind dispatch so any future
+ * attachment-bearing trigger (e.g. a connector mailbox handing over email
+ * attachments) declares its requirement HERE, next to the registry, and every
+ * consumer picks it up without code changes.
+ */
+export const requiredRunFileInputs = (
+  triggerType: WorkflowTriggerType,
+  triggerConfig: WorkflowTriggerConfig,
+): string[] => {
+  switch (triggerType) {
+    case "form":
+      return (triggerConfig.form?.fields ?? [])
+        .filter((field) => field.type === "file" && field.required)
+        .map((field) => field.key);
+    case "manual":
+    case "cron":
+    case "event":
+      return [];
+  }
+};
 
 /** Compact trigger reference for the `manageWorkflow` tool — generated from the
  * registry so the agent contract never drifts from the editor's. */

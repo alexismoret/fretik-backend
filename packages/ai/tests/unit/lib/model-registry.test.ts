@@ -88,28 +88,42 @@ describe("settingsForRole — parity with historical settings objects", () => {
     });
   });
 
-  test("bare roles get NO settings object (call sites own their options)", () => {
-    expect(
-      settingsForRole(
-        ROLE_BINDINGS["compaction-summarizer"],
-        getProfileForRole("compaction-summarizer"),
-      ),
-    ).toBeUndefined();
+  test("bare roles carry their profile's provider policy (zdr always; sort when the profile asks)", () => {
+    // The reasoning/usage envelope is left to the call site, but the
+    // provider block (zdr especially) must never be dropped.
+    const bareNoSort = { provider: { require_parameters: true, zdr: true } };
     expect(
       settingsForRole(
         ROLE_BINDINGS["cheap-tasks"],
         getProfileForRole("cheap-tasks"),
       ),
-    ).toBeUndefined();
+    ).toEqual(bareNoSort);
     expect(
       settingsForRole(ROLE_BINDINGS.vision, getProfileForRole("vision")),
-    ).toBeUndefined();
+    ).toEqual(bareNoSort);
     expect(
       settingsForRole(
         ROLE_BINDINGS["vision-fallback"],
         getProfileForRole("vision-fallback"),
       ),
-    ).toBeUndefined();
+    ).toEqual(bareNoSort);
+    // A throughput-sorted profile (deepseek-v4-flash) surfaces `sort`.
+    expect(
+      settingsForRole(
+        ROLE_BINDINGS["compaction-summarizer"],
+        getProfileForRole("compaction-summarizer"),
+      ),
+    ).toEqual({
+      provider: { require_parameters: true, zdr: true, sort: "throughput" },
+    });
+  });
+
+  test("transform runs ZDR + throughput-sorted (deepseek-v4-flash policy)", () => {
+    expect(
+      settingsForRole(ROLE_BINDINGS.transform, getProfileForRole("transform")),
+    ).toEqual({
+      provider: { require_parameters: true, zdr: true, sort: "throughput" },
+    });
   });
 });
 

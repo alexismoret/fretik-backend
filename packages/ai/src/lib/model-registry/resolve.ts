@@ -96,6 +96,10 @@ export const settingsForRole = (
   // routing. `allow_fallbacks` stays default-on, so the pin is a
   // preference, never a hard constraint. See `ModelAssessment.provider.order`.
   const order = profile.assessment.provider.order;
+  // Throughput-sorted routing when the profile asks for it (fast workhorses
+  // doing bulk output-heavy work — e.g. deepseek-v4-flash). A per-profile
+  // fact; undefined leaves OpenRouter's default (price) ordering.
+  const sort = profile.assessment.provider.sort;
   switch (binding.settingsKind) {
     case "chat":
       return {
@@ -123,7 +127,21 @@ export const settingsForRole = (
         reasoning: { effort: "medium" },
       };
     case "bare":
-      return undefined;
+      // Bare roles leave the reasoning/usage envelope to the call site, but
+      // must still carry their profile's PROVIDER policy — chiefly `zdr` (a
+      // data-retention guarantee that must never be silently dropped), plus
+      // throughput-sorted routing / an upstream pin when the profile asks for
+      // them. Previously returned `undefined`, so bare roles (transform,
+      // extract, vision, …) ran with NO provider block at all — dropping the
+      // very `zdr`/`sort` their profile declared.
+      return {
+        provider: {
+          require_parameters: true,
+          zdr,
+          ...(order ? { order: [...order] } : {}),
+          ...(sort ? { sort } : {}),
+        },
+      };
   }
 };
 
@@ -439,10 +457,18 @@ export const ROLE_TIER: Record<ModelRole, ModelTier | "fixed"> = {
   "memory-consolidate": "fixed",
   "compaction-summarizer": "workhorse",
   "cheap-tasks": "utility",
+  // FIXED: repair is a SYSTEM reliability component on the hot path of every
+  // malformed tool call — a team's pick must not slow it below the 120b.
+  "tool-repair": "fixed",
   vision: "fixed",
   "vision-fallback": "fixed",
   extract: "fixed",
   "extract-fallback": "fixed",
+  // Tracks the team's workhorse pick: bulk prose transformation is a
+  // cost/quality preference a team may legitimately tune, and the fixed
+  // fallback catches a weak pick's truncations/refusals.
+  transform: "workhorse",
+  "transform-fallback": "fixed",
 };
 
 /** Representative role whose code-default profile is the tier's recommendation. */

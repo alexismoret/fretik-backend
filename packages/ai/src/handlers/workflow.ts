@@ -90,6 +90,7 @@ import {
   prepareModelMessages,
 } from "../services/native-input";
 import { runUnifiedRecall } from "../services/recall/recall";
+import { resumeSourceConversation } from "../services/workflow-resume/resume-source-conversation";
 import {
   buildTurnMessageMetadata,
   filterNewAssistantMessages,
@@ -690,12 +691,18 @@ const executeTurn = async (params: {
   // inside the tx — a rolled-back finalize must not leave a stray message).
   // Idempotent + fire-and-forget: a failed notice must not fail the turn.
   if (terminal) {
-    void notifySourceConversation({ runId: run.id }).catch((err: unknown) => {
-      console.warn(
-        `${logPrefix} source-conversation notice failed:`,
-        err instanceof Error ? err.message : err,
-      );
-    });
+    void notifySourceConversation({ runId: run.id })
+      .then(({ posted }) => {
+        // Resume the launching chat exactly once (the posted notice is the
+        // anchor): the builder analyzes the run outcome and continues alone.
+        if (posted) void resumeSourceConversation({ runId: run.id });
+      })
+      .catch((err: unknown) => {
+        console.warn(
+          `${logPrefix} source-conversation notice failed:`,
+          err instanceof Error ? err.message : err,
+        );
+      });
   }
   // Notification email — only from the finalize that actually performed the
   // terminal transition (exactly-once), after the commit, fire-and-forget.
@@ -951,8 +958,13 @@ workflowTriggerRoutes.post("/runs/:runId/finalize", async (c) => {
     error: parsed.data.error ?? null,
   });
   // Notify the launching chat for orchestrator-side terminal closes too
-  // (deadline, approval timeout, onFailure) — idempotent with the turn-close path.
-  void notifySourceConversation({ runId }).catch(() => undefined);
+  // (deadline, approval timeout, onFailure) — idempotent with the turn-close
+  // path, and resume it exactly once (anchored on the posted notice).
+  void notifySourceConversation({ runId })
+    .then(({ posted }) => {
+      if (posted) void resumeSourceConversation({ runId });
+    })
+    .catch(() => undefined);
   // Notification email (the service itself drops `canceled`) — only from the
   // finalize that performed the transition. Fire-and-forget.
   if (transitioned) {

@@ -15,7 +15,11 @@ import {
   type AgentRuntimeContextBase,
   type AgentSet,
 } from "../shared/agent-builder";
-import { memoizeAgentSets, stopOnPendingApproval } from "../shared/agent-set";
+import {
+  memoizeAgentSets,
+  stopOnBackgroundLaunch,
+  stopOnPendingApproval,
+} from "../shared/agent-set";
 import { parseIntEnv } from "../shared/env";
 import { policyHiddenToolNames } from "../shared/policy-tool-gate";
 import {
@@ -359,6 +363,7 @@ const subAgentPrimarySet = buildAgentSet<ChatbotCallOptions, SubAgentTools>({
   stopWhen: [
     isStepCount(parseSubAgentMaxSteps()),
     hasToolCall("askUserQuestion"),
+    stopOnBackgroundLaunch<SubAgentTools>(),
   ],
   repairToolCall: llmRepairToolCall<SubAgentTools>(),
   prepareStep: subAgentPrepareStep,
@@ -387,6 +392,7 @@ const subAgentCheapSet = buildAgentSet<ChatbotCallOptions, SubAgentTools>({
   stopWhen: [
     isStepCount(parseSubAgentMaxSteps()),
     hasToolCall("askUserQuestion"),
+    stopOnBackgroundLaunch<SubAgentTools>(),
   ],
   repairToolCall: llmRepairToolCall<SubAgentTools>(),
   prepareStep: subAgentPrepareStep,
@@ -441,6 +447,10 @@ const makeChatbotAgentSet = (
       // fresh turn — the agent re-runs the same code and the dispatch path
       // matches the grant by `lookupHash`.
       stopOnPendingApproval<ChatbotTools>(),
+      // End the turn the moment a background run is launched (`manageWorkflow
+      // run_test`) — the run-completion continuation resumes this conversation;
+      // polling or sleeping here would only burn steps.
+      stopOnBackgroundLaunch<ChatbotTools>(),
     ],
     repairToolCall: llmRepairToolCall<ChatbotTools>(),
     prepareStep: chatbotPrepareStep,

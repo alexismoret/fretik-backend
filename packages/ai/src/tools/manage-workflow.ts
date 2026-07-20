@@ -1,3 +1,5 @@
+import db from "@fretik/shared/db";
+import { readSessionFile } from "@fretik/shared/lib/chatbot-session-storage";
 import { isValidIcon } from "@fretik/shared/lib/icons/search";
 import { describeFormFieldsForAgent } from "@fretik/shared/schemas/workflow-forms";
 import {
@@ -14,6 +16,7 @@ import {
 } from "@fretik/shared/schemas/workflows";
 import { isOrgAdmin } from "@fretik/shared/services/organization/member-role";
 import { activateWorkflow } from "@fretik/shared/services/workflows/activate";
+import type { RunAttachment } from "@fretik/shared/services/workflows/attach-run-files";
 import { createWorkflow } from "@fretik/shared/services/workflows/create";
 import { createWorkflowRun } from "@fretik/shared/services/workflows/create-run";
 import {
@@ -33,21 +36,32 @@ import { workflowToolHintNames } from "../agents/workflow/tools";
 import { TOOL_ERROR_CODES, toolError } from "../lib/tool-error-codes";
 
 /**
- * Collect every `toolHints` entry across a playbook's tasks that names no
- * real workflow tool. Returns the unknown hints (empty = all valid). Guards
- * against typos and forbidden-tool hints that would silently no-op at run time.
+ * Drop every `toolHints` entry that names no real workflow tool (typos,
+ * forbidden tools — they would silently no-op at run time) instead of failing
+ * the write. Returns the sanitized playbook plus a warning naming what was
+ * dropped, so the model can correct on the next update without losing the
+ * whole call.
  */
-const unknownToolHints = (
+const sanitizeToolHints = (
   playbook: z.infer<typeof WorkflowPlaybookSchema>,
-): string[] => {
+): { playbook: z.infer<typeof WorkflowPlaybookSchema>; warnings: string[] } => {
   const valid = workflowToolHintNames();
-  const unknown = new Set<string>();
-  for (const task of playbook.tasks) {
-    for (const hint of task.toolHints ?? []) {
-      if (!valid.has(hint)) unknown.add(hint);
+  const dropped = new Set<string>();
+  const tasks = playbook.tasks.map((task) => {
+    const hints = task.toolHints ?? [];
+    const kept = hints.filter((hint) => valid.has(hint));
+    for (const hint of hints) {
+      if (!valid.has(hint)) dropped.add(hint);
     }
-  }
-  return [...unknown];
+    return kept.length === hints.length ? task : { ...task, toolHints: kept };
+  });
+  if (dropped.size === 0) return { playbook, warnings: [] };
+  return {
+    playbook: { ...playbook, tasks },
+    warnings: [
+      `Dropped unknown toolHints: ${[...dropped].join(", ")}. Valid tools: ${[...workflowToolHintNames()].sort().join(", ")}.`,
+    ],
+  };
 };
 
 type WorkflowScope = "team" | "private";
@@ -69,11 +83,11 @@ export const createManageWorkflowTool = () =>
       "- update: workflowId + any field, including scope (re-scope anytime). Safe anytime — runs snapshot the playbook, so edits never disturb a running or past run.",
       "- list / get: the team's workflows (+ your private ones) / one workflow's full playbook. Each result carries `scope`.",
       "- get_trigger_catalog: the machine-readable catalog of trigger kinds + each event type's editable filter params. Read it before setting triggerType/triggerConfig.",
-      "- run_test: workflowId (+ optional payload) fires a test run. Then poll get_run until it leaves queued/running.",
+      "- run_test: workflowId (+ optional payload, + files: attachment filenames to hand to the run) fires a test run in the background. Launch it, say so, and END your turn — this conversation is notified and resumed automatically when the run finishes. Never poll get_run or sleep while it runs.",
       "- get_run: runId → status, per-task outcomes, result summary, error.",
       "- activate / pause: flip a workflow live / paused. Cron workflows get their schedule on activate.",
       "",
-      "Loop: create_draft → run_test → get_run → adjust with update → activate.",
+      "Loop: create_draft → run_test (turn ends) → resumed on completion → analyze with get_run → adjust with update → activate.",
       "Activation gate: activate needs ≥1 succeeded run. To skip testing, confirm with the user first (askUserQuestion), then pass confirm: true.",
       "",
       "Form trigger (triggerType 'form'): a person fills a form; each submission starts a run whose triggerPayload is the answers, with uploaded files attached to the run — write the playbook to consume triggerPayload. triggerConfig.form = { title, description?, fields[] (≥1 to activate), visibility ('public' = anyone with the link, 'private' = the workflow's team/owner), submitLabel?, successMessage? }. Each field = { key (snake_case, unique), type, label, required, +per-type constraints (minLength/maxLength, min/max/step, options[{value,label}], accept/maxFiles/maxFileSizeMb) }.",
@@ -137,6 +151,13 @@ export const createManageWorkflowTool = () =>
         .record(z.string(), z.unknown())
         .optional()
         .describe("run_test only — the trigger input handed to the agent."),
+      files: z
+        .array(z.string().min(1))
+        .max(10)
+        .optional()
+        .describe(
+          "run_test only — filenames of THIS conversation's attachments to hand to the run, exactly as listed in the attached-files block. Required when the workflow's form has a required file field: payload strings alone attach nothing.",
+        ),
       confirm: z
         .boolean()
         .optional()
@@ -174,18 +195,11 @@ export const createManageWorkflowTool = () =>
                 "No acting user in context.",
               );
             }
-            const badHints = unknownToolHints(input.playbook);
-            if (badHints.length > 0) {
-              return toolError(
-                TOOL_ERROR_CODES.WORKFLOW_ERROR,
-                `Unknown toolHints: ${badHints.join(", ")}.`,
-                `Valid tools: ${[...workflowToolHintNames()].sort().join(", ")}.`,
-              );
-            }
+            const { playbook, warnings } = sanitizeToolHints(input.playbook);
             const createInput: CreateWorkflowInput = {
               name: input.name,
               description: input.description ?? "",
-              playbook: input.playbook,
+              playbook,
               triggerType: input.triggerType ?? "manual",
               triggerConfig: input.triggerConfig ?? {},
               autonomy: input.autonomy ?? "approval_required",
@@ -212,6 +226,7 @@ export const createManageWorkflowTool = () =>
                 scope: scopeOf(workflow.userId),
                 ...(workflow.formUrl ? { formUrl: workflow.formUrl } : {}),
               },
+              ...(warnings.length > 0 ? { warnings } : {}),
               next: "Test it with run_test, then get_run to review, before activate.",
             };
           }
@@ -223,16 +238,10 @@ export const createManageWorkflowTool = () =>
                 "update requires workflowId.",
               );
             }
-            if (input.playbook !== undefined) {
-              const badHints = unknownToolHints(input.playbook);
-              if (badHints.length > 0) {
-                return toolError(
-                  TOOL_ERROR_CODES.WORKFLOW_ERROR,
-                  `Unknown toolHints: ${badHints.join(", ")}.`,
-                  `Valid tools: ${[...workflowToolHintNames()].sort().join(", ")}.`,
-                );
-              }
-            }
+            const sanitized =
+              input.playbook !== undefined
+                ? sanitizeToolHints(input.playbook)
+                : undefined;
             if (input.scope === "private" && !userId) {
               return toolError(
                 TOOL_ERROR_CODES.WORKFLOW_ERROR,
@@ -252,9 +261,7 @@ export const createManageWorkflowTool = () =>
               ...(input.triggerConfig !== undefined
                 ? { triggerConfig: input.triggerConfig }
                 : {}),
-              ...(input.playbook !== undefined
-                ? { playbook: input.playbook }
-                : {}),
+              ...(sanitized ? { playbook: sanitized.playbook } : {}),
               ...(input.autonomy !== undefined
                 ? { autonomy: input.autonomy }
                 : {}),
@@ -287,6 +294,9 @@ export const createManageWorkflowTool = () =>
                 status: workflow.status,
                 scope: scopeOf(workflow.userId),
               },
+              ...(sanitized && sanitized.warnings.length > 0
+                ? { warnings: sanitized.warnings }
+                : {}),
             };
           }
 
@@ -366,19 +376,121 @@ export const createManageWorkflowTool = () =>
                 "No such workflow for this team.",
               );
             }
+            // The run executes in its own fresh conversation and sees ONLY
+            // files attached to it here — chat attachments never carry over by
+            // themselves.
+            const fileNames = input.files ?? [];
+            const attachments: RunAttachment[] = [];
+            if (fileNames.length > 0) {
+              const conversationId = ctx.conversationId;
+              if (!conversationId) {
+                return toolError(
+                  TOOL_ERROR_CODES.NO_CONVERSATION,
+                  "files requires an active conversation to read attachments from.",
+                );
+              }
+              const chatFiles = await db.query.aiChatFiles.findMany({
+                columns: { filename: true, mimeType: true, status: true },
+                where: { conversationId, filename: { in: fileNames } },
+              });
+              const byName = new Map(chatFiles.map((f) => [f.filename, f]));
+              for (const filename of fileNames) {
+                const chatFile = byName.get(filename);
+                const bytes =
+                  chatFile && chatFile.status !== "error"
+                    ? await readSessionFile(
+                        conversationId,
+                        `attachments/${filename}`,
+                      )
+                    : null;
+                if (!chatFile || !bytes) {
+                  return toolError(
+                    TOOL_ERROR_CODES.WORKFLOW_ERROR,
+                    `"${filename}" is not a readable attachment of this conversation.`,
+                    "Pass filenames exactly as listed in the attached-files block.",
+                  );
+                }
+                attachments.push({
+                  filename,
+                  mimeType: chatFile.mimeType,
+                  bytes,
+                });
+              }
+            }
+
+            // Test payload mirrors a real form submission: file fields carry
+            // the attached filenames, required file fields must be satisfied.
+            const payload: Record<string, unknown> = {
+              ...(input.payload ?? {}),
+            };
+            if (row.triggerType === "form") {
+              const fileFields = (row.triggerConfig.form?.fields ?? []).filter(
+                (field) => field.type === "file",
+              );
+              const soleField =
+                fileFields.length === 1 ? fileFields[0] : undefined;
+              if (
+                soleField &&
+                attachments.length > 0 &&
+                payload[soleField.key] === undefined
+              ) {
+                payload[soleField.key] = attachments.map((a) => a.filename);
+              }
+              const attachedNames = new Set(attachments.map((a) => a.filename));
+              for (const field of fileFields) {
+                const value = payload[field.key];
+                const names =
+                  typeof value === "string"
+                    ? [value]
+                    : Array.isArray(value)
+                      ? value.filter((v): v is string => typeof v === "string")
+                      : [];
+                const unknown = names.filter(
+                  (name) => !attachedNames.has(name),
+                );
+                if (unknown.length > 0) {
+                  return toolError(
+                    TOOL_ERROR_CODES.WORKFLOW_ERROR,
+                    `Form field '${field.key}' references files not attached to the run: ${unknown.join(", ")}.`,
+                    "Payload strings attach nothing — list every test file in `files`.",
+                  );
+                }
+                if (field.required && names.length === 0) {
+                  return toolError(
+                    TOOL_ERROR_CODES.WORKFLOW_ERROR,
+                    `Form field '${field.key}' requires at least one file; the test run got none.`,
+                    "Attach the file(s) to this conversation, then pass their filenames in `files` (several file fields: also map them under payload.<key>).",
+                  );
+                }
+              }
+            }
+
             const run = await createWorkflowRun({
               workflow: row,
-              triggerType: "manual",
-              triggerPayload: input.payload,
+              // A form workflow tests as a form run — the executor sees the
+              // same trigger shape a real submission produces.
+              triggerType: row.triggerType === "form" ? "form" : "manual",
+              triggerPayload: payload,
               triggeredByUserId: userId ?? null,
               // Notify this chat when the test run finishes.
               sourceConversationId: ctx.conversationId ?? null,
               isTest: true,
+              ...(attachments.length > 0 ? { attachments } : {}),
             });
+            if (run.status === "failed") {
+              return {
+                ok: true,
+                run: { id: run.id, status: run.status },
+                next: "The run failed to start — read `error` via get_run, fix, and relaunch.",
+              };
+            }
             return {
               ok: true,
               run: { id: run.id, status: run.status },
-              next: "Poll get_run with this runId until status leaves queued/running.",
+              // Ends the turn (stopOnBackgroundLaunch) — the run is now in
+              // flight and this conversation is resumed on completion.
+              backgroundRun: true,
+              next: "The run continues in the background. End your turn now — say the test is launched, nothing else. This conversation is notified and resumed automatically when it finishes. Never wait by polling get_run or sleeping.",
             };
           }
 

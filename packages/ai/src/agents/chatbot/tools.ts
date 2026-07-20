@@ -25,6 +25,7 @@ import { createSearchIconsTool } from "../../tools/search-icons";
 import { createSearchSkillCatalogTool } from "../../tools/search-skill-catalog";
 import { createSearchToolsTool } from "../../tools/search-tools";
 import { createSqlQueryTool } from "../../tools/sql-query";
+import { createTransformTool } from "../../tools/transform";
 import { createUpdateSkillTool } from "../../tools/update-skill";
 import { createUploadToDriveTool } from "../../tools/upload-to-drive";
 import { createVisionTool } from "../../tools/vision";
@@ -332,6 +333,25 @@ export const buildDomainTools = () => ({
     category: "domain",
     searchHint: "fetch extract read content specific url page markdown article",
     maxResultSizeChars: 48_000,
+  }),
+  transform: buildChatbotTool({
+    ...createTransformTool(),
+    // Domain, not core (unlike extract): a translate/rewrite intent is
+    // explicit in the user's message, so the `<tool_routing>` row fires at
+    // plan time and one `searchTools` round-trip is cheap — keeping the
+    // ~450-token description out of the always-cached static prefix.
+    // Promote to core if a WS4 eval shows the model still authoring prose
+    // in python instead of activating transform.
+    category: "domain",
+    searchHint:
+      "transform translate rewrite restyle reword rephrase reformat redact anonymise document text file markdown language french english whole document to file",
+    // Small by construction — the tool returns a preview + path, never the
+    // transformed document itself.
+    maxResultSizeChars: 8_000,
+    // Paid remote model calls + writes an output file — not read-only, but
+    // stateless and re-derivable from the same source + instruction.
+    isReadOnly: false,
+    microcompactable: true,
   }),
   downloadDriveDocument: buildChatbotTool({
     ...createDownloadDriveDocumentTool(),

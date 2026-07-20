@@ -81,6 +81,12 @@ export const CURATED: Record<string, CuratedCase> = {
   "doc-plain-language": { capability: "instruction-following", smoke: true },
   "doc-proactive-workflow": { capability: "reasoning" },
   "doc-proactive-memory": { capability: "reasoning" },
+  // ── transform tool routing (2026-07): a document-scale translation must
+  // route to `transform`, not python-authored literals; trivial text stays
+  // inline. See cases/transform.ts. CORE tier (measures the prose + tool
+  // system, not the model); not smoke — the large-doc case runs multi-chunk.
+  "transform-translate-large-doc": { capability: "tool-use" },
+  "transform-not-for-trivial-text": { capability: "tool-use" },
   // ── C3 model-gate suites (2026-06-11) — written against OUR tools,
   // method borrowed from public benchmarks (BFCL / IFEval / LongBench),
   // never imported data. See evals/cases/{tool-portability,

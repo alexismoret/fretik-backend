@@ -10,6 +10,7 @@ import { describe, expect, test } from "bun:test";
 import {
   classifyStreamError,
   delay,
+  describeStreamError,
   retryAfterMs,
   toStructuredError,
   withSoftTimeout,
@@ -161,6 +162,75 @@ describe("classifyStreamError", () => {
       reason: "unknown",
     });
   });
+
+  // OpenRouter mid-stream failures arrive as a RAW plain object (not an
+  // APICallError) — `{ code, message, ... }`, sometimes wrapped in `.error`,
+  // and `code` may be a string. Before the fix these all fell through to
+  // fatal/unknown (retryable:false), so a transient provider blip surfaced
+  // to the user as an un-retryable death.
+  describe("OpenRouter plain-object provider payloads", () => {
+    test("numeric 5xx code → transient/server_error", () => {
+      expect(
+        classifyStreamError({ code: 502, message: "Provider returned error" }),
+      ).toEqual({ kind: "transient", reason: "server_error", statusCode: 502 });
+    });
+
+    test("string code '429' is numeric-coerced → transient/rate_limited", () => {
+      expect(
+        classifyStreamError({ code: "429", message: "rate limited upstream" }),
+      ).toEqual({ kind: "transient", reason: "rate_limited", statusCode: 429 });
+    });
+
+    test("408 → transient/request_timeout", () => {
+      expect(classifyStreamError({ code: 408, message: "timed out" })).toEqual({
+        kind: "transient",
+        reason: "request_timeout",
+        statusCode: 408,
+      });
+    });
+
+    test("401/403 → fatal/auth", () => {
+      expect(classifyStreamError({ code: 401, message: "no key" })).toEqual({
+        kind: "fatal",
+        reason: "auth",
+        statusCode: 401,
+      });
+    });
+
+    test("other 4xx → fatal/client_error", () => {
+      expect(
+        classifyStreamError({ code: 400, message: "bad request" }),
+      ).toEqual({ kind: "fatal", reason: "client_error", statusCode: 400 });
+    });
+
+    test("wrapped `.error` payload is unwrapped one level", () => {
+      expect(
+        classifyStreamError({ error: { code: 503, message: "overloaded" } }),
+      ).toEqual({ kind: "transient", reason: "server_error", statusCode: 503 });
+    });
+
+    test("no usable code but a provider-error message → transient/provider_error", () => {
+      expect(
+        classifyStreamError({
+          code: null,
+          message: "Provider returned error",
+        }),
+      ).toEqual({ kind: "transient", reason: "provider_error" });
+    });
+
+    test("object with a message but no provider signal stays fatal/unknown", () => {
+      expect(
+        classifyStreamError({ message: "something unexpected happened" }),
+      ).toEqual({ kind: "fatal", reason: "unknown" });
+    });
+
+    test("empty-pool message on a provider payload wins over the code branch", () => {
+      // The empty-pool check runs first (it can surface as a 404 body).
+      expect(
+        classifyStreamError({ code: 404, message: "No endpoints found" }),
+      ).toMatchObject({ kind: "transient", reason: "empty_provider_pool" });
+    });
+  });
 });
 
 describe("retryAfterMs", () => {
@@ -246,5 +316,37 @@ describe("withSoftTimeout", () => {
     );
     // Give the late rejection a tick to settle without crashing the test.
     await delay(20);
+  });
+});
+
+describe("describeStreamError", () => {
+  test("a plain-object error never degrades to '[object Object]'", () => {
+    const out = describeStreamError({
+      code: 502,
+      message: "Provider returned error",
+    });
+    expect(out).not.toContain("[object Object]");
+    expect(out).toContain("Provider returned error");
+    expect(out).toContain("502");
+  });
+
+  test("a wrapped `.error` object still surfaces the inner message", () => {
+    const out = describeStreamError({
+      error: { code: 503, message: "overloaded" },
+    });
+    expect(out).not.toContain("[object Object]");
+    expect(out).toContain("overloaded");
+  });
+
+  test("an Error keeps its message and stack", () => {
+    const out = describeStreamError(new Error("kaboom"));
+    expect(out).toContain("kaboom");
+  });
+
+  test("a circular object is tolerated (no throw, no '[object Object]')", () => {
+    const circular: Record<string, unknown> = { message: "loop" };
+    circular.self = circular;
+    const out = describeStreamError(circular);
+    expect(out).toContain("loop");
   });
 });

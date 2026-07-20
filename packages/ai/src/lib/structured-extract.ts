@@ -1,6 +1,7 @@
 import { type JSONSchema7, type LanguageModelV4 } from "@ai-sdk/provider";
 import { generateText, jsonSchema, Output, type Schema } from "ai";
 import { Ajv, type ValidateFunction } from "ajv";
+import { mapBounded } from "./bounded-map";
 import { describeLlmError } from "./describe-llm-error";
 import { telemetryFor } from "./langfuse";
 import { resolveModel } from "./model-registry/resolve";
@@ -358,7 +359,8 @@ const sanitizeNode = (
 // provider-safe subset the strict bounds walk (`sanitizeNode`) enforces,
 // repairing the shapes a model actually emits instead of rejecting them:
 // bare property maps, `anyOf`/`nullable` idioms, `$ref`/`$defs`, `allOf`,
-// annotations, missing `type`. Deterministic, runs before `sanitizeNode`, and
+// annotations, missing `type`, field definitions misplaced next to
+// `properties`, non-array `required`. Deterministic, runs before `sanitizeNode`, and
 // only ever LOWERS — a schema that is already in the subset passes through
 // byte-for-byte. Genuinely un-lowerable input (empty, over-depth, >120 fields)
 // still fails, in `sanitizeNode`, with an agent-readable message.
@@ -396,6 +398,18 @@ const STRUCTURAL_KEYWORDS = new Set<string>([
   "items",
   "enum",
   "const",
+]);
+
+/** Keywords that legitimately carry object values on an object node — never
+ * lifted into `properties` as misplaced field definitions (step 5b). */
+const NEVER_LIFT_KEYWORDS = new Set<string>([
+  "type",
+  "properties",
+  "items",
+  "required",
+  "enum",
+  "const",
+  "additionalProperties",
 ]);
 
 /** A node describing only `null` — the null branch of a nullable union. */
@@ -569,6 +583,33 @@ const lowerNode = (
     node["properties"] = properties;
   }
 
+  // 5b. Field definitions dropped NEXT TO `properties` (the model put them at
+  //     the wrong nesting level) → lift schema-shaped object siblings into
+  //     `properties` instead of erroring on a keyword collision (`format`) or
+  //     silently losing the field.
+  const isObjectNode =
+    node["type"] === "object" ||
+    (Array.isArray(node["type"]) && node["type"].includes("object")) ||
+    isPlainObject(node["properties"]);
+  if (isObjectNode) {
+    const existing = isPlainObject(node["properties"])
+      ? node["properties"]
+      : {};
+    let lifted: Record<string, unknown> | null = null;
+    for (const [key, value] of Object.entries(node)) {
+      if (NEVER_LIFT_KEYWORDS.has(key)) continue;
+      if (!isPlainObject(value)) continue;
+      const looksLikeSchema =
+        [...STRUCTURAL_KEYWORDS].some((k) => k in value) ||
+        "description" in value;
+      if (!looksLikeSchema) continue;
+      delete node[key];
+      if (key in existing) continue;
+      (lifted ??= {})[key] = value;
+    }
+    if (lifted) node["properties"] = { ...existing, ...lifted };
+  }
+
   // 6. Recurse into properties + items.
   if (isPlainObject(node["properties"])) {
     const lowered: Record<string, unknown> = {};
@@ -611,6 +652,8 @@ const lowerNode = (
   for (const [key, value] of Object.entries(node)) {
     if (!PASSTHROUGH_KEYWORDS.has(key)) continue;
     if (key === "additionalProperties" && typeof value !== "boolean") continue;
+    // Draft-04 style `required: true` (or any non-array) → drop, not error.
+    if (key === "required" && !Array.isArray(value)) continue;
     out[key] = value;
   }
   return out;
@@ -1060,30 +1103,6 @@ const runPdfChunk = async (
       ];
     }
   }
-};
-
-/** Bounded-parallel map preserving input order. */
-const mapBounded = async <T, R>(
-  items: readonly T[],
-  limit: number,
-  fn: (item: T) => Promise<R>,
-): Promise<R[]> => {
-  const results: R[] = new Array<R>(items.length);
-  let next = 0;
-  const workers = Array.from(
-    { length: Math.min(limit, items.length) },
-    async () => {
-      while (next < items.length) {
-        const index = next;
-        next += 1;
-        const item = items[index];
-        if (item === undefined) continue;
-        results[index] = await fn(item);
-      }
-    },
-  );
-  await Promise.all(workers);
-  return results;
 };
 
 // ============================================================================

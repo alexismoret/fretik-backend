@@ -290,10 +290,13 @@ export type ModelRole =
   | "memory-consolidate"
   | "compaction-summarizer"
   | "cheap-tasks"
+  | "tool-repair"
   | "vision"
   | "vision-fallback"
   | "extract"
-  | "extract-fallback";
+  | "extract-fallback"
+  | "transform"
+  | "transform-fallback";
 
 /**
  * Role-level request envelope. C1 keeps these as role facts to stay

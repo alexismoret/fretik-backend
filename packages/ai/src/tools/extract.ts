@@ -125,6 +125,7 @@ export const createExtractTool = () =>
         return {
           error: prepared.error,
           code: TOOL_ERROR_CODES.INVALID_SCHEMA,
+          hint: 'Minimal valid schema: {"type":"object","properties":{"field_name":{"type":"string","description":"where the value appears"}}}. An empty {} is not a schema — declare at least one property.',
         };
       }
 

@@ -29,6 +29,7 @@ import { ragPrecisionSuite } from "./rag-precision";
 import { securitySuite } from "./security";
 import { simpleQaSuite } from "./simple-qa";
 import { toolPortabilitySuite } from "./tool-portability";
+import { transformSuite } from "./transform";
 
 export const allSuites: EvalSuite[] = [
   simpleQaSuite,
@@ -43,6 +44,7 @@ export const allSuites: EvalSuite[] = [
   dispatchAgentSuite,
   doctrineSuite,
   toolPortabilitySuite,
+  transformSuite,
   instructionFollowingSuite,
   longContextSuite,
   securitySuite,

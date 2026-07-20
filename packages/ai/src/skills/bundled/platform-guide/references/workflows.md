@@ -6,7 +6,7 @@ A workflow is this assistant running unattended: a trigger fires, the playbook's
 
 1. `get_trigger_catalog` — the authoritative list of triggers, their `triggerConfig` shapes, and per-event filter keys. Never guess a config shape.
 2. `create_draft` — name, description, trigger, playbook, autonomy, scope. The tool's own description carries the playbook-authoring rules (goal-oriented instructions, never tool names).
-3. `run_test` — a workflow CANNOT be activated until one test run has succeeded. Inspect with `get_run`; iterate with `update`.
+3. `run_test` — a workflow CANNOT be activated until one test run has succeeded. Hand test files over via `files` (chat attachments never reach the run by themselves), then end the turn: the run executes in the background and this conversation is resumed with the outcome. Inspect with `get_run`; iterate with `update`.
 4. `activate` — the trigger goes live. `pause` stops it without deleting anything.
 
 ## Triggers

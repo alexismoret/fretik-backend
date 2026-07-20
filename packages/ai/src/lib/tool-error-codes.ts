@@ -63,6 +63,10 @@ export const TOOL_ERROR_CODES = {
   INVALID_PAGE_RANGE: "INVALID_PAGE_RANGE",
   EXTRACT_ERROR: "EXTRACT_ERROR",
 
+  // Prose transformation (`transform` tool)
+  TRANSFORM_ERROR: "TRANSFORM_ERROR",
+  EMPTY_SOURCE: "EMPTY_SOURCE",
+
   // Storage / S3 / Drive download
   NOT_FOUND: "NOT_FOUND",
   FORBIDDEN: "FORBIDDEN",

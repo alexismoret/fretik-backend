@@ -956,6 +956,16 @@ export const ROLE_BINDINGS: Record<ModelRole, RoleBinding> = {
     settingsKind: "bare",
     wrapCache: false,
   },
+  // One-shot malformed-tool-call repair (`repair-tool-call.ts`). Split from
+  // `dispatch-cheap` (2026-07): deepseek-v4-flash hit the 20s repair timeout
+  // in prod, turning every repair into pure wasted latency — same failure the
+  // recall eval documented, same fix (gpt-oss-120b, ~6x faster).
+  "tool-repair": {
+    role: "tool-repair",
+    profileKey: "gpt-oss-120b",
+    settingsKind: "bare",
+    wrapCache: false,
+  },
   vision: {
     role: "vision",
     profileKey: "gemini-3.1-flash-lite",
@@ -983,6 +993,27 @@ export const ROLE_BINDINGS: Record<ModelRole, RoleBinding> = {
   // family here with a reliable native-PDF contract via OpenRouter.
   "extract-fallback": {
     role: "extract-fallback",
+    profileKey: "gemini-3.5-flash",
+    settingsKind: "bare",
+    wrapCache: false,
+  },
+  // Document-scale prose transformation (the `transform` tool): translate,
+  // rewrite, restyle a whole document chunk-by-chunk. Separate from the
+  // `extract` roles on purpose — extract is native-PDF/vision-pinned, whereas
+  // transform is text-in/text-out and wants a fast, strongly-multilingual
+  // workhorse. `bare`: the engine owns per-call options (temperature 0, output
+  // cap). No cache wrap — chunk calls are independent one-shots.
+  transform: {
+    role: "transform",
+    profileKey: "deepseek-v4-flash",
+    settingsKind: "bare",
+    wrapCache: false,
+  },
+  // Different family from the primary (deepseek), strong on multilingual
+  // prose — the observed failure class is a truncated or refused chunk, and a
+  // family swap is the most effective second attempt.
+  "transform-fallback": {
+    role: "transform-fallback",
     profileKey: "gemini-3.5-flash",
     settingsKind: "bare",
     wrapCache: false,

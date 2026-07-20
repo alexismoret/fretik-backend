@@ -3,6 +3,7 @@ import db from "../../db";
 import { aiConversations, workflowRuns, type Workflow } from "../../db/schema";
 import { internalError, throwHttpError } from "../../lib/errors";
 import { triggerWorkflowRun } from "../../lib/trigger-client";
+import { requiredRunFileInputs } from "../../schemas/workflow-triggers";
 import type {
   WorkflowRunResponse,
   WorkflowTaskState,
@@ -100,6 +101,36 @@ export const createWorkflowRun = async (params: {
     if (!run) return throwHttpError(500, internalError());
     return { runId: run.id, conversationId: conversation.id };
   });
+
+  // Fail fast when the trigger's required file inputs are absent (per-kind
+  // contract in the trigger registry) — the executor would otherwise start
+  // against an empty `attachments/` and can only improvise. Triggers that
+  // collect files (form submissions, future connector mailboxes) always pass
+  // validated attachments; this is the mechanical backstop for builder test
+  // runs and API launches.
+  const missingFileInputs = params.attachments?.length
+    ? []
+    : requiredRunFileInputs(workflow.triggerType, workflow.triggerConfig);
+  if (missingFileInputs.length > 0) {
+    const { transitioned } = await finalizeRun({
+      runId,
+      status: "failed",
+      error: {
+        code: "INPUT_MISSING",
+        message: `This workflow's trigger requires file input(s) (${missingFileInputs.join(", ")}), but the run received none.`,
+      },
+    });
+    if (transitioned) {
+      void sendRunCompletionEmailIfEnabled({ runId }).catch((err: unknown) => {
+        console.warn(`[workflow-run ${runId}] completion email failed:`, err);
+      });
+    }
+    const row = await db.query.workflowRuns.findFirst({
+      where: { id: runId },
+    });
+    if (!row) return throwHttpError(500, internalError());
+    return serializeWorkflowRun(row);
+  }
 
   // Store any trigger files on the run's conversation BEFORE the task fires,
   // so the first turn sees them in `<file_attachments>` (S3 write is a network

@@ -22,10 +22,14 @@ const STATUS_LABEL: Record<string, string> = {
  * carrying this run id, so it is safe to call from every terminal path (the
  * turn-close handler, the orchestrator's finalize route, cancel-run). Best
  * effort — call fire-and-forget; a failed notice must never fail a finalize.
+ *
+ * Returns `{ posted: true }` only on the call that actually inserted the
+ * notice — the exactly-once anchor the caller uses to fire the follow-up
+ * chatbot resume without double-firing across racing terminal paths.
  */
 export const notifySourceConversation = async (params: {
   runId: string;
-}): Promise<void> => {
+}): Promise<{ posted: boolean }> => {
   const run = await db.query.workflowRuns.findFirst({
     where: { id: params.runId },
     columns: {
@@ -35,13 +39,13 @@ export const notifySourceConversation = async (params: {
       outputSummary: true,
     },
   });
-  if (!run?.sourceConversationId) return;
+  if (!run?.sourceConversationId) return { posted: false };
   if (
     run.status !== "succeeded" &&
     run.status !== "failed" &&
     run.status !== "canceled"
   ) {
-    return;
+    return { posted: false };
   }
   const conversationId = run.sourceConversationId;
 
@@ -57,7 +61,7 @@ export const notifySourceConversation = async (params: {
       ),
     )
     .limit(1);
-  if (existing.length > 0) return;
+  if (existing.length > 0) return { posted: false };
 
   const workflow = await db.query.workflows.findFirst({
     where: { id: run.workflowId },
@@ -85,4 +89,5 @@ export const notifySourceConversation = async (params: {
     role: "assistant",
     authorId: null,
   });
+  return { posted: true };
 };

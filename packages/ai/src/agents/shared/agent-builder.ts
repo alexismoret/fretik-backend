@@ -12,6 +12,7 @@ import {
 } from "ai";
 import { telemetryFor } from "../../lib/langfuse";
 import type { ResolvedModel } from "../../lib/model-registry/resolve";
+import { stopOnRepeatedToolErrors, trailingToolErrorRun } from "./agent-set";
 import {
   DynamicToolManager,
   replayActivationFromHistory,
@@ -278,6 +279,46 @@ export const buildToolsContext = (
   Object.fromEntries(Object.keys(tools).map((name) => [name, ctx]));
 
 /**
+ * Loop guard (applied to EVERY agent by `buildToolLoopAgent`): steer at 3
+ * identical consecutive tool failures; circuit-break the TURN at 8 — a
+ * backstop far above healthy operation (prod observed a 17-call
+ * identical-failure loop with neither brake), same philosophy as the turn and
+ * token caps. Ending the turn is not ending the work: a workflow run
+ * re-steers on its next turn, a chat hands control back to the user.
+ */
+const LOOP_GUARD_STEER_AT = 3;
+const LOOP_GUARD_ABORT_AT = 8;
+
+/**
+ * Wrap an agent's `prepareStep` with the soft half of the loop guard: once the
+ * trailing identical-failure run reaches the steer threshold, append ONE
+ * transient user message telling the model to stop repeating the call. The
+ * override carries forward within the turn and is never persisted (message
+ * persistence flows from the UIMessage stream); dedup is by exact text, so
+ * parallel failures that jump the counter past the threshold still inject
+ * exactly once.
+ */
+const withLoopGuard = <TTools extends ToolSet>(
+  base: PrepareStepFunction<TTools> | undefined,
+): PrepareStepFunction<TTools> => {
+  return async (options) => {
+    const result = (await base?.(options)) ?? {};
+    const run = trailingToolErrorRun(options.steps);
+    if (!run || run.count < LOOP_GUARD_STEER_AT) return result;
+    const guardText = `[loop-guard] Your ${run.toolName} calls keep failing with ${run.code}. Do not repeat the same call: fix the input per the error's hint, take a different approach, or report the blocker (chat: tell the user; workflow run: completeTask failed).`;
+    const messages = result.messages ?? options.messages;
+    const alreadyInjected = messages.some(
+      (message) => message.role === "user" && message.content === guardText,
+    );
+    if (alreadyInjected) return result;
+    return {
+      ...result,
+      messages: [...messages, { role: "user" as const, content: guardText }],
+    };
+  };
+};
+
+/**
  * The argument type the framework hands to `prepareCall` — derived from the
  * SDK settings so the callback body stays fully typed even though the settings
  * object is asserted past the generic `ToolsContextParameter` conditional.
@@ -292,8 +333,13 @@ const buildToolLoopAgent = <CALL_OPTIONS, TTools extends ToolSet>(
 ): ToolLoopAgent<CALL_OPTIONS, TTools> => {
   const model: LanguageModel = resolved.model;
   const tools = config.buildTools();
-  const prepareStep = config.prepareStep?.(tools);
-  const stopWhen = config.stopWhen ?? isStepCount(12);
+  const prepareStep = withLoopGuard(config.prepareStep?.(tools));
+  const configuredStop = config.stopWhen ?? isStepCount(12);
+  // Compose the loop guard's hard backstop into every agent's stop set.
+  const stopWhen = [
+    ...(Array.isArray(configuredStop) ? configuredStop : [configuredStop]),
+    stopOnRepeatedToolErrors<TTools>(LOOP_GUARD_ABORT_AT),
+  ];
   const onStepEnd = config.onStepEnd ?? defaultOnStepEnd<TTools>(config.id);
   // Step-0 fallback tool menu for agents WITHOUT a Progressive-Disclosure
   // `prepareStep` (all tools active). Every Fretik agent DOES set a

@@ -80,3 +80,13 @@ When prod error-analysis names a real failure: `promoteTrace` the failing trace 
 dataset (`origin:prod`), or hand-write one tight case grounded in that trace, add it to
 `curation.ts`, and `bun run langfuse:sync-datasets`. One real, sharp case beats ten
 synthetic ones.
+
+## Not eval-expressible (unit-tested instead)
+
+- **Mid-stream provider death (2026-07).** The CBAM-translation session died twice on an
+  OpenRouter mid-stream provider error (a plain-object `{ code, message }` frame), which the
+  classifier mislabelled `fatal/unknown` and logged as `[object Object]`. This failure mode
+  cannot be injected through the real-service eval harness (no provider-failure seam), so it
+  is covered by `tests/unit/lib/stream-errors.test.ts` (classification + `describeStreamError`
+  serialisation) rather than a dataset case. The behavioural half of the same incident — the
+  24-python-call authoring reflex — IS eval-expressible and lives in `cases/transform.ts`.

@@ -923,6 +923,62 @@ const setupAbortChannel = async (
 };
 
 /**
+ * C4 — mid-stream failure escalation across turns. When a turn dies
+ * mid-stream with a structured (non-transparent) error, we drop a
+ * short-lived marker keyed by conversation. The client's retry is a plain
+ * re-POST with no resume signal (`ChatStreamRequestSchema` carries no
+ * retry field), so without this the next attempt re-runs the SAME primary
+ * on the SAME context and dies identically — exactly the loop observed in
+ * prod (two identical mid-stream deaths on a 71k-token turn). The next
+ * turn consumes the marker once and serves the fallback model.
+ *
+ * MULTI-REPLICA: the `ai` service runs as N horizontally-scaled replicas,
+ * so turn N (which SETs the marker) and its retry turn N+1 (which reads
+ * it) may land on DIFFERENT instances. The marker therefore lives in the
+ * shared Redis, not in process memory. `GETDEL` is atomic, so the
+ * escalation fires exactly once even if two retries race across two
+ * replicas — the loser reads null and simply stays on the primary. The
+ * 15-min TTL bounds the blast radius: a one-off provider blip escalates at
+ * most the immediately-following turn, then the key self-expires (no
+ * explicit clear needed — GETDEL-at-start already consumes it).
+ */
+const MIDSTREAM_ERROR_MARKER_TTL_SECONDS = 900;
+const midstreamErrorMarkerKey = (conversationId: string): string =>
+  `chatbot:midstream-error:${conversationId}`;
+
+/** Record that this conversation's turn just died mid-stream. Fire-and-forget. */
+const markMidstreamError = (conversationId: string, reason: string): void => {
+  void redis
+    .set(
+      midstreamErrorMarkerKey(conversationId),
+      reason,
+      "EX",
+      MIDSTREAM_ERROR_MARKER_TTL_SECONDS,
+    )
+    .catch((err: unknown) => {
+      console.warn("[chatbot] failed to set mid-stream error marker:", err);
+    });
+};
+
+/**
+ * Read-and-delete the mid-stream error marker for a conversation. Returns
+ * true when a prior turn (possibly on another replica) died mid-stream (→
+ * serve the fallback this turn). GETDEL is atomic, so the escalation fires
+ * exactly once across replicas.
+ */
+const consumeMidstreamErrorMarker = async (
+  conversationId: string,
+): Promise<boolean> => {
+  try {
+    const prior = await redis.getdel(midstreamErrorMarkerKey(conversationId));
+    return prior !== null;
+  } catch (err: unknown) {
+    console.warn("[chatbot] failed to consume mid-stream error marker:", err);
+    return false;
+  }
+};
+
+/**
  * Shared tail of both routes: hydrate cache → stream with fallback
  * → return a UIMessage stream response whose `onFinish` persists
  * new assistant messages + fires the stale-output sweep.
@@ -948,7 +1004,7 @@ const setupAbortChannel = async (
  * persistence only on /stream, …). Factoring the shared tail keeps
  * the two routes aligned without flattening their differences.
  */
-const runChatbotTurn = async (
+export const runChatbotTurn = async (
   params: RunChatbotTurnParams,
 ): Promise<Response> => {
   const filenames = extractLastUserFileFilenames(params.history);
@@ -984,8 +1040,27 @@ const runChatbotTurn = async (
   // Serving set + profile for this turn (see RunChatbotTurnParams).
   // Resolved ONCE here so every consumer below — compaction threshold,
   // primary stream, zombie-recovery fallback — uses the same pair.
-  const agentSet = params.agentSet ?? chatbotAgentSet;
-  const modelProfile = params.modelProfile ?? getProfileForRole("chat");
+  let agentSet = params.agentSet ?? chatbotAgentSet;
+  let modelProfile = params.modelProfile ?? getProfileForRole("chat");
+
+  // C4 — escalate to the fallback model when the PREVIOUS attempt on this
+  // conversation died mid-stream (marker set by `recordStreamError`). Only
+  // on the default user path: an explicit /invoke pin (eval gate, workers)
+  // must stay on its candidate model, so a caller-supplied `agentSet` is
+  // never overridden. Serving the fallback swaps BOTH the agent AND the
+  // profile so compaction threshold / native-input policy / metadata key
+  // all follow the model that actually answers.
+  const escalatedAfterMidstreamError =
+    params.agentSet === undefined &&
+    params.conversationId !== undefined &&
+    (await consumeMidstreamErrorMarker(params.conversationId));
+  if (escalatedAfterMidstreamError) {
+    console.warn(
+      `${params.logPrefix} prior turn died mid-stream — escalating to fallback model`,
+    );
+    agentSet = { ...agentSet, primary: agentSet.fallback };
+    modelProfile = getProfileForRole("chat-fallback");
+  }
 
   // C7 — per-turn "deep thinking" reasoning override. Built once from the
   // turn's level + the SAME profile that serves it, so the primary stream
@@ -1021,6 +1096,21 @@ const runChatbotTurn = async (
     /** First fatal/structured classification put on the wire, for the parent span. */
     errorStatus?: string;
   } = {};
+  // Wire-error dedup. The AI SDK's outer `createUIMessageStream` re-invokes
+  // `onError(new Error(chunk.errorText))` for every merged error chunk — so
+  // `recordStreamError` runs a SECOND time with an Error whose message is
+  // the very string it already returned (the structured JSON, the sentinel,
+  // "Stopped."). Without this guard that second pass re-classifies the
+  // derivative (→ a bogus fatal/unknown), double-logs, and duplicates the
+  // Langfuse `turn-error` event. Every value we put on the wire is recorded
+  // here; a re-entry that matches short-circuits with zero side effects.
+  //
+  // Process-local by design (NOT Redis): both onError callbacks belong to
+  // the SAME `createUIMessageStream` and fire in the same tick on the one
+  // replica that owns this turn. A turn never splits across instances (a
+  // GET reconnect only replays the Redis buffer, it does not re-run the
+  // turn), so there is nothing to synchronise cross-replica here.
+  const emittedWireErrors = new Set<string>();
   const onTurnStep: GenerateTextOnStepEndCallback<ChatbotTools> = (step) => {
     if (step.toolCalls.length > 0 || step.toolResults.length > 0) {
       turnFlags.toolExecuted = true;
@@ -1044,9 +1134,19 @@ const runChatbotTurn = async (
   // `resume` tells it to CONTINUE the turn (a tool already ran — replaying
   // would repeat the side effect) rather than regenerate from scratch.
   const recordStreamError = (err: unknown): string => {
+    // Second-pass short-circuit (see `emittedWireErrors`): the outer stream
+    // re-enters this handler with `new Error(<string we already returned>)`.
+    // Return it verbatim — no re-classification, no log, no duplicate event.
+    if (err instanceof Error && emittedWireErrors.has(err.message)) {
+      return err.message;
+    }
+    const emit = (value: string): string => {
+      emittedWireErrors.add(value);
+      return value;
+    };
     if (abortController.signal.aborted) {
       console.info(`${params.logPrefix} stream ended after user abort`);
-      return "Stopped.";
+      return emit("Stopped.");
     }
     // A bad tool input / unknown tool is NOT a turn death: the SDK already fed
     // it back to the model as a recoverable tool-error part (multi-step). Label
@@ -1055,7 +1155,7 @@ const runChatbotTurn = async (
       console.info(
         `${params.logPrefix} recoverable tool-call error (${err instanceof Error ? err.name : "unknown"}) — model self-corrects`,
       );
-      return "Invalid tool input — adjust the arguments and retry.";
+      return emit("Invalid tool input — adjust the arguments and retry.");
     }
     const classification = classifyStreamError(err);
     // Log the full error OBJECT (stack + cause chain) — a name/message
@@ -1086,15 +1186,24 @@ const runChatbotTurn = async (
         { asType: "event", parentSpanContext: turnTrace.spanContext },
       );
     }
-    if (transparent) return FAILOVER_SENTINEL;
+    if (transparent) return emit(FAILOVER_SENTINEL);
     turnTrace.errorStatus ??= `${classification.kind}/${classification.reason}`;
-    return JSON.stringify(
-      toStructuredError(classification, {
-        resume: turnFlags.toolExecuted,
-        ...(turnTrace.traceId !== undefined
-          ? { traceId: turnTrace.traceId }
-          : {}),
-      }),
+    // Mark the conversation so the NEXT turn (the user's retry — possibly on
+    // another replica) escalates to the fallback model instead of dying the
+    // same way on the same primary. Skipped for pinned callers (no
+    // conversationId, or a caller-supplied agentSet — eval gate / workers).
+    if (params.conversationId !== undefined && params.agentSet === undefined) {
+      markMidstreamError(params.conversationId, classification.reason);
+    }
+    return emit(
+      JSON.stringify(
+        toStructuredError(classification, {
+          resume: turnFlags.toolExecuted,
+          ...(turnTrace.traceId !== undefined
+            ? { traceId: turnTrace.traceId }
+            : {}),
+        }),
+      ),
     );
   };
 
@@ -1619,6 +1728,11 @@ const runChatbotTurn = async (
               const turnMetadata: Record<string, string> = {
                 servedBy: servedByTurn,
               };
+              // This turn was served on the fallback because a PRIOR turn on
+              // this conversation died mid-stream (cross-turn escalation).
+              if (escalatedAfterMidstreamError) {
+                turnMetadata.escalatedAfterMidstreamError = "true";
+              }
               if (traceFinishReason !== undefined) {
                 turnMetadata.finishReason = traceFinishReason;
               }

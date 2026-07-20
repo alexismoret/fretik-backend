@@ -172,6 +172,64 @@ describe("sanitizeExtractSchema — draft-07 lowering", () => {
     expect(props["ref"]).toHaveProperty("type", ["string", "null"]);
   });
 
+  test("lifts field definitions misplaced next to properties into them", () => {
+    // Observed in prod: the model put `format` (a string keyword) and a
+    // non-keyword field as SIBLINGS of `properties` inside items.
+    const asNode = (value: unknown): Record<string, unknown> => {
+      if (typeof value !== "object" || value === null || Array.isArray(value)) {
+        throw new Error("not an object schema node");
+      }
+      return { ...value };
+    };
+    const props = propsOf({
+      type: "object",
+      properties: {
+        lines: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: { description: { type: "string" } },
+            format: { type: "string", description: "bottle format" },
+            quantite: { type: "number" },
+          },
+        },
+      },
+    });
+    const items = asNode(props["lines"]?.["items"]);
+    const itemProps = asNode(items["properties"]);
+    expect(Object.keys(itemProps).sort()).toEqual([
+      "description",
+      "format",
+      "quantite",
+    ]);
+  });
+
+  test("drops a non-array required instead of erroring", () => {
+    const props = propsOf({
+      type: "object",
+      properties: {
+        lines: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: { label: { type: "string" } },
+            required: true,
+          },
+        },
+      },
+    });
+    const items = props["lines"]?.["items"];
+    expect(items).not.toHaveProperty("required");
+  });
+
+  test("still rejects an empty schema with the object-shape message", () => {
+    const result = sanitizeExtractSchema({});
+    expect(result).toHaveProperty("error");
+    if ("error" in result) {
+      expect(result.error).toContain("must describe an object");
+    }
+  });
+
   test("inlines a local $ref against $defs", () => {
     const props = propsOf({
       type: "object",

@@ -99,7 +99,7 @@ export const WorkflowPlaybookTaskSchema = z.object({
     ),
   title: z.string().min(1).max(120),
   description: z.string().max(500).default(""),
-  instructions: z.string().min(1).max(2000),
+  instructions: z.string().min(1).max(10000),
   expectedOutput: z.string().max(500).optional(),
   toolHints: z.array(z.string().max(60)).max(10).optional(),
 });

@@ -1,22 +1,30 @@
 import { SYSTEM_ACTOR } from "@fretik/shared/services/domain-events/emit";
 import { emitDomainEventsBulk } from "@fretik/shared/services/domain-events/emit-bulk";
 import { demoteStaleEpisodes } from "@fretik/shared/services/episodes/demote";
+import { purgeExpiredEpisodes } from "@fretik/shared/services/episodes/purge";
 import { deleteEpisodeVectors } from "@fretik/shared/services/episodes/vectors";
 
 /**
- * Episode GC (P6) — the 04:00 cron. Active episodes not recalled for
- * `DEMOTE_AFTER_DAYS` flip to `demoted` (stamped `demotedAt` for an eventual
- * much-later purge) and leave the recall index (vectors deleted). Nothing is
- * ever deleted from `ai_episodes`; re-promotion = flip back + re-vectorize.
+ * Episode GC (P6) — the 04:00 cron. Two stages:
+ *   1. Active episodes not recalled for `DEMOTE_*_DAYS` flip to `demoted`
+ *      (stamped `demotedAt`) and leave the recall index (vectors deleted).
+ *   2. Anything `demoted` for ≥ `PURGE_AFTER_DAYS` is finally HARD-deleted —
+ *      the "eventual much-later purge" the demotion has always anticipated,
+ *      covering both cold GC-demoted rows and user-hidden ones.
  * Chunked SQL, no LLM — fast enough for the maintenance dispatcher.
  */
 
 /** Retention floor (never-recalled) and ceiling (well-recalled) in days. */
 const DEMOTE_BASE_DAYS = 90;
 const DEMOTE_KEEP_DAYS = 180;
+/** A demoted episode is hard-deleted once it has been out this long. */
+const PURGE_AFTER_DAYS = 30;
 const BATCH = 200;
 
-export const runGcDemote = async (): Promise<{ demoted: number }> => {
+export const runGcDemote = async (): Promise<{
+  demoted: number;
+  purged: number;
+}> => {
   const date = new Date().toISOString().slice(0, 10);
   let total = 0;
   for (;;) {
@@ -59,5 +67,13 @@ export const runGcDemote = async (): Promise<{ demoted: number }> => {
     total += batch.length;
     if (batch.length < BATCH) break;
   }
-  return { demoted: total };
+
+  // Stage 2: hard-delete episodes demoted long enough. Runs after the demote
+  // pass so a freshly-cold episode gets its full 30-day grace, never same-run.
+  const { purged } = await purgeExpiredEpisodes({
+    olderThanDays: PURGE_AFTER_DAYS,
+    limit: BATCH,
+  });
+
+  return { demoted: total, purged };
 };

@@ -5,7 +5,14 @@ import { isOrgAdmin } from "../organization/member-role";
 import { isTeamMember } from "../team/members";
 
 export type FormAccessResult =
-  | { access: "ready"; workflow: Workflow; form: WorkflowFormConfig }
+  | {
+      access: "ready";
+      /** `live` = an active workflow (a real submission); `test` = a member
+       * dry-running a draft/paused workflow through its own form. */
+      mode: "live" | "test";
+      workflow: Workflow;
+      form: WorkflowFormConfig;
+    }
   | { access: "not_found" }
   | { access: "inactive" }
   | { access: "login_required" }
@@ -44,15 +51,29 @@ export const resolveFormAccess = async (params: {
 
   const form = workflow.triggerConfig.form;
   if (workflow.triggerType !== "form" || !form) return { access: "not_found" };
-  if (workflow.status !== "active") return { access: "inactive" };
+
+  // Not yet active → normally `inactive`, but a member with the workflow's own
+  // scope may TEST-run a draft/paused form (the cockpit "Test" button opens
+  // this page). Anonymous or out-of-scope visitors keep the `inactive` verdict;
+  // archived is terminal (no test).
+  if (workflow.status !== "active") {
+    if (
+      params.userId &&
+      (workflow.status === "draft" || workflow.status === "paused") &&
+      (await canAccessPrivateForm(workflow, params.userId))
+    ) {
+      return { access: "ready", mode: "test", workflow, form };
+    }
+    return { access: "inactive" };
+  }
 
   if (form.visibility === "public") {
-    return { access: "ready", workflow, form };
+    return { access: "ready", mode: "live", workflow, form };
   }
 
   if (!params.userId) return { access: "login_required" };
   const allowed = await canAccessPrivateForm(workflow, params.userId);
   return allowed
-    ? { access: "ready", workflow, form }
+    ? { access: "ready", mode: "live", workflow, form }
     : { access: "forbidden" };
 };

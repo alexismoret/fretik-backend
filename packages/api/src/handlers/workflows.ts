@@ -39,6 +39,7 @@ import { archiveWorkflow } from "@fretik/shared/services/workflows/archive";
 import { cancelWorkflowRun } from "@fretik/shared/services/workflows/cancel-run";
 import { createWorkflow } from "@fretik/shared/services/workflows/create";
 import { createWorkflowRun } from "@fretik/shared/services/workflows/create-run";
+import { deleteWorkflow } from "@fretik/shared/services/workflows/delete";
 import {
   getWorkflow,
   getWorkflowRow,
@@ -178,11 +179,11 @@ const updateRoute = createRoute({
 });
 
 const archiveRoute = createRoute({
-  method: "delete",
-  path: "/{id}",
+  method: "post",
+  path: "/{id}/archive",
   summary: "Archive a workflow",
   description:
-    "Archives (never hard-deletes — run history stays). Drops the Trigger.dev schedule when one exists.",
+    "active/paused/draft → archived (reversible off-switch — run history stays). Drops the Trigger.dev schedule when one exists.",
   tags: ["Workflows"],
   request: { params: paramsIdSchema },
   responses: {
@@ -190,6 +191,26 @@ const archiveRoute = createRoute({
       content: { "application/json": { schema: WorkflowResponseSchema } },
       description: "Archived workflow",
     },
+    ...responseForbiddenSchema,
+    ...responseNotFoundSchema,
+    ...responseInternalErrorSchema,
+  },
+});
+
+const deleteRoute = createRoute({
+  method: "delete",
+  path: "/{id}",
+  summary: "Permanently delete an archived workflow",
+  description:
+    "Only archived workflows can be deleted (400 otherwise). Irreversibly removes the workflow, its full run history, run transcripts/conversations and their files.",
+  tags: ["Workflows"],
+  request: { params: paramsIdSchema },
+  responses: {
+    200: {
+      content: { "application/json": { schema: WorkflowResponseSchema } },
+      description: "Deleted workflow",
+    },
+    ...responseBadRequestSchema,
     ...responseForbiddenSchema,
     ...responseNotFoundSchema,
     ...responseInternalErrorSchema,
@@ -485,6 +506,17 @@ workflowRoutes.openapi(archiveRoute, async (c) => {
   return c.json(workflow, 200);
 });
 
+workflowRoutes.openapi(deleteRoute, async (c) => {
+  const team = c.get("team");
+  if (!team) return c.json(teamRequired(), 403);
+  const user = c.get("user");
+  const { id } = c.req.valid("param");
+  const requester = await resolveRequester(user, team);
+  const workflow = await deleteWorkflow({ id, teamId: team.id, requester });
+  if (!workflow) return throwHttpError(404, notFound("Workflow not found"));
+  return c.json(workflow, 200);
+});
+
 workflowRoutes.openapi(activateRoute, async (c) => {
   const team = c.get("team");
   if (!team) return c.json(teamRequired(), 403);
@@ -529,7 +561,10 @@ workflowRoutes.openapi(runRoute, async (c) => {
 
   const run = await createWorkflowRun({
     workflow,
-    triggerType: "manual",
+    // A form workflow launched here IS a form submission by a member, so the
+    // run reads as `form` (aligns with the builder's `run_test` and fixes the
+    // trigger card's origin label). Everything else was launched by hand.
+    triggerType: workflow.triggerType === "form" ? "form" : "manual",
     triggerPayload: body.payload,
     triggeredByUserId: user.id,
     isTest: body.isTest,

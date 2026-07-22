@@ -74,11 +74,49 @@ const episodeConversationRefSchema = z.object({
   title: z.string(),
 });
 
+/**
+ * Workflow-run provenance — present when the episode was distilled from a
+ * workflow run (the run reuses the conversation pipeline, so `conversation`
+ * is also set, but the UI should link to the run, not the chatbot). Both ids
+ * are read from the episode's `metadata` JSONB and are needed to build the
+ * `/workflows/{workflowId}?run={workflowRunId}` link.
+ */
+const episodeWorkflowRefSchema = z.object({
+  workflowId: z.uuid(),
+  workflowRunId: z.uuid(),
+});
+
 /** Detail — the summary plus the distilled body, anchored records, source. */
 export const episodeDetailSchema = episodeSummarySchema.extend({
   summary: z.string(),
   records: z.array(episodeRecordRefSchema),
   conversation: episodeConversationRefSchema.nullable(),
+  workflow: episodeWorkflowRefSchema.nullable(),
 });
 
 export type EpisodeDetailResponse = z.infer<typeof episodeDetailSchema>;
+
+// ==================== //
+// DELETE               //
+// ==================== //
+
+/** Single soft-delete (hide) response. */
+export const episodeOkResponseSchema = z.object({
+  ok: z.literal(true),
+});
+
+export const deleteAllEpisodesBodySchema = z.object({
+  /**
+   * `user` = the caller's own private episodes; `team` = every episode in the
+   * team (admin only — enforced in the handler via `isOrgAdmin`).
+   */
+  scope: z.enum(["user", "team"]),
+});
+
+export type DeleteAllEpisodesInput = z.infer<
+  typeof deleteAllEpisodesBodySchema
+>;
+
+export const deleteAllEpisodesResponseSchema = z.object({
+  hidden: z.number().int(),
+});

@@ -106,6 +106,22 @@ export const deleteMemoryQuerySchema = z.object({
   reason: z.string().max(MEMORY_MAX_DELETE_REASON_LENGTH).optional(),
 });
 
+export const deleteAllMemoriesBodySchema = z.object({
+  /**
+   * `user` = the caller's own user-scope notes; `team` = every note in the
+   * team (admin only — enforced in the handler via `isOrgAdmin`).
+   */
+  scope: aiMemoryScopeSchema,
+});
+
+export type DeleteAllMemoriesInput = z.infer<
+  typeof deleteAllMemoriesBodySchema
+>;
+
+export const deleteAllMemoriesResponseSchema = z.object({
+  deleted: z.number().int(),
+});
+
 export const feedbackQuerySchema = z.object({
   limit: z.coerce
     .number()

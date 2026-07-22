@@ -3,6 +3,7 @@ import db from "../../db";
 import { workflows } from "../../db/schema";
 import { deleteWorkflowSchedule } from "../../lib/trigger-client";
 import type { WorkflowResponse, WorkflowStatus } from "../../schemas/workflows";
+import { hideEpisodesForWorkflow } from "../episodes/hide-for-workflow";
 import { getWorkflowRow } from "./get";
 import { serializeWorkflow } from "./serialize";
 import type { WorkflowRequester } from "./visibility";
@@ -47,5 +48,20 @@ export const deactivateWorkflow = async (params: {
     })
     .where(and(eq(workflows.id, id), eq(workflows.teamId, teamId)))
     .returning();
+
+  // Archiving retires the workflow — hide its runs' episodes so their memory
+  // stops surfacing in recall (a pause is temporary, so it leaves them alone).
+  // Best-effort: a hiccup here must not block the state change.
+  if (status === "archived") {
+    await hideEpisodesForWorkflow({ teamId, workflowId: id }).catch(
+      (error: unknown) => {
+        console.warn(
+          `[workflows.deactivate] episode hide failed for ${id}:`,
+          error instanceof Error ? error.message : error,
+        );
+      },
+    );
+  }
+
   return updated ? serializeWorkflow(updated) : undefined;
 };

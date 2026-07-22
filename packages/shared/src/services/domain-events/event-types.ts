@@ -47,6 +47,8 @@ export const DOMAIN_EVENT_TYPES = [
   "episode.created",
   "episode.consolidated",
   "episode.demoted",
+  "episode.deleted",
+  "episode.purged",
   // Skills catalogue.
   "skill.created",
   "skill.updated",

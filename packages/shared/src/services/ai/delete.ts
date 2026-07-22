@@ -4,6 +4,8 @@ import { aiConversationMembers, aiConversations } from "../../db/schema";
 import { deleteSessionFolder } from "../../lib/chatbot-session-storage";
 import { emitDomainEventsBulk } from "../domain-events/emit-bulk";
 import { killSandbox } from "../e2b/kill-sandbox";
+import { hideEpisodesForConversations } from "../episodes/hide-for-source";
+import { deleteEpisodeVectors } from "../episodes/vectors";
 
 /**
  * Delete conversations. Only an `owner` may delete a collaborative
@@ -46,7 +48,13 @@ export const deleteConversations = async (data: {
     return { rowCount: 0 };
   }
 
+  let hiddenEpisodeIds: string[] = [];
   const deleted = await db.transaction(async (tx) => {
+    // Hide the conversation episodes distilled from these threads BEFORE the
+    // rows go — the `conversationId` FK nulls on delete, so we must match now.
+    // They leave recall immediately and the GC purges them after 30 days.
+    hiddenEpisodeIds = await hideEpisodesForConversations(tx, ownedIds);
+
     // Journal first — the rows are gone after this tx, and the events' own
     // conversation FK column nulls on delete; the payload keeps the id. One
     // team per call, so one org for the whole batch.
@@ -70,6 +78,10 @@ export const deleteConversations = async (data: {
       .where(inArray(aiConversations.id, ownedIds))
       .returning({ id: aiConversations.id });
   });
+
+  // Drop the recall vectors of the hidden episodes (no FK from `ai_vectors`).
+  // Fire-and-forget, same contract as the memory-delete path.
+  void deleteEpisodeVectors(hiddenEpisodeIds);
 
   // The FK cascade just reaped every `ai_chat_files` row for these
   // conversations; the S3 session folders have no such relationship

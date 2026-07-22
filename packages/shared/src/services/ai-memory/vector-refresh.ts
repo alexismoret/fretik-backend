@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 import db from "../../db";
 import type { MemoryVectorMetadata } from "../../db/schema/ai-vectors";
@@ -114,6 +114,31 @@ export const deleteMemoryVectors = async (memoryId: string): Promise<void> => {
   } catch (error) {
     console.error(
       `[MemoryVectorRefresh] Failed to delete vectors for memory ${memoryId}:`,
+      error,
+    );
+  }
+};
+
+/**
+ * Set-based sibling of `deleteMemoryVectors` for a bulk memory wipe — one
+ * `inArray` DELETE instead of a query per id. Same fire-and-forget contract.
+ */
+export const deleteMemoryVectorsBulk = async (
+  memoryIds: string[],
+): Promise<void> => {
+  if (memoryIds.length === 0) return;
+  try {
+    await db
+      .delete(aiVectors)
+      .where(
+        and(
+          eq(aiVectors.sourceType, "memories"),
+          inArray(aiVectors.sourceId, memoryIds),
+        ),
+      );
+  } catch (error) {
+    console.error(
+      `[MemoryVectorRefresh] Failed to bulk-delete vectors for ${memoryIds.length.toString()} memories:`,
       error,
     );
   }

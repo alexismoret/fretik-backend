@@ -424,15 +424,15 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
       evalGate: { status: "pending" },
     },
   },
-  "gemini-3.1-flash-lite": {
-    key: "gemini-3.1-flash-lite",
+  "gemini-3.5-flash-lite": {
+    key: "gemini-3.5-flash-lite",
     family: "google",
     tiers: ["utility"],
     catalog: {
       // GA id — the prod vision incumbent ran the `-preview` route of
       // the SAME model until 2026-06; preview routes get sunset, the
       // GA route is the supported one.
-      id: "google/gemini-3.1-flash-lite",
+      id: "google/gemini-3.5-flash-lite",
       contextLength: 1_048_576,
       maxCompletionTokens: 65_536,
       inputModalities: ["text", "image", "video", "file", "audio"],
@@ -968,7 +968,7 @@ export const ROLE_BINDINGS: Record<ModelRole, RoleBinding> = {
   },
   vision: {
     role: "vision",
-    profileKey: "gemini-3.1-flash-lite",
+    profileKey: "gemini-3.5-flash-lite",
     settingsKind: "bare",
     wrapCache: false,
   },
@@ -984,7 +984,7 @@ export const ROLE_BINDINGS: Record<ModelRole, RoleBinding> = {
   // to gemini-3.5-flash is a one-line change with no impact on vision.
   extract: {
     role: "extract",
-    profileKey: "gemini-3.1-flash-lite",
+    profileKey: "gemini-3.5-flash-lite",
     settingsKind: "bare",
     wrapCache: false,
   },

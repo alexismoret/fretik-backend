@@ -47,10 +47,30 @@ const EMBEDDING_PARALLEL_CALLS = (() => {
  * accounting (`usage: { include: true }`) so OpenRouter returns the real USD
  * cost for the Langfuse `embedding` observation. A separate instance keeps
  * `dimensions` off the chat provider.
+ *
+ * Provider routing (2026-07-21): without preferences OpenRouter price-sorts,
+ * and the pinned provider can degrade badly — a prod session measured 21-40s
+ * to embed 10-52 token queries, dominating searchKnowledge's wall-clock.
+ * `sort: "throughput"` routes around a degraded provider; `zdr` makes the
+ * data policy explicit (Nebius/DeepInfra both qualify); the `quantizations`
+ * floor keeps queries on the same quantization pool the indexed corpus was
+ * embedded with (SiliconFlow serves fp8 — mixing quantizations between
+ * corpus and query vectors adds retrieval noise). NO `require_parameters`
+ * here: embeddings endpoints don't advertise `dimensions` in
+ * supported_parameters, so it would empty the pool — the dimension check in
+ * `embedQuery`/`embedBatch` already guards that contract.
  */
 const embeddingsProvider = createOpenRouter({
   apiKey,
-  extraBody: { dimensions: EMBEDDING_DIMENSIONS, usage: { include: true } },
+  extraBody: {
+    dimensions: EMBEDDING_DIMENSIONS,
+    usage: { include: true },
+    provider: {
+      zdr: true,
+      sort: "throughput",
+      quantizations: ["bf16", "fp16", "unknown"],
+    },
+  },
 });
 
 /**

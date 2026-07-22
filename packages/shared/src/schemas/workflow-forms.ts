@@ -351,8 +351,16 @@ export const PUBLIC_FORM_ACCESS_VALUES = [
 export const publicFormAccessSchema = z.enum(PUBLIC_FORM_ACCESS_VALUES);
 export type PublicFormAccess = z.infer<typeof publicFormAccessSchema>;
 
+/** How this form was reached: `live` = an active workflow (real submission);
+ * `test` = a member dry-running a draft/paused workflow through its own form. */
+export const PUBLIC_FORM_MODE_VALUES = ["live", "test"] as const;
+export const publicFormModeSchema = z.enum(PUBLIC_FORM_MODE_VALUES);
+export type PublicFormMode = z.infer<typeof publicFormModeSchema>;
+
 export const PublicFormResponseSchema = z.object({
   access: publicFormAccessSchema,
+  /** Present only when `access` is `ready`. */
+  mode: publicFormModeSchema.optional(),
   form: PublicFormViewSchema.optional(),
 });
 export type PublicFormResponse = z.infer<typeof PublicFormResponseSchema>;
@@ -360,6 +368,10 @@ export type PublicFormResponse = z.infer<typeof PublicFormResponseSchema>;
 export const PublicFormSubmitResponseSchema = z.object({
   ok: z.literal(true),
   successMessage: z.string().optional(),
+  /** Set only for a test submission — lets the cockpit link straight to the
+   * run it just started (`/workflows/{workflowId}?run={runId}`). */
+  runId: z.string().optional(),
+  workflowId: z.string().optional(),
 });
 export type PublicFormSubmitResponse = z.infer<
   typeof PublicFormSubmitResponseSchema

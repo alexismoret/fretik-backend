@@ -11,7 +11,7 @@ import {
 } from "@fretik/shared/schemas/workflow-forms";
 import { serializePublicForm } from "@fretik/shared/services/workflows/get-public-form";
 import { resolveFormAccess } from "@fretik/shared/services/workflows/resolve-form-access";
-import { submitPublicForm } from "@fretik/shared/services/workflows/submit-form";
+import { submitWorkflowForm } from "@fretik/shared/services/workflows/submit-form";
 import { createRoute, OpenAPIHono } from "@hono/zod-openapi";
 import type { Context } from "hono";
 import { rateLimiter } from "hono-rate-limiter";
@@ -73,7 +73,7 @@ publicFormRoutes.openapi(getFormRoute, async (c) => {
     return c.json({ access: result.access }, 200);
   }
   const form = await serializePublicForm(result.workflow, result.form);
-  return c.json({ access: "ready" as const, form }, 200);
+  return c.json({ access: "ready" as const, mode: result.mode, form }, 200);
 });
 
 // ==================== //
@@ -152,12 +152,13 @@ publicFormRoutes.post("/:token/submit", async (c) => {
     if (uploaded.length > 0) files.set(field.key, uploaded);
   }
 
-  const outcome = await submitPublicForm({
+  const outcome = await submitWorkflowForm({
     workflow: result.workflow,
     form: result.form,
     values,
     files,
     triggeredByUserId: userId ?? null,
+    isTest: result.mode === "test",
   });
 
   if (!outcome.ok) {
@@ -168,6 +169,10 @@ publicFormRoutes.post("/:token/submit", async (c) => {
       ok: true,
       ...(result.form.successMessage !== undefined
         ? { successMessage: result.form.successMessage }
+        : {}),
+      // A test submission returns its run so the cockpit can jump to it.
+      ...(result.mode === "test"
+        ? { runId: outcome.runId, workflowId: outcome.workflowId }
         : {}),
     },
     200,

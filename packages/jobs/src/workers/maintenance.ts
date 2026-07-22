@@ -41,9 +41,9 @@ export const startMaintenanceWorker = (): Worker => {
           return;
         }
         case GC_DEMOTE_JOB: {
-          const { demoted } = await runGcDemote();
+          const { demoted, purged } = await runGcDemote();
           console.info(
-            `[gc-demote] demoted ${demoted.toString()} stale episodes`,
+            `[gc-demote] demoted ${demoted.toString()} stale episodes, purged ${purged.toString()} expired`,
           );
           return;
         }

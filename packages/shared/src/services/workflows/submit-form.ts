@@ -3,20 +3,24 @@ import type { WorkflowFormConfig } from "../../schemas/workflow-forms";
 import { createWorkflowRun } from "./create-run";
 import { validateFormSubmission } from "./validate-form-submission";
 
-export type FormSubmitOutcome = { ok: true } | { ok: false; message: string };
+export type FormSubmitOutcome =
+  | { ok: true; runId: string; workflowId: string }
+  | { ok: false; message: string };
 
 /**
- * Handle one public form submission (access + rate limits already enforced by
- * the handler): validate the values/files against the stored form config, then
+ * Handle one form submission (access + rate limits already enforced by the
+ * handler): validate the values/files against the stored form config, then
  * create a `form`-triggered run seeded with the answers, with any uploads
- * attached so the agent reads them.
+ * attached so the agent reads them. Serves both the public `/f/<token>` page
+ * and a member's cockpit test run (`isTest` — a draft/paused dry-run).
  */
-export const submitPublicForm = async (params: {
+export const submitWorkflowForm = async (params: {
   workflow: Workflow;
   form: WorkflowFormConfig;
   values: Record<string, unknown>;
   files: Map<string, File[]>;
   triggeredByUserId?: string | null;
+  isTest?: boolean;
 }): Promise<FormSubmitOutcome> => {
   const validated = await validateFormSubmission({
     form: params.form,
@@ -25,12 +29,13 @@ export const submitPublicForm = async (params: {
   });
   if (!validated.ok) return { ok: false, message: validated.message };
 
-  await createWorkflowRun({
+  const run = await createWorkflowRun({
     workflow: params.workflow,
     triggerType: "form",
     triggerPayload: validated.payload,
     triggeredByUserId: params.triggeredByUserId ?? null,
     attachments: validated.attachments,
+    isTest: params.isTest ?? false,
   });
-  return { ok: true };
+  return { ok: true, runId: run.id, workflowId: run.workflowId };
 };

@@ -7,6 +7,8 @@ import {
   emitDomainEvent,
   SYSTEM_ACTOR,
 } from "../domain-events/emit";
+import { hideEpisodesForRecords } from "../episodes/hide-for-source";
+import { deleteEpisodeVectors } from "../episodes/vectors";
 
 /**
  * Delete an object record and journal `record.deleted` in the same transaction.
@@ -22,6 +24,7 @@ export const deleteObjectRecord = async (data: {
 }): Promise<{ id: string }> => {
   const actor = data.actor ?? SYSTEM_ACTOR;
 
+  let hiddenEpisodeIds: string[] = [];
   const run = async (tx: Transaction): Promise<{ id: string }> => {
     const existing = await tx.query.objectRecords.findFirst({
       columns: { id: true, organizationId: true, teamId: true, label: true },
@@ -40,9 +43,21 @@ export const deleteObjectRecord = async (data: {
       payload: { recordId: existing.id, label: existing.label },
     });
 
+    // Hide the record-activity episode anchored on this record BEFORE the row
+    // goes (the `anchorRecordId` FK nulls on delete). It leaves recall now and
+    // the GC purges it after 30 days.
+    hiddenEpisodeIds = await hideEpisodesForRecords(tx, [data.id]);
+
     await tx.delete(objectRecords).where(eq(objectRecords.id, data.id));
     return { id: data.id };
   };
 
-  return data.tx ? run(data.tx) : db.transaction(run);
+  const result = await (data.tx ? run(data.tx) : db.transaction(run));
+
+  // Drop the hidden episodes' recall vectors (no FK from `ai_vectors`).
+  // Fire-and-forget; vectors regenerate on re-promote, so a rolled-back parent
+  // tx (when `data.tx` is supplied) at worst re-vectorizes a still-live episode.
+  void deleteEpisodeVectors(hiddenEpisodeIds);
+
+  return result;
 };

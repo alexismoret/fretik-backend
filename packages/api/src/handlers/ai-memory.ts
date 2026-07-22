@@ -5,6 +5,8 @@ import {
 import { forbidden, notFound, throwHttpError } from "@fretik/shared/lib/errors";
 import {
   createMemoryBodySchema,
+  deleteAllMemoriesBodySchema,
+  deleteAllMemoriesResponseSchema,
   deleteMemoryQuerySchema,
   feedbackQuerySchema,
   memoryContentResponseSchema,
@@ -25,13 +27,17 @@ import {
   responseSuccessSchemaBuilder,
 } from "@fretik/shared/schemas/common/responses";
 import {
+  deleteAllEpisodesBodySchema,
+  deleteAllEpisodesResponseSchema,
   episodeDetailSchema,
   episodeIdParamSchema,
   episodeListQuerySchema,
   episodeListResponseSchema,
+  episodeOkResponseSchema,
 } from "@fretik/shared/schemas/episodes";
 import { createMemory } from "@fretik/shared/services/ai-memory/create";
 import { deleteMemory } from "@fretik/shared/services/ai-memory/delete";
+import { deleteAllMemories } from "@fretik/shared/services/ai-memory/delete-all";
 import {
   getMemoryActivityFeed,
   type MemoryFeedbackEntry,
@@ -42,10 +48,13 @@ import { listMemoriesForUi } from "@fretik/shared/services/ai-memory/list-for-ui
 import { overwriteMemory } from "@fretik/shared/services/ai-memory/overwrite";
 import { formatMemoryPath } from "@fretik/shared/services/ai-memory/paths";
 import { suggestMemoryPath } from "@fretik/shared/services/ai-memory/suggest-path";
+import { hideEpisode } from "@fretik/shared/services/episodes/hide";
+import { hideAllEpisodes } from "@fretik/shared/services/episodes/hide-all";
 import {
   getEpisode,
   listEpisodes,
 } from "@fretik/shared/services/episodes/list";
+import { isOrgAdmin } from "@fretik/shared/services/organization/member-role";
 import { createRoute, OpenAPIHono } from "@hono/zod-openapi";
 
 // ==================== //
@@ -222,6 +231,70 @@ const getEpisodeRoute = createRoute({
   },
 });
 
+const deleteEpisodeRoute = createRoute({
+  method: "delete",
+  path: "/episodes/{id}",
+  summary: "Delete (hide) a distilled episode",
+  description:
+    "Soft-delete: flips the episode to `demoted` and drops its recall vectors, so it leaves recall + the default UI immediately. A nightly job hard-deletes it after 30 days. A member may delete their own private episode; a team-visible one requires an org admin.",
+  tags: ["AiMemory"],
+  request: { params: episodeIdParamSchema },
+  responses: {
+    ...responseSuccessSchemaBuilder(episodeOkResponseSchema, "Episode hidden"),
+    ...responseNotFoundSchema,
+    ...responseForbiddenSchema,
+    ...responseInternalErrorSchema,
+  },
+});
+
+const deleteAllEpisodesRoute = createRoute({
+  method: "post",
+  path: "/episodes/delete-all",
+  summary: "Bulk-delete (hide) episodes in scope",
+  description:
+    "`scope='user'` hides the caller's own private episodes; `scope='team'` hides every episode in the team and requires an org admin (403 otherwise).",
+  tags: ["AiMemory"],
+  request: {
+    body: {
+      content: { "application/json": { schema: deleteAllEpisodesBodySchema } },
+      required: true,
+    },
+  },
+  responses: {
+    ...responseSuccessSchemaBuilder(
+      deleteAllEpisodesResponseSchema,
+      "Episodes hidden",
+    ),
+    ...responseBadRequestSchema,
+    ...responseForbiddenSchema,
+    ...responseInternalErrorSchema,
+  },
+});
+
+const deleteAllMemoriesRoute = createRoute({
+  method: "post",
+  path: "/delete-all",
+  summary: "Bulk-delete memory notes in scope",
+  description:
+    "`scope='user'` deletes the caller's own user-scope notes; `scope='team'` deletes every note in the team and requires an org admin (403 otherwise).",
+  tags: ["AiMemory"],
+  request: {
+    body: {
+      content: { "application/json": { schema: deleteAllMemoriesBodySchema } },
+      required: true,
+    },
+  },
+  responses: {
+    ...responseSuccessSchemaBuilder(
+      deleteAllMemoriesResponseSchema,
+      "Notes deleted",
+    ),
+    ...responseBadRequestSchema,
+    ...responseForbiddenSchema,
+    ...responseInternalErrorSchema,
+  },
+});
+
 const getFeedbackRoute = createRoute({
   method: "get",
   path: "/feedback",
@@ -287,6 +360,15 @@ aiMemoryRoutes.openapi(getEpisodeRoute, async (c) => {
   if (!episode) {
     return throwHttpError(404, notFound("Episode not found"));
   }
+  // Workflow-run provenance lives in `metadata` (no FK) — a run reuses the
+  // conversation pipeline, so `conversation` is also set, but the UI links to
+  // the run when both ids are present. Guard the untyped JSONB.
+  const workflowId = episode.metadata.workflowId;
+  const workflowRunId = episode.metadata.workflowRunId;
+  const workflow =
+    typeof workflowId === "string" && typeof workflowRunId === "string"
+      ? { workflowId, workflowRunId }
+      : null;
   return c.json(
     {
       id: episode.id,
@@ -316,9 +398,45 @@ aiMemoryRoutes.openapi(getEpisodeRoute, async (c) => {
       conversation: episode.conversation
         ? { id: episode.conversation.id, title: episode.conversation.title }
         : null,
+      workflow,
     },
     200,
   );
+});
+
+aiMemoryRoutes.openapi(deleteEpisodeRoute, async (c) => {
+  const ctx = requireSession(c);
+  const { id } = c.req.valid("param");
+  await hideEpisode({
+    episodeId: id,
+    teamId: ctx.teamId,
+    userId: ctx.userId,
+    isAdmin: await isOrgAdmin(ctx.organizationId, ctx.userId),
+  });
+  return c.json({ ok: true as const }, 200);
+});
+
+aiMemoryRoutes.openapi(deleteAllEpisodesRoute, async (c) => {
+  const ctx = requireSession(c);
+  const { scope } = c.req.valid("json");
+  const { hidden } = await hideAllEpisodes({
+    teamId: ctx.teamId,
+    userId: ctx.userId,
+    scope,
+    isAdmin: await isOrgAdmin(ctx.organizationId, ctx.userId),
+  });
+  return c.json({ hidden }, 200);
+});
+
+aiMemoryRoutes.openapi(deleteAllMemoriesRoute, async (c) => {
+  const ctx = requireSession(c);
+  const { scope } = c.req.valid("json");
+  const { deleted } = await deleteAllMemories({
+    scopeKey: ctx,
+    scope,
+    isAdmin: await isOrgAdmin(ctx.organizationId, ctx.userId),
+  });
+  return c.json({ deleted }, 200);
 });
 
 aiMemoryRoutes.openapi(getFeedbackRoute, async (c) => {

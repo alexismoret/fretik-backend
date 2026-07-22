@@ -4,6 +4,8 @@ import { objectRecords } from "../../db/schema";
 import { chunkForBulk } from "../../lib/db-bulk";
 import { type EventActor, SYSTEM_ACTOR } from "../domain-events/emit";
 import { emitDomainEventsBulk } from "../domain-events/emit-bulk";
+import { hideEpisodesForRecords } from "../episodes/hide-for-source";
+import { deleteEpisodeVectors } from "../episodes/vectors";
 
 /**
  * Result of a bulk delete. `deletedIds` are the records actually removed (owned
@@ -68,6 +70,7 @@ export const bulkDeleteObjectRecords = async (input: {
     .map((id) => ({ id, error: "Record not found in your team." }));
 
   const deletedIds: string[] = [];
+  const hiddenEpisodeIds: string[] = [];
   const runBatch = async (
     tx: Transaction,
     batch: typeof owned,
@@ -85,6 +88,15 @@ export const bulkDeleteObjectRecords = async (input: {
         dedupKey: `record.deleted:${r.id}`,
       })),
     });
+    // Hide record-activity episodes anchored on these records BEFORE the rows
+    // go (the `anchorRecordId` FK nulls on delete). This is the common path —
+    // deleting a document/folder bulk-deletes its mirror records through here.
+    hiddenEpisodeIds.push(
+      ...(await hideEpisodesForRecords(
+        tx,
+        batch.map((r) => r.id),
+      )),
+    );
     await tx.delete(objectRecords).where(
       inArray(
         objectRecords.id,
@@ -97,6 +109,9 @@ export const bulkDeleteObjectRecords = async (input: {
     else await db.transaction((tx) => runBatch(tx, batch));
     for (const r of batch) deletedIds.push(r.id);
   }
+
+  // Drop the hidden episodes' recall vectors (no FK from `ai_vectors`).
+  void deleteEpisodeVectors(hiddenEpisodeIds);
 
   return { deletedIds, errors };
 };

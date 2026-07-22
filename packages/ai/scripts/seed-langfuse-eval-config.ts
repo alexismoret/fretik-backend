@@ -31,7 +31,7 @@
 import { LangfuseClient } from "@langfuse/client";
 
 const JUDGE_MODEL =
-  process.env.OPENROUTER_EVAL_JUDGE_MODEL ?? "google/gemini-3.5-flash";
+  process.env.OPENROUTER_EVAL_JUDGE_MODEL ?? "google/gemini-3.6-flash";
 const ONLINE_SAMPLING = Number(
   process.env.LANGFUSE_ONLINE_EVAL_SAMPLING ?? "0.15",
 );

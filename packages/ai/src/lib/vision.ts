@@ -5,7 +5,7 @@ import { resolveModel } from "./model-registry/resolve";
 
 /**
  * Vision sub-model for the `vision` tool — the registry's `vision`
- * role (default Gemini 3.1 Flash Lite). The primary chat model never
+ * role (default Gemini 3.5 Flash Lite). The primary chat model never
  * sees image or PDF bytes — this keeps the hot-path context cheap and
  * isolates vision cost behind an explicit tool call.
  *
@@ -224,7 +224,7 @@ export interface DescribeVideoArgs {
 
 /**
  * Describe a video by sending its raw bytes to the PRIMARY vision model
- * only. Gemini 3.1 Flash Lite ingests video natively; the OpenRouter
+ * only. Gemini 3.5 Flash Lite ingests video natively; the OpenRouter
  * provider serialises a `file` part with a `video/*` mediaType as a
  * `video_url` block. NO fallback: the `vision-fallback` role
  * (`gpt-4o-mini`) has no video modality, so a second route would add cost

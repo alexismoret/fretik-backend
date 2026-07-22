@@ -107,7 +107,7 @@ export type CostClass = "premium" | "standard" | "budget";
  * `workhorse` = tool-capable cheap sub-work (pre-extract, sub-agents,
  * compaction), `utility` = judgment-on-context one-shots (memory
  * recall, titles, reformulation). A profile may belong to MORE THAN ONE
- * tier — e.g. Sonnet 4.6 / Gemini 3.5 Flash serve as both flagship and
+ * tier — e.g. Sonnet 4.6 / Gemini 3.6 Flash serve as both flagship and
  * workhorse — see `ModelProfile.tiers`.
  */
 export type ModelTier = "flagship" | "workhorse" | "utility";
@@ -267,7 +267,7 @@ export interface ModelProfile {
   family: ModelFamily;
   /**
    * Tiers this profile may be selected for (C8 picker grouping). Usually
-   * one; multi-tier models (e.g. Sonnet 4.6, Gemini 3.5 Flash) list
+   * one; multi-tier models (e.g. Sonnet 4.6, Gemini 3.6 Flash) list
    * `["flagship", "workhorse"]`. The profile surfaces in every tier menu
    * it lists, gate permitting — see `isSelectableForTier`.
    */

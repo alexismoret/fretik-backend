@@ -142,7 +142,7 @@ describe("role bindings — default model ids pinned (chat: gated M3 flip)", () 
     "memory-distill": "openai/gpt-oss-20b",
     "compaction-summarizer": "deepseek/deepseek-v4-flash",
     "cheap-tasks": "openai/gpt-oss-20b",
-    vision: "google/gemini-3.1-flash-lite",
+    vision: "google/gemini-3.5-flash-lite",
     "vision-fallback": "openai/gpt-4o-mini",
   };
 
@@ -224,8 +224,8 @@ describe("registry integrity", () => {
       "claude-haiku-4.5",
       "gpt-5.5",
       "gemini-3.1-pro",
-      "gemini-3.5-flash",
-      "gemini-3.1-flash-lite",
+      "gemini-3.6-flash",
+      "gemini-3.5-flash-lite",
       "mistral-medium-3.5",
     ]);
     for (const [key, profile] of Object.entries(MODEL_PROFILES)) {

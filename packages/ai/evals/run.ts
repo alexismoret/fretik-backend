@@ -31,7 +31,7 @@
  *   EVAL_USER_ID    (opt.)    forwarded as X-Context-User-Id
  *   LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY / LANGFUSE_BASE_URL
  *   OPENROUTER_API_KEY                 (judge)
- *   OPENROUTER_EVAL_JUDGE_MODEL  (opt., default google/gemini-3.5-flash)
+ *   OPENROUTER_EVAL_JUDGE_MODEL  (opt., default google/gemini-3.6-flash)
  *
  * ── Invocation ─────────────────────────────────────────────────────
  *

@@ -163,10 +163,10 @@ describe("cheapModelIdForTeam", () => {
     setTeamAiSettingsDouble({
       flagshipProfileKey: null,
       workhorseProfileKey: null,
-      utilityProfileKey: "gemini-3.1-flash-lite",
+      utilityProfileKey: "gemini-3.5-flash-lite",
     });
     expect(await cheapModelIdForTeam("team-1")).toBe(
-      resolveModelForRoleProfile("cheap-tasks", "gemini-3.1-flash-lite").profile
+      resolveModelForRoleProfile("cheap-tasks", "gemini-3.5-flash-lite").profile
         .catalog.id,
     );
   });

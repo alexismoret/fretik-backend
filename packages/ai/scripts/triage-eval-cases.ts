@@ -27,7 +27,7 @@ import type { Assertion, EvalCase } from "../evals/types";
 const MODEL =
   process.env.OPENROUTER_TRIAGE_MODEL ??
   process.env.OPENROUTER_EVAL_JUDGE_MODEL ??
-  "google/gemini-3.5-flash";
+  "google/gemini-3.6-flash";
 
 const CONCURRENCY = 5;
 

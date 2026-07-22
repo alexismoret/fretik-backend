@@ -55,7 +55,7 @@ const buildVisionPayload = (
 /**
  * `vision` tool — sends an image or PDF from the conversation's
  * sandbox to a vision sub-model (the model registry's `vision` role,
- * Google Gemini 3.1 Flash Lite by default) with a caller-supplied
+ * Google Gemini 3.5 Flash Lite by default) with a caller-supplied
  * question, and returns the description.
  *
  * Designed to be RARE. Most uploaded files in the Fretik chatbot are

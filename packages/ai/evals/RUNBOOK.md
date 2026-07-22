@@ -137,18 +137,18 @@ deltas — prefer the full set and re-run before trusting a borderline verdict.
 The C8 picker (`/model-profiles`) lists **only** profiles whose `assessment.evalGate.status
 === "passed"`, grouped per tier (flagship / workhorse / utility) — `isSelectableForTier`
 in `lib/model-registry/resolve.ts` matches `profile.tiers.includes(tier)`, so a multi-tier
-profile (e.g. Sonnet 4.6, Gemini 3.5 Flash = flagship + workhorse) shows in every tier it
+profile (e.g. Sonnet 4.6, Gemini 3.6 Flash = flagship + workhorse) shows in every tier it
 lists. A model becomes team-selectable the moment its `evalGate` flips to `passed` in
 `profiles.ts` (the same reviewed-PR promotion above) — no UI change needed.
 
-To enrich a tier (e.g. offer a frontier flagship like Claude Sonnet 4.6 / Gemini 3.5 Flash,
+To enrich a tier (e.g. offer a frontier flagship like Claude Sonnet 4.6 / Gemini 3.6 Flash,
 or a full-Mistral stack for a data-residency-sensitive team), gate the candidate, then flip
 its `evalGate` to `passed` in the promotion PR:
 
 ```bash
 cd backend/packages/ai           # service running in another pane
 AI_SERVICE_URL=http://localhost:8083 bun run evals:gate -- --candidate claude-sonnet-4.6
-AI_SERVICE_URL=http://localhost:8083 bun run evals:gate -- --candidate gemini-3.5-flash
+AI_SERVICE_URL=http://localhost:8083 bun run evals:gate -- --candidate gemini-3.6-flash
 AI_SERVICE_URL=http://localhost:8083 bun run evals:gate -- --candidate mistral-medium-3.5
 ```
 

@@ -36,7 +36,7 @@ When editing prompts (`src/agents/shared/agent-system-prompt.md`, `src/agents/ch
 
 Invariants:
 
-- **Judge is graded** (`evals/judge.ts` + `judge-rubric.md`): `correct/partial/incorrect`→1/0.5/0, model Gemini (`google/gemini-3.5-flash`, different family than the agent).
+- **Judge is graded** (`evals/judge.ts` + `judge-rubric.md`): `correct/partial/incorrect`→1/0.5/0, model Gemini (`google/gemini-3.6-flash`, different family than the agent).
 - **Curation lives in `evals/curation.ts`** (the `CURATED` map = triage gate output); only listed cases sync to the `chatbot-eval` dataset. Code is the source of truth; the dataset is a mirror that grows from prod via `promoteTrace`.
 - **Failure taxonomy is DISCOVERED, never seeded** (pre-defined list = confirmation bias; score configs are non-deletable). Seed only objective configs (`correctness`/`pass-rate`/`no-error`/`latency-ok`); `failed-check` is a mechanical "which assertion broke" label. Real taxonomy comes from error analysis on prod traces.
 - `scripts/*` are OUTSIDE the `tsconfig` include — `bun run typecheck` does not cover them (verify via a temp tsconfig).

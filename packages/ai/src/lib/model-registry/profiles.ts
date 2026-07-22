@@ -15,9 +15,9 @@ import {
  * 2026-06-11 (`scripts/check-model-catalog.ts` re-verifies them — run
  * it after any provider announcement). Tier placements follow the
  * Artificial Analysis Intelligence Index (June 2026 snapshot):
- * Opus 4.8 ≈ 61, GPT-5.5 ≈ 60, Gemini 3.5 Flash ≈ 55, MiniMax M3 ≈ 55
+ * Opus 4.8 ≈ 61, GPT-5.5 ≈ 60, Gemini 3.6 Flash ≈ 55, MiniMax M3 ≈ 55
  * (leading open weights), DeepSeek V4 Pro ≈ 52, GLM-5.1 ≈ 51. A profile
- * may list more than one tier (e.g. Sonnet 4.6 / Gemini 3.5 Flash serve
+ * may list more than one tier (e.g. Sonnet 4.6 / Gemini 3.6 Flash serve
  * both flagship and workhorse).
  *
  * A profile's `evalGate.status` stays `pending` until the C3 promotion
@@ -381,12 +381,12 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
       evalGate: { status: "pending" },
     },
   },
-  "gemini-3.5-flash": {
-    key: "gemini-3.5-flash",
+  "gemini-3.6-flash": {
+    key: "gemini-3.6-flash",
     family: "google",
     tiers: ["flagship", "workhorse"],
     catalog: {
-      id: "google/gemini-3.5-flash",
+      id: "google/gemini-3.6-flash",
       contextLength: 1_048_576,
       maxCompletionTokens: 65_536,
       inputModalities: ["text", "image", "video", "file", "audio"],
@@ -403,7 +403,11 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
     },
     assessment: {
       costClass: "standard",
-      pricing: { inputPerMTok: 1.5, outputPerMTok: 9, cacheReadPerMTok: 0.15 },
+      pricing: {
+        inputPerMTok: 1.5,
+        outputPerMTok: 7.5,
+        cacheReadPerMTok: 0.15,
+      },
       nativeInput: {
         image: false,
         video: false,
@@ -450,9 +454,9 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
     assessment: {
       costClass: "budget",
       pricing: {
-        inputPerMTok: 0.25,
-        outputPerMTok: 1.5,
-        cacheReadPerMTok: 0.025,
+        inputPerMTok: 0.3,
+        outputPerMTok: 2.5,
+        cacheReadPerMTok: 0.03,
       },
       nativeInput: {
         image: false,
@@ -848,7 +852,7 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
 export const STEERABLE_REASONING_KEYS: ReadonlySet<string> = new Set([
   "gpt-5.5",
   "gemini-3.1-pro",
-  "gemini-3.5-flash",
+  "gemini-3.6-flash",
   "claude-opus-4.8",
   "claude-sonnet-4.6",
   "mistral-medium-3.5",
@@ -981,7 +985,7 @@ export const ROLE_BINDINGS: Record<ModelRole, RoleBinding> = {
   // Structured document extraction (the `extract` tool). Separate from
   // `vision` on purpose: extraction quality tunes independently — if
   // flash-lite proves weak on complex tables, flipping this profileKey
-  // to gemini-3.5-flash is a one-line change with no impact on vision.
+  // to gemini-3.6-flash is a one-line change with no impact on vision.
   extract: {
     role: "extract",
     profileKey: "gemini-3.5-flash-lite",
@@ -993,7 +997,7 @@ export const ROLE_BINDINGS: Record<ModelRole, RoleBinding> = {
   // family here with a reliable native-PDF contract via OpenRouter.
   "extract-fallback": {
     role: "extract-fallback",
-    profileKey: "gemini-3.5-flash",
+    profileKey: "gemini-3.6-flash",
     settingsKind: "bare",
     wrapCache: false,
   },
@@ -1014,7 +1018,7 @@ export const ROLE_BINDINGS: Record<ModelRole, RoleBinding> = {
   // family swap is the most effective second attempt.
   "transform-fallback": {
     role: "transform-fallback",
-    profileKey: "gemini-3.5-flash",
+    profileKey: "gemini-3.6-flash",
     settingsKind: "bare",
     wrapCache: false,
   },

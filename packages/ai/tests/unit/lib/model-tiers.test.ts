@@ -47,9 +47,9 @@ describe("isSelectableForTier", () => {
   });
 
   test("workhorse / utility do NOT require a gate — only the tier + enabled", () => {
-    // gemini-3.5-flash is `pending` (failed flagship on zombie-rate) but lists
+    // gemini-3.6-flash is `pending` (failed flagship on zombie-rate) but lists
     // workhorse → selectable there, NOT in flagship.
-    const gemini = MODEL_PROFILES["gemini-3.5-flash"];
+    const gemini = MODEL_PROFILES["gemini-3.6-flash"];
     expect(gemini).toBeDefined();
     expect(gemini.assessment.evalGate.status).not.toBe("passed");
     expect(gemini.tiers).toContain("workhorse");
@@ -86,9 +86,9 @@ describe("listSelectableProfilesForTier", () => {
     expect(keys).toContain("minimax-m3");
   });
 
-  test("workhorse menu includes a non-gated model (gemini-3.5-flash)", () => {
+  test("workhorse menu includes a non-gated model (gemini-3.6-flash)", () => {
     const keys = listSelectableProfilesForTier("workhorse").map((p) => p.key);
-    expect(keys).toContain("gemini-3.5-flash");
+    expect(keys).toContain("gemini-3.6-flash");
   });
 
   test("utility menu excludes gpt-4o-mini (vision-fallback only)", () => {

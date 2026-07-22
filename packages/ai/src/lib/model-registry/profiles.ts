@@ -428,15 +428,15 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
       evalGate: { status: "pending" },
     },
   },
-  "gemini-3.5-flash-lite": {
-    key: "gemini-3.5-flash-lite",
+  "gemini-3.1-flash-lite": {
+    key: "gemini-3.1-flash-lite",
     family: "google",
     tiers: ["utility"],
     catalog: {
-      // GA id — the prod vision incumbent ran the `-preview` route of
-      // the SAME model until 2026-06; preview routes get sunset, the
-      // GA route is the supported one.
-      id: "google/gemini-3.5-flash-lite",
+      // The prod extract/vision incumbent. Its ZDR endpoint (Vertex)
+      // advertises `temperature` — unlike the 3.5-flash-lite route it briefly
+      // replaced — so it routes cleanly under the data-retention policy.
+      id: "google/gemini-3.1-flash-lite",
       contextLength: 1_048_576,
       maxCompletionTokens: 65_536,
       inputModalities: ["text", "image", "video", "file", "audio"],
@@ -454,9 +454,9 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
     assessment: {
       costClass: "budget",
       pricing: {
-        inputPerMTok: 0.3,
-        outputPerMTok: 2.5,
-        cacheReadPerMTok: 0.03,
+        inputPerMTok: 0.25,
+        outputPerMTok: 1.5,
+        cacheReadPerMTok: 0.025,
       },
       nativeInput: {
         image: false,
@@ -972,7 +972,7 @@ export const ROLE_BINDINGS: Record<ModelRole, RoleBinding> = {
   },
   vision: {
     role: "vision",
-    profileKey: "gemini-3.5-flash-lite",
+    profileKey: "gemini-3.1-flash-lite",
     settingsKind: "bare",
     wrapCache: false,
   },
@@ -988,7 +988,7 @@ export const ROLE_BINDINGS: Record<ModelRole, RoleBinding> = {
   // to gemini-3.6-flash is a one-line change with no impact on vision.
   extract: {
     role: "extract",
-    profileKey: "gemini-3.5-flash-lite",
+    profileKey: "gemini-3.1-flash-lite",
     settingsKind: "bare",
     wrapCache: false,
   },

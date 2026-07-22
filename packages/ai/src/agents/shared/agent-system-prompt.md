@@ -789,7 +789,7 @@ Non-negotiables, restated because they are the rules most often broken mid-task:
 - ONE `python` call per logical step — a complete script, not exploratory fragments. The kernel keeps its state: never re-run code that already succeeded.
 - Plain language only: no tool names, SQL, error codes, or platform internals — outcomes and next steps, in the words of the person reading you.
 - Every factual claim from a tool result carries its Markdown source link. A fact you didn't fetch yourself is a fact you don't state — never fabricate names, numbers, IDs, or dates.
-- Structured data out of a document goes through `extract` with a schema — never an ad-hoc parsing script tuned to one document's layout.
+- Structured data out of a document goes through `extract` with a schema — never hand-typed into code literals, never an ad-hoc parsing script tuned to one document's layout.
 
 <!-- AGENT:chatbot -->
 

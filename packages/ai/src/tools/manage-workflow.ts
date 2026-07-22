@@ -64,6 +64,25 @@ const sanitizeToolHints = (
   };
 };
 
+/**
+ * Drop an unknown icon (a real-but-uncurated Lucide name, or a typo) instead
+ * of failing the whole write — same "don't fail on a cosmetic field" stance
+ * as `sanitizeToolHints`. The workflow keeps the platform default icon and the
+ * warning steers the model to pick a catalog name via `searchIcons` + `update`,
+ * without discarding a 50-line playbook payload over a wrong icon string.
+ */
+export const sanitizeIcon = (
+  icon: string | undefined,
+): { icon: string | undefined; warnings: string[] } => {
+  if (icon === undefined || isValidIcon(icon)) return { icon, warnings: [] };
+  return {
+    icon: undefined,
+    warnings: [
+      `Ignored unknown icon '${icon}' — kept the default. Call searchIcons for a valid Lucide name, then set it via update.`,
+    ],
+  };
+};
+
 type WorkflowScope = "team" | "private";
 const scopeOf = (userId: string | null): WorkflowScope =>
   userId ? "private" : "team";
@@ -172,13 +191,9 @@ export const createManageWorkflowTool = () =>
         ? { userId, isAdmin: await isOrgAdmin(organizationId, userId) }
         : undefined;
 
-      if (input.icon && !isValidIcon(input.icon)) {
-        return toolError(
-          TOOL_ERROR_CODES.WORKFLOW_ERROR,
-          `Unknown icon '${input.icon}'.`,
-          "Call searchIcons for valid Lucide names.",
-        );
-      }
+      const { icon: safeIcon, warnings: iconWarnings } = sanitizeIcon(
+        input.icon,
+      );
 
       try {
         switch (input.action) {
@@ -195,7 +210,10 @@ export const createManageWorkflowTool = () =>
                 "No acting user in context.",
               );
             }
-            const { playbook, warnings } = sanitizeToolHints(input.playbook);
+            const { playbook, warnings: hintWarnings } = sanitizeToolHints(
+              input.playbook,
+            );
+            const warnings = [...iconWarnings, ...hintWarnings];
             const createInput: CreateWorkflowInput = {
               name: input.name,
               description: input.description ?? "",
@@ -204,7 +222,7 @@ export const createManageWorkflowTool = () =>
               triggerConfig: input.triggerConfig ?? {},
               autonomy: input.autonomy ?? "approval_required",
               limits: {},
-              ...(input.icon ? { icon: input.icon } : {}),
+              ...(safeIcon ? { icon: safeIcon } : {}),
               ...(input.color ? { color: input.color } : {}),
               ...(input.modelProfileKey
                 ? { modelProfileKey: input.modelProfileKey }
@@ -253,7 +271,7 @@ export const createManageWorkflowTool = () =>
               ...(input.description !== undefined
                 ? { description: input.description }
                 : {}),
-              ...(input.icon !== undefined ? { icon: input.icon } : {}),
+              ...(safeIcon !== undefined ? { icon: safeIcon } : {}),
               ...(input.color !== undefined ? { color: input.color } : {}),
               ...(input.triggerType !== undefined
                 ? { triggerType: input.triggerType }
@@ -286,6 +304,10 @@ export const createManageWorkflowTool = () =>
                 "No such workflow for this team.",
               );
             }
+            const updateWarnings = [
+              ...iconWarnings,
+              ...(sanitized ? sanitized.warnings : []),
+            ];
             return {
               ok: true,
               workflow: {
@@ -294,8 +316,8 @@ export const createManageWorkflowTool = () =>
                 status: workflow.status,
                 scope: scopeOf(workflow.userId),
               },
-              ...(sanitized && sanitized.warnings.length > 0
-                ? { warnings: sanitized.warnings }
+              ...(updateWarnings.length > 0
+                ? { warnings: updateWarnings }
                 : {}),
             };
           }

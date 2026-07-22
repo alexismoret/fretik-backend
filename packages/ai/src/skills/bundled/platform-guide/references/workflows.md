@@ -6,7 +6,7 @@ A workflow is this assistant running unattended: a trigger fires, the playbook's
 
 1. `get_trigger_catalog` — the authoritative list of triggers, their `triggerConfig` shapes, and per-event filter keys. Never guess a config shape.
 2. `create_draft` — name, description, trigger, playbook, autonomy, scope. The tool's own description carries the playbook-authoring rules (goal-oriented instructions, never tool names).
-3. `run_test` — a workflow CANNOT be activated until one test run has succeeded. Hand test files over via `files` (chat attachments never reach the run by themselves), then end the turn: the run executes in the background and this conversation is resumed with the outcome. Inspect with `get_run`; iterate with `update`.
+3. `run_test` — a workflow CANNOT be activated until one test run has succeeded. Hand test files over via `files` (chat attachments never reach the run by themselves), then end the turn: the run executes in the background and this conversation is resumed with the outcome. Inspect with `get_run` — and when the conversation holds an example of the expected result, compare the test's deliverable against it field by field; every mismatch is a playbook defect to fix with `update` before activating. Iterate with `update`.
 4. `activate` — the trigger goes live. `pause` stops it without deleting anything.
 
 ## Triggers
@@ -26,6 +26,8 @@ A playbook is a program: each run executes against whatever the trigger delivers
 
 Example files in the conversation are ONE point in the input space, not its definition — unless the user says they are the fixed template. When the request leaves the variability ambiguous ("here are some invoices" — always this supplier? always this layout?), `askUserQuestion` before building: one question up front beats a workflow that breaks on its second run.
 
+The same discipline covers the deliverable. When the output leaves a real choice open — which identifier fills a column, which of several formats, which rule when the data offers more than one candidate — settle it against the example the user gave, or `askUserQuestion` before building. A choice discovered only after the first test run has already cost the user the whole run.
+
 ## Autonomy modes
 
 - `read_only` — analysis and deliverables only; every write is refused. Right for reports and digests.
@@ -36,7 +38,7 @@ Example files in the conversation are ONE point in the input space, not its defi
 
 - **Notifications** — the run can email chosen members (plus whoever launched it) on success (with produced files attached), on failure, and when an approval is waiting. Most users want at least the failure email.
 - **Scope** — `team` (default; sees team connections) or `private` (also sees the creator's personal connections — required when the playbook uses a personal mailbox).
-- **toolHints** — pre-activate the domain tools the playbook needs, saving the run a discovery step.
+- **toolHints** — per task, name the tools it should reach for, above all the one that carries its core operation (structured extraction → `extract`, document-scale rewrite → `transform`). Domain tools listed here pre-load, skipping a discovery step; a core tool serves as a per-task usage cue the executor sees each turn.
 
 ## Traps
 

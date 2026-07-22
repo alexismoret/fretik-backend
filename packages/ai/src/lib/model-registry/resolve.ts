@@ -131,12 +131,20 @@ export const settingsForRole = (
       // must still carry their profile's PROVIDER policy — chiefly `zdr` (a
       // data-retention guarantee that must never be silently dropped), plus
       // throughput-sorted routing / an upstream pin when the profile asks for
-      // them. Previously returned `undefined`, so bare roles (transform,
-      // extract, vision, …) ran with NO provider block at all — dropping the
-      // very `zdr`/`sort` their profile declared.
+      // them.
+      //
+      // Deliberately NO `require_parameters`: unlike `chat`, bare roles never
+      // tool-call (extract/transform are structured-output/plain-text one-shots,
+      // vision/cheap-tasks/tool-repair are single generations), so the anti-XML
+      // guard the chat loop needs doesn't apply. And `require_parameters` is
+      // actively harmful here — it narrows routing to providers advertising
+      // EVERY request parameter, which empties the pool when a pinned model's
+      // only ZDR endpoint omits one: Gemini's ZDR route (Vertex) doesn't
+      // advertise `temperature`, which extract/vision send at 0, so ZDR + this
+      // flag → "No endpoints found matching your data policy" on every call.
+      // Same reasoning as the embeddings provider block (see `lib/embeddings.ts`).
       return {
         provider: {
-          require_parameters: true,
           zdr,
           ...(order ? { order: [...order] } : {}),
           ...(sort ? { sort } : {}),

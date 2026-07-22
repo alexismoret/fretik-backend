@@ -422,6 +422,32 @@ describe("assembleExtractResult", () => {
     expect(result.notices[1]).toContain('pages:"3-4"');
   });
 
+  test("a backend-unavailable failure steers to read + python, not a retry loop", () => {
+    const result = assembleExtractResult(
+      [
+        {
+          ...outcomeBase,
+          pages: [1, 2],
+          rows: [],
+          failed: true,
+          unavailable: true,
+          error: "No endpoints found matching your data policy",
+        },
+      ],
+      "records",
+      2,
+      "1-2",
+    );
+    expect(result.complete).toBe(false);
+    expect(result.notices[0]).toContain("unavailable");
+    expect(result.notices[0]).toContain("read + python");
+    expect(result.notices[0]).toContain(
+      "No endpoints found matching your data policy",
+    );
+    // Never tells the agent to re-call extract on a deterministic outage.
+    expect(result.notices[0]).not.toContain("re-call extract");
+  });
+
   test("record shape returns the first non-null record and flags fallback use", () => {
     const result = assembleExtractResult(
       [

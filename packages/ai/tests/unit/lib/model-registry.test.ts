@@ -88,10 +88,13 @@ describe("settingsForRole — parity with historical settings objects", () => {
     });
   });
 
-  test("bare roles carry their profile's provider policy (zdr always; sort when the profile asks)", () => {
+  test("bare roles carry their profile's provider policy (zdr always; sort when the profile asks), WITHOUT require_parameters", () => {
     // The reasoning/usage envelope is left to the call site, but the
-    // provider block (zdr especially) must never be dropped.
-    const bareNoSort = { provider: { require_parameters: true, zdr: true } };
+    // provider block (zdr especially) must never be dropped. Unlike `chat`,
+    // bare roles omit `require_parameters` — they never tool-call, and the
+    // flag would exclude a pinned model's only ZDR endpoint when it omits a
+    // sent parameter (Gemini's Vertex route doesn't advertise `temperature`).
+    const bareNoSort = { provider: { zdr: true } };
     expect(
       settingsForRole(
         ROLE_BINDINGS["cheap-tasks"],
@@ -114,7 +117,7 @@ describe("settingsForRole — parity with historical settings objects", () => {
         getProfileForRole("compaction-summarizer"),
       ),
     ).toEqual({
-      provider: { require_parameters: true, zdr: true, sort: "throughput" },
+      provider: { zdr: true, sort: "throughput" },
     });
   });
 
@@ -122,7 +125,7 @@ describe("settingsForRole — parity with historical settings objects", () => {
     expect(
       settingsForRole(ROLE_BINDINGS.transform, getProfileForRole("transform")),
     ).toEqual({
-      provider: { require_parameters: true, zdr: true, sort: "throughput" },
+      provider: { zdr: true, sort: "throughput" },
     });
   });
 });
@@ -142,8 +145,14 @@ describe("role bindings — default model ids pinned (chat: gated M3 flip)", () 
     "memory-distill": "openai/gpt-oss-20b",
     "compaction-summarizer": "deepseek/deepseek-v4-flash",
     "cheap-tasks": "openai/gpt-oss-20b",
-    vision: "google/gemini-3.5-flash-lite",
+    vision: "google/gemini-3.1-flash-lite",
     "vision-fallback": "openai/gpt-4o-mini",
+    extract: "google/gemini-3.1-flash-lite",
+    "extract-fallback": "google/gemini-3.6-flash",
+    transform: "deepseek/deepseek-v4-flash",
+    "transform-fallback": "google/gemini-3.6-flash",
+    "tool-repair": "openai/gpt-oss-120b",
+    "memory-consolidate": "openai/gpt-oss-120b",
   };
 
   for (const [role, id] of Object.entries(expectedIds)) {
@@ -225,7 +234,7 @@ describe("registry integrity", () => {
       "gpt-5.5",
       "gemini-3.1-pro",
       "gemini-3.6-flash",
-      "gemini-3.5-flash-lite",
+      "gemini-3.1-flash-lite",
       "mistral-medium-3.5",
     ]);
     for (const [key, profile] of Object.entries(MODEL_PROFILES)) {

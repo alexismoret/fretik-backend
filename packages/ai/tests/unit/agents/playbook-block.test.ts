@@ -114,6 +114,36 @@ describe("buildSteeringMessage (per-turn, at the tail)", () => {
     expect(msg).not.toContain("Tag each sender as client or vendor.");
   });
 
+  test("surfaces the current task's toolHints as a per-turn usage cue", () => {
+    const hinted: WorkflowTaskState[] = [
+      {
+        key: "extract_lines",
+        title: "Extract lines",
+        description: "",
+        instructions: "Pull every line item.",
+        toolHints: ["extract", "python"],
+        status: "in_progress",
+      },
+    ];
+    const msg = buildSteeringMessage({
+      run: run({ taskStates: hinted }),
+      turnIndex: 2,
+      currentDate: "d",
+      nudge: false,
+      wrapUp: false,
+    });
+    expect(msg).toContain("Suggested tools: extract, python");
+    // A task without hints emits no such line.
+    const bare = buildSteeringMessage({
+      run: run(),
+      turnIndex: 2,
+      currentDate: "d",
+      nudge: false,
+      wrapUp: false,
+    });
+    expect(bare).not.toContain("Suggested tools:");
+  });
+
   test("turn 1 includes recall; later turns don't", () => {
     const first = buildSteeringMessage({
       run: run(),

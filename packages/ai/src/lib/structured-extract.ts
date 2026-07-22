@@ -887,6 +887,14 @@ interface ChunkOutcome {
   truncated: boolean;
   failed: boolean;
   usedFallback: boolean;
+  /** Compact cause, set only when `failed` — surfaced in the tool notice. */
+  error?: string;
+  /**
+   * Set only when `failed`: the failure is a backend outage (routing /
+   * data-policy / provider-availability / transport), not a document problem —
+   * a same-call retry can't fix it, so the notice steers to read + python.
+   */
+  unavailable?: boolean;
 }
 
 interface CallContext {
@@ -1025,6 +1033,7 @@ const runSingleCall = async (
       console.error(
         `[extract] call failed on both models — ${describeLlmError(fallbackError)}`,
       );
+      const failure = summariseExtractFailure(fallbackError);
       return {
         pages,
         rows: [],
@@ -1032,6 +1041,8 @@ const runSingleCall = async (
         truncated: false,
         failed: true,
         usedFallback: true,
+        error: failure.reason,
+        unavailable: failure.unavailable,
       };
     }
   }
@@ -1091,6 +1102,7 @@ const runPdfChunk = async (
       console.error(
         `[extract] chunk ${formatPageRanges(pages)} failed on both models — ${describeLlmError(fallbackError)}`,
       );
+      const failure = summariseExtractFailure(fallbackError);
       return [
         {
           pages,
@@ -1099,6 +1111,8 @@ const runPdfChunk = async (
           truncated: false,
           failed: true,
           usedFallback: true,
+          error: failure.reason,
+          unavailable: failure.unavailable,
         },
       ];
     }
@@ -1111,6 +1125,41 @@ const runPdfChunk = async (
 
 const describeRange = (pages: readonly number[]): string =>
   pages.length === 0 ? "the document" : `pages ${formatPageRanges(pages)}`;
+
+/**
+ * Compact, agent-facing summary of a chunk that failed on BOTH models.
+ * `unavailable` marks failures a same-call retry can't fix — provider
+ * routing / data-policy / availability / transport (the ZDR-routing outage
+ * that motivated this returned "No endpoints found matching your data
+ * policy" on every chunk). The notice uses it to steer the agent to
+ * `read` + `python` instead of re-calling `extract` in a loop.
+ */
+const summariseExtractFailure = (
+  err: unknown,
+): { unavailable: boolean; reason: string } => {
+  const message = err instanceof Error ? err.message : String(err);
+  const causeMessage =
+    err instanceof Error && err.cause instanceof Error ? err.cause.message : "";
+  const haystack = `${message} ${causeMessage}`.toLowerCase();
+  const unavailable = [
+    "no endpoints",
+    "data policy",
+    "no allowed providers",
+    "rate limit",
+    "quota",
+    "overloaded",
+    "timed out",
+    "timeout",
+    "aborted",
+    "fetch failed",
+    "network",
+  ].some((needle) => haystack.includes(needle));
+  const reason = (message || "unknown error")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 180);
+  return { unavailable, reason };
+};
 
 /** Merge chunk outcomes into the tool-facing result envelope. */
 export const assembleExtractResult = (
@@ -1126,8 +1175,11 @@ export const assembleExtractResult = (
         ? ` with pages:"${formatPageRanges(outcome.pages)}"`
         : "";
     if (outcome.failed) {
+      const cause = outcome.error ? ` (${outcome.error})` : "";
       notices.push(
-        `${describeRange(outcome.pages)} could not be extracted (model error) — re-call extract${rangeArg}, or fall back to read + python.`,
+        outcome.unavailable
+          ? `${describeRange(outcome.pages)}: the extraction service is unavailable${cause} — this is a backend outage, not a document problem, and re-calling extract will keep failing. Use read + python for this task and report the failure.`
+          : `${describeRange(outcome.pages)} could not be extracted${cause} — re-call extract${rangeArg} with a narrower schema or instructions, or fall back to read + python.`,
       );
     } else if (outcome.truncated) {
       notices.push(

@@ -42,7 +42,7 @@ const MODEL_DISPLAY_NAME: Record<string, string> = {
   // Google
   "gemini-3.1-pro": "Gemini 3.1 Pro",
   "gemini-3.6-flash": "Gemini 3.6 Flash",
-  "gemini-3.5-flash-lite": "Gemini 3.5 Flash Lite",
+  "gemini-3.1-flash-lite": "Gemini 3.1 Flash Lite",
   // Mistral
   "mistral-medium-3.5": "Mistral Medium 3.5",
   "mistral-small-2603": "Mistral Small",

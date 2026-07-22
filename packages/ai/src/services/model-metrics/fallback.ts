@@ -26,7 +26,7 @@ export const FALLBACK_METRICS: Record<string, FallbackMetric> = {
   "gpt-4o-mini": { intelligence: 6.9, speed: 75.559 },
   "gemini-3.1-pro": { intelligence: 60, speed: 90 },
   "gemini-3.6-flash": { intelligence: 50.1, speed: 310.997 },
-  "gemini-3.5-flash-lite": { intelligence: 36.5, speed: 400.349 },
+  "gemini-3.1-flash-lite": { intelligence: 30, speed: 400 },
   "mistral-medium-3.5": { intelligence: 29.9, speed: 141.393 },
   "mistral-small-2603": { intelligence: 4.7, speed: 157.875 },
   "ministral-8b-2512": { intelligence: 28, speed: 220 },

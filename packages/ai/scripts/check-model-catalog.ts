@@ -17,6 +17,20 @@
  * drift check if/when profiles churn becomes a problem.
  *
  * NOTE: no API key needed — /api/v1/models is public.
+ *
+ * Live routing probe:
+ *
+ *     bun run models:check --probe        # needs OPENROUTER_API_KEY
+ *
+ * For every ROLE, makes a minimal completion with the role's REAL
+ * provider block + `temperature: 0` and reports whether it routes. This
+ * is the only check that catches an EMPTY routing pool — a catalog diff
+ * can't see it, because the model id exists and its parameters are on
+ * *some* endpoint, just not on the one the role's data policy allows
+ * (the class of failure behind "No endpoints found matching your data
+ * policy": Gemini's ZDR endpoint omits `temperature`, so ZDR +
+ * `require_parameters` empties the pool). Runs the probe and exits;
+ * without the flag, the catalog drift check runs as before.
  */
 import { MODEL_PROFILES } from "../src/lib/model-registry/profiles";
 
@@ -33,6 +47,60 @@ interface ApiModel {
 
 const sameSet = (a: readonly string[], b: readonly string[]): boolean =>
   a.length === b.length && [...a].sort().join(",") === [...b].sort().join(",");
+
+if (process.argv.includes("--probe")) {
+  // Dynamic imports: resolve.ts constructs the OpenRouter client (reads the
+  // API key), which the key-less drift path must not require.
+  const { resolveModel } = await import("../src/lib/model-registry/resolve");
+  const { ROLE_BINDINGS } = await import("../src/lib/model-registry/profiles");
+  const { generateText } = await import("ai");
+
+  // Iterate the binding VALUES so `binding.role` carries the ModelRole type
+  // (Object.keys would widen to string and force a cast).
+  const bindings = Object.values(ROLE_BINDINGS);
+  const results = await Promise.all(
+    bindings.map(async (binding) => {
+      const { model, profile } = resolveModel(binding.role);
+      try {
+        await generateText({
+          model,
+          prompt: "Reply with the single word: ok.",
+          temperature: 0,
+          maxOutputTokens: 8,
+        });
+        return {
+          role: binding.role,
+          id: profile.catalog.id,
+          ok: true as const,
+        };
+      } catch (err) {
+        return {
+          role: binding.role,
+          id: profile.catalog.id,
+          ok: false as const,
+          reason:
+            err instanceof Error ? err.message.slice(0, 160) : String(err),
+        };
+      }
+    }),
+  );
+
+  let failures = 0;
+  for (const r of results.sort((a, b) => a.role.localeCompare(b.role))) {
+    if (r.ok) {
+      console.log(`OK   ${r.role.padEnd(22)} ${r.id}`);
+    } else {
+      failures += 1;
+      console.error(`FAIL ${r.role.padEnd(22)} ${r.id} — ${r.reason}`);
+    }
+  }
+  if (failures > 0) {
+    console.error(`\n${failures}/${bindings.length} role(s) could not route.`);
+    process.exit(1);
+  }
+  console.log(`\nOK — all ${bindings.length} roles route a minimal request.`);
+  process.exit(0);
+}
 
 const response = await fetch("https://openrouter.ai/api/v1/models");
 if (!response.ok) {

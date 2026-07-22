@@ -59,12 +59,16 @@ const tmpl = Template()
   //                         PDF/PNG + xlsx formula recalculation (recalc.py)
   //   - poppler-utils     → pdf / pptx skills: PDF→PNG (pdftoppm) for thumbnails
   //                         and visual verification of generated outputs
+  //   - xxd, file         → byte/type inspection of generated outputs (BOM,
+  //                         encoding, magic bytes) in ONE bash call, instead of
+  //                         a hand-rolled Python hex loop that is easy to get
+  //                         wrong — `xxd` is not in the base image.
   // `--no-install-recommends` keeps the layer small (libreoffice's
   // suggested deps add ~400MB of unused packages).
   .runCmd(
     [
       "apt-get update",
-      "DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pandoc libreoffice-core libreoffice-writer libreoffice-calc libreoffice-impress poppler-utils",
+      "DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pandoc libreoffice-core libreoffice-writer libreoffice-calc libreoffice-impress poppler-utils xxd file",
       "apt-get clean",
       "rm -rf /var/lib/apt/lists/*",
     ].join(" && "),

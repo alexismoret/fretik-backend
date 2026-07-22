@@ -113,6 +113,9 @@ export const buildSteeringMessage = (params: {
     if (current.expectedOutput !== undefined) {
       lines.push(`Expected output: ${current.expectedOutput}`);
     }
+    if (current.toolHints !== undefined && current.toolHints.length > 0) {
+      lines.push(`Suggested tools: ${current.toolHints.join(", ")}`);
+    }
   } else {
     lines.push(
       "",

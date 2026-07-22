@@ -1082,6 +1082,12 @@ export const runChatbotTurn = async (
     toolExecuted: false,
     visibleText: false,
     failoverAttempted: false,
+    // Final-step signals for the "reasoned heavily, then stopped without the
+    // tool call it announced" zombie (see the recovery merge below).
+    // Overwritten every step, so at turn end they describe the LAST step.
+    lastStepCalledTool: false,
+    lastStepReasoningTokens: 0,
+    lastStepVisibleChars: 0,
   };
   // Langfuse anchor for the turn, captured the moment the `chatbot-turn`
   // span opens. `recordStreamError` fires inside stream callbacks where
@@ -1112,10 +1118,13 @@ export const runChatbotTurn = async (
   // turn), so there is nothing to synchronise cross-replica here.
   const emittedWireErrors = new Set<string>();
   const onTurnStep: GenerateTextOnStepEndCallback<ChatbotTools> = (step) => {
-    if (step.toolCalls.length > 0 || step.toolResults.length > 0) {
-      turnFlags.toolExecuted = true;
-    }
+    const calledTool = step.toolCalls.length > 0 || step.toolResults.length > 0;
+    if (calledTool) turnFlags.toolExecuted = true;
     if (step.text.length > 0) turnFlags.visibleText = true;
+    turnFlags.lastStepCalledTool = calledTool;
+    turnFlags.lastStepReasoningTokens =
+      step.usage?.outputTokenDetails?.reasoningTokens ?? 0;
+    turnFlags.lastStepVisibleChars = step.text.trim().length;
   };
   // A stream error is "transparently recoverable" only when it is a
   // pre-output provider failure (empty pool / 429 / 5xx / timeout), no
@@ -1642,8 +1651,27 @@ export const runChatbotTurn = async (
             finishReason === "stop" &&
             !turnFlags.toolExecuted &&
             hasNoVisibleText;
+          // Reasoning-dominated stop: the model reasoned heavily, emitted only
+          // a short preamble ("let me create the draft now"), and finished
+          // `stop` WITHOUT the tool call its own reasoning announced. Unlike
+          // `reasoningOnlyStop`, a bit of text and an earlier tool call exist,
+          // so it slips past the happy-path classifier — yet the turn is just
+          // as dead. Observed on MiniMax M3 building a large `manageWorkflow`
+          // draft (17k reasoning tokens on the final step, no create_draft
+          // call, 396 chars of filler). Gated on a heavy FINAL-step reasoning
+          // burst + a short final answer + no tool call in that step, so a
+          // genuine concise answer after modest reasoning never trips it.
+          const REASONING_ZOMBIE_TOKEN_FLOOR = 4000;
+          const REASONING_ZOMBIE_TEXT_CEILING = 600;
+          const reasoningDominatedStop =
+            finishReason === "stop" &&
+            !turnFlags.lastStepCalledTool &&
+            turnFlags.lastStepReasoningTokens >= REASONING_ZOMBIE_TOKEN_FLOOR &&
+            turnFlags.lastStepVisibleChars < REASONING_ZOMBIE_TEXT_CEILING;
           const primaryZombied =
-            (isBudgetExhausted || reasoningOnlyStop) && hasNoVisibleText;
+            (isBudgetExhausted && hasNoVisibleText) ||
+            reasoningOnlyStop ||
+            reasoningDominatedStop;
           if (primaryZombied) {
             // Zombie: the primary finished with no answer. Chain the
             // fallback with a visible notice (this fires regardless of

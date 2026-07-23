@@ -655,6 +655,17 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
         style: "max-tokens",
         defaultLevel: "low",
         maxTokens: 5_000,
+        // Replayed reasoning is POISON for M3's tool-calling: with its own
+        // past <think> blocks in history it hits the documented MiniMax
+        // "understanding-execution gap" — announces the tool call in text,
+        // then emits EOS instead of the call (prod zombies 2026-07-22/23,
+        // sessions 019f8ad8/019f8eb3). Controlled replay of the dead prod
+        // request (gen-1784805816, n=5 per variant): reasoning replayed →
+        // 4/5 tool calls; stripped → 5/5, zero new reasoning tokens, 2-3×
+        // faster steps. Stripping also stops the ×2+ per-turn context
+        // inflation. Novita ignores `reasoning.max_tokens`, so the budget
+        // above cannot contain it either way.
+        replayInHistory: false,
       },
       provider: { requireParameters: true, zdr: true, order: ["Novita"] },
       // Promoted via the C3 gate, 2026-06-12. All capabilities at or

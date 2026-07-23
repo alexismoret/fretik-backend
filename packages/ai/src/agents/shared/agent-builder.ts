@@ -12,6 +12,7 @@ import {
 } from "ai";
 import { telemetryFor } from "../../lib/langfuse";
 import type { ResolvedModel } from "../../lib/model-registry/resolve";
+import type { ModelProfile } from "../../lib/model-registry/types";
 import { stopOnRepeatedToolErrors, trailingToolErrorRun } from "./agent-set";
 import {
   DynamicToolManager,
@@ -319,6 +320,42 @@ const withLoopGuard = <TTools extends ToolSet>(
 };
 
 /**
+ * Wrap an agent's `prepareStep` with the reasoning-replay policy: when the
+ * serving profile declares `reasoning.replayInHistory: false`, drop every
+ * `reasoning` part from assistant messages before the step is sent — initial
+ * history AND the loop's own appended steps (`prepareStep` fires on step 0
+ * too). Text and tool-call parts are untouched; an assistant message left
+ * empty by the strip (reasoning-only, so it never carries tool calls whose
+ * responses could desync) is dropped whole. Composed OUTSIDE the loop guard
+ * so it has the final say on the outgoing messages. See the flag's doc in
+ * `model-registry/types.ts` for the measured rationale (MiniMax M3
+ * understanding-execution gap).
+ */
+export const withReasoningReplayStrip = <TTools extends ToolSet>(
+  base: PrepareStepFunction<TTools>,
+  profile: ModelProfile,
+): PrepareStepFunction<TTools> => {
+  if (profile.assessment.reasoning.replayInHistory !== false) return base;
+  return async (options) => {
+    const result = (await base(options)) ?? {};
+    const messages = result.messages ?? options.messages;
+    let changed = false;
+    const stripped = messages.flatMap((message) => {
+      if (message.role !== "assistant" || !Array.isArray(message.content)) {
+        return [message];
+      }
+      const parts = message.content.filter((part) => part.type !== "reasoning");
+      if (parts.length === message.content.length) return [message];
+      changed = true;
+      if (parts.length === 0) return [];
+      return [{ ...message, content: parts }];
+    });
+    if (!changed) return result;
+    return { ...result, messages: stripped };
+  };
+};
+
+/**
  * The argument type the framework hands to `prepareCall` — derived from the
  * SDK settings so the callback body stays fully typed even though the settings
  * object is asserted past the generic `ToolsContextParameter` conditional.
@@ -333,7 +370,10 @@ const buildToolLoopAgent = <CALL_OPTIONS, TTools extends ToolSet>(
 ): ToolLoopAgent<CALL_OPTIONS, TTools> => {
   const model: LanguageModel = resolved.model;
   const tools = config.buildTools();
-  const prepareStep = withLoopGuard(config.prepareStep?.(tools));
+  const prepareStep = withReasoningReplayStrip(
+    withLoopGuard(config.prepareStep?.(tools)),
+    resolved.profile,
+  );
   const configuredStop = config.stopWhen ?? isStepCount(12);
   // Compose the loop guard's hard backstop into every agent's stop set.
   const stopWhen = [

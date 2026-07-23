@@ -64,6 +64,7 @@ import {
   toUIMessageStream,
   UI_MESSAGE_STREAM_HEADERS,
   type GenerateTextOnStepEndCallback,
+  type ModelMessage,
   type UIMessage,
   type UIMessageChunk,
   type UIMessageStreamWriter,
@@ -75,6 +76,7 @@ import { streamSSE } from "hono/streaming";
 import { buildSpeakerContext } from "../agents/chatbot/speaker-context";
 import { summariseMissedMessages } from "../services/catch-up-summary";
 import { notifyMentionedMembers } from "../services/chatbot-mention-email";
+import { isAnnouncedActionStop } from "../services/turn-continuation/judge";
 // Use node:stream/web's TransformStream rather than the DOM global:
 // Bun implements both, but the DOM lib's TransformStream clashes with
 // `AsyncIterableStream.pipeThrough` typings (DOM's ReadableStream has
@@ -299,12 +301,16 @@ const streamChatbotWithFallback = async (params: {
         ? { providerOptions: { openrouter: openrouterOptions } }
         : {}),
     });
-  return streamWithRetryThenFallback({
+  const outcome = await streamWithRetryThenFallback({
     primary: () => streamWith(params.agentSet.primary),
     fallback: () => streamWith(params.agentSet.fallback),
     abortSignal: params.abortSignal,
     log: (message) => console.warn(`[chatbot] ${message}`),
   });
+  // `modelMessages` is returned so the dead-step continuation can rebuild
+  // "this turn so far" (base history + the partial turn's response messages)
+  // without re-running `prepareModelMessages`.
+  return { ...outcome, modelMessages };
 };
 
 /**
@@ -1082,11 +1088,10 @@ export const runChatbotTurn = async (
     toolExecuted: false,
     visibleText: false,
     failoverAttempted: false,
-    // Final-step signals for the "reasoned heavily, then stopped without the
-    // tool call it announced" zombie (see the recovery merge below).
+    // Final-step signals for the dead-final-step recovery (the model
+    // announces an action, then ends the turn without the tool call).
     // Overwritten every step, so at turn end they describe the LAST step.
     lastStepCalledTool: false,
-    lastStepReasoningTokens: 0,
     lastStepVisibleChars: 0,
   };
   // Langfuse anchor for the turn, captured the moment the `chatbot-turn`
@@ -1122,8 +1127,6 @@ export const runChatbotTurn = async (
     if (calledTool) turnFlags.toolExecuted = true;
     if (step.text.length > 0) turnFlags.visibleText = true;
     turnFlags.lastStepCalledTool = calledTool;
-    turnFlags.lastStepReasoningTokens =
-      step.usage?.outputTokenDetails?.reasoningTokens ?? 0;
     turnFlags.lastStepVisibleChars = step.text.trim().length;
   };
   // A stream error is "transparently recoverable" only when it is a
@@ -1465,6 +1468,110 @@ export const runChatbotTurn = async (
         }
       };
 
+      // Dead-final-step recovery: the model did tool work, then its FINAL
+      // step announced an action in a short text and emitted EOS instead of
+      // the tool call (MiniMax "understanding-execution gap" — prod zombies
+      // 2026-07-22/23). Unlike the zombie path above, the turn HAS side
+      // effects, so re-running it from the base history would replay tool
+      // writes (a `create_draft` would be duplicated). The remedy is a
+      // CONTINUATION: same turn context (base model messages + the partial
+      // turn's response messages) plus a one-line steer, streamed into the
+      // same writer. One attempt on the primary; if its final step dies the
+      // same way, one attempt on the fallback model with the identical
+      // augmented history; then give up (the announced text stays visible).
+      const CONTINUATION_NUDGE =
+        "[continuation] Your last message announced an action but the turn ended without the corresponding tool call. Continue now: make that tool call and carry the task through. If the work is genuinely complete, write the final answer instead.";
+      /** Final-step text at/above this length reads as a real answer, not a
+       * dead announcement (observed dead steps: 86 and 396 chars). */
+      const DEAD_STEP_TEXT_CEILING = 600;
+      const runContinuation = async (
+        baseMessages: ModelMessage[],
+        partialMessages: ModelMessage[],
+      ): Promise<void> => {
+        turnFlags.failoverAttempted = true;
+        const messages = [
+          ...baseMessages,
+          ...partialMessages,
+          { role: "user" as const, content: CONTINUATION_NUDGE },
+        ];
+        const attempt = async (
+          agent: AgentSet<ChatbotCallOptions, ChatbotTools>["primary"],
+          kind: string,
+          servedBy: "primary" | "fallback",
+        ): Promise<boolean> => {
+          recoveryKind = kind;
+          if (servedBy === "fallback") servedByTurn = "fallback";
+          const contResult = await agent.stream({
+            messages,
+            options: callOptionsWithFiles,
+            abortSignal: abortController.signal,
+            onStepEnd: onTurnStep,
+            ...(reasoningOverride !== undefined
+              ? {
+                  providerOptions: {
+                    openrouter: { reasoning: reasoningOverride },
+                  },
+                }
+              : {}),
+          });
+          writer.merge(
+            dropChunksAfterAbort(
+              toUIMessageStream<ChatbotTools>({
+                stream: contResult.stream,
+                onError: recordStreamError,
+                messageMetadata: ({ part }) => {
+                  if (part.type !== "finish") return undefined;
+                  return buildTurnMessageMetadata(
+                    part,
+                    servedBy,
+                    modelProfile.key,
+                    getActiveTraceId(),
+                  );
+                },
+              }),
+              abortController.signal,
+            ),
+          );
+          const [contFinish, contText] = await Promise.all([
+            contResult.finishReason,
+            contResult.text,
+          ]);
+          visibleOutput = [visibleOutput, contText ?? ""]
+            .filter((s) => s.length > 0)
+            .join("\n");
+          // Recovered iff the continuation's final step either ran a tool
+          // (flags updated live by onTurnStep) or delivered substantial text.
+          return (
+            turnFlags.lastStepCalledTool ||
+            (contFinish === "stop" &&
+              turnFlags.lastStepVisibleChars >= DEAD_STEP_TEXT_CEILING)
+          );
+        };
+        try {
+          console.error(
+            `${params.logPrefix} dead final step (announced action, no tool call) — continuing on the primary`,
+          );
+          if (
+            await attempt(agentSet.primary, "dead-step-continuation", "primary")
+          ) {
+            return;
+          }
+          console.error(
+            `${params.logPrefix} continuation died on the primary — retrying on the fallback model`,
+          );
+          await attempt(
+            agentSet.fallback,
+            "dead-step-continuation-fallback",
+            "fallback",
+          );
+        } catch (err) {
+          console.warn(
+            `${params.logPrefix} dead-step continuation failed:`,
+            err instanceof Error ? err.message : err,
+          );
+        }
+      };
+
       // Auto-title the conversation from the first user message. The
       // generation + the emit/persist both run in PARALLEL with the model
       // answer: `emitAutoTitle` writes the `data-conversation-title` part
@@ -1523,15 +1630,16 @@ export const runChatbotTurn = async (
           },
         });
 
-        const { result, servedBy, retried } = await streamChatbotWithFallback({
-          history: historyForModel,
-          callOptions: callOptionsWithFiles,
-          agentSet,
-          modelProfile,
-          abortSignal: abortController.signal,
-          onStepFinish: onTurnStep,
-          reasoningOverride,
-        });
+        const { result, servedBy, retried, modelMessages } =
+          await streamChatbotWithFallback({
+            history: historyForModel,
+            callOptions: callOptionsWithFiles,
+            agentSet,
+            modelProfile,
+            abortSignal: abortController.signal,
+            onStepFinish: onTurnStep,
+            reasoningOverride,
+          });
         // Pre-stream recovery telemetry (the mid-stream paths set their own
         // `recoveryKind` via runFallbackModel / the structured-error branch).
         servedByTurn = servedBy;
@@ -1640,43 +1748,32 @@ export const runChatbotTurn = async (
           const isBudgetExhausted =
             finishReason === "other" || finishReason === "length";
           const hasNoVisibleText = (finalText ?? "").trim().length === 0;
-          // Reasoning-only stop: the model spends its whole output on
-          // reasoning and finishes `stop` with no visible text and no
-          // tool side-effect (observed on MiniMax M3, doctrine run
-          // 2026-07-17). From the user's perspective that turn is as
-          // dead as a budget-exhausted one — chain the fallback. Turns
-          // that ran a tool are excluded: askUserQuestion / pending
-          // approval end the turn with legitimately empty text.
-          const reasoningOnlyStop =
-            finishReason === "stop" &&
+          // Zombie: the turn finished with no answer AND no tool side effect
+          // (reasoning-only stop, or a budget-exhausted step — observed on
+          // MiniMax M3, doctrine run 2026-07-17). Chain the fallback from the
+          // base history: with zero side effects a from-scratch re-run is
+          // safe. Turns that ran a tool are EXCLUDED here — re-running them
+          // would replay their writes; their dead-step case is handled by the
+          // continuation below, which keeps the partial turn in context.
+          const primaryZombied =
+            (isBudgetExhausted || finishReason === "stop") &&
             !turnFlags.toolExecuted &&
             hasNoVisibleText;
-          // Reasoning-dominated stop: the model reasoned heavily, emitted only
-          // a short preamble ("let me create the draft now"), and finished
-          // `stop` WITHOUT the tool call its own reasoning announced. Unlike
-          // `reasoningOnlyStop`, a bit of text and an earlier tool call exist,
-          // so it slips past the happy-path classifier — yet the turn is just
-          // as dead. Observed on MiniMax M3 building a large `manageWorkflow`
-          // draft (17k reasoning tokens on the final step, no create_draft
-          // call, 396 chars of filler). Gated on a heavy FINAL-step reasoning
-          // burst + a short final answer + no tool call in that step, so a
-          // genuine concise answer after modest reasoning never trips it.
-          const REASONING_ZOMBIE_TOKEN_FLOOR = 4000;
-          const REASONING_ZOMBIE_TEXT_CEILING = 600;
-          const reasoningDominatedStop =
-            finishReason === "stop" &&
+          // Dead final step: the turn DID tool work, then its final step
+          // announced an action in a short text and finished without the
+          // tool call (MiniMax "understanding-execution gap", prod zombies
+          // 2026-07-22/23 — 86 and 396 chars of "let me…" then EOS; the
+          // reasoning volume is NOT a signal, the observed cases spanned
+          // 879→17k reasoning tokens). The judge separates it from a
+          // legitimate brief answer; askUserQuestion / pending-approval
+          // turns never match (their final step calls a tool).
+          const deadFinalStep =
+            (finishReason === "stop" || isBudgetExhausted) &&
+            turnFlags.toolExecuted &&
             !turnFlags.lastStepCalledTool &&
-            turnFlags.lastStepReasoningTokens >= REASONING_ZOMBIE_TOKEN_FLOOR &&
-            turnFlags.lastStepVisibleChars < REASONING_ZOMBIE_TEXT_CEILING;
-          const primaryZombied =
-            (isBudgetExhausted && hasNoVisibleText) ||
-            reasoningOnlyStop ||
-            reasoningDominatedStop;
+            turnFlags.lastStepVisibleChars < DEAD_STEP_TEXT_CEILING &&
+            !turnFlags.failoverAttempted;
           if (primaryZombied) {
-            // Zombie: the primary finished with no answer. Chain the
-            // fallback with a visible notice (this fires regardless of
-            // whether tool calls happened — from the user's perspective a
-            // turn that called `read` 5× and produced no text is a zombie).
             console.error(
               `${params.logPrefix} primary zombied (finish=${finishReason}) — chaining to fallback model`,
             );
@@ -1684,6 +1781,14 @@ export const runChatbotTurn = async (
               notice: true,
               recovery: "zombie-fallback",
             });
+          } else if (deadFinalStep) {
+            const lastStepText = (finalText ?? "").trim();
+            if (await isAnnouncedActionStop(lastStepText)) {
+              await runContinuation(
+                modelMessages,
+                await result.responseMessages,
+              );
+            }
           }
         }
       };

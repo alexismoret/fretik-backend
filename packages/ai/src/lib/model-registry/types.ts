@@ -212,6 +212,19 @@ export interface ModelAssessment {
      * use the table value for `defaultLevel`.
      */
     maxTokens?: number;
+    /**
+     * `false` = strip this model's own reasoning parts from the message
+     * history before every step (in-loop AND across turns). Set it when
+     * replaying the model's reasoning measurably degrades it: on
+     * MiniMax M3 (Novita), replayed reasoning triggers the documented
+     * "understanding-execution gap" — the model announces a tool call
+     * in text, then emits EOS instead of the call (controlled replay of
+     * prod zombie gen-1784805816: replay 4/5 tool calls, stripped 5/5,
+     * and stripping also stops runaway re-thinking + shrinks context).
+     * Absent = replay as-is (default; families with signed reasoning —
+     * Anthropic / Google — MUST keep it).
+     */
+    replayInHistory?: false;
   };
   /**
    * OpenRouter routing envelope. `requireParameters` is non-negotiable

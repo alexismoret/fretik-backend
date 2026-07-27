@@ -18,6 +18,7 @@ import {
 // jsonb columns are typed by its inferred types, so nothing is declared
 // twice and drizzle-kit sees no schema-parse cycle (the reverse edge is
 // type-only, erased at runtime).
+import type { ReasoningLevelInput } from "../../schemas/reasoning";
 import type {
   WorkflowLimits,
   WorkflowNotifications,
@@ -100,6 +101,14 @@ export const workflows = pgTable(
 
     // Per-workflow model override; NULL → the `workflow` role default.
     modelProfileKey: varchar("model_profile_key", { length: 64 }),
+
+    // How hard this workflow's model thinks (a `ReasoningLevel`). NULL → the
+    // team's flagship default, then the profile default. Persisted rather than
+    // per-run because a workflow has no prompt bar: cron / form / event runs
+    // start with nobody there to choose.
+    reasoningLevel: varchar("reasoning_level", {
+      length: 16,
+    }).$type<ReasoningLevelInput>(),
 
     // User-visible run limits (wall-clock + optional token budget).
     limits: jsonb("limits").$type<WorkflowLimits>().notNull().default({}),

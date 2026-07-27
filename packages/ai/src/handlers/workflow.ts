@@ -76,9 +76,11 @@ import type { WorkflowTools } from "../agents/workflow/tools";
 import { subscribeAbort } from "../lib/abort-subscriber";
 import { flushLangfuse, langfuseEnabled } from "../lib/langfuse";
 import {
-  getProfileForRole,
+  effectiveReasoningLevel,
+  reasoningParamForProfile,
   resolveChatModelForProfile,
 } from "../lib/model-registry/resolve";
+import { resolveTeamFlagship } from "../lib/model-registry/team-model";
 import {
   streamWithRetryThenFallback,
   withSoftTimeout,
@@ -395,7 +397,24 @@ const executeTurn = async (params: {
     },
   );
 
-  const agentSet = getWorkflowAgentSet(workflow.modelProfileKey ?? undefined);
+  // Which model serves this run: the workflow's own pin → the team's flagship
+  // pick → the code default. `modelProfileKey` is persisted as a free
+  // `z.string().max(64)` (the agent's `manage_workflow` tool can write any
+  // string) and used to be handed straight to `resolveChatModelForProfile`,
+  // whose `getProfile` THROWS on an unknown key — so a workflow pinned to a
+  // profile we later renamed or retired died mid-run instead of degrading.
+  const {
+    profileKey: servingProfileKey,
+    fellBack,
+    storedReasoningLevel,
+  } = await resolveTeamFlagship(workflow.teamId, workflow.modelProfileKey);
+  if (fellBack) {
+    console.warn(
+      `${logPrefix} workflow ${workflow.id} pins unknown/unselectable model "${workflow.modelProfileKey ?? ""}" — falling back to ${servingProfileKey}`,
+    );
+  }
+
+  const agentSet = getWorkflowAgentSet(servingProfileKey);
 
   let turnUsage: LanguageModelUsage | undefined;
   let finalMessages: UIMessage[] = [];
@@ -428,10 +447,18 @@ const executeTurn = async (params: {
     }
   };
 
-  const modelProfile =
-    workflow.modelProfileKey !== null
-      ? resolveChatModelForProfile(workflow.modelProfileKey).profile
-      : getProfileForRole("workflow");
+  // Same resolved key as `agentSet` above, so the profile driving
+  // `prepareModelMessages` can never diverge from the one actually serving.
+  const modelProfile = resolveChatModelForProfile(servingProfileKey).profile;
+
+  // Thinking depth for this run: the workflow's own setting → the team's stored
+  // default (only when this run uses the team's flagship — see
+  // `resolveTeamFlagship`) → the profile default. Persisted rather than asked
+  // per run, because cron / form / event runs start with nobody there to pick.
+  const runReasoningLevel = effectiveReasoningLevel(
+    modelProfile,
+    workflow.reasoningLevel ?? storedReasoningLevel,
+  );
 
   try {
     const modelMessages = await convertToModelMessages(
@@ -445,16 +472,31 @@ const executeTurn = async (params: {
       { ignoreIncompleteToolCalls: true },
     );
 
-    // C5v2: pin the raw PDF past OpenRouter's default Mistral-OCR pass
-    // when a native file rides this turn; otherwise send no
-    // `providerOptions` at all (byte-identical to today).
-    const providerOptionsSpread = hasNativeFileParts(history, modelProfile)
-      ? {
-          providerOptions: {
-            openrouter: { plugins: NATIVE_FILE_PARSER_PLUGINS },
-          },
-        }
-      : {};
+    // Two independent per-call provider overrides, merged into one
+    // `openrouter` block (a second `providerOptions` key would clobber the
+    // first). With neither in play we send no `providerOptions` at all, so an
+    // ordinary run stays byte-identical to before.
+    //  - C5v2: pin the raw PDF past OpenRouter's default Mistral-OCR pass when
+    //    a native file rides this turn.
+    //  - the resolved thinking depth, which overrides the profile-baked default
+    //    the model instance was constructed with.
+    const openrouterOptions = {
+      ...(hasNativeFileParts(history, modelProfile)
+        ? { plugins: NATIVE_FILE_PARSER_PLUGINS }
+        : {}),
+      ...(runReasoningLevel !== undefined
+        ? {
+            reasoning: reasoningParamForProfile(
+              modelProfile,
+              runReasoningLevel,
+            ),
+          }
+        : {}),
+    };
+    const providerOptionsSpread =
+      Object.keys(openrouterOptions).length > 0
+        ? { providerOptions: { openrouter: openrouterOptions } }
+        : {};
 
     const streamOutcome = await streamWithRetryThenFallback({
       primary: () =>

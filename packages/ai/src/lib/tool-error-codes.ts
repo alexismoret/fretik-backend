@@ -58,7 +58,11 @@ export const TOOL_ERROR_CODES = {
   UNSUPPORTED_VISION_TYPE: "UNSUPPORTED_VISION_TYPE",
   VISION_ERROR: "VISION_ERROR",
 
-  // Structured extraction (`extract` tool)
+  // Structured extraction (`extract` tool). INVALID_ARGS = malformed call
+  // shape (empty/oversized field list) — the loop guard forces a corrected
+  // retry of the SAME tool from the worked example in the hint, never a switch
+  // to python. INVALID_SCHEMA kept for back-compat (legacy `schema` arg path).
+  INVALID_ARGS: "INVALID_ARGS",
   INVALID_SCHEMA: "INVALID_SCHEMA",
   INVALID_PAGE_RANGE: "INVALID_PAGE_RANGE",
   EXTRACT_ERROR: "EXTRACT_ERROR",

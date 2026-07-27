@@ -69,9 +69,9 @@ export type PreExtractionUniversalOutput = z.infer<
 /**
  * Build a Zod object whose shape mirrors the active team's field
  * definitions. The `.describe()` on each field carries the user-facing
- * description; Vercel AI SDK's `Output.object` forwards it to the JSON
- * Schema sent to the LLM, so the model knows precisely what to extract
- * without us having to grow the system prompt.
+ * description; `zodToPromptSchema` serialises it into the JSON Schema
+ * block of the pre-extract system prompt, so the model knows precisely
+ * what to extract without us having to grow the base prompt.
  *
  * Type mapping:
  *   - text / url / email → z.string()

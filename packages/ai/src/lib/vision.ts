@@ -5,9 +5,14 @@ import { resolveModel } from "./model-registry/resolve";
 
 /**
  * Vision sub-model for the `vision` tool — the registry's `vision`
- * role (default Gemini 3.5 Flash Lite). The primary chat model never
- * sees image or PDF bytes — this keeps the hot-path context cheap and
- * isolates vision cost behind an explicit tool call.
+ * role (shared with the `extract` engine). The primary
+ * chat model never sees image or PDF bytes — this keeps the hot-path
+ * context cheap and isolates vision cost behind an explicit tool call.
+ *
+ * Reasoning is pinned to `minimal` and temperature is dropped: Gemini 3.x
+ * mandates reasoning (it counts against the output cap) and returns EMPTY at
+ * `temperature:0` — the same two knobs the `extract` engine learned from the
+ * WS0 replay. See `lib/structured-extract.ts`.
  *
  * Contract: the caller hands raw bytes (already read from the
  * conversation sandbox via the storage façade) plus the mime type
@@ -51,8 +56,23 @@ const VIDEO_TIMEOUT_MS = 120_000;
  * `finishReason`) so a capped answer is always visible to the caller.
  * Bulk structured extraction does not belong here (that's `extract`).
  */
-const MAX_OUTPUT_TOKENS = 3_000;
-const TEMPERATURE = 0.2;
+// Reasoning counts against this cap on Gemini 3.x, so leave headroom above the
+// answer itself — a describe truncated by thinking would be surfaced as
+// `truncated` but is a waste.
+const MAX_OUTPUT_TOKENS = 8_000;
+
+/** Mandatory Gemini reasoning pinned to the least; native-PDF route added per
+ * call where the source is a PDF. No temperature (Vertex ZDR omits it; temp:0
+ * returns empty on Gemini 3.x). */
+const VISION_PROVIDER_OPTIONS = {
+  openrouter: { reasoning: { effort: "minimal" as const } },
+};
+const VISION_PDF_PROVIDER_OPTIONS = {
+  openrouter: {
+    reasoning: { effort: "minimal" as const },
+    plugins: [{ id: "file-parser", pdf: { engine: "native" } }],
+  },
+};
 
 const visionModel = visionPrimary.model;
 const visionFallbackModel = visionFallback.model;
@@ -102,7 +122,6 @@ export const describeImage = async (
   return runWithVisionFallback(async (model, modelId) => {
     const { text, finishReason } = await generateText({
       model,
-      temperature: TEMPERATURE,
       maxOutputTokens: MAX_OUTPUT_TOKENS,
       abortSignal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
       // Nests under the `vision` tool call → under `chatbot-turn`.
@@ -128,6 +147,7 @@ export const describeImage = async (
           ],
         },
       ],
+      providerOptions: VISION_PROVIDER_OPTIONS,
     });
 
     return {
@@ -168,7 +188,6 @@ export const describePdf = async (
   return runWithVisionFallback(async (model, modelId) => {
     const { text, finishReason } = await generateText({
       model,
-      temperature: TEMPERATURE,
       maxOutputTokens: MAX_OUTPUT_TOKENS,
       abortSignal: AbortSignal.timeout(DEFAULT_TIMEOUT_MS),
       // Nests under the `vision` tool call → under `chatbot-turn`.
@@ -190,16 +209,7 @@ export const describePdf = async (
           ],
         },
       ],
-      providerOptions: {
-        openrouter: {
-          plugins: [
-            {
-              id: "file-parser",
-              pdf: { engine: "native" },
-            },
-          ],
-        },
-      },
+      providerOptions: VISION_PDF_PROVIDER_OPTIONS,
     });
 
     return {
@@ -224,20 +234,18 @@ export interface DescribeVideoArgs {
 
 /**
  * Describe a video by sending its raw bytes to the PRIMARY vision model
- * only. Gemini 3.5 Flash Lite ingests video natively; the OpenRouter
- * provider serialises a `file` part with a `video/*` mediaType as a
- * `video_url` block. NO fallback: the `vision-fallback` role
- * (`gpt-4o-mini`) has no video modality, so a second route would add cost
- * without real resilience (both vision models are Google). On failure the
- * error propagates to the `vision` tool surface as a typed error and the
- * agent can retry next turn.
+ * only. Gemini 3.6 Flash ingests video natively; the OpenRouter provider
+ * serialises a `file` part with a `video/*` mediaType as a `video_url`
+ * block. NO fallback: both vision roles are Google Gemini, so a second
+ * route adds cost without real resilience for a one-shot describe. On
+ * failure the error propagates to the `vision` tool surface as a typed
+ * error and the agent can retry next turn.
  */
 export const describeVideo = async (
   args: DescribeVideoArgs,
 ): Promise<DescribeFileResult> => {
   const { text, finishReason } = await generateText({
     model: visionModel,
-    temperature: TEMPERATURE,
     maxOutputTokens: MAX_OUTPUT_TOKENS,
     abortSignal: AbortSignal.timeout(VIDEO_TIMEOUT_MS),
     // Nests under the `vision` tool call → under `chatbot-turn`.
@@ -259,6 +267,7 @@ export const describeVideo = async (
         ],
       },
     ],
+    providerOptions: VISION_PROVIDER_OPTIONS,
   });
 
   return {

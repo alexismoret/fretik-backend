@@ -1,11 +1,11 @@
 import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
 import { PDFDocument } from "pdf-lib";
 import { getProfileForRole } from "../../../src/lib/model-registry/resolve";
-// Real schema preparation is exercised through the tool; only the
-// engine's model-calling entry point is faked below.
+// Real schema building is exercised through the tool; only the engine's
+// model-calling entry point is faked below.
 import {
+  buildExtractionSchema,
   type ExtractSource,
-  prepareExtractionSchema,
   type RunStructuredExtractArgs,
 } from "../../../src/lib/structured-extract";
 import { realDbExports } from "../../lib/real-db";
@@ -17,74 +17,12 @@ afterAll(() => {
   void mock.module("@fretik/shared/db", () => realDbExports);
 });
 
-// --------------------------------------------------------------- //
-// In-memory DB rows (aiChatFiles) for the Office/OCR path          //
-// --------------------------------------------------------------- //
-
-interface ChatFileRow {
-  id: string;
-  fileHash: string | null;
-  mimeType: string;
-  size: number;
-}
-const chatFileRows = new Map<string, ChatFileRow>();
-const rowKey = (conversationId: string, filename: string): string =>
-  `${conversationId}::${filename}`;
-
-void mock.module("@fretik/shared/db", () => ({
-  default: {
-    query: new Proxy(
-      {},
-      {
-        get: (_t, table: string) => ({
-          findFirst: async (q: {
-            where?: { conversationId?: string; filename?: string };
-          }) => {
-            const where = q.where ?? {};
-            if (table === "aiChatFiles") {
-              if (!where.conversationId || !where.filename) return undefined;
-              return chatFileRows.get(
-                rowKey(where.conversationId, where.filename),
-              );
-            }
-            return undefined;
-          },
-          findMany: async () => [],
-        }),
-      },
-    ),
-    update: () => ({ set: () => ({ where: async () => undefined }) }),
-  },
-}));
-
-// Cached-OCR seam. Per the established mock contract, the fake MUST
-// return `imageIds` (and `pages`) — see read.test.ts.
-const extractionCalls: { fileHash: string; mimeType: string }[] = [];
-void mock.module("@fretik/shared/services/file-extraction/extract", () => ({
-  getOrCreateExtraction: async (args: {
-    fileHash: string;
-    mimeType: string;
-  }) => {
-    extractionCalls.push({ fileHash: args.fileHash, mimeType: args.mimeType });
-    return {
-      route: "mistral-ocr",
-      markdown: "# Page one\n\ncontent",
-      pages: [
-        { index: 0, markdown: "# Page one\n\ncontent" },
-        { index: 1, markdown: "second page" },
-      ],
-      pageCount: 2,
-      imageIds: [],
-    };
-  },
-}));
-
-// Engine seam: capture the source the tool built; return a canned
-// envelope. `prepareExtractionSchema` stays REAL so schema validation
-// is exercised end-to-end through the tool.
+// Engine seam: capture the source the tool built; return a canned envelope.
+// `buildExtractionSchema` stays REAL so field→schema building is exercised
+// end-to-end through the tool.
 const engineCalls: RunStructuredExtractArgs[] = [];
 void mock.module("../../../src/lib/structured-extract", () => ({
-  prepareExtractionSchema,
+  buildExtractionSchema,
   runStructuredExtract: async (args: RunStructuredExtractArgs) => {
     engineCalls.push(args);
     return {
@@ -105,10 +43,9 @@ const { DynamicToolManager } =
 const { wrapRuntimeContext } =
   await import("../../../src/agents/shared/runtime-context");
 
-const VALID_SCHEMA = {
-  type: "object",
-  properties: { value: { type: "number", description: "the value" } },
-};
+const VALID_FIELDS = [
+  { name: "value", type: "number", description: "the value" },
+];
 
 const execExtract = async (
   conversationId: string | undefined,
@@ -126,7 +63,7 @@ const execExtract = async (
     dynamicToolManager: new DynamicToolManager(),
   };
   const result = await tool.execute(
-    { schema: VALID_SCHEMA, shape: "records", ...input },
+    { fields: VALID_FIELDS, shape: "records", ...input },
     {
       toolCallId: `tc-${Math.random().toString(36).slice(2, 8)}`,
       messages: [],
@@ -149,23 +86,34 @@ const buildPdf = async (pages: number): Promise<Uint8Array> => {
 
 beforeEach(() => {
   sandboxFs.reset();
-  chatFileRows.clear();
-  extractionCalls.length = 0;
   engineCalls.length = 0;
 });
 
 describe("extract tool — input validation", () => {
-  test("rejects an un-lowerable schema before any engine call", async () => {
-    // Draft-07 idioms ($ref, allOf, anyOf-nullable, bare maps) are lowered,
-    // not rejected — so the guard fires only for a schema that describes no
-    // record at all (here: an object with zero fields).
+  test("empty fields → INVALID_ARGS with a worked example, no engine call", async () => {
     sandboxFs.write("c1", "attachments/doc.pdf", await buildPdf(1));
     const result = await execExtract("c1", {
       file_path: "attachments/doc.pdf",
-      schema: { type: "object", properties: {} },
+      fields: [],
     });
-    expect(result["code"]).toBe("INVALID_SCHEMA");
+    expect(result["code"]).toBe("INVALID_ARGS");
+    expect(String(result["hint"])).toContain("Example call");
     expect(engineCalls).toHaveLength(0);
+  });
+
+  test("legacy `schema` object is accepted via the compat shim", async () => {
+    sandboxFs.write("c1", "attachments/doc.pdf", await buildPdf(1));
+    const result = await execExtract("c1", {
+      file_path: "attachments/doc.pdf",
+      fields: undefined,
+      schema: {
+        type: "object",
+        properties: { amount: { type: "number", description: "total" } },
+      },
+    });
+    expect(engineCalls).toHaveLength(1);
+    expect(Array.isArray(result["notices"])).toBe(true);
+    expect((result["notices"] as string[]).join(" ")).toContain("deprecated");
   });
 
   test("routes spreadsheets to python", async () => {
@@ -176,6 +124,15 @@ describe("extract tool — input validation", () => {
     expect(result["hint"]).toBe("python");
   });
 
+  test("routes Office documents to read (native-only extract)", async () => {
+    const result = await execExtract("c1", {
+      file_path: "attachments/report.docx",
+    });
+    expect(result["code"]).toBe("UNSUPPORTED_EXTENSION");
+    expect(result["hint"]).toBe("read");
+    expect(engineCalls).toHaveLength(0);
+  });
+
   test("rejects unsupported extensions", async () => {
     const result = await execExtract("c1", {
       file_path: "attachments/clip.mp4",
@@ -183,9 +140,10 @@ describe("extract tool — input validation", () => {
     expect(result["code"]).toBe("UNSUPPORTED_EXTENSION");
   });
 
-  test("rejects pages on a non-PDF", async () => {
+  test("rejects pages on a non-PDF (image)", async () => {
+    sandboxFs.write("c1", "attachments/scan.png", new Uint8Array([1, 2, 3]));
     const result = await execExtract("c1", {
-      file_path: "attachments/report.docx",
+      file_path: "attachments/scan.png",
       pages: "1-2",
     });
     expect(result["code"]).toBe("INVALID_PAGE_RANGE");
@@ -246,7 +204,7 @@ describe("extract tool — PDF routing", () => {
     expect(engineCalls).toHaveLength(0);
   });
 
-  test("unsplittable pdf degrades to whole-doc with a notice when pages requested", async () => {
+  test("unsplittable pdf degrades to whole-doc", async () => {
     sandboxFs.write(
       "c1",
       "attachments/doc.pdf",
@@ -263,40 +221,11 @@ describe("extract tool — PDF routing", () => {
     expect(source.selectedPages).toEqual([]);
     expect(result["complete"]).toBe(true);
   });
-});
 
-describe("extract tool — image and Office routing", () => {
   test("images become a single native image source", async () => {
     sandboxFs.write("c1", "attachments/scan.png", new Uint8Array([1, 2, 3]));
     await execExtract("c1", { file_path: "attachments/scan.png" });
     const source = engineCalls[0]?.source;
     expect(source?.kind).toBe("image");
-  });
-
-  test("docx rides the cached OCR markdown as a text source", async () => {
-    chatFileRows.set(rowKey("c1", "report.docx"), {
-      id: "row-1",
-      fileHash: "hash-1",
-      mimeType:
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-      size: 1234,
-    });
-    await execExtract("c1", { file_path: "attachments/report.docx" });
-    expect(extractionCalls).toHaveLength(1);
-    expect(extractionCalls[0]?.fileHash).toBe("hash-1");
-    const source = engineCalls[0]?.source as Extract<
-      ExtractSource,
-      { kind: "text" }
-    >;
-    expect(source.kind).toBe("text");
-    expect(source.pages.map((page) => page.pageNumber)).toEqual([1, 2]);
-    expect(source.pagesTotal).toBe(2);
-  });
-
-  test("docx without an attachment row → FILE_NOT_FOUND", async () => {
-    const result = await execExtract("c1", {
-      file_path: "attachments/missing.docx",
-    });
-    expect(result["code"]).toBe("FILE_NOT_FOUND");
   });
 });

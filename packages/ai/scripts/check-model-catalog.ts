@@ -62,10 +62,14 @@ if (process.argv.includes("--probe")) {
     bindings.map(async (binding) => {
       const { model, profile } = resolveModel(binding.role);
       try {
+        // No hardcoded `temperature`: the resolved model already carries the
+        // role's EXACT provider block (zdr, require_parameters where set), which
+        // is what governs routing. Adding temperature here would probe a param
+        // no role sends — and on the Gemini vision/extract role the Vertex ZDR
+        // route doesn't advertise it, so it would only muddy the signal.
         await generateText({
           model,
           prompt: "Reply with the single word: ok.",
-          temperature: 0,
           maxOutputTokens: 8,
         });
         return {

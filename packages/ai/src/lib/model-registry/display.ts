@@ -30,18 +30,20 @@ export interface FamilyBranding {
 
 const MODEL_DISPLAY_NAME: Record<string, string> = {
   // Anthropic
-  "claude-opus-4.8": "Claude Opus 4.8",
-  "claude-sonnet-4.6": "Claude Sonnet 4.6",
+  "claude-opus-5": "Claude Opus 5",
+  "claude-sonnet-5": "Claude Sonnet 5",
   "claude-haiku-4.5": "Claude Haiku 4.5",
   // OpenAI
-  "gpt-5.5": "GPT-5.5",
+  "gpt-5.6-sol": "GPT-5.6 Sol",
+  "gpt-5.6-terra": "GPT-5.6 Terra",
+  "gpt-5.6-luna": "GPT-5.6 Luna",
   "gpt-5.4-nano": "GPT-5.4 nano",
   "gpt-oss-120b": "GPT-OSS 120B",
   "gpt-oss-20b": "GPT-OSS 20B",
-  "gpt-4o-mini": "GPT-4o mini",
   // Google
   "gemini-3.1-pro": "Gemini 3.1 Pro",
   "gemini-3.6-flash": "Gemini 3.6 Flash",
+  "gemini-3.5-flash-lite": "Gemini 3.5 Flash Lite",
   "gemini-3.1-flash-lite": "Gemini 3.1 Flash Lite",
   // Mistral
   "mistral-medium-3.5": "Mistral Medium 3.5",
@@ -53,8 +55,11 @@ const MODEL_DISPLAY_NAME: Record<string, string> = {
   "deepseek-v4-pro": "DeepSeek V4 Pro",
   "deepseek-v4-flash": "DeepSeek V4 Flash",
   // Z.ai (GLM)
-  "glm-5.1": "GLM-5.1",
-  "glm-4.7": "GLM-4.7",
+  "glm-5.2": "GLM-5.2",
+  // xAI
+  "grok-4.5": "Grok 4.5",
+  // Thinking Machines
+  inkling: "Inkling",
 };
 
 const FAMILY_BRANDING: Record<ModelFamily, FamilyBranding> = {
@@ -73,9 +78,13 @@ const FAMILY_BRANDING: Record<ModelFamily, FamilyBranding> = {
   // MiniMax has no simple-icons mark — generic fallback + brand-ish colour.
   minimax: { icon: "i-simple-icons-minimax", brandColor: "#E8484B" },
   deepseek: { icon: "i-hugeicons-deepseek", brandColor: "#4D6BFE" },
+  // Kept for completeness — no Qwen profile ships (no ZDR endpoint upstream).
   qwen: { icon: "i-hugeicons-qwen", brandColor: "#615CED" },
   // Z.ai / Zhipu (GLM) has no simple-icons mark — generic fallback.
   zai: { icon: "i-lucide-hexagon", brandColor: "#3859FF" },
+  xai: { icon: "i-simple-icons-x", brandColor: "#111111" },
+  // Thinking Machines has no brand mark in either icon set — generic fallback.
+  thinkingmachines: { icon: "i-lucide-brain-circuit", brandColor: "#0F9D8C" },
   other: { icon: "i-lucide-bot", brandColor: "#6B7280" },
 };
 

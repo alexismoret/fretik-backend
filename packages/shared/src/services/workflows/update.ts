@@ -97,6 +97,9 @@ export const updateWorkflow = async (params: {
       ...(input.modelProfileKey !== undefined
         ? { modelProfileKey: input.modelProfileKey }
         : {}),
+      ...(input.reasoningLevel !== undefined
+        ? { reasoningLevel: input.reasoningLevel }
+        : {}),
       ...(input.limits !== undefined ? { limits: input.limits } : {}),
       ...(notifications !== undefined ? { notifications } : {}),
       ...(input.userId !== undefined ? { userId: input.userId } : {}),

@@ -21,7 +21,7 @@ import { vectorizeSource } from "../vectorize";
  * (`userId` = that member); ≥2 members → team-visible (`userId` NULL).
  *
  * Output handling mirrors `extract-mentions.ts` (defensive parse degrading
- * to a no-op, not `Output.object`) for the same provider-pool reason.
+ * to a no-op, never `Output.object`) for the same provider-pool reason.
  */
 
 const MIN_MESSAGES = 4;

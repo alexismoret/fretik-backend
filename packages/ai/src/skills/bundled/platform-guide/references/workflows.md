@@ -22,11 +22,13 @@ A playbook is a program: each run executes against whatever the trigger delivers
 
 - **Fixed template** — the user says every run carries the same document, same layout (a system export, their own generated form). Tailoring tasks to that exact structure is correct.
 - **Stable format, varying content** — same document type each run, but the values, rows, and page counts differ. Tasks describe WHICH data to obtain (fields, records, bounds) — never positions, counts, or wording observed in one example.
-- **Open input** — layout, length, even document type can differ run to run (a public form, a mailbox). Tasks state the goal and the data contract; the executor adapts per run (`extract` with a schema rather than any layout-specific parsing).
+- **Open input** — layout, length, even document type can differ run to run (a public form, a mailbox). Tasks state the goal and the data contract; the executor adapts per run (`extract` naming the fields, rather than any layout-specific parsing).
 
 Example files in the conversation are ONE point in the input space, not its definition — unless the user says they are the fixed template. When the request leaves the variability ambiguous ("here are some invoices" — always this supplier? always this layout?), `askUserQuestion` before building: one question up front beats a workflow that breaks on its second run.
 
-The same discipline covers the deliverable. When the output leaves a real choice open — which identifier fills a column, which of several formats, which rule when the data offers more than one candidate — settle it against the example the user gave, or `askUserQuestion` before building. A choice discovered only after the first test run has already cost the user the whole run.
+The same discipline covers the deliverable. When the output leaves a real choice open — which identifier fills a column, which of several formats, which rule when the data offers more than one candidate, what a run does when an expected value or cross-source match is MISSING (fail, keep the row with the value empty, or pause for approval) — settle it against the example the user gave, or `askUserQuestion` before building. A choice discovered only after the first test run has already cost the user the whole run.
+
+**A run never sees the chat where the workflow was built.** So when the conversation shows what the output must look like — an example file, an exact column list, a required format — that contract must live in `playbook.deliverable` ({ format, description }: columns in order, separator, decimal format, file naming, a couple of example rows), NOT only in a chat attachment the run can't reach. On each `run_test`, download the produced deliverable and diff it against the contract field by field; every mismatch is a playbook defect to fix with `update` before `activate`.
 
 ## Autonomy modes
 

@@ -1,14 +1,29 @@
 import { z } from "zod";
 
 /**
- * Fetch intelligence + speed from the Artificial Analysis API (chantier C8).
+ * Fetch live model metrics from the Artificial Analysis API (chantier C8).
  * `GET /api/v2/data/llms/models`, header `x-api-key`. Free tier is 1000 req/day
  * — callers MUST cache (see `get.ts`), never call per user request.
  *
- * Returns a lookup keyed by NORMALISED model name AND slug so the registry can
- * match by either. Resilient by design: a missing key, network error, or
- * unparseable body returns `null` — the caller then uses the fallback. Never
+ * Returns a lookup keyed by AA slug AND normalised name, so a profile matches
+ * on its explicit `assessment.aaSlug` first and on its display name only as a
+ * fallback. Resilient by design: a missing key, network error, or unparseable
+ * body returns `null` — the caller then uses the committed fallback. Never
  * throws to the caller.
+ *
+ * # Which fields, and why these
+ *
+ * The v2 API exposes 10 top-level fields; we read every one that tells a team
+ * something they cannot infer. Notably ABSENT from the API (available only in
+ * the website payload): per-task output-token counts and hallucination rate.
+ * Verbosity is therefore hand-curated per profile as
+ * `assessment.verbosity` rather than scraped at runtime — a website layout
+ * change must never be able to break a live request.
+ *
+ * `median_time_to_first_answer_token` is preferred over
+ * `median_time_to_first_token_seconds`: the latter fires on the first REASONING
+ * token, so a model that thinks for two minutes before speaking still scores
+ * well on it. The former is what a user actually waits through.
  *
  * Attribution to https://artificialanalysis.ai/ is REQUIRED wherever these
  * values are shown (handled by the frontend).
@@ -22,9 +37,14 @@ const aaModelSchema = z.object({
   evaluations: z
     .object({
       artificial_analysis_intelligence_index: z.number().nullish(),
+      artificial_analysis_coding_index: z.number().nullish(),
+      tau_banking: z.number().nullish(),
+      ifbench: z.number().nullish(),
+      lcr: z.number().nullish(),
     })
     .nullish(),
   median_output_tokens_per_second: z.number().nullish(),
+  median_time_to_first_answer_token: z.number().nullish(),
 });
 
 const aaResponseSchema = z.object({
@@ -34,6 +54,11 @@ const aaResponseSchema = z.object({
 export interface AaMetric {
   intelligence: number | null;
   speed: number | null;
+  timeToFirstAnswer: number | null;
+  coding: number | null;
+  toolUse: number | null;
+  instructionFollowing: number | null;
+  longContext: number | null;
 }
 
 /** Lowercase + alphanumeric only — robust matching across name/slug casing. */
@@ -47,7 +72,7 @@ export const fetchArtificialAnalysisMetrics =
     const apiKey = process.env.ARTIFICIAL_ANALYSIS_API_KEY;
     if (!apiKey) {
       console.warn(
-        "[model-metrics] ARTIFICIAL_ANALYSIS_API_KEY unset — using fallback intelligence/speed",
+        "[model-metrics] ARTIFICIAL_ANALYSIS_API_KEY unset — using fallback metrics",
       );
       return null;
     }
@@ -72,13 +97,24 @@ export const fetchArtificialAnalysisMetrics =
 
       const lookup = new Map<string, AaMetric>();
       for (const model of parsed.data.data) {
+        const evaluations = model.evaluations;
         const metric: AaMetric = {
           intelligence:
-            model.evaluations?.artificial_analysis_intelligence_index ?? null,
+            evaluations?.artificial_analysis_intelligence_index ?? null,
           speed: model.median_output_tokens_per_second ?? null,
+          timeToFirstAnswer: model.median_time_to_first_answer_token ?? null,
+          coding: evaluations?.artificial_analysis_coding_index ?? null,
+          toolUse: evaluations?.tau_banking ?? null,
+          instructionFollowing: evaluations?.ifbench ?? null,
+          longContext: evaluations?.lcr ?? null,
         };
+        // Slug FIRST and unnormalised too: `assessment.aaSlug` is copied
+        // verbatim from AA, so an exact hit is the common case.
+        if (model.slug) {
+          lookup.set(model.slug, metric);
+          lookup.set(normalizeModelName(model.slug), metric);
+        }
         if (model.name) lookup.set(normalizeModelName(model.name), metric);
-        if (model.slug) lookup.set(normalizeModelName(model.slug), metric);
       }
       return lookup;
     } catch (error) {

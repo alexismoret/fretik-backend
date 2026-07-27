@@ -30,4 +30,30 @@ describe("parseLlmJsonObject", () => {
     expect(parseLlmJsonObject("no json here")).toBeNull();
     expect(parseLlmJsonObject('{"title": totally broken]')).toBeNull();
   });
+
+  test("fenced block wins over a stray brace in surrounding prose", () => {
+    expect(
+      parseLlmJsonObject('Note {draft}\n```json\n{"title":"A"}\n```\nBye }'),
+    ).toEqual({ title: "A" });
+  });
+
+  test("unclosed fence (truncated completion) still parses", () => {
+    expect(parseLlmJsonObject('```json\n{"title":"A"}')).toEqual({
+      title: "A",
+    });
+  });
+
+  test("salvageTruncation recovers complete rows from an array cut mid-record", () => {
+    const cut = '{"records":[{"a":1},{"a":2},{"a":3';
+    expect(parseLlmJsonObject(cut)).toBeNull();
+    expect(parseLlmJsonObject(cut, { salvageTruncation: true })).toEqual({
+      records: [{ a: 1 }, { a: 2 }],
+    });
+  });
+
+  test("salvageTruncation stays off by default and off-path for valid JSON", () => {
+    expect(parseLlmJsonObject('{"a":1}', { salvageTruncation: true })).toEqual({
+      a: 1,
+    });
+  });
 });

@@ -150,6 +150,12 @@ export interface BuildAgentSetConfig<CALL_OPTIONS, TTools extends ToolSet> {
    * partial survives in history, the next turn resumes it) — it does NOT fail
    * the run; a truncated tool-call surfaces as `InvalidToolInputError`, healed
    * by `repairToolCall` when set. Guards against a single runaway generation.
+   *
+   * IGNORED when the serving profile sets `provider.omitMaxTokens` — some
+   * models' only ZDR-eligible upstream does not advertise the parameter, and
+   * `require_parameters: true` turns an unsupported param into an EMPTY routing
+   * pool (HTTP 404), not a dropped field. Losing a per-step cap is strictly
+   * better than losing the model.
    */
   maxOutputTokens?: number;
   /**
@@ -289,6 +295,20 @@ export const buildToolsContext = (
  */
 const LOOP_GUARD_STEER_AT = 3;
 const LOOP_GUARD_ABORT_AT = 8;
+/** Steer sooner for malformed-call-shape errors — one bad retry is enough. */
+const LOOP_GUARD_INPUT_SHAPE_STEER_AT = 2;
+/**
+ * Error codes that mean "the CALL was shaped wrong", not "this tool can't do
+ * the job". The fix is a corrected retry of the SAME tool from the error's
+ * worked example — NEVER a switch to python (that manufactured the 35-python
+ * loop in the 2026-07 DAE run, where the model abandoned `extract` after an
+ * INVALID_SCHEMA instead of fixing the args).
+ */
+const INPUT_SHAPE_CODES = new Set([
+  "INVALID_ARGS",
+  "INVALID_SCHEMA",
+  "INVALID_PAGE_RANGE",
+]);
 
 /**
  * Wrap an agent's `prepareStep` with the soft half of the loop guard: once the
@@ -305,8 +325,18 @@ const withLoopGuard = <TTools extends ToolSet>(
   return async (options) => {
     const result = (await base?.(options)) ?? {};
     const run = trailingToolErrorRun(options.steps);
-    if (!run || run.count < LOOP_GUARD_STEER_AT) return result;
-    const guardText = `[loop-guard] Your ${run.toolName} calls keep failing with ${run.code}. Do not repeat the same call: fix the input per the error's hint, take a different approach, or report the blocker (chat: tell the user; workflow run: completeTask failed).`;
+    if (!run) return result;
+    const isInputShape = INPUT_SHAPE_CODES.has(run.code);
+    const steerAt = isInputShape
+      ? LOOP_GUARD_INPUT_SHAPE_STEER_AT
+      : LOOP_GUARD_STEER_AT;
+    if (run.count < steerAt) return result;
+    // Input-shape errors: force a corrected retry of the SAME tool from the
+    // hint's example — do NOT license switching tools. Other errors (the tool
+    // genuinely can't proceed): the model may take a different route or report.
+    const guardText = isInputShape
+      ? `[loop-guard] Your ${run.toolName} calls keep failing with ${run.code} — the CALL is malformed, the tool is right. Retry ${run.toolName} ONCE using the exact shape from the error's hint (it shows a valid example). Do not switch to another tool.`
+      : `[loop-guard] Your ${run.toolName} calls keep failing with ${run.code}. Do not repeat the same call: fix the input per the error's hint, take a different approach, or report the blocker (chat: tell the user; workflow run: completeTask failed).`;
     const messages = result.messages ?? options.messages;
     const alreadyInjected = messages.some(
       (message) => message.role === "user" && message.content === guardText,
@@ -414,7 +444,13 @@ const buildToolLoopAgent = <CALL_OPTIONS, TTools extends ToolSet>(
     prepareStep,
     onStepEnd,
     callOptionsSchema: config.callOptionsSchema,
-    ...(config.maxOutputTokens !== undefined
+    // `omitMaxTokens` wins over the configured cap — see the field's docblock.
+    // Probed 2026-07-26: OpenAI's ZDR endpoints are served by Azure, which
+    // advertises `max_completion_tokens` rather than `max_tokens`, so sending
+    // one under `require_parameters: true` + `zdr: true` empties the pool and
+    // OpenRouter answers 404 "No endpoints found matching your data policy".
+    ...(config.maxOutputTokens !== undefined &&
+    resolved.profile.assessment.provider.omitMaxTokens !== true
       ? { maxOutputTokens: config.maxOutputTokens }
       : {}),
     ...(config.repairToolCall !== undefined

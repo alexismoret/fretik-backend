@@ -54,6 +54,13 @@ export const buildPlaybookBlock = (
   if (workflow.playbook.successCriteria) {
     lines.push(`**Success criteria:** ${workflow.playbook.successCriteria}`);
   }
+  if (workflow.playbook.deliverable) {
+    // The output contract — this run never saw the chat where the workflow was
+    // built, so the deliverable's exact shape lives here. Match it exactly.
+    lines.push(
+      `**Deliverable (${workflow.playbook.deliverable.format}) — produce EXACTLY this:** ${workflow.playbook.deliverable.description}`,
+    );
+  }
   if (workflow.playbook.notes) {
     lines.push(`**Notes:** ${workflow.playbook.notes}`);
   }

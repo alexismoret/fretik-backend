@@ -18,10 +18,32 @@ export interface ModelMetrics {
   speed: number | null;
   /**
    * Relative cost indicator 0-100 (higher = more expensive / more credits).
-   * Log-scaled from the backend OpenRouter price — the dollar figure is never
-   * exposed. Always present (price is always known from the registry catalog).
+   * Log-scaled from an estimated per-TURN cost that folds in the cached-input
+   * rate and the model's measured verbosity — the dollar figure is never
+   * exposed. Always present (price is always known from the registry).
    */
   costLevel: number;
+  /**
+   * Seconds to the first ANSWER token (AA `median_time_to_first_answer_token`).
+   * The honest latency metric for a reasoning model: `speed` measures how fast
+   * tokens flow once they start, and `median_time_to_first_token` fires on the
+   * first REASONING token, so a model can score well on both while leaving the
+   * user staring at nothing. Measured spread is enormous — 3.4s for GPT-5.6
+   * Luna @medium, 252s for Kimi K3. Null if unmatched.
+   */
+  timeToFirstAnswer: number | null;
+  /** AA Coding Index (raw). A second capability axis. Null if unmatched. */
+  coding: number | null;
+  /**
+   * AA `tau_banking` (0-1) — multi-turn TOOL-USE reliability. The axis our
+   * agent lives or dies on, and the one with the widest real spread between
+   * otherwise similar models. Null if unmatched.
+   */
+  toolUse: number | null;
+  /** AA `ifbench` (0-1) — instruction following. Null if unmatched. */
+  instructionFollowing: number | null;
+  /** AA `lcr` (0-1) — long-context reasoning. Null if unmatched. */
+  longContext: number | null;
 }
 
 export interface ModelMetricsSnapshot {

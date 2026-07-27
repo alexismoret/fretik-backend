@@ -18,11 +18,16 @@
  * Usage: `bun run langfuse:triage-cases` (needs OPENROUTER_API_KEY).
  */
 
+import { parseLlmJsonObject } from "@fretik/shared/lib/llm-json";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
-import { generateText, Output } from "ai";
+import { generateText } from "ai";
 import { z } from "zod";
 import { allSuites } from "../evals/cases";
 import type { Assertion, EvalCase } from "../evals/types";
+import {
+  SCHEMA_BLOCK_TRAILER,
+  zodToPromptSchema,
+} from "../src/lib/schema-prompt";
 
 const MODEL =
   process.env.OPENROUTER_TRIAGE_MODEL ??
@@ -149,14 +154,24 @@ const main = async (): Promise<void> => {
   const rows: Row[] = [];
   await pool(cases, CONCURRENCY, async ({ suite, case: c }) => {
     try {
-      const { experimental_output: object } = await generateText({
+      // Free-form + shared lenient parse — `Output.object` sends the schema
+      // only as a decoding constraint (never as model input) and its strict
+      // parser rejects any prose; the schema block in the prompt + Zod
+      // validation is the reliable path. No temperature: 0 on Gemini 3.x
+      // yields empty output.
+      const { text } = await generateText({
         model,
-        system: SYSTEM,
+        system: `${SYSTEM}
+
+<schema>
+${zodToPromptSchema(TriageSchema)}
+</schema>
+
+${SCHEMA_BLOCK_TRAILER}`,
         prompt: buildUserPrompt(suite, c),
-        temperature: 0,
         abortSignal: AbortSignal.timeout(40_000),
-        experimental_output: Output.object({ schema: TriageSchema }),
       });
+      const object = TriageSchema.parse(parseLlmJsonObject(text));
       rows.push({
         caseId: c.id,
         suite,

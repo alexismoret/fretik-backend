@@ -63,6 +63,73 @@ export const resolveModelForTeam = async (
 };
 
 /**
+ * The flagship model + thinking depth a chat turn or workflow run should use.
+ *
+ * Resolution order for the MODEL: an explicit pin (a workflow's
+ * `modelProfileKey`) → the team's stored flagship pick → the code default.
+ * Before 2026-07-27 the chat path skipped the middle step, because the prompt
+ * bar stamped the team's pick onto every new conversation. That picker is gone —
+ * teams choose a model once, in settings — so unpinned conversations must read
+ * the team's choice here or it would be silently ignored.
+ *
+ * `storedReasoningLevel` is only returned when the resolved model IS the team's
+ * effective flagship: the level was chosen against that specific model (see the
+ * reset rule in `upsertTeamAiSettings`), so it must not leak onto a workflow
+ * pinned to something else — whose own `reasoningLevel` column applies instead.
+ * Raw here, validated by `effectiveReasoningLevel` at the call site.
+ */
+export interface TeamFlagshipSelection {
+  profileKey: string;
+  /** True when a pin/stored key was unusable and the default took over. */
+  fellBack: boolean;
+  storedReasoningLevel: string | null;
+}
+
+export const resolveTeamFlagship = async (
+  teamId: string | undefined,
+  pinnedKey: string | null | undefined,
+): Promise<TeamFlagshipSelection> => {
+  // Same defensive read as `resolveModelForTeam`: a Redis/DB hiccup on a
+  // personalization read must degrade to the code default, never break a turn.
+  // try/catch rather than `.catch()` — the read can throw synchronously before
+  // a promise exists.
+  let settings = null;
+  if (teamId !== undefined) {
+    try {
+      settings = await withSoftTimeout(
+        getTeamAiSettings(teamId),
+        3000,
+        null,
+        "team-ai-settings",
+      );
+    } catch (err) {
+      console.error(
+        `[team-model] settings read failed for team=${teamId} — using code default:`,
+        err,
+      );
+    }
+  }
+
+  const teamFlagship = resolveTierProfileKey(
+    "flagship",
+    settings?.flagshipProfileKey,
+  ).profileKey;
+
+  const resolved = pinnedKey
+    ? resolveTierProfileKey("flagship", pinnedKey)
+    : { profileKey: teamFlagship, fellBack: false };
+
+  return {
+    profileKey: resolved.profileKey,
+    fellBack: resolved.fellBack,
+    storedReasoningLevel:
+      resolved.profileKey === teamFlagship
+        ? (settings?.flagshipReasoningLevel ?? null)
+        : null,
+  };
+};
+
+/**
  * Resolve a role for a memory pipeline, with an eval-only profile override:
  * when `profileOverride` is set the model is forced onto that registry profile
  * under the role's own envelope (the model bake-off across recall + the

@@ -51,6 +51,7 @@ export const createWorkflow = async (params: {
       playbook: input.playbook,
       autonomy: input.autonomy,
       modelProfileKey: input.modelProfileKey ?? null,
+      reasoningLevel: input.reasoningLevel ?? null,
       limits: input.limits,
       createdByUserId: params.createdByUserId,
     })

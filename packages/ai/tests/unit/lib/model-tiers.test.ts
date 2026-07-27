@@ -38,45 +38,64 @@ describe("ROLE_TIER", () => {
 });
 
 describe("isSelectableForTier", () => {
-  test("flagship requires the flagship tier AND a passed gate", () => {
+  test("selectability is the tier plus `enabled` — nothing else", () => {
     const m3 = MODEL_PROFILES["minimax-m3"];
     expect(m3).toBeDefined();
     expect(isSelectableForTier(m3, "flagship")).toBe(true);
-    // Right gate, wrong tier.
+    // Right model, wrong tier.
     expect(isSelectableForTier(m3, "utility")).toBe(false);
   });
 
-  test("workhorse / utility do NOT require a gate — only the tier + enabled", () => {
-    // gemini-3.6-flash is `pending` (failed flagship on zombie-rate) but lists
-    // workhorse → selectable there, NOT in flagship.
-    const gemini = MODEL_PROFILES["gemini-3.6-flash"];
-    expect(gemini).toBeDefined();
-    expect(gemini.assessment.evalGate.status).not.toBe("passed");
-    expect(gemini.tiers).toContain("workhorse");
-    expect(isSelectableForTier(gemini, "workhorse")).toBe(true);
-    expect(isSelectableForTier(gemini, "flagship")).toBe(false);
-  });
-
-  test("a non-passed profile is never selectable for FLAGSHIP", () => {
-    const pending = Object.values(MODEL_PROFILES).find(
+  test("the eval gate NO LONGER blocks selection, in any tier", () => {
+    // The 2026-07-26 change: a profile with no gate evidence at all is still
+    // offered to teams. This used to be false for `flagship`, which had frozen
+    // the flagship menu at two models. Guards against the clause creeping back.
+    const ungated = Object.values(MODEL_PROFILES).filter(
       (p) =>
-        p.assessment.evalGate.status !== "passed" &&
+        p.assessment.evalGate?.status !== "passed" &&
+        p.assessment.enabled &&
         p.tiers.includes("flagship"),
     );
-    expect(pending).toBeDefined();
-    expect(isSelectableForTier(pending!, "flagship")).toBe(false);
+    expect(ungated.length).toBeGreaterThan(0);
+    for (const profile of ungated) {
+      expect(`${profile.key}:${isSelectableForTier(profile, "flagship")}`).toBe(
+        `${profile.key}:true`,
+      );
+    }
+  });
+
+  test("`enabled: false` blocks every tier the profile lists", () => {
+    const disabled = Object.values(MODEL_PROFILES).filter(
+      (p) => !p.assessment.enabled,
+    );
+    expect(disabled.length).toBeGreaterThan(0);
+    for (const profile of disabled) {
+      for (const tier of profile.tiers) {
+        expect(
+          `${profile.key}:${tier}:${isSelectableForTier(profile, tier)}`,
+        ).toBe(`${profile.key}:${tier}:false`);
+      }
+    }
+  });
+
+  test("every disabled profile explains itself", () => {
+    // The picker renders disabled models with a tooltip keyed off this field —
+    // a blank reason would render an unexplained dead card.
+    for (const profile of Object.values(MODEL_PROFILES)) {
+      if (profile.assessment.enabled) continue;
+      expect(
+        `${profile.key}:${profile.assessment.disabledReason ?? "MISSING"}`,
+      ).not.toBe(`${profile.key}:MISSING`);
+    }
   });
 });
 
 describe("listSelectableProfilesForTier", () => {
-  test("every listed profile is of that tier + enabled; flagship also requires passed", () => {
+  test("every listed profile is of that tier and enabled", () => {
     for (const tier of TIERS) {
       for (const profile of listSelectableProfilesForTier(tier)) {
         expect(profile.tiers).toContain(tier);
-        expect(profile.assessment.enabled).not.toBe(false);
-        if (tier === "flagship") {
-          expect(profile.assessment.evalGate.status).toBe("passed");
-        }
+        expect(profile.assessment.enabled).toBe(true);
       }
     }
   });
@@ -86,14 +105,22 @@ describe("listSelectableProfilesForTier", () => {
     expect(keys).toContain("minimax-m3");
   });
 
-  test("workhorse menu includes a non-gated model (gemini-3.6-flash)", () => {
-    const keys = listSelectableProfilesForTier("workhorse").map((p) => p.key);
-    expect(keys).toContain("gemini-3.6-flash");
+  test("flagship menu offers real choice across families", () => {
+    // The whole point of dropping the gate: breadth. Two options from one or
+    // two vendors (the pre-2026-07-26 state) is a regression, not a menu.
+    const profiles = listSelectableProfilesForTier("flagship");
+    expect(profiles.length).toBeGreaterThanOrEqual(3);
+    expect(new Set(profiles.map((p) => p.family)).size).toBeGreaterThanOrEqual(
+      3,
+    );
   });
 
-  test("utility menu excludes gpt-4o-mini (vision-fallback only)", () => {
-    const keys = listSelectableProfilesForTier("utility").map((p) => p.key);
-    expect(keys).not.toContain("gpt-4o-mini");
+  test("every tier has at least one selectable option", () => {
+    for (const tier of TIERS) {
+      expect(`${tier}:${listSelectableProfilesForTier(tier).length > 0}`).toBe(
+        `${tier}:true`,
+      );
+    }
   });
 });
 
@@ -142,9 +169,21 @@ describe("resolveFlagshipProfileKey", () => {
     });
   });
 
-  test("a non-flagship (or gate-failed) pin → default + fallback flag", () => {
-    // gpt-oss-20b is a passed utility model — not a selectable flagship.
+  test("a non-flagship pin → default + fallback flag", () => {
+    // gpt-oss-20b is a utility model — not a selectable flagship.
     const result = resolveFlagshipProfileKey("gpt-oss-20b");
+    expect(result.profileKey).toBe(def);
+    expect(result.fellBack).toBe(true);
+  });
+
+  test("a disabled flagship pin → default + fallback flag", () => {
+    // `enabled: false` is now the ONLY thing that can reject a pin, so it has
+    // to actually reject one.
+    const disabled = Object.values(MODEL_PROFILES).find(
+      (p) => !p.assessment.enabled && p.tiers.includes("flagship"),
+    );
+    expect(disabled).toBeDefined();
+    const result = resolveFlagshipProfileKey(disabled!.key);
     expect(result.profileKey).toBe(def);
     expect(result.fellBack).toBe(true);
   });
@@ -161,12 +200,42 @@ describe("costLevelFromProfile", () => {
 
   test("a cheaper model has a lower cost level than a premium one", () => {
     const cheap = MODEL_PROFILES["gpt-oss-20b"];
-    const premium = MODEL_PROFILES["claude-opus-4.8"];
+    const premium = MODEL_PROFILES["claude-opus-5"];
     expect(cheap).toBeDefined();
     expect(premium).toBeDefined();
     expect(costLevelFromProfile(cheap)).toBeLessThan(
       costLevelFromProfile(premium),
     );
+  });
+
+  test("verbosity, not headline price, drives the ranking", () => {
+    // The reason `costLevelFromProfile` models a real turn instead of a 3:1
+    // blend. GLM-5.2 has a CHEAPER headline than Gemini 3.6 Flash
+    // ($0.67/$2.11 vs $1.50/$7.50) yet is the more verbose model by far
+    // (42 791 vs 23 307 output tokens per task). A blended-price formula would
+    // rank purely on the headline; this one must account for both.
+    const glm = MODEL_PROFILES["glm-5.2"];
+    const flash = MODEL_PROFILES["gemini-3.6-flash"];
+    expect(glm).toBeDefined();
+    expect(flash).toBeDefined();
+    expect(glm.assessment.verbosity?.outputTokensPerTask).toBeGreaterThan(
+      flash.assessment.verbosity?.outputTokensPerTask ?? 0,
+    );
+    // Cheap input still wins overall here — but only because the model prices
+    // it that way, not because verbosity was ignored.
+    expect(costLevelFromProfile(glm)).toBeLessThan(costLevelFromProfile(flash));
+  });
+
+  test("a model with no verbosity data is neither rewarded nor punished", () => {
+    // Missing AA coverage must fall back to the fleet median, never to zero
+    // output (which would make an unmeasured model look artificially cheap).
+    const noVerbosity = Object.values(MODEL_PROFILES).filter(
+      (p) => p.assessment.verbosity === undefined,
+    );
+    for (const profile of noVerbosity) {
+      const level = costLevelFromProfile(profile);
+      expect(`${profile.key}:${level > 0}`).toBe(`${profile.key}:true`);
+    }
   });
 });
 

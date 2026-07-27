@@ -36,7 +36,7 @@ const profileWith = (
     cache: { strategy: "none" },
     reasoning: { style: "none", defaultLevel: "none" },
     provider: { requireParameters: true },
-    evalGate: { status: "passed" },
+    enabled: true,
   },
 });
 

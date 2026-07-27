@@ -5,6 +5,7 @@ import {
   aiConversationMemberRoleEnum,
   aiVectorSourceTypeEnum,
 } from "../db/schema";
+import { reasoningLevelSchema } from "./reasoning";
 
 /**
  * Agent types supported in ai_conversations. Kept in sync with the
@@ -35,6 +36,13 @@ export type AiMessageRole = z.infer<typeof aiMessageRoleSchema>;
 export const aiVectorSourceTypeSchema = z.enum(
   aiVectorSourceTypeEnum.enumValues,
 );
+
+/**
+ * Thinking depth — defined in the db-free `schemas/reasoning.ts` (the workflow
+ * schemas need it inside the Trigger.dev bundle), re-exported here because this
+ * is where callers look for AI-adjacent vocabulary.
+ */
+export { reasoningLevelSchema, type ReasoningLevelInput } from "./reasoning";
 
 // ==================== //
 // ai_vectors metadata //
@@ -328,15 +336,20 @@ export const ChatStreamRequestSchema = z.object({
     description: "Whether the new user message @mentions the assistant",
   }),
   /**
-   * Per-turn "deep thinking" toggle. true → high reasoning effort for
-   * this turn; absent/false → the model's default depth. Not persisted —
-   * the user flips it freely per message (Claude-style). The server maps
-   * this boolean to a `ReasoningLevel` so only the eval-validated rung is
-   * reachable; a future advanced picker can add a level field additively.
+   * Per-turn thinking depth. Replaced the boolean `deepThinking` toggle on
+   * 2026-07-27, when the prompt bar's model selector became a reasoning
+   * selector: non-technical teams pick how hard the assistant thinks, not
+   * which model runs.
+   *
+   * Not persisted — the user changes it freely per message (Claude-style), and
+   * in a collaborative conversation each participant steers their own turns.
+   * Absent → the team's stored default for its flagship model, then the
+   * profile's `defaultLevel`. A level the serving model does not support is
+   * ignored server-side, never an error.
    */
-  deepThinking: z.boolean().optional().openapi({
+  reasoningLevel: reasoningLevelSchema.optional().openapi({
     description:
-      "Request high reasoning effort for this turn (deep thinking). Absent/false uses the model's default depth.",
+      "Thinking depth for this turn. Absent uses the team default, then the model's own default.",
   }),
 });
 export type ChatStreamRequest = z.infer<typeof ChatStreamRequestSchema>;

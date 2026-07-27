@@ -1,4 +1,5 @@
 import { pgTable, timestamp, uuid, varchar } from "drizzle-orm/pg-core";
+import type { ReasoningLevelInput } from "../../schemas/reasoning";
 import { team } from "./auth-schema";
 
 /**
@@ -29,6 +30,25 @@ export const teamAiSettings = pgTable("team_ai_settings", {
   workhorseProfileKey: varchar("workhorse_profile_key", { length: 64 }),
   // Micro-tasks (memory recall, titles, reformulation). Null = code default.
   utilityProfileKey: varchar("utility_profile_key", { length: 64 }),
+
+  /**
+   * How hard the team's FLAGSHIP model thinks by default (a `ReasoningLevel` —
+   * see @fretik/shared `schemas/ai.ts` `reasoningLevelSchema`). Null = the
+   * profile's own `assessment.reasoning.defaultLevel`.
+   *
+   * Flagship only, deliberately: workhorse/utility roles hardcode their effort
+   * per `settingsKind` (pre-extract → minimal, recall → medium, …) because
+   * those envelopes are calibrated system components, not preferences.
+   *
+   * RESET TO NULL whenever `flagshipProfileKey` changes — a level is meaningful
+   * only against the model it was chosen for ("high" on Luna and "high" on
+   * GLM-5.2 cost and behave nothing alike), and the effort ladders differ per
+   * model, so carrying it over could pin a level the new model rejects. See
+   * `services/team-ai-settings/upsert.ts`.
+   */
+  flagshipReasoningLevel: varchar("flagship_reasoning_level", {
+    length: 16,
+  }).$type<ReasoningLevelInput>(),
 
   createdAt: timestamp("created_at", { mode: "date", withTimezone: true })
     .defaultNow()

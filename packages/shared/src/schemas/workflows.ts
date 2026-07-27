@@ -3,6 +3,7 @@ import {
   isTriggerableEventType,
   WORKFLOW_TRIGGERABLE_EVENT_TYPES,
 } from "../services/domain-events/event-types";
+import { reasoningLevelSchema } from "./reasoning";
 import { WorkflowFormConfigSchema } from "./workflow-forms";
 
 /**
@@ -111,12 +112,28 @@ export type WorkflowPlaybookTask = z.infer<typeof WorkflowPlaybookTaskSchema>;
  * is the reliability lever — structured-plan guidance raises multi-step
  * tool-call accuracy far above a freeform goal.
  */
+/**
+ * The exact shape of what a run must produce, pinned at build time. A run
+ * executes in a FRESH conversation and never sees the chat where the workflow
+ * was created — so any output contract shown there (an example file, a column
+ * list, a required format) must be captured HERE or the executor invents it.
+ * Kept generic: `description` carries whatever fixes the deliverable — columns
+ * and their order, separator, decimal format, file naming, a couple of example
+ * rows, sections of a report, an email's subject line.
+ */
+export const WorkflowDeliverableSchema = z.object({
+  format: z.string().min(1).max(60),
+  description: z.string().min(1).max(2000),
+});
+export type WorkflowDeliverable = z.infer<typeof WorkflowDeliverableSchema>;
+
 export const WorkflowPlaybookSchema = z
   .object({
     goal: z.string().min(1).max(1000),
     tasks: z.array(WorkflowPlaybookTaskSchema).min(1).max(20),
     successCriteria: z.string().max(1000).optional(),
     notes: z.string().max(1000).optional(),
+    deliverable: WorkflowDeliverableSchema.optional(),
   })
   .superRefine((playbook, ctx) => {
     const seen = new Set<string>();
@@ -429,6 +446,7 @@ export const CreateWorkflowSchema = z
     playbook: WorkflowPlaybookSchema,
     autonomy: workflowAutonomySchema.default("approval_required"),
     modelProfileKey: z.string().max(64).optional(),
+    reasoningLevel: reasoningLevelSchema.optional(),
     limits: WorkflowLimitsSchema.default({}),
     /** NULL/omitted = team-shared; set = private to that user. */
     userId: z.uuid().optional(),
@@ -452,6 +470,7 @@ export const UpdateWorkflowSchema = z
     playbook: WorkflowPlaybookSchema.optional(),
     autonomy: workflowAutonomySchema.optional(),
     modelProfileKey: z.string().max(64).nullable().optional(),
+    reasoningLevel: reasoningLevelSchema.nullable().optional(),
     limits: WorkflowLimitsSchema.optional(),
     notifications: WorkflowNotificationsSchema.optional(),
     /** Re-scope: NULL = team-shared, set = private to that user. The service
@@ -493,6 +512,7 @@ export const WorkflowResponseSchema = z.object({
   playbook: WorkflowPlaybookSchema,
   autonomy: workflowAutonomySchema,
   modelProfileKey: z.string().nullable(),
+  reasoningLevel: reasoningLevelSchema.nullable(),
   limits: WorkflowLimitsSchema,
   notifications: WorkflowNotificationsSchema,
   /** Platform ceilings used whenever `limits` doesn't set an explicit value

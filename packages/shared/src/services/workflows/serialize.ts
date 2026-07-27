@@ -38,6 +38,7 @@ export const serializeWorkflow = (row: Workflow): WorkflowResponse => ({
   playbook: row.playbook,
   autonomy: row.autonomy,
   modelProfileKey: row.modelProfileKey,
+  reasoningLevel: row.reasoningLevel,
   limits: row.limits,
   notifications: row.notifications,
   defaultLimits: {

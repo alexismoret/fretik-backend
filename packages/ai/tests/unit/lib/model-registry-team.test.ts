@@ -19,7 +19,7 @@ import { setTeamAiSettingsDouble } from "../../lib/team-ai-settings-double";
 // module cache). `setTeamAiSettingsDouble` drives that shared stub.
 const { resolveModel, resolveModelForRoleProfile, resolveTierProfileKey } =
   await import("../../../src/lib/model-registry/resolve");
-const { resolveModelForTeam, cheapModelIdForTeam } =
+const { resolveModelForTeam, cheapModelIdForTeam, resolveTeamFlagship } =
   await import("../../../src/lib/model-registry/team-model");
 
 beforeEach(() => {
@@ -169,5 +169,97 @@ describe("cheapModelIdForTeam", () => {
       resolveModelForRoleProfile("cheap-tasks", "gemini-3.1-flash-lite").profile
         .catalog.id,
     );
+  });
+});
+
+/**
+ * The chat/workflow entry point (2026-07-27). Two things changed together and
+ * both are pinned here: an unpinned conversation now follows the TEAM's model
+ * pick (before, the prompt-bar picker stamped it at creation — that picker is
+ * gone), and the team's thinking depth travels alongside the model it was
+ * chosen for.
+ */
+describe("resolveTeamFlagship", () => {
+  const codeDefault = "minimax-m3";
+
+  test("no team in scope → code default, nothing stored", async () => {
+    expect(await resolveTeamFlagship(undefined, null)).toEqual({
+      profileKey: codeDefault,
+      fellBack: false,
+      storedReasoningLevel: null,
+    });
+  });
+
+  test("unpinned conversation follows the TEAM's flagship pick", async () => {
+    // The regression this guards: with the prompt-bar picker removed, new
+    // conversations carry no pin, and resolving straight to the code default
+    // would silently ignore the team's choice in settings.
+    setTeamAiSettingsDouble({
+      flagshipProfileKey: "deepseek-v4-pro",
+      workhorseProfileKey: null,
+      utilityProfileKey: null,
+    });
+    expect(await resolveTeamFlagship("team-1", null)).toEqual({
+      profileKey: "deepseek-v4-pro",
+      fellBack: false,
+      storedReasoningLevel: null,
+    });
+  });
+
+  test("an explicit pin wins over the team pick", async () => {
+    setTeamAiSettingsDouble({
+      flagshipProfileKey: "deepseek-v4-pro",
+      workhorseProfileKey: null,
+      utilityProfileKey: null,
+    });
+    const resolved = await resolveTeamFlagship("team-1", "glm-5.2");
+    expect(resolved.profileKey).toBe("glm-5.2");
+    expect(resolved.fellBack).toBe(false);
+  });
+
+  test("an unusable pin degrades to the code default and says so", async () => {
+    const resolved = await resolveTeamFlagship("team-1", "retired-model");
+    expect(resolved).toEqual({
+      profileKey: codeDefault,
+      fellBack: true,
+      storedReasoningLevel: null,
+    });
+  });
+
+  test("the stored depth rides along when the team's own flagship serves", async () => {
+    setTeamAiSettingsDouble({
+      flagshipProfileKey: "glm-5.2",
+      workhorseProfileKey: null,
+      utilityProfileKey: null,
+      flagshipReasoningLevel: "xhigh",
+    });
+    expect(await resolveTeamFlagship("team-1", null)).toEqual({
+      profileKey: "glm-5.2",
+      fellBack: false,
+      storedReasoningLevel: "xhigh",
+    });
+  });
+
+  test("the stored depth does NOT leak onto a differently-pinned model", async () => {
+    // A depth is chosen against one model's cost and latency. A workflow pinned
+    // elsewhere uses its own `reasoningLevel` column, not the team's.
+    setTeamAiSettingsDouble({
+      flagshipProfileKey: "glm-5.2",
+      workhorseProfileKey: null,
+      utilityProfileKey: null,
+      flagshipReasoningLevel: "xhigh",
+    });
+    const resolved = await resolveTeamFlagship("team-1", "deepseek-v4-pro");
+    expect(resolved.profileKey).toBe("deepseek-v4-pro");
+    expect(resolved.storedReasoningLevel).toBeNull();
+  });
+
+  test("settings read throwing → code default, no depth (defensive)", async () => {
+    setTeamAiSettingsDouble(null, true);
+    expect(await resolveTeamFlagship("team-1", null)).toEqual({
+      profileKey: codeDefault,
+      fellBack: false,
+      storedReasoningLevel: null,
+    });
   });
 });

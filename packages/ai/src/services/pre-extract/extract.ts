@@ -1,6 +1,7 @@
 import type { FieldDefinition } from "@fretik/shared/db/schema";
+import { parseLlmJsonObject } from "@fretik/shared/lib/llm-json";
 import { buildPreExtractSchema } from "@fretik/shared/schemas/pre-extraction";
-import { generateText, type LanguageModel, Output } from "ai";
+import { generateText, type LanguageModel } from "ai";
 import { describeLlmError } from "../../lib/describe-llm-error";
 import { telemetryFor } from "../../lib/langfuse";
 import { resolveModelForTeam } from "../../lib/model-registry/team-model";
@@ -86,7 +87,7 @@ export interface RunPreextractLlmResult {
  * emit a structured log line per call.
  *
  * The fallback triggers on ANY failure of the primary: network 5xx,
- * generateText schema-validation failure, abort/timeout. If the
+ * unparsable output, Zod validation failure, abort/timeout. If the
  * fallback itself fails, the error propagates.
  */
 export const runPreextractLlm = async (
@@ -144,11 +145,14 @@ const callLlm = async (
   schema: ReturnType<typeof buildPreExtractSchema>,
   model: LanguageModel,
 ): Promise<PreExtractionLlmOutput> => {
-  // Belt-and-suspenders: ship the schema both via `response_format` (the
-  // `Output.object` argument) AND inside the system prompt. Some upstream
-  // OpenRouter providers silently downgrade strict json_schema mode to
-  // free-form `json_object`; when that happens the model relies on the
-  // schema in the prompt to know the expected shape.
+  // Free-form generation: the schema travels ONLY inside the system prompt.
+  // No `Output.object` — its `response_format: json_schema, strict` never
+  // reaches the model as input (the SDK sends it solely as a decoding
+  // constraint), providers that don't support it drop it silently, and
+  // constrained decoding itself makes Gemini-class models bail mid-output
+  // (measured 0/4 constrained vs 7/7 free-form in the extract engine).
+  // The lenient shared parse + Zod validation below replace the SDK's
+  // brittle strict parse; a failure throws into the primary→fallback tier.
   const system = `${PREEXTRACT_SYSTEM_PROMPT_BASE}
 
 <schema>
@@ -157,9 +161,8 @@ ${zodToPromptSchema(schema)}
 
 ${SCHEMA_BLOCK_TRAILER}`;
 
-  const { output } = await generateText({
+  const { text } = await generateText({
     model,
-    output: Output.object({ schema }),
     system,
     prompt,
     temperature: PREEXTRACT_TEMPERATURE,
@@ -168,5 +171,11 @@ ${SCHEMA_BLOCK_TRAILER}`;
     telemetry: telemetryFor("pre-extract"),
   });
 
-  return output;
+  const parsed = parseLlmJsonObject(text);
+  if (parsed === null) {
+    throw new Error(
+      `pre-extract: no JSON object found in the model output (${text.length} chars)`,
+    );
+  }
+  return schema.parse(parsed);
 };

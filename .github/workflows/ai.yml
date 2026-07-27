@@ -33,6 +33,12 @@ jobs:
   check:
     name: typecheck + lint + test
     runs-on: ubuntu-latest
+    env:
+      # Job-scoped so the catalog-drift step below can gate on its presence:
+      # a step-level `env:` is not visible to that step's own `if:`.
+      # Absent on forks / Dependabot PRs, which is why the step skips rather
+      # than fails when it is empty.
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
     steps:
       - uses: actions/checkout@v6
 
@@ -73,6 +79,16 @@ jobs:
 
       - name: Test @fretik/ai (unit only — integration tests gated separately)
         run: bun run --filter '@fretik/ai' test
+
+      # The model registry mirrors OpenRouter's catalog by hand across 22
+      # profiles and 9 brands, and upstreams change context windows, prices and
+      # supported parameters without notice — MiniMax M3's context doubled
+      # between two syncs. Drift is silent until a request fails in prod, so
+      # diff it on every PR. Skipped (not failed) without a key, since forks and
+      # Dependabot PRs don't get repository secrets.
+      - name: Check model catalog against the live OpenRouter API
+        if: env.OPENROUTER_API_KEY != ''
+        run: bun run --filter '@fretik/ai' models:check
 
   build-and-push:
     name: build + push to GHCR

@@ -132,46 +132,91 @@ unchanged (the gate aborts on caseId-set mismatch); the parallel probes are
 informational (the baseline may not support parallel calls at all); judge noise on small
 deltas — prefer the full set and re-run before trusting a borderline verdict.
 
-### Surfacing a model in the C8 picker (frontier / per-tier menus)
+### What the gate does and does NOT govern (changed 2026-07-26)
 
-The C8 picker (`/model-profiles`) lists **only** profiles whose `assessment.evalGate.status
-=== "passed"`, grouped per tier (flagship / workhorse / utility) — `isSelectableForTier`
-in `lib/model-registry/resolve.ts` matches `profile.tiers.includes(tier)`, so a multi-tier
-profile (e.g. Sonnet 4.6, Gemini 3.6 Flash = flagship + workhorse) shows in every tier it
-lists. A model becomes team-selectable the moment its `evalGate` flips to `passed` in
-`profiles.ts` (the same reviewed-PR promotion above) — no UI change needed.
+**The gate no longer decides which models teams may select.** It used to: the picker
+listed only `evalGate.status === "passed"` profiles for the flagship tier, which froze that
+menu at two models while twelve sat `pending`. Gate runs are slow and costly, the suite is
+not a fair enough judge to be a gatekeeper, and one profile already carried a hand-written
+override explaining its verdict had been overruled.
 
-To enrich a tier (e.g. offer a frontier flagship like Claude Sonnet 4.6 / Gemini 3.6 Flash,
-or a full-Mistral stack for a data-residency-sensitive team), gate the candidate, then flip
-its `evalGate` to `passed` in the promotion PR:
+Selection is now governed by `assessment.enabled` alone (`isSelectableForTier`). Adding a
+model to the catalog needs **no eval evidence** — pick the latest version of a supported
+brand, fill in its profile, ship it. If it underperforms on our tools, the team switches
+model; that is their call.
+
+**The gate governs exactly one thing: the APPLIED DEFAULT.** Changing
+`ROLE_BINDINGS.chat` / `.workflow` requires the bound profile to carry
+`evalGate.status: "passed"`, enforced by `tests/unit/lib/model-registry.test.ts` — so a PR
+that swaps the default without a gate run fails CI.
 
 ```bash
 cd backend/packages/ai           # service running in another pane
-AI_SERVICE_URL=http://localhost:8083 bun run evals:gate -- --candidate claude-sonnet-4.6
-AI_SERVICE_URL=http://localhost:8083 bun run evals:gate -- --candidate gemini-3.6-flash
-AI_SERVICE_URL=http://localhost:8083 bun run evals:gate -- --candidate mistral-medium-3.5
+AI_SERVICE_URL=http://localhost:8083 bun run evals:gate -- --candidate gpt-5.6-luna
 ```
 
-The candidate profiles already exist in `profiles.ts` at `status: "pending"` (every
-family ships flagship/workhorse/utility). The picker's per-tier "recommended" badge tracks
-the code-default `ROLE_BINDINGS` for that tier — promotion does not change the recommendation,
-only the available choices. Display metadata: brand name + icon live in
-`lib/model-registry/display.ts`; intelligence/speed are fetched live from Artificial Analysis
-and cost is abstracted from the catalog price (`services/model-metrics`) — no per-model
-display edit is needed when promoting.
+Then commit the printed `evalGate` stamp onto that profile **and** repoint the binding, in
+the same reviewed PR.
 
-**Reasoning steerability (C7 extended-thinking toggle) — classify at every flagship gate.**
-The toggle is shown per-model via `STEERABLE_REASONING_KEYS` (`profiles.ts`) and the wire
-lever is `reasoning.style` (`effort` for OpenAI / Anthropic / Google / Mistral / DeepSeek;
-`none`/adaptive otherwise — Claude 4.x rejects `max-tokens`/`budget_tokens`). Docs are
-PRIORS only — confirm at RUNTIME, the param is frequently inert: minimax-m3 lists
-`reasoning` yet ignores both `effort` and `max_tokens` (self-regulating ~~3-5k). Probe with a
-direct OpenRouter call comparing `usage.completion_tokens_details.reasoning_tokens` at
-`effort: low` vs `high` (plus `xhigh` for budget models, but note OpenRouter strips
-DeepSeek's `xhigh→max`, LiteLLM #27439): a clear monotonic rise ⇒ steerable (add to the set);
-flat ⇒ adaptive (leave out). Tune `defaultLevel` to a sensible B2B baseline (~~`medium`,
-≈ the provider's own default) and let the gate eval confirm no regression — only `low` is
-eval-validated today.
+### Adding a model to the catalog (no gate needed)
+
+1. Read its facts from OpenRouter (`architecture`, `supported_parameters`, `pricing`,
+   `reasoning`) and write them into `catalog` verbatim — `bun run models:check` diffs them.
+2. Set `assessment.enabled`: today's rule is `false` for anything costlier per turn than
+   GPT-5.6 Luna @xhigh, with a `disabledReason` so the hub can explain itself.
+3. Add `aaSlug` — pinned to the profile's `reasoning.defaultLevel`, since Artificial
+   Analysis publishes one record PER EFFORT LEVEL and they differ a lot (Luna spans 33.3 to
+   51.2 intelligence across five levels).
+4. Add `verbosity` from AA's `intelligenceIndexOutputTokensPerTask`. This is site-only data,
+   absent from the v2 API, so it is hand-curated — and it is load-bearing for `costLevel`,
+   because models differ ~20× in output volume and headline price alone mis-ranks the fleet
+   by up to 8 positions.
+5. Activate `nativeInput` for every visual modality the catalog allows (`audio` stays off
+   registry-wide until a call site produces audio parts).
+6. Add the brand name to `lib/model-registry/display.ts` and a `FALLBACK_METRICS` row.
+7. Verify: `bun run check && bun run test && bun run models:check --probe`.
+
+The picker's per-tier "recommended" badge tracks the code-default `ROLE_BINDINGS`, so
+adding a model changes the available choices, never the recommendation.
+
+**Reasoning steerability — DERIVED, not classified, and now USER-FACING.**
+`STEERABLE_REASONING_KEYS` is computed from `catalog.reasoning.supportedEfforts`: a model is
+steerable when OpenRouter accepts more than one effort level, which is exactly when raising
+the level does something. It used to be a hand-maintained list of six keys, so every model
+added after it was written silently reported "not steerable".
+
+Since 2026-07-27 this is no longer an internal detail. The prompt bar's model selector was
+replaced by a **thinking-depth picker**, so `selectableReasoningLevels(profile)` is literally
+the menu a user sees — and a wrong entry there is a control that does nothing. It narrows the
+raw ladder twice: a single-rung ladder yields `[]` (not a choice), and so does every
+`style: "max-tokens"` profile, because the one such profile in the fleet (MiniMax M3, today's
+applied default) measurably ignores the knob. Consequence to know before you debug it: **on
+the current default the picker renders disabled with an explanation.** Four of the five
+selectable flagship models do steer, so it comes alive as soon as a team switches model.
+
+That makes `catalog.reasoning` load-bearing — copy it verbatim from OpenRouter, including
+`mandatory` (Gemini and Grok cannot have reasoning switched off; never send them `none`).
+A model with NO `supportedEfforts` honours only a token budget ⇒ `assessment.reasoning.style`
+must be `"max-tokens"` (MiniMax M3, Claude Haiku 4.5).
+
+`defaultLevel` therefore also became the depth most users get: it is the bottom of a
+three-layer default (per-turn pick → team's stored level → this). Route every requested level
+through `effectiveReasoningLevel`, never straight into `reasoningParamForProfile` — it drops
+unsupported rungs AND the profile default itself, which is what keeps an untouched turn
+byte-identical on the wire.
+
+Choosing `defaultLevel` is still a judgement call, and the two axes that decide it are cost
+and TAIL LATENCY, measured per model:
+
+- GPT-5.6 Luna `xhigh` costs +1 % over `high` on our turn shape (the bill is cached-input
+  dominated) while buying +11 % intelligence — but a hard prompt measured 118 s to the first
+  answer token.
+- GLM-5.2 `xhigh` measured **818 s** to the first answer token. Unusable for chat; it runs
+  at `high`.
+
+Note `max` exists in `ReasoningLevel` (OpenRouter accepts it on GPT-5.6 / Claude 5 / Inkling)
+but the provider SDK's union stops at `xhigh`, so `reasoningParamForProfile` clamps `max`
+down to `xhigh` on the wire. Remove the clamp when the SDK widens.
 
 ## External capability priors (leaderboards — never imported datasets)
 

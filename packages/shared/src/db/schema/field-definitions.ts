@@ -70,8 +70,8 @@ export const fieldDefinitions = pgTable(
     label: text("label").notNull(),
     // User-facing description AND `.describe()` source for the pre-extract
     // Zod runtime — the same text drives the field tooltip in the UI and the
-    // instructions sent to the LLM via Vercel AI SDK's `Output.object`. Kept
-    // single because both audiences benefit from the same precise wording.
+    // schema block embedded in the pre-extract LLM prompt. Kept single
+    // because both audiences benefit from the same precise wording.
     description: text("description"),
 
     type: fieldDefinitionTypeEnum("type").notNull(),

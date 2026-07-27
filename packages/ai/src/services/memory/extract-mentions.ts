@@ -19,9 +19,9 @@ import { resolveMemoryModel } from "../../lib/model-registry/team-model";
  * job is generalist recall + HONEST confidence; the trust bands do the rest.
  *
  * Output handling mirrors `search/multi-query.ts` (cheap model + defensive
- * parse degrading to empty), NOT pre-extract's `Output.object`: the
- * structured-output path sends `response_format`, which under the role
- * envelope's `require_parameters: true` narrows the OpenRouter provider pool
+ * parse degrading to empty), never `Output.object`: the structured-output
+ * path sends `response_format`, which under the role envelope's
+ * `require_parameters: true` narrows the OpenRouter provider pool
  * (the documented empty-pool failure mode) — a hard route error on a
  * best-effort background pass is worse than an occasional parse fallback,
  * and the end state on a bad completion is the same empty list either way.

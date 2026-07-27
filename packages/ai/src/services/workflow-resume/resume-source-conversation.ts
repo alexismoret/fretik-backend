@@ -88,7 +88,7 @@ export const resumeSourceConversation = async (params: {
   const text = [
     `[workflow-run-finished] Test run ${runId} of workflow "${workflow?.name ?? "Workflow"}" ${run.status}.`,
     ...(outcome ? [outcome] : []),
-    "Analyze the outcome (get_run for per-task detail), then continue the builder loop: iterate with update + run_test, or activate. The user has not spoken — only ask them when a decision genuinely needs their input.",
+    "FIRST call get_run for the per-task detail — never judge the run from this summary alone. When the conversation holds an example deliverable, download the run's output and diff it against that example. THEN continue the BUILDER loop: fix the playbook with update + run_test, or activate. NEVER redo the run's work yourself in this chat — the deliverable is produced by the run, not here; reproducing it proves nothing about the workflow. The user has not spoken — only ask them when a decision genuinely needs their input.",
   ].join("\n");
 
   // Claim the turn slot BEFORE persisting the continuation: if a user turn is

@@ -96,6 +96,10 @@ export const settingsForRole = (
   // routing. `allow_fallbacks` stays default-on, so the pin is a
   // preference, never a hard constraint. See `ModelAssessment.provider.order`.
   const order = profile.assessment.provider.order;
+  // Per-profile upstream exclusions — a HARD filter, unlike `order`, so a
+  // fallback can't land on an upstream we've measured as broken. See
+  // `ModelAssessment.provider.ignore`.
+  const ignore = profile.assessment.provider.ignore;
   // Throughput-sorted routing when the profile asks for it (fast workhorses
   // doing bulk output-heavy work — e.g. deepseek-v4-flash). A per-profile
   // fact; undefined leaves OpenRouter's default (price) ordering.
@@ -107,6 +111,7 @@ export const settingsForRole = (
           require_parameters: true,
           zdr,
           ...(order ? { order: [...order] } : {}),
+          ...(ignore ? { ignore: [...ignore] } : {}),
         },
         reasoning: reasoningParamForProfile(profile),
         usage: { include: true },
@@ -147,6 +152,7 @@ export const settingsForRole = (
         provider: {
           zdr,
           ...(order ? { order: [...order] } : {}),
+          ...(ignore ? { ignore: [...ignore] } : {}),
           ...(sort ? { sort } : {}),
         },
       };
@@ -169,22 +175,56 @@ const MAX_TOKENS_BUDGET_BY_LEVEL: Record<
   medium: 4_000,
   high: 8_000,
   xhigh: 16_000,
+  // `max` doubles xhigh rather than extending the ×2 ladder further: the rung
+  // exists so a `max`-capable profile can express its top setting, not to
+  // license unbounded thinking on a budget-style model. Every family that
+  // genuinely wants `max` (OpenAI GPT-5.6, Anthropic Claude 5, Inkling) is
+  // effort-style and never reads this table.
+  max: 32_000,
 };
+
+/**
+ * `max` exists in OUR vocabulary (OpenRouter's HTTP API accepts it, and
+ * `catalog.reasoning.supportedEfforts` records it so drift checks and the
+ * picker show a model's true ladder) but the provider SDK's `effort` union
+ * stops at `xhigh` as of @openrouter/ai-sdk-provider@3.0.0. Rather than cast
+ * around the type, clamp: `max` requests are served at `xhigh`, the highest
+ * rung the SDK can express. Costs little — Artificial Analysis measures GPT-5.6
+ * Luna at 51.2 on `max` vs 49.1 on `xhigh` — and stays type-honest. Drop the
+ * clamp when the provider widens its union.
+ */
+const wireEffort = (
+  level: Exclude<ReasoningLevel, "none">,
+): "xhigh" | "high" | "medium" | "low" | "minimal" =>
+  level === "max" ? "xhigh" : level;
 
 /**
  * Map the product's effort-first `ReasoningLevel` to the wire param the
  * model family honours: effort-style families get OpenRouter's `effort`
- * (whose union matches `ReasoningLevel` exactly); `max-tokens` families
- * get a budget from the table above. `none` (level or style) → no
- * reasoning param at all.
+ * (clamped by `wireEffort`); `max-tokens` families get a budget from the
+ * table above.
  */
 export const reasoningParamForProfile = (
   profile: ModelProfile,
   level?: ReasoningLevel,
 ): OpenRouterChatSettings["reasoning"] => {
   const { style, defaultLevel, maxTokens } = profile.assessment.reasoning;
+  // A model with no reasoning support takes no reasoning param at all: sending
+  // one narrows the pool to nothing under `require_parameters`.
+  if (style === "none") return undefined;
   const resolved = level ?? defaultLevel;
-  if (style === "none" || resolved === "none") return undefined;
+  if (resolved === "none") {
+    // An EXPLICIT `none` has to actually switch thinking off, and omitting the
+    // parameter does NOT do that — measured on GPT-5.6 Luna 2026-07-27: no
+    // param → 13 reasoning tokens (the upstream applies its own default), vs 0
+    // for both `{ enabled: false }` and `{ effort: "none" }`. Now that "No
+    // thinking" is a menu item a user can pick, that gap is the difference
+    // between the control working and lying. Both fields are sent: the SDK's
+    // union requires an `effort`, and `enabled: false` is OpenRouter's own
+    // documented off-switch. Only the explicit path sends it, so a profile that
+    // merely DEFAULTS to `none` keeps its byte-identical historical envelope.
+    return level === undefined ? undefined : { enabled: false, effort: "none" };
+  }
   if (style === "max-tokens") {
     // A per-profile `maxTokens` override (adaptive models that over-think,
     // e.g. MiniMax M3) wins over the shared level→budget table.
@@ -193,7 +233,7 @@ export const reasoningParamForProfile = (
       max_tokens: maxTokens ?? MAX_TOKENS_BUDGET_BY_LEVEL[resolved],
     };
   }
-  return { enabled: true, effort: resolved };
+  return { enabled: true, effort: wireEffort(resolved) };
 };
 
 export interface ResolvedModel {
@@ -468,10 +508,11 @@ export const ROLE_TIER: Record<ModelRole, ModelTier | "fixed"> = {
   // FIXED: repair is a SYSTEM reliability component on the hot path of every
   // malformed tool call — a team's pick must not slow it below the 120b.
   "tool-repair": "fixed",
+  // ONE file-capable model (gemini-3.6-flash) backs both the `vision` tool and
+  // the `extract` engine — no separate extraction role. FIXED: a team's tier
+  // pick must not silently degrade document extraction quality.
   vision: "fixed",
   "vision-fallback": "fixed",
-  extract: "fixed",
-  "extract-fallback": "fixed",
   // Tracks the team's workhorse pick: bulk prose transformation is a
   // cost/quality preference a team may legitimately tune, and the fixed
   // fallback catches a weak pick's truncations/refusals.
@@ -487,31 +528,112 @@ const TIER_DEFAULT_ROLE: Record<ModelTier, ModelRole> = {
 };
 
 /**
- * A profile a team may pick for a tier: it is `enabled` (product on/off) and
- * LISTS that tier. A multi-tier profile (e.g. Sonnet 4.6 — flagship +
- * workhorse) is selectable in each tier it lists. `enabled:false` hides a model
- * everywhere (cost / beta), and removing a tier from `tiers` is the per-tier
- * off-switch (e.g. a model offered in workhorse but not flagship).
+ * A profile a team may pick for a tier: it is `enabled` and LISTS that tier.
+ * That is the whole rule.
  *
- * The eval gate validates the FLAGSHIP (chat) envelope only, so **only
- * flagship requires `passed`** — workhorse / utility are lower-stakes auxiliary
- * roles (titles, memory, pre-extract, compaction) a team can pick without a
- * gate run. This is what lets a model serve workhorse/utility before (or
- * without ever) being gated as a flagship.
+ * `enabled: false` blocks a model everywhere (today: cost, until billing
+ * exists) and removing a tier from `tiers` is the per-tier off-switch. A
+ * multi-tier profile (e.g. GPT-5.6 Luna — flagship + workhorse) is selectable
+ * in each tier it lists.
+ *
+ * **The eval-gate clause was removed on 2026-07-26.** It used to require
+ * `evalGate.status === "passed"` for the flagship tier, which had frozen the
+ * flagship menu at two models while twelve profiles sat `pending`: gate runs
+ * are slow and costly, the suite is not a fair enough judge to be a
+ * gatekeeper, and one profile already carried a hand-written override
+ * explaining the gate's verdict had been overruled. The product bet is
+ * breadth — a team that finds a model weak on our tools switches model.
+ * Evals now gate only the APPLIED DEFAULT (`ROLE_BINDINGS` for `chat` /
+ * `workflow`), enforced in `model-registry.test.ts` rather than at runtime.
  */
 export const isSelectableForTier = (
   profile: ModelProfile,
   tier: ModelTier,
-): boolean =>
-  profile.assessment.enabled !== false &&
-  profile.tiers.includes(tier) &&
-  (tier !== "flagship" || profile.assessment.evalGate.status === "passed");
+): boolean => profile.assessment.enabled && profile.tiers.includes(tier);
 
-/** Every gate-passed profile recommended for a tier (the tier's picker menu). */
+/**
+ * The thinking depths a USER may request for a profile — what a reasoning
+ * picker offers, and the allow-list a stored level is validated against.
+ *
+ * The gate is the CATALOG LADDER, not the wire style: a `max-tokens` profile is
+ * steered just as well by the level→budget table as an `effort` profile is by
+ * the effort string (DeepSeek V4 is deliberately budget-driven precisely so its
+ * 4:1 reasoning ratio stays bounded, and still answers to the level). Two
+ * narrowings on top:
+ *
+ *  - a single-rung ladder is not a choice, so it yields `[]` and the picker
+ *    hides rather than showing one inert option. A model with NO ladder at all
+ *    (MiniMax M3, Claude Haiku 4.5) lands here too — which is right for M3 for
+ *    an independent measured reason: the C7 probe found its `reasoning_tokens`
+ *    flat at ~3-5k across every effort value, and one upstream ignored
+ *    `reasoning.max_tokens` outright.
+ *  - a profile that PINS `maxTokens` yields `[]`, because that override beats
+ *    the level→budget table in `reasoningParamForProfile` — the levels would be
+ *    decorative. A unit test keeps a pinned budget and a real ladder from ever
+ *    coexisting silently.
+ *
+ * Sending a rung outside the ladder is a wire error waiting to happen, and for a
+ * `mandatory` reasoner (every Gemini but 3.1 Flash-Lite, plus Grok) the ladder
+ * correctly omits `none` — reasoning there cannot be switched off.
+ *
+ * Consequence worth knowing: on the current applied default (M3) the chat
+ * reasoning picker renders disabled with an explanation. Every other selectable
+ * flagship steers, so the control comes alive as soon as a team picks one.
+ */
+export const selectableReasoningLevels = (
+  profile: ModelProfile,
+): readonly ReasoningLevel[] => {
+  const { style, maxTokens } = profile.assessment.reasoning;
+  if (style === "none") return [];
+  if (style === "max-tokens" && maxTokens !== undefined) return [];
+  const efforts = profile.catalog.reasoning?.supportedEfforts ?? [];
+  return efforts.length > 1 ? efforts : [];
+};
+
+/**
+ * Narrow a STORED or REQUESTED level to one the profile actually accepts.
+ * Returns `undefined` — meaning "use the profile default" — for an unset level,
+ * a level the model does not support (a team's stored choice outliving a model
+ * swap, a crafted request), and for a level that IS the profile default.
+ *
+ * That last case matters beyond tidiness: passing the default explicitly would
+ * route a `max-tokens` profile through the level→budget table instead of its
+ * hand-tuned `maxTokens` override, changing the wire bytes of a turn nobody
+ * asked to change.
+ */
+export const effectiveReasoningLevel = (
+  profile: ModelProfile,
+  requested: string | null | undefined,
+): ReasoningLevel | undefined => {
+  if (!requested) return undefined;
+  const allowed = selectableReasoningLevels(profile);
+  const match = allowed.find((level) => level === requested);
+  if (match === undefined) return undefined;
+  return match === profile.assessment.reasoning.defaultLevel
+    ? undefined
+    : match;
+};
+
+/** Every selectable profile for a tier — what a team may actually choose. */
 export const listSelectableProfilesForTier = (
   tier: ModelTier,
 ): readonly ModelProfile[] =>
   listProfiles().filter((profile) => isSelectableForTier(profile, tier));
+
+/**
+ * Every profile that LISTS a tier, selectable or not — what the picker
+ * DISPLAYS. Disabled models stay visible with an explanation
+ * (`assessment.disabledReason`) rather than vanishing: a team that cannot yet
+ * pick Claude Opus 5 is better served by seeing it greyed out with a reason
+ * than by wondering whether Fretik supports Anthropic at all.
+ *
+ * Callers MUST still run `isSelectableForTier` before honouring a choice —
+ * this is a display list, never an authorisation list.
+ */
+export const listProfilesForTierDisplay = (
+  tier: ModelTier,
+): readonly ModelProfile[] =>
+  listProfiles().filter((profile) => profile.tiers.includes(tier));
 
 /** The code-default profile key for a tier — badged "recommended" in the UI. */
 export const recommendedProfileKeyForTier = (tier: ModelTier): string =>

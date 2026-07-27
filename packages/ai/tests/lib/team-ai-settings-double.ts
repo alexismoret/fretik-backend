@@ -19,12 +19,14 @@
  */
 import type { TeamAiSettings } from "@fretik/shared/db/schema";
 
-// Only the 3 profile-key columns are read by any call site (team-model.ts) —
-// the double omits teamId/createdAt/updatedAt so test literals stay minimal.
+// Only the columns some call site in `team-model.ts` reads — the double omits
+// teamId/createdAt/updatedAt so test literals stay minimal. Optional so a
+// literal can keep listing just the tier keys it cares about.
 type ProfileKeys = Pick<
   TeamAiSettings,
   "flagshipProfileKey" | "workhorseProfileKey" | "utilityProfileKey"
->;
+> &
+  Partial<Pick<TeamAiSettings, "flagshipReasoningLevel">>;
 
 let settings: ProfileKeys | null = null;
 let shouldThrow = false;

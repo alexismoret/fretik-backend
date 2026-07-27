@@ -19,6 +19,9 @@ import type { ModelMetricsSnapshot } from "./types";
 
 const FRESH_MS = 24 * 60 * 60 * 1000;
 
+// Mirrors `ModelMetrics`. The nullable axes are `.nullish()`-tolerant on read so
+// a snapshot cached BEFORE they existed still parses (and simply reports them
+// absent) instead of failing the schema and forcing a synchronous cold start.
 const snapshotSchema = z.object({
   metrics: z.record(
     z.string(),
@@ -26,6 +29,11 @@ const snapshotSchema = z.object({
       intelligence: z.number().nullable(),
       speed: z.number().nullable(),
       costLevel: z.number(),
+      timeToFirstAnswer: z.number().nullish().default(null),
+      coding: z.number().nullish().default(null),
+      toolUse: z.number().nullish().default(null),
+      instructionFollowing: z.number().nullish().default(null),
+      longContext: z.number().nullish().default(null),
     }),
   ),
   fetchedAt: z.string(),

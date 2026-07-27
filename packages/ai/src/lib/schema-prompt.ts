@@ -11,11 +11,12 @@ import { z } from "zod";
  * Schema `description` properties — the LLM uses them as authoritative
  * extraction guidance.
  *
- * Why we ALSO ship the schema in the prompt (when it already travels via
- * OpenRouter's `response_format: { type: "json_schema", strict: true }`):
- * upstream provider behaviour varies. Some downgrade strict mode to a
- * free-form `json_object` silently, and the model relies on whatever is
- * in the prompt to know the shape. Belt-and-suspenders.
+ * The prompt is the ONLY channel the schema reaches the model through:
+ * callers generate free-form and validate the parsed output themselves.
+ * `response_format` (AI SDK `Output.object`) is deliberately not used —
+ * it never reaches the model as input, providers that don't support it
+ * drop it silently, and the constrained decoding it activates makes
+ * Gemini-class models bail mid-output.
  */
 export const zodToPromptSchema = (schema: z.ZodTypeAny): string =>
   JSON.stringify(z.toJSONSchema(schema, { unrepresentable: "any" }), null, 2);

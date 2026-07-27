@@ -41,7 +41,7 @@ const profileWith = (
     cache: { strategy: "none" },
     reasoning: { style: "none", defaultLevel: "none" },
     provider: { requireParameters: true },
-    evalGate: { status: "passed" },
+    enabled: true,
   },
 });
 
@@ -281,9 +281,9 @@ describe("prepareModelMessages — native file (C5v2, PDF)", () => {
     expect(deps.calls.read).toHaveLength(0);
   });
 
-  test("activated registry profile (claude-sonnet-4.6) ingests a PDF natively; minimax-m3 does not", async () => {
+  test("a file-capable registry profile ingests a PDF natively; minimax-m3 does not", async () => {
     const history = [mediaMsg("1", "application/pdf", "doc.pdf")];
-    const sonnet = MODEL_PROFILES["claude-sonnet-4.6"];
+    const sonnet = MODEL_PROFILES["claude-sonnet-5"];
     const m3 = MODEL_PROFILES["minimax-m3"];
     expect(sonnet).toBeDefined();
     expect(m3).toBeDefined();
@@ -293,7 +293,9 @@ describe("prepareModelMessages — native file (C5v2, PDF)", () => {
       mediaType: "application/pdf",
       url: "data:application/pdf;base64,AQID",
     });
-    // M3's catalog has no "file" → byte-identical strip (inert guard).
+    // M3's catalog has no "file" → byte-identical strip. This is the honest
+    // remaining case for the inert path: not a product choice, a real upstream
+    // limitation.
     const m3Deps = makeDeps();
     const m3Out = await prepareModelMessages(history, m3, m3Deps);
     expect(m3Out).toEqual(stripFilePartsForModel(history));

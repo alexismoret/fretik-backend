@@ -1,6 +1,7 @@
 import { redis } from "@fretik/shared/lib/redis";
 import { getModelDisplayName } from "../../lib/model-registry/display";
 import { MODEL_PROFILES } from "../../lib/model-registry/profiles";
+import type { ModelProfile } from "../../lib/model-registry/types";
 import { costLevelFromProfile } from "./cost-level";
 import { FALLBACK_METRICS } from "./fallback";
 import {
@@ -16,19 +17,27 @@ const REFRESH_LOCK_KEY = "model-metrics:refreshing";
 const REFRESH_LOCK_TTL_SECONDS = 120;
 
 /**
- * Registry key → Artificial Analysis model name, for the rare case where AA's
- * name differs from our `displayName`/key and normalised matching misses.
- * Empty by default — fill in as live AA data reveals mismatches.
+ * Match a profile to its Artificial Analysis record.
+ *
+ * `assessment.aaSlug` is the authoritative path and should be set on every
+ * profile AA covers. Display-name matching survives only as a fallback for
+ * profiles without a slug — it is genuinely unreliable for two reasons:
+ * a profile absent from `MODEL_DISPLAY_NAME` silently matched nothing (which is
+ * what happened to `gemini-3.5-flash-lite`), and AA publishes ONE RECORD PER
+ * EFFORT LEVEL, so a name match returns whichever variant happens to share our
+ * label rather than the level we actually run. GPT-5.6 Luna alone spans 33.3 to
+ * 51.2 intelligence across its five levels.
  */
-const AA_NAME_OVERRIDES: Record<string, string> = {};
-
-const matchAa = (key: string, aa: AaLookup): AaMetric | undefined => {
-  const candidates = [
-    AA_NAME_OVERRIDES[key],
-    getModelDisplayName(key),
-    key,
-  ].filter((candidate): candidate is string => Boolean(candidate));
-  for (const candidate of candidates) {
+const matchAa = (profile: ModelProfile, aa: AaLookup): AaMetric | undefined => {
+  const slug = profile.assessment.aaSlug;
+  if (slug !== undefined) {
+    const exact = aa.get(slug) ?? aa.get(normalizeModelName(slug));
+    if (exact) return exact;
+    console.warn(
+      `[model-metrics] aaSlug "${slug}" (profile ${profile.key}) not found in the Artificial Analysis response — check for a rename`,
+    );
+  }
+  for (const candidate of [getModelDisplayName(profile.key), profile.key]) {
     const hit = aa.get(normalizeModelName(candidate));
     if (hit) return hit;
   }
@@ -48,12 +57,19 @@ export const buildModelMetricsSnapshot = (
   let partial = aa === null;
 
   for (const [key, profile] of Object.entries(MODEL_PROFILES)) {
-    const hit = aa ? matchAa(key, aa) : undefined;
+    const hit = aa ? matchAa(profile, aa) : undefined;
     const fallback = FALLBACK_METRICS[key];
     if (!hit) partial = true;
     metrics[key] = {
       intelligence: hit?.intelligence ?? fallback?.intelligence ?? null,
       speed: hit?.speed ?? fallback?.speed ?? null,
+      // The richer axes have no fallback rows: they are display-only garnish,
+      // so a stale committed value would be worse than an honest blank.
+      timeToFirstAnswer: hit?.timeToFirstAnswer ?? null,
+      coding: hit?.coding ?? null,
+      toolUse: hit?.toolUse ?? null,
+      instructionFollowing: hit?.instructionFollowing ?? null,
+      longContext: hit?.longContext ?? null,
       costLevel: costLevelFromProfile(profile),
     };
   }

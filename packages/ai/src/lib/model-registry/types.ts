@@ -13,12 +13,16 @@
  * - **No model env vars.** Role bindings below are the code defaults;
  *   per-team / per-conversation selection comes from the DB (C8).
  *   Changing a default model = a reviewed PR, not an env edit.
- * - **Promotion is eval-gated, never guessed.** A profile is `pending`
- *   until a C3 gate run, committed by a human, flips it to `passed`.
- *   The PR is the promotion.
- * - **Catalog facts are exact.** Modalities list what the model truly
- *   accepts upstream — product policy (e.g. which attachments go
- *   native, C5) reads these facts plus `evalGate`, it does not edit
+ * - **Selection is open; only the DEFAULT is eval-gated.** Any profile a
+ *   team may reach is governed by `assessment.enabled` alone. Evals gate
+ *   exactly one thing: binding a profile as an APPLIED DEFAULT in
+ *   `ROLE_BINDINGS` for `chat` / `workflow` — enforced by
+ *   `model-registry.test.ts`, not by a runtime filter. Rationale: the
+ *   product is breadth (plug in any model); a model that underperforms on
+ *   our tools is the team's call to swap, not a gate's call to hide.
+ * - **Catalog facts are exact.** Modalities and the reasoning contract
+ *   list what the model truly accepts upstream — product policy (e.g.
+ *   which attachments go native, C5) reads these facts, it does not edit
  *   them.
  */
 
@@ -45,7 +49,7 @@ export type SupportedParameter =
  * Facts mirrored from the OpenRouter models API (GET /api/v1/models).
  * Field names track theirs 1:1 (camelCased) — keep it that way so
  * `scripts/check-model-catalog.ts` can diff mechanically. Last full
- * sync: 2026-06-11.
+ * sync: 2026-07-26.
  */
 export interface ModelCatalogFacts {
   /** OpenRouter model id, e.g. `minimax/minimax-m3`. */
@@ -60,6 +64,27 @@ export interface ModelCatalogFacts {
   outputModalities: readonly OutputModality[];
   /** `supported_parameters`, verbatim. */
   supportedParameters: readonly SupportedParameter[];
+  /**
+   * `reasoning`, verbatim — OpenRouter publishes the reasoning contract per
+   * model, so `assessment.reasoning` no longer has to be guessed:
+   * - `mandatory`: reasoning cannot be disabled (Gemini, Grok) — never send
+   *   `none` to these.
+   * - `supportedEfforts`: the exact effort ladder. Absent ⇒ the model ignores
+   *   the effort knob entirely and only honours a `max_tokens` budget
+   *   (MiniMax M3, Claude Haiku 4.5) ⇒ `assessment.reasoning.style` must be
+   *   `"max-tokens"`.
+   * - `defaultEffort`: upstream's own default, for reference.
+   *
+   * Being catalog (not assessment) makes steerability DERIVABLE — see
+   * `selectableReasoningLevels` (resolve.ts) — instead of a hand-kept key
+   * list that rots.
+   * Omitted entirely when the model has no reasoning support at all.
+   */
+  reasoning?: {
+    mandatory: boolean;
+    supportedEfforts?: readonly ReasoningLevel[];
+    defaultEffort?: ReasoningLevel;
+  };
 }
 
 /**
@@ -78,17 +103,51 @@ export type ReasoningStyle = "max-tokens" | "effort" | "none";
  * Product-level reasoning vocabulary — effort-first, the industry
  * convention (Claude.ai: effort + extended-thinking toggle; ChatGPT:
  * instant vs thinking) and fully aligned with OpenRouter's effort
- * scale (`xhigh|high|medium|low|minimal`). OpenRouter normalises
+ * scale (`max|xhigh|high|medium|low|minimal`). OpenRouter normalises
  * effort across providers (translating to budgets for budget-style
  * models), so this is the portable currency; `max_tokens` is never
- * exposed as a product knob. UI mapping (C8): auto (product default)
- * + a single per-conversation « deep thinking » toggle = `high`. The
- * level → wire-param mapping is per-profile (C2) and re-baselined via
- * evals, never guessed.
+ * exposed as a product knob. The level → wire-param mapping is
+ * per-profile (C2) and re-baselined via evals, never guessed.
+ *
+ * `max` sits ABOVE `xhigh` and is real, not decorative: OpenRouter accepts
+ * it on Luna / Terra / Sol / Opus 5 / Sonnet 5 / Inkling, and Artificial
+ * Analysis measures GPT-5.6 Luna at 51.2 intelligence on `max` vs 49.1 on
+ * `xhigh`. Some models (Kimi K3) even default to it upstream. Only ever
+ * send a level a profile's `catalog.reasoning.supportedEfforts` lists.
+ *
+ * The user-facing surface is a THREE-LAYER default (2026-07-27): the
+ * profile's `assessment.reasoning.defaultLevel`, overridden by the team's
+ * stored choice for its flagship model, overridden by the level a user picks
+ * for one chat turn or one workflow. Order enforced in `handlers/chatbot.ts`
+ * and `handlers/workflow.ts`; the picker only ever offers levels from
+ * `catalog.reasoning.supportedEfforts`.
+ *
+ * `REASONING_LEVELS` is the runtime tuple behind the union — the HTTP + DB
+ * boundary needs actual values (`schemas/ai.ts` `reasoningLevelSchema` in
+ * @fretik/shared). A unit test asserts the two stay identical.
  */
-export type ReasoningLevel =
-  "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
+export const REASONING_LEVELS = [
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+] as const;
 
+export type ReasoningLevel = (typeof REASONING_LEVELS)[number];
+
+/**
+ * Brands whose latest models the product offers. One entry per vendor we
+ * ship, plus `other` as the display fallback.
+ *
+ * `qwen` is retained deliberately with NO profile shipping: Qwen has no
+ * zero-data-retention endpoint on OpenRouter at all (probed 2026-07-26 —
+ * every request envelope returns HTTP 404 "No endpoints found matching your
+ * data policy", Alibaba being the sole host). Keeping the family member
+ * costs nothing and lets a Qwen profile land the day a ZDR host appears.
+ */
 export type ModelFamily =
   | "anthropic"
   | "openai"
@@ -98,6 +157,8 @@ export type ModelFamily =
   | "deepseek"
   | "qwen"
   | "zai"
+  | "xai"
+  | "thinkingmachines"
   | "other";
 
 export type CostClass = "premium" | "standard" | "budget";
@@ -115,20 +176,21 @@ export type ModelTier = "flagship" | "workhorse" | "utility";
 /**
  * Native multimodal-input policy (chantier C5) — which attachment
  * modalities this profile receives as NATIVE content parts instead of
- * routing them through the `read`/`vision` tools. A per-modality switch
- * that is eval-gated, never inferred from the catalog: a flag is `true`
- * only once an A/B run proves native beats tool-mediated for THIS model.
+ * routing them through the `read`/`vision` tools.
  *
  * Integrity invariant (`model-registry.test.ts`): activation ⊆ catalog
  * facts — `image:true` ⇒ catalog lists `"image"`, `video:true` ⇒
  * `"video"`, `fileMimeTypes` non-empty ⇒ `"file"`, `audio:true` ⇒
  * `"audio"`. The catalog is the hard ceiling; this block is the product
- * decision under it.
+ * decision under it. That subset rule is the ONLY invariant — there is no
+ * frozen allow-list of which profiles may activate what, because a
+ * registry meant to grow cannot have its capabilities pinned by a test.
  *
- * Ships INERT — every flag is `false`/empty until a gated activation PR,
- * so `prepareModelMessages` is byte-identical to `stripFilePartsForModel`.
- * v1 wired `image` + `video`; v2 (C5v2) wires `fileMimeTypes` (native
- * PDF, on catalog-`file` profiles only). `audio` stays forward-declared.
+ * Default posture is now ACTIVE, not inert: if the model accepts a modality
+ * upstream, send it natively — tool-mediated routing is the fallback for
+ * what the model genuinely cannot read. The exception is `audio`, which
+ * stays off everywhere: no call site produces audio parts yet, so
+ * activating it would be untested surface.
  */
 export interface NativeInputPolicy {
   image: boolean;
@@ -170,6 +232,39 @@ export const NATIVE_FILE_MAX_BYTES = 10_000_000;
 /** Product decisions about a model — ours, never synced from any API. */
 export interface ModelAssessment {
   costClass: CostClass;
+  /**
+   * Artificial Analysis model slug, pinned to THIS profile's
+   * `reasoning.defaultLevel`. AA publishes one record per effort level
+   * (`gpt-5-6-luna-high`, `-xhigh`, `-max`, …) with materially different
+   * numbers — Luna scores 33.3 / 38.1 / 46.1 / 49.1 / 51.2 from low to max —
+   * so a name match would report whichever variant happens to share our
+   * display name rather than the one we actually run.
+   *
+   * Replaces the old display-name matching in
+   * `services/model-metrics/refresh.ts`, which silently returned no metrics
+   * for any profile missing from `MODEL_DISPLAY_NAME`. Omit only when AA does
+   * not cover the model at all — the fallback table then supplies the values.
+   */
+  aaSlug?: string;
+  /**
+   * VERBOSITY — how many output tokens this model spends to finish a task, and
+   * how that splits between reasoning and answer. Hand-curated from Artificial
+   * Analysis (`intelligenceIndexOutputTokensPerTask`) when a model is added.
+   *
+   * Load-bearing for cost, and the reason headline pricing lies: models differ
+   * by ~20× in output volume, so $/MTok alone mis-ranks the fleet by up to 8
+   * positions. GLM-5.2 emits 42.8k tokens per AA task at a 6.0 reasoning:answer
+   * ratio; GPT-5.6 Luna @xhigh emits 12.5k at 2.1. Read by
+   * `services/model-metrics/cost-level.ts`.
+   *
+   * NOT fetched live: AA's v2 API has no verbosity field (it exists only in the
+   * website payload), so scraping it at runtime would put a layout change on
+   * the request path. Refresh by hand alongside the profile.
+   */
+  verbosity?: {
+    outputTokensPerTask: number;
+    reasoningToAnswerRatio: number;
+  };
   /**
    * HAND-CURATED price, USD per 1,000,000 tokens. Lives here (not in
    * `catalog`) because it is a product-maintained value, NOT the mechanical
@@ -251,24 +346,62 @@ export interface ModelAssessment {
      * cache-less models.
      */
     order?: readonly string[];
+    /**
+     * Upstream slugs to EXCLUDE outright (OpenRouter `provider.ignore`).
+     * `order` only states a preference — when every listed upstream is
+     * down, routing falls back to the rest of the pool. Reach for this
+     * when an upstream's output is WRONG rather than absent, so a
+     * fallback can never silently reintroduce the defect.
+     */
+    ignore?: readonly string[];
+    /**
+     * Omit `max_tokens` from requests for this profile. Needed when the
+     * model's only ZDR-eligible upstream does not advertise the parameter:
+     * `requireParameters` is literal `true`, so sending an unsupported param
+     * EMPTIES the routing pool and OpenRouter answers HTTP 404 "No endpoints
+     * found matching your data policy".
+     *
+     * Live case (probed 2026-07-26): OpenAI's ZDR endpoints are served by
+     * Azure, which advertises `max_completion_tokens` and not `max_tokens`.
+     * The chat path sends no `maxOutputTokens` and routes fine; the workflow
+     * agent sends one and 404s. Honoured in
+     * `agents/shared/agent-builder.ts`.
+     */
+    omitMaxTokens?: true;
   };
   /** Per-family system-prompt overlay key (C2). Unset = no overlay. */
   promptOverlayKey?: string;
   /**
-   * Product on/off switch — whether teams may select this profile, ORTHOGONAL
-   * to `evalGate` (which records whether we've TESTED it). `false` hides it
-   * from every picker AND rejects it as a team default / conversation pin,
-   * even when gate-passed. Use for models we've validated but choose not to
-   * offer yet (cost / beta). Absent = enabled.
+   * THE selection switch — the only thing standing between a team and a
+   * model. `false` hides it from every picker and rejects it as a team
+   * default / conversation pin. Required (not optional) so adding a profile
+   * forces an explicit answer.
+   *
+   * Today's policy: everything costlier per turn than GPT-5.6 Luna @ xhigh is
+   * `false`, because there is no billing yet to pass the cost on. Disabled
+   * profiles stay VISIBLE in the picker with `disabledReason` explaining why,
+   * rather than vanishing — a model a team cannot pick is still information.
+   *
+   * Note this gates SELECTION only. `ROLE_BINDINGS` resolves profiles
+   * directly and bypasses `isSelectableForTier`, so a disabled profile can
+   * still serve an internal role (e.g. `gemini-3.6-flash` →
+   * `transform-fallback`).
    */
-  enabled?: boolean;
+  enabled: boolean;
+  /** Why `enabled: false` — drives the picker tooltip. Omit when enabled. */
+  disabledReason?: "cost" | "no-zdr" | "unavailable";
   /**
-   * Promotion state. Only `passed` profiles are selectable by teams
-   * (C8). Incumbents serving prod before the gate existed are
-   * grandfathered as `passed` with no `lastRunId`.
+   * Eval evidence that this profile is fit to be an APPLIED DEFAULT — i.e. to
+   * appear in `ROLE_BINDINGS` for `chat` / `workflow`. Enforced by
+   * `model-registry.test.ts`, so swapping the default without a gate run
+   * fails CI, while merely offering a model needs nothing here.
+   *
+   * Deliberately NOT read at runtime (that was the old flagship whitelist,
+   * removed 2026-07-26) and optional: most profiles are simply `untested`,
+   * which is a fine state for a selectable model.
    */
-  evalGate: {
-    status: "passed" | "failed" | "pending";
+  evalGate?: {
+    status: "passed" | "failed" | "pending" | "untested";
     lastRunId?: string;
     gatedAt?: string;
   };
@@ -306,8 +439,6 @@ export type ModelRole =
   | "tool-repair"
   | "vision"
   | "vision-fallback"
-  | "extract"
-  | "extract-fallback"
   | "transform"
   | "transform-fallback";
 

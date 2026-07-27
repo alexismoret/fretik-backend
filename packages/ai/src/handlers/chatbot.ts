@@ -102,11 +102,12 @@ import { subscribeAbort } from "../lib/abort-subscriber";
 import { flushLangfuse, langfuseEnabled } from "../lib/langfuse";
 import { deleteScore, recordScore } from "../lib/langfuse-scores";
 import {
+  effectiveReasoningLevel,
   getProfileForRole,
   reasoningParamForProfile,
   resolveChatModelForProfile,
-  resolveFlagshipProfileKey,
 } from "../lib/model-registry/resolve";
+import { resolveTeamFlagship } from "../lib/model-registry/team-model";
 import type { ModelProfile, ReasoningLevel } from "../lib/model-registry/types";
 import { getResumableStreamContext } from "../lib/resumable-stream-context";
 import {
@@ -719,13 +720,11 @@ interface RunChatbotTurnParams {
   agentSet?: AgentSet<ChatbotCallOptions, ChatbotTools>;
   modelProfile?: ModelProfile;
   /**
-   * Per-turn reasoning escalation (C7 "deep thinking"). Set to "high"
-   * by the user-facing POST /stream when the request carries
-   * `deepThinking: true`; absent → the profile's default level (a turn
-   * byte-identical to one without the toggle). Internal `/invoke`
-   * callers omit it. The field is the FULL `ReasoningLevel` enum, not a
-   * boolean, so a future advanced picker threads finer levels with no
-   * backend change — only `high` is reachable from the v1 toggle.
+   * Thinking depth for this turn, already resolved and validated by the
+   * caller (`effectiveReasoningLevel`): the user's pick in the prompt
+   * bar, else the team's stored default for this model. Absent → the
+   * profile's own default, which keeps the turn byte-identical to one
+   * where nobody chose. Internal `/invoke` callers always omit it.
    */
   reasoningLevel?: ReasoningLevel;
   /**
@@ -2092,7 +2091,7 @@ chatbotRoutes.post("/stream", async (c) => {
     messages,
     mentionedUserIds,
     mentionsAssistant,
-    deepThinking,
+    reasoningLevel,
   } = parsed.data;
 
   const conversation = await getConversation({
@@ -2231,18 +2230,21 @@ chatbotRoutes.post("/stream", async (c) => {
     traceId: streamId,
   };
 
-  // C8 — resolve the conversation's pinned flagship model. The key was
-  // stamped at creation (picker choice → team default → null). An unset /
-  // unknown / no-longer-selectable pin degrades to the chat default; a
-  // fallback is logged (a UI notice could ride the metadata later).
-  const { profileKey: flagshipKey, fellBack } = resolveFlagshipProfileKey(
-    conversation.modelProfileKey,
-  );
+  // C8 — which flagship model serves this turn: the conversation's pin (legacy
+  // conversations, stamped when the prompt bar still had a model picker) → the
+  // team's pick in settings → the code default. An unknown or
+  // no-longer-selectable pin degrades rather than erroring.
+  const {
+    profileKey: flagshipKey,
+    fellBack,
+    storedReasoningLevel,
+  } = await resolveTeamFlagship(team.id, conversation.modelProfileKey);
   if (fellBack && conversation.modelProfileKey) {
     console.warn(
       `[chatbot] conversation ${conversationId} pinned model "${conversation.modelProfileKey}" is not a selectable flagship — using default`,
     );
   }
+  const profile = resolveChatModelForProfile(flagshipKey).profile;
 
   return runChatbotTurn({
     conversationId,
@@ -2251,10 +2253,16 @@ chatbotRoutes.post("/stream", async (c) => {
     resumableStreamId: streamId,
     logPrefix: "[chatbot]",
     agentSet: getChatbotAgentSet(flagshipKey),
-    modelProfile: resolveChatModelForProfile(flagshipKey).profile,
-    // C7 — map the user-facing boolean to a ReasoningLevel server-side so
-    // only the eval-validated `high` rung is reachable from the v1 toggle.
-    reasoningLevel: deepThinking ? "high" : undefined,
+    modelProfile: profile,
+    // Thinking depth, outermost choice first: what this user picked in the
+    // prompt bar for this turn, else the team's stored default for this model,
+    // else the profile's own. `effectiveReasoningLevel` drops anything the
+    // model does not support (and the profile default itself, so an untouched
+    // turn stays byte-identical on the wire).
+    reasoningLevel: effectiveReasoningLevel(
+      profile,
+      reasoningLevel ?? storedReasoningLevel,
+    ),
   });
 });
 

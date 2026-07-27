@@ -1,3 +1,4 @@
+import { reasoningLevelSchema } from "@fretik/shared/schemas/reasoning";
 import { describe, expect, test } from "bun:test";
 import {
   MODEL_PROFILES,
@@ -5,11 +6,16 @@ import {
 } from "../../../src/lib/model-registry/profiles";
 import {
   createOrphanThinkStreamStripper,
+  effectiveReasoningLevel,
   getProfileForRole,
+  isSelectableForTier,
+  reasoningParamForProfile,
+  selectableReasoningLevels,
   settingsForRole,
   stripOrphanThinkTags,
 } from "../../../src/lib/model-registry/resolve";
 import {
+  REASONING_LEVELS,
   supportsParameter,
   type ModelRole,
   type ModelTier,
@@ -121,6 +127,20 @@ describe("settingsForRole — parity with historical settings objects", () => {
     });
   });
 
+  test("chat pins the leak-free M3 upstreams and hard-excludes Novita", () => {
+    // Novita mis-splits the `</think>` boundary in streaming (first chunk of
+    // the answer lands on the reasoning channel), so a fallback must never be
+    // able to reach it — `order` alone is only a preference. See the rationale
+    // on the minimax-m3 profile.
+    const chat = settingsForRole(ROLE_BINDINGS.chat, getProfileForRole("chat"));
+    expect(chat?.provider).toEqual({
+      require_parameters: true,
+      zdr: true,
+      order: ["DeepInfra", "Parasail", "AtlasCloud"],
+      ignore: ["Novita"],
+    });
+  });
+
   test("transform runs ZDR + throughput-sorted (deepseek-v4-flash policy)", () => {
     expect(
       settingsForRole(ROLE_BINDINGS.transform, getProfileForRole("transform")),
@@ -145,10 +165,12 @@ describe("role bindings — default model ids pinned (chat: gated M3 flip)", () 
     "memory-distill": "openai/gpt-oss-20b",
     "compaction-summarizer": "deepseek/deepseek-v4-flash",
     "cheap-tasks": "openai/gpt-oss-20b",
-    vision: "google/gemini-3.1-flash-lite",
-    "vision-fallback": "openai/gpt-4o-mini",
-    extract: "google/gemini-3.1-flash-lite",
-    "extract-fallback": "google/gemini-3.6-flash",
+    // ONE file-capable model backs both the `vision` tool and the `extract`
+    // engine (no separate extraction role) — 3.5-flash-lite since 2026-07-25
+    // (5×/3× cheaper, 12/12 full-recall free-form replays), cheap 3.1-lite
+    // fallback. See ROLE_BINDINGS.vision.
+    vision: "google/gemini-3.5-flash-lite",
+    "vision-fallback": "google/gemini-3.1-flash-lite",
     transform: "deepseek/deepseek-v4-flash",
     "transform-fallback": "google/gemini-3.6-flash",
     "tool-repair": "openai/gpt-oss-120b",
@@ -222,30 +244,111 @@ describe("registry integrity", () => {
     }
   });
 
-  test("native input activation matches the gated set (C5 media, C5v2 PDF)", () => {
-    // C5 (2026-06-15) activated image+video on M3 only; C5v2 (2026-07-17)
-    // activated native PDF on the catalog-`file` chat-capable profiles.
-    // Any new activation elsewhere must come with its eval evidence, so
-    // this guards accidental flips in both directions.
-    const NATIVE_PDF_PROFILES = new Set([
-      "claude-opus-4.8",
-      "claude-sonnet-4.6",
-      "claude-haiku-4.5",
-      "gpt-5.5",
-      "gemini-3.1-pro",
-      "gemini-3.6-flash",
-      "gemini-3.1-flash-lite",
-      "mistral-medium-3.5",
-    ]);
+  test("native input is activated wherever the catalog allows it", () => {
+    // Replaces the old frozen allow-list of nine profile keys, which pinned
+    // WHICH models may read an attachment and so turned every registry
+    // addition into a test edit — and had left most of the fleet routing
+    // images through the `vision` tool despite accepting them natively.
+    //
+    // The rule is now derived: if a model accepts a visual modality upstream,
+    // we send it natively. `audio` is the one deliberate exception (no call
+    // site emits audio parts yet), asserted separately below.
     for (const [key, profile] of Object.entries(MODEL_PROFILES)) {
       const { nativeInput } = profile.assessment;
-      const mediaActive =
-        nativeInput.image || nativeInput.video || nativeInput.audio;
-      expect(`${key}:media:${mediaActive}`).toBe(
-        `${key}:media:${key === "minimax-m3"}`,
-      );
+      const catalog = profile.catalog.inputModalities;
+      for (const modality of ["image", "video"] as const) {
+        expect(`${key}:${modality}:${nativeInput[modality]}`).toBe(
+          `${key}:${modality}:${catalog.includes(modality)}`,
+        );
+      }
       expect(`${key}:pdf:${nativeInput.fileMimeTypes.join(",")}`).toBe(
-        `${key}:pdf:${NATIVE_PDF_PROFILES.has(key) ? "application/pdf" : ""}`,
+        `${key}:pdf:${catalog.includes("file") ? "application/pdf" : ""}`,
+      );
+    }
+  });
+
+  test("audio is inactive everywhere, even where the catalog allows it", () => {
+    // Five profiles accept audio upstream. Nothing in the product produces an
+    // audio part, so activating it would ship untested surface — this guards
+    // an accidental flip until there is a call site and eval evidence.
+    const audioCapable = Object.values(MODEL_PROFILES).filter((p) =>
+      p.catalog.inputModalities.includes("audio"),
+    );
+    expect(audioCapable.length).toBeGreaterThan(0);
+    for (const profile of audioCapable) {
+      expect(`${profile.key}:${profile.assessment.nativeInput.audio}`).toBe(
+        `${profile.key}:false`,
+      );
+    }
+  });
+
+  test("every activated modality declares a recency limit", () => {
+    // `prepareModelMessages` keeps the N most-recent native parts per modality
+    // and degrades older ones to tool-mediated. Without a limit a long
+    // conversation re-sends every image it ever saw, every turn.
+    for (const profile of Object.values(MODEL_PROFILES)) {
+      const { nativeInput } = profile.assessment;
+      const { limits } = nativeInput;
+      if (nativeInput.image) {
+        expect(
+          `${profile.key}:images:${limits?.maxImagesPerRequest ?? 0}`,
+        ).not.toBe(`${profile.key}:images:0`);
+      }
+      if (nativeInput.video) {
+        expect(
+          `${profile.key}:videos:${limits?.maxVideosPerRequest ?? 0}`,
+        ).not.toBe(`${profile.key}:videos:0`);
+      }
+      if (nativeInput.fileMimeTypes.length > 0) {
+        expect(
+          `${profile.key}:files:${limits?.maxFilesPerRequest ?? 0}`,
+        ).not.toBe(`${profile.key}:files:0`);
+      }
+    }
+  });
+
+  test("the applied chat / workflow defaults carry passing eval evidence", () => {
+    // THE replacement for the old flagship selection gate. Selection is now
+    // governed by `enabled` alone, so evals guard exactly one thing: which
+    // model actually serves by default. Swapping `ROLE_BINDINGS.chat` without
+    // a gate run must fail CI.
+    for (const role of ["chat", "workflow"] as const) {
+      const binding = ROLE_BINDINGS[role];
+      const profile = MODEL_PROFILES[binding.profileKey];
+      expect(profile).toBeDefined();
+      expect(
+        `${role}:${profile.assessment.evalGate?.status ?? "MISSING"}`,
+      ).toBe(`${role}:passed`);
+    }
+  });
+
+  test("steerability is derived from the catalog, not hand-listed", () => {
+    // Sanity on the derivation itself: neither empty nor everything, or the
+    // rule is silently degenerate and every picker would look the same.
+    const steerable = Object.values(MODEL_PROFILES).filter(
+      (profile) => selectableReasoningLevels(profile).length > 0,
+    );
+    expect(steerable.length).toBeGreaterThan(0);
+    expect(steerable.length).toBeLessThan(Object.keys(MODEL_PROFILES).length);
+  });
+
+  test("a profile never defaults to a reasoning level upstream rejects", () => {
+    for (const profile of Object.values(MODEL_PROFILES)) {
+      const { style, defaultLevel } = profile.assessment.reasoning;
+      const catalogReasoning = profile.catalog.reasoning;
+      // Budget-style profiles send `max_tokens`, not an effort string, so the
+      // effort ladder does not constrain them.
+      if (style !== "effort") continue;
+      // Reasoning that cannot be switched off must never default to `none`.
+      if (catalogReasoning?.mandatory === true) {
+        expect(`${profile.key}:${defaultLevel}`).not.toBe(
+          `${profile.key}:none`,
+        );
+      }
+      const supported = catalogReasoning?.supportedEfforts;
+      if (supported === undefined || defaultLevel === "none") continue;
+      expect(`${profile.key}:${supported.includes(defaultLevel)}`).toBe(
+        `${profile.key}:true`,
       );
     }
   });
@@ -265,6 +368,150 @@ describe("registry integrity", () => {
     expect(supportsParameter(m3, "tools")).toBe(true);
     // structured_outputs is absent from the M3 parameter list (unlike M2.7).
     expect(supportsParameter(m3, "structured_outputs")).toBe(false);
+  });
+});
+
+/**
+ * The user-facing thinking-depth picker (2026-07-27). It replaced the model
+ * selector in the prompt bar, so what it offers has to be exactly what the
+ * serving model honours — an inert control is worse than no control.
+ */
+describe("thinking depth — what a user may actually request", () => {
+  test("the API's level enum matches the registry's, value for value", () => {
+    // Two declarations exist on purpose: @fretik/shared needs VALUES at the
+    // HTTP + DB boundary and must not import the registry (it ships inside the
+    // Trigger.dev bundle). A divergence would let the API accept a level the
+    // registry cannot map to a wire parameter, so pin them together.
+    expect([...reasoningLevelSchema.options].sort()).toEqual(
+      [...REASONING_LEVELS].sort(),
+    );
+  });
+
+  test("only a real ladder offers a choice, whatever the wire style", () => {
+    for (const profile of Object.values(MODEL_PROFILES)) {
+      const levels = selectableReasoningLevels(profile);
+      // Never a single dead option, and never a level upstream rejects.
+      expect(levels.length === 0 || levels.length > 1).toBe(true);
+      const supported = profile.catalog.reasoning?.supportedEfforts ?? [];
+      for (const level of levels) {
+        expect(`${profile.key}:${supported.includes(level)}`).toBe(
+          `${profile.key}:true`,
+        );
+      }
+      // Non-reasoning models expose nothing at all.
+      if (profile.assessment.reasoning.style === "none") {
+        expect(`${profile.key}:${levels.length}`).toBe(`${profile.key}:0`);
+      }
+    }
+  });
+
+  test("a budget-style model with a ladder still offers its levels", () => {
+    // The style is NOT the gate. DeepSeek V4 is deliberately `max-tokens` (its
+    // 4:1 reasoning ratio needs a ceiling) yet documented as answering to the
+    // level, which selects the budget from the shared table. An earlier version
+    // of this rule keyed off `style === "effort"` and silently took that away.
+    const deepseek = MODEL_PROFILES["deepseek-v4-pro"];
+    expect(deepseek?.assessment.reasoning.style).toBe("max-tokens");
+    expect(selectableReasoningLevels(deepseek).length).toBeGreaterThan(1);
+  });
+
+  test("a pinned reasoning budget never coexists with an offered ladder", () => {
+    // `reasoningParamForProfile` lets a per-profile `maxTokens` beat the
+    // level→budget table, so offering levels alongside one would be a control
+    // that changes nothing on the wire.
+    for (const profile of Object.values(MODEL_PROFILES)) {
+      if (profile.assessment.reasoning.maxTokens === undefined) continue;
+      expect(
+        `${profile.key}:${selectableReasoningLevels(profile).length}`,
+      ).toBe(`${profile.key}:0`);
+    }
+  });
+
+  test("a mandatory reasoner never offers to switch reasoning off", () => {
+    for (const profile of Object.values(MODEL_PROFILES)) {
+      if (profile.catalog.reasoning?.mandatory !== true) continue;
+      expect(
+        `${profile.key}:${selectableReasoningLevels(profile).includes("none")}`,
+      ).toBe(`${profile.key}:false`);
+    }
+  });
+
+  test("every flagship a team can pick either steers or explains itself", () => {
+    // Not an assertion that all of them steer — the applied default (M3) does
+    // not. This pins that the menu is not ENTIRELY inert, so the control is
+    // reachable by switching model, and documents which side each model is on.
+    const flagship = Object.values(MODEL_PROFILES).filter((p) =>
+      isSelectableForTier(p, "flagship"),
+    );
+    expect(flagship.length).toBeGreaterThan(1);
+    expect(
+      flagship.filter((p) => selectableReasoningLevels(p).length > 0).length,
+    ).toBeGreaterThan(0);
+  });
+
+  describe('"No thinking" actually switches thinking off', () => {
+    // Measured on GPT-5.6 Luna 2026-07-27: omitting the reasoning param leaves
+    // 13 reasoning tokens (Azure's own default); `{ enabled: false }` and
+    // `{ effort: "none" }` both leave 0. A user who picks "No thinking" must get
+    // the off-switch, not the omission.
+    const luna = MODEL_PROFILES["gpt-5.6-luna"];
+    const flashLite = MODEL_PROFILES["gemini-3.1-flash-lite"];
+
+    test("an explicit `none` sends the off-switch", () => {
+      expect(luna && reasoningParamForProfile(luna, "none")).toEqual({
+        enabled: false,
+        effort: "none",
+      });
+    });
+
+    test("a profile that merely DEFAULTS to none stays byte-identical", () => {
+      // gemini-3.1-flash-lite's default IS `none`; its envelope must not gain a
+      // parameter it never sent, or every cached prefix on that path changes.
+      expect(flashLite?.assessment.reasoning.defaultLevel).toBe("none");
+      expect(flashLite && reasoningParamForProfile(flashLite)).toBeUndefined();
+    });
+
+    test("a model with no reasoning support still sends nothing", () => {
+      // `require_parameters` would empty the pool on a param it can't advertise.
+      for (const profile of Object.values(MODEL_PROFILES)) {
+        if (profile.assessment.reasoning.style !== "none") continue;
+        expect(reasoningParamForProfile(profile, "none")).toBeUndefined();
+        expect(reasoningParamForProfile(profile, "high")).toBeUndefined();
+      }
+    });
+  });
+
+  describe("effectiveReasoningLevel", () => {
+    // GLM-5.2's ladder is xhigh/high with `high` as its default — the smallest
+    // real ladder in the fleet, so it exercises every branch.
+    const glm = MODEL_PROFILES["glm-5.2"];
+    const m3 = MODEL_PROFILES["minimax-m3"];
+
+    test("passes a supported non-default level through", () => {
+      expect(glm && effectiveReasoningLevel(glm, "xhigh")).toBe("xhigh");
+    });
+
+    test("drops the profile's OWN default", () => {
+      // Sending it explicitly would route a budget-style profile through the
+      // level→budget table instead of its hand-tuned `maxTokens`, changing the
+      // wire bytes of a turn nobody asked to change.
+      expect(glm && effectiveReasoningLevel(glm, "high")).toBeUndefined();
+    });
+
+    test("drops a level the model does not support", () => {
+      // How a team's stored choice survives a model swap without breaking it.
+      expect(glm && effectiveReasoningLevel(glm, "minimal")).toBeUndefined();
+      expect(glm && effectiveReasoningLevel(glm, "garbage")).toBeUndefined();
+    });
+
+    test("drops everything for a model with no depth knob", () => {
+      expect(m3 && effectiveReasoningLevel(m3, "high")).toBeUndefined();
+    });
+
+    test("unset stays unset", () => {
+      expect(glm && effectiveReasoningLevel(glm, null)).toBeUndefined();
+      expect(glm && effectiveReasoningLevel(glm, undefined)).toBeUndefined();
+    });
   });
 });
 

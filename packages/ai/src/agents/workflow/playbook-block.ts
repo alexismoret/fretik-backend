@@ -80,6 +80,13 @@ export const buildPlaybookBlock = (
     if (task.expectedOutput !== undefined) {
       lines.push(`    Expected output: ${task.expectedOutput}`);
     }
+    // Hints belong here too, not only on the steering message's current-task
+    // pin: tasks chain WITHIN a turn via `completeTask`, and a hint the
+    // executor only sees at turn start is invisible for every task it reaches
+    // mid-turn. Static per run, so the prompt stays byte-stable.
+    if (task.toolHints !== undefined && task.toolHints.length > 0) {
+      lines.push(`    Suggested tools: ${task.toolHints.join(", ")}`);
+    }
   }
   return lines.join("\n");
 };

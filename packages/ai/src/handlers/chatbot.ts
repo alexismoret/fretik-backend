@@ -95,7 +95,8 @@ import type { ChatbotTools } from "../agents/chatbot/tools";
 import type { AgentSet } from "../agents/shared/agent-builder";
 import {
   assembleContextFragments,
-  buildAttachedFilesBlock,
+  ATTACHED_FILES_UNAVAILABLE,
+  buildConversationAttachedFilesBlock,
   loadExternalApps,
 } from "../agents/shared/fragments";
 import { subscribeAbort } from "../lib/abort-subscriber";
@@ -822,10 +823,18 @@ const buildTurnCallOptions = async (
   // parallel batch.
   const [attachedFilesBlock, activeMemoryRecall, fragments, toolPolicies] =
     await Promise.all([
+      // Conversation-scoped, NOT last-message-scoped: a file part that the
+      // active profile can't ingest natively is dropped from the history by
+      // `prepareModelMessages` (and native ones past the recency cap with
+      // it), so this block is the ONLY thing that keeps an earlier turn's
+      // attachment knowable. Scoping it to the last user message made every
+      // such file vanish on turn 2 — the agent then reports it has no files
+      // while they sit readable in `attachments/`. Same builder the workflow
+      // handler uses.
       withSoftTimeout(
-        buildAttachedFilesBlock(params.conversationId, filenames),
+        buildConversationAttachedFilesBlock(params.conversationId),
         4000,
-        "",
+        ATTACHED_FILES_UNAVAILABLE,
         "attached-files",
       ),
       activeMemoryInputs && activeMemoryUserId

@@ -276,6 +276,14 @@ export const loadExternalApps = async (params: {
 };
 
 /**
+ * Fallback when the attachment listing times out. An empty string renders as
+ * "no files attached", which the agent reads as fact and reports to the user —
+ * so a slow DB must say "unknown", never "none".
+ */
+export const ATTACHED_FILES_UNAVAILABLE =
+  "_The attachment list could not be loaded for this turn. Files may still be present — check with `bash: ls attachments` before telling the user there are none._";
+
+/**
  * Build the `{{attachedFilesBlock}}` fragment — moved verbatim from
  * `handlers/chatbot.ts`. JOINs the filenames against `ai_chat_files` so
  * every entry carries the authoritative metadata (MIME type, size, sidecar
@@ -327,13 +335,23 @@ export const buildAttachedFilesBlock = async (
     if (row.snapshot) {
       body.push(renderSnapshot(row.snapshot));
     }
+    // `extract` reads PDFs and images natively; DOCX/PPTX are text, so they
+    // keep the read-first line. Naming `extract` HERE is load-bearing: this
+    // is the most file-adjacent instruction the model gets, and while it
+    // listed only read/vision/python the model routed document data through
+    // an ad-hoc python parser even with the hint in its playbook.
+    const extractsNatively =
+      row.mimeType === "application/pdf" || row.mimeType.startsWith("image/");
     if (row.hasMarkdown) {
+      const extractLead = extractsNatively
+        ? `\`extract\` for structured data (line items, table rows, named fields). `
+        : "";
       body.push(
-        `\`read({ file_path: '${relativePath}' })\` returns its text; figure refs in it are vision-targetable. For layout / signature questions use \`vision\`; to modify the file use \`python\` on '${relativePath}'.`,
+        `${extractLead}\`read({ file_path: '${relativePath}' })\` returns its text; figure refs in it are vision-targetable. For layout / signature questions use \`vision\`; to modify the file use \`python\` on '${relativePath}'.`,
       );
     } else if (row.mimeType.startsWith("image/")) {
       body.push(
-        `Call \`vision({ file_path: '${relativePath}', question: '...' })\` for visual questions (\`read\` has no text for this image).`,
+        `\`extract\` for structured data. Call \`vision({ file_path: '${relativePath}', question: '...' })\` for visual questions (\`read\` has no text for this image).`,
       );
     } else if (
       row.mimeType.includes("spreadsheet") ||
@@ -354,11 +372,19 @@ export const buildAttachedFilesBlock = async (
 };
 
 /**
- * Conversation-scoped `{{attachedFilesBlock}}` — for a run whose files were NOT
- * carried by a user message (a workflow seeded by a form/email trigger, whose
- * uploads `attachRunFiles` wrote straight onto the run's conversation).
- * Enumerates every non-error attachment on the conversation, then renders them
- * through `buildAttachedFilesBlock`.
+ * Conversation-scoped `{{attachedFilesBlock}}` — used by BOTH agents.
+ *
+ * Workflow runs need it because their files never rode a user message (a
+ * form/email trigger's uploads go straight onto the run's conversation via
+ * `attachRunFiles`). Chat needs it because a file part survives in the
+ * history only while the active profile ingests it natively AND it stays
+ * inside the recency cap — `prepareModelMessages` drops the rest silently.
+ * Scoped to the last user message, this block made every earlier attachment
+ * disappear on the next turn, so the agent concluded it had no files while
+ * they sat readable in `attachments/`.
+ *
+ * Enumerates every non-error attachment on the conversation, then renders
+ * them through `buildAttachedFilesBlock`.
  */
 export const buildConversationAttachedFilesBlock = async (
   conversationId: string | undefined,
@@ -372,7 +398,10 @@ export const buildConversationAttachedFilesBlock = async (
         eq(aiChatFiles.conversationId, conversationId),
         ne(aiChatFiles.status, "error"),
       ),
-    );
+    )
+    // Upload order, so the listing reads as a timeline the agent can map onto
+    // the conversation ("the file from my first message").
+    .orderBy(aiChatFiles.createdAt);
   return buildAttachedFilesBlock(
     conversationId,
     rows.map((r) => r.filename),

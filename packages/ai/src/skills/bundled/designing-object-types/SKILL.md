@@ -93,4 +93,4 @@ For MANY records or restructuring a type (merge/move/split, data-preserving rety
 
 A migration is ONE script: `create_type` the target → `query` the source → `bulk_create` into the target → `bulk_delete` the source. Keep results in variables; print only counts.
 
-Build `rows` in code — never by hand-retyping the source's values. Whatever the input (pasted CSV/JSON, or an uploaded file: Excel, JSON, Markdown, PDF…), parse it in-script with the right library (`csv`, `json`, `openpyxl`/`pandas`, `pdfplumber`, …) and map its columns to field keys programmatically. Hand-transcribing rows silently drops or corrupts cells; parsing keeps every value exactly as given.
+Build `rows` in code — never by hand-retyping the source's values. Tabular and text sources (pasted CSV/JSON, Excel, JSON, Markdown) parse in-script with the right library (`csv`, `json`, `openpyxl`/`pandas`, …); a PDF or image goes through `extract` first, whose validated JSON you then map to field keys. Hand-transcribing rows silently drops or corrupts cells, and a parser tuned to one document's layout breaks on the next one.

@@ -81,6 +81,22 @@ describe("buildPlaybookBlock (static, per-run)", () => {
     const b = buildPlaybookBlock(workflow(), run({ taskStates: flipped }));
     expect(a).toBe(b);
   });
+
+  // Tasks chain within a single turn via `completeTask`, so a hint carried
+  // only by the steering message's current-task pin is invisible for every
+  // task reached mid-turn — which is how an `extract`-hinted task got
+  // hand-parsed in prod.
+  test("carries each task's toolHints, not just the current one's", () => {
+    const hinted = TASKS.map((t) =>
+      t.key === "classify" ? { ...t, toolHints: ["extract"] } : t,
+    );
+    const block = buildPlaybookBlock(workflow(), run({ taskStates: hinted }));
+    expect(block).toContain("Suggested tools: extract");
+    // Tasks without hints stay silent.
+    expect(buildPlaybookBlock(workflow(), run())).not.toContain(
+      "Suggested tools:",
+    );
+  });
 });
 
 describe("buildSteeringMessage (per-turn, at the tail)", () => {

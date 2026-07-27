@@ -41,7 +41,7 @@ export interface CuratedCase {
 }
 
 export const CURATED: Record<string, CuratedCase> = {
-  // extraction (5)
+  // extraction (6)
   "rag-specific-id": { capability: "extraction", smoke: true },
   "file-pdf-read": { capability: "extraction", smoke: true },
   // Structured-extraction chantier (2026-07): the `extract` tool replaces
@@ -50,6 +50,8 @@ export const CURATED: Record<string, CuratedCase> = {
   "ex-pdf-line-items": { capability: "extraction", smoke: true },
   "ex-record-header-fields": { capability: "extraction" },
   "ex-extract-not-python": { capability: "extraction" },
+  // Smoke: the read-then-python relapse is the one that reached prod.
+  "ex-extract-after-read": { capability: "extraction", smoke: true },
   // generation (3)
   "edge-unicode-identifier": { capability: "generation", smoke: true },
   "qa-clarify": { capability: "generation", smoke: true },

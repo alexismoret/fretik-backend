@@ -11,7 +11,6 @@ import { NATIVE_FILE_MAX_BYTES } from "../lib/model-registry/types";
 import { getPdfPageCount, parsePageSelection } from "../lib/pdf-pages";
 import {
   buildExtractionSchema,
-  type ExtractField,
   type ExtractSource,
   runStructuredExtract,
 } from "../lib/structured-extract";
@@ -47,31 +46,6 @@ const getExtension = (path: string): string => {
 
 const EXAMPLE_CALL =
   '{"file_path":"attachments/doc.pdf","shape":"records","fields":[{"name":"article_number","type":"integer","description":"the Art. N° column"},{"name":"description"},{"name":"net_weight_kg","type":"number"}]}';
-
-/** Accept a legacy `schema` object (top-level `properties`) by converting it to
- * a flat field list — a one-release compat shim so a stale prompt doesn't fail. */
-const fieldsFromLegacySchema = (schema: unknown): ExtractField[] | null => {
-  if (typeof schema !== "object" || schema === null) return null;
-  const props = (schema as Record<string, unknown>)["properties"];
-  if (typeof props !== "object" || props === null) return null;
-  const fields: ExtractField[] = [];
-  for (const [name, def] of Object.entries(props as Record<string, unknown>)) {
-    if (typeof def === "object" && def !== null) {
-      const d = def as Record<string, unknown>;
-      const rawType = d["type"];
-      const type =
-        rawType === "number" || rawType === "integer" || rawType === "boolean"
-          ? rawType
-          : "string";
-      const description =
-        typeof d["description"] === "string" ? d["description"] : undefined;
-      fields.push({ name, type, description });
-    } else {
-      fields.push({ name });
-    }
-  }
-  return fields.length > 0 ? fields : null;
-};
 
 export const createExtractTool = () =>
   tool({
@@ -119,7 +93,6 @@ export const createExtractTool = () =>
         )
         .min(1)
         .max(60)
-        .optional()
         .describe(
           'The fields to extract, each {name, type?, description?}. Example: [{"name":"article_number","type":"integer"},{"name":"description"},{"name":"amount","type":"number","description":"line total in EUR"}].',
         ),
@@ -141,12 +114,9 @@ export const createExtractTool = () =>
         .describe(
           "PDF page selection, 1-based, e.g. '2-9' or '1,4-6'. Omit for the whole document.",
         ),
-      // Deprecated legacy escape hatch — a raw JSON Schema. Undocumented in the
-      // description; converted to `fields` for one release, then removed.
-      schema: z.record(z.string(), z.unknown()).optional(),
     }),
     execute: async (
-      { file_path, fields, shape, instructions, pages, schema },
+      { file_path, fields, shape, instructions, pages },
       options,
     ) => {
       const ctx = getRuntimeContext(options);
@@ -159,27 +129,7 @@ export const createExtractTool = () =>
       }
       const conversationId = ctx.conversationId;
 
-      const warnings: string[] = [];
-      let effectiveFields: ExtractField[] | undefined = fields;
-      if ((!effectiveFields || effectiveFields.length === 0) && schema) {
-        const legacy = fieldsFromLegacySchema(schema);
-        if (legacy) {
-          effectiveFields = legacy;
-          warnings.push(
-            "`schema` is deprecated — pass a flat `fields` list instead.",
-          );
-        }
-      }
-      if (!effectiveFields || effectiveFields.length === 0) {
-        return {
-          error:
-            "extract needs a `fields` list — name the fields to pull from the document.",
-          code: TOOL_ERROR_CODES.INVALID_ARGS,
-          hint: `Example call: ${EXAMPLE_CALL}`,
-        };
-      }
-
-      const prepared = buildExtractionSchema(effectiveFields, shape);
+      const prepared = buildExtractionSchema(fields, shape);
       if ("error" in prepared) {
         return {
           error: prepared.error,
@@ -309,7 +259,7 @@ export const createExtractTool = () =>
         return {
           filePath: resolved.absolute,
           ...result,
-          notices: [...warnings, ...lateNotices, ...result.notices],
+          notices: [...lateNotices, ...result.notices],
         };
       } catch (err) {
         return {

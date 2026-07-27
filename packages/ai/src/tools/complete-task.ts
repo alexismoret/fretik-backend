@@ -57,6 +57,12 @@ export const createCompleteTaskTool = () =>
       }
       if (result.next !== null) {
         const next = result.next;
+        // The hint rides the `instruction` sentence, not just a bare array
+        // field: a task reached mid-turn gets no steering message, so this
+        // result is the only place its tool cue can land — and a JSON array
+        // buried under a paragraph of instructions reads as metadata, not as
+        // direction.
+        const hints = next.toolHints ?? [];
         return {
           closedTask: { key: result.completed.key, status: outcome },
           nextTask: {
@@ -66,11 +72,12 @@ export const createCompleteTaskTool = () =>
             ...(next.expectedOutput !== undefined
               ? { expectedOutput: next.expectedOutput }
               : {}),
-            ...(next.toolHints !== undefined
-              ? { toolHints: next.toolHints }
-              : {}),
+            ...(hints.length > 0 ? { toolHints: hints } : {}),
           },
-          instruction: "Work on this task now.",
+          instruction:
+            hints.length > 0
+              ? `Work on this task now, reaching for ${hints.join(", ")}.`
+              : "Work on this task now.",
         };
       }
       return {

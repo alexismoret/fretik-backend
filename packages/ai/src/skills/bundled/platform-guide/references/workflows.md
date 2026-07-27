@@ -24,6 +24,11 @@ A playbook is a program: each run executes against whatever the trigger delivers
 - **Stable format, varying content** — same document type each run, but the values, rows, and page counts differ. Tasks describe WHICH data to obtain (fields, records, bounds) — never positions, counts, or wording observed in one example.
 - **Open input** — layout, length, even document type can differ run to run (a public form, a mailbox). Tasks state the goal and the data contract; the executor adapts per run (`extract` naming the fields, rather than any layout-specific parsing).
 
+Two rules make an extraction playbook hold up, both learned from runs that failed without them:
+
+- **The extraction task carries its field list** — names, types, and where each value sits. That is a data contract, not a tool argument (`instructions` still name no tool), and without it the executor invents a different shape every run.
+- **The task that extracts is the task that opens the document.** An earlier task that reads whole files just to sort or count them leaves their text in the run's context, and the extraction task then parses that text instead of the file. Give an inventory task the minimum it needs — `bash: ls attachments`, the `<attached_file>` snapshot, at most one targeted read.
+
 Example files in the conversation are ONE point in the input space, not its definition — unless the user says they are the fixed template. When the request leaves the variability ambiguous ("here are some invoices" — always this supplier? always this layout?), `askUserQuestion` before building: one question up front beats a workflow that breaks on its second run.
 
 The same discipline covers the deliverable. When the output leaves a real choice open — which identifier fills a column, which of several formats, which rule when the data offers more than one candidate, what a run does when an expected value or cross-source match is MISSING (fail, keep the row with the value empty, or pause for approval) — settle it against the example the user gave, or `askUserQuestion` before building. A choice discovered only after the first test run has already cost the user the whole run.

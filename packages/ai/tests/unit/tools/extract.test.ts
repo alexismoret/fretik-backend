@@ -44,7 +44,7 @@ const { wrapRuntimeContext } =
   await import("../../../src/agents/shared/runtime-context");
 
 const VALID_FIELDS = [
-  { name: "value", type: "number", description: "the value" },
+  { name: "value", type: "number" as const, description: "the value" },
 ];
 
 const execExtract = async (
@@ -101,19 +101,22 @@ describe("extract tool — input validation", () => {
     expect(engineCalls).toHaveLength(0);
   });
 
-  test("legacy `schema` object is accepted via the compat shim", async () => {
+  // The `schema` param is gone: it was undocumented, serialised into the wire
+  // schema as an object accepting no properties, and models planning "let me
+  // build the schema" sent `{}` — 25/25 calls in prod failed INVALID_SCHEMA
+  // before falling back to hand-parsing. `fields` is the only surface now.
+  test("a legacy `schema`-only call no longer reaches the engine", async () => {
     sandboxFs.write("c1", "attachments/doc.pdf", await buildPdf(1));
     const result = await execExtract("c1", {
       file_path: "attachments/doc.pdf",
-      fields: undefined,
+      fields: [],
       schema: {
         type: "object",
         properties: { amount: { type: "number", description: "total" } },
       },
     });
-    expect(engineCalls).toHaveLength(1);
-    expect(Array.isArray(result["notices"])).toBe(true);
-    expect((result["notices"] as string[]).join(" ")).toContain("deprecated");
+    expect(result["code"]).toBe("INVALID_ARGS");
+    expect(engineCalls).toHaveLength(0);
   });
 
   test("routes spreadsheets to python", async () => {

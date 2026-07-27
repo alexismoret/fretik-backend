@@ -93,6 +93,8 @@ with open("rotated.pdf", "wb") as output:
 
 ### pdfplumber - Text and Table Extraction
 
+Only for a PDF you are transforming (locating content to split, redact, or rebuild). Pulling data OUT of a PDF is `extract` — it needs no script and no layout assumptions.
+
 #### Extract Text with Layout
 
 ```python
@@ -323,16 +325,17 @@ with open("encrypted.pdf", "wb") as output:
 
 ## Quick Reference
 
-| Task               | Best Tool                       | Command/Code               |
-| ------------------ | ------------------------------- | -------------------------- |
-| Merge PDFs         | pypdf                           | `writer.add_page(page)`    |
-| Split PDFs         | pypdf                           | One page per file          |
-| Extract text       | pdfplumber                      | `page.extract_text()`      |
-| Extract tables     | pdfplumber                      | `page.extract_tables()`    |
-| Create PDFs        | reportlab                       | Canvas or Platypus         |
-| Command line merge | qpdf                            | `qpdf --empty --pages ...` |
-| OCR scanned PDFs   | pytesseract                     | Convert to image first     |
-| Fill PDF forms     | pdf-lib or pypdf (see FORMS.md) | See FORMS.md               |
+| Task                                  | Best Tool                       | Command/Code                               |
+| ------------------------------------- | ------------------------------- | ------------------------------------------ |
+| Merge PDFs                            | pypdf                           | `writer.add_page(page)`                    |
+| Split PDFs                            | pypdf                           | One page per file                          |
+| Read a PDF's text                     | `read`                          | no script needed                           |
+| Data out of a PDF                     | `extract`                       | name the fields                            |
+| Locate text/tables while transforming | pdfplumber                      | `page.extract_text()` / `extract_tables()` |
+| Create PDFs                           | reportlab                       | Canvas or Platypus                         |
+| Command line merge                    | qpdf                            | `qpdf --empty --pages ...`                 |
+| OCR scanned PDFs                      | pytesseract                     | Convert to image first                     |
+| Fill PDF forms                        | pdf-lib or pypdf (see FORMS.md) | See FORMS.md                               |
 
 ## Next Steps
 

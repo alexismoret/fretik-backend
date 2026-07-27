@@ -90,3 +90,13 @@ synthetic ones.
   is covered by `tests/unit/lib/stream-errors.test.ts` (classification + `describeStreamError`
   serialisation) rather than a dataset case. The behavioural half of the same incident — the
   24-python-call authoring reflex — IS eval-expressible and lives in `cases/transform.ts`.
+
+- **Attachment visibility across turns (2026-07).** A file the active profile cannot ingest
+  natively is dropped from the message history, so `<file_attachments>` is the only thing
+  that keeps it knowable; while that block was built from the LAST USER MESSAGE only, every
+  earlier attachment vanished on the next turn and the agent reported having no files.
+  Fixed by moving chat to `buildConversationAttachedFilesBlock`. Not eval-expressible: a
+  case is one `/invoke` turn, and `fixtures` always attaches to that same seeded message, so
+  the harness cannot produce "file attached on turn 1, asked about on turn 2". Covered by
+  the wiring in `handlers/chatbot.ts` instead. Making it a dataset case
+  needs multi-turn support in `conversation-lifecycle.ts`.

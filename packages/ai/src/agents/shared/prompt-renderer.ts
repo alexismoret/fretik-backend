@@ -40,7 +40,11 @@ const buildNativeMediaNote = (nativeInput: NativeInputPolicy): string => {
   const pdfNote = nativePdf
     ? " Use `read` when you need exact text to quote or line-precise navigation in a long document."
     : "";
-  return `**Attached ${joined} are directly visible to you in this message** — describe and answer from what you see. Call \`vision\` only for a finer visual sub-question (a region of an image, a specific moment of a video).${pdfNote}`;
+  // The closing sentence is load-bearing: `<file_attachments>` is
+  // conversation-scoped while native ingestion is per-message and capped, so
+  // some listed files are NOT in the message. Without it the model treats the
+  // whole list as visible and never reaches for the tool named on the entry.
+  return `**Attached ${joined} are directly visible to you in this message** — describe and answer from what you see. Call \`vision\` only for a finer visual sub-question (a region of an image, a specific moment of a video).${pdfNote} Every other file in \`<file_attachments>\` is real but NOT in this message: reach it with the tool named on its entry.`;
 };
 
 /**
@@ -346,7 +350,7 @@ export const buildChatbotSystemPrompt = async (
       attachedFilesBlock:
         ctx.attachedFilesBlock && ctx.attachedFilesBlock.length > 0
           ? ctx.attachedFilesBlock
-          : "_No files attached to the current message._",
+          : "_No files attached to this conversation._",
       nativeMediaNote: buildNativeMediaNote(
         ctx.modelProfile.assessment.nativeInput,
       ),

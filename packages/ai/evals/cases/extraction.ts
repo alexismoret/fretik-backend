@@ -79,5 +79,29 @@ export const extractionSuite: EvalSuite = {
         },
       ],
     },
+    {
+      // Regression test for the 2026-07 workflow run where the executor
+      // reasoned its way TO `extract`, then talked itself out of it because
+      // it had already read the document ("I have the text already, python
+      // is faster") and hand-parsed 29 pages with pdfplumber instead. Having
+      // read a PDF must not reclassify it as text.
+      id: "ex-extract-after-read",
+      description:
+        "A `read` on the PDF first does not license hand-parsing its text — the extraction still goes through `extract`",
+      prompt:
+        "Lis d'abord invoice.pdf pour voir sa structure, puis donne-moi toutes ses lignes avec description, quantité et montant.",
+      tags: ["files", "extract", "routing"],
+      fixtures: ["invoice.pdf"],
+      budget: { maxToolCalls: 5, expectedTools: ["read", "extract"] },
+      assertions: [
+        { type: "noError" },
+        { type: "toolUsed", tools: ["extract"], mode: "any" },
+        {
+          type: "judge",
+          rubric:
+            "PASS if the assistant reads the file and still obtains the line items through the `extract` tool. FAIL if, having read the PDF, it parses that text with python (pdfplumber / regex / string splitting) or hand-transcribes values from the read output into a script or the answer — the read output is a rendering, the PDF is still the source.",
+        },
+      ],
+    },
   ],
 };

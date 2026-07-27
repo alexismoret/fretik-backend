@@ -12,7 +12,18 @@ import {
 } from "./fetch-artificial-analysis";
 import type { ModelMetrics, ModelMetricsSnapshot } from "./types";
 
-export const MODEL_METRICS_CACHE_KEY = "model-metrics:v1";
+/**
+ * BUMP THIS whenever the snapshot's SHAPE or the set of profile keys changes.
+ *
+ * `get.ts` serves a cached snapshot untouched while it is under 24h old, and it
+ * parses tolerantly so new axes read as absent rather than failing. Together
+ * those mean a deploy that widens the snapshot silently serves the OLD one for a
+ * day: v1 held the pre-2026-07-26 profile set, so after that deploy every
+ * renamed or added model resolved to no metrics at all and the whole hub read
+ * "Not measured". Changing the key makes the deploy invalidate its own cache —
+ * the alternative is remembering to flush Redis by hand on every rollout.
+ */
+export const MODEL_METRICS_CACHE_KEY = "model-metrics:v2";
 const REFRESH_LOCK_KEY = "model-metrics:refreshing";
 const REFRESH_LOCK_TTL_SECONDS = 120;
 
@@ -63,9 +74,16 @@ export const buildModelMetricsSnapshot = (
     metrics[key] = {
       intelligence: hit?.intelligence ?? fallback?.intelligence ?? null,
       speed: hit?.speed ?? fallback?.speed ?? null,
-      // The richer axes have no fallback rows: they are display-only garnish,
-      // so a stale committed value would be worse than an honest blank.
-      timeToFirstAnswer: hit?.timeToFirstAnswer ?? null,
+      // Falls back like intelligence/speed: this drives a headline gauge, so a
+      // blank column is worse than a figure captured a few weeks ago. AA reports
+      // 0 (not null) when it has no throughput data for a model, which would
+      // read as "instant" — treat 0 as absent.
+      timeToFirstAnswer:
+        (hit?.timeToFirstAnswer ?? 0) > 0
+          ? (hit?.timeToFirstAnswer ?? null)
+          : (fallback?.timeToFirstAnswer ?? null),
+      // The detail-panel axes below keep no fallback rows: they are secondary
+      // evidence, where an honest blank costs the reader nothing.
       coding: hit?.coding ?? null,
       toolUse: hit?.toolUse ?? null,
       instructionFollowing: hit?.instructionFollowing ?? null,

@@ -13,6 +13,7 @@ import {
 } from "../../../src/lib/model-registry/resolve";
 import type { ModelTier } from "../../../src/lib/model-registry/types";
 import { costLevelFromProfile } from "../../../src/services/model-metrics/cost-level";
+import { FALLBACK_METRICS } from "../../../src/services/model-metrics/fallback";
 
 /**
  * C8 — per-team / per-conversation tier selection. These pin the pure
@@ -243,5 +244,57 @@ describe("display names", () => {
   test("known key resolves to a brand name; unknown falls back to the key", () => {
     expect(getModelDisplayName("minimax-m3")).toBe("MiniMax M3");
     expect(getModelDisplayName("totally-unknown")).toBe("totally-unknown");
+  });
+});
+
+/**
+ * The hub's three headline gauges (capability / running cost / time to answer)
+ * must ALWAYS render a value. They come from the metrics snapshot, which falls
+ * back to `FALLBACK_METRICS` whenever Artificial Analysis is unreachable or the
+ * `ARTIFICIAL_ANALYSIS_API_KEY` is unset — as it can be in a fresh environment.
+ *
+ * This exists because of a real prod symptom (2026-07-27): every model rendered
+ * "Not measured". Two causes, both guarded here and in `refresh.ts` — a stale
+ * snapshot under an unbumped cache key, and `timeToFirstAnswer` having no
+ * fallback row while driving a headline gauge.
+ */
+describe("fallback metrics cover every headline gauge", () => {
+  test("every profile has a fallback row", () => {
+    // A model added without one shows blank gauges in any AA-less environment.
+    for (const key of Object.keys(MODEL_PROFILES)) {
+      expect(`${key}:${FALLBACK_METRICS[key] !== undefined}`).toBe(
+        `${key}:true`,
+      );
+    }
+  });
+
+  test("no fallback row carries a zero or negative figure", () => {
+    // AA returns 0 for "no data", not "instant" / "free" — copying that through
+    // would render a model as the fastest in the fleet on missing data.
+    for (const [key, row] of Object.entries(FALLBACK_METRICS)) {
+      expect(`${key}:intelligence:${row.intelligence > 0}`).toBe(
+        `${key}:intelligence:true`,
+      );
+      expect(`${key}:speed:${row.speed > 0}`).toBe(`${key}:speed:true`);
+      expect(`${key}:ttfa:${row.timeToFirstAnswer > 0}`).toBe(
+        `${key}:ttfa:true`,
+      );
+    }
+  });
+
+  test("no fallback row is left over from a removed profile", () => {
+    for (const key of Object.keys(FALLBACK_METRICS)) {
+      expect(`${key}:${MODEL_PROFILES[key] !== undefined}`).toBe(`${key}:true`);
+    }
+  });
+
+  test("cost never falls back — it is always the real catalog price", () => {
+    // `costLevel` is computed per request from the registry, so unlike the AA
+    // axes it can never be blank. Pins that it stays that way.
+    for (const profile of Object.values(MODEL_PROFILES)) {
+      const level = costLevelFromProfile(profile);
+      expect(Number.isFinite(level)).toBe(true);
+      expect(level).toBeGreaterThan(0);
+    }
   });
 });

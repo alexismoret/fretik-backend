@@ -67,6 +67,9 @@ const runResume = async (params: { runId: string }): Promise<void> => {
       error: true,
       isTest: true,
       triggeredByUserId: true,
+      usage: true,
+      startedAt: true,
+      finishedAt: true,
     },
   });
   if (!run?.sourceConversationId) return;
@@ -102,13 +105,32 @@ const runResume = async (params: { runId: string }): Promise<void> => {
         sourceConversationId: run.sourceConversationId,
       })
     : 0;
+  // What the run just cost, on the header line — the builder decides whether
+  // another round is worth it against a number, not a feeling. Tokens only,
+  // never a currency amount: this message is visible in the conversation.
+  const durationMs =
+    run.startedAt && run.finishedAt
+      ? run.finishedAt.getTime() - run.startedAt.getTime()
+      : null;
+  const weight = [
+    ...(durationMs !== null && durationMs > 0
+      ? [`${Math.max(1, Math.round(durationMs / 60_000)).toString()} min`]
+      : []),
+    ...(run.usage.totalTokens > 0
+      ? [`${(run.usage.totalTokens / 1_000_000).toFixed(1)}M tokens`]
+      : []),
+  ].join(", ");
   const text = [
-    `[workflow-run-finished] Test run ${runId} of workflow "${workflow?.name ?? "Workflow"}" ${run.status}. Test run #${testsSoFar.toString()} in this conversation.`,
+    `[workflow-run-finished] Test run ${runId} of workflow "${workflow?.name ?? "Workflow"}" ${run.status}. Test run #${testsSoFar.toString()} in this conversation${weight ? ` (${weight})` : ""}.`,
     ...(outcome ? [outcome] : []),
     // Until 2026-07-28 this said "download the run's output" — no tool could,
     // so the builder graded run after run on the summary the run wrote about
     // itself. `get_run` now materialises the deliverables under `runs/<id>/`.
-    "FIRST call get_run — never judge the run from this summary alone. It returns `outputs` with a path per deliverable: OPEN the file and compare it to what was asked. When the conversation holds an example of the output, diff the two in `python` and print the first difference per column — comparing them by eye misses a decimal or an empty column every time. A run that produced no deliverable at all is itself a playbook defect — fix the playbook so it always delivers, with the values it could not establish left empty, rather than debating its report. THEN continue the BUILDER loop: fix the playbook with update + run_test, or activate. NEVER redo the run's work yourself in this chat — the deliverable is produced by the run, not here; reproducing it proves nothing about the workflow. Each extra test run costs the user real time and money: when two rounds have not converged, show them the difference and ask. The user has not spoken — only ask them when a decision genuinely needs their input.",
+    // Until 2026-07-29 it then said only "fix with update + run_test, or
+    // activate" — no convergence rule, so a prod session re-ran a SUCCEEDED
+    // run twice over number formats and data-inherent gaps (3 runs, ~30 min,
+    // near-identical deliverables). The classification below is that rule.
+    "FIRST call get_run — never judge the run from this summary alone. It returns `outputs` with a path per deliverable: OPEN the file and compare it to what was asked. When the conversation holds an example of the output, diff the two in `python` and print the first difference per column — comparing them by eye misses a decimal or an empty column every time. A run that produced no deliverable at all is itself a playbook defect — fix the playbook so it always delivers, with the values it could not establish left empty, rather than debating its report. THEN classify each gap you found: (a) playbook defect — the deliverable's structure or logic does not match what was asked → fix with update + run_test; (b) data gap — the input genuinely lacks the value, any correct run would leave that cell empty → report it as a finding, NEVER as a reason to re-run; (c) spec detail you could have stated upfront (a number format, a label, a sort order) → fold it into the playbook with update and move on WITHOUT a new test — the current deliverable already proves the logic. Deliverable structurally conform → activate now and report the (b)/(c) items alongside. When you update, tighten the existing task in place — appending validation tasks makes every future run longer, not better. A test run costs the user the time and tokens shown above; two rounds without convergence → show the user the remaining difference and ask. NEVER redo the run's work yourself in this chat — the deliverable is produced by the run, not here; reproducing it proves nothing about the workflow. The user has not spoken — only ask them when a decision genuinely needs their input.",
   ].join("\n");
 
   // Claim the turn slot BEFORE persisting the continuation: if a user turn is

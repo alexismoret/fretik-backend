@@ -86,6 +86,7 @@ import {
   withSoftTimeout,
 } from "../lib/stream-errors";
 import { triggerCallbackMiddleware } from "../middlewares/trigger-callback";
+import { microcompactMessages } from "../services/compaction/microcompact";
 import {
   hasNativeFileParts,
   NATIVE_FILE_PARSER_PLUGINS,
@@ -116,9 +117,11 @@ import {
 
 const logPrefix = "[workflow.turn]";
 
-/** How many history messages feed the agent (same default as the chatbot;
- * compaction is not wired for workflow runs in V1 — turns are bounded and
- * the playbook re-grounds every turn). */
+/** How many history messages feed the agent (same default as the chatbot).
+ * Full summarising compaction is not wired for workflow runs — turns are
+ * bounded and the playbook re-grounds every turn — but the microcompact pass
+ * IS (see `executeTurn`): between turns, old stateless tool results (reads,
+ * extracts, RAG dumps) are replaced by markers, in memory only. */
 const WORKFLOW_HISTORY_LIMIT = 40;
 
 /** Consecutive turns with zero tool calls AND zero task transitions before
@@ -185,6 +188,8 @@ const addUsage = (
   inputTokens: prev.inputTokens + (turn?.inputTokens ?? 0),
   outputTokens: prev.outputTokens + (turn?.outputTokens ?? 0),
   totalTokens: prev.totalTokens + (turn?.totalTokens ?? 0),
+  cachedInputTokens:
+    prev.cachedInputTokens + (turn?.inputTokenDetails.cacheReadTokens ?? 0),
   turns: turnIndex,
 });
 
@@ -294,9 +299,14 @@ const executeTurn = async (params: {
   const traceId = randomUUIDv7();
 
   // ---- Context assembly (fragments shared with the chatbot) ----
-  const historyRaw = await loadConversationForAgent(
-    conversationId,
-    WORKFLOW_HISTORY_LIMIT,
+  // Microcompact BETWEEN turns, same pass the chatbot runs: a prior turn's
+  // stale tool results (whole-file reads, extract payloads) otherwise replay
+  // verbatim on every step of every later turn. In-memory only — persisted
+  // messages stay intact, and the current turn's own steps are untouched so
+  // the intra-turn prompt-cache prefix survives. (The inter-turn prefix was
+  // already broken each turn by the steering message.)
+  const historyRaw = microcompactMessages(
+    await loadConversationForAgent(conversationId, WORKFLOW_HISTORY_LIMIT),
   );
   const isFirstTurn = turnIndex === 1;
   const nudge = previousNoProgressTurns(run) > 0;

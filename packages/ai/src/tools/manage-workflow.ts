@@ -132,7 +132,7 @@ export const createManageWorkflowTool = () =>
       "- get_run: runId → status, per-task outcomes, result summary, error, and `outputs` — the run's deliverables, each pulled into this conversation at `runs/<runId>/<file>` so you can `read` it or load it in `python`. A run works in its own workspace, so this is the ONLY way to see what it actually produced: judge the run on the file, never on its own summary.",
       "- activate / pause: flip a workflow live / paused. Cron workflows get their schedule on activate.",
       "",
-      "Loop: create_draft → run_test (turn ends) → resumed on completion → analyze with get_run → adjust with update → activate.",
+      "Loop: create_draft → run_test (turn ends) → resumed on completion → analyze with get_run → adjust with update → activate. One conform test is enough: re-test only when an update fixed a real structural/logic defect; a spec detail (number format, label, sort order) goes in via update with no new test, and gaps inherent to the input data are findings to report, never a reason to re-run.",
       "Activation gate: activate needs ≥1 succeeded run. To skip testing, confirm with the user first (askUserQuestion), then pass confirm: true.",
       "",
       "Form trigger (triggerType 'form'): a person fills a form; each submission starts a run whose triggerPayload is the answers, with uploaded files attached to the run — write the playbook to consume triggerPayload. triggerConfig.form = { title, description?, fields[] (≥1 to activate), visibility ('public' = anyone with the link, 'private' = the workflow's team/owner), submitLabel?, successMessage? }. Each field = { key (snake_case, unique), type, label, required, +per-type constraints (minLength/maxLength, min/max/step, options[{value,label}], accept/maxFiles/maxFileSizeMb) }.",
@@ -147,6 +147,8 @@ export const createManageWorkflowTool = () =>
       "- Autonomy governs writes: `read_only` = no writes; `approval_required` (default) = object writes go through the Python objects SDK in bulk (`records.bulk_*`) and PAUSE for a human to approve, and an open decision pauses via `askUserQuestion` — say WHAT to write / decide, the platform handles the pause + resume; `autonomous` = writes apply directly. Never merge 'present a list and then create it' into a plan that assumes the user is watching — describe the write, the run pauses for approval on its own.",
       "- Scope governs identity: `team` (default) runs as the team assistant — sees only team-shared external-app connections, everyone on the team sees and runs it. `private` runs as you — sees your personal connections too (plus team ones), and only you (and org admins) see or run it. A connections listing tags each row `scope: user` (personal) or `scope: team` (shared); if the playbook needs a `scope: user` connection, the workflow MUST be `private` — the team assistant can never see it. Prefer `team` when a team-shared connection covers the need. Unsure which the user wants, or whether the connection is personal? `askUserQuestion`. `run_test` failing `EXTERNAL_APP_NO_CONNECTION` on what looked like a personal connection means wrong scope — set `scope: private` and retest.",
       "- `toolHints` per task: the tool carrying its core operation, core or domain (validated against the registry). Domain tools pre-load so the run doesn't spend a turn searching; a core tool is the per-task cue the executor reads every turn — an extraction task that omits `extract` gets hand-parsed. Keep the list minimal: the operation's tool, not every tool it might touch. A task that turns on judgement (which records go together, which category applies) gets NO hint — hinting `python` there buys a hand-written scorer instead of a decision.",
+      "- An extraction task never instructs 'read the documents completely': `extract` reads the document itself and returns the structured data. Instruct at most a bounded look (first page / ~50 lines) to identify each file's type and role before extracting — a full `read` on top of `extract` sends every document through the context twice.",
+      "- `update` tightens in place: fold a fix into the task it belongs to, put deliverable format details in `playbook.deliverable` — never append validation tasks round after round; every appended task makes every future run longer.",
       "- Push bulk web/document research into a sub-agent (the executor's `dispatchAgent`) so intermediate reads don't bloat the run — instruct it to 'delegate the research, keep only the summary'.",
       "- Anti-race: finish any data mutation BEFORE a task that reads it back; instruct tasks to re-query state at the point of use, never to reuse a stale snapshot from an earlier task.",
     ].join("\n"),
@@ -208,7 +210,9 @@ export const createManageWorkflowTool = () =>
       confirm: z
         .boolean()
         .optional()
-        .describe("activate only — override the ≥1-successful-test gate."),
+        .describe(
+          "activate: override the ≥1-successful-test gate. run_test: required from the 3rd test when the previous one succeeded.",
+        ),
     }),
     execute: async (input, options) => {
       const ctx = getRuntimeContext(options);
@@ -562,6 +566,31 @@ export const createManageWorkflowTool = () =>
                 "Show the user what the last run produced versus what they asked for, and ask which difference to fix. They can also run the workflow from its page.",
               );
             }
+            // Friction, not a wall: from the 3rd test after a SUCCEEDED one,
+            // require an explicit confirm. A succeeded run whose deliverable
+            // was worth re-testing twice usually wasn't — prod 2026-07-29
+            // re-ran a succeeded run twice over number formats and shipped a
+            // near-identical file both times. Failed runs stay frictionless.
+            if (previousTests >= 2 && input.confirm !== true) {
+              const lastTest = ctx.conversationId
+                ? await db.query.workflowRuns.findFirst({
+                    where: {
+                      workflowId: row.id,
+                      sourceConversationId: ctx.conversationId,
+                      isTest: true,
+                    },
+                    orderBy: { createdAt: "desc" },
+                    columns: { status: true },
+                  })
+                : undefined;
+              if (lastTest?.status === "succeeded") {
+                return toolError(
+                  TOOL_ERROR_CODES.WORKFLOW_ERROR,
+                  `The last test run SUCCEEDED and ${previousTests.toString()} tests already ran — a #${(previousTests + 1).toString()} needs confirm: true.`,
+                  "A structurally conform deliverable → activate; a spec detail (format, label) → update without retesting. Re-test only for a real playbook defect the update just fixed — then pass confirm: true, or ask the user.",
+                );
+              }
+            }
 
             const run = await createWorkflowRun({
               workflow: row,
@@ -577,11 +606,14 @@ export const createManageWorkflowTool = () =>
             });
             const testRunNumber = previousTests + 1;
             if (run.status === "failed") {
+              // Failed at creation (INPUT_MISSING / TRIGGER_FAILED): the turn
+              // deliberately continues — fixing the input and relaunching in
+              // the same turn is the right move. These runs never started, so
+              // `countTestRuns` excludes them from the iteration budget.
               return {
                 ok: true,
                 run: { id: run.id, status: run.status },
-                testRunNumber,
-                next: "The run failed to start — read `error` via get_run, fix, and relaunch.",
+                next: "The run failed to start (this does not count as a test run) — read `error` via get_run, fix the cause, and relaunch in this turn.",
               };
             }
             return {
@@ -637,6 +669,13 @@ export const createManageWorkflowTool = () =>
                 status: run.status,
                 isTest: run.isTest,
                 turns: run.usage.turns,
+                // Tokens with the cache share broken out — the raw total alone
+                // reads as runaway consumption when most of it is cache hits.
+                usage: {
+                  totalTokens: run.usage.totalTokens,
+                  cachedInputTokens: run.usage.cachedInputTokens,
+                  outputTokens: run.usage.outputTokens,
+                },
                 tasks: run.taskStates.map((t) => ({
                   key: t.key,
                   title: t.title,

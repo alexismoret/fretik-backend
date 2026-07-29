@@ -239,6 +239,7 @@ export const workflowRuns = pgTable(
       inputTokens: 0,
       outputTokens: 0,
       totalTokens: 0,
+      cachedInputTokens: 0,
       turns: 0,
     }),
     outputSummary: text("output_summary"),

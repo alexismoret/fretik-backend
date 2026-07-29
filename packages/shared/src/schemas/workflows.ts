@@ -338,6 +338,11 @@ export const WorkflowRunUsageSchema = z.object({
   inputTokens: z.number().int().nonnegative().default(0),
   outputTokens: z.number().int().nonnegative().default(0),
   totalTokens: z.number().int().nonnegative().default(0),
+  /** Provider cache reads, a subset of `inputTokens`. Kept separate because a
+   * multi-step run re-sends its whole context every step: the raw total reads
+   * as runaway consumption when ~95% of it is cheap cache hits. Tokens only —
+   * any cost/credit presentation happens in a display layer, never here. */
+  cachedInputTokens: z.number().int().nonnegative().default(0),
   turns: z.number().int().nonnegative().default(0),
 });
 export type WorkflowRunUsage = z.infer<typeof WorkflowRunUsageSchema>;

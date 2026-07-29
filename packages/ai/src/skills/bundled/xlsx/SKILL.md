@@ -172,6 +172,17 @@ This applies to ALL calculations - totals, percentages, ratios, differences, etc
      - `#VALUE!`: Wrong data type in formula
      - `#NAME?`: Unrecognized formula name
 
+### One-call build & verify loop
+
+Each `python` call is a full model round-trip — batch the whole cycle into ONE cell instead of one call per check:
+
+1. Build or modify the workbook, `wb.save(path)`.
+2. Same cell — recalculate: `subprocess.run(["python", "skills/xlsx/scripts/recalc.py", path], capture_output=True, text=True)` and parse its JSON (no separate `bash` step).
+3. Same cell — reload with `load_workbook(path, data_only=True)` and assert everything the deliverable requires (sheets, columns and order, row count, number formats, sort order, required cells non-empty), collecting failures into one list.
+4. Print ONE compact report: recalc status + every failed assertion. Fix everything it lists in the next single call, then re-run the same cell until the report is clean.
+
+Interleaving "recalc → inspect → tweak one format → recalc" as separate calls spends 10+ round-trips on what two cells cover.
+
 ### Creating new Excel files
 
 ```python

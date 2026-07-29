@@ -82,11 +82,12 @@ describe("getCompactionThresholdTokens — CC effective-window arithmetic", () =
     );
   });
 
-  test("default chat profile (MiniMax M3, 524K) lands at 491,000 with the 20K reserve", () => {
+  test("default chat profile (MiniMax M3, 1,048K) lands at 1,015,576 with the 20K reserve", () => {
     // Pins the real serving threshold — update deliberately on model swap
-    // (last: catalog contextLength 1,048,576 → 524,000, 2026-07).
+    // (last: catalog contextLength 524,000 → 1,048,576, OpenRouter catalog
+    // re-sync, 2026-07).
     if (SUMMARY_RESERVE === 20_000) {
-      expect(getCompactionThresholdTokens(baseProfile)).toBe(491_000);
+      expect(getCompactionThresholdTokens(baseProfile)).toBe(1_015_576);
     }
   });
 });

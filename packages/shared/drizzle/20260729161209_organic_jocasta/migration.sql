@@ -1,0 +1,1 @@
+ALTER TABLE "workflow_runs" ALTER COLUMN "usage" SET DEFAULT '{"inputTokens":0,"outputTokens":0,"totalTokens":0,"cachedInputTokens":0,"turns":0}';

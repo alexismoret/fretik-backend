@@ -1,4 +1,4 @@
-import { and, count, eq } from "drizzle-orm";
+import { and, count, eq, isNotNull, ne, or } from "drizzle-orm";
 import db from "../../db";
 import { workflowRuns } from "../../db/schema";
 
@@ -10,6 +10,11 @@ import { workflowRuns } from "../../db/schema";
  * `isTest`, and the auto-resume lock is keyed per RUN. Counting per
  * (workflow, source conversation) is what makes an iteration budget possible
  * without touching genuine re-tests in a different conversation.
+ *
+ * Runs that failed at CREATION (INPUT_MISSING / TRIGGER_FAILED — `startedAt`
+ * never stamped) don't count: they consumed no model work and taught the
+ * builder nothing, so burning an iteration slot on each would let two
+ * forgotten-attachment mistakes eat the budget a real test needs.
  */
 export const countTestRuns = async (params: {
   workflowId: string;
@@ -23,6 +28,10 @@ export const countTestRuns = async (params: {
         eq(workflowRuns.workflowId, params.workflowId),
         eq(workflowRuns.sourceConversationId, params.sourceConversationId),
         eq(workflowRuns.isTest, true),
+        or(
+          ne(workflowRuns.status, "failed"),
+          isNotNull(workflowRuns.startedAt),
+        ),
       ),
     );
   return row?.value ?? 0;

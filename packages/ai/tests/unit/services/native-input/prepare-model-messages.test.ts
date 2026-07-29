@@ -8,6 +8,7 @@ import type {
 } from "../../../../src/lib/model-registry/types";
 import {
   hasNativeFileParts,
+  planNativeIngestion,
   prepareModelMessages,
   stripFilePartsForModel,
   stripReasoningPartsForModel,
@@ -241,7 +242,9 @@ describe("prepareModelMessages — native file (C5v2, PDF)", () => {
     expect(deps.calls.presign).toHaveLength(0);
   });
 
-  test("maxFilesPerRequest keeps the most-recent PDFs, demotes the older", async () => {
+  // A PDF is native on the turn it arrives and not after: re-sending it on
+  // every step was ~1.1M of a 2.18M-token thread (prod 2026-07-29).
+  test("only the newest turn's PDF rides native; earlier ones demote", async () => {
     const history = [
       mediaMsg("1", "application/pdf", "old.pdf"),
       mediaMsg("2", "application/pdf", "mid.pdf"),
@@ -252,10 +255,35 @@ describe("prepareModelMessages — native file (C5v2, PDF)", () => {
       pdfProfile({ maxFilesPerRequest: 2 }),
       makeDeps(),
     );
-    // oldest demoted to tool-mediated (text part only)
     expect(result[0]?.parts).toHaveLength(1);
-    expect(result[1]?.parts[1]).toMatchObject({ filename: "mid.pdf" });
+    expect(result[1]?.parts).toHaveLength(1);
     expect(result[2]?.parts[1]).toMatchObject({ filename: "new.pdf" });
+  });
+
+  test("maxFilesPerRequest still caps several PDFs sent in one turn", async () => {
+    const history: UIMessage[] = [
+      {
+        id: "u1",
+        role: "user",
+        parts: [
+          { type: "text", text: "three at once" },
+          ...["a.pdf", "b.pdf", "c.pdf"].map((filename) => ({
+            type: "file" as const,
+            mediaType: "application/pdf",
+            filename,
+            url: `attachments/${filename}`,
+          })),
+        ],
+      },
+    ];
+    const result = await prepareModelMessages(
+      history,
+      pdfProfile({ maxFilesPerRequest: 2 }),
+      makeDeps(),
+    );
+    expect(
+      result[0]?.parts.filter((p) => p.type === "file").map((p) => p.filename),
+    ).toEqual(["a.pdf", "b.pdf"]);
   });
 
   test("an oversized PDF demotes to tool-mediated, never errors", async () => {
@@ -369,5 +397,174 @@ describe("prepareModelMessages — reasoning stripping (#423)", () => {
     expect(
       result.flatMap((m) => m.parts).some((p) => p.type === "reasoning"),
     ).toBe(false);
+  });
+});
+
+// The prompt used to promise "attached PDFs are directly visible" from the
+// PROFILE's capability. Prod 2026-07-27: 4 files attached, 2 reached the
+// model, nothing said so, and the agent invented an output column rather than
+// opening the example file it never knew it could read.
+describe("planNativeIngestion", () => {
+  const pdfProfile = profileWith(["text", "file"], {
+    fileMimeTypes: ["application/pdf"],
+    limits: { maxFilesPerRequest: 2 },
+  });
+
+  test("names what rides native and what needs a tool", () => {
+    const history: UIMessage[] = [
+      mediaMsg("u1", "application/pdf", "a.pdf"),
+      {
+        id: "u2",
+        role: "user",
+        parts: [
+          { type: "text", text: "and these" },
+          ...["b.pdf", "c.pdf"].map((filename) => ({
+            type: "file" as const,
+            mediaType: "application/pdf",
+            filename,
+            url: `attachments/${filename}`,
+          })),
+          {
+            type: "file" as const,
+            mediaType: "text/csv",
+            filename: "example.csv",
+            url: "attachments/example.csv",
+          },
+        ],
+      },
+    ];
+    const plan = planNativeIngestion(history, pdfProfile);
+    // This turn's two PDFs ride; an earlier turn's PDF and the non-native mime
+    // are reachable only through a tool.
+    expect(plan.native).toEqual(["b.pdf", "c.pdf"]);
+    expect(plan.toolOnly).toEqual(["a.pdf", "example.csv"]);
+  });
+
+  test("a PDF from an earlier turn becomes tool-only", () => {
+    const plan = planNativeIngestion(
+      [
+        mediaMsg("u1", "application/pdf", "invoice.pdf"),
+        { id: "a1", role: "assistant", parts: [{ type: "text", text: "ok" }] },
+        { id: "u2", role: "user", parts: [{ type: "text", text: "and now?" }] },
+      ],
+      pdfProfile,
+    );
+    expect(plan.native).toEqual([]);
+    expect(plan.toolOnly).toEqual(["invoice.pdf"]);
+  });
+
+  test("an image from an earlier turn still rides native", () => {
+    const imageProfile = profileWith(["text", "image"], { image: true });
+    const plan = planNativeIngestion(
+      [
+        mediaMsg("u1", "image/png", "chart.png"),
+        { id: "u2", role: "user", parts: [{ type: "text", text: "and Q3?" }] },
+      ],
+      imageProfile,
+    );
+    expect(plan.native).toEqual(["chart.png"]);
+    expect(plan.toolOnly).toEqual([]);
+  });
+
+  test("agrees with what prepareModelMessages actually sends", async () => {
+    const history: UIMessage[] = [
+      mediaMsg("u1", "application/pdf", "a.pdf"),
+      mediaMsg("u2", "application/pdf", "b.pdf"),
+      mediaMsg("u3", "application/pdf", "c.pdf"),
+    ];
+    const plan = planNativeIngestion(history, pdfProfile);
+    const prepared = await prepareModelMessages(
+      history,
+      pdfProfile,
+      makeDeps(),
+    );
+    const sent = prepared
+      .flatMap((m) => m.parts)
+      .filter((p) => p.type === "file")
+      .map((p) => (p.type === "file" ? p.filename : undefined));
+    expect(sent).toEqual(plan.native);
+  });
+
+  test("a non-multimodal profile makes every file tool-only", () => {
+    const inert = profileWith(["text"], {});
+    const plan = planNativeIngestion(
+      [mediaMsg("u1", "application/pdf", "a.pdf")],
+      inert,
+    );
+    expect(plan.native).toEqual([]);
+    expect(plan.toolOnly).toEqual(["a.pdf"]);
+  });
+
+  // A workflow run attaches every input file to ONE steering message, so the
+  // cap had nothing chronological to rank and sliced the tail: a 2026-07-28
+  // run sent 3 PDFs under a cap of 2 and dropped the first — the 29-page
+  // primary document. Inside one message, order of delivery decides.
+  test("within one message the cap keeps the FIRST files, not the last", () => {
+    const history: UIMessage[] = [
+      {
+        id: "u1",
+        role: "user",
+        parts: [
+          { type: "text", text: "run" },
+          {
+            type: "file",
+            mediaType: "application/pdf",
+            filename: "primary.pdf",
+            url: "attachments/primary.pdf",
+          },
+          {
+            type: "file",
+            mediaType: "application/pdf",
+            filename: "second.pdf",
+            url: "attachments/second.pdf",
+          },
+          {
+            type: "file",
+            mediaType: "application/pdf",
+            filename: "third.pdf",
+            url: "attachments/third.pdf",
+          },
+        ],
+      },
+    ];
+    const plan = planNativeIngestion(history, pdfProfile);
+    expect(plan.native).toEqual(["primary.pdf", "second.pdf"]);
+    expect(plan.toolOnly).toEqual(["third.pdf"]);
+  });
+
+  test("a newer message still outranks an older one", () => {
+    const history: UIMessage[] = [
+      mediaMsg("u1", "application/pdf", "old.pdf"),
+      {
+        id: "u2",
+        role: "user",
+        parts: [
+          { type: "text", text: "and these" },
+          {
+            type: "file",
+            mediaType: "application/pdf",
+            filename: "new-a.pdf",
+            url: "attachments/new-a.pdf",
+          },
+          {
+            type: "file",
+            mediaType: "application/pdf",
+            filename: "new-b.pdf",
+            url: "attachments/new-b.pdf",
+          },
+        ],
+      },
+    ];
+    const plan = planNativeIngestion(history, pdfProfile);
+    expect(plan.native).toEqual(["new-a.pdf", "new-b.pdf"]);
+    expect(plan.toolOnly).toEqual(["old.pdf"]);
+  });
+
+  test("no files at all → both lists empty (the note renders empty)", () => {
+    const plan = planNativeIngestion(
+      [{ id: "u1", role: "user", parts: [{ type: "text", text: "hi" }] }],
+      pdfProfile,
+    );
+    expect(plan).toEqual({ native: [], toolOnly: [] });
   });
 });

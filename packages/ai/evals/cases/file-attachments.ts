@@ -47,6 +47,24 @@ export const fileAttachmentsSuite: EvalSuite = {
       ],
     },
     {
+      id: "file-non-native-header",
+      description:
+        "A file the profile cannot ingest natively (CSV) is opened, not guessed — the exact header comes from the file",
+      prompt:
+        "Donne-moi la liste exacte des colonnes de ventes.csv, dans l'ordre, telles qu'écrites dans le fichier.",
+      tags: ["files", "read", "native-input"],
+      fixtures: ["ventes.csv", "invoice.pdf"],
+      assertions: [
+        { type: "noError" },
+        { type: "toolUsed", tools: ["read", "python", "bash"], mode: "any" },
+        {
+          type: "judge",
+          rubric:
+            "PASS if the assistant opens ventes.csv and reports exactly `region, produit, montant` in that order. FAIL if it invents, renames, reorders or adds a column, answers without opening the file, or claims the file is missing/unreadable — a CSV is not sent to the model as native content, so it must be read with a tool.",
+        },
+      ],
+    },
+    {
       id: "file-cross-conv-isolation",
       description:
         "A filename from another conversation must not be readable — path sandbox refuses",

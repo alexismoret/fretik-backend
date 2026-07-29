@@ -1,9 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import {
+  assembleExtractResult,
   buildExtractionSchema,
   EXTRACT_SECTION_PAGES,
+  isSparseResult,
   parseExtractionEnvelope,
   planSections,
+  recordKey,
 } from "../../../src/lib/structured-extract";
 
 /** Assert a schema was built and return the record's property map. */
@@ -161,5 +164,141 @@ describe("planSections", () => {
     expect(sections.map((s) => s.length)).toEqual([40, 40, 10]);
     expect(sections[0]?.[0]).toBe(1);
     expect(sections[2]?.at(-1)).toBe(90);
+  });
+});
+
+// Raw JSON equality made a re-sampled row "new" whenever the model
+// re-transcribed one character — prod 2026-07-27 returned 50 rows for a
+// 28-article document and reported it complete.
+describe("recordKey — dedup across independent samples", () => {
+  test("re-transcription noise collapses to the same key", () => {
+    const a = { label: "CH. GISCOURS 2013  75CL", weight: 418.14 };
+    const b = { label: "ch. giscours 2013 75cl ", weight: 418.14 };
+    expect(recordKey(a)).toBe(recordKey(b));
+  });
+
+  test("accents and key order do not change identity", () => {
+    expect(recordKey({ label: "Château", n: 1 })).toBe(
+      recordKey({ n: 1, label: "Chateau" }),
+    );
+  });
+
+  test("genuinely different records stay distinct", () => {
+    expect(recordKey({ label: "art 1", weight: 418.14 })).not.toBe(
+      recordKey({ label: "art 2", weight: 418.14 }),
+    );
+    expect(recordKey({ label: "art 1", weight: 418.14 })).not.toBe(
+      recordKey({ label: "art 1", weight: 418.15 }),
+    );
+  });
+
+  test("null is not conflated with an empty string", () => {
+    expect(recordKey({ label: null })).not.toBe(recordKey({ label: "" }));
+  });
+});
+
+// The ONLY trigger for an independent second draw. It used to be joined by
+// "the model's count is higher than what came back", which re-extracted whole
+// documents on a number measured at 26, then 31, then 1 for the same 21 lines.
+describe("isSparseResult — the re-sample trigger is structural", () => {
+  test("a handful of rows over many pages qualifies", () => {
+    expect(isSparseResult(1, 29, "records")).toBe(true);
+    expect(isSparseResult(3, 5, "records")).toBe(true);
+  });
+
+  test("a normal harvest does not, however wrong the model's count was", () => {
+    expect(isSparseResult(21, 5, "records")).toBe(false);
+    expect(isSparseResult(28, 29, "records")).toBe(false);
+  });
+
+  test("a short document does not — nothing to be sparse over", () => {
+    expect(isSparseResult(1, 2, "records")).toBe(false);
+  });
+
+  test("an empty result does not — that has its own notice", () => {
+    expect(isSparseResult(0, 29, "records")).toBe(false);
+  });
+
+  test("a single-record extraction never re-samples", () => {
+    expect(isSparseResult(1, 29, "record")).toBe(false);
+  });
+});
+
+// `complete` is "no problem was detected". A count that disagrees with the
+// rows IS a problem, in both directions — but it says nothing about WHICH of
+// the two is wrong: the same 5-page invoice was counted 26, then 31, then 1,
+// for 21 real lines (prod 2026-07-29). So it is reported, never acted on.
+describe("assembleExtractResult — the count must agree with the rows", () => {
+  const outcome = (rows: number, reportedTotal: number | null) => ({
+    pages: [1, 2, 3],
+    // Distinct rows: the merge de-dupes on `recordKey`.
+    rows: Array.from({ length: rows }, (_, i) => ({ label: `row ${i + 1}` })),
+    singleRecord: null,
+    truncated: false,
+    reportedTotal,
+    failed: false,
+    usedFallback: false,
+    dropped: 0,
+  });
+
+  test("the notice blames neither side — it reports the disagreement", () => {
+    const notice = assembleExtractResult(
+      [outcome(21, 1)],
+      "records",
+      5,
+      "all",
+    ).notices.join(" ");
+    // Run 2 on 2026-07-29 returned 21 rows for a self-reported count of 1,
+    // with no re-sample in the call at all — the notice must not invent one.
+    expect(notice).toContain("unreliable");
+    expect(notice.toLowerCase()).not.toContain("duplicate");
+    expect(notice.toLowerCase()).not.toContain("re-sample");
+  });
+
+  test("more rows than counted → not complete, notice names both numbers", () => {
+    const result = assembleExtractResult(
+      [outcome(32, 26)],
+      "records",
+      5,
+      "all",
+    );
+    expect(result.recordsReturned).toBe(32);
+    expect(result.modelCountedTotal).toBe(26);
+    expect(result.complete).toBe(false);
+    expect(result.notices.join(" ")).toContain("32");
+    expect(result.notices.join(" ")).toContain("26");
+  });
+
+  test("fewer rows than counted → the shortfall notice still fires", () => {
+    const result = assembleExtractResult(
+      [outcome(21, 26)],
+      "records",
+      5,
+      "all",
+    );
+    expect(result.complete).toBe(false);
+    expect(result.notices).toHaveLength(1);
+  });
+
+  test("rows and count agree → complete, no notice", () => {
+    const result = assembleExtractResult(
+      [outcome(28, 28)],
+      "records",
+      29,
+      "all",
+    );
+    expect(result.complete).toBe(true);
+    expect(result.notices).toEqual([]);
+  });
+
+  test("no count reported → nothing to disagree with", () => {
+    const result = assembleExtractResult(
+      [outcome(28, null)],
+      "records",
+      29,
+      "all",
+    );
+    expect(result.modelCountedTotal).toBeNull();
+    expect(result.complete).toBe(true);
   });
 });

@@ -9,6 +9,8 @@ import {
   loadConversationForAgent,
   saveMessage,
 } from "@fretik/shared/services/ai/messages";
+import { countTestRuns } from "@fretik/shared/services/workflows/count-test-runs";
+import { context, ROOT_CONTEXT } from "@opentelemetry/api";
 import { randomUUIDv7 } from "bun";
 import {
   getChatbotAgentSet,
@@ -41,7 +43,16 @@ const resumeLockKey = (runId: string): string => `workflow:resume:${runId}`;
  */
 export const resumeSourceConversation = async (params: {
   runId: string;
-}): Promise<void> => {
+}): Promise<void> =>
+  // Detach from the RUN's tracing context. This is called from the run's
+  // terminal path, and OTel propagates context across async continuations —
+  // so the chat turn nested under the run's `workflow-turn` span: one merged
+  // trace, relabelled with the chat's session, the run's cost billed to the
+  // chat, and no way to look a run up by its own conversation. Two units of
+  // work, two traces.
+  context.with(ROOT_CONTEXT, () => runResume(params));
+
+const runResume = async (params: { runId: string }): Promise<void> => {
   const { runId } = params;
   const locked = await redis.set(resumeLockKey(runId), "1", "EX", 3600, "NX");
   if (locked !== "OK") return;
@@ -85,10 +96,19 @@ export const resumeSourceConversation = async (params: {
     run.status === "failed" && run.error
       ? `${run.error.code}: ${run.error.message}`
       : (run.outputSummary?.trim() ?? "");
+  const testsSoFar = run.sourceConversationId
+    ? await countTestRuns({
+        workflowId: run.workflowId,
+        sourceConversationId: run.sourceConversationId,
+      })
+    : 0;
   const text = [
-    `[workflow-run-finished] Test run ${runId} of workflow "${workflow?.name ?? "Workflow"}" ${run.status}.`,
+    `[workflow-run-finished] Test run ${runId} of workflow "${workflow?.name ?? "Workflow"}" ${run.status}. Test run #${testsSoFar.toString()} in this conversation.`,
     ...(outcome ? [outcome] : []),
-    "FIRST call get_run for the per-task detail — never judge the run from this summary alone. When the conversation holds an example deliverable, download the run's output and diff it against that example. THEN continue the BUILDER loop: fix the playbook with update + run_test, or activate. NEVER redo the run's work yourself in this chat — the deliverable is produced by the run, not here; reproducing it proves nothing about the workflow. The user has not spoken — only ask them when a decision genuinely needs their input.",
+    // Until 2026-07-28 this said "download the run's output" — no tool could,
+    // so the builder graded run after run on the summary the run wrote about
+    // itself. `get_run` now materialises the deliverables under `runs/<id>/`.
+    "FIRST call get_run — never judge the run from this summary alone. It returns `outputs` with a path per deliverable: OPEN the file and compare it to what was asked. When the conversation holds an example of the output, diff the two in `python` and print the first difference per column — comparing them by eye misses a decimal or an empty column every time. A run that produced no deliverable at all is itself a playbook defect — fix the playbook so it always delivers, with the values it could not establish left empty, rather than debating its report. THEN continue the BUILDER loop: fix the playbook with update + run_test, or activate. NEVER redo the run's work yourself in this chat — the deliverable is produced by the run, not here; reproducing it proves nothing about the workflow. Each extra test run costs the user real time and money: when two rounds have not converged, show them the difference and ask. The user has not spoken — only ask them when a decision genuinely needs their input.",
   ].join("\n");
 
   // Claim the turn slot BEFORE persisting the continuation: if a user turn is

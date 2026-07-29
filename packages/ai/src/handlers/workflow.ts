@@ -231,6 +231,14 @@ const ensureSteeringMessage = async (params: {
     nudge: params.nudge,
     wrapUp: params.wrapUp,
   });
+  // Text only — a run NEVER carries native file content. Its files arrive
+  // through `attachRunFiles` and are reached with `extract` / `read` /
+  // `vision`, which is what the playbook names and what the executor does.
+  // Attaching them as file parts (tried 2026-07-27, measured 07-28) put ~61k
+  // tokens of parsed PDF on EVERY step — 1.34M of a 2.66M-token run, half its
+  // input — for content the executor never answered from: it called `extract`
+  // on the same files, then `read` to verify. `<file_attachments>` still names
+  // them, so nothing is hidden.
   const parts: UIMessage["parts"] = [{ type: "text", text }];
   const row = await saveMessage({
     conversationId: params.conversationId,
@@ -450,6 +458,10 @@ const executeTurn = async (params: {
   // Same resolved key as `agentSet` above, so the profile driving
   // `prepareModelMessages` can never diverge from the one actually serving.
   const modelProfile = resolveChatModelForProfile(servingProfileKey).profile;
+
+  // No `nativeIngestion` here, deliberately: a run's history carries no file
+  // parts, so the plan would be empty and `{{nativeMediaNote}}` renders
+  // nothing — which is exactly true. The chat still sets it.
 
   // Thinking depth for this run: the workflow's own setting → the team's stored
   // default (only when this run uses the team's flagship — see
@@ -898,11 +910,23 @@ workflowTriggerRoutes.post("/runs/:runId/turn", async (c) => {
                   { input: `${workflow.name} — turn ${turnIndex.toString()}` },
                   { asType: "agent" },
                 );
-                return runTurn();
+                const turn = await runTurn();
+                // Re-assert the type at the END, as `chatbot-turn` does. A
+                // recall `embed` whose own span is absent stamps its cost on
+                // whatever span is active — the parent — and retypes it
+                // EMBEDDING; only a terminal write puts it back. Carries the
+                // turn outcome onto the trace root while it is there.
+                updateActiveObservation(
+                  {
+                    output: turn.result.status,
+                    metadata: { status: turn.result.status },
+                  },
+                  { asType: "agent" },
+                );
+                return turn;
               },
             ),
           );
-          await flushLangfuse();
         }
 
         await send("result", execution.result);
@@ -952,6 +976,11 @@ workflowTriggerRoutes.post("/runs/:runId/turn", async (c) => {
       } finally {
         clearInterval(heartbeat);
         clearInterval(dbHeartbeat);
+        // Flush HERE, not on the success path: a turn that throws — a user
+        // cancelling the run, above all — never reached the old call site, so
+        // the batch died with the request. The 2026-07-28 cancelled run spent
+        // 9 minutes and left ZERO observations in Langfuse.
+        if (langfuseEnabled) await flushLangfuse();
       }
     },
     async (err, stream) => {

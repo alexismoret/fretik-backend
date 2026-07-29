@@ -542,6 +542,9 @@ export const WorkflowRunResponseSchema = z.object({
   triggerType: workflowTriggerTypeSchema,
   triggerPayload: z.record(z.string(), z.unknown()),
   conversationId: z.uuid().nullable(),
+  /** Chat conversation that launched this run, when one did. The run's own
+   * deliverables are mirrored back there under `runs/<runId>/`. */
+  sourceConversationId: z.uuid().nullable(),
   triggerRunId: z.string().nullable(),
   taskStates: z.array(WorkflowTaskStateSchema),
   turnCount: z.number().int(),

@@ -64,6 +64,11 @@ export const EXTRACT_SECTION_PAGES = 40;
 const EXTRACT_SECTION_CONCURRENCY = 2;
 /** Max follow-up calls after a `length` truncation before reporting a gap. */
 const EXTRACT_MAX_CONTINUATIONS = 3;
+/** A `records` call covering more than this many pages… */
+const EXTRACT_SPARSE_MIN_PAGES = 3;
+/** …and returning no more than this many rows gets ONE extra independent
+ * sample: the count assertion cannot detect a model that under-counts. */
+const EXTRACT_SPARSE_MAX_ROWS = 3;
 
 /** Reasoning counts against the output budget; Gemini mandates it, so pin the
  * least and give plenty of headroom (model max is 65 536). */
@@ -136,6 +141,12 @@ export interface StructuredExtractResult {
   pagesCovered: string;
   /** Number of model calls made (1 for the common whole-doc case). */
   chunks: number;
+  /** Rows actually returned (`records`) or 1/0 (`record`). */
+  recordsReturned: number;
+  /** What the extractor itself counted, summed over calls; `null` when it did
+   * not report a count. Equal to `recordsReturned` proves self-consistency
+   * only — NOT that the document held nothing more. */
+  modelCountedTotal: number | null;
   /** False when a section/continuation failed or a truncation gap remains. */
   complete: boolean;
   /** Agent-directive follow-up guidance (which pages to re-call, and how). */
@@ -393,9 +404,33 @@ const validateRecords = (
 };
 
 /** Stable identity of a record for dedup — sorted key/value JSON. */
-const recordKey = (row: ExtractedRow): string => {
+/**
+ * Identity of a record for deduplication ACROSS independent samples, so a
+ * re-sample of the same document does not double the row count.
+ *
+ * Raw JSON equality is too strict: a re-sample re-transcribes free text, and
+ * one differing space, accent or trailing period made the row "new" — prod
+ * 2026-07-27 returned 50 rows for a 28-article document, reported complete.
+ * Normalising strings (case, accents, whitespace, punctuation-ish edges) and
+ * numbers (trailing-zero noise) makes the key stable under re-transcription
+ * while still separating genuinely different records.
+ */
+const normaliseKeyValue = (value: unknown): unknown => {
+  if (typeof value === "string") {
+    return value
+      .normalize("NFD")
+      .replace(/\p{Diacritic}/gu, "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .toLowerCase();
+  }
+  if (typeof value === "number") return Number(value.toPrecision(10));
+  return value;
+};
+
+export const recordKey = (row: ExtractedRow): string => {
   const keys = Object.keys(row).sort();
-  return JSON.stringify(keys.map((k) => [k, row[k]]));
+  return JSON.stringify(keys.map((k) => [k, normaliseKeyValue(row[k])]));
 };
 
 // ============================================================================
@@ -571,6 +606,25 @@ interface SectionOutcome {
 }
 
 /**
+ * Does this result look like Gemini's bimodal bail — a handful of rows spread
+ * over many pages — and so deserve an independent second draw?
+ *
+ * Structural on purpose. The model's own `total_matching_records` is NOT part
+ * of it: on one 5-page invoice it reported 26, then 31, then 1, for 21 real
+ * lines. Driving a full re-extraction from that number cost ~70s per call and
+ * returned 42 rows for 21 (prod 2026-07-29).
+ */
+export const isSparseResult = (
+  rowCount: number,
+  pageCount: number,
+  shape: ExtractShape,
+): boolean =>
+  shape === "records" &&
+  pageCount > EXTRACT_SPARSE_MIN_PAGES &&
+  rowCount >= 1 &&
+  rowCount <= EXTRACT_SPARSE_MAX_ROWS;
+
+/**
  * Run one native call (whole doc or one section) with continuation on
  * truncation and a single fallback-model retry on error. `file` already carries
  * the right bytes (the whole doc, or a sliced section).
@@ -580,26 +634,45 @@ const runNativeCall = async (
   pages: number[],
   file: CallFile,
 ): Promise<SectionOutcome> => {
-  const collected: ExtractedRow[] = [];
+  let collected: ExtractedRow[] = [];
   const seen = new Set<string>();
   let singleRecord: ExtractedRow | null = null;
   let usedFallback = false;
   let dropped = 0;
 
-  const absorb = (result: LlmCallResult): void => {
+  /** Validated rows of ONE call, de-duplicated within that call only. */
+  const validateSample = (result: LlmCallResult): ExtractedRow[] => {
     const validated = validateRecords(result.rows, ctx.prepared.validateRecord);
     dropped += validated.dropped;
+    const rows: ExtractedRow[] = [];
+    const keys = new Set<string>();
     for (const row of validated.kept) {
       const key = recordKey(row);
-      if (seen.has(key)) continue;
-      seen.add(key);
-      collected.push(row);
+      if (keys.has(key)) continue;
+      keys.add(key);
+      rows.push(row);
     }
+    return rows;
+  };
+
+  const takeSingleRecord = (result: LlmCallResult): void => {
     if (result.singleRecord && !singleRecord) {
       const candidate = { ...result.singleRecord };
       if (ctx.prepared.validateRecord(candidate)) singleRecord = candidate;
       else dropped += 1;
     }
+  };
+
+  /** Union into `collected` — ONLY for truncation continuations, where the
+   *  pieces are genuinely disjoint parts of one interrupted answer. */
+  const absorb = (result: LlmCallResult): void => {
+    for (const row of validateSample(result)) {
+      const key = recordKey(row);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      collected.push(row);
+    }
+    takeSingleRecord(result);
   };
 
   let result: LlmCallResult;
@@ -649,52 +722,87 @@ const runNativeCall = async (
   }
   absorb(result);
 
-  // Recovery loop, two distinct failure modes on a "records" extraction:
-  //   • TRUNCATION (finishReason=length): the array was genuinely cut off →
-  //     continue FROM what we have (pass seenKeys, "extract the rest").
-  //   • COUNT SHORTFALL (finishReason=stop, but records.length < the model's
-  //     own count): Gemini's bimodal bail — it emits 1 record and stops even
-  //     though it counted N (proven 2026-07-24: ~half of attempts return 1 of
-  //     28, independent of page count/density). The fix is a FRESH independent
-  //     re-sample — NO seenKeys priming, which re-triggers the bail — unioned
-  //     by recordKey. An independent attempt has ~50% chance of the full set,
-  //     so a few samples converge; the union keeps whatever any attempt found.
+  // Recovery, on a "records" extraction. TWO paths, and they compose data in
+  // OPPOSITE ways — which is the whole point.
+  //
+  //   • TRUNCATION (finishReason=length): the array was genuinely cut off, so
+  //     the pieces are disjoint parts of one answer → continue FROM what we
+  //     have (seed with seenKeys) and UNION.
+  //
+  //   • SPARSE RESULT (a handful of rows spread over many pages): Gemini's
+  //     bimodal bail — it emits 1 record and stops even though the document
+  //     holds 28 (proven 2026-07-24, ~half of attempts, independent of page
+  //     count). The answer is a FRESH independent draw — no seedKeys, which
+  //     re-triggers the bail — and the draws then COMPETE: keep the fullest,
+  //     never the union. Two independent transcriptions of the same table are
+  //     not two halves of it; unioning them doubles every row whose free-text
+  //     field the model re-worded. Prod 2026-07-29: 42 rows returned for a
+  //     21-line invoice, 114s instead of 45s, and the executor spent python
+  //     calls undoing it.
+  //
+  // The model's own `total_matching_records` triggers NOTHING any more. On one
+  // 5-page invoice it reported 26, then 31, then 1 — for 21 real lines. It is
+  // reported in the envelope and flagged when it disagrees, nothing else.
   let truncated = result.truncated && ctx.shape === "records";
   let reportedTotal = result.reportedTotal;
-  const shortfall = (): boolean =>
-    ctx.shape === "records" &&
-    reportedTotal !== null &&
-    collected.length < reportedTotal;
   let rounds = 0;
-  while ((truncated || shortfall()) && rounds < EXTRACT_MAX_CONTINUATIONS) {
+  while (truncated && rounds < EXTRACT_MAX_CONTINUATIONS) {
     rounds += 1;
     const before = collected.length;
-    const seedKeys = truncated ? [...seen] : [];
     try {
       const cont = await callExtractLlm(
         extractPrimary.model,
         ctx,
         pages,
         file,
-        seedKeys,
+        [...seen],
         reportedTotal,
       );
       absorb(cont);
       truncated = cont.truncated;
       if (reportedTotal === null) reportedTotal = cont.reportedTotal;
     } catch (contError) {
-      // A transient stall shouldn't end the recovery — keep re-sampling; a hard
-      // error (bad request, auth) won't fix itself, so stop.
+      // A transient stall shouldn't end the recovery; a hard error (bad
+      // request, auth) won't fix itself.
       console.warn(
-        `[extract] recovery ${rounds} failed — ${describeLlmError(contError)}`,
+        `[extract] continuation ${rounds.toString()} failed — ${describeLlmError(contError)}`,
       );
       if (!isTimeoutError(contError)) break;
       continue;
     }
-    // A truncation continuation that adds nothing is exhausted — stop. A fresh
-    // re-sample that adds nothing is just another bail; keep sampling until the
-    // count is met or the round budget runs out.
-    if (truncated && collected.length === before) break;
+    // A continuation that adds nothing is exhausted.
+    if (collected.length === before) break;
+  }
+
+  while (
+    isSparseResult(collected.length, pages.length, ctx.shape) &&
+    rounds < EXTRACT_MAX_CONTINUATIONS
+  ) {
+    rounds += 1;
+    let sample: LlmCallResult;
+    try {
+      sample = await callExtractLlm(
+        extractPrimary.model,
+        ctx,
+        pages,
+        file,
+        [],
+        reportedTotal,
+      );
+    } catch (probeError) {
+      console.warn(
+        `[extract] re-sample ${rounds.toString()} failed — ${describeLlmError(probeError)}`,
+      );
+      if (!isTimeoutError(probeError)) break;
+      continue;
+    }
+    takeSingleRecord(sample);
+    if (reportedTotal === null) reportedTotal = sample.reportedTotal;
+    const rows = validateSample(sample);
+    // No improvement means the document really is this sparse — stop rather
+    // than pay for a third opinion.
+    if (rows.length <= collected.length) break;
+    collected = rows;
   }
 
   return {
@@ -756,7 +864,7 @@ const summariseExtractFailure = (
 };
 
 /** Merge section outcomes into the tool-facing result envelope. */
-const assembleExtractResult = (
+export const assembleExtractResult = (
   outcomes: SectionOutcome[],
   shape: ExtractShape,
   pagesTotal: number | null,
@@ -782,12 +890,14 @@ const assembleExtractResult = (
     } else if (
       shape === "records" &&
       outcome.reportedTotal !== null &&
-      outcome.rows.length < outcome.reportedTotal
+      outcome.rows.length !== outcome.reportedTotal
     ) {
-      // The model's own count says the list is short and continuations did not
-      // close the gap — the data is INCOMPLETE; never report it as complete.
+      // The extractor's own count disagrees with what it returned. Measured on
+      // one 5-page invoice: 26, then 31, then 1, for 21 real lines — the count
+      // is a weak signal in BOTH directions, so this only reports the
+      // disagreement. Nothing is re-run on the strength of it.
       notices.push(
-        `${describeRange(outcome.pages)}: only ${outcome.rows.length} of the ${outcome.reportedTotal} matching records the extractor counted came back — re-call extract${rangeArg} on a narrower page range or with sharper instructions to get the rest.`,
+        `${describeRange(outcome.pages)}: ${outcome.rows.length.toString()} records returned, but the extractor counted ${outcome.reportedTotal.toString()} — its count is unreliable and one of the two is wrong. If the row count matters, check it against the document, or re-call extract${rangeArg} on a narrower page range.`,
       );
     }
   }
@@ -833,6 +943,11 @@ const assembleExtractResult = (
     );
   }
 
+  const counted = outcomes.reduce<number | null>(
+    (sum, o) => (o.reportedTotal === null ? sum : (sum ?? 0) + o.reportedTotal),
+    null,
+  );
+  const returned = "records" in data ? data.records.length : empty ? 0 : 1;
   return {
     model: usedFallback
       ? `${EXTRACT_MODEL_ID}+${EXTRACT_FALLBACK_MODEL_ID}`
@@ -840,6 +955,8 @@ const assembleExtractResult = (
     pagesTotal,
     pagesCovered: coveredLabel,
     chunks: outcomes.length,
+    recordsReturned: returned,
+    modelCountedTotal: counted,
     complete: notices.length === 0,
     notices,
     data,

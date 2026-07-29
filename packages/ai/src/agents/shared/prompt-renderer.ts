@@ -1,6 +1,6 @@
 import { TOOL_PERMISSIONS_REMEDIATION } from "@fretik/shared/services/ai/remediation";
 import { fetchManagedPrompt } from "../../lib/langfuse-prompts";
-import type { NativeInputPolicy } from "../../lib/model-registry/types";
+import type { NativeIngestionPlan } from "../../services/native-input/prepare-model-messages";
 import { buildSessionStateBlock } from "../../services/session-state/build-block";
 import type { SearchableToolRegistry } from "./chatbot-tool";
 import { policyHiddenToolNames } from "./policy-tool-gate";
@@ -26,26 +26,35 @@ const buildBlockedToolsNote = (ctx: AgentRuntimeContext): string => {
  * / non-multimodal profiles, keeping the rendered prompt byte-identical to
  * today. Below the cache marker, so it never touches the static prefix.
  */
-const buildNativeMediaNote = (nativeInput: NativeInputPolicy): string => {
-  const kinds: string[] = [];
-  if (nativeInput.image) kinds.push("images");
-  if (nativeInput.video) kinds.push("videos");
-  const nativePdf = nativeInput.fileMimeTypes.includes("application/pdf");
-  if (nativePdf) kinds.push("PDFs");
-  if (kinds.length === 0) return "";
-  const joined =
-    kinds.length > 2
-      ? `${kinds.slice(0, -1).join(", ")}, and ${kinds[kinds.length - 1]}`
-      : kinds.join(" and ");
-  const pdfNote = nativePdf
-    ? " Use `read` when you need exact text to quote or line-precise navigation in a long document."
-    : "";
-  // The closing sentence is load-bearing: `<file_attachments>` is
-  // conversation-scoped while native ingestion is per-message and capped, so
-  // some listed files are NOT in the message. Without it the model treats the
-  // whole list as visible and never reaches for the tool named on the entry.
-  return `**Attached ${joined} are directly visible to you in this message** — describe and answer from what you see. Call \`vision\` only for a finer visual sub-question (a region of an image, a specific moment of a video).${pdfNote} Every other file in \`<file_attachments>\` is real but NOT in this message: reach it with the tool named on its entry.`;
+const buildNativeMediaNote = (
+  plan: NativeIngestionPlan | undefined,
+): string => {
+  // NAMES, not capabilities. Stating what the profile *can* ingest made the
+  // note false for every file past the recency cap, for every non-native mime,
+  // and for 100% of workflow runs (no file part ever reaches a run's messages).
+  // The model then treated the whole `<file_attachments>` list as visible and
+  // never opened what it could have read.
+  if (!plan || (plan.native.length === 0 && plan.toolOnly.length === 0)) {
+    return "";
+  }
+  const lines: string[] = [];
+  if (plan.native.length > 0) {
+    lines.push(
+      `**${formatList(plan.native)} ${plan.native.length > 1 ? "are" : "is"} directly visible to you in this message** — answer from what you see. Call \`vision\` only for a finer visual sub-question, and \`read\` when you need exact text to quote or line-precise navigation.`,
+    );
+  }
+  if (plan.toolOnly.length > 0) {
+    lines.push(
+      `${formatList(plan.toolOnly)} ${plan.toolOnly.length > 1 ? "are" : "is"} attached to this conversation but NOT in this message — reach ${plan.toolOnly.length > 1 ? "them" : "it"} with the tool named on ${plan.toolOnly.length > 1 ? "their entries" : "its entry"} in \`<file_attachments>\`.`,
+    );
+  }
+  return lines.join("\n");
 };
+
+const formatList = (names: string[]): string =>
+  names.length > 2
+    ? `${names.slice(0, -1).join(", ")}, and ${names[names.length - 1]}`
+    : names.join(" and ");
 
 /**
  * Pure prompt template renderer used by the chatbot agent.
@@ -351,9 +360,7 @@ export const buildChatbotSystemPrompt = async (
         ctx.attachedFilesBlock && ctx.attachedFilesBlock.length > 0
           ? ctx.attachedFilesBlock
           : "_No files attached to this conversation._",
-      nativeMediaNote: buildNativeMediaNote(
-        ctx.modelProfile.assessment.nativeInput,
-      ),
+      nativeMediaNote: buildNativeMediaNote(ctx.nativeIngestion),
       chatbotContextManifest:
         ctx.chatbotContextManifest && ctx.chatbotContextManifest.length > 0
           ? ctx.chatbotContextManifest
@@ -431,9 +438,7 @@ export const buildWorkflowSystemPrompt = async (
         ctx.attachedFilesBlock && ctx.attachedFilesBlock.length > 0
           ? ctx.attachedFilesBlock
           : "_No files handed to this run._",
-      nativeMediaNote: buildNativeMediaNote(
-        ctx.modelProfile.assessment.nativeInput,
-      ),
+      nativeMediaNote: buildNativeMediaNote(ctx.nativeIngestion),
       blockedToolsNote: buildBlockedToolsNote(ctx),
       chatbotContextManifest:
         ctx.chatbotContextManifest && ctx.chatbotContextManifest.length > 0

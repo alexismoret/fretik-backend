@@ -129,6 +129,7 @@ import { generateConversationTitle } from "../services/conversation-title/genera
 import {
   hasNativeFileParts,
   NATIVE_FILE_PARSER_PLUGINS,
+  planNativeIngestion,
   prepareModelMessages,
   type PrepareModelMessagesDeps,
 } from "../services/native-input";
@@ -1075,6 +1076,15 @@ export const runChatbotTurn = async (
     agentSet = { ...agentSet, primary: agentSet.fallback };
     modelProfile = getProfileForRole("chat-fallback");
   }
+
+  // Which attachments actually ride native this turn, and which the model has
+  // to open with a tool. Computed HERE because the fallback escalation above
+  // can still change the profile — and the profile decides. Set on the options
+  // object, which is not read until the stream calls below.
+  callOptionsWithFiles.nativeIngestion = planNativeIngestion(
+    params.history,
+    modelProfile,
+  );
 
   // C7 — per-turn "deep thinking" reasoning override. Built once from the
   // turn's level + the SAME profile that serves it, so the primary stream
@@ -2317,11 +2327,27 @@ chatbotRoutes.get("/:conversationId/stream", async (c) => {
   }
 
   const ctx = getResumableStreamContext();
-  const stream = await ctx.resumeExistingStream(activeStreamId);
+  // ORPHANED STREAM. `resumeExistingStream` subscribes and waits 1s for the
+  // producing process to ack; when that process is gone but its sentinel
+  // survives in Redis (24h TTL, never marked done) — every deploy or restart
+  // mid-turn — nobody answers and the promise REJECTS. Uncaught, that reaches
+  // the global handler as a 500, and since the pointer is never cleared the
+  // client's reconnect ladder replays it. Same outcome as an expired
+  // sentinel, so take the same exit.
+  let stream: Awaited<ReturnType<typeof ctx.resumeExistingStream>> = null;
+  try {
+    stream = await ctx.resumeExistingStream(activeStreamId);
+  } catch (error) {
+    console.warn(
+      `[chatbot] stream ${activeStreamId} has no live producer (restart?):`,
+      error instanceof Error ? error.message : error,
+    );
+  }
   if (!stream) {
-    // The sentinel has expired (24h TTL) or the publisher never got
-    // to record it. Clear the column so we don't keep 204-missing and
-    // hand back 204 to let the client fall back to the history.
+    // The sentinel has expired (24h TTL), the publisher never got to record
+    // it, or it is orphaned (above). Clear the column so we don't keep
+    // 204-missing and hand back 204 to let the client fall back to the
+    // history.
     await clearConversationActiveStream(conversationId, activeStreamId);
     return new Response(null, { status: 204 });
   }

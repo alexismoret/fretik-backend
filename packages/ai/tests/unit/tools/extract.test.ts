@@ -197,6 +197,36 @@ describe("extract tool — PDF routing", () => {
     expect(source.selectedPages).toEqual([1, 2, 3]);
   });
 
+  // Models fill every field of the schema, so an OPTIONAL string arrives as
+  // "" — 13 of 38 prod calls, on the first attempt of every run, all rejected
+  // before reaching the engine. Blank means what omitting it means.
+  test.each(["", "  ", "all", "ALL"])(
+    "pages %p is treated as the whole document",
+    async (pages) => {
+      sandboxFs.write("c1", "attachments/doc.pdf", await buildPdf(3));
+      const result = await execExtract("c1", {
+        file_path: "attachments/doc.pdf",
+        pages,
+      });
+      expect(result["code"]).toBeUndefined();
+      const source = engineCalls[0]?.source as Extract<
+        ExtractSource,
+        { kind: "pdf" }
+      >;
+      expect(source.selectedPages).toEqual([1, 2, 3]);
+    },
+  );
+
+  test("a blank pages on an image is not a page-range error", async () => {
+    sandboxFs.write("c1", "attachments/scan.png", new Uint8Array([1, 2, 3]));
+    const result = await execExtract("c1", {
+      file_path: "attachments/scan.png",
+      pages: "",
+    });
+    expect(result["code"]).toBeUndefined();
+    expect(engineCalls[0]?.source.kind).toBe("image");
+  });
+
   test("out-of-bounds pages → INVALID_PAGE_RANGE", async () => {
     sandboxFs.write("c1", "attachments/doc.pdf", await buildPdf(3));
     const result = await execExtract("c1", {

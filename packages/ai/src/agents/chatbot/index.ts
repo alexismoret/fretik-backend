@@ -104,6 +104,15 @@ export const ChatbotCallOptionsSchema = z.object({
    */
   attachedFilesBlock: z.string().optional(),
   /**
+   * Which of those files ride natively on THIS request and which the model
+   * has to open with a tool — `planNativeIngestion`, the same plan
+   * `prepareModelMessages` applies. Renders `{{nativeMediaNote}}`; without it
+   * the note would state the profile's capability instead of the facts.
+   */
+  nativeIngestion: z
+    .object({ native: z.array(z.string()), toolOnly: z.array(z.string()) })
+    .optional(),
+  /**
    * Pre-rendered manifest of the persistent chatbot-context files
    * (Projects-style — user + team instructions and a compact catalogue
    * of files). Computed by the handler through
@@ -273,6 +282,7 @@ export const buildChatbotRuntimeContextBase = (
   conversationId: options.conversationId,
   timeZone: options.timeZone,
   attachedFilesBlock: options.attachedFilesBlock,
+  nativeIngestion: options.nativeIngestion,
   chatbotContextManifest: options.chatbotContextManifest,
   activeMemoryBlock: options.activeMemoryBlock,
   teamObjectsBlock: options.teamObjectsBlock,

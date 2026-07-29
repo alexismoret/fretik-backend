@@ -1,9 +1,11 @@
 export {
   NATIVE_FILE_PARSER_PLUGINS,
   hasNativeFileParts,
+  planNativeIngestion,
   prepareModelMessages,
   stripFilePartsForModel,
   stripReasoningPartsForModel,
+  type NativeIngestionPlan,
   type PrepareModelMessagesDeps,
 } from "./prepare-model-messages";
 export {

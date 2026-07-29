@@ -390,8 +390,26 @@ export const buildConversationAttachedFilesBlock = async (
   conversationId: string | undefined,
 ): Promise<string> => {
   if (!conversationId) return "";
-  const rows = await db
-    .select({ filename: aiChatFiles.filename })
+  const rows = await listConversationFiles(conversationId);
+  return buildAttachedFilesBlock(
+    conversationId,
+    rows.map((r) => r.filename),
+  );
+};
+
+/**
+ * Every readable attachment of a conversation, oldest first. Backs the block
+ * above, and lets the workflow handler turn a run's input files into real
+ * message parts (a run's files never rode a user message).
+ */
+export const listConversationFiles = async (
+  conversationId: string,
+): Promise<{ filename: string; mimeType: string }[]> =>
+  db
+    .select({
+      filename: aiChatFiles.filename,
+      mimeType: aiChatFiles.mimeType,
+    })
     .from(aiChatFiles)
     .where(
       and(
@@ -402,8 +420,3 @@ export const buildConversationAttachedFilesBlock = async (
     // Upload order, so the listing reads as a timeline the agent can map onto
     // the conversation ("the file from my first message").
     .orderBy(aiChatFiles.createdAt);
-  return buildAttachedFilesBlock(
-    conversationId,
-    rows.map((r) => r.filename),
-  );
-};

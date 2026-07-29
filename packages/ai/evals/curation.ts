@@ -41,7 +41,7 @@ export interface CuratedCase {
 }
 
 export const CURATED: Record<string, CuratedCase> = {
-  // extraction (6)
+  // extraction (7)
   "rag-specific-id": { capability: "extraction", smoke: true },
   "file-pdf-read": { capability: "extraction", smoke: true },
   // Structured-extraction chantier (2026-07): the `extract` tool replaces
@@ -52,6 +52,9 @@ export const CURATED: Record<string, CuratedCase> = {
   "ex-extract-not-python": { capability: "extraction" },
   // Smoke: the read-then-python relapse is the one that reached prod.
   "ex-extract-after-read": { capability: "extraction", smoke: true },
+  // Smoke: a non-native attachment (CSV) is invisible in the message; prod
+  // 2026-07-27 invented a column header rather than opening the file.
+  "file-non-native-header": { capability: "extraction", smoke: true },
   // generation (3)
   "edge-unicode-identifier": { capability: "generation", smoke: true },
   "qa-clarify": { capability: "generation", smoke: true },
@@ -76,10 +79,14 @@ export const CURATED: Record<string, CuratedCase> = {
   "rag-no-match": { capability: "reasoning", smoke: true },
   // ── Doctrine probes (2026-07-17 prompt refonte) — pin the refonte's
   // target behaviors: one-python-call, skill gate, RAG-vs-download
-  // routing, plain language, proactive etiquette. See cases/doctrine.ts.
+  // routing, judge-don't-score, plain language, proactive etiquette.
+  // See cases/doctrine.ts.
   "doc-python-one-call": { capability: "tool-use" },
   "doc-skill-first-xlsx": { capability: "tool-use" },
   "doc-rag-first-content": { capability: "tool-use" },
+  // Smoke: a run spent 45% of its wall-clock authoring a fuzzy-match scorer
+  // for pairs a reader settles instantly (prod 2026-07-28).
+  "doc-match-is-judgement": { capability: "reasoning", smoke: true },
   "doc-plain-language": { capability: "instruction-following", smoke: true },
   "doc-proactive-workflow": { capability: "reasoning" },
   "doc-proactive-memory": { capability: "reasoning" },

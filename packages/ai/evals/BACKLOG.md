@@ -100,3 +100,22 @@ synthetic ones.
   the harness cannot produce "file attached on turn 1, asked about on turn 2". Covered by
   the wiring in `handlers/chatbot.ts` instead. Making it a dataset case
   needs multi-turn support in `conversation-lifecycle.ts`.
+
+- **The whole workflow path (2026-07).** The engine runs the CHATBOT only — there is no
+  workflow-run case, and a run is where the expensive failures happen. Two shipped and went
+  unnoticed for days: `extract` failing 25/25 on `INVALID_SCHEMA` (18-23/07), then
+  `pages: ""` failing 13 of 38 calls on the first attempt of every run (27/07). Both are
+  now unit-tested (`tests/unit/tools/extract.test.ts`), but the class of defect —
+  "the executor's tool calls in a real run" — has no coverage. Needs a headless
+  `POST /workflow/turn` seam in the harness plus a fixture playbook; until then, a workflow
+  change is validated by replaying a real run and reading the trace.
+
+  **What the gap cost on 2026-07-28**, a run where every tool behaved correctly: the
+  playbook itself decided to withhold the deliverable, paraphrased the example file's header
+  into a column that does not exist, and spent 45% of the run authoring a string-similarity
+  scorer. The fixes are doctrine (`platform-guide/references/workflows.md`, the `create_draft`
+  description, one `<tool_routing>` row) and only the LAST of them is eval-expressible from a
+  chat turn — `doc-match-is-judgement`. "A run always produces its deliverable", "copy the
+  example's structure, don't describe it", and "an example output built from the example
+  inputs is a worked answer" are properties of a PLAYBOOK, and the harness cannot author or
+  execute one. They stay verified by replaying a real build-and-run conversation.

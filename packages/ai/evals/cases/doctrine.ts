@@ -133,6 +133,30 @@ export const doctrineSuite: EvalSuite = {
       ],
     },
     {
+      // 2026-07-28 workflow run: a reconciliation task hinted at `python` made
+      // the executor author a rapidfuzz scorer with thresholds and rewrite it
+      // three times — 202s of a 451s run, and it still mismatched half the
+      // rows a reader would have paired at a glance. Deciding two records name
+      // the same thing is a judgement; `python` joins on the pairs afterwards.
+      // Graded on the ANSWER, not the tools: `python` is legitimate for the
+      // join itself, so forbidding it would test the wrong thing.
+      id: "doc-match-is-judgement",
+      description:
+        "Reconciling two short lists is decided by reading them, not by a string-similarity script",
+      prompt:
+        "Voici deux listes à rapprocher. Fournisseurs facturés : « Acme Corp. », « Béta Industrie SARL », « Delta-Log », « Zenith Partners ». Fournisseurs référencés : « ACME CORPORATION SA », « Zénith Partners Ltd », « Beta Industrie », « Omega Services ». Dis-moi quel fournisseur facturé correspond à quel fournisseur référencé, et lesquels n'ont pas de correspondance.",
+      tags: ["doctrine", "routing", "reasoning"],
+      budget: { maxToolCalls: 1 },
+      assertions: [
+        { type: "noError" },
+        {
+          type: "judge",
+          rubric:
+            "PASS if the assistant pairs « Acme Corp. »→« ACME CORPORATION SA », « Béta Industrie SARL »→« Beta Industrie », « Zenith Partners »→« Zénith Partners Ltd », reports « Delta-Log » as having no counterpart, and reports « Omega Services » as unreferenced on the invoiced side. Accept any presentation (table, list, prose). FAIL if any of those three pairs is missing or wrong, if « Delta-Log » is paired with anything, or if the assistant asks for more input instead of deciding.",
+        },
+      ],
+    },
+    {
       id: "doc-plain-language",
       description:
         "Non-technical user gets a plain answer — no SQL, tool names, or platform internals",

@@ -75,6 +75,7 @@ export const serializeWorkflowRun = (
   triggerType: row.triggerType,
   triggerPayload: row.triggerPayload,
   conversationId: row.conversationId,
+  sourceConversationId: row.sourceConversationId,
   triggerRunId: row.triggerRunId,
   taskStates: row.taskStates,
   turnCount: row.turnCount,

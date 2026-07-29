@@ -9,6 +9,7 @@ import {
 } from "../lib/conversation-storage";
 import { NATIVE_FILE_MAX_BYTES } from "../lib/model-registry/types";
 import { getPdfPageCount, parsePageSelection } from "../lib/pdf-pages";
+import { persistToolResult } from "../lib/persisted-output";
 import {
   buildExtractionSchema,
   type ExtractSource,
@@ -44,6 +45,12 @@ const getExtension = (path: string): string => {
   return dotIndex > 0 ? path.slice(dotIndex).toLowerCase() : "";
 };
 
+/** Above this serialized size the records stay in the file only — the model
+ * works from `dataPath` with `python` instead of reading them inline. */
+const EXTRACT_INLINE_MAX_CHARS = 15_000;
+/** Rows kept inline as a shape sample when the full set is omitted. */
+const EXTRACT_PREVIEW_RECORDS = 3;
+
 const EXAMPLE_CALL =
   '{"file_path":"attachments/doc.pdf","shape":"records","fields":[{"name":"article_number","type":"integer","description":"the Art. N° column"},{"name":"description"},{"name":"net_weight_kg","type":"number"}]}';
 
@@ -54,14 +61,16 @@ export const createExtractTool = () =>
       "",
       "Use extract whenever the goal is DATA from a PDF or image (line items, table rows, header fields, named values), whatever the layout — never write a parsing script against a document's layout. Text you can already read (a .txt, an Office doc's text, a CSV) is NOT for extract: read it, or use python (pandas) for spreadsheets.",
       "",
+      "You must know WHAT a file is before naming its fields. On a file you have not identified, `read` it first — one cheap call. A field set that does not match the document costs a full model pass and comes back empty or nonsense, so never try several field sets on the same file to see which fits, and never merge every document type into one wide schema.",
+      "",
       "Inputs:",
       "- file_path: ONE .pdf/.png/.jpg/.webp under `/workspace/`. One call per file — call extract in parallel for several files.",
       '- fields: a flat list of the fields to pull, each `{name, type?, description?}`. Give every numeric/date field its type (number|integer|boolean|date; default string) — typed values are validated server-side, untyped strings are not. Put guidance in `description` (where the value appears, units, exact format). Absent values come back null, never invented. Example: [{"name":"total","type":"number","description":"invoice grand total"},{"name":"issued","type":"date"}].',
       "- shape: 'records' → a LIST, one object per row/occurrence. 'record' → ONE object (header/summary fields). Header + line items = two calls (one 'record', one 'records').",
       "- instructions (optional): what the document is, which table/section to target, rows to skip, and — if the document repeats records across copies — to return each distinct record once.",
-      "- pages (optional): 1-based selection like '2-9' or '1,4-6'. Omit for the whole document.",
+      "- pages (optional): 1-based selection like '2-9' or '1,4-6'. Omit it by default — the whole document is read, and a long one is sectioned server-side. Slicing a document into windows yourself returns the same rows several times on any document that repeats its content across copies.",
       "",
-      "Output: { pagesTotal, pagesCovered, complete, notices, data }. Check `complete`; when false, `notices` says exactly what to do. Data is already validated — aggregate it with `python` if needed, never re-extract the same values another way.",
+      "Output: { pagesCovered, recordsReturned, modelCountedTotal, complete, notices, dataPath, data }. `dataPath` is the validated records on disk: load it in `python` (`json.load(open(dataPath))['records']`) — NEVER retype values into code. Big results come back as `dataPreview` (3 rows) with `data` omitted; the file always holds everything. `complete` means no problem was detected, not that nothing was missed — `modelCountedTotal` is the extractor counting itself, so weigh `recordsReturned` against the document's size before building on it, and act on `notices`.",
     ].join("\n"),
     inputSchema: z.object({
       file_path: z
@@ -112,13 +121,23 @@ export const createExtractTool = () =>
         .string()
         .optional()
         .describe(
-          "PDF page selection, 1-based, e.g. '2-9' or '1,4-6'. Omit for the whole document.",
+          "PDF page selection, 1-based, e.g. '2-9' or '1,4-6'. Omit (or '') for the whole document — the default, and the right choice unless you need one known section.",
         ),
     }),
     execute: async (
       { file_path, fields, shape, instructions, pages },
       options,
     ) => {
+      // An OPTIONAL string param comes back as "" from models that fill every
+      // field of the schema — measured 13 of 38 prod calls, every one on the
+      // first attempt of a run, all rejected by `parsePageSelection`. Blank and
+      // "all" mean the same thing the parameter's absence means: whole document.
+      const pageSpec = pages?.trim() ?? "";
+      const pageSelection =
+        pageSpec === "" || pageSpec.toLowerCase() === "all"
+          ? undefined
+          : pageSpec;
+
       const ctx = getRuntimeContext(options);
       if (!ctx.conversationId) {
         return {
@@ -169,7 +188,7 @@ export const createExtractTool = () =>
           code: TOOL_ERROR_CODES.UNSUPPORTED_EXTENSION,
         };
       }
-      if (pages !== undefined && !isPdf) {
+      if (pageSelection !== undefined && !isPdf) {
         return {
           error: `"pages" only applies to PDFs — images are extracted whole.`,
           code: TOOL_ERROR_CODES.INVALID_PAGE_RANGE,
@@ -212,8 +231,8 @@ export const createExtractTool = () =>
         const splittable = pagesTotal !== null;
         let selectedPages: number[] = [];
         if (splittable) {
-          if (pages !== undefined) {
-            const selection = parsePageSelection(pages, pagesTotal);
+          if (pageSelection !== undefined) {
+            const selection = parsePageSelection(pageSelection, pagesTotal);
             if ("error" in selection) {
               return {
                 error: selection.error,
@@ -234,7 +253,7 @@ export const createExtractTool = () =>
               code: TOOL_ERROR_CODES.EXTRACT_ERROR,
             };
           }
-          if (pages !== undefined) {
+          if (pageSelection !== undefined) {
             lateNotices.push(
               "This PDF could not be split into pages (encrypted or non-standard structure) — the whole document was extracted instead of the requested range.",
             );
@@ -256,10 +275,34 @@ export const createExtractTool = () =>
           { tags: ["process:extract-tool"] },
           () => runStructuredExtract({ source, prepared, shape, instructions }),
         );
+        // The data is ALWAYS written out, whatever its size — that path is the
+        // only thing standing between the model and re-typing every value into
+        // a python literal (prod 2026-07-27: 28 rows × 17 fields hand-copied,
+        // the run's biggest output-token line). Same directory as the
+        // large-output envelopes, but the tool keeps its structured shape:
+        // `complete` / `notices` / counts must stay readable as fields.
+        const { data, ...envelope } = result;
+        const persisted = await persistToolResult(
+          data,
+          conversationId,
+          options.toolCallId,
+        );
+        const inline =
+          persisted.totalChars <= EXTRACT_INLINE_MAX_CHARS
+            ? { data }
+            : {
+                dataPreview:
+                  "records" in data
+                    ? data.records.slice(0, EXTRACT_PREVIEW_RECORDS)
+                    : data.record,
+                dataInlineOmitted: true,
+              };
         return {
           filePath: resolved.absolute,
-          ...result,
+          ...envelope,
           notices: [...lateNotices, ...result.notices],
+          dataPath: persisted.path,
+          ...inline,
         };
       } catch (err) {
         return {

@@ -201,6 +201,107 @@ export const hasNativeFileParts = (
     ),
   );
 
+/**
+ * Native-eligible file parts, after the per-modality recency cap. Shared by
+ * the transform pass and `planNativeIngestion`, so what the prompt claims can
+ * never disagree with what was actually sent.
+ */
+const planNativeParts = (
+  messages: UIMessage[],
+  profile: ModelProfile,
+): Set<FileUIPart> => {
+  // Native-eligible file parts per modality, in conversation order
+  // (array order == chronological), each tagged with its message index.
+  const nativeByModality = new Map<
+    NativeModality,
+    { part: FileUIPart; messageIndex: number }[]
+  >();
+  // A document rides natively only on the turn it ARRIVES — the "look at
+  // this" moment. Afterwards it stays reachable through `read` / `extract` /
+  // `vision`, and the prompt names it as such. Measured 2026-07-29: the same
+  // two PDFs re-sent on all 18 steps of a 3-turn thread were ~1.1M of the
+  // conversation's 2.18M input tokens, ~60k per step, and the agent answered
+  // from none of them. Images and video are exempt: an image costs 1-2k
+  // tokens, and "what's in the chart you sent earlier" is a real ask.
+  const lastUserIndex = messages.findLastIndex((m) => m.role === "user");
+  messages.forEach((message, messageIndex) => {
+    for (const part of message.parts) {
+      if (!isFileUIPart(part)) continue;
+      if (resolveAttachmentIngestion(part, profile) !== "native") continue;
+      const modality = mediaModality(part.mediaType);
+      if (!modality) continue;
+      if (modality === "file" && messageIndex !== lastUserIndex) continue;
+      const bucket = nativeByModality.get(modality) ?? [];
+      bucket.push({ part, messageIndex });
+      nativeByModality.set(modality, bucket);
+    }
+  });
+
+  // Cap per modality: newest MESSAGE first, then the order the files were
+  // given INSIDE that message. Recency only ranks messages — inside one, every
+  // file arrived at the same instant, so "most recent" is meaningless there.
+  // Slicing the tail dropped whichever file the user happened to list first:
+  // a 2026-07-28 run sent 3 PDFs in one message under a cap of 2 and silently
+  // excluded the primary document. Files past the cap demote to tool-mediated
+  // (the agent can still `read` / `vision` them, and the prompt names them).
+  const keepNative = new Set<FileUIPart>();
+  const { limits } = profile.assessment.nativeInput;
+  for (const [modality, entries] of nativeByModality) {
+    const cap = capForModality(modality, limits);
+    if (cap === undefined || cap >= entries.length) {
+      for (const { part } of entries) keepNative.add(part);
+      continue;
+    }
+    const ranked = entries
+      .map((entry, position) => ({ ...entry, position }))
+      .sort(
+        (a, b) => b.messageIndex - a.messageIndex || a.position - b.position,
+      );
+    for (const { part } of ranked.slice(0, cap)) keepNative.add(part);
+  }
+  return keepNative;
+};
+
+/**
+ * WHICH files this profile actually sends natively on the next request, and
+ * which the model must reach with a tool instead.
+ *
+ * The prompt used to state the profile's CAPABILITY ("attached PDFs are
+ * directly visible in this message") — false for every file past the recency
+ * cap, false for every non-native mime, and false for 100% of workflow runs.
+ * Prod 2026-07-27: 4 files attached, 2 reached the model, no signal about the
+ * other 2, and the agent invented an output column rather than opening the
+ * example file it never knew it could read.
+ *
+ * Pure — same plan/cap logic as `prepareModelMessages`, no I/O. Names are
+ * basenames: what `<file_attachments>` shows and what `read` takes.
+ */
+export interface NativeIngestionPlan {
+  /** Sent as native content on this request. */
+  native: string[];
+  /** Present in the conversation but NOT in this request. */
+  toolOnly: string[];
+}
+
+const partFilename = (part: FileUIPart): string =>
+  part.filename ?? sanitizeSessionPath(part.url.split("/").pop() ?? "file");
+
+export const planNativeIngestion = (
+  history: UIMessage[],
+  profile: ModelProfile,
+): NativeIngestionPlan => {
+  const keep = planNativeParts(history, profile);
+  const native: string[] = [];
+  const toolOnly: string[] = [];
+  for (const message of history) {
+    for (const part of message.parts) {
+      if (!isFileUIPart(part)) continue;
+      (keep.has(part) ? native : toolOnly).push(partFilename(part));
+    }
+  }
+  return { native, toolOnly };
+};
+
 export const prepareModelMessages = async (
   history: UIMessage[],
   profile: ModelProfile,
@@ -214,37 +315,11 @@ export const prepareModelMessages = async (
     stripReasoningPartsForModel(history),
   );
 
-  // Plan pass — native-eligible file parts per modality, in conversation
-  // order (array order == chronological).
-  const nativeByModality = new Map<NativeModality, FileUIPart[]>();
-  for (const message of base) {
-    for (const part of message.parts) {
-      if (!isFileUIPart(part)) continue;
-      if (resolveAttachmentIngestion(part, profile) !== "native") continue;
-      const modality = mediaModality(part.mediaType);
-      if (!modality) continue;
-      const bucket = nativeByModality.get(modality) ?? [];
-      bucket.push(part);
-      nativeByModality.set(modality, bucket);
-    }
-  }
+  const keepNative = planNativeParts(base, profile);
 
   // Fast path — nothing native (inert / non-multimodal): file-stripped
   // (reasoning already stripped above), no I/O.
-  if (nativeByModality.size === 0) return stripFilePartsForModel(base);
-
-  // Recency cap per modality — keep the most-recent N; older native parts
-  // demote to tool-mediated (the agent can re-`read`/`vision` them).
-  const keepNative = new Set<FileUIPart>();
-  const { limits } = profile.assessment.nativeInput;
-  for (const [modality, parts] of nativeByModality) {
-    const cap = capForModality(modality, limits);
-    const kept =
-      cap === undefined || cap >= parts.length
-        ? parts
-        : parts.slice(parts.length - cap);
-    for (const part of kept) keepNative.add(part);
-  }
+  if (keepNative.size === 0) return stripFilePartsForModel(base);
 
   // Transform pass — non-file parts untouched; kept-native parts rewritten;
   // tool-mediated, demoted, and I/O-failed parts dropped. New objects only.

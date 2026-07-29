@@ -52,6 +52,7 @@ import { readSkillWorkspaceFile } from "../skills/read-skill-file";
  *  - Persisted-output files saved by other tools at
  *    `outputs/persisted/{toolCallId}.(json|txt)`
  *  - Drive documents pulled in on demand at `drive/`
+ *  - Workflow-run deliverables pulled in on demand at `runs/<runId>/`
  *  - Skill bundles at `skills/<name>/...`
  *  - Context files at `context/...`
  *  - Memory files at `memory/...`
@@ -138,11 +139,16 @@ const resolveReadPath = (
 };
 
 const DRIVE_UUID_RE = /^drive\/([0-9a-fA-F-]{36})-/;
+const RUN_OUTPUT_RE = /^runs\/([0-9a-fA-F-]{36})\//;
 
 const buildFileNotFoundHint = (relative: string): string | undefined => {
   const driveMatch = DRIVE_UUID_RE.exec(relative);
   if (driveMatch) {
     return `Call \`downloadDriveDocument({ documentId: "${driveMatch[1]}" })\` first. Files under \`drive/\` exist only after a successful download in this conversation.`;
+  }
+  const runMatch = RUN_OUTPUT_RE.exec(relative);
+  if (runMatch) {
+    return `Call \`manageWorkflow({ action: "get_run", runId: "${runMatch[1]}" })\` first — it pulls that run's deliverables into \`runs/${runMatch[1]}/\` and names them.`;
   }
   if (relative.startsWith(`${WORKSPACE_DIRS.attachments}/`)) {
     return `Check the exact filename in the system prompt's <attached_files> block — case, extension, and spaces must match. Bare \`read("<filename>")\` is rewritten as \`${WORKSPACE_DIRS.attachments}/<filename>\`.`;
@@ -493,7 +499,7 @@ export const createReadTool = () =>
       const resolved = resolveReadPath(file_path);
       if (!resolved) {
         return {
-          error: `Path is outside the conversation's sandbox (/workspace/). Only files under attachments/, outputs/, drive/, skills/, context/, or memory/ are readable.`,
+          error: `Path is outside the conversation's sandbox (/workspace/). Only files under attachments/, outputs/, runs/, drive/, skills/, context/, or memory/ are readable.`,
           code: TOOL_ERROR_CODES.PATH_OUT_OF_SANDBOX,
         };
       }

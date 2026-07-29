@@ -17,6 +17,7 @@ import {
 import { isOrgAdmin } from "@fretik/shared/services/organization/member-role";
 import { activateWorkflow } from "@fretik/shared/services/workflows/activate";
 import type { RunAttachment } from "@fretik/shared/services/workflows/attach-run-files";
+import { countTestRuns } from "@fretik/shared/services/workflows/count-test-runs";
 import { createWorkflow } from "@fretik/shared/services/workflows/create";
 import { createWorkflowRun } from "@fretik/shared/services/workflows/create-run";
 import {
@@ -31,9 +32,34 @@ import { updateWorkflow } from "@fretik/shared/services/workflows/update";
 import type { WorkflowRequester } from "@fretik/shared/services/workflows/visibility";
 import { tool } from "ai";
 import { z } from "zod";
+import { listConversationFiles } from "../agents/shared/fragments";
 import { getRuntimeContext } from "../agents/shared/runtime-context";
 import { workflowToolHintNames } from "../agents/workflow/tools";
+import { WORKSPACE_DIRS } from "../lib/conversation-storage";
 import { TOOL_ERROR_CODES, toolError } from "../lib/tool-error-codes";
+import { materializeRunOutputs } from "../services/workflow-runs/materialize-run-outputs";
+
+/**
+ * Test runs of one workflow the builder may launch from one conversation
+ * before it has to bring the user in. Five rounds is already well past the
+ * point where the agent is learning something new from the next run.
+ */
+const MAX_TEST_RUNS_PER_CONVERSATION = 5;
+
+/** Conversation attachments named on a `run_test` result before the tail is summarised. */
+const HELD_BACK_FILES_LISTED = 5;
+
+/**
+ * `attachments/<name>` → `<name>`. The workspace path is what every other tool
+ * and the `<file_attachments>` block speak; `ai_chat_files.filename` and a form
+ * payload speak basenames. Applied on BOTH sides of `run_test` — normalising
+ * only `files` still rejected the payload, which cost a wasted round-trip on
+ * the first `run_test` of the 2026-07-28 session.
+ */
+export const toAttachmentBasename = (name: string): string =>
+  name.startsWith(`${WORKSPACE_DIRS.attachments}/`)
+    ? name.slice(WORKSPACE_DIRS.attachments.length + 1)
+    : name;
 
 /**
  * Drop every `toolHints` entry that names no real workflow tool (typos,
@@ -102,8 +128,8 @@ export const createManageWorkflowTool = () =>
       "- update: workflowId + any field, including scope (re-scope anytime). Safe anytime — runs snapshot the playbook, so edits never disturb a running or past run.",
       "- list / get: the team's workflows (+ your private ones) / one workflow's full playbook. Each result carries `scope`.",
       "- get_trigger_catalog: the machine-readable catalog of trigger kinds + each event type's editable filter params. Read it before setting triggerType/triggerConfig.",
-      "- run_test: workflowId (+ optional payload, + files: attachment filenames to hand to the run) fires a test run in the background. Launch it, say so, and END your turn — this conversation is notified and resumed automatically when the run finishes. Never poll get_run or sleep while it runs.",
-      "- get_run: runId → status, per-task outcomes, result summary, error.",
+      "- run_test: workflowId (+ optional payload, + files: attachment filenames to hand to the run) fires a test run in the background. The run sees `files` and nothing else — a source document you leave out comes back as empty cells, not as an error. The result echoes `notHandedOver`: this conversation's other attachments, so check none of them was needed. Launch it, say so, and END your turn — this conversation is notified and resumed automatically when the run finishes. Never poll get_run or sleep while it runs.",
+      "- get_run: runId → status, per-task outcomes, result summary, error, and `outputs` — the run's deliverables, each pulled into this conversation at `runs/<runId>/<file>` so you can `read` it or load it in `python`. A run works in its own workspace, so this is the ONLY way to see what it actually produced: judge the run on the file, never on its own summary.",
       "- activate / pause: flip a workflow live / paused. Cron workflows get their schedule on activate.",
       "",
       "Loop: create_draft → run_test (turn ends) → resumed on completion → analyze with get_run → adjust with update → activate.",
@@ -116,10 +142,11 @@ export const createManageWorkflowTool = () =>
       "Writing a playbook (the run has no user to ask — be specific, stay industry-agnostic):",
       "- Task `instructions` state the GOAL and the expected output — WHAT to achieve, never a tool name or its arguments. `toolHints` is the ONLY place a tool name may appear. The executor picks the tool and its exact argument shape from the live schema (`describeObjectType`). A playbook that dictates `manageRecord` calls or field formats goes stale and breaks.",
       "- A playbook runs against whatever its trigger delivers, run after run. Decide from the user's request how variable that input is — fixed template / stable format with varying content / open input — and generalize each task to that level; `skills/platform-guide/references/workflows.md` § 'Design for the input space' carries the doctrine. Variability ambiguous? askUserQuestion before baking an example file's structure into a task.",
-      "- When the conversation shows what the output must look like (example file, exact columns, required format), capture it in `playbook.deliverable` = { format, description } — a run executes in a FRESH conversation and never sees this chat, so a contract left only here is invisible to the executor. Details + the diff-vs-example check: workflows.md.",
+      "- When the conversation shows what the output must look like (example file, exact columns, required format), capture it in `playbook.deliverable` = { format, description } — a run executes in a FRESH conversation and never sees this chat, so a contract left only here is invisible to the executor. Copy the example's structure line AND two of its data rows as read, never a description of them — the rows are the only place the way a value is written is visible. Details + the diff-vs-example check: workflows.md.",
+      "- A run always produces its deliverable. A value it cannot establish leaves that cell empty and names the affected rows in the summary; a playbook that withholds the whole file until every value is confirmed spends the run and returns nothing to read or correct. Only refuse to produce when the user asked for that.",
       "- Autonomy governs writes: `read_only` = no writes; `approval_required` (default) = object writes go through the Python objects SDK in bulk (`records.bulk_*`) and PAUSE for a human to approve, and an open decision pauses via `askUserQuestion` — say WHAT to write / decide, the platform handles the pause + resume; `autonomous` = writes apply directly. Never merge 'present a list and then create it' into a plan that assumes the user is watching — describe the write, the run pauses for approval on its own.",
       "- Scope governs identity: `team` (default) runs as the team assistant — sees only team-shared external-app connections, everyone on the team sees and runs it. `private` runs as you — sees your personal connections too (plus team ones), and only you (and org admins) see or run it. A connections listing tags each row `scope: user` (personal) or `scope: team` (shared); if the playbook needs a `scope: user` connection, the workflow MUST be `private` — the team assistant can never see it. Prefer `team` when a team-shared connection covers the need. Unsure which the user wants, or whether the connection is personal? `askUserQuestion`. `run_test` failing `EXTERNAL_APP_NO_CONNECTION` on what looked like a personal connection means wrong scope — set `scope: private` and retest.",
-      "- `toolHints` per task: the tool carrying its core operation, core or domain (validated against the registry). Domain tools pre-load so the run doesn't spend a turn searching; a core tool is the per-task cue the executor reads every turn — an extraction task that omits `extract` gets hand-parsed. Keep the list minimal: the operation's tool, not every tool it might touch.",
+      "- `toolHints` per task: the tool carrying its core operation, core or domain (validated against the registry). Domain tools pre-load so the run doesn't spend a turn searching; a core tool is the per-task cue the executor reads every turn — an extraction task that omits `extract` gets hand-parsed. Keep the list minimal: the operation's tool, not every tool it might touch. A task that turns on judgement (which records go together, which category applies) gets NO hint — hinting `python` there buys a hand-written scorer instead of a decision.",
       "- Push bulk web/document research into a sub-agent (the executor's `dispatchAgent`) so intermediate reads don't bloat the run — instruct it to 'delegate the research, keep only the summary'.",
       "- Anti-race: finish any data mutation BEFORE a task that reads it back; instruct tasks to re-query state at the point of use, never to reuse a stale snapshot from an earlier task.",
     ].join("\n"),
@@ -176,7 +203,7 @@ export const createManageWorkflowTool = () =>
         .max(10)
         .optional()
         .describe(
-          "run_test only — filenames of THIS conversation's attachments to hand to the run, exactly as listed in the attached-files block. Required when the workflow's form has a required file field: payload strings alone attach nothing.",
+          "run_test only — THIS conversation's attachments to hand to the run, as the path shown in the attached-files block ('attachments/report.pdf') or the bare filename. Required when the workflow's form has a required file field: payload strings alone attach nothing.",
         ),
       confirm: z
         .boolean()
@@ -402,7 +429,11 @@ export const createManageWorkflowTool = () =>
             // The run executes in its own fresh conversation and sees ONLY
             // files attached to it here — chat attachments never carry over by
             // themselves.
-            const fileNames = input.files ?? [];
+            // `ai_chat_files.filename` is a bare basename, but every OTHER
+            // tool — and the `<file_attachments>` block itself — speaks
+            // `attachments/<name>`. Rejecting that form cost one wasted call
+            // on the first run_test of a prod session; accept both.
+            const fileNames = (input.files ?? []).map(toAttachmentBasename);
             const attachments: RunAttachment[] = [];
             if (fileNames.length > 0) {
               const conversationId = ctx.conversationId;
@@ -462,12 +493,16 @@ export const createManageWorkflowTool = () =>
               const attachedNames = new Set(attachments.map((a) => a.filename));
               for (const field of fileFields) {
                 const value = payload[field.key];
-                const names =
+                const names = (
                   typeof value === "string"
                     ? [value]
                     : Array.isArray(value)
                       ? value.filter((v): v is string => typeof v === "string")
-                      : [];
+                      : []
+                ).map(toAttachmentBasename);
+                // Write the normalised names back: the run reads this payload
+                // and must see the names its own workspace uses.
+                if (names.length > 0) payload[field.key] = names;
                 const unknown = names.filter(
                   (name) => !attachedNames.has(name),
                 );
@@ -488,6 +523,46 @@ export const createManageWorkflowTool = () =>
               }
             }
 
+            // Every attachment of this conversation the run did NOT get. A run
+            // sees `files` and nothing else, so a source document left behind
+            // produces a deliverable that looks complete and isn't: prod
+            // 2026-07-28 tested twice with 2 of 3 documents, and the missing
+            // invoice's amounts came back as empty cells nobody questioned.
+            // A plain list, not an error — an example or template file usually
+            // has no business inside the run.
+            const heldBack = ctx.conversationId
+              ? (await listConversationFiles(ctx.conversationId))
+                  .map((file) => file.filename)
+                  .filter((name) => !fileNames.includes(name))
+              : [];
+            const notHandedOver =
+              heldBack.length > HELD_BACK_FILES_LISTED
+                ? [
+                    ...heldBack.slice(0, HELD_BACK_FILES_LISTED),
+                    `+${(heldBack.length - HELD_BACK_FILES_LISTED).toString()} more`,
+                  ]
+                : heldBack;
+
+            // Iteration budget. Nothing else bounds this: the in-flight guard
+            // is cron-only, the circuit breaker skips `isTest`, and the
+            // finish→resume→update→run_test cycle is deduped per RUN. Prod
+            // 2026-07-27 spent 27 minutes and $2.16 on four rounds of it. The
+            // count rides every result so the model can see itself converging
+            // — or not.
+            const previousTests = ctx.conversationId
+              ? await countTestRuns({
+                  workflowId: row.id,
+                  sourceConversationId: ctx.conversationId,
+                })
+              : 0;
+            if (previousTests >= MAX_TEST_RUNS_PER_CONVERSATION) {
+              return toolError(
+                TOOL_ERROR_CODES.WORKFLOW_ERROR,
+                `${previousTests.toString()} test runs already in this conversation — stop iterating alone.`,
+                "Show the user what the last run produced versus what they asked for, and ask which difference to fix. They can also run the workflow from its page.",
+              );
+            }
+
             const run = await createWorkflowRun({
               workflow: row,
               // A form workflow tests as a form run — the executor sees the
@@ -500,16 +575,21 @@ export const createManageWorkflowTool = () =>
               isTest: true,
               ...(attachments.length > 0 ? { attachments } : {}),
             });
+            const testRunNumber = previousTests + 1;
             if (run.status === "failed") {
               return {
                 ok: true,
                 run: { id: run.id, status: run.status },
+                testRunNumber,
                 next: "The run failed to start — read `error` via get_run, fix, and relaunch.",
               };
             }
             return {
               ok: true,
               run: { id: run.id, status: run.status },
+              testRunNumber,
+              testRunsAllowed: MAX_TEST_RUNS_PER_CONVERSATION,
+              ...(notHandedOver.length > 0 ? { notHandedOver } : {}),
               // Ends the turn (stopOnBackgroundLaunch) — the run is now in
               // flight and this conversation is resumed on completion.
               backgroundRun: true,
@@ -535,6 +615,21 @@ export const createManageWorkflowTool = () =>
                 "No such run for this team.",
               );
             }
+            // The deliverables are pulled into THIS conversation's workspace
+            // and handed back as paths: a run writes in its own conversation,
+            // so without this the builder can only grade a run on the summary
+            // the run wrote about itself — which is how four consecutive test
+            // runs shipped the same invented CSV column in prod.
+            const outputs = run.outputs ?? [];
+            const materialized =
+              outputs.length > 0 && run.conversationId && ctx.conversationId
+                ? await materializeRunOutputs({
+                    runId: run.id,
+                    runConversationId: run.conversationId,
+                    conversationId: ctx.conversationId,
+                    outputs,
+                  })
+                : new Map<string, string>();
             return {
               ok: true,
               run: {
@@ -549,6 +644,22 @@ export const createManageWorkflowTool = () =>
                   ...(t.summary ? { summary: t.summary } : {}),
                 })),
                 outputSummary: run.outputSummary,
+                outputs: outputs.map((output) => ({
+                  label: output.label,
+                  ...(output.value !== undefined
+                    ? { value: output.value }
+                    : {}),
+                  ...(output.mimeType !== undefined
+                    ? { mimeType: output.mimeType }
+                    : {}),
+                  ...(output.sizeBytes !== undefined
+                    ? { sizeBytes: output.sizeBytes }
+                    : {}),
+                  ...(output.filePath !== undefined &&
+                  materialized.has(output.filePath)
+                    ? { path: materialized.get(output.filePath) }
+                    : {}),
+                })),
                 error: run.error,
               },
             };

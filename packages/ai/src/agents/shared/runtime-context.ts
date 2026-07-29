@@ -2,6 +2,7 @@ import type { ToolPolicyLevel } from "@fretik/shared/schemas/tool-policies";
 import type { EventActor } from "@fretik/shared/services/domain-events/emit";
 import type { LangfusePromptRef } from "../../lib/langfuse-prompts";
 import type { ModelProfile } from "../../lib/model-registry/types";
+import type { NativeIngestionPlan } from "../../services/native-input/prepare-model-messages";
 import type { DynamicToolManager } from "./dynamic-tools";
 
 /**
@@ -124,6 +125,13 @@ export interface AgentRuntimeContext {
    * `_No attached files._`.
    */
   attachedFilesBlock?: string;
+  /**
+   * Which attached files ride natively on THIS request and which the model
+   * must open with a tool — from `planNativeIngestion`, the same plan
+   * `prepareModelMessages` applies. Renders `{{nativeMediaNote}}`. Absent on
+   * paths that build no messages; the note is then empty.
+   */
+  nativeIngestion?: NativeIngestionPlan;
   /**
    * Rendered `{{chatbotContextManifest}}` fragment for the system
    * prompt — a compact catalogue of the user / team persistent

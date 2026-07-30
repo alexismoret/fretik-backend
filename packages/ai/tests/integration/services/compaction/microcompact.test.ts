@@ -1,6 +1,8 @@
 import type { UIMessage } from "ai";
 import { describe, expect, test } from "bun:test";
 import {
+  CLEAR_BATCH_SIZE,
+  CLEAR_TAIL_BUDGET_CHARS,
   COMPACTABLE_TOOLS,
   KEEP_RECENT_COMPACTABLE_RESULTS,
   microcompactMessages,
@@ -109,8 +111,27 @@ describe("microcompactMessages — clearing behavior", () => {
     expect(microcompactMessages(msgs)).toBe(msgs);
   });
 
-  test("clears the older results when total exceeds keepRecent", () => {
-    const total = KEEP_RECENT_COMPACTABLE_RESULTS + 3;
+  test("hysteresis: small overflow below the batch boundary is left alone", () => {
+    // eligible = CLEAR_BATCH_SIZE - 1 small results → count cutoff 0,
+    // size cutoff 0 → byte-identical history, no prefix bust.
+    const total = KEEP_RECENT_COMPACTABLE_RESULTS + CLEAR_BATCH_SIZE - 1;
+    const msgs: UIMessage[] = [];
+    for (let i = 0; i < total; i++) {
+      msgs.push(
+        assistantWithToolPart(`a${i.toString()}`, [
+          {
+            toolName: "searchKnowledge",
+            toolCallId: `call-${i.toString()}`,
+            output: { chunks: [`chunk-${i.toString()}-data`] },
+          },
+        ]),
+      );
+    }
+    expect(microcompactMessages(msgs)).toBe(msgs);
+  });
+
+  test("clears a whole batch once eligible reaches the batch boundary", () => {
+    const total = KEEP_RECENT_COMPACTABLE_RESULTS + CLEAR_BATCH_SIZE;
     const msgs: UIMessage[] = [];
     for (let i = 0; i < total; i++) {
       msgs.push(
@@ -125,21 +146,88 @@ describe("microcompactMessages — clearing behavior", () => {
     }
     const out = microcompactMessages(msgs);
     expect(out).not.toBe(msgs);
-    // First 3 should be cleared, last keepRecent kept verbatim.
-    for (let i = 0; i < 3; i++) {
+    // First CLEAR_BATCH_SIZE cleared, last keepRecent kept verbatim.
+    for (let i = 0; i < CLEAR_BATCH_SIZE; i++) {
       const output = readFirstPartOutput(out[i]);
       expect(typeof output).toBe("string");
       expect(String(output)).toContain("Old searchKnowledge tool result");
       expect(String(output)).toContain(`call-${i.toString()}`);
     }
-    for (let i = 3; i < total; i++) {
+    for (let i = CLEAR_BATCH_SIZE; i < total; i++) {
       const output = readFirstPartOutput(out[i]);
       expect(typeof output).toBe("object");
     }
   });
 
+  test("tail budget: oversized stale results are cleared before the batch boundary", () => {
+    // 2 eligible results whose combined size blows CLEAR_TAIL_BUDGET_CHARS:
+    // the size rule must advance the cutoff past the overflow even though
+    // the count rule alone would wait for a full batch.
+    const big = "x".repeat(Math.floor(CLEAR_TAIL_BUDGET_CHARS * 0.6));
+    const msgs: UIMessage[] = [
+      assistantWithToolPart("a-big-old", [
+        { toolName: "read", toolCallId: "call-big-old", output: { big } },
+      ]),
+      assistantWithToolPart("a-big-new", [
+        { toolName: "read", toolCallId: "call-big-new", output: { big } },
+      ]),
+    ];
+    for (let i = 0; i < KEEP_RECENT_COMPACTABLE_RESULTS; i++) {
+      msgs.push(
+        assistantWithToolPart(`a${i.toString()}`, [
+          {
+            toolName: "searchKnowledge",
+            toolCallId: `call-${i.toString()}`,
+            output: { chunks: ["small"] },
+          },
+        ]),
+      );
+    }
+    const out = microcompactMessages(msgs);
+    expect(out).not.toBe(msgs);
+    // The older big result is cleared (tail sum over budget at its index);
+    // the newer one alone fits the budget and survives.
+    expect(String(readFirstPartOutput(out[0]))).toContain(
+      "Old read tool result",
+    );
+    expect(typeof readFirstPartOutput(out[1])).toBe("object");
+  });
+
+  test("byte-stability: appending one result below the boundary does not change the cleared set", () => {
+    const base: UIMessage[] = [];
+    const total = KEEP_RECENT_COMPACTABLE_RESULTS + CLEAR_BATCH_SIZE;
+    for (let i = 0; i < total; i++) {
+      base.push(
+        assistantWithToolPart(`a${i.toString()}`, [
+          {
+            toolName: "searchKnowledge",
+            toolCallId: `call-${i.toString()}`,
+            output: { chunks: [`chunk-${i.toString()}`] },
+          },
+        ]),
+      );
+    }
+    const grown = [
+      ...base,
+      assistantWithToolPart("a-next-turn", [
+        {
+          toolName: "searchKnowledge",
+          toolCallId: "call-next-turn",
+          output: { chunks: ["fresh"] },
+        },
+      ]),
+    ];
+    const outBase = microcompactMessages(base);
+    const outGrown = microcompactMessages(grown);
+    // The shared prefix (all of `base`'s messages) must serialize
+    // identically in both runs — that is the cache invariant.
+    expect(JSON.stringify(outGrown.slice(0, base.length))).toBe(
+      JSON.stringify(outBase),
+    );
+  });
+
   test("does NOT clear non-compactable tools (manageTasks, searchTools)", () => {
-    const total = KEEP_RECENT_COMPACTABLE_RESULTS + 3;
+    const total = KEEP_RECENT_COMPACTABLE_RESULTS + CLEAR_BATCH_SIZE;
     const msgs: UIMessage[] = [];
     // First 3: non-compactable tools — must remain verbatim.
     msgs.push(
@@ -191,7 +279,7 @@ describe("microcompactMessages — clearing behavior", () => {
   });
 
   test("does not mutate the input array", () => {
-    const total = KEEP_RECENT_COMPACTABLE_RESULTS + 2;
+    const total = KEEP_RECENT_COMPACTABLE_RESULTS + CLEAR_BATCH_SIZE;
     const msgs: UIMessage[] = [];
     for (let i = 0; i < total; i++) {
       msgs.push(
@@ -212,7 +300,7 @@ describe("microcompactMessages — clearing behavior", () => {
   });
 
   test("ignores non output-available tool parts (e.g. input-available state)", () => {
-    const total = KEEP_RECENT_COMPACTABLE_RESULTS + 1;
+    const total = KEEP_RECENT_COMPACTABLE_RESULTS + CLEAR_BATCH_SIZE;
     const msgs: UIMessage[] = [];
     msgs.push(
       assistantWithToolPart("a-pending", [
@@ -237,8 +325,9 @@ describe("microcompactMessages — clearing behavior", () => {
     }
     const out = microcompactMessages(msgs);
     // The `input-available` part is not counted as a hit, so the
-    // total of compactable hits = `total` (= keepRecent + 1).
-    // Therefore exactly 1 older output is cleared.
+    // compactable hits = `total` (= keepRecent + one full batch).
+    // Exactly one batch of older outputs is cleared; the pending part
+    // itself is untouched.
     let clearedSeen = 0;
     for (const m of out) {
       const output = readFirstPartOutput(m);
@@ -249,6 +338,7 @@ describe("microcompactMessages — clearing behavior", () => {
         clearedSeen++;
       }
     }
-    expect(clearedSeen).toBe(1);
+    expect(clearedSeen).toBe(CLEAR_BATCH_SIZE);
+    expect(readFirstPartOutput(out[0])).toBeUndefined();
   });
 });

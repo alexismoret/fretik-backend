@@ -32,11 +32,23 @@ import { buildSubAgentTools } from "../../agents/chatbot/tools";
  * Trade-off vs CC:
  *   - CC keeps the recent N tool results verbatim AND skips the
  *     mutation when the cache is warm (so the prefix isn't broken).
- *   - Fretik always rewrites the older results. We accept the
- *     (provider-side) cache miss because (a) MiniMax M2.7 / OpenRouter
- *     don't grant us first-party cache-edit semantics anyway, and (b)
- *     the alternative (paying the full token cost every turn for old
- *     RAG dumps) is worse on the cost axis we actually care about.
+ *   - Fretik has no cache-warmth signal (OpenRouter), so byte-stability
+ *     across turns IS the cache strategy: the function must be a
+ *     deterministic, monotone function of the history — same history
+ *     prefix in, same cleared bytes out — because the raw history is
+ *     re-microcompacted from scratch every turn (nothing is persisted).
+ *     Clearing is therefore batched with hysteresis (see
+ *     `CLEAR_BATCH_SIZE` / `CLEAR_TAIL_BUDGET_CHARS`) instead of the
+ *     original sliding window: a sliding cutoff rewrote 1-2 results at
+ *     the head of the history EVERY turn, invalidating the provider
+ *     prefix cache for the whole downstream payload. Measured on a
+ *     5-turn builder conversation (2026-07-30, gpt-5.6-luna @ $1/M in,
+ *     $0.105/M cached): each turn re-billed 58-97k tokens uncached
+ *     (~$0.08-0.10) to save ~1.5k tokens of cleared output (~$0.0002) —
+ *     wrong by two orders of magnitude on any model with a discounted
+ *     prompt cache. With hysteresis the same rewrite happens once per
+ *     `CLEAR_BATCH_SIZE` results (or when the stale tail outgrows the
+ *     char budget), amortising one prefix bust over many turns.
  *
  * Eligibility — derived from the live tool registry, NOT a hand-
  * maintained list. A tool's result is eligible for clearing iff
@@ -111,6 +123,30 @@ export const KEEP_RECENT_COMPACTABLE_RESULTS = (() => {
   return Math.min(30, Math.max(1, Math.floor(parsed)));
 })();
 
+/**
+ * Hysteresis quantum: eligible results are cleared in batches of this
+ * size — the cutoff is `floor(eligible / CLEAR_BATCH_SIZE) * CLEAR_BATCH_SIZE`,
+ * so the cleared set (and thus the serialized prefix bytes) only changes
+ * once every `CLEAR_BATCH_SIZE` new compactable results instead of every
+ * turn. Between two batch boundaries at most `CLEAR_BATCH_SIZE - 1` stale
+ * results ride along uncleared; they ride at the cached-token rate, which
+ * is what makes the wait cheaper than the rewrite.
+ */
+export const CLEAR_BATCH_SIZE = 10;
+
+/**
+ * Size override for the count quantum: when the UNCLEARED eligible tail
+ * (everything past the batch cutoff, excluding the keep-recent set)
+ * exceeds this many serialized chars (~20k tokens), the cutoff advances
+ * past enough of it to get back under budget, batch boundary or not.
+ * Guards the original microcompact motivation — a burst of huge RAG/read
+ * dumps must not pin 100k+ stale tokens for up to 9 turns. The cutoff
+ * derived from this rule is monotone as the history grows (appending
+ * results only ever moves it forward), preserving byte-stability of the
+ * already-cleared prefix.
+ */
+export const CLEAR_TAIL_BUDGET_CHARS = 80_000;
+
 const TOOL_PART_PREFIX = "tool-";
 
 /**
@@ -131,6 +167,8 @@ interface CompactableHit {
   partIndex: number;
   toolName: string;
   toolCallId: string;
+  /** Serialized size of the part's output, for the tail-budget rule. */
+  outputChars: number;
 }
 
 /**
@@ -172,11 +210,16 @@ const collectCompactableHits = (messages: UIMessage[]): CompactableHit[] => {
         "toolCallId" in part && typeof part.toolCallId === "string"
           ? part.toolCallId
           : `unknown-${m.toString()}-${p.toString()}`;
+      // Tool outputs come from the persisted history (already went
+      // through JSON once), so serialization cannot throw here.
+      const serialized =
+        "output" in part ? JSON.stringify(part.output) : undefined;
       hits.push({
         messageIndex: m,
         partIndex: p,
         toolName,
         toolCallId,
+        outputChars: serialized === undefined ? 0 : serialized.length,
       });
     }
   }
@@ -186,9 +229,15 @@ const collectCompactableHits = (messages: UIMessage[]): CompactableHit[] => {
 /**
  * Replace the older compactable tool-results with markers.
  *
+ * The cutoff is deterministic and MONOTONE in the history (appending
+ * new results never un-clears an already-cleared one), so consecutive
+ * turns serialize a byte-identical prefix until a batch boundary or
+ * the tail budget advances it — that invariant is what keeps the
+ * provider prompt cache warm across turns.
+ *
  * @returns A new `UIMessage[]` with the marker substitutions applied,
  *   or the input array by reference when nothing changed (no hits, or
- *   total hits ≤ keepRecent).
+ *   the hysteresis cutoff is still zero).
  */
 export const microcompactMessages = (messages: UIMessage[]): UIMessage[] => {
   const hits = collectCompactableHits(messages);
@@ -196,7 +245,31 @@ export const microcompactMessages = (messages: UIMessage[]): UIMessage[] => {
     return messages;
   }
 
-  const cutoff = hits.length - KEEP_RECENT_COMPACTABLE_RESULTS;
+  const eligible = hits.length - KEEP_RECENT_COMPACTABLE_RESULTS;
+
+  // Count rule: clear in whole batches only.
+  const countCutoff =
+    Math.floor(eligible / CLEAR_BATCH_SIZE) * CLEAR_BATCH_SIZE;
+
+  // Size rule: if the uncleared eligible tail outweighs the budget,
+  // advance the cutoff just past the overflow. Walk backwards from the
+  // newest eligible hit accumulating sizes; the first index where the
+  // running total exceeds the budget must be cleared, along with
+  // everything older.
+  let sizeCutoff = 0;
+  let tailChars = 0;
+  for (let i = eligible - 1; i >= 0; i--) {
+    tailChars += hits[i]?.outputChars ?? 0;
+    if (tailChars > CLEAR_TAIL_BUDGET_CHARS) {
+      sizeCutoff = i + 1;
+      break;
+    }
+  }
+
+  const cutoff = Math.max(countCutoff, sizeCutoff);
+  if (cutoff === 0) {
+    return messages;
+  }
   // Index by message → set of part indices to clear.
   const clearMap = new Map<number, Set<number>>();
   for (let i = 0; i < cutoff; i++) {

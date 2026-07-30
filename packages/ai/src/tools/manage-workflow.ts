@@ -1,5 +1,9 @@
 import db from "@fretik/shared/db";
 import { readSessionFile } from "@fretik/shared/lib/chatbot-session-storage";
+import {
+  OBJECT_COLOR_TOKENS,
+  isValidObjectColor,
+} from "@fretik/shared/lib/colors/object-colors";
 import { isValidIcon } from "@fretik/shared/lib/icons/search";
 import { describeFormFieldsForAgent } from "@fretik/shared/schemas/workflow-forms";
 import {
@@ -109,6 +113,21 @@ export const sanitizeIcon = (
   };
 };
 
+/** Same stance for the color: an off-palette token is dropped, not an error. */
+export const sanitizeColor = (
+  color: string | undefined,
+): { color: string | undefined; warnings: string[] } => {
+  if (color === undefined || isValidObjectColor(color)) {
+    return { color, warnings: [] };
+  }
+  return {
+    color: undefined,
+    warnings: [
+      `Ignored unknown color '${color}' — kept the default. Valid tokens: ${OBJECT_COLOR_TOKENS.join(", ")}.`,
+    ],
+  };
+};
+
 type WorkflowScope = "team" | "private";
 const scopeOf = (userId: string | null): WorkflowScope =>
   userId ? "private" : "team";
@@ -124,7 +143,7 @@ export const createManageWorkflowTool = () =>
     description: [
       "Build and manage workflows — autonomous agents that run a playbook of tasks on a schedule, an event, or on demand, with the same tools you have. Deciding WHETHER a workflow is the right feature (vs a team skill, an object type, or just doing the task now) — and how features compose — is `skills/platform-guide/SKILL.md` territory: read it before proposing.",
       "",
-      "- create_draft: name + playbook (one goal + 1-20 ordered tasks; each task = title + instructions, optional expectedOutput + toolHints). Optional icon (from searchIcons), color, description, triggerType (manual|cron|event|form) + triggerConfig, autonomy (read_only|approval_required|autonomous, default approval_required), modelProfileKey, scope (team|private, default team). Starts as draft. The user sets run time/token limits themselves on the workflow page.",
+      "- create_draft: name + playbook (one goal + 1-20 ordered tasks; each task = title + instructions, optional expectedOutput + toolHints) + icon + color — set both at creation, best-guess is safe (an off-catalog value is dropped with a warning, never an error). Optional description, triggerType (manual|cron|event|form) + triggerConfig, autonomy (read_only|approval_required|autonomous, default approval_required), modelProfileKey, scope (team|private, default team). Starts as draft. The user sets run time/token limits themselves on the workflow page.",
       "- update: workflowId + any field, including scope (re-scope anytime). Safe anytime — runs snapshot the playbook, so edits never disturb a running or past run.",
       "- list / get: the team's workflows (+ your private ones) / one workflow's full playbook. Each result carries `scope`.",
       "- get_trigger_catalog: the machine-readable catalog of trigger kinds + each event type's editable filter params. Read it before setting triggerType/triggerConfig.",
@@ -175,8 +194,14 @@ export const createManageWorkflowTool = () =>
         .string()
         .max(60)
         .optional()
-        .describe("Lucide icon name from searchIcons."),
-      color: z.string().max(20).optional(),
+        .describe(
+          "Lucide icon name. Best-guess a common one (file-spreadsheet, mail, chart-bar…) — an unknown name is dropped with a warning; reach for searchIcons only after a drop.",
+        ),
+      color: z
+        .string()
+        .max(20)
+        .optional()
+        .describe(`Palette token: ${OBJECT_COLOR_TOKENS.join(" | ")}.`),
       triggerType: workflowTriggerTypeSchema.optional(),
       triggerConfig: WorkflowTriggerConfigSchema.optional().describe(
         describeTriggerConfigForAgent(),
@@ -226,6 +251,9 @@ export const createManageWorkflowTool = () =>
       const { icon: safeIcon, warnings: iconWarnings } = sanitizeIcon(
         input.icon,
       );
+      const { color: safeColor, warnings: colorWarnings } = sanitizeColor(
+        input.color,
+      );
 
       try {
         switch (input.action) {
@@ -245,7 +273,11 @@ export const createManageWorkflowTool = () =>
             const { playbook, warnings: hintWarnings } = sanitizeToolHints(
               input.playbook,
             );
-            const warnings = [...iconWarnings, ...hintWarnings];
+            const warnings = [
+              ...iconWarnings,
+              ...colorWarnings,
+              ...hintWarnings,
+            ];
             const createInput: CreateWorkflowInput = {
               name: input.name,
               description: input.description ?? "",
@@ -255,7 +287,7 @@ export const createManageWorkflowTool = () =>
               autonomy: input.autonomy ?? "approval_required",
               limits: {},
               ...(safeIcon ? { icon: safeIcon } : {}),
-              ...(input.color ? { color: input.color } : {}),
+              ...(safeColor ? { color: safeColor } : {}),
               ...(input.modelProfileKey
                 ? { modelProfileKey: input.modelProfileKey }
                 : {}),
@@ -304,7 +336,7 @@ export const createManageWorkflowTool = () =>
                 ? { description: input.description }
                 : {}),
               ...(safeIcon !== undefined ? { icon: safeIcon } : {}),
-              ...(input.color !== undefined ? { color: input.color } : {}),
+              ...(safeColor !== undefined ? { color: safeColor } : {}),
               ...(input.triggerType !== undefined
                 ? { triggerType: input.triggerType }
                 : {}),
@@ -338,6 +370,7 @@ export const createManageWorkflowTool = () =>
             }
             const updateWarnings = [
               ...iconWarnings,
+              ...colorWarnings,
               ...(sanitized ? sanitized.warnings : []),
             ];
             return {

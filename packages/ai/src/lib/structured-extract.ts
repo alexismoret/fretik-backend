@@ -73,11 +73,15 @@ const EXTRACT_SPARSE_MAX_ROWS = 3;
 /** Reasoning counts against the output budget; Gemini mandates it, so pin the
  * least and give plenty of headroom (model max is 65 536). */
 const EXTRACT_MAX_OUTPUT_TOKENS = 60_000;
-// A normal whole-doc call is ~7-30s; 90s tolerates a slow provider moment but
-// gives up on a stalled Vertex route (2026-07-24 replays: stochastic 120s+
-// hangs on calls that normally run in seconds) — a stall gets ONE primary
-// retry, then the fallback model.
-const EXTRACT_TIMEOUT_MS = 90_000;
+// A normal whole-doc call is ~7-30s, but a LEGITIMATE dense-document call can
+// need well over 90s: prod 2026-07-30 (workflow run 019fb3ab…) hit two back-to-
+// back 90s timeouts on a chunk whose extraction emits ~14.7k output tokens —
+// undoable in 90s at flash-lite throughput — before the fallback landed it in
+// 58s. 180s clears that class of call while still bounding a stalled Vertex
+// route (2026-07-24 replays: stochastic 120s+ hangs); on timeout we go straight
+// to the fallback model — no same-model retry, which for an output-bound chunk
+// just re-buys the identical timeout.
+const EXTRACT_TIMEOUT_MS = 180_000;
 // "low", not "minimal": minimal lets Gemini skip thinking entirely, and with
 // thinking unengaged it leaks its chain-of-thought into string values and
 // stops after 1 record (prod 2026-07-24 + replays: minimal 0/3, low 2/3 —
@@ -677,17 +681,7 @@ const runNativeCall = async (
 
   let result: LlmCallResult;
   try {
-    try {
-      result = await callExtractLlm(extractPrimary.model, ctx, pages, file, []);
-    } catch (firstError) {
-      // A stalled route (timeout/abort) is transient — the same call usually
-      // succeeds in seconds on retry. Other errors go straight to the fallback.
-      if (!isTimeoutError(firstError)) throw firstError;
-      console.warn(
-        `[extract] ${describeRange(pages)} stalled on ${EXTRACT_MODEL_ID}, retrying once — ${describeLlmError(firstError)}`,
-      );
-      result = await callExtractLlm(extractPrimary.model, ctx, pages, file, []);
-    }
+    result = await callExtractLlm(extractPrimary.model, ctx, pages, file, []);
   } catch (primaryError) {
     console.warn(
       `[extract] ${describeRange(pages)} failed on ${EXTRACT_MODEL_ID}, retrying on ${EXTRACT_FALLBACK_MODEL_ID} — ${describeLlmError(primaryError)}`,

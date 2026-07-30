@@ -128,7 +128,8 @@ visible in the verdict table; read them. Re-arm the hard fail with `GATE_CORRECT
 the new flagship — same calibrate-then-enforce discipline as cost / efficiency.
 
 **Caveats:** a stored `--baseline-run` is only comparable while the curated set is
-unchanged (the gate aborts on caseId-set mismatch); the parallel probes are
+unchanged (the gate aborts on caseId-set mismatch) and is looked up over the last year
+(experiments API window); the parallel probes are
 informational (the baseline may not support parallel calls at all); judge noise on small
 deltas — prefer the full set and re-run before trusting a borderline verdict.
 
@@ -262,9 +263,10 @@ Every model call bills **OpenRouter**, on every surface. The difference is **bou
 once enabled, judges a sample of every prod turn forever).
 
 Each `evals:langfuse` run attaches **`cost-agent-usd`** (total) + **`cost-per-turn-usd`** to the
-dataset run — the exact agent cost per turn, summed from each turn's server `chatbot-turn` trace
-(`api.trace.get(...).totalCost`, via the captured `langfuseTraceId`; the comment shows coverage
-`N/M turns costed`). Compare these across runs to weigh agent models for the Phase 8 decision.
+dataset run — the exact agent cost per turn, summed over the observations of each turn's server
+`chatbot-turn` trace (`api.observations.getMany({ traceId, fields: "usage" })`, via the captured
+`langfuseTraceId`; the comment shows coverage `N/M turns costed`). Compare these across runs to
+weigh agent models for the Phase 8 decision.
 The in-process **judge** cost is not yet rolled in (constant across agent-model comparisons; a
 follow-up).
 

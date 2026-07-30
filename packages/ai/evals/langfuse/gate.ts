@@ -50,6 +50,7 @@ import {
 import { DATASET_NAME } from "./dataset-sync";
 import { caseCorrectness, isZombie } from "./evaluators";
 import { runChatbotExperiment } from "./experiment";
+import { findExperimentByName, listExperimentItemIds } from "./experiments-api";
 import type { TaskOutput } from "./types";
 
 const THRESHOLD = Number(process.env.EVAL_CORRECTNESS_THRESHOLD ?? "0.6");
@@ -135,9 +136,8 @@ const metricsFromResult = (
   return {
     source: "live",
     runName,
-    ...(result.datasetRunId !== undefined
-      ? { datasetRunId: result.datasetRunId }
-      : {}),
+    // v4 serves no dataset-run link; the experiment id identifies the run.
+    datasetRunId: result.datasetRunId ?? result.experimentId,
     correctness: mean(outputs.map(caseCorrectness)),
     perCapability,
     ...(totals.total > 0
@@ -160,17 +160,25 @@ const metricsFromResult = (
 };
 
 /**
- * Metrics of a STORED dataset run, via the Langfuse API. Parity-checks
- * the run's caseId set against the CURRENT curated set first — scores
- * from a differently-sized dataset are not comparable.
+ * Metrics of a STORED run, via the Langfuse experiments API (a v3 "dataset
+ * run" is a v4 "experiment": same name, run-level scores attached to the
+ * experiment). Parity-checks the run's caseId set against the CURRENT
+ * curated set first — scores from a differently-sized dataset are not
+ * comparable.
  */
 const metricsFromStoredRun = async (runName: string): Promise<RunMetrics> => {
   if (!langfuseClient) {
     throw new Error("Langfuse not configured (LANGFUSE_* env missing)");
   }
-  const run = await langfuseClient.api.datasets.getRun(DATASET_NAME, runName);
+  const run = await findExperimentByName(runName);
+  if (!run) {
+    throw new Error(
+      `No experiment named "${runName}" found. Run the gate without ` +
+        `--baseline-run for a paired back-to-back comparison.`,
+    );
+  }
 
-  // Parity check: map the run's datasetItemIds back to caseIds and
+  // Parity check: map the run's dataset-item ids back to caseIds and
   // compare against the current curated set.
   const dataset = await langfuseClient.dataset.get(DATASET_NAME);
   const caseIdByItemId = new Map<string, string>();
@@ -182,8 +190,8 @@ const metricsFromStoredRun = async (runName: string): Promise<RunMetrics> => {
     }
   }
   const runCaseIds = new Set(
-    run.datasetRunItems
-      .map((i) => caseIdByItemId.get(i.datasetItemId))
+    (await listExperimentItemIds(run.id))
+      .map((itemId) => caseIdByItemId.get(itemId))
       .filter((id): id is string => typeof id === "string"),
   );
   const curatedIds = new Set(Object.keys(CURATED));
@@ -197,17 +205,13 @@ const metricsFromStoredRun = async (runName: string): Promise<RunMetrics> => {
     );
   }
 
-  // Run-level scores (the ones runEvaluators attached to this run).
-  const scores = await langfuseClient.api.scores.getMany({
-    datasetRunId: run.id,
-    limit: 100,
-  });
+  // Run-level scores = the experiment-level scores the runEvaluators
+  // attached (item and trace scores hang off the items, not the
+  // experiment, so they cannot leak in here).
   const byName = new Map<string, { value: number; comment?: string }>();
-  for (const s of scores.data) {
-    if (!("value" in s) || typeof s.value !== "number") continue;
-    // First write wins per name — if item-level scores leak into this
-    // query they share names with run scores; the run evaluator wrote
-    // last, and the API returns newest first, so keep the first.
+  for (const s of run.scores ?? []) {
+    if (typeof s.value !== "number") continue;
+    // First write wins per name — the API returns newest first.
     if (!byName.has(s.name)) {
       byName.set(s.name, {
         value: s.value,

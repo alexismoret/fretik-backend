@@ -76,12 +76,38 @@ export const fetchConfigIds = async (): Promise<ConfigIds> => {
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
-/** Exact agent cost of a turn = its server `chatbot-turn` trace totalCost. */
+/**
+ * Exact agent cost of a turn = the sum of its observations' cost.
+ *
+ * Langfuse v4 has no trace entity (a trace IS its root observation) and
+ * `GET /api/public/traces/:id` is gone, so the cost is summed over the
+ * trace's observations (v2 API, `usage` field group). Returns `null` when
+ * nothing is ingested yet, so the caller's retry sees a miss rather than a
+ * fake 0.
+ */
 const fetchTraceCost = async (traceId: string): Promise<number | null> => {
   if (!langfuseClient) return null;
   try {
-    const trace = await langfuseClient.api.trace.get(traceId);
-    return typeof trace.totalCost === "number" ? trace.totalCost : null;
+    let total = 0;
+    let seen = 0;
+    let cursor: string | undefined;
+    do {
+      // Cursor pagination is serial by definition: the next page key comes
+      // from this response.
+      // eslint-disable-next-line no-await-in-loop
+      const page = await langfuseClient.api.observations.getMany({
+        traceId,
+        fields: "usage",
+        limit: 100,
+        ...(cursor !== undefined ? { cursor } : {}),
+      });
+      for (const obs of page.data) {
+        seen++;
+        total += obs.totalCost ?? 0;
+      }
+      cursor = page.meta.cursor;
+    } while (cursor !== undefined);
+    return seen > 0 ? total : null;
   } catch {
     return null;
   }
@@ -203,6 +229,24 @@ export const runChatbotExperiment = async (
       return true;
     });
     result = await langfuseClient.experiment.run({ ...common, data });
+  }
+
+  // The SDK still links dataset-run items over the v3 endpoint, which a v4
+  // server no longer serves: `datasetRunId` comes back undefined and the
+  // ExperimentManager then SKIPS persisting the run-level evaluations. The
+  // experiment itself exists — its id rode in on the OTel experiment
+  // attributes and is returned as `experimentId` — so attach the run scores
+  // to it here. A score's `datasetRunId` IS the experiment id in v4
+  // vocabulary (scores v3 filters those with `experimentId`). Guarded: when
+  // the SDK did link the run, it already wrote them.
+  if (result.datasetRunId === undefined) {
+    for (const evaluation of result.runEvaluations) {
+      langfuseClient.score.create({
+        datasetRunId: result.experimentId,
+        ...evaluation,
+      });
+    }
+    await langfuseClient.score.flush();
   }
 
   await flushLangfuse();

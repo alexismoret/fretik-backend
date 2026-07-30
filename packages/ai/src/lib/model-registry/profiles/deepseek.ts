@@ -81,7 +81,7 @@ export const DEEPSEEK_PROFILES: Record<string, ModelProfile> = {
   "deepseek-v4-flash": {
     key: "deepseek-v4-flash",
     family: "deepseek",
-    tiers: ["workhorse"],
+    tiers: ["flagship", "workhorse"],
     catalog: {
       id: "deepseek/deepseek-v4-flash",
       contextLength: 1_048_576,

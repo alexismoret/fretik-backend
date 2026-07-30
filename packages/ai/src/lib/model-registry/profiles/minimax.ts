@@ -106,8 +106,7 @@ export const MINIMAX_PROFILES: Record<string, ModelProfile> = {
       provider: {
         requireParameters: true,
         zdr: true,
-        order: ["DeepInfra", "Parasail", "AtlasCloud"],
-        ignore: ["Novita"],
+        order: ["Novita"],
       },
       enabled: true,
       // Promoted via the C3 gate, 2026-06-12. All capabilities at or

@@ -86,23 +86,17 @@ export const MINIMAX_PROFILES: Record<string, ModelProfile> = {
         // never reached the cap on the probe prompt — inconclusive).
         replayInHistory: false,
       },
-      // `ignore` — Novita SPLITS the `</think>` boundary while streaming: the
-      // opening chunk of the answer is emitted on the `reasoning` channel,
-      // then `content` resumes at `\n\n` + the remainder. The visible reply
-      // starts mid-word ("\n\n vais analyser…") and the corrupted text is
-      // PERSISTED into history. Raw-wire probes (no SDK in the loop, same
-      // model / prompt / params) isolate it to that upstream: Novita 10/10 vs
-      // DeepInfra / Parasail / AtlasCloud / Minimax 0/10. Prod rate on the chat
-      // role had climbed to 9/50 turns (23–26 Jul). `order` is only a
-      // preference, so a fallback could land there again — exclude it hard.
-      // A silent wrong answer is the one failure mode a fallback must not have;
-      // Together / Venice stay reachable, so this costs no availability.
-      // `order` — the leak-free upstreams, ranked stability-then-speed
-      // (measured 2026-07-26: TTFT p50 0.67 / 0.74 / 1.05 s, tool calls 3/3,
-      // cache reads live, zero rate-limiting, uptime_30m ≥ 99.5%). AtlasCloud
-      // is the slowest but holds the pool's best 1-day uptime, so it anchors
-      // the tail. Venice / Together are faster still but stayed out of the pin:
-      // both 429'd under a light probe and carry the weakest 1-day uptime.
+      // `order: ["Novita"]` — Novita SPLITS the `</think>` boundary while
+      // streaming (opening chunk of the answer lands on the `reasoning`
+      // channel, `content` resumes mid-word at `\n\n` + the remainder), but
+      // it is the only ZDR upstream that is both fast and reliably up:
+      // DeepInfra is slow enough that streams cut mid-response, and
+      // Parasail/AtlasCloud were unstable. The leak is contained downstream —
+      // `stripOrphanThinkTags` (`../resolve.ts`) strips the dangling tag from
+      // both streamed deltas and persisted history — so the corrupted-text
+      // failure mode from 2026-07-26 (prod 9/50 turns) no longer reaches the
+      // user or gets written to history; only latency/availability trade off
+      // here, not correctness.
       provider: {
         requireParameters: true,
         zdr: true,

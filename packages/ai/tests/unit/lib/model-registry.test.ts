@@ -127,17 +127,17 @@ describe("settingsForRole — parity with historical settings objects", () => {
     });
   });
 
-  test("chat pins the leak-free M3 upstreams and hard-excludes Novita", () => {
-    // Novita mis-splits the `</think>` boundary in streaming (first chunk of
-    // the answer lands on the reasoning channel), so a fallback must never be
-    // able to reach it — `order` alone is only a preference. See the rationale
-    // on the minimax-m3 profile.
+  test("chat pins Novita — fast/viable ZDR upstream, think-leak mitigated downstream", () => {
+    // Novita mis-splits the `</think>` boundary in streaming, but it's the
+    // only ZDR upstream that's both fast and reliably up (DeepInfra cuts
+    // streams under load, Parasail/AtlasCloud were unstable); the leak
+    // itself is stripped by `stripOrphanThinkTags` (resolve.ts), not by
+    // excluding the provider. See the rationale on the minimax-m3 profile.
     const chat = settingsForRole(ROLE_BINDINGS.chat, getProfileForRole("chat"));
     expect(chat?.provider).toEqual({
       require_parameters: true,
       zdr: true,
-      order: ["DeepInfra", "Parasail", "AtlasCloud"],
-      ignore: ["Novita"],
+      order: ["Novita"],
     });
   });
 

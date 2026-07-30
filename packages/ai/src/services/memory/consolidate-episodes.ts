@@ -14,7 +14,7 @@ import { generateText } from "ai";
 import { z } from "zod";
 import { telemetryFor } from "../../lib/langfuse";
 import { resolveMemoryModel } from "../../lib/model-registry/team-model";
-import { withTraceSession } from "../../lib/trace-tool";
+import { withNamedTrace } from "../../lib/trace-tool";
 import { vectorizeSource } from "../vectorize";
 
 /**
@@ -161,9 +161,10 @@ export const consolidateEpisodes = async (input: {
       ? [`<recent_activity>\n${eventLines.join("\n")}\n</recent_activity>`]
       : []),
   ].join("\n\n");
-  const output = await withTraceSession(
-    `memory-dreaming:${teamId}:${dreamDate}`,
+  const output = await withNamedTrace(
+    "memory-consolidate",
     {
+      sessionId: `memory-dreaming:${teamId}:${dreamDate}`,
       metadata: { teamId, episodeIds: input.episodeIds.join(",") },
       tags: ["process:memory-consolidate", `team:${teamId}`],
     },

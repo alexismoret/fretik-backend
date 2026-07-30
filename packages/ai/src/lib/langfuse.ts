@@ -22,6 +22,11 @@
  *
  * Env vars (read by the SDK; Bun auto-loads `.env`):
  *   LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY / LANGFUSE_BASE_URL  — required
+ *   OTEL_SERVICE_NAME             — optional but recommended (`fretik-ai`);
+ *     unset, every observation carries `service.name=unknown_service:bun`.
+ *     It must come from the ENVIRONMENT: OTel builds its default resource when
+ *     `@opentelemetry/sdk-trace-node` is imported, i.e. before any statement in
+ *     this module body could set it.
  *   LANGFUSE_TRACING_ENVIRONMENT  — optional; defaults to NODE_ENV-derived
  *   LANGFUSE_RELEASE              — optional; version stamp on every trace
  */

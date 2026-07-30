@@ -121,6 +121,7 @@ import {
   toStructuredError,
   withSoftTimeout,
 } from "../lib/stream-errors";
+import { withNamedTrace } from "../lib/trace-tool";
 import { chatbotRateLimitMiddleware } from "../middlewares/chatbot-rate-limit";
 import { internalMiddleware } from "../middlewares/internal";
 import { sendChatbotFinishedEmailIfEnabled } from "../services/chatbot-finished-email";
@@ -416,7 +417,18 @@ const maybeStartAutoTitle = (
   const lastUser = [...params.history].reverse().find((m) => m.role === "user");
   const firstUserText = lastUser ? uiMessageText(lastUser) : "";
   if (firstUserText.length === 0) return null;
-  return generateConversationTitle(firstUserText, params.callOptions.teamId);
+  // Fired before the turn's own trace opens, so it is a sibling root like
+  // `active-memory-recall` — named here, and joined to the conversation's
+  // session so its cost lands with the turns it titles.
+  return withNamedTrace(
+    "conversation-title",
+    {
+      sessionId: params.conversationId,
+      userId: params.callOptions.userId,
+      tags: [`team:${params.callOptions.teamId}`],
+    },
+    () => generateConversationTitle(firstUserText, params.callOptions.teamId),
+  );
 };
 
 /**
@@ -2720,12 +2732,23 @@ chatbotRoutes.post("/:conversationId/summary", async (c) => {
     userId: user.id,
     ...(since ? { since } : {}),
   });
-  const summary = await summariseMissedMessages({
-    missed,
-    priorContext,
-    participants: conversation.members,
-    teamId: team.id,
-  });
+  // Served straight from this route, so it is its own root trace — named and
+  // joined to the conversation's session (see `withNamedTrace`).
+  const summary = await withNamedTrace(
+    "catch-up-summary",
+    {
+      sessionId: conversationId,
+      userId: user.id,
+      tags: [`team:${team.id}`],
+    },
+    () =>
+      summariseMissedMessages({
+        missed,
+        priorContext,
+        participants: conversation.members,
+        teamId: team.id,
+      }),
+  );
 
   return c.json({ summary }, 200);
 });

@@ -8,7 +8,7 @@ import { generateText } from "ai";
 import { z } from "zod";
 import { telemetryFor } from "../../lib/langfuse";
 import { resolveMemoryModel } from "../../lib/model-registry/team-model";
-import { withTraceSession } from "../../lib/trace-tool";
+import { withNamedTrace } from "../../lib/trace-tool";
 
 /**
  * Episode → semantic promotion (P8.5). When a record recurs across several
@@ -150,9 +150,10 @@ export const promoteEpisodes = async (input: {
   const prompt = `<episodes>\n${episodeBlock}\n</episodes>${existingBlock}`;
 
   const dreamDate = new Date().toISOString().slice(0, 10);
-  const output = await withTraceSession(
-    `memory-dreaming:${teamId}:${dreamDate}`,
+  const output = await withNamedTrace(
+    "memory-consolidate",
     {
+      sessionId: `memory-dreaming:${teamId}:${dreamDate}`,
       metadata: { teamId, episodeIds: input.episodeIds.join(",") },
       tags: ["process:memory-promote", `team:${teamId}`],
     },

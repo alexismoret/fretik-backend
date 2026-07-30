@@ -11,6 +11,7 @@ import { generateText } from "ai";
 import { z } from "zod";
 import { telemetryFor } from "../../lib/langfuse";
 import { resolveMemoryModel } from "../../lib/model-registry/team-model";
+import { withNamedTrace } from "../../lib/trace-tool";
 
 /**
  * Relation extraction (P8.4) — the second pass of the async resolver, run only
@@ -160,20 +161,29 @@ export const extractRelations = async (input: {
       : "";
   const prompt = `<text>\n${text}\n</text>\n\n<records>\n${recordBlock}\n</records>${linkBlock}${catalogBlock}`;
 
-  const { model } = await resolveMemoryModel(
+  // Called straight from the internal HTTP handler, so this is its own root
+  // trace — name it, or it lands as `invoke_agent <model>` (see
+  // `withNamedTrace`).
+  const { text: raw } = await withNamedTrace(
     "memory-extract",
-    teamId,
-    input.modelProfileKey,
+    { tags: [`team:${teamId}`], metadata: { teamId } },
+    async () => {
+      const { model } = await resolveMemoryModel(
+        "memory-extract",
+        teamId,
+        input.modelProfileKey,
+      );
+      return generateText({
+        model,
+        instructions: SYSTEM_PROMPT,
+        prompt,
+        temperature: EXTRACT_TEMPERATURE,
+        maxOutputTokens: EXTRACT_MAX_OUTPUT_TOKENS,
+        abortSignal: AbortSignal.timeout(EXTRACT_TIMEOUT_MS),
+        telemetry: telemetryFor("memory-extract"),
+      });
+    },
   );
-  const { text: raw } = await generateText({
-    model,
-    instructions: SYSTEM_PROMPT,
-    prompt,
-    temperature: EXTRACT_TEMPERATURE,
-    maxOutputTokens: EXTRACT_MAX_OUTPUT_TOKENS,
-    abortSignal: AbortSignal.timeout(EXTRACT_TIMEOUT_MS),
-    telemetry: telemetryFor("memory-extract"),
-  });
   const parsed = relationsOutputSchema.safeParse(parseLlmJsonObject(raw));
   if (!parsed.success) return ZERO;
 

@@ -3,6 +3,7 @@ import { generateText } from "ai";
 import { z } from "zod";
 import { telemetryFor } from "../../lib/langfuse";
 import { resolveMemoryModel } from "../../lib/model-registry/team-model";
+import { withNamedTrace } from "../../lib/trace-tool";
 
 /**
  * LLM mention extraction — the PRIMARY extractor of the async event→graph
@@ -96,20 +97,29 @@ export const extractMentions = async (input: {
   const text = input.text.trim().slice(0, MAX_TEXT_CHARS);
   if (text.length === 0) return [];
 
-  const { model } = await resolveMemoryModel(
+  // Called straight from the internal HTTP handler, so this is its own root
+  // trace — name it, or it lands as `invoke_agent <model>` (see
+  // `withNamedTrace`).
+  const { text: raw } = await withNamedTrace(
     "memory-extract",
-    input.teamId,
-    input.modelProfileKey,
+    { tags: [`team:${input.teamId}`], metadata: { teamId: input.teamId } },
+    async () => {
+      const { model } = await resolveMemoryModel(
+        "memory-extract",
+        input.teamId,
+        input.modelProfileKey,
+      );
+      return generateText({
+        model,
+        instructions: SYSTEM_PROMPT,
+        prompt: text,
+        temperature: EXTRACT_TEMPERATURE,
+        maxOutputTokens: EXTRACT_MAX_OUTPUT_TOKENS,
+        abortSignal: AbortSignal.timeout(EXTRACT_TIMEOUT_MS),
+        telemetry: telemetryFor("memory-extract"),
+      });
+    },
   );
-  const { text: raw } = await generateText({
-    model,
-    instructions: SYSTEM_PROMPT,
-    prompt: text,
-    temperature: EXTRACT_TEMPERATURE,
-    maxOutputTokens: EXTRACT_MAX_OUTPUT_TOKENS,
-    abortSignal: AbortSignal.timeout(EXTRACT_TIMEOUT_MS),
-    telemetry: telemetryFor("memory-extract"),
-  });
 
   return parseMentions(raw).slice(0, MAX_MENTIONS);
 };

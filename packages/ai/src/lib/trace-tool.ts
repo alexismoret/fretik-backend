@@ -32,25 +32,68 @@ export const withTraceSession = async <T>(
 };
 
 /**
- * Like `withTraceSession`, but ALSO opens a single parent `agent` observation
- * named `name` so every AI call inside `fn` nests under ONE trace instead of
- * scattering into many sibling roots (e.g. a document's vectorisation = 1
- * `vectorize` trace with N enrichment + 1 embeddings child, not N+1 roots).
- * Keeps the per-subject `sessionId` grouping. No-op when Langfuse is off.
+ * Open a NAMED standalone trace for a background operation that runs outside
+ * any turn (memory dreaming, mention extraction, auto-title).
+ *
+ * The name is load-bearing, not decoration, and it MUST come from an opened
+ * observation. Two mechanisms that look like they would name it do not:
+ *   - `telemetryFor("memory-extract")` — AI SDK v7 hardcodes the span name to
+ *     `invoke_agent <model>` / `chat <model>` and carries the functionId as the
+ *     `gen_ai.agent.name` attribute instead;
+ *   - `propagateAttributes({ traceName })` alone — a v3 trace-level concept; on
+ *     a v4 server the root observation keeps its own name (verified against
+ *     4.0.0: a bare `generateText` under `traceName: "memory-extract"` still
+ *     lands as `invoke_agent openai/gpt-oss-20b`).
+ * Without this wrapper these operations are indistinguishable from each other
+ * in the UI — measured 2026-07-30: 353 such roots over 3 days, 13 of the 23
+ * documented trace names absent from the data entirely.
+ *
+ * Use `withTraceSession` instead for work that JOINS an existing trace (a tool
+ * inside a turn): opening a named observation there would nest a redundant
+ * level under the turn.
+ */
+export const withNamedTrace = async <T>(
+  name: string,
+  attrs: {
+    sessionId?: string;
+    userId?: string;
+    metadata?: Record<string, string>;
+    tags?: string[];
+  },
+  fn: () => Promise<T>,
+): Promise<T> => {
+  if (!langfuseEnabled) return fn();
+  return startActiveObservation(
+    name,
+    () =>
+      propagateAttributes(
+        {
+          traceName: name,
+          ...(attrs.sessionId !== undefined
+            ? { sessionId: attrs.sessionId }
+            : {}),
+          ...(attrs.userId !== undefined ? { userId: attrs.userId } : {}),
+          ...(attrs.metadata !== undefined ? { metadata: attrs.metadata } : {}),
+          ...(attrs.tags !== undefined ? { tags: attrs.tags } : {}),
+        },
+        fn,
+      ),
+    { asType: "agent" },
+  );
+};
+
+/**
+ * A `withNamedTrace` whose subject grouping is mandatory: every AI call inside
+ * `fn` nests under ONE named `agent` observation instead of scattering into
+ * sibling roots (a document's vectorisation = 1 `vectorize` trace with N
+ * enrichment + 1 embeddings child, not N+1 roots), grouped by `sessionId`.
  */
 export const withPipelineTrace = async <T>(
   name: string,
   sessionId: string,
   attrs: { metadata?: Record<string, string>; tags?: string[] },
   fn: () => Promise<T>,
-): Promise<T> => {
-  if (!langfuseEnabled) return fn();
-  return startActiveObservation(
-    name,
-    () => withTraceSession(sessionId, attrs, fn),
-    { asType: "agent" },
-  );
-};
+): Promise<T> => withNamedTrace(name, { sessionId, ...attrs }, fn);
 
 /** What an external call reports back for its Langfuse observation. */
 export interface ExternalCallTrace {

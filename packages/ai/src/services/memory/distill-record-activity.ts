@@ -6,7 +6,7 @@ import { generateText } from "ai";
 import { z } from "zod";
 import { telemetryFor } from "../../lib/langfuse";
 import { resolveMemoryModel } from "../../lib/model-registry/team-model";
-import { withTraceSession } from "../../lib/trace-tool";
+import { withNamedTrace } from "../../lib/trace-tool";
 import { vectorizeSource } from "../vectorize";
 
 /**
@@ -99,9 +99,10 @@ export const distillRecordActivity = async (input: {
   // All dreaming LLM calls of a team's night share one Langfuse session, so
   // the Sessions view aggregates the per-night cost per team.
   const dreamDate = new Date().toISOString().slice(0, 10);
-  const output = await withTraceSession(
-    `memory-dreaming:${teamId}:${dreamDate}`,
+  const output = await withNamedTrace(
+    "memory-distill",
     {
+      sessionId: `memory-dreaming:${teamId}:${dreamDate}`,
       metadata: { recordId, teamId },
       tags: ["process:memory-distill", `team:${teamId}`],
     },

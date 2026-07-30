@@ -6,7 +6,7 @@ import { generateText, type UIMessage } from "ai";
 import { z } from "zod";
 import { telemetryFor } from "../../lib/langfuse";
 import { resolveMemoryModel } from "../../lib/model-registry/team-model";
-import { withTraceSession } from "../../lib/trace-tool";
+import { withNamedTrace } from "../../lib/trace-tool";
 import { vectorizeSource } from "../vectorize";
 
 /**
@@ -241,12 +241,13 @@ export const distillConversation = async (input: {
       : []),
   ].join("\n\n");
 
-  // Single-call pipeline → `withTraceSession` (chat-file-OCR pattern):
-  // the generation joins the conversation's Langfuse session, so the
-  // distillation cost aggregates with the turns it summarises.
-  const output = await withTraceSession(
-    conversationId,
+  // Single-call background pipeline → its own named trace, joined to the
+  // conversation's Langfuse session so the distillation cost aggregates with
+  // the turns it summarises.
+  const output = await withNamedTrace(
+    "memory-distill",
     {
+      sessionId: conversationId,
       metadata: { conversationId, teamId },
       tags: ["process:memory-distill", `team:${teamId}`],
     },

@@ -25,7 +25,11 @@ import type {
   LanguageModelV4StreamPart,
   SharedV4ProviderMetadata,
 } from "@ai-sdk/provider";
-import { getActiveSpanId, updateActiveObservation } from "@langfuse/tracing";
+import {
+  getActiveSpanId,
+  startObservation,
+  updateActiveObservation,
+} from "@langfuse/tracing";
 import { TransformStream } from "node:stream/web";
 
 /**
@@ -50,7 +54,6 @@ const extractOpenRouterCost = (
  */
 const writeCost = (
   providerMetadata: SharedV4ProviderMetadata | undefined,
-  asType: "generation" | "embedding" = "generation",
 ): void => {
   const cost = extractOpenRouterCost(providerMetadata);
   if (cost === undefined) return;
@@ -61,22 +64,48 @@ const writeCost = (
   // `instrumentModel` safe to apply uniformly to every model.
   if (getActiveSpanId() === undefined) return;
   try {
-    // Branch on the literal so overload resolution picks the right
-    // (cost-bearing) attribute type — a union `asType` falls back to the
-    // base span overload, which has no `costDetails`.
-    if (asType === "embedding") {
-      updateActiveObservation(
-        { costDetails: { total: cost } },
-        { asType: "embedding" },
-      );
-    } else {
-      updateActiveObservation(
-        { costDetails: { total: cost } },
-        { asType: "generation" },
-      );
-    }
+    updateActiveObservation(
+      { costDetails: { total: cost } },
+      { asType: "generation" },
+    );
   } catch {
     // Swallow — never let cost ingestion break the generation.
+  }
+};
+
+/**
+ * Embedding cost, as its own observation.
+ *
+ * `updateActiveObservation` does NOT work here. The AI SDK's OTel integration
+ * opens the `embeddings <model>` span with `startSpan` under the call's root
+ * context and never makes it the ACTIVE span — unlike a language-model call,
+ * which runs inside `context.with(modelCallContext, execute)`. A cost update
+ * from `wrapEmbed` therefore lands on whatever observation IS active: the
+ * caller's pipeline parent (`vectorize`, …), which it also retypes to
+ * `embedding` and which, across several batches, keeps only the last chunk's
+ * cost. Verified on live traces.
+ *
+ * So emit a dedicated child instead — one per batch, aggregated by Langfuse at
+ * trace/session level. It carries `model` because Langfuse v4 silently drops
+ * `costDetails` on a model-less observation.
+ */
+const writeEmbeddingCost = (
+  providerMetadata: SharedV4ProviderMetadata | undefined,
+  modelId: string,
+): void => {
+  const cost = extractOpenRouterCost(providerMetadata);
+  if (cost === undefined) return;
+  // Untraced embed call → creating an observation here would open an orphan
+  // root trace per batch. Same rationale as `writeCost`.
+  if (getActiveSpanId() === undefined) return;
+  try {
+    startObservation(
+      `embeddings ${modelId} cost`,
+      { model: modelId, costDetails: { total: cost } },
+      { asType: "embedding" },
+    ).end();
+  } catch {
+    // Swallow — never let cost ingestion break the embedding call.
   }
 };
 
@@ -114,18 +143,19 @@ export const costCaptureMiddleware: LanguageModelV4Middleware = {
 
 /**
  * Embedding-model counterpart of `costCaptureMiddleware`: ingests OpenRouter's
- * exact per-call cost onto the Langfuse `embedding` observation emitted by
- * `embed` / `embedMany` telemetry. `overrideMaxEmbeddingsPerCall` keeps the
- * 20-input batch size of the previous raw-fetch path (one cost write per
+ * exact per-call cost as a dedicated `embedding` observation next to the one
+ * `embed` / `embedMany` telemetry emits (see `writeEmbeddingCost` for why it
+ * cannot be written onto that one). `overrideMaxEmbeddingsPerCall` keeps the
+ * 20-input batch size of the previous raw-fetch path (one cost observation per
  * chunk → Langfuse aggregates them at the trace level). Attach via
  * `instrumentEmbeddingModel` only when Langfuse is configured.
  */
 export const embeddingCostCaptureMiddleware: EmbeddingModelV4Middleware = {
   specificationVersion: "v4",
   overrideMaxEmbeddingsPerCall: () => 20,
-  wrapEmbed: async ({ doEmbed }) => {
+  wrapEmbed: async ({ doEmbed, model }) => {
     const result = await doEmbed();
-    writeCost(result.providerMetadata, "embedding");
+    writeEmbeddingCost(result.providerMetadata, model.modelId);
     return result;
   },
 };

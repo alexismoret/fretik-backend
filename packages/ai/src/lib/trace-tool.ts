@@ -97,8 +97,14 @@ export const traceExternalCall = async <T>(
             input,
             ...(t.output !== undefined ? { output: t.output } : {}),
             ...(t.metadata !== undefined ? { metadata: t.metadata } : {}),
+            // `model` is load-bearing for cost, not decoration: Langfuse v4
+            // only ingests `costDetails` on an observation that carries a
+            // model name (verified against 4.0.0 — a cost-only update lands
+            // as `{}` in the events tables, while the same update with any
+            // model string is kept verbatim). These are not model calls, so
+            // the priced unit is the call itself.
             ...(t.costUsd !== undefined
-              ? { costDetails: { total: t.costUsd } }
+              ? { model: name, costDetails: { total: t.costUsd } }
               : {}),
           },
           { asType: "generation" },

@@ -1,7 +1,9 @@
 import type { ModelProfile } from "../types";
 
 /**
- * Z.ai — GLM. Catalog synced from the OpenRouter models API 2026-07-26.
+ * Z.ai — GLM. Catalog synced from the OpenRouter models API 2026-07-30
+ * (`maxCompletionTokens` moved 131 072 → 128 000 upstream; rest unchanged
+ * since the 2026-07-26 sync).
  * Replaces GLM-5.1 and GLM-4.7 (latest-version-only rule).
  *
  * GLM-5.2 is the most intelligent model in the fleet's affordable band (51.1 AA
@@ -31,7 +33,7 @@ export const ZAI_PROFILES: Record<string, ModelProfile> = {
     catalog: {
       id: "z-ai/glm-5.2",
       contextLength: 1_048_576,
-      maxCompletionTokens: 131_072,
+      maxCompletionTokens: 128_000,
       inputModalities: ["text"],
       outputModalities: ["text"],
       supportedParameters: [

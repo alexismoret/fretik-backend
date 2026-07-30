@@ -74,7 +74,7 @@ export interface InvokeResult {
   /**
    * Langfuse trace id of the server-side `chatbot-turn` (from the SSE
    * `langfuseTraceId` message metadata). Lets the experiment fetch the
-   * turn's exact agent cost (`api.trace.get(...).totalCost`).
+   * turn's exact agent cost (summed over `api.observations.getMany`).
    */
   traceId?: string;
 }

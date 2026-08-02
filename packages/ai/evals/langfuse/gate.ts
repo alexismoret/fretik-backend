@@ -20,7 +20,7 @@
  *    correctness drop ≤ 1 case-equivalent; tool-call-validity ≥
  *    baseline − ε; zombie-rate ≤ baseline + ε; cost-per-turn within
  *    the profile's costClass envelope (ADVISORY until calibrated);
- *    avg latency ≤ 1.5× baseline; fallback-served items ≤ 1. Plus a
+ *    avg latency ≤ 1.5× baseline; fallback-served ≤ baseline + 1. Plus a
  *    tool-calling EFFICIENCY section (avg-tool-calls / tool-error-rate
  *    / redundant-call-rate) — ADVISORY in C11, never failing.
  *

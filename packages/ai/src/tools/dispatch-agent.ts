@@ -14,7 +14,7 @@ import { createSubAgentExecute } from "../agents/shared/sub-agent";
  *   - `"primary"` (default) — same model as the main agent, for
  *     sub-tasks that need real reasoning.
  *   - `"cheap"`              — `dispatchAgentCheapModel`
- *     (`deepseek/deepseek-v4-flash` by default), for well-scoped
+ *     (`deepseek/deepseek-v4-flash-0731` by default), for well-scoped
  *     mechanical sub-tasks.
  *
  * The model is selected at call time by routing through the matching

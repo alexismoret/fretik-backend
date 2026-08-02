@@ -67,15 +67,28 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
  * `transform-fallback` → `gemini-3.6-flash`.
  */
 export const ROLE_BINDINGS: Record<ModelRole, RoleBinding> = {
+  // Gated flip 2026-08-02 (run 8e3ea13a8b4b3968): minimax-m3 → deepseek-v4-flash.
+  // Faster (56.3s → 30.8s avg), ~2.9× cheaper per turn, ahead on reasoning and
+  // tool-use, and it needs none of M3's mitigations (no `replayInHistory`
+  // strip, no orphan-`</think>` stripper). The displaced M3 becomes
+  // `chat-fallback` below, which keeps primary and fallback on different
+  // families and different upstreams.
   chat: {
     role: "chat",
-    profileKey: "minimax-m3",
+    profileKey: "deepseek-v4-flash",
     settingsKind: "chat",
     wrapCache: true,
   },
+  // Deliberately a DIFFERENT family and a different upstream from `chat`:
+  // this binding exists for the turns where the primary died, so sharing
+  // DeepSeek's weights or DeepInfra's capacity with it would let one incident
+  // take out both. minimax-m3 was the gate-passing default until 2026-08-02,
+  // routes via Novita, and carries its own mitigations (`replayInHistory:
+  // false`, the orphan-`</think>` stripper) — they apply here too, since the
+  // escalation swaps the PROFILE, not just the agent.
   "chat-fallback": {
     role: "chat-fallback",
-    profileKey: "deepseek-v4-pro",
+    profileKey: "minimax-m3",
     settingsKind: "chat",
     wrapCache: true,
   },
@@ -84,9 +97,10 @@ export const ROLE_BINDINGS: Record<ModelRole, RoleBinding> = {
   // the team's flagship tier pick; a workflow may override per-run via its
   // `modelProfileKey`. The agent already delegates mechanical sub-tasks to the
   // cheap model via `dispatchAgent`, so the default need not be the cheap one.
+  // Tracks `chat` (reliability first) — flipped in the same gated change.
   workflow: {
     role: "workflow",
-    profileKey: "minimax-m3",
+    profileKey: "deepseek-v4-flash",
     settingsKind: "chat",
     wrapCache: true,
   },
@@ -113,7 +127,8 @@ export const ROLE_BINDINGS: Record<ModelRole, RoleBinding> = {
     // P5-bis recall-eval decision (2026-07, 16-case suite × 3 repeats):
     // gpt-oss-120b @ effort medium @ 10k output budget → 16/16 at
     // p50 ~1.3s; gpt-oss-20b topped out at 15/16 with double latency;
-    // deepseek-v4-flash timed out (13-15s). The judge is a SYSTEM
+    // deepseek-v4-flash timed out (13-15s — measured on the April model the
+    // key then pointed at, superseded by 0731 on 2026-08-02). The judge is a SYSTEM
     // quality component — ROLE_TIER pins it "fixed" so a team's utility
     // pick can't degrade it. NOTE: the old 3k judge output budget
     // silently truncated gpt-oss REASONING at medium/high effort and
@@ -162,7 +177,10 @@ export const ROLE_BINDINGS: Record<ModelRole, RoleBinding> = {
   // One-shot malformed-tool-call repair (`repair-tool-call.ts`). Split from
   // `dispatch-cheap` (2026-07): deepseek-v4-flash hit the 20s repair timeout
   // in prod, turning every repair into pure wasted latency — same failure the
-  // recall eval documented, same fix (gpt-oss-120b, ~6x faster).
+  // recall eval documented, same fix (gpt-oss-120b, ~6x faster). Measured on
+  // the April model; the key points at 0731 since 2026-08-02, which is much
+  // faster on the pinned upstream — worth re-testing before assuming it still
+  // holds.
   "tool-repair": {
     role: "tool-repair",
     profileKey: "gpt-oss-120b",

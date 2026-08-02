@@ -37,24 +37,42 @@ import { shouldInjectCacheControl } from "../../../src/lib/openrouter-cache";
  */
 
 describe("settingsForRole — parity with historical settings objects", () => {
-  test("chat-fallback and dispatch-cheap keep the historical chat envelope", () => {
-    const historicalChatEnvelope = {
-      provider: { require_parameters: true, zdr: true },
-      reasoning: { enabled: true, max_tokens: 1_500 },
-      usage: { include: true },
-    };
+  test("chat-fallback carries minimax-m3's own envelope, not the historical one", () => {
+    // Rebound to minimax-m3 on 2026-08-02 so the fallback shares neither
+    // family nor upstream with the DeepSeek primary. It therefore brings M3's
+    // pinned 5 000-token reasoning budget and Novita pin rather than the
+    // 1 500 / unpinned envelope deepseek-v4-pro used to produce here.
     expect(
       settingsForRole(
         ROLE_BINDINGS["chat-fallback"],
         getProfileForRole("chat-fallback"),
       ),
-    ).toEqual(historicalChatEnvelope);
+    ).toEqual({
+      provider: { require_parameters: true, zdr: true, order: ["Novita"] },
+      reasoning: { enabled: true, max_tokens: 5_000 },
+      usage: { include: true },
+    });
+  });
+
+  test("dispatch-cheap adds the deepseek-v4-flash upstream pin", () => {
+    // Same historical envelope plus `order` — the 0731 swap (2026-08-02) pinned
+    // DeepInfra because the upstream, not the reasoning knob, decides how much
+    // this model thinks: median 1 512 reasoning tokens there vs 8 360-9 914 on
+    // every other ZDR upstream, at equal measured quality. See the profile.
     expect(
       settingsForRole(
         ROLE_BINDINGS["dispatch-cheap"],
         getProfileForRole("dispatch-cheap"),
       ),
-    ).toEqual(historicalChatEnvelope);
+    ).toEqual({
+      provider: {
+        require_parameters: true,
+        zdr: true,
+        order: ["DeepInfra"],
+      },
+      reasoning: { enabled: true, max_tokens: 1_500 },
+      usage: { include: true },
+    });
   });
 
   test("preextract envelope matches the legacy preextractModelSettings", () => {
@@ -116,54 +134,55 @@ describe("settingsForRole — parity with historical settings objects", () => {
         getProfileForRole("vision-fallback"),
       ),
     ).toEqual(bareNoSort);
-    // A throughput-sorted profile (deepseek-v4-flash) surfaces `sort`.
+    // A throughput-sorted, upstream-pinned profile (deepseek-v4-flash) surfaces
+    // both `sort` and `order`.
     expect(
       settingsForRole(
         ROLE_BINDINGS["compaction-summarizer"],
         getProfileForRole("compaction-summarizer"),
       ),
     ).toEqual({
-      provider: { zdr: true, sort: "throughput" },
+      provider: { zdr: true, sort: "throughput", order: ["DeepInfra"] },
     });
   });
 
-  test("chat pins Novita — fast/viable ZDR upstream, think-leak mitigated downstream", () => {
-    // Novita mis-splits the `</think>` boundary in streaming, but it's the
-    // only ZDR upstream that's both fast and reliably up (DeepInfra cuts
-    // streams under load, Parasail/AtlasCloud were unstable); the leak
-    // itself is stripped by `stripOrphanThinkTags` (resolve.ts), not by
-    // excluding the provider. See the rationale on the minimax-m3 profile.
+  test("chat pins DeepInfra — cheapest, fastest and least verbose ZDR upstream", () => {
+    // Measured 2026-08-02 on the exact chat envelope, n=5: DeepInfra emits a
+    // median 1 512 reasoning tokens at 19.8s, against 8 360-9 914 tokens and
+    // 64-205s for every other ZDR upstream, at equal measured quality. See the
+    // rationale on the deepseek-v4-flash profile. `allow_fallbacks` stays on,
+    // so this is a preference, not a single point of failure.
     const chat = settingsForRole(ROLE_BINDINGS.chat, getProfileForRole("chat"));
     expect(chat?.provider).toEqual({
       require_parameters: true,
       zdr: true,
-      order: ["Novita"],
+      order: ["DeepInfra"],
     });
   });
 
-  test("transform runs ZDR + throughput-sorted (deepseek-v4-flash policy)", () => {
+  test("transform runs ZDR + throughput-sorted + DeepInfra-pinned (deepseek-v4-flash policy)", () => {
     expect(
       settingsForRole(ROLE_BINDINGS.transform, getProfileForRole("transform")),
     ).toEqual({
-      provider: { zdr: true, sort: "throughput" },
+      provider: { zdr: true, sort: "throughput", order: ["DeepInfra"] },
     });
   });
 });
 
 describe("role bindings — default model ids pinned (chat: gated M3 flip)", () => {
   const expectedIds: Record<ModelRole, string> = {
-    chat: "minimax/minimax-m3",
-    "chat-fallback": "deepseek/deepseek-v4-pro",
+    chat: "deepseek/deepseek-v4-flash-0731",
+    "chat-fallback": "minimax/minimax-m3",
     // Workflow executor defaults to the chat profile (reliability first).
-    workflow: "minimax/minimax-m3",
-    "dispatch-cheap": "deepseek/deepseek-v4-flash",
-    "pre-extract": "deepseek/deepseek-v4-flash",
+    workflow: "deepseek/deepseek-v4-flash-0731",
+    "dispatch-cheap": "deepseek/deepseek-v4-flash-0731",
+    "pre-extract": "deepseek/deepseek-v4-flash-0731",
     "pre-extract-fallback": "openai/gpt-oss-120b",
     // P5-bis (2026-07): 120b @ medium = 16/16 recall evals; 20b unstable.
     "active-memory": "openai/gpt-oss-120b",
     "memory-extract": "openai/gpt-oss-20b",
     "memory-distill": "openai/gpt-oss-20b",
-    "compaction-summarizer": "deepseek/deepseek-v4-flash",
+    "compaction-summarizer": "deepseek/deepseek-v4-flash-0731",
     "cheap-tasks": "openai/gpt-oss-20b",
     // ONE file-capable model backs both the `vision` tool and the `extract`
     // engine (no separate extraction role) — 3.5-flash-lite since 2026-07-25
@@ -171,7 +190,7 @@ describe("role bindings — default model ids pinned (chat: gated M3 flip)", () 
     // fallback. See ROLE_BINDINGS.vision.
     vision: "google/gemini-3.5-flash-lite",
     "vision-fallback": "google/gemini-3.1-flash-lite",
-    transform: "deepseek/deepseek-v4-flash",
+    transform: "deepseek/deepseek-v4-flash-0731",
     "transform-fallback": "google/gemini-3.6-flash",
     "tool-repair": "openai/gpt-oss-120b",
     "memory-consolidate": "openai/gpt-oss-120b",

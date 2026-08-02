@@ -308,16 +308,31 @@ export interface ModelAssessment {
      */
     maxTokens?: number;
     /**
-     * `false` = strip this model's own reasoning parts from the message
-     * history before every step (in-loop AND across turns). Set it when
-     * replaying the model's reasoning measurably degrades it: on
-     * MiniMax M3 (Novita), replayed reasoning triggers the documented
-     * "understanding-execution gap" — the model announces a tool call
-     * in text, then emits EOS instead of the call (controlled replay of
-     * prod zombie gen-1784805816: replay 4/5 tool calls, stripped 5/5,
-     * and stripping also stops runaway re-thinking + shrinks context).
-     * Absent = replay as-is (default; families with signed reasoning —
-     * Anthropic / Google — MUST keep it).
+     * `false` = strip this model's own reasoning parts from the messages
+     * sent at every step of the IN-TURN tool loop
+     * (`withReasoningReplayStrip`, agent-builder.ts).
+     *
+     * SCOPE — read this before reasoning about the flag. Cross-turn
+     * reasoning is ALREADY stripped for every profile, unconditionally,
+     * one layer up: `stripReasoningPartsForModel` runs on the persisted
+     * history inside `prepareModelMessages` (the mandatory path). So this
+     * flag governs exactly one thing — whether the loop replays the
+     * reasoning IT generated earlier in the SAME turn. The name is a
+     * historical misnomer; it is not about "history".
+     *
+     * Anthropic and Google must keep the in-turn replay: their thinking
+     * blocks carry signatures that are fresh and valid within a turn, and
+     * their APIs require the blocks be echoed back alongside tool results.
+     *
+     * Set to `false` only on measured evidence. The one profile carrying
+     * it (MiniMax M3) was set from a n=5 replay of prod zombie
+     * gen-1784805816 (replayed 4/5 tool calls vs stripped 5/5) — a
+     * one-case delta that a controlled n=20 A/B on 2026-08-02 did NOT
+     * reproduce (20/20 tool calls in BOTH arms, for M3 and DeepSeek, on
+     * both a short and a long multi-step loop). It is kept on M3 for its
+     * second, independent benefit: stripping removes the ×2+ per-turn
+     * context inflation. Do not copy it onto a new profile as a
+     * precaution — measure, or leave it absent.
      */
     replayInHistory?: false;
   };

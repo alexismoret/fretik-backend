@@ -23,7 +23,7 @@ import type { ModelMetrics, ModelMetricsSnapshot } from "./types";
  * "Not measured". Changing the key makes the deploy invalidate its own cache —
  * the alternative is remembering to flush Redis by hand on every rollout.
  */
-export const MODEL_METRICS_CACHE_KEY = "model-metrics:v2";
+export const MODEL_METRICS_CACHE_KEY = "model-metrics:v3";
 const REFRESH_LOCK_KEY = "model-metrics:refreshing";
 const REFRESH_LOCK_TTL_SECONDS = 120;
 
@@ -73,7 +73,14 @@ export const buildModelMetricsSnapshot = (
     if (!hit) partial = true;
     metrics[key] = {
       intelligence: hit?.intelligence ?? fallback?.intelligence ?? null,
-      speed: hit?.speed ?? fallback?.speed ?? null,
+      // Same 0-means-absent rule as `timeToFirstAnswer` below — AA returns 0 on
+      // BOTH throughput axes for a model it has scored but not yet timed
+      // (deepseek-v4-flash 0731 on 2026-08-02), and `??` would let that 0
+      // through as a real measurement.
+      speed:
+        (hit?.speed ?? 0) > 0
+          ? (hit?.speed ?? null)
+          : (fallback?.speed ?? null),
       // Falls back like intelligence/speed: this drives a headline gauge, so a
       // blank column is worse than a figure captured a few weeks ago. AA reports
       // 0 (not null) when it has no throughput data for a model, which would

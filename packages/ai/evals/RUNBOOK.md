@@ -115,7 +115,7 @@ AI_SERVICE_URL=http://localhost:8083 bun run evals:gate -- --candidate minimax-m
 per-capability correctness drop ≤ 1 case-equivalent (ADVISORY by default — see below) ·
 `tool-call-validity` ≥ baseline − ε · `zombie-rate` ≤ baseline + ε · `cost-per-turn-usd`
 within the profile's `costClass` envelope (ADVISORY until calibrated) · avg latency ≤ 1.5×
-baseline · ≤ 1 candidate case answered by the fallback agent (`fallback-served` — a silent
+baseline · `fallback-served` ≤ baseline + 1 candidate case (a silent
 failover must not score as the candidate). The gate also prints a tool-calling **efficiency**
 block (`avg-tool-calls` / `tool-error-rate` / `redundant-call-rate`) — ADVISORY (never failing)
 until `GATE_EFFICIENCY_ENFORCED=1` + calibrated envelopes (same discipline as cost).

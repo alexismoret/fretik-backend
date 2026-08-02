@@ -2,7 +2,7 @@
  * `dispatchAgent` tool — sub-agent delegation pattern.
  *
  * The chatbot can delegate an encapsulated sub-task to a fresh
- * sub-agent (`primary` = same model, `cheap` = `deepseek/deepseek-v4-flash`)
+ * sub-agent (`primary` = same model, `cheap` = `deepseek/deepseek-v4-flash-0731`)
  * via the `dispatchAgent` tool. The sub-agent runs its own short tool
  * loop in isolation and returns a tight summary as the tool result.
  *

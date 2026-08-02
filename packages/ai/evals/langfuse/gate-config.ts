@@ -24,8 +24,21 @@ export interface GateConfig {
    * (provider load), not on the candidate.
    */
   latencyFactor: number;
-  /** Max candidate cases allowed to be served by the fallback agent. */
-  maxFallbackServed: number;
+  /**
+   * How many MORE cases than the baseline the candidate may have served by
+   * the fallback agent. Relative, like every other criterion here.
+   *
+   * It was an ABSOLUTE cap of 1 until 2026-08-02, when the RUNBOOK's own
+   * self-test disproved it: `evals:gate --candidate minimax-m3` against the
+   * stored minimax-m3 baseline — the check the RUNBOOK says "must pass
+   * trivially" — FAILED with 2 fallback-served cases out of 80 (run
+   * gate-cand-minimax-m3-20260802-1624). The applied default could not pass
+   * its own gate, so the cap was measuring the suite's ambient recovery rate,
+   * not a candidate defect. The criterion's intent survives intact: a
+   * candidate must not fail over MORE than the incumbent, because a silent
+   * failover inflates its correctness with another model's answers.
+   */
+  maxFallbackServedDelta: number;
   /**
    * Max per-capability correctness drop, in CASE-EQUIVALENTS
    * (drop × number of candidate cases in the capability ≤ this). This is
@@ -75,7 +88,7 @@ export interface GateConfig {
 export const GATE_CONFIG: GateConfig = {
   epsilon: num(process.env.GATE_EPSILON, 0.02),
   latencyFactor: num(process.env.GATE_LATENCY_FACTOR, 1.5),
-  maxFallbackServed: num(process.env.GATE_MAX_FALLBACK_SERVED, 1),
+  maxFallbackServedDelta: num(process.env.GATE_MAX_FALLBACK_SERVED_DELTA, 1),
   maxCapabilityDropCases: num(process.env.GATE_MAX_CAPABILITY_DROP_CASES, 1),
   correctnessEnforced: process.env.GATE_CORRECTNESS_ENFORCED === "1",
   costCalibrated: process.env.GATE_COST_CALIBRATED === "1",

@@ -99,8 +99,13 @@ export const FALLBACK_METRICS: Record<string, FallbackMetric> = {
     speed: 70.9,
     timeToFirstAnswer: 62.7,
   },
+  // V4 Flash 0731 (2026-08-02). AA has scored its intelligence but NOT yet
+  // measured either throughput axis — both come back as literal 0, i.e. "no
+  // data", not "instant". The two speed figures are therefore carried over from
+  // the April model (`deepseek-v4-flash-0420`), which shares its architecture
+  // and parameter count; refresh them once AA publishes 0731's own.
   "deepseek-v4-flash": {
-    intelligence: 40.3,
+    intelligence: 49.9,
     speed: 117.7,
     timeToFirstAnswer: 48.5,
   },

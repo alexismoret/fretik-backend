@@ -10,8 +10,10 @@ import { NATIVE_FILE_MAX_BYTES, type ModelProfile } from "../types";
  *   `shouldInjectCacheControl`, `lib/openrouter-cache.ts`). Cache WRITES cost
  *   ~1.25× input, unlike the implicit-cache families.
  * - **Signed reasoning.** Never set `reasoning.replayInHistory: false` —
- *   Anthropic signs its thinking blocks and rejects a history with them
- *   stripped.
+ *   Anthropic signs its thinking blocks and requires them echoed back
+ *   alongside tool results WITHIN a turn. (Cross-turn reasoning is stripped
+ *   for every profile anyway, one layer up in `prepareModelMessages`, so the
+ *   constraint is specifically about the in-turn tool loop.)
  * - **ZDR routes via Amazon Bedrock** (probed 2026-07-26, all three models).
  * - **Every profile is `enabled: false` on cost.** Even Haiku 4.5, the
  *   cheapest, runs ~2.71× a MiniMax M3 turn — just over the GPT-5.6 Luna

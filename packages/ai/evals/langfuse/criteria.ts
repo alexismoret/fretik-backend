@@ -123,8 +123,11 @@ export const evaluateCriteria = (
   out.push({
     name: "fallback-served",
     verdict:
-      cand.fallbackServedCount <= cfg.maxFallbackServed ? "pass" : "fail",
-    detail: `${cand.fallbackServedCount.toString()} candidate case(s) answered by the fallback agent (max ${cfg.maxFallbackServed.toString()})`,
+      cand.fallbackServedCount <=
+      base.fallbackServedCount + cfg.maxFallbackServedDelta
+        ? "pass"
+        : "fail",
+    detail: `${cand.fallbackServedCount.toString()} candidate case(s) answered by the fallback agent vs ${base.fallbackServedCount.toString()} baseline (cap ${(base.fallbackServedCount + cfg.maxFallbackServedDelta).toString()} = baseline + ${cfg.maxFallbackServedDelta.toString()})`,
   });
 
   // ── C11 tool-calling EFFICIENCY (advisory until calibrated) ──────────

@@ -180,7 +180,7 @@ describe("cheapModelIdForTeam", () => {
  * chosen for.
  */
 describe("resolveTeamFlagship", () => {
-  const codeDefault = "minimax-m3";
+  const codeDefault = "deepseek-v4-flash";
 
   test("no team in scope → code default, nothing stored", async () => {
     expect(await resolveTeamFlagship(undefined, null)).toEqual({

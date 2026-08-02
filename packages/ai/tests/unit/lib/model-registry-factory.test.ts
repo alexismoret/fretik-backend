@@ -23,9 +23,9 @@ describe("resolveChatModelForProfile", () => {
   });
 
   test("non-default profiles memoize per key under the chat envelope", () => {
-    const first = resolveChatModelForProfile("deepseek-v4-flash");
-    expect(resolveChatModelForProfile("deepseek-v4-flash")).toBe(first);
-    expect(first.profile.catalog.id).toBe("deepseek/deepseek-v4-flash");
+    const first = resolveChatModelForProfile("minimax-m3");
+    expect(resolveChatModelForProfile("minimax-m3")).toBe(first);
+    expect(first.profile.catalog.id).toBe("minimax/minimax-m3");
     expect(first.binding.settingsKind).toBe("chat");
     expect(first.binding.wrapCache).toBe(true);
   });
@@ -48,11 +48,11 @@ describe("getChatbotAgentSet", () => {
   });
 
   test("a different profile gets its own set, memoized per key", () => {
-    // deepseek-v4-flash — a non-default profile (the workhorse binding),
-    // distinct from the minimax-m3 chat default.
-    const other = getChatbotAgentSet("deepseek-v4-flash");
+    // minimax-m3 — a selectable flagship, distinct from the
+    // deepseek-v4-flash chat default since the 2026-08-02 gated flip.
+    const other = getChatbotAgentSet("minimax-m3");
     expect(other).not.toBe(chatbotAgentSet);
-    expect(getChatbotAgentSet("deepseek-v4-flash")).toBe(other);
+    expect(getChatbotAgentSet("minimax-m3")).toBe(other);
     expect(other.toolNames).toEqual(chatbotAgentSet.toolNames);
   });
 });

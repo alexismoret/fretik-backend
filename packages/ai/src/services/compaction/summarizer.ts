@@ -32,7 +32,7 @@ const SUMMARISER_TEMPERATURE = 0.2;
 
 /**
  * Compaction summariser model — the registry's `compaction-summarizer`
- * role (default `deepseek/deepseek-v4-flash`: 1M-token context keeps
+ * role (default `deepseek/deepseek-v4-flash-0731`: 1M-token context keeps
  * very long older blocks within reach at a price well below the
  * previous `gpt-oss-120b`, which capped us at 131K). It is a workhorse-tier
  * role, so a team's workhorse pick (C8b) overrides the default — resolved per

@@ -352,14 +352,17 @@ const withLoopGuard = <TTools extends ToolSet>(
 /**
  * Wrap an agent's `prepareStep` with the reasoning-replay policy: when the
  * serving profile declares `reasoning.replayInHistory: false`, drop every
- * `reasoning` part from assistant messages before the step is sent — initial
- * history AND the loop's own appended steps (`prepareStep` fires on step 0
- * too). Text and tool-call parts are untouched; an assistant message left
- * empty by the strip (reasoning-only, so it never carries tool calls whose
- * responses could desync) is dropped whole. Composed OUTSIDE the loop guard
- * so it has the final say on the outgoing messages. See the flag's doc in
- * `model-registry/types.ts` for the measured rationale (MiniMax M3
- * understanding-execution gap).
+ * `reasoning` part from assistant messages before the step is sent. Text and
+ * tool-call parts are untouched; an assistant message left empty by the strip
+ * (reasoning-only, so it never carries tool calls whose responses could
+ * desync) is dropped whole. Composed OUTSIDE the loop guard so it has the
+ * final say on the outgoing messages.
+ *
+ * What this actually removes is the loop's OWN reasoning from earlier steps of
+ * the SAME turn. Prior-turn reasoning never reaches here: it is stripped for
+ * every profile, unconditionally, by `stripReasoningPartsForModel` inside
+ * `prepareModelMessages`. See the flag's doc in `model-registry/types.ts`,
+ * including why it should not be copied onto a new profile without measuring.
  */
 export const withReasoningReplayStrip = <TTools extends ToolSet>(
   base: PrepareStepFunction<TTools>,

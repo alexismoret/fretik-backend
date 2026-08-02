@@ -383,7 +383,7 @@ const subAgentPrimarySet = buildAgentSet<ChatbotCallOptions, SubAgentTools>({
 
 /**
  * Sub-agent set on the CHEAP model (the registry's `dispatch-cheap` role,
- * `deepseek/deepseek-v4-flash` by default). Used when
+ * `deepseek/deepseek-v4-flash-0731` by default). Used when
  * `dispatchAgent({ model: 'cheap' })` is called for well-scoped
  * mechanical sub-tasks (summarise one document, extract a known
  * schema, classify items).

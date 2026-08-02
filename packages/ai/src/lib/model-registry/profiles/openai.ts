@@ -201,8 +201,10 @@ export const OPENAI_PROFILES: Record<string, ModelProfile> = {
   // GPT-5.4 Mini is deliberately NOT in the registry. It is the latest OpenAI
   // "mini", so the latest-version-only rule would admit it, but it is strictly
   // dominated: 40.0 AA intelligence at 2.04× a MiniMax M3 turn, against
-  // deepseek-v4-flash at 40.3 for 0.46× — marginally smarter for 4.4× less
-  // money. There is no workload where a team should pick it.
+  // deepseek-v4-flash at 49.9 for 0.46× — CHEAPER and 10 points smarter. The
+  // 0731 swap (2026-08-02) widened this gap: the comparison used to read
+  // "marginally smarter for 4.4× less money" against the April model's 40.3.
+  // There is no workload where a team should pick it.
   //
   // GPT-5.4 Nano below survives the same test for a specific reason: at 0.55×
   // it is the cheapest model in the registry that can read an attachment at

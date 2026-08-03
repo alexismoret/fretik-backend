@@ -163,6 +163,13 @@ the same reviewed PR.
 
 1. Read its facts from OpenRouter (`architecture`, `supported_parameters`, `pricing`,
    `reasoning`) and write them into `catalog` verbatim — `bun run models:check` diffs them.
+   For `assessment.pricing`, record the endpoint the profile ACTUALLY ROUTES TO, not the
+   headline catalog price: the top-level `/models` price is the cheapest endpoint, which
+   under ZDR is often one we cannot reach. `bun run models:check --prices` resolves the real
+   routing and diffs it. (This caught `deepseek-v4-pro` priced at DeepSeek's first-party
+   endpoint — outside the ZDR pool — understating its cached-input rate 28×.) At runtime the
+   live routed price overrides this field anyway; the committed value is the reviewed
+   baseline and the offline fallback.
 2. Set `assessment.enabled`: today's rule is `false` for anything costlier per turn than
    GPT-5.6 Luna @xhigh, with a `disabledReason` so the hub can explain itself.
 3. Add `aaSlug` — pinned to the profile's `reasoning.defaultLevel`, since Artificial
@@ -175,7 +182,8 @@ the same reviewed PR.
 5. Activate `nativeInput` for every visual modality the catalog allows (`audio` stays off
    registry-wide until a call site produces audio parts).
 6. Add the brand name to `lib/model-registry/display.ts` and a `FALLBACK_METRICS` row.
-7. Verify: `bun run check && bun run test && bun run models:check --probe`.
+7. Verify: `bun run check && bun run test`, then `bun run models:check --probe` and
+   `bun run models:check --prices` (each flag runs its own check and exits).
 
 The picker's per-tier "recommended" badge tracks the code-default `ROLE_BINDINGS`, so
 adding a model changes the available choices, never the recommendation.

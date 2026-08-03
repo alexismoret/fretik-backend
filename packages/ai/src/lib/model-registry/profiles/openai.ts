@@ -291,7 +291,16 @@ export const OPENAI_PROFILES: Record<string, ModelProfile> = {
     },
     assessment: {
       costClass: "budget",
-      pricing: { inputPerMTok: 0.039, outputPerMTok: 0.18 },
+      // Median of the reachable ZDR pool (2026-08-03), not the cheapest
+      // endpoint: this model has a wide provider spread and OpenRouter load-
+      // balances across it. CoreWeave publishes a cached-input rate even though
+      // `cache.strategy` is `none` here — recorded because the cost model reads
+      // the rate directly now.
+      pricing: {
+        inputPerMTok: 0.085,
+        outputPerMTok: 0.495,
+        cacheReadPerMTok: 0.0425,
+      },
       nativeInput: {
         image: false,
         video: false,
@@ -336,7 +345,12 @@ export const OPENAI_PROFILES: Record<string, ModelProfile> = {
     },
     assessment: {
       costClass: "budget",
-      pricing: { inputPerMTok: 0.029, outputPerMTok: 0.14 },
+      // Pool median, same basis as gpt-oss-120b above.
+      pricing: {
+        inputPerMTok: 0.04,
+        outputPerMTok: 0.14,
+        cacheReadPerMTok: 0.03375,
+      },
       nativeInput: {
         image: false,
         video: false,

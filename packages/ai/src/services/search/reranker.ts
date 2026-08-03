@@ -1,3 +1,4 @@
+import { OPENROUTER_API_BASE_URL } from "@fretik/shared/lib/openrouter";
 import {
   startActiveObservation,
   updateActiveObservation,
@@ -44,7 +45,7 @@ if (!rerankModelId) {
   throw "Missing OPENROUTER_RERANK_MODEL env";
 }
 
-const OPENROUTER_RERANK_URL = "https://openrouter.ai/api/v1/rerank";
+const OPENROUTER_RERANK_URL = `${OPENROUTER_API_BASE_URL}/rerank`;
 
 /**
  * Hard timeout on the rerank HTTP call. Rerank-4-fast "high performance

@@ -31,7 +31,19 @@
  * policy": Gemini's ZDR endpoint omits `temperature`, so ZDR +
  * `require_parameters` empties the pool). Runs the probe and exits;
  * without the flag, the catalog drift check runs as before.
+ *
+ * Price drift:
+ *
+ *     bun run models:check --prices      # needs OPENROUTER_API_KEY
+ *
+ * Compares each profile's `assessment.pricing` against the endpoint it
+ * ACTUALLY routes to. This block is not part of the catalog mirror, so
+ * nothing validated it until 2026-08-03 — when an audit found three
+ * profiles wrong, `deepseek-v4-pro` by 3× on input and 28× on cached
+ * input because it was priced at DeepSeek's first-party endpoint, which
+ * the ZDR pool excludes. Tolerates 15 % to absorb routing variance.
  */
+import { OPENROUTER_API_BASE_URL } from "@fretik/shared/lib/openrouter";
 import { MODEL_PROFILES } from "../src/lib/model-registry/profiles";
 
 interface ApiModel {
@@ -106,7 +118,64 @@ if (process.argv.includes("--probe")) {
   process.exit(0);
 }
 
-const response = await fetch("https://openrouter.ai/api/v1/models");
+if (process.argv.includes("--prices")) {
+  // Dynamic import for the same reason as --probe: this path needs the key.
+  const { fetchOpenRouterRouting } =
+    await import("../src/services/model-metrics/fetch-openrouter-routing");
+  const routing = await fetchOpenRouterRouting();
+  if (routing.size === 0) {
+    console.error("No routing resolved — is OPENROUTER_API_KEY set?");
+    process.exit(2);
+  }
+
+  // This is a SMOKE ALARM for "priced at an endpoint we never reach", not a
+  // precision audit. The bug it exists to catch was 3× on input and 28× on
+  // cached input; meanwhile the pool itself is genuinely fuzzy — GLM 5.2 has 34
+  // endpoints spanning 8× in price, and two consecutive enumerations of it
+  // produced medians 27 % apart. A tight bound would cry wolf every run.
+  // Precision costs little anyway: the curated price is only ever used when
+  // OpenRouter is unreachable, since the live value overrides it at runtime.
+  const TOLERANCE = 0.5;
+  let priceDrift = 0;
+  for (const [key, profile] of Object.entries(MODEL_PROFILES)) {
+    const routed = routing.get(key);
+    if (!routed) {
+      console.warn(`SKIP  ${key}: no endpoint resolved`);
+      continue;
+    }
+    const ours = profile.assessment.pricing;
+    const off = (curated: number | undefined, live: number | undefined) => {
+      if (curated === undefined || live === undefined) return curated !== live;
+      if (curated === 0) return live !== 0;
+      return Math.abs(live - curated) / curated > TOLERANCE;
+    };
+    const fields: [string, number | undefined, number | undefined][] = [
+      ["input", ours.inputPerMTok, routed.pricing.inputPerMTok],
+      ["output", ours.outputPerMTok, routed.pricing.outputPerMTok],
+      ["cacheRead", ours.cacheReadPerMTok, routed.pricing.cacheReadPerMTok],
+    ];
+    const bad = fields.filter(([, c, l]) => off(c, l));
+    if (bad.length > 0) {
+      priceDrift += 1;
+      const detail = bad
+        .map(([name, c, l]) => `${name} ${c ?? "none"} → live ${l ?? "none"}`)
+        .join(", ");
+      console.error(`DRIFT ${key} (served by ${routed.provider}): ${detail}`);
+    }
+  }
+  if (priceDrift > 0) {
+    console.error(
+      `\n${priceDrift} profile(s) priced against an endpoint we do not reach.`,
+    );
+    process.exit(1);
+  }
+  console.log(
+    `OK — ${routing.size} profiles priced at the endpoint they actually route to.`,
+  );
+  process.exit(0);
+}
+
+const response = await fetch(`${OPENROUTER_API_BASE_URL}/models`);
 if (!response.ok) {
   console.error(`OpenRouter API returned ${response.status}`);
   process.exit(2);

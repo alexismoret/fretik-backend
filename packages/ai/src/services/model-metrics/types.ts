@@ -14,7 +14,14 @@
 export interface ModelMetrics {
   /** Artificial Analysis Intelligence Index (raw, ~0-70). Null if unmatched. */
   intelligence: number | null;
-  /** Median output tokens/second (Artificial Analysis). Null if unmatched. */
+  /**
+   * Median output tokens/second. Prefers OpenRouter's p50 for the upstream this
+   * profile actually routes to (`fetch-openrouter-routing.ts`), falling back to
+   * Artificial Analysis. OpenRouter wins because AA measures whichever route it
+   * picked, which for a pinned profile is usually not ours — DeepSeek V4 Flash
+   * runs on DeepInfra here, and AA never measured that endpoint at all. Null
+   * when neither source has it.
+   */
   speed: number | null;
   /**
    * Relative cost indicator 0-100 (higher = more expensive / more credits).
@@ -44,6 +51,19 @@ export interface ModelMetrics {
   instructionFollowing: number | null;
   /** AA `lcr` (0-1) — long-context reasoning. Null if unmatched. */
   longContext: number | null;
+  /**
+   * p50 seconds to the first token on the upstream we route to, measured by
+   * OpenRouter over the last 30 minutes of live traffic.
+   *
+   * NOT interchangeable with `timeToFirstAnswer`: this fires on the first token
+   * of ANY kind, so a model that reasons for a minute still scores ~1s here.
+   * Kept as its own axis rather than folded into the Speed gauge — deriving
+   * time-to-first-ANSWER from it (`ttft + reasoningTokens / throughput`) was
+   * tried on 2026-08-03 and rejected: it ranked MiniMax M3 faster than DeepSeek
+   * V4 Flash, while the eval gate measured the reverse by 1.8× end-to-end.
+   * Null when OpenRouter has no sample for that endpoint.
+   */
+  ttftSeconds: number | null;
 }
 
 export interface ModelMetricsSnapshot {

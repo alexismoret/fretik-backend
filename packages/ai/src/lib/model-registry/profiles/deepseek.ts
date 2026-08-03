@@ -56,10 +56,26 @@ export const DEEPSEEK_PROFILES: Record<string, ModelProfile> = {
     },
     assessment: {
       costClass: "budget",
+      // CORRECTED 2026-08-03. Was $0.435/$0.87/$0.0036 — DeepSeek's own
+      // first-party endpoint, which is NOT IN THE ZDR POOL. We could never be
+      // billed at it. Probing the real envelope enumerates the reachable pool
+      // as Parasail / Ionstream / Novita / Venice / Together / DeepInfra /
+      // DigitalOcean / CoreWeave, priced $1.13-1.74 in and $0.094-0.348 cached.
+      // The values below are the MEDIAN of that pool — three consecutive probes
+      // served DeepInfra, then DigitalOcean, then CoreWeave, so no single
+      // endpoint is "the" price here.
+      //
+      // The old cached rate was the damaging one: at 0.83 % of input it was an
+      // order of magnitude below the fleet, and since a Fretik turn is
+      // cache-read dominated it made this model rank CHEAPER than MiniMax M3
+      // when it is ~3× dearer. costLevel 27 → 51, `low` → `moderate`.
+      // Superseded at runtime by the live routed price
+      // (`services/model-metrics/fetch-openrouter-routing.ts`); this is the
+      // reviewed baseline and the offline fallback.
       pricing: {
-        inputPerMTok: 0.435,
-        outputPerMTok: 0.87,
-        cacheReadPerMTok: 0.0036,
+        inputPerMTok: 1.521,
+        outputPerMTok: 3.043,
+        cacheReadPerMTok: 0.1175,
       },
       aaSlug: "deepseek-v4-pro",
       verbosity: { outputTokensPerTask: 36_963, reasoningToAnswerRatio: 4.1 },
@@ -134,14 +150,18 @@ export const DEEPSEEK_PROFILES: Record<string, ModelProfile> = {
     },
     assessment: {
       costClass: "budget",
-      // List price, matching the majority of endpoints and DeepSeek's own API —
-      // the same basis as every other profile. The pinned DeepInfra route is
-      // actually cheaper ($0.09/$0.18/$0.018); pricing the fleet at
-      // cheapest-route would make `costLevel` incomparable across profiles.
+      // CORRECTED 2026-08-03 to the PINNED DeepInfra route. This used to carry
+      // the list price ($0.14/$0.28/$0.028) on the argument that pricing the
+      // fleet at cheapest-route would make `costLevel` incomparable — but an
+      // audit of all 22 profiles showed the opposite was already true: every
+      // other profile records the endpoint it actually routes to (M3 at
+      // Novita's price, the OpenAI family at Azure's, GLM at DeepInfra's). This
+      // was the only list-priced profile, so it overstated the default
+      // flagship by 1.56× against a fleet priced on a different basis.
       pricing: {
-        inputPerMTok: 0.14,
-        outputPerMTok: 0.28,
-        cacheReadPerMTok: 0.028,
+        inputPerMTok: 0.09,
+        outputPerMTok: 0.18,
+        cacheReadPerMTok: 0.018,
       },
       // AA re-pointed this slug at 0731 — see the note above.
       aaSlug: "deepseek-v4-flash",

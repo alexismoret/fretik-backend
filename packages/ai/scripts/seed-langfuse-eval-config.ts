@@ -28,6 +28,7 @@
  * Usage: `bun run langfuse:seed-eval-config` (needs LANGFUSE_* + OPENROUTER_API_KEY).
  */
 
+import { OPENROUTER_API_BASE_URL } from "@fretik/shared/lib/openrouter";
 import { LangfuseClient } from "@langfuse/client";
 
 const JUDGE_MODEL =
@@ -202,7 +203,7 @@ const seedLlmConnection = async (): Promise<void> => {
     provider: CONNECTION_PROVIDER,
     adapter: "openai",
     secretKey: apiKey,
-    baseURL: "https://openrouter.ai/api/v1",
+    baseURL: OPENROUTER_API_BASE_URL,
     customModels: [JUDGE_MODEL],
     withDefaultModels: false,
   });

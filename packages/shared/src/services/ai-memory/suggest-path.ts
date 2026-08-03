@@ -1,4 +1,5 @@
 import type { AiMemoryScope } from "../../db/schema/ai-memory";
+import { OPENROUTER_API_BASE_URL } from "../../lib/openrouter";
 import { findMemoryByPath } from "./lookup";
 import type { MemoryScopeKey } from "./types";
 
@@ -190,7 +191,7 @@ const callOpenRouter = async (args: {
   ].join("\n");
 
   try {
-    const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    const res = await fetch(`${OPENROUTER_API_BASE_URL}/chat/completions`, {
       method: "POST",
       signal: controller.signal,
       headers: {

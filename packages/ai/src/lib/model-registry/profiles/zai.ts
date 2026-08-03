@@ -1,10 +1,15 @@
 import type { ModelProfile } from "../types";
 
 /**
- * Z.ai — GLM. Catalog re-synced from the OpenRouter models API 2026-08-02.
- * `maxCompletionTokens` has oscillated upstream — 131 072 on 2026-07-26,
- * 128 000 on 2026-07-30, back to 131 072 now. Re-run `bun run models:check`
- * rather than assuming this one is stable.
+ * Z.ai — GLM. Catalog re-synced from the OpenRouter models API 2026-08-03.
+ *
+ * `maxCompletionTokens` OSCILLATES and always will: 131 072 on 2026-07-26,
+ * 128 000 on 2026-07-30, 131 072 on 2026-08-02, 262 144 now. OpenRouter reports
+ * it from `top_provider`, i.e. whichever upstream currently leads the routing —
+ * and GLM 5.2 has 34 endpoints with differing caps, so the field tracks routing
+ * rather than the model. The same mechanism makes its price unstable (see
+ * `assessment.pricing`). Expect `bun run models:check` to flag this one
+ * periodically; re-sync it rather than treating it as a regression.
  * Replaces GLM-5.1 and GLM-4.7 (latest-version-only rule).
  *
  * GLM-5.2 is the most intelligent model in the fleet's affordable band (51.1 AA
@@ -34,7 +39,7 @@ export const ZAI_PROFILES: Record<string, ModelProfile> = {
     catalog: {
       id: "z-ai/glm-5.2",
       contextLength: 1_048_576,
-      maxCompletionTokens: 131_072,
+      maxCompletionTokens: 262_144,
       inputModalities: ["text"],
       outputModalities: ["text"],
       supportedParameters: [
@@ -54,10 +59,16 @@ export const ZAI_PROFILES: Record<string, ModelProfile> = {
     },
     assessment: {
       costClass: "standard",
+      // CORRECTED 2026-08-03. The previous $0.672/$2.112/$0.1248 matched NO
+      // live endpoint — it was exactly 0.48× the $1.4/$4.4/$0.26 tier, i.e. a
+      // discount that no longer exists. GLM 5.2 has the widest provider spread
+      // in the fleet (34 endpoints, $0.277 to $2.31 input), and probes served
+      // DeepInfra then Parasail, so the values below are the MEDIAN of the
+      // reachable ZDR pool. Live routing overrides this at runtime.
       pricing: {
-        inputPerMTok: 0.672,
-        outputPerMTok: 2.112,
-        cacheReadPerMTok: 0.1248,
+        inputPerMTok: 1.12,
+        outputPerMTok: 3.85,
+        cacheReadPerMTok: 0.205,
       },
       aaSlug: "glm-5-2",
       verbosity: { outputTokensPerTask: 42_791, reasoningToAnswerRatio: 6.03 },

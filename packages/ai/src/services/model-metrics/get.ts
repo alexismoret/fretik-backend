@@ -34,6 +34,7 @@ const snapshotSchema = z.object({
       toolUse: z.number().nullish().default(null),
       instructionFollowing: z.number().nullish().default(null),
       longContext: z.number().nullish().default(null),
+      ttftSeconds: z.number().nullish().default(null),
     }),
   ),
   fetchedAt: z.string(),

@@ -99,15 +99,29 @@ export const FALLBACK_METRICS: Record<string, FallbackMetric> = {
     speed: 70.9,
     timeToFirstAnswer: 62.7,
   },
-  // V4 Flash 0731 (2026-08-02). AA has scored its intelligence but NOT yet
-  // measured either throughput axis — both come back as literal 0, i.e. "no
-  // data", not "instant". The two speed figures are therefore carried over from
-  // the April model (`deepseek-v4-flash-0420`), which shares its architecture
-  // and parameter count; refresh them once AA publishes 0731's own.
+  // V4 Flash 0731. AA has scored its intelligence but NOT yet measured either
+  // throughput axis — both come back as literal 0, i.e. "no data", not
+  // "instant".
+  //
+  // Both figures were carried over from the April model (`-0420`) until
+  // 2026-08-03, and that was WRONG in a user-visible way: 48.5s put the default
+  // flagship in the "slow" bucket (>40s) while the eval gate measured it at
+  // 30 846ms average turn latency against MiniMax M3's 56 325ms — nearly twice
+  // as FAST as the model the card called "moderate". A number from a different
+  // model, measured on a route we do not use, is not a conservative default.
+  //
+  // Replaced by figures grounded in our own routing (DeepInfra, pinned):
+  // - `speed` 75 = the p50 throughput OpenRouter reports for that endpoint.
+  // - `timeToFirstAnswer` 13.3 = AA's M3 figure (24.3s) scaled by the gate's
+  //   measured latency ratio (30 846 / 56 325). Derived, not measured — but it
+  //   agrees with two independent signals: a 1.96s TTFAT probe on an easy
+  //   prompt, and `ttft + reasoning/throughput` from OpenRouter's p50s (13.2s).
+  // Both are superseded at runtime the moment AA or OpenRouter reports real
+  // numbers; this table only fires when BOTH sources are unreachable.
   "deepseek-v4-flash": {
     intelligence: 49.9,
-    speed: 117.7,
-    timeToFirstAnswer: 48.5,
+    speed: 75,
+    timeToFirstAnswer: 13.3,
   },
   // Z.ai
   "glm-5.2": { intelligence: 51.1, speed: 156.7, timeToFirstAnswer: 13.7 },

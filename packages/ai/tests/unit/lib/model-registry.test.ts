@@ -36,6 +36,16 @@ import { shouldInjectCacheControl } from "../../../src/lib/openrouter-cache";
  * tracks it; every other binding keeps the historical envelope.
  */
 
+/**
+ * The vetted upstream pool for deepseek-v4-flash, asserted on every role that
+ * carries it. Pinned here because widening it is a QUALITY change, not a
+ * routing tweak: membership is decided by whether an upstream populates the
+ * implicit prompt cache (a miss bills ~4.6× per turn) and whether its reasoning
+ * converges, neither of which `sort: "throughput"` can see. See the profile for
+ * the 2026-08-05 measurements and the per-provider exclusion reasons.
+ */
+const VETTED_DEEPSEEK_UPSTREAMS = ["baseten", "venice", "deepinfra"];
+
 describe("settingsForRole — parity with historical settings objects", () => {
   test("chat-fallback carries minimax-m3's own envelope, not the historical one", () => {
     // Rebound to minimax-m3 on 2026-08-02 so the fallback shares neither
@@ -54,11 +64,7 @@ describe("settingsForRole — parity with historical settings objects", () => {
     });
   });
 
-  test("dispatch-cheap adds the deepseek-v4-flash upstream pin", () => {
-    // Same historical envelope plus `order` — the 0731 swap (2026-08-02) pinned
-    // DeepInfra because the upstream, not the reasoning knob, decides how much
-    // this model thinks: median 1 512 reasoning tokens there vs 8 360-9 914 on
-    // every other ZDR upstream, at equal measured quality. See the profile.
+  test("dispatch-cheap carries the deepseek-v4-flash vetted pool + throughput sort", () => {
     expect(
       settingsForRole(
         ROLE_BINDINGS["dispatch-cheap"],
@@ -68,7 +74,8 @@ describe("settingsForRole — parity with historical settings objects", () => {
       provider: {
         require_parameters: true,
         zdr: true,
-        order: ["DeepInfra"],
+        only: VETTED_DEEPSEEK_UPSTREAMS,
+        sort: "throughput",
       },
       reasoning: { enabled: true, max_tokens: 1_500 },
       usage: { include: true },
@@ -94,7 +101,12 @@ describe("settingsForRole — parity with historical settings objects", () => {
     ).toEqual(expected);
   });
 
-  test("active-memory envelope = the P5-bis recall envelope (throughput sort + quality floor)", () => {
+  // `only` is the recall judge's LATENCY guard, and it is pinned here because
+  // widening it silently re-admits an upstream whose spread reaches the 15 s
+  // recall timeout — where the cost is a turn with no memory block at all, not
+  // a slow turn. Measured 2026-08 over 200 judge calls: DeepInfra mean 4.6 s /
+  // max 9.7 s against Cerebras 1.0 / 4.9 and Groq 2.1 / 4.5.
+  test("active-memory envelope = the P5-bis recall envelope (throughput sort + quality floor + latency shortlist)", () => {
     expect(
       settingsForRole(
         ROLE_BINDINGS["active-memory"],
@@ -107,8 +119,15 @@ describe("settingsForRole — parity with historical settings objects", () => {
         sort: "throughput",
         ignore: ["fireworks"],
         quantizations: ["bf16", "fp16", "unknown"],
+        only: ["cerebras", "groq"],
       },
-      reasoning: { effort: "medium" },
+      // `enabled: true` arrived when the two memory kinds started resolving
+      // reasoning THROUGH the profile (`reasoningParamForProfile`) instead of
+      // hardcoding `{ effort }`. For an effort-style family like gpt-oss the
+      // pair is semantically the same switch; the change exists so that
+      // `max-tokens`-style profiles stop receiving an `effort` their pool
+      // ignores, which ran them with unbounded reasoning.
+      reasoning: { enabled: true, effort: "medium" },
     });
   });
 
@@ -134,37 +153,49 @@ describe("settingsForRole — parity with historical settings objects", () => {
         getProfileForRole("vision-fallback"),
       ),
     ).toEqual(bareNoSort);
-    // A throughput-sorted, upstream-pinned profile (deepseek-v4-flash) surfaces
-    // both `sort` and `order`.
+    // A throughput-sorted profile with a vetted pool (deepseek-v4-flash)
+    // surfaces both `sort` and `only`.
     expect(
       settingsForRole(
         ROLE_BINDINGS["compaction-summarizer"],
         getProfileForRole("compaction-summarizer"),
       ),
     ).toEqual({
-      provider: { zdr: true, sort: "throughput", order: ["DeepInfra"] },
+      provider: {
+        zdr: true,
+        sort: "throughput",
+        only: VETTED_DEEPSEEK_UPSTREAMS,
+      },
     });
   });
 
-  test("chat pins DeepInfra — cheapest, fastest and least verbose ZDR upstream", () => {
-    // Measured 2026-08-02 on the exact chat envelope, n=5: DeepInfra emits a
-    // median 1 512 reasoning tokens at 19.8s, against 8 360-9 914 tokens and
-    // 64-205s for every other ZDR upstream, at equal measured quality. See the
-    // rationale on the deepseek-v4-flash profile. `allow_fallbacks` stays on,
-    // so this is a preference, not a single point of failure.
+  // REGRESSION GUARD, and the reason this test is worth its weight: `order` and
+  // `sort` do not compose — OpenRouter consults the pin first, so a profile
+  // carrying both routes unsorted. deepseek-v4-flash shipped exactly that from
+  // 2026-08-02 to 2026-08-05, which pinned every agent turn to DeepInfra and
+  // made its declared throughput sort dead config. Measured on a 4 096-token
+  // generation, that pin was the SLOWEST working upstream in the pool: 67 tok/s
+  // and 62.0s, against BaseTen's 283 tok/s and 14.9s.
+  test("chat routes on live throughput within the vetted pool — never on a pin", () => {
     const chat = settingsForRole(ROLE_BINDINGS.chat, getProfileForRole("chat"));
     expect(chat?.provider).toEqual({
       require_parameters: true,
       zdr: true,
-      order: ["DeepInfra"],
+      only: VETTED_DEEPSEEK_UPSTREAMS,
+      sort: "throughput",
     });
+    expect(chat?.provider).not.toHaveProperty("order");
   });
 
-  test("transform runs ZDR + throughput-sorted + DeepInfra-pinned (deepseek-v4-flash policy)", () => {
+  test("transform runs ZDR + throughput-sorted over the vetted pool (deepseek-v4-flash policy)", () => {
     expect(
       settingsForRole(ROLE_BINDINGS.transform, getProfileForRole("transform")),
     ).toEqual({
-      provider: { zdr: true, sort: "throughput", order: ["DeepInfra"] },
+      provider: {
+        zdr: true,
+        sort: "throughput",
+        only: VETTED_DEEPSEEK_UPSTREAMS,
+      },
     });
   });
 });
@@ -179,9 +210,17 @@ describe("role bindings — default model ids pinned (chat: gated M3 flip)", () 
     "pre-extract": "deepseek/deepseek-v4-flash-0731",
     "pre-extract-fallback": "openai/gpt-oss-120b",
     // P5-bis (2026-07): 120b @ medium = 16/16 recall evals; 20b unstable.
+    // Stays on gpt-oss while the three WRITE roles below moved: it is the only
+    // memory role on a turn's hot path, behind a 15 s ceiling, and
+    // deepseek-v4-flash runs at 40-60 TPS.
     "active-memory": "openai/gpt-oss-120b",
-    "memory-extract": "openai/gpt-oss-20b",
-    "memory-distill": "openai/gpt-oss-20b",
+    // The write path moved to deepseek-v4-flash on 2026-08-04: memory-eval
+    // 15/16 against gpt-oss 13/16 at TEN repeats, with the three cases gpt-oss
+    // lost being the ones that write permanent rows (see the rationale on the
+    // bindings themselves). Re-pin these three only against another 10-repeat
+    // run — at 3 repeats this suite reported 16/16 while four cases were broken.
+    "memory-extract": "deepseek/deepseek-v4-flash-0731",
+    "memory-distill": "deepseek/deepseek-v4-flash-0731",
     "compaction-summarizer": "deepseek/deepseek-v4-flash-0731",
     "cheap-tasks": "openai/gpt-oss-20b",
     // ONE file-capable model backs both the `vision` tool and the `extract`
@@ -193,7 +232,11 @@ describe("role bindings — default model ids pinned (chat: gated M3 flip)", () 
     transform: "deepseek/deepseek-v4-flash-0731",
     "transform-fallback": "google/gemini-3.6-flash",
     "tool-repair": "openai/gpt-oss-120b",
+    // Stayed on gpt-oss: deepseek runs away on reasoning here (see binding).
     "memory-consolidate": "openai/gpt-oss-120b",
+    // Split out of `memory-consolidate` — the two tasks that shared that role
+    // want opposite models (10/10 vs 6/10 on the over-generalization guard).
+    "memory-promote": "deepseek/deepseek-v4-flash-0731",
   };
 
   for (const [role, id] of Object.entries(expectedIds)) {

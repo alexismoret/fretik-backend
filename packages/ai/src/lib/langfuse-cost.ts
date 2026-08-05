@@ -15,6 +15,9 @@
  * from the result (non-streaming) or the `finish` stream part (streaming)
  * and write it via `updateActiveObservation`.
  *
+ * The same seam carries the serving UPSTREAM (`extractOpenRouterProvider`):
+ * it rides the same `providerMetadata` and is otherwise absent from the trace.
+ *
  * Attached to models via `instrumentModel` (`lib/model-instrumentation.ts`)
  * only when Langfuse is configured; a no-op otherwise, and a no-op on any
  * model call that emits no generation span (see `writeCost`).
@@ -49,14 +52,37 @@ const extractOpenRouterCost = (
 };
 
 /**
- * Write the cost onto the currently active Langfuse generation. Soft-fail:
- * telemetry must never break a model call.
+ * The UPSTREAM that actually served the call ("Groq", "Cerebras", "Amazon
+ * Bedrock", …), from `providerMetadata.openrouter.provider`.
+ *
+ * OTel records `gen_ai.provider.name` as the literal `"openrouter"`, so
+ * without this the serving upstream is nowhere in the trace — and OpenRouter
+ * routes the same model id to a different one call to call. Recovering it
+ * afterwards means replaying `gen_ai.response.id` against OpenRouter's
+ * `/api/v1/generation` endpoint one call at a time (done by hand once, 2026-08:
+ * the recall judge was silently split across three upstreams). Recorded on
+ * every instrumented generation so provider-correlated behaviour is a filter in
+ * the UI, not an investigation.
+ */
+const extractOpenRouterProvider = (
+  providerMetadata: SharedV4ProviderMetadata | undefined,
+): string | undefined => {
+  const provider = providerMetadata?.openrouter?.provider;
+  return typeof provider === "string" && provider.length > 0
+    ? provider
+    : undefined;
+};
+
+/**
+ * Write the cost + serving upstream onto the currently active Langfuse
+ * generation. Soft-fail: telemetry must never break a model call.
  */
 const writeCost = (
   providerMetadata: SharedV4ProviderMetadata | undefined,
 ): void => {
   const cost = extractOpenRouterCost(providerMetadata);
-  if (cost === undefined) return;
+  const provider = extractOpenRouterProvider(providerMetadata);
+  if (cost === undefined && provider === undefined) return;
   // No active observation → this model call isn't traced (no
   // `experimental_telemetry`), so there's no generation to attach cost to.
   // Skip silently — otherwise `updateActiveObservation` logs a "no active
@@ -65,7 +91,12 @@ const writeCost = (
   if (getActiveSpanId() === undefined) return;
   try {
     updateActiveObservation(
-      { costDetails: { total: cost } },
+      {
+        ...(cost !== undefined ? { costDetails: { total: cost } } : {}),
+        ...(provider !== undefined
+          ? { metadata: { openrouterProvider: provider } }
+          : {}),
+      },
       { asType: "generation" },
     );
   } catch {

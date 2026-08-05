@@ -37,9 +37,11 @@ import { withNamedTrace } from "../../lib/trace-tool";
 
 const MAX_SUMMARY_CHARS = 1_500;
 const MAX_EXISTING_LEARNED = 20;
-const PROMOTE_TIMEOUT_MS = 45_000;
+/** Off the hot path — sized for the slowest eligible model, see `extract-mentions.ts`. */
+const PROMOTE_TIMEOUT_MS = 120_000;
 const PROMOTE_TEMPERATURE = 0;
-const PROMOTE_MAX_OUTPUT_TOKENS = 4_000;
+/** See `consolidate-episodes.ts`: sized so reasoning cannot starve the answer. */
+const PROMOTE_MAX_OUTPUT_TOKENS = 12_000;
 /** Machine namespace — promotions live here, never overwrite curated memories. */
 const LEARNED_PREFIX = "learned/";
 
@@ -159,11 +161,11 @@ export const promoteEpisodes = async (input: {
     },
     async () => {
       const { model } = await resolveMemoryModel(
-        "memory-consolidate",
+        "memory-promote",
         teamId,
         input.modelProfileKey,
       );
-      const { text: raw } = await generateText({
+      const { text: raw, finishReason } = await generateText({
         model,
         instructions: SYSTEM_PROMPT,
         prompt,
@@ -172,6 +174,15 @@ export const promoteEpisodes = async (input: {
         abortSignal: AbortSignal.timeout(PROMOTE_TIMEOUT_MS),
         telemetry: telemetryFor("memory-consolidate"),
       });
+      if (finishReason === "length") {
+        // Reasoning ate the output budget before the answer started, so the
+        // JSON below parses to nothing and this pass silently does nothing.
+        // Loud on purpose — it is how a truncated consolidation looked like a
+        // NOOP for a whole eval run (2026-08-04).
+        console.warn(
+          `[memory-promote] output truncated at ${PROMOTE_MAX_OUTPUT_TOKENS.toString()} tokens (finishReason=length)`,
+        );
+      }
       const parsed = promoteOutputSchema.safeParse(parseLlmJsonObject(raw));
       return parsed.success ? parsed.data : null;
     },

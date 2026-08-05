@@ -32,21 +32,14 @@ import { vectorizeSource } from "./index";
  */
 
 /**
- * Hex SHA-256 of the input string. Uses Web Crypto (native in Bun) —
- * `Bun.hash` is non-cryptographic and would be wrong here because the
- * hash is the source-identity field stored in `metadata.content_hash`
- * and persisted across boots.
+ * Hex SHA-256 of the input string, the value stored in
+ * `metadata.content_hash`. A NAMED algorithm on purpose: the hash is
+ * persisted and compared across boots, so it must survive a Bun upgrade —
+ * `Bun.hash`'s default is non-cryptographic AND unpinned, and a change to it
+ * would invalidate every stored hash at once and re-embed the whole corpus.
  */
-const sha256Hex = async (input: string): Promise<string> => {
-  const buf = await crypto.subtle.digest(
-    "SHA-256",
-    new TextEncoder().encode(input),
-  );
-  const bytes = new Uint8Array(buf);
-  let out = "";
-  for (const b of bytes) out += b.toString(16).padStart(2, "0");
-  return out;
-};
+const sha256Hex = (input: string): string =>
+  new Bun.CryptoHasher("sha256").update(input).digest("hex");
 
 interface SourceIdLookup {
   sourceId: string;
@@ -111,7 +104,7 @@ export interface VectorizeSkillFileResult {
 export const vectorizeSkillFile = async (
   input: VectorizeSkillFileInput,
 ): Promise<VectorizeSkillFileResult> => {
-  const contentHash = await sha256Hex(input.content);
+  const contentHash = sha256Hex(input.content);
   const { sourceId, existingHash } = await getOrMintSourceId(
     input.skillName,
     input.skillFile,

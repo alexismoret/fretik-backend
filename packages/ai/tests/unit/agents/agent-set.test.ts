@@ -1,7 +1,6 @@
 import type { StepResult, ToolSet } from "ai";
 import { describe, expect, test } from "bun:test";
 import {
-  stopOnBackgroundLaunch,
   stopOnRepeatedToolErrors,
   trailingToolErrorRun,
 } from "../../../src/agents/shared/agent-set";
@@ -99,33 +98,6 @@ describe("stopOnRepeatedToolErrors", () => {
   });
 });
 
-describe("stopOnBackgroundLaunch", () => {
-  test("stops when the LAST step reports a background run", async () => {
-    const stop = stopOnBackgroundLaunch<ToolSet>();
-    const launched = steps([
-      [
-        {
-          toolName: "manageWorkflow",
-          output: { ok: true, backgroundRun: true },
-        },
-      ],
-    ]);
-    expect(await stop({ steps: launched })).toBe(true);
-  });
-
-  test("ignores earlier steps and non-marked results", async () => {
-    const stop = stopOnBackgroundLaunch<ToolSet>();
-    const earlier = steps([
-      [
-        {
-          toolName: "manageWorkflow",
-          output: { ok: true, backgroundRun: true },
-        },
-      ],
-      [ok("read")],
-    ]);
-    expect(await stop({ steps: earlier })).toBe(false);
-    expect(await stop({ steps: steps([[ok("manageWorkflow")]]) })).toBe(false);
-    expect(await stop({ steps: [] })).toBe(false);
-  });
-});
+// A background launch (`backgroundRun: true`) deliberately has NO stop
+// condition: the agent may keep working in the same turn, and the wait
+// registry resumes the conversation once every launched task is settled.

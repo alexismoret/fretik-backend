@@ -14,7 +14,14 @@ export interface PresenceViewer {
  * Per-conversation live event, fanned out to every connected viewer over
  * the `/chatbot/:id/events` SSE channel. Carries the collaborative
  * signals a viewer needs:
- *  - `turn-started` / `turn-ended` → live token fan-out + send gating,
+ *  - `turn-started` → a turn is under way: gate sending, show it as busy,
+ *  - `turn-stream-ready` → its resumable buffer now EXISTS, so a viewer can
+ *    attach and stream live. Separate from `turn-started` on purpose: the
+ *    buffer is only registered once the turn's setup completes (context,
+ *    external apps, abort channel), seconds later. Announcing readiness early
+ *    made viewers attach to nothing, get a 204, and sit on a frozen
+ *    transcript until the turn ended.
+ *  - `turn-ended` → stop the fan-out, lift the gate,
  *  - `message-added` → refetch history (covers human-to-human asides
  *    that don't start an assistant turn),
  *  - `presence` / `typing` → roster + "X is typing…".
@@ -24,6 +31,7 @@ export interface PresenceViewer {
  */
 export type ConversationEvent =
   | { type: "turn-started"; streamId: string; byUserId: string }
+  | { type: "turn-stream-ready"; streamId: string }
   | { type: "turn-ended"; streamId: string; stopped: boolean }
   | {
       type: "message-added";

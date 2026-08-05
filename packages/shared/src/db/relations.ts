@@ -584,6 +584,7 @@ export const relations = defineRelations(schema, (r) => ({
       alias: "memoryHistoryConversation",
     }),
     toolApprovalRequests: r.many.toolApprovalRequests(),
+    backgroundTasks: r.many.conversationBackgroundTasks(),
   },
 
   aiMessages: {
@@ -911,6 +912,17 @@ export const relations = defineRelations(schema, (r) => ({
       from: r.workflowRuns.conversationId,
       to: r.aiConversations.id,
       optional: true,
+    }),
+  },
+
+  // ============================================================================
+  // Conversation background tasks (wait/notify registry)
+  // ============================================================================
+
+  conversationBackgroundTasks: {
+    conversation: r.one.aiConversations({
+      from: r.conversationBackgroundTasks.conversationId,
+      to: r.aiConversations.id,
     }),
   },
 }));

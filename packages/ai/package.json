@@ -15,6 +15,7 @@
     "evals:langfuse": "bun run evals/run.ts",
     "evals:recall": "bun run evals/recall/run.ts",
     "evals:memory": "bun run evals/memory/run.ts",
+    "evals:chain": "bun run evals/chain/run.ts",
     "evals:gate": "bun run evals/langfuse/gate.ts",
     "check": "bun run typecheck && bun run lint && bun run format:check",
     "langfuse:seed-prompts": "bun run scripts/seed-langfuse-prompts.ts",

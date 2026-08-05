@@ -46,6 +46,9 @@ const tsvector = customType<{ data: string }>({
  *                  truth; team or user-scoped)
  *   - 'records'  : record "cards" (label + aliases + type + key text fields)
  *                  for semantic record search — confirmed records only
+ *   - 'workflows': what a workflow does and what it takes, so the assistant
+ *                  finds an existing one from a request that never says
+ *                  "workflow" — and never builds a duplicate
  */
 export const aiVectorSourceTypeEnum = pgEnum("ai_vector_source_type", [
   "documents",
@@ -54,6 +57,7 @@ export const aiVectorSourceTypeEnum = pgEnum("ai_vector_source_type", [
   "context",
   "episodes",
   "records",
+  "workflows",
 ]);
 
 export const AI_VECTOR_SOURCE_TYPES = aiVectorSourceTypeEnum.enumValues;
@@ -192,13 +196,30 @@ type RecordVectorMetadata = {
   label: string;
 };
 
+/*
+ * Metadata for `source_type='workflows'` rows — one card per workflow
+ * (what it does, how it is triggered, what it takes as input), refreshed on
+ * every definition change and deleted with the workflow. `source_id` = the
+ * workflow id; single chunk, like records.
+ */
+type WorkflowVectorMetadata = {
+  name: string;
+  description: string;
+  trigger_type: string;
+  status: string;
+  task_count: number;
+  content_hash: string;
+  version_indexed_at: string;
+};
+
 export type AiVectorMetadata =
   | DocumentVectorMetadata
   | MemoryVectorMetadata
   | SkillVectorMetadata
   | ContextVectorMetadata
   | EpisodeVectorMetadata
-  | RecordVectorMetadata;
+  | RecordVectorMetadata
+  | WorkflowVectorMetadata;
 
 export type {
   ContextVectorMetadata,
@@ -208,6 +229,7 @@ export type {
   MentionVectorInfo,
   RecordVectorMetadata,
   SkillVectorMetadata,
+  WorkflowVectorMetadata,
 };
 
 /*

@@ -8,6 +8,7 @@
     "backfill:episodes": "bun run src/scripts/backfill-episodes.ts",
     "backfill:record-cards": "bun run src/scripts/backfill-record-cards.ts",
     "dreaming:run": "bun run src/scripts/run-dreaming.ts",
+    "memory:audit": "bun run src/scripts/memory-audit.ts",
     "gc:run": "bun run src/scripts/run-gc.ts",
     "typecheck": "tsc --noEmit",
     "lint": "oxlint --type-aware",

@@ -35,9 +35,11 @@ import { withNamedTrace } from "../../lib/trace-tool";
 
 const MAX_TEXT_CHARS = 8_000;
 const MAX_RELATIONS = 12;
-const EXTRACT_TIMEOUT_MS = 25_000;
+/** Off the hot path — sized for the slowest eligible model, see `extract-mentions.ts`. */
+const EXTRACT_TIMEOUT_MS = 90_000;
 const EXTRACT_TEMPERATURE = 0;
-const EXTRACT_MAX_OUTPUT_TOKENS = 2_500;
+/** See `consolidate-episodes.ts`: sized so reasoning cannot starve the answer. */
+const EXTRACT_MAX_OUTPUT_TOKENS = 12_000;
 
 const relationsOutputSchema = z.object({
   relations: z
@@ -130,10 +132,10 @@ export const extractRelations = async (input: {
 
   // Known relation keys for canonicalization guidance — scoped to predicates
   // whose SUBJECT type is one of these records' types (the same axis
-  // `resolveLinkType` dedups on). Unscoped, a busy team's unrelated predicates
-  // would tempt the model into borrowing a key valid for a different type pair
-  // — the edge is then rejected downstream (or, on a shared normalizedKey,
-  // collides on the team-unique index). Relevant catalog only.
+  // `resolveLinkType` dedups on, and now the same axis the uniqueness index
+  // uses). Unscoped, a busy team's unrelated predicates would tempt the model
+  // into borrowing a key valid for a different type pair, and the edge is then
+  // rejected downstream. Relevant catalog only.
   const recordTypeIds = [
     ...new Set([...records.values()].map((r) => r.objectTypeId)),
   ];
@@ -213,13 +215,27 @@ export const extractRelations = async (input: {
     const from = records.get(r.fromRecordId);
     const to = records.get(r.toRecordId);
     if (!from || !to) continue;
-    const { linkTypeId } = await resolveLinkType({
-      organizationId,
-      teamId,
-      rawKey: r.predicate,
-      fromObjectTypeId: from.objectTypeId,
-      toObjectTypeId: to.objectTypeId,
-    });
+    // Per-relation, not per-pass: canonicalizing a predicate can fail on a
+    // constraint the caller cannot see (it may create a link type), and one
+    // unusable predicate must not cost the event its OTHER relations. This
+    // used to throw all the way out — the memory-resolve worker then logged
+    // "relation extraction unavailable" and dropped the whole pass, silently.
+    let linkTypeId: string;
+    try {
+      ({ linkTypeId } = await resolveLinkType({
+        organizationId,
+        teamId,
+        rawKey: r.predicate,
+        fromObjectTypeId: from.objectTypeId,
+        toObjectTypeId: to.objectTypeId,
+      }));
+    } catch (err) {
+      console.warn(
+        `[extract-relations] predicate "${r.predicate}" unresolvable for ${from.typeLabel}→${to.typeLabel}, skipping:`,
+        err instanceof Error ? err.message : err,
+      );
+      continue;
+    }
     linkInputs.push({
       linkTypeId,
       fromRecordId: r.fromRecordId,

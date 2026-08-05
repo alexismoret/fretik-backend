@@ -34,7 +34,7 @@ import {
   heartbeatRun,
   setRunWaitToken,
 } from "@fretik/shared/services/workflows/heartbeat-run";
-import { notifySourceConversation } from "@fretik/shared/services/workflows/notify-source-conversation";
+import { onWorkflowRunTerminal } from "@fretik/shared/services/workflows/on-run-terminal";
 import { recordTurnResult } from "@fretik/shared/services/workflows/record-turn-result";
 import { sendRunApprovalEmailIfEnabled } from "@fretik/shared/services/workflows/send-run-approval-email";
 import { sendRunCompletionEmailIfEnabled } from "@fretik/shared/services/workflows/send-run-completion-email";
@@ -93,7 +93,6 @@ import {
   prepareModelMessages,
 } from "../services/native-input";
 import { runUnifiedRecall } from "../services/recall/recall";
-import { resumeSourceConversation } from "../services/workflow-resume/resume-source-conversation";
 import {
   buildTurnMessageMetadata,
   filterNewAssistantMessages,
@@ -751,22 +750,17 @@ const executeTurn = async (params: {
     }
   });
 
-  // Post the completion notice to the launching chat AFTER the commit (never
-  // inside the tx — a rolled-back finalize must not leave a stray message).
-  // Idempotent + fire-and-forget: a failed notice must not fail the turn.
+  // Tell the launching chat AFTER the commit (never inside the tx — a
+  // rolled-back finalize must not leave a stray message). Settles the wait
+  // record, posts the notice, signals a possible resume; each step carries its
+  // own exactly-once guard. Fire-and-forget: it must not fail the turn.
   if (terminal) {
-    void notifySourceConversation({ runId: run.id })
-      .then(({ posted }) => {
-        // Resume the launching chat exactly once (the posted notice is the
-        // anchor): the builder analyzes the run outcome and continues alone.
-        if (posted) void resumeSourceConversation({ runId: run.id });
-      })
-      .catch((err: unknown) => {
-        console.warn(
-          `${logPrefix} source-conversation notice failed:`,
-          err instanceof Error ? err.message : err,
-        );
-      });
+    void onWorkflowRunTerminal({ runId: run.id }).catch((err: unknown) => {
+      console.warn(
+        `${logPrefix} source-conversation notice failed:`,
+        err instanceof Error ? err.message : err,
+      );
+    });
   }
   // Notification email — only from the finalize that actually performed the
   // terminal transition (exactly-once), after the commit, fire-and-forget.
@@ -1038,14 +1032,10 @@ workflowTriggerRoutes.post("/runs/:runId/finalize", async (c) => {
     status: parsed.data.status,
     error: parsed.data.error ?? null,
   });
-  // Notify the launching chat for orchestrator-side terminal closes too
+  // Tell the launching chat for orchestrator-side terminal closes too
   // (deadline, approval timeout, onFailure) — idempotent with the turn-close
-  // path, and resume it exactly once (anchored on the posted notice).
-  void notifySourceConversation({ runId })
-    .then(({ posted }) => {
-      if (posted) void resumeSourceConversation({ runId });
-    })
-    .catch(() => undefined);
+  // path.
+  void onWorkflowRunTerminal({ runId }).catch(() => undefined);
   // Notification email (the service itself drops `canceled`) — only from the
   // finalize that performed the transition. Fire-and-forget.
   if (transitioned) {

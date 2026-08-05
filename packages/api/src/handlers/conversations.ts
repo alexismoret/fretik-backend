@@ -15,6 +15,7 @@ import {
 import {
   AddConversationMembersSchema,
   aiAgentTypeSchema,
+  ConversationBackgroundTasksResponseSchema,
   ConversationResponseSchema,
   CreateConversationSchema,
   MembersResponseSchema,
@@ -39,6 +40,8 @@ import { removeConversationMember } from "@fretik/shared/services/ai/members/rem
 import { setMemberEmailPreference } from "@fretik/shared/services/ai/members/set-email-preference";
 import { getConversationMessages } from "@fretik/shared/services/ai/messages";
 import { updateConversation } from "@fretik/shared/services/ai/update";
+import { listConversationTasks } from "@fretik/shared/services/conversation-tasks/list";
+import { serializeConversationTask } from "@fretik/shared/services/conversation-tasks/serialize";
 import { createRoute, OpenAPIHono } from "@hono/zod-openapi";
 import { z } from "zod";
 
@@ -194,6 +197,29 @@ const getMessagesRoute = createRoute({
         "application/json": { schema: MessagesResponseSchema },
       },
       description: "Messages retrieved successfully",
+    },
+    ...responseNotFoundSchema,
+    ...responseForbiddenSchema,
+    ...responseInternalErrorSchema,
+  },
+});
+
+const getBackgroundTasksRoute = createRoute({
+  method: "get",
+  path: "/{id}/background-tasks",
+  summary: "List background work a conversation is waiting on",
+  description:
+    "Workflow runs the agent launched from this conversation: everything still running, plus what finished recently. The conversation is resumed automatically once they are all done.",
+  tags: ["Conversations"],
+  request: { params: paramsIdSchema },
+  responses: {
+    200: {
+      content: {
+        "application/json": {
+          schema: ConversationBackgroundTasksResponseSchema,
+        },
+      },
+      description: "Background tasks retrieved successfully",
     },
     ...responseNotFoundSchema,
     ...responseForbiddenSchema,
@@ -413,6 +439,28 @@ conversationRoutes.openapi(getMessagesRoute, async (c) => {
   const messages = await getConversationMessages(conversation.id);
 
   return c.json(messages, 200);
+});
+
+conversationRoutes.openapi(getBackgroundTasksRoute, async (c) => {
+  const user = c.get("user");
+  const team = c.get("team");
+  if (!team) return throwHttpError(403, teamRequired());
+
+  const { id } = c.req.valid("param");
+
+  const conversation = await getConversation({
+    id,
+    teamId: team.id,
+    userId: user.id,
+  });
+
+  if (!conversation) {
+    return throwHttpError(404, notFound("Conversation not found"));
+  }
+
+  const tasks = await listConversationTasks(conversation.id);
+
+  return c.json({ tasks: tasks.map(serializeConversationTask) }, 200);
 });
 
 conversationRoutes.openapi(addMembersRoute, async (c) => {

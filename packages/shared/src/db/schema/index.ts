@@ -92,3 +92,7 @@ export * from "./approvals";
 
 // Workflows (autonomous agents: definitions + runs, Trigger.dev-driven)
 export * from "./workflows";
+
+// Background work a chat conversation waits on (workflow runs today) — the
+// registry behind "launch, keep working, get resumed when it finishes".
+export * from "./conversation-tasks";

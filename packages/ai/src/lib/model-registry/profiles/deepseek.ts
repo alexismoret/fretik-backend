@@ -150,18 +150,25 @@ export const DEEPSEEK_PROFILES: Record<string, ModelProfile> = {
     },
     assessment: {
       costClass: "budget",
-      // CORRECTED 2026-08-03 to the PINNED DeepInfra route. This used to carry
-      // the list price ($0.14/$0.28/$0.028) on the argument that pricing the
-      // fleet at cheapest-route would make `costLevel` incomparable — but an
-      // audit of all 22 profiles showed the opposite was already true: every
-      // other profile records the endpoint it actually routes to (M3 at
-      // Novita's price, the OpenAI family at Azure's, GLM at DeepInfra's). This
-      // was the only list-priced profile, so it overstated the default
-      // flagship by 1.56× against a fleet priced on a different basis.
+      // MEDIAN OF THE VETTED POOL since 2026-08-05, replacing DeepInfra's
+      // $0.09/$0.18/$0.018. The rule is unchanged — price the endpoint the
+      // profile actually routes to — but this profile no longer routes to ONE
+      // endpoint: `provider.only` + `sort` choose per request among BaseTen
+      // ($0.130/$0.260), Venice ($0.175/$0.350) and DeepInfra ($0.090/$0.180),
+      // so the median is what we pay on average. A live probe the same day
+      // resolved $0.1325/$0.265/$0.0265 (median of 2, BaseTen rate-limiting) —
+      // this within noise.
+      //
+      // Honest about the direction: this is a real ~1.47× on `cacheReadPerMTok`,
+      // and a Fretik turn is cache-read dominated, so `costLevel` rises with it.
+      // What it buys is a measured 4× on completion time whenever the sort lands
+      // on BaseTen or Venice (14.9-15.5s vs DeepInfra's 62.0s for 4 096 tokens).
+      // Superseded at runtime by the live routed price
+      // (`services/model-metrics/fetch-openrouter-routing.ts`).
       pricing: {
-        inputPerMTok: 0.09,
-        outputPerMTok: 0.18,
-        cacheReadPerMTok: 0.018,
+        inputPerMTok: 0.13,
+        outputPerMTok: 0.26,
+        cacheReadPerMTok: 0.028,
       },
       // AA re-pointed this slug at 0731 — see the note above.
       aaSlug: "deepseek-v4-flash",
@@ -187,26 +194,57 @@ export const DEEPSEEK_PROFILES: Record<string, ModelProfile> = {
       provider: {
         requireParameters: true,
         zdr: true,
+        // `sort` + `only`, NOT a pin. Re-measured 2026-08-05, and the headline
+        // is that the previous `order: ["DeepInfra"]` was pinning the agent to
+        // the SLOWEST working upstream — and silently disabling this `sort`,
+        // since OpenRouter consults `order` first.
+        //
+        // The 2026-08-02 note this replaces measured a single hard prompt and
+        // read the result as "DeepInfra thinks 6× less than the others". Two
+        // things were wrong with it. Reasoning volume is a property of the
+        // PROMPT, not the upstream: re-probed with an explicit budget, NO
+        // upstream honours `reasoning.max_tokens` (600 requested → 1 015-1 600
+        // emitted everywhere), and on ordinary turns the whole pool sits at
+        // 38-183 tokens. And it never measured sustained decode, which is what
+        // an agent turn is actually made of.
+        //
+        // Measured on a 4 096-token generation, n=3, median tok/s and total:
+        //   BaseTen    (fp8)  283 tps / 14.9s   ← 429s under load, falls over
+        //   Venice   (unknown) 273 tps / 15.5s
+        //   SiliconFlow (fp8)  115 tps / 36.8s
+        //   Novita      (fp8)   98 tps / 42.8s
+        //   DeepInfra   (fp4)   67 tps / 62.0s  ← what we were pinned to
+        // Time-to-first-token spans only ~0.6s across that pool, so `sort` is
+        // on throughput: decode dominates a turn, not TTFT.
         sort: "throughput",
-        // `order: ["DeepInfra"]` — the upstream choice dominates every
-        // reasoning knob on this model. Measured 2026-08-02 with the EXACT
-        // chat envelope (require_parameters + zdr + reasoning.max_tokens 1500),
-        // same hard prompt, pinned without fallback, median reasoning tokens /
-        // median latency / median cost:
-        //   DeepInfra  (fp4)      1 512 /  19.8s / $0.00041
-        //   Parasail   (fp8)      2 141 / 204.8s / $0.00102
-        //   Fireworks  (unknown)  8 360 / 151.3s / $0.00350
-        //   SiliconFlow(fp8)      8 707 /  64.1s / $0.00252
-        //   Novita     (fp8)      9 914 /  75.4s / $0.00285
-        // DeepInfra's range (873-3 528) does not even overlap Novita's
-        // (6 651-21 516). Quality is flat across all of them — 15/15 on
-        // arithmetic, strict-JSON format discipline and real tool calls
-        // (name + argument checked), so the fp4 serving costs nothing
-        // measurable on the failure modes quantization usually causes. Those
-        // checks do NOT probe deep reasoning; the eval suite does, and it runs
-        // on this routing. `allow_fallbacks` stays on, so this is a preference,
-        // not a single point of failure.
-        order: ["DeepInfra"],
+        // The vetted pool. Membership is a CACHE + CONVERGENCE decision, which
+        // is why it cannot be left to `sort` alone:
+        //  - all three hit the implicit prompt cache 100 % on a repeated 75k
+        //    prefix. That is worth more than raw speed — a miss bills ~4.6× on a
+        //    Fretik turn ($0.00490 vs $0.00107 measured), and the cache is why
+        //    routing must stay STICKY. It does: over 10 consecutive turns the
+        //    sort served all 10 from one upstream at 10/10 cache hits, so the
+        //    old fear that sorting would thrash the cache is unfounded.
+        //  - DeepInfra and Venice stop reasoning on their own (1 015-1 115
+        //    tokens against a 600 budget); Novita, SiliconFlow, Phala and
+        //    Together ran to the 1 600 cap with the answer still unwritten.
+        // Excluded on measurement: Novita + SiliconFlow (reasoning runaway, and
+        // Novita cached only 3/10 turns), Parasail (19.5s TTFT), Mancer 2 (never
+        // caches, dearest), Morph / AkashML / Io Net (18-33 tps or timeout),
+        // Fireworks + Ionstream (HTTP 429), Baidu / DeepSeek / Cloudflare /
+        // BaseTen-without-ZDR (404 — outside the ZDR pool).
+        //
+        // BaseTen is IN despite rate-limiting us 2 calls in 3: a 429 inside
+        // `only` fails over silently (0 errors reached the caller over 10 turns),
+        // so it costs nothing to have it and it is 4× DeepInfra when it serves.
+        //
+        // Venice is deliberately NOT pinned ahead of DeepInfra even though it
+        // measured 4× faster: OpenRouter reports its p50 at 44 tps, and one of
+        // the three runs did come in at 65 tps, so it is bimodal and their
+        // aggregate is probably the honest number. Pinning our own optimistic
+        // sample is the exact mistake this change is undoing — let the live sort
+        // promote it when its p50 says so.
+        only: ["baseten", "venice", "deepinfra"],
       },
       enabled: true,
       // Promoted to the `chat` + `workflow` default 2026-08-02, full curated

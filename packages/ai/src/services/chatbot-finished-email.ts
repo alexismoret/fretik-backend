@@ -11,6 +11,7 @@ import {
   buildSessionFileAttachments,
   type BuiltEmailAttachment,
 } from "@fretik/shared/lib/email-attachments";
+import { listPendingConversationTasks } from "@fretik/shared/services/conversation-tasks/list";
 import type { UIMessage } from "ai";
 
 /**
@@ -345,6 +346,14 @@ export const sendChatbotFinishedEmailIfEnabled = async (
     );
     return;
   }
+
+  // The turn ended, but the work did not: the agent launched background work
+  // (a workflow run) and this conversation is resumed automatically when it
+  // finishes. Emailing "your assistant replied" here would announce a result
+  // that does not exist yet — the real final turn, after the resume, sends it.
+  // Deliberately AFTER the approval/question branches: those need the user
+  // whatever else is running.
+  if ((await listPendingConversationTasks(conversationId)).length > 0) return;
 
   const assistantMarkdown = extractAssistantMarkdown(lastAssistant);
   if (assistantMarkdown.length === 0) {

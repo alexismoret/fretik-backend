@@ -47,12 +47,12 @@ const TOP_K = 20;
 export const createRagSearchTool = () =>
   tool({
     description: [
-      "Semantic search across team knowledge: documents, memories, skills, context. Returns up to 20 most-relevant text chunks with source metadata.",
+      "Semantic search across team knowledge: documents, memories, skills, context, past episodes, object records, and workflows. Returns up to 20 most-relevant text chunks with source metadata.",
       "",
       'THE first move whenever the answer lives in the text of a document, memory, skill, or context file — "what does this contract say about penalties", "summarize the latest audit report", "do we have a process for onboarding". This works even when you already know exactly WHICH document: pass its id in `filters.sourceIds` and ask — cheaper and faster than downloading the file. Reach for `downloadDriveDocument` ONLY when you need the original bytes (parsing, vision, template reuse), never to answer a content question.',
       "",
       "- `question` must be natural language. Put ids in `filters.sourceIds`, never in the question.",
-      "- `filters.sourceTypes` (optional): documents, memories, skills, context. Defaults to all.",
+      "- `filters.sourceTypes` (optional): defaults to all. `workflows` answers whether something that already does this exists — search it before proposing to build one, since the user asks for the outcome, not for a workflow.",
       "- `filters.sourceIds` (optional): narrow to specific row UUIDs (e.g. from `listDocuments`) — the way to search INSIDE one or a few known documents. This tool takes no structural filters (type, date, folder) directly; pre-select ids with `listDocuments` first.",
     ].join("\n"),
     inputSchema: z.object({

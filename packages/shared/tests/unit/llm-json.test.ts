@@ -31,6 +31,29 @@ describe("parseLlmJsonObject", () => {
     expect(parseLlmJsonObject('{"title": totally broken]')).toBeNull();
   });
 
+  test("rebalances a stray closer with intact content", () => {
+    expect(parseLlmJsonObject('{"title":"T","summary":"S"]}')).toEqual({
+      title: "T",
+      summary: "S",
+    });
+  });
+
+  test("rebalances the exact deepseek digest slip observed 2026-08-05", () => {
+    // Probe replay of the r19 `unparsable (658 chars)` failure: full JSON,
+    // perfect content, one stray `]` before the final `}` — 1/40 at temp 0.
+    const raw =
+      '{"title":"Volta Energie – Devis signé en 2026-08-03","summary":"Le fournisseur *Volta Energie* a été créé le 3 Août 2026 avec le secteur *énergie renouvelable*. Rapidement, le statut est passé de *prospect qualifié* à *devis signé*, avec un montant de **128 000 €**."]}';
+    const parsed = parseLlmJsonObject(raw);
+    expect(parsed).toMatchObject({
+      title: "Volta Energie – Devis signé en 2026-08-03",
+    });
+  });
+
+  test("rebalance never completes an unclosed document on the default path", () => {
+    // Cut mid-array = truncation: only the opt-in salvage path may accept it.
+    expect(parseLlmJsonObject('{"records":[{"a":1},{"a":2y')).toBeNull();
+  });
+
   test("fenced block wins over a stray brace in surrounding prose", () => {
     expect(
       parseLlmJsonObject('Note {draft}\n```json\n{"title":"A"}\n```\nBye }'),

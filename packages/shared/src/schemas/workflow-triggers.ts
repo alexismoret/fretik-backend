@@ -383,6 +383,33 @@ export const requiredRunFileInputs = (
   }
 };
 
+/**
+ * One plain sentence describing how a workflow starts, for its searchable
+ * card. Phrased the way a user would ("every Monday", "when a document is
+ * added") rather than as configuration, since the card has to match a request
+ * that never mentions triggers. Per-kind dispatch, like the rest of this
+ * registry, so a new trigger declares its wording here.
+ */
+export const describeTriggerForCard = (
+  triggerType: WorkflowTriggerType,
+  triggerConfig: WorkflowTriggerConfig,
+): string => {
+  switch (triggerType) {
+    case "manual":
+      return "someone runs it on demand";
+    case "cron":
+      return `a schedule (${triggerConfig.cron?.pattern ?? "not set yet"})`;
+    case "event":
+      return `an event in the workspace (${triggerConfig.event?.type ?? "not set yet"})`;
+    case "form": {
+      const fields = (triggerConfig.form?.fields ?? [])
+        .map((field) => field.label)
+        .join(", ");
+      return `someone submitting the form "${triggerConfig.form?.title ?? "untitled"}"${fields ? `, which asks for: ${fields}` : ""}`;
+    }
+  }
+};
+
 /** Compact trigger reference for the `manageWorkflow` tool — generated from the
  * registry so the agent contract never drifts from the editor's. */
 export const describeTriggerConfigForAgent = (): string => {

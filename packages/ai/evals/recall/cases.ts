@@ -26,6 +26,7 @@ export const rec = (id: string): string => `record:${id}`;
 export const ep = (id: string): string => `episode:${id}`;
 export const mem = (path: string): string => `memory:${path}`;
 export const doc = (id: string): string => `document:${id}`;
+export const wf = (id: string): string => `workflow:${id}`;
 
 export interface RecallEvalCase {
   id: string;
@@ -34,14 +35,26 @@ export interface RecallEvalCase {
   recentTail?: string;
   /** false → run in system scope (userId undefined) — the privacy axis. */
   asUser?: boolean;
-  /** false → NONE (or gated-to-null) is the correct outcome. */
-  expectBlock: boolean;
+  /**
+   * true → a memory block is required; false → NONE (or gated-to-null) is the
+   * correct outcome. Omit ONLY when the memory block is not this case's axis
+   * and either outcome is defensible — asserting a guess is how a case stops
+   * being ground truth.
+   */
+  expectBlock?: boolean;
   /** Marker substrings the block MUST contain (all of them). */
   mustCite?: (fx: RecallFixtures) => string[];
   /** Marker substrings the block must NOT contain (any of them fails). */
   mustNotCite?: (fx: RecallFixtures) => string[];
   /** Ceiling on distinct `(record:` markers — the volume/selectivity axis. */
   maxRecordMarkers?: number;
+  /**
+   * The CAPABILITY channel, asserted separately from the memory block: it is
+   * judge-free and has its own budget, so a case can legitimately expect a
+   * capability and no memory block, or the reverse. Undefined = not asserted.
+   */
+  expectCapability?: boolean;
+  mustCiteCapability?: (fx: RecallFixtures) => string[];
 }
 
 export const RECALL_CASES: RecallEvalCase[] = [
@@ -62,6 +75,14 @@ export const RECALL_CASES: RecallEvalCase[] = [
       "Pour les livraisons Nordwind, on était partis sur quel rythme déjà ?",
     expectBlock: true,
     mustCite: (fx) => [ep(fx.episodes.contract)],
+  },
+  {
+    id: "rec-graph-usage-vs-relevance",
+    description:
+      "Three heavily-recalled routine episodes vs one fresh, directly relevant one on the same anchor (Callisto) — the fresh episode must reach the judge and be cited. Guards the recall-boost cap in graph.ts: unbounded, +60 recalls outrank content freshness and evict the relevant episode from the 3 graph slots (measured 2026-08-05: a 67×-recalled fixture episode monopolised the arm).",
+    message: "Qui est notre contact support chez Callisto Systems ?",
+    expectBlock: true,
+    mustCite: (fx) => [ep(fx.episodes.callistoFresh)],
   },
   {
     id: "rec-record-exact",
@@ -99,7 +120,7 @@ export const RECALL_CASES: RecallEvalCase[] = [
   {
     id: "rec-noise-general",
     description:
-      "General-knowledge question → NONE (no overlap with the corpus).",
+      "General-knowledge question → NONE. Hard on purpose: the corpus DOES contain an ambient invoice whose VAT amount lexically dominates the ranking — the judge must refuse a dominant but non-responsive candidate. Retrieval is byte-identical across repeats; the residual is judge-side selectivity.",
     message:
       "Quelle est la différence entre la TVA collectée et la TVA déductible ?",
     expectBlock: false,
@@ -216,5 +237,25 @@ export const RECALL_CASES: RecallEvalCase[] = [
     message: "C'est quoi le délai de livraison actuel de Vega Logistics ?",
     expectBlock: true,
     mustCite: () => ["24"],
+  },
+  {
+    id: "rec-workflow-outcome",
+    description:
+      "The capability axis: the user asks for the OUTCOME, never saying 'workflow' — the card of the workflow that already produces it must surface, so the assistant can offer to run it instead of doing the work by hand.",
+    message:
+      "Tu peux me sortir la liste des livraisons fournisseurs qui ont du retard ?",
+    // `expectBlock` deliberately unasserted: the supplier-process memory is
+    // topically adjacent without answering this, so both a block and NONE are
+    // defensible. The capability is the axis under test.
+    expectCapability: true,
+    mustCiteCapability: (fx) => [wf(fx.workflows.lateDeliveries)],
+  },
+  {
+    id: "rec-workflow-not-a-catch-all",
+    description:
+      "A workflow card must not answer everything it shares vocabulary with: a question about ONE supplier's identity is not a request to run the late-delivery recap. The card is deliberately worded around suppliers and deliveries, so this is the false positive the capability gate has to refuse.",
+    message: "Fais-moi un point sur Nordwind GmbH.",
+    expectBlock: true,
+    expectCapability: false,
   },
 ];

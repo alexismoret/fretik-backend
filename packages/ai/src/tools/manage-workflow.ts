@@ -53,6 +53,13 @@ const MAX_TEST_RUNS_PER_CONVERSATION = 5;
 /** Conversation attachments named on a `run_test` result before the tail is summarised. */
 const HELD_BACK_FILES_LISTED = 5;
 
+/** A `list` entry states what the workflow does, not its whole playbook. */
+const LISTING_DESCRIPTION_CHARS = 200;
+const truncateForListing = (text: string): string =>
+  text.length > LISTING_DESCRIPTION_CHARS
+    ? `${text.slice(0, LISTING_DESCRIPTION_CHARS).trimEnd()}…`
+    : text;
+
 /**
  * `attachments/<name>` → `<name>`. The workspace path is what every other tool
  * and the `<file_attachments>` block speak; `ai_chat_files.filename` and a form
@@ -64,6 +71,150 @@ export const toAttachmentBasename = (name: string): string =>
   name.startsWith(`${WORKSPACE_DIRS.attachments}/`)
     ? name.slice(WORKSPACE_DIRS.attachments.length + 1)
     : name;
+
+type WorkflowRow = NonNullable<Awaited<ReturnType<typeof getWorkflowRow>>>;
+
+interface PreparedRunLaunch {
+  payload: Record<string, unknown>;
+  attachments: RunAttachment[];
+  notHandedOver: string[];
+}
+
+/**
+ * Resolve what a run launched from this chat receives: the conversation
+ * attachments it is handed, and a trigger payload that names them the way the
+ * run's own workspace will. Shared by `run_test` and `run` — both launch the
+ * same machine, they only differ in what a failure costs.
+ *
+ * Returns a tool error (never throws) when a named file is unreadable or a
+ * required form file field is unsatisfied.
+ */
+const prepareRunLaunch = async (params: {
+  row: WorkflowRow;
+  conversationId: string | undefined;
+  files: string[] | undefined;
+  payload: Record<string, unknown> | undefined;
+}): Promise<PreparedRunLaunch | ReturnType<typeof toolError>> => {
+  const { row, conversationId } = params;
+
+  // The run executes in its own fresh conversation and sees ONLY files
+  // attached to it here — chat attachments never carry over by themselves.
+  // `ai_chat_files.filename` is a bare basename, but every OTHER tool — and
+  // the `<file_attachments>` block itself — speaks `attachments/<name>`.
+  // Rejecting that form cost one wasted call on the first run_test of a prod
+  // session; accept both.
+  const fileNames = (params.files ?? []).map(toAttachmentBasename);
+  const attachments: RunAttachment[] = [];
+  if (fileNames.length > 0) {
+    if (!conversationId) {
+      return toolError(
+        TOOL_ERROR_CODES.NO_CONVERSATION,
+        "files requires an active conversation to read attachments from.",
+      );
+    }
+    const chatFiles = await db.query.aiChatFiles.findMany({
+      columns: { filename: true, mimeType: true, status: true },
+      where: { conversationId, filename: { in: fileNames } },
+    });
+    const byName = new Map(chatFiles.map((f) => [f.filename, f]));
+    for (const filename of fileNames) {
+      const chatFile = byName.get(filename);
+      const bytes =
+        chatFile && chatFile.status !== "error"
+          ? await readSessionFile(conversationId, `attachments/${filename}`)
+          : null;
+      if (!chatFile || !bytes) {
+        return toolError(
+          TOOL_ERROR_CODES.WORKFLOW_ERROR,
+          `"${filename}" is not a readable attachment of this conversation.`,
+          "Pass filenames exactly as listed in the attached-files block.",
+        );
+      }
+      attachments.push({ filename, mimeType: chatFile.mimeType, bytes });
+    }
+  }
+
+  // The payload mirrors a real form submission: file fields carry the attached
+  // filenames, required file fields must be satisfied.
+  const payload: Record<string, unknown> = { ...(params.payload ?? {}) };
+  if (row.triggerType === "form") {
+    const fileFields = (row.triggerConfig.form?.fields ?? []).filter(
+      (field) => field.type === "file",
+    );
+    const soleField = fileFields.length === 1 ? fileFields[0] : undefined;
+    if (
+      soleField &&
+      attachments.length > 0 &&
+      payload[soleField.key] === undefined
+    ) {
+      payload[soleField.key] = attachments.map((a) => a.filename);
+    }
+    const attachedNames = new Set(attachments.map((a) => a.filename));
+    for (const field of fileFields) {
+      const value = payload[field.key];
+      const names = (
+        typeof value === "string"
+          ? [value]
+          : Array.isArray(value)
+            ? value.filter((v): v is string => typeof v === "string")
+            : []
+      ).map(toAttachmentBasename);
+      // Write the normalised names back: the run reads this payload and must
+      // see the names its own workspace uses.
+      if (names.length > 0) payload[field.key] = names;
+      const unknown = names.filter((name) => !attachedNames.has(name));
+      if (unknown.length > 0) {
+        return toolError(
+          TOOL_ERROR_CODES.WORKFLOW_ERROR,
+          `Form field '${field.key}' references files not attached to the run: ${unknown.join(", ")}.`,
+          "Payload strings attach nothing — list every file in `files`.",
+        );
+      }
+      if (field.required && names.length === 0) {
+        return toolError(
+          TOOL_ERROR_CODES.WORKFLOW_ERROR,
+          `Form field '${field.key}' requires at least one file; the run got none.`,
+          "Attach the file(s) to this conversation, then pass their filenames in `files` (several file fields: also map them under payload.<key>).",
+        );
+      }
+    }
+  }
+
+  // Every attachment of this conversation the run did NOT get. A run sees
+  // `files` and nothing else, so a source document left behind produces a
+  // deliverable that looks complete and isn't: prod 2026-07-28 tested twice
+  // with 2 of 3 documents, and the missing invoice's amounts came back as
+  // empty cells nobody questioned. A plain list, not an error — an example or
+  // template file usually has no business inside the run.
+  const heldBack = conversationId
+    ? (await listConversationFiles(conversationId))
+        .map((file) => file.filename)
+        .filter((name) => !fileNames.includes(name))
+    : [];
+  const notHandedOver =
+    heldBack.length > HELD_BACK_FILES_LISTED
+      ? [
+          ...heldBack.slice(0, HELD_BACK_FILES_LISTED),
+          `+${(heldBack.length - HELD_BACK_FILES_LISTED).toString()} more`,
+        ]
+      : heldBack;
+
+  return { payload, attachments, notHandedOver };
+};
+
+/** Narrow `prepareRunLaunch`'s union without a cast. */
+const isPreparedLaunch = (
+  result: PreparedRunLaunch | ReturnType<typeof toolError>,
+): result is PreparedRunLaunch => "payload" in result;
+
+/**
+ * What the agent must do after firing a run. Deliberately NOT "end your turn":
+ * a launch no longer stops the loop, so the agent finishes whatever else the
+ * user asked for. What it must never do is wait — the conversation is resumed
+ * on its own once every run it launched has finished.
+ */
+const BACKGROUND_RUN_NEXT =
+  "The run continues in the background — finish any other work this turn needs, then end the turn. This conversation is notified and resumed automatically once every run it launched has finished. Never wait: no get_run polling, no sleeping.";
 
 /**
  * Drop every `toolHints` entry that names no real workflow tool (typos,
@@ -145,13 +296,15 @@ export const createManageWorkflowTool = () =>
       "",
       "- create_draft: name + playbook (one goal + 1-20 ordered tasks; each task = title + instructions, optional expectedOutput + toolHints) + icon + color — set both at creation, best-guess is safe (an off-catalog value is dropped with a warning, never an error). Optional description, triggerType (manual|cron|event|form) + triggerConfig, autonomy (read_only|approval_required|autonomous, default approval_required), modelProfileKey, scope (team|private, default team). Starts as draft. The user sets run time/token limits themselves on the workflow page.",
       "- update: workflowId + any field, including scope (re-scope anytime). Safe anytime — runs snapshot the playbook, so edits never disturb a running or past run.",
-      "- list / get: the team's workflows (+ your private ones) / one workflow's full playbook. Each result carries `scope`.",
+      "- list / get: the team's workflows (+ your private ones), each with what it does / one workflow's full playbook. Each result carries `scope`. Before create_draft, ALWAYS check list (and `searchKnowledge` with sourceTypes ['workflows']) for one that already covers the need — run it, extend it, or tell the user it exists, rather than building a second one.",
       "- get_trigger_catalog: the machine-readable catalog of trigger kinds + each event type's editable filter params. Read it before setting triggerType/triggerConfig.",
-      "- run_test: workflowId (+ optional payload, + files: attachment filenames to hand to the run) fires a test run in the background. The run sees `files` and nothing else — a source document you leave out comes back as empty cells, not as an error. The result echoes `notHandedOver`: this conversation's other attachments, so check none of them was needed. Launch it, say so, and END your turn — this conversation is notified and resumed automatically when the run finishes. Never poll get_run or sleep while it runs.",
+      "- run_test: workflowId (+ optional payload, + files: attachment filenames to hand to the run) fires a test run in the background. The run sees `files` and nothing else — a source document you leave out comes back as empty cells, not as an error. The result echoes `notHandedOver`: this conversation's other attachments, so check none of them was needed.",
+      "- run: same arguments, but a REAL run of an active workflow — it writes, sends, and emails the workflow's recipients. Needs confirm: true, which you may pass only after the user agreed in this conversation. Use it when they ask for what the workflow does; run_test is for trying one out.",
+      "- Either launch leaves the run in the background: keep working on the rest of the turn, then end it normally. Never wait — no polling, no sleeping. This conversation is resumed once every run it launched has finished, with all their outcomes at once.",
       "- get_run: runId → status, per-task outcomes, result summary, error, and `outputs` — the run's deliverables, each pulled into this conversation at `runs/<runId>/<file>` so you can `read` it or load it in `python`. A run works in its own workspace, so this is the ONLY way to see what it actually produced: judge the run on the file, never on its own summary.",
       "- activate / pause: flip a workflow live / paused. Cron workflows get their schedule on activate.",
       "",
-      "Loop: create_draft → run_test (turn ends) → resumed on completion → analyze with get_run → adjust with update → activate. One conform test is enough: re-test only when an update fixed a real structural/logic defect; a spec detail (number format, label, sort order) goes in via update with no new test, and gaps inherent to the input data are findings to report, never a reason to re-run.",
+      "Loop: create_draft → run_test → resumed on completion → analyze with get_run → adjust with update → activate. One conform test is enough: re-test only when an update fixed a real structural/logic defect; a spec detail (number format, label, sort order) goes in via update with no new test, and gaps inherent to the input data are findings to report, never a reason to re-run.",
       "Activation gate: activate needs ≥1 succeeded run. To skip testing, confirm with the user first (askUserQuestion), then pass confirm: true.",
       "",
       "Form trigger (triggerType 'form'): a person fills a form; each submission starts a run whose triggerPayload is the answers, with uploaded files attached to the run — write the playbook to consume triggerPayload. triggerConfig.form = { title, description?, fields[] (≥1 to activate), visibility ('public' = anyone with the link, 'private' = the workflow's team/owner), submitLabel?, successMessage? }. Each field = { key (snake_case, unique), type, label, required, +per-type constraints (minLength/maxLength, min/max/step, options[{value,label}], accept/maxFiles/maxFileSizeMb) }.",
@@ -179,6 +332,7 @@ export const createManageWorkflowTool = () =>
         "get",
         "get_trigger_catalog",
         "run_test",
+        "run",
         "get_run",
         "activate",
         "pause",
@@ -186,7 +340,9 @@ export const createManageWorkflowTool = () =>
       workflowId: z
         .uuid()
         .optional()
-        .describe("Required for update / get / run_test / activate / pause."),
+        .describe(
+          "Required for update / get / run_test / run / activate / pause.",
+        ),
       runId: z.uuid().optional().describe("Required for get_run."),
       name: z.string().min(1).max(120).optional(),
       description: z.string().max(2000).optional(),
@@ -224,19 +380,19 @@ export const createManageWorkflowTool = () =>
       payload: z
         .record(z.string(), z.unknown())
         .optional()
-        .describe("run_test only — the trigger input handed to the agent."),
+        .describe("run_test / run — the trigger input handed to the agent."),
       files: z
         .array(z.string().min(1))
         .max(10)
         .optional()
         .describe(
-          "run_test only — THIS conversation's attachments to hand to the run, as the path shown in the attached-files block ('attachments/report.pdf') or the bare filename. Required when the workflow's form has a required file field: payload strings alone attach nothing.",
+          "run_test / run — THIS conversation's attachments to hand to the run, as the path shown in the attached-files block ('attachments/report.pdf') or the bare filename. Required when the workflow's form has a required file field: payload strings alone attach nothing.",
         ),
       confirm: z
         .boolean()
         .optional()
         .describe(
-          "activate: override the ≥1-successful-test gate. run_test: required from the 3rd test when the previous one succeeded.",
+          "activate: override the ≥1-successful-test gate. run_test: required from the 3rd test when the previous one succeeded. run: ALWAYS required — the user must have said yes.",
         ),
     }),
     execute: async (input, options) => {
@@ -394,6 +550,11 @@ export const createManageWorkflowTool = () =>
               workflows: workflows.map((w) => ({
                 id: w.id,
                 name: w.name,
+                // What it does, so a candidate can be recognised here rather
+                // than by calling `get` on every workflow in the team.
+                description: truncateForListing(
+                  w.description ?? w.playbook.goal,
+                ),
                 status: w.status,
                 triggerType: w.triggerType,
                 autonomy: w.autonomy,
@@ -463,122 +624,14 @@ export const createManageWorkflowTool = () =>
                 "No such workflow for this team.",
               );
             }
-            // The run executes in its own fresh conversation and sees ONLY
-            // files attached to it here — chat attachments never carry over by
-            // themselves.
-            // `ai_chat_files.filename` is a bare basename, but every OTHER
-            // tool — and the `<file_attachments>` block itself — speaks
-            // `attachments/<name>`. Rejecting that form cost one wasted call
-            // on the first run_test of a prod session; accept both.
-            const fileNames = (input.files ?? []).map(toAttachmentBasename);
-            const attachments: RunAttachment[] = [];
-            if (fileNames.length > 0) {
-              const conversationId = ctx.conversationId;
-              if (!conversationId) {
-                return toolError(
-                  TOOL_ERROR_CODES.NO_CONVERSATION,
-                  "files requires an active conversation to read attachments from.",
-                );
-              }
-              const chatFiles = await db.query.aiChatFiles.findMany({
-                columns: { filename: true, mimeType: true, status: true },
-                where: { conversationId, filename: { in: fileNames } },
-              });
-              const byName = new Map(chatFiles.map((f) => [f.filename, f]));
-              for (const filename of fileNames) {
-                const chatFile = byName.get(filename);
-                const bytes =
-                  chatFile && chatFile.status !== "error"
-                    ? await readSessionFile(
-                        conversationId,
-                        `attachments/${filename}`,
-                      )
-                    : null;
-                if (!chatFile || !bytes) {
-                  return toolError(
-                    TOOL_ERROR_CODES.WORKFLOW_ERROR,
-                    `"${filename}" is not a readable attachment of this conversation.`,
-                    "Pass filenames exactly as listed in the attached-files block.",
-                  );
-                }
-                attachments.push({
-                  filename,
-                  mimeType: chatFile.mimeType,
-                  bytes,
-                });
-              }
-            }
-
-            // Test payload mirrors a real form submission: file fields carry
-            // the attached filenames, required file fields must be satisfied.
-            const payload: Record<string, unknown> = {
-              ...(input.payload ?? {}),
-            };
-            if (row.triggerType === "form") {
-              const fileFields = (row.triggerConfig.form?.fields ?? []).filter(
-                (field) => field.type === "file",
-              );
-              const soleField =
-                fileFields.length === 1 ? fileFields[0] : undefined;
-              if (
-                soleField &&
-                attachments.length > 0 &&
-                payload[soleField.key] === undefined
-              ) {
-                payload[soleField.key] = attachments.map((a) => a.filename);
-              }
-              const attachedNames = new Set(attachments.map((a) => a.filename));
-              for (const field of fileFields) {
-                const value = payload[field.key];
-                const names = (
-                  typeof value === "string"
-                    ? [value]
-                    : Array.isArray(value)
-                      ? value.filter((v): v is string => typeof v === "string")
-                      : []
-                ).map(toAttachmentBasename);
-                // Write the normalised names back: the run reads this payload
-                // and must see the names its own workspace uses.
-                if (names.length > 0) payload[field.key] = names;
-                const unknown = names.filter(
-                  (name) => !attachedNames.has(name),
-                );
-                if (unknown.length > 0) {
-                  return toolError(
-                    TOOL_ERROR_CODES.WORKFLOW_ERROR,
-                    `Form field '${field.key}' references files not attached to the run: ${unknown.join(", ")}.`,
-                    "Payload strings attach nothing — list every test file in `files`.",
-                  );
-                }
-                if (field.required && names.length === 0) {
-                  return toolError(
-                    TOOL_ERROR_CODES.WORKFLOW_ERROR,
-                    `Form field '${field.key}' requires at least one file; the test run got none.`,
-                    "Attach the file(s) to this conversation, then pass their filenames in `files` (several file fields: also map them under payload.<key>).",
-                  );
-                }
-              }
-            }
-
-            // Every attachment of this conversation the run did NOT get. A run
-            // sees `files` and nothing else, so a source document left behind
-            // produces a deliverable that looks complete and isn't: prod
-            // 2026-07-28 tested twice with 2 of 3 documents, and the missing
-            // invoice's amounts came back as empty cells nobody questioned.
-            // A plain list, not an error — an example or template file usually
-            // has no business inside the run.
-            const heldBack = ctx.conversationId
-              ? (await listConversationFiles(ctx.conversationId))
-                  .map((file) => file.filename)
-                  .filter((name) => !fileNames.includes(name))
-              : [];
-            const notHandedOver =
-              heldBack.length > HELD_BACK_FILES_LISTED
-                ? [
-                    ...heldBack.slice(0, HELD_BACK_FILES_LISTED),
-                    `+${(heldBack.length - HELD_BACK_FILES_LISTED).toString()} more`,
-                  ]
-                : heldBack;
+            const prepared = await prepareRunLaunch({
+              row,
+              conversationId: ctx.conversationId,
+              files: input.files,
+              payload: input.payload,
+            });
+            if (!isPreparedLaunch(prepared)) return prepared;
+            const { payload, attachments, notHandedOver } = prepared;
 
             // Iteration budget. Nothing else bounds this: the in-flight guard
             // is cron-only, the circuit breaker skips `isTest`, and the
@@ -655,10 +708,85 @@ export const createManageWorkflowTool = () =>
               testRunNumber,
               testRunsAllowed: MAX_TEST_RUNS_PER_CONVERSATION,
               ...(notHandedOver.length > 0 ? { notHandedOver } : {}),
-              // Ends the turn (stopOnBackgroundLaunch) — the run is now in
-              // flight and this conversation is resumed on completion.
+              // Registered as a wait of this conversation — it is resumed once
+              // this run (and any sibling) finishes. Also the marker the UI
+              // reads to show the run live.
               backgroundRun: true,
-              next: "The run continues in the background. End your turn now — say the test is launched, nothing else. This conversation is notified and resumed automatically when it finishes. Never wait by polling get_run or sleeping.",
+              next: BACKGROUND_RUN_NEXT,
+            };
+          }
+
+          case "run": {
+            if (!input.workflowId) {
+              return toolError(
+                TOOL_ERROR_CODES.WORKFLOW_ERROR,
+                "run requires workflowId.",
+              );
+            }
+            const row = await getWorkflowRow({
+              id: input.workflowId,
+              teamId,
+              requester,
+            });
+            if (!row) {
+              return toolError(
+                TOOL_ERROR_CODES.WORKFLOW_NOT_FOUND,
+                "No such workflow for this team.",
+              );
+            }
+            // A real run does the work for real: it writes, sends, and emails
+            // the workflow's recipients. Only a live workflow may be run, and
+            // only on the user's explicit say-so — a test run is the way to
+            // try something out.
+            if (row.status !== "active") {
+              return toolError(
+                TOOL_ERROR_CODES.WORKFLOW_ERROR,
+                `This workflow is ${row.status}, and only an active workflow can be run for real.`,
+                "Activate it first, or use run_test to try it out.",
+              );
+            }
+            if (input.confirm !== true) {
+              return toolError(
+                TOOL_ERROR_CODES.WORKFLOW_ERROR,
+                "A real run needs the user's explicit go-ahead in this conversation.",
+                "Tell them what it will do, ask, then pass confirm: true. Use run_test to try it out without side effects.",
+              );
+            }
+
+            const prepared = await prepareRunLaunch({
+              row,
+              conversationId: ctx.conversationId,
+              files: input.files,
+              payload: input.payload,
+            });
+            if (!isPreparedLaunch(prepared)) return prepared;
+
+            const run = await createWorkflowRun({
+              workflow: row,
+              triggerType: row.triggerType === "form" ? "form" : "manual",
+              triggerPayload: prepared.payload,
+              triggeredByUserId: userId ?? null,
+              sourceConversationId: ctx.conversationId ?? null,
+              isTest: false,
+              ...(prepared.attachments.length > 0
+                ? { attachments: prepared.attachments }
+                : {}),
+            });
+            if (run.status === "failed") {
+              return {
+                ok: true,
+                run: { id: run.id, status: run.status },
+                next: "The run failed to start — read `error` via get_run, fix the cause, and relaunch in this turn.",
+              };
+            }
+            return {
+              ok: true,
+              run: { id: run.id, status: run.status },
+              ...(prepared.notHandedOver.length > 0
+                ? { notHandedOver: prepared.notHandedOver }
+                : {}),
+              backgroundRun: true,
+              next: BACKGROUND_RUN_NEXT,
             };
           }
 

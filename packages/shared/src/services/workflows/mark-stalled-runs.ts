@@ -2,6 +2,7 @@ import { and, eq, lt, or, sql } from "drizzle-orm";
 import db from "../../db";
 import { workflowRuns } from "../../db/schema";
 import { finalizeRun } from "./finalize-run";
+import { onWorkflowRunTerminal } from "./on-run-terminal";
 import { sendRunCompletionEmailIfEnabled } from "./send-run-completion-email";
 
 /** A run is stalled if it's still `running` but hasn't beaten in this long. */
@@ -67,6 +68,15 @@ export const markStalledRuns = async (params?: {
       (err: unknown) => {
         console.warn(
           `[workflow-run ${candidate.id}] completion email failed:`,
+          err,
+        );
+      },
+    );
+    // A reclaimed run has no live turn to tell its launching chat — do it here.
+    void onWorkflowRunTerminal({ runId: candidate.id }).catch(
+      (err: unknown) => {
+        console.warn(
+          `[workflow-run ${candidate.id}] source-conversation notice failed:`,
           err,
         );
       },

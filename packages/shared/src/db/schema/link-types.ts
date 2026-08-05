@@ -101,11 +101,22 @@ export const linkTypes = pgTable(
       .notNull(),
   },
   (table) => [
+    // A predicate is unique PER SOURCE TYPE, not per scope. `fromObjectTypeId`
+    // is load-bearing here: without it the constraint contradicted everything
+    // that reads these rows — `resolveLinkType` looks up scoped by source type,
+    // `bulkCreateLinks` validates an edge's endpoints against the link type's
+    // declared types, and the extractor's `<known_relations>` catalog is scoped
+    // the same way. A team that already had `supplies` on one type therefore
+    // could never gain `supplies` on another: the lookup (scoped) found
+    // nothing, the insert (unscoped) hit this index, and `extract-relations`
+    // threw. Measured 2026-08-03 at 10/10 on `mem-relation-explicit`, and
+    // SILENT in production — the memory-resolve worker catches it and logs
+    // "relation extraction unavailable", losing the whole pass for that event.
     uniqueIndex("link_types_org_key_uniq")
-      .on(table.organizationId, table.normalizedKey)
+      .on(table.organizationId, table.normalizedKey, table.fromObjectTypeId)
       .where(sql`team_id IS NULL`),
     uniqueIndex("link_types_team_key_uniq")
-      .on(table.teamId, table.normalizedKey)
+      .on(table.teamId, table.normalizedKey, table.fromObjectTypeId)
       .where(sql`team_id IS NOT NULL`),
     index("link_types_org_idx").on(table.organizationId),
     index("link_types_team_idx").on(table.teamId),

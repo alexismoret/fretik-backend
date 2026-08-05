@@ -160,6 +160,16 @@ export interface AgentRuntimeContext {
    */
   activeMemoryBlock?: string;
   /**
+   * Rendered `{{availableCapabilities}}` fragment — one workflow card when an
+   * existing workflow already produces what this turn asks for. Built by the
+   * same `runUnifiedRecall` call as `activeMemoryBlock`, but on a separate,
+   * judge-free channel: a capability answers "does this already exist", not
+   * "what is true", and the two compete destructively in one budget. Undefined
+   * on the vast majority of turns — the gate requires the card to top the whole
+   * retrieval ranking.
+   */
+  availableCapabilitiesBlock?: string;
+  /**
    * Rendered `{{teamObjects}}` fragment for the system prompt — one line
    * per object type the team can query (`- **key** (view …) — columns: ….
    * relations: …`). The AI query path's schema-discovery block: it names

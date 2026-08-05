@@ -57,9 +57,15 @@ import type { ModelProfile } from "../../lib/model-registry/types";
  * average.
  *
  * EXCEPT when the profile pins `provider.order`: a pin is honoured in practice
- * (every probe of `deepseek-v4-flash` and `minimax-m3` served the pinned
- * upstream), so a pool median there would price away the very benefit the pin
- * exists to capture. Pinned profiles are priced at their pin.
+ * (every probe of `minimax-m3` served the pinned upstream), so a pool median
+ * there would price away the very benefit the pin exists to capture. Pinned
+ * profiles are priced at their pin.
+ *
+ * A profile carrying `provider.only` instead (deepseek-v4-flash since
+ * 2026-08-05) is NOT a pin and is enumerated normally — the enumeration is
+ * simply bounded by the vetted pool, so the median is taken over the handful of
+ * endpoints that can actually serve it. That is the right basis for a model
+ * whose upstream is chosen live by `sort` rather than fixed.
  *
  * Resilient like `fetch-artificial-analysis.ts`: any failure simply omits that
  * profile, and the caller keeps the curated `assessment.pricing`. Never throws.
@@ -133,9 +139,11 @@ const perMTok = (raw: string): number => Number(raw) * 1_000_000;
 /**
  * Ask for one token using the profile's REAL provider block and report which
  * upstream served it. Mirrors the `chat` envelope built by `settingsForRole` —
- * `require_parameters` + `zdr` + any `order` / `ignore` pin — because those are
- * exactly what narrow the pool. `sort` is deliberately absent: `settingsForRole`
- * does not forward it on the `chat` kind.
+ * `require_parameters` + `zdr` + any `order` / `only` / `ignore` filter — because
+ * those are exactly what narrow the pool. `sort` is deliberately absent even
+ * though `settingsForRole` now forwards it: a sort only REORDERS a pool, so
+ * sending it would bias every probe toward the same fast endpoint and defeat the
+ * enumeration this function exists to perform.
  *
  * `exclude` carries the providers already enumerated, so repeated calls walk
  * the reachable pool in OpenRouter's own preference order until it 404s.
@@ -145,7 +153,8 @@ const probeServingProvider = async (
   apiKey: string,
   exclude: readonly string[] = [],
 ): Promise<string | null> => {
-  const { zdr, order, ignore, omitMaxTokens } = profile.assessment.provider;
+  const { zdr, order, ignore, only, omitMaxTokens } =
+    profile.assessment.provider;
   const skip = [...(ignore ?? []), ...exclude];
   const body: Record<string, unknown> = {
     model: profile.catalog.id,
@@ -154,6 +163,12 @@ const probeServingProvider = async (
       require_parameters: true,
       zdr,
       ...(order ? { order: [...order] } : {}),
+      // `only` narrows the reachable pool harder than anything else, so omitting
+      // it would price a profile against endpoints it can never be served by —
+      // exactly the class of error this module was written to catch. For a
+      // profile carrying one, enumeration walks the VETTED pool and the median
+      // is the median of what we actually pay.
+      ...(only ? { only: [...only] } : {}),
       ...(skip.length > 0 ? { ignore: skip } : {}),
     },
   };

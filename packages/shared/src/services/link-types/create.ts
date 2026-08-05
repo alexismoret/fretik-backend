@@ -33,13 +33,19 @@ const slugifyLinkTypeKey = (raw: string): string =>
     .slice(0, MAX_KEY_LENGTH);
 
 /**
- * Resolve a unique `normalized_key` within a team's scope: slugify the base
- * (label when no key is supplied), then append `_2`, `_3`, … until it clears
- * the per-team uniqueness index. Keeps relation keys out of the UI.
+ * Resolve a unique `normalized_key` for one SOURCE TYPE within a scope:
+ * slugify the base (label when no key is supplied), then append `_2`, `_3`, …
+ * until it clears the uniqueness index. Keeps relation keys out of the UI.
+ *
+ * Scoped by `fromObjectTypeId` because the index is (see `link-types.ts`):
+ * without it a team that had `supplies` on one type would get `supplies_2` on
+ * the next, for a key that is in fact free — sprawl invented by the guard
+ * meant to prevent it.
  */
 const resolveUniqueLinkKey = async (data: {
   organizationId: string;
   teamId: string;
+  fromObjectTypeId: string;
   base: string;
 }): Promise<string> => {
   const rows = await db
@@ -48,6 +54,7 @@ const resolveUniqueLinkKey = async (data: {
     .where(
       and(
         eq(linkTypes.organizationId, data.organizationId),
+        eq(linkTypes.fromObjectTypeId, data.fromObjectTypeId),
         data.teamId === null
           ? isNull(linkTypes.teamId)
           : eq(linkTypes.teamId, data.teamId),
@@ -90,6 +97,7 @@ export const createLinkType = async (input: {
     : await resolveUniqueLinkKey({
         organizationId: input.organizationId,
         teamId: input.teamId,
+        fromObjectTypeId: input.fromObjectTypeId,
         base: input.label,
       });
   if (

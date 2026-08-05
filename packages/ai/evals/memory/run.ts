@@ -19,8 +19,13 @@
  * EVAL_TEAM_ID, EVAL_ORGANIZATION_ID, EVAL_USER_ID.
  */
 
-import type { Evaluation, ExperimentTask } from "@langfuse/client";
+import type {
+  Evaluation,
+  ExperimentTask,
+  RunEvaluator,
+} from "@langfuse/client";
 import { flushLangfuse, langfuseClient } from "../../src/lib/langfuse";
+import { raceDeadline } from "../deadline";
 import { MEMORY_CASES, type MemoryEvalCase } from "./cases";
 import {
   cleanupMemoryFixtures,
@@ -88,6 +93,19 @@ interface CaseOutcome {
   avgLatencyMs: number;
 }
 
+/**
+ * A case that neither always passes nor always fails over its repeats — the
+ * failure mode the all-or-nothing gate cannot express. Ported verbatim from the
+ * recall runner, for the reason that runner learned it: at 3 repeats a
+ * 58%-stable case reads as a pass or a fail depending on the draw, and every
+ * "16/16" this suite has ever printed was drawn at that count.
+ */
+const isBimodal = (o: CaseOutcome): boolean =>
+  o.passFraction > 0 && o.passFraction < 1;
+
+/** Watchdog ceiling — far above any legitimate repeat (LLM timeout is 120 s). */
+const REPEAT_DEADLINE_MS = 5 * 60_000;
+
 const runCase = async (c: MemoryEvalCase): Promise<CaseOutcome> => {
   const outcomes: RepeatOutcome[] = [];
   for (let i = 0; i < repeats; i++) {
@@ -95,7 +113,11 @@ const runCase = async (c: MemoryEvalCase): Promise<CaseOutcome> => {
     let text = "";
     let failures: string[] = [];
     try {
-      const r = await c.run(fixtures, profileKey);
+      const r = await raceDeadline(
+        () => c.run(fixtures, profileKey),
+        REPEAT_DEADLINE_MS,
+        `${c.id} repeat ${(i + 1).toString()}`,
+      );
       text = r.text;
       failures = r.failures;
     } catch (err) {
@@ -188,13 +210,55 @@ const runAllLangfuse = async (): Promise<void> => {
     return outcome;
   };
 
-  await client.experiment.run({
+  // Run-level aggregates — without them a run is only comparable case by case
+  // in the UI, which is how a whole-suite drift stays invisible.
+  const runEvaluators: RunEvaluator[] = [
+    // eslint-disable-next-line @typescript-eslint/require-await
+    async ({ itemResults }) => {
+      const outs: CaseOutcome[] = itemResults.map((r) => r.output);
+      if (outs.length === 0) return [];
+      const mean = outs.reduce((a, o) => a + o.passFraction, 0) / outs.length;
+      const bimodal = outs.filter(isBimodal);
+      const evaluations: Evaluation[] = [
+        {
+          name: "memory-mean-pass",
+          value: Number(mean.toFixed(4)),
+          dataType: "NUMERIC",
+          comment: `${repeats.toString()} repeats/case, profile ${profileKey ?? "code-default"}`,
+        },
+        {
+          name: "memory-cases-stable",
+          value: outs.filter((o) => o.passed).length,
+          dataType: "NUMERIC",
+          comment: `of ${outs.length.toString()} cases`,
+        },
+        {
+          name: "memory-cases-bimodal",
+          value: bimodal.length,
+          dataType: "NUMERIC",
+          comment:
+            bimodal.length === 0
+              ? "none"
+              : bimodal
+                  .map(
+                    (o) =>
+                      `${o.caseId} ${(o.passFraction * repeats).toString()}/${repeats.toString()}`,
+                  )
+                  .join(", "),
+        },
+      ];
+      return evaluations;
+    },
+  ];
+
+  const result = await client.experiment.run({
     name: "memory-eval",
     ...(opt("--run-name") ? { runName: opt("--run-name") } : {}),
     data,
     task,
     maxConcurrency: 1,
     metadata: { repeats, profile: profileKey ?? "code-default" },
+    runEvaluators,
     evaluators: [
       // eslint-disable-next-line @typescript-eslint/require-await
       async ({ output }) => {
@@ -220,6 +284,25 @@ const runAllLangfuse = async (): Promise<void> => {
       },
     ],
   });
+
+  // Same v4 gap the recall + chatbot evals hit: the SDK still links dataset-run
+  // items over the v3 endpoint, which a server in `events_only` mode no longer
+  // serves. `datasetRunId` comes back undefined and the ExperimentManager then
+  // SKIPS persisting the run-level evaluations — per-item scores and traces
+  // land fine either way. Attach them to the experiment id, which rode in on
+  // the OTel experiment attributes.
+  if (result.datasetRunId === undefined) {
+    for (const evaluation of result.runEvaluations) {
+      client.score.create({
+        datasetRunId: result.experimentId,
+        ...evaluation,
+      });
+    }
+    await client.score.flush();
+  }
+  console.log(
+    `[memory-eval] experiment ${result.experimentId} — ${result.runEvaluations.length.toString()} run-level scores`,
+  );
   await flushLangfuse();
 };
 
@@ -236,8 +319,11 @@ console.log(`profile: ${profileKey ?? "(code default: gpt-oss-20b)"}\n`);
 let passed = 0;
 for (const out of results) {
   if (out.passed) passed++;
+  // ⚠️ = bimodal: the case flips between repeats, so its all-or-nothing
+  // verdict is a coin toss at this repeat count — read the fraction, not ✅/❌.
+  const mark = out.passed ? "✅" : isBimodal(out) ? "⚠️" : "❌";
   console.log(
-    `${out.passed ? "✅" : "❌"} ${out.caseId} [${out.task}] — ${(out.passFraction * repeats).toString()}/${repeats.toString()}, ~${out.avgLatencyMs.toString()}ms`,
+    `${mark} ${out.caseId} [${out.task}] — ${(out.passFraction * repeats).toString()}/${repeats.toString()}, ~${out.avgLatencyMs.toString()}ms`,
   );
   out.repeats.forEach((r, i) => {
     const status = r.failures.length === 0 ? "ok" : r.failures.join("; ");
@@ -251,7 +337,18 @@ for (const out of results) {
   });
   console.log("");
 }
+const bimodal = results.filter(isBimodal);
 console.log(
   `TOTAL: ${passed.toString()}/${results.length.toString()} cases fully stable (${repeats.toString()}/${repeats.toString()})`,
 );
+if (bimodal.length > 0) {
+  console.log(
+    `BIMODAL: ${bimodal
+      .map(
+        (o) =>
+          `${o.caseId} ${(o.passFraction * repeats).toString()}/${repeats.toString()}`,
+      )
+      .join(", ")}`,
+  );
+}
 process.exit(passed === results.length ? 0 : 1);

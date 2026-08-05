@@ -21,12 +21,17 @@
  * EVAL_TEAM_ID, EVAL_ORGANIZATION_ID, EVAL_USER_ID.
  */
 
-import type { Evaluation, ExperimentTask } from "@langfuse/client";
+import type {
+  Evaluation,
+  ExperimentTask,
+  RunEvaluator,
+} from "@langfuse/client";
 import { flushLangfuse, langfuseClient } from "../../src/lib/langfuse";
 import {
   runUnifiedRecall,
   type UnifiedRecallResult,
 } from "../../src/services/recall/recall";
+import { raceDeadline } from "../deadline";
 import { RECALL_CASES, type RecallEvalCase } from "./cases";
 import {
   cleanupRecallFixtures,
@@ -89,12 +94,30 @@ const evaluateRepeat = (
   result: UnifiedRecallResult | null,
 ): string[] => {
   const failures: string[] = [];
-  if (result === null) {
-    if (c.expectBlock) failures.push("expected a block, got NONE");
+  // The capability channel is judge-free and has its own budget, so `result`
+  // can be non-null with an EMPTY memory block (a workflow matched, the judge
+  // said NONE) — the memory assertions key on the block, never on `result`.
+  const capability = result?.capabilityBlock;
+  if (c.expectCapability === true && capability === undefined) {
+    failures.push("expected a capability, got none");
+  }
+  if (c.expectCapability === false && capability !== undefined) {
+    failures.push(
+      `expected no capability, got: "${capability.slice(0, 120)}…"`,
+    );
+  }
+  for (const marker of c.mustCiteCapability?.(fx) ?? []) {
+    if (capability === undefined || !capability.includes(marker)) {
+      failures.push(`missing capability marker ${marker}`);
+    }
+  }
+
+  const block = result?.block ?? "";
+  if (block.length === 0) {
+    if (c.expectBlock === true) failures.push("expected a block, got NONE");
     return failures;
   }
-  const block = result.block;
-  if (!c.expectBlock) {
+  if (c.expectBlock === false) {
     failures.push(`expected NONE, got a block: "${block.slice(0, 120)}…"`);
     return failures;
   }
@@ -122,6 +145,7 @@ const evaluateRepeat = (
 
 interface RepeatOutcome {
   block: string | null;
+  capability: string | null;
   failures: string[];
   latencyMs: number;
 }
@@ -134,24 +158,51 @@ interface CaseOutcome {
   avgLatencyMs: number;
 }
 
+/**
+ * A case that neither always passes nor always fails over its repeats — the
+ * failure mode the all-or-nothing gate cannot express. At the default 3
+ * repeats a 58%-stable case reads as a pass or a fail depending on the draw
+ * (measured on `rec-multi-domain`, 7/12 across three runs), so the count is
+ * surfaced explicitly rather than left to be inferred from a flipping verdict.
+ */
+const isBimodal = (o: CaseOutcome): boolean =>
+  o.passFraction > 0 && o.passFraction < 1;
+
+/** Watchdog ceiling — far above any legitimate repeat (judge timeout is 15 s). */
+const REPEAT_DEADLINE_MS = 5 * 60_000;
+
 const runCase = async (c: RecallEvalCase): Promise<CaseOutcome> => {
   const outcomes: RepeatOutcome[] = [];
   for (let i = 0; i < repeats; i++) {
     const t0 = Date.now();
-    const result = await runUnifiedRecall({
-      organizationId: scope.organizationId,
-      teamId: scope.teamId,
-      userId: c.asUser === false ? undefined : scope.userId,
-      agentType: "chatbot",
-      userMessage: c.message,
-      attachedFiles: [],
-      recentTail: c.recentTail ?? "",
-      bypassCache: true,
-      judgeProfileKey,
-    });
+    // `runUnifiedRecall` never throws by design, so the only rejection here is
+    // the watchdog's — recorded as a failure instead of crashing the suite.
+    let result: UnifiedRecallResult | null = null;
+    let hung: string | null = null;
+    try {
+      result = await raceDeadline(
+        () =>
+          runUnifiedRecall({
+            organizationId: scope.organizationId,
+            teamId: scope.teamId,
+            userId: c.asUser === false ? undefined : scope.userId,
+            agentType: "chatbot",
+            userMessage: c.message,
+            attachedFiles: [],
+            recentTail: c.recentTail ?? "",
+            bypassCache: true,
+            judgeProfileKey,
+          }),
+        REPEAT_DEADLINE_MS,
+        `${c.id} repeat ${(i + 1).toString()}`,
+      );
+    } catch (err) {
+      hung = err instanceof Error ? err.message : String(err);
+    }
     outcomes.push({
       block: result?.block ?? null,
-      failures: evaluateRepeat(c, fixtures, result),
+      capability: result?.capabilityBlock ?? null,
+      failures: hung !== null ? [hung] : evaluateRepeat(c, fixtures, result),
       latencyMs: Date.now() - t0,
     });
   }
@@ -233,7 +284,12 @@ const runAllLangfuse = async (): Promise<void> => {
         passed: false,
         passFraction: 0,
         repeats: [
-          { block: null, failures: ["case not found in code"], latencyMs: 0 },
+          {
+            block: null,
+            capability: null,
+            failures: ["case not found in code"],
+            latencyMs: 0,
+          },
         ],
         avgLatencyMs: 0,
       };
@@ -247,13 +303,55 @@ const runAllLangfuse = async (): Promise<void> => {
     return outcome;
   };
 
-  await client.experiment.run({
+  // Run-level aggregates — without them a run is only comparable case by case
+  // in the UI, which is how a whole-suite drift stays invisible.
+  const runEvaluators: RunEvaluator[] = [
+    // eslint-disable-next-line @typescript-eslint/require-await
+    async ({ itemResults }) => {
+      const outs: CaseOutcome[] = itemResults.map((r) => r.output);
+      if (outs.length === 0) return [];
+      const mean = outs.reduce((a, o) => a + o.passFraction, 0) / outs.length;
+      const bimodal = outs.filter(isBimodal);
+      const evaluations: Evaluation[] = [
+        {
+          name: "recall-mean-pass",
+          value: Number(mean.toFixed(4)),
+          dataType: "NUMERIC",
+          comment: `${repeats.toString()} repeats/case`,
+        },
+        {
+          name: "recall-cases-stable",
+          value: outs.filter((o) => o.passed).length,
+          dataType: "NUMERIC",
+          comment: `of ${outs.length.toString()} cases`,
+        },
+        {
+          name: "recall-cases-bimodal",
+          value: bimodal.length,
+          dataType: "NUMERIC",
+          comment:
+            bimodal.length === 0
+              ? "none"
+              : bimodal
+                  .map(
+                    (o) =>
+                      `${o.caseId} ${(o.passFraction * repeats).toString()}/${repeats.toString()}`,
+                  )
+                  .join(", "),
+        },
+      ];
+      return evaluations;
+    },
+  ];
+
+  const result = await client.experiment.run({
     name: "recall-eval",
     ...(opt("--run-name") ? { runName: opt("--run-name") } : {}),
     data,
     task,
     maxConcurrency: 2,
     metadata: { repeats },
+    runEvaluators,
     evaluators: [
       // eslint-disable-next-line @typescript-eslint/require-await
       async ({ output }) => {
@@ -279,6 +377,25 @@ const runAllLangfuse = async (): Promise<void> => {
       },
     ],
   });
+
+  // Same v4 gap the chatbot eval hits (`evals/langfuse/experiment.ts`): the SDK
+  // still links dataset-run items over the v3 endpoint, which a server in
+  // `events_only` mode no longer serves. `datasetRunId` comes back undefined
+  // and the ExperimentManager then SKIPS persisting the run-level evaluations —
+  // the per-item scores and traces land fine either way. Attach them to the
+  // experiment id, which rode in on the OTel experiment attributes.
+  if (result.datasetRunId === undefined) {
+    for (const evaluation of result.runEvaluations) {
+      client.score.create({
+        datasetRunId: result.experimentId,
+        ...evaluation,
+      });
+    }
+    await client.score.flush();
+  }
+  console.log(
+    `[recall-eval] experiment ${result.experimentId} — ${result.runEvaluations.length.toString()} run-level scores`,
+  );
   await flushLangfuse();
 };
 
@@ -294,24 +411,39 @@ console.log("\n================ RECALL EVAL REPORT ================\n");
 let passed = 0;
 for (const out of results) {
   if (out.passed) passed++;
+  // ⚠️ = bimodal: the case flips between repeats, so its all-or-nothing
+  // verdict is a coin toss at this repeat count — read the fraction, not ✅/❌.
+  const mark = out.passed ? "✅" : isBimodal(out) ? "⚠️" : "❌";
   console.log(
-    `${out.passed ? "✅" : "❌"} ${out.caseId} — ${(out.passFraction * repeats).toString()}/${repeats.toString()} repeats, ~${out.avgLatencyMs.toString()}ms avg`,
+    `${mark} ${out.caseId} — ${(out.passFraction * repeats).toString()}/${repeats.toString()} repeats, ~${out.avgLatencyMs.toString()}ms avg`,
   );
   out.repeats.forEach((r, i) => {
     const status = r.failures.length === 0 ? "ok" : r.failures.join("; ");
     console.log(`  · repeat ${(i + 1).toString()} [${status}]`);
     console.log(
-      r.block === null
+      r.block === null || r.block.length === 0
         ? "    NONE"
         : r.block
             .split("\n")
             .map((l) => `    ${l}`)
             .join("\n"),
     );
+    if (r.capability !== null) console.log(`    [capability] ${r.capability}`);
   });
   console.log("");
 }
+const bimodal = results.filter(isBimodal);
 console.log(
   `TOTAL: ${passed.toString()}/${results.length.toString()} cases fully stable (${repeats.toString()}/${repeats.toString()} repeats)`,
 );
+if (bimodal.length > 0) {
+  console.log(
+    `BIMODAL: ${bimodal
+      .map(
+        (o) =>
+          `${o.caseId} ${(o.passFraction * repeats).toString()}/${repeats.toString()}`,
+      )
+      .join(", ")}`,
+  );
+}
 process.exit(passed === results.length ? 0 : 1);

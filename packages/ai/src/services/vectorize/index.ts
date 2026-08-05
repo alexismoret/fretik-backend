@@ -7,6 +7,7 @@ import type {
   MemoryVectorMetadata,
   RecordVectorMetadata,
   SkillVectorMetadata,
+  WorkflowVectorMetadata,
 } from "@fretik/shared/db/schema";
 import { withPipelineTrace } from "../../lib/trace-tool";
 import { splitMarkdown } from "./chunker";
@@ -131,6 +132,11 @@ const isRecordMetadata = (
   _metadata: AiVectorMetadata,
 ): _metadata is RecordVectorMetadata => sourceType === "records";
 
+const isWorkflowMetadata = (
+  sourceType: AiVectorSourceType,
+  _metadata: AiVectorMetadata,
+): _metadata is WorkflowVectorMetadata => sourceType === "workflows";
+
 /**
  * Source-aware contextual header injected into every chunk's
  * `contextualPrefix` before embedding. Anthropic Contextual Retrieval
@@ -204,6 +210,18 @@ const buildRecordSemanticHeader = (metadata: RecordVectorMetadata): string =>
   `[RECORD:${metadata.object_type_key}] ${metadata.label}`;
 
 /**
+ * Source-aware contextual header for workflow cards. The trigger kind is in
+ * the tag because "does this run on a schedule or when I ask" is half of what
+ * makes a workflow the right answer to a request.
+ *
+ *   `[WORKFLOW:cron] Weekly supplier report — active`
+ */
+const buildWorkflowSemanticHeader = (
+  metadata: WorkflowVectorMetadata,
+): string =>
+  `[WORKFLOW:${metadata.trigger_type}] ${metadata.name} — ${metadata.status}`;
+
+/**
  * Dispatcher for the source-aware semantic header injected into every
  * chunk's contextual prefix before embedding. Returns `null` for
  * source kinds that intentionally skip the header.
@@ -230,6 +248,8 @@ const buildSourceSemanticHeader = (
     return buildEpisodeSemanticHeader(metadata);
   if (isRecordMetadata(sourceType, metadata))
     return buildRecordSemanticHeader(metadata);
+  if (isWorkflowMetadata(sourceType, metadata))
+    return buildWorkflowSemanticHeader(metadata);
   return null;
 };
 
@@ -356,13 +376,12 @@ const vectorizeSourceImpl = async (
   }
 
   // Stage 2 — contextual enrichment (individual-chunk failures soften
-  // to an empty prefix; stage-wide failure propagates). Record cards
-  // skip it: a card is ONE self-describing chunk (label + type + fields)
-  // — there is no surrounding document to situate it in, so the LLM
-  // call would only add cost. The semantic header (stage 2b) still
-  // applies.
+  // to an empty prefix; stage-wide failure propagates). Record and
+  // workflow cards skip it: a card is ONE self-describing chunk — there
+  // is no surrounding document to situate it in, so the LLM call would
+  // only add cost. The semantic header (stage 2b) still applies.
   const enriched: EnrichedChunk[] =
-    sourceType === "records"
+    sourceType === "records" || sourceType === "workflows"
       ? chunks.map((c) => ({ ...c, contextualPrefix: "" }))
       : await enrichChunks(content, chunks);
   const enrichedCount = enriched.filter(

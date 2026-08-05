@@ -90,6 +90,9 @@ export const GC_DEMOTE_JOB = "gc-demote";
 export const WORKFLOW_TRIGGER_SWEEP_JOB = "workflow-trigger-sweep";
 /** 5min — reclaims stalled (heartbeat-dead) workflow runs. */
 export const WORKFLOW_STALL_SWEEP_JOB = "workflow-stall-sweep";
+/** 5min — reconciles the conversation wait registry and re-signals owed
+ * resumes (backstop for a completion or resume signal lost to a restart). */
+export const CONVERSATION_TASK_SWEEP_JOB = "conversation-task-sweep";
 
 /** Job name on MCP_REFRESH_QUEUE — 05:00 UTC cron, re-introspects every active
  * MCP connection and adopts any tool-surface change. */

@@ -24,6 +24,8 @@ import { preExtractRoutes } from "./handlers/pre-extract";
 import { vectorizeRoutes } from "./handlers/vectorize";
 import { workflowTriggerRoutes } from "./handlers/workflow";
 import { registerOrphanCleanupCron } from "./services/chat-files/orphan-cron";
+import { subscribeConversationTaskResumes } from "./services/conversation-tasks/subscribe-resume";
+import { backfillWorkflowVectors } from "./services/vectorize/workflows";
 import {
   loadSkillCatalog,
   vectorizeAllBundledSkills,
@@ -128,6 +130,30 @@ void vectorizeAllBundledSkills().catch((err) => {
 // deduplicates the repeatable-job key, so calling it from every
 // replica is safe and exactly one wins the nightly run.
 await registerOrphanCleanupCron();
+
+// Listen for conversations whose background work (workflow runs) has
+// finished, so they get resumed here — the only process able to drive a
+// chatbot turn. Rides the shared multiplexed subscriber; a signal missed
+// during boot is picked up by the 5-min maintenance sweep.
+subscribeConversationTaskResumes();
+
+// Index workflows that predate the discovery feature, so the assistant can
+// find them from a plain request. Selects only un-indexed ones, so this is a
+// no-op from the second boot on. Fire-and-forget — never blocks boot.
+void backfillWorkflowVectors()
+  .then(({ indexed }) => {
+    if (indexed > 0) {
+      console.log(
+        `[boot] indexed ${indexed.toString()} workflow(s) for discovery`,
+      );
+    }
+  })
+  .catch((err: unknown) => {
+    console.error(
+      "[boot] workflow vectorize backfill failed:",
+      err instanceof Error ? err.message : err,
+    );
+  });
 
 // One-shot reclaim of E2B sandboxes orphaned by previous runs (typical
 // case: dev hot-reload, server crash, deployment rollover). Steady-

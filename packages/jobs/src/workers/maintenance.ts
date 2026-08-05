@@ -1,7 +1,9 @@
 import { createWorkerConnection } from "@fretik/shared/lib/queue/connection";
+import { sweepConversationTasks } from "@fretik/shared/services/conversation-tasks/sweep";
 import { markStalledRuns } from "@fretik/shared/services/workflows/mark-stalled-runs";
 import { type Job, Worker } from "bullmq";
 import {
+  CONVERSATION_TASK_SWEEP_JOB,
   DREAMING_SWEEP_JOB,
   GC_DEMOTE_JOB,
   JOURNAL_SWEEP_JOB,
@@ -61,6 +63,15 @@ export const startMaintenanceWorker = (): Worker => {
           if (reclaimed > 0) {
             console.info(
               `[workflow-stall-sweep] reclaimed ${reclaimed.toString()} stalled runs`,
+            );
+          }
+          return;
+        }
+        case CONVERSATION_TASK_SWEEP_JOB: {
+          const { reconciled, signaled } = await sweepConversationTasks();
+          if (reconciled > 0 || signaled > 0) {
+            console.info(
+              `[conversation-task-sweep] reconciled ${reconciled.toString()} tasks, signaled ${signaled.toString()} conversations`,
             );
           }
           return;

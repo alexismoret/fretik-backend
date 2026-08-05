@@ -10,6 +10,7 @@ import {
 import { filterTeamMemberIds } from "../team/members";
 import { getWorkflowRow } from "./get";
 import { serializeWorkflow } from "./serialize";
+import { refreshWorkflowVectors } from "./vector-refresh";
 import { workflowOwnerWriteError, type WorkflowRequester } from "./visibility";
 
 /**
@@ -111,5 +112,7 @@ export const updateWorkflow = async (params: {
     .returning();
 
   if (!row) return undefined;
+  // The card describes the playbook — re-index whenever it changes.
+  void refreshWorkflowVectors(row.id);
   return serializeWorkflow(row);
 };

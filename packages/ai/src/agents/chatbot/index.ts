@@ -15,11 +15,7 @@ import {
   type AgentRuntimeContextBase,
   type AgentSet,
 } from "../shared/agent-builder";
-import {
-  memoizeAgentSets,
-  stopOnBackgroundLaunch,
-  stopOnPendingApproval,
-} from "../shared/agent-set";
+import { memoizeAgentSets, stopOnPendingApproval } from "../shared/agent-set";
 import { parseIntEnv } from "../shared/env";
 import { policyHiddenToolNames } from "../shared/policy-tool-gate";
 import {
@@ -132,6 +128,13 @@ export const ChatbotCallOptionsSchema = z.object({
    * recall failed / timed out (active memory must never block a turn).
    */
   activeMemoryBlock: z.string().optional(),
+  /**
+   * One workflow card when an existing workflow already produces what this
+   * turn asks for — the capability channel of the same recall pass, kept out
+   * of the judge's budget. Substituted into `{{availableCapabilities}}`.
+   * Omitted on the vast majority of turns.
+   */
+  availableCapabilitiesBlock: z.string().optional(),
   /**
    * Catalogue of the team's object types for the AI query path — one line
    * per type (typed view + field columns + outgoing relations). The
@@ -285,6 +288,7 @@ export const buildChatbotRuntimeContextBase = (
   nativeIngestion: options.nativeIngestion,
   chatbotContextManifest: options.chatbotContextManifest,
   activeMemoryBlock: options.activeMemoryBlock,
+  availableCapabilitiesBlock: options.availableCapabilitiesBlock,
   teamObjectsBlock: options.teamObjectsBlock,
   enabledSkillsBlock: options.enabledSkillsBlock,
   participantsBlock: options.participantsBlock,
@@ -373,7 +377,6 @@ const subAgentPrimarySet = buildAgentSet<ChatbotCallOptions, SubAgentTools>({
   stopWhen: [
     isStepCount(parseSubAgentMaxSteps()),
     hasToolCall("askUserQuestion"),
-    stopOnBackgroundLaunch<SubAgentTools>(),
   ],
   repairToolCall: llmRepairToolCall<SubAgentTools>(),
   prepareStep: subAgentPrepareStep,
@@ -402,7 +405,6 @@ const subAgentCheapSet = buildAgentSet<ChatbotCallOptions, SubAgentTools>({
   stopWhen: [
     isStepCount(parseSubAgentMaxSteps()),
     hasToolCall("askUserQuestion"),
-    stopOnBackgroundLaunch<SubAgentTools>(),
   ],
   repairToolCall: llmRepairToolCall<SubAgentTools>(),
   prepareStep: subAgentPrepareStep,
@@ -457,10 +459,6 @@ const makeChatbotAgentSet = (
       // fresh turn — the agent re-runs the same code and the dispatch path
       // matches the grant by `lookupHash`.
       stopOnPendingApproval<ChatbotTools>(),
-      // End the turn the moment a background run is launched (`manageWorkflow
-      // run_test`) — the run-completion continuation resumes this conversation;
-      // polling or sleeping here would only burn steps.
-      stopOnBackgroundLaunch<ChatbotTools>(),
     ],
     repairToolCall: llmRepairToolCall<ChatbotTools>(),
     prepareStep: chatbotPrepareStep,

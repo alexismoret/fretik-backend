@@ -25,10 +25,12 @@ const MIN_DIGEST_EVENTS = 5;
 const DIGEST_WINDOW_DAYS = 7;
 const MAX_EVENTS = 80;
 const MAX_PAYLOAD_CHARS = 200;
-const DIGEST_TIMEOUT_MS = 45_000;
+/** Off the hot path — sized for the slowest eligible model, see `extract-mentions.ts`. */
+const DIGEST_TIMEOUT_MS = 120_000;
 const DIGEST_TEMPERATURE = 0;
 /** Same envelope as distill-conversation: ~800-token JSON + low-effort reasoning. */
-const DIGEST_MAX_OUTPUT_TOKENS = 3_000;
+/** See `consolidate-episodes.ts`: sized so reasoning cannot starve the answer. */
+const DIGEST_MAX_OUTPUT_TOKENS = 12_000;
 
 const digestOutputSchema = z.object({
   title: z.string().min(1),
@@ -112,7 +114,7 @@ export const distillRecordActivity = async (input: {
         teamId,
         input.modelProfileKey,
       );
-      const { text: raw } = await generateText({
+      const { text: raw, finishReason } = await generateText({
         model,
         instructions: SYSTEM_PROMPT,
         prompt,
@@ -121,6 +123,15 @@ export const distillRecordActivity = async (input: {
         abortSignal: AbortSignal.timeout(DIGEST_TIMEOUT_MS),
         telemetry: telemetryFor("memory-distill"),
       });
+      if (finishReason === "length") {
+        // Reasoning ate the output budget before the answer started, so the
+        // JSON below parses to nothing and this pass silently does nothing.
+        // Loud on purpose — it is how a truncated consolidation looked like a
+        // NOOP for a whole eval run (2026-08-04).
+        console.warn(
+          `[memory-digest] output truncated at ${DIGEST_MAX_OUTPUT_TOKENS.toString()} tokens (finishReason=length)`,
+        );
+      }
       const parsed = parseDigestOutput(raw);
       if (!parsed) {
         console.warn(

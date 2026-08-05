@@ -38,7 +38,8 @@ const MAX_MESSAGE_CHARS = 500;
  */
 const MAX_TRANSCRIPT_CHARS = 12_000;
 const MAX_CANDIDATE_RECORDS = 40;
-const DISTILL_TIMEOUT_MS = 45_000;
+/** Off the hot path — sized for the slowest eligible model, see `extract-mentions.ts`. */
+const DISTILL_TIMEOUT_MS = 120_000;
 const DISTILL_TEMPERATURE = 0;
 /**
  * Title (~30) + summary (~1500 chars ≈ 400 tokens) + 25 uuids (~300
@@ -46,7 +47,8 @@ const DISTILL_TEMPERATURE = 0;
  * loses the whole pass, so 3 000 gives ~4× margin. Reasoning runaway is
  * bounded by the role envelope's `effort: "low"`.
  */
-const DISTILL_MAX_OUTPUT_TOKENS = 3_000;
+/** See `consolidate-episodes.ts`: sized so reasoning cannot starve the answer. */
+const DISTILL_MAX_OUTPUT_TOKENS = 12_000;
 
 const distillOutputSchema = z.object({
   title: z.string().min(1),
@@ -257,7 +259,7 @@ export const distillConversation = async (input: {
         teamId,
         input.modelProfileKey,
       );
-      const { text: raw } = await generateText({
+      const { text: raw, finishReason } = await generateText({
         model,
         instructions: SYSTEM_PROMPT,
         prompt,
@@ -266,6 +268,15 @@ export const distillConversation = async (input: {
         abortSignal: AbortSignal.timeout(DISTILL_TIMEOUT_MS),
         telemetry: telemetryFor("memory-distill"),
       });
+      if (finishReason === "length") {
+        // Reasoning ate the output budget before the answer started, so the
+        // JSON below parses to nothing and this pass silently does nothing.
+        // Loud on purpose — it is how a truncated consolidation looked like a
+        // NOOP for a whole eval run (2026-08-04).
+        console.warn(
+          `[memory-distill] output truncated at ${DISTILL_MAX_OUTPUT_TOKENS.toString()} tokens (finishReason=length)`,
+        );
+      }
       return parseDistillOutput(raw);
     },
   );

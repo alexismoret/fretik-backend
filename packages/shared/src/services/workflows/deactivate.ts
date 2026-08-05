@@ -6,6 +6,10 @@ import type { WorkflowResponse, WorkflowStatus } from "../../schemas/workflows";
 import { hideEpisodesForWorkflow } from "../episodes/hide-for-workflow";
 import { getWorkflowRow } from "./get";
 import { serializeWorkflow } from "./serialize";
+import {
+  deleteWorkflowVectorRows,
+  refreshWorkflowVectors,
+} from "./vector-refresh";
 import type { WorkflowRequester } from "./visibility";
 
 /**
@@ -61,6 +65,14 @@ export const deactivateWorkflow = async (params: {
         );
       },
     );
+  }
+
+  // Keep the searchable card in step with the state: an archived workflow
+  // must stop being discoverable, a paused one stays findable (so the
+  // assistant can offer to re-activate it) but says so.
+  if (updated) {
+    if (status === "archived") void deleteWorkflowVectorRows(id);
+    else void refreshWorkflowVectors(id);
   }
 
   return updated ? serializeWorkflow(updated) : undefined;

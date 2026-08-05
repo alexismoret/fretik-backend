@@ -29,29 +29,6 @@ export const stopOnPendingApproval = <
   };
 };
 
-/**
- * Stop the agent loop the moment a tool result reports a background run in
- * flight (`backgroundRun: true` — set by `manageWorkflow run_test`). Matched
- * by output SHAPE, never by tool name, mirroring `stopOnPendingApproval`: the
- * launching turn ends immediately and the conversation is resumed by the
- * run-completion continuation instead of the model polling or sleeping.
- */
-export const stopOnBackgroundLaunch = <
-  TTools extends ToolSet,
->(): StopCondition<TTools> => {
-  return ({ steps }) => {
-    const lastStep = steps.at(-1);
-    if (lastStep === undefined) return false;
-    return lastStep.toolResults.some(
-      (tr) =>
-        tr.output !== null &&
-        typeof tr.output === "object" &&
-        "backgroundRun" in tr.output &&
-        tr.output.backgroundRun === true,
-    );
-  };
-};
-
 /** `{ error, code }` failure envelope check (the `tool-error-codes.ts`
  * contract) — returns the code, or null for a success/foreign shape. */
 const toolFailureCode = (output: unknown): string | null => {

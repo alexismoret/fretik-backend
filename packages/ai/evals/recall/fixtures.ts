@@ -49,6 +49,7 @@ export interface RecallFixtures {
     sirius: string;
     horizon: string;
     vega: string;
+    callisto: string;
     distractors: string[];
   };
   episodes: {
@@ -57,9 +58,11 @@ export interface RecallFixtures {
     privateBail: string;
     vegaOld: string;
     vegaNew: string;
+    callistoFresh: string;
   };
   memoryPaths: { recapHebdo: string; relanceStyle: string };
   documents: { bail: string; charte: string };
+  workflows: { lateDeliveries: string };
 }
 
 interface Scope {
@@ -325,6 +328,52 @@ const ensureDocument = async (
   return sourceId;
 };
 
+/**
+ * Synthetic workflow card, indexed straight into `ai_vectors`
+ * (source_type='workflows') — same shortcut as `ensureDocument`: the recall
+ * capability arm reads vectors, never the `workflows` table, so this exercises
+ * the real path without a playbook row. Content mirrors `buildWorkflowCard`
+ * (`@fretik/shared/services/workflows/vector-refresh`) — goal first, then the
+ * task titles, because a user asks for the OUTCOME.
+ */
+const ensureWorkflowCard = async (
+  scope: Scope,
+  name: string,
+  card: string,
+): Promise<string> => {
+  const rows = await db
+    .select({ sourceId: aiVectors.sourceId })
+    .from(aiVectors)
+    .where(
+      and(
+        eq(aiVectors.sourceType, "workflows"),
+        eq(aiVectors.teamId, scope.teamId),
+        sql`${aiVectors.metadata}->>'name' = ${name}`,
+      ),
+    )
+    .limit(1);
+  const first = rows[0];
+  if (first) return first.sourceId;
+  const sourceId = crypto.randomUUID();
+  await vectorizeSource({
+    sourceType: "workflows",
+    sourceId,
+    content: card,
+    metadata: {
+      name,
+      description: "",
+      trigger_type: "manual",
+      status: "active",
+      task_count: 3,
+      content_hash: "",
+      version_indexed_at: new Date().toISOString(),
+    },
+    teamId: scope.teamId,
+    organizationId: scope.organizationId,
+  });
+  return sourceId;
+};
+
 export const ensureRecallFixtures = async (
   scope: Scope,
 ): Promise<RecallFixtures> => {
@@ -382,6 +431,18 @@ export const ensureRecallFixtures = async (
     secteur: "transport et logistique",
     note_interne: "Transporteur pour les expéditions Benelux.",
   });
+  // Usage-vs-relevance subject — isolated vocabulary (software support /
+  // tickets) so its episodes only compete on the Callisto question.
+  const callisto = await ensureRecord(
+    scope,
+    supplierTypeId,
+    "Callisto Systems",
+    {
+      ville: "Berlin",
+      secteur: "éditeur logiciel — outil de ticketing",
+      note_interne: "Éditeur de l'outil de suivi des tickets internes.",
+    },
+  );
   const distractors: string[] = [];
   for (const d of DISTRACTORS) {
     distractors.push(
@@ -466,6 +527,50 @@ export const ensureRecallFixtures = async (
     occurredTo: new Date("2026-06-30T17:00:00Z"),
   });
 
+  // Usage-vs-relevance cluster (rec-graph-usage-vs-relevance): three
+  // heavily-recalled peripheral episodes against one fresh, directly relevant
+  // one, all anchored on Callisto. The raw UPDATE below (re-applied on every
+  // ensure, bypassing the ORM's $onUpdateFn) pins the geometry: crowders 10
+  // days old with 60 recalls, the relevant episode fresh with none. Unbounded
+  // boost ranks the crowders at now+50d and evicts the relevant episode from
+  // the graph arm's 3 slots; a 7-day cap ranks them at now−3d and it wins one.
+  for (const [week, note] of [
+    [
+      "semaine 27",
+      "Point de suivi hebdomadaire avec Callisto Systems : revue du backlog de tickets, pas d'incident majeur, prochaine revue planifiée.",
+    ],
+    [
+      "semaine 28",
+      "Suivi hebdomadaire Callisto Systems : mise à jour mineure de l'outil déployée, temps de réponse stables, rien à signaler.",
+    ],
+    [
+      "semaine 29",
+      "Suivi hebdomadaire Callisto Systems : volumétrie de tickets en légère baisse, revue des accès utilisateurs effectuée.",
+    ],
+  ] as const) {
+    await ensureEpisode(scope, {
+      title: `Callisto Systems — suivi hebdo (${week})`,
+      summary: note,
+      recordIds: [callisto],
+    });
+  }
+  const callistoFresh = await ensureEpisode(scope, {
+    title: "Callisto Systems — nouveau contact support",
+    summary:
+      "Changement d'interlocuteur chez Callisto Systems : **Lena Voss** (l.voss@callisto.example) reprend le suivi de nos tickets à compter de cette semaine. L'ancien interlocuteur, Marek Jansen, quitte le support — ne plus lui adresser de demandes.",
+    recordIds: [callisto],
+  });
+  await db.execute(sql`
+    UPDATE ai_episodes
+    SET updated_at = now() - interval '10 days', recall_count = 60
+    WHERE team_id = ${scope.teamId} AND title LIKE 'Callisto Systems — suivi hebdo%'
+  `);
+  await db.execute(sql`
+    UPDATE ai_episodes
+    SET updated_at = now(), recall_count = 0
+    WHERE id = ${callistoFresh}
+  `);
+
   const recapHebdoPath = "team/processes/recap-hebdo-fournisseurs.md";
   await ensureMemory(
     scope,
@@ -492,6 +597,16 @@ export const ensureRecallFixtures = async (
     "# Charte des achats responsables\n\nLa présente charte encadre les relations avec l'ensemble des fournisseurs référencés.\n\n- Privilégier les fournisseurs disposant d'une certification environnementale.\n- Tout nouveau fournisseur fait l'objet d'une évaluation documentée avant référencement.\n- Les paiements sont effectués à 30 jours fin de mois, sans exception.\n- Un audit qualité est mené chaque année sur au moins 20 % du panel fournisseurs.",
   );
 
+  // The capability axis: a workflow whose GOAL is the outcome a user would ask
+  // for in plain words, never naming a workflow. Deliberately worded around
+  // suppliers and deliveries so it also probes the false positive — every
+  // supplier question in this suite shares that vocabulary with it.
+  const lateDeliveries = await ensureWorkflowCard(
+    scope,
+    "Récap des livraisons fournisseurs en retard",
+    "Workflow: Récap des livraisons fournisseurs en retard\nGoal: produire la liste des livraisons fournisseurs en retard et l'envoyer aux acheteurs.\nStarted by: manuellement, ou tous les lundis à 8h.\nSteps:\n1. Collecter les livraisons attendues — lister les livraisons dont la date prévue est dépassée.\n2. Recouper avec les fournisseurs — rattacher chaque retard à son fournisseur et à son contrat.\n3. Envoyer le récapitulatif — tableau des retards par fournisseur, envoyé aux acheteurs.",
+  );
+
   return {
     organizationId: scope.organizationId,
     teamId: scope.teamId,
@@ -502,11 +617,20 @@ export const ensureRecallFixtures = async (
       sirius,
       horizon,
       vega,
+      callisto,
       distractors,
     },
-    episodes: { contract, pricingOld, privateBail, vegaOld, vegaNew },
+    episodes: {
+      contract,
+      pricingOld,
+      privateBail,
+      vegaOld,
+      vegaNew,
+      callistoFresh,
+    },
     memoryPaths: { recapHebdo: recapHebdoPath, relanceStyle: relanceStylePath },
     documents: { bail, charte },
+    workflows: { lateDeliveries },
   };
 };
 
@@ -523,7 +647,8 @@ export const cleanupRecallFixtures = async (scope: Scope): Promise<void> => {
         e.title.includes("Nordwind") ||
         e.title.includes("Benchmark tarifaire fournisseurs") ||
         e.title.includes("renégociation du bail Sirius") ||
-        e.title.includes("Vega Logistics"),
+        e.title.includes("Vega Logistics") ||
+        e.title.includes("Callisto Systems"),
     )
     .map((e) => e.id);
   if (fixtureEpisodeIds.length > 0) {
@@ -559,6 +684,17 @@ export const cleanupRecallFixtures = async (scope: Scope): Promise<void> => {
         eq(aiVectors.sourceType, "documents"),
         eq(aiVectors.teamId, scope.teamId),
         sql`${aiVectors.metadata}->>'file_name' IN ('bail-sirius-lyon.pdf', 'charte-achats-responsables.pdf')`,
+      ),
+    );
+
+  // Synthetic workflow cards — vectors only (no workflow rows exist).
+  await db
+    .delete(aiVectors)
+    .where(
+      and(
+        eq(aiVectors.sourceType, "workflows"),
+        eq(aiVectors.teamId, scope.teamId),
+        sql`${aiVectors.metadata}->>'name' = 'Récap des livraisons fournisseurs en retard'`,
       ),
     );
 

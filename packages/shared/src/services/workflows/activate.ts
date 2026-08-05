@@ -7,6 +7,7 @@ import { workflowFormActivationError } from "../../schemas/workflow-forms";
 import type { WorkflowResponse } from "../../schemas/workflows";
 import { getWorkflowRow } from "./get";
 import { serializeWorkflow } from "./serialize";
+import { refreshWorkflowVectors } from "./vector-refresh";
 import type { WorkflowRequester } from "./visibility";
 
 /**
@@ -66,5 +67,6 @@ export const activateWorkflow = async (params: {
       and(eq(workflows.id, params.id), eq(workflows.teamId, params.teamId)),
     )
     .returning();
+  if (updated) void refreshWorkflowVectors(updated.id);
   return updated ? serializeWorkflow(updated) : undefined;
 };

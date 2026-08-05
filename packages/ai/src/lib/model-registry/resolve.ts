@@ -60,9 +60,19 @@ export const openrouter = createOpenRouter({
  * - `bare` — no settings object: those call sites (vision, compaction
  *   summariser, cheap one-shots) own their per-call options.
  *
- * NOTE: `sort: "throughput"` is a ROLE fact (pre-extract wants the
- * fastest provider), not a model fact — do not source it from the
- * profile here or `dispatch-cheap` would silently gain it.
+ * NOTE: `preextract` hardcodes `sort: "throughput"` as a ROLE fact — that
+ * hot path wants the fastest provider whatever model is bound to it. Every
+ * other kind sources `sort` and `only` from the PROFILE, which is where
+ * "which upstreams serve this model acceptably, and how to choose among
+ * them" belongs.
+ *
+ * This reversed on 2026-08-05. The rule used to be that `sort` must never
+ * reach the chat kind, so `dispatch-cheap` would not "silently gain it" —
+ * but the effect was that the agent loop, the output-heaviest caller in the
+ * service, was the ONE path that could express no routing preference at all
+ * beyond a hard pin, and therefore fell back to OpenRouter's default price
+ * ordering. Gaining the profile's declared sort is the correct behaviour for
+ * `dispatch-cheap`, not an accident to guard against.
  */
 /**
  * Speed-first routing with a QUALITY floor for the memory-utility judges
@@ -72,16 +82,100 @@ export const openrouter = createOpenRouter({
  * ignored (empirically broken there — injected blocks on noise 6/6 —
  * while quant-listed as "unknown"). `sort: "throughput"` then picks the
  * fastest of what remains (Groq p50 ~0.5s); fallbacks stay enabled.
+ *
+ * These filters bound the pool; they do NOT make it a vetted shortlist.
+ * Measured 2026-08 on gpt-oss-120b (19 endpoints): `"unknown"` alone admits
+ * Amazon Bedrock, Google, DigitalOcean, Mara, Phala and Together, and Groq
+ * itself is quant-listed `"unknown"` — dropping that entry would remove the
+ * fastest upstream, not the unvetted ones. `only` is the instrument for a
+ * shortlist, per call site (see `RECALL_JUDGE_UPSTREAMS`).
  */
+/** Quantization floor for OPEN routing — see the note inside the builder. */
+const QUANTIZATION_FLOOR = ["bf16", "fp16", "unknown"] as const;
+
 const memoryUtilityProvider = (
-  zdr: boolean | undefined,
-): NonNullable<OpenRouterChatSettings["provider"]> => ({
-  require_parameters: true,
-  zdr,
-  sort: "throughput",
-  ignore: ["fireworks"],
-  quantizations: ["bf16", "fp16", "unknown"],
-});
+  profile: ModelProfile,
+  shortlist?: readonly string[],
+): NonNullable<OpenRouterChatSettings["provider"]> => {
+  const { zdr, order, ignore, only } = profile.assessment.provider;
+  // A profile that governs its own serving — by pinning `order` OR by declaring
+  // a vetted `only` pool — is exempt from the quantization floor; one with open
+  // routing takes it. Applying the floor to everything made every other model
+  // untestable here: deepseek-v4-flash is served fp4 on DeepInfra, an endpoint
+  // its profile vets and prices, so the list emptied its pool outright (160/160
+  // calls, "No endpoints found for the request with quantization", measured
+  // 2026-08-03). Quantization was never the real criterion anyway — it stood in
+  // for "this small model loses its format discipline", which is a fact about
+  // gpt-oss-20b, not about fp4.
+  //
+  // `only` has to count here alongside `order`, or moving deepseek-v4-flash off
+  // its pin and onto a vetted pool (2026-08-05) would have silently re-imposed
+  // the floor and reproduced that same empty pool on all three memory roles.
+  const selfGoverned = order !== undefined || only !== undefined;
+  return {
+    require_parameters: true,
+    zdr,
+    sort: "throughput",
+    ignore: ignore ? ["fireworks", ...ignore] : ["fireworks"],
+    ...(order ? { order: [...order] } : {}),
+    ...(selfGoverned ? {} : { quantizations: [...QUANTIZATION_FLOOR] }),
+    // The call-site shortlist (the recall judge's latency guard) wins over the
+    // profile's own pool: it is a HARD filter chosen for a role with a 15 s
+    // ceiling, and intersecting the two could empty the pool.
+    ...((shortlist ?? only) ? { only: [...(shortlist ?? only ?? [])] } : {}),
+  };
+};
+
+/**
+ * The recall judge's upstream shortlist, on a LATENCY criterion: recall runs on
+ * the hot path behind a 15 s hard timeout (`RECALL_TIMEOUT_MS`), and a call
+ * that blows it loses the turn's whole memory block — silently, since recall
+ * soft-fails to null.
+ *
+ * Measured over 200 judge calls (2026-08, gpt-oss-120b): Cerebras mean 1.0 s /
+ * max 4.9 s, Groq mean 2.1 s / max 4.5 s, DeepInfra mean 4.6 s / max 9.7 s.
+ * Two calls hit the timeout, and DeepInfra is the only endpoint whose spread
+ * reaches it — so it is excluded despite being a clean bf16 serving.
+ * `sort: "throughput"` does NOT prevent this: it orders by recently measured
+ * throughput, which is not a per-request latency guarantee.
+ *
+ * Scoped to the `recall` settings kind (the `active-memory` role, tier `fixed`,
+ * so the model under it cannot change) rather than shared with the memory
+ * distillers: `only` is a HARD filter that intersects with `zdr` +
+ * `require_parameters`, gpt-oss-20b has no Cerebras endpoint at all, and the
+ * distillers run off the hot path where 5 s costs nothing.
+ */
+const RECALL_JUDGE_UPSTREAMS = ["cerebras", "groq"] as const;
+
+/**
+ * Reasoning budget for the memory roles on `max-tokens`-style models.
+ *
+ * The shared level table's floor (`minimal` = 512) does not bind on these
+ * tasks: deepseek-v4-flash spent a median 407 reasoning tokens against a 1 500
+ * budget, so every rung above 407 is the same request. Measured 2026-08-04 on
+ * the memory suite: capping at 256 pulls reasoning to 236 tokens and the call
+ * from $0.000121 to $0.000087 (-28 %) with `distill-record-activity` and
+ * `promote-oneoff` — the two cases the model change was bought for — both still
+ * 10/10.
+ *
+ * Deliberately NOT a per-profile `maxTokens`: that field is global to the
+ * profile and deepseek-v4-flash also serves `chat` and `workflow`, where a
+ * 256-token ceiling would be absurd. The budget belongs to the ROLE.
+ */
+const MEMORY_REASONING_MAX_TOKENS = 256;
+
+/**
+ * Reasoning envelope for the memory roles. Effort-style families keep the level
+ * they always had; `max-tokens` families get the tight budget above instead of
+ * the level table's, which they overshoot anyway.
+ */
+const memoryReasoning = (
+  profile: ModelProfile,
+  level: ReasoningLevel,
+): OpenRouterChatSettings["reasoning"] =>
+  profile.assessment.reasoning.style === "max-tokens"
+    ? { enabled: true, max_tokens: MEMORY_REASONING_MAX_TOKENS }
+    : reasoningParamForProfile(profile, level);
 
 export const settingsForRole = (
   binding: RoleBinding,
@@ -104,6 +198,9 @@ export const settingsForRole = (
   // doing bulk output-heavy work — e.g. deepseek-v4-flash). A per-profile
   // fact; undefined leaves OpenRouter's default (price) ordering.
   const sort = profile.assessment.provider.sort;
+  // Per-profile HARD allow-list of upstreams — the vetted pool `sort` may pick
+  // from. See `ModelAssessment.provider.only`.
+  const only = profile.assessment.provider.only;
   switch (binding.settingsKind) {
     case "chat":
       return {
@@ -112,6 +209,14 @@ export const settingsForRole = (
           zdr,
           ...(order ? { order: [...order] } : {}),
           ...(ignore ? { ignore: [...ignore] } : {}),
+          // `only` + `sort` were previously dropped on this kind, so the chat
+          // path could express no routing preference beyond a hard pin: a
+          // profile's declared `sort` reached `transform` and `compaction` but
+          // never the agent loop itself, which is the output-heaviest caller of
+          // the three. Forwarding them is what lets the main turn route on live
+          // throughput instead of OpenRouter's default price ordering.
+          ...(only ? { only: [...only] } : {}),
+          ...(sort ? { sort } : {}),
         },
         reasoning: reasoningParamForProfile(profile),
         usage: { include: true },
@@ -121,15 +226,25 @@ export const settingsForRole = (
         reasoning: { effort: "minimal" },
         provider: { require_parameters: true, zdr, sort: "throughput" },
       };
+    // Both memory kinds resolve their reasoning param THROUGH the profile,
+    // exactly like `chat`. A hardcoded `{ effort }` looks equivalent and is
+    // not: it is honoured only by effort-style families, so every
+    // `max-tokens`-style profile (deepseek-v4-flash, MiniMax M3) silently ran
+    // these roles with UNBOUNDED reasoning. That is the whole of the July
+    // "deepseek times out at 13-15 s on the recall judge" result — a plumbing
+    // artefact, not a capability verdict, and it made an entire model family
+    // untestable on memory. `reasoningParamForProfile` sends `max_tokens` to
+    // those families instead (DeepInfra honours it: a 1 500 budget measured
+    // 1 512 tokens) and keeps the effort string for the rest.
     case "active-memory":
       return {
-        provider: memoryUtilityProvider(zdr),
-        reasoning: { effort: "low" },
+        provider: memoryUtilityProvider(profile),
+        reasoning: memoryReasoning(profile, "low"),
       };
     case "recall":
       return {
-        provider: memoryUtilityProvider(zdr),
-        reasoning: { effort: "medium" },
+        provider: memoryUtilityProvider(profile, RECALL_JUDGE_UPSTREAMS),
+        reasoning: memoryReasoning(profile, "medium"),
       };
     case "bare":
       // Bare roles leave the reasoning/usage envelope to the call site, but
@@ -153,6 +268,7 @@ export const settingsForRole = (
           zdr,
           ...(order ? { order: [...order] } : {}),
           ...(ignore ? { ignore: [...ignore] } : {}),
+          ...(only ? { only: [...only] } : {}),
           ...(sort ? { sort } : {}),
         },
       };
@@ -503,6 +619,9 @@ export const ROLE_TIER: Record<ModelRole, ModelTier | "fixed"> = {
   // the recall judge) — a team's utility pick must not degrade it below the
   // 120b that makes temporal re-anchoring reliable.
   "memory-consolidate": "fixed",
+  // Same tier as consolidation: an autonomous write to team-shared memory is
+  // a SYSTEM quality component, not a team preference.
+  "memory-promote": "fixed",
   "compaction-summarizer": "workhorse",
   "cheap-tasks": "utility",
   // FIXED: repair is a SYSTEM reliability component on the hot path of every

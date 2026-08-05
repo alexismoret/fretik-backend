@@ -5,11 +5,13 @@ import {
   episodeVectorMetadataSchema,
   memoryVectorMetadataSchema,
   recordVectorMetadataSchema,
+  workflowVectorMetadataSchema,
 } from "@fretik/shared/schemas/ai";
 import { OpenAPIHono } from "@hono/zod-openapi";
 import { z } from "zod";
 import { internalMiddleware } from "../middlewares/internal";
 import { vectorizeSource } from "../services/vectorize";
+import { vectorizeWorkflow } from "../services/vectorize/workflows";
 import type { HonoInternalAppType } from "../types/hono";
 
 /**
@@ -43,6 +45,7 @@ const MEMORIES_SOURCE: AiVectorSourceType = "memories";
 const CONTEXT_SOURCE: AiVectorSourceType = "context";
 const EPISODES_SOURCE: AiVectorSourceType = "episodes";
 const RECORDS_SOURCE: AiVectorSourceType = "records";
+const WORKFLOWS_SOURCE: AiVectorSourceType = "workflows";
 
 /**
  * Discriminated union on sourceType: a `documents` source must ship a
@@ -127,6 +130,22 @@ const VectorizeRequestSchema = z.discriminatedUnion("sourceType", [
     teamId: z.uuid(),
     organizationId: z.uuid(),
   }),
+  z.object({
+    sourceType: z.literal(WORKFLOWS_SOURCE),
+    /** The workflow id — a workflow card is identified by the workflow. */
+    sourceId: z.uuid(),
+    /** The workflow "card" built by `buildWorkflowCard` — one chunk. */
+    content: z.string().min(1),
+    /** `content_hash` + `version_indexed_at` are computed here, not sent. */
+    metadata: workflowVectorMetadataSchema.omit({
+      content_hash: true,
+      version_indexed_at: true,
+    }),
+    teamId: z.uuid(),
+    organizationId: z.uuid(),
+    /** Owner of a private workflow; NULL when team-shared. */
+    userId: z.uuid().nullable(),
+  }),
 ]);
 
 const vectorizeRoutes = new OpenAPIHono<HonoInternalAppType>();
@@ -150,7 +169,25 @@ vectorizeRoutes.post("/", async (c) => {
     // Forward the whole validated payload. The Zod discriminated union
     // has already narrowed `metadata` against `sourceType`, so this
     // assignment is type-safe without any runtime cast.
-    const result = await vectorizeSource(parsed.data);
+    // Workflow cards go through their own entry point: it owns the
+    // `content_hash` short-circuit, so re-saving a workflow without a
+    // meaningful change costs no embedding.
+    const data = parsed.data;
+    const result =
+      data.sourceType === "workflows"
+        ? await vectorizeWorkflow({
+            workflowId: data.sourceId,
+            teamId: data.teamId,
+            organizationId: data.organizationId,
+            userId: data.userId,
+            name: data.metadata.name,
+            description: data.metadata.description,
+            triggerType: data.metadata.trigger_type,
+            status: data.metadata.status,
+            taskCount: data.metadata.task_count,
+            content: data.content,
+          })
+        : await vectorizeSource(data);
     return c.json(
       {
         success: true,

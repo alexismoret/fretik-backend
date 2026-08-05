@@ -3,6 +3,7 @@ import { publishWorkflowAbort } from "../../lib/workflow-abort";
 import type { WorkflowRunResponse } from "../../schemas/workflows";
 import { finalizeRun } from "./finalize-run";
 import { getWorkflowRun, getWorkflowRunRow } from "./get-run";
+import { onWorkflowRunTerminal } from "./on-run-terminal";
 import type { WorkflowRequester } from "./visibility";
 
 /**
@@ -48,6 +49,18 @@ export const cancelWorkflowRun = async (params: {
     status: "canceled",
     error: { code: "CANCELED", message: "Stopped by a user." },
   });
+
+  // Tell the launching chat. A run canceled while it was still queued or
+  // parked on an approval has no in-flight turn to carry the news, so without
+  // this the conversation waited on it forever.
+  await onWorkflowRunTerminal({ runId: params.runId }).catch(
+    (error: unknown) => {
+      console.warn(
+        `[workflows.cancel] source-conversation notice failed for ${params.runId}:`,
+        error instanceof Error ? error.message : error,
+      );
+    },
+  );
 
   return getWorkflowRun({ id: params.runId, teamId: params.teamId });
 };

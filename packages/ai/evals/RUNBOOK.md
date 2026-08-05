@@ -42,8 +42,49 @@ AI_SERVICE_URL=http://localhost:8083 bun run evals:langfuse -- --run-name <name>
 `src/lib/model-registry/profiles.ts` (the flagship held to 1.000), overridden by
 `--candidate <profileKey>`. Without the pin, the EVAL team's C8 picker choice
 silently overrides the code binding (the 2026-07-17 runs measured `gpt-oss-20b`
-that way). The `evals:memory` / `evals:recall` harnesses are separate and keep
-their own gpt-oss-20b/120b defaults (`--profile` / `--judge-profile`).
+that way). The `evals:memory` / `evals:recall` / `evals:chain` harnesses are
+separate: they run the services IN-PROCESS and take their model from the code
+bindings, overridable with `--profile` / `--judge-profile`.
+
+**The memory harnesses, in one table.** All three share the EVAL team, so the
+fixtures of one decide cases in another — clean up before switching.
+
+|                | What it scores                                                                      | Needs the AI service | Repeats |
+| -------------- | ----------------------------------------------------------------------------------- | -------------------- | ------- |
+| `evals:memory` | each generator in isolation                                                         | no                   | **10**  |
+| `evals:recall` | the `<active_memory>` block                                                         | no                   | **10**  |
+| `evals:chain`  | conversation → distill → consolidate → promote → recall, with per-stage attribution | **yes**              | **10**  |
+
+- **`evals:chain` requires `bun run dev` in this package.** Writing a memory
+  triggers its indexing over HTTP (`callAiService("/internal/vectorize")`,
+  because `@fretik/shared` cannot import `@fretik/ai`), the call is
+  fire-and-forget, and its errors are swallowed by design. With no listener the
+  promoted memory is simply never indexed, recall cannot retrieve it, and the
+  suite reports a chain failure that is really "no dev server was running"
+  (measured 2026-08-04: 0/5, zero vectors, 20 s of waiting included).
+- **Ten repeats, not three.** Until 2026-08-03 the memory suite defaulted to 3
+  and printed "16/16"; at 10 the same code was 12/16 — three bimodal cases and
+  one dead. Three repeats cannot separate a 58 % case from a 100 % one, so a
+  3-repeat number is not evidence for or against anything.
+- **Isolation:** `evals:memory -- --cleanup` and `evals:chain -- --cleanup`
+  before any `evals:recall` run — their supplier fixtures otherwise contaminate
+  `rec-volume-selectivity` and the NONE cases.
+- **Closure rule for a contested case.** Stable-at-N=10 cannot separate ~93 %
+  from ~99 % — a case flagged `BIMODAL` is decided by a targeted run
+  (`--case <id> --repeats 30`) and counts as CLOSED at **≥ 29/30**. Never
+  arbitrate two whole-suite totals against each other; only paired, per-case
+  numbers decide anything (the 2026-08-04 "15/16 vs 13/16" was pure draw
+  noise — the bimodal set permuted between runs while the code barely moved).
+
+**Frozen baselines — 2026-08-05** (`freeze-*` / `n30-*` runs, code bindings:
+extract/distill/promote = deepseek-v4-flash, consolidate + recall judge =
+gpt-oss-120b):
+
+| Suite                     | Frozen               | Detail                                                                                                                                                                                                                                                                         |
+| ------------------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `evals:memory` (17 cases) | 16/17 stable at N=10 | flagged `mem-relation-noise` 9/10 re-ran **30/30** → closed. The four once-contested cases, targeted: reanchor 30/30 · merge 30/30 · revise 29/30 · distill-record-activity 30/30                                                                                              |
+| `evals:chain` (4 cases)   | **4/4** at N=10      | `chain-contradiction-corrected` closed by the consolidation-judge id handles                                                                                                                                                                                                   |
+| `evals:recall` (23 cases) | 22/23 stable at N=10 | **open residual**: `rec-noise-general` — 8/10 in the freeze, **14/30** targeted (historic ~88 %). Judge-side selectivity against a lexically dominant, non-responsive candidate; the hot-path judge model is deliberately out of scope here. The one case of 44 below the bar. |
 
 **Run tiers.** Every curated case is either **core** (behavioral regression — the
 prompt/tool/harness signal, runs on every full baseline) or **`tier: "model-gate"`**

@@ -37,16 +37,21 @@ import { withNamedTrace } from "../../lib/trace-tool";
  */
 const MAX_TEXT_CHARS = 8_000;
 const MAX_MENTIONS = 15;
-const EXTRACT_TIMEOUT_MS = 20_000;
-const EXTRACT_TEMPERATURE = 0;
 /**
- * Worst-case well-formed output (15 mentions, long verbatim labels, code
- * fences) is ~950 tokens; a cap that truncates the JSON loses the WHOLE pass
- * (parse fails → empty), so 2 000 doubles the worst case. Output tokens only
- * cost when generated; reasoning runaway is bounded by the role envelope's
- * `effort: "low"` (see `settingsForRole`, kind `active-memory`).
+ * Sized for the SLOWEST model this role may be pointed at, not the fastest.
+ *
+ * The memory roles run in background workers and nightly crons — nothing here
+ * is on a turn's hot path, so a ceiling costs nothing until it fires, and when
+ * it fires it costs a permanent row (an episode, a link, a learned memory) that
+ * is simply never written. The old 20 s was implicitly a gpt-oss number
+ * (100-300 TPS): at 40 TPS with a 1 500-token reasoning budget this pass needs
+ * ~45 s, so any slower model would have failed the CLOCK rather than the task —
+ * the exact mistake that produced the July "deepseek is too slow" verdict.
  */
-const EXTRACT_MAX_OUTPUT_TOKENS = 2_000;
+const EXTRACT_TIMEOUT_MS = 90_000;
+const EXTRACT_TEMPERATURE = 0;
+/** See `consolidate-episodes.ts`: sized so reasoning cannot starve the answer. */
+const EXTRACT_MAX_OUTPUT_TOKENS = 12_000;
 
 export interface ExtractedMention {
   /** The mention verbatim from the text. */

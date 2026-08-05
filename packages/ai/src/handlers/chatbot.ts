@@ -8,6 +8,7 @@ import {
   getSessionFilePresignedUrl,
   readSessionFile,
 } from "@fretik/shared/lib/chatbot-session-storage";
+import { publishConversationTaskResume } from "@fretik/shared/lib/conversation-task-resume";
 import {
   notFound,
   teamRequired,
@@ -44,6 +45,7 @@ import {
   removePresent,
 } from "@fretik/shared/services/ai/presence";
 import { updateConversation } from "@fretik/shared/services/ai/update";
+import { hasResumableConversationTasks } from "@fretik/shared/services/conversation-tasks/list";
 import { emitDomainEvent } from "@fretik/shared/services/domain-events/emit";
 import { releaseSandbox } from "@fretik/shared/services/e2b/release-sandbox";
 import { getTeamToolPolicies } from "@fretik/shared/services/tool-policies/get-for-team";
@@ -122,6 +124,7 @@ import {
   withSoftTimeout,
 } from "../lib/stream-errors";
 import { withNamedTrace } from "../lib/trace-tool";
+import { uuidv7TimestampMs } from "../lib/uuidv7-time";
 import { chatbotRateLimitMiddleware } from "../middlewares/chatbot-rate-limit";
 import { internalMiddleware } from "../middlewares/internal";
 import { sendChatbotFinishedEmailIfEnabled } from "../services/chatbot-finished-email";
@@ -904,6 +907,7 @@ const buildTurnCallOptions = async (
       attachedFilesBlock.length > 0 ? attachedFilesBlock : undefined,
     chatbotContextManifest: fragments.chatbotContextManifest,
     activeMemoryBlock: activeMemoryRecall?.block,
+    availableCapabilitiesBlock: activeMemoryRecall?.capabilityBlock,
     teamObjectsBlock: fragments.teamObjectsBlock,
     enabledSkillsBlock: fragments.enabledSkillsBlock,
     externalAppConnections: externalApps.externalAppConnections,
@@ -1367,6 +1371,25 @@ export const runChatbotTurn = async (
           streamId: params.resumableStreamId,
           stopped: abortController.signal.aborted,
         });
+      }
+      // Drain background work that finished while this turn held the slot: a
+      // resume needs a free slot, which only exists now. Goes through the
+      // same signal as every other terminal path (rather than calling the
+      // resume directly, which would make this handler and the resume service
+      // import each other) — this process is subscribed, so it comes straight
+      // back. Gated on the registry so idle conversations publish nothing.
+      if (params.conversationId) {
+        const conversationId = params.conversationId;
+        void hasResumableConversationTasks(conversationId)
+          .then(async (owed) => {
+            if (owed) await publishConversationTaskResume(conversationId);
+          })
+          .catch((err: unknown) => {
+            console.warn(
+              `${params.logPrefix} background-task drain failed:`,
+              err instanceof Error ? err.message : err,
+            );
+          });
       }
       await releaseAbortSubscriber();
       // Ship this turn's spans to Langfuse promptly (don't wait for the
@@ -1951,6 +1974,17 @@ export const runChatbotTurn = async (
         try {
           const ctx = getResumableStreamContext();
           await ctx.createNewResumableStream(resumableStreamId, () => stream);
+          // The buffer exists NOW — only now can another viewer attach to it.
+          // `turn-started` fires much earlier (before this turn's setup) so
+          // the UI can gate immediately; this is the separate "you may
+          // attach" signal, and without it viewers raced the registration,
+          // got a 204, and watched a frozen transcript until the turn ended.
+          if (params.conversationId) {
+            await publishConversationEvent(params.conversationId, {
+              type: "turn-stream-ready",
+              streamId: resumableStreamId,
+            });
+          }
         } catch (err) {
           console.error("[chatbot] createNewResumableStream failed:", err);
         }
@@ -2298,6 +2332,15 @@ chatbotRoutes.post("/stream", async (c) => {
 });
 
 /**
+ * How long after a turn claimed the slot its stream buffer is still assumed
+ * to be on its way. Covers the turn setup that runs between the claim and
+ * `createNewResumableStream` (context load, external apps, abort channel) —
+ * seconds at worst, so 15s is generous without keeping a genuinely dead
+ * pointer alive for long.
+ */
+const STREAM_CLAIM_GRACE_MS = 15_000;
+
+/**
  * GET /chatbot/:conversationId/stream — reconnection endpoint.
  *
  * Consumed by `@ai-sdk/vue`'s `DefaultChatTransport.resumeStream()`
@@ -2356,11 +2399,24 @@ chatbotRoutes.get("/:conversationId/stream", async (c) => {
     );
   }
   if (!stream) {
-    // The sentinel has expired (24h TTL), the publisher never got to record
-    // it, or it is orphaned (above). Clear the column so we don't keep
-    // 204-missing and hand back 204 to let the client fall back to the
-    // history.
-    await clearConversationActiveStream(conversationId, activeStreamId);
+    // FRESH CLAIM, NOT AN ORPHAN. A turn claims the slot and publishes
+    // `turn-started` BEFORE its buffer exists — registering it happens deep
+    // inside the turn setup, several awaits later. A viewer that fans in
+    // during that window finds no buffer; clearing the slot here would then
+    // destroy the pointer the real stream is about to need, and every later
+    // resume (this tab, other tabs, the events snapshot) would 204 for the
+    // rest of the turn. So hand back 204 WITHOUT clearing and let the client
+    // retry — the id carries its own claim time, no extra state needed.
+    const claimedAt = uuidv7TimestampMs(activeStreamId);
+    const isFreshClaim =
+      claimedAt !== null && Date.now() - claimedAt < STREAM_CLAIM_GRACE_MS;
+    if (!isFreshClaim) {
+      // The sentinel has expired (24h TTL), the publisher never got to record
+      // it, or it is orphaned (above). Clear the column so we don't keep
+      // 204-missing and hand back 204 to let the client fall back to the
+      // history.
+      await clearConversationActiveStream(conversationId, activeStreamId);
+    }
     return new Response(null, { status: 204 });
   }
 
@@ -2460,6 +2516,17 @@ chatbotRoutes.get("/:conversationId/events", async (c) => {
           type: "turn-started",
           streamId: activeStreamId,
           byUserId: "",
+        }),
+      });
+      // A turn that started before this viewer connected has normally
+      // registered its buffer already, so invite the attach right away. If it
+      // has not (the viewer landed inside the setup window), the real
+      // `turn-stream-ready` follows over this same channel moments later.
+      await stream.writeSSE({
+        event: "message",
+        data: JSON.stringify({
+          type: "turn-stream-ready",
+          streamId: activeStreamId,
         }),
       });
     }

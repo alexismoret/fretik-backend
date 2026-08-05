@@ -3,8 +3,9 @@ import {
   anchorTextToRecords,
   type RecordAnchor,
 } from "@fretik/shared/services/object-records/anchor";
+import { getActiveSpanId, startObservation } from "@langfuse/tracing";
 import { generateText } from "ai";
-import { telemetryFor } from "../../lib/langfuse";
+import { langfuseEnabled, telemetryFor } from "../../lib/langfuse";
 import { resolveMemoryModel } from "../../lib/model-registry/team-model";
 import { searchRAG } from "../search";
 import { gatherGraphNeighborhood, type GraphNeighborhood } from "./graph";
@@ -24,6 +25,9 @@ import { RECALL_JUDGE_SYSTEM_PROMPT } from "./prompt";
  *     preferences, distilled past conversations, semantic record cards.
  *   - `searchRAG(documents)` — uploaded content. Context and skills are
  *     excluded: their catalogues are already injected every turn.
+ *
+ * A fourth arm retrieves workflow cards. It is the CAPABILITY channel and
+ * never reaches the judge — see `CAPABILITY_TOP_K`.
  *
  * Agent-agnostic on purpose: the signature carries scope + message only,
  * so `/internal/agents/*\/invoke` (and future Trigger.dev workflow tasks)
@@ -88,6 +92,43 @@ const DOCUMENTS_TOP_K = 5;
 /** Per-candidate clip — keeps the judge prompt ≤ ~12k chars worst case. */
 const CANDIDATE_MAX_CHARS = 700;
 /**
+ * TRIED AND REVERTED (2026-08): a relevance gate dropping candidates below a
+ * query-relative rerank floor before the judge. It removed 48% of candidates
+ * (the documents arm returns its full top-K even when nothing is relevant —
+ * measured on a supplier follow-up: an invoice, a purchasing charter, a CVE
+ * bulletin and a lease twice), and every required candidate survived it.
+ *
+ * It was still reverted. It had no failing case to fix — the noise was ugly,
+ * not harmful — and the one suite run that included it scored 18/20 against
+ * 20/20 without it. The gate is provably not the cause (it is deterministic:
+ * identical kept-counts across all ten repeats, while the failures were single
+ * repeats), so the reading is inconclusive both ways — which is the point. A
+ * change with an unproven benefit and a measured-worse run does not ship.
+ *
+ * The per-arm scores are still recorded (`recordCandidateScores`), so anyone
+ * revisiting this starts from data rather than from scratch.
+ */
+/**
+ * Capability channel — workflow cards, retrieved alongside the memory arms and
+ * rendered on their OWN budget, never mixed into the judge's candidates.
+ *
+ * A capability is not a fact. Putting the cards in the judge's pool was tried
+ * and reverted: it does not add a fifth source, it competes with the other four
+ * under one fixed bullet budget, and the measured cost was the multi-domain
+ * case collapsing to 1/9 plus false positives on a case that must stay silent.
+ * The judge distills what is TRUE; this answers a different question — does
+ * something that already produces this exist.
+ *
+ * The gate is positional, not a score threshold: the card must essentially top
+ * the whole ranking. "A workflow already does this" is only worth raising
+ * unprompted when nothing in memory is a better answer — a card that merely
+ * shares vocabulary with the message (a supplier workflow on any supplier
+ * question) is exactly the false positive to avoid.
+ */
+const CAPABILITY_TOP_K = 3;
+const CAPABILITY_MARGIN = 0.9;
+const CAPABILITY_MAX_CHARS = 300;
+/**
  * The block itself is ≤ ~500 tokens, but gpt-oss REASONING tokens count
  * toward this budget and a truncated completion loses the whole recall
  * (the eval suite showed medium/high effort silently collapsing to NONE
@@ -146,6 +187,13 @@ export interface UnifiedRecallResult {
   block: string;
   /** Episodes the judge cited — already stamped, exposed for telemetry. */
   recalledEpisodeIds: string[];
+  /**
+   * One workflow card when an existing workflow already produces what the
+   * message asks for. Independent of `block`: it is the judge-free channel, so
+   * it survives a `NONE` verdict — a request nothing in memory helps with is
+   * precisely where "this already exists" is worth raising.
+   */
+  capabilityBlock?: string;
 }
 
 interface CacheEntry {
@@ -255,6 +303,8 @@ export interface RecallSearchHit {
   sourceId: string;
   content: string;
   metadata: unknown;
+  /** Cohere relevance ∈ [0,1]; null when the rerank stage was skipped. */
+  rerankScore?: number | null;
 }
 
 export interface RecallGathered {
@@ -262,6 +312,8 @@ export interface RecallGathered {
   knowledgeResults: RecallSearchHit[];
   documentResults: RecallSearchHit[];
   graph: GraphNeighborhood | null;
+  /** Capability channel — NEVER passed to the judge (see `CAPABILITY_TOP_K`). */
+  workflowResults: RecallSearchHit[];
 }
 
 /**
@@ -273,7 +325,7 @@ export const gatherRecallCandidates = async (
   params: UnifiedRecallParams,
 ): Promise<RecallGathered> => {
   const query = buildRecallQuery(params);
-  const [anchors, knowledge, documents] = await Promise.all([
+  const [anchors, knowledge, documents, workflows] = await Promise.all([
     withArmBudget<RecordAnchor[]>(
       anchorTextToRecords({
         teamId: params.teamId,
@@ -303,6 +355,18 @@ export const gatherRecallCandidates = async (
       topK: DOCUMENTS_TOP_K,
       skipMultiQuery: true,
     }).catch(() => ({ results: [] })),
+    // Capability arm. Free in wall-clock terms — the arms already race in
+    // parallel and the reranker has no concurrency cap — and deliberately
+    // kept out of the judge's pool.
+    searchRAG({
+      query,
+      teamId: params.teamId,
+      organizationId: params.organizationId,
+      userId: params.userId,
+      filters: { sourceTypes: ["workflows"] },
+      topK: CAPABILITY_TOP_K,
+      skipMultiQuery: true,
+    }).catch(() => ({ results: [] })),
   ]);
 
   // Graph neighborhood needs the anchors — second (still bounded) hop.
@@ -315,21 +379,175 @@ export const gatherRecallCandidates = async (
     "graph",
   );
 
+  recordCandidateScores(
+    knowledge.results,
+    documents.results,
+    workflows.results,
+  );
+
   return {
     anchors,
     knowledgeResults: knowledge.results,
     documentResults: documents.results,
     graph,
+    workflowResults: workflows.results,
   };
+};
+
+/**
+ * The capability block — at most one workflow card, or `null`.
+ *
+ * Ranked against the memory arms rather than against its own arm: the gate
+ * asks "is a capability the best thing retrieval found for this message",
+ * which is the question that separates "produce me the late-delivery list"
+ * (the card tops everything) from "how is this supplier doing" (a record
+ * does). See `CAPABILITY_MARGIN`.
+ */
+const buildCapabilityBlock = (gathered: RecallGathered): string | null => {
+  const top = gathered.workflowResults[0];
+  const score = top?.rerankScore;
+  if (!top || typeof score !== "number") return null;
+  const best = Math.max(
+    score,
+    ...[...gathered.knowledgeResults, ...gathered.documentResults].map((h) =>
+      typeof h.rerankScore === "number" ? h.rerankScore : 0,
+    ),
+  );
+  if (score < best * CAPABILITY_MARGIN) return null;
+  const name = metadataString(top.metadata, "name") ?? "Untitled workflow";
+  const summary = top.content
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, CAPABILITY_MAX_CHARS);
+  return `- **${name}** (workflow:${top.sourceId}) — ${summary}`;
+};
+
+/**
+ * Record each arm's rerank-score distribution as a Langfuse observation.
+ *
+ * Calibration data, not decoration: the arms return a fixed top-K each, so a
+ * turn whose corpus holds nothing relevant still ships `DOCUMENTS_TOP_K`
+ * documents into the judge prompt (measured on a supplier follow-up: an
+ * invoice, a purchasing charter, a CVE bulletin and a lease). Any relevance
+ * floor has to be derived from real distributions — Cohere's scores are
+ * query-dependent and not comparable across queries, so a hardcoded threshold
+ * is not a valid instrument.
+ *
+ * Soft-fail and skipped when nothing is traced, exactly like the cost
+ * middleware: telemetry never delays or breaks a turn.
+ */
+const recordCandidateScores = (
+  knowledge: RecallSearchHit[],
+  documents: RecallSearchHit[],
+  workflows: RecallSearchHit[],
+): void => {
+  if (!langfuseEnabled || getActiveSpanId() === undefined) return;
+  const scores = (hits: RecallSearchHit[]): (number | null)[] =>
+    hits.map((h) => (typeof h.rerankScore === "number" ? h.rerankScore : null));
+  try {
+    startObservation("recall-candidates", {
+      metadata: {
+        knowledge: scores(knowledge),
+        knowledgeTypes: knowledge.map((h) => h.sourceType),
+        documents: scores(documents),
+        // The capability arm competes with the memory arms for its gate, so
+        // its scores only mean anything next to theirs.
+        workflows: scores(workflows),
+      },
+    }).end();
+  } catch {
+    // Swallow — recall must never break the main turn.
+  }
 };
 
 export interface JudgeInput {
   prompt: string;
   /** Episode ids actually offered — the stamping/citation allowlist. */
   episodeIdCandidates: Set<string>;
+  /**
+   * Handle → real provenance (`episode:<uuid>`, `memory:<path>`, …). The judge
+   * only ever sees and copies the handle; ids are restored in code.
+   */
+  handles: Map<string, string>;
   /** True = nothing gathered anywhere; skip the judge call entirely. */
   empty: boolean;
 }
+
+/**
+ * Provenance handles — the judge cites `(episode:E1)`, never a 36-char uuid.
+ *
+ * Transcribing a uuid is pure mechanical work with no judgment in it, and the
+ * utility-tier judge fails at it in ways that cannot be enumerated in advance.
+ * Measured on one recall run (2026-08-03), three distinct corruptions of the
+ * SAME id, at temperature 0:
+ *   `(episode:019fc79b-706f-60... )`       truncated with an ellipsis
+ *   `(episode:019fc79b-706f-60b8b0-61d…)`  characters dropped mid-uuid
+ *   `(episode:<uuid>, As of 2026‑06‑30)`   a date appended inside the parens
+ *                                          (U+2011 hyphens — the same Unicode
+ *                                           tic that once leaked an API key
+ *                                           past an ASCII regex)
+ * Each one costs more than a blemish: `runUnifiedRecall` extracts cited
+ * episodes with a regex that needs the id followed immediately by `)`, so a
+ * mangled marker yields NO id, `stampEpisodeRecall` never fires, and the
+ * demotion GC ages out an episode that was in fact recalled. The third form is
+ * the worst — it PASSES the eval (`mustCite` matches a substring, without the
+ * closing paren) while failing in production.
+ *
+ * Repairing the output was tried and rejected: a repair table only ever covers
+ * the corruptions already observed, and the next model finds new ones. Handles
+ * remove the failure mode instead of catching it — a two-character token is
+ * either in the table (exact id, guaranteed) or it is not (provably invented,
+ * and droppable), with no third outcome to discover later.
+ */
+const HANDLE_PREFIX: Record<string, string> = {
+  memory: "M",
+  episode: "E",
+  record: "R",
+  document: "D",
+};
+
+/** Allocates one stable handle per real provenance, and remembers the mapping. */
+const makeHandleAllocator = (): {
+  handleFor: (kind: string, id: string) => string;
+  handles: Map<string, string>;
+} => {
+  const handles = new Map<string, string>();
+  const byReal = new Map<string, string>();
+  const counters = new Map<string, number>();
+  const handleFor = (kind: string, id: string): string => {
+    const real = `${kind}:${id}`;
+    const existing = byReal.get(real);
+    if (existing !== undefined) return existing;
+    const n = (counters.get(kind) ?? 0) + 1;
+    counters.set(kind, n);
+    const handle = `${kind}:${HANDLE_PREFIX[kind] ?? "X"}${n.toString()}`;
+    byReal.set(real, handle);
+    handles.set(handle, real);
+    return handle;
+  };
+  return { handleFor, handles };
+};
+
+/**
+ * Restore real provenance from the handles the judge copied. An unknown handle
+ * is provenance the judge invented — the marker is dropped rather than passed
+ * to the agent, which would otherwise call its tools with a fabricated id.
+ */
+export const expandHandles = (
+  text: string,
+  handles: Map<string, string>,
+): string =>
+  text.replace(
+    /\((memory|episode|record|document):([^)]*)\)/g,
+    (_whole, kind: string, raw: string) => {
+      const real = handles.get(`${kind}:${raw.trim()}`);
+      if (real !== undefined) return `(${real})`;
+      console.warn(
+        `[recall] judge cited an unknown handle ${kind}:${raw.slice(0, 24)} — dropped`,
+      );
+      return "";
+    },
+  );
 
 /** Pure prompt assembly over the gathered candidates. */
 export const buildJudgeInput = (
@@ -341,6 +559,7 @@ export const buildJudgeInput = (
   const records: Candidate[] = [];
   const docs: Candidate[] = [];
   const episodeIdCandidates = new Set<string>();
+  const { handleFor, handles } = makeHandleAllocator();
   // Graph-anchored episodes come first, WITH their summaries — an episode
   // about a record named in the message must never depend on the semantic
   // arm's top-K to reach the judge with substance.
@@ -351,36 +570,54 @@ export const buildJudgeInput = (
         ? `Linked records: ${ep.anchorLabels.join(", ")}\n`
         : "";
     episodes.push({
-      marker: `(episode:${ep.id})`,
+      marker: `(${handleFor("episode", ep.id)})`,
       content: `${linkedLine}${asOfLine(ep.occurredTo?.toISOString() ?? null)}${ep.title}\n${ep.summary}`,
     });
   }
   for (const r of gathered.knowledgeResults) {
     if (r.sourceType === "memories") {
       const path = metadataString(r.metadata, "path") ?? r.sourceId;
-      memories.push({ marker: `(memory:${path})`, content: r.content });
+      memories.push({
+        marker: `(${handleFor("memory", path)})`,
+        content: r.content,
+      });
     } else if (r.sourceType === "episodes") {
       if (episodeIdCandidates.has(r.sourceId)) continue; // already first-class
       episodeIdCandidates.add(r.sourceId);
       const dated = asOfLine(metadataString(r.metadata, "occurred_to"));
       episodes.push({
-        marker: `(episode:${r.sourceId})`,
+        marker: `(${handleFor("episode", r.sourceId)})`,
         content: `${dated}${r.content}`,
       });
     } else if (r.sourceType === "records") {
-      records.push({ marker: `(record:${r.sourceId})`, content: r.content });
+      records.push({
+        marker: `(${handleFor("record", r.sourceId)})`,
+        content: r.content,
+      });
     }
   }
   for (const r of gathered.documentResults) {
+    // The filename rides in the CONTENT, not the marker: anything inside the
+    // parens is something the judge may copy, and a quoted name next to the
+    // handle is an invitation to merge the two.
     const name = metadataString(r.metadata, "file_name");
     docs.push({
-      marker: `(document:${r.sourceId}${name ? ` "${name}"` : ""})`,
-      content: r.content,
+      marker: `(${handleFor("document", r.sourceId)})`,
+      content: `${name ? `File: ${name}\n` : ""}${r.content}`,
     });
   }
 
   const graph = gathered.graph;
   const hasGraph = graph !== null && graph.rendered.length > 0;
+  // The graph arm renders record ids inline (it is pure SQL and knows nothing
+  // about handles). Swap them here, in the one place that owns the mapping, so
+  // no uuid survives anywhere in the judge's input.
+  const graphRendered = hasGraph
+    ? graph.rendered.replace(
+        /\(record:([0-9a-fA-F-]{36})\)/g,
+        (_whole, id: string) => `(${handleFor("record", id)})`,
+      )
+    : "";
   const empty =
     memories.length === 0 &&
     episodes.length === 0 &&
@@ -406,16 +643,16 @@ export const buildJudgeInput = (
     renderCandidates("Records", records) +
     renderCandidates("Documents", docs) +
     (hasGraph
-      ? `## Graph neighborhood (records whose NAME string-matched the message — the match can be coincidental, judge it against the message)\n\n${graph.rendered}\n\n`
+      ? `## Graph neighborhood (records whose NAME string-matched the message — the match can be coincidental, judge it against the message)\n\n${graphRendered}\n\n`
       : "") +
     // Trailing reminders — the position small utility models obey best:
     // format discipline, the per-source inclusion contract, false-match
     // discrimination (mid-prompt versions of these were consistently skipped).
     // DELIBERATE REPETITION of RECALL_JUDGE_SYSTEM_PROMPT rules (prompt.ts) —
     // keep the two in sync when editing either.
-    `Reply with exactly NONE when nothing overlaps the message. Otherwise reply with the sectioned block — the first line must be FACTS:, EPISODES:, or GRAPH:. Every source that overlaps gets its own bullet: a matching Working memory AND the entity's Records card in FACTS, an overlapping "Past episodes" in EPISODES (decisions and outcomes), a genuine anchor's graph line in GRAPH. Drop any match the message does not actually refer to (a name used as an ordinary word matches coincidentally; near-identical spellings are the same entity). Never answer the user message itself.`;
+    `Reply with exactly NONE when nothing overlaps the message. Otherwise reply with the sectioned block — the first line must be FACTS:, EPISODES:, or GRAPH:. Every source that overlaps gets its own bullet: a matching Working memory AND the entity's Records card in FACTS, an overlapping "Past episodes" in EPISODES (decisions and outcomes), every line of a genuine anchor in GRAPH — that call is about the anchor, not about whether the line answers the message. Drop any match the message does not actually refer to (a name used as an ordinary word matches coincidentally; near-identical spellings are the same entity). Copy each tag exactly as printed, e.g. (episode:E1) — nothing else inside the parentheses. Never answer the user message itself.`;
 
-  return { prompt, episodeIdCandidates, empty };
+  return { prompt, episodeIdCandidates, handles, empty };
 };
 
 /**
@@ -465,10 +702,13 @@ export const runUnifiedRecall = async (
   try {
     const gathered = await gatherRecallCandidates(params);
     const judgeInput = buildJudgeInput(params, gathered);
+    // Judge-free channel: computed before the judge runs and kept whatever it
+    // decides, so a verdict of NONE still surfaces an existing workflow.
+    const capabilityBlock = buildCapabilityBlock(gathered) ?? undefined;
+    let block: string | null = null;
+    let recalledEpisodeIds: string[] = [];
 
-    if (judgeInput.empty) {
-      result = null;
-    } else {
+    if (!judgeInput.empty) {
       const signals: AbortSignal[] = [AbortSignal.timeout(RECALL_TIMEOUT_MS)];
       if (params.abortSignal) signals.push(params.abortSignal);
       const judgeAbort = AbortSignal.any(signals);
@@ -502,20 +742,21 @@ export const runUnifiedRecall = async (
           `[recall] judge output truncated at ${JUDGE_MAX_OUTPUT_TOKENS.toString()} tokens (finishReason=length)`,
         );
       }
-      const text = gateJudgeOutput(judged.text);
-      if (text === null) {
-        result = null;
-      } else {
+      // Handles → real provenance BEFORE the gate, so everything downstream
+      // (the size cap, the episode-citation regex, the agent's own tool calls)
+      // sees ids that are correct by construction rather than transcribed.
+      block = gateJudgeOutput(expandHandles(judged.text, judgeInput.handles));
+      if (block !== null) {
         // Only ids that were actually offered count as recalled — the
         // judge can't stamp an invented episode.
         const cited = new Set<string>();
-        for (const match of text.matchAll(/\(episode:([^)\s]+)\)/g)) {
+        for (const match of block.matchAll(/\(episode:([^)\s]+)\)/g)) {
           const id = match[1];
           if (id !== undefined && judgeInput.episodeIdCandidates.has(id)) {
             cited.add(id);
           }
         }
-        const recalledEpisodeIds = [...cited];
+        recalledEpisodeIds = [...cited];
         if (recalledEpisodeIds.length > 0) {
           // Fire-and-forget — recall stats drive the L5 demotion GC, and
           // a failed stamp must never delay the turn.
@@ -526,9 +767,17 @@ export const runUnifiedRecall = async (
             );
           });
         }
-        result = { block: text, recalledEpisodeIds };
       }
     }
+
+    result =
+      block === null && capabilityBlock === undefined
+        ? null
+        : {
+            block: block ?? "",
+            recalledEpisodeIds,
+            ...(capabilityBlock !== undefined ? { capabilityBlock } : {}),
+          };
   } catch (err) {
     // Swallow — recall must never break the main turn.
     console.warn(

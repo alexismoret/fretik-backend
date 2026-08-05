@@ -1,7 +1,7 @@
 import { generateText } from "ai";
 import { telemetryFor } from "../../lib/langfuse";
 import { instrumentModel } from "../../lib/model-instrumentation";
-import { CHEAP_MODEL } from "../../lib/models";
+import { CHEAP_MODEL, CHEAP_PROVIDER } from "../../lib/models";
 import { openrouter } from "../../lib/openrouter";
 import { withSlot } from "../../lib/rate-limit";
 import type { Chunk } from "./chunker";
@@ -117,6 +117,7 @@ export interface EnrichedChunk {
 const cheapModel = instrumentModel(
   openrouter.chat(CHEAP_MODEL, {
     reasoning: { effort: "low" },
+    provider: CHEAP_PROVIDER,
   }),
 );
 

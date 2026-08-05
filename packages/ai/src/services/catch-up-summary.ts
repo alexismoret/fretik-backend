@@ -2,6 +2,7 @@ import { type UIMessage, streamText } from "ai";
 import { telemetryFor } from "../lib/langfuse";
 import { instrumentModel } from "../lib/model-instrumentation";
 import { cheapModelIdForTeam } from "../lib/model-registry/team-model";
+import { cheapProviderFor } from "../lib/models";
 import { openrouter } from "../lib/openrouter";
 
 type Participant = { userId: string; name: string };
@@ -29,7 +30,10 @@ const summaryModelFor = (
   const cached = summaryModelById.get(modelId);
   if (cached) return cached;
   const model = instrumentModel(
-    openrouter.chat(modelId, { reasoning: { effort: "low" } }),
+    openrouter.chat(modelId, {
+      reasoning: { effort: "low" },
+      provider: cheapProviderFor(modelId),
+    }),
   );
   summaryModelById.set(modelId, model);
   return model;

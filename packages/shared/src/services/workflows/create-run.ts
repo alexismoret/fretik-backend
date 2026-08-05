@@ -11,6 +11,8 @@ import type {
 } from "../../schemas/workflows";
 import { WORKFLOW_MAX_DURATION_MINUTES } from "../../schemas/workflows";
 import { getTeamBotUserId } from "../auth/bot-user";
+import { completeConversationTask } from "../conversation-tasks/complete";
+import { registerConversationTask } from "../conversation-tasks/register";
 import { attachRunFiles, type RunAttachment } from "./attach-run-files";
 import { finalizeRun } from "./finalize-run";
 import { sendRunCompletionEmailIfEnabled } from "./send-run-completion-email";
@@ -60,6 +62,19 @@ export const createWorkflowRun = async (params: {
 }): Promise<WorkflowRunResponse> => {
   const { workflow } = params;
 
+  // A launch that dies at creation is reported to the launching turn inline —
+  // that turn is still streaming. Settle AND consume the wait record so the
+  // conversation is never woken for an error it already handled.
+  const settleFailedLaunch = async (runId: string): Promise<void> => {
+    if (!params.sourceConversationId) return;
+    await completeConversationTask({
+      kind: "workflow_run",
+      ref: runId,
+      status: "failed",
+      consume: true,
+    });
+  };
+
   // Team workflows act as the team bot; user-scoped workflows act as their
   // owner. This identity feeds the sandbox JWT, journal attribution, and
   // recall's user-scope gating.
@@ -99,6 +114,21 @@ export const createWorkflowRun = async (params: {
       })
       .returning({ id: workflowRuns.id });
     if (!run) return throwHttpError(500, internalError());
+
+    // A run launched from a chat is something that chat now waits on: record
+    // it in the same transaction, so a run that exists is always tracked and
+    // the conversation can be resumed when it (and its siblings) finish.
+    if (params.sourceConversationId) {
+      await registerConversationTask({
+        tx,
+        conversationId: params.sourceConversationId,
+        kind: "workflow_run",
+        ref: run.id,
+        title: workflow.name,
+        metadata: { workflowId: workflow.id, isTest: params.isTest ?? false },
+      });
+    }
+
     return { runId: run.id, conversationId: conversation.id };
   });
 
@@ -125,6 +155,7 @@ export const createWorkflowRun = async (params: {
         console.warn(`[workflow-run ${runId}] completion email failed:`, err);
       });
     }
+    await settleFailedLaunch(runId);
     const row = await db.query.workflowRuns.findFirst({
       where: { id: runId },
     });
@@ -174,6 +205,7 @@ export const createWorkflowRun = async (params: {
         console.warn(`[workflow-run ${runId}] completion email failed:`, err);
       });
     }
+    await settleFailedLaunch(runId);
     const row = await db.query.workflowRuns.findFirst({
       where: { id: runId },
     });

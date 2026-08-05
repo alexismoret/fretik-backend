@@ -46,6 +46,7 @@ export const DOMAIN_EVENT_TYPES = [
   // Distilled episodic memory.
   "episode.created",
   "episode.consolidated",
+  "episode.unsuperseded",
   "episode.demoted",
   "episode.deleted",
   "episode.purged",

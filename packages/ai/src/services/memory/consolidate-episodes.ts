@@ -32,10 +32,27 @@ import { vectorizeSource } from "../vectorize";
 
 const MAX_RECENT_EVENTS = 20;
 const MAX_PAYLOAD_CHARS = 150;
-const CONSOLIDATE_TIMEOUT_MS = 45_000;
+/** Off the hot path — sized for the slowest eligible model, see `extract-mentions.ts`. */
+const CONSOLIDATE_TIMEOUT_MS = 120_000;
 const CONSOLIDATE_TEMPERATURE = 0;
 /** Merged summary ~1500 chars + low-effort reasoning — distill envelope. */
-const CONSOLIDATE_MAX_OUTPUT_TOKENS = 3_000;
+/**
+ * Sized so REASONING cannot starve the answer, not so the answer fits.
+ *
+ * Reasoning tokens count against this cap, and the upstream does not reliably
+ * honour the reasoning budget we ask for: measured 2026-08-04 on
+ * deepseek-v4-flash with `reasoning.max_tokens: 256`, one consolidation call
+ * produced 3 380 reasoning tokens, hit `completion = 3 000` exactly, and
+ * returned `finish_reason: length` — a truncated JSON that parses to nothing,
+ * so the judge silently NOOPs and the contradiction it was asked to resolve
+ * survives. Same trap `JUDGE_MAX_OUTPUT_TOKENS` documents in
+ * `services/recall/recall.ts`, which the memory services never inherited.
+ *
+ * Output tokens are billed only when generated, so a ceiling this high costs
+ * nothing until something goes wrong — and when it does, it fails loudly
+ * (`finishReason === "length"` is logged) instead of as an empty result.
+ */
+const CONSOLIDATE_MAX_OUTPUT_TOKENS = 12_000;
 
 const judgeOutputSchema = z.object({
   action: z.enum(["MERGE", "REVISE", "NOOP"]),
@@ -50,8 +67,9 @@ Output strict JSON, nothing else:
 {"action":"MERGE"|"REVISE"|"NOOP","title":"...","summary":"...","supersededIds":["..."]}
 
 - MERGE: the episodes tell ONE story (the same matter across conversations, redundant retellings). Write the unified episode — title ≤100 chars; summary markdown ~1500 chars keeping every durable fact, decision, and open point from the members: merging must lose nothing. supersededIds = every episode folded in.
-- REVISE: one or more episodes state something the other episodes or the recent activity contradict or made obsolete — including a future-dated plan whose date is now past relative to <today> (rewrite it to reflect what happened, or drop the stale claim). Write the corrected episode (same shape as MERGE); supersededIds = only the outdated episodes. If the corrected episode ends up absorbing every member's durable content, that is a MERGE — supersede them all.
+- REVISE: one or more episodes state something the other episodes or the recent activity contradict or made obsolete — including a future-dated plan whose date is now past relative to <today>. Write the corrected episode (same shape as MERGE), and state the current value or outcome the newest evidence establishes — never merely drop the stale claim; dropping without replacement is only for claims nothing newer supersedes. supersededIds = only the outdated episodes. If the corrected episode ends up absorbing every member's durable content, that is a MERGE — supersede them all.
 - NOOP: distinct matters that merely share a record — keep them separate. Omit title/summary/supersededIds.
+- supersededIds: copy the episode id tags exactly as printed (e.g. "E2") — nothing else inside the strings.
 - Never invent facts absent from the inputs. Unsure → NOOP.
 - NEVER carry secrets (passwords, API keys, tokens) or unrelated personal data into the written episode.
 - Write title and summary in the episodes' language.`;
@@ -130,7 +148,16 @@ export const consolidateEpisodes = async (input: {
       : [];
   recentEvents.reverse();
 
-  const episodeBlocks = episodes.map((e) => {
+  // Short id tags (E1, E2, …) instead of raw uuids — the judge must COPY ids
+  // into supersededIds, and uuid transcription is a measured failure class:
+  // 4 of the 5 consolidate failures across r19 + the N=30 baselines
+  // (2026-08-05) were `degraded` coercions of a correct action. Same cure as
+  // the recall judge's provenance handles: the model only ever sees tags, and
+  // expansion back to uuids happens in code below.
+  const idByTag = new Map(
+    episodes.map((e, i) => [`E${(i + 1).toString()}`, e.id]),
+  );
+  const episodeBlocks = episodes.map((e, i) => {
     const window = [
       e.occurredFrom?.toISOString().slice(0, 10),
       e.occurredTo?.toISOString().slice(0, 10),
@@ -141,7 +168,7 @@ export const consolidateEpisodes = async (input: {
       .map((r) => labelOf.get(r.recordId))
       .filter(Boolean)
       .join(", ");
-    return `<episode id="${e.id}" kind="${e.kind}"${window ? ` occurred="${window}"` : ""}${anchors ? ` records="${anchors}"` : ""}>\n${e.title}\n${e.summary}\n</episode>`;
+    return `<episode id="E${(i + 1).toString()}" kind="${e.kind}"${window ? ` occurred="${window}"` : ""}${anchors ? ` records="${anchors}"` : ""}>\n${e.title}\n${e.summary}\n</episode>`;
   });
   const eventLines = recentEvents.map((e) => {
     const payload =
@@ -174,7 +201,7 @@ export const consolidateEpisodes = async (input: {
         teamId,
         input.modelProfileKey,
       );
-      const { text: raw } = await generateText({
+      const { text: raw, finishReason } = await generateText({
         model,
         instructions: SYSTEM_PROMPT,
         prompt,
@@ -183,6 +210,15 @@ export const consolidateEpisodes = async (input: {
         abortSignal: AbortSignal.timeout(CONSOLIDATE_TIMEOUT_MS),
         telemetry: telemetryFor("memory-consolidate"),
       });
+      if (finishReason === "length") {
+        // Reasoning ate the output budget before the answer started, so the
+        // JSON below parses to nothing and this pass silently does nothing.
+        // Loud on purpose — it is how a truncated consolidation looked like a
+        // NOOP for a whole eval run (2026-08-04).
+        console.warn(
+          `[memory-consolidate] output truncated at ${CONSOLIDATE_MAX_OUTPUT_TOKENS.toString()} tokens (finishReason=length)`,
+        );
+      }
       const parsed = parseJudgeOutput(raw);
       if (!parsed) {
         console.warn(
@@ -194,20 +230,33 @@ export const consolidateEpisodes = async (input: {
   );
   if (!output || output.action === "NOOP") return NOOP;
 
-  // Structural guards — only loaded active members can be superseded, and
-  // the action must carry a real replacement.
-  const loadedIds = new Set(episodes.map((e) => e.id));
-  const supersededIds = [...new Set(output.supersededIds)].filter((id) =>
-    loadedIds.has(id),
-  );
+  // Expand tags back to uuids — an unknown tag is dropped loudly, and the
+  // structural guard below then decides whether what remains still carries a
+  // real replacement.
+  const supersededIds = [
+    ...new Set(
+      output.supersededIds.flatMap((tag) => {
+        const id = idByTag.get(tag.trim());
+        if (id === undefined) {
+          console.warn(
+            `[memory-consolidate] judge cited an unknown episode tag "${tag.slice(0, 24)}" — dropped`,
+          );
+          return [];
+        }
+        return [id];
+      }),
+    ),
+  ];
   const minSuperseded = output.action === "MERGE" ? 2 : 1;
   if (
     supersededIds.length < minSuperseded ||
     !output.title?.trim() ||
     !output.summary?.trim()
   ) {
+    // Name the failing branch — `degraded` alone cost a forensics pass
+    // (2026-08-05) to tell a mangled id list from an empty summary.
     console.warn(
-      `[memory-consolidate] degraded ${output.action} output for team ${teamId} — NOOP`,
+      `[memory-consolidate] degraded ${output.action} output for team ${teamId} (superseded ${supersededIds.length.toString()}/${minSuperseded.toString()}, title ${output.title?.trim() ? "ok" : "EMPTY"}, summary ${output.summary?.trim() ? "ok" : "EMPTY"}) — NOOP`,
     );
     return NOOP;
   }

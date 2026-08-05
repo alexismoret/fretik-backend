@@ -7,6 +7,7 @@ import {
   type WorkflowResponse,
 } from "../../schemas/workflows";
 import { serializeWorkflow } from "./serialize";
+import { refreshWorkflowVectors } from "./vector-refresh";
 import { workflowOwnerWriteError } from "./visibility";
 
 /**
@@ -58,5 +59,7 @@ export const createWorkflow = async (params: {
     .returning();
 
   if (!row) return throwHttpError(500, internalError());
+  // Index it so the assistant can find it later from a plain request.
+  void refreshWorkflowVectors(row.id);
   return serializeWorkflow(row);
 };

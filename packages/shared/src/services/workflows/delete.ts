@@ -9,6 +9,7 @@ import { hideEpisodesForWorkflow } from "../episodes/hide-for-workflow";
 import { cancelWorkflowRun } from "./cancel-run";
 import { getWorkflowRow } from "./get";
 import { serializeWorkflow } from "./serialize";
+import { deleteWorkflowVectorRows } from "./vector-refresh";
 import type { WorkflowRequester } from "./visibility";
 
 /** A run is done when it can no longer fire a turn or hold a Trigger.dev task. */
@@ -108,6 +109,10 @@ export const deleteWorkflow = async (params: {
       }),
     ]),
   );
+
+  // `ai_vectors.source_id` is a plain string with no FK, so the cascade never
+  // reaches the workflow's card — drop it explicitly or it stays searchable.
+  await deleteWorkflowVectorRows(params.id);
 
   return serialized;
 };

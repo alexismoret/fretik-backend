@@ -2,6 +2,7 @@ import { generateText } from "ai";
 import { telemetryFor } from "../../lib/langfuse";
 import { instrumentModel } from "../../lib/model-instrumentation";
 import { cheapModelIdForTeam } from "../../lib/model-registry/team-model";
+import { cheapProviderFor } from "../../lib/models";
 import { openrouter } from "../../lib/openrouter";
 import { withSlot } from "../../lib/rate-limit";
 
@@ -50,7 +51,10 @@ const titleModelFor = (modelId: string): ReturnType<typeof instrumentModel> => {
   const cached = titleModelById.get(modelId);
   if (cached) return cached;
   const model = instrumentModel(
-    openrouter.chat(modelId, { reasoning: { effort: "low" } }),
+    openrouter.chat(modelId, {
+      reasoning: { effort: "low" },
+      provider: cheapProviderFor(modelId),
+    }),
   );
   titleModelById.set(modelId, model);
   return model;

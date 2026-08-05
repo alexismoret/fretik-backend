@@ -21,8 +21,15 @@ const REDACTIONS: { re: RegExp; to: string }[] = [
   },
   { re: /Bearer\s+[A-Za-z0-9._-]+/g, to: "Bearer ***" },
   { re: /\b(?:sk|pk|rk)-[A-Za-z0-9_-]{16,}\b/g, to: "***SECRET***" },
-  // Financial identifiers.
-  { re: /\b\d{4}[- ]?\d{4}[- ]?\d{4}[- ]?\d{4}\b/g, to: "***CARD***" },
+  // Financial identifiers. The card pattern is anchored on a NON-numeric left
+  // boundary: `\b` alone fires after the dot of a float, so a 16-digit mantissa
+  // is redacted as a card number — measured on the recall eval, whose
+  // `passFraction: 0.6666666666666666` came back `0.***CARD***` and made the
+  // stored payload unparseable.
+  {
+    re: /(^|[^\d.])(\d{4}[- ]?\d{4}[- ]?\d{4}[- ]?\d{4})\b/g,
+    to: "$1***CARD***",
+  },
   { re: /\b[A-Z]{2}\d{2}[A-Z0-9]{10,30}\b/g, to: "***IBAN***" },
   // Contact PII.
   { re: /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, to: "***EMAIL***" },

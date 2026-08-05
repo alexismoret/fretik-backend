@@ -349,7 +349,41 @@ export interface ModelAssessment {
   provider: {
     requireParameters: true;
     zdr?: boolean;
+    /**
+     * How OpenRouter picks WITHIN the remaining pool (`provider.sort`),
+     * re-evaluated on every request from its own live measurements.
+     *
+     * This is the knob that makes routing ADAPTIVE, and it is the opposite of
+     * `order`: a pin reroutes only when an upstream FAILS, so one that merely
+     * gets slow keeps the traffic. Note the two cannot be combined — `order` is
+     * consulted first, so a profile carrying both silently runs unsorted.
+     *
+     * `"throughput"` (tokens/second) rather than latency is deliberate for an
+     * agent: a turn emits reasoning, tool calls and an answer, so decode time
+     * dominates. Measured 2026-08-05 on a 4 096-token generation, the spread on
+     * time-to-first-token across the pool was ~0.6 s while the spread on
+     * completion was 14.9 s to 62.0 s.
+     */
     sort?: "throughput";
+    /**
+     * HARD allow-list of upstream slugs (OpenRouter `provider.only`) — the
+     * vetted pool `sort` is allowed to choose from.
+     *
+     * Reach for this when "which upstream serves this model" is a QUALITY
+     * question no routing metric expresses. On `deepseek-v4-flash-0731`, ~12
+     * upstreams are ZDR-reachable and most are disqualified for reasons speed
+     * and price are blind to: several never populate the implicit prompt cache
+     * (a miss costs ~4.6× on a Fretik turn), and several never stop reasoning.
+     * A sort with no allow-list picks them happily.
+     *
+     * Unlike `order` this is HARD — `allow_fallbacks` cannot reopen the wider
+     * pool, so an empty list is a 404 rather than a slow answer. List enough
+     * upstreams to survive one being out, and rely on the role's FALLBACK MODEL
+     * beyond that. Verified 2026-08-05: over 10 consecutive turns with a
+     * rate-limited upstream in the pool, 0 errors reached the caller — OpenRouter
+     * fails over inside the list silently.
+     */
+    only?: readonly string[];
     /**
      * Preferred upstream provider slug order (OpenRouter `provider.order`).
      * Set when a model is served by MULTIPLE upstreams with INDEPENDENT
@@ -449,6 +483,7 @@ export type ModelRole =
   | "memory-extract"
   | "memory-distill"
   | "memory-consolidate"
+  | "memory-promote"
   | "compaction-summarizer"
   | "cheap-tasks"
   | "tool-repair"

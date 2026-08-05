@@ -4,6 +4,7 @@ import {
   aiAgentTypeEnum,
   aiConversationMemberRoleEnum,
   aiVectorSourceTypeEnum,
+  CONVERSATION_TASK_KINDS,
 } from "../db/schema";
 import { reasoningLevelSchema } from "./reasoning";
 
@@ -175,6 +176,16 @@ export const recordVectorMetadataSchema = z.object({
   label: z.string().min(1),
 });
 
+export const workflowVectorMetadataSchema = z.object({
+  name: z.string().min(1),
+  description: z.string(),
+  trigger_type: z.string().min(1),
+  status: z.string().min(1),
+  task_count: z.number().int().nonnegative(),
+  content_hash: z.string().min(1),
+  version_indexed_at: z.string().min(1),
+});
+
 // ==================== //
 // Conversation CRUD    //
 // ==================== //
@@ -307,6 +318,35 @@ export const UiMessageSchema = z.custom<UIMessage>(
 export type UiMessagePayload = z.infer<typeof UiMessageSchema>;
 
 export const MessagesResponseSchema = z.array(UiMessageSchema);
+
+// ==================== //
+// Background tasks     //
+// ==================== //
+
+/**
+ * A piece of background work a conversation is waiting on — today a workflow
+ * run the agent launched. Surfaced so the chat can show what is still running
+ * and let the user stop it.
+ */
+export const ConversationBackgroundTaskSchema = z.object({
+  id: z.uuid(),
+  kind: z.enum(CONVERSATION_TASK_KINDS),
+  /** Id of the work in its own domain — a workflow run id for `workflow_run`. */
+  ref: z.string(),
+  title: z.string(),
+  status: z.enum(["pending", "succeeded", "failed", "canceled"]),
+  workflowId: z.uuid().nullable(),
+  isTest: z.boolean(),
+  createdAt: z.date(),
+  completedAt: z.date().nullable(),
+});
+export type ConversationBackgroundTaskResponse = z.infer<
+  typeof ConversationBackgroundTaskSchema
+>;
+
+export const ConversationBackgroundTasksResponseSchema = z.object({
+  tasks: z.array(ConversationBackgroundTaskSchema),
+});
 
 // ==================== //
 // Stream request       //

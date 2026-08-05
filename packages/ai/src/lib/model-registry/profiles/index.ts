@@ -137,28 +137,82 @@ export const ROLE_BINDINGS: Record<ModelRole, RoleBinding> = {
     settingsKind: "recall",
     wrapCache: false,
   },
+  // TWO of the three write roles moved off gpt-oss (2026-08-04, memory-eval
+  // × 10 repeats): deepseek-v4-flash 15/16 against gpt-oss 13/16 on the same
+  // suite, the same day. Consolidation stayed — see its own binding below.
+  //
+  // What decided it is not the totals but WHERE they differ. gpt-oss lost on
+  // judgment and fidelity: `distill-record-activity` returned 8/10, then 5/10,
+  // then 3/10 across runs with nothing substantive changed between them — a
+  // true stability near 50 % that no prompt can lift — and `promote-oneoff`,
+  // which writes a FALSE durable team fact when it slips, sat at 9/10. Both are
+  // 10/10 on deepseek-v4-flash.
+  //
+  // Cost, measured per call on OpenRouter rather than derived from list prices:
+  // $0.000087 against gpt-oss-20b's $0.000021, i.e. ~4x — about $0.66 per
+  // 10 000 memory calls. The gap is reasoning tokens (236 against 6), which is
+  // exactly what was bought. Note the tail: `reasoning.max_tokens` is a request
+  // this route may ignore outright, and a runaway costs ~25x the median (the
+  // consolidation binding documents one at 13 700 tokens against a 256 budget).
+  //
+  // Latency triples (~10 s against ~3 s) and does not matter: these run in
+  // background workers and nightly crons, and the timeouts in
+  // `services/memory/*` were resized for it. `active-memory` stays on gpt-oss
+  // for the opposite reason — it is the only memory role on a turn's hot path,
+  // behind a 15 s ceiling.
+  //
+  // All of the above is at 10 repeats. At 3 — this suite's default until
+  // 2026-08-03 — it printed "16/16" while three cases were bimodal and a fourth
+  // was dead. Do not re-decide any of it on a 3-repeat run.
   "memory-extract": {
     role: "memory-extract",
-    profileKey: "gpt-oss-20b",
+    profileKey: "deepseek-v4-flash",
     settingsKind: "active-memory",
     wrapCache: false,
   },
   "memory-distill": {
     role: "memory-distill",
-    profileKey: "gpt-oss-20b",
+    profileKey: "deepseek-v4-flash",
     settingsKind: "active-memory",
     wrapCache: false,
   },
   "memory-consolidate": {
     role: "memory-consolidate",
-    // P8.2 memory-eval decision: the consolidation judge (MERGE/REVISE/NOOP +
-    // temporal re-anchoring of a plan whose date is now past) needs judgment
-    // gpt-oss-20b delivers unreliably — the reanchor case NOOP'd 1-2/3.
-    // gpt-oss-120b @ effort low → reanchor 5/5, merge/revise/noop stable.
-    // Split from `memory-distill` on purpose: consolidation is low-volume
-    // (nightly per-cluster + eager per just-distilled episode), so the ~3x
-    // model cost lands on a fraction of the (high-volume) distill traffic.
+    // The one write role that did NOT move, and the reason the three are kept
+    // as separate bindings. Head-to-head at 10 repeats on 2026-08-04:
+    // `mem-consolidate-revise` 10/10 on gpt-oss-120b at ~7.7 s against 9/10 on
+    // deepseek-v4-flash at ~31.6 s, and the chain suite's contradiction case
+    // 8/10 — where BOTH failures were deepseek emitting ~13 700 reasoning
+    // tokens against a requested 256, hitting the output cap and returning
+    // truncated JSON, which the judge's defensive parse turns into a silent
+    // NOOP. The contradiction it was asked to resolve then survives.
+    //
+    // No budget knob restrains it: `reasoning.max_tokens` is a request this
+    // route ignores (a factor of 53 here), raising the output cap only made
+    // each runaway cost 25x the median without fixing it, and the calls were
+    // served by the PINNED upstream, so it is not a fallback landing somewhere
+    // worse. Consolidation is also where a wrong result is least recoverable —
+    // a bad MERGE takes episodes out of the active set — so it keeps the model
+    // that does not gamble.
     profileKey: "gpt-oss-120b",
+    settingsKind: "active-memory",
+    wrapCache: false,
+  },
+  "memory-promote": {
+    role: "memory-promote",
+    // Split OUT of `memory-consolidate` on 2026-08-04, because the two tasks
+    // that shared it want opposite models. Consolidation is safest on gpt-oss
+    // (deepseek runs away on reasoning there); promotion is the reverse —
+    // `mem-promote-oneoff` measured 10/10 on deepseek-v4-flash against 6/10 on
+    // gpt-oss-120b at ten repeats.
+    //
+    // That case is the over-generalization guard, and it is the most damaging
+    // failure in the suite: when it slips, a rule that was never true gets
+    // written to team-shared `learned/` memory, where recall then serves it as
+    // a FACT on every later turn. 6/10 means four such writes in ten nights.
+    // Sharing one binding hid this — reverting consolidation silently reverted
+    // promotion with it.
+    profileKey: "deepseek-v4-flash",
     settingsKind: "active-memory",
     wrapCache: false,
   },

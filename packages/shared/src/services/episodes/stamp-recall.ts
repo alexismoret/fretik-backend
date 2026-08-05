@@ -16,6 +16,11 @@ export const stampEpisodeRecall = async (
     .set({
       lastRecalledAt: new Date(),
       recallCount: sql`${aiEpisodes.recallCount} + 1`,
+      // Usage is not edition: pin updated_at, else the ORM's $onUpdateFn
+      // refreshes it on every stamp and CONTENT recency starts tracking recall
+      // usage — the compounding half of the recalled→boosted→recalled loop the
+      // graph arm's RECALL_BOOST_CAP bounds (measured 2026-08-05).
+      updatedAt: sql`${aiEpisodes.updatedAt}`,
     })
     .where(inArray(aiEpisodes.id, episodeIds));
 };

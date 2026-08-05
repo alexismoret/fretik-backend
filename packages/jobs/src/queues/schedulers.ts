@@ -1,4 +1,5 @@
 import {
+  CONVERSATION_TASK_SWEEP_JOB,
   DREAMING_SWEEP_JOB,
   GC_DEMOTE_JOB,
   JOURNAL_SWEEP_JOB,
@@ -69,6 +70,11 @@ export const registerSchedulers = async (): Promise<void> => {
     WORKFLOW_STALL_SWEEP_JOB,
     { every: STALL_SWEEP_INTERVAL_MS },
     { name: WORKFLOW_STALL_SWEEP_JOB, opts: CRON_OPTS },
+  );
+  await maintenance.upsertJobScheduler(
+    CONVERSATION_TASK_SWEEP_JOB,
+    { every: STALL_SWEEP_INTERVAL_MS },
+    { name: CONVERSATION_TASK_SWEEP_JOB, opts: CRON_OPTS },
   );
 
   // Dedicated queue — the refresh re-introspects every MCP connection over the

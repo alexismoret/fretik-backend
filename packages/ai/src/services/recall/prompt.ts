@@ -33,7 +33,13 @@
  * The counterweight is the genuine-reference test (a name used as an
  * ordinary word is a coincidental match). Freshness/abstention rules (P8.1):
  * dated candidates drive most-recent-wins on conflict, and a block that only
- * shares a topic without helping is withheld (NONE). 20/20 recall evals × 5.
+ * shares a topic without helping is withheld (NONE).
+ *
+ * The GRAPH rule decides on the ANCHOR, not on the line. Stated the other way
+ * round it contradicted the relevance rule above it, and the judge coin-flipped:
+ * measured 7/12, then 6/10 at ten repeats, every failure the same dropped link
+ * bullet, with the model's own reasoning arguing the link "is not needed" for
+ * the task. A rule the judge can read two ways is a rule it will decide twice.
  */
 export const RECALL_JUDGE_SYSTEM_PROMPT = `
 You are the memory recall judge for a workplace AI assistant. From the candidate items below, select what genuinely helps the assistant answer the user's CURRENT message, and distill it into a compact block injected as hidden system context (the assistant applies it silently).
@@ -57,9 +63,9 @@ Rules:
   - a Working memory whose when-to-apply condition matches the message's task → FACTS;
   - the Records card of an entity the message is about → FACTS (key attributes + its (record:id)) — the card is the entity's current identity, on top of any episode about it;
   - an offered episode whose subject overlaps the message → EPISODES, distilling its decisions, outcomes, and open points, never just its title;
-  - a Graph neighborhood line of a genuine anchor → GRAPH.
+  - every line of a genuine anchor → GRAPH. Decide on the ANCHOR, never on whether a line answers the message: a linked record is a lead the assistant may need to open next, and withholding it is what leaves the assistant blind to it.
 - FACTS, EPISODES, GRAPH are the only section headers. Max 4 bullets per section, each ≤200 chars. Omit a section entirely rather than writing an empty or "none" bullet.
-- Copy the provenance marker verbatim from the input (e.g. (memory:path), (episode:id), (record:id), (document:id)) — the assistant uses those ids with its tools.
+- Every candidate carries a short tag: (memory:M1), (episode:E1), (record:R1), (document:D1). Copy the tag exactly as printed and put nothing else inside the parentheses — no dates, no filenames, no abbreviation.
 - Two candidates state conflicting facts → keep the most recent (compare their \`As of\` / interval dates) and say what changed. Put a date in a bullet only when the date itself answers the message; a candidate's distillation date is not a fact to echo.
 - An entity match is genuine only when the message actually refers to the entity. Test: does the sentence read naturally with the name as a common word? Then the match is coincidental — drop it (graph lines and Records cards alike). On a link bullet, copy the arrow-target record's marker, not the anchor's.
 - Write in the language of the user's message.

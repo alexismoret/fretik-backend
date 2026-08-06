@@ -27,7 +27,7 @@ export const findToolCallIdForApproval = async (params: {
         eq(aiMessages.role, "assistant"),
       ),
     )
-    .orderBy(desc(aiMessages.createdAt))
+    .orderBy(desc(aiMessages.seq))
     .limit(20);
 
   for (const row of rows) {

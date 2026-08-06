@@ -1,4 +1,5 @@
 import { setProviders } from "@fretik/shared/external-apps/registry";
+import { akaneaWmsEntry } from "./akanea-wms";
 import { exchangeEntry } from "./exchange";
 import { frontEntry } from "./front";
 import { imapSmtpEntry } from "./imap-smtp";
@@ -27,9 +28,11 @@ setProviders({
   front: frontEntry,
   shiptify: shiptifyEntry,
   planner: plannerEntry,
+  "akanea-wms": akaneaWmsEntry,
 });
 
 export {
+  akaneaWmsEntry,
   exchangeEntry,
   frontEntry,
   imapSmtpEntry,

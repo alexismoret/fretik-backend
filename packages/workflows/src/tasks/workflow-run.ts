@@ -194,11 +194,24 @@ const callTurnWithRetry = async (params: {
     : new Error("turn failed after retries");
 };
 
-/** One run at a time per workflow: `concurrencyKey: workflowId` is set at
- * trigger time, so each workflow gets its own single-slot queue. */
+/** Per-workflow parallelism: `concurrencyKey: workflowId` is set at trigger
+ * time, so each workflow gets its own COPY of this queue at this limit —
+ * runs beyond it wait as `queued`, which is the backpressure for bulk-upload
+ * bursts. The SaaS-wide ceiling is the Trigger.dev ENVIRONMENT concurrency
+ * limit (dashboard-side), not this value. Env var must be set on the
+ * Trigger.dev environment; changing it requires redeploying this package.
+ * Kept low: each executing run fans SSE turn requests at the AI service. */
+const workflowRunConcurrency = (): number => {
+  const raw = Number.parseInt(
+    process.env["WORKFLOW_RUN_CONCURRENCY"] ?? "",
+    10,
+  );
+  return Number.isFinite(raw) && raw > 0 ? raw : 3;
+};
+
 export const workflowRunQueue = queue({
   name: "workflow-runs",
-  concurrencyLimit: 1,
+  concurrencyLimit: workflowRunConcurrency(),
 });
 
 export const workflowRun = schemaTask({
@@ -217,6 +230,9 @@ export const workflowRun = schemaTask({
     // with TIME_LIMIT the instant it is approved, making the multi-day
     // token pointless).
     let deadlineAt = Date.now() + payload.maxDurationMinutes * 60_000;
+    // The Fretik run id, so a realtime subscriber can map this Trigger run
+    // to its `workflow_runs` row without reading the (skipped) payload.
+    metadata.set("runId", payload.runId);
     metadata.set("status", "running");
 
     let turnIndex = 1;

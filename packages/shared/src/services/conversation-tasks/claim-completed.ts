@@ -1,6 +1,6 @@
 import { and, eq, inArray, isNull, notExists, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
-import db from "../../db";
+import db, { type Transaction } from "../../db";
 import type { ConversationBackgroundTask } from "../../db/schema";
 import {
   CONVERSATION_TASK_TERMINAL_STATUSES,
@@ -19,13 +19,16 @@ import {
  *
  * The caller resumes the conversation with the returned rows and, if it fails
  * before the continuation is persisted, releases them via
- * `releaseClaimedConversationTasks`.
+ * `releaseClaimedConversationTasks`. Pass `tx` to make the claim atomic with
+ * the continuation-message write — a process dying between the two must not
+ * leave rows consumed with no message describing them.
  */
 export const claimCompletedConversationTasks = async (
   conversationId: string,
+  tx?: Transaction,
 ): Promise<ConversationBackgroundTask[]> => {
   const pending = alias(conversationBackgroundTasks, "pending_sibling");
-  return db
+  return (tx ?? db)
     .update(conversationBackgroundTasks)
     .set({ consumedAt: new Date() })
     .where(

@@ -15,8 +15,11 @@ export const ANTI_BUFFERING_HEADERS = {
   "Cache-Control": "no-cache, no-transform",
   // Nginx / Cloud Run / Vercel edge — disable proxy buffering.
   "X-Accel-Buffering": "no",
-  // Prevents any intermediate (or Bun itself) from gzipping the stream.
-  "Content-Encoding": "identity",
+  // NOTE: no explicit `Content-Encoding: identity` — some proxies/CDNs
+  // mishandle the explicit header on chunked responses (observed as
+  // buffered/stalled SSE); `no-transform` above already forbids
+  // intermediaries from compressing, and neither service runs a
+  // compression middleware.
   Connection: "keep-alive",
 } as const;
 
@@ -24,9 +27,8 @@ export const ANTI_BUFFERING_HEADERS = {
  * Apply the anti-buffering headers to a Hono context BEFORE returning
  * `streamSSE(c, ...)`. Hono's `streamSSE` already sets `Content-Type`,
  * `Cache-Control: no-cache`, `Connection`, and `Transfer-Encoding`;
- * we extend those with `no-transform`, `X-Accel-Buffering: no` and
- * `Content-Encoding: identity` so intermediate proxies and gzip
- * layers don't buffer chunks and trigger
+ * we extend those with `no-transform` and `X-Accel-Buffering: no` so
+ * intermediate proxies and gzip layers don't buffer chunks and trigger
  * `ERR_INCOMPLETE_CHUNKED_ENCODING` on the browser.
  */
 export const applyAntiBufferingHeaders = (c: {
@@ -35,5 +37,4 @@ export const applyAntiBufferingHeaders = (c: {
   // Overrides Hono's default `no-cache` so proxies also see `no-transform`.
   c.header("Cache-Control", "no-cache, no-transform");
   c.header("X-Accel-Buffering", "no");
-  c.header("Content-Encoding", "identity");
 };

@@ -4,7 +4,6 @@ import {
   ensureWorkerCursor,
   readEventsAfter,
 } from "@fretik/shared/services/domain-events/consume";
-import { countRecentEventRuns } from "@fretik/shared/services/workflows/count-recent-event-runs";
 import { filterWorkflowConversationIds } from "@fretik/shared/services/workflows/filter-workflow-conversation-ids";
 import { listActiveEventWorkflows } from "@fretik/shared/services/workflows/list-active-event-workflows";
 import { listExistingEventRuns } from "@fretik/shared/services/workflows/list-existing-event-runs";
@@ -20,7 +19,7 @@ import { getWorkflowTriggerQueue } from "../queues/queues";
  * (Trigger.dev network call) runs off the queue.
  *
  * Same journal-as-outbox design as the memory sweep: a worker/Redis outage
- * never loses events (the cursor just resumes). Three guards keep it safe:
+ * never loses events (the cursor just resumes). Two guards keep it safe:
  *   - anti-loop: events a workflow itself emitted (`actorType 'workflow'` or
  *     `agentKey 'workflow:*'`) are skipped, so a run's own journal writes
  *     can never trigger another run.
@@ -28,10 +27,12 @@ import { getWorkflowTriggerQueue } from "../queues/queues";
  *     the truth; the batched `listExistingEventRuns` set + the
  *     `wfrun-{wf}-{event}` jobId skip it earlier so a re-swept event never
  *     double-fires.
- *   - rate cap: `WORKFLOW_EVENT_RUNS_PER_HOUR` per workflow. A local per-sweep
- *     budget stops one bulk-import batch from enqueuing thousands at once; the
- *     create worker re-checks the cap authoritatively (runs created since this
- *     sweep are now visible), so the storm is bounded across sweeps too.
+ *
+ * Deliberately NO rate limit here: every matched event becomes a run row so a
+ * bulk upload is never silently dropped — the Trigger.dev per-workflow queue
+ * is the backpressure (runs wait as `queued`). The runaway guard
+ * (`WORKFLOW_EVENT_RUNS_PER_HOUR`) lives in the create worker, which pauses
+ * the workflow loudly instead of dropping events.
  */
 
 const CURSOR_NAME = "workflow-triggers";
@@ -44,8 +45,6 @@ const intFromEnv = (name: string, fallback: number): number => {
 /** Shares the memory sweep's consistency-lag rationale (late-commit safety). */
 const WATERMARK_MS = intFromEnv("MEMORY_SWEEP_WATERMARK_MS", 15_000);
 const SWEEP_BATCH = intFromEnv("MEMORY_SWEEP_BATCH", 500);
-const RUNS_PER_HOUR_CAP = intFromEnv("WORKFLOW_EVENT_RUNS_PER_HOUR", 20);
-const ONE_HOUR_MS = 60 * 60 * 1000;
 
 /** A run's own journal writes must never trigger another run. */
 const isWorkflowOriginated = (event: DomainEvent): boolean =>
@@ -121,32 +120,11 @@ export const runWorkflowTriggerSweep = async (): Promise<{
       sourceEventIds: [...new Set(pairs.map((p) => p.event.id))],
     });
 
-    // Per-workflow enqueue budget for THIS sweep (cap minus runs already
-    // started in the last hour) — one count per MATCHED workflow, so a
-    // bulk-import batch can't enqueue thousands. The create worker re-checks
-    // the cap authoritatively for the cross-sweep race.
-    const since = new Date(Date.now() - ONE_HOUR_MS);
-    const budget = new Map<string, number>();
-    for (const workflowId of matchedWorkflowIds) {
-      budget.set(
-        workflowId,
-        RUNS_PER_HOUR_CAP - (await countRecentEventRuns({ workflowId, since })),
-      );
-    }
-
     const jobs: Parameters<
       ReturnType<typeof getWorkflowTriggerQueue>["addBulk"]
     >[0] = [];
     for (const { workflow, event } of pairs) {
       if (existing.has(`${workflow.id}:${event.id}`)) continue;
-      const remaining = budget.get(workflow.id) ?? 0;
-      if (remaining <= 0) {
-        console.warn(
-          `[workflow-trigger-sweep] rate cap (${RUNS_PER_HOUR_CAP.toString()}/h) reached for workflow ${workflow.id} — skipping event ${event.id}`,
-        );
-        continue;
-      }
-      budget.set(workflow.id, remaining - 1);
       jobs.push({
         name: WORKFLOW_RUN_CREATE_JOB,
         data: {
@@ -174,7 +152,9 @@ export const runWorkflowTriggerSweep = async (): Promise<{
   }
 
   // Advance past the WHOLE batch — every event was evaluated; the ones we
-  // skipped (workflow-originated, unmatched, capped) are permanently skipped.
+  // skipped (workflow-originated, unmatched) are permanently skipped. Every
+  // matched, non-duplicate event has a BullMQ job by now, so advancing is
+  // lossless for them.
   const last = events[events.length - 1];
   if (last) {
     await advanceWorkerCursor({ name: CURSOR_NAME, position: last.id });

@@ -112,6 +112,7 @@ export const fooManifest: ProviderManifest = {
 | docusign        | `documents`     | `e-signature`                                 |
 | canva           | `design`        |                                               |
 | akanea          | `industry`      | `tms`, `customs`                              |
+| akanea-wms      | `industry`      | `wms`                                         |
 | shiptify        | `industry`      | `tms`                                         |
 
 If a provider you are adding is not in this table, pick the root that

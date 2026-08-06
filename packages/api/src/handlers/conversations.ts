@@ -188,9 +188,14 @@ const getMessagesRoute = createRoute({
   path: "/{id}/messages",
   summary: "Get messages of an AI conversation",
   description:
-    "Return the full message history as Vercel AI SDK UIMessage objects, ready to inject into the Chat class on the client.",
+    "Return the message history as Vercel AI SDK UIMessage objects, ready to inject into the Chat class on the client. `limit` returns only the last N messages (still oldest-first) — the mount path uses it to keep reload payloads bounded.",
   tags: ["Conversations"],
-  request: { params: paramsIdSchema },
+  request: {
+    params: paramsIdSchema,
+    query: z.object({
+      limit: z.coerce.number().int().min(1).max(500).optional(),
+    }),
+  },
   responses: {
     200: {
       content: {
@@ -436,7 +441,8 @@ conversationRoutes.openapi(getMessagesRoute, async (c) => {
     return throwHttpError(404, notFound("Conversation not found"));
   }
 
-  const messages = await getConversationMessages(conversation.id);
+  const { limit } = c.req.valid("query");
+  const messages = await getConversationMessages(conversation.id, limit);
 
   return c.json(messages, 200);
 });

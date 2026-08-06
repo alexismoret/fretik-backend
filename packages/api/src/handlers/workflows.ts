@@ -409,9 +409,16 @@ const realtimeTokenRoute = createRoute({
   responses: {
     200: {
       content: {
-        "application/json": { schema: z.object({ token: z.string() }) },
+        "application/json": {
+          schema: z.object({
+            token: z.string(),
+            url: z.string(),
+            tag: z.string(),
+          }),
+        },
       },
-      description: "Public access token",
+      description:
+        "Public access token, Trigger API base URL, and the team tag to subscribe to",
     },
     ...responseForbiddenSchema,
     ...responseInternalErrorSchema,
@@ -644,8 +651,8 @@ workflowRoutes.openapi(transcriptRoute, async (c) => {
 workflowRoutes.openapi(realtimeTokenRoute, async (c) => {
   const team = c.get("team");
   if (!team) return c.json(teamRequired(), 403);
-  const token = await createWorkflowRealtimeToken(team.id);
-  return c.json({ token }, 200);
+  const { token, url, tag } = await createWorkflowRealtimeToken(team.id);
+  return c.json({ token, url, tag }, 200);
 });
 
 export { workflowRoutes };

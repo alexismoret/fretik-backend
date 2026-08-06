@@ -29,6 +29,24 @@ export const setConversationActiveStream = async (
 };
 
 /**
+ * Unconditionally point a conversation at a new stream. Workflow turns use
+ * this instead of the CAS claim: turn serialization is already guaranteed
+ * upstream (the Trigger orchestrator runs one turn at a time per run, and
+ * replays are absorbed by the turn-index idempotency), so a stale id left
+ * behind by a crashed process must never block the next turn's live
+ * transcript the way the chat's 409 guard would.
+ */
+export const forceSetConversationActiveStream = async (
+  conversationId: string,
+  streamId: string,
+): Promise<void> => {
+  await db
+    .update(aiConversations)
+    .set({ activeStreamId: streamId })
+    .where(eq(aiConversations.id, conversationId));
+};
+
+/**
  * Clear the active stream id, but only if it still matches the id that we
  * originally set. This compare-and-swap protects us against a stale
  * `onFinish` clearing a stream that was started by a later turn (e.g. if

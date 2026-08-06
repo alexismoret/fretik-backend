@@ -17,12 +17,21 @@ import {
   type WorkflowTaskState,
   type WorkflowTurnResult,
 } from "@fretik/shared/schemas/workflows";
+import {
+  clearConversationActiveStream,
+  forceSetConversationActiveStream,
+} from "@fretik/shared/services/ai/active-stream";
 import { approvalPendingId } from "@fretik/shared/services/ai/approval-pending";
 import {
   loadConversationForAgent,
   saveMessage,
   saveMessages,
 } from "@fretik/shared/services/ai/messages";
+import {
+  endTurnLog,
+  openTurnLog,
+  pumpChunksToTurnLog,
+} from "@fretik/shared/services/ai/turn-log";
 import { releaseSandbox } from "@fretik/shared/services/e2b/release-sandbox";
 import { getTeamToolPolicies } from "@fretik/shared/services/tool-policies/get-for-team";
 import { createWorkflowRun } from "@fretik/shared/services/workflows/create-run";
@@ -54,9 +63,14 @@ import {
   toUIMessageStream,
   type LanguageModelUsage,
   type UIMessage,
+  type UIMessageChunk,
 } from "ai";
 import { randomUUIDv7 } from "bun";
 import { streamSSE } from "hono/streaming";
+// node:stream/web rather than the DOM global — same typing rationale as
+// `lib/scrub-stream.ts` (the DOM TransformStream doesn't unify with the
+// AI SDK's stream iterator shape).
+import { TransformStream } from "node:stream/web";
 import {
   assembleContextFragments,
   buildConversationAttachedFilesBlock,
@@ -81,6 +95,7 @@ import {
   resolveChatModelForProfile,
 } from "../lib/model-registry/resolve";
 import { resolveTeamFlagship } from "../lib/model-registry/team-model";
+import { buildSensitiveInputScrubber } from "../lib/scrub-stream";
 import {
   streamWithRetryThenFallback,
   withSoftTimeout,
@@ -414,6 +429,17 @@ const executeTurn = async (params: {
     },
   );
 
+  // ---- Live transcript wire ----
+  // Same mechanics as the chat: the turn's UI chunks are pumped into a
+  // Redis turn-log keyed by a fresh stream id, and the conversation row
+  // points at it so the transcript SSE endpoint can find the live log.
+  // Force-set (not CAS): turn serialization is guaranteed upstream, and a
+  // stale id from a crashed process must not silence the transcript.
+  const streamId = randomUUIDv7();
+  await forceSetConversationActiveStream(conversationId, streamId);
+  await openTurnLog(streamId);
+  let turnLogEnded = false;
+
   // Which model serves this run: the workflow's own pin → the team's flagship
   // pick → the code default. `modelProfileKey` is persisted as a free
   // `z.string().max(64)` (the agent's `manage_workflow` tool can write any
@@ -571,34 +597,54 @@ const executeTurn = async (params: {
         );
       },
     });
-    const reader = uiStream.getReader();
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      // Live timeline mirror: completeTask tool results carry the fresh
-      // task snapshot — forward it without waiting for the turn to end.
-      if (
-        typeof value === "object" &&
-        "type" in value &&
-        value.type === "tool-output-available"
-      ) {
-        const output: unknown = "output" in value ? value.output : undefined;
+    // Live timeline mirror: completeTask tool results carry the fresh
+    // task snapshot — forward it without waiting for the turn to end.
+    // Pass-through tap, pre-scrub, so the pump stays the single consumer.
+    const taskUpdateTap = new TransformStream<UIMessageChunk, UIMessageChunk>({
+      transform: (value, controller) => {
         if (
-          output !== null &&
-          typeof output === "object" &&
-          "taskStates" in output &&
-          Array.isArray(output.taskStates)
+          typeof value === "object" &&
+          "type" in value &&
+          value.type === "tool-output-available"
         ) {
-          params.emitTaskUpdate(
-            (output as { taskStates: WorkflowTaskState[] }).taskStates,
-          );
+          const output: unknown = "output" in value ? value.output : undefined;
+          if (
+            output !== null &&
+            typeof output === "object" &&
+            "taskStates" in output &&
+            Array.isArray(output.taskStates)
+          ) {
+            params.emitTaskUpdate(
+              (output as { taskStates: WorkflowTaskState[] }).taskStates,
+            );
+          }
         }
-      }
-    }
+        controller.enqueue(value);
+      },
+    });
+    // The pump drains the whole stream (it is the ONLY consumer, so the
+    // `onFinish` above still fires) and writes each scrubbed chunk to the
+    // turn-log; it always terminates the log, success or error.
+    await pumpChunksToTurnLog(
+      streamId,
+      uiStream
+        .pipeThrough(taskUpdateTap)
+        .pipeThrough(buildSensitiveInputScrubber()),
+    );
+    turnLogEnded = true;
     // v7: `result.usage` is the all-steps turn total (v6's `totalUsage`).
     turnUsage = await result.usage;
   } finally {
     await releaseAbortSubscriber();
+    // A failure before/inside the pump leaves the log open — close it so
+    // viewers get their `[DONE]` instead of stalling until the TTL.
+    if (!turnLogEnded) {
+      await endTurnLog(streamId, "error").catch(() => undefined);
+    }
+    // CAS-clear: a replayed/parallel turn that force-set a newer id keeps it.
+    await clearConversationActiveStream(conversationId, streamId).catch(
+      () => undefined,
+    );
     // Pause the sandbox between turns — same billing discipline as chat.
     void releaseSandbox(conversationId).catch((err: unknown) => {
       console.warn(

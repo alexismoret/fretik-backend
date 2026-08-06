@@ -68,10 +68,11 @@ export const startMaintenanceWorker = (): Worker => {
           return;
         }
         case CONVERSATION_TASK_SWEEP_JOB: {
-          const { reconciled, signaled } = await sweepConversationTasks();
-          if (reconciled > 0 || signaled > 0) {
+          const { reconciled, signaled, slotsCleared } =
+            await sweepConversationTasks();
+          if (reconciled > 0 || signaled > 0 || slotsCleared > 0) {
             console.info(
-              `[conversation-task-sweep] reconciled ${reconciled.toString()} tasks, signaled ${signaled.toString()} conversations`,
+              `[conversation-task-sweep] reconciled ${reconciled.toString()} tasks, signaled ${signaled.toString()} conversations, cleared ${slotsCleared.toString()} stuck slots`,
             );
           }
           return;

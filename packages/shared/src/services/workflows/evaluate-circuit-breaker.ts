@@ -28,6 +28,7 @@ export const CIRCUIT_BREAKER_REASON_PREFIX = "circuit_breaker";
  */
 const INFRA_FAILURE_CODES = new Set([
   "STALLED",
+  "EXPIRED",
   "TRIGGER_FAILED",
   "ORCHESTRATOR_FAILURE",
   "APPROVAL_TIMEOUT",

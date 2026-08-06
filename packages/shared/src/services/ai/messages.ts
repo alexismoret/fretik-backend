@@ -1,5 +1,5 @@
 import type { UIMessage } from "ai";
-import { and, asc, desc, eq, gt, lte } from "drizzle-orm";
+import { and, asc, desc, eq, gt, lte, sql } from "drizzle-orm";
 import db, { type Transaction } from "../../db";
 import { aiConversations, aiMessages } from "../../db/schema";
 
@@ -15,6 +15,9 @@ const rowToUiMessage = (row: typeof aiMessages.$inferSelect): UIMessage => {
   const metadata = {
     ...(row.metadata ?? {}),
     ...(row.authorId ? { authorId: row.authorId } : {}),
+    // Surfaced so a resuming client can trim the active turn's partial
+    // messages before replaying the turn log (and flag interrupted turns).
+    ...(row.turnId ? { turnId: row.turnId } : {}),
   };
   return {
     id: row.id,
@@ -40,19 +43,33 @@ const touchConversation = async (
 };
 
 /**
- * Load every message of a conversation in chronological order. Used by the
+ * Load a conversation's messages in chronological order. Used by the
  * frontend to rehydrate a conversation when the user navigates to it.
+ *
+ * `limit` returns the LAST N messages (still oldest-first) — the mount
+ * path passes one so a python-heavy 200-turn conversation doesn't ship
+ * multi-MB of parts jsonb on every reload. Omitted → full history.
  *
  * Returns UIMessage[] in the exact shape @ai-sdk/vue's Chat expects.
  */
 export const getConversationMessages = async (
   conversationId: string,
+  limit?: number,
 ): Promise<UIMessage[]> => {
+  if (limit !== undefined) {
+    const rows = await db
+      .select()
+      .from(aiMessages)
+      .where(eq(aiMessages.conversationId, conversationId))
+      .orderBy(desc(aiMessages.seq))
+      .limit(limit);
+    return rows.reverse().map(rowToUiMessage);
+  }
   const rows = await db
     .select()
     .from(aiMessages)
     .where(eq(aiMessages.conversationId, conversationId))
-    .orderBy(asc(aiMessages.createdAt));
+    .orderBy(asc(aiMessages.seq));
 
   return rows.map(rowToUiMessage);
 };
@@ -76,7 +93,7 @@ export const loadConversationForAgent = async (
     .select()
     .from(aiMessages)
     .where(eq(aiMessages.conversationId, conversationId))
-    .orderBy(desc(aiMessages.createdAt))
+    .orderBy(desc(aiMessages.seq))
     .limit(limit);
 
   return rows.reverse().map(rowToUiMessage);
@@ -100,7 +117,7 @@ export const loadMessagesSince = async (
         gt(aiMessages.createdAt, since),
       ),
     )
-    .orderBy(asc(aiMessages.createdAt));
+    .orderBy(asc(aiMessages.seq));
 
   return rows.map(rowToUiMessage);
 };
@@ -125,7 +142,7 @@ export const loadMessagesBefore = async (
         lte(aiMessages.createdAt, before),
       ),
     )
-    .orderBy(desc(aiMessages.createdAt))
+    .orderBy(desc(aiMessages.seq))
     .limit(limit);
 
   return rows.reverse().map(rowToUiMessage);
@@ -151,6 +168,13 @@ const toRecordMetadata = (
  * user message is saved before streaming starts, then each assistant
  * message produced by the agent is saved in the `onFinish` callback (with
  * all its parts including tool invocations).
+ *
+ * When `id` is provided (the message's wire id from the AI SDK stream), the
+ * row keeps that id and a re-save of the same id converges via upsert —
+ * transcript ids are then identical on the wire, in DB, and after reload,
+ * which is what lets the frontend rehydrate without remounting anything.
+ * The conflict guard is scoped to the same conversation so a colliding id
+ * from another conversation can never be overwritten.
  */
 export const saveMessage = async (data: {
   conversationId: string;
@@ -159,15 +183,30 @@ export const saveMessage = async (data: {
   metadata?: unknown;
   /** Human author of a `user` message; null/omitted for assistant/system. */
   authorId?: string | null;
+  /** Wire id of the message; omitted → DB generates a uuid v7. */
+  id?: string;
+  /** Stream id of the turn that produced this message (assistant rows). */
+  turnId?: string | null;
 }) => {
   const [row] = await db
     .insert(aiMessages)
     .values({
+      ...(data.id ? { id: data.id } : {}),
       conversationId: data.conversationId,
       role: data.role,
       parts: data.parts,
       metadata: toRecordMetadata(data.metadata),
       authorId: data.authorId ?? null,
+      turnId: data.turnId ?? null,
+    })
+    .onConflictDoUpdate({
+      target: aiMessages.id,
+      set: {
+        parts: sql`excluded.parts`,
+        metadata: sql`excluded.metadata`,
+        turnId: sql`excluded.turn_id`,
+      },
+      setWhere: sql`${aiMessages.conversationId} = excluded.conversation_id`,
     })
     .returning();
 
@@ -182,6 +221,12 @@ export const saveMessage = async (data: {
  * Pass `tx` to enlist in a caller's transaction — the chatbot handler uses
  * this to commit the turn's messages and its `chat.turn` journal entry
  * atomically (the outbox guarantee).
+ *
+ * Same id semantics as `saveMessage`: wire ids are preserved and re-saves
+ * of the same id converge (idempotent upsert, scoped to the conversation).
+ * The incremental turn recorder and the final `onFinish` write both go
+ * through here with the same ids, so whichever lands last simply refreshes
+ * `parts`/`metadata` in place.
  */
 export const saveMessages = async (
   conversationId: string,
@@ -190,6 +235,8 @@ export const saveMessages = async (
     parts: UIMessage["parts"];
     metadata?: unknown;
     authorId?: string | null;
+    id?: string;
+    turnId?: string | null;
   }[],
   tx?: Transaction,
 ) => {
@@ -199,13 +246,24 @@ export const saveMessages = async (
     .insert(aiMessages)
     .values(
       messages.map((m) => ({
+        ...(m.id ? { id: m.id } : {}),
         conversationId,
         role: m.role,
         parts: m.parts,
         metadata: toRecordMetadata(m.metadata),
         authorId: m.authorId ?? null,
+        turnId: m.turnId ?? null,
       })),
     )
+    .onConflictDoUpdate({
+      target: aiMessages.id,
+      set: {
+        parts: sql`excluded.parts`,
+        metadata: sql`excluded.metadata`,
+        turnId: sql`excluded.turn_id`,
+      },
+      setWhere: sql`${aiMessages.conversationId} = excluded.conversation_id`,
+    })
     .returning();
 
   await touchConversation(conversationId, tx);

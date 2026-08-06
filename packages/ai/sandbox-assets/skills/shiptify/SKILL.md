@@ -22,7 +22,7 @@ You can interact with the user's Shiptify account via the `fretik_apps.shiptify`
 - `shiptify.list_locations(limit=25, offset=0, q=None, internal_ref=None)` — List address-book locations — call before creating a SR to pick from/dest address ids
 - `shiptify.list_carriers(internal_ref=None)` — List active carriers on the account
 - `shiptify.list_shipment_modes()` — List shipment modes (road / sea / air / …) — call before create_shipment_request
-- `shiptify.list_content_types()` — List active cargo content types — call before any create_shipment_request\* to resolve `type_id` on each cargo line
+- `shiptify.list_content_types()` — List active cargo content types — call before any create_shipment_request* to resolve `type_id` on each cargo line
 - `shiptify.galaxy_list_carrier_shipment_requests(limit=25, offset=0)` — List shipment requests received as a carrier (the quote inbox)
 - `shiptify.galaxy_list_ready_to_book(limit=25, offset=0)` — List awarded shipment requests waiting for the carrier to book them
 - `shiptify.galaxy_list_shipment_request_attachments(id)` — List attachments on a carrier-side shipment request

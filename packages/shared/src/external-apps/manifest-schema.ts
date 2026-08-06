@@ -626,7 +626,7 @@ export const providerManifestSchema = z
      *  - 0..N "fine" categories (`email`, `instant-messaging`, `sms`, `voice`,
      *    `video-call`, `calendar`, `contacts`, `file-storage`, `notes`,
      *    `database`, `tasks`, `e-signature`, `payments`, `design`, `tms`,
-     *    `customs`, `shared-inbox`, …) — read by the agent from the system
+     *    `wms`, `customs`, `shared-inbox`, …) — read by the agent from the system
      *    prompt to decide whether two connections are substitutable for one
      *    user request. The frontend ignores them.
      *

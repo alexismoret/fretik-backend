@@ -44,6 +44,14 @@ import {
   publishTyping,
   removePresent,
 } from "@fretik/shared/services/ai/presence";
+import {
+  getTurnLogStatus,
+  openTurnLog,
+  pumpChunksToTurnLog,
+  readTurnLogAsSse,
+  TURN_LOG_ORPHAN_MS,
+} from "@fretik/shared/services/ai/turn-log";
+import { recordTurnIncrementally } from "@fretik/shared/services/ai/turn-recorder";
 import { updateConversation } from "@fretik/shared/services/ai/update";
 import { hasResumableConversationTasks } from "@fretik/shared/services/conversation-tasks/list";
 import { emitDomainEvent } from "@fretik/shared/services/domain-events/emit";
@@ -68,7 +76,6 @@ import {
   type GenerateTextOnStepEndCallback,
   type ModelMessage,
   type UIMessage,
-  type UIMessageChunk,
   type UIMessageStreamWriter,
 } from "ai";
 import { randomUUIDv7 } from "bun";
@@ -112,7 +119,7 @@ import {
 } from "../lib/model-registry/resolve";
 import { resolveTeamFlagship } from "../lib/model-registry/team-model";
 import type { ModelProfile, ReasoningLevel } from "../lib/model-registry/types";
-import { getResumableStreamContext } from "../lib/resumable-stream-context";
+import { buildSensitiveInputScrubber } from "../lib/scrub-stream";
 import {
   classifyStreamError,
   describeStreamError,
@@ -332,10 +339,20 @@ const streamChatbotWithFallback = async (params: {
  * plan), so writes made during the stream are tagged with the
  * conversation directly — no need for a pre-stream message stub.
  */
+/**
+ * `ai_messages.id` is a uuid column: only forward a wire id that is actually
+ * a uuid (SDK-default 16-char ids from stale clients fall back to the DB
+ * generating a v7 — same behaviour as before this column carried wire ids).
+ */
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const isUuid = (value: string): boolean => UUID_RE.test(value);
+
 const persistAssistantMessages = async (
   conversationId: string | undefined,
   history: UIMessage[],
   finalMessages: UIMessage[],
+  turnId: string | null,
   tx?: Transaction,
 ): Promise<UIMessage[]> => {
   if (!conversationId) return [];
@@ -344,9 +361,14 @@ const persistAssistantMessages = async (
   await saveMessages(
     conversationId,
     assistantMessages.map((m) => ({
+      // Wire id preserved (uuid v7 minted by `generateMessageId`) — DB ids
+      // stay identical to what the client already rendered, and the upsert
+      // makes a recorder-then-onFinish double write converge in place.
+      id: isUuid(m.id) ? m.id : undefined,
       role: "assistant" as const,
       parts: m.parts,
       metadata: narrowMessageMetadata(m),
+      turnId,
     })),
     tx,
   );
@@ -482,85 +504,8 @@ const emitAutoTitle = async (args: {
   }
 };
 
-/**
- * Tool names whose `input` is considered sensitive and must never
- * leave the backend verbatim on the streamed UI channel. The model
- * still sees the real input (it produced it and needs it to reason
- * on subsequent turns), and the DB-persisted assistant message keeps
- * the real input too — only the bytes sent to the browser are
- * scrubbed.
- *
- * The transform lives in front of `createUIMessageStreamResponse` so
- * onFinish / persistAssistantMessages receive the unmodified frame
- * set, which matters for model replay on the next turn.
- */
-const SENSITIVE_TOOL_NAMES = new Set(["querySql"]);
-
-/**
- * Keys stripped from a sensitive tool's `tool-input-available` chunk.
- * Keep the envelope (toolCallId, toolName, state) so the client still
- * renders the spinner and runs the tool lifecycle; just empty out the
- * payload fields that carry the secret.
- */
-const SENSITIVE_INPUT_KEYS_TO_REDACT = new Set(["sql_query"]);
-
-/**
- * Filter the outbound UI stream so sensitive tool inputs never reach
- * the client. Rewrites these chunk types:
- *
- *   - `tool-input-start` → pass through, but remember the toolCallId
- *     so we can scrub its downstream deltas/available events.
- *   - `tool-input-delta` → drop deltas for sensitive tools (they
- *     stream the raw JSON of the tool call args; replaying them
- *     client-side would defeat the scrub).
- *   - `tool-input-available` → keep the envelope, scrub the listed
- *     fields on its `input` object.
- *
- * Every other chunk type passes through untouched. Back-pressure is
- * preserved because we enqueue 0 or 1 chunks per incoming chunk.
- */
-const buildSensitiveInputScrubber = () => {
-  const sensitiveCallIds = new Set<string>();
-  return new TransformStream({
-    transform(chunk: UIMessageChunk, controller) {
-      if (chunk.type === "tool-input-start") {
-        if (SENSITIVE_TOOL_NAMES.has(chunk.toolName)) {
-          sensitiveCallIds.add(chunk.toolCallId);
-        }
-        controller.enqueue(chunk);
-        return;
-      }
-      if (
-        chunk.type === "tool-input-delta" &&
-        sensitiveCallIds.has(chunk.toolCallId)
-      ) {
-        // Swallow — the client will jump from input-streaming to
-        // input-available without seeing any body fragment.
-        return;
-      }
-      if (
-        chunk.type === "tool-input-available" &&
-        sensitiveCallIds.has(chunk.toolCallId)
-      ) {
-        const input = chunk.input;
-        if (input && typeof input === "object") {
-          const scrubbed: Record<string, unknown> = {};
-          const inputRecord: Record<string, unknown> = { ...input };
-          for (const key of Object.keys(inputRecord)) {
-            scrubbed[key] = SENSITIVE_INPUT_KEYS_TO_REDACT.has(key)
-              ? undefined
-              : inputRecord[key];
-          }
-          controller.enqueue({ ...chunk, input: scrubbed });
-        } else {
-          controller.enqueue(chunk);
-        }
-        return;
-      }
-      controller.enqueue(chunk);
-    },
-  });
-};
+// Sensitive-input scrubbing lives in `lib/scrub-stream.ts` — shared with the
+// workflow transcript pump so both wires redact the same tool inputs.
 
 // ============================================================ //
 // ATTACHED FILES                                                  //
@@ -1019,16 +964,15 @@ const consumeMidstreamErrorMarker = async (
  * runs on the PRE-scrub stream so persistence + future-turn replay
  * see the real values.
  *
- * Phase 12 (resumable streams): when a `conversationId` is provided
- * and a `streamId` was claimed by the caller, the outbound SSE stream
- * is simultaneously tee'd into a Redis-backed resumable buffer (via
- * the `resumable-stream` package). The `onFinish` callback clears the
- * `activeStreamId` column so the GET /:conversationId/stream
- * reconnection handler knows the turn is done. We intentionally do
- * NOT forward the request AbortSignal to the LLM — the turn must
- * finish regardless of whether the HTTP client is still connected so
- * `onFinish` can persist the assistant messages and keep the buffer
- * consistent.
+ * Turn-log transport: when a `streamId` was claimed by the caller, the
+ * chunk stream is pumped into a per-turn Redis Stream (`turn-log.ts`)
+ * and every consumer — this POST included — reads the log back with a
+ * cursor. The `onFinish` callback clears the `activeStreamId` column so
+ * the GET /:conversationId/stream reconnection handler knows the turn
+ * is done. We intentionally do NOT forward the request AbortSignal to
+ * the LLM — the turn must finish regardless of whether any HTTP client
+ * is still connected so `onFinish` can persist the assistant messages
+ * and the log stays consistent.
  *
  * Intentionally NOT a middleware: the two routes have distinct
  * pre-work (Better Auth session vs X-Context headers, user-message
@@ -1273,6 +1217,9 @@ export const runChatbotTurn = async (
   const COMPACTION_PART_ID = "compaction-status";
   const rawStream = createUIMessageStream<UIMessage>({
     originalMessages: params.history,
+    // uuid v7 for any message id the outer stream mints itself — keeps
+    // every id in the turn a valid uuid so persistence preserves it.
+    generateId: randomUUIDv7,
     // C4 — mid-stream errors. The primary→fallback try/catch in
     // `streamChatbotWithFallback` only catches errors BEFORE the stream
     // is set up; anything that errors after `.stream()` returns reaches
@@ -1293,6 +1240,7 @@ export const runChatbotTurn = async (
           params.conversationId,
           params.history,
           finalMessages,
+          params.resumableStreamId ?? null,
           tx,
         );
         if (!params.conversationId) return;
@@ -1355,7 +1303,7 @@ export const runChatbotTurn = async (
           );
         });
       }
-      // Release the resumable-stream slot so the next turn can start
+      // Release the active-stream slot so the next turn can start
       // without tripping the 409 idempotence guard. Compare-and-swap
       // on the streamId keeps us safe from clearing a fresher turn.
       if (params.conversationId && params.resumableStreamId) {
@@ -1466,6 +1414,9 @@ export const runChatbotTurn = async (
             dropChunksAfterAbort(
               toUIMessageStream<ChatbotTools>({
                 stream: fallbackResult.stream,
+                // uuid v7 wire ids — persisted verbatim by `saveMessages`
+                // so DB ids ≡ stream ids (stable Vue keys across reloads).
+                generateMessageId: randomUUIDv7,
                 onError: recordStreamError,
                 messageMetadata: ({ part }) => {
                   if (part.type !== "finish") return undefined;
@@ -1571,6 +1522,7 @@ export const runChatbotTurn = async (
             dropChunksAfterAbort(
               toUIMessageStream<ChatbotTools>({
                 stream: contResult.stream,
+                generateMessageId: randomUUIDv7,
                 onError: recordStreamError,
                 messageMetadata: ({ part }) => {
                   if (part.type !== "finish") return undefined;
@@ -1723,6 +1675,7 @@ export const runChatbotTurn = async (
           dropChunksAfterAbort(
             toUIMessageStream<ChatbotTools>({
               stream: result.stream,
+              generateMessageId: randomUUIDv7,
               // A provider `error` part (e.g. empty pool) surfaces through
               // the INNER stream's onError, not the outer one — route it to
               // the same mapper so both surfaces agree on the wire frame.
@@ -1958,51 +1911,52 @@ export const runChatbotTurn = async (
 
   const resumableStreamId = params.resumableStreamId;
 
-  const baseResponse = createUIMessageStreamResponse({
-    stream:
-      params.scrubSensitiveInputs === false
-        ? rawStream
-        : rawStream.pipeThrough(buildSensitiveInputScrubber()),
-    // When the caller wants resumability, tee the SSE-encoded stream
-    // into a Redis-backed buffer so a subsequent GET can replay every
-    // byte that was emitted — even if the original HTTP connection
-    // drops. The AI SDK does the tee internally; this callback
-    // receives a copy of the SSE text stream.
-    ...(resumableStreamId !== undefined && {
-      headers: ANTI_BUFFERING_HEADERS,
-      consumeSseStream: async ({ stream }) => {
-        try {
-          const ctx = getResumableStreamContext();
-          await ctx.createNewResumableStream(resumableStreamId, () => stream);
-          // The buffer exists NOW — only now can another viewer attach to it.
-          // `turn-started` fires much earlier (before this turn's setup) so
-          // the UI can gate immediately; this is the separate "you may
-          // attach" signal, and without it viewers raced the registration,
-          // got a 204, and watched a frozen transcript until the turn ended.
-          if (params.conversationId) {
-            await publishConversationEvent(params.conversationId, {
-              type: "turn-stream-ready",
-              streamId: resumableStreamId,
-            });
-          }
-        } catch (err) {
-          console.error("[chatbot] createNewResumableStream failed:", err);
-        }
-      },
-    }),
-  });
+  if (resumableStreamId === undefined) {
+    // Stateless callers (`/internal/invoke`): direct passthrough, no turn
+    // log, no recorder (they own their persistence). Heartbeat keeps long
+    // tool-call gaps alive on the raw pipe.
+    return wrapResponseWithSseHeartbeat(
+      createUIMessageStreamResponse({
+        stream:
+          params.scrubSensitiveInputs === false
+            ? rawStream
+            : rawStream.pipeThrough(buildSensitiveInputScrubber()),
+      }),
+    );
+  }
 
-  // Wrap the SSE body with a heartbeat that emits a real UIMessage
-  // `data-ping` frame at the byte level (not via the AI SDK's
-  // `writer.write` — that path gets buffered by the internal
-  // TransformStream and doesn't reach the client reliably during
-  // long tool-call gaps). The ping is a proper v6 stream protocol
-  // frame with `transient: true`: the @ai-sdk/vue `DefaultChatTransport`
-  // parses it, sees it's transient, and drops it (never reaches
-  // `chat.messages`, never triggers `onData`). Keeps the connection
-  // alive through intermediate proxies and the browser's own idle
-  // timer during the 10-20s "silent thinking" windows.
-  return wrapResponseWithSseHeartbeat(baseResponse);
+  // Incremental persistence rides a PRE-scrub tee: persisted parts carry
+  // the real tool inputs (matching the final `onFinish` write), while the
+  // wire — turn log included — only ever sees scrubbed frames.
+  const [recorderBranch, wireBranch] = rawStream.tee();
+  if (params.conversationId) {
+    void recordTurnIncrementally({
+      conversationId: params.conversationId,
+      turnId: resumableStreamId,
+      chunks: recorderBranch,
+    });
+  } else {
+    void recorderBranch.cancel();
+  }
+  const outboundStream =
+    params.scrubSensitiveInputs === false
+      ? wireBranch
+      : wireBranch.pipeThrough(buildSensitiveInputScrubber());
+
+  // Turn-log transport. The pump is the ONLY wire consumer of the SDK
+  // stream: it drives generation to completion (so `onFinish` —
+  // persistence, slot release, `turn-ended` — always runs) and appends
+  // every chunk to the per-turn Redis Stream. EVERY viewer, this
+  // initiating POST included, reads the log back — one code path,
+  // byte-identical frames live, on resume, and for collaborative fan-in,
+  // all decoupled from any HTTP connection's lifetime. Producer liveness
+  // pings ride the log itself (see turn-log.ts), so no per-connection
+  // heartbeat wrapper here.
+  void pumpChunksToTurnLog(resumableStreamId, outboundStream);
+  return new Response(readTurnLogAsSse(resumableStreamId, "0-0"), {
+    status: 200,
+    headers: { ...UI_MESSAGE_STREAM_HEADERS, ...ANTI_BUFFERING_HEADERS },
+  });
 };
 
 /**
@@ -2039,10 +1993,9 @@ const encodePingFrame = (): string => {
  * guarantees runs exactly once when the input stream closes (clean
  * finish, LLM error, or client disconnect).
  *
- * Generic over the chunk shape so we can plug it on both the POST
- * `/stream` body (`Uint8Array` out of `createUIMessageStreamResponse`)
- * and the GET `/:id/stream` resume body (`string` out of
- * `resumable-stream`'s `resumeExistingStream`).
+ * Only used on the stateless `/internal/invoke` passthrough now — the
+ * turn-log paths get their liveness pings from the producer, inside the
+ * log itself (`turn-log.ts`), so every consumer inherits them.
  */
 const injectSseHeartbeat = <T extends Uint8Array | string>(
   intervalMs: number,
@@ -2086,9 +2039,6 @@ const injectSseHeartbeatBytes = (intervalMs: number) => {
     encoder.encode(encodePingFrame()),
   );
 };
-
-const injectSseHeartbeatText = (intervalMs: number) =>
-  injectSseHeartbeat<string>(intervalMs, encodePingFrame);
 
 const wrapResponseWithSseHeartbeat = (response: Response): Response => {
   if (!response.body) return response;
@@ -2179,6 +2129,10 @@ chatbotRoutes.post("/stream", async (c) => {
       parts: lastUser.parts,
       metadata: lastUser.metadata,
       authorId: user.id,
+      // Keep the client's wire id (uuid via the frontend's `generateId`)
+      // so the bubble the sender already rendered survives rehydration
+      // with the same Vue key. A duplicate POST converges by upsert.
+      id: isUuid(lastUser.id) ? lastUser.id : undefined,
     });
     // Bind every `ai_chat_files` row that was created in the draft
     // (messageId = NULL) to the message we just persisted. The orphan
@@ -2258,10 +2212,16 @@ chatbotRoutes.post("/stream", async (c) => {
     );
   }
 
+  // Open the turn log BEFORE announcing the turn: the log exists from this
+  // instant, so any viewer invited by `turn-started` attaches successfully
+  // — there is no setup window where an attach finds nothing (the old
+  // buffer registered seconds into the turn and early attachers 204'd).
+  await openTurnLog(streamId);
+
   // Announce the turn to every connected viewer so non-senders fan-in to
-  // the same resumable buffer (live multi-user streaming) and their send
-  // button gates while it runs. `byUserId` lets the sender's own client
-  // skip the fan-in (it is already streaming via this POST).
+  // the same turn log (live multi-user streaming) and their send button
+  // gates while it runs. `byUserId` lets the sender's own client skip the
+  // fan-in (it is already streaming via this POST).
   await publishConversationEvent(conversationId, {
     type: "turn-started",
     streamId,
@@ -2332,34 +2292,36 @@ chatbotRoutes.post("/stream", async (c) => {
 });
 
 /**
- * How long after a turn claimed the slot its stream buffer is still assumed
- * to be on its way. Covers the turn setup that runs between the claim and
- * `createNewResumableStream` (context load, external apps, abort channel) —
- * seconds at worst, so 15s is generous without keeping a genuinely dead
- * pointer alive for long.
+ * How long after a turn claimed the slot its turn log is still assumed to
+ * be on its way. The log is opened synchronously right after the claim, so
+ * a MISSING log normally means Redis lost the key — but a request racing
+ * the claim by milliseconds deserves the benefit of the doubt. The claim
+ * uuid (v7) carries its own timestamp, so no extra state is needed.
  */
 const STREAM_CLAIM_GRACE_MS = 15_000;
+
+/** Redis Stream entry-id shape (`<ms>-<n>`); anything else falls to 0-0. */
+const TURN_LOG_CURSOR_RE = /^\d+-\d+$/;
 
 /**
  * GET /chatbot/:conversationId/stream — reconnection endpoint.
  *
- * Consumed by `@ai-sdk/vue`'s `DefaultChatTransport.resumeStream()`
- * (wired up in `useChatSession.ts`). Called on mount when the client
- * suspects a turn might still be streaming (e.g. the last message is
- * a pending user message, or we're coming back from a page refresh).
- *
  * Semantics:
- *   - 204 No Content  → no active stream, client falls back to the
- *                       history fetch + waits for the next POST.
- *   - 200 event-stream → an active stream exists; the body is the
- *                        tee'd SSE output from the current turn, and
- *                        `@ai-sdk/vue` merges it into `chat.messages`
- *                        exactly as it would a fresh POST.
+ *   - 204 No Content   → no live turn (none claimed, or the producer died
+ *                        and the slot was just cleared). The client falls
+ *                        back to history.
+ *   - 200 event-stream → the turn log replayed from the requested cursor
+ *                        (`Last-Event-ID` header or `?cursor=`; absent →
+ *                        `0-0`, a full structurally-complete replay).
+ *                        Every data frame carries `id: <redis-entry-id>`
+ *                        so the next reconnect resumes with zero overlap.
  *   - 404 / 403        → classic auth failures.
  *
- * The Redis buffer lives 24h (default TTL in `resumable-stream`), but
- * practical recovery windows are short: `onFinish` normally clears
- * `activeStreamId` within seconds of the turn finishing.
+ * Never blocks: the log always answers immediately (the old
+ * `resumable-stream` handshake waited up to 1s on the producing process,
+ * on the mount critical path). Orphan detection is a data check — a live
+ * producer pings its log every 5s, so a stale tail means a dead process
+ * and the slot is cleared on the spot.
  */
 chatbotRoutes.get("/:conversationId/stream", async (c) => {
   const user = c.get("user");
@@ -2381,55 +2343,39 @@ chatbotRoutes.get("/:conversationId/stream", async (c) => {
     return new Response(null, { status: 204 });
   }
 
-  const ctx = getResumableStreamContext();
-  // ORPHANED STREAM. `resumeExistingStream` subscribes and waits 1s for the
-  // producing process to ack; when that process is gone but its sentinel
-  // survives in Redis (24h TTL, never marked done) — every deploy or restart
-  // mid-turn — nobody answers and the promise REJECTS. Uncaught, that reaches
-  // the global handler as a 500, and since the pointer is never cleared the
-  // client's reconnect ladder replays it. Same outcome as an expired
-  // sentinel, so take the same exit.
-  let stream: Awaited<ReturnType<typeof ctx.resumeExistingStream>> = null;
-  try {
-    stream = await ctx.resumeExistingStream(activeStreamId);
-  } catch (error) {
-    console.warn(
-      `[chatbot] stream ${activeStreamId} has no live producer (restart?):`,
-      error instanceof Error ? error.message : error,
-    );
-  }
-  if (!stream) {
-    // FRESH CLAIM, NOT AN ORPHAN. A turn claims the slot and publishes
-    // `turn-started` BEFORE its buffer exists — registering it happens deep
-    // inside the turn setup, several awaits later. A viewer that fans in
-    // during that window finds no buffer; clearing the slot here would then
-    // destroy the pointer the real stream is about to need, and every later
-    // resume (this tab, other tabs, the events snapshot) would 204 for the
-    // rest of the turn. So hand back 204 WITHOUT clearing and let the client
-    // retry — the id carries its own claim time, no extra state needed.
+  const status = await getTurnLogStatus(activeStreamId);
+  if (!status.exists) {
+    // The log is opened synchronously right after the claim, so a missing
+    // log means Redis lost the key (flush/restart) — except for a request
+    // racing the claim by milliseconds, which gets the benefit of the
+    // doubt via the claim uuid's own timestamp.
     const claimedAt = uuidv7TimestampMs(activeStreamId);
     const isFreshClaim =
       claimedAt !== null && Date.now() - claimedAt < STREAM_CLAIM_GRACE_MS;
     if (!isFreshClaim) {
-      // The sentinel has expired (24h TTL), the publisher never got to record
-      // it, or it is orphaned (above). Clear the column so we don't keep
-      // 204-missing and hand back 204 to let the client fall back to the
-      // history.
       await clearConversationActiveStream(conversationId, activeStreamId);
     }
     return new Response(null, { status: 204 });
   }
+  if (!status.ended && Date.now() - status.lastEntryMs > TURN_LOG_ORPHAN_MS) {
+    // Dead producer (deploy/crash mid-turn): a live one pings its log
+    // every 5s. Clear the slot so the conversation isn't stuck behind the
+    // 409 guard; the client falls back to history, which carries the
+    // incrementally-persisted partial turn.
+    await clearConversationActiveStream(conversationId, activeStreamId);
+    return new Response(null, { status: 204 });
+  }
 
-  return new Response(
-    stream.pipeThrough(injectSseHeartbeatText(CHATBOT_HEARTBEAT_MS)),
-    {
-      status: 200,
-      headers: {
-        ...UI_MESSAGE_STREAM_HEADERS,
-        ...ANTI_BUFFERING_HEADERS,
-      },
+  const rawCursor = c.req.header("Last-Event-ID") ?? c.req.query("cursor");
+  const cursor =
+    rawCursor && TURN_LOG_CURSOR_RE.test(rawCursor) ? rawCursor : "0-0";
+  return new Response(readTurnLogAsSse(activeStreamId, cursor), {
+    status: 200,
+    headers: {
+      ...UI_MESSAGE_STREAM_HEADERS,
+      ...ANTI_BUFFERING_HEADERS,
     },
-  );
+  });
 });
 
 /**
@@ -2508,6 +2454,10 @@ chatbotRoutes.get("/:conversationId/events", async (c) => {
     // Initial snapshot: any live turn + the current presence roster, so a
     // viewer joining mid-turn fans in and renders avatars without waiting
     // for the next event.
+    // `turn-started` alone is the attach invite: the turn log exists from
+    // the moment the slot is claimed (openTurnLog runs before the event is
+    // published), so a viewer can always attach immediately — the separate
+    // `turn-stream-ready` handshake is gone with the old buffer.
     const activeStreamId = await getConversationActiveStream(conversationId);
     if (activeStreamId) {
       await stream.writeSSE({
@@ -2516,17 +2466,6 @@ chatbotRoutes.get("/:conversationId/events", async (c) => {
           type: "turn-started",
           streamId: activeStreamId,
           byUserId: "",
-        }),
-      });
-      // A turn that started before this viewer connected has normally
-      // registered its buffer already, so invite the attach right away. If it
-      // has not (the viewer landed inside the setup window), the real
-      // `turn-stream-ready` follows over this same channel moments later.
-      await stream.writeSSE({
-        event: "message",
-        data: JSON.stringify({
-          type: "turn-stream-ready",
-          streamId: activeStreamId,
         }),
       });
     }
@@ -2540,39 +2479,52 @@ chatbotRoutes.get("/:conversationId/events", async (c) => {
 
     // Bridge Redis pub/sub → an awaitable queue so every SSE write is
     // ordered + awaited (the Bun chunked-encoding footgun; see sse-utils).
+    //
+    // Shape matters here: the queue is FULLY DRAINED before blocking, and
+    // the wait primitive resolves WITHOUT consuming — the previous
+    // `Promise.race(heartbeat, waitForEvent())` shifted an event into a
+    // race the heartbeat had already won, silently dropping it (a lost
+    // `turn-started` meant a viewer never attached; a lost `turn-ended`
+    // left the send gate stuck until reload).
     const queue: string[] = [];
-    let resolveNext: (() => void) | null = null;
+    let signalEvent: (() => void) | null = null;
     const cleanup = await subscribeConversationEvents(
       conversationId,
       (payload) => {
         queue.push(payload);
-        if (resolveNext) {
-          const fn = resolveNext;
-          resolveNext = null;
-          fn();
-        }
+        signalEvent?.();
+        signalEvent = null;
       },
     );
-    const waitForEvent = (): Promise<string | null> =>
-      queue.length > 0
-        ? Promise.resolve(queue.shift() ?? null)
-        : new Promise<string | null>((resolve) => {
-            resolveNext = () => resolve(queue.shift() ?? null);
-          });
+    // Resolves "event" as soon as the queue is (or becomes) non-empty,
+    // "heartbeat" after the keep-alive interval. Never touches the queue.
+    const waitForEventOrHeartbeat = (): Promise<"event" | "heartbeat"> =>
+      new Promise((resolve) => {
+        if (queue.length > 0) {
+          resolve("event");
+          return;
+        }
+        const timer = setTimeout(() => {
+          signalEvent = null;
+          resolve("heartbeat");
+        }, CHATBOT_HEARTBEAT_MS);
+        signalEvent = () => {
+          clearTimeout(timer);
+          resolve("event");
+        };
+      });
 
     /* oxlint-disable no-await-in-loop -- sequential SSE writes are required */
     try {
       while (!stream.aborted) {
-        const heartbeat = stream
-          .sleep(CHATBOT_HEARTBEAT_MS)
-          .then(() => "heartbeat" as const);
-        const next = await Promise.race([heartbeat, waitForEvent()]);
-        if (next === "heartbeat") {
-          await stream.writeSSE({ event: "ping", data: "ping" });
-          continue;
+        while (queue.length > 0) {
+          const next = queue.shift();
+          if (next) await stream.writeSSE({ event: "message", data: next });
         }
-        if (!next) continue;
-        await stream.writeSSE({ event: "message", data: next });
+        const outcome = await waitForEventOrHeartbeat();
+        if (outcome === "heartbeat") {
+          await stream.writeSSE({ event: "ping", data: "ping" });
+        }
       }
     } finally {
       await cleanup();
@@ -2910,7 +2862,7 @@ chatbotInternalRoutes.post("/invoke", async (c) => {
   };
 
   // Internal `/invoke` callers (e.g. workflow nodes) do NOT go through
-  // the resumable-stream path — they keep the HTTP connection open for
+  // the turn-log path — they keep the HTTP connection open for
   // the full turn and don't need tab-reopen reconnection. We still
   // avoid passing the request AbortSignal to the LLM to stay
   // consistent with the user-facing route; the caller should drive

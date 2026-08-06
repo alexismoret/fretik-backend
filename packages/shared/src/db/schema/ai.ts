@@ -1,6 +1,7 @@
 import type { UIMessage } from "ai";
 import { sql } from "drizzle-orm";
 import {
+  bigint,
   boolean,
   index,
   jsonb,
@@ -130,6 +131,24 @@ export const aiMessages = pgTable(
     parts: jsonb("parts").$type<UIMessage["parts"]>().notNull(),
     metadata: jsonb("metadata").$type<Record<string, unknown>>(),
 
+    /**
+     * Monotonic insertion counter — the ONLY ordering key for transcript
+     * reads. `created_at` ties within a turn (multi-row INSERT shares one
+     * `transaction_timestamp()`), which made `ORDER BY created_at` shuffle
+     * a turn's messages across reloads. Identity is `BY DEFAULT` (not
+     * `ALWAYS`) so the migration backfill could renumber existing rows in
+     * `(created_at, id)` order.
+     */
+    seq: bigint("seq", { mode: "number" }).generatedByDefaultAsIdentity(),
+
+    /**
+     * Stream id of the turn that produced this message (assistant rows
+     * only; the claim uuid from `ai_conversations.active_stream_id`).
+     * Lets a resuming client trim the in-flight turn's partial messages
+     * before replaying the turn log, and flags interrupted turns.
+     */
+    turnId: uuid("turn_id"),
+
     createdAt: timestamp("created_at").defaultNow().notNull(),
   },
   (t) => [
@@ -138,6 +157,7 @@ export const aiMessages = pgTable(
       t.conversationId,
       t.createdAt,
     ),
+    index("ai_messages_conversation_seq_idx").on(t.conversationId, t.seq),
   ],
 );
 

@@ -1,5 +1,6 @@
 import db from "@fretik/shared/db";
 import type { ConversationBackgroundTask } from "@fretik/shared/db/schema";
+import { aiMessages } from "@fretik/shared/db/schema";
 import {
   clearConversationActiveStream,
   setConversationActiveStream,
@@ -7,8 +8,9 @@ import {
 import { publishConversationEvent } from "@fretik/shared/services/ai/conversation-events";
 import {
   loadConversationForAgent,
-  saveMessage,
+  saveMessages,
 } from "@fretik/shared/services/ai/messages";
+import { openTurnLog } from "@fretik/shared/services/ai/turn-log";
 import {
   claimCompletedConversationTasks,
   releaseClaimedConversationTasks,
@@ -16,6 +18,7 @@ import {
 import { hasResumableConversationTasks } from "@fretik/shared/services/conversation-tasks/list";
 import { context, ROOT_CONTEXT } from "@opentelemetry/api";
 import { randomUUIDv7 } from "bun";
+import { and, eq } from "drizzle-orm";
 import {
   getChatbotAgentSet,
   type ChatbotCallOptions,
@@ -95,33 +98,48 @@ const runResume = async (params: { conversationId: string }): Promise<void> => {
   if (!claimedSlot) return;
 
   let claimed: ConversationBackgroundTask[] = [];
+  const continuationMessageId = randomUUIDv7();
   try {
-    claimed = await claimCompletedConversationTasks(conversationId);
-    if (claimed.length === 0) {
-      await clearConversationActiveStream(conversationId, streamId);
-      return;
-    }
-
-    const built = await buildContinuation(claimed);
-    if (!built) {
-      await clearConversationActiveStream(conversationId, streamId);
-      return;
-    }
-
-    await saveMessage({
-      conversationId,
-      role: "user",
-      parts: [{ type: "text", text: built.text }],
-      metadata: {
-        kind: CONTINUATION_KIND,
-        taskIds: claimed.map((task) => task.id),
-        refs: claimed.map((task) => task.ref),
-      },
+    // Claim + continuation write in ONE transaction: a process dying between
+    // the two used to leave rows consumed with no message describing them —
+    // outcomes silently lost. Now either both landed or neither did.
+    const outcome = await db.transaction(async (tx) => {
+      const rows = await claimCompletedConversationTasks(conversationId, tx);
+      if (rows.length === 0) return null;
+      const built = await buildContinuation(rows);
+      // No line could be built (every underlying row vanished): keep the
+      // consumption — there is nothing to describe, retrying won't help.
+      if (!built) return { rows, built: null };
+      await saveMessages(
+        conversationId,
+        [
+          {
+            id: continuationMessageId,
+            role: "user",
+            parts: [{ type: "text", text: built.text }],
+            metadata: {
+              kind: CONTINUATION_KIND,
+              taskIds: rows.map((task) => task.id),
+              refs: rows.map((task) => task.ref),
+            },
+          },
+        ],
+        tx,
+      );
+      return { rows, built };
     });
+    if (!outcome || outcome.built === null) {
+      await clearConversationActiveStream(conversationId, streamId);
+      return;
+    }
+    claimed = outcome.rows;
+    const built = outcome.built;
 
-    // Announce like a user POST /stream: every open tab fans in to the
-    // resumable buffer. The empty `byUserId` matches no viewer, so nobody
-    // skips the fan-in as "their own" turn.
+    // Open the turn log before the announcement, exactly like a user POST
+    // /stream — `turn-started` is the attach invite and the log must exist
+    // when it lands. Every open tab fans in; the empty `byUserId` matches
+    // no viewer, so nobody skips the fan-in as "their own" turn.
+    await openTurnLog(streamId);
     await publishConversationEvent(conversationId, {
       type: "turn-started",
       streamId,
@@ -149,24 +167,36 @@ const runResume = async (params: { conversationId: string }): Promise<void> => {
       agentSet: getChatbotAgentSet(profileKey),
       modelProfile: resolveChatModelForProfile(profileKey).profile,
     });
-    // Drive the turn to completion server-side — nobody holds this Response.
-    // The resumable tee + `onFinish` persist, clear the slot, and publish
-    // `turn-ended` exactly as a user-facing turn does.
-    if (response.body) {
-      for await (const chunk of response.body) {
-        void chunk;
-      }
-    }
+    // The turn-log pump inside `runChatbotTurn` drives generation to
+    // completion on its own — the returned Response body is just a log
+    // reader for HTTP consumers, and nobody holds this one. Cancel it so
+    // its wake-channel subscription is released immediately. `onFinish`
+    // persists, clears the slot, and publishes `turn-ended` exactly as a
+    // user-facing turn does; viewers attach via the fan-out. Non-throwing:
+    // once generation is running, a reader hiccup must not trip the
+    // rollback below.
+    await response.body?.cancel().catch(() => undefined);
   } catch (err) {
     console.error(
       `${LOG_PREFIX} resume failed for conversation ${conversationId}:`,
       err,
     );
-    // The turn's own onFinish never ran — free the slot, and hand the tasks
-    // back so the sweep retries them rather than losing the outcomes.
+    // The turn's own onFinish never ran — restore the exact initial state:
+    // free the slot, delete the continuation message (a re-resume writes its
+    // own; leaving this one would describe the batch twice), and hand the
+    // tasks back so the next signal or the sweep retries them.
     await clearConversationActiveStream(conversationId, streamId).catch(
       () => undefined,
     );
+    await db
+      .delete(aiMessages)
+      .where(
+        and(
+          eq(aiMessages.id, continuationMessageId),
+          eq(aiMessages.conversationId, conversationId),
+        ),
+      )
+      .catch(() => undefined);
     await releaseClaimedConversationTasks(claimed.map((task) => task.id)).catch(
       () => undefined,
     );

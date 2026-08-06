@@ -23,6 +23,7 @@ import { modelProfilesRoutes } from "./handlers/model-profiles";
 import { preExtractRoutes } from "./handlers/pre-extract";
 import { vectorizeRoutes } from "./handlers/vectorize";
 import { workflowTriggerRoutes } from "./handlers/workflow";
+import { workflowTranscriptRoutes } from "./handlers/workflow-transcript";
 import { registerOrphanCleanupCron } from "./services/chat-files/orphan-cron";
 import { subscribeConversationTaskResumes } from "./services/conversation-tasks/subscribe-resume";
 import { backfillWorkflowVectors } from "./services/vectorize/workflows";
@@ -63,6 +64,9 @@ app.route("/chatbot-files", chatFilesRoutes);
 
 // User-facing model selection (C8) — picker menu + team defaults (cookie auth).
 app.route("/model-profiles", modelProfilesRoutes);
+
+// User-facing live workflow-run transcript (cookie auth, team-scoped).
+app.route("/workflow-runs", workflowTranscriptRoutes);
 
 // Internal agent invocations (X-Internal-Key middleware inside)
 app.route("/internal/agents/chatbot", chatbotInternalRoutes);

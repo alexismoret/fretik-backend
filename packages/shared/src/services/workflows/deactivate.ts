@@ -4,6 +4,7 @@ import { workflows } from "../../db/schema";
 import { deleteWorkflowSchedule } from "../../lib/trigger-client";
 import type { WorkflowResponse, WorkflowStatus } from "../../schemas/workflows";
 import { hideEpisodesForWorkflow } from "../episodes/hide-for-workflow";
+import { cancelQueuedEventRuns } from "./cancel-queued-event-runs";
 import { getWorkflowRow } from "./get";
 import { serializeWorkflow } from "./serialize";
 import {
@@ -52,6 +53,22 @@ export const deactivateWorkflow = async (params: {
     })
     .where(and(eq(workflows.id, id), eq(workflows.teamId, teamId)))
     .returning();
+
+  // Deactivating also kills the queued EVENT backlog (Pause = "stop the
+  // flood" during a bulk-upload burst; the circuit breaker and the runaway
+  // guard reach here through `pauseWorkflow` too). Queued manual/test/form
+  // runs are user-initiated and left alone. Best-effort: a Trigger hiccup
+  // must not block the state change.
+  if (updated) {
+    await cancelQueuedEventRuns({ workflowId: id, teamId }).catch(
+      (error: unknown) => {
+        console.warn(
+          `[workflows.deactivate] queued-run cancel failed for ${id}:`,
+          error instanceof Error ? error.message : error,
+        );
+      },
+    );
+  }
 
   // Archiving retires the workflow — hide its runs' episodes so their memory
   // stops surfacing in recall (a pause is temporary, so it leaves them alone).

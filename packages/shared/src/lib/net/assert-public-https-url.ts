@@ -1,5 +1,7 @@
 /**
- * SSRF guard for user-supplied MCP server URLs.
+ * SSRF guard for user-supplied upstream URLs — MCP servers, and any
+ * provider whose base URL is typed by the user rather than declared in a
+ * manifest.
  *
  * Unlike the manifest/Nango-proxy paths (Nango fetches upstream, so an SSRF
  * against Fretik is near-nil), the direct MCP transport fetches a URL the user
@@ -39,9 +41,18 @@ export interface UrlGuardOptions {
   /**
    * Dev escape hatch: allow http + private/loopback targets (e.g. a local MCP
    * server on `http://localhost:8931/mcp`). Defaults to the
-   * `MCP_ALLOW_PRIVATE_URLS=true` env flag.
+   * `MCP_ALLOW_PRIVATE_URLS=true` / `EXTERNAL_APPS_ALLOW_PRIVATE_URLS=true`
+   * env flags — the second name exists so non-MCP callers are not told to
+   * set an MCP-branded variable.
    */
   allowPrivate?: boolean;
+  /**
+   * What the URL points at, used to build the error messages the end user
+   * reads in the connection form ("MCP server URL is not a valid URL",
+   * "Akanea WMS server host … resolves to a private address"). Name the
+   * thing, not the field: " URL" / " host" is appended.
+   */
+  label?: string;
 }
 
 const MAX_URL_LEN = 2048;
@@ -115,11 +126,14 @@ export const assertPublicHttpsUrl = async (
   opts?: UrlGuardOptions,
 ): Promise<void> => {
   const allowPrivate =
-    opts?.allowPrivate ?? Bun.env.MCP_ALLOW_PRIVATE_URLS === "true";
+    opts?.allowPrivate ??
+    (Bun.env.MCP_ALLOW_PRIVATE_URLS === "true" ||
+      Bun.env.EXTERNAL_APPS_ALLOW_PRIVATE_URLS === "true");
+  const label = opts?.label ?? "MCP server";
 
   if (rawUrl.length > MAX_URL_LEN) {
     throw new UnsafeUrlError(
-      `MCP server URL exceeds the ${MAX_URL_LEN.toString()}-character limit`,
+      `${label} URL exceeds the ${MAX_URL_LEN.toString()}-character limit`,
     );
   }
 
@@ -127,12 +141,12 @@ export const assertPublicHttpsUrl = async (
   try {
     parsed = new URL(rawUrl);
   } catch {
-    throw new UnsafeUrlError("MCP server URL is not a valid URL");
+    throw new UnsafeUrlError(`${label} URL is not a valid URL`);
   }
 
   if (parsed.username !== "" || parsed.password !== "") {
     throw new UnsafeUrlError(
-      "MCP server URL must not embed credentials (user:password@…)",
+      `${label} URL must not embed credentials (user:password@…)`,
     );
   }
 
@@ -140,7 +154,7 @@ export const assertPublicHttpsUrl = async (
   const httpAllowed = allowPrivate && parsed.protocol === "http:";
   if (!httpsOnly && !httpAllowed) {
     throw new UnsafeUrlError(
-      `MCP server URL scheme "${parsed.protocol}" is not allowed; use https`,
+      `${label} URL scheme "${parsed.protocol}" is not allowed; use https`,
     );
   }
 
@@ -165,17 +179,15 @@ export const assertPublicHttpsUrl = async (
   try {
     addresses = await resolve(host);
   } catch {
-    throw new UnsafeUrlError(`Could not resolve MCP server host "${host}"`);
+    throw new UnsafeUrlError(`Could not resolve ${label} host "${host}"`);
   }
   if (addresses.length === 0) {
-    throw new UnsafeUrlError(
-      `MCP server host "${host}" resolved to no address`,
-    );
+    throw new UnsafeUrlError(`${label} host "${host}" resolved to no address`);
   }
   for (const { address } of addresses) {
     if (isPrivateIpv4(address) || isPrivateIpv6(address.toLowerCase())) {
       throw new UnsafeUrlError(
-        `MCP server host "${host}" resolves to a private address and cannot be reached`,
+        `${label} host "${host}" resolves to a private address and cannot be reached`,
       );
     }
   }

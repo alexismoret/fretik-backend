@@ -34,10 +34,12 @@ export const workflowTag = (workflowId: string): string =>
   `workflow:${workflowId}`;
 
 /**
- * Trigger a `workflow-run` orchestrator run. Serialized per workflow via
- * `concurrencyKey` (the task declares concurrency 1), tagged for realtime.
- * Returns the Trigger run id (stamped onto `workflow_runs.trigger_run_id`
- * for cancel + subscribe) and a scoped public token for the frontend.
+ * Trigger a `workflow-run` orchestrator run. Bounded per workflow via
+ * `concurrencyKey` (the task's queue declares the per-workflow limit); runs
+ * beyond the limit wait as `queued` — that queue is the backpressure for
+ * bulk-upload bursts. Tagged for realtime. Returns the Trigger run id
+ * (stamped onto `workflow_runs.trigger_run_id` for cancel + subscribe) and a
+ * scoped public token for the frontend.
  */
 export const triggerWorkflowRun = async (
   payload: WorkflowRunTaskPayload,
@@ -47,6 +49,12 @@ export const triggerWorkflowRun = async (
   const handle = await tasks.trigger(WORKFLOW_RUN_TASK_ID, payload, {
     queue: "workflow-runs",
     concurrencyKey: payload.workflowId,
+    // Explicit queue residency bound. Overrides the dev default of 10 min
+    // (which would silently expire a queued burst in local testing) and
+    // matches the theoretical worst case of a 500-run backlog draining at
+    // the per-workflow concurrency. An expired run is reclaimed as
+    // failed(EXPIRED) by the stall sweeper.
+    ttl: process.env["WORKFLOW_RUN_QUEUE_TTL"] ?? "7d",
     tags: [workflowTeamTag(payload.teamId), workflowTag(payload.workflowId)],
     ...(opts.idempotencyKey !== undefined
       ? { idempotencyKey: opts.idempotencyKey }
@@ -114,14 +122,24 @@ export const completeWorkflowWaitToken = async (
 /**
  * Mint a scoped public access token the browser uses to subscribe to a
  * team's workflow runs in realtime (`runs.subscribeToRunsWithTag`). Scoped
- * to the team tag only — never "all runs".
+ * to the team tag only — never "all runs". `skipColumns` is baked into the
+ * token so the browser cannot widen the projection. Also returns the Trigger
+ * API base URL and the tag so the frontend needs no Trigger config of its own.
  */
 export const createWorkflowRealtimeToken = async (
   teamId: string,
-): Promise<string> => {
+): Promise<{ token: string; url: string; tag: string }> => {
   assertConfigured();
-  return auth.createPublicToken({
+  const url = process.env.TRIGGER_API_URL;
+  if (url === undefined || url === "") {
+    throw new Error(
+      "TRIGGER_API_URL is not set — the browser cannot subscribe to Trigger.dev realtime. Set it in this service's env.",
+    );
+  }
+  const token = await auth.createPublicToken({
     scopes: { read: { tags: [workflowTeamTag(teamId)] } },
     expirationTime: "1hr",
+    realtime: { skipColumns: ["payload", "output"] },
   });
+  return { token, url, tag: workflowTeamTag(teamId) };
 };

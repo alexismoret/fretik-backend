@@ -103,6 +103,21 @@ export default {
         percent_complete: "Progression",
         assignees: "Personnes assignées",
         checklist: "Éléments de checklist",
+        // Libellés spécifiques Akanea WMS.
+        warehouse_customer: "Stockeur",
+        suppliers: "Fournisseurs",
+        consignees: "Destinataires",
+        line_count: "Lignes",
+        planned_receiving: "Réception prévue",
+        planned_delivery: "Livraison prévue",
+        items: "Articles",
+        parties: "Tiers",
+        pallets: "Palettes",
+        new_stock_status: "Nouveau statut de stock",
+        new_stock_location: "Nouvel emplacement",
+        new_batch: "Nouveau lot",
+        new_quantity: "Nouvelle quantité (UVC)",
+        new_expiry: "Nouvelle date limite",
       },
 
       values: {
@@ -602,6 +617,33 @@ export default {
         },
         delete_tag: {
           title: { default: "Supprimer le tag Front" },
+        },
+      },
+
+      "akanea-wms": {
+        upsert_receptions: {
+          title: { default: "Envoyer {{count}} réception(s) vers Akanea WMS" },
+        },
+        upsert_preparations: {
+          title: {
+            default: "Envoyer {{count}} préparation(s) vers Akanea WMS",
+          },
+        },
+        upsert_items: {
+          title: {
+            default:
+              "Créer ou mettre à jour {{count}} article(s) dans Akanea WMS",
+          },
+        },
+        upsert_parties: {
+          title: {
+            default: "Créer ou mettre à jour {{count}} tiers dans Akanea WMS",
+          },
+        },
+        change_stock: {
+          title: {
+            default: "Modifier {{count}} objet(s) de stock dans Akanea WMS",
+          },
         },
       },
     },

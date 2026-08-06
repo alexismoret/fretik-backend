@@ -194,10 +194,54 @@ export const DEEPSEEK_PROFILES: Record<string, ModelProfile> = {
       provider: {
         requireParameters: true,
         zdr: true,
-        // `sort` + `only`, NOT a pin. Re-measured 2026-08-05, and the headline
-        // is that the previous `order: ["DeepInfra"]` was pinning the agent to
-        // the SLOWEST working upstream — and silently disabling this `sort`,
-        // since OpenRouter consults `order` first.
+        // `sort` + `only`, NOT a pin. Re-measured 2026-08-06 with
+        // `bun run models:bench` over 9 candidates plus a COST-based cache probe
+        // (three identical 75k prefixes, reading `usage.cost` rather than the
+        // self-reported `cached_tokens`, which a provider may simply omit):
+        //
+        //   upstream      tok/s   best   reason   cached-path cost
+        //   siliconflow    86.9   89.5     1119   $0.00147 … or $0.00733
+        //   coreweave      86.5  107.0     1543   $0.00680 (never drops)
+        //   together       77.4   86.2     2380   $0.00157
+        //   phala          71.4   72.5      864   —
+        //   novita         65.8   66.4     4096   —
+        //   deepinfra      55.9   57.1     2557   $0.00097
+        //   venice         43.2   43.5     2343   —
+        //   parasail       31.4   33.0     1310   —
+        //   baseten           —      —        —   3 × HTTP 429, 0 success
+        //
+        // VENICE STAYS, but on a corrected basis. Two runs returned 43.2 and
+        // 43.5 tok/s — no variance at all — so the "273 tps" below never
+        // reproduced, and the note that admitted it was right to suspect its own
+        // sample ("bimodal… their aggregate is probably the honest number").
+        // It is kept because its OpenRouter p99 is 304, the second highest in
+        // the pool: a member the sort does not promote costs nothing, and
+        // dropping it would remove the only path by which a genuinely bimodal
+        // upstream ever gets used. Do NOT read its presence as a speed claim.
+        //
+        // TOGETHER IS IN: 1.38× DeepInfra's decode, caches STABLY (cost falls
+        // 4.66× on the second identical prefix, $0.00732 → $0.00157) and
+        // converges better than the incumbent (2 380 reasoning tokens against
+        // DeepInfra's 2 557 on a 600 budget).
+        //
+        // The two FASTEST upstreams are both rejected, and only the cost probe
+        // could show why: CoreWeave bills three identical 75k prefixes at
+        // $0.006800 each with `cached_tokens: 0` — it genuinely does not cache,
+        // making it 7.0× DeepInfra's cached path for 1.55× the speed.
+        // SiliconFlow is worse than that: it cached once ($0.00147) then missed
+        // twice within 30 s ($0.00733), so its cost is unpredictable rather than
+        // merely high. Novita burned all 4 096 output tokens on reasoning — the
+        // answer is never written — which is a hard exclusion, not a preference.
+        //
+        // Together is admitted as a CANDIDATE, deliberately not pinned with
+        // `order`: OpenRouter's own p50 still ranks it (37) below DeepInfra (44),
+        // and pinning our own n=2 against their 30-minute aggregate is the exact
+        // mistake this change is undoing. If its p50 rises, `sort` promotes it.
+        //
+        // Earlier note (2026-08-05), kept for the reasoning that still holds:
+        // the previous `order: ["DeepInfra"]` was pinning the agent to the
+        // SLOWEST working upstream — and silently disabling this `sort`, since
+        // OpenRouter consults `order` first.
         //
         // The 2026-08-02 note this replaces measured a single hard prompt and
         // read the result as "DeepInfra thinks 6× less than the others". Two
@@ -218,33 +262,36 @@ export const DEEPSEEK_PROFILES: Record<string, ModelProfile> = {
         // on throughput: decode dominates a turn, not TTFT.
         sort: "throughput",
         // The vetted pool. Membership is a CACHE + CONVERGENCE decision, which
-        // is why it cannot be left to `sort` alone:
-        //  - all three hit the implicit prompt cache 100 % on a repeated 75k
-        //    prefix. That is worth more than raw speed — a miss bills ~4.6× on a
-        //    Fretik turn ($0.00490 vs $0.00107 measured), and the cache is why
-        //    routing must stay STICKY. It does: over 10 consecutive turns the
-        //    sort served all 10 from one upstream at 10/10 cache hits, so the
-        //    old fear that sorting would thrash the cache is unfounded.
-        //  - DeepInfra and Venice stop reasoning on their own (1 015-1 115
-        //    tokens against a 600 budget); Novita, SiliconFlow, Phala and
-        //    Together ran to the 1 600 cap with the answer still unwritten.
-        // Excluded on measurement: Novita + SiliconFlow (reasoning runaway, and
-        // Novita cached only 3/10 turns), Parasail (19.5s TTFT), Mancer 2 (never
-        // caches, dearest), Morph / AkashML / Io Net (18-33 tps or timeout),
-        // Fireworks + Ionstream (HTTP 429), Baidu / DeepSeek / Cloudflare /
-        // BaseTen-without-ZDR (404 — outside the ZDR pool).
+        // is why it cannot be left to `sort` alone — a sort sees throughput and
+        // nothing else, and on this model the two FASTEST upstreams are the two
+        // that do not cache. A miss bills ~4.6× on a Fretik turn ($0.00490 vs
+        // $0.00107), so the cache is also why routing must stay STICKY. It does:
+        // over 10 consecutive turns the sort served all 10 from one upstream at
+        // 10/10 cache hits, so the old fear that sorting thrashes the cache is
+        // unfounded.
         //
-        // BaseTen is IN despite rate-limiting us 2 calls in 3: a 429 inside
-        // `only` fails over silently (0 errors reached the caller over 10 turns),
-        // so it costs nothing to have it and it is 4× DeepInfra when it serves.
+        // The pool is deliberately WIDER than the set we expect to be served by.
+        // `sort` promotes on OpenRouter's live p50, so an upstream that is only
+        // occasionally fast can only ever be reached if it is a member — and a
+        // member that is never promoted costs nothing. Admission therefore turns
+        // on cache and convergence, never on "will it win today".
         //
-        // Venice is deliberately NOT pinned ahead of DeepInfra even though it
-        // measured 4× faster: OpenRouter reports its p50 at 44 tps, and one of
-        // the three runs did come in at 65 tps, so it is bimodal and their
-        // aggregate is probably the honest number. Pinning our own optimistic
-        // sample is the exact mistake this change is undoing — let the live sort
-        // promote it when its p50 says so.
-        only: ["baseten", "venice", "deepinfra"],
+        // Excluded on measurement: CoreWeave + SiliconFlow (no cache / erratic
+        // cache, see above — the only exclusions here that cost real speed),
+        // Novita (reasoning runaway: spent the whole 4 096-token budget with the
+        // answer unwritten), Parasail (31 tok/s), Phala (caches and converges
+        // best of the lot, but $0.070/MTok cache-read is 3.9× DeepInfra's for
+        // 1.28× the decode), Mancer 2 (never caches, dearest), Morph / AkashML /
+        // Io Net (17-21 tok/s), Fireworks + Ionstream (HTTP 429), Baidu /
+        // DeepSeek / Cloudflare / BaseTen-without-ZDR (404 — outside the ZDR
+        // pool). Parasail's old "19.5s TTFT" exclusion was a bad sample:
+        // OpenRouter puts its latency p50 at 779 ms, second best of all 22.
+        //
+        // BaseTen is IN despite serving 0 of 5 attempts across two benches (all
+        // HTTP 429): a 429 inside `only` fails over silently (0 errors reached
+        // the caller over 10 turns), so the option costs nothing, and its p99 is
+        // 412 tok/s — four times anything else here — when it does serve.
+        only: ["baseten", "venice", "together", "deepinfra"],
       },
       enabled: true,
       // Promoted to the `chat` + `workflow` default 2026-08-02, full curated

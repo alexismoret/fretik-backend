@@ -24,6 +24,7 @@
     "langfuse:seed-eval-config": "bun run scripts/seed-langfuse-eval-config.ts",
     "measure:tokens": "bun run scripts/measure-system-prompt-tokens.ts",
     "models:check": "bun run scripts/check-model-catalog.ts",
+    "models:bench": "bun run scripts/measure-upstreams.ts",
     "backfill:orphan-think": "bun run scripts/backfill-orphan-think-tags.ts"
   },
   "dependencies": {

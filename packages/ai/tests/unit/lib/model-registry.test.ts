@@ -44,7 +44,12 @@ import { shouldInjectCacheControl } from "../../../src/lib/openrouter-cache";
  * converges, neither of which `sort: "throughput"` can see. See the profile for
  * the 2026-08-05 measurements and the per-provider exclusion reasons.
  */
-const VETTED_DEEPSEEK_UPSTREAMS = ["baseten", "venice", "deepinfra"];
+const VETTED_DEEPSEEK_UPSTREAMS = [
+  "baseten",
+  "venice",
+  "together",
+  "deepinfra",
+];
 
 describe("settingsForRole — parity with historical settings objects", () => {
   test("chat-fallback carries minimax-m3's own envelope, not the historical one", () => {
@@ -82,23 +87,37 @@ describe("settingsForRole — parity with historical settings objects", () => {
     });
   });
 
-  test("preextract envelope matches the legacy preextractModelSettings", () => {
-    const expected = {
-      reasoning: { effort: "minimal" },
-      provider: { require_parameters: true, zdr: true, sort: "throughput" },
-    };
+  // The two pre-extract roles no longer share one envelope, and that is the
+  // point: the kind carries the PROFILE's pool on top of its own role-level
+  // sort. Bound to deepseek-v4-flash, `pre-extract` used to run on the full ZDR
+  // pool because this kind dropped `only`/`ignore` — reaching the upstreams the
+  // profile excludes on measurement.
+  test("preextract carries the bound profile's vetted pool + the role's throughput sort", () => {
     expect(
       settingsForRole(
         ROLE_BINDINGS["pre-extract"],
         getProfileForRole("pre-extract"),
       ),
-    ).toEqual(expected);
+    ).toEqual({
+      reasoning: { effort: "minimal" },
+      provider: {
+        require_parameters: true,
+        zdr: true,
+        only: VETTED_DEEPSEEK_UPSTREAMS,
+        sort: "throughput",
+      },
+    });
+    // gpt-oss-120b declares no pool, so its envelope is unchanged — a profile
+    // without filters must not gain any.
     expect(
       settingsForRole(
         ROLE_BINDINGS["pre-extract-fallback"],
         getProfileForRole("pre-extract-fallback"),
       ),
-    ).toEqual(expected);
+    ).toEqual({
+      reasoning: { effort: "minimal" },
+      provider: { require_parameters: true, zdr: true, sort: "throughput" },
+    });
   });
 
   // `only` is the recall judge's LATENCY guard, and it is pinned here because

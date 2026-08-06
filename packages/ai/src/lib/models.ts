@@ -55,6 +55,14 @@ export const cheapProviderFor = (
     // Same floor as the memory judges: a quantized 20b loses output discipline.
     quantizations: ["bf16", "fp16", "unknown"],
     ignore: ["fireworks"],
+    // Without this the block expressed no speed preference at all, so these
+    // calls ran on OpenRouter's DEFAULT price ordering — which is how the
+    // 5.8 s median above happened. Nothing here needs the cache stickiness that
+    // makes the agent loop's pool a delicate choice: every one of these is a
+    // one-shot over content that never repeats, so there is no warm prefix to
+    // lose by moving upstream. Latency is the only axis left that matters, and
+    // enrichment sits on the critical path of every indexed chunk.
+    sort: "throughput",
   };
 };
 

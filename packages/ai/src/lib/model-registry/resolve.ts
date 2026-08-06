@@ -224,7 +224,24 @@ export const settingsForRole = (
     case "preextract":
       return {
         reasoning: { effort: "minimal" },
-        provider: { require_parameters: true, zdr, sort: "throughput" },
+        provider: {
+          require_parameters: true,
+          zdr,
+          // Same omission the `chat` kind carried until 2026-08-05, and with the
+          // same consequence: `pre-extract` binds to deepseek-v4-flash, so
+          // dropping the profile's filters ran it on the FULL 22-endpoint ZDR
+          // pool. `sort: "throughput"` then reached exactly the upstreams the
+          // profile excludes on measurement — Fireworks (HTTP 429), Novita and
+          // SiliconFlow (reasoning runaway), Phala — because a sort only
+          // REORDERS a pool, it never narrows one. The pool is a quality
+          // decision (cache population, reasoning convergence) and belongs to
+          // every role serving that profile, not just the agent loop.
+          ...(ignore ? { ignore: [...ignore] } : {}),
+          ...(only ? { only: [...only] } : {}),
+          // Role-level, not profile-level: pre-extraction is a bulk one-shot
+          // where decode dominates, whatever profile is bound.
+          sort: "throughput",
+        },
       };
     // Both memory kinds resolve their reasoning param THROUGH the profile,
     // exactly like `chat`. A hardcoded `{ effort }` looks equivalent and is

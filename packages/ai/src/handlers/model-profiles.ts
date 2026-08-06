@@ -85,6 +85,16 @@ const buildCard = (
     speed: metric?.speed ?? null,
     costLevel: metric?.costLevel ?? null,
     timeToFirstAnswer: metric?.timeToFirstAnswer ?? null,
+    /**
+     * p50 time to the FIRST token on the upstream this profile actually routes
+     * to, measured by OpenRouter over the last 30 minutes of live traffic.
+     * Distinct from `timeToFirstAnswer`, which counts the wait until the first
+     * ANSWER token and so includes a reasoning model's silent thinking. Both
+     * this and `speed` were computed and cached but never sent, which left the
+     * panel describing whichever route Artificial Analysis happened to sample
+     * rather than ours.
+     */
+    ttftSeconds: metric?.ttftSeconds ?? null,
     coding: metric?.coding ?? null,
     toolUse: metric?.toolUse ?? null,
     instructionFollowing: metric?.instructionFollowing ?? null,

@@ -219,6 +219,17 @@ export const DEEPSEEK_PROFILES: Record<string, ModelProfile> = {
         // dropping it would remove the only path by which a genuinely bimodal
         // upstream ever gets used. Do NOT read its presence as a speed claim.
         //
+        // 2026-08-09: nearly dropped over the empty-`spec.elements` loop (prod
+        // conversation 019fe670, 35 consecutive degenerate `managePage` calls).
+        // The measurement that would have justified it was WRONG — the probe
+        // left reasoning uncapped, so Venice spent 7 200 output tokens thinking
+        // and truncated the call. Re-run with what `settingsForRole` actually
+        // sends (`reasoning.max_tokens: 1500`), n=5, same 9k prompt and tool
+        // schema: Venice 5/5 wrote the elements, DeepInfra 4/5, Together 3/5.
+        // The lesson is about probes, not upstreams: measure a provider with
+        // the envelope production puts on the wire, or the result describes an
+        // experiment nobody runs.
+        //
         // TOGETHER IS IN: 1.38× DeepInfra's decode, caches STABLY (cost falls
         // 4.66× on the second identical prefix, $0.00732 → $0.00157) and
         // converges better than the incumbent (2 380 reasoning tokens against

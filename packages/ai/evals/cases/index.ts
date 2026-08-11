@@ -24,6 +24,7 @@ import { multiStepSuite } from "./multi-step";
 import { multimodalSuite } from "./multimodal";
 import { objectGraphSuite } from "./object-graph";
 import { objectsAutonomySuite } from "./objects-autonomy";
+import { pagesSuite } from "./pages";
 import { ragMetadataSuite } from "./rag-metadata";
 import { ragPrecisionSuite } from "./rag-precision";
 import { securitySuite } from "./security";
@@ -52,4 +53,5 @@ export const allSuites: EvalSuite[] = [
   multimodalSuite,
   objectGraphSuite,
   objectsAutonomySuite,
+  pagesSuite,
 ];

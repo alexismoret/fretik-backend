@@ -14,6 +14,7 @@ import { createManageDriveTool } from "../../tools/manage-drive";
 import { createManageFieldTool } from "../../tools/manage-field";
 import { createManageLinkTool } from "../../tools/manage-link";
 import { createManageObjectTypeTool } from "../../tools/manage-object-type";
+import { createManagePageTool } from "../../tools/manage-page";
 import { createManageRecordTool } from "../../tools/manage-record";
 import { createManageWorkflowTool } from "../../tools/manage-workflow";
 import { createMemoryTool } from "../../tools/memory";
@@ -78,33 +79,24 @@ export const buildCoreTools = (domainTools: SearchableToolRegistry) => ({
     ...createRagSearchTool(),
     category: "core",
     searchHint: "semantic rag documents content search",
-    // RAG chunks are verbose by nature; give them extra room before
-    // the persisted-output layer kicks in.
-    maxResultSizeChars: 48_000,
   }),
   querySql: buildChatbotTool({
     ...createSqlQueryTool(),
     category: "core",
     searchHint: "postgres sql structured query count filter aggregate",
-    maxResultSizeChars: 32_000,
   }),
   searchWeb: buildChatbotTool({
     ...createWebSearchTool(),
     category: "core",
     searchHint: "web tavily external regulation market news",
-    // Tavily results are compact — a smaller cap avoids wasted context.
-    maxResultSizeChars: 24_000,
   }),
   read: buildChatbotTool({
     ...createReadTool(),
     category: "core",
     searchHint:
       "read file attachment pdf docx pptx text json csv slice offset limit inspect ocr sidecar persisted output",
-    // Opt out of the persistence layer entirely: persisting the
-    // output of a file-read tool back to disk would be circular.
-    // The tool self-bounds via its own MAX_READ_CHARS (see
-    // tools/read.ts).
-    maxResultSizeChars: Number.POSITIVE_INFINITY,
+    // Self-bounds via its own MAX_READ_CHARS (see tools/read.ts) — persisting
+    // the output of a file-read tool back to disk would be circular.
   }),
   extract: buildChatbotTool({
     ...createExtractTool(),
@@ -118,10 +110,6 @@ export const buildCoreTools = (domainTools: SearchableToolRegistry) => ({
     category: "core",
     searchHint:
       "extract structured data fields line items table rows records document pdf docx invoice json schema",
-    // Row sets can get big — same threshold as querySql; oversized
-    // results land in a <persisted-output> file the agent reads back
-    // or processes with python.
-    maxResultSizeChars: 32_000,
     // Paid remote model call, but stateless and re-derivable from the
     // same file + schema — same microcompact stance as vision.
     isReadOnly: false,
@@ -132,11 +120,6 @@ export const buildCoreTools = (domainTools: SearchableToolRegistry) => ({
     category: "core",
     searchHint:
       "view image pdf vision describe photo diagram chart layout colour signature visual question gemini document",
-    // Vision payloads are short descriptions — leave Fretik's
-    // default threshold in place. Not strictly read-only (it
-    // invokes a remote vision model), but no side-effects on local
-    // state.
-    maxResultSizeChars: 8_000,
     isReadOnly: false,
     // Vision returns a stateless description that the model can
     // re-generate by calling vision again on the same path. Override
@@ -149,11 +132,6 @@ export const buildCoreTools = (domainTools: SearchableToolRegistry) => ({
     category: "core",
     searchHint:
       "execute python code script sandbox transform filter aggregate compute json csv",
-    // Mirrors Claude Code's BashTool cap (30K). `python` is the
-    // chatbot's general-purpose "run code, get stdout" escape hatch —
-    // same conceptual role as Bash in Claude Code, so the threshold
-    // tracks Bash's. See tools/python.ts for the full rationale.
-    maxResultSizeChars: 30_000,
     // Stdout is captured but the script can also write files into the
     // sandbox dir, so this tool is not strictly read-only.
     isReadOnly: false,
@@ -163,10 +141,6 @@ export const buildCoreTools = (domainTools: SearchableToolRegistry) => ({
     category: "core",
     searchHint:
       "execute bash shell command run ls cat grep find sed awk head tail wc sort tar diff terminal pipeline directory listing",
-    // Same cap as `python` and Claude Code's BashTool — stdout dumps
-    // from `find` / `grep -R` / `ls -R` are the primary reason the
-    // persisted-output layer exists.
-    maxResultSizeChars: 30_000,
     // Bash can mutate /workspace (rm, mv, >); not read-only.
     isReadOnly: false,
   }),
@@ -175,9 +149,6 @@ export const buildCoreTools = (domainTools: SearchableToolRegistry) => ({
     category: "core",
     searchHint:
       "present surface display show generated file card download inline image preview deliverable excel word powerpoint pdf chart",
-    // Output is a small descriptor array (filename/mime/size per file)
-    // plus an optional caption — always comfortably under any cap.
-    maxResultSizeChars: 8_000,
     // Mirrors produced files to S3, so not strictly read-only.
     isReadOnly: false,
   }),
@@ -188,7 +159,6 @@ export const buildCoreTools = (domainTools: SearchableToolRegistry) => ({
       "activate enable discover load domain tools deferred progressive disclosure",
     // searchTools responses only carry tool names, never payloads.
     // A tight cap keeps the context footprint negligible.
-    maxResultSizeChars: 8_000,
     // Replay-critical: `replayActivationFromHistory` reconstructs the
     // DynamicToolManager state by reading the JSON payload of past
     // searchTools results. Microcompact must NEVER clear these or
@@ -204,7 +174,6 @@ export const buildCoreTools = (domainTools: SearchableToolRegistry) => ({
     // `view` of a directory is the largest payload — bounded server-side
     // (depth-2 listing, line-truncation, 30K total cap). Aligned with the
     // SQL/web cap.
-    maxResultSizeChars: 32_000,
     // memory mutates the durable `ai_memories` table — not read-only.
     isReadOnly: false,
   }),
@@ -215,7 +184,6 @@ export const buildCoreTools = (domainTools: SearchableToolRegistry) => ({
       "ask user question multiple choice clarify ambiguity preference decision confirm propose memory disambiguate",
     // Output is a small descriptor (1-4 questions × up to 4 options each)
     // — always comfortably under any cap.
-    maxResultSizeChars: 8_000,
     // No external side effects on local state at execute time; the
     // actual answer collection happens client-side via a fresh user
     // turn carrying the answers.
@@ -270,69 +238,59 @@ export const buildDomainTools = () => ({
     category: "domain",
     searchHint:
       "search filter list team documents by type folder status filename",
-    maxResultSizeChars: 16_000,
   }),
   describeObjectType: buildChatbotTool({
     ...createDescribeObjectTypeTool(),
     category: "domain",
     searchHint:
       "describe object type fields columns schema metadata key label type description config options enum allowed values choices select multi_select bounds min max relations typed view what fields",
-    maxResultSizeChars: 16_000,
   }),
   listObjects: buildChatbotTool({
     ...createListObjectsTool(),
     category: "domain",
     searchHint:
       "list browse object records of a type rows entities companies people custom records search status confirmed suggested pending pagination",
-    maxResultSizeChars: 16_000,
   }),
   getObject: buildChatbotTool({
     ...createGetObjectTool(),
     category: "domain",
     searchHint:
       "get object record by id detail fields linked records relations connections neighbors what is connected to",
-    maxResultSizeChars: 16_000,
   }),
   manageRecord: buildChatbotTool({
     ...createManageRecordTool(),
     category: "domain",
     searchHint:
       "create add update edit delete remove record row entity confirm reject accept ai suggestion set status write data object",
-    maxResultSizeChars: 16_000,
   }),
   manageLink: buildChatbotTool({
     ...createManageLinkTool(),
     category: "domain",
     searchHint:
       "link unlink connect disconnect relate records relationship edge association attach detach",
-    maxResultSizeChars: 8_000,
   }),
   manageObjectType: buildChatbotTool({
     ...createManageObjectTypeTool(),
     category: "domain",
     searchHint:
       "create update delete object type schema table model define new kind of thing entity category rename",
-    maxResultSizeChars: 8_000,
   }),
   manageField: buildChatbotTool({
     ...createManageFieldTool(),
     category: "domain",
     searchHint:
       "add edit remove change field column attribute property type schema select options number bounds relation rollup",
-    maxResultSizeChars: 8_000,
   }),
   searchIcons: buildChatbotTool({
     ...createSearchIconsTool(),
     category: "domain",
     searchHint:
       "find icon lucide glyph symbol for object type select option picker visual",
-    maxResultSizeChars: 8_000,
   }),
   webFetch: buildChatbotTool({
     ...createWebFetchTool(),
     category: "domain",
     searchHint: "fetch extract read content specific url page markdown article",
-    maxResultSizeChars: 48_000,
   }),
   transform: buildChatbotTool({
     ...createTransformTool(),
@@ -347,7 +305,6 @@ export const buildDomainTools = () => ({
       "transform translate rewrite restyle reword rephrase reformat redact anonymise document text file markdown language french english whole document to file",
     // Small by construction — the tool returns a preview + path, never the
     // transformed document itself.
-    maxResultSizeChars: 8_000,
     // Paid remote model calls + writes an output file — not read-only, but
     // stateless and re-derivable from the same source + instruction.
     isReadOnly: false,
@@ -360,7 +317,6 @@ export const buildDomainTools = () => ({
       "download drive document binary pdf docx xlsx pull file workspace sandbox local copy parse vision generate template",
     // Output is a small descriptor (path / filename / mimeType / size)
     // — never large.
-    maxResultSizeChars: 8_000,
     // Mutates `/workspace/drive/` and (potentially) the conversation
     // sandbox quota — not strictly read-only.
     isReadOnly: false,
@@ -371,7 +327,6 @@ export const buildDomainTools = () => ({
     searchHint:
       "upload save file to drive promote attachment conversation store persist archive keep document",
     // Output is a small descriptor (documentId / filename / status) — never large.
-    maxResultSizeChars: 8_000,
     // Copies bytes into the Drive + enqueues processing — not read-only.
     isReadOnly: false,
   }),
@@ -380,7 +335,6 @@ export const buildDomainTools = () => ({
     category: "domain",
     searchHint:
       "create rename move delete folder directory organize drive tree relocate document into folder file structure",
-    maxResultSizeChars: 8_000,
     // Mutates the folder tree + document locations — not read-only.
     isReadOnly: false,
   }),
@@ -389,7 +343,6 @@ export const buildDomainTools = () => ({
     category: "domain",
     searchHint:
       "list browse folders directories drive tree navigate discover folder ids subfolders",
-    maxResultSizeChars: 8_000,
   }),
   createSkill: buildChatbotTool({
     ...createCreateSkillTool(),
@@ -402,7 +355,6 @@ export const buildDomainTools = () => ({
       "create new skill recipe playbook procedure instructions template reusable repeat task custom assistant ability set up automate",
     // Slim envelope (slug + status). Body lives in the call's args,
     // not in the result — see create-skill.ts for the rationale.
-    maxResultSizeChars: 2_000,
     // Returns a draft for user confirmation — does not mutate DB.
     isReadOnly: true,
   }),
@@ -411,7 +363,6 @@ export const buildDomainTools = () => ({
     category: "domain",
     searchHint:
       "update existing skill edit improve refine extend rewrite adjust modify enhance",
-    maxResultSizeChars: 2_000,
     isReadOnly: true,
   }),
   searchSkills: buildChatbotTool({
@@ -419,7 +370,6 @@ export const buildDomainTools = () => ({
     category: "domain",
     searchHint:
       "find discover search skill catalog marketplace capability playbook ability ready-made install add",
-    maxResultSizeChars: 4_000,
     isReadOnly: true,
   }),
   installSkill: buildChatbotTool({
@@ -427,16 +377,29 @@ export const buildDomainTools = () => ({
     category: "domain",
     searchHint:
       "install add skill from catalog marketplace capability playbook to team enable",
-    maxResultSizeChars: 2_000,
     // Persists a skill to the team (behind the write-approval gate).
     isReadOnly: false,
+  }),
+  managePage: buildChatbotTool({
+    ...createManagePageTool(),
+    category: "domain",
+    searchHint:
+      "page dashboard interface view chart graph kpi table visualise visualize report display layout custom ui public link share live data",
+    // Writes page definitions (and mints public URLs) — not read-only.
+    isReadOnly: false,
+    // …but every result it returns is RE-FETCHABLE, which is what compaction
+    // actually cares about: get_catalog, list, get and dry_run all replay
+    // identically, and the one durable fact a create returns (the pageId) is
+    // recoverable with `list`. Without this override the 19 KB catalog stayed
+    // pinned for the life of the conversation — heaviest exactly when the
+    // window is under pressure.
+    microcompactable: true,
   }),
   manageWorkflow: buildChatbotTool({
     ...createManageWorkflowTool(),
     category: "domain",
     searchHint:
       "create build manage workflow automation autonomous agent scheduled recurring cron trigger event playbook tasks run test activate pause draft",
-    maxResultSizeChars: 8_000,
     // Mutates workflow definitions + fires test runs — not read-only.
     isReadOnly: false,
   }),

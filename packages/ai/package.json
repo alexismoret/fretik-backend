@@ -30,6 +30,7 @@
   "dependencies": {
     "@ai-sdk/provider": "^4.0.3",
     "@fretik/providers": "workspace:*",
+    "@fretik/render": "workspace:*",
     "@fretik/shared": "workspace:*",
     "@hono/zod-openapi": "^1.4.0",
     "@langfuse/client": "^5.9.1",

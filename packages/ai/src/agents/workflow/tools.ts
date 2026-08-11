@@ -61,7 +61,6 @@ export const buildWorkflowTools = (extras: {
       searchHint:
         "complete close finish current playbook task advance next step progress",
       // Result is the next task's instructions — always small.
-      maxResultSizeChars: 8_000,
       // Mutates workflow_runs.task_states — not read-only.
       isReadOnly: false,
     }),

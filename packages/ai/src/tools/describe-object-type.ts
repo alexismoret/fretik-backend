@@ -24,9 +24,9 @@ import { TOOL_ERROR_CODES, toolError } from "../lib/tool-error-codes";
 export const createDescribeObjectTypeTool = () =>
   tool({
     description: [
-      "Full schema of one object type: its typed table, icon/color, fields (key, label, type, description, config/options), and outgoing relations.",
+      "Full schema of one object type: its `objectTypeId`, typed table, icon/color, fields (key, label, type, description, config/options), and outgoing relations.",
       "",
-      "Use this when you need a field's exact `select` options, `number` bounds, `description`, or user-facing label before writing a `querySql` against the type's `data.obj_<typeId>` table or filtering `listObjects`. Get type keys from `<team_objects>`. Also the way to read the full column set of a type that `<team_objects>` shows compacted.",
+      "Use this when you need a field's exact `select` options, `number` bounds, `description`, or user-facing label before writing a `querySql` against the type's `data.obj_<typeId>` table or filtering `listObjects`. It is also where `objectTypeId` comes from — the uuid a page dataset needs; never reconstruct it from the table name. Get type keys from `<team_objects>`. Also the way to read the full column set of a type that `<team_objects>` shows compacted.",
     ].join("\n"),
     inputSchema: z.object({
       typeKey: z
@@ -78,6 +78,11 @@ export const createDescribeObjectTypeTool = () =>
 
       const payload = {
         key: type.key,
+        // The uuid every other tool means by `objectTypeId`. Given explicitly
+        // because it is NOT derivable from the table name: `data.obj_<hex>`
+        // drops the dashes, and a page dataset built from that hex silently
+        // matches nothing.
+        objectTypeId: type.id,
         label: type.label,
         description: type.description,
         icon: type.icon,

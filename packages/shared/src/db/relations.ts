@@ -883,6 +883,41 @@ export const relations = defineRelations(schema, (r) => ({
     runs: r.many.workflowRuns(),
   },
 
+  pages: {
+    organization: r.one.organization({
+      from: r.pages.organizationId,
+      to: r.organization.id,
+    }),
+    team: r.one.team({
+      from: r.pages.teamId,
+      to: r.team.id,
+    }),
+    user: r.one.user({
+      from: r.pages.userId,
+      to: r.user.id,
+      alias: "pageOwner",
+      optional: true,
+    }),
+    createdBy: r.one.user({
+      from: r.pages.createdByUserId,
+      to: r.user.id,
+      alias: "pageCreator",
+      optional: true,
+    }),
+    shares: r.many.pageShares(),
+  },
+
+  pageShares: {
+    page: r.one.pages({
+      from: r.pageShares.pageId,
+      to: r.pages.id,
+    }),
+    team: r.one.team({
+      from: r.pageShares.teamId,
+      to: r.team.id,
+    }),
+  },
+
   workflowRuns: {
     workflow: r.one.workflows({
       from: r.workflowRuns.workflowId,

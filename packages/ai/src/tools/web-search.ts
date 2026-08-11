@@ -7,11 +7,10 @@ import { TOOL_ERROR_CODES } from "../lib/tool-error-codes";
 import { isUrlDenied } from "../lib/web-egress";
 
 /**
- * Per-tool char threshold for `maybePersistLargeOutput`. Tavily
- * results are compact compared to RAG (title + 2-3 sentence snippet
- * per hit), so the envelope sits below the global 32K default. Matches
- * the `maxResultSizeChars: 24_000` on `searchWeb` in
- * `agents/chatbot/tools.ts`.
+ * Per-tool char threshold for `maybePersistLargeOutput`. Tavily results are
+ * compact compared to RAG (title + 2-3 sentence snippet per hit), so the
+ * envelope can sit low. This is the ONLY cap that actually fires: the registry
+ * metadata that used to declare one was read by nothing and has been removed.
  */
 const WEB_SEARCH_PERSIST_THRESHOLD_CHARS = 24_000;
 

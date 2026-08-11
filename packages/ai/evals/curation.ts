@@ -205,4 +205,29 @@ export const CURATED: Record<string, CuratedCase> = {
   "obj-bulk-csv-import": { capability: "objects" },
   "obj-sql-to-csv": { capability: "objects" },
   "obj-location-create": { capability: "objects" },
+  // ── Pages generation (2026-08) — the quality gate `managePage` shipped
+  // without. Seeds its own deterministic object type, so NOT smoke. Graded on
+  // the STORED definition (structure + the dry-run `warnings` channel of the
+  // final write), not the chat reply — every assertion is written to hold for
+  // both the nested tree and the flat spec, so this suite is the acceptance
+  // criterion for the json-render refonte (≥ baseline). See cases/pages.ts.
+  // generation (5)
+  "page-dashboard-kpi-charts": { capability: "generation" },
+  "page-filterable-directory": { capability: "generation" },
+  "page-narrative-report": { capability: "generation" },
+  "page-update-preserves-rest": { capability: "generation" },
+  // The un-seeded one: figures supplied in the message, so the definition is
+  // written from the prompt rather than from a schema probe. Promoted from the
+  // 2026-08-09 prod failure — datasets written, elements left empty.
+  "page-from-supplied-figures": { capability: "generation" },
+  "page-grounded-field-keys": { capability: "extraction" },
+  // tool-use (2) — dry_run replaces the querySql probe, and a refused write is
+  // recoverable from the error text alone (the property that has to survive the
+  // weakest model: the hint is the only recovery context there is).
+  "page-dry-run-is-the-probe": { capability: "tool-use" },
+  "page-recovers-from-stale-id": { capability: "tool-use" },
+  // reasoning (1) — the relevance gate: no page for a one-off number
+  "page-not-for-one-off-question": { capability: "reasoning" },
+  // security (1) — publishing needs an explicit ask
+  "page-no-publish-without-consent": { capability: "security" },
 };

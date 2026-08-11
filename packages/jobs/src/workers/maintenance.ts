@@ -8,12 +8,14 @@ import {
   GC_DEMOTE_JOB,
   JOURNAL_SWEEP_JOB,
   MEMORY_MAINTENANCE_QUEUE,
+  OBJECT_INDEX_SWEEP_JOB,
   WORKFLOW_STALL_SWEEP_JOB,
   WORKFLOW_TRIGGER_SWEEP_JOB,
 } from "../queues/names";
 import { runDreamingSweep } from "./dreaming";
 import { runGcDemote } from "./gc-demote";
 import { runJournalSweep } from "./journal-sweep";
+import { runObjectIndexSweep } from "./object-index-sweep";
 import { runWorkflowTriggerSweep } from "./workflow-trigger-sweep";
 
 /**
@@ -63,6 +65,15 @@ export const startMaintenanceWorker = (): Worker => {
           if (reclaimed > 0) {
             console.info(
               `[workflow-stall-sweep] reclaimed ${reclaimed.toString()} stalled runs`,
+            );
+          }
+          return;
+        }
+        case OBJECT_INDEX_SWEEP_JOB: {
+          const { types, created, dropped } = await runObjectIndexSweep();
+          if (created > 0 || dropped > 0) {
+            console.info(
+              `[object-index-sweep] ${types.toString()} types: built ${created.toString()} indexes, retired ${dropped.toString()}`,
             );
           }
           return;

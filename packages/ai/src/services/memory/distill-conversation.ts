@@ -158,10 +158,14 @@ export const distillConversation = async (input: {
 
   // Transcript tail, oldest first. Rows are read directly (not through
   // `loadConversationForAgent`) because the distiller needs `createdAt`
-  // for the episode's occurrence window.
+  // for the episode's occurrence window. Ordered by `seq`, never
+  // `created_at`: a turn's rows share one `transaction_timestamp()`, so
+  // `created_at` ties and the tail comes back shuffled — the assistant's
+  // answer ahead of the user's question, and a non-deterministic slice
+  // once the conversation is longer than `MAX_MESSAGES`.
   const rows = await db.query.aiMessages.findMany({
     where: { conversationId },
-    orderBy: { createdAt: "desc" },
+    orderBy: { seq: "desc" },
     limit: MAX_MESSAGES,
   });
   rows.reverse();

@@ -1,0 +1,2 @@
+ALTER TABLE "field_definitions" ADD COLUMN "index_unused_since" timestamp with time zone;--> statement-breakpoint
+ALTER TABLE "field_definitions" ADD COLUMN "index_dropped_at" timestamp with time zone;

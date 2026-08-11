@@ -1,10 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { PgDialect } from "drizzle-orm/pg-core";
-import type {
-  FieldDefinition,
-  FieldDefinitionConfig,
-  FieldDefinitionType,
-} from "../../src/db/schema";
+import type { FieldDefinition, FieldDefinitionType } from "../../src/db/schema";
 
 // `record-io.ts` also exports `readRecordData(Batch)`, which default to the
 // real `db` client — importing the module (for the pure SQL builder under
@@ -38,11 +34,13 @@ const makeField = (
   label: key,
   type,
   description: null,
-  config: {} as FieldDefinitionConfig,
+  config: {},
   aiExtractionEnabled: true,
   vectorizeInclude: true,
   displayInPanel: true,
   isTitle: false,
+  indexUnusedSince: null,
+  indexDroppedAt: null,
   enabled: true,
   displayOrder: 0,
   createdAt: new Date(),

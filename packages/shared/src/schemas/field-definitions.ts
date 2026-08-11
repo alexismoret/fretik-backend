@@ -105,6 +105,11 @@ export const fieldDefinitionResponseSchema = z.object({
   isTitle: z.boolean(),
   enabled: z.boolean(),
   displayOrder: z.number().int(),
+  // Index bookkeeping, carried so this schema still describes the whole row —
+  // `/internal/pre-extract` ships stored field definitions over HTTP and types
+  // them from here. Defaulted, so no caller has to send them.
+  indexUnusedSince: z.coerce.date().nullable().default(null),
+  indexDroppedAt: z.coerce.date().nullable().default(null),
   // `z.coerce.date()` (not `z.date()`) so the schema accepts BOTH `Date`
   // instances (in-process callers) AND ISO strings (HTTP payloads from
   // @fretik/api → /internal/pre-extract + /internal/field-definitions/suggest

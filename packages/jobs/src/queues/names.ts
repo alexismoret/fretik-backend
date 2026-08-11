@@ -93,6 +93,11 @@ export const WORKFLOW_STALL_SWEEP_JOB = "workflow-stall-sweep";
 /** 5min — reconciles the conversation wait registry and re-signals owed
  * resumes (backstop for a completion or resume signal lost to a restart). */
 export const CONVERSATION_TASK_SWEEP_JOB = "conversation-task-sweep";
+/** 02:00 UTC cron — builds the field indexes big object tables are missing and
+ * retires the ones Postgres never reads. The catch-all trigger, for tables that
+ * crossed the size threshold by growing row by row rather than through an
+ * import or a page save. */
+export const OBJECT_INDEX_SWEEP_JOB = "object-index-sweep";
 
 /** Job name on MCP_REFRESH_QUEUE — 05:00 UTC cron, re-introspects every active
  * MCP connection and adopts any tool-surface change. */

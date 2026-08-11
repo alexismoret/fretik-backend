@@ -166,10 +166,6 @@ export const createDispatchAgentTool = <TTools extends ToolSet>(deps: {
     category: "core",
     searchHint:
       "delegate sub-agent task encapsulated parallel synthesis isolated context analyse compare multi-source",
-    // Sub-agent returns a short summary string only — the per-call
-    // payload is always tight. 16K is comfortable headroom without
-    // tripping the persisted-output layer for normal turns.
-    maxResultSizeChars: 16_000,
     // Spawning a sub-agent has external side effects (LLM calls, tool
     // executions in the shared sandbox). Not read-only.
     isReadOnly: false,

@@ -1,0 +1,475 @@
+import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { HTTPException } from "hono/http-exception";
+// `schemas/ontology` reaches `common/params`, which calls `.openapi()` — the
+// method only exists once `@hono/zod-openapi` has patched Zod. In a service
+// that happens at boot; here it has to be imported for the side effect.
+import "@hono/zod-openapi";
+import type { PageDefinition, PageElement } from "../../src/schemas/pages";
+
+/**
+ * Publishing, public access, and the dry run.
+ *
+ * Two things are pinned here. First the publish contract: what gets FROZEN
+ * (the definition) versus what stays live (the data), that a re-publish keeps
+ * the token so a shared link never breaks, and that unpublishing clears the
+ * token so a revoked link is indistinguishable from one that never existed.
+ *
+ * Second, `dryRunPage`'s output is CHARACTERISED rather than specified — these
+ * assertions exist to make the next refactor's diff readable, so they record
+ * what it does today, including that it sanitizes the definition itself.
+ *
+ * The db and redis are mocked at module level; the dynamic imports resolve
+ * after, and `updates` reads back exactly what was written.
+ */
+
+interface FakePage {
+  id: string;
+  teamId: string;
+  name: string;
+  description: string | null;
+  icon: string | null;
+  color: string | null;
+  userId: string | null;
+  definition: PageDefinition;
+  publishedDefinition: PageDefinition | null;
+  publicToken: string | null;
+  publishedAt: Date | null;
+  publishedByUserId: string | null;
+  sourceConversationId: string | null;
+  createdByUserId: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const blankDefinition = (): PageDefinition => ({
+  version: 2,
+  variables: [],
+  datasets: [],
+  spec: {
+    root: "root",
+    elements: {
+      root: { type: "box", props: {}, children: ["title"] },
+      title: { type: "heading", props: { text: "Hello" } },
+    },
+  },
+});
+
+const fakePage = (overrides: Partial<FakePage> = {}): FakePage => ({
+  id: "page-1",
+  teamId: "team-1",
+  name: "Sales",
+  description: null,
+  icon: null,
+  color: null,
+  userId: null,
+  definition: blankDefinition(),
+  publishedDefinition: null,
+  publicToken: null,
+  publishedAt: null,
+  publishedByUserId: null,
+  sourceConversationId: null,
+  createdByUserId: "user-1",
+  createdAt: new Date("2026-01-01"),
+  updatedAt: new Date("2026-01-01"),
+  ...overrides,
+});
+
+/** The single row the mocked db holds; undefined means "no such page". */
+let storedPage: FakePage | undefined;
+/** Every `set()` payload that reached the update builder. */
+const updates: Record<string, unknown>[] = [];
+/** Cache prefixes dropped through `deleteKeysByPrefix`. */
+const cacheDrops: string[] = [];
+
+void mock.module("../../src/db", () => ({
+  default: {
+    query: {
+      pages: {
+        findFirst: (args: {
+          where?: { id?: string; publicToken?: string };
+        }) => {
+          if (!storedPage) return Promise.resolve(undefined);
+          const where = args.where ?? {};
+          if (where.id !== undefined && where.id !== storedPage.id) {
+            return Promise.resolve(undefined);
+          }
+          if (
+            where.publicToken !== undefined &&
+            where.publicToken !== storedPage.publicToken
+          ) {
+            return Promise.resolve(undefined);
+          }
+          return Promise.resolve(storedPage);
+        },
+      },
+      objectTypes: {
+        findFirst: () => Promise.resolve(undefined),
+        findMany: () => Promise.resolve([]),
+      },
+    },
+    update: () => ({
+      set: (values: Record<string, unknown>) => {
+        updates.push(values);
+        if (storedPage) storedPage = { ...storedPage, ...values };
+        return {
+          where: () => ({
+            returning: () => Promise.resolve(storedPage ? [storedPage] : []),
+          }),
+        };
+      },
+    }),
+  },
+}));
+
+// `redis.ts` opens its connection at module load, so it is replaced whole —
+// which means every export it has must be present here, not just the one under
+// test. `selectOrCache` degrades to a straight call: no cache, no staleness.
+void mock.module("../../src/lib/redis", () => ({
+  redis: {},
+  selectOrCache: <T>(fn: () => Promise<T>) => fn(),
+  deleteKeysByPrefix: (prefix: string) => {
+    cacheDrops.push(prefix);
+    return Promise.resolve();
+  },
+}));
+
+const { publishPage, unpublishPage } =
+  await import("../../src/services/pages/publish");
+const { resolvePageAccess } =
+  await import("../../src/services/pages/resolve-page-access");
+const { dryRunPage } = await import("../../src/services/pages/dry-run");
+const { pageOwnerWriteError, pageVisibilityWhere } =
+  await import("../../src/services/pages/visibility");
+
+beforeEach(() => {
+  updates.length = 0;
+  cacheDrops.length = 0;
+  storedPage = fakePage();
+  process.env.APP_URL = "https://app.example.com";
+});
+
+describe("publishPage — frozen definition, live data", () => {
+  test("snapshots the current definition and mints a token", async () => {
+    const page = await publishPage({
+      pageId: "page-1",
+      teamId: "team-1",
+      publishedByUserId: "user-1",
+    });
+
+    const written = updates[0];
+    expect(written?.publishedDefinition).toEqual(storedPage?.definition);
+    expect(typeof written?.publicToken).toBe("string");
+    expect(written?.publishedByUserId).toBe("user-1");
+    expect(page.publicUrl).toBe(
+      `https://app.example.com/p/${String(written?.publicToken)}`,
+    );
+  });
+
+  test("re-publishing keeps the token so a shared link never breaks", async () => {
+    storedPage = fakePage({ publicToken: "token-abc" });
+    await publishPage({
+      pageId: "page-1",
+      teamId: "team-1",
+      publishedByUserId: "user-1",
+    });
+    expect(updates[0]?.publicToken).toBe("token-abc");
+  });
+
+  test("a later edit does not reach the published snapshot", async () => {
+    storedPage = fakePage({ publicToken: "token-abc" });
+    await publishPage({
+      pageId: "page-1",
+      teamId: "team-1",
+      publishedByUserId: "user-1",
+    });
+    const frozen = updates[0]?.publishedDefinition;
+
+    // The working definition moves on; the snapshot must not follow.
+    const edited = blankDefinition();
+    edited.spec.elements.title = { type: "heading", props: { text: "Edited" } };
+    storedPage = {
+      ...fakePage({ publicToken: "token-abc" }),
+      definition: edited,
+    };
+
+    expect(JSON.stringify(frozen)).toContain("Hello");
+    expect(JSON.stringify(frozen)).not.toContain("Edited");
+  });
+
+  test("a page that renders nothing is refused, and its message names the fault", async () => {
+    storedPage = fakePage({
+      definition: {
+        version: 2,
+        variables: [],
+        datasets: [],
+        spec: { root: "root", elements: {} },
+      },
+    });
+    const failure = await publishPage({
+      pageId: "page-1",
+      teamId: "team-1",
+      publishedByUserId: "user-1",
+    }).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(HTTPException);
+    expect(failure instanceof HTTPException && failure.status).toBe(400);
+    // The gate's own wording is what an agent has to act on — pin it here so a
+    // refactor that swallows it fails loudly.
+    expect(failure instanceof HTTPException && failure.message).toContain(
+      "root element",
+    );
+    expect(updates).toEqual([]);
+  });
+
+  test("an unknown page id is a 404, not a silent no-op", async () => {
+    storedPage = undefined;
+    const failure = await publishPage({
+      pageId: "page-missing",
+      teamId: "team-1",
+      publishedByUserId: "user-1",
+    }).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(HTTPException);
+    expect(failure instanceof HTTPException && failure.status).toBe(404);
+    expect(updates).toEqual([]);
+  });
+
+  test("publishing drops the public cache so the link goes live at once", async () => {
+    storedPage = fakePage({ publicToken: "token-abc" });
+    await publishPage({
+      pageId: "page-1",
+      teamId: "team-1",
+      publishedByUserId: "user-1",
+    });
+    expect(cacheDrops).toEqual(["page:pub:token-abc:"]);
+  });
+});
+
+describe("visibility — who may see and own a page", () => {
+  test("no requester means system trust: every page in the team", () => {
+    expect(pageVisibilityWhere()).toEqual({});
+  });
+
+  test("an org admin sees everything, for governance", () => {
+    expect(pageVisibilityWhere({ userId: "user-2", isAdmin: true })).toEqual(
+      {},
+    );
+  });
+
+  test("a member sees team-shared pages and their own, and no others", () => {
+    expect(pageVisibilityWhere({ userId: "user-2", isAdmin: false })).toEqual({
+      OR: [{ userId: { isNull: true } }, { userId: "user-2" }],
+    });
+  });
+
+  test("a page may be team-shared or private to the writer, never to someone else", () => {
+    expect(pageOwnerWriteError(null, "user-1")).toBeNull();
+    expect(pageOwnerWriteError(undefined, "user-1")).toBeNull();
+    expect(pageOwnerWriteError("user-1", "user-1")).toBeNull();
+    expect(pageOwnerWriteError("user-2", "user-1")).toContain(
+      "can't be scoped to another user",
+    );
+  });
+});
+
+describe("unpublishPage — a revoked link is indistinguishable from none", () => {
+  test("clears the token and the snapshot together", async () => {
+    storedPage = fakePage({
+      publicToken: "token-abc",
+      publishedDefinition: blankDefinition(),
+      publishedAt: new Date("2026-02-01"),
+      publishedByUserId: "user-1",
+    });
+    const page = await unpublishPage({ pageId: "page-1", teamId: "team-1" });
+
+    expect(updates[0]).toEqual({
+      publicToken: null,
+      publishedDefinition: null,
+      publishedAt: null,
+      publishedByUserId: null,
+    });
+    expect(page.publicUrl).toBeNull();
+    expect(cacheDrops).toEqual(["page:pub:token-abc:"]);
+  });
+
+  test("unpublishing a page that was never published still succeeds", async () => {
+    await unpublishPage({ pageId: "page-1", teamId: "team-1" });
+    expect(updates[0]?.publicToken).toBeNull();
+    expect(cacheDrops).toEqual([]);
+  });
+});
+
+describe("resolvePageAccess — the anonymous door", () => {
+  test("serves the FROZEN definition, never the working one", async () => {
+    const published = blankDefinition();
+    published.spec.elements.title = {
+      type: "heading",
+      props: { text: "Published" },
+    };
+    const working = blankDefinition();
+    working.spec.elements.title = { type: "heading", props: { text: "Draft" } };
+    storedPage = fakePage({
+      publicToken: "token-abc",
+      publishedDefinition: published,
+      definition: working,
+    });
+
+    const result = await resolvePageAccess({ token: "token-abc" });
+    expect(result.access).toBe("ready");
+    expect(
+      result.access === "ready" ? JSON.stringify(result.definition) : "",
+    ).toContain("Published");
+    expect(
+      result.access === "ready" ? JSON.stringify(result.definition) : "",
+    ).not.toContain("Draft");
+  });
+
+  test("an unknown token is not_found", async () => {
+    storedPage = fakePage({ publicToken: "token-abc" });
+    expect(await resolvePageAccess({ token: "token-other" })).toEqual({
+      access: "not_found",
+    });
+  });
+
+  test("a page with a token but no snapshot is not_found, never a blank page", async () => {
+    storedPage = fakePage({
+      publicToken: "token-abc",
+      publishedDefinition: null,
+    });
+    expect(await resolvePageAccess({ token: "token-abc" })).toEqual({
+      access: "not_found",
+    });
+  });
+});
+
+describe("dryRunPage — characterisation of today's output", () => {
+  const withDatasets = (
+    elements: Record<string, PageElement>,
+    datasets: PageDefinition["datasets"],
+  ): PageDefinition => ({
+    version: 2,
+    variables: [],
+    datasets,
+    spec: {
+      root: "root",
+      elements: {
+        root: { type: "box", props: {}, children: Object.keys(elements) },
+        ...elements,
+      },
+    },
+  });
+
+  test("reports row count and one clipped sample row", async () => {
+    const long = "x".repeat(200);
+    const result = await dryRunPage({
+      definition: withDatasets({}, [
+        { id: "sales", kind: "inline", rows: [{ note: long, amount: 10 }] },
+      ]),
+      teamId: "team-1",
+    });
+
+    expect(result.samples.sales?.rowCount).toBe(1);
+    const sample = result.samples.sales?.sample;
+    const note =
+      typeof sample === "object" && sample !== null && !Array.isArray(sample)
+        ? sample.note
+        : undefined;
+    expect(typeof note === "string" && note.length).toBe(121);
+    expect(typeof note === "string" && note.endsWith("…")).toBe(true);
+  });
+
+  test("an empty dataset is a warning that names the likely cause", async () => {
+    const result = await dryRunPage({
+      definition: withDatasets({}, [{ id: "sales", kind: "inline", rows: [] }]),
+      teamId: "team-1",
+    });
+    expect(result.warnings).toContain(
+      'dataset "sales" returned no rows — check its filters, or the object type may be empty.',
+    );
+  });
+
+  test("a failing dataset is reported with its own message", async () => {
+    const result = await dryRunPage({
+      definition: withDatasets({}, [
+        { id: "broken", kind: "transform", code: "this is ( not jsonata" },
+      ]),
+      teamId: "team-1",
+    });
+    expect(
+      result.warnings.some((w) => w.startsWith('dataset "broken" failed:')),
+    ).toBe(true);
+  });
+
+  test("a binding that resolves to nothing names the $$.state trap", async () => {
+    const result = await dryRunPage({
+      definition: withDatasets(
+        {
+          total: {
+            type: "stat",
+            props: { label: "Total", value: { $: "data.sales.nope" } },
+          },
+        },
+        [{ id: "sales", kind: "inline", rows: [{ amount: 10 }] }],
+      ),
+      teamId: "team-1",
+    });
+    expect(
+      result.warnings.some((w) =>
+        w.includes("these bindings resolved to nothing"),
+      ),
+    ).toBe(true);
+    expect(result.warnings.join(" ")).toContain("$$.state.x");
+  });
+
+  test("dryRunPage sanitizes the definition itself — its warnings include the static pass", async () => {
+    const result = await dryRunPage({
+      definition: withDatasets(
+        { total: { type: "stat", props: { label: "T", nonsenseProp: 1 } } },
+        [],
+      ),
+      teamId: "team-1",
+    });
+    expect(result.warnings.some((w) => w.includes("nonsenseProp"))).toBe(true);
+  });
+
+  test("assumeSanitized skips the static pass — the caller already ran it", async () => {
+    const definition = withDatasets(
+      { total: { type: "stat", props: { label: "T", nonsenseProp: 1 } } },
+      [],
+    );
+    // Same definition, both ways: the static finding is the difference.
+    const fresh = await dryRunPage({ definition, teamId: "team-1" });
+    const preSanitized = await dryRunPage({
+      definition,
+      teamId: "team-1",
+      assumeSanitized: true,
+    });
+
+    expect(fresh.warnings.some((w) => w.includes("nonsenseProp"))).toBe(true);
+    expect(preSanitized.warnings.some((w) => w.includes("nonsenseProp"))).toBe(
+      false,
+    );
+    // The DATA phase still runs either way — that is the half a caller cannot
+    // have done for itself.
+    expect(preSanitized.samples).toEqual(fresh.samples);
+  });
+
+  test("a one-category chart is polish, never a warning", async () => {
+    const result = await dryRunPage({
+      definition: withDatasets(
+        {
+          chart: {
+            type: "chart_bar",
+            props: { dataset: "sales", x: "group", y: "amount" },
+          },
+        },
+        [{ id: "sales", kind: "inline", rows: [{ group: "A", amount: 10 }] }],
+      ),
+      teamId: "team-1",
+    });
+    expect(result.polish.some((p) => p.includes("is not a chart"))).toBe(true);
+    expect(result.warnings.some((w) => w.includes("is not a chart"))).toBe(
+      false,
+    );
+  });
+});

@@ -4,6 +4,7 @@ import {
   GC_DEMOTE_JOB,
   JOURNAL_SWEEP_JOB,
   MCP_SNAPSHOT_REFRESH_JOB,
+  OBJECT_INDEX_SWEEP_JOB,
   WORKFLOW_STALL_SWEEP_JOB,
   WORKFLOW_TRIGGER_SWEEP_JOB,
 } from "./names";
@@ -26,6 +27,10 @@ const DREAMING_CRON = "0 3 * * *";
 const GC_CRON = "0 4 * * *";
 /** MCP tool-snapshot drift refresh at 05:00 UTC — after the memory window. */
 const MCP_REFRESH_CRON = "0 5 * * *";
+/** Object-index sweep at 02:00 UTC, ahead of the memory window: it issues
+ * `CREATE INDEX CONCURRENTLY`, which is IO-heavy and best kept away from the
+ * dreaming and GC passes. */
+const OBJECT_INDEX_CRON = "0 2 * * *";
 
 const CRON_OPTS = {
   removeOnComplete: { count: 30 },
@@ -75,6 +80,11 @@ export const registerSchedulers = async (): Promise<void> => {
     CONVERSATION_TASK_SWEEP_JOB,
     { every: STALL_SWEEP_INTERVAL_MS },
     { name: CONVERSATION_TASK_SWEEP_JOB, opts: CRON_OPTS },
+  );
+  await maintenance.upsertJobScheduler(
+    OBJECT_INDEX_SWEEP_JOB,
+    { pattern: OBJECT_INDEX_CRON, tz: "UTC" },
+    { name: OBJECT_INDEX_SWEEP_JOB, opts: CRON_OPTS },
   );
 
   // Dedicated queue — the refresh re-introspects every MCP connection over the

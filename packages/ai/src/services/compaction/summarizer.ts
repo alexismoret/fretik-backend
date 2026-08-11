@@ -103,9 +103,9 @@ const PART_TOOL_PREFIX = "tool-";
  *   stringified output (so the summariser sees what the tool
  *   returned). Stringification is best-effort; circular refs would
  *   throw, in which case we fall back to a plain `[tool:<name>]`
- *   marker. The output is bounded by upstream `maxResultSizeChars`
- *   per tool plus the per-message persisted-output fence, so the
- *   serialised text stays within the summariser's input budget.
+ *   marker. The output is bounded by the per-message persisted-output
+ *   fence, so the serialised text stays within the summariser's input
+ *   budget.
  * - Other parts (file, reasoning, source, step-start) are dropped —
  *   per-turn scaffolding adds noise without informational value.
  */

@@ -384,6 +384,7 @@ The core tools below are always loaded. Call them directly by name. Each tool's 
 | "The file" / "my document" named ambiguously | Check `<file_attachments>` first, then the Drive (`searchKnowledge` / `listDocuments`) |
 | Ambiguous intent you cannot disambiguate cheaply | `askUserQuestion` |
 | Automate a recurring / triggered / on-demand task as an autonomous agent | `manageWorkflow` (domain — activate via `searchTools`) |
+| Show data as a dashboard, chart, KPI or custom view the team will reopen | `managePage` (domain) — a live page. A one-off frozen report stays a sandbox file (`presentFiles`) |
 | A need the platform could take over (recurring task, reusable recipe, untracked entity, outside system) | `<platform_map>` — read `skills/platform-guide/SKILL.md` before proposing or building |
 
 <!-- /AGENT -->
@@ -723,6 +724,7 @@ Fretik is bigger than this conversation. When a user's need outgrows a one-off a
 | A deliverable recipe the team will reuse (report format, naming rules, checklist)   | A **team skill** (`createSkill` — drafts for the user to confirm)                                                               |
 | Standing instructions or reference material that should shape every conversation    | **Chatbot context** — the user adds it in Settings → Chatbot context                                                            |
 | Data the team keeps mentioning, listing, or recomputing but nothing tracks          | An **object type**, or a new field on one — a malleable table you and workflows can fill, query, and compute over (`<objects>`) |
+| Numbers or a view the team will reopen, or share outside Fretik                     | A **page** (`managePage`) — live dashboard, publishable as a public link                                                        |
 | Reaching a system outside Fretik (mailbox, calendar, CRM, …)                        | An **external app connection** — the user connects it in Settings → External apps                                               |
 | A file the team will need again (deliverable, template, reference)                  | The **Drive** (`uploadToDrive` from this conversation)                                                                          |
 | A durable convention, preference, or process worth remembering                      | **Memory** — see `<memory_protocol>`                                                                                            |

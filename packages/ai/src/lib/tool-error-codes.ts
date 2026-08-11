@@ -15,6 +15,16 @@ export const TOOL_ERROR_CODES = {
   // Runtime context (per-request state missing)
   NO_CONVERSATION: "NO_CONVERSATION",
   MEMORY_REQUIRES_USER: "MEMORY_REQUIRES_USER",
+  // The action needs an authenticated user and this session has none. NOT an
+  // input-shape code on purpose: no argument the model can change fixes it, so
+  // the loop guard must not steer it into "retry with the corrected shape".
+  REQUIRES_USER: "REQUIRES_USER",
+
+  // Page builder (managePage domain tool). The publish gate rejects a page the
+  // agent must EDIT first (blank, cyclic, past the element/depth ceiling), so
+  // it stays out of the input-shape family: re-sending the same publish call is
+  // exactly the wrong move.
+  PAGE_NOT_PUBLISHABLE: "PAGE_NOT_PUBLISHABLE",
 
   // Workflow (headless workflow-agent tools)
   NO_WORKFLOW_RUN: "NO_WORKFLOW_RUN",

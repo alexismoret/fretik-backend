@@ -125,6 +125,7 @@ export const BUILTIN_TOOL_POLICY_CATALOG: Record<
   manageObjectType: configWriteTool("manageObjectType"),
   manageField: configWriteTool("manageField"),
   manageWorkflow: configWriteTool("manageWorkflow"),
+  managePage: configWriteTool("managePage"),
 };
 
 /** Names in the catalog — the only keys a team policy map may carry. */

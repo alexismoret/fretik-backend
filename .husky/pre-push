@@ -1,1 +1,14 @@
 bun run --filter '*' check
+
+# The render contract's generated copy lives in the frontend repo, which deploys
+# on its own. Pushing the backend without it means the live agent authors pages
+# against a catalog the live frontend does not have yet.
+#
+# A REMINDER, not a failure: backend-then-frontend is the normal order, so the
+# copy being uncommitted here is expected — the mistake is stopping there.
+if [ -d ../app/.git ] && [ -n "$(git -C ../app status --porcelain -- app/utils/render-contract)" ]; then
+  echo ""
+  echo "⚠️  The render contract changed in ../app and is not committed there yet."
+  echo "   Until fretik-app is pushed, the deployed frontend renders with the old catalog."
+  echo ""
+fi

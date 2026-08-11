@@ -30,7 +30,9 @@ import { objectRecordRoutes } from "./handlers/object-records";
 import { objectSharingRoutes } from "./handlers/object-sharing";
 import { objectTypeRoutes } from "./handlers/object-types";
 import { organizationRoutes } from "./handlers/organization";
+import { pageRoutes } from "./handlers/pages";
 import { publicFormRoutes } from "./handlers/public-forms";
+import { publicPageRoutes } from "./handlers/public-pages";
 import { signupAccessRoutes } from "./handlers/signup-access";
 import { skillsRoutes } from "./handlers/skills";
 import { superAdminRoutes } from "./handlers/super-admins";
@@ -102,7 +104,10 @@ app.route("/approvals", approvalsRoutes);
 app.route("/tool-policies", toolPoliciesRoutes);
 app.route("/team-settings", teamSettingsRoutes);
 app.route("/workflows", workflowRoutes);
+app.route("/pages", pageRoutes);
 app.route("/forms", publicFormRoutes);
+// Anonymous ingress for published pages — no auth, always answers 200.
+app.route("/p", publicPageRoutes);
 app.route("/desktop-releases", desktopReleaseRoutes);
 app.route("/sandbox", sandboxRoutes);
 

@@ -16,10 +16,11 @@
     },
     "packages/ai": {
       "name": "@fretik/ai",
-      "version": "0.6.0",
+      "version": "0.6.2",
       "dependencies": {
         "@ai-sdk/provider": "^4.0.3",
         "@fretik/providers": "workspace:*",
+        "@fretik/render": "workspace:*",
         "@fretik/shared": "workspace:*",
         "@hono/zod-openapi": "^1.4.0",
         "@langfuse/client": "^5.9.1",
@@ -60,7 +61,7 @@
     },
     "packages/api": {
       "name": "@fretik/api",
-      "version": "0.6.0",
+      "version": "0.6.2",
       "dependencies": {
         "@fretik/providers": "workspace:*",
         "@fretik/shared": "workspace:*",
@@ -87,7 +88,7 @@
     },
     "packages/jobs": {
       "name": "@fretik/jobs",
-      "version": "0.6.0",
+      "version": "0.6.2",
       "dependencies": {
         "@fretik/providers": "workspace:*",
         "@fretik/shared": "workspace:*",
@@ -107,7 +108,7 @@
     },
     "packages/providers": {
       "name": "@fretik/providers",
-      "version": "0.6.0",
+      "version": "0.6.2",
       "dependencies": {
         "@ewsjs/xhr": "^3.1.3",
         "@fretik/shared": "workspace:*",
@@ -129,9 +130,27 @@
         "typescript": "^6.0.3",
       },
     },
+    "packages/render": {
+      "name": "@fretik/render",
+      "version": "0.6.2",
+      "dependencies": {
+        "@json-render/core": "0.19.0",
+        "jsonata": "^2.2.2",
+        "zod": "^4.4.3",
+      },
+      "devDependencies": {
+        "@types/bun": "latest",
+        "@typescript/native": "npm:typescript@^7.0.2",
+        "oxlint": "^1.74.0",
+        "oxlint-tsgolint": "^0.24.0",
+        "prettier": "3.9.5",
+        "prettier-plugin-organize-imports": "^4.3.0",
+        "typescript": "^6.0.3",
+      },
+    },
     "packages/shared": {
       "name": "@fretik/shared",
-      "version": "0.6.0",
+      "version": "0.6.2",
       "dependencies": {
         "@ai-sdk/mcp": "^2.0.10",
         "@aws-sdk/client-s3": "^3.1072.0",
@@ -140,7 +159,9 @@
         "@better-auth/electron": "^1.6.23",
         "@better-auth/redis-storage": "^1.6.23",
         "@e2b/code-interpreter": "^2.6.1",
+        "@fretik/render": "workspace:*",
         "@hono/zod-openapi": "^1.4.0",
+        "@json-render/core": "0.19.0",
         "@mistralai/mistralai": "^2.2.6",
         "@nangohq/node": "^0.70.7",
         "@trigger.dev/sdk": "4.5.0",
@@ -158,10 +179,12 @@
         "i18next": "^26.3.1",
         "ioredis": "5.10.1",
         "jose": "^6.2.3",
+        "jsonata": "^2.2.2",
         "marked": "^18.0.5",
         "mjml": "^5.3.0",
         "node-poppler": "^9.1.2",
         "pg": "^8.22.0",
+        "quickjs-emscripten": "^0.32.0",
         "zod": "^4.4.3",
       },
       "devDependencies": {
@@ -179,7 +202,7 @@
     },
     "packages/workflows": {
       "name": "@fretik/workflows",
-      "version": "0.6.0",
+      "version": "0.6.2",
       "dependencies": {
         "@fretik/shared": "workspace:*",
         "@trigger.dev/sdk": "4.5.0",
@@ -404,6 +427,8 @@
 
     "@fretik/providers": ["@fretik/providers@workspace:packages/providers"],
 
+    "@fretik/render": ["@fretik/render@workspace:packages/render"],
+
     "@fretik/shared": ["@fretik/shared@workspace:packages/shared"],
 
     "@fretik/workflows": ["@fretik/workflows@workspace:packages/workflows"],
@@ -422,7 +447,19 @@
 
     "@isaacs/fs-minipass": ["@isaacs/fs-minipass@4.0.1", "", { "dependencies": { "minipass": "^7.0.4" } }, "sha512-wgm9Ehl2jpeqP3zw/7mo3kRHFp5MEDhqAdwy1fTGkHAwnkGOVsgpvQhL8B5n1qlb01jV3n/bI0ZfZp5lWA1k4w=="],
 
+    "@jitl/quickjs-ffi-types": ["@jitl/quickjs-ffi-types@0.32.0", "", {}, "sha512-v9T+GQpmk43VDJ7d72sf0Nexhk+ArvtUihW27dy7lqAl0zBObFKtSBBIm5RBjwIhE8VwsPPm9PNuvPvNqLWUEg=="],
+
+    "@jitl/quickjs-wasmfile-debug-asyncify": ["@jitl/quickjs-wasmfile-debug-asyncify@0.32.0", "", { "dependencies": { "@jitl/quickjs-ffi-types": "0.32.0" } }, "sha512-EX8zbXwGqCgAE764M+qvkHtyXDi/FUoMBea0JnES7vCM3P7a2+EOZOjGv85wtZ2sJhI1oJ+nekmqpOODFDY+hw=="],
+
+    "@jitl/quickjs-wasmfile-debug-sync": ["@jitl/quickjs-wasmfile-debug-sync@0.32.0", "", { "dependencies": { "@jitl/quickjs-ffi-types": "0.32.0" } }, "sha512-LeYWrPGC1uNCTBWvibo3ZLJj0CSVNYUXvJpXMCmuQ5Sap2cCACc3uvGvYV4homHHBAzfw5akoTqMMS4YFRtw+Q=="],
+
+    "@jitl/quickjs-wasmfile-release-asyncify": ["@jitl/quickjs-wasmfile-release-asyncify@0.32.0", "", { "dependencies": { "@jitl/quickjs-ffi-types": "0.32.0" } }, "sha512-3oSwPfja12ICz4aIblB58cuY8JlEq5Txt8Cut4VLo+LH47QN+mzCnSgnbB03hWzg1LBcc+VyyI9UOag7a1NF+Q=="],
+
+    "@jitl/quickjs-wasmfile-release-sync": ["@jitl/quickjs-wasmfile-release-sync@0.32.0", "", { "dependencies": { "@jitl/quickjs-ffi-types": "0.32.0" } }, "sha512-BKNDI/TPBfGlLNGYpLrhcDGXmIk4xHm4MRAisOBnOzpXVn9HZWsfmMAc9WMBrAHjvvds6HOikKeaOBKdPdpVrg=="],
+
     "@js-temporal/polyfill": ["@js-temporal/polyfill@0.5.1", "", { "dependencies": { "jsbi": "^4.3.0" } }, "sha512-hloP58zRVCRSpgDxmqCWJNlizAlUgJFqG2ypq79DCvyv9tHjRYMDOcPFjzfl/A1/YxDvRCZz8wvZvmapQnKwFQ=="],
+
+    "@json-render/core": ["@json-render/core@0.19.0", "", { "dependencies": { "zod": "^4.3.6" } }, "sha512-vvcyZ+10EDZKbEyB1J2kXOGfDaiZR2LurZGSqi2r5STHyKr+Te85DWaBxTwRGgM7U1LtIvNx85BzzjElRKoAIg=="],
 
     "@jsonhero/path": ["@jsonhero/path@1.0.21", "", {}, "sha512-gVUDj/92acpVoJwsVJ/RuWOaHyG4oFzn898WNGQItLCTQ+hOaVlEaImhwE1WqOTf+l3dGOUkbSiVKlb3q1hd1Q=="],
 
@@ -1230,6 +1267,8 @@
 
     "json5": ["json5@2.2.3", "", { "bin": { "json5": "lib/cli.js" } }, "sha512-XmOWe7eyHYH14cLdVPoyg+GOH3rYX++KpzrylJwSW98t3Nk+U8XOl8FWKOgwtzdb8lXGf6zYwDUzeHMWfxasyg=="],
 
+    "jsonata": ["jsonata@2.2.2", "", {}, "sha512-XDFH2PuaAXv0AXJEWwElXbqADmKFGKMLMkFb+qOz0EhjQW2EIJ6pgtordLU+4u3IVERyBfqy6bi6kZKEncvRqA=="],
+
     "jsonc-parser": ["jsonc-parser@3.2.1", "", {}, "sha512-AilxAyFOAcK5wA1+LeaySVBrHsGQvUFCDWXKpZjzaL0PqW+xfBOttn8GNtWKFWqneyMZj41MWF9Kl6iPWLwgOA=="],
 
     "jsonify": ["jsonify@0.0.1", "", {}, "sha512-2/Ki0GcmuqSrgFyelQq9M05y7PS0mEwuIzrf3f1fPqkVDVRvZrPZtVSMHxdgo8Aq0sxAOb/cr2aqqA3LeWHVPg=="],
@@ -1685,6 +1724,10 @@
     "querystringify": ["querystringify@2.2.0", "", {}, "sha512-FIqgj2EUvTa7R50u0rGsyTftzjYmv/a3hO345bZNrqabNqjtgiDMgmo4mkUjd+nzU5oF3dClKqFIPUKybUyqoQ=="],
 
     "quick-format-unescaped": ["quick-format-unescaped@4.0.4", "", {}, "sha512-tYC1Q1hgyRuHgloV/YXs2w15unPVh8qfu/qCTfhTYamaw7fyhumKa2yGpdSo87vY32rIclj+4fWYQXUMs9EHvg=="],
+
+    "quickjs-emscripten": ["quickjs-emscripten@0.32.0", "", { "dependencies": { "@jitl/quickjs-wasmfile-debug-asyncify": "0.32.0", "@jitl/quickjs-wasmfile-debug-sync": "0.32.0", "@jitl/quickjs-wasmfile-release-asyncify": "0.32.0", "@jitl/quickjs-wasmfile-release-sync": "0.32.0", "quickjs-emscripten-core": "0.32.0" } }, "sha512-So0Sqw869y/S2oE3Nuc0uT3Dhqgvsj8FSrwBdsuTosVsG8ME5/OcudU1GxsrIFdFABgy17GHnTVO9TYV/bLQcA=="],
+
+    "quickjs-emscripten-core": ["quickjs-emscripten-core@0.32.0", "", { "dependencies": { "@jitl/quickjs-ffi-types": "0.32.0" } }, "sha512-QFnPfjFey8EqknSrSxe1hZrf1/8z7/6s1QzGOmKo6++02r7QRRX7ZoyNaZh7JuVjWsVW87KnQrbZqnHkOAzUyg=="],
 
     "range-parser": ["range-parser@1.3.0", "", {}, "sha512-hek2mFQpPuI4E1BBKrSto+BU3e3x4xuarsbiwr3+lf7p44juvFMV0XFWQAP3xUyqXA4RrXLIoaSUGbSt056ZMw=="],
 

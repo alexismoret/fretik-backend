@@ -93,21 +93,12 @@ const guardToolExecute = <TInput, TOutput, TContext>(
  *   them up.
  */
 
-/**
- * Default cap on how many characters a tool result can return before
- * the persisted-output layer swaps the full payload for a filesystem
- * reference + preview. Chosen at 32K (~8K tokens) — small enough to
- * stay within the context budget of non-Anthropic models, large
- * enough to cover most real tool turns.
- */
-export const DEFAULT_MAX_RESULT_SIZE_CHARS = 32_000;
-
 export type ChatbotToolCategory = "core" | "domain";
 
 /**
  * Input shape accepted by `buildChatbotTool`. Extends a Vercel AI SDK
  * `Tool` with the metadata fields whose defaults we want to fill in
- * centrally. `maxResultSizeChars` and `isReadOnly` are optional at the
+ * centrally. `isReadOnly` and `microcompactable` are optional at the
  * call site so tool authors only specify them when they deviate from
  * the defaults.
  */
@@ -119,8 +110,6 @@ export type ChatbotToolDefinition<TInput, TOutput> = Tool<TInput, TOutput> & {
    * Keep it dense and noun-heavy.
    */
   searchHint: string;
-  /** Override the default 32K cap. Only set when the tool really needs it. */
-  maxResultSizeChars?: number;
   /** Defaults to `true` — all current chatbot tools are read-only. */
   isReadOnly?: boolean;
   /**
@@ -156,7 +145,6 @@ export type ChatbotTool<TInput = unknown, TOutput = unknown> = Tool<
 > & {
   category: ChatbotToolCategory;
   searchHint: string;
-  maxResultSizeChars: number;
   isReadOnly: boolean;
   microcompactable: boolean;
   shouldDefer: boolean;
@@ -265,8 +253,6 @@ export const buildChatbotTool = <TInput, TOutput>(
   };
   const resolved: ChatbotTool<TInput, TOutput> = {
     ...enrichedDefinition,
-    maxResultSizeChars:
-      definition.maxResultSizeChars ?? DEFAULT_MAX_RESULT_SIZE_CHARS,
     isReadOnly,
     microcompactable: definition.microcompactable ?? isReadOnly,
     shouldDefer: definition.category === "domain",

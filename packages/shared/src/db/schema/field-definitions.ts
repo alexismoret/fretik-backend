@@ -92,6 +92,35 @@ export const fieldDefinitions = pgTable(
     enabled: boolean("enabled").notNull().default(true),
     displayOrder: integer("display_order").notNull().default(0),
 
+    /**
+     * Auto-index bookkeeping — the two timestamps that close the create/drop
+     * loop on this field's column index (see `services/object-schema/indexes`).
+     *
+     * `indexUnusedSince` is stamped by the maintenance pass the first time
+     * Postgres reports ZERO scans for the index, and cleared as soon as it
+     * reports any. Long enough at zero and the index is dropped, which stamps
+     * `indexDroppedAt` — the flag reconciliation reads to know NOT to rebuild
+     * it. Without it every pass would recreate exactly what the last one
+     * dropped.
+     *
+     * Resurrection costs nothing: a query that filters or sorts on this field
+     * clears `indexDroppedAt`, and the next pass rebuilds. The read path already
+     * holds the field definition, so the check is a property lookup — the only
+     * write happens in the rare case where a dropped index is wanted again.
+     *
+     * Lives here rather than in Redis because it is bounded (never a new row),
+     * survives a cache flush — losing it would silently rebuild every dropped
+     * index — and is cascade-deleted with the field.
+     */
+    indexUnusedSince: timestamp("index_unused_since", {
+      mode: "date",
+      withTimezone: true,
+    }),
+    indexDroppedAt: timestamp("index_dropped_at", {
+      mode: "date",
+      withTimezone: true,
+    }),
+
     createdAt: timestamp("created_at", { mode: "date", withTimezone: true })
       .defaultNow()
       .notNull(),

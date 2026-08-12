@@ -564,6 +564,12 @@ export const WorkflowRunResponseSchema = z.object({
   triggeredByUserId: z.uuid().nullable(),
   startedAt: isoDate.nullable(),
   finishedAt: isoDate.nullable(),
+  /** Cumulated time the run spent parked on a human (approvals), and the
+   * start of the park currently open (NULL while it works). Subtract both
+   * from `finishedAt - startedAt` to get worked time — what the run's budget
+   * is actually enforced against. */
+  pausedMs: z.number().int(),
+  pausedAt: isoDate.nullable(),
   createdAt: isoDate,
 });
 export type WorkflowRunResponse = z.infer<typeof WorkflowRunResponseSchema>;

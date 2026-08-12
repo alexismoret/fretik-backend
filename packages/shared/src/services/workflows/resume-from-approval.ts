@@ -2,6 +2,7 @@ import { eq } from "drizzle-orm";
 import db from "../../db";
 import { workflowRuns } from "../../db/schema";
 import { completeWorkflowWaitToken } from "../../lib/trigger-client";
+import { closePausedWindow } from "./paused-clock";
 
 /**
  * Resume a workflow run that was parked on a HITL approval, once the user
@@ -25,9 +26,18 @@ export const resumeRunFromApproval = async (params: {
   if (!run || !run.waitTokenId) return false;
 
   await completeWorkflowWaitToken(run.waitTokenId, params.decision);
+  const now = new Date();
   await db
     .update(workflowRuns)
-    .set({ status: "running", waitTokenId: null, lastHeartbeatAt: new Date() })
+    .set({
+      status: "running",
+      waitTokenId: null,
+      lastHeartbeatAt: now,
+      // The wait is over: bank it, so the run's elapsed time resumes from
+      // where it froze instead of catching up on the human's thinking time.
+      pausedMs: closePausedWindow(now),
+      pausedAt: null,
+    })
     .where(eq(workflowRuns.id, run.id));
   return true;
 };

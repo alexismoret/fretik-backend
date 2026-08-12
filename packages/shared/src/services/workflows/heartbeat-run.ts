@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import db from "../../db";
 import { workflowRuns } from "../../db/schema";
 
@@ -30,10 +30,18 @@ export const heartbeatRun = async (params: {
  * The approval-decision path reads it back to `wait.completeToken`, resuming
  * the orchestrator loop.
  *
- * Guarded on `status = 'running'`: a retried/late wait-token POST must not
- * flip an already-canceled (or otherwise closed) run back to
- * `needs_approval`. Returns whether THIS call parked the run — the
- * exactly-once signal the approval notification email keys on.
+ * The run is ALREADY `needs_approval` by the time this lands: the turn's own
+ * transaction (`recordTurnResult`) writes that status before the orchestrator
+ * gets the result and mints the token. So the guard admits both non-terminal
+ * states — a `status = 'running'` filter matched zero rows, left
+ * `waitTokenId` NULL, and stranded every approval (`resumeRunFromApproval`
+ * bails without a token, so the run sat until APPROVAL_TIMEOUT and the
+ * notification email never fired).
+ *
+ * `waitTokenId IS NULL` carries the rest of the contract: a terminal or
+ * canceled run is never dragged back to `needs_approval`, and a retried/late
+ * POST matches nothing — so the returned `parked` stays the exactly-once
+ * signal the approval notification email keys on.
  */
 export const setRunWaitToken = async (params: {
   runId: string;
@@ -45,7 +53,8 @@ export const setRunWaitToken = async (params: {
     .where(
       and(
         eq(workflowRuns.id, params.runId),
-        eq(workflowRuns.status, "running"),
+        inArray(workflowRuns.status, ["running", "needs_approval"]),
+        isNull(workflowRuns.waitTokenId),
       ),
     )
     .returning({ id: workflowRuns.id });

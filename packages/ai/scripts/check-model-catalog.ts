@@ -6,15 +6,29 @@
  *
  *     bun run models:check
  *
- * Checked per profile:
- *   - the model id still exists on OpenRouter;
- *   - `contextLength` and `maxCompletionTokens` match exactly;
- *   - `inputModalities` / `outputModalities` match as SETS;
- *   - our `supportedParameters` are a SUBSET of the live list (we
- *     intentionally store only the parameters the product reads).
+ * Two severities, because a catalog mirror that fails on cosmetic
+ * churn stops being read:
  *
- * Exit code 1 on any drift — wire it into CI next to the gen:sdk
- * drift check if/when profiles churn becomes a problem.
+ * DRIFT (exit 1) — a field the PRODUCT reads, so being wrong changes
+ * behaviour:
+ *   - the model id still exists on OpenRouter (else every request 404s);
+ *   - `contextLength` matches exactly (compaction budgets off it);
+ *   - `inputModalities` / `outputModalities` match as SETS (native
+ *     attachment routing off them);
+ *   - our `supportedParameters` are a SUBSET of the live list (we
+ *     intentionally store only the parameters the product reads) — a
+ *     parameter the pool does not advertise EMPTIES it.
+ *
+ * STALE (exit 0, advisory) — `maxCompletionTokens`. Nothing reads it:
+ * it is documentation for whoever compares profiles. And it cannot be
+ * kept accurate, because OpenRouter reports it from `top_provider` —
+ * whichever upstream currently LEADS the routing — so on any model with
+ * many endpoints it tracks routing, not the model. GLM 5.2 alone moved
+ * 131 072 → 128 000 → 131 072 → 262 144 → 131 072 over three weeks
+ * across its 34 endpoints. Failing CI on that trains everyone to ignore
+ * the check, which is how a real `supportedParameters` drift ships. Same
+ * reasoning as the 50 % tolerance on --prices below. Re-sync these when
+ * you are in the file anyway.
  *
  * NOTE: no API key needed — /api/v1/models is public.
  *
@@ -189,6 +203,13 @@ const drift = (key: string, message: string) => {
   console.error(`DRIFT ${key}: ${message}`);
 };
 
+// Advisory: reported, never fatal. See the severity split at the top.
+let staleCount = 0;
+const stale = (key: string, message: string) => {
+  staleCount += 1;
+  console.warn(`STALE ${key}: ${message}`);
+};
+
 for (const profile of Object.values(MODEL_PROFILES)) {
   const { key, catalog } = profile;
   const live = liveById.get(catalog.id);
@@ -206,9 +227,9 @@ for (const profile of Object.values(MODEL_PROFILES)) {
 
   const liveMaxOut = live.top_provider?.max_completion_tokens ?? undefined;
   if (liveMaxOut !== catalog.maxCompletionTokens) {
-    drift(
+    stale(
       key,
-      `maxCompletionTokens ${catalog.maxCompletionTokens} → live ${liveMaxOut}`,
+      `maxCompletionTokens ${catalog.maxCompletionTokens ?? "none"} → live ${liveMaxOut ?? "none"}`,
     );
   }
 
@@ -234,12 +255,19 @@ for (const profile of Object.values(MODEL_PROFILES)) {
   }
 }
 
+const profileCount = Object.keys(MODEL_PROFILES).length;
+
+if (staleCount > 0) {
+  console.warn(
+    `\n${staleCount} advisory difference(s) — nothing reads these, re-sync when convenient.`,
+  );
+}
 if (driftCount > 0) {
   console.error(
-    `\n${driftCount} drift(s) found across ${Object.keys(MODEL_PROFILES).length} profiles.`,
+    `\n${driftCount} drift(s) found across ${profileCount} profiles.`,
   );
   process.exit(1);
 }
 console.log(
-  `OK — ${Object.keys(MODEL_PROFILES).length} profiles match the live OpenRouter catalog.`,
+  `OK — ${profileCount} profiles match the live OpenRouter catalog on every field the product reads.`,
 );

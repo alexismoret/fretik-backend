@@ -7,6 +7,7 @@ import type {
   WorkflowRunUsage,
 } from "../../schemas/workflows";
 import { emitDomainEvent } from "../domain-events/emit";
+import { closePausedWindow } from "./paused-clock";
 
 /** Terminal run statuses `finalizeRun` may set. */
 export type FinalRunStatus = "succeeded" | "failed" | "canceled";
@@ -49,6 +50,11 @@ export const finalizeRun = async (params: {
         ...(params.error !== undefined ? { error: params.error } : {}),
         ...(params.usage !== undefined ? { usage: params.usage } : {}),
         waitTokenId: null,
+        // A run can die parked (canceled by the user, or APPROVAL_TIMEOUT):
+        // bank the open window here too, or its final duration would carry
+        // however long the approval went unanswered.
+        pausedMs: closePausedWindow(now),
+        pausedAt: null,
         finishedAt: now,
         lastHeartbeatAt: now,
       })

@@ -325,7 +325,10 @@ const options = {
             columns: { maxAgencies: true },
             where: { organizationId: data.organizationId },
           });
-          return settings?.maxAgencies ?? 1;
+          // No settings row (org predating `afterCreateOrganization`, or an
+          // insert that failed) must not silently cap the org at one team —
+          // fall back to the same default the column carries.
+          return settings?.maxAgencies ?? 10;
         },
         maximumMembersPerTeam: 50,
         allowRemovingAllTeams: false,

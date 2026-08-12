@@ -226,6 +226,11 @@ export const loadExternalApps = async (params: {
                     ? [`description: "${description}"`]
                     : []),
                   `id: ${r.id}`,
+                  // Ownership, not decoration: a `user` (personal) connection is
+                  // invisible to the team assistant, so this tag is what lets
+                  // the agent pick a workflow's scope (`manageWorkflow`) before
+                  // a run fails at dispatch with EXTERNAL_APP_NO_CONNECTION.
+                  `scope: ${r.userId === null ? "team" : "user"}`,
                   `categories: [${categories.join(", ")}]`,
                   ...exposed,
                 ];

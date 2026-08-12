@@ -254,6 +254,15 @@ export const workflowRuns = pgTable(
     startedAt: timestamp("started_at", { withTimezone: true }),
     finishedAt: timestamp("finished_at", { withTimezone: true }),
 
+    // Parked-on-a-human accounting. Time awaiting an approval is latency, not
+    // compute — the orchestrator already pushes its own deadline by the wait,
+    // so a raw `finishedAt - startedAt` overstates a run against the very
+    // budget being enforced. `pausedAt` is the current park's start (NULL
+    // while the run works), `pausedMs` the total of the parks already closed;
+    // subtract both and every duration read reflects worked time.
+    pausedAt: timestamp("paused_at", { withTimezone: true }),
+    pausedMs: integer("paused_ms").notNull().default(0),
+
     createdAt: timestamp("created_at", { withTimezone: true })
       .defaultNow()
       .notNull(),

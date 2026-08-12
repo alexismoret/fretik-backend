@@ -43,6 +43,10 @@ export const recordTurnResult = async (params: {
       params.result.status === "needs_approval"
         ? { status: runStatus }
         : {}),
+      // Open the parked window in the SAME transaction that parks the run, so
+      // the clock can never count human latency as worked time. Closed by
+      // `resumeRunFromApproval` (or `finalizeRun`, for a run that dies parked).
+      ...(params.result.status === "needs_approval" ? { pausedAt: now } : {}),
     })
     .where(eq(workflowRuns.id, params.runId));
 };

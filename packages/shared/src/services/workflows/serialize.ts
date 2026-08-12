@@ -88,5 +88,7 @@ export const serializeWorkflowRun = (
   triggeredByUserId: row.triggeredByUserId,
   startedAt: row.startedAt,
   finishedAt: row.finishedAt,
+  pausedMs: row.pausedMs,
+  pausedAt: row.pausedAt,
   createdAt: row.createdAt,
 });

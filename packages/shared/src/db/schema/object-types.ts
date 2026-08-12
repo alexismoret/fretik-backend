@@ -58,6 +58,15 @@ export const objectTypes = pgTable(
     isSystem: boolean("is_system").notNull().default(false),
     enabled: boolean("enabled").notNull().default(true),
 
+    // Whether this type's records carry a semantic card in `ai_vectors`.
+    // NULL (the default) = decide from the row count, see
+    // `services/object-records/card-indexing-policy.ts`. Set explicitly to
+    // override the size heuristic in either direction: `true` keeps a huge
+    // type embedded, `false` takes a small noisy one out of recall. Nullable
+    // on purpose — a plain boolean could not tell "auto, currently on" from
+    // "the user asked for on", and only the second must survive growth.
+    semanticIndex: boolean("semantic_index"),
+
     // RESERVED — Directus-style per-type / per-field ACL. Unused in V1, present
     // so team-level RLS can later be refined to "per-métier views" without a
     // migration.

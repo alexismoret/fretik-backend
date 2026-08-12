@@ -7,6 +7,7 @@ import {
   type EventActor,
   SYSTEM_ACTOR,
 } from "../domain-events/emit";
+import { purgeCardVectorsForType } from "../object-records/card-indexing-policy";
 import { dropObjectTable } from "../object-schema/table";
 import { DOCUMENT_TYPE_KEY } from "./constants";
 import { invalidateObjectTypeIdCache } from "./resolve";
@@ -17,6 +18,14 @@ import { invalidateObjectTypeIdCache } from "./resolve";
  * upload pipeline depends on it. Every other type (including the seeded
  * company/person/note/task) is deletable; the FK cascade removes its records,
  * field definitions, and link types.
+ *
+ * The cascade is also why this has to purge the type's semantic cards itself.
+ * Every other way a record disappears journals `record.deleted`, which the
+ * sweep turns into a card deletion — a cascade journals nothing, so the cards
+ * would outlive the records forever. Left alone they are not merely stale: they
+ * keep competing in every semantic search, and they let the assistant retrieve
+ * data the user deleted. Measured on a development database before this fix,
+ * one deleted type had left 14 545 orphan cards against 33 document chunks.
  */
 export const deleteObjectType = async (data: {
   id: string;
@@ -59,6 +68,9 @@ export const deleteObjectType = async (data: {
         dedupKey: `object_type.deleted:${id}`,
       });
     }
+    // In the SAME transaction as the cascade: a rollback must leave the index
+    // describing the type that survived, not a type stripped of its cards.
+    await purgeCardVectorsForType({ objectTypeId: id, tx });
     await tx.delete(objectTypes).where(eq(objectTypes.id, id));
     await dropObjectTable({ tx, objectTypeId: id });
   });

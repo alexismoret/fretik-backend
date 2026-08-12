@@ -3,13 +3,21 @@ import type { AiVectorSourceType } from "@fretik/shared/db/schema";
 import { aiVectors } from "@fretik/shared/db/schema";
 import { and, eq, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 import { EMBEDDING_DIMENSIONS } from "../../lib/embeddings";
+import { fuseArms, type HybridCandidate, type RawRow } from "./fuse-arms";
+import {
+  type RegistryRow,
+  runRecordRegistrySearch,
+} from "./record-registry-search";
+
+export type { HybridCandidate } from "./fuse-arms";
 
 /**
- * Parallel hybrid search: HNSW semantic + BM25 lexical, fused via
- * weighted RRF per the Anthropic Contextual Retrieval cookbook
- * (semantic 0.8 / BM25 0.2 — NOT the standard uniform k=60 RRF).
+ * Parallel hybrid search: HNSW semantic + BM25 lexical over `ai_vectors`,
+ * plus a lexical arm over the RECORD REGISTRY, fused via weighted RRF
+ * per the Anthropic Contextual Retrieval cookbook (semantic 0.8 /
+ * BM25 0.2 — NOT the standard uniform k=60 RRF).
  *
- * The two searches run in parallel — the semantic side wraps its
+ * The three searches run in parallel — the semantic side wraps its
  * `SELECT` in a transaction so `SET LOCAL hnsw.ef_search` applies
  * only to that query. Results are merged in application code with
  * weighted-RRF scoring; the top 50 fused candidates are returned.
@@ -17,8 +25,14 @@ import { EMBEDDING_DIMENSIONS } from "../../lib/embeddings";
  *   semantic:   ORDER BY embedding <=> :qvec::halfvec   → top 150
  *   bm25    :   ORDER BY ts_rank_cd(search_vector, plainto_tsquery('simple', :q)) DESC
  *                                                       → top 150
- *   fusion  :   score = Ws/(rank+1)_semantic + Wb/(rank+1)_bm25
+ *   registry:   same probe against `object_records.search_vector` → top 150
+ *   fusion  :   score = Ws/(rank+1)_sem + Wb/(rank+1)_bm25 + Wr/(rank+1)_reg
  *   output  :   top 50 by fused score
+ *
+ * The registry arm reads a DIFFERENT table, and that is the point: the
+ * other two are blind to anything never embedded, which by policy is
+ * every record of a type past `CARD_INDEX_ROW_CEILING`. See
+ * `record-registry-search.ts` for why it costs nothing.
  *
  * Both sides MUST apply the 3-arm scope predicate — mandatory
  * isolation per `keyDecisions.sql_rules` and the
@@ -64,6 +78,20 @@ const PER_SEARCH_LIMIT = 150;
 /** Weighted-RRF coefficients per the Anthropic cookbook. */
 const SEMANTIC_WEIGHT = 0.8;
 const BM25_WEIGHT = 0.2;
+
+/**
+ * Weight of the record-registry arm — the same as BM25, because it IS a BM25
+ * arm, only over `object_records.search_vector` instead of `ai_vectors`.
+ *
+ * It does not need to be higher, and raising it would be a mistake. RRF here is
+ * a RECALL stage: its only job is to get a candidate into the 50 that reach the
+ * reranker, which then scores actual relevance to the query. At 0.2 a rank-1
+ * registry hit scores 0.1, which outranks a semantic hit at rank 7 — comfortably
+ * inside the pool. A record card that ALSO matches lexically accumulates both
+ * lexical arms, which is corroboration, not double counting: it matched two
+ * separately maintained representations of the same row.
+ */
+const REGISTRY_WEIGHT = 0.2;
 
 /**
  * HNSW query-time parameter. The pgvector default is 40, too low for
@@ -115,36 +143,6 @@ export interface HybridSearchInput {
   filters?: HybridSearchFilters;
 }
 
-export interface HybridCandidate {
-  id: string;
-  content: string;
-  contextualPrefix: string;
-  metadata: unknown;
-  sourceType: AiVectorSourceType;
-  sourceId: string;
-  chunkIndex: number;
-  totalChunks: number;
-  createdAt: Date;
-  /** 1-based rank in the semantic list, `null` if absent from that list. */
-  semanticRank: number | null;
-  /** 1-based rank in the BM25 list, `null` if absent from that list. */
-  bm25Rank: number | null;
-  /** Weighted-RRF fused score. */
-  rrfScore: number;
-}
-
-interface RawRow {
-  id: string;
-  content: string;
-  contextualPrefix: string;
-  metadata: unknown;
-  sourceType: AiVectorSourceType;
-  sourceId: string;
-  chunkIndex: number;
-  totalChunks: number;
-  createdAt: Date;
-}
-
 const serializeHalfvec = (embedding: number[]): string =>
   `[${embedding.join(",")}]`;
 
@@ -187,6 +185,17 @@ const buildFilterClauses = (
   }
   return clauses;
 };
+
+/**
+ * Whether the registry arm can contribute at all. It only ever produces
+ * `records`, so a caller that filtered them out must not pay for the query —
+ * and an unfiltered caller must still get it, since "all source types" includes
+ * records.
+ */
+const wantsRecords = (filters: HybridSearchFilters | undefined): boolean =>
+  !filters?.sourceTypes ||
+  filters.sourceTypes.length === 0 ||
+  filters.sourceTypes.includes("records");
 
 const runSemanticSearch = async (
   queryEmbedding: number[],
@@ -289,7 +298,7 @@ export const hybridSearch = async (
     );
   }
 
-  const [semanticRows, bm25Rows] = await Promise.all([
+  const [semanticRows, bm25Rows, registryRows] = await Promise.all([
     hasValidEmbedding
       ? runSemanticSearch(
           queryEmbedding,
@@ -300,56 +309,34 @@ export const hybridSearch = async (
         )
       : Promise.resolve<RawRow[]>([]),
     runBm25Search(query, teamId, organizationId, userId, filters),
+    wantsRecords(filters)
+      ? runRecordRegistrySearch({
+          queryText: query,
+          teamId,
+          organizationId,
+          recordIds: filters?.sourceIds,
+          // Deliberately shallower than the two vector arms. They fetch 150
+          // because a candidate buried in one can be shallow in the other, and
+          // cross-arm accumulation lifts it into the output. Nothing can lift a
+          // registry-only candidate — this arm is its only source — so a hit at
+          // registry rank r is outscored by the r-1 hits above it, and rank 51
+          // can never reach a top-50 output. Fetching deeper is provably wasted.
+          limit: HYBRID_OUTPUT_SIZE,
+        })
+      : Promise.resolve<RegistryRow[]>([]),
   ]);
 
-  const merged = new Map<string, HybridCandidate>();
-
-  semanticRows.forEach((row, index) => {
-    const rank = index + 1;
-    merged.set(row.id, {
-      id: row.id,
-      content: row.content,
-      contextualPrefix: row.contextualPrefix,
-      metadata: row.metadata,
-      sourceType: row.sourceType,
-      sourceId: row.sourceId,
-      chunkIndex: row.chunkIndex,
-      totalChunks: row.totalChunks,
-      createdAt: row.createdAt,
-      semanticRank: rank,
-      bm25Rank: null,
-      rrfScore: SEMANTIC_WEIGHT * (1 / (rank + 1)),
-    });
+  return fuseArms({
+    semanticRows,
+    bm25Rows,
+    registryRows,
+    weights: {
+      semantic: SEMANTIC_WEIGHT,
+      bm25: BM25_WEIGHT,
+      registry: REGISTRY_WEIGHT,
+    },
+    outputSize: HYBRID_OUTPUT_SIZE,
   });
-
-  bm25Rows.forEach((row, index) => {
-    const rank = index + 1;
-    const delta = BM25_WEIGHT * (1 / (rank + 1));
-    const existing = merged.get(row.id);
-    if (existing) {
-      existing.bm25Rank = rank;
-      existing.rrfScore += delta;
-    } else {
-      merged.set(row.id, {
-        id: row.id,
-        content: row.content,
-        contextualPrefix: row.contextualPrefix,
-        metadata: row.metadata,
-        sourceType: row.sourceType,
-        sourceId: row.sourceId,
-        chunkIndex: row.chunkIndex,
-        totalChunks: row.totalChunks,
-        createdAt: row.createdAt,
-        semanticRank: null,
-        bm25Rank: rank,
-        rrfScore: delta,
-      });
-    }
-  });
-
-  return [...merged.values()]
-    .sort((a, b) => b.rrfScore - a.rrfScore)
-    .slice(0, HYBRID_OUTPUT_SIZE);
 };
 
 export const HYBRID_CONSTANTS = {
@@ -357,5 +344,6 @@ export const HYBRID_CONSTANTS = {
   PER_SEARCH_LIMIT,
   SEMANTIC_WEIGHT,
   BM25_WEIGHT,
+  REGISTRY_WEIGHT,
   HNSW_EF_SEARCH,
 } as const;

@@ -9,6 +9,10 @@ import {
   type EventActor,
   SYSTEM_ACTOR,
 } from "../domain-events/emit";
+import {
+  forgetCardIndexPolicy,
+  reconcileCardIndexPolicy,
+} from "../object-records/card-indexing-policy";
 import { reconcileTypeGrants } from "../object-sharing/reconcile";
 
 /**
@@ -31,6 +35,8 @@ export const updateObjectType = async (data: {
     icon?: string | null;
     color?: string | null;
     enabled?: boolean;
+    /** `null` restores the size heuristic — see `card-indexing-policy.ts`. */
+    semanticIndex?: boolean | null;
   };
   sharing?: Audience;
   /** Session team — asserted to own the type when `sharing` is set. */
@@ -45,7 +51,7 @@ export const updateObjectType = async (data: {
   // otherwise just load the row (for the owner check + return).
   const hasPatch = Object.values(patch).some((v) => v !== undefined);
 
-  return db.transaction(async (tx) => {
+  const row = await db.transaction(async (tx) => {
     const row = hasPatch
       ? (
           await tx
@@ -104,4 +110,15 @@ export const updateObjectType = async (data: {
     }
     return row;
   });
+
+  // Semantic indexing is a stored policy with a cached verdict and existing
+  // vectors behind it — changing the setting has to move both, or it is a
+  // switch that reports one thing and does another. Outside the transaction:
+  // the vectors are a derived index, not part of the catalog write, and a
+  // Redis hiccup must not roll back a rename.
+  if (patch.semanticIndex !== undefined) {
+    await forgetCardIndexPolicy(row.id);
+    await reconcileCardIndexPolicy({ objectTypeId: row.id });
+  }
+  return row;
 };

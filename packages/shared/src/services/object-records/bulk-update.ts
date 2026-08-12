@@ -2,7 +2,11 @@ import { inArray, sql } from "drizzle-orm";
 import db from "../../db";
 import type { FieldDefinition } from "../../db/schema";
 import { objectRecords } from "../../db/schema";
-import { chunkForBulk, formatBulkRowError } from "../../lib/db-bulk";
+import {
+  chunkForBulk,
+  chunkSizeForParams,
+  formatBulkRowError,
+} from "../../lib/db-bulk";
 import { computeRecordIdentity } from "../../schemas/record-shape";
 import { type EventActor, SYSTEM_ACTOR } from "../domain-events/emit";
 import { emitDomainEventsBulk } from "../domain-events/emit-bulk";
@@ -10,11 +14,17 @@ import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
 import { resolveLocationRefsBatch } from "../locations/resolve-batch";
 import {
   buildExtensionUpdateBatch,
+  extensionColumnCount,
   readRecordDataBatch,
 } from "../object-schema/record-io";
 import { filterTeamMemberIds } from "../team/members";
-import { validateRecordData } from "./validate";
+import { buildRecordDataValidator } from "./validate";
 import { collectMemberUserIds } from "./validate-members";
+
+/** Parameters the registry UPDATE binds per row (id, label, normalized, search, event). */
+const REGISTRY_UPDATE_PARAMS_PER_ROW = 5;
+/** System columns `buildExtensionUpdateBatch` binds per row, before the fields. */
+const EXTENSION_UPDATE_SYS_PARAMS = 2;
 
 /** Result of a bulk update: the records actually rewritten + per-id failures. */
 export interface BulkUpdateResult {
@@ -147,6 +157,12 @@ export const bulkUpdateObjectRecords = async (input: {
     const fds = fieldDefsByType.get(typeId) ?? [];
     const before =
       beforeByType.get(typeId) ?? new Map<string, Record<string, unknown>>();
+    // One compiled validator per TYPE — the Zod shape depends on the type's
+    // fields and `strict`, neither of which varies across the rows below.
+    const validator = buildRecordDataValidator({
+      fieldDefs: fds,
+      strict: input.strict,
+    });
     const prep: PreparedUpdate[] = [];
     for (const id of ids) {
       const rec = recById.get(id);
@@ -158,11 +174,7 @@ export const bulkUpdateObjectRecords = async (input: {
         const effectiveData = input.merge
           ? { ...(before.get(id) ?? {}), ...provided }
           : provided;
-        const parsed = validateRecordData({
-          fieldDefs: fds,
-          data: effectiveData,
-          strict: input.strict,
-        });
+        const parsed = validator.validate(effectiveData);
         const invalidMembers = collectMemberUserIds(fds, parsed).filter(
           (m) => !allowedMembers.has(m),
         );
@@ -219,7 +231,15 @@ export const bulkUpdateObjectRecords = async (input: {
   const updatedIds: string[] = [];
   for (const [typeId, prep] of preparedByType) {
     const fds = fieldDefsByType.get(typeId) ?? [];
-    for (const batch of chunkForBulk(prep)) {
+    // Sized from THIS type's width: the extension update binds `id` + `label`
+    // plus one parameter per scalar column, the registry update binds 5.
+    const chunkSize = chunkSizeForParams(
+      Math.max(
+        REGISTRY_UPDATE_PARAMS_PER_ROW,
+        EXTENSION_UPDATE_SYS_PARAMS + extensionColumnCount(fds),
+      ),
+    );
+    for (const batch of chunkForBulk(prep, chunkSize)) {
       await db.transaction(async (tx) => {
         // `record.updated` has no natural once-only token — no dedupKey. One
         // team ⇒ one organization, so the batch's first row's org stands in.

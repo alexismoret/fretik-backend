@@ -4,7 +4,7 @@ import type { OntologySource, OntologyStatus } from "../../db/schema";
 import { objectRecords } from "../../db/schema";
 import {
   chunkForBulk,
-  DB_BULK_CHUNK_SIZE,
+  chunkSizeForParams,
   formatBulkRowError,
 } from "../../lib/db-bulk";
 import { computeRecordIdentity } from "../../schemas/record-shape";
@@ -18,11 +18,19 @@ import {
 } from "../links/resolve-relation-inputs";
 import { resolveLocationRefsBatch } from "../locations/resolve-batch";
 import { reconcileFieldIndexes } from "../object-schema/reconcile-indexes";
-import { buildExtensionInsertBatch } from "../object-schema/record-io";
+import {
+  buildExtensionInsertBatch,
+  extensionColumnCount,
+} from "../object-schema/record-io";
 import { filterTeamMemberIds } from "../team/members";
 import { buildCreateDiff } from "./create-diff";
-import { validateRecordData } from "./validate";
+import { buildRecordDataValidator } from "./validate";
 import { collectMemberUserIds } from "./validate-members";
+
+/** Parameters the registry INSERT binds per row (see step 2 below). */
+const REGISTRY_PARAMS_PER_ROW = 13;
+/** System columns `buildExtensionInsertBatch` binds per row, before the fields. */
+const EXTENSION_SYS_PARAMS = 4;
 
 /** One row of a bulk create: the record's `data`, plus its outgoing relations. */
 export interface BulkCreateRow {
@@ -49,17 +57,19 @@ export interface BulkCreateResult {
  * relations. The bulk sibling of `createObjectRecord` (kept separate on purpose
  * — single-row writes throw on the first bad value and enlist in a caller's
  * `tx`; bulk skips bad rows and owns its transaction). Shares every business
- * rule with the single path: `validateRecordData`, member validation,
+ * rule with the single path: the same record validation, member validation,
  * `computeRecordIdentity`, `buildExtensionInsert*`, the `record.created` journal
  * entry, and the same relation resolution + `bulkCreateLinks`.
  *
- * Performance contract — NO per-row SQL. Validation is in-memory; member
+ * Performance contract — NO per-row SQL, and no per-row CPU that the batch can
+ * pay once. Validation is in-memory against ONE compiled validator; member
  * assignment is checked against ONE team-membership fetch for the whole batch;
- * the surviving rows are written in chunks of {@link DB_BULK_CHUNK_SIZE}, each a
- * single transaction of set-based statements. Relations are then resolved in two
- * grouped reads and written set-based. Unlike the single path the relation step
- * is NOT atomic with its record (partial-success contract): a failed relation is
- * reported in `relationErrors` without undoing the record.
+ * the surviving rows are written in chunks sized by `chunkSizeForParams` from
+ * this type's real column width, each a single transaction of set-based
+ * statements. Relations are then resolved in two grouped reads and written
+ * set-based. Unlike the single path the relation step is NOT atomic with its
+ * record (partial-success contract): a failed relation is reported in
+ * `relationErrors` without undoing the record.
  */
 export const bulkCreateObjectRecords = async (input: {
   organizationId: string;
@@ -77,6 +87,14 @@ export const bulkCreateObjectRecords = async (input: {
    * `ids`/`relationErrors` come back empty.
    */
   dryRun?: boolean;
+  /**
+   * Skip the trailing index reconcile. Set by a caller that writes ONE logical
+   * load in several calls (a chunked import), which reconciles once after the
+   * last one — that is the whole point of building indexes after the load, and
+   * firing it per call would instead run N `CREATE INDEX CONCURRENTLY` passes
+   * against the same table while the load is still going.
+   */
+  skipIndexReconcile?: boolean;
   actor?: EventActor;
 }): Promise<BulkCreateResult> => {
   const actor = input.actor ?? SYSTEM_ACTOR;
@@ -113,13 +131,16 @@ export const bulkCreateObjectRecords = async (input: {
   };
   const prepared: Prepared[] = [];
   const errors: { index: number; error: string }[] = [];
+  // Compiled ONCE for the whole batch: the Zod shape is a function of the
+  // fields and `strict`, both loop-invariant. Building it per row cost one
+  // discarded `z.object` (and one validator per field) for every row.
+  const validator = buildRecordDataValidator({
+    fieldDefs,
+    strict: input.strict,
+  });
   for (const [index, raw] of input.rows.entries()) {
     try {
-      const data = validateRecordData({
-        fieldDefs,
-        data: raw.data,
-        strict: input.strict,
-      });
+      const data = validator.validate(raw.data);
       const invalidMembers = collectMemberUserIds(fieldDefs, data).filter(
         (id) => !allowedMembers.has(id),
       );
@@ -155,7 +176,16 @@ export const bulkCreateObjectRecords = async (input: {
 
   const ids: (string | null)[] = input.rows.map(() => null);
 
-  for (const batch of chunkForBulk(prepared, DB_BULK_CHUNK_SIZE)) {
+  // Size the chunk from what a row of THIS type actually binds: the widest of
+  // the statements below is the extension insert (4 system columns + one per
+  // scalar column), and the registry insert binds a fixed 13.
+  const chunkSize = chunkSizeForParams(
+    Math.max(
+      REGISTRY_PARAMS_PER_ROW,
+      EXTENSION_SYS_PARAMS + extensionColumnCount(fieldDefs),
+    ),
+  );
+  for (const batch of chunkForBulk(prepared, chunkSize)) {
     await db.transaction(async (tx) => {
       // 2. Registry rows — system columns only. RETURNING preserves VALUES
       //    order, so `inserted[i]` pairs with `batch[i]`.
@@ -240,14 +270,16 @@ export const bulkCreateObjectRecords = async (input: {
   //
   //    Not awaited: `CREATE INDEX CONCURRENTLY` scales with the table and the
   //    rows are already committed and readable without it.
-  void reconcileFieldIndexes({ objectTypeId: input.objectTypeId }).catch(
-    (cause: unknown) => {
-      console.warn(
-        `[object-records] index reconcile skipped for ${input.objectTypeId}:`,
-        cause instanceof Error ? cause.message : cause,
-      );
-    },
-  );
+  if (input.skipIndexReconcile !== true) {
+    void reconcileFieldIndexes({ objectTypeId: input.objectTypeId }).catch(
+      (cause: unknown) => {
+        console.warn(
+          `[object-records] index reconcile skipped for ${input.objectTypeId}:`,
+          cause instanceof Error ? cause.message : cause,
+        );
+      },
+    );
+  }
 
   return { ids, errors, relationErrors };
 };

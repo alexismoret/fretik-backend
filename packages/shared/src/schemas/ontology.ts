@@ -104,6 +104,9 @@ export const updateObjectTypeRequestSchema = z.object({
   icon: z.string().trim().max(60).nullish(),
   color: z.string().trim().max(20).nullish(),
   enabled: z.boolean().optional(),
+  // Override the semantic-indexing size heuristic. `null` restores "decide
+  // from the row count"; `false` also drops the type's existing record cards.
+  semanticIndex: z.boolean().nullish(),
   // Change the cross-team audience (owner-only). Reconciles `object_grants`.
   sharing: audienceSchema.optional(),
 });

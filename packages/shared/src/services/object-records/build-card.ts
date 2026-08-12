@@ -2,6 +2,7 @@ import db from "../../db";
 import type { RecordVectorMetadata } from "../../db/schema/ai-vectors";
 import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
 import { readRecordData } from "../object-schema/record-io";
+import { isCardIndexedType } from "./card-indexing-policy";
 
 /**
  * Card size guard: one card = ONE vectorize chunk (the chunker window is
@@ -38,7 +39,13 @@ const renderValue = (
  * `ai_vectors` as `source_type='records'`. Returns null for missing,
  * non-confirmed, or document-mirror records (documents are already indexed
  * as `source_type='documents'` with their full content; a card would only
- * duplicate them in every hybrid sweep).
+ * duplicate them in every hybrid sweep), and for records of a type the size
+ * policy excludes from semantic indexing.
+ *
+ * Null is the single lever for all of those: the card worker degrades a null
+ * card to a vector DELETE, so every exclusion reason cleans up after itself
+ * with no purge path of its own. That is why the policy is enforced HERE
+ * rather than at the enqueue sites — one gate, and no caller can bypass it.
  */
 export const buildRecordCard = async (
   recordId: string,
@@ -51,6 +58,9 @@ export const buildRecordCard = async (
     return null;
   }
   if (record.documentId) return null;
+  // Checked before the two heavier loads below, and after the cheap guards:
+  // an excluded type must not pay for field definitions and a row read.
+  if (!(await isCardIndexedType(record.objectTypeId))) return null;
   const objectType = record.objectType;
 
   const fieldDefs = await getFieldDefinitionsForTeam({

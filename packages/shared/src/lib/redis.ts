@@ -22,25 +22,47 @@ redis.on("error", (err: unknown) => {
 });
 
 /**
- * If in redis, return data else Select from fn, set in cache and return
+ * Whether a freshly computed value is worth storing.
  *
- * @param fn
- * @param cacheKey
- * @param ttl
- * @returns
+ * The line is at NULLISH, not at falsy, and both sides of it are deliberate.
+ *
+ * Caching `false` / `0` / `""` is required: they are answers. A lookup that
+ * legitimately resolves to one of them would otherwise miss the cache forever
+ * — silently, showing up only as load — and the caller's only workaround is to
+ * fold the value into an object, which is folklore, not a contract.
+ *
+ * NOT caching nullish is equally required, and it is why this is not simply
+ * "cache everything". Every current caller returns nullish for "not found",
+ * and in each one that absence is a decision with a lifetime: `assertOrgAdmin`
+ * turns a missing member into a 403, `authMiddleware` turns a missing org or
+ * team into a 404, and the registry clients return `null` after a failed HTTP
+ * fetch. Storing those would pin a denial, a 404, or a registry outage for the
+ * whole TTL — a user added to a team would stay locked out for 30 minutes.
+ */
+export const isCacheableValue = (value: unknown): boolean =>
+  value !== null && value !== undefined;
+
+/**
+ * Read `cacheKey` from Redis, or compute it with `fn`, store it and return it.
+ *
+ * See {@link isCacheableValue} for what does and does not get stored — the one
+ * sharp edge of this helper.
  */
 export const selectOrCache = async <T>(
   fn: () => Promise<T>,
   cacheKey: string,
   ttl: number = 30 * 60,
 ): Promise<T> => {
+  // `!== null` and not a truthiness test: `get` answers `null` on a miss, and
+  // every JSON encoding is a non-empty string (`false` → "false", `0` → "0"),
+  // so a truthiness test here would re-compute exactly the values above.
   const value = await redis.get(cacheKey);
-  if (value) {
+  if (value !== null) {
     return JSON.parse(value);
   }
 
   const newValue = await fn();
-  if (newValue) {
+  if (isCacheableValue(newValue)) {
     await redis.set(cacheKey, JSON.stringify(newValue), "EX", ttl);
   }
 

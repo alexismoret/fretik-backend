@@ -1,0 +1,1 @@
+ALTER TABLE "object_types" ADD COLUMN "semantic_index" boolean;

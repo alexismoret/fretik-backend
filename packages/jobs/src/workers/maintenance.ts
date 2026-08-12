@@ -70,10 +70,11 @@ export const startMaintenanceWorker = (): Worker => {
           return;
         }
         case OBJECT_INDEX_SWEEP_JOB: {
-          const { types, created, dropped } = await runObjectIndexSweep();
-          if (created > 0 || dropped > 0) {
+          const { types, created, dropped, cardsPurged } =
+            await runObjectIndexSweep();
+          if (created > 0 || dropped > 0 || cardsPurged > 0) {
             console.info(
-              `[object-index-sweep] ${types.toString()} types: built ${created.toString()} indexes, retired ${dropped.toString()}`,
+              `[object-index-sweep] ${types.toString()} types: built ${created.toString()} indexes, retired ${dropped.toString()}, purged ${cardsPurged.toString()} record cards`,
             );
           }
           return;

@@ -133,6 +133,18 @@ export const buildExtensionInsert = (input: {
  * (system columns + every scalar field, absent → NULL), so the VALUES rows are
  * shape-aligned. Returns `null` for an empty batch.
  */
+/**
+ * Scalar columns one row of this type binds on the extension table.
+ *
+ * The batch builders below emit a fixed column template per row, so this IS the
+ * per-row parameter count they will bind (plus the system columns the caller
+ * adds). Bulk services feed it to `chunkSizeForParams` to size a chunk from the
+ * type's real width instead of a fixed guess — a `money` field is two columns,
+ * so the field count alone would under-report.
+ */
+export const extensionColumnCount = (fields: FieldDefinition[]): number =>
+  collectColumnValues(fields, {}, "replace").length;
+
 export const buildExtensionInsertBatch = (input: {
   objectTypeId: string;
   fields: FieldDefinition[];

@@ -170,6 +170,13 @@ class Operation:
     args: dict[str, Any]
 
 
+# Seconds before a backend call is abandoned. `urlopen` defaults to no timeout
+# at all, so a hung request burned the sandbox's entire 5-minute wall clock and
+# surfaced as "the cell did nothing" with no error to act on. Generous enough
+# for a large bulk write, short enough to leave room to react.
+_POST_TIMEOUT_S = 120
+
+
 def _auth() -> dict[str, Any]:
     with open("/workspace/.fretik/auth.json", "r", encoding="utf-8") as f:
         return json.load(f)
@@ -196,11 +203,16 @@ def _post(payload: dict[str, Any]) -> Any:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req) as response:
+        with urllib.request.urlopen(req, timeout=_POST_TIMEOUT_S) as response:
             data = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         raw = exc.read().decode("utf-8", errors="replace")
         raise FretikActionError(f"HTTP {exc.code}: {raw}") from exc
+    except (urllib.error.URLError, TimeoutError) as exc:
+        raise FretikActionError(
+            f"Backend call timed out or was unreachable after "
+            f"{_POST_TIMEOUT_S}s: {exc}"
+        ) from exc
 
     status = data.get("status")
     if status == "approval_pending":

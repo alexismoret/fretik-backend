@@ -1,4 +1,5 @@
 import db from "@fretik/shared/db";
+import { isCardIndexedType } from "@fretik/shared/services/object-records/card-indexing-policy";
 import { getRecordCardQueue } from "../queues/queues";
 
 /**
@@ -7,6 +8,11 @@ import { getRecordCardQueue } from "../queues/queues";
  * `buildRecordCard` re-guards anyway). Rate is capped by the record-card
  * worker's concurrency; stopping = draining the queue. Existing jobIds
  * (`card-{id}`) make re-runs no-ops for records already pending.
+ *
+ * Types the size policy excludes are dropped HERE too, not only in
+ * `buildRecordCard`: a backfill over a 200 000-row type would otherwise queue
+ * 200 000 jobs for the worker to discard one by one, which is the throughput
+ * cost the policy exists to avoid even though the end state would be right.
  *
  *   bun run backfill:record-cards [--limit N] [--dry-run]
  */
@@ -23,15 +29,32 @@ const limitRaw =
 const limit =
   Number.isFinite(limitRaw) && limitRaw > 0 ? limitRaw : DEFAULT_LIMIT;
 
-const rows = await db.query.objectRecords.findMany({
-  columns: { id: true, teamId: true, organizationId: true, label: true },
+const candidates = await db.query.objectRecords.findMany({
+  columns: {
+    id: true,
+    teamId: true,
+    organizationId: true,
+    objectTypeId: true,
+    label: true,
+  },
   where: { status: "confirmed", documentId: { isNull: true } },
   orderBy: { updatedAt: "desc" },
   limit,
 });
 
+// One verdict per distinct type, not per record — the policy caches, but this
+// also keeps the log honest about WHY rows were dropped.
+const indexedTypes = new Map<string, boolean>();
+for (const typeId of new Set(candidates.map((row) => row.objectTypeId))) {
+  indexedTypes.set(typeId, await isCardIndexedType(typeId));
+}
+const rows = candidates.filter(
+  (row) => indexedTypes.get(row.objectTypeId) === true,
+);
+const excluded = candidates.length - rows.length;
+
 console.info(
-  `[backfill-record-cards] ${rows.length.toString()} confirmed records (limit ${limit.toString()}${dryRun ? ", dry-run" : ""})`,
+  `[backfill-record-cards] ${rows.length.toString()} confirmed records (limit ${limit.toString()}${excluded > 0 ? `, ${excluded.toString()} skipped — type not semantically indexed` : ""}${dryRun ? ", dry-run" : ""})`,
 );
 
 if (dryRun) {

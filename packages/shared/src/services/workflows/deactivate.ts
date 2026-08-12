@@ -60,14 +60,24 @@ export const deactivateWorkflow = async (params: {
   // runs are user-initiated and left alone. Best-effort: a Trigger hiccup
   // must not block the state change.
   if (updated) {
-    await cancelQueuedEventRuns({ workflowId: id, teamId }).catch(
-      (error: unknown) => {
-        console.warn(
-          `[workflows.deactivate] queued-run cancel failed for ${id}:`,
-          error instanceof Error ? error.message : error,
-        );
-      },
-    );
+    const canceled = await cancelQueuedEventRuns({
+      workflowId: id,
+      teamId,
+    }).catch((error: unknown) => {
+      console.warn(
+        `[workflows.deactivate] queued-run cancel failed for ${id}:`,
+        error instanceof Error ? error.message : error,
+      );
+      return 0;
+    });
+    // Say how many. The pause itself is loud (`pausedReason` renders in the
+    // UI) but the backlog it discards was not recorded anywhere — and under an
+    // event storm that number is the whole story, not a detail.
+    if (canceled > 0) {
+      console.info(
+        `[workflows.deactivate] workflow ${id} → ${status}: canceled ${String(canceled)} queued event run(s)`,
+      );
+    }
   }
 
   // Archiving retires the workflow — hide its runs' episodes so their memory

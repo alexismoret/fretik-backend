@@ -77,6 +77,8 @@ export interface SearchRagDebugEntry {
   chunkId: string;
   semanticRank: number | null;
   bm25Rank: number | null;
+  /** Rank in the record-registry arm — set only on `records` candidates. */
+  registryRank: number | null;
   rrfScore: number;
   rerankScore: number | null;
   matchedVariants: number;
@@ -135,6 +137,7 @@ const globalMerge = (
           existing.bestVariantScore = candidate.rrfScore;
           existing.semanticRank = candidate.semanticRank;
           existing.bm25Rank = candidate.bm25Rank;
+          existing.registryRank = candidate.registryRank;
         }
       } else {
         merged.set(candidate.id, {
@@ -252,6 +255,7 @@ export const searchRAG = async (
       chunkId: c.id,
       semanticRank: c.semanticRank,
       bm25Rank: c.bm25Rank,
+      registryRank: c.registryRank,
       rrfScore: c.rrfScore,
       rerankScore: rerankedById.get(c.id) ?? null,
       matchedVariants: c.matchedVariants,

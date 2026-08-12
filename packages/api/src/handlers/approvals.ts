@@ -37,6 +37,7 @@ import { getApprovalForCaller } from "@fretik/shared/services/approvals/get-by-i
 import { grantApproval } from "@fretik/shared/services/approvals/grant";
 import { modifyAndGrantApproval } from "@fretik/shared/services/approvals/modify-and-grant";
 import { rejectApproval } from "@fretik/shared/services/approvals/reject";
+import { toWirePayload } from "@fretik/shared/services/approvals/to-wire-payload";
 import { extractFrameworkArgs } from "@fretik/shared/services/external-apps/exec/framework-args";
 import { resolveMcpWriteOp } from "@fretik/shared/services/external-apps/exec/mcp-plan";
 import { validateActionArgs } from "@fretik/shared/services/external-apps/exec/validate-args";
@@ -84,7 +85,10 @@ const toDto = async (
     summary:
       row.summary !== null ? renderApprovalSummary(row.summary, lang) : null,
     operations: row.operations,
-    payload: row.payload,
+    // Preview, not the whole list: a bulk record write holds one entry per
+    // record. `itemCount` above carries the true total, so the card knows it is
+    // looking at a slice. Grant still executes from the stored payload.
+    payload: toWirePayload(row.payload),
     result: row.result ?? null,
     decisionFeedback: row.decisionFeedback,
     decisionAt: row.decisionAt,

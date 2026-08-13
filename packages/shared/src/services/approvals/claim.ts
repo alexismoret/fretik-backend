@@ -31,3 +31,23 @@ export const claimGrantedApproval = async (
     .returning();
   return row;
 };
+
+/**
+ * Hand a claim back: `executing` → `granted`.
+ *
+ * Only for a deferred grant whose hand-off failed before anything started.
+ * `executing` means "someone is working on this", and a row stuck there with
+ * nobody working on it is a dead end — the status machine deliberately refuses
+ * to re-execute it. Reverting lets the user simply try again.
+ */
+export const releaseClaimedApproval = async (id: string): Promise<void> => {
+  await db
+    .update(toolApprovalRequests)
+    .set({ status: "granted", executedAt: null })
+    .where(
+      and(
+        eq(toolApprovalRequests.id, id),
+        eq(toolApprovalRequests.status, "executing"),
+      ),
+    );
+};

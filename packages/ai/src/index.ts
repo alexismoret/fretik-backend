@@ -3,6 +3,15 @@
 // creates a telemetry span. No-op when LANGFUSE_* env vars are absent.
 import "./lib/langfuse";
 
+// Patches Zod with `.openapi()`. Side-effect import, and it MUST precede every
+// `@fretik/*` import: the formatter sorts `@fretik` before `@hono`, so any
+// shared module reaching `schemas/common/params` (which calls `.openapi()` at
+// module load) would otherwise evaluate against an unpatched Zod and throw at
+// boot. This file's leading side-effect imports are comment-separated groups,
+// which the sorter leaves in place — that is what makes the order enforceable.
+// oxlint-disable-next-line import/no-duplicates
+import "@hono/zod-openapi";
+
 // Bootstrap external-app provider registration (side-effect import — must
 // run before any chatbot tool or sandbox-exec touches the registry).
 import "@fretik/providers";
@@ -10,6 +19,7 @@ import "@fretik/providers";
 import { errorHandler } from "@fretik/shared/lib/error-handler";
 import { globalRateLimiter } from "@fretik/shared/lib/rate-limit";
 import { reclaimOrphanSandboxes } from "@fretik/shared/services/e2b/reclaim-orphans";
+import { installExternalPageQueryExecutor } from "@fretik/shared/services/external-apps/exec/page-query";
 import { syncBundledSkillsCatalogue } from "@fretik/shared/services/skills/sync-bundled-catalogue";
 import { OpenAPIHono } from "@hono/zod-openapi";
 import figlet from "figlet";
@@ -33,6 +43,10 @@ import {
 } from "./skills/materialize";
 
 const VERSION = packagejson.version;
+
+// managePage's dry_run executes page datasets, including external ones — the
+// seam refuses in any process that skips this install.
+installExternalPageQueryExecutor();
 
 const app = new OpenAPIHono();
 

@@ -98,6 +98,20 @@ export const PAGE_LIMITS = {
   maxCellElements: 8,
   maxCellDepth: 3,
   maxCellPageSize: 50,
+  /**
+   * How long an external dataset's upstream answer may be reused, seconds.
+   * The floor exists because a page renders far more often than a third party
+   * wants to be called; the ceiling because past 15 minutes the data is not
+   * "live" and belongs in an object type.
+   */
+  minExternalTtlSeconds: 15,
+  maxExternalTtlSeconds: 900,
+  defaultExternalTtlSeconds: 60,
+  /** Bounds for a page's own auto-refresh loop (`autoRefreshSeconds`). */
+  minAutoRefreshSeconds: 15,
+  maxAutoRefreshSeconds: 3600,
+  /** Declared write/read operations one page may run. */
+  maxOperations: 16,
 } as const;
 
 /**
@@ -284,10 +298,12 @@ export type PageVariable = z.infer<typeof PageVariableSchema>;
  * new entry here plus a new file there, with no migration: datasets live in
  * the definition's JSONB.
  *
- * `external` (a connected app queried through MCP) is DECLARED but not
- * enabled — the resolver returns an explicit error. It is listed so the shape
- * is fixed before the first implementation, and so a page that asks for one
- * gets a real answer instead of "unknown kind".
+ * `external` is a live read from a connected app (MCP or manifest), resolved
+ * server-side by `sources/external.ts` through a registered executor. It is
+ * for SMALL, FRESH reads whose value is their recency — an inbox, today's
+ * orders. Volume, history and anything published stay on the workflow → object
+ * type path: a third party cannot be filtered, grouped or indexed the way an
+ * object type can.
  *
  * A Drive spreadsheet is deliberately NOT a kind. A document's bytes cannot be
  * replaced (`updateDocument` changes its name and folder, nothing else), so a
@@ -435,20 +451,31 @@ export const PageDatasetSchema = z
     /** The body of `(data, state) => …` — it must `return` its rows. */
     code: z.string().max(PAGE_LIMITS.maxTransformChars).optional(),
 
-    // --- external: a connected app, DECLARED but not yet executed ---
-    // The shape is fixed now so the seam it will plug into is known, and so a
-    // stored page written against it survives the day it turns on. Every field
-    // lives in the DEFINITION, never in a request: a viewer cannot name a
-    // connection or an operation any more than it can name an object type.
-    // See `sources/external.ts` for the six preconditions still missing.
-    /** Which connected app answers — an `external_apps` connection. */
+    // --- external: a live read from a connected app ---
+    // Every field lives in the DEFINITION, never in a request: a viewer cannot
+    // name a connection or an operation any more than it can name an object
+    // type. The connection itself is resolved AT VIEW TIME (see
+    // `resolvePageConnection`): the viewer's own connection of the provider
+    // first, the team's shared one second — the same page shows each member
+    // their own data, which is why `providerKey` is the normal spelling and
+    // `connectionId` is a deliberate pin.
+    /** Pin ONE connection. Omit to resolve by provider for each viewer. */
     connectionId: z.uuid().optional(),
+    /** Provider to resolve per viewer (their own connection, else the team's). */
+    providerKey: z.string().max(80).optional(),
     /** The read operation to call on it (a tool or action name). */
     operation: z.string().max(120).optional(),
-    /** Its arguments — literals, or bindings on page state. */
+    /** Its arguments — literals, or bindings on page STATE (not data). */
     args: z.record(z.string(), pageValueSchema).optional(),
     /** Where the rows sit in the response, as a JSONata path. */
     resultPath: z.string().max(200).optional(),
+    /** Upstream answer reuse window, seconds. Bounded by PAGE_LIMITS. */
+    cacheTtlSeconds: z
+      .number()
+      .int()
+      .min(PAGE_LIMITS.minExternalTtlSeconds)
+      .max(PAGE_LIMITS.maxExternalTtlSeconds)
+      .optional(),
   })
   .superRefine((ds, ctx) => {
     if (ds.kind === "objects" && !ds.objectTypeId) {
@@ -465,8 +492,82 @@ export const PageDatasetSchema = z
         path: ["code"],
       });
     }
+    if (ds.kind === "external") {
+      if (!ds.operation) {
+        ctx.addIssue({
+          code: "custom",
+          message: `dataset "${ds.id}": an external dataset needs operation`,
+          path: ["operation"],
+        });
+      }
+      if (!ds.connectionId && !ds.providerKey) {
+        ctx.addIssue({
+          code: "custom",
+          message: `dataset "${ds.id}": an external dataset needs providerKey (or a pinned connectionId)`,
+          path: ["providerKey"],
+        });
+      }
+    }
   });
 export type PageDataset = z.infer<typeof PageDatasetSchema>;
+
+// ==================== //
+// OPERATIONS (WRITES)  //
+// ==================== //
+
+/**
+ * A named call INTO a connected app that a page may run — a form's submit, a
+ * button that marks an order shipped. Datasets read; operations act.
+ *
+ * Declared at the top level rather than inline on the button, for the same
+ * reason a dataset is: the STORED definition is the security boundary. A
+ * viewer's browser sends an operation ID and values for the page's declared
+ * VARIABLES — never an action name, never an argument template, never a
+ * connection. The server re-evaluates the stored `args` against those values,
+ * so the worst a forged request can do is pass a different string where a
+ * string was already going to go.
+ *
+ * A FORM IS NOT A SEPARATE STATE MODEL. Its fields are ordinary variables
+ * (`{ "$bindState": "/newOrderRef" }`), which is what gives them declared
+ * types, coercion, and the one already-proven boundary; `form` is a layout
+ * component that groups inputs and fires `submit`.
+ *
+ * `confirm` is not decoration: an action the app itself marks destructive is
+ * REFUSED server-side unless the page declared one, so a "delete everything"
+ * button cannot be one click by accident.
+ */
+export const PageOperationSchema = z.object({
+  id: pageKeySchema,
+  /** Pin ONE connection. Omit to resolve per viewer, like a dataset. */
+  connectionId: z.uuid().optional(),
+  providerKey: z.string().max(80).optional(),
+  /** The action to call on it — a name from the app's own catalogue. */
+  action: z.string().max(120),
+  /** Argument template. Bindings read page state (`state.<variable>`). */
+  args: z.record(z.string(), pageValueSchema).optional(),
+  /** Ask before running. Required for anything the app marks destructive. */
+  confirm: z
+    .object({
+      title: z.string().max(120),
+      description: z.string().max(400).optional(),
+    })
+    .optional(),
+  onSuccess: z
+    .object({
+      /** Datasets to re-run once it lands — how a page shows its own write. */
+      refetch: z.array(pageKeySchema).max(PAGE_LIMITS.maxDatasets).optional(),
+      /** Literal text; the page's own words, not an i18n key. */
+      toast: z.string().max(200).optional(),
+      /** Variables to clear — an entry form starting empty for the next one. */
+      resetVariables: z
+        .array(pageKeySchema)
+        .max(PAGE_LIMITS.maxVariables)
+        .optional(),
+    })
+    .optional(),
+  onError: z.object({ toast: z.string().max(200).optional() }).optional(),
+});
+export type PageOperation = z.infer<typeof PageOperationSchema>;
 
 // ==================== //
 // ACTIONS              //
@@ -693,7 +794,23 @@ export const PageDefinitionSchema = z.object({
     .max(PAGE_LIMITS.maxVariables)
     .default([]),
   datasets: z.array(PageDatasetSchema).max(PAGE_LIMITS.maxDatasets).default([]),
+  operations: z
+    .array(PageOperationSchema)
+    .max(PAGE_LIMITS.maxOperations)
+    .default([]),
   theme: PageThemeSchema.optional(),
+  /**
+   * Re-query the page's datasets every N seconds while it is open — the knob
+   * that makes an inbox or an order board feel live. The floor keeps a page
+   * from polling a third party faster than a human reads; viewers can always
+   * refresh by hand.
+   */
+  autoRefreshSeconds: z
+    .number()
+    .int()
+    .min(PAGE_LIMITS.minAutoRefreshSeconds)
+    .max(PAGE_LIMITS.maxAutoRefreshSeconds)
+    .optional(),
   /**
    * REQUIRED, and deliberately not defaulted. A `.default({ root: "",
    * elements: {} })` here reached the model as `"default": {"root": "",
@@ -733,6 +850,7 @@ export const EMPTY_PAGE_DEFINITION: PageDefinition = {
   version: 2,
   variables: [],
   datasets: [],
+  operations: [],
   spec: { root: "", elements: {} },
 };
 
@@ -857,6 +975,12 @@ export const pagePublishError = (definition: PageDefinition): string | null => {
   if (external) {
     return `Dataset "${external.id}" reads a connected app, which a published page may not do — an anonymous visitor would be spending the team's credentials. Sync it into an object type with a workflow and query that instead.`;
   }
+  // Same rule, one step stronger: an operation WRITES to a third party. A link
+  // anyone can open must not carry one, whatever it is guarded by client-side.
+  const [operation] = definition.operations;
+  if (operation !== undefined) {
+    return `Operation "${operation.id}" writes to a connected app, which a published page may not do — anyone with the link could run it on the team's credentials. Keep this page internal, or remove its operations.`;
+  }
   return null;
 };
 
@@ -901,6 +1025,14 @@ export const describePageDataContract = (): string =>
     "                 (or one object). Plain JSON in, plain JSON out — no IO, no await,",
     "                 500 ms. It runs on results the query ALREADY reduced: never group or",
     "                 sum here, an aggregate dataset does that in SQL over every row.",
+    "kind=external  → providerKey + operation (+ args, resultPath?, cacheTtlSeconds?).",
+    "                 A live read from a connected app. Name the PROVIDER: each viewer",
+    "                 then reads through their own connection, the team's otherwise.",
+    "                 `connectionId` pins one account for everyone — only when they all",
+    "                 must see that same account.",
+    '                 args may bind to state (`{"$": "state.folder"}`), never to data.',
+    "                 resultPath is a JSONata path to the rows inside the answer — run",
+    "                 dry_run to see the real shape before writing it.",
     "A dataset's rows land in state at `/data/<id>`: that is the `statePath` a",
     "`repeat` names, and `data.<id>` is how a binding reads them.",
     "",
@@ -910,9 +1042,23 @@ export const describePageDataContract = (): string =>
     "on a control, read as `state.month` in a binding, and bound to by a dataset filter.",
     'An "all" chip is an option with value: "" — an empty value drops its filter.',
     "",
+    "## operations (writes)",
+    "operations: [{ id, providerKey, action, args?, confirm?, onSuccess?, onError? }]",
+    "A write into a connected app, run by the `run` action: bind",
+    '`{ "action": "run", "params": { "operation": "<id>" } }` to a button\'s `click`',
+    "or a form's `submit`. Connections resolve per viewer, exactly as a dataset's do.",
+    "args bind to state, so a form field IS a variable — no separate form model.",
+    "confirm: { title, description? } asks before running, and is REQUIRED for any",
+    "action the app marks destructive (the server refuses it otherwise).",
+    "onSuccess: { refetch: [datasetIds], toast?, resetVariables? } — refetch is how the",
+    "page shows its own write; resetVariables clears an entry form for the next one.",
+    "A page with operations cannot be published: a public link must not write.",
+    "",
     "## theme (page level, optional)",
     "theme: { accent(@color), density(@density), radius(none|sm|md|lg|xl) }",
     "Sets the page's own accent and rounding; density resizes every control below.",
+    "autoRefreshSeconds (page level, ≥15) re-queries every dataset on a timer — for a",
+    "board someone leaves open, not for a report.",
   ].join("\n");
 
 // ==================== //
@@ -1101,6 +1247,17 @@ export const PageDatasetResultSchema = z.discriminatedUnion("status", [
   }),
   /** The viewer's team has no grant on that object type — this block only. */
   z.object({ status: z.literal("forbidden") }),
+  /**
+   * An external dataset found no usable connection FOR THIS VIEWER — the page
+   * itself is fine, so the frontend renders a "connect your account" prompt in
+   * the dataset's place instead of an error.
+   */
+  z.object({
+    status: z.literal("needs_connection"),
+    providerKey: z.string(),
+    /** Human name of the app, when a pinned connection told us. */
+    displayName: z.string().optional(),
+  }),
   z.object({ status: z.literal("error"), message: z.string() }),
 ]);
 export type PageDatasetResult = z.infer<typeof PageDatasetResultSchema>;
@@ -1109,6 +1266,33 @@ export const PageDataResponseSchema = z.object({
   datasets: z.record(z.string(), PageDatasetResultSchema),
 });
 export type PageDataResponse = z.infer<typeof PageDataResponseSchema>;
+
+/**
+ * Running ONE declared operation. The same asymmetry as the data request, and
+ * enforced by the same code: the browser names an operation the page declares
+ * and supplies variable VALUES, while the action, the connection and the
+ * argument template all come from the stored definition. `resolvePageState`
+ * coerces those values against the declared types and drops everything else,
+ * so a write reaches the app through exactly the boundary a read does.
+ */
+export const PageRunRequestSchema = z.object({
+  operation: pageKeySchema,
+  variables: z.record(z.string(), pageValueSchema).default({}),
+});
+export type PageRunRequest = z.infer<typeof PageRunRequestSchema>;
+
+export const PageRunResponseSchema = z.discriminatedUnion("status", [
+  z.object({
+    status: z.literal("ok"),
+    /** What the app answered, narrowed to JSON and capped. */
+    result: pageValueSchema.optional(),
+  }),
+  z.object({ status: z.literal("needs_connection"), providerKey: z.string() }),
+  /** The action is disabled on that connection by its permission settings. */
+  z.object({ status: z.literal("blocked"), message: z.string() }),
+  z.object({ status: z.literal("error"), message: z.string() }),
+]);
+export type PageRunResponse = z.infer<typeof PageRunResponseSchema>;
 
 /** Access verdict for the public route — mirrors `PublicFormResponse`. */
 export const PUBLIC_PAGE_ACCESS_VALUES = [

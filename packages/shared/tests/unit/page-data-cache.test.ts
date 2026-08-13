@@ -136,6 +136,7 @@ describe("pageDataCacheKey — what must never share an entry", () => {
   const base = {
     pageId: "page-1",
     teamId: "team-1",
+    userId: null,
     definitionFingerprint: "2026-08-11T00:00:00.000Z",
     request: { variables: { month: "2026-08" } },
   };
@@ -146,6 +147,16 @@ describe("pageDataCacheKey — what must never share an entry", () => {
     expect(pageDataCacheKey(base)).not.toBe(
       pageDataCacheKey({ ...base, teamId: "team-2" }),
     );
+  });
+
+  test("two viewers never collide — a personal connection makes answers viewer-specific", () => {
+    const mine = pageDataCacheKey({ ...base, userId: "user-1" });
+    const theirs = pageDataCacheKey({ ...base, userId: "user-2" });
+    const anonymous = pageDataCacheKey(base);
+    expect(new Set([mine, theirs, anonymous]).size).toBe(3);
+    // The anonymous sentinel is explicit, not an empty segment a viewer id
+    // could ever equal.
+    expect(anonymous).toContain(":u:public:");
   });
 
   test("editing the page retires its entries", () => {

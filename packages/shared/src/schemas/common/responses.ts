@@ -38,6 +38,22 @@ export const responseListSchema = <T extends z.ZodTypeAny>(dataSchema: T) =>
   });
 
 /**
+ * The other half of `cursorParamSchema`: where the next page starts, or `null`
+ * when this one is the last. Grafted onto whatever envelope a list already
+ * returns rather than replacing it — a list that answers both a numbered
+ * `page` and a `cursor` keeps one response shape, and the field simply stays
+ * absent on the path that did not walk.
+ */
+export const nextCursorSchema = z
+  .string()
+  .nullable()
+  .openapi({
+    description:
+      "Cursor to pass as `cursor` for the following page. Null when this is the last one.",
+  })
+  .describe("Cursor of the next page, or null at the end");
+
+/**
  * Schema for delete operation responses
  */
 export const responseDeleteSchema = z.object({

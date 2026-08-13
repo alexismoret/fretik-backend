@@ -4,6 +4,7 @@ import {
   ensureWorkerCursor,
   readEventsAfter,
 } from "@fretik/shared/services/domain-events/consume";
+import { intFromEnv } from "../lib/env";
 import {
   getMemoryDistillQueue,
   getMemoryResolveQueue,
@@ -39,11 +40,6 @@ import {
 
 const CURSOR_NAME = "memory-resolver";
 
-const intFromEnv = (name: string, fallback: number): number => {
-  const raw = Number.parseInt(process.env[name] ?? "", 10);
-  return Number.isFinite(raw) && raw > 0 ? raw : fallback;
-};
-
 /** Consistency lag — must exceed the longest event-emitting transaction. */
 const WATERMARK_MS = intFromEnv("MEMORY_SWEEP_WATERMARK_MS", 15_000);
 /** Per-sweep read ceiling: a backlog drains progressively, never in one load. */
@@ -67,6 +63,22 @@ const CRON_DISTILL_TTL_S = intFromEnv(
   "MEMORY_CRON_DISTILL_TTL_S",
   24 * 60 * 60,
 );
+/**
+ * Wall-clock a single sweep tick may spend draining. The tick reads one batch
+ * at a time; without a loop, a backlog drains at `SWEEP_BATCH` per schedule
+ * interval — 500 events every 15s, so a 100 000-row import takes ~50 minutes to
+ * reach the card indexer, and the whole team's memory lags behind it.
+ *
+ * Bounded rather than "drain everything" because this worker runs at
+ * concurrency 1 alongside the workflow-trigger sweep: a tick that never ends
+ * starves them. 5s against a 15s interval leaves two thirds of the cycle free.
+ */
+const SWEEP_BUDGET_MS = intFromEnv("MEMORY_SWEEP_BUDGET_MS", 5_000);
+/** Backstop on the drain loop, so a bug in the cursor cannot spin forever. */
+const SWEEP_MAX_PASSES = intFromEnv("MEMORY_SWEEP_MAX_PASSES", 40);
+/** Queue commands issued concurrently. ioredis pipelines a batch into one
+ * round trip, which is the point — see `resetDebounce`. */
+const QUEUE_OP_CHUNK = 100;
 
 /** Event types the resolver has nothing to do with — linked at source, or
  * (`workflow.`) carrying only ids the LLM mention-extraction would waste a
@@ -82,14 +94,61 @@ const RESOLVE_SKIP_PREFIXES = [
 const needsResolve = (type: string): boolean =>
   !RESOLVE_SKIP_PREFIXES.some((p) => type.startsWith(p));
 
+/**
+ * Clear pending jobs so the following `addBulk` is not swallowed.
+ *
+ * This CANNOT be dropped in favour of "let the existing job stand", however
+ * tempting: BullMQ refuses an `add` whose jobId exists in ANY state, and both
+ * queues here keep completed jobs (`removeOnComplete: { count }`). Verified
+ * against a live Redis — after a `card-{id}` job completes, re-adding the same
+ * id leaves the queue empty and the old payload in place, so the record would
+ * never be re-indexed again until the completed job aged out. What the removal
+ * costs is one round trip per id; issuing them concurrently hands ioredis a
+ * pipeline, so a 500-id batch costs about one.
+ *
+ * A running job cannot be removed — the rejection is swallowed and the `add`
+ * then no-ops on the live id, which is the pre-existing accepted edge.
+ */
+const resetDebounce = async (
+  queue: { remove: (jobId: string) => Promise<number> },
+  jobIds: string[],
+): Promise<void> => {
+  for (let i = 0; i < jobIds.length; i += QUEUE_OP_CHUNK) {
+    await Promise.all(
+      jobIds
+        .slice(i, i + QUEUE_OP_CHUNK)
+        .map((jobId) => queue.remove(jobId).catch(() => 0)),
+    );
+  }
+};
+
+/**
+ * Drain the journal for up to `SWEEP_BUDGET_MS`, one batch per pass.
+ *
+ * A pass that comes back short means the journal is caught up — either there is
+ * nothing left, or the watermark is holding the rest back, and in both cases
+ * another read this tick would return the same nothing.
+ */
 export const runJournalSweep = async (): Promise<{ swept: number }> => {
+  const deadline = Date.now() + SWEEP_BUDGET_MS;
+  let swept = 0;
+  for (let pass = 0; pass < SWEEP_MAX_PASSES; pass += 1) {
+    const batch = await runSweepPass();
+    swept += batch;
+    if (batch < SWEEP_BATCH) break;
+    if (Date.now() >= deadline) break;
+  }
+  return { swept };
+};
+
+const runSweepPass = async (): Promise<number> => {
   const cursor = await ensureWorkerCursor(CURSOR_NAME);
   const events = await readEventsAfter({
     after: cursor,
     watermarkMs: WATERMARK_MS,
     limit: SWEEP_BATCH,
   });
-  if (events.length === 0) return { swept: 0 };
+  if (events.length === 0) return 0;
 
   const toResolve = events.filter((e) => needsResolve(e.type));
   if (toResolve.length > 0) {
@@ -134,20 +193,24 @@ export const runJournalSweep = async (): Promise<{ swept: number }> => {
     }
   }
   const distillQueue = getMemoryDistillQueue();
-  for (const [conversationId, scope] of conversations) {
-    const jobId = `distill-${conversationId}`;
-    await distillQueue.remove(jobId).catch(() => {});
-    await distillQueue.add(
-      "distill",
-      { conversationId, ...scope },
-      {
-        jobId,
-        delay: DISTILL_DEBOUNCE_MS,
-        attempts: 3,
-        backoff: { type: "exponential", delay: 10_000 },
-        removeOnComplete: { count: 500 },
-        removeOnFail: { count: 500 },
-      },
+  if (conversations.size > 0) {
+    await resetDebounce(
+      distillQueue,
+      [...conversations.keys()].map((id) => `distill-${id}`),
+    );
+    await distillQueue.addBulk(
+      [...conversations].map(([conversationId, scope]) => ({
+        name: "distill",
+        data: { conversationId, ...scope },
+        opts: {
+          jobId: `distill-${conversationId}`,
+          delay: DISTILL_DEBOUNCE_MS,
+          attempts: 3,
+          backoff: { type: "exponential" as const, delay: 10_000 },
+          removeOnComplete: { count: 500 },
+          removeOnFail: { count: 500 },
+        },
+      })),
     );
   }
 
@@ -245,21 +308,27 @@ export const runJournalSweep = async (): Promise<{ swept: number }> => {
     }
   }
   const cardQueue = getRecordCardQueue();
-  for (const [recordId, { op, ...scope }] of cardOps) {
-    const jobId = `card-${recordId}`;
-    await cardQueue.remove(jobId).catch(() => {});
+  if (cardOps.size > 0) {
+    // The hot path of a bulk import: one card op per imported row. Batched
+    // rather than looped — a 500-row batch was 1000 sequential round trips.
+    await resetDebounce(
+      cardQueue,
+      [...cardOps.keys()].map((id) => `card-${id}`),
+    );
     // Not caught — same rationale as the distill adds above.
-    await cardQueue.add(
-      "card",
-      { recordId, op, ...scope },
-      {
-        jobId,
-        ...(op === "upsert" ? { delay: CARD_DEBOUNCE_MS } : {}),
-        attempts: 3,
-        backoff: { type: "exponential", delay: 10_000 },
-        removeOnComplete: { count: 1_000 },
-        removeOnFail: { count: 1_000 },
-      },
+    await cardQueue.addBulk(
+      [...cardOps].map(([recordId, { op, ...scope }]) => ({
+        name: "card",
+        data: { recordId, op, ...scope },
+        opts: {
+          jobId: `card-${recordId}`,
+          ...(op === "upsert" ? { delay: CARD_DEBOUNCE_MS } : {}),
+          attempts: 3,
+          backoff: { type: "exponential" as const, delay: 10_000 },
+          removeOnComplete: { count: 1_000 },
+          removeOnFail: { count: 1_000 },
+        },
+      })),
     );
   }
 
@@ -267,5 +336,5 @@ export const runJournalSweep = async (): Promise<{ swept: number }> => {
   if (last) {
     await advanceWorkerCursor({ name: CURSOR_NAME, position: last.id });
   }
-  return { swept: events.length };
+  return events.length;
 };

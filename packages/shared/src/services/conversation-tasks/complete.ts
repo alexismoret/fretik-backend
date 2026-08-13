@@ -1,5 +1,5 @@
 import { and, eq } from "drizzle-orm";
-import db from "../../db";
+import db, { type Transaction } from "../../db";
 import type {
   ConversationTaskKind,
   ConversationTaskTerminalStatus,
@@ -22,9 +22,13 @@ export const completeConversationTask = async (params: {
   ref: string;
   status: ConversationTaskTerminalStatus;
   consume?: boolean;
+  /** Settle in the SAME transaction as whatever produced the outcome. A task
+   * that stays pending because its producer committed and this did not blocks
+   * the conversation's fan-in for good. */
+  tx?: Transaction;
 }): Promise<{ conversationId: string | null; transitioned: boolean }> => {
   const now = new Date();
-  const rows = await db
+  const rows = await (params.tx ?? db)
     .update(conversationBackgroundTasks)
     .set({
       status: params.status,

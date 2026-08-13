@@ -223,11 +223,11 @@ export const createManagePageTool = () =>
       "- update: pageId + any field. To change PART of an existing page, send `patch` — RFC 6902 ops rooted at the definition, so one op reaches an element, a dataset filter or the theme — rather than a whole `definition`, which replaces the previous one and is how an element that was fine disappears. `get` it first when you are unsure of the current keys.",
       "  Building in passes uses the same channel: omit `definition.spec` on create to open the page on its datasets, then add the elements a few ops per call. A page that already exists cannot be lost by a later rewrite.",
       "- list / get: the team's pages (+ your private ones) / one page's full definition.",
-      "- publish / unpublish: mint or revoke a public URL anyone can open without an account. publish FREEZES the current definition for that URL (later edits stay internal until you publish again) while the DATA stays live. It exposes everything the owning team can see, so get the user's explicit agreement first, and hand back the returned publicUrl.",
+      "- publish / unpublish: mint or revoke a public URL anyone can open without an account. publish FREEZES the current definition for that URL (later edits stay internal until you publish again) while the DATA stays live. It exposes everything the owning team can see, so get the user's explicit agreement first, and hand back the returned publicUrl. A page that reads a connected app or writes to one is refused — an anonymous visitor cannot spend the team's credentials.",
       "",
       "dry_run, create and update all EXECUTE the page: they run the datasets and evaluate every binding against the rows that come back. They return two separate lists. `warnings` is broken — a wrong field name, a chart that cannot draw, a dropped prop; fix it in the same turn rather than reporting a page you have not seen resolve. `polish` is not broken but reads as unfinished — an unlabelled metric, a row of KPIs with nothing to compare against; treat it as the difference between a page that works and a page someone is glad to open.",
       "",
-      "A definition is { version: 2, variables, datasets, spec, theme? }: `datasets` fetch or compute the data, `variables` hold what the viewer changes, and `spec` is { root, elements } — a flat map keyed by element id, where nesting is a parent listing its children's keys. Three references tie them together — an element names a dataset by id, a dataset filter binds to state, a control writes state — and nothing else is wired. Data alone is not a page: a definition whose `spec.root` names no entry in `spec.elements` is refused rather than saved, so write the elements in the same call. Call describeObjectType for field keys, types and option values BEFORE writing an objects dataset; guessing keys is the main way a page comes back empty.",
+      "A definition is { version: 2, variables, datasets, operations, spec, theme? }: `datasets` fetch or compute the data, `operations` write into connected apps, `variables` hold what the viewer changes, and `spec` is { root, elements } — a flat map keyed by element id, where nesting is a parent listing its children's keys. Three references tie them together — an element names a dataset by id, a dataset filter binds to state, a control writes state — and nothing else is wired. Data alone is not a page: a definition whose `spec.root` names no entry in `spec.elements` is refused rather than saved, so write the elements in the same call. Call describeObjectType for field keys, types and option values BEFORE writing an objects dataset; guessing keys is the main way a page comes back empty.",
     ].join("\n"),
     inputSchema: z.object({
       action: z.enum([
@@ -318,6 +318,7 @@ export const createManagePageTool = () =>
                 spec: input.definition.spec ?? EMPTY_PAGE_DEFINITION.spec,
               },
               teamId: teamId,
+              userId: userId ?? null,
             });
             return {
               samples: dryRun.samples,
@@ -423,6 +424,7 @@ export const createManagePageTool = () =>
             const dryRun = await dryRunPage({
               definition: page.definition,
               teamId: teamId,
+              userId: userId ?? null,
               // `page.definition` is what the service STORED, i.e. already
               // sanitized — re-running the static pass here only produced a
               // second copy of every structural warning.
@@ -539,6 +541,7 @@ export const createManagePageTool = () =>
             const dryRun = await dryRunPage({
               definition: page.definition,
               teamId: teamId,
+              userId: userId ?? null,
               // `page.definition` is what the service STORED, i.e. already
               // sanitized — re-running the static pass here only produced a
               // second copy of every structural warning.

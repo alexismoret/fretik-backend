@@ -6,7 +6,8 @@ import {
 } from "../db/schema";
 import { FIELD_DEFINITION_LIMITS } from "../services/field-definitions/constants";
 import { OBJECT_TYPE_LIMITS } from "../services/object-types/constants";
-import { paramsListSchema } from "./common/params";
+import { cursorParamSchema, paramsListSchema } from "./common/params";
+import { nextCursorSchema } from "./common/responses";
 import {
   fieldConfigSchema,
   fieldDefinitionTypeSchema,
@@ -284,6 +285,7 @@ export const recordFilterSchema = z.object({
 export type RecordFilter = z.infer<typeof recordFilterSchema>;
 
 export const recordListQuerySchema = paramsListSchema.extend({
+  ...cursorParamSchema.shape,
   objectTypeId: z.uuid(),
   status: ontologyStatusSchema.default("confirmed"),
   // Resolve the mirror record of an uploaded document (attachment fields link
@@ -298,6 +300,9 @@ export const recordListQuerySchema = paramsListSchema.extend({
   // shape-guarded in the service; an unknown token falls back to createdAt.
   sortBy: z.string().max(80).default("createdAt"),
   sortDir: z.enum(["asc", "desc"]).default("desc"),
+  // `cursor` walks forward and skips the exact count; falls back to paging
+  // when the order is not the default one. See `listObjectRecords`.
+  paginate: z.enum(["page", "cursor"]).default("page"),
   // JSON-encoded `RecordFilter[]` (query params are strings). Malformed input
   // degrades to "no filters" rather than erroring the list.
   filters: z
@@ -506,6 +511,13 @@ export const createLinkTypeRequestSchema = z.object({
 // Activity timeline (folded from domain_events)
 // ---------------------------------------------------------------------------
 
+export const recordHistoryQuerySchema = z.object({
+  ...cursorParamSchema.shape,
+  // Clamped by the service (`HISTORY_MAX_LIMIT`); repeated here so an absurd
+  // value is rejected at the boundary rather than silently shrunk.
+  limit: z.coerce.number().int().positive().max(500).optional(),
+});
+
 export const recordHistoryResponseSchema = z.object({
   recordId: z.uuid(),
   fields: z.record(
@@ -529,4 +541,8 @@ export const recordHistoryResponseSchema = z.object({
       changedKeys: z.array(z.string()),
     }),
   ),
+  // The service has always paged (`limit` + `before`); the response schema used
+  // to strip this, which made every page after the first unreachable and the
+  // truncation of a busy record's timeline silent.
+  nextCursor: nextCursorSchema,
 });

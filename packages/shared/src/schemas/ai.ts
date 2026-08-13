@@ -337,6 +337,13 @@ export const ConversationBackgroundTaskSchema = z.object({
   status: z.enum(["pending", "succeeded", "failed", "canceled"]),
   workflowId: z.uuid().nullable(),
   isTest: z.boolean(),
+  /** `bulk_operation` — the parts its row composes its label from. */
+  importTypeKey: z.string().nullable(),
+  importRows: z.number().int().nullable(),
+  /** How far along, in the kind's own unit. Null when it counts nothing. */
+  progress: z
+    .object({ done: z.number().int(), total: z.number().int() })
+    .nullable(),
   createdAt: z.date(),
   completedAt: z.date().nullable(),
 });

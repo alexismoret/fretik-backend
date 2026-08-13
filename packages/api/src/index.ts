@@ -1,3 +1,12 @@
+// Patches Zod with `.openapi()`. Side-effect import, and it MUST precede every
+// `@fretik/*` import: the formatter sorts `@fretik` before `@hono`, so any
+// shared module reaching `schemas/common/params` (which calls `.openapi()` at
+// module load) would otherwise evaluate against an unpatched Zod and throw at
+// boot. Comment-separated side-effect groups are left in place by the sorter,
+// which is what makes this order enforceable.
+// oxlint-disable-next-line import/no-duplicates
+import "@hono/zod-openapi";
+
 // Bootstrap external-app provider registration (side-effect import — must
 // run before any route handler touches the registry).
 import "@fretik/providers";
@@ -5,6 +14,7 @@ import "@fretik/providers";
 import { auth } from "@fretik/shared/lib/auth";
 import { errorHandler } from "@fretik/shared/lib/error-handler";
 import { globalRateLimiter } from "@fretik/shared/lib/rate-limit";
+import { installExternalPageQueryExecutor } from "@fretik/shared/services/external-apps/exec/page-query";
 import { OpenAPIHono } from "@hono/zod-openapi";
 import figlet from "figlet";
 import { getConnInfo } from "hono/bun";
@@ -41,6 +51,10 @@ import { toolPoliciesRoutes } from "./handlers/tool-policies";
 import { workflowRoutes } from "./handlers/workflows";
 
 const VERSION = packagejson.version;
+
+// Page datasets may read connected apps in THIS process (the seam refuses
+// everywhere the executor is not installed — a worker, a bare test).
+installExternalPageQueryExecutor();
 
 const app = new OpenAPIHono();
 

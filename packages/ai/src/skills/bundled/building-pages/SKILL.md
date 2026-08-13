@@ -150,8 +150,18 @@ Precedence, once: **a `table_cell` › explicit `format` › the field's type �
 - **`objects` + `mode: "records"`** for tables and lists. `limit` is the PAGE SIZE, not a ceiling: a table over one pages and sorts server-side, so 25–100 serves a type of any size and the reader still sees the real total. Two follow-ons: a column total then covers one page only — use an aggregate dataset for a figure that holds; and give a paginated table its own dataset, since paging re-queries it under anything else reading it.
 - **`transform`** when the answer is not a query: a derived column, a ratio between datasets, a set difference, a join. Declare `inputs`, read them as `data.<id>`. The code is **JavaScript** — the body of `(data, state) => …`, so it must `return` its rows. Give it results a query already reduced: grouping and summing belong to an aggregate dataset, which does it in SQL over every row instead of over the few thousand a transform can hold.
 - **`inline`** for small fixed reference data the team has no table for — targets, thresholds, conversion rates. Never for query results: embedding rows freezes them, which is what a page exists to avoid.
+- **`external`** for a small, live read from a connected app — an inbox, today's orders, this week's tickets. Its value is freshness: the answer is cached for a minute or so and re-read on every visit.
 
-Data from an outside system does not belong in a dataset. Have a workflow write it into an object type, then query that — the page stays live and the credentials stay where they belong.
+**Choosing between `external` and a workflow that syncs into an object type** — the question is what the data has to survive:
+
+| Use `external`                 | Sync into an object type instead                  |
+| ------------------------------ | ------------------------------------------------- |
+| Tens of rows, read as-is       | Thousands, or filtered/grouped/sorted server-side |
+| Freshness is the point         | History, trends, or anything compared over time   |
+| Each viewer sees THEIR account | Everyone must see the same rows                   |
+| Internal page                  | The page must be published                        |
+
+The reason is not policy: a third party cannot be filtered or indexed the way an object type can, so a page that asks it for volume pays a network round trip for rows nobody sorted.
 
 ## Interactivity
 
@@ -168,6 +178,29 @@ Drill-down is the same mechanism: `row_click` on a table runs `{ "action": "setS
 Repeating content is `repeat` on any container — `{ "statePath": "/data/deals" }` on a `box` renders its children once per row, each read as `item.<field>`.
 
 Prefer a `button_group` to a `select` at five options or fewer — visible choices get used, hidden ones do not.
+
+## Forms and writes
+
+A page that only shows things is half a page. An `operations` entry is a write into a connected app; the `run` action fires it.
+
+- **A form field is a variable.** Declare it in `variables`, bind the control with `$bindState`, and read it in the operation's `args` as `state.<key>`. There is no separate form model to learn, and the value arrives typed.
+- Put the controls in a `form` and bind the run to its `submit`: Enter in a field and a `submit: true` button both fire it, and required fields are checked first. Give each control a `label` — that is what turns it into a labelled field with its required marker.
+- `onSuccess.refetch` names the datasets to re-run, which is how the page shows the thing that was just created. Add `resetVariables` so the next entry starts clean, and a `toast` in the user's own terms.
+- `confirm` is REQUIRED for anything the app marks destructive — the server refuses the operation without it. Add one to anything irreversible even when it is not.
+
+Worked shape, an order entry form:
+
+```json
+"operations": [{
+  "id": "create_order",
+  "providerKey": "acme-orders",
+  "action": "create_order",
+  "args": { "reference": { "$": "state.reference" }, "quantity": { "$": "state.quantity" } },
+  "onSuccess": { "refetch": ["orders"], "toast": "Order created", "resetVariables": ["reference", "quantity"] }
+}]
+```
+
+with `{ "type": "button", "props": { "label": "Create", "submit": true } }` inside a `form` whose `submit` runs `{ "action": "run", "params": { "operation": "create_order" } }`.
 
 ## Expressions
 
@@ -199,6 +232,8 @@ Before you hand a page over:
 ## Publishing
 
 Ask the user before you `publish`, and say plainly what will be visible: the link needs no account and exposes everything the owning team can see. Member fields show a name only, never a profile.
+
+A page that reads a connected app or writes to one CANNOT be published — an anonymous visitor would be spending the team's credentials. If the user wants both, sync the data into an object type with a workflow and publish a page over that.
 
 ## When a page is the wrong answer
 

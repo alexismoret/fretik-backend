@@ -83,6 +83,7 @@ const page = (
   version: 2,
   variables,
   datasets,
+  operations: [],
   spec: { root: "root", elements: { root: { type: "box", props: {} } } },
 });
 
@@ -101,6 +102,7 @@ describe("resolvePageState — the security boundary", () => {
       objectTypeId: "type-evil",
       filters: [{ key: "amount", op: "gt", value: 0 }],
       teamId: "another-team",
+      userId: null,
     });
     expect(state).toEqual({});
   });
@@ -176,6 +178,7 @@ describe("runPageData — orchestration and degradation", () => {
     const { datasets } = await runPageData({
       definition: page([], [inline("sales", [{ amount: 10 }])]),
       teamId: "team-1",
+      userId: null,
       variables: {},
     });
     expect(datasets.sales).toEqual({
@@ -200,6 +203,7 @@ describe("runPageData — orchestration and degradation", () => {
         ],
       ),
       teamId: "team-1",
+      userId: null,
       variables: {},
     });
     expect(datasets.total).toEqual({
@@ -224,6 +228,7 @@ describe("runPageData — orchestration and degradation", () => {
         ],
       ),
       teamId: "team-1",
+      userId: null,
       variables: { floor: 20, secret: "ignored" },
     });
     expect(datasets.kept).toEqual({
@@ -243,6 +248,7 @@ describe("runPageData — orchestration and degradation", () => {
         ],
       ),
       teamId: "team-1",
+      userId: null,
       variables: {},
     });
     // The message has to name the stuck datasets: an agent that only reads
@@ -273,6 +279,7 @@ describe("runPageData — orchestration and degradation", () => {
         ],
       ),
       teamId: "team-1",
+      userId: null,
       variables: {},
     });
     expect(datasets.derived).toEqual({
@@ -292,6 +299,7 @@ describe("runPageData — orchestration and degradation", () => {
         ],
       ),
       teamId: "team-1",
+      userId: null,
       variables: {},
     });
     expect(datasets.good?.status).toBe("ok");
@@ -313,6 +321,7 @@ describe("runPageData — orchestration and degradation", () => {
         ],
       ),
       teamId: "team-1",
+      userId: null,
       variables: {},
       datasetIds: ["total"],
     });
@@ -346,6 +355,7 @@ describe("runPageData — orchestration and degradation", () => {
         ],
       ),
       teamId: "team-1",
+      userId: null,
       variables: {},
       datasetIds: ["total"],
     });
@@ -393,6 +403,7 @@ describe("runPageData — orchestration and degradation", () => {
         ],
       ),
       teamId: "team-1",
+      userId: null,
       variables: {},
     });
     const elapsed = performance.now() - startedAt;
@@ -426,6 +437,7 @@ describe("runPageData — orchestration and degradation", () => {
         ],
       ),
       teamId: "team-1",
+      userId: null,
       variables: {},
     });
     expect(datasets.js?.status).toBe("error");
@@ -446,7 +458,7 @@ describe("objectsSource — the stored definition owns the query", () => {
         objectTypeId: "type-1",
         filters: [{ key: "status", op: "eq", value: { $: "state.status" } }],
       },
-      { teamId: "team-1", state: { status: "won" }, data: {} },
+      { teamId: "team-1", userId: null, state: { status: "won" }, data: {} },
     );
     expect(listCalls[0]?.filters).toEqual([
       { key: "status", op: "eq", value: "won" },
@@ -463,7 +475,7 @@ describe("objectsSource — the stored definition owns the query", () => {
         objectTypeId: "type-1",
         filters: [{ key: "status", op: "eq", value: { $: "state.status" } }],
       },
-      { teamId: "team-1", state: { status: "" }, data: {} },
+      { teamId: "team-1", userId: null, state: { status: "" }, data: {} },
     );
     expect(listCalls[0]?.filters).toEqual([]);
   });
@@ -478,7 +490,7 @@ describe("objectsSource — the stored definition owns the query", () => {
         objectTypeId: "type-1",
         limit: 999_999,
       },
-      { teamId: "team-1", state: {}, data: {} },
+      { teamId: "team-1", userId: null, state: {}, data: {} },
     );
     expect(listCalls[0]?.limit).toBe(PAGE_LIMITS.maxRows);
   });
@@ -486,7 +498,7 @@ describe("objectsSource — the stored definition owns the query", () => {
   test("an object type the team cannot see degrades to forbidden", async () => {
     const result = await objectsSource.resolve(
       { id: "records", kind: "objects", objectTypeId: "type-unknown" },
-      { teamId: "team-1", state: {}, data: {} },
+      { teamId: "team-1", userId: null, state: {}, data: {} },
     );
     expect(result.status).toBe("forbidden");
   });
@@ -495,7 +507,7 @@ describe("objectsSource — the stored definition owns the query", () => {
     listResult = { count: 500, data: [{ id: "r1", label: "R1", data: {} }] };
     const result = await objectsSource.resolve(
       { id: "records", kind: "objects", objectTypeId: "type-1" },
-      { teamId: "team-1", state: {}, data: {} },
+      { teamId: "team-1", userId: null, state: {}, data: {} },
     );
     expect(result.status === "ok" && result.truncated).toBe(true);
   });
@@ -527,6 +539,7 @@ describe("objectsSource — the window and ordering a viewer may ask for", () =>
     fieldDefinitions = sortableFields;
     const result = await objectsSource.resolve(dataset, {
       teamId: "team-1",
+      userId: null,
       state: {},
       data: {},
       query: { page: 4, pageSize: 50 },
@@ -546,6 +559,7 @@ describe("objectsSource — the window and ordering a viewer may ask for", () =>
     fieldDefinitions = sortableFields;
     const result = await objectsSource.resolve(dataset, {
       teamId: "team-1",
+      userId: null,
       state: {},
       data: {},
       query: { page: 1000, pageSize: 200 },
@@ -567,6 +581,7 @@ describe("objectsSource — the window and ordering a viewer may ask for", () =>
       { ...dataset, sortBy: "montant", sortDir: "desc" },
       {
         teamId: "team-1",
+        userId: null,
         state: {},
         data: {},
         query: { sortBy: "montant", sortDir: "asc" },
@@ -585,6 +600,7 @@ describe("objectsSource — the window and ordering a viewer may ask for", () =>
       fieldDefinitions = sortableFields;
       await objectsSource.resolve(dataset, {
         teamId: "team-1",
+        userId: null,
         state: {},
         data: {},
         query: { sortBy: key },
@@ -599,6 +615,7 @@ describe("objectsSource — the window and ordering a viewer may ask for", () =>
     fieldDefinitions = sortableFields;
     const result = await objectsSource.resolve(dataset, {
       teamId: "team-1",
+      userId: null,
       state: {},
       data: {},
       query: { sortBy: "montant; DROP TABLE object_records" },
@@ -616,6 +633,7 @@ describe("objectsSource — the window and ordering a viewer may ask for", () =>
     fieldDefinitions = sortableFields;
     const result = await objectsSource.resolve(dataset, {
       teamId: "team-1",
+      userId: null,
       state: {},
       data: {},
       query: { sortBy: "client" },
@@ -637,6 +655,7 @@ describe("objectsSource — the window and ordering a viewer may ask for", () =>
       { ...dataset, filters: [{ key: "montant", op: "gt", value: 100 }] },
       {
         teamId: "team-1",
+        userId: null,
         state: {},
         data: {},
         query: { page: 2, sortBy: "montant" },
@@ -654,6 +673,7 @@ describe("objectsSource — the window and ordering a viewer may ask for", () =>
       { ...dataset, mode: "aggregate", groupBy: "montant" },
       {
         teamId: "team-1",
+        userId: null,
         state: {},
         data: {},
         query: { page: 7, pageSize: 200 },

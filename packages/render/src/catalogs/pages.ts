@@ -56,6 +56,23 @@ const optionList = z.array(
   z.object({ value: z.string(), label: z.string().optional() }),
 );
 
+/**
+ * What turns a bare control into a labelled FIELD. Optional everywhere: a
+ * filter bar wants a placeholder and nothing else, while a data-entry form
+ * wants a label and a required marker. The renderer wraps the control in a
+ * form field as soon as a label is present, so the author asks for a label
+ * rather than for a wrapper.
+ *
+ * TWO props, not four. `description` and `hint` were both here and were cut:
+ * printed across seven controls they cost more than the label plus the
+ * placeholder already say, and this catalog has been over its size ceiling
+ * once already for exactly that reason (see `chartNotes`).
+ */
+const fieldProps = {
+  label: z.string().optional(),
+  required: z.boolean().optional(),
+};
+
 /** Props every chart shares. */
 const chartProps = {
   dataset: z.string(),
@@ -141,6 +158,20 @@ export const pagesCatalog = defineCatalog(elementTreeSchema, {
         "titled surface. Give it the title and description rather than putting a `heading` inside it.",
       notes: { highlight: "accent ring around the card" },
       meta: { group: "layout" },
+    },
+    form: {
+      props: z.object({
+        title: z.string().optional(),
+        description: z.string().optional(),
+        icon: z.string().optional(),
+        variant: scale("variant").optional(),
+        color: scale("color").optional(),
+      }),
+      slots: ["default"],
+      events: ["submit"],
+      description:
+        "data-entry surface. Put controls inside, give each a `label`, and bind a `run` action to `submit`: Enter in a field and a `submit: true` button both fire it, and required fields are checked first.",
+      meta: { group: "interactive" },
     },
     section: {
       props: z.object({
@@ -577,10 +608,16 @@ export const pagesCatalog = defineCatalog(elementTreeSchema, {
         size: scale("size").optional(),
         block: z.boolean().optional(),
         active: z.boolean().optional(),
+        loading: z.boolean().optional(),
+        disabled: z.boolean().optional(),
+        submit: z.boolean().optional(),
       }),
       events: ["click"],
       description: "button running the actions bound to its `click` event.",
-      notes: { active: "bind it — renders the button as selected" },
+      notes: {
+        active: "bind it — renders the button as selected",
+        submit: "inside a form: submits it instead of firing `click`",
+      },
       meta: { group: "interactive" },
     },
     button_group: {
@@ -636,6 +673,7 @@ export const pagesCatalog = defineCatalog(elementTreeSchema, {
     },
     select: {
       props: z.object({
+        ...fieldProps,
         value: z.union([z.string(), z.array(z.string())]).optional(),
         options: optionList,
         placeholder: z.string().optional(),
@@ -651,6 +689,7 @@ export const pagesCatalog = defineCatalog(elementTreeSchema, {
     },
     input: {
       props: z.object({
+        ...fieldProps,
         value: z.string().optional(),
         placeholder: z.string().optional(),
         icon: z.string().optional(),
@@ -662,6 +701,7 @@ export const pagesCatalog = defineCatalog(elementTreeSchema, {
     },
     textarea: {
       props: z.object({
+        ...fieldProps,
         value: z.string().optional(),
         placeholder: z.string().optional(),
         rows: z.number().optional(),
@@ -673,6 +713,7 @@ export const pagesCatalog = defineCatalog(elementTreeSchema, {
     },
     number_input: {
       props: z.object({
+        ...fieldProps,
         value: z.number().optional(),
         min: z.number().optional(),
         max: z.number().optional(),
@@ -702,6 +743,7 @@ export const pagesCatalog = defineCatalog(elementTreeSchema, {
     },
     radio_group: {
       props: z.object({
+        ...fieldProps,
         value: z.string().optional(),
         options: optionList,
         orientation: orientation.optional(),
@@ -716,6 +758,7 @@ export const pagesCatalog = defineCatalog(elementTreeSchema, {
     // nothing. It comes back the day the picker takes one.
     date_range: {
       props: z.object({
+        ...fieldProps,
         value: z
           .object({ start: z.string().nullable(), end: z.string().nullable() })
           .optional(),
@@ -728,6 +771,7 @@ export const pagesCatalog = defineCatalog(elementTreeSchema, {
     },
     slider: {
       props: z.object({
+        ...fieldProps,
         value: z.number().optional(),
         min: z.number().optional(),
         max: z.number().optional(),
@@ -815,6 +859,11 @@ export const pagesCatalog = defineCatalog(elementTreeSchema, {
     copy: {
       params: z.object({ value: z.unknown() }),
       description: "Copy a value to the viewer's clipboard.",
+    },
+    run: {
+      params: z.object({ operation: z.string() }),
+      description:
+        "Run one of the definition's operations — a write into a connected app. Names an operations[] id; the server owns the action, connection and arguments.",
     },
   },
 });

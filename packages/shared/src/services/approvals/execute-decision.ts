@@ -2,7 +2,7 @@ import type { ToolApprovalRequest } from "../../db/schema";
 import type { GrantApprovalRequest } from "../../schemas/approvals";
 import { findToolCallIdForApproval } from "../ai/find-tool-call-by-approval";
 import { updateToolPartOutputByToolCallId } from "../ai/update-tool-part-output";
-import { claimGrantedApproval } from "./claim";
+import { claimGrantedApproval, releaseClaimedApproval } from "./claim";
 import { getApprovalForCaller } from "./get-by-id";
 import { APPROVAL_KIND_HANDLERS } from "./kinds";
 
@@ -49,13 +49,29 @@ export const executeAndMutateForGrant = async (params: {
       working = await getApprovalForCaller(working.id, params.teamId);
     } else {
       working = claimed;
-      // Execute the decision (per kind). Each handler's `execute` persists the
-      // result + marks the row `consumed` internally, so the re-read below sees
-      // the final `consumed` row with its `result`.
-      await APPROVAL_KIND_HANDLERS[working.kind].execute({
-        approval: working,
-        decision: params.decision,
-      });
+      const handler = APPROVAL_KIND_HANDLERS[working.kind];
+      // Some decisions must not execute inside this request — a staged import
+      // takes minutes and, more to the point, has to outlive the tab that
+      // approved it. The claim above already happened, so the row sits
+      // `executing` and whatever `startDeferred` launches owns finishing it.
+      if (handler.deferExecution?.(working) === true) {
+        try {
+          await handler.startDeferred?.({ approval: working });
+        } catch (error) {
+          // Nothing started, so the claim has to go back — otherwise the row
+          // is `executing` with no executor and the user can never retry.
+          await releaseClaimedApproval(working.id);
+          throw error;
+        }
+      } else {
+        // Execute the decision (per kind). Each handler's `execute` persists
+        // the result + marks the row `consumed` internally, so the re-read
+        // below sees the final `consumed` row with its `result`.
+        await handler.execute({
+          approval: working,
+          decision: params.decision,
+        });
+      }
       working = await getApprovalForCaller(working.id, params.teamId);
     }
   }
@@ -86,6 +102,10 @@ export const executeAndMutateForGrant = async (params: {
 export const mutateForReject = async (
   approval: ToolApprovalRequest,
 ): Promise<void> => {
+  // Release whatever the pending decision was holding (a refused import's
+  // staged rows), before the tool part stops pointing at it.
+  await APPROVAL_KIND_HANDLERS[approval.kind].onReject?.(approval);
+
   const found = await findToolCallIdForApproval({
     conversationId: approval.conversationId,
     approvalId: approval.id,

@@ -1,4 +1,4 @@
-import type { Context } from "hono";
+import type { Context, Env, Input } from "hono";
 import { rateLimiter, type Store } from "hono-rate-limiter";
 import { redis } from "./redis";
 
@@ -10,7 +10,17 @@ export const clientIp = (c: Context): string =>
   c.req.header("x-real-ip") ??
   "unknown";
 
-type InitOptions = Parameters<NonNullable<Store["init"]>>[0];
+/**
+ * `init` receives the limiter's own config, which is typed by the app's `Env`.
+ * That makes `Store` CONTRAVARIANT in it: a `Store<Env>` is not assignable
+ * where a `Store<MyApp>` is expected, so a limiter mounted on a typed app
+ * (one whose `keyGenerator` reads `c.get("user")`) cannot take a store pinned
+ * to the default. The store itself is env-agnostic — it only reads
+ * `windowMs` — so the parameter is threaded through rather than fixed.
+ */
+type InitOptions<E extends Env, P extends string, I extends Input> = Parameters<
+  NonNullable<Store<E, P, I>["init"]>
+>[0];
 
 /**
  * `hono-rate-limiter` Store backed by the shared ioredis connection, so the
@@ -19,7 +29,11 @@ type InitOptions = Parameters<NonNullable<Store["init"]>>[0];
  * Upstash-only). Fixed-window counter: `INCR` the key and set its TTL on the
  * first hit of the window.
  */
-class RedisRateLimitStore implements Store {
+class RedisRateLimitStore<
+  E extends Env = Env,
+  P extends string = string,
+  I extends Input = Input,
+> implements Store<E, P, I> {
   prefix: string;
   localKeys = false;
   private windowMs = 60_000;
@@ -28,7 +42,7 @@ class RedisRateLimitStore implements Store {
     this.prefix = prefix;
   }
 
-  init(options: InitOptions): void {
+  init(options: InitOptions<E, P, I>): void {
     this.windowMs = options.windowMs;
   }
 
@@ -59,10 +73,21 @@ class RedisRateLimitStore implements Store {
   }
 }
 
-/** A Redis-backed rate-limit store scoped by `prefix` (one per limiter so their
- * counters never collide). */
-export const createRedisRateLimitStore = (prefix: string): Store =>
-  new RedisRateLimitStore(prefix);
+/**
+ * A Redis-backed rate-limit store scoped by `prefix` (one per limiter so their
+ * counters never collide).
+ *
+ * Pass the app's `Env` when the limiter is mounted on a typed app and its
+ * `keyGenerator` reads a context variable — `createRedisRateLimitStore<MyApp>(…)`.
+ * Callers that key on the request alone need no argument.
+ */
+export const createRedisRateLimitStore = <
+  E extends Env = Env,
+  P extends string = string,
+  I extends Input = Input,
+>(
+  prefix: string,
+): Store<E, P, I> => new RedisRateLimitStore<E, P, I>(prefix);
 
 const parseGlobalLimit = (): number => {
   const raw = process.env.GLOBAL_RATE_LIMIT_PER_MINUTE;

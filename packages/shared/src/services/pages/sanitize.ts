@@ -101,6 +101,7 @@ const MAX_WALK_STEPS = 20_000;
 interface SanitizeContext {
   datasetIds: Set<string>;
   stateKeys: Set<string>;
+  operationIds: Set<string>;
   warnings: string[];
   polish: string[];
 }
@@ -254,6 +255,21 @@ const checkAction = (
     !context.datasetIds.has(dataset)
   ) {
     warnOnce(context, `${where}: refetch targets unknown dataset "${dataset}"`);
+  }
+  if (action.action === "run") {
+    const operation = action.params?.["operation"];
+    if (typeof operation !== "string" || operation.length === 0) {
+      warnOnce(
+        context,
+        `${where}: run needs params.operation — the id of an entry in the definition's operations[]`,
+      );
+    } else if (!context.operationIds.has(operation)) {
+      const known = [...context.operationIds].slice(0, 6).join(", ");
+      warnOnce(
+        context,
+        `${where}: run targets unknown operation "${operation}"${known ? ` — declared: ${known}` : " — the page declares none"}`,
+      );
+    }
   }
 };
 
@@ -738,6 +754,9 @@ export const sanitizePageDefinition = (
   const context: SanitizeContext = {
     datasetIds: new Set(definition.datasets.map((dataset) => dataset.id)),
     stateKeys: new Set(definition.variables.map((variable) => variable.key)),
+    operationIds: new Set(
+      definition.operations.map((operation) => operation.id),
+    ),
     warnings: [],
     polish: [],
   };
@@ -797,6 +816,44 @@ export const sanitizePageDefinition = (
         warnOnce(
           context,
           `dataset "${dataset.id}": inline rows are ${Math.round(bytes / 1000).toString()}KB, over the ${Math.round(PAGE_LIMITS.maxInlineBytes / 1000).toString()}KB cap — query an object type instead`,
+        );
+      }
+    }
+    if (dataset.kind === "external") {
+      // Args resolve against STATE only — the wave executor cannot promise
+      // another dataset's rows are settled when this one fires upstream.
+      eachPageBinding(dataset.args ?? {}, (expression) => {
+        checkExpression(
+          context,
+          expression,
+          `dataset "${dataset.id}" external args`,
+        );
+        if (/\bdata\s*\./.test(expression)) {
+          warnOnce(
+            context,
+            `dataset "${dataset.id}": external args resolve against state only — "data." reads nothing here. Bind a variable instead.`,
+          );
+        }
+      });
+      if (dataset.resultPath) {
+        const error = pageExpressionSyntaxError(dataset.resultPath);
+        if (error) {
+          warnOnce(
+            context,
+            `dataset "${dataset.id}": resultPath does not parse — ${error}`,
+          );
+        }
+      }
+      if (dataset.connectionId && dataset.providerKey) {
+        polishOnce(
+          context,
+          `dataset "${dataset.id}" names both connectionId and providerKey — the pin wins, so the providerKey is decoration.`,
+        );
+      }
+      if (dataset.connectionId && !dataset.providerKey) {
+        polishOnce(
+          context,
+          `dataset "${dataset.id}" pins one connection. On a team page, providerKey lets each viewer read through their OWN connection — pin only when everyone should see this exact account.`,
         );
       }
     }

@@ -213,8 +213,11 @@ publicPageRoutes.openapi(postDataRoute, async (c) => {
         // anonymous viewer.
         definition: result.definition,
         // OWNER scope, deliberately: an anonymous viewer has no team, and the
-        // published definition is the security boundary.
+        // published definition is the security boundary. No viewer identity
+        // either — external datasets cannot resolve here (publish gate), and
+        // the null makes the resolver refuse rather than guess.
         teamId: result.page.teamId,
+        userId: null,
         variables,
         ...(datasetIds !== undefined ? { datasetIds } : {}),
         ...(queries !== undefined ? { queries } : {}),

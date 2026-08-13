@@ -633,6 +633,7 @@ const updatePreservesRest: EvalCase = {
     const definition: PageDefinition = {
       version: 2,
       variables: [],
+      operations: [],
       datasets: [
         {
           id: "deals",
@@ -761,6 +762,7 @@ const recoversFromStalePageId: EvalCase = {
     const definition: PageDefinition = {
       version: 2,
       variables: [],
+      operations: [],
       datasets: [
         {
           id: "deals",

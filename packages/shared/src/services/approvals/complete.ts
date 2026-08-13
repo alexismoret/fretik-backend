@@ -1,5 +1,5 @@
 import { eq } from "drizzle-orm";
-import db from "../../db";
+import db, { type Transaction } from "../../db";
 import {
   type ToolApprovalRequest,
   type ToolApprovalResult,
@@ -29,8 +29,12 @@ export const updatePartialResult = async (
 export const markConsumed = async (
   id: string,
   result: ToolApprovalResult,
+  /** Commit with the caller's other writes — a deferred execution finishes an
+   * approval, a task and an operation in one step, and half of that landing is
+   * a conversation stuck waiting on work that is already over. */
+  tx?: Transaction,
 ): Promise<ToolApprovalRequest | undefined> => {
-  const [row] = await db
+  const [row] = await (tx ?? db)
     .update(toolApprovalRequests)
     .set({ status: "consumed", result })
     .where(eq(toolApprovalRequests.id, id))

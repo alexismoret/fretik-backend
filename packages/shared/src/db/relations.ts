@@ -960,4 +960,41 @@ export const relations = defineRelations(schema, (r) => ({
       to: r.aiConversations.id,
     }),
   },
+
+  // ============================================================================
+  // Bulk operations (chunked loads: staging → one approval → worker drain)
+  // ============================================================================
+
+  bulkOperations: {
+    organization: r.one.organization({
+      from: r.bulkOperations.organizationId,
+      to: r.organization.id,
+    }),
+    team: r.one.team({
+      from: r.bulkOperations.teamId,
+      to: r.team.id,
+    }),
+    user: r.one.user({
+      from: r.bulkOperations.userId,
+      to: r.user.id,
+      alias: "bulkOperationUser",
+    }),
+    conversation: r.one.aiConversations({
+      from: r.bulkOperations.conversationId,
+      to: r.aiConversations.id,
+    }),
+    approval: r.one.toolApprovalRequests({
+      from: r.bulkOperations.approvalId,
+      to: r.toolApprovalRequests.id,
+      optional: true,
+    }),
+    chunks: r.many.bulkOperationChunks(),
+  },
+
+  bulkOperationChunks: {
+    operation: r.one.bulkOperations({
+      from: r.bulkOperationChunks.operationId,
+      to: r.bulkOperations.id,
+    }),
+  },
 }));

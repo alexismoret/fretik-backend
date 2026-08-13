@@ -1,18 +1,17 @@
 import { and, eq, inArray, isNotNull, isNull, lt, sql } from "drizzle-orm";
 import db from "../../db";
-import type { ConversationTaskTerminalStatus } from "../../db/schema";
+import type { ConversationTaskKind } from "../../db/schema";
 import {
   aiConversations,
   CONVERSATION_TASK_TERMINAL_STATUSES,
   conversationBackgroundTasks,
-  workflowRuns,
 } from "../../db/schema";
 import { publishConversationTaskResume } from "../../lib/conversation-task-resume";
 import { uuidv7TimestampMs } from "../../lib/uuidv7-time";
-import type { WorkflowRunStatus } from "../../schemas/workflows";
 import { clearConversationActiveStream } from "../ai/active-stream";
 import { getTurnLogStatus, TURN_LOG_ORPHAN_MS } from "../ai/turn-log";
 import { completeConversationTask } from "./complete";
+import { CONVERSATION_TASK_RECONCILERS } from "./kinds";
 
 /** Below this age a pending row is simply young, not lost. */
 const RECONCILE_AFTER_MS = 10 * 60 * 1000;
@@ -20,22 +19,6 @@ const RECONCILE_AFTER_MS = 10 * 60 * 1000;
 /** Same benefit-of-the-doubt window as the AI service's stream endpoints:
  * a slot claimed milliseconds ago has no turn-log yet, and that's fine. */
 const STREAM_CLAIM_GRACE_MS = 15_000;
-
-/** A run's outcome, once it has one — null while it is still going. */
-const taskStatusOfRun = (
-  status: WorkflowRunStatus,
-): ConversationTaskTerminalStatus | null => {
-  switch (status) {
-    case "succeeded":
-      return "succeeded";
-    case "failed":
-      return "failed";
-    case "canceled":
-      return "canceled";
-    default:
-      return null;
-  }
-};
 
 /**
  * Backstop for the wait/notify registry, run by the jobs maintenance sweep.
@@ -50,9 +33,10 @@ const taskStatusOfRun = (
  *    turn-log) blocks new prompts and resumes until someone happens to open
  *    the conversation.
  *
- * Both are reconciled from the durable state: the run rows and the registry
- * itself. Idempotent — a task already settled is skipped by
- * `completeConversationTask`'s own guard, and a resume signal is cheap.
+ * All are reconciled from durable state: each kind's own work rows (through
+ * `CONVERSATION_TASK_RECONCILERS`) and the registry itself. Idempotent — a task
+ * already settled is skipped by `completeConversationTask`'s own guard, and a
+ * resume signal is cheap.
  */
 export const sweepConversationTasks = async (params?: {
   now?: Date;
@@ -96,41 +80,40 @@ export const sweepConversationTasks = async (params?: {
     slotsCleared += 1;
   }
 
-  // (a) Pending tasks whose underlying run is already terminal — or gone.
+  // (a) Pending tasks whose underlying work is already terminal — or gone.
+  //     Resolved per kind through `CONVERSATION_TASK_RECONCILERS`, so a kind
+  //     added to the registry cannot quietly miss its repair path.
   const stale = await db
     .select({
+      kind: conversationBackgroundTasks.kind,
       ref: conversationBackgroundTasks.ref,
-      runStatus: workflowRuns.status,
     })
     .from(conversationBackgroundTasks)
-    .leftJoin(
-      workflowRuns,
-      sql`${workflowRuns.id}::text = ${conversationBackgroundTasks.ref}`,
-    )
     .where(
       and(
-        eq(conversationBackgroundTasks.kind, "workflow_run"),
         eq(conversationBackgroundTasks.status, "pending"),
         lt(conversationBackgroundTasks.createdAt, cutoff),
       ),
     );
 
-  let reconciled = 0;
+  const refsByKind = new Map<ConversationTaskKind, string[]>();
   for (const row of stale) {
-    // A missing run row (workflow deleted) means nothing will ever report on
-    // it: settle the wait rather than block the conversation forever.
-    const status =
-      row.runStatus === null ? "failed" : taskStatusOfRun(row.runStatus);
-    if (status === null) continue;
+    refsByKind.set(row.kind, [...(refsByKind.get(row.kind) ?? []), row.ref]);
+  }
 
-    const { transitioned, conversationId } = await completeConversationTask({
-      kind: "workflow_run",
-      ref: row.ref,
-      status,
-    });
-    if (!transitioned) continue;
-    reconciled += 1;
-    if (conversationId) await publishConversationTaskResume(conversationId);
+  let reconciled = 0;
+  for (const [kind, refs] of refsByKind) {
+    const terminal = await CONVERSATION_TASK_RECONCILERS[kind].resolve(refs);
+    for (const [ref, status] of terminal) {
+      const { transitioned, conversationId } = await completeConversationTask({
+        kind,
+        ref,
+        status,
+      });
+      if (!transitioned) continue;
+      reconciled += 1;
+      if (conversationId) await publishConversationTaskResume(conversationId);
+    }
   }
 
   // (b) Conversations owed a resume: everything settled, nothing consumed,

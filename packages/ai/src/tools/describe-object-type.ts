@@ -1,5 +1,6 @@
 import { describeFieldExpectation } from "@fretik/shared/schemas/record-shape";
 import { getFieldDefinitionsForTeam } from "@fretik/shared/services/field-definitions/get-for-team";
+import { countRecordsForType } from "@fretik/shared/services/object-records/count";
 import { describeTeamSchema } from "@fretik/shared/services/object-types/describe-team-schema";
 import { tool } from "ai";
 import { z } from "zod";
@@ -76,8 +77,25 @@ export const createDescribeObjectTypeTool = () =>
         );
       }
 
+      // Volume decides how the type gets READ — enumerate it, aggregate it, or
+      // offer an export — and the agent has no other cheap way to know before
+      // committing to one. Exact and on demand: `<team_objects>` deliberately
+      // carries no count, because a per-turn estimate would be stale precisely
+      // after the import that made the type big.
+      let recordCount: number | null = null;
+      try {
+        recordCount = await countRecordsForType({
+          objectTypeId: type.id,
+          teamId: ctx.teamId,
+        });
+      } catch {
+        // Non-essential next to the schema — a failed count must not cost the
+        // agent the fields it actually asked for.
+      }
+
       const payload = {
         key: type.key,
+        recordCount,
         // The uuid every other tool means by `objectTypeId`. Given explicitly
         // because it is NOT derivable from the table name: `data.obj_<hex>`
         // drops the dashes, and a page dataset built from that hex silently

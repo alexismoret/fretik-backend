@@ -1,4 +1,5 @@
 import type { DomainEvent, Workflow } from "@fretik/shared/db/schema";
+import { isImportOriginated } from "@fretik/shared/services/bulk-operations/agent-key";
 import {
   advanceWorkerCursor,
   ensureWorkerCursor,
@@ -7,6 +8,7 @@ import {
 import { filterWorkflowConversationIds } from "@fretik/shared/services/workflows/filter-workflow-conversation-ids";
 import { listActiveEventWorkflows } from "@fretik/shared/services/workflows/list-active-event-workflows";
 import { listExistingEventRuns } from "@fretik/shared/services/workflows/list-existing-event-runs";
+import { intFromEnv } from "../lib/env";
 import { WORKFLOW_RUN_CREATE_JOB } from "../queues/names";
 import { getWorkflowTriggerQueue } from "../queues/queues";
 
@@ -19,10 +21,12 @@ import { getWorkflowTriggerQueue } from "../queues/queues";
  * (Trigger.dev network call) runs off the queue.
  *
  * Same journal-as-outbox design as the memory sweep: a worker/Redis outage
- * never loses events (the cursor just resumes). Two guards keep it safe:
+ * never loses events (the cursor just resumes). Three guards keep it safe:
  *   - anti-loop: events a workflow itself emitted (`actorType 'workflow'` or
  *     `agentKey 'workflow:*'`) are skipped, so a run's own journal writes
  *     can never trigger another run.
+ *   - bulk imports: events stamped `agentKey 'import:*'` are skipped too —
+ *     entering history is not a stream of business events.
  *   - dedup: the partial unique index on `(workflow_id, source_event_id)` is
  *     the truth; the batched `listExistingEventRuns` set + the
  *     `wfrun-{wf}-{event}` jobId skip it earlier so a re-swept event never
@@ -37,11 +41,6 @@ import { getWorkflowTriggerQueue } from "../queues/queues";
 
 const CURSOR_NAME = "workflow-triggers";
 
-const intFromEnv = (name: string, fallback: number): number => {
-  const raw = Number.parseInt(process.env[name] ?? "", 10);
-  return Number.isFinite(raw) && raw > 0 ? raw : fallback;
-};
-
 /** Shares the memory sweep's consistency-lag rationale (late-commit safety). */
 const WATERMARK_MS = intFromEnv("MEMORY_SWEEP_WATERMARK_MS", 15_000);
 const SWEEP_BATCH = intFromEnv("MEMORY_SWEEP_BATCH", 500);
@@ -50,6 +49,14 @@ const SWEEP_BATCH = intFromEnv("MEMORY_SWEEP_BATCH", 500);
 const isWorkflowOriginated = (event: DomainEvent): boolean =>
   event.actorType === "workflow" ||
   (event.agentKey !== null && event.agentKey.startsWith("workflow:"));
+
+/**
+ * A bulk import's writes must not fire triggers either — same mechanism, same
+ * `agentKey` convention, different reason: see `bulk-operations/agent-key.ts`.
+ * A 200 000-row load is history being entered, not 200 000 things happening.
+ */
+const isImportedRecord = (event: DomainEvent): boolean =>
+  isImportOriginated(event.agentKey);
 
 /** Config match: event type equal + every filter entry equal on the payload. */
 const matchesEvent = (workflow: Workflow, event: DomainEvent): boolean => {
@@ -72,7 +79,9 @@ export const runWorkflowTriggerSweep = async (): Promise<{
   });
   if (events.length === 0) return { created: 0 };
 
-  const nonSelf = events.filter((e) => !isWorkflowOriginated(e));
+  const nonSelf = events.filter(
+    (e) => !isWorkflowOriginated(e) && !isImportedRecord(e),
+  );
   // A run's SDK/sub-agent writes journal under the run's OWN conversation —
   // `actorType`/`agentKey` miss those, so exclude any event whose conversation
   // is a workflow run's. This is what actually closes the self-trigger loop.

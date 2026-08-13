@@ -8,6 +8,7 @@ import {
   getTableColumns,
   inArray,
   isNull,
+  lt,
   sql,
   type SQL,
 } from "drizzle-orm";
@@ -19,8 +20,10 @@ import type {
   OntologyStatus,
 } from "../../db/schema";
 import { links, linkTypes, objectRecords } from "../../db/schema";
+import { idCursor } from "../../lib/cursor";
 import { notFound, throwHttpError } from "../../lib/errors";
 import type { RecordFilter } from "../../schemas/ontology";
+import { normalizeEntityName } from "../../utils/normalizeEntityName";
 import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
 import { columnsForField } from "../object-schema/columns";
 import { computeRelationRollupValues } from "../object-schema/computed";
@@ -241,6 +244,22 @@ const buildFilterCondition = (
  * `sortBy` / `sortDir` drive server-side ordering. Paginated; returns the page
  * plus the total count for the active filter. Each record's `data` is
  * reconstructed from its typed columns in one batch query.
+ *
+ * Two ways to page, and the caller picks by what it renders:
+ *  - `paginate: "page"` (the default) — `page`/`offset` + an exact `count`,
+ *    for numbered pages and "X–Y of Z".
+ *  - `paginate: "cursor"` — `cursor` + `nextCursor`, for a list that only ever
+ *    walks forward. The total is then neither computed nor returned, which is
+ *    the point: a scrolling lane was paying a full `COUNT(*)` per page to
+ *    answer a question `limit + 1` answers for free.
+ *
+ * An explicit mode rather than "a cursor was passed", because the FIRST page of
+ * a walk has no cursor yet — inferring the mode from its presence would make
+ * that page pay the count it is trying to avoid.
+ *
+ * The walk only applies under the DEFAULT order (`createdAt` desc). Any other
+ * `sortBy`/`sortDir` silently keeps the offset path — see `walking` below for
+ * why that restriction is not laziness.
  */
 export const listObjectRecords = async (data: {
   teamId: string;
@@ -249,14 +268,31 @@ export const listObjectRecords = async (data: {
   search?: string;
   filters?: RecordFilter[];
   page?: number;
+  /** Row offset. Takes precedence over `page`, which it generalises — a caller
+   *  advancing by result COUNT (the `listObjects` tool) lands between page
+   *  boundaries and cannot express itself as a page number. */
+  offset?: number;
   limit?: number;
   sortBy?: string;
   sortDir?: "asc" | "desc";
   withLinks?: boolean;
+  /** `"cursor"` walks forward and skips the count. Falls back to `"page"` when
+   *  the order is not the default one. */
+  paginate?: "page" | "cursor";
+  /** Opaque cursor from a previous `nextCursor`. Absent on the first page of a
+   *  walk; one that no longer decodes restarts from the first page. */
+  cursor?: string;
   // Resolve the 1:1 mirror record of an uploaded document (the attachment
   // field links to this mirror, not the drive `documentId`).
   documentId?: string;
-}): Promise<{ count: number; data: ObjectRecordListItem[] }> => {
+}): Promise<{
+  /** NOT computed on the walk, where it comes back as 0 — a caller that asked
+   *  for `paginate: "cursor"` asked for exactly that. Read `nextCursor`. */
+  count: number;
+  data: ObjectRecordListItem[];
+  /** Present only on the walk; null once the last row has been served. */
+  nextCursor?: string | null;
+}> => {
   const {
     teamId,
     objectTypeId,
@@ -270,6 +306,25 @@ export const listObjectRecords = async (data: {
     withLinks = false,
     documentId,
   } = data;
+
+  /**
+   * Walk forward instead of counting rows — only when the caller asked AND the
+   * order is the default one.
+   *
+   * The walk orders by the primary key alone (`id DESC`), not by
+   * `created_at DESC, id DESC`: the seek key and the ORDER BY must be the SAME
+   * key or the walk skips rows, and only the id survives a round-trip through
+   * the application exactly (see `lib/cursor`). Both are v7 ids, so the two
+   * orders differ only by the gap between a transaction's start — which is
+   * what `created_at`'s `now()` records — and its insert.
+   *
+   * Any other order pays the offset. Sorting by a FIELD could not walk anyway:
+   * nullable columns with a deliberate NULL order, `money` split across two
+   * columns, text keys needing a three-value cursor.
+   */
+  const walking =
+    data.paginate === "cursor" && sortBy === "createdAt" && sortDir === "desc";
+  const from = walking ? idCursor(data.cursor) : null;
 
   // A type's fields live under its OWNER team. For an own type that's the
   // viewing team; for a shared-in foreign type it's the type's `teamId`; for a
@@ -296,10 +351,31 @@ export const listObjectRecords = async (data: {
   }
   if (search && search.trim().length > 0) {
     const q = search.trim();
-    const like = `%${q}%`;
-    conditions.push(
-      sql`(${objectRecords.label} ILIKE ${like} OR ${objectRecords.normalizedLabel} ILIKE ${like} OR ${objectRecords.searchVector} @@ plainto_tsquery('simple', ${q}))`,
-    );
+    // TWO arms, and every arm MUST be indexable — an OR is only as fast as its
+    // slowest branch. Postgres can BitmapOr several index scans, but one branch
+    // with no index forces a sequential scan of the whole type and drags the
+    // indexed branches down with it. That is what the third arm did here: a
+    // bare `label ILIKE '%q%'` has no index (the leading wildcard rules out a
+    // btree, and no trigram index covers `label`). Measured on 200k rows, one
+    // selective search: 222 ms with it, 76 ms without.
+    //
+    // Dropping it loses nothing. `normalized_label` is the SAME text lowercased
+    // with punctuation and legal suffixes removed, and it carries the trigram
+    // index — so normalising the QUERY the same way matches strictly more than
+    // the raw arm did ("hapag-lloyd" now finds "Hapag Lloyd", which it did not).
+    // The one case normalisation erases — a query that is ONLY a legal suffix —
+    // is covered by the third arm, since `search_vector` is built from the raw
+    // label plus the type's text fields.
+    const normalized = normalizeEntityName(q);
+    const arms = [
+      sql`${objectRecords.searchVector} @@ plainto_tsquery('simple', ${q})`,
+    ];
+    if (normalized.length > 0) {
+      arms.unshift(
+        sql`${objectRecords.normalizedLabel} ILIKE ${`%${normalized}%`}`,
+      );
+    }
+    conditions.push(sql`(${sql.join(arms, sql` OR `)})`);
   }
   const fieldTypeByKey = new Map<string, FieldDefinitionType>(
     fieldDefs.map((d) => [d.key, d.type]),
@@ -314,8 +390,13 @@ export const listObjectRecords = async (data: {
       if (cond) conditions.push(cond);
     }
   }
+  if (from) conditions.push(lt(objectRecords.id, from));
   const whereClause = and(...conditions);
-  const offset = Math.max(0, page * limit);
+  const offset = Math.max(0, data.offset ?? page * limit);
+  // One row past the page, on the walk only: it answers "is there another
+  // page?" definitively, so the last page ends the scroll instead of costing
+  // one more round-trip to discover it is empty.
+  const fetchLimit = walking ? limit + 1 : limit;
 
   // Resurrect an index the maintenance pass dropped, if this query proves it is
   // wanted again. Free unless something WAS dropped: the check reads the field
@@ -357,37 +438,62 @@ export const listObjectRecords = async (data: {
         objectTypeId,
         sortFieldType,
       );
-      return db
-        .select(getTableColumns(objectRecords))
-        .from(objectRecords)
-        .where(whereClause)
-        .orderBy(
-          sortDir === "asc" ? asc(expression) : desc(expression),
-          desc(objectRecords.id),
-        )
-        .limit(limit)
-        .offset(offset);
+      return (
+        db
+          .select(getTableColumns(objectRecords))
+          .from(objectRecords)
+          .where(whereClause)
+          // On the walk, order by the seek key ALONE. Ordering by anything the
+          // cursor does not carry lets rows fall between two pages.
+          .orderBy(
+            ...(walking
+              ? [desc(objectRecords.id)]
+              : [
+                  sortDir === "asc" ? asc(expression) : desc(expression),
+                  desc(objectRecords.id),
+                ]),
+          )
+          .limit(fetchLimit)
+          .offset(walking ? 0 : offset)
+      );
     }
     const keys = extensionSortKeys(sortTarget).map((key) =>
       sortDir === "asc" ? asc(key) : desc(key),
     );
-    return db
-      .select(getTableColumns(objectRecords))
-      .from(objectRecords)
-      .innerJoin(
-        sql`${sql.raw(qualifiedObjectTable(objectTypeId))} ${sql.raw(EXT)}`,
-        sql`${sql.raw(`${EXT}."id"`)} = ${objectRecords.id}`,
-      )
-      .where(and(whereClause, extensionScopeCondition({ teamId, status })))
-      .orderBy(...keys, desc(objectRecords.id))
-      .limit(limit)
-      .offset(offset);
+    return (
+      db
+        .select(getTableColumns(objectRecords))
+        .from(objectRecords)
+        .innerJoin(
+          sql`${sql.raw(qualifiedObjectTable(objectTypeId))} ${sql.raw(EXT)}`,
+          sql`${sql.raw(`${EXT}."id"`)} = ${objectRecords.id}`,
+        )
+        .where(and(whereClause, extensionScopeCondition({ teamId, status })))
+        // Never the walk: this branch exists for `sortBy: "field:<key>"`, and
+        // only the default `createdAt` order can walk.
+        .orderBy(...keys, desc(objectRecords.id))
+        .limit(limit)
+        .offset(offset)
+    );
   };
 
-  const [items, [totalResult]] = await Promise.all([
+  const [rows, [totalResult]] = await Promise.all([
     pageRows(),
-    db.select({ total: count() }).from(objectRecords).where(whereClause),
+    // Not counted on the walk. This is THE saving: a count over the whole
+    // filtered set, paid once per scrolled page, to answer a question the one
+    // extra row already answers.
+    walking
+      ? Promise.resolve<{ total: number }[]>([])
+      : db.select({ total: count() }).from(objectRecords).where(whereClause),
   ]);
+
+  const hasMore = walking && rows.length > limit;
+  const items = hasMore ? rows.slice(0, limit) : rows;
+  const nextCursor = hasMore ? (items.at(-1)?.id ?? null) : null;
+  // Absent outside the walk, rather than null: a paged caller never has a
+  // "next cursor", and an always-null field reads like "you are on the last
+  // page".
+  const walk = walking ? { nextCursor } : {};
 
   const recordIds = items.map((r) => r.id);
   const [dataById, computed] = await Promise.all([
@@ -405,7 +511,7 @@ export const listObjectRecords = async (data: {
   }));
 
   if (!withLinks) {
-    return { count: totalResult?.total ?? 0, data: enriched };
+    return { count: totalResult?.total ?? 0, data: enriched, ...walk };
   }
 
   const summaries = await fetchOutgoingLinkSummaries(recordIds);
@@ -415,6 +521,7 @@ export const listObjectRecords = async (data: {
       ...r,
       outgoingLinks: summaries[r.id] ?? [],
     })),
+    ...walk,
   };
 };
 

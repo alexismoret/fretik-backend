@@ -86,7 +86,11 @@ export const createListObjectsTool = () =>
           objectTypeId,
           status,
           search,
-          page: Math.floor(effectiveOffset / effectiveLimit),
+          // The row offset, not a page number. `nextOffset` below advances by
+          // however many rows came back, which lands between page boundaries
+          // as soon as one page is short — `floor(offset / limit)` then snapped
+          // BACK to the boundary and re-served rows the agent had already seen.
+          offset: effectiveOffset,
           limit: effectiveLimit,
         });
       } catch (err) {

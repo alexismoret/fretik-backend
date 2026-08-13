@@ -1,59 +1,68 @@
-import type { PageValue } from "../../../schemas/pages";
+import { evaluatePageExpression } from "@fretik/render/runtime/expressions";
+import { isPageBinding, type PageValue } from "../../../schemas/pages";
 import type { PageDataSource } from "./types";
+import { toPageValue } from "./values";
 
 /**
- * A connected app queried through MCP — DECLARED, not enabled.
+ * A live read from a connected app — the executor behind it is REGISTERED, not
+ * imported, so `services/pages` keeps knowing nothing about MCP transports or
+ * provider registries, and every consumer of the page registry that never
+ * installs one (a bare test, a future worker) gets a refusal instead of a
+ * dependency.
  *
- * The kind exists so the shape is fixed before the first implementation and so
- * a page that asks for one gets a real answer instead of "unknown kind". The
- * same pattern `lang: "js"` followed on a transform, right up until it shipped.
+ * The six preconditions this seam once listed are now either met or explicitly
+ * assumed:
  *
- * Six things have to exist before this resolves anything, and none of them do:
+ * 1. Uniform query verb — the executor dispatches a descriptor/manifest READ
+ *    action by name (`exec/page-query.ts`), the same names the agent already
+ *    reads in the app's SKILL.
+ * 2. Execution outside a conversation — the executor is context-free: no
+ *    `ExecContext`, no approval gate, identity is `{ teamId, userId }`.
+ * 3. Per-connection budget — a Redis counter bounds upstream calls per minute;
+ *    the cache absorbs the normal load.
+ * 4. Opt-in per connection — ASSUMED rather than modelled: an `active`
+ *    connection whose action is not `blocked` may feed a page. A dedicated
+ *    "usable in pages" flag stays a future hardening.
+ * 5. Crowd-disabling guard — the page path NEVER writes `connection.status`;
+ *    an upstream failure costs the dataset's block, nothing else.
+ * 6. No external data on `/p/<token>` — the publish gate refuses it
+ *    (`pagePublishError`), unchanged.
  *
- * 1. A uniform query verb. Today there are ~40 ad-hoc `list_*` actions with no
- *    common grammar — nothing a dataset could name generically.
- * 2. An execution path OUTSIDE a conversation. Every provider call currently
- *    wants `ExecContext{conversationId, turnId}`; the natural seam is
- *    `executeReadAction` (`exec/read-executor.ts`), which is already
- *    context-free, with `mcpCallTool` (`mcp/transport.ts`) beside it.
- * 3. A per-connection budget or quota. Nothing exists — a page view would be
- *    an unmetered upstream call.
- * 4. An explicit opt-in per connection: "this may feed a page".
- * 5. A guard against crowd-disabling. One upstream 401 flips a connection to
- *    `status: error`, so anonymous viewers of a public page could disable a
- *    team's integration by loading it.
- * 6. A rule keeping external datasets OFF `/p/<token>` in v1 — an anonymous
- *    route must not reach a third party on the team's credentials.
- *
- * WHAT THIS IS NOT FOR, whenever it does arrive: large volumes. A third party
- * cannot be filtered, grouped or indexed the way an object type can, and every
- * page view would pay a network round trip for rows nobody sorted. The
- * documented path for real volume is unchanged — a workflow syncs the data into
- * an object type, and the page queries THAT, in SQL, over indexed columns. This
- * source is for small, live reads whose value is their freshness.
+ * WHAT THIS IS NOT FOR: large volumes. A third party cannot be filtered,
+ * grouped or indexed the way an object type can. The documented path for real
+ * volume is unchanged — a workflow syncs the data into an object type, and the
+ * page queries THAT, in SQL, over indexed columns. This source is for small,
+ * live reads whose value is their freshness.
  */
 
 /**
- * What an implementation must provide. Registered from a package that may reach
- * the app layer, so `shared` keeps knowing nothing about MCP transports.
- *
- * The contract carries a CACHE by design rather than by later addition: a
- * dashboard's widget must not become a request to a third party on every
- * render. Between a 30 s MCP timeout, a per-connection budget and a crowd
- * arriving on a published link, "call it every time" is not an option that
- * exists — so the executor is expected to serve from a Redis entry keyed by
- * connection + operation + hashed args, and only miss occasionally.
+ * What an implementation must provide. `args` arrive as LITERALS — the source
+ * resolves bindings before the call, so the executor's cache key and the
+ * request it sends are the same values, and the executor stays evaluable
+ * without a page in hand.
  */
 export interface ExternalPageQueryExecutor {
   execute: (input: {
     teamId: string;
-    connectionId: string;
+    /** The viewer; null on the anonymous route (unreachable behind the
+     * publish gate, guarded anyway). */
+    userId: string | null;
+    /** Pinned connection, when the dataset names one. */
+    connectionId?: string;
+    /** Provider to resolve per viewer (their own connection, else the team's). */
+    providerKey?: string;
     operation: string;
     args: Record<string, PageValue>;
     resultPath?: string;
-    /** Cache lifetime for this dataset's answer. Default 300 s. */
+    /** Reuse window for the upstream answer. Executor applies the default. */
     cacheTtlSeconds?: number;
-  }) => Promise<{ rows: PageValue[]; truncated: boolean }>;
+    /** Bypass the cached answer (refresh button); still repopulates. */
+    fresh?: boolean;
+  }) => Promise<
+    | { status: "ok"; rows: PageValue[]; truncated: boolean }
+    | { status: "needs_connection"; providerKey: string; displayName?: string }
+    | { status: "error"; message: string }
+  >;
 }
 
 let executor: ExternalPageQueryExecutor | undefined;
@@ -61,7 +70,8 @@ let executor: ExternalPageQueryExecutor | undefined;
 /**
  * Install the implementation. Until something calls this, the source refuses —
  * which is the whole point of the seam: the refusal is the default, and turning
- * it on is one explicit registration rather than a scattering of edits.
+ * it on is one explicit registration at process boot rather than a scattering
+ * of edits.
  */
 export const registerExternalPageQueryExecutor = (
   implementation: ExternalPageQueryExecutor,
@@ -69,33 +79,119 @@ export const registerExternalPageQueryExecutor = (
   executor = implementation;
 };
 
+/** Test hook: restore the not-enabled default between cases. */
+export const resetExternalPageQueryExecutor = (): void => {
+  executor = undefined;
+};
+
 const NOT_ENABLED =
-  "External app datasets are not enabled yet. Query the connected app in this conversation and store what the page needs, or model the data as an object type.";
+  "External app datasets are not enabled in this process. Query the connected app in this conversation and store what the page needs, or model the data as an object type.";
+
+/**
+ * Resolve `{ "$": … }` bindings anywhere inside the args against page STATE
+ * only. Datasets run in parallel waves, so reading `data.*` here would race
+ * whatever it names — the sanitizer warns on it, and the scope simply does not
+ * carry it. A binding that evaluates to nothing drops its key (the "empty
+ * means all" convention filters already follow); one that fails to evaluate
+ * fails the dataset, because a request with a silently-wrong argument is worse
+ * than no request.
+ */
+const resolveArgValue = async (
+  value: PageValue,
+  state: Record<string, PageValue>,
+): Promise<
+  { ok: true; value: PageValue | undefined } | { ok: false; error: string }
+> => {
+  if (isPageBinding(value)) {
+    const result = await evaluatePageExpression(value.$, { state, data: {} });
+    if (!result.ok) return { ok: false, error: result.error };
+    if (result.value === undefined) return { ok: true, value: undefined };
+    return { ok: true, value: toPageValue(result.value) };
+  }
+  if (Array.isArray(value)) {
+    const entries: PageValue[] = [];
+    for (const entry of value) {
+      const resolved = await resolveArgValue(entry, state);
+      if (!resolved.ok) return resolved;
+      if (resolved.value !== undefined) entries.push(resolved.value);
+    }
+    return { ok: true, value: entries };
+  }
+  if (typeof value === "object" && value !== null) {
+    const mapped: Record<string, PageValue> = {};
+    for (const [key, inner] of Object.entries(value)) {
+      const resolved = await resolveArgValue(inner, state);
+      if (!resolved.ok) return resolved;
+      if (resolved.value !== undefined) mapped[key] = resolved.value;
+    }
+    return { ok: true, value: mapped };
+  }
+  return { ok: true, value };
+};
+
+export const resolveExternalArgs = async (
+  args: Record<string, PageValue>,
+  state: Record<string, PageValue>,
+): Promise<
+  { ok: true; args: Record<string, PageValue> } | { ok: false; error: string }
+> => {
+  const resolved: Record<string, PageValue> = {};
+  for (const [key, value] of Object.entries(args)) {
+    const entry = await resolveArgValue(value, state);
+    if (!entry.ok) {
+      return { ok: false, error: `argument "${key}": ${entry.error}` };
+    }
+    if (entry.value !== undefined) resolved[key] = entry.value;
+  }
+  return { ok: true, args: resolved };
+};
 
 export const externalSource: PageDataSource = {
   kind: "external",
-  resolve: async (dataset, { teamId }) => {
+  resolve: async (dataset, { teamId, userId, state, fresh }) => {
     if (!executor) return { status: "error", message: NOT_ENABLED };
-    if (!dataset.connectionId || !dataset.operation) {
+    if (!dataset.operation || (!dataset.connectionId && !dataset.providerKey)) {
       return {
         status: "error",
         message:
-          "an external dataset needs connectionId and operation, both from the stored definition",
+          "an external dataset needs operation and providerKey (or a pinned connectionId), all from the stored definition",
       };
     }
-    // `args` are passed through UNRESOLVED: evaluating the bindings in them is
-    // the implementation's job, because it is the same step that decides the
-    // cache key. Sketching it here would be guessing at a contract nothing
-    // exercises yet.
-    const { rows, truncated } = await executor.execute({
+    const resolvedArgs = await resolveExternalArgs(dataset.args ?? {}, state);
+    if (!resolvedArgs.ok) {
+      return { status: "error", message: resolvedArgs.error };
+    }
+    const result = await executor.execute({
       teamId,
-      connectionId: dataset.connectionId,
+      userId,
       operation: dataset.operation,
-      args: dataset.args ?? {},
+      args: resolvedArgs.args,
+      ...(dataset.connectionId !== undefined
+        ? { connectionId: dataset.connectionId }
+        : {}),
+      ...(dataset.providerKey !== undefined
+        ? { providerKey: dataset.providerKey }
+        : {}),
       ...(dataset.resultPath !== undefined
         ? { resultPath: dataset.resultPath }
         : {}),
+      ...(dataset.cacheTtlSeconds !== undefined
+        ? { cacheTtlSeconds: dataset.cacheTtlSeconds }
+        : {}),
+      ...(fresh !== undefined ? { fresh } : {}),
     });
-    return { status: "ok", rows, truncated };
+    if (result.status === "ok") {
+      return { status: "ok", rows: result.rows, truncated: result.truncated };
+    }
+    if (result.status === "needs_connection") {
+      return {
+        status: "needs_connection",
+        providerKey: result.providerKey,
+        ...(result.displayName !== undefined
+          ? { displayName: result.displayName }
+          : {}),
+      };
+    }
+    return { status: "error", message: result.message };
   },
 };

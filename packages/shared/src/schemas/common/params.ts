@@ -77,6 +77,36 @@ export const paramsListSchema = z.object({
 export type ParamsList = z.infer<typeof paramsListSchema>;
 
 /**
+ * The shared cursor parameter, for lists that can be walked forward rather
+ * than jumped into.
+ *
+ * OPAQUE by contract: the caller passes back whatever `nextCursor` it was
+ * handed and never builds one. Each endpoint encodes whatever its own ORDER BY
+ * needs (a single id here, a `(timestamp, id)` pair there) — the shape is the
+ * endpoint's business, the round-trip is the contract. A cursor that no longer
+ * decodes must degrade to the first page, never error: it typically comes from
+ * a tab left open across a deploy.
+ *
+ * Offered ALONGSIDE `page`, never instead of it. Numbered pages, "showing
+ * X–Y of Z" and jump-to-last all need an exact total, and most lists in this
+ * product display one. The cursor is for the lists that only ever walk
+ * forward — an infinite scroll — where the total is computed and thrown away.
+ */
+export const cursorParamSchema = z.object({
+  cursor: z
+    .string()
+    .max(300)
+    .optional()
+    .openapi({
+      description:
+        "Opaque cursor from a previous response's `nextCursor`. Walks forward from that point instead of counting rows; ignored when the list is not ordered by its default key.",
+    })
+    .describe("Opaque forward-pagination cursor"),
+});
+
+export type CursorParam = z.infer<typeof cursorParamSchema>;
+
+/**
  * Extended list schema with folder filter
  * Used in routes that support folder-based filtering
  */

@@ -8,14 +8,22 @@ import {
   WORKFLOW_STALL_SWEEP_JOB,
   WORKFLOW_TRIGGER_SWEEP_JOB,
 } from "./names";
-import { getMcpRefreshQueue, getMemoryMaintenanceQueue } from "./queues";
+import {
+  getMcpRefreshQueue,
+  getMemoryMaintenanceQueue,
+  getObjectIndexQueue,
+} from "./queues";
 
 /**
  * Repeatable-job registration. BullMQ job schedulers are queue-level state
  * keyed by scheduler id — every replica upserts the same ids, so N replicas
- * still produce ONE job per interval. All land on the maintenance queue: the
- * journal + workflow-trigger sweeps are cheap (reads + enqueue), the nightly
- * triggers fan work out elsewhere, and the stall sweep is one bounded UPDATE.
+ * still produce ONE job per interval.
+ *
+ * Most land on the maintenance queue, which runs at concurrency 1: the journal
+ * + workflow-trigger sweeps are cheap (reads + enqueue), the nightly triggers
+ * fan work out elsewhere, and the stall sweep is one bounded UPDATE. A job that
+ * can occupy that worker for MINUTES gets its own queue instead — see the MCP
+ * refresh and the object-index sweep at the bottom.
  */
 
 const SWEEP_INTERVAL_MS = 15_000;
@@ -81,7 +89,10 @@ export const registerSchedulers = async (): Promise<void> => {
     { every: STALL_SWEEP_INTERVAL_MS },
     { name: CONVERSATION_TASK_SWEEP_JOB, opts: CRON_OPTS },
   );
-  await maintenance.upsertJobScheduler(
+  // Dedicated queue — one pass can hold a `CREATE INDEX CONCURRENTLY` for
+  // minutes, which on the concurrency-1 maintenance queue would stop the 15s
+  // sweeps outright for the duration.
+  await getObjectIndexQueue().upsertJobScheduler(
     OBJECT_INDEX_SWEEP_JOB,
     { pattern: OBJECT_INDEX_CRON, tz: "UTC" },
     { name: OBJECT_INDEX_SWEEP_JOB, opts: CRON_OPTS },

@@ -32,6 +32,25 @@ const REGISTRY_PARAMS_PER_ROW = 13;
 /** System columns `buildExtensionInsertBatch` binds per row, before the fields. */
 const EXTENSION_SYS_PARAMS = 4;
 
+/**
+ * Rows this service puts in ONE transaction for a type of this shape.
+ *
+ * Exported because a chunked import needs to size its OWN chunks to match:
+ * when an import chunk equals a transaction, a chunk that throws is a chunk
+ * that wrote nothing, and it can be retried safely. Split it any finer or any
+ * coarser and "the call failed" stops implying "nothing landed" — which is the
+ * whole basis of the import's exactly-once ledger.
+ */
+export const recordWriteChunkSize = (
+  fieldDefs: Parameters<typeof extensionColumnCount>[0],
+): number =>
+  chunkSizeForParams(
+    Math.max(
+      REGISTRY_PARAMS_PER_ROW,
+      EXTENSION_SYS_PARAMS + extensionColumnCount(fieldDefs),
+    ),
+  );
+
 /** One row of a bulk create: the record's `data`, plus its outgoing relations. */
 export interface BulkCreateRow {
   data: Record<string, unknown>;
@@ -179,12 +198,7 @@ export const bulkCreateObjectRecords = async (input: {
   // Size the chunk from what a row of THIS type actually binds: the widest of
   // the statements below is the extension insert (4 system columns + one per
   // scalar column), and the registry insert binds a fixed 13.
-  const chunkSize = chunkSizeForParams(
-    Math.max(
-      REGISTRY_PARAMS_PER_ROW,
-      EXTENSION_SYS_PARAMS + extensionColumnCount(fieldDefs),
-    ),
-  );
+  const chunkSize = recordWriteChunkSize(fieldDefs);
   for (const batch of chunkForBulk(prepared, chunkSize)) {
     await db.transaction(async (tx) => {
       // 2. Registry rows — system columns only. RETURNING preserves VALUES

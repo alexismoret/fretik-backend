@@ -3,6 +3,7 @@ import {
   type HonoLoggedAppType,
 } from "@fretik/shared/lib/auth-middleware";
 import { teamRequired } from "@fretik/shared/lib/errors";
+import { createRedisRateLimitStore } from "@fretik/shared/lib/rate-limit";
 import { paramsIdSchema } from "@fretik/shared/schemas/common/params";
 import {
   responseBadRequestSchema,
@@ -15,6 +16,8 @@ import {
   PageDataRequestSchema,
   PageDataResponseSchema,
   PageResponseSchema,
+  PageRunRequestSchema,
+  PageRunResponseSchema,
   PageSummarySchema,
   UpdatePageSchema,
 } from "@fretik/shared/schemas/pages";
@@ -30,10 +33,12 @@ import {
   unpublishPage,
 } from "@fretik/shared/services/pages/publish";
 import { getPage, listPages } from "@fretik/shared/services/pages/retrieve";
+import { runPageOperation } from "@fretik/shared/services/pages/run-operation";
 import { runPageData } from "@fretik/shared/services/pages/run-page-data";
 import { updatePage } from "@fretik/shared/services/pages/update";
 import type { PageRequester } from "@fretik/shared/services/pages/visibility";
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
+import { rateLimiter } from "hono-rate-limiter";
 
 /**
  * Pages — data-bound UI documents rendered deterministically from a stored
@@ -46,6 +51,29 @@ import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 
 const pageRoutes = new OpenAPIHono<HonoLoggedAppType>();
 pageRoutes.use("*", authMiddleware);
+
+/**
+ * Running an operation reaches a third party on the team's credentials, so it
+ * is capped PER PERSON PER PAGE — a stuck button, a double-click storm or a
+ * script cannot turn one page into a load generator, while two colleagues
+ * working side by side never share a budget.
+ *
+ * This route is authenticated, and a published page may not carry operations
+ * at all (`pagePublishError` refuses it), so no anonymous traffic reaches it.
+ * The executor holds a second, per-connection budget; that one bounds the
+ * third party, this one bounds the person.
+ */
+pageRoutes.use(
+  "/:id/run",
+  rateLimiter<HonoLoggedAppType>({
+    windowMs: 60_000,
+    limit: 30,
+    standardHeaders: "draft-6",
+    keyGenerator: (c) => `${c.get("user").id}:${c.req.param("id") ?? ""}`,
+    store: createRedisRateLimitStore<HonoLoggedAppType>("rl:page-run:"),
+    requestPropertyName: "rateLimitPageRun",
+  }),
+);
 
 /** A private (user-scoped) page is visible only to its owner — except org
  * admins/owners, who see every page for governance. */
@@ -240,6 +268,32 @@ const dataRoute = createRoute({
   },
 });
 
+const runRoute = createRoute({
+  method: "post",
+  path: "/{id}/run",
+  summary: "Run one of a page's operations",
+  description:
+    "Executes a WRITE the page declares, against a connected app. The body names an operation id and carries variable values — never an action, a connection or an argument template, which all come from the stored definition. Answers 200 with a verdict (`ok` / `needs_connection` / `blocked` / `error`) rather than an HTTP error, so a page renders the outcome instead of a stack trace.",
+  tags: ["Pages"],
+  request: {
+    params: paramsIdSchema,
+    body: {
+      content: { "application/json": { schema: PageRunRequestSchema } },
+      required: true,
+    },
+  },
+  responses: {
+    200: {
+      content: { "application/json": { schema: PageRunResponseSchema } },
+      description: "The operation's outcome",
+    },
+    ...responseBadRequestSchema,
+    ...responseForbiddenSchema,
+    ...responseNotFoundSchema,
+    ...responseInternalErrorSchema,
+  },
+});
+
 // ---- Handlers --------------------------------------------------------
 
 pageRoutes.openapi(listRoute, async (c) => {
@@ -350,6 +404,9 @@ pageRoutes.openapi(dataRoute, async (c) => {
       // shared across teams shows each reader their own records, so a key
       // without the team would serve one team's rows to another.
       teamId: team.id,
+      // And the viewer themselves: an external dataset resolved through a
+      // personal connection makes the answer viewer-specific.
+      userId: user.id,
       definitionFingerprint: page.updatedAt.toISOString(),
       request: { variables, datasetIds, queries },
     }),
@@ -360,10 +417,31 @@ pageRoutes.openapi(dataRoute, async (c) => {
       runPageData({
         definition: page.definition,
         teamId: team.id,
+        userId: user.id,
         variables,
         ...(datasetIds !== undefined ? { datasetIds } : {}),
         ...(queries !== undefined ? { queries } : {}),
+        ...(fresh !== undefined ? { fresh } : {}),
       }),
+  });
+  return c.json(result, 200);
+});
+
+pageRoutes.openapi(runRoute, async (c) => {
+  const team = c.get("team");
+  if (!team) return c.json(teamRequired(), 403);
+  const user = c.get("user");
+  const { id } = c.req.valid("param");
+  const { operation, variables } = c.req.valid("json");
+  const requester = await resolveRequester(user, team);
+
+  const result = await runPageOperation({
+    pageId: id,
+    teamId: team.id,
+    userId: user.id,
+    requester,
+    operation,
+    variables,
   });
   return c.json(result, 200);
 });

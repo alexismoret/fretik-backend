@@ -29,6 +29,7 @@ const page = (
   version: 2,
   variables: [],
   datasets: [],
+  operations: [],
   spec: {
     root: "root",
     elements: {
@@ -481,6 +482,7 @@ describe("the publish ceilings, warned at WRITE time", () => {
       version: 2,
       variables: [],
       datasets: [],
+      operations: [],
       spec: { root: "box-0", elements: deep },
     });
     // It used to save clean and only fail at publish, with nothing said in the
@@ -495,6 +497,7 @@ describe("the publish ceilings, warned at WRITE time", () => {
       version: 2,
       variables: [],
       datasets: [],
+      operations: [],
       spec: { root: "box-0", elements: nested(PAGE_LIMITS.maxDepth) },
     });
     expect(warnings.some((w) => w.includes("nests"))).toBe(false);
@@ -536,6 +539,7 @@ describe("placement props survive whichever side they are written on", () => {
       version: 2,
       variables: [],
       datasets: [],
+      operations: [],
       spec: {
         root: "root",
         elements: {
@@ -657,6 +661,7 @@ describe("a twelve-column grid whose children place themselves nowhere", () => {
     version: 2,
     variables: [],
     datasets: [],
+    operations: [],
     spec: {
       root: "row",
       elements: {

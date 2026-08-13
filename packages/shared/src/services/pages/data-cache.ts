@@ -44,6 +44,15 @@ const inFlight = new Map<string, Promise<PageDataResponse>>();
 export const pageDataCacheKey = (input: {
   pageId: string;
   teamId: string;
+  /**
+   * The viewer, or null for the anonymous route. UNCONDITIONALLY in the key:
+   * an external dataset resolved through a personal connection makes the
+   * response viewer-specific, and a key that carried the user "only when
+   * needed" is exactly the predicate that leaks the day the condition drifts.
+   * The cost — losing cross-viewer sharing of a 20 s entry on object-only team
+   * pages — is marginal next to serving one member's inbox to another.
+   */
+  userId: string | null;
   /** The definition's `updatedAt` — editing a page retires its entries. */
   definitionFingerprint: string;
   request: {
@@ -52,7 +61,7 @@ export const pageDataCacheKey = (input: {
     queries?: Record<string, unknown>;
   };
 }): string =>
-  `page:data:${input.pageId}:${input.teamId}:${input.definitionFingerprint}:${hashPageDataRequest(input.request)}`;
+  `page:data:${input.pageId}:${input.teamId}:u:${input.userId ?? "public"}:${input.definitionFingerprint}:${hashPageDataRequest(input.request)}`;
 
 /**
  * Serve a page's datasets from cache, or run them once and share that run.

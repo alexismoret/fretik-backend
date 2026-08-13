@@ -68,6 +68,7 @@ describe("pagePublishError", () => {
         version: 2,
         variables: [],
         datasets: [],
+        operations: [],
         spec: { root: "root", elements: {} },
       }),
     ).toBe("The page needs a root element to publish.");
@@ -85,6 +86,7 @@ describe("pagePublishError", () => {
     version: 2,
     variables: [],
     datasets: [dataset],
+    operations: [],
     spec: { root: "root", elements: { root: { type: "box" } } },
   });
 
@@ -227,6 +229,7 @@ describe("applyPageDefinitionPatch", () => {
   const definition: PageDefinition = {
     version: 2,
     variables: [{ key: "stage", type: "string", initial: "won" }],
+    operations: [],
     datasets: [
       {
         id: "deals",

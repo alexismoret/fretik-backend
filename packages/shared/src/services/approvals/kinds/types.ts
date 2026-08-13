@@ -46,4 +46,31 @@ export interface ApprovalKindHandler {
     approval: ToolApprovalRequest,
     result: ToolApprovalResult,
   ): unknown;
+
+  /**
+   * True when the grant must NOT run inside the HTTP request that granted it.
+   *
+   * A staged import is the case this exists for: applying 200 000 rows takes
+   * minutes, so executing inline would hold the grant request open, time it
+   * out, and — worse — tie the work to a browser that the user is precisely
+   * expected to close. When this returns true the orchestrator claims the row
+   * (`granted` → `executing`) and calls {@link startDeferred} instead of
+   * {@link execute}; whatever that started is responsible for finishing the row.
+   */
+  deferExecution?(approval: ToolApprovalRequest): boolean;
+
+  /**
+   * Hand the claimed approval to whatever will execute it out-of-band. Called
+   * only when {@link deferExecution} returned true, and only for the caller
+   * that won the claim, so it never starts the same work twice.
+   */
+  startDeferred?(p: { approval: ToolApprovalRequest }): Promise<void>;
+
+  /**
+   * Release whatever the pending decision was holding, after a rejection.
+   * Only kinds that park state outside the approval row need it — a refused
+   * import otherwise leaves its uploaded rows sitting in the staging table
+   * forever.
+   */
+  onReject?(approval: ToolApprovalRequest): Promise<void>;
 }

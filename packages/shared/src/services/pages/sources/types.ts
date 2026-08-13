@@ -26,6 +26,12 @@ export interface PageDataSourceContext {
    * owner's for a published page. Never derived from a request parameter.
    */
   teamId: string;
+  /**
+   * The viewer, when the route knows one; null on the anonymous public route.
+   * External datasets resolve "the viewer's own connection" from it — object
+   * queries ignore it, their scope is the team.
+   */
+  userId: string | null;
   /** Declared variables, already coerced. The only viewer input that gets in. */
   state: Record<string, PageValue>;
   /** Rows of the datasets resolved before this one, keyed by dataset id. */
@@ -36,6 +42,11 @@ export interface PageDataSourceContext {
    * ignores it — it is a hint, never a contract.
    */
   query?: PageDatasetQuery;
+  /**
+   * The refresh button: sources that cache upstream answers bypass their read
+   * (but still repopulate). Never set on the public route.
+   */
+  fresh?: boolean;
 }
 
 export interface PageDataSource {

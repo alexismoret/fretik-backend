@@ -97,5 +97,9 @@ export * from "./workflows";
 // registry behind "launch, keep working, get resumed when it finishes".
 export * from "./conversation-tasks";
 
+// Bulk operations (loads too large for one request or one approval payload:
+// chunked upload, one summary approval, worker-applied).
+export * from "./bulk-operations";
+
 // Pages (agent-authored, data-bound UI documents rendered without an LLM)
 export * from "./pages";

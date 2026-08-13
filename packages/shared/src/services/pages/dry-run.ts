@@ -300,6 +300,9 @@ const collectDataChecks = (
 export const dryRunPage = async (params: {
   definition: PageDefinition;
   teamId: string;
+  /** The acting user — external datasets resolve THEIR connection, exactly as
+   * the page will for that same person viewing it. Null when unknown. */
+  userId: string | null;
   /**
    * The caller already ran `sanitizePageDefinition` and is passing the result.
    * `create`/`update` do: they hand over the STORED definition, which is the
@@ -321,6 +324,7 @@ export const dryRunPage = async (params: {
   const { datasets } = await runPageData({
     definition,
     teamId: params.teamId,
+    userId: params.userId,
     variables: {},
   });
 
@@ -367,12 +371,22 @@ export const dryRunPage = async (params: {
     } else {
       data[id] = [];
       samples[id] = { status: result.status, rowCount: 0 };
-      pushPageWarning(
-        warnings,
-        result.status === "forbidden"
-          ? `dataset "${id}": this team cannot read that object type.`
-          : `dataset "${id}" failed: ${result.message}`,
-      );
+      if (result.status === "forbidden") {
+        pushPageWarning(
+          warnings,
+          `dataset "${id}": this team cannot read that object type.`,
+        );
+      } else if (result.status === "needs_connection") {
+        // Not a defect — the page renders a connect prompt for viewers in this
+        // position. Said as a fact so the agent can decide whether to pin a
+        // team connection instead.
+        pushPageWarning(
+          warnings,
+          `dataset "${id}": no usable ${result.providerKey} connection for the acting user — such viewers will see a "connect your account" prompt instead of data.`,
+        );
+      } else {
+        pushPageWarning(warnings, `dataset "${id}" failed: ${result.message}`);
+      }
     }
   }
 

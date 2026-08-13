@@ -64,3 +64,25 @@ export const recordWriteLookupHash = (
     recordIds: payload.items.map((i) => i.recordId),
   });
 };
+
+/**
+ * Dedup key for a STAGED load, whose rows never reach this process in one piece
+ * — so, unlike {@link recordWriteLookupHash}, it cannot hash them. It hashes
+ * the load's description plus a `rowsDigest` the caller computed over the rows
+ * it is about to send.
+ *
+ * The digest keeps the key honest: without it, "200 000 rows into clients"
+ * would match ANY other 200 000-row load into the same type, and a re-run with
+ * corrected data would silently replay the old outcome instead of importing.
+ * It is computed SDK-side over canonicalized rows, which is also what makes the
+ * re-run contract affordable: the client can tell "this is the same load" for
+ * the price of one local hash, without uploading a byte.
+ *
+ * Dedup only — tenancy stays on the JWT, and the human grant stays required.
+ */
+export const recordImportLookupHash = (input: {
+  op: string;
+  objectTypeId: string;
+  totalRows: number;
+  rowsDigest: string;
+}): string => canonicalHash({ kind: "record_import", ...input });

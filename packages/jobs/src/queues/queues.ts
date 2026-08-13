@@ -6,6 +6,7 @@ import {
   MEMORY_DREAMING_QUEUE,
   MEMORY_MAINTENANCE_QUEUE,
   MEMORY_RESOLVE_QUEUE,
+  OBJECT_INDEX_QUEUE,
   RECORD_CARD_QUEUE,
   WORKFLOW_TRIGGER_QUEUE,
   type DreamingTeamJobData,
@@ -83,4 +84,13 @@ export const getMcpRefreshQueue = (): Queue => {
     connection: getProducerConnection(),
   });
   return mcpRefreshQueue;
+};
+
+let objectIndexQueue: Queue | null = null;
+
+export const getObjectIndexQueue = (): Queue => {
+  objectIndexQueue ??= new Queue(OBJECT_INDEX_QUEUE, {
+    connection: getProducerConnection(),
+  });
+  return objectIndexQueue;
 };

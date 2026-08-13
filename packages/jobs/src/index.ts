@@ -2,6 +2,7 @@
 // Postgres advisory lock, so booting jobs + api + ai in parallel is safe.
 import "@fretik/shared/db";
 
+import { startBulkOperationWorker } from "@fretik/shared/services/bulk-operations/queue";
 import { startDocumentProcessingWorker } from "@fretik/shared/services/documents/processing-queue";
 import packagejson from "../package.json";
 import { healthApp } from "./health";
@@ -11,6 +12,7 @@ import { startMaintenanceWorker } from "./workers/maintenance";
 import { startMcpRefreshWorker } from "./workers/mcp-refresh";
 import { startMemoryDistillWorker } from "./workers/memory-distill";
 import { startMemoryResolveWorker } from "./workers/memory-resolve";
+import { startObjectIndexWorker } from "./workers/object-index-sweep";
 import { startRecordCardWorker } from "./workers/record-card";
 import { startWorkflowRunCreateWorker } from "./workers/workflow-run-create";
 
@@ -32,12 +34,14 @@ startDreamingWorker();
 startWorkflowRunCreateWorker();
 startMaintenanceWorker();
 startMcpRefreshWorker();
+startObjectIndexWorker();
+startBulkOperationWorker();
 await registerSchedulers();
 
 console.log(`
 ---------------------------
 fretik jobs v${packagejson.version}
-workers: document-processing · memory-resolve · memory-distill · record-card · memory-dreaming · memory-maintenance · workflow-trigger · mcp-refresh
+workers: document-processing · memory-resolve · memory-distill · record-card · memory-dreaming · memory-maintenance · workflow-trigger · mcp-refresh · object-index · bulk-operation
 ---------------------------
 `);
 

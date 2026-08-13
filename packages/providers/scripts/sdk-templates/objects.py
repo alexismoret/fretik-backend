@@ -36,7 +36,7 @@ manageObjectType / manageField tools instead; this SDK is the batch path.
 
 from typing import Any
 
-from ._runtime import _call_objects
+from ._runtime import SDK_INLINE_ROW_LIMIT, _call_objects, _import
 
 # Field dicts use Python snake_case; the backend wants camelCase. Map only the
 # multi-word keys — single-word ones (label, type, description, config) pass
@@ -105,11 +105,30 @@ class _Records:
         "to_record_id": "<id>"}]} — target by `to_record_id` or an uploaded
         file's `to_document_id` (its document record).
 
+        Pass the WHOLE list, however long — batches beyond a few thousand rows
+        are streamed automatically. Never split them into a manual loop: that
+        opens one approval per batch instead of one for the load.
+
         Returns {"ids": [...], "okCount": int, "errors": [{index, error}],
         "relationErrors": [{index, error}]}. `ids[i]` is the new id for `rows[i]`
         (None if it failed); `relationErrors` is indexed by row. Keep the result
         in a variable and print only counts, not the whole list.
+
+        On a streamed load `ids` may be None — it is absent, not empty, when the
+        call resumed rows an earlier attempt had already written. Read the
+        counts; query the type if you need the ids.
         """
+        # Past the inline limit the whole list no longer fits one request, one
+        # approval payload, or one thing a person can review. The streamed path
+        # uploads it in chunks against a single approval and survives a crash.
+        if len(rows) > SDK_INLINE_ROW_LIMIT:
+            if any("relations" in r for r in rows):
+                raise ValueError(
+                    "bulk_create: relations are not supported past "
+                    f"{SDK_INLINE_ROW_LIMIT} rows. Create the records first, "
+                    "then link them in a second pass."
+                )
+            return _import(type_key, [_row(r)["data"] for r in rows])
         return _call_objects(
             "records.bulk_create",
             {"typeKey": type_key, "rows": [_row(r) for r in rows]},

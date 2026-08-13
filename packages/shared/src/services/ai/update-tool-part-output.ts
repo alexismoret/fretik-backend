@@ -1,5 +1,5 @@
 import { and, desc, eq } from "drizzle-orm";
-import db from "../../db";
+import db, { type Transaction } from "../../db";
 import { aiMessages } from "../../db/schema";
 
 /**
@@ -38,8 +38,11 @@ export const updateToolPartOutputByToolCallId = async (params: {
   conversationId: string;
   toolCallId: string;
   newOutput: unknown;
+  /** Rewrite the history entry with the writes that made it true. */
+  tx?: Transaction;
 }): Promise<void> => {
-  const rows = await db
+  const exec = params.tx ?? db;
+  const rows = await exec
     .select()
     .from(aiMessages)
     .where(
@@ -72,7 +75,7 @@ export const updateToolPartOutputByToolCallId = async (params: {
     });
 
     if (mutated) {
-      await db
+      await exec
         .update(aiMessages)
         .set({ parts: nextParts })
         .where(eq(aiMessages.id, row.id));

@@ -1,3 +1,4 @@
+import { createWorkerConnection } from "@fretik/shared/lib/queue/connection";
 import {
   purgeOrphanRecordVectors,
   reconcileCardIndexPolicy,
@@ -7,6 +8,8 @@ import {
   pruneUnusedFieldIndexes,
   reconcileFieldIndexes,
 } from "@fretik/shared/services/object-schema/reconcile-indexes";
+import { Worker } from "bullmq";
+import { OBJECT_INDEX_QUEUE } from "../queues/names";
 
 /**
  * The autonomous index pass over big object tables — SQL indexes and semantic
@@ -54,4 +57,34 @@ export const runObjectIndexSweep = async (): Promise<{
   }
 
   return { types: objectTypeIds.length, created, dropped, cardsPurged };
+};
+
+/**
+ * Own worker on its own queue, for the reason `names.ts` records: one pass can
+ * hold a `CREATE INDEX CONCURRENTLY` for minutes, and the maintenance queue
+ * runs at concurrency 1 with the 15s journal and workflow-trigger sweeps behind
+ * it. Concurrency 1 here too — the sweep is already sequential per type on
+ * purpose, and a second pass would only contend for the same tables.
+ */
+export const startObjectIndexWorker = (): Worker => {
+  const worker = new Worker(
+    OBJECT_INDEX_QUEUE,
+    async () => {
+      const { types, created, dropped, cardsPurged } =
+        await runObjectIndexSweep();
+      if (created > 0 || dropped > 0 || cardsPurged > 0) {
+        console.info(
+          `[object-index-sweep] ${types.toString()} types: built ${created.toString()} indexes, retired ${dropped.toString()}, purged ${cardsPurged.toString()} record cards`,
+        );
+      }
+    },
+    { connection: createWorkerConnection(), concurrency: 1 },
+  );
+  worker.on("failed", (job, err) => {
+    console.error(
+      `[object-index-sweep] job ${job?.id ?? "<unknown>"} failed:`,
+      err instanceof Error ? err.message : err,
+    );
+  });
+  return worker;
 };

@@ -171,9 +171,17 @@ export const buildFieldFilterPredicate = (
       if (typeof v !== "string") return null;
       if (isMulti)
         return sql`${sql.raw(`e."${f.key}"`)} @> ARRAY[${v}]::text[]`;
-      // A text column stays uncast so `ILIKE` can use a GIN pg_trgm index;
-      // any other type has to become text to be matched at all (unindexable,
-      // but substring-matching a number has no index answer anyway).
+      // A text column stays uncast; any other type has to become text to be
+      // matched at all.
+      //
+      // Neither form is indexable today, and that is a real limit rather than
+      // an oversight: `indexTargetsForType` gives a text column a btree on
+      // `left(col, 500)`, which a leading wildcard cannot enter, and the trigram
+      // index that COULD serve it was measured at +49% on a 200 000-row import
+      // (25.0 s against 16.8 s) — too much to pay on every write of every type
+      // for a filter most types never use. So a `contains` filter scans the
+      // type. The registry's own search does not: `object_records` already
+      // carries a trigram index on `normalized_label` (see `retrieve.ts`).
       const target = comparison.kind === "direct" ? col : sql`${col}::text`;
       return sql`${target} ILIKE ${`%${v}%`}`;
     }

@@ -17,7 +17,10 @@ import { aiConversations } from "./ai";
  * DDL migration. The `(kind, ref)` unique index carries the idempotence a
  * enum would not have given anyway.
  */
-export const CONVERSATION_TASK_KINDS = ["workflow_run"] as const;
+export const CONVERSATION_TASK_KINDS = [
+  "workflow_run",
+  "bulk_operation",
+] as const;
 export type ConversationTaskKind = (typeof CONVERSATION_TASK_KINDS)[number];
 
 export const CONVERSATION_TASK_TERMINAL_STATUSES = [
@@ -29,10 +32,31 @@ export type ConversationTaskTerminalStatus =
   (typeof CONVERSATION_TASK_TERMINAL_STATUSES)[number];
 export type ConversationTaskStatus = "pending" | ConversationTaskTerminalStatus;
 
-/** Kind-specific display/routing payload — never load-bearing for the resume. */
+/**
+ * Kind-specific display/routing payload — never load-bearing for the resume.
+ *
+ * Display fields are STRUCTURED, not a sentence: `title` is a server string and
+ * the frontend translates every word it shows, so a kind whose label is generated
+ * (rather than user-supplied like a workflow's name) must ship the parts and let
+ * the UI compose them.
+ */
 export interface ConversationTaskMetadata {
   workflowId?: string;
   isTest?: boolean;
+  /** `bulk_operation` — what is being loaded, for the row's label. */
+  importTypeKey?: string;
+  importRows?: number;
+  /**
+   * How far along, in whatever unit the kind counts (rows, steps, files).
+   *
+   * Generic on purpose, and this is the whole reason it lives HERE rather than
+   * behind a per-kind endpoint: the task list is already polled while anything
+   * is pending, so a kind that keeps these two numbers up to date gets a live
+   * progress bar for free — no second query, no second component. A kind that
+   * has nothing to count leaves them unset and shows none.
+   */
+  progressDone?: number;
+  progressTotal?: number;
 }
 
 /**

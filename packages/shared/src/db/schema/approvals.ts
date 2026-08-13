@@ -290,6 +290,32 @@ export interface ToolApprovalRecordWritePayload {
   note?: string;
 }
 
+/**
+ * A `record_write` whose rows live in a `bulk_operations` staging area instead
+ * of in this payload.
+ *
+ * Structurally a record-write payload with a SHORT `items` list, and that is
+ * exactly what it is: past a few thousand rows the payload stops being a
+ * proposal anyone reads and becomes a transport problem, so the rows are
+ * uploaded in chunks and `items` keeps only the sample. Every existing consumer
+ * — the wire projection, the card, the guards — therefore keeps working
+ * unchanged, seeing a truncated write; only two things branch on
+ * `isRecordImportPayload`: the grant (which defers to a worker instead of
+ * writing inline) and the sandbox replay shape.
+ *
+ * `itemCount` on the row carries `totalRows`, so the card already renders its
+ * summary form for the same reason a 5 000-item write does.
+ */
+export interface ToolApprovalRecordImportPayload extends ToolApprovalRecordWritePayload {
+  /** The `bulk_operations` row holding the chunks. */
+  operationId: string;
+  /** Rows announced by the caller — what the card states, and what the grant
+   * will actually write (`items` is only the sample). */
+  totalRows: number;
+  /** Column names detected in the source, for the card's header. */
+  columns?: string[];
+}
+
 // ---- Tool-call payload (one gated builtin write tool) ---------------------
 
 /**

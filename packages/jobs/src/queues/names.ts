@@ -25,6 +25,13 @@ export const WORKFLOW_TRIGGER_QUEUE = "workflow-trigger";
 // re-introspects every active MCP connection over the network (Nango proxy), so
 // it must never share the 15s maintenance queue.
 export const MCP_REFRESH_QUEUE = "mcp-refresh";
+// Dedicated queue for the nightly object-index sweep — one pass issues a
+// `CREATE INDEX CONCURRENTLY` per missing index, each of which can run for
+// minutes on a large table. On the concurrency-1 maintenance queue that is
+// head-of-line blocking: the 15s journal and workflow-trigger sweeps would not
+// run at all for the duration, once a night, right when a nightly import has
+// just filled the journal.
+export const OBJECT_INDEX_QUEUE = "object-index";
 
 /** One journal event to resolve against the object graph (P3). */
 export interface MemoryResolveJobData {

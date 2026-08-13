@@ -109,11 +109,16 @@ export const runPageData = async (params: {
   /** Team whose scope the queries run under (viewer's, or the owner's for a
    * published page). */
   teamId: string;
+  /** The viewer, when the route knows one; null on the anonymous public
+   * route. External datasets resolve "their own connection" from it. */
+  userId: string | null;
   variables: Record<string, PageValue>;
   /** Restrict execution to these dataset ids (a targeted refetch). */
   datasetIds?: string[];
   /** Per-dataset window and ordering, keyed by dataset id. */
   queries?: Record<string, PageDatasetQuery>;
+  /** Refresh button: sources that cache upstream answers bypass their read. */
+  fresh?: boolean;
 }): Promise<PageDataResponse> => {
   const state = resolvePageState(params.definition, params.variables);
 
@@ -148,11 +153,13 @@ export const runPageData = async (params: {
     try {
       return await source.resolve(dataset, {
         teamId: params.teamId,
+        userId: params.userId,
         state,
         data: rowsById,
         ...(params.queries?.[id] !== undefined
           ? { query: params.queries[id] }
           : {}),
+        ...(params.fresh !== undefined ? { fresh: params.fresh } : {}),
       });
     } catch (cause) {
       return {

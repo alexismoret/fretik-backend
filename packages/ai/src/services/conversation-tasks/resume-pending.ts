@@ -1,5 +1,8 @@
 import db from "@fretik/shared/db";
-import type { ConversationBackgroundTask } from "@fretik/shared/db/schema";
+import type {
+  ConversationBackgroundTask,
+  ConversationTaskKind,
+} from "@fretik/shared/db/schema";
 import { aiMessages } from "@fretik/shared/db/schema";
 import {
   clearConversationActiveStream,
@@ -29,9 +32,9 @@ import {
   resolveFlagshipProfileKey,
 } from "../../lib/model-registry/resolve";
 import {
-  buildWorkflowRunContinuation,
-  workflowRunDoctrine,
-} from "./workflow-run-continuation";
+  CONVERSATION_TASK_CONTINUATIONS,
+  type TaskLine,
+} from "./continuation-registry";
 
 /** Hidden-message kind — mirrored by the frontend's hidden-kinds filter. */
 const CONTINUATION_KIND = "background-task-continuation";
@@ -207,22 +210,27 @@ const runResume = async (params: { conversationId: string }): Promise<void> => {
  * Assemble one continuation message from a whole batch: what came back, then
  * how to deal with it. Returns null when nothing in the batch could be
  * described (every underlying row vanished).
+ *
+ * Kind-blind: lines and doctrine both come from
+ * `CONVERSATION_TASK_CONTINUATIONS`, so a batch mixing a finished workflow run
+ * and a finished import produces one message carrying both, each with its own
+ * way of working — instead of the second kind waking the conversation with
+ * nothing to say while its outcome is marked consumed.
  */
 const buildContinuation = async (
   tasks: ConversationBackgroundTask[],
 ): Promise<{ text: string; actingUserId: string | null } | null> => {
+  const byKind = new Map<ConversationTaskKind, TaskLine[]>();
   const lines: string[] = [];
-  let hasTest = false;
-  let hasReal = false;
   let actingUserId: string | null = null;
 
   for (const task of tasks) {
-    const built = await buildWorkflowRunContinuation(task);
+    const built =
+      await CONVERSATION_TASK_CONTINUATIONS[task.kind].buildLine(task);
     if (!built) continue;
     lines.push(built.line);
-    if (built.isTest) hasTest = true;
-    else hasReal = true;
-    actingUserId ??= built.triggeredByUserId;
+    byKind.set(task.kind, [...(byKind.get(task.kind) ?? []), built]);
+    actingUserId ??= built.actingUserId;
   }
   if (lines.length === 0) return null;
 
@@ -230,12 +238,16 @@ const buildContinuation = async (
     lines.length === 1
       ? `[background-task-finished] ${lines[0] ?? ""}`
       : [
-          `[background-tasks-finished] ${lines.length.toString()} runs you launched have finished:`,
+          `[background-tasks-finished] ${lines.length.toString()} things you launched have finished:`,
           ...lines.map((line) => `- ${line}`),
         ].join("\n");
 
+  const doctrine = [...byKind].flatMap(([kind, built]) =>
+    CONVERSATION_TASK_CONTINUATIONS[kind].doctrine(built),
+  );
+
   return {
-    text: [header, ...workflowRunDoctrine({ hasTest, hasReal })].join("\n"),
+    text: [header, ...doctrine].join("\n"),
     actingUserId,
   };
 };

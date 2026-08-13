@@ -14,6 +14,7 @@ the JWT rotates without restarting the Jupyter kernel.
 # AUTO-GENERATED via scripts/generate-sdk.ts — do not edit by hand.
 
 import base64
+import hashlib
 import json
 import os
 import re
@@ -233,6 +234,127 @@ def _call_objects(op: str, args: dict[str, Any]) -> Any:
     the bulk rows themselves.
     """
     return _post({"kind": "objects", "op": op, "args": args})
+
+
+# Rows a single `records.bulk_create` request may carry. Past this the whole
+# list no longer fits one HTTP body, one approval payload, or one thing a
+# person can review — so `_import` streams it instead. The threshold is
+# invisible to the caller: `bulk_create` picks the path itself.
+SDK_INLINE_ROW_LIMIT = 1000
+
+
+def _rows_digest(rows: list[dict[str, Any]]) -> str:
+    """Content hash of the rows, computed here so the SAME load can be
+    recognized on a re-run WITHOUT re-uploading a byte.
+
+    `sort_keys` makes it independent of dict ordering; `allow_nan=False` is the
+    load-bearing part — pandas writes NaN into cells, `json.dumps` would emit
+    the non-standard `NaN` literal, and the same DataFrame could then hash two
+    ways. Rejecting it forces the caller to clean the value (see `_clean_nan`),
+    which is what makes the digest deterministic.
+    """
+    hasher = hashlib.sha256()
+    for row in rows:
+        hasher.update(
+            json.dumps(
+                row, sort_keys=True, separators=(",", ":"), allow_nan=False
+            ).encode("utf-8")
+        )
+    return hasher.hexdigest()
+
+
+def _clean_nan(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Replace float NaN / infinities with None — an empty cell, which is what
+    a spreadsheet meant by them. Also what makes `allow_nan=False` above safe.
+    """
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        cleaned = {
+            k: (None if isinstance(v, float) and v != v else v)
+            for k, v in row.items()
+        }
+        # +/- inf survives the NaN test; JSON cannot carry it either.
+        out.append(
+            {
+                k: (None if v in (float("inf"), float("-inf")) else v)
+                for k, v in cleaned.items()
+            }
+        )
+    return out
+
+
+def _import(type_key: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Stream a large create load: announce it, upload it in chunks, commit it.
+
+    Called by `objects.records.bulk_create` past `SDK_INLINE_ROW_LIMIT`. The
+    agent never calls this directly and never chooses between the two paths.
+
+    Resumable by construction. Every step is keyed by content, so re-running the
+    exact same code after a crash, a sandbox recycle, or an approval skips
+    whatever already landed — including all of it, in which case the call
+    returns the earlier outcome without sending a single row.
+    """
+    rows = _clean_nan(rows)
+    columns = sorted({k for row in rows[:100] for k in row.keys()})
+
+    begin = _post(
+        {
+            "kind": "objects",
+            "op": "records.import_begin",
+            "args": {
+                "op": "create",
+                "typeKey": type_key,
+                "totalRows": len(rows),
+                "rowsDigest": _rows_digest(rows),
+                "sample": rows[:3],
+                "columns": columns,
+            },
+        }
+    )
+    # Already finished, or already running in the background — nothing to send.
+    if begin.get("state") in ("replay", "running"):
+        return begin
+
+    operation_id = begin["operationId"]
+    chunk_rows = begin["chunkRows"]
+    done = set(begin.get("doneChunks") or [])
+
+    # None once any chunk was applied by an EARLIER attempt: those ids went to
+    # a process that is gone, and a list with holes in it would read as "these
+    # rows failed". Explicitly absent beats quietly wrong — see `bulk_create`.
+    ids: list[Any] | None = []
+    ok_count = 0
+    errors: list[dict[str, Any]] = []
+    for index, start in enumerate(range(0, len(rows), chunk_rows)):
+        if index in done:
+            ids = None
+            continue
+        result = _post(
+            {
+                "kind": "objects",
+                "op": "records.import_chunk",
+                "args": {
+                    "operationId": operation_id,
+                    "chunkIndex": index,
+                    "rows": rows[start : start + chunk_rows],
+                },
+            }
+        )
+        if ids is not None:
+            ids.extend(result.get("ids") or [])
+        ok_count += result.get("okCount", 0)
+        errors.extend(result.get("errors") or [])
+
+    # Raises ApprovalPending when a human must grant the load — the agent then
+    # re-runs this exact code and lands on the `replay` branch above.
+    commit = _post(
+        {
+            "kind": "objects",
+            "op": "records.import_commit",
+            "args": {"operationId": operation_id},
+        }
+    )
+    return {**commit, "ids": ids, "okCount": commit.get("okCount", ok_count)}
 
 
 def _call_read(action: str, args: dict[str, Any]) -> Any:

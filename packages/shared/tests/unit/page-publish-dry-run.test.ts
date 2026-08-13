@@ -45,6 +45,7 @@ const blankDefinition = (): PageDefinition => ({
   version: 2,
   variables: [],
   datasets: [],
+  operations: [],
   spec: {
     root: "root",
     elements: {
@@ -202,6 +203,7 @@ describe("publishPage — frozen definition, live data", () => {
         version: 2,
         variables: [],
         datasets: [],
+        operations: [],
         spec: { root: "root", elements: {} },
       },
     });
@@ -350,6 +352,7 @@ describe("dryRunPage — characterisation of today's output", () => {
     version: 2,
     variables: [],
     datasets,
+    operations: [],
     spec: {
       root: "root",
       elements: {
@@ -366,6 +369,7 @@ describe("dryRunPage — characterisation of today's output", () => {
         { id: "sales", kind: "inline", rows: [{ note: long, amount: 10 }] },
       ]),
       teamId: "team-1",
+      userId: null,
     });
 
     expect(result.samples.sales?.rowCount).toBe(1);
@@ -382,6 +386,7 @@ describe("dryRunPage — characterisation of today's output", () => {
     const result = await dryRunPage({
       definition: withDatasets({}, [{ id: "sales", kind: "inline", rows: [] }]),
       teamId: "team-1",
+      userId: null,
     });
     expect(result.warnings).toContain(
       'dataset "sales" returned no rows — check its filters, or the object type may be empty.',
@@ -394,6 +399,7 @@ describe("dryRunPage — characterisation of today's output", () => {
         { id: "broken", kind: "transform", code: "this is ( not jsonata" },
       ]),
       teamId: "team-1",
+      userId: null,
     });
     expect(
       result.warnings.some((w) => w.startsWith('dataset "broken" failed:')),
@@ -412,6 +418,7 @@ describe("dryRunPage — characterisation of today's output", () => {
         [{ id: "sales", kind: "inline", rows: [{ amount: 10 }] }],
       ),
       teamId: "team-1",
+      userId: null,
     });
     expect(
       result.warnings.some((w) =>
@@ -428,6 +435,7 @@ describe("dryRunPage — characterisation of today's output", () => {
         [],
       ),
       teamId: "team-1",
+      userId: null,
     });
     expect(result.warnings.some((w) => w.includes("nonsenseProp"))).toBe(true);
   });
@@ -438,10 +446,15 @@ describe("dryRunPage — characterisation of today's output", () => {
       [],
     );
     // Same definition, both ways: the static finding is the difference.
-    const fresh = await dryRunPage({ definition, teamId: "team-1" });
+    const fresh = await dryRunPage({
+      definition,
+      teamId: "team-1",
+      userId: null,
+    });
     const preSanitized = await dryRunPage({
       definition,
       teamId: "team-1",
+      userId: null,
       assumeSanitized: true,
     });
 
@@ -466,6 +479,7 @@ describe("dryRunPage — characterisation of today's output", () => {
         [{ id: "sales", kind: "inline", rows: [{ group: "A", amount: 10 }] }],
       ),
       teamId: "team-1",
+      userId: null,
     });
     expect(result.polish.some((p) => p.includes("is not a chart"))).toBe(true);
     expect(result.warnings.some((w) => w.includes("is not a chart"))).toBe(

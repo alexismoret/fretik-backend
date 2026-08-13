@@ -3,6 +3,7 @@ import { z } from "zod";
 import db from "../../db";
 import type { DomainEventActor } from "../../db/schema";
 import { domainEventLinks, domainEvents, user } from "../../db/schema";
+import { idCursor } from "../../lib/cursor";
 
 /**
  * Hard ceiling on one history page. A hot record touched thousands of times
@@ -43,7 +44,7 @@ interface HistoryEvent {
  * value is derived here — there is no record-level bi-temporal column.
  *
  * Reads the record's latest events (via `domain_event_links`), bounded by
- * `limit` with uuid-v7 cursor pagination (`before` = an event id from a prior
+ * `limit` with uuid-v7 cursor pagination (`cursor` = an event id from a prior
  * page; ids are time-ordered), then replays each event's `payload.diff`
  * (`{ field: { from, to } }`, written by the record create/update outbox)
  * oldest-first into a per-field timeline. Events without a diff (e.g.
@@ -54,7 +55,10 @@ interface HistoryEvent {
 export const getRecordHistory = async (data: {
   recordId: string;
   limit?: number;
-  before?: string;
+  /** An event id from a previous `nextCursor` — the page starts just before
+   *  it. Same opaque-string contract as every other cursor in the API; here
+   *  the opaque value happens to be the id itself. */
+  cursor?: string;
 }): Promise<{
   recordId: string;
   fields: Record<string, FieldChange[]>;
@@ -65,6 +69,9 @@ export const getRecordHistory = async (data: {
     data.limit ?? HISTORY_DEFAULT_LIMIT,
     HISTORY_MAX_LIMIT,
   );
+  // A cursor that is not an id restarts the walk. It would otherwise reach a
+  // `uuid` comparison and come back as a 500.
+  const cursor = idCursor(data.cursor);
   const rows = await db
     .select({
       id: domainEvents.id,
@@ -80,7 +87,7 @@ export const getRecordHistory = async (data: {
     .where(
       and(
         eq(domainEventLinks.recordId, data.recordId),
-        ...(data.before ? [lt(domainEvents.id, data.before)] : []),
+        ...(cursor ? [lt(domainEvents.id, cursor)] : []),
       ),
     )
     // Newest-first + one extra row to detect a further page; folded oldest-first

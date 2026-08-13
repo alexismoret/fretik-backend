@@ -4,6 +4,7 @@ import { buildRecordCard } from "@fretik/shared/services/object-records/build-ca
 import { deleteRecordCardVectors } from "@fretik/shared/services/object-records/card-vectors";
 import { type Job, Worker } from "bullmq";
 import { z } from "zod";
+import { intFromEnv } from "../lib/env";
 import { RECORD_CARD_QUEUE, type RecordCardJobData } from "../queues/names";
 
 /**
@@ -16,7 +17,17 @@ import { RECORD_CARD_QUEUE, type RecordCardJobData } from "../queues/names";
  * embed, no AI-service roundtrip.
  */
 
-const CONCURRENCY = 3;
+/**
+ * Cards in flight. Each is one embedding round trip, so the ceiling that
+ * actually matters is the shared `openrouter:embeddings` semaphore (10) the AI
+ * service holds — this only decides how much of it this worker may claim.
+ *
+ * 3 was the safe default when a bulk import could enqueue a card per row; with
+ * the indexing ceiling in place the backlog a big import produces is bounded,
+ * and 3 leaves the provider budget idle while a legitimate backlog drains.
+ * Env-tunable because the right value depends on the deployment's replica count.
+ */
+const CONCURRENCY = intFromEnv("RECORD_CARD_CONCURRENCY", 5);
 
 const vectorizeResponseSchema = z.object({ success: z.boolean() });
 

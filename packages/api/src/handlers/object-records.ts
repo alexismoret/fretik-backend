@@ -5,6 +5,7 @@ import {
 import { teamRequired } from "@fretik/shared/lib/errors";
 import { paramsIdSchema } from "@fretik/shared/schemas/common/params";
 import {
+  nextCursorSchema,
   responseBadRequestSchema,
   responseForbiddenSchema,
   responseInternalErrorSchema,
@@ -19,6 +20,7 @@ import {
   objectRecordResponseSchema,
   objectRecordWithLinksResponseSchema,
   recordAggregateQuerySchema,
+  recordHistoryQuerySchema,
   recordHistoryResponseSchema,
   recordListQuerySchema,
   recordMapQuerySchema,
@@ -58,7 +60,10 @@ const listRoute = createRoute({
     200: {
       content: {
         "application/json": {
-          schema: responseListSchema(objectRecordListItemSchema),
+          schema: responseListSchema(objectRecordListItemSchema).extend({
+            // Only on `paginate=cursor`, where `count` is not computed.
+            nextCursor: nextCursorSchema.optional(),
+          }),
         },
       },
       description: "Records retrieved",
@@ -129,9 +134,9 @@ const historyRoute = createRoute({
   path: "/{id}/history",
   summary: "Get a record's activity timeline",
   description:
-    "Folds the durable journal into the record's field history + event list.",
+    "Folds the durable journal into the record's field history + event list. Newest first, one page at a time — walk older with `cursor`.",
   tags: ["ObjectRecords"],
-  request: { params: paramsIdSchema },
+  request: { params: paramsIdSchema, query: recordHistoryQuerySchema },
   responses: {
     200: {
       content: {
@@ -257,6 +262,8 @@ objectRecordRoutes.openapi(listRoute, async (c) => {
     sortDir,
     withLinks,
     documentId,
+    paginate,
+    cursor,
   } = c.req.valid("query");
   const result = await listObjectRecords({
     teamId: team.id,
@@ -270,6 +277,8 @@ objectRecordRoutes.openapi(listRoute, async (c) => {
     sortDir,
     withLinks,
     documentId,
+    paginate,
+    ...(cursor ? { cursor } : {}),
   });
   return c.json(result, 200);
 });
@@ -323,7 +332,12 @@ objectRecordRoutes.openapi(historyRoute, async (c) => {
   const team = c.get("team");
   if (!team) return c.json(teamRequired(), 403);
   const { id } = c.req.valid("param");
-  const history = await getRecordHistory({ recordId: id });
+  const { cursor, limit } = c.req.valid("query");
+  const history = await getRecordHistory({
+    recordId: id,
+    ...(cursor ? { cursor } : {}),
+    ...(limit ? { limit } : {}),
+  });
   return c.json(history, 200);
 });
 

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { BulkOperation } from "../../db/schema";
 import { MAX_BULK_ITEMS } from "../../lib/db-bulk";
 import {
   fieldConfigSchema,
@@ -10,13 +11,31 @@ import type { ToolPolicyLevel } from "../../schemas/tool-policies";
 import type { WorkflowAutonomy } from "../../schemas/workflows";
 import { TOOL_PERMISSIONS_REMEDIATION } from "../ai/remediation";
 import { gateRecordWriteApproval } from "../approvals/gate-record-write";
+import { recordImportLookupHash } from "../approvals/hash";
+import {
+  beginBulkOperation,
+  MAX_BULK_OPERATION_ITEMS,
+} from "../bulk-operations/begin";
+import {
+  applyChunk,
+  chunkAlreadyApplied,
+  claimChunk,
+} from "../bulk-operations/chunk";
+import { commitBulkOperation } from "../bulk-operations/commit";
+import { findBulkOperation } from "../bulk-operations/find";
+import { emptyProgress, foldChunkProgress } from "../bulk-operations/progress";
+import { updateBulkOperationProgress } from "../bulk-operations/runner";
+import { importToolOutput } from "../bulk-operations/tool-output";
 import type { EventActor } from "../domain-events/emit";
 import { FIELD_DEFINITION_LIMITS } from "../field-definitions/constants";
 import { createFieldDefinition } from "../field-definitions/create";
 import { deleteFieldDefinition } from "../field-definitions/delete";
 import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
 import { updateFieldDefinition } from "../field-definitions/update";
-import { bulkCreateObjectRecords } from "../object-records/bulk-create";
+import {
+  bulkCreateObjectRecords,
+  recordWriteChunkSize,
+} from "../object-records/bulk-create";
 import { bulkDeleteObjectRecords } from "../object-records/bulk-delete";
 import { bulkUpdateObjectRecords } from "../object-records/bulk-update";
 import { queryObjectRecords } from "../object-records/query";
@@ -111,6 +130,12 @@ export const dispatchObjects = async (
         return await bulkUpdate(ctx, actor, autonomy, teamPolicies, rawArgs);
       case "records.bulk_delete":
         return await bulkDelete(ctx, actor, autonomy, teamPolicies, rawArgs);
+      case "records.import_begin":
+        return await importBegin(ctx, autonomy, teamPolicies, rawArgs);
+      case "records.import_chunk":
+        return await importChunk(ctx, rawArgs);
+      case "records.import_commit":
+        return await importCommit(ctx, rawArgs);
       case "records.query":
         return await queryRecords(ctx, rawArgs);
       case "schema.create_type":
@@ -348,6 +373,244 @@ const bulkDelete = async (
     },
   });
 };
+
+// ── Streamed import (loads too large for one request) ─────────────────
+//
+// Three ops that only the SDK's `_import` helper calls, and only past
+// `SDK_INLINE_ROW_LIMIT` rows. Everything below that keeps using
+// `records.bulk_create` unchanged — the agent never chooses between the two.
+//
+// The split exists because a 200 000-row load breaks three ceilings at once: a
+// single HTTP body, the approval payload a browser can render, and the "one
+// pending approval per conversation" rule (40 sequential grants at the old
+// 5 000-row cap). Chunking the upload against a `bulk_operations` row fixes all
+// three, and turns a crash mid-load into a resume instead of a restart.
+
+const importBeginArgs = z.object({
+  op: z.literal("create"),
+  typeKey: z.string().min(1).max(60),
+  totalRows: z.number().int().min(1).max(MAX_BULK_OPERATION_ITEMS),
+  /** Caller-side digest of the canonicalized rows — the replay key's payload. */
+  rowsDigest: z.string().min(16).max(128),
+  sample: z.array(z.record(z.string(), z.unknown())).max(10),
+  columns: z.array(z.string()).max(200).optional(),
+});
+
+/**
+ * Open (or re-find) a streamed load. Never carries rows: it settles the target
+ * type, the policy, the chunk size and what has already been sent, so the
+ * caller knows exactly what — if anything — is left to upload.
+ */
+const importBegin = async (
+  ctx: ExecContext,
+  autonomy: WorkflowAutonomy | null,
+  teamPolicies: Record<string, ToolPolicyLevel>,
+  rawArgs: Record<string, unknown>,
+): Promise<SandboxExecResponse> => {
+  const args = importBeginArgs.parse(rawArgs);
+  const objectTypeId = await resolveTeamType(ctx, args.typeKey);
+  if (objectTypeId === null) return unknownType(args.typeKey);
+
+  const level = resolveBuiltinToolPolicy({
+    toolName: "manageRecord",
+    teamPolicies,
+    autonomy,
+  });
+  if (level === "blocked") {
+    return {
+      status: "error",
+      message:
+        autonomy === "read_only"
+          ? "READ_ONLY_WORKFLOW: this run cannot write records. Note in the task summary what would have been written."
+          : `RECORD_WRITES_DISABLED: the team disabled record writes for the assistant. ${TOOL_PERMISSIONS_REMEDIATION}`,
+    };
+  }
+
+  // Chunk size comes from the TARGET TYPE's real column width, so one uploaded
+  // chunk is exactly one database transaction — the property the chunk ledger's
+  // exactly-once guard rests on.
+  const fieldDefs = await getFieldDefinitionsForTeam({
+    teamId: ctx.teamId,
+    objectTypeId,
+  });
+
+  const lookupHash = recordImportLookupHash({
+    op: args.op,
+    objectTypeId,
+    totalRows: args.totalRows,
+    rowsDigest: args.rowsDigest,
+  });
+
+  const handle = await beginBulkOperation({
+    organizationId: ctx.organizationId,
+    teamId: ctx.teamId,
+    userId: ctx.userId,
+    conversationId: ctx.conversationId,
+    turnId: ctx.turnId,
+    kind: "record_import",
+    mode: level === "auto" ? "direct" : "staged",
+    lookupHash,
+    totalItems: args.totalRows,
+    chunkSize: recordWriteChunkSize(fieldDefs),
+    params: { op: args.op, objectTypeId, typeKey: args.typeKey },
+    sample: args.sample,
+    ...(args.columns ? { columns: args.columns } : {}),
+  });
+
+  const { operation } = handle;
+  if (operation.status === "done") {
+    return {
+      status: "ok",
+      data: { state: "replay", ...importToolOutput(operation, null) },
+    };
+  }
+  if (
+    operation.status === "pending_approval" &&
+    operation.approvalId !== null
+  ) {
+    return { status: "approval_pending", approvalId: operation.approvalId };
+  }
+  if (operation.status === "queued" || operation.status === "running") {
+    return {
+      status: "ok",
+      data: { state: "running", ...importToolOutput(operation, null) },
+    };
+  }
+  if (operation.status === "failed" || operation.status === "cancelled") {
+    return {
+      status: "error",
+      message:
+        operation.error ??
+        `A previous attempt at this exact load ended as ${operation.status}.`,
+    };
+  }
+
+  return {
+    status: "ok",
+    data: {
+      state: "upload",
+      operationId: operation.id,
+      chunkRows: operation.chunkSize,
+      mode: operation.mode,
+      // Chunks the caller must NOT re-send. Empty on a first run; on a resume
+      // this is what makes re-running the same code cost nothing.
+      doneChunks: handle.doneChunks,
+    },
+  };
+};
+
+const importChunkArgs = z.object({
+  operationId: z.uuid(),
+  chunkIndex: z.number().int().min(0),
+  rows: z.array(z.record(z.string(), z.unknown())).min(1).max(5000),
+});
+
+/**
+ * Take one chunk. In `direct` mode it is written on the spot and its ids come
+ * back; in `staged` mode it is parked until a human grants the whole load.
+ */
+const importChunk = async (
+  ctx: ExecContext,
+  rawArgs: Record<string, unknown>,
+): Promise<SandboxExecResponse> => {
+  const args = importChunkArgs.parse(rawArgs);
+  const operation = await findTeamOperation(ctx, args.operationId);
+  if (operation === null) return unknownOperation(args.operationId);
+  if (operation.status !== "staging") {
+    return {
+      status: "error",
+      message: `Bulk operation ${operation.id} is ${operation.status} and no longer accepts rows.`,
+    };
+  }
+
+  const chunk = await claimChunk({
+    operationId: operation.id,
+    chunkIndex: args.chunkIndex,
+    itemCount: args.rows.length,
+    ...(operation.mode === "staged" ? { items: args.rows } : {}),
+  });
+
+  if (operation.mode === "staged") {
+    return { status: "ok", data: { staged: chunk.chunkIndex } };
+  }
+
+  // A chunk the caller is SENDING AGAIN (a retried request, a resumed loop).
+  // `applyChunk` already refuses to write it twice, but the running tally is a
+  // separate fold and would count it twice — reporting 7 000 rows written for a
+  // 5 000-row load while the table holds the right 5 000. Measured, not
+  // theorised: this is what a probe of the real path produced.
+  const replayed = chunkAlreadyApplied(chunk);
+  const outcome = await applyChunk({ operation, chunk, items: args.rows });
+  if (!replayed) {
+    await recordDirectProgress(operation.id, chunk.chunkIndex, outcome);
+  }
+  return {
+    status: "ok",
+    data: {
+      applied: chunk.chunkIndex,
+      ids: outcome.ids ?? [],
+      okCount: outcome.succeeded,
+      errors: outcome.errors,
+    },
+  };
+};
+
+/** Fold one directly-applied chunk into the operation's running tally. */
+const recordDirectProgress = async (
+  operationId: string,
+  chunkIndex: number,
+  outcome: {
+    succeeded: number;
+    failed: number;
+    errors: { index: number; error: string }[];
+  },
+): Promise<void> => {
+  const current = await findBulkOperation(operationId);
+  if (current === undefined) return;
+  await updateBulkOperationProgress(
+    operationId,
+    foldChunkProgress(
+      current.progress ?? emptyProgress(),
+      outcome,
+      chunkIndex * current.chunkSize,
+    ),
+  );
+};
+
+const importCommitArgs = z.object({ operationId: z.uuid() });
+
+/** Close the upload: finalize a direct load, or open the single approval card. */
+const importCommit = async (
+  ctx: ExecContext,
+  rawArgs: Record<string, unknown>,
+): Promise<SandboxExecResponse> => {
+  const { operationId } = importCommitArgs.parse(rawArgs);
+  const operation = await findTeamOperation(ctx, operationId);
+  if (operation === null) return unknownOperation(operationId);
+  return commitBulkOperation({ operation, gateContext: ctx });
+};
+
+/**
+ * An operation of THIS conversation. Scoping on the conversation, not just the
+ * team, is what stops one turn from committing or extending a load opened by
+ * another — the operation id travels through agent-written code.
+ */
+const findTeamOperation = async (
+  ctx: ExecContext,
+  operationId: string,
+): Promise<BulkOperation | null> => {
+  const row = await findBulkOperation(operationId);
+  if (!row) return null;
+  if (row.teamId !== ctx.teamId || row.conversationId !== ctx.conversationId) {
+    return null;
+  }
+  return row;
+};
+
+const unknownOperation = (id: string): SandboxExecResponse => ({
+  status: "error",
+  message: `No bulk operation '${id}' in this conversation. Re-run the load from the start.`,
+});
 
 const queryArgs = z.object({
   typeKey: z.string().min(1).max(60),

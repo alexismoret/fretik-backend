@@ -301,8 +301,6 @@ export const buildDomainTools = () => ({
     category: "domain",
     searchHint:
       "map site discover urls pages structure sitemap find page on website pricing contact docs section",
-    // URLs only — a 100-URL map is a few KB.
-    maxResultSizeChars: 16_000,
   }),
   transform: buildChatbotTool({
     ...createTransformTool(),

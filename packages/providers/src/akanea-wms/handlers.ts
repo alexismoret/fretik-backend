@@ -24,6 +24,7 @@ import {
   looseNumber,
   looseString,
   numField,
+  relStrField,
   strField,
 } from "./normalize";
 import {
@@ -47,7 +48,13 @@ import {
  * casing or the date format, and those differ between installs.
  */
 
-/** Header-only projections documented per endpoint — far lighter payloads. */
+/**
+ * Header-only projections documented per endpoint — far lighter payloads, and
+ * the reason receptions and preparations carry flat `ClientCodeId` columns
+ * while `GetItems` and `GetItemQuantities` (which publish no such projection)
+ * carry a nested `Client` object instead. Mappers must match the shape their
+ * own request asks for; `relStrField` reads the nested one.
+ */
 const RECEPTION_HEADER_META = "79a55a90-3e2e-48a3-9058-20ed07b4e229";
 const PREPARATION_HEADER_META = "67bafa0a-1c5c-4684-a189-f834a870a536";
 
@@ -95,10 +102,15 @@ const toItemQuantity = (row: unknown): Record<string, unknown> =>
   compactRow({
     item_code: strField(row, "ItemCode"),
     client_code_id: strField(row, "ClientCodeId"),
+    // The warehouse customer's NAME, the one thing no read used to expose. It
+    // is what lets a caller tie a document to a `client_code_id` at all: the
+    // code is internal to the WMS and never appears on a business document.
+    client_name: relStrField(row, "Client", "Name"),
     batch_number: strField(row, "BatchNumber"),
     pallet: strField(row, "Pallet"),
     warehouse_id: strField(row, "WarehouseId"),
-    status_id: strField(row, "StatusId"),
+    // `EnItemQuantities` has no flat `StatusId` — the status is a relation.
+    status_id: relStrField(row, "Status", "Id"),
     expiry_date: dateField(row, "ExpiryDate"),
     fifo_date: dateField(row, "FIFODate"),
     // Xtent spells the "available" columns with a double L.
@@ -120,9 +132,13 @@ const toStockMovement = (row: unknown): Record<string, unknown> =>
     id: numField(row, "Id"),
     item_code: strField(row, "ItemCode"),
     client_code_id: strField(row, "ClientCodeId"),
+    client_name: relStrField(row, "Client", "Name"),
     movement_code: strField(row, "MovementCode"),
     movement_type: strField(row, "MovementType"),
-    movement_date: dateField(row, "MovementDate"),
+    // `StockDate` ("Date stock"), not `MovementDate` — the latter is not a
+    // field of `EnStockMovements` under any projection, so this read was
+    // always empty.
+    movement_date: dateField(row, "StockDate"),
     creation_date: dateField(row, "CreationDate"),
     batch_number: strField(row, "BatchNumber"),
     pallet_number: strField(row, "PalletNumber"),
@@ -155,7 +171,8 @@ const toReception = (row: unknown): Record<string, unknown> =>
     arrival_date: dateField(row, "ArrivalDate"),
     reception_warehouse_id: strField(row, "ReceptionWarehouseId"),
     truck_number: strField(row, "TruckNumber"),
-    number_of_lines: numField(row, "NumberOfLines"),
+    // No `NumberOfLines` on `EnReception` under either projection — only the
+    // three totals below. Count `list_receptions_stored` rows for a line count.
     number_of_pallets: numField(row, "NumberOfPallets"),
     number_of_parcels: numField(row, "NumberOfParcels"),
     number_of_sale_units: numField(row, "NumberOfSU"),
@@ -180,11 +197,11 @@ const toPreparation = (row: unknown): Record<string, unknown> =>
     planned_preparation_date: dateField(row, "PlannedPreparationDate"),
     actual_preparation_date: dateField(row, "ActualPreparationDate"),
     preparation_warehouse_id: strField(row, "PreparationWarehouseId"),
-    urgent: boolField(row, "Urgent"),
-    number_of_lines: numField(row, "NumberOfLines"),
-    number_of_pallets: numField(row, "NumberOfPallets"),
-    number_of_parcels: numField(row, "NumberOfParcels"),
-    number_of_sale_units: numField(row, "NumberOfSU"),
+    // `Urgent` is not a field of `EnPreparation`; urgency is the `Emergency`
+    // relation, hence a CODE rather than the boolean this used to promise (and
+    // never deliver). Preparations also carry none of the `NumberOf*` totals
+    // that receptions do — count `list_preparations_prepared` rows instead.
+    urgency_code: relStrField(row, "Emergency", "Id"),
     creation_date: dateField(row, "CreationDate"),
     validation_date: dateField(row, "ValidationDate"),
   });
@@ -193,13 +210,20 @@ const toItem = (row: unknown): Record<string, unknown> =>
   compactRow({
     id: numField(row, "Id"),
     item_code: strField(row, "ItemCode"),
-    client_code_id: strField(row, "ClientCodeId"),
+    // `GetItems` publishes NO header projection, so every one of these is a
+    // nested relation on `EnItem` and never a flat `*CodeId` column. Reading
+    // the flat names here returned `undefined` on all five, which is what sent
+    // an agent hunting through the WMS for a warehouse customer the item
+    // already carried. `PackagingCode` is gone outright: `EnItem` has no such
+    // field under any shape.
+    client_code_id: relStrField(row, "Client", "Id"),
+    client_name: relStrField(row, "Client", "Name"),
     description: strField(row, "Description"),
     external_reference: strField(row, "ExternalReference"),
-    family_code: strField(row, "FamilyCode"),
-    packaging_code: strField(row, "PackagingCode"),
-    unit_code: strField(row, "UnitCode"),
-    supplier_code_id: strField(row, "SupplierCodeId"),
+    family_code: relStrField(row, "Family", "Id"),
+    unit_code: relStrField(row, "Unit", "Id"),
+    supplier_code_id: relStrField(row, "Supplier", "Id"),
+    supplier_name: relStrField(row, "Supplier", "Name"),
     batch_management: strField(row, "BatchManagement"),
     available: boolField(row, "Available"),
     inner: numField(row, "Inner"),

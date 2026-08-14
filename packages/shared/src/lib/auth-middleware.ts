@@ -2,6 +2,10 @@ import { createMiddleware } from "hono/factory";
 import db from "../db";
 import type { organization, team, user } from "../db/schema";
 import { auth } from "./auth";
+import {
+  TEAM_MEMBERSHIP_CACHE_TTL,
+  teamMembershipCacheKey,
+} from "./auth-roles";
 import { selectOrCache } from "./redis";
 
 export type HonoLoggedAppType = {
@@ -61,13 +65,33 @@ export const authMiddleware = createMiddleware<HonoLoggedAppType>(
     let activeTeam: typeof team.$inferSelect | undefined = undefined;
 
     if (activeTeamId) {
-      activeTeam = await selectOrCache(
+      const candidate = await selectOrCache(
         () =>
           db.query.team.findFirst({
             where: { id: activeTeamId },
           }),
         `team:${activeTeamId}`,
       );
+
+      // The session keeps its `activeTeamId` when the active organization
+      // changes, and team membership can be revoked mid-session. Trusting the
+      // raw id would run the request against a team the caller has no access
+      // to — leave the context team null instead, so handlers that need one
+      // fail cleanly rather than serving another team's data.
+      const belongsToActiveOrg = candidate?.organizationId === activeOrgId;
+      if (candidate && belongsToActiveOrg) {
+        const membership = await selectOrCache(
+          () =>
+            db.query.teamMember.findFirst({
+              where: { teamId: activeTeamId, userId: authUser.id },
+            }),
+          teamMembershipCacheKey(activeTeamId, authUser.id),
+          TEAM_MEMBERSHIP_CACHE_TTL,
+        );
+        if (membership) {
+          activeTeam = candidate;
+        }
+      }
     }
 
     c.set("user", authUser as typeof user.$inferSelect);

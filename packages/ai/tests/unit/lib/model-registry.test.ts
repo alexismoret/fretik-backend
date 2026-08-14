@@ -39,15 +39,21 @@ import { shouldInjectCacheControl } from "../../../src/lib/openrouter-cache";
 /**
  * The vetted upstream pool for deepseek-v4-flash, asserted on every role that
  * carries it. Pinned here because widening it is a QUALITY change, not a
- * routing tweak: membership is decided by whether an upstream populates the
- * implicit prompt cache (a miss bills ~4.6× per turn) and whether its reasoning
- * converges, neither of which `sort: "throughput"` can see. See the profile for
- * the 2026-08-05 measurements and the per-provider exclusion reasons.
+ * routing tweak: membership is decided by whether an upstream returns the
+ * answer INTACT when the response ends in a tool call, whether it populates the
+ * implicit prompt cache (a miss bills ~4.6× per turn), and whether its reasoning
+ * converges — none of which `sort: "throughput"` can see. See the profile for
+ * the 2026-08-13 measurements and the per-provider exclusion reasons.
+ *
+ * Together was REMOVED on 2026-08-13 for truncating answers mid-sentence at the
+ * tool-call boundary; Fireworks and CoreWeave replaced it once their own
+ * exclusions (HTTP 429, no cache) re-benched clean.
  */
 const VETTED_DEEPSEEK_UPSTREAMS = [
   "baseten",
+  "fireworks",
   "venice",
-  "together",
+  "coreweave",
   "deepinfra",
 ];
 

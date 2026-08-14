@@ -106,6 +106,35 @@ export const dateField = (row: unknown, name: string): string | undefined =>
   akaneaDate(field(row, name));
 
 /**
+ * Read one property out of a RELATED entity — `Client.Id`, `Client.Name`,
+ * `Supplier.Id`, `Status.Id`.
+ *
+ * Xtent serves every entity in two shapes. The default projection nests the
+ * related party as an object (`"Client": { "Id": 246, "Name": "…" }`); a
+ * `metaId` selects a flattened "header" projection where the same thing is a
+ * scalar (`"ClientCodeId": 246`). Which one a read gets is a property of the
+ * REQUEST, so a mapper that only knows the flat name silently yields
+ * `undefined` on every row of the other shape — that is how `list_items` came
+ * to report no warehouse customer at all (`GetItems` publishes no header
+ * projection, so it is always the nested one).
+ *
+ * Kept separate from `field()` rather than folded into it: a mapper should say
+ * which shape it expects, and the flat/nested choice per read is exactly the
+ * thing that was wrong.
+ */
+export const relField = (
+  row: unknown,
+  relation: string,
+  property: string,
+): unknown => field(field(row, relation), property);
+
+export const relStrField = (
+  row: unknown,
+  relation: string,
+  property: string,
+): string | undefined => looseString(relField(row, relation, property));
+
+/**
  * Drop the keys whose value is `undefined` so the generated Pydantic
  * models fall back to their own `None` defaults instead of receiving an
  * explicit `undefined` that JSON would erase anyway.

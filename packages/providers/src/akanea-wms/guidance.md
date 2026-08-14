@@ -7,6 +7,8 @@ Akanea WMS (Xtent) runs a physical warehouse on behalf of one or more **warehous
 
 Around them sit **items** (the article catalogue) and **parties** (suppliers, consignees, carriers, warehouse customers). Quantities are counted in sale units (UVC), parcels and full pallets. Session tokens are leased and released server-side — never look for a login action.
 
+**Parties have no read action, and none can be added — Xtent publishes none.** A party reaches you only as a side-car on the record that references it: `client_code_id` + `client_name` on items, stock quantities and movements, `supplier_name` on receptions, `consignee_name` and `carrier_name` on preparations. To turn a name on a document into a `client_code_id`, look up one of its item codes with `list_items` and read the pair off the item. Do not go looking for a `list_parties`, and do not introspect the Python module for one.
+
 ## Filters and sorts
 
 Every read takes a `filters` string over the entity's PascalCase properties. Always pass one — an unfiltered read scans the whole warehouse.
@@ -44,7 +46,7 @@ akanea_wms.list_preparations(
 
 Header reads — `list_receptions`, `list_preparations` — say what was ANNOUNCED. What the floor actually did lives in `list_receptions_stored` and `list_preparations_prepared` (one row per stock object), plus `list_preparations_sscc` for pallet labels. When a user asks "did it really arrive / really ship", read the second set.
 
-Every read caps its answer at `limit` rows (200 by default) because Xtent pages nothing server-side. A truncated answer means the filter was too broad — narrow `filters` instead of raising `limit`.
+Every read caps its answer at `limit` rows (200 by default) because Xtent pages nothing server-side. `limit` truncates what comes BACK to you; it does not shrink the query, so lowering it makes a broad read no faster and no cheaper — only `filters` does. An unfiltered read of a real warehouse takes over a minute and will time out. A truncated answer means the filter was too broad — narrow `filters` instead of raising `limit`.
 
 Dates come back as the warehouse's own wall clock, with no timezone (`2026-08-05T15:30:03`). Report them as-is; do NOT convert them or append `Z`.
 
@@ -84,7 +86,8 @@ Only the fields listed here reach Xtent — anything else is dropped before the 
 
 - **reception** — `client_code_id`\*, `movement_code_id`\*, `lines`\*, `id`, `order_reference`, `supplier_code_id`, `supplier_name`, `supplier_reference`, `carrier_code_id`, `carrier_name`, `planned_receiving_date`, `appointment_date`, `arrival_date`, `reception_warehouse_id`, `office_id`, `truck_number`, `container_number`, `seal`, `number_of_pallets`, `number_of_parcels`, `comments`
 - **reception line** — `line_number`\*, `item_code`\*, `expected_sale_units`\*, `internal_item_id`, `batch_number`, `expiry_date`, `expected_parcels`, `expected_full_pallets`, `gross_weight`, `net_weight`, `status_code_id`, `external_line_number`, `comments`
-- **preparation** — `client_code_id`\*, `consignee_code_id`\*, `lines`\*, `id`, `order_reference`, `client_reference`, `consignee_reference`, `consignee_name`, `consignee_address1`, `consignee_address2`, `consignee_zip_code`, `consignee_city_name`, `consignee_country_id`, `contact_name`, `contact_phone`, `contact_mail`, `carrier_code_id`, `carrier_name`, `planned_delivery_date`, `imperative_delivery_date`, `planned_preparation_date`, `preparation_warehouse_id`, `movement_code_id`, `office_id`, `urgent`
+- **preparation** — `client_code_id`\*, `consignee_code_id`\*, `lines`\*, `comments`, `id`, `order_reference`, `client_reference`, `consignee_reference`, `consignee_name`, `consignee_address1`, `consignee_address2`, `consignee_zip_code`, `consignee_city_name`, `consignee_country_id`, `contact_name`, `contact_phone`, `contact_mail`, `carrier_code_id`, `carrier_name`, `planned_delivery_date`, `imperative_delivery_date`, `planned_preparation_date`, `preparation_warehouse_id`, `movement_code_id`, `office_id`, `urgent`
+- **preparation comment** (up to 3 in `comments`) — `comment_type`\*, `comment`, `order`. The type routes the note: `PRE` reaches the picker, `TRS` the carrier, `LIV` the delivery slip, `REC` the reception. A note with no type has nowhere to go, so pick one deliberately rather than defaulting.
 - **preparation line** — `line_number`\*, `item_code`\*, `ordered_sale_units`\*, `internal_item_id`, `batch_number`, `ordered_parcels`, `ordered_full_pallets`, `expiry_date`, `status_code_id`, `external_line_number`, `comments`
 - **item** — `client_code_id`\*, `item_code`\*, `description`\*, `priority_racks`\* (each: `warehouse_id`\*, `movement_type`\*, `priority_rack`, `priority`), `external_reference`, `family_code`, `packaging_code`, `unit_code`, `supplier_code_id`, `batch_management`, `available`, `inner`, `outer`, `layers_per_pallet`, `parcels_per_layer`, `parcel_gross_weight`, `parcel_net_weight`, `comments`
 - **party** — `id`\*, `name`, `party_category`, `office_id`, `address1`, `address2`, `zip_code`, `city_name`, `country_id`, `operation_address1`, `operation_address2`, `operation_zip_code`, `operation_city_name`, `operation_country_id`, `email`, `phone_number`, `siret`, `vat_identification`, `eori_number`, `available`

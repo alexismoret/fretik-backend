@@ -24,6 +24,10 @@ import { seedStarterObjectTypes } from "../services/object-types/seed-starter-ty
 import { seedSystemOntology } from "../services/object-types/seed-system-types";
 import { scrubWorkflowNotificationRecipient } from "../services/workflows/scrub-notification-recipient";
 import { OTP_EXPIRY_SECONDS } from "./auth-constants";
+import {
+  invalidateOrgTeamMembershipCache,
+  invalidateTeamMembershipCache,
+} from "./auth-roles";
 import { sendEmail } from "./email";
 import { redis } from "./redis";
 
@@ -284,12 +288,23 @@ const options = {
             userId: data.member.userId,
             organizationId: data.organization.id,
           });
+          // `authMiddleware` caches team membership; removing an org member
+          // also drops their `team_member` rows, so their live session would
+          // keep team access until the TTL expires.
+          await invalidateOrgTeamMembershipCache(
+            data.organization.id,
+            data.member.userId,
+          );
         },
         afterRemoveTeamMember: async (data) => {
           await scrubNotificationRecipient({
             userId: data.teamMember.userId,
             teamId: data.team.id,
           });
+          await invalidateTeamMembershipCache(
+            data.team.id,
+            data.teamMember.userId,
+          );
         },
       },
 

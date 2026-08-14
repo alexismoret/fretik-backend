@@ -18,6 +18,7 @@ from ._runtime import FretikActionError, Operation, _call_read, run_plan
 class ItemQuantity(BaseModel):
     item_code: str | None = None
     client_code_id: str | None = None
+    client_name: str | None = None
     batch_number: str | None = None
     pallet: str | None = None
     warehouse_id: str | None = None
@@ -41,6 +42,7 @@ class StockMovement(BaseModel):
     id: int | None = None
     item_code: str | None = None
     client_code_id: str | None = None
+    client_name: str | None = None
     movement_code: str | None = None
     movement_type: str | None = None
     movement_date: str | None = None
@@ -72,7 +74,6 @@ class Reception(BaseModel):
     arrival_date: str | None = None
     reception_warehouse_id: str | None = None
     truck_number: str | None = None
-    number_of_lines: float | None = None
     number_of_pallets: float | None = None
     number_of_parcels: float | None = None
     number_of_sale_units: float | None = None
@@ -96,11 +97,7 @@ class Preparation(BaseModel):
     planned_preparation_date: str | None = None
     actual_preparation_date: str | None = None
     preparation_warehouse_id: str | None = None
-    urgent: bool | None = None
-    number_of_lines: float | None = None
-    number_of_pallets: float | None = None
-    number_of_parcels: float | None = None
-    number_of_sale_units: float | None = None
+    urgency_code: str | None = None
     creation_date: str | None = None
     validation_date: str | None = None
 
@@ -136,12 +133,13 @@ class Item(BaseModel):
     id: int | None = None
     item_code: str | None = None
     client_code_id: str | None = None
+    client_name: str | None = None
     description: str | None = None
     external_reference: str | None = None
     family_code: str | None = None
-    packaging_code: str | None = None
     unit_code: str | None = None
     supplier_code_id: str | None = None
+    supplier_name: str | None = None
     batch_management: str | None = None
     available: bool | None = None
     inner: float | None = None

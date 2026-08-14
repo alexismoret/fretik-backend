@@ -1376,10 +1376,14 @@ export const runChatbotTurn = async (
         try {
           if (opts.notice) {
             const noticeId = randomUUIDv7();
+            // All three chunks MUST carry the same id: `processUIMessageStream`
+            // throws `UIMessageStreamError` on a `text-delta` whose id has no
+            // open `text-start`, which kills the whole client stream — no
+            // notice, no `onFinish`, turn never persisted.
             writer.write({ type: "text-start", id: noticeId });
             writer.write({
               type: "text-delta",
-              id: `${noticeId}-d`,
+              id: noticeId,
               delta:
                 "_Switching to the fallback model after the primary stopped without producing an answer…_\n\n",
             });
@@ -1451,10 +1455,11 @@ export const runChatbotTurn = async (
               `${params.logPrefix} fallback also zombied (finish=${fbFinish})`,
             );
             const finalId = randomUUIDv7();
+            // Same id across the three chunks — see the note on the notice above.
             writer.write({ type: "text-start", id: finalId });
             writer.write({
               type: "text-delta",
-              id: `${finalId}-d`,
+              id: finalId,
               delta:
                 "Both models stopped without producing an answer. Please retry — for large attachments, try opening the file directly in `python` (e.g. `pdfplumber.open(...)`, `pd.read_csv(...)`).",
             });
@@ -1880,6 +1885,20 @@ export const runChatbotTurn = async (
               }
               if (recoveryErrorReason !== undefined) {
                 turnMetadata.errorReason = recoveryErrorReason;
+              }
+              // A turn that answered NOTHING is invisible in the traces
+              // otherwise: no usage, no finish reason, no provider, and
+              // `output: null` on the root — indistinguishable from a user
+              // Stop, which is the state 3 of 6 turns of session
+              // 019ff9d5 ended in with no way to tell which. Both flags are
+              // recorded so the two causes can be told apart before anything
+              // is built on top of them (a stall watchdog needs to know the
+              // stalls are real, and how long they actually run).
+              if (visibleOutput.trim().length === 0) {
+                turnMetadata.emptyTurn = "true";
+              }
+              if (abortController.signal.aborted) {
+                turnMetadata.stopped = "true";
               }
               // A structured error reached the wire → the whole turn is
               // marked ERROR so it is filterable by level in Langfuse

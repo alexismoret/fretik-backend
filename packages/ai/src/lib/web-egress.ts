@@ -12,8 +12,12 @@ import { TOOL_ERROR_CODES } from "./tool-error-codes";
  *     private / loopback / link-local / metadata targets, and over-long URLs.
  *  2. Opt-in operator levers (off by default): a denylist
  *     (`AI_WEB_BLOCKED_DOMAINS`) and a dormant allowlist
- *     (`AI_WEB_ALLOWED_DOMAINS`, which flips fetch to deny-by-default when set).
- *  3. A disable switch (`AI_WEB_TOOLS_ENABLED=false`) read by the agent wiring.
+ *     (`AI_WEB_ALLOWED_DOMAINS`, which flips to deny-by-default when set).
+ *     Both apply to fetch targets AND to discovered URLs (`isUrlDenied`), so
+ *     search never surfaces a page the fetch path would refuse.
+ *  3. A disable switch (`AI_WEB_TOOLS_ENABLED=false`) plus a missing Tavily
+ *     key, either of which prunes the web tools from every registry
+ *     (`pruneWebTools`) and from the chatbot's per-step tool list.
  *
  * Honesty note: Tavily fetches server-side, so SSRF-against-Fretik is already
  * near-nil. `assertFetchableTarget` matters mainly for a clean structured error
@@ -222,16 +226,63 @@ export const assertFetchableTarget = (rawUrl: string): void =>
   assertFetchableTargetWithPolicy(rawUrl, currentEgressPolicy());
 
 /**
- * True when a result URL should be dropped from `searchWeb` output under the
- * given denylist (defaults to the live env denylist). Allowlist is NOT applied
- * to search discovery — only the explicit denylist filters results.
+ * True when a discovered URL (a `searchWeb` hit, a `webMap` result) should be
+ * dropped before the model ever sees it. Applies the SAME domain policy as
+ * `assertFetchableTarget`: the denylist always, and — when an allowlist is
+ * configured — anything outside it. Surfacing a URL the fetch path would
+ * refuse wastes a credit and pushes the model to cite a page it cannot read.
  */
 export const isUrlDenied = (
   url: string,
-  blockedDomains: string[] = currentEgressPolicy().blockedDomains,
+  policy: EgressPolicy = currentEgressPolicy(),
 ): boolean => {
-  if (blockedDomains.length === 0) return false;
+  if (
+    policy.blockedDomains.length === 0 &&
+    policy.allowedDomains.length === 0
+  ) {
+    return false;
+  }
   const host = hostFromUrl(url);
   if (host === null) return false;
-  return blockedDomains.some((p) => hostMatches(host, p));
+  if (policy.blockedDomains.some((p) => hostMatches(host, p))) return true;
+  return (
+    policy.allowedDomains.length > 0 &&
+    !policy.allowedDomains.some((p) => hostMatches(host, p))
+  );
+};
+
+/**
+ * The web tools gated by `AI_WEB_TOOLS_ENABLED` and by the presence of a
+ * Tavily key. Canonical list — the chatbot's `prepareStep` suppression and
+ * the registry pruning below both read it, so a new web tool is gated in one
+ * place.
+ */
+export const WEB_TOOL_NAMES: ReadonlySet<string> = new Set([
+  "searchWeb",
+  "webFetch",
+  "webMap",
+]);
+
+/**
+ * True when the web tools should exist at all on this deployment: the
+ * operator switch is on AND a Tavily key is configured (every web tool is
+ * Tavily-backed; without a key they can only fail).
+ */
+export const areWebToolsAvailable = (): boolean =>
+  areWebToolsEnabled() && Boolean(process.env.TAVILY_API_KEY);
+
+/**
+ * Return the registry unchanged when the web tools are available (the normal
+ * case), and strip them ONLY when the operator disabled them or no Tavily key
+ * is set. Applied to the registries built once at boot (sub-agents, workflow
+ * runs), which install no `prepareStep`; the chatbot instead filters per step,
+ * which also strips the tools from the prompt's catalogue.
+ */
+export const pruneWebToolsIfUnavailable = <T extends Record<string, unknown>>(
+  registry: T,
+): T => {
+  if (areWebToolsAvailable()) return registry;
+  const pruned = { ...registry };
+  for (const name of WEB_TOOL_NAMES) delete pruned[name];
+  return pruned;
 };

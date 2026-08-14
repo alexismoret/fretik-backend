@@ -3,6 +3,7 @@ import { Sandbox } from "@e2b/code-interpreter";
 import { FileType } from "e2b";
 import { extname } from "node:path";
 import { acquireSandbox } from "./acquire-sandbox";
+import { SANDBOX_TIMEOUT_MS } from "./client";
 import { killSandbox } from "./kill-sandbox";
 import {
   clearPythonContextFromRegistry,
@@ -505,6 +506,11 @@ export const runInSandbox = async (
       options.abortSignal,
       sbx.runCode(options.code, {
         context,
+        // Without this the SDK applies its own 60 s default, which is neither
+        // the 5 min the `python` tool advertises to the model nor the window
+        // the sandbox itself is leased for — a read against a slow upstream
+        // died at 60 s while everything above it was sized for five minutes.
+        timeoutMs: SANDBOX_TIMEOUT_MS,
         onStdout: (data: { line?: string }) => {
           const line = data.line ?? "";
           stdoutBuf += line;
@@ -585,6 +591,8 @@ export const runInSandbox = async (
       options.abortSignal,
       sbx.commands.run(options.code, {
         cwd: WORKSPACE_ROOT,
+        // Same reason as the `runCode` call above: the SDK default is 60 s.
+        timeoutMs: SANDBOX_TIMEOUT_MS,
         onStdout: (chunk: string) => {
           stdoutBuf += chunk;
           options.onStdout?.(chunk);

@@ -1,6 +1,6 @@
 import db from "../db";
 import { forbidden, throwHttpError } from "./errors";
-import { selectOrCache } from "./redis";
+import { redis, selectOrCache } from "./redis";
 
 /**
  * Cross-handler role gating + member-role cache.
@@ -67,4 +67,52 @@ export const assertOrgAdmin = async (data: {
       forbidden(data.message ?? "This action requires admin or owner role"),
     );
   }
+};
+
+/**
+ * Cache key for the team-membership lookup `authMiddleware` runs on every
+ * request. Nested under `team:{teamId}:` like the other team-scoped caches, so
+ * a team-wide `deleteKeysByPrefix('team:{teamId}')` clears it too.
+ */
+export const teamMembershipCacheKey = (
+  teamId: string,
+  userId: string,
+): string => `team:${teamId}:member:${userId}`;
+
+/**
+ * TTL for the team-membership cache (seconds). Aligned with the member-role
+ * cache — both gate access, and both are invalidated explicitly on removal, so
+ * the TTL is only a backstop.
+ */
+export const TEAM_MEMBERSHIP_CACHE_TTL = MEMBER_ROLE_CACHE_TTL;
+
+/**
+ * Drop one user's cached membership in one team. Call AFTER the removal
+ * commits — a stale entry would keep the team context alive for a caller who
+ * no longer belongs to it.
+ */
+export const invalidateTeamMembershipCache = async (
+  teamId: string,
+  userId: string,
+): Promise<void> => {
+  await redis.del(teamMembershipCacheKey(teamId, userId));
+};
+
+/**
+ * Drop every cached team membership a user holds in an organization.
+ * Better Auth's `removeMember` bulk-deletes their `team_member` rows in one
+ * statement, so `afterRemoveTeamMember` never fires per row and the org-level
+ * hook has to sweep the teams itself.
+ */
+export const invalidateOrgTeamMembershipCache = async (
+  organizationId: string,
+  userId: string,
+): Promise<void> => {
+  const teams = await db.query.team.findMany({
+    columns: { id: true },
+    where: { organizationId },
+  });
+  await Promise.all(
+    teams.map((t) => invalidateTeamMembershipCache(t.id, userId)),
+  );
 };

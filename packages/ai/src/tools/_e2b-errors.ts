@@ -36,8 +36,11 @@ export const mapE2BError = (
     };
   }
   if (err instanceof TimeoutError) {
+    // The SDK's own message ends with "the 'timeoutMs' option can be used to
+    // increase this timeout" — an option no tool exposes, so it sends the model
+    // hunting for a knob that does not exist. Say what it can actually do.
     return {
-      error: `Sandbox request timed out ${context}: ${err.message}`,
+      error: `Sandbox run timed out ${context} (5 min cap). Narrow the work: filter the query, fetch fewer rows, or split it across calls. Re-running the same code unchanged will time out again.`,
       code: TOOL_ERROR_CODES.SANDBOX_TIMEOUT,
     };
   }

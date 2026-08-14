@@ -2,13 +2,17 @@ import { tool } from "ai";
 import { z } from "zod";
 import { getRuntimeContext } from "../agents/shared/runtime-context";
 import { maybePersistLargeOutput } from "../lib/persisted-output";
-import { extractUrls, TavilyTimeoutError } from "../lib/tavily";
+import {
+  extractUrls,
+  TavilyTimeoutError,
+  TavilyUnconfiguredError,
+} from "../lib/tavily";
 import { TOOL_ERROR_CODES } from "../lib/tool-error-codes";
 import { assertFetchableTarget, WebEgressError } from "../lib/web-egress";
 
 /**
- * Domain tool (deferred) — fetch a single public URL and return its
- * cleaned Markdown content.
+ * Domain tool (deferred) — fetch public URLs and return their cleaned
+ * Markdown content.
  *
  * Backed by Tavily's `/extract` endpoint (see `lib/tavily.ts`). Unlike
  * Claude Code's `WebFetchTool` which pulls HTML via axios + parses
@@ -16,6 +20,9 @@ import { assertFetchableTarget, WebEgressError } from "../lib/web-egress";
  * one remote call and returns raw Markdown. The chatbot reads/
  * summarises the content itself in the next step — no hidden LLM
  * roundtrip.
+ *
+ * Batching matters on cost: Tavily bills `/extract` per group of 5
+ * URLs, so five pages in one call cost what one page costs.
  *
  * Larger than the other domain tools (48K threshold vs 16K) because a
  * single article can easily fill 20-40 KB of Markdown and we would
@@ -29,16 +36,35 @@ const WEB_FETCH_PERSIST_THRESHOLD_CHARS = 48_000;
 export const createWebFetchTool = () =>
   tool({
     description: [
-      "Fetch a public URL and return its cleaned Markdown content.",
+      "Fetch public URLs and return their cleaned Markdown content.",
       "",
-      "Use this when you need the FULL content of a SPECIFIC page the user referenced (a regulation page, a press release, a vendor pricing page, …). For broad discovery of external information, use `searchWeb` first — it returns titles and snippets and scales better than fetching every candidate URL.",
+      "Use it for the FULL content of pages you already know — a page the user referenced, a hit `searchWeb` returned, a URL `webMap` discovered. For discovery, search first: fetching candidate URLs one by one does not scale.",
       "",
-      "Input: a single `url` and an optional `depth` ('basic' or 'advanced'). `advanced` asks Tavily for a deeper extraction pass — slower but picks up content from JS-heavy pages. Default is 'basic'.",
+      "Pass up to 5 `urls` in ONE call when you need several related pages — Tavily bills per group of 5, so five URLs together cost what one costs. Set `query` on long pages to get only the passages that answer it instead of the whole article. `depth: 'advanced'` is slower but reads JS-heavy pages.",
       "",
-      "Returns: `{ url, title, content, favicon }`. If the URL fails (404, blocked, …), the tool returns an `error` field describing the failure. Large markdown responses may be auto-persisted — recover with `read(file_path)` or process with `python`.",
+      "Returns `{ results: [{ url, title, content, favicon }], failed: [{ url, error }] }` — a partial success is normal, read what came back and do not retry a URL that failed twice. Large markdown may be auto-persisted: recover with `read(file_path)` or process with `python`.",
     ].join("\n"),
     inputSchema: z.object({
-      url: z.string().url().describe("Public URL to fetch"),
+      urls: z
+        .array(z.url())
+        .min(1)
+        .max(5)
+        .describe(
+          "Public URLs to fetch (1-5). Batch related pages you will read together.",
+        ),
+      query: z
+        .string()
+        .optional()
+        .describe(
+          "Return only the passages relevant to this question instead of the full page — prefer it on long articles and documentation",
+        ),
+      chunks_per_source: z
+        .number()
+        .int()
+        .min(1)
+        .max(5)
+        .optional()
+        .describe("With `query`: passages returned per page (default 3)"),
       depth: z
         .enum(["basic", "advanced"])
         .optional()
@@ -46,30 +72,57 @@ export const createWebFetchTool = () =>
           "Extraction depth — 'basic' (default) is faster, 'advanced' is slower but better on JS-heavy or paywalled pages",
         ),
     }),
-    execute: async ({ url, depth }, options) => {
+    execute: async ({ urls, query, chunks_per_source, depth }, options) => {
       const ctx = getRuntimeContext(options);
       const { toolCallId } = options;
 
-      // Egress hardening: reject internal/private/non-http(s) targets and
-      // domains excluded by the deployment's denylist/allowlist before the
-      // Tavily call. The web stays open by default; see `lib/web-egress.ts`.
-      try {
-        assertFetchableTarget(url);
-      } catch (err) {
-        if (err instanceof WebEgressError) {
-          return { error: err.detail.message, code: err.detail.code, url };
+      // Egress hardening per URL: reject internal/private/non-http(s) targets
+      // and domains excluded by the deployment's denylist/allowlist before the
+      // Tavily call. A blocked URL joins `failed` instead of sinking the whole
+      // batch. The web stays open by default; see `lib/web-egress.ts`.
+      const fetchable: string[] = [];
+      const blocked: Array<{ url: string; error: string }> = [];
+      for (const url of urls) {
+        try {
+          assertFetchableTarget(url);
+          fetchable.push(url);
+        } catch (err) {
+          if (err instanceof WebEgressError) {
+            blocked.push({ url, error: err.detail.message });
+            continue;
+          }
+          throw err;
         }
-        throw err;
+      }
+
+      if (fetchable.length === 0) {
+        return {
+          error: blocked[0]?.error ?? "No fetchable URL",
+          code: TOOL_ERROR_CODES.WEB_FETCH_BLOCKED_TARGET,
+          failed: blocked,
+        };
       }
 
       let result: Awaited<ReturnType<typeof extractUrls>>;
       try {
-        result = await extractUrls([url], depth ?? "basic");
+        result = await extractUrls(fetchable, {
+          depth: depth ?? "basic",
+          ...(query === undefined ? {} : { query }),
+          ...(chunks_per_source === undefined
+            ? {}
+            : { chunksPerSource: chunks_per_source }),
+        });
       } catch (err) {
         if (err instanceof TavilyTimeoutError) {
           return {
             error: `webFetch timed out: ${err.message}`,
             code: TOOL_ERROR_CODES.TAVILY_TIMEOUT,
+          };
+        }
+        if (err instanceof TavilyUnconfiguredError) {
+          return {
+            error: err.message,
+            code: TOOL_ERROR_CODES.WEB_TOOLS_UNCONFIGURED,
           };
         }
         return {
@@ -78,21 +131,23 @@ export const createWebFetchTool = () =>
         };
       }
 
-      const [extracted] = result.results;
-      if (!extracted) {
-        const failure = result.failed[0];
+      const failed = [...blocked, ...result.failed];
+      if (result.results.length === 0) {
         return {
-          error: failure?.error ?? `No content returned for ${url}`,
+          error: failed[0]?.error ?? `No content returned for ${urls[0]}`,
           code: TOOL_ERROR_CODES.WEB_FETCH_EMPTY,
-          url,
+          failed,
         };
       }
 
       const payload = {
-        url: extracted.url,
-        title: extracted.title,
-        favicon: extracted.favicon,
-        content: extracted.content,
+        results: result.results.map((r) => ({
+          url: r.url,
+          title: r.title,
+          favicon: r.favicon,
+          content: r.content,
+        })),
+        ...(failed.length > 0 ? { failed } : {}),
       };
 
       return maybePersistLargeOutput(

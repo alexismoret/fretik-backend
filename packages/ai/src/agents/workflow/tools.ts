@@ -1,3 +1,4 @@
+import { pruneWebToolsIfUnavailable } from "../../lib/web-egress";
 import { createAskUserQuestionWorkflowTool } from "../../tools/ask-user/workflow";
 import { createCompleteTaskTool } from "../../tools/complete-task";
 import type { createDispatchAgentTool } from "../../tools/dispatch-agent";
@@ -42,9 +43,11 @@ export const buildWorkflowTools = (extras: {
   // `WORKFLOW_FORBIDDEN_DOMAIN_TOOLS` (see `../shared/workflow-tool-gate`): a
   // run never edits schema, drafts skills, or builds workflows. Keep the two
   // lists in sync — sub-agents prune the same names by string.
+  //
+  // Web tools stay in by default; `pruneWebToolsIfUnavailable` only honours
+  // the operator kill switch, which headless runs would otherwise ignore.
   return {
-    ...coreTools,
-    ...domainTools,
+    ...pruneWebToolsIfUnavailable({ ...coreTools, ...domainTools }),
     dispatchAgent: extras.dispatchAgent,
     // Blocking variant — creates a `question` approval and pauses the run.
     askUserQuestion: buildChatbotTool({

@@ -219,21 +219,48 @@ export const DEEPSEEK_PROFILES: Record<string, ModelProfile> = {
         // dropping it would remove the only path by which a genuinely bimodal
         // upstream ever gets used. Do NOT read its presence as a speed claim.
         //
-        // 2026-08-09: nearly dropped over the empty-`spec.elements` loop (prod
-        // conversation 019fe670, 35 consecutive degenerate `managePage` calls).
-        // The measurement that would have justified it was WRONG — the probe
-        // left reasoning uncapped, so Venice spent 7 200 output tokens thinking
-        // and truncated the call. Re-run with what `settingsForRole` actually
-        // sends (`reasoning.max_tokens: 1500`), n=5, same 9k prompt and tool
-        // schema: Venice 5/5 wrote the elements, DeepInfra 4/5, Together 3/5.
-        // The lesson is about probes, not upstreams: measure a provider with
-        // the envelope production puts on the wire, or the result describes an
-        // experiment nobody runs.
+        // TOGETHER IS OUT since 2026-08-13: it MUTILATES answers. Whenever a
+        // response ends in tool calls — which every agent turn does — it stops
+        // emitting `content` mid-sentence and never sends the tail in any later
+        // chunk, so nothing downstream can recover it. Prod evidence over 5 days
+        // of `chatbot-turn` generations, same code and same model throughout:
+        // 44/50 text parts cut on `finish_reason = tool-calls` (0/14 on `stop`),
+        // against 0/25 Venice and 0/5 DeepInfra. Reproduced off the raw wire
+        // 3/3, streaming AND non-streaming, so it is generation-side rather than
+        // a framing bug in any SDK. Same class as the `</think>` boundary bug on
+        // `minimax-m3`, same remedy. The speed and cache numbers that admitted
+        // it on 2026-08-06 still hold; they are not worth a truncated answer.
+        // `models:bench` now carries this as its `intact` column — re-admit only
+        // on a clean reading.
         //
-        // TOGETHER IS IN: 1.38× DeepInfra's decode, caches STABLY (cost falls
-        // 4.66× on the second identical prefix, $0.00732 → $0.00157) and
-        // converges better than the incumbent (2 380 reasoning tokens against
-        // DeepInfra's 2 557 on a 600 budget).
+        // Re-benched 2026-08-13, n=3, integrity + cost-based cache:
+        //
+        //   upstream    intact  tok/s  best   cold $    warm $   429
+        //   baseten        0/3  132.3  132.3       —         —     6   ← never served
+        //   fireworks      3/3   97.0  100.2  0.00733   0.00147     0
+        //   venice         3/3   87.2   92.3  0.00917   0.00184     0
+        //   coreweave      3/3   74.1   82.6  0.00680   0.00368     0
+        //   together       0/3   55.2   61.2  0.00732   0.00157     0   ← cuts answers
+        //   deepinfra      1/3   28.1   34.2  0.00418   0.00086     2
+        //
+        // FIREWORKS IS IN, and the note it replaces was simply STALE. It was
+        // excluded as "HTTP 429" — it now serves 6/6 calls without one, and is
+        // the best endpoint here on every axis at once: fastest of those that
+        // work, a clean 5.0× cache drop, and by far the tightest reasoning
+        // (714 tokens against a 600 budget, where Venice spends 2 802 and
+        // DeepInfra 2 082 for the same answer).
+        //
+        // COREWEAVE IS IN, on a correction and a caveat. The correction: it DOES
+        // cache now — $0.00680 → $0.00368 — where the 2026-08-06 probe measured
+        // three identical prefixes billed flat and concluded it never did. The
+        // caveat: that is a 1.85× drop where every other member gets ~5×, so its
+        // warm path is 4.3× DeepInfra's and 2.5× Fireworks'. It is admitted as a
+        // ceiling-and-availability option under the pool doctrine below (a member
+        // the sort does not promote costs nothing), NOT as a cheap one.
+        //
+        // DEEPINFRA IS NO LONGER THE SAFE INCUMBENT: 28 tok/s median here, a
+        // fifth of its own ceiling, and 2 of its 3 integrity runs came back 429.
+        // It stays for its warm price, which is still the cheapest by 1.7×.
         //
         // The two FASTEST upstreams are both rejected, and only the cost probe
         // could show why: CoreWeave bills three identical 75k prefixes at
@@ -244,10 +271,9 @@ export const DEEPSEEK_PROFILES: Record<string, ModelProfile> = {
         // merely high. Novita burned all 4 096 output tokens on reasoning — the
         // answer is never written — which is a hard exclusion, not a preference.
         //
-        // Together is admitted as a CANDIDATE, deliberately not pinned with
-        // `order`: OpenRouter's own p50 still ranks it (37) below DeepInfra (44),
-        // and pinning our own n=2 against their 30-minute aggregate is the exact
-        // mistake this change is undoing. If its p50 rises, `sort` promotes it.
+        // Nothing here is pinned with `order`: pinning our own n=3 against
+        // OpenRouter's live aggregate is the mistake the 2026-08-05 change
+        // undid, and `order` silently disables `sort`.
         //
         // Earlier note (2026-08-05), kept for the reasoning that still holds:
         // the previous `order: ["DeepInfra"]` was pinning the agent to the
@@ -285,24 +311,29 @@ export const DEEPSEEK_PROFILES: Record<string, ModelProfile> = {
         // `sort` promotes on OpenRouter's live p50, so an upstream that is only
         // occasionally fast can only ever be reached if it is a member — and a
         // member that is never promoted costs nothing. Admission therefore turns
-        // on cache and convergence, never on "will it win today".
+        // on ANSWER INTEGRITY first, then cache and convergence, never on "will
+        // it win today".
         //
-        // Excluded on measurement: CoreWeave + SiliconFlow (no cache / erratic
-        // cache, see above — the only exclusions here that cost real speed),
-        // Novita (reasoning runaway: spent the whole 4 096-token budget with the
-        // answer unwritten), Parasail (31 tok/s), Phala (caches and converges
-        // best of the lot, but $0.070/MTok cache-read is 3.9× DeepInfra's for
-        // 1.28× the decode), Mancer 2 (never caches, dearest), Morph / AkashML /
-        // Io Net (17-21 tok/s), Fireworks + Ionstream (HTTP 429), Baidu /
-        // DeepSeek / Cloudflare / BaseTen-without-ZDR (404 — outside the ZDR
-        // pool). Parasail's old "19.5s TTFT" exclusion was a bad sample:
-        // OpenRouter puts its latency p50 at 779 ms, second best of all 22.
+        // Excluded on measurement: SiliconFlow (erratic cache — hit once then
+        // missed twice in 30 s), Novita (reasoning runaway: spent the whole
+        // 4 096-token budget with the answer unwritten), Parasail (31 tok/s),
+        // Phala (caches and converges best of the lot, but $0.070/MTok
+        // cache-read is 3.9× DeepInfra's for 1.28× the decode), Mancer 2 (never
+        // caches, dearest), Morph / AkashML / Io Net (17-21 tok/s), Ionstream
+        // (HTTP 429), Together (cuts answers — above), Baidu / DeepSeek /
+        // Cloudflare / BaseTen-without-ZDR (404 — outside the ZDR pool).
+        // Parasail's old "19.5s TTFT" exclusion was a bad sample: OpenRouter
+        // puts its latency p50 at 779 ms, second best of all 22.
+        //
+        // TWO of those exclusions expired and were reversed on 2026-08-13
+        // (CoreWeave's "never caches", Fireworks' "HTTP 429"). An upstream is a
+        // moving target: re-bench before quoting a note, never act on its age.
         //
         // BaseTen is IN despite serving 0 of 5 attempts across two benches (all
         // HTTP 429): a 429 inside `only` fails over silently (0 errors reached
         // the caller over 10 turns), so the option costs nothing, and its p99 is
         // 412 tok/s — four times anything else here — when it does serve.
-        only: ["baseten", "venice", "together", "deepinfra"],
+        only: ["baseten", "fireworks", "venice", "coreweave", "deepinfra"],
       },
       enabled: true,
       // Promoted to the `chat` + `workflow` default 2026-08-02, full curated

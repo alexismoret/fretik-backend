@@ -1,3 +1,4 @@
+import { pruneWebToolsIfUnavailable } from "../../lib/web-egress";
 import { createAskUserQuestionTool } from "../../tools/ask-user/chat";
 import { createBashTool } from "../../tools/bash";
 import { createCreateSkillTool } from "../../tools/create-skill";
@@ -31,6 +32,7 @@ import { createUpdateSkillTool } from "../../tools/update-skill";
 import { createUploadToDriveTool } from "../../tools/upload-to-drive";
 import { createVisionTool } from "../../tools/vision";
 import { createWebFetchTool } from "../../tools/web-fetch";
+import { createWebMapTool } from "../../tools/web-map";
 import { createWebSearchTool } from "../../tools/web-search";
 import {
   buildChatbotTool,
@@ -212,9 +214,11 @@ export const buildCoreTools = (domainTools: SearchableToolRegistry) => ({
  *   services (field validation, typed table, `domain_events`). Bulk writes
  *   and type migrations go through the Python `objects` SDK (fretik_apps),
  *   not these tools.
- * - **webFetch**: pulls a specific public URL as cleaned Markdown
- *   via Tavily `/extract`. Paired with the core `searchWeb` tool —
+ * - **webFetch**: pulls up to 5 public URLs as cleaned Markdown via
+ *   Tavily `/extract`. Paired with the core `searchWeb` tool —
  *   search first, fetch specific hits second.
+ * - **webMap**: lists a site's URLs (Tavily `/map`, no content) when
+ *   the site is known but the page isn't — map, pick, then `webFetch`.
  * - **downloadDriveDocument**: pulls a Drive document's binary bytes
  *   into the conversation sandbox under `/workspace/drive/`. Use
  *   only when `searchKnowledge` (RAG) isn't enough — typically for
@@ -291,6 +295,14 @@ export const buildDomainTools = () => ({
     ...createWebFetchTool(),
     category: "domain",
     searchHint: "fetch extract read content specific url page markdown article",
+  }),
+  webMap: buildChatbotTool({
+    ...createWebMapTool(),
+    category: "domain",
+    searchHint:
+      "map site discover urls pages structure sitemap find page on website pricing contact docs section",
+    // URLs only — a 100-URL map is a few KB.
+    maxResultSizeChars: 16_000,
   }),
   transform: buildChatbotTool({
     ...createTransformTool(),
@@ -466,7 +478,10 @@ export const buildSubAgentTools = () => {
   const domainTools = buildDomainTools();
   const allCoreTools = buildCoreTools(domainTools);
   const { searchTools: _searchTools, ...coreWithoutSearch } = allCoreTools;
-  return { ...coreWithoutSearch, ...domainTools };
+  // Sub-agents keep the web tools like everyone else; this only honours the
+  // operator's kill switch (and a missing Tavily key), which the chatbot
+  // applies per step and sub-agents would otherwise ignore entirely.
+  return pruneWebToolsIfUnavailable({ ...coreWithoutSearch, ...domainTools });
 };
 
 export type SubAgentTools = ReturnType<typeof buildSubAgentTools>;

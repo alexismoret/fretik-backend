@@ -322,6 +322,35 @@ export const preparationLineFields: readonly WireField[] = [
   { key: "comments", wire: "Comments", spec: freeText("Free-text line note") },
 ];
 
+/**
+ * Header comments of a preparation. Xtent types them rather than offering one
+ * free-text box: a note meant for the picker, the carrier or the delivery slip
+ * lands in a different place in the warehouse, so the TYPE is mandatory and
+ * carries the routing. Capped at 3 by the vendor (`0-3`), one per type in
+ * practice.
+ */
+export const preparationCommentFields: readonly WireField[] = [
+  {
+    key: "comment_type",
+    wire: "CommentType",
+    spec: {
+      type: "string",
+      description:
+        "Where the note goes: PRE preparation, TRS transport, LIV delivery slip, REC reception",
+    },
+  },
+  {
+    key: "comment",
+    wire: "Comment",
+    spec: freeText("The note itself, 512 characters max"),
+  },
+  {
+    key: "order",
+    wire: "Order",
+    spec: { type: "integer", optional: true, description: "Display rank" },
+  },
+];
+
 export const preparationFields: readonly WireField[] = [
   {
     key: "client_code_id",
@@ -338,6 +367,15 @@ export const preparationFields: readonly WireField[] = [
     wire: "EdiPreparationDetailsList",
     children: preparationLineFields,
     spec: lines(preparationLineFields, "Preparation lines — at least one"),
+  },
+  {
+    key: "comments",
+    wire: "EdiPreparationCommentsList",
+    children: preparationCommentFields,
+    spec: lines(
+      preparationCommentFields,
+      "Header notes, up to 3, each typed by where it must appear",
+    ),
   },
   {
     key: "id",

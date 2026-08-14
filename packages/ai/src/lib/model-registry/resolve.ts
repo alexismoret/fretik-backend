@@ -231,9 +231,10 @@ export const settingsForRole = (
           // same consequence: `pre-extract` binds to deepseek-v4-flash, so
           // dropping the profile's filters ran it on the FULL 22-endpoint ZDR
           // pool. `sort: "throughput"` then reached exactly the upstreams the
-          // profile excludes on measurement — Fireworks (HTTP 429), Novita and
-          // SiliconFlow (reasoning runaway), Phala — because a sort only
-          // REORDERS a pool, it never narrows one. The pool is a quality
+          // profile excludes on measurement — Novita and SiliconFlow (reasoning
+          // runaway), Phala — because a sort only REORDERS a pool, it never
+          // narrows one. (Fireworks was on that list for HTTP 429 until
+          // 2026-08-13, when it re-benched clean and joined the pool.) The pool is a quality
           // decision (cache population, reasoning convergence) and belongs to
           // every role serving that profile, not just the agent loop.
           ...(ignore ? { ignore: [...ignore] } : {}),

@@ -7,7 +7,7 @@ import {
   resolveModel,
   type ResolvedModel,
 } from "../../lib/model-registry/resolve";
-import { areWebToolsEnabled } from "../../lib/web-egress";
+import { areWebToolsAvailable, WEB_TOOL_NAMES } from "../../lib/web-egress";
 import { createDispatchAgentTool } from "../../tools/dispatch-agent";
 import {
   buildAgentSet,
@@ -54,15 +54,15 @@ const parseChatbotMaxSteps = (): number =>
   parseIntEnv("CHATBOT_MAX_STEPS", { fallback: 30, min: 1, max: 200 });
 
 /**
- * Names of the web tools, suppressed entirely when an operator sets
- * `AI_WEB_TOOLS_ENABLED=false` (the disable lever in `lib/web-egress.ts`).
- * Passing this as the `suppress` gate to the shared Progressive-Disclosure
- * helpers keeps them out of both `activeTools` and the prompt's domain-tool
- * catalogue, so the model never sees a tool it cannot use.
+ * The web tools are suppressed entirely when an operator sets
+ * `AI_WEB_TOOLS_ENABLED=false` or no Tavily key is configured (both read by
+ * `areWebToolsAvailable` in `lib/web-egress.ts`, which also owns the canonical
+ * name list). Passing this as the `suppress` gate to the shared
+ * Progressive-Disclosure helpers keeps them out of both `activeTools` and the
+ * prompt's domain-tool catalogue, so the model never sees a tool it cannot use.
  */
-const WEB_TOOL_NAMES = new Set<string>(["searchWeb", "webFetch"]);
 const isToolSuppressed = (name: string): boolean =>
-  !areWebToolsEnabled() && WEB_TOOL_NAMES.has(name);
+  !areWebToolsAvailable() && WEB_TOOL_NAMES.has(name);
 
 /**
  * Chatbot agent — Fretik's general-purpose data assistant.

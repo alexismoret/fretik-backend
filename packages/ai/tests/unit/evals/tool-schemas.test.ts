@@ -68,6 +68,7 @@ describe("validateToolCalls", () => {
       "askUserQuestion",
       "listDocuments",
       "webFetch",
+      "webMap",
       "dispatchAgent",
     ];
     const summary = validateToolCalls(

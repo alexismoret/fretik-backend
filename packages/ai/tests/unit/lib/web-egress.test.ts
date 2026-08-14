@@ -6,6 +6,7 @@ import {
   type EgressPolicy,
   hostFromUrl,
   isUrlDenied,
+  pruneWebToolsIfUnavailable,
   WebEgressError,
 } from "../../../src/lib/web-egress";
 
@@ -174,19 +175,41 @@ describe("allowlist (dormant, off by default)", () => {
   });
 });
 
-describe("isUrlDenied (searchWeb result filter)", () => {
-  test("never denies when denylist is empty", () => {
-    expect(isUrlDenied("https://evil.com/", [])).toBe(false);
+describe("isUrlDenied (discovered-URL filter)", () => {
+  test("never denies when neither list is set", () => {
+    expect(isUrlDenied("https://evil.com/", policy())).toBe(false);
   });
 
   test("denies hosts matching the denylist", () => {
-    expect(isUrlDenied("https://evil.com/x", ["evil.com"])).toBe(true);
-    expect(isUrlDenied("https://a.evil.com/x", ["evil.com"])).toBe(true);
-    expect(isUrlDenied("https://ok.com/x", ["evil.com"])).toBe(false);
+    const p = policy({ blockedDomains: ["evil.com"] });
+    expect(isUrlDenied("https://evil.com/x", p)).toBe(true);
+    expect(isUrlDenied("https://a.evil.com/x", p)).toBe(true);
+    expect(isUrlDenied("https://ok.com/x", p)).toBe(false);
+  });
+
+  /**
+   * The allowlist governs discovery too: surfacing a hit `webFetch` would
+   * refuse wastes a credit and pushes the model to cite an unreadable page.
+   */
+  test("denies hosts outside a configured allowlist", () => {
+    const p = policy({ allowedDomains: ["example.com"] });
+    expect(isUrlDenied("https://example.com/x", p)).toBe(false);
+    expect(isUrlDenied("https://docs.example.com/x", p)).toBe(false);
+    expect(isUrlDenied("https://other.com/x", p)).toBe(true);
+  });
+
+  test("denylist wins over the allowlist", () => {
+    const p = policy({
+      allowedDomains: ["example.com"],
+      blockedDomains: ["bad.example.com"],
+    });
+    expect(isUrlDenied("https://bad.example.com/x", p)).toBe(true);
   });
 
   test("returns false for unparseable URLs", () => {
-    expect(isUrlDenied("nonsense", ["evil.com"])).toBe(false);
+    expect(
+      isUrlDenied("nonsense", policy({ blockedDomains: ["evil.com"] })),
+    ).toBe(false);
   });
 });
 
@@ -204,5 +227,60 @@ describe("areWebToolsEnabled", () => {
       if (original === undefined) delete process.env.AI_WEB_TOOLS_ENABLED;
       else process.env.AI_WEB_TOOLS_ENABLED = original;
     }
+  });
+});
+
+/**
+ * The kill switch has to reach the registries built once at boot (sub-agents,
+ * workflow runs) — they install no `prepareStep`, so without this they kept
+ * calling Tavily after an operator disabled the web.
+ */
+describe("pruneWebToolsIfUnavailable", () => {
+  const registry = { searchWeb: 1, webFetch: 2, webMap: 3, querySql: 4 };
+
+  const withEnv = (
+    env: { enabled?: string; key?: string },
+    run: () => void,
+  ): void => {
+    const originalEnabled = process.env.AI_WEB_TOOLS_ENABLED;
+    const originalKey = process.env.TAVILY_API_KEY;
+    try {
+      if (env.enabled === undefined) delete process.env.AI_WEB_TOOLS_ENABLED;
+      else process.env.AI_WEB_TOOLS_ENABLED = env.enabled;
+      if (env.key === undefined) delete process.env.TAVILY_API_KEY;
+      else process.env.TAVILY_API_KEY = env.key;
+      run();
+    } finally {
+      if (originalEnabled === undefined)
+        delete process.env.AI_WEB_TOOLS_ENABLED;
+      else process.env.AI_WEB_TOOLS_ENABLED = originalEnabled;
+      if (originalKey === undefined) delete process.env.TAVILY_API_KEY;
+      else process.env.TAVILY_API_KEY = originalKey;
+    }
+  };
+
+  test("keeps every tool when enabled with a key (the normal case)", () => {
+    withEnv({ key: "tvly-test" }, () => {
+      expect(pruneWebToolsIfUnavailable(registry)).toEqual(registry);
+    });
+  });
+
+  test("strips the web tools when the operator disables them", () => {
+    withEnv({ enabled: "false", key: "tvly-test" }, () => {
+      expect(pruneWebToolsIfUnavailable(registry)).toEqual({ querySql: 4 });
+    });
+  });
+
+  test("strips the web tools when no Tavily key is configured", () => {
+    withEnv({}, () => {
+      expect(pruneWebToolsIfUnavailable(registry)).toEqual({ querySql: 4 });
+    });
+  });
+
+  test("leaves the caller's registry untouched", () => {
+    withEnv({}, () => {
+      pruneWebToolsIfUnavailable(registry);
+      expect(Object.keys(registry)).toHaveLength(4);
+    });
   });
 });

@@ -221,13 +221,55 @@ export const deleteObjects = async (keys: string[]): Promise<void> => {
   }
 };
 
+interface PresignedUrlOptions {
+  /**
+   * Force the object to download under this filename instead of being
+   * rendered inline. Signed into the URL as `response-content-disposition`,
+   * which S3 (and Scaleway's S3-compatible API) echoes back as the response
+   * `Content-Disposition`.
+   *
+   * Needed because the object's stored Content-Type decides the default:
+   * an attachment uploaded as `image/png` or `application/pdf` renders in
+   * the tab instead of downloading. Overriding at presign time keeps the
+   * stored metadata honest (previews still work — they just don't pass
+   * this) while giving download actions a deterministic outcome.
+   */
+  downloadFilename?: string;
+}
+
+/**
+ * RFC 5987 / RFC 6266 `Content-Disposition` for an arbitrary filename.
+ *
+ * Two parameters on purpose: bare `filename` is ASCII-only per the RFC, so
+ * anything else (accents, CJK — routine for user-supplied and agent-generated
+ * names alike) must also travel as percent-encoded UTF-8 in `filename*`.
+ * Clients that understand `filename*` prefer it; the rest fall back to the
+ * sanitised ASCII form. Quotes and backslashes are stripped from the fallback
+ * so they cannot terminate the quoted-string early.
+ */
+const contentDispositionFor = (filename: string): string => {
+  const asciiFallback = filename
+    // eslint-disable-next-line no-control-regex
+    .replace(/[^\x20-\x7E]/g, "_")
+    .replace(/["\\]/g, "");
+  return `attachment; filename="${asciiFallback}"; filename*=UTF-8''${encodeURIComponent(filename)}`;
+};
+
 export const getPresignedUrl = async (
   key: string,
   expiresIn = 3600,
+  options: PresignedUrlOptions = {},
 ): Promise<string> => {
   const command = new GetObjectCommand({
     Bucket: s3Bucket,
     Key: key,
+    ...(options.downloadFilename !== undefined
+      ? {
+          ResponseContentDisposition: contentDispositionFor(
+            options.downloadFilename,
+          ),
+        }
+      : {}),
   });
 
   return getSignedUrl(client, command, { expiresIn });

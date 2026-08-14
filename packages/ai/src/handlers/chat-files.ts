@@ -18,7 +18,11 @@ import { getPresignedUrl } from "@fretik/shared/lib/s3";
 import { promoteChatFilesToDrive } from "@fretik/shared/services/chat-files/promote-to-drive";
 import { OpenAPIHono } from "@hono/zod-openapi";
 import { and, desc, eq, ne } from "drizzle-orm";
-import { deleteFile, WORKSPACE_DIRS } from "../lib/conversation-storage";
+import {
+  deleteFile,
+  resolveWorkspacePath,
+  WORKSPACE_DIRS,
+} from "../lib/conversation-storage";
 import { uploadChatFile } from "../services/chat-files/upload";
 
 /**
@@ -64,6 +68,19 @@ const sidecarFilename = (filename: string): string => {
 
 const buildAttachmentPath = (filename: string): string =>
   `${WORKSPACE_DIRS.attachments}/${filename}`;
+
+/**
+ * Top-level workspace dirs an explicit `?path=` may address.
+ *
+ * These are exactly the trees `mirrorSandboxChanges` backs up to S3, so
+ * they are the only ones that still have bytes to serve once the sandbox
+ * is paused or expired. Mirrors `BACKUP_ELIGIBLE_DIRS` in
+ * `lib/conversation-storage.ts` — keep the two in step.
+ */
+const DOWNLOADABLE_DIRS = new Set<string>([
+  WORKSPACE_DIRS.attachments,
+  WORKSPACE_DIRS.outputs,
+]);
 
 // ==================== //
 // GET list             //
@@ -173,7 +190,7 @@ chatFilesRoutes.post("/conversation/:id/files/promote-to-drive", async (c) => {
     typeof body === "object" &&
     body !== null &&
     "fileIds" in body &&
-    Array.isArray((body as { fileIds: unknown }).fileIds)
+    Array.isArray(body.fileIds)
       ? (body as { fileIds: unknown[] }).fileIds.filter(
           (v): v is string => typeof v === "string",
         )
@@ -260,57 +277,61 @@ chatFilesRoutes.get("/conversation/:id/files/:filename/download", async (c) => {
   const conversationId = c.req.param("id");
   const filename = c.req.param("filename");
 
-  // Two paths share this endpoint:
-  //  1. User-uploaded files live in `ai_chat_files` — the original
-  //     flow. We check team ownership via the row's conversation join.
-  //     The S3 key is `chatbot-sessions/{conv}/attachments/{filename}`.
-  //  2. Tool-generated files (created by `presentFiles` via the agent's
-  //     `python` output) are written directly to the S3 session
-  //     folder under `outputs/{path}` without a DB row — no upload
-  //     flow, no status machine, no sidecar. For those we resolve
-  //     team ownership via the parent conversation and confirm the
-  //     file actually exists in S3 before presigning. The frontend
-  //     passes the `path` query param to disambiguate (e.g.
-  //     `?path=outputs/chart.png`).
-  const row = await db.query.aiChatFiles.findFirst({
-    where: {
-      conversationId,
-      filename,
-    },
-    with: {
-      conversation: { columns: { teamId: true } },
-    },
+  // Team ownership is a property of the CONVERSATION, so resolve it once
+  // here — every resolution branch below needs exactly this check, and
+  // hoisting it lets the `ai_chat_files` lookup drop its conversation join.
+  const conversation = await db.query.aiConversations.findFirst({
+    where: { id: conversationId },
+    columns: { id: true, teamId: true },
   });
+  if (!conversation) {
+    return throwHttpError(404, notFound("Conversation not found"));
+  }
+  if (conversation.teamId !== team.id) {
+    return throwHttpError(403, forbidden());
+  }
+
+  // Three ways to name the file, resolved in this order:
+  //  1. An explicit `?path=` wins outright. It names a workspace path
+  //     (`outputs/chart.png`) and is how markdown file links and the
+  //     `presentFiles` cards address a file. Checked FIRST because a
+  //     basename is ambiguous: a link to `outputs/report.pdf` was
+  //     shadowed by an unrelated `attachments/report.pdf` upload that
+  //     happened to share the basename, silently serving other bytes.
+  //  2. User-uploaded files live in `ai_chat_files`, under
+  //     `chatbot-sessions/{conv}/attachments/{filename}`.
+  //  3. Tool-generated files with neither a row nor a `?path=` (old chat
+  //     history that only kept the basename) fall back to a best-effort
+  //     search across `outputs/`.
+  const explicitPath = c.req.query("path");
 
   let s3RelativePath: string;
 
-  if (row) {
-    if (!row.conversation) {
-      return throwHttpError(404, notFound("Chat file not found"));
+  if (explicitPath !== undefined && explicitPath.length > 0) {
+    const resolved = resolveWorkspacePath(explicitPath);
+    // Only the two S3-mirrored trees are servable: `attachments/` and
+    // `outputs/` are backed up by `mirrorSandboxChanges` after every
+    // sandbox run, while `skills/`, `drive/`, `runs/`, `context/`,
+    // `memory/` and the workspace root are not — a presigned URL for
+    // those would 404 on S3 anyway. Rejecting here makes that an honest
+    // error instead of a broken link. `sanitizeSessionPath` (inside
+    // `buildSessionKey`) already drops `.`/`..`; this is the second gate.
+    const head = resolved?.relative.split("/")[0];
+    if (!resolved || head === undefined || !DOWNLOADABLE_DIRS.has(head)) {
+      return throwHttpError(404, notFound("File not found"));
     }
-    if (row.conversation.teamId !== team.id) {
-      return throwHttpError(403, forbidden());
-    }
-    s3RelativePath = buildAttachmentPath(filename);
+    s3RelativePath = resolved.relative;
   } else {
-    const conversation = await db.query.aiConversations.findFirst({
-      where: { id: conversationId },
-      columns: { id: true, teamId: true },
+    const row = await db.query.aiChatFiles.findFirst({
+      where: {
+        conversationId,
+        filename,
+      },
+      columns: { id: true },
     });
-    if (!conversation) {
-      return throwHttpError(404, notFound("Conversation not found"));
-    }
-    if (conversation.teamId !== team.id) {
-      return throwHttpError(403, forbidden());
-    }
-    // For tool-generated files, the caller supplies the workspace
-    // path explicitly (`?path=outputs/chart.png`). Fall back to a
-    // best-effort search across `outputs/` if missing — keeps the
-    // download URL backwards compatible with old chat history that
-    // only knows the basename.
-    const explicitPath = c.req.query("path");
-    if (explicitPath) {
-      s3RelativePath = explicitPath;
+
+    if (row) {
+      s3RelativePath = buildAttachmentPath(filename);
     } else {
       const candidates = await listSessionPaths(conversationId, "outputs");
       const match = candidates.find(
@@ -323,9 +344,21 @@ chatFilesRoutes.get("/conversation/:id/files/:filename/download", async (c) => {
     }
   }
 
+  // `?disposition=attachment` signs a `Content-Disposition` into the
+  // presigned URL so the browser saves the file instead of rendering it.
+  // Download actions pass it; inline previews (the `<img>` in a
+  // presentFiles card, the PDF viewer) deliberately do not.
+  // Named from the route param, not from the resolved key: S3 segments are
+  // sanitised to `[A-Za-z0-9._-]`, so keying the disposition off the stored
+  // path would hand the user `mon_rapport.xlsx` for a file they know as
+  // `mon rapport.xlsx`.
+  const downloadFilename =
+    c.req.query("disposition") === "attachment" ? filename : undefined;
+
   const url = await getPresignedUrl(
     buildSessionKey(conversationId, s3RelativePath),
     3600,
+    downloadFilename !== undefined ? { downloadFilename } : {},
   );
   // `?presign=1` returns the presigned S3 URL as JSON instead of a
   // redirect. The "Open with Excel/Word/PowerPoint" buttons need this

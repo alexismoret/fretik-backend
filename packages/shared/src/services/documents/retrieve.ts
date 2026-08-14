@@ -279,10 +279,17 @@ export const getDocumentDetails = async (data: {
     return throwHttpError(404, notFound("Document not found"));
   }
 
+  // Signed as an attachment. The viewer reads this URL with `fetch`, which
+  // ignores `Content-Disposition`, so inline rendering is unaffected — but the
+  // "Download" button next to it now saves the file instead of navigating, and
+  // the disposition is what marks the URL as a download for the Electron
+  // shell, which would otherwise hand it to the system browser.
   const fileUrl =
     document.status === "ready"
       ? await getPresignedUrl(
           buildDocumentOriginalKey(document.id, document.originalFilename),
+          3600,
+          { downloadFilename: document.originalFilename },
         )
       : null;
 

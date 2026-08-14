@@ -397,7 +397,12 @@ chatbotContextRoutes.openapi(downloadFileRoute, async (c) => {
     fileId,
     organizationId: key.organizationId,
   });
-  const url = await getPresignedUrl(file.s3Key, 60 * 5);
+  // Signed as an attachment: the caller's only use for this URL is to save the
+  // file, and the disposition is also what identifies it as a download to the
+  // Electron shell, which otherwise hands it to a system browser.
+  const url = await getPresignedUrl(file.s3Key, 60 * 5, {
+    downloadFilename: file.filename,
+  });
   return c.json({ url }, 200);
 });
 

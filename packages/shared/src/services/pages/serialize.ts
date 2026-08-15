@@ -22,6 +22,7 @@ export const serializePage = (row: Page): PageResponse => ({
   color: row.color,
   userId: row.userId,
   definition: row.definition,
+  runtimeErrors: row.runtimeErrors,
   publicToken: row.publicToken,
   publishedAt: row.publishedAt,
   publicUrl: buildPageUrl(row.publicToken),
@@ -31,18 +32,12 @@ export const serializePage = (row: Page): PageResponse => ({
   updatedAt: row.updatedAt,
 });
 
-/**
- * List projection — carries counts instead of the whole spec.
- *
- * The count is every declared element, not only the ones reachable from the
- * root: a list row says how big the page is, and an orphan is still something
- * the author wrote. `sanitizePageDefinition` is what reports it as a problem.
- */
+/** List projection — sizes instead of the whole document. */
 export const serializePageSummary = (row: Page): PageSummary => {
   const { definition, ...rest } = serializePage(row);
   return {
     ...rest,
-    elementCount: Object.keys(definition.spec.elements).length,
+    sourceBytes: definition.code.source.length,
     datasetCount: definition.datasets.length,
   };
 };

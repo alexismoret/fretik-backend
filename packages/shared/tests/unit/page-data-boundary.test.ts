@@ -80,11 +80,11 @@ const page = (
   variables: PageVariable[],
   datasets: PageDataset[] = [],
 ): PageDefinition => ({
-  version: 2,
+  version: 3,
   variables,
   datasets,
   operations: [],
-  spec: { root: "root", elements: { root: { type: "box", props: {} } } },
+  code: { source: "<template><div>x</div></template>" },
 });
 
 const inline = (
@@ -456,7 +456,7 @@ describe("objectsSource — the stored definition owns the query", () => {
         id: "records",
         kind: "objects",
         objectTypeId: "type-1",
-        filters: [{ key: "status", op: "eq", value: { $: "state.status" } }],
+        filters: [{ key: "status", op: "eq", value: { var: "status" } }],
       },
       { teamId: "team-1", userId: null, state: { status: "won" }, data: {} },
     );
@@ -473,7 +473,7 @@ describe("objectsSource — the stored definition owns the query", () => {
         id: "records",
         kind: "objects",
         objectTypeId: "type-1",
-        filters: [{ key: "status", op: "eq", value: { $: "state.status" } }],
+        filters: [{ key: "status", op: "eq", value: { var: "status" } }],
       },
       { teamId: "team-1", userId: null, state: { status: "" }, data: {} },
     );

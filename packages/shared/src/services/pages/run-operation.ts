@@ -114,7 +114,7 @@ export const runPageOperation = async (params: {
 
   // The stored template, resolved against the coerced state. A binding that
   // yields nothing drops its argument rather than sending null.
-  const resolvedArgs = await resolveExternalArgs(operation.args ?? {}, state);
+  const resolvedArgs = resolveExternalArgs(operation.args ?? {}, state);
   if (!resolvedArgs.ok) {
     return { status: "error", message: resolvedArgs.error };
   }

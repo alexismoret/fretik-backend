@@ -16,9 +16,9 @@ import {
  * The external SEAM: what reaches a registered executor, and what a page gets
  * back. The executor here is a fake — the real one (`exec/page-query.ts`)
  * talks to connections and Redis, which is not this file's business. What IS
- * this file's business: the refusal default, the arg-binding resolution that
- * happens BEFORE the executor (state-only scope, drop-on-empty,
- * fail-on-error), and the result mapping the frontend depends on.
+ * this file's business: the refusal default, the `{ var }` resolution that
+ * happens BEFORE the executor (declared state only, drop-on-empty), and the
+ * result mapping the frontend depends on.
  */
 
 type ExecutorInput = Parameters<ExternalPageQueryExecutor["execute"]>[0];
@@ -84,7 +84,7 @@ describe("externalSource — the seam", () => {
 
     const result = await externalSource.resolve(
       dataset({
-        args: { folder: { $: "state.folder" }, limit: 25 },
+        args: { folder: { var: "folder" }, limit: 25 },
         resultPath: "value.items",
         cacheTtlSeconds: 120,
       }),
@@ -98,7 +98,7 @@ describe("externalSource — the seam", () => {
     expect(input?.userId).toBe("user-1");
     expect(input?.providerKey).toBe("acme-mail");
     expect(input?.operation).toBe("list_messages");
-    // The binding arrived as a LITERAL — the executor never sees `{ $: … }`.
+    // The reference arrived as a LITERAL — the executor never sees `{ var }`.
     expect(input?.args).toEqual({ folder: "inbox", limit: 25 });
     expect(input?.resultPath).toBe("value.items");
     expect(input?.cacheTtlSeconds).toBe(120);
@@ -129,46 +129,45 @@ describe("externalSource — the seam", () => {
     expect(failed).toEqual({ status: "error", message: "upstream 503" });
   });
 
-  test("a binding that fails to evaluate fails the dataset, not silently the request", async () => {
-    let called = 0;
+  test("a reference to nothing drops its argument — never sends null upstream", async () => {
+    const seen: ExecutorInput[] = [];
     registerExternalPageQueryExecutor({
-      execute: () => {
-        called += 1;
+      execute: (input) => {
+        seen.push(input);
         return Promise.resolve({ status: "ok", rows: [], truncated: false });
       },
     });
     const result = await externalSource.resolve(
-      dataset({ args: { folder: { $: "state.(((" } } }),
+      dataset({ args: { folder: { var: "ghost" }, limit: 10 } }),
       { ...context },
     );
-    expect(result.status).toBe("error");
-    if (result.status === "error") {
-      expect(result.message).toContain('argument "folder"');
-    }
-    // A request with a silently-wrong argument is worse than no request.
-    expect(called).toBe(0);
+    // A `{ var }` naming no declared variable is data pointing at nothing —
+    // the sanitizer warned at write time, and here the key simply drops (the
+    // "empty means all" convention filters already follow).
+    expect(result.status).toBe("ok");
+    expect(seen[0]?.args).toEqual({ limit: 10 });
   });
 });
 
-describe("resolveExternalArgs — state-only scope", () => {
-  test("bindings resolve against state; data is not in scope", async () => {
-    const resolved = await resolveExternalArgs(
-      { folder: { $: "state.folder" }, leak: { $: "data.secrets" } },
+describe("resolveExternalArgs — declared state only", () => {
+  test("references resolve against state; unknown names are dropped", () => {
+    const resolved = resolveExternalArgs(
+      { folder: { var: "folder" }, leak: { var: "secrets" } },
       { folder: "sent" },
     );
     expect(resolved.ok).toBe(true);
     if (resolved.ok) {
-      // `data.secrets` evaluates to nothing → the key is dropped, the
+      // `secrets` is not in the coerced state → the key is dropped, the
       // "empty means all" convention filters already follow.
       expect(resolved.args).toEqual({ folder: "sent" });
     }
   });
 
-  test("bindings are resolved at any depth, and empty entries drop", async () => {
-    const resolved = await resolveExternalArgs(
+  test("references are resolved at any depth, and empty entries drop", () => {
+    const resolved = resolveExternalArgs(
       {
         query: {
-          folders: [{ $: "state.a" }, { $: "state.missing" }, "fixed"],
+          folders: [{ var: "a" }, { var: "missing" }, "fixed"],
           flag: true,
         },
       },

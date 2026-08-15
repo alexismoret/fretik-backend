@@ -904,18 +904,6 @@ export const relations = defineRelations(schema, (r) => ({
       alias: "pageCreator",
       optional: true,
     }),
-    shares: r.many.pageShares(),
-  },
-
-  pageShares: {
-    page: r.one.pages({
-      from: r.pageShares.pageId,
-      to: r.pages.id,
-    }),
-    team: r.one.team({
-      from: r.pageShares.teamId,
-      to: r.team.id,
-    }),
   },
 
   workflowRuns: {

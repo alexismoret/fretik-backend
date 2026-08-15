@@ -5,7 +5,6 @@ import {
   pgTable,
   text,
   timestamp,
-  uniqueIndex,
   uuid,
   varchar,
 } from "drizzle-orm/pg-core";
@@ -13,7 +12,7 @@ import {
 // workflows/skills): the jsonb columns are typed by its inferred type, so the
 // contract is declared once and drizzle-kit sees no schema-parse cycle (the
 // reverse edge is type-only, erased at runtime).
-import type { PageDefinition } from "../../schemas/pages";
+import type { PageDefinition, PageRuntimeError } from "../../schemas/pages";
 import { aiConversations } from "./ai";
 import { organization, team, user } from "./auth-schema";
 
@@ -53,6 +52,14 @@ export const pages = pgTable(
 
     definition: jsonb("definition").$type<PageDefinition>().notNull(),
 
+    // Ring buffer of the most recent runtime errors the sandboxed page
+    // reported through the bridge (`POST /pages/{id}/errors`) — the agent's
+    // self-heal feed, surfaced by managePage get/update.
+    runtimeErrors: jsonb("runtime_errors")
+      .$type<PageRuntimeError[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+
     // Opaque token keying the public URL (`/p/<token>`); NULL = unpublished.
     // Decoupled from the page id (which appears in authed responses/logs),
     // unique-indexed for O(1) public lookup, and rotatable.
@@ -90,37 +97,3 @@ export const pages = pgTable(
 
 export type Page = typeof pages.$inferSelect;
 export type NewPage = typeof pages.$inferInsert;
-
-/**
- * Cross-team share of a page. Grants VISIBILITY OF THE LAYOUT only: a shared
- * page still runs its datasets under the VIEWER's team scope, so a viewer
- * never sees records their team lacks a grant on. A dataset the viewer cannot
- * read degrades to a no-access block instead of leaking.
- */
-export const pageShares = pgTable(
-  "page_shares",
-  {
-    id: uuid("id")
-      .default(sql`uuid_generate_v7()`)
-      .primaryKey(),
-    pageId: uuid("page_id")
-      .notNull()
-      .references(() => pages.id, { onDelete: "cascade" }),
-    teamId: uuid("team_id")
-      .notNull()
-      .references(() => team.id, { onDelete: "cascade" }),
-    createdByUserId: uuid("created_by_user_id").references(() => user.id, {
-      onDelete: "set null",
-    }),
-    createdAt: timestamp("created_at", { withTimezone: true })
-      .defaultNow()
-      .notNull(),
-  },
-  (t) => [
-    uniqueIndex("page_shares_page_team_uniq").on(t.pageId, t.teamId),
-    index("page_shares_team_idx").on(t.teamId),
-  ],
-);
-
-export type PageShare = typeof pageShares.$inferSelect;
-export type NewPageShare = typeof pageShares.$inferInsert;

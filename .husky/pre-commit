@@ -1,8 +1,1 @@
 bun lint-staged
-
-# The render contract's generated copy lives in the FRONTEND repo (fretik-app),
-# so no single commit can carry both sides. Re-sync it here: the working tree is
-# then never the thing that drifts, and only the frontend commit is left to make.
-if ! git diff --cached --quiet -- packages/render/src; then
-  (cd packages/render && bun run sync-contract) || exit 1
-fi

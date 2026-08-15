@@ -1,4 +1,3 @@
-import { evaluatePageExpression } from "@fretik/render/runtime/expressions";
 import db from "../../../db";
 import type { RecordFilter } from "../../../schemas/ontology";
 import type {
@@ -8,7 +7,7 @@ import type {
   PageFieldDescriptor,
   PageValue,
 } from "../../../schemas/pages";
-import { PAGE_LIMITS, isPageBinding } from "../../../schemas/pages";
+import { PAGE_LIMITS, isPageVarRef } from "../../../schemas/pages";
 import { aggregateRecords } from "../../object-records/aggregate";
 import { listObjectRecords } from "../../object-records/retrieve";
 import { buildPageFieldDescriptors } from "../field-descriptors";
@@ -22,13 +21,14 @@ import { toPageValue } from "./values";
 
 /**
  * Resolve a dataset's filters against page state. A filter whose value is a
- * binding evaluates it; one that resolves to nothing is DROPPED, which is what
- * makes an "All" option work without a special case.
+ * `{ var }` reference substitutes that variable's current value; one that
+ * resolves to nothing is DROPPED, which is what makes an "All" option work
+ * without a special case.
  */
-const resolveFilters = async (
+const resolveFilters = (
   dataset: PageDataset,
   state: Record<string, PageValue>,
-): Promise<RecordFilter[]> => {
+): RecordFilter[] => {
   const resolved: RecordFilter[] = [];
   for (const filter of dataset.filters ?? []) {
     // Value-less operators (`is_empty`, `is_true`, …) carry no value at all.
@@ -36,16 +36,11 @@ const resolveFilters = async (
       resolved.push({ key: filter.key, op: filter.op });
       continue;
     }
-    if (!isPageBinding(filter.value)) {
+    if (!isPageVarRef(filter.value)) {
       resolved.push({ key: filter.key, op: filter.op, value: filter.value });
       continue;
     }
-    const evaluated = await evaluatePageExpression(filter.value.$, {
-      state,
-      data: {},
-    });
-    if (!evaluated.ok) continue;
-    const value = evaluated.value;
+    const value = state[filter.value.var];
     if (value === undefined || value === null || value === "") continue;
     if (
       typeof value === "string" ||
@@ -170,7 +165,7 @@ export const objectsSource: PageDataSource = {
     });
     if (!type) return { status: "forbidden" };
 
-    const filters = await resolveFilters(dataset, state);
+    const filters = resolveFilters(dataset, state);
     // Read the descriptors BEFORE the rows: they are what a runtime sort key is
     // validated against, and they come from the field-definition cache, so this
     // is a map lookup rather than a second round trip.

@@ -3,11 +3,9 @@ import { describe, expect, test } from "bun:test";
 // method only exists once `@hono/zod-openapi` has patched Zod.
 import "@hono/zod-openapi";
 import { z } from "zod";
-import type {
-  PageDefinition,
-  PageDefinitionPatch,
-} from "../../src/schemas/pages";
+import type { PageCompiled, PageDefinition } from "../../src/schemas/pages";
 import {
+  PAGE_LIMITS,
   PageDatasetSchema,
   PageDefinitionSchema,
   PageDraftDefinitionSchema,
@@ -15,63 +13,66 @@ import {
   pagePublishError,
   pageValueSchema,
 } from "../../src/schemas/pages";
-import { applyPageDefinitionPatch } from "../../src/services/pages/patch";
+import { applyPageCodeEdits } from "../../src/services/pages/apply-code-edits";
 
 /**
  * The gates that REFUSE a page rather than warn about it.
  *
- * Everything else on a definition is sanitize-and-warn, and that is right: an
- * off-catalog prop is a best guess worth keeping the turn for. A document that
- * renders nothing is not — a write that reports success there sends the agent
- * back a URL for a blank screen, which is how prod 2026-08-09 spent 35 tool
- * calls saving the same empty page.
+ * Everything on the DATA half is sanitize-and-warn, and that is right: a
+ * dangling reference is a best guess worth keeping the turn for. A document
+ * that renders nothing is not — a write that reports success there sends the
+ * agent back a URL for a blank screen, which is how prod 2026-08-09 spent 35
+ * tool calls saving the same empty page.
  */
+
+const SOURCE = "<template><h1>Hello</h1></template>";
+
+const compiled = (): PageCompiled => ({
+  js: 'import { mountPage } from "#fretik/sdk";',
+  css: ".p-4{padding:1rem}",
+  runtimeVersion: "v1",
+  sourceHash: "a".repeat(64),
+  compiledAt: "2026-01-01T00:00:00.000Z",
+});
+
+const page = (extra: Partial<PageDefinition> = {}): PageDefinition => ({
+  version: 3,
+  variables: [],
+  datasets: [],
+  operations: [],
+  code: { source: SOURCE, compiled: compiled() },
+  ...extra,
+});
+
 describe("pageBlankError", () => {
-  test("an empty elements map is refused, and the message says what to write", () => {
-    const message = pageBlankError({ root: "root", elements: {} });
-    expect(message).toContain("spec.elements is empty");
+  test("an empty source is refused, and the message says what to write", () => {
+    const message = pageBlankError({ source: "" });
+    expect(message).toContain("code.source is empty");
     expect(message).toContain("renders nothing");
+    expect(message).toContain("<template>");
   });
 
-  test("an empty root is refused, and the message lists candidate keys", () => {
-    const message = pageBlankError({
-      root: "",
-      elements: { header: { type: "heading" }, body: { type: "box" } },
-    });
-    expect(message).toContain("spec.root is empty");
-    expect(message).toContain("header");
+  test("whitespace is as blank as nothing", () => {
+    expect(pageBlankError({ source: "  \n\t " })).not.toBeNull();
   });
 
-  test("a root naming no element is refused", () => {
-    const message = pageBlankError({
-      root: "main",
-      elements: { header: { type: "heading" } },
-    });
-    expect(message).toContain('spec.root is "main"');
-    expect(message).toContain("header");
-  });
-
-  test("a resolvable root passes — unreachable siblings are the sanitizer's job", () => {
-    expect(
-      pageBlankError({
-        root: "root",
-        elements: { root: { type: "box" }, orphan: { type: "text" } },
-      }),
-    ).toBeNull();
+  test("any real source passes — whether it COMPILES is the compiler's job", () => {
+    expect(pageBlankError({ source: SOURCE })).toBeNull();
+    expect(pageBlankError({ source: "<template>broken" })).toBeNull();
   });
 });
 
 describe("pagePublishError", () => {
   test("still refuses to publish a page that renders nothing", () => {
-    expect(
-      pagePublishError({
-        version: 2,
-        variables: [],
-        datasets: [],
-        operations: [],
-        spec: { root: "root", elements: {} },
-      }),
-    ).toBe("The page needs a root element to publish.");
+    expect(pagePublishError(page({ code: { source: "" } }))).toBe(
+      "The page has no code to publish.",
+    );
+  });
+
+  test("code that never compiled cleanly cannot be published", () => {
+    const error = pagePublishError(page({ code: { source: SOURCE } }));
+    expect(error).toContain("never compiled");
+    expect(error).toContain("publish");
   });
 
   /**
@@ -80,23 +81,17 @@ describe("pagePublishError", () => {
    * — metered, rate-limited, and able to flip the connection to `error` for
    * everyone who uses it.
    */
-  const withDataset = (
-    dataset: PageDefinition["datasets"][number],
-  ): PageDefinition => ({
-    version: 2,
-    variables: [],
-    datasets: [dataset],
-    operations: [],
-    spec: { root: "root", elements: { root: { type: "box" } } },
-  });
-
   test("an external dataset cannot be published", () => {
     const error = pagePublishError(
-      withDataset({
-        id: "crm",
-        kind: "external",
-        connectionId: "00000000-0000-4000-8000-000000000000",
-        operation: "list_deals",
+      page({
+        datasets: [
+          {
+            id: "crm",
+            kind: "external",
+            connectionId: "00000000-0000-4000-8000-000000000000",
+            operation: "list_deals",
+          },
+        ],
       }),
     );
     expect(error).toContain('Dataset "crm"');
@@ -104,13 +99,29 @@ describe("pagePublishError", () => {
     expect(error).toContain("workflow");
   });
 
+  test("an operation cannot be published — a public link must not write", () => {
+    const error = pagePublishError(
+      page({
+        operations: [
+          { id: "ship", providerKey: "acme-orders", action: "mark_shipped" },
+        ],
+      }),
+    );
+    expect(error).toContain('Operation "ship"');
+    expect(error).toContain("remove its operations");
+  });
+
   test("the same page over an object type publishes", () => {
     expect(
       pagePublishError(
-        withDataset({
-          id: "crm",
-          kind: "objects",
-          objectTypeId: "00000000-0000-4000-8000-000000000000",
+        page({
+          datasets: [
+            {
+              id: "crm",
+              kind: "objects",
+              objectTypeId: "00000000-0000-4000-8000-000000000000",
+            },
+          ],
         }),
       ),
     ).toBeNull();
@@ -119,24 +130,35 @@ describe("pagePublishError", () => {
 
 describe("PageDefinitionSchema", () => {
   /**
-   * `spec` used to default to `{ root: "", elements: {} }`, which reached the
+   * `code` must be REQUIRED in storage: a defaulted empty page would reach the
    * model as a documented default value in the tool's JSON Schema — the schema
    * itself saying an empty page is ordinary.
    */
-  test("spec is required, not defaulted to an empty page", () => {
+  test("code is required, not defaulted to an empty page", () => {
     const parsed = PageDefinitionSchema.safeParse({
-      version: 2,
+      version: 3,
       datasets: [{ id: "kpi", kind: "inline", rows: [{ amount: 1 }] }],
     });
     expect(parsed.success).toBe(false);
   });
 
-  test("a definition carrying its spec parses", () => {
-    const parsed = PageDefinitionSchema.safeParse({
-      version: 2,
-      spec: { root: "root", elements: { root: { type: "box" } } },
-    });
-    expect(parsed.success).toBe(true);
+  test("a definition carrying its code parses, with or without a compile", () => {
+    expect(
+      PageDefinitionSchema.safeParse({
+        version: 3,
+        code: { source: SOURCE },
+      }).success,
+    ).toBe(true);
+    expect(PageDefinitionSchema.safeParse(page()).success).toBe(true);
+  });
+
+  test("a compiled block is validated, not waved through", () => {
+    const parsed = PageDefinitionSchema.safeParse(
+      page({
+        code: { source: SOURCE, compiled: { ...compiled(), sourceHash: "xx" } },
+      }),
+    );
+    expect(parsed.success).toBe(false);
   });
 });
 
@@ -217,129 +239,115 @@ describe("inline dataset rows", () => {
 });
 
 /**
- * The patch channel is rooted at the DEFINITION, not at `spec`.
- *
- * Before, only the spec half was patchable, so changing one dataset filter
- * forced the agent to re-send the whole document — the exact move that drops an
- * element that was fine. These pin the reach of a single op and, more
- * importantly, the re-parse: json-render's applier does NOT throw on an
- * out-of-range array index, so without it a bad path would reach storage.
+ * The targeted-edit channel — the artifact-style alternative to re-sending the
+ * whole SFC, which is the exact move that drops a line that was fine. Exact
+ * match, once, in order; anything ambiguous is a STALE VIEW and refuses with
+ * the way out.
  */
-describe("applyPageDefinitionPatch", () => {
-  const definition: PageDefinition = {
-    version: 2,
-    variables: [{ key: "stage", type: "string", initial: "won" }],
-    operations: [],
-    datasets: [
-      {
-        id: "deals",
-        kind: "objects",
-        objectTypeId: "019f10cd-12e0-73e6-b781-ab61ff781f5a",
-        mode: "records",
-        filters: [{ key: "stage", op: "eq", value: "won" }],
-      },
-    ],
-    spec: {
-      root: "page",
-      elements: {
-        page: { type: "grid", children: ["title"] },
-        title: { type: "heading", props: { text: "Pipeline" } },
-      },
-    },
-  };
+describe("applyPageCodeEdits", () => {
+  const source =
+    "<template>\n  <h1>Pipeline</h1>\n  <p>Pipeline</p>\n</template>";
 
-  const applied = (patch: PageDefinitionPatch): PageDefinition => {
-    const result = applyPageDefinitionPatch(definition, patch);
-    if ("error" in result) throw new Error(result.error);
-    return result.definition;
-  };
-
-  test("one op reaches an element's prop", () => {
-    const next = applied([
-      { op: "replace", path: "/spec/elements/title/props/text", value: "2026" },
+  test("one edit reaches its exact text", () => {
+    const result = applyPageCodeEdits(source, [
+      { oldString: "<h1>Pipeline</h1>", newString: "<h1>2026</h1>" },
     ]);
-    expect(next.spec.elements.title?.props?.text).toBe("2026");
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.source).toContain("<h1>2026</h1>");
+      expect(result.source).toContain("<p>Pipeline</p>");
+    }
   });
 
-  test("one op reaches a dataset filter — the half that had no channel", () => {
-    const next = applied([
-      { op: "replace", path: "/datasets/0/filters/0/value", value: "lost" },
+  test("an oldString that matches nothing refuses and says how to re-anchor", () => {
+    const result = applyPageCodeEdits(source, [
+      { oldString: "<h1>Sales</h1>", newString: "<h1>2026</h1>" },
     ]);
-    const [dataset] = next.datasets;
-    expect(dataset?.kind === "objects" && dataset.filters?.[0]?.value).toBe(
-      "lost",
-    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain("not found");
+      expect(result.error).toContain('"get"');
+    }
   });
 
-  test("one op reaches a variable and one adds an element", () => {
-    const next = applied([
-      { op: "replace", path: "/variables/0/initial", value: "lost" },
-      {
-        op: "add",
-        path: "/spec/elements/total",
-        value: { type: "stat", props: { label: "Total" } },
-      },
+  test("an ambiguous match refuses rather than guessing an occurrence", () => {
+    const result = applyPageCodeEdits(source, [
+      { oldString: "Pipeline", newString: "2026" },
     ]);
-    expect(next.variables[0]?.initial).toBe("lost");
-    expect(next.spec.elements.total?.type).toBe("stat");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain("2 times");
+      expect(result.error).toContain("replaceAll");
+    }
   });
 
-  test("the source document is never mutated", () => {
-    applied([
-      { op: "replace", path: "/spec/elements/title/props/text", value: "2026" },
+  test("replaceAll changes every occurrence", () => {
+    const result = applyPageCodeEdits(source, [
+      { oldString: "Pipeline", newString: "2026", replaceAll: true },
     ]);
-    expect(definition.spec.elements.title?.props?.text).toBe("Pipeline");
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.source).not.toContain("Pipeline");
   });
 
-  test("a patch that produces an invalid definition is refused, not stored", () => {
-    const result = applyPageDefinitionPatch(definition, [
-      { op: "replace", path: "/spec/elements/title/type", value: "not_a_type" },
+  test("edits apply in order — a later edit may target what an earlier one wrote", () => {
+    const result = applyPageCodeEdits(source, [
+      { oldString: "<h1>Pipeline</h1>", newString: "<h1>Deals</h1>" },
+      { oldString: "<h1>Deals</h1>", newString: "<h1>Deals 2026</h1>" },
     ]);
-    expect("error" in result && result.error).toContain("no longer valid");
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.source).toContain("<h1>Deals 2026</h1>");
   });
 
-  test("an out-of-range index is caught by the re-parse, not by the applier", () => {
-    const result = applyPageDefinitionPatch(definition, [
-      { op: "replace", path: "/datasets/9/id", value: "ghost" },
+  test("an edit that changes nothing is refused by name", () => {
+    const result = applyPageCodeEdits(source, [
+      { oldString: "Pipeline", newString: "Pipeline" },
     ]);
-    expect("error" in result).toBe(true);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("identical");
+  });
+
+  test("an edit may not push the source past the size ceiling", () => {
+    const nearCeiling = `${"a".repeat(PAGE_LIMITS.maxSourceChars - 10)}MARKER`;
+    const over = applyPageCodeEdits(nearCeiling, [
+      { oldString: "MARKER", newString: "b".repeat(100) },
+    ]);
+    expect(over.ok).toBe(false);
+    if (!over.ok) expect(over.error).toContain("ceiling");
   });
 });
 
 /**
- * The author-facing definition allows a page to be OPENED before it is drawn.
- *
- * Measured 2026-08-10 by replaying the production request per upstream: one
- * pool member writes `spec.elements` 0 times in 28 through the nested
- * `definition` path and 15 times in 16 through `patch`. Storage still requires
- * a spec — a stored page without one reaches the renderer.
+ * The author-facing definition allows a page to be OPENED before it is drawn —
+ * the data-first draft path: datasets in one call, the SFC in the next.
+ * Storage still requires `code`; a stored page without one reaches the
+ * renderer.
  */
 describe("PageDraftDefinitionSchema", () => {
   const datasetsOnly = {
-    version: 2,
+    version: 3,
     variables: [],
     datasets: [{ id: "kpi", kind: "inline", rows: [{ label: "a", value: 1 }] }],
   };
 
-  test("a definition without a spec is accepted from an author", () => {
+  test("a definition without code is accepted from an author", () => {
     const parsed = PageDraftDefinitionSchema.safeParse(datasetsOnly);
     expect(parsed.success).toBe(true);
-    expect(parsed.success && parsed.data.spec).toBeUndefined();
+    expect(parsed.success && parsed.data.code).toBeUndefined();
   });
 
   test("the same definition is REFUSED by the storage schema", () => {
     expect(PageDefinitionSchema.safeParse(datasetsOnly).success).toBe(false);
   });
 
-  test("a supplied spec is still validated, not waved through", () => {
+  test("supplied code is still validated, not waved through", () => {
     const parsed = PageDraftDefinitionSchema.safeParse({
       ...datasetsOnly,
-      spec: { root: "page", elements: { page: { type: "not_a_component" } } },
+      code: { source: 123 },
     });
     expect(parsed.success).toBe(false);
   });
 
-  test("spec stays visible in the JSON Schema the model reads, just not required", () => {
+  test("code stays visible in the JSON Schema the model reads, just not required", () => {
     const json = JSON.stringify(
       z.toJSONSchema(PageDraftDefinitionSchema, {
         target: "draft-7",
@@ -352,7 +360,7 @@ describe("PageDraftDefinitionSchema", () => {
       typeof parsed === "object" && parsed !== null && "required" in parsed
         ? parsed.required
         : null;
-    expect(json).toContain('"elements"');
-    expect(Array.isArray(required) && required.includes("spec")).toBe(false);
+    expect(json).toContain('"source"');
+    expect(Array.isArray(required) && required.includes("code")).toBe(false);
   });
 });

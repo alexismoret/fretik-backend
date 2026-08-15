@@ -101,11 +101,11 @@ const pageWith = (
   operations: PageDefinition["operations"],
   variables: PageDefinition["variables"] = [],
 ): PageDefinition => ({
-  version: 2,
+  version: 3,
   variables,
   datasets: [],
   operations,
-  spec: { root: "root", elements: { root: { type: "box" } } },
+  code: { source: "<template><div>x</div></template>" },
 });
 
 const run = (variables: Record<string, PageValue> = {}) =>
@@ -126,7 +126,7 @@ beforeEach(() => {
       id: "create",
       providerKey: "acme-orders",
       action: "create_order",
-      args: { reference: { $: "state.reference" } },
+      args: { reference: { var: "reference" } },
     },
   ]);
 });
@@ -204,7 +204,7 @@ describe("the argument boundary", () => {
           id: "create",
           providerKey: "acme-orders",
           action: "create_order",
-          args: { reference: { $: "state.reference" } },
+          args: { reference: { var: "reference" } },
         },
       ],
       [{ key: "reference", type: "string" }],
@@ -229,7 +229,7 @@ describe("the argument boundary", () => {
           id: "create",
           providerKey: "acme-orders",
           action: "create_order",
-          args: { quantity: { $: "state.quantity" } },
+          args: { quantity: { var: "quantity" } },
         },
       ],
       [{ key: "quantity", type: "number", initial: 1 }],
@@ -250,8 +250,8 @@ describe("the argument boundary", () => {
           providerKey: "acme-orders",
           action: "create_order",
           args: {
-            reference: { $: "state.reference" },
-            note: { $: "state.missing" },
+            reference: { var: "reference" },
+            note: { var: "missing" },
           },
         },
       ],

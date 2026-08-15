@@ -1,5 +1,4 @@
-import { evaluatePageExpression } from "@fretik/render/runtime/expressions";
-import { isPageBinding, type PageValue } from "../../../schemas/pages";
+import { isPageVarRef, type PageValue } from "../../../schemas/pages";
 import type { PageDataSource } from "./types";
 import { toPageValue } from "./values";
 
@@ -96,22 +95,20 @@ const NOT_ENABLED =
  * fails the dataset, because a request with a silently-wrong argument is worse
  * than no request.
  */
-const resolveArgValue = async (
+const resolveArgValue = (
   value: PageValue,
   state: Record<string, PageValue>,
-): Promise<
-  { ok: true; value: PageValue | undefined } | { ok: false; error: string }
-> => {
-  if (isPageBinding(value)) {
-    const result = await evaluatePageExpression(value.$, { state, data: {} });
-    if (!result.ok) return { ok: false, error: result.error };
-    if (result.value === undefined) return { ok: true, value: undefined };
-    return { ok: true, value: toPageValue(result.value) };
+):
+  { ok: true; value: PageValue | undefined } | { ok: false; error: string } => {
+  if (isPageVarRef(value)) {
+    const resolved = state[value.var];
+    if (resolved === undefined) return { ok: true, value: undefined };
+    return { ok: true, value: toPageValue(resolved) };
   }
   if (Array.isArray(value)) {
     const entries: PageValue[] = [];
     for (const entry of value) {
-      const resolved = await resolveArgValue(entry, state);
+      const resolved = resolveArgValue(entry, state);
       if (!resolved.ok) return resolved;
       if (resolved.value !== undefined) entries.push(resolved.value);
     }
@@ -120,7 +117,7 @@ const resolveArgValue = async (
   if (typeof value === "object" && value !== null) {
     const mapped: Record<string, PageValue> = {};
     for (const [key, inner] of Object.entries(value)) {
-      const resolved = await resolveArgValue(inner, state);
+      const resolved = resolveArgValue(inner, state);
       if (!resolved.ok) return resolved;
       if (resolved.value !== undefined) mapped[key] = resolved.value;
     }
@@ -129,15 +126,15 @@ const resolveArgValue = async (
   return { ok: true, value };
 };
 
-export const resolveExternalArgs = async (
+export const resolveExternalArgs = (
   args: Record<string, PageValue>,
   state: Record<string, PageValue>,
-): Promise<
-  { ok: true; args: Record<string, PageValue> } | { ok: false; error: string }
-> => {
+):
+  | { ok: true; args: Record<string, PageValue> }
+  | { ok: false; error: string } => {
   const resolved: Record<string, PageValue> = {};
   for (const [key, value] of Object.entries(args)) {
-    const entry = await resolveArgValue(value, state);
+    const entry = resolveArgValue(value, state);
     if (!entry.ok) {
       return { ok: false, error: `argument "${key}": ${entry.error}` };
     }
@@ -157,7 +154,7 @@ export const externalSource: PageDataSource = {
           "an external dataset needs operation and providerKey (or a pinned connectionId), all from the stored definition",
       };
     }
-    const resolvedArgs = await resolveExternalArgs(dataset.args ?? {}, state);
+    const resolvedArgs = resolveExternalArgs(dataset.args ?? {}, state);
     if (!resolvedArgs.ok) {
       return { status: "error", message: resolvedArgs.error };
     }

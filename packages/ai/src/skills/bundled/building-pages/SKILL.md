@@ -1,242 +1,69 @@
 ---
 name: building-pages
-description: Design a page — a live dashboard, directory, report or status view built from the team's data with managePage. Read before writing a page definition. Covers page archetypes, layout and responsive rules, conditional styling by binding, typed values, charts, filters and drill-down, and the dataset patterns. Use when the request is a dashboard, a view, "visualise X", "track X", "somewhere to follow Y", or when a public link to living numbers is wanted.
+description: Build a page — a live, data-bound screen the team opens in the app, written as a real Vue SFC over their data. Covers design doctrine, the Nuxt UI catalogue, the data/action contract, and worked page patterns. Use for any dashboard, directory, board, console or mini-app request.
 ---
 
-# building-pages skill
+# Building pages
 
-Every style value comes from the design system, so a page cannot look broken by accident. What is left is judgment: what the reader needs to SEE, what they need to CHANGE, and how finished it looks when they open it.
+A page is ONE Vue SFC you write. The server compiles it on save and the app runs it in a sandboxed frame, styled with the team's own design system. You have all of Vue, all of Nuxt UI, Tailwind and Chart.js — and nothing renders, formats or decorates anything for you. What you write is exactly what the team gets.
 
-**This file is the judgment; `get_catalog` is the reference.** Read both before your first definition.
+The bar is not "it displays the data". It is: **someone reopens this page every Monday instead of asking you.** That means it answers its question in the first screen, stays legible when a dataset is empty or slow, shows values the way a person reads them, and offers the next action in place.
 
-The bar: indistinguishable from a page a good front-end engineer would hand-write for the same request. Icons where they orient, colour where it means something, a caption under every chart, a comparison beside every number, an empty state that names the filter.
+You never see the result. You cannot screenshot it, and nobody will fix it for you — so the discipline below replaces your eyes.
 
-## Before writing anything
+## Process
 
-1. `listObjects`, then `describeObjectType` for every type you will query. It returns the `objectTypeId` (the uuid a dataset needs — **never** reconstruct it from the `data.obj_…` table name, which drops the dashes), the field KEYS and TYPES, and every `select` option with its label.
-2. **Do not probe with `querySql`.** Between `describeObjectType` for the schema and `dry_run` for the real rows, there is no question left that SQL answers.
-3. Decide the ONE question the page answers. A page that answers one question well beats a page that shows everything.
-4. Decide what the viewer changes: a period, a category, an owner. Each becomes a state variable.
+1. **Probe the data before you design anything.** `dry_run` a definition with datasets and no `code`: it returns real field names, a real row, real distinct groups. Designing against imagined fields is the single biggest cause of a page that ships `[object Object]`.
+2. **Plan in one paragraph, before code.** The page's one job. The layout in a sentence. The three things visible without scrolling. The one element the page is remembered by. If that paragraph would fit any other page over any other dataset, it is a template, not a design — redo it.
+3. **Build** — read the references you need first (below).
+4. **Critique your own source**, against `references/design.md` § Self-critique. Fix what fails there.
+5. **`dry_run` the finished definition**, then save. Fix compile errors and dataset errors before the user ever opens it.
 
-## Page archetypes
+## Where the knowledge lives
 
-Pages are not all dashboards. Pick the shape that matches the request:
+Three layers, and using the wrong one is how pages come out generic:
 
-| Request sounds like…                   | Shape                                                                                               |
-| -------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| "track", "monitor", "how are we doing" | **Dashboard** — filters, a KPI row, two or three charts, a detail table                             |
-| "list of", "directory", "who / which"  | **Directory** — a search `input`, filter chips, then a `table` with typed cells (or repeated cards) |
-| "report on", "summary of", "brief"     | **Report** — `section` bands of prose (`markdown`, `rich_text`) with one figure each                |
-| "status of", "where does X stand"      | **Status** — one `stat` with `emphasis: "hero"`, a `timeline` or `stepper`, a `key_values` block    |
-| "compare A and B"                      | **Comparison** — a `grid` of two mirrored columns, same elements on both sides                      |
-| "detail of one X"                      | **Record view** — `identity` header, `key_values` body, related `table` below                       |
+| Layer                | What it answers                                                                               | How to get it                                                                                                       |
+| -------------------- | --------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| **Runtime contract** | What may I import, what does the bridge offer, what does the sandbox forbid                   | `managePage { action: "get_guide" }` — once per conversation, before your first page                                |
+| **Component API**    | What does `UTable` / `USlideover` / `USelectMenu` actually accept — every prop, slot, variant | `managePage { action: "components", components: [...] }` — up to 6 at a time, generated from the library's own docs |
+| **Judgment**         | Which component, which layout, which density, which words                                     | this skill's references, below                                                                                      |
 
-A dashboard opens with numbers. A report opens with a sentence. Do not give a report a KPI row because dashboards have one.
+Never guess a prop. An unknown prop is dropped silently and an unregistered component renders as nothing — both produce a page that looks broken for no visible reason. Ask for the API of the components your page will use, in one call, before writing the template.
 
-A view of ONE record pins that record: filter the dataset to its key, and put the same filter on every aggregate the page shows. Unfiltered, the page reads whichever row came back first and its KPIs total the whole table under a title naming one.
+## References
 
-## Layout
+Load what the task needs.
 
-Work top-down in bands.
+| You are about to                                                          | Read                       |
+| ------------------------------------------------------------------------- | -------------------------- |
+| Lay out the page — composition, hierarchy, density, colour, motion, copy  | `references/design.md`     |
+| Choose components, or render a table, list, form or overlay well          | `references/components.md` |
+| Wire datasets, filters, pagination, formatting, charts, or a write action | `references/data.md`       |
+| Start from a working page of the same family                              | `references/patterns.md`   |
 
-- **`grid` is the page skeleton, `box` is the flow inside it.** A row of chips, a label beside a value, an icon before a number — all `box`. Nesting a `box` inside a grid cell is normal and expected.
-- `grid` is 12 columns and steps down on its own: 4 across becomes 2 on a tablet and 1 on a phone. Set `span` for desktop and let it stack. Spell out `{ base, sm, md, lg }` only when the tablet step must differ from that automatic one.
-- **Quote numeric scale values**: `span: "4"`, `cols: "3"`. A bare number is coerced, but write it right.
-- `card` when a block needs a title and a border — and give the card the `title`/`description` rather than putting a `heading` inside it. Do not wrap every element in one; a page of boxed boxes reads as noise.
-- `section` for a titled band of the page. `eyebrow` above the title is the cheapest way to tell a reader where they are.
-- `box` with `surface` + `border` + `radius` builds a tinted panel without a card — the way to set one block apart without adding a frame.
-- Past seven blocks in one view: split with `tabs`.
+Anything real needs `design.md`. Anything with records needs `components.md` and `data.md`.
 
-The dashboard rhythm, when that is the shape: filters (`box`, `direction: row`, `wrap`) → KPI row (`grid` of `stat`, `span: "3"`) → charts (`span: "6"` for a pair, `"12"` for a time series) → detail table (`span: "12"`, last).
+## Non-negotiables
 
-## Conditional styling is a binding
+The compiler refuses the write, or the sandbox silently drops the result, when you break these.
 
-**This is what makes a page look authored rather than stamped.** Any prop takes a binding, so any prop can respond to the data:
-
-```json
-{
-  "type": "badge",
-  "props": {
-    "label": { "$": "item.status" },
-    "color": {
-      "$": "item.overdue ? 'error' : item.status = 'done' ? 'success' : 'neutral'"
-    }
-  }
-}
-```
-
-```json
-{
-  "type": "text",
-  "props": {
-    "text": { "$": "item.margin" },
-    "format": "percent",
-    "color": {
-      "$": "item.margin < 0 ? 'error' : item.margin > 0.3 ? 'success' : 'neutral'"
-    },
-    "icon": { "$": "item.margin < 0 ? 'trending-down' : 'trending-up'" }
-  }
-}
-```
-
-```json
-{
-  "type": "stat",
-  "props": {
-    "label": "Support backlog",
-    "value": { "$": "data.kpi[0].open" },
-    "compare": { "$": "data.kpi[0].open_prev" },
-    "compareLabel": "vs last week",
-    "deltaColor": {
-      "$": "data.kpi[0].open > data.kpi[0].open_prev ? 'error' : 'success'"
-    }
-  }
-}
-```
-
-That last one matters: a rising backlog is bad, a rising revenue is good, and the tile cannot know which. The delta's colour and icon default to the SIGN — override them whenever the sign does not mean what it looks like (cost, churn, latency, delay, headcount freeze).
-
-`emphasis: "hero"` makes one number the headline. **One per view.** Two heroes is no hero.
-
-Colour: the seven semantic tokens (`primary`, `success`, `warning`, `error`, `info`, `secondary`, `neutral`) carry MEANING and follow the workspace theme. Every Tailwind hue (`indigo`, `amber`, `teal`, …) is also accepted and is for ENTITY data and decoration — a category, a team, a themed band. Use a semantic token when the colour says "this is good/bad"; use a hue when it says "this is the marketing one".
-
-A binding that resolves outside a prop's allowed values falls back and is reported, so guard your fallback branch.
-
-## Typed values — let the workspace do the work
-
-An `objects` dataset ships its field types with the data. Because of that:
-
-- A **table cell** over a `select` renders that option's own coloured badge, money keeps its currency, a rating becomes stars, a date is localised, a boolean becomes a check. **You write nothing.** Do not set `format: "text"` on a status column — it would throw the type away.
-- The `field` component does the same for one value anywhere else (a detail card, a repeated row): `{ "type": "field", "props": { "dataset": "invoices", "key": "status", "value": { "$": "item.status" } } }`. `key_values` takes the same pair — `dataset` on the block, `key` on each item — and without it a status reads as raw text beside a table showing it as a badge.
-- A `table_cell` CHILD of the table replaces one column with your own subtree — `{ "type": "table_cell", "props": { "column": "owner" }, "children": ["owner-identity"] }` — with the row in scope as `item`. Use it when the automatic render is not enough: a name plus an avatar (`identity`), a value plus a trend arrow, a bar beside a number. Keep it small: eight elements, three levels.
-
-Precedence, once: **a `table_cell` › explicit `format` › the field's type › what the value looks like › plain text.**
-
-## Choosing the component
-
-| The reader needs to…        | Use                                                                       |
-| --------------------------- | ------------------------------------------------------------------------- |
-| know one number now         | `stat`                                                                    |
-| compare categories          | `chart_bar` (goes horizontal on its own past 6, or with long labels)      |
-| see movement over time      | `chart_line`, or `chart_area` when the total matters as much as the shape |
-| judge a share of a whole    | `chart_donut` — six slices at most                                        |
-| find a specific row         | `table`                                                                   |
-| read one record's fields    | `key_values`                                                              |
-| see a person or a company   | `identity`                                                                |
-| follow a history            | `timeline`                                                                |
-| follow an ordered process   | `stepper` (only when order carries information)                           |
-| track progress to a target  | `progress` (`variant: "ring"` for a compact one)                          |
-| emphasise inside a sentence | `rich_text`                                                               |
-| see nothing, on purpose     | `empty_state`                                                             |
-
-**Is it even a chart?** Two or three categories is a `stat`, or two side by side — it reads faster and takes a quarter of the space. Thirty columns is a spreadsheet, not a table: pick the ones that answer the question.
-
-## Charts
-
-- **Every metric gets a `label`, and a `unit` if it has one** — it becomes the legend entry, the axis title, the tooltip row and the column header at once. Without it the chart says `nb` or `m0`.
-- A caption is generated from the dataset ("Gross margin by month (THB)"). Write your own `caption` when you can say something better — what the number means, not what it is.
-- `seriesBy` on the dataset needs `series: "series"` on the chart. Without it every group collapses into one flat line.
-- Past 8 series the tail folds into a grey "Other" automatically. If you are near that, group the data instead.
-- **There is no second y-axis, by design.** Two measures of different scale: two charts side by side, or index both to a common base in a `transform`.
-- Values between 0 and 1 want `format: "percent"`, not `number`.
-
-## Datasets
-
-- **`objects` + `mode: "aggregate"`** for anything a chart or a KPI shows. Let the database group and sum; never pull rows to count them in an expression.
-  - `groupBy` a category field, or a date field with `dateBucket` (`month` is usually right).
-  - `metrics: [{ name, fn, key, label, unit }]` — `name` is the row key you bind to; `label` is what a human reads.
-  - `seriesBy` adds a second dimension: stacked bars, multi-series lines.
-  - Omit `groupBy` for a single scalar row — the KPI shape. Add a second metric filtered to the previous period and you have your `compare`.
-- **`objects` + `mode: "records"`** for tables and lists. `limit` is the PAGE SIZE, not a ceiling: a table over one pages and sorts server-side, so 25–100 serves a type of any size and the reader still sees the real total. Two follow-ons: a column total then covers one page only — use an aggregate dataset for a figure that holds; and give a paginated table its own dataset, since paging re-queries it under anything else reading it.
-- **`transform`** when the answer is not a query: a derived column, a ratio between datasets, a set difference, a join. Declare `inputs`, read them as `data.<id>`. The code is **JavaScript** — the body of `(data, state) => …`, so it must `return` its rows. Give it results a query already reduced: grouping and summing belong to an aggregate dataset, which does it in SQL over every row instead of over the few thousand a transform can hold.
-- **`inline`** for small fixed reference data the team has no table for — targets, thresholds, conversion rates. Never for query results: embedding rows freezes them, which is what a page exists to avoid.
-- **`external`** for a small, live read from a connected app — an inbox, today's orders, this week's tickets. Its value is freshness: the answer is cached for a minute or so and re-read on every visit.
-
-**Choosing between `external` and a workflow that syncs into an object type** — the question is what the data has to survive:
-
-| Use `external`                 | Sync into an object type instead                  |
-| ------------------------------ | ------------------------------------------------- |
-| Tens of rows, read as-is       | Thousands, or filtered/grouped/sorted server-side |
-| Freshness is the point         | History, trends, or anything compared over time   |
-| Each viewer sees THEIR account | Everyone must see the same rows                   |
-| Internal page                  | The page must be published                        |
-
-The reason is not policy: a third party cannot be filtered or indexed the way an object type can, so a page that asks it for volume pays a network round trip for rows nobody sorted.
-
-## Interactivity
-
-State variables are the only moving parts. Three wires, and nothing else:
-
-- A control writes state through a two-way binding on its value prop: `"value": { "$bindState": "/period" }` on a `select`, `button_group`, `date_range`, … A fixed value there makes a control that looks live and changes nothing.
-- A dataset filter binds to state — `{ key: "month", op: "eq", value: { "$": "state.period" } }` — so changing the control re-queries the server.
-- Any prop can bind to state or data for display.
-
-An **"All" option is `value: ""`** — an empty value drops its filter server-side, so the reset needs no special case. Give it a label ("All", "Any owner"), never an empty one.
-
-Drill-down is the same mechanism: `row_click` on a table runs `{ "action": "setState", "params": { "statePath": "/selected", "value": { "$": "item.id" } } }`, and a block below filters on it. Use the element's `visible` to hide the detail until something is selected, and pair it with an `empty_state` that says what to click.
-
-Repeating content is `repeat` on any container — `{ "statePath": "/data/deals" }` on a `box` renders its children once per row, each read as `item.<field>`.
-
-Prefer a `button_group` to a `select` at five options or fewer — visible choices get used, hidden ones do not.
-
-## Forms and writes
-
-A page that only shows things is half a page. An `operations` entry is a write into a connected app; the `run` action fires it.
-
-- **A form field is a variable.** Declare it in `variables`, bind the control with `$bindState`, and read it in the operation's `args` as `state.<key>`. There is no separate form model to learn, and the value arrives typed.
-- Put the controls in a `form` and bind the run to its `submit`: Enter in a field and a `submit: true` button both fire it, and required fields are checked first. Give each control a `label` — that is what turns it into a labelled field with its required marker.
-- `onSuccess.refetch` names the datasets to re-run, which is how the page shows the thing that was just created. Add `resetVariables` so the next entry starts clean, and a `toast` in the user's own terms.
-- `confirm` is REQUIRED for anything the app marks destructive — the server refuses the operation without it. Add one to anything irreversible even when it is not.
-
-Worked shape, an order entry form:
-
-```json
-"operations": [{
-  "id": "create_order",
-  "providerKey": "acme-orders",
-  "action": "create_order",
-  "args": { "reference": { "$": "state.reference" }, "quantity": { "$": "state.quantity" } },
-  "onSuccess": { "refetch": ["orders"], "toast": "Order created", "resetVariables": ["reference", "quantity"] }
-}]
-```
-
-with `{ "type": "button", "props": { "label": "Create", "submit": true } }` inside a `form` whose `submit` runs `{ "action": "run", "params": { "operation": "create_order" } }`.
-
-## Expressions
-
-The catalog states the grammar; these are the judgment calls it cannot make.
-
-- Aggregate with `$sum`, `$average`, `$count`, `$min`, `$max`; filter with a predicate: `data.sales[status='won']`.
-- Keep expressions short. A binding is a dotted path with a little arithmetic — anything needing several steps belongs in a `transform`, which is JavaScript, computed once instead of on every render.
-- Never format numbers or dates by hand. Set `format` and the page renders them in the viewer's own locale.
-
-## Editing a page you already built
-
-Send `patch` — RFC 6902 ops rooted at the definition — never a whole `definition`. One op reaches one element, one dataset filter, one theme value; a full rewrite is how an element that was fine disappears. `get` the page first when you are unsure of the current keys.
-
-Building in passes is the same move: `create` without `spec` opens the page on its datasets, then add the elements a few ops at a time. A page that exists cannot be lost by a later rewrite.
-
-## The finished checklist
-
-Before you hand a page over:
-
-- [ ] Every chart's caption reads as a sentence a person would say.
-- [ ] Every KPI has a `compare` — a number with nothing to measure it against says very little.
-- [ ] Icons on cards, sections and stats — chosen to orient, not to decorate.
-- [ ] Colour means something everywhere it appears, and the meaning is right (check every delta).
-- [ ] Empty states name the active filter, not the absence: "No invoices for March", not "No data".
-- [ ] `warnings` empty; `polish` read, and acted on or consciously left.
-
-`samples` on the same result shows what actually came back — row counts, distinct group values, field types, one real row. Check your bindings against it; a dataset returning zero rows is a wrong filter far more often than missing data.
+- **Static Tailwind classes only.** The compiler scans your source text; a class assembled at runtime (``:class="`bg-${c}-500`"``) styles nothing. Toggle between complete literal strings, or use `:style` for a value that is genuinely dynamic (a hex from the data, a computed width).
+- **Imports: `vue`, `@nuxt/ui`, `chart.js` / `chart.js/auto`, `#fretik/sdk`, `@vueuse/core`, `@internationalized/date`, and the four Pragmatic drag-and-drop paths** (`references/components.md` § Beyond Nuxt UI lists what each is for). Nothing else, no relative files — it is one file. `@tanstack/vue-table` is NOT importable: paginate and sort through the data contract, not through the table's own row models.
+- **Icons are `i-lucide-*` only**, prefix included. A name is parsed as `i-<collection>-<icon>`, so a schema icon like `calendar-check` written as `` `i-${icon}` `` asks for the `calendar` collection and silently renders an empty box. Always `` `i-lucide-${icon}` ``.
+- **No `fetch`, no storage, no `window.open`.** The bridge is the only door out; state lives in refs. Plain `<a href>` is fine — the app routes it.
+- **Every dataset result has four outcomes**, and a page that renders one of them is broken for the other three: loading, `ok` with rows, `ok` with zero rows, and a failure (`error` / `forbidden` / `needs_connection`).
+- `<style scoped>` exists but Tailwind covers almost everything; no `@import`, no `url()`.
 
 ## Publishing
 
-Ask the user before you `publish`, and say plainly what will be visible: the link needs no account and exposes everything the owning team can see. Member fields show a name only, never a profile.
-
-A page that reads a connected app or writes to one CANNOT be published — an anonymous visitor would be spending the team's credentials. If the user wants both, sync the data into an object type with a workflow and publish a page over that.
+`publish` mints a link anyone can open without an account. The code is frozen at that moment; the data stays live under the owning team's scope. **Ask the user before publishing** — it exposes what the team can see. Pages that read or write a connected app are refused at the gate. Re-publish to refresh the snapshot; `unpublish` kills the link for good.
 
 ## When a page is the wrong answer
 
-- A one-off number, asked once → answer in the conversation.
-- A frozen report to send as a file → build it in the sandbox and `presentFiles`.
-- Work that must HAPPEN on a schedule rather than be looked at → a workflow. A workflow that fills an object type and a page that reads it is often the right pair.
+- A one-off number, or a question → answer in chat.
+- A frozen report to send someone → a sandbox file (`presentFiles`).
+- Data entry at scale, imports, records management → the objects UI already does it.
+- A recurring process with steps and approvals → a workflow.
+
+A page earns its keep when the team will REOPEN it.

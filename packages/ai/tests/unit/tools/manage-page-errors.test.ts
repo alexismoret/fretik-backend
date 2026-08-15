@@ -65,16 +65,21 @@ describe("liftPageError — 404", () => {
 
 describe("liftPageError — the publish gate", () => {
   test("carries the gate's own message through, word for word", () => {
-    // The real message, produced by the real gate: a cyclic page.
+    // The real message, produced by the real gate: an operation on a page
+    // someone is trying to expose anonymously.
     const blocker = pagePublishError({
-      version: 2,
+      version: 3,
       variables: [],
       datasets: [],
-      spec: {
-        root: "a",
-        elements: {
-          a: { type: "box", props: {}, children: ["b"] },
-          b: { type: "box", props: {}, children: ["a"] },
+      operations: [{ id: "send_update", action: "send_message" }],
+      code: {
+        source: "<template><div>x</div></template>",
+        compiled: {
+          js: "export default {}",
+          css: "",
+          runtimeVersion: "v1",
+          sourceHash: "a".repeat(64),
+          compiledAt: "2026-08-14T00:00:00.000Z",
         },
       },
     });
@@ -87,22 +92,40 @@ describe("liftPageError — the publish gate", () => {
 
     expect(lifted?.code).toBe(TOOL_ERROR_CODES.PAGE_NOT_PUBLISHABLE);
     expect(lifted?.error).toBe(blocker);
-    // It names the offending element — that is the whole value of passing it
+    // It names the offending operation — that is the whole value of passing it
     // through instead of substituting a generic sentence.
-    expect(lifted?.error).toContain('"a"');
-    expect(lifted?.hint).toContain("update + patch");
+    expect(lifted?.error).toContain('"send_update"');
+    expect(lifted?.hint).toContain("update the page");
   });
 
   test("points at editing the page, never at re-sending publish", () => {
     const lifted = liftPageError(
       httpError(
         400,
-        badRequest("The page has 401 elements; the ceiling is 400."),
+        badRequest(
+          "The page has never compiled successfully — save it (create/update) until compile errors are gone, then publish.",
+        ),
       ),
       { action: "publish", pageId: "page-42" },
     );
-    expect(lifted?.error).toContain("401");
-    expect(lifted?.hint).toContain("get the page");
+    expect(lifted?.error).toContain("never compiled");
+    expect(lifted?.hint).toContain("update the page");
+  });
+});
+
+describe("liftPageError — the compile refusal", () => {
+  test("travels VERBATIM as INVALID_ARGS — the error list IS the fix list", () => {
+    const message = [
+      "Page code failed to compile — nothing was saved. Fix the source and resend it:",
+      "- [script] Unexpected token (line 12)",
+    ].join("\n");
+    const lifted = liftPageError(httpError(400, badRequest(message)), {
+      action: "update",
+      pageId: "page-42",
+    });
+    expect(lifted?.code).toBe(TOOL_ERROR_CODES.INVALID_ARGS);
+    expect(lifted?.error).toBe(message);
+    expect(lifted?.hint).toContain("Nothing was saved");
   });
 });
 
@@ -179,13 +202,9 @@ describe("managePage accepts a stringified definition", () => {
   };
 
   const definition = {
-    version: 2,
     variables: [],
     datasets: [],
-    spec: {
-      root: "root",
-      elements: { root: { type: "heading", props: { text: "Q3" } } },
-    },
+    code: { source: "<template><h1>Q3</h1></template>" },
   };
 
   const call = (value: unknown) =>

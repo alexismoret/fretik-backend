@@ -1,4 +1,3 @@
-import { compilePageExpression } from "@fretik/render/runtime/expressions";
 import type { ExternalAppConnection } from "../../../db/schema";
 import { getAction } from "../../../external-apps/registry";
 import { redis } from "../../../lib/redis";
@@ -20,6 +19,26 @@ import { getSnapshotForConnection } from "../mcp/snapshot-store";
 import { mcpCallTool } from "../mcp/transport";
 import { executeReadAction } from "./read-executor";
 import { validateActionArgs } from "./validate-args";
+
+/**
+ * Walk a plain dot path (`value.items[0].rows`) into an upstream answer.
+ * Property and index steps only — a path is DATA, nothing evaluates. Returns
+ * undefined the moment a step finds nothing.
+ */
+const resolveResultPath = (payload: unknown, path: string): unknown => {
+  let current: unknown = payload;
+  for (const match of path.matchAll(/([A-Za-z_$][\w$]*)|\[(\d+)\]/g)) {
+    if (current === null || typeof current !== "object") return undefined;
+    const property = match[1];
+    if (property !== undefined) {
+      current = Reflect.get(current, property);
+    } else if (match[2] !== undefined) {
+      current = Array.isArray(current) ? current[Number(match[2])] : undefined;
+    }
+    if (current === undefined) return undefined;
+  }
+  return current;
+};
 
 /**
  * The page-dataset implementation of `ExternalPageQueryExecutor` — a READ over
@@ -278,23 +297,15 @@ const runQuery = async (
 
   let payload = stripBinary(answer.data);
   if (input.resultPath !== undefined) {
-    const compiled = compilePageExpression(input.resultPath);
-    if (compiled === null) {
+    // Walked against the RESPONSE — the path's root is the answer itself.
+    const extracted = resolveResultPath(payload, input.resultPath);
+    if (extracted === undefined) {
       return {
         status: "error",
-        message: `resultPath does not parse: ${input.resultPath}`,
+        message: `resultPath "${input.resultPath}" found nothing in the answer — run dry_run to see its real shape.`,
       };
     }
-    try {
-      // Evaluated against the RESPONSE — the path's root is the answer itself.
-      const extracted: unknown = await compiled.evaluate(payload);
-      payload = extracted;
-    } catch (error) {
-      return {
-        status: "error",
-        message: `resultPath failed: ${error instanceof Error ? error.message : String(error)}`,
-      };
-    }
+    payload = extracted;
   }
 
   const result: PageQueryResult = { status: "ok", ...capRows(asRows(payload)) };

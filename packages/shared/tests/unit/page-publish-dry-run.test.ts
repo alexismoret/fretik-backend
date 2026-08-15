@@ -4,15 +4,20 @@ import { HTTPException } from "hono/http-exception";
 // method only exists once `@hono/zod-openapi` has patched Zod. In a service
 // that happens at boot; here it has to be imported for the side effect.
 import "@hono/zod-openapi";
-import type { PageDefinition, PageElement } from "../../src/schemas/pages";
+import type {
+  PageCompiled,
+  PageDefinition,
+  PageRuntimeError,
+} from "../../src/schemas/pages";
 
 /**
  * Publishing, public access, and the dry run.
  *
  * Two things are pinned here. First the publish contract: what gets FROZEN
- * (the definition) versus what stays live (the data), that a re-publish keeps
- * the token so a shared link never breaks, and that unpublishing clears the
- * token so a revoked link is indistinguishable from one that never existed.
+ * (the definition, compiled code included) versus what stays live (the data),
+ * that a re-publish keeps the token so a shared link never breaks, and that
+ * unpublishing clears the token so a revoked link is indistinguishable from
+ * one that never existed.
  *
  * Second, `dryRunPage`'s output is CHARACTERISED rather than specified — these
  * assertions exist to make the next refactor's diff readable, so they record
@@ -32,6 +37,7 @@ interface FakePage {
   userId: string | null;
   definition: PageDefinition;
   publishedDefinition: PageDefinition | null;
+  runtimeErrors: PageRuntimeError[];
   publicToken: string | null;
   publishedAt: Date | null;
   publishedByUserId: string | null;
@@ -41,17 +47,23 @@ interface FakePage {
   updatedAt: Date;
 }
 
-const blankDefinition = (): PageDefinition => ({
-  version: 2,
+const compiled = (): PageCompiled => ({
+  js: 'import { mountPage } from "#fretik/sdk";',
+  css: ".p-4{padding:1rem}",
+  runtimeVersion: "v1",
+  sourceHash: "a".repeat(64),
+  compiledAt: "2026-01-01T00:00:00.000Z",
+});
+
+/** A publishable page: real source AND a stored compile. */
+const readyDefinition = (text = "Hello"): PageDefinition => ({
+  version: 3,
   variables: [],
   datasets: [],
   operations: [],
-  spec: {
-    root: "root",
-    elements: {
-      root: { type: "box", props: {}, children: ["title"] },
-      title: { type: "heading", props: { text: "Hello" } },
-    },
+  code: {
+    source: `<template><h1>${text}</h1></template>`,
+    compiled: compiled(),
   },
 });
 
@@ -63,8 +75,9 @@ const fakePage = (overrides: Partial<FakePage> = {}): FakePage => ({
   icon: null,
   color: null,
   userId: null,
-  definition: blankDefinition(),
+  definition: readyDefinition(),
   publishedDefinition: null,
+  runtimeErrors: [],
   publicToken: null,
   publishedAt: null,
   publishedByUserId: null,
@@ -186,25 +199,23 @@ describe("publishPage — frozen definition, live data", () => {
     const frozen = updates[0]?.publishedDefinition;
 
     // The working definition moves on; the snapshot must not follow.
-    const edited = blankDefinition();
-    edited.spec.elements.title = { type: "heading", props: { text: "Edited" } };
     storedPage = {
       ...fakePage({ publicToken: "token-abc" }),
-      definition: edited,
+      definition: readyDefinition("Edited"),
     };
 
     expect(JSON.stringify(frozen)).toContain("Hello");
     expect(JSON.stringify(frozen)).not.toContain("Edited");
   });
 
-  test("a page that renders nothing is refused, and its message names the fault", async () => {
+  test("a page with no code is refused, and its message names the fault", async () => {
     storedPage = fakePage({
       definition: {
-        version: 2,
+        version: 3,
         variables: [],
         datasets: [],
         operations: [],
-        spec: { root: "root", elements: {} },
+        code: { source: "" },
       },
     });
     const failure = await publishPage({
@@ -218,7 +229,31 @@ describe("publishPage — frozen definition, live data", () => {
     // The gate's own wording is what an agent has to act on — pin it here so a
     // refactor that swallows it fails loudly.
     expect(failure instanceof HTTPException && failure.message).toContain(
-      "root element",
+      "no code to publish",
+    );
+    expect(updates).toEqual([]);
+  });
+
+  test("code that never compiled cleanly is refused the same way", async () => {
+    storedPage = fakePage({
+      definition: {
+        version: 3,
+        variables: [],
+        datasets: [],
+        operations: [],
+        code: { source: "<template><h1>Hello</h1></template>" },
+      },
+    });
+    const failure = await publishPage({
+      pageId: "page-1",
+      teamId: "team-1",
+      publishedByUserId: "user-1",
+    }).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(HTTPException);
+    expect(failure instanceof HTTPException && failure.status).toBe(400);
+    expect(failure instanceof HTTPException && failure.message).toContain(
+      "never compiled",
     );
     expect(updates).toEqual([]);
   });
@@ -278,7 +313,7 @@ describe("unpublishPage — a revoked link is indistinguishable from none", () =
   test("clears the token and the snapshot together", async () => {
     storedPage = fakePage({
       publicToken: "token-abc",
-      publishedDefinition: blankDefinition(),
+      publishedDefinition: readyDefinition(),
       publishedAt: new Date("2026-02-01"),
       publishedByUserId: "user-1",
     });
@@ -303,17 +338,10 @@ describe("unpublishPage — a revoked link is indistinguishable from none", () =
 
 describe("resolvePageAccess — the anonymous door", () => {
   test("serves the FROZEN definition, never the working one", async () => {
-    const published = blankDefinition();
-    published.spec.elements.title = {
-      type: "heading",
-      props: { text: "Published" },
-    };
-    const working = blankDefinition();
-    working.spec.elements.title = { type: "heading", props: { text: "Draft" } };
     storedPage = fakePage({
       publicToken: "token-abc",
-      publishedDefinition: published,
-      definition: working,
+      publishedDefinition: readyDefinition("Published"),
+      definition: readyDefinition("Draft"),
     });
 
     const result = await resolvePageAccess({ token: "token-abc" });
@@ -346,30 +374,25 @@ describe("resolvePageAccess — the anonymous door", () => {
 
 describe("dryRunPage — characterisation of today's output", () => {
   const withDatasets = (
-    elements: Record<string, PageElement>,
     datasets: PageDefinition["datasets"],
+    source = "<template><div>ok</div></template>",
   ): PageDefinition => ({
-    version: 2,
+    version: 3,
     variables: [],
     datasets,
     operations: [],
-    spec: {
-      root: "root",
-      elements: {
-        root: { type: "box", props: {}, children: Object.keys(elements) },
-        ...elements,
-      },
-    },
+    code: { source },
   });
 
   test("reports row count and one clipped sample row", async () => {
     const long = "x".repeat(200);
     const result = await dryRunPage({
-      definition: withDatasets({}, [
+      definition: withDatasets([
         { id: "sales", kind: "inline", rows: [{ note: long, amount: 10 }] },
       ]),
       teamId: "team-1",
       userId: null,
+      assumeCompiled: true,
     });
 
     expect(result.samples.sales?.rowCount).toBe(1);
@@ -378,15 +401,38 @@ describe("dryRunPage — characterisation of today's output", () => {
       typeof sample === "object" && sample !== null && !Array.isArray(sample)
         ? sample.note
         : undefined;
-    expect(typeof note === "string" && note.length).toBe(121);
+    expect(typeof note === "string" && note.length).toBe(161);
     expect(typeof note === "string" && note.endsWith("…")).toBe(true);
+  });
+
+  test("a grouped dataset reports its distinct group values", async () => {
+    const result = await dryRunPage({
+      definition: withDatasets([
+        {
+          id: "byStage",
+          kind: "inline",
+          groupBy: "stage",
+          rows: [
+            { group: "won", n: 3 },
+            { group: "lost", n: 1 },
+            { group: "won", n: 2 },
+          ],
+        },
+      ]),
+      teamId: "team-1",
+      userId: null,
+      assumeCompiled: true,
+    });
+    expect(result.samples.byStage?.groupCount).toBe(2);
+    expect(result.samples.byStage?.groupValues).toEqual(["won", "lost"]);
   });
 
   test("an empty dataset is a warning that names the likely cause", async () => {
     const result = await dryRunPage({
-      definition: withDatasets({}, [{ id: "sales", kind: "inline", rows: [] }]),
+      definition: withDatasets([{ id: "sales", kind: "inline", rows: [] }]),
       teamId: "team-1",
       userId: null,
+      assumeCompiled: true,
     });
     expect(result.warnings).toContain(
       'dataset "sales" returned no rows — check its filters, or the object type may be empty.',
@@ -395,95 +441,132 @@ describe("dryRunPage — characterisation of today's output", () => {
 
   test("a failing dataset is reported with its own message", async () => {
     const result = await dryRunPage({
-      definition: withDatasets({}, [
-        { id: "broken", kind: "transform", code: "this is ( not jsonata" },
+      definition: withDatasets([
+        { id: "broken", kind: "transform", code: "return this is ( not js" },
       ]),
       teamId: "team-1",
       userId: null,
+      assumeCompiled: true,
     });
     expect(
       result.warnings.some((w) => w.startsWith('dataset "broken" failed:')),
     ).toBe(true);
   });
 
-  test("a binding that resolves to nothing names the $$.state trap", async () => {
+  test("an unreadable object type degrades to its own forbidden warning", async () => {
+    // The mocked db knows no object types, so any objects dataset resolves
+    // forbidden — one dataset's grant costs its block, not the page.
+    const result = await dryRunPage({
+      definition: withDatasets([
+        {
+          id: "records",
+          kind: "objects",
+          objectTypeId: "00000000-0000-4000-8000-000000000000",
+        },
+      ]),
+      teamId: "team-1",
+      userId: null,
+      assumeCompiled: true,
+    });
+    expect(result.samples.records).toEqual({
+      status: "forbidden",
+      rowCount: 0,
+    });
+    expect(result.warnings).toContain(
+      'dataset "records": this team cannot read that object type.',
+    );
+  });
+
+  test("empty code is a warning, not a refusal — a dry run persists nothing", async () => {
+    const result = await dryRunPage({
+      definition: withDatasets([], ""),
+      teamId: "team-1",
+      userId: null,
+      assumeCompiled: true,
+    });
+    expect(
+      result.warnings.some((w) => w.includes("code.source is empty")),
+    ).toBe(true);
+  });
+
+  test("without assumeCompiled, compile errors land in warnings", async () => {
+    // No <template> is a STRUCTURAL failure — caught before the Tailwind
+    // subprocess, so this stays a fast unit test of the wiring.
     const result = await dryRunPage({
       definition: withDatasets(
-        {
-          total: {
-            type: "stat",
-            props: { label: "Total", value: { $: "data.sales.nope" } },
-          },
-        },
-        [{ id: "sales", kind: "inline", rows: [{ amount: 10 }] }],
+        [],
+        '<script setup lang="ts">const a = 1</script>',
       ),
       teamId: "team-1",
       userId: null,
     });
-    expect(
-      result.warnings.some((w) =>
-        w.includes("these bindings resolved to nothing"),
+    const found = result.warnings.find((w) => w.startsWith("code [structure]"));
+    expect(found).toBeDefined();
+    expect(found).toContain("<template>");
+  });
+
+  test("assumeCompiled skips the compile pass — the write just paid for it", async () => {
+    const result = await dryRunPage({
+      definition: withDatasets(
+        [],
+        '<script setup lang="ts">const a = 1</script>',
       ),
-    ).toBe(true);
-    expect(result.warnings.join(" ")).toContain("$$.state.x");
+      teamId: "team-1",
+      userId: null,
+      assumeCompiled: true,
+    });
+    expect(result.warnings.some((w) => w.startsWith("code ["))).toBe(false);
   });
 
   test("dryRunPage sanitizes the definition itself — its warnings include the static pass", async () => {
     const result = await dryRunPage({
-      definition: withDatasets(
-        { total: { type: "stat", props: { label: "T", nonsenseProp: 1 } } },
-        [],
-      ),
+      definition: withDatasets([
+        {
+          id: "derived",
+          kind: "transform",
+          inputs: ["nowhere"],
+          code: "return [{ seen: data.nowhere === null }];",
+        },
+      ]),
       teamId: "team-1",
       userId: null,
+      assumeCompiled: true,
     });
-    expect(result.warnings.some((w) => w.includes("nonsenseProp"))).toBe(true);
+    expect(result.warnings).toContain(
+      'dataset "derived": input "nowhere" does not exist',
+    );
   });
 
   test("assumeSanitized skips the static pass — the caller already ran it", async () => {
-    const definition = withDatasets(
-      { total: { type: "stat", props: { label: "T", nonsenseProp: 1 } } },
-      [],
-    );
+    const definition = withDatasets([
+      {
+        id: "derived",
+        kind: "transform",
+        inputs: ["nowhere"],
+        code: "return [{ seen: data.nowhere === null }];",
+      },
+    ]);
     // Same definition, both ways: the static finding is the difference.
     const fresh = await dryRunPage({
       definition,
       teamId: "team-1",
       userId: null,
+      assumeCompiled: true,
     });
     const preSanitized = await dryRunPage({
       definition,
       teamId: "team-1",
       userId: null,
       assumeSanitized: true,
+      assumeCompiled: true,
     });
 
-    expect(fresh.warnings.some((w) => w.includes("nonsenseProp"))).toBe(true);
-    expect(preSanitized.warnings.some((w) => w.includes("nonsenseProp"))).toBe(
+    expect(fresh.warnings.some((w) => w.includes('"nowhere"'))).toBe(true);
+    expect(preSanitized.warnings.some((w) => w.includes('"nowhere"'))).toBe(
       false,
     );
     // The DATA phase still runs either way — that is the half a caller cannot
     // have done for itself.
     expect(preSanitized.samples).toEqual(fresh.samples);
-  });
-
-  test("a one-category chart is polish, never a warning", async () => {
-    const result = await dryRunPage({
-      definition: withDatasets(
-        {
-          chart: {
-            type: "chart_bar",
-            props: { dataset: "sales", x: "group", y: "amount" },
-          },
-        },
-        [{ id: "sales", kind: "inline", rows: [{ group: "A", amount: 10 }] }],
-      ),
-      teamId: "team-1",
-      userId: null,
-    });
-    expect(result.polish.some((p) => p.includes("is not a chart"))).toBe(true);
-    expect(result.warnings.some((w) => w.includes("is not a chart"))).toBe(
-      false,
-    );
   });
 });

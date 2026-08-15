@@ -22,25 +22,28 @@ import {
   collectDatasets,
   collectNodes,
   definitionText,
-  hasNodeMatching,
   nodeTypes,
+  pageSource,
   rendersSomething,
 } from "./page-definition-readers";
 
 /**
  * Pages generation suite — the quality gate the `managePage` tool never had.
  *
- * The pages feature ships a wide authoring surface (45 node types, datasets,
- * JSONata bindings) and was verified only by dry-run + browser inspection: no
- * eval ever measured whether the AGENT writes good pages with it. That gap is
- * the reason this file exists, and it is deliberately written to OUTLIVE the
- * json-render refonte: every assertion reads facts that hold in BOTH the
- * current nested `definition.root` tree and the flat `spec.elements` map that
- * replaces it, so the same suite scores the format before and after and the
+ * The pages feature ships a wide authoring surface (a complete Vue SFC over
+ * declared datasets, variables and operations) and was verified only by
+ * dry-run + browser inspection: no eval ever measured whether the AGENT
+ * writes good pages with it. That gap is the reason this file exists, and it
+ * is deliberately written to OUTLIVE format migrations: every assertion reads
+ * the stored page through the shape-blind readers in
+ * `page-definition-readers.ts` (v1 nested tree, v2 flat spec, v3 code), so
+ * the same suite scores a format before and after a migration and the
  * migration has a real acceptance criterion (≥ baseline) instead of a vibe.
+ * On a code page, structure probes read the SFC source — component tags,
+ * class idioms, bridge calls — and data probes read the declared datasets.
  *
  * What it grades:
- *   - the STORED page (not the chat reply) — structure, datasets, bindings;
+ *   - the STORED page (not the chat reply) — structure, datasets, wiring;
  *   - the `warnings` channel of the final write, which is the system's own
  *     verdict on the definition it just saved (zero is the bar — a warning
  *     means the agent shipped a page it never saw resolve);
@@ -314,7 +317,9 @@ const finalWriteSampleRows = (result: InvokeResult): number[] => {
 
 // ── Shared assertion builders ───────────────────────────────────────────────
 
-/** The saved page exists and is non-trivial. */
+/** The saved page exists and is non-trivial. On a code page "nodes" are the
+ * template's component-tag occurrences (see `collectNodes`), so a floor here
+ * is a floor on how much the SFC actually assembles. */
 const pageSaved = (minNodes: number): EvalCase["assertions"][number] => ({
   type: "custom",
   name: "page-saved",
@@ -395,7 +400,11 @@ const dashboard: EvalCase = {
   assertions: [
     { type: "noError" },
     { type: "toolUsed", tools: ["managePage"] },
-    pageSaved(6),
+    // Was 6 when heading and stat NODES counted. The tag scan only sees
+    // component tags — KPI tiles written as styled divs are invisible to it —
+    // so the floor drops to what a real dashboard cannot go below: the charts
+    // plus their loading/empty states.
+    pageSaved(4),
     usesSeededType,
     datasetsReturnedRows,
     noFinalWarnings,
@@ -405,10 +414,17 @@ const dashboard: EvalCase = {
       fn: async (_r, ctx) => {
         const page = await pageForConversation(ctx);
         if (!page) return "no page was saved";
-        if (!hasNodeMatching(page.definition, /chart/i))
-          return `no chart node — types: ${nodeTypes(page.definition).join(",")}`;
-        if (!hasNodeMatching(page.definition, /^stat$|metric|kpi/i))
-          return `no KPI/stat node — types: ${nodeTypes(page.definition).join(",")}`;
+        const source = pageSource(page.definition);
+        // A code page has no chart NODE — Chart.js drawing on a <canvas> is
+        // the one way this runtime charts.
+        if (!/chart\.js|<canvas/i.test(source))
+          return "no chart — the code neither imports chart.js nor draws on a <canvas>";
+        // No stat node either: a KPI is a big rendered number, and the house
+        // idiom for one is `text-3xl font-display tabular-nums`
+        // (skills/building-pages). The class probe is a proxy for "a headline
+        // figure is displayed prominently".
+        if (!/text-3xl|tabular-nums/.test(source))
+          return "no KPI figure — nothing renders a big number (text-3xl / tabular-nums)";
         return true;
       },
     },
@@ -469,19 +485,22 @@ const filterableDirectory: EvalCase = {
       fn: async (_r, ctx) => {
         const page = await pageForConversation(ctx);
         if (!page) return "no page was saved";
+        const source = pageSource(page.definition);
         if (
-          !hasNodeMatching(page.definition, /select|radio|button_group|tabs/i)
+          !/USelect|USelectMenu|URadio|UTabs|UInput|UButtonGroup/.test(source)
         )
-          return `no filter control — types: ${nodeTypes(page.definition).join(",")}`;
-        // Both formats express "this filter reads the viewer's choice" as a
-        // reference to state somewhere in the definition: v1 `{$: "state.x"}`
-        // / `state` props, json-render `$state` / `$bindState`.
+          return "no filter control in the template (USelect/URadio/UTabs/UInput/UButtonGroup)";
+        // Wired means the choice TRAVELS: the code re-queries with variable
+        // values (`fretik.data.query({ variables })`), and a dataset filter
+        // reads the variable back as a { "var": … } reference. Either half
+        // alone is an inert control.
         if (
-          !/\bstate\b|\$state|\$bindState/i.test(
-            definitionText(page.definition),
-          )
+          !source.includes("fretik.data.query") ||
+          !/\bvariables\b/.test(source)
         )
-          return "no control or filter references state — the filter is inert";
+          return "the control never re-queries — no fretik.data.query call sending variables";
+        if (!definitionText(page.definition).includes('"var"'))
+          return 'no dataset filter reads the variable — no { "var": … } reference in the definition';
         return true;
       },
     },
@@ -509,7 +528,10 @@ const narrativeReport: EvalCase = {
   assertions: [
     { type: "noError" },
     { type: "toolUsed", tools: ["managePage"] },
-    pageSaved(4),
+    // Was 4 when heading/text NODES counted. Prose in a code page is plain
+    // HTML the tag scan cannot see, so the component floor only guards the
+    // table and its states — the prose intent moves to the source probe below.
+    pageSaved(2),
     usesSeededType,
     {
       type: "custom",
@@ -517,13 +539,12 @@ const narrativeReport: EvalCase = {
       fn: async (_r, ctx) => {
         const page = await pageForConversation(ctx);
         if (!page) return "no page was saved";
-        const types = nodeTypes(page.definition);
-        const prose = types.some((t) =>
-          /heading|text|markdown|rich_text|section/i.test(t),
-        );
-        const table = types.some((t) => /table/i.test(t));
-        if (!prose) return `no prose node — types: ${types.join(",")}`;
-        if (!table) return `no table node — types: ${types.join(",")}`;
+        const source = pageSource(page.definition);
+        // Prose on a code page is heading/paragraph HTML in the template —
+        // there is no text node to count.
+        if (!/<h[1-6][\s>]|<p[\s>]/i.test(source))
+          return "no prose — the template has no heading or paragraph element";
+        if (!/<UTable|<table/i.test(source)) return "no table in the template";
         return true;
       },
     },
@@ -598,10 +619,11 @@ const noPublishWithoutAsking: EvalCase = {
 };
 
 /**
- * Update safety. The tool replaces a definition WHOLESALE, so the failure mode
- * is silent amputation: the agent sends back only the part it changed and the
- * rest of the page disappears. Seeds a two-dataset page and asks for a change
- * that touches one of them.
+ * Update safety. A definition section the agent resends replaces the stored
+ * one WHOLE, so the failure mode is silent amputation: a one-string ask
+ * answered with a cut-down SFC (instead of targeted `edits`, or a faithful
+ * full resend) loses the rest of the page. Seeds a two-dataset code page and
+ * asks for a change that touches one heading.
  */
 const UPDATE_PAGE_NAME = "Eval Pipeline Overview";
 
@@ -609,10 +631,10 @@ const updatePreservesRest: EvalCase = {
   id: "page-update-preserves-rest",
   description:
     "Changing one part of an existing page leaves its other content intact (no wholesale amputation).",
-  // "the main title" was ambiguous — a page has BOTH a name and a heading
-  // node, and the agent reasonably renamed the page instead. Naming the
+  // "the main title" was ambiguous — a page has BOTH a name and a heading in
+  // its code, and the agent reasonably renamed the page instead. Naming the
   // current heading text removes the ambiguity so the case measures what it
-  // is for: whether the rest of the tree survives a targeted edit.
+  // is for: whether the rest of the code survives a targeted edit.
   prompt: `On the page called "${UPDATE_PAGE_NAME}", the heading at the top currently reads "Pipeline overview". Change that heading's text to "Pipeline 2026", and leave the rest of the page exactly as it is.`,
   tags: ["pages", "generation", "data-loss"],
   seed: async (ctx) => {
@@ -629,9 +651,76 @@ const updatePreservesRest: EvalCase = {
     // service would pull `schemas/pages`, which only loads once something has
     // registered the zod-openapi extension — true inside the API/AI process,
     // not in the eval runner. The `pages` table types its jsonb column with a
-    // TYPE-only import, so `db/schema` stays safe to import here.
+    // TYPE-only import, so `db/schema` stays safe to import here. `compiled`
+    // is deliberately absent — a direct insert never compiled, and the agent's
+    // own update recompiles the edited source anyway.
+    //
+    // The SFC is house-style (skills/building-pages): a heading, a Chart.js
+    // bar on a <canvas> fed by `by_stage`, a UTable over `deals` — the three
+    // things the assertion checks survive the edit. "Pipeline overview"
+    // appears EXACTLY once, so an exact-match `edits` call lands cleanly.
+    const source = `<template>
+  <div class="mx-auto max-w-screen-xl space-y-6 p-6">
+    <div>
+      <h1 class="text-2xl font-display tracking-tight">Pipeline overview</h1>
+      <p class="text-sm text-muted">Every deal, and where each stage stands.</p>
+    </div>
+
+    <UCard variant="soft">
+      <p class="text-xs uppercase tracking-wide text-muted">Deals per stage</p>
+      <USkeleton v-if="pending" class="mt-3 h-64 w-full" />
+      <canvas v-show="!pending" ref="stageCanvas" class="mt-3 max-h-64 w-full" />
+    </UCard>
+
+    <UCard variant="soft">
+      <p class="text-xs uppercase tracking-wide text-muted">All deals</p>
+      <USkeleton v-if="pending" class="mt-3 h-40 w-full" />
+      <UEmpty v-else-if="rows.length === 0" icon="i-lucide-handshake" title="No deals yet" />
+      <UTable v-else :data="rows" class="mt-3" />
+    </UCard>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { computed, onMounted, onUnmounted, ref } from 'vue'
+import Chart from 'chart.js/auto'
+import { fretik, type DatasetResult } from '#fretik/sdk'
+
+const pending = ref(true)
+const datasets = ref<Record<string, DatasetResult>>({})
+const stageCanvas = ref<HTMLCanvasElement | null>(null)
+let chart: Chart | null = null
+
+const rows = computed(() =>
+  datasets.value.deals?.status === 'ok'
+    ? (datasets.value.deals.rows as Record<string, unknown>[])
+    : [],
+)
+
+onMounted(async () => {
+  const result = await fretik.data.query()
+  datasets.value = result.datasets
+  pending.value = false
+  const byStage = datasets.value.by_stage
+  if (byStage?.status === 'ok' && stageCanvas.value) {
+    const stageRows = byStage.rows as { group: string; deal_count: number }[]
+    chart = new Chart(stageCanvas.value, {
+      type: 'bar',
+      data: {
+        labels: stageRows.map((row) => row.group),
+        datasets: [{ label: 'Deals', data: stageRows.map((row) => row.deal_count) }],
+      },
+    })
+  }
+})
+
+onUnmounted(() => {
+  chart?.destroy()
+})
+</script>
+`;
     const definition: PageDefinition = {
-      version: 2,
+      version: 3,
       variables: [],
       operations: [],
       datasets: [
@@ -651,32 +740,7 @@ const updatePreservesRest: EvalCase = {
           metrics: [{ name: "deal_count", fn: "count", label: "Deals" }],
         },
       ],
-      spec: {
-        root: "page",
-        elements: {
-          page: { type: "box", children: ["title", "chart", "table"] },
-          // `level` is a NUMBER prop (1-4). Passing "1" would be dropped with
-          // a warning that the agent then inherits on its own write — the
-          // fixture must be catalog-clean or the case measures our mistake.
-          title: {
-            type: "heading",
-            props: { text: "Pipeline overview", level: 1 },
-          },
-          chart: {
-            type: "chart_bar",
-            props: {
-              dataset: "by_stage",
-              x: "group",
-              y: "deal_count",
-              caption: "Deals per stage",
-            },
-          },
-          table: {
-            type: "table",
-            props: { dataset: "deals", caption: "All deals" },
-          },
-        },
-      },
+      code: { source },
     };
     await db.insert(pages).values({
       organizationId: ctx.organizationId,
@@ -709,14 +773,13 @@ const updatePreservesRest: EvalCase = {
       fn: async (_r, ctx) => {
         const page = await pageForConversation(ctx);
         if (!page) return "the seeded page disappeared";
-        const text = definitionText(page.definition);
-        if (!/Pipeline 2026/.test(text))
-          return "the title was not changed to 'Pipeline 2026'";
-        const types = nodeTypes(page.definition);
-        if (!types.some((t) => /chart/i.test(t)))
-          return `the chart was dropped by the update — remaining: ${types.join(",")}`;
-        if (!types.some((t) => /table/i.test(t)))
-          return `the table was dropped by the update — remaining: ${types.join(",")}`;
+        const source = pageSource(page.definition);
+        if (!/Pipeline 2026/.test(source))
+          return "the heading was not changed to 'Pipeline 2026'";
+        if (!/chart\.js|<canvas/i.test(source))
+          return "the chart was dropped by the update — no chart.js / <canvas> left in the code";
+        if (!/<UTable|<table/i.test(source))
+          return "the table was dropped by the update — no <UTable> left in the code";
         const datasets = collectDatasets(page.definition);
         if (datasets.length < 2)
           return `datasets lost: ${datasets.length} left of 2`;
@@ -757,10 +820,44 @@ const recoversFromStalePageId: EvalCase = {
     if (!typeId) throw new Error("eval seed: deal type missing after seeding");
     if (!ctx.userId) throw new Error("eval seed: EVAL_USER_ID is required");
     // Inserted directly for the same reason as the update case: the fixture
-    // must be byte-exact and catalog-clean, so the case measures recovery and
-    // not a coercion the sanitizer would have made.
+    // must be byte-exact, so the case measures recovery and not a coercion the
+    // sanitizer (or compiler) would have made. "Board" appears exactly once in
+    // the source, so the recovering edit has one clean anchor.
+    const source = `<template>
+  <div class="mx-auto max-w-screen-xl space-y-6 p-6">
+    <h1 class="text-2xl font-display tracking-tight">Board</h1>
+
+    <UCard variant="soft">
+      <p class="text-xs uppercase tracking-wide text-muted">All deals</p>
+      <USkeleton v-if="pending" class="mt-3 h-40 w-full" />
+      <UEmpty v-else-if="rows.length === 0" icon="i-lucide-handshake" title="No deals yet" />
+      <UTable v-else :data="rows" class="mt-3" />
+    </UCard>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { computed, onMounted, ref } from 'vue'
+import { fretik, type DatasetResult } from '#fretik/sdk'
+
+const pending = ref(true)
+const datasets = ref<Record<string, DatasetResult>>({})
+
+const rows = computed(() =>
+  datasets.value.deals?.status === 'ok'
+    ? (datasets.value.deals.rows as Record<string, unknown>[])
+    : [],
+)
+
+onMounted(async () => {
+  const result = await fretik.data.query()
+  datasets.value = result.datasets
+  pending.value = false
+})
+</script>
+`;
     const definition: PageDefinition = {
-      version: 2,
+      version: 3,
       variables: [],
       operations: [],
       datasets: [
@@ -772,17 +869,7 @@ const recoversFromStalePageId: EvalCase = {
           limit: 50,
         },
       ],
-      spec: {
-        root: "page",
-        elements: {
-          page: { type: "box", children: ["title", "table"] },
-          title: { type: "heading", props: { text: "Board", level: 1 } },
-          table: {
-            type: "table",
-            props: { dataset: "deals", caption: "All deals" },
-          },
-        },
-      },
+      code: { source },
     };
     await db.insert(pages).values({
       organizationId: ctx.organizationId,
@@ -827,12 +914,11 @@ const recoversFromStalePageId: EvalCase = {
 
         const page = await pageForConversation(ctx);
         if (!page) return "the seeded page disappeared";
-        const text = definitionText(page.definition);
-        if (!/Recovered board/.test(text))
+        const source = pageSource(page.definition);
+        if (!/Recovered board/.test(source))
           return "the agent never completed the edit after recovering";
-        const types = nodeTypes(page.definition);
-        if (!types.some((t) => /table/i.test(t)))
-          return `the table was dropped while recovering — remaining: ${types.join(",")}`;
+        if (!/<UTable|<table/i.test(source))
+          return "the table was dropped while recovering — no <UTable> left in the code";
         return true;
       },
     },
@@ -886,8 +972,8 @@ const groundedFieldKeys: EvalCase = {
  * written from the message rather than from a schema probe, and prod
  * 2026-08-09 showed it failing in a way none of the object-backed cases could
  * catch — 35 `managePage` calls that each carried four full `inline` datasets
- * and an EMPTY element map, saving a page that painted a blank screen and
- * reporting success every time.
+ * and an EMPTY element map (today's equivalent: an empty `code.source`),
+ * saving a page that painted a blank screen and reporting success every time.
  *
  * So this case grades the two facts that failure inverted, both read off the
  * STORED page: it draws something, and its inline rows are objects keyed by
@@ -897,7 +983,7 @@ const groundedFieldKeys: EvalCase = {
 const inlineDataPage: EvalCase = {
   id: "page-from-supplied-figures",
   description:
-    "Figures given in the message become a page that renders — inline datasets AND the elements that draw them.",
+    "Figures given in the message become a page that renders — inline datasets AND the code that draws them.",
   prompt: [
     "Here are our Q1 support figures. Build me a page out of them, with the numbers up top and a breakdown by channel underneath.",
     "",
@@ -913,7 +999,11 @@ const inlineDataPage: EvalCase = {
   assertions: [
     { type: "noError" },
     { type: "toolUsed", tools: ["managePage"] },
-    pageSaved(5),
+    // Was 5 when heading and stat NODES counted. Headline numbers are styled
+    // text the tag scan cannot see, so the floor is the countable minimum of
+    // "numbers up top and a breakdown underneath": the breakdown component
+    // plus its states/surfaces.
+    pageSaved(3),
     {
       type: "custom",
       name: "page-renders",

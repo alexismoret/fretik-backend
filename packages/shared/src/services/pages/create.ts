@@ -6,6 +6,7 @@ import {
   type CreatePageInput,
   type PageResponse,
 } from "../../schemas/pages";
+import { ensurePageCompiled } from "./compile";
 import { ensurePageDatasetIndexes } from "./ensure-dataset-indexes";
 import { sanitizePageDefinition } from "./sanitize";
 import { serializePage } from "./serialize";
@@ -38,9 +39,11 @@ export const createPage = async (params: {
   );
   if (ownerError) return throwHttpError(400, badRequest(ownerError));
 
-  const { definition, warnings, polish } = sanitizePageDefinition(
-    input.definition,
-  );
+  const sanitized = sanitizePageDefinition(input.definition);
+  const { warnings, polish } = sanitized;
+  // Compile at save. A failing compile REFUSES the create (400 with the
+  // compiler's errors) — code is binary, see `services/pages/compile.ts`.
+  const definition = await ensurePageCompiled(sanitized.definition);
 
   const [row] = await db
     .insert(pages)

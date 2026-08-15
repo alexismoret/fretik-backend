@@ -1,4 +1,3 @@
-import { pagesCatalogPrompt } from "@fretik/render/catalogs/pages";
 import {
   OBJECT_COLOR_TOKENS,
   isValidObjectColor,
@@ -7,15 +6,21 @@ import { isValidIcon } from "@fretik/shared/lib/icons/search";
 import { parseApiError } from "@fretik/shared/schemas/errors";
 import {
   EMPTY_PAGE_DEFINITION,
-  PageDefinitionPatchSchema,
-  PageDraftDefinitionSchema,
+  PAGE_LIMITS,
+  PageCodeEditsSchema,
+  PageDatasetSchema,
+  PageOperationSchema,
+  PageThemeSchema,
+  PageVariableSchema,
   describePageDataContract,
   pageBlankError,
+  type PageDefinition,
+  type PageResponse,
 } from "@fretik/shared/schemas/pages";
 import { isOrgAdmin } from "@fretik/shared/services/organization/member-role";
+import { applyPageCodeEdits } from "@fretik/shared/services/pages/apply-code-edits";
 import { createPage } from "@fretik/shared/services/pages/create";
 import { dryRunPage } from "@fretik/shared/services/pages/dry-run";
-import { applyPageDefinitionPatch } from "@fretik/shared/services/pages/patch";
 import {
   publishPage,
   unpublishPage,
@@ -29,11 +34,16 @@ import { z } from "zod";
 import { getRuntimeContext } from "../agents/shared/runtime-context";
 import {
   TOOL_ERROR_CODES,
-  type ToolErrorOutput,
   toolError,
+  type ToolErrorOutput,
 } from "../lib/tool-error-codes";
+import {
+  MAX_COMPONENT_DOCS,
+  listComponentNames,
+  readComponentDocs,
+} from "./page-component-docs";
 
-/** A `list` entry states what the page shows, not its whole tree. */
+/** A `list` entry states what the page shows, not its whole document. */
 const LISTING_DESCRIPTION_CHARS = 200;
 const truncateForListing = (text: string): string =>
   text.length > LISTING_DESCRIPTION_CHARS
@@ -44,6 +54,8 @@ const truncateForListing = (text: string): string =>
 const MAX_WARNINGS_RETURNED = 25;
 /** Polish is taste. Past a handful it stops being actionable in the turn. */
 const MAX_POLISH_RETURNED = 10;
+/** Runtime errors surfaced per call — the self-heal feed's readable tail. */
+const MAX_RUNTIME_ERRORS_RETURNED = 5;
 
 /**
  * A write merges findings from three sources — icon/colour sanitising, the
@@ -55,30 +67,17 @@ const distinctWarnings = (warnings: string[]): string[] => [
   ...new Set(warnings),
 ];
 
-/**
- * Same merge for the other channel, and it is not symmetry for its own sake:
- * the dry run runs `assumeSanitized` on a write (the stored definition already
- * went through the static pass), so its `polish` holds the DATA findings only.
- * Without the service's half, a write returned an empty list where `dry_run`
- * on the very same definition returned notes.
- */
 const mergePolish = (...lists: string[][]): string[] =>
   [...new Set(lists.flat())].slice(0, MAX_POLISH_RETURNED);
 
 /**
  * Accept a nested object that arrived JSON-ENCODED.
  *
- * A page definition is the deepest argument this agent ever sends, and serialising
- * it to a string is the classic weak-model slip — observed on deepseek-v4-flash,
- * whose own next-step reasoning read "je corrige le format (objet au lieu de
- * chaîne)". It cost a discarded step plus a repair-model call to recover
- * something no information was missing from. Same doctrine as `manageRecord`'s
- * tolerant `value` union: widen where the intent is unambiguous rather than
- * spend a turn teaching it.
- *
- * A string that does not parse falls THROUGH unchanged, so the model still gets
- * the schema's own message rather than a JSON-parse error about a field it does
- * not know it sent as text.
+ * A page definition is the deepest argument this agent ever sends, and
+ * serialising it to a string is the classic weak-model slip (observed on
+ * deepseek-v4-flash). A string that does not parse falls THROUGH unchanged, so
+ * the model still gets the schema's own message rather than a JSON-parse error
+ * about a field it does not know it sent as text.
  */
 const jsonTolerant = <TSchema extends z.ZodType>(schema: TSchema) =>
   z.preprocess((value) => {
@@ -91,47 +90,69 @@ const jsonTolerant = <TSchema extends z.ZodType>(schema: TSchema) =>
   }, schema);
 
 /**
- * Worked shape for the blank-page rejection — a page is elements, and the
- * failure it answers is a definition that carried datasets and nothing else.
- *
- * Rewriting this to advertise the spec-less two-pass path instead was measured
- * and REVERTED (2026-08-10, byte-faithful replay after a refused blank
- * definition, n=5 per cell): the upstream that cannot emit a nested element map
- * reached the working path 1/5 with either text, and the healthy one was 5/5
- * with either. The hint's wording is inert here — the model that finds the
- * two-pass path finds it from the tool description. Do not spend tokens here
- * again without a measurement.
+ * The definition as the AGENT sends it: every section optional, the tool
+ * assembles the stored document (version stamp, defaults). Omitted sections
+ * KEEP their stored value on update — send a section to replace it whole.
  */
-const BLANK_PAGE_HINT =
-  'spec: { root: "root", elements: { "root": { type: "box", children: ["title", "total"] }, "title": { type: "heading", props: { text: "Q3" } }, "total": { type: "stat", props: { label: "Revenue", value: { "$": "data.sales[0].amount" } } } } }';
+const definitionSectionsSchema = z.object({
+  variables: z
+    .array(PageVariableSchema)
+    .max(PAGE_LIMITS.maxVariables)
+    .optional(),
+  datasets: z.array(PageDatasetSchema).max(PAGE_LIMITS.maxDatasets).optional(),
+  operations: z
+    .array(PageOperationSchema)
+    .max(PAGE_LIMITS.maxOperations)
+    .optional(),
+  theme: PageThemeSchema.nullable().optional(),
+  code: z
+    .object({
+      source: z.string().max(PAGE_LIMITS.maxSourceChars),
+    })
+    .optional()
+    .describe("The COMPLETE Vue SFC — never a fragment."),
+});
+type DefinitionSections = z.infer<typeof definitionSectionsSchema>;
+
+/** Assemble a stored definition from sections + a base (the stored page on
+ * update, the empty page on create). */
+const assembleDefinition = (
+  base: PageDefinition,
+  sections: DefinitionSections | undefined,
+): PageDefinition => ({
+  version: 3,
+  variables: sections?.variables ?? base.variables,
+  datasets: sections?.datasets ?? base.datasets,
+  operations: sections?.operations ?? base.operations,
+  ...(sections?.theme === null
+    ? {}
+    : (sections?.theme ?? base.theme)
+      ? { theme: sections?.theme ?? base.theme }
+      : {}),
+  code: sections?.code
+    ? { source: sections.code.source }
+    : {
+        source: base.code.source,
+        ...(base.code.compiled ? { compiled: base.code.compiled } : {}),
+      },
+});
 
 /**
- * The directive that closes a two-pass build. It has to name the NEXT CALL,
- * not describe the state: a page opened without a spec renders nothing, and a
+ * The directive that closes a data-first draft. It has to name the NEXT CALL,
+ * not describe the state: a page opened without code renders nothing, and a
  * result that only said so is what let a blank page be reported as finished.
- *
- * Measured to be the load-bearing half (2026-08-10, byte-faithful replay): the
- * upstream that cannot emit a nested spec goes from 0/5 to 5/5 once its create
- * result carries this line, while the upstream that never needed it stays 5/5
- * and writes MORE elements (12 vs 10 median).
  */
 const DRAFT_NEXT_STEP = (pageId: string): string =>
-  `The page is open and its datasets resolve, but it renders nothing yet. Add its elements with update + patch on pageId ${pageId} — one \`add\` op per element under /spec/elements — then dry_run it.`;
+  `The page is open and its datasets resolve, but it has no code yet — nothing renders. Send the complete SFC with update { pageId: "${pageId}", definition: { code: { source } } }, then hand back the url.`;
 
 /**
  * Translate a thrown `HTTPException` from the page services into the envelope
  * the agent reads. Returns null for anything it does not recognise, and the
- * caller rethrows — `guardToolExecute` stays the backstop for real bugs, and
- * its "unexpected internal error, retry once" message stays reserved for them.
+ * caller rethrows — `guardToolExecute` stays the backstop for real bugs.
  *
- * The reason this exists: without it EVERY missing page, every publish gate and
- * every scope refusal reached the model as that generic backstop string. The
- * publish gate in particular names the cyclic element, the element count and
- * the depth against their ceilings — the most actionable messages in the whole
- * feature, and they were being discarded a layer below.
- *
- * None of the codes it emits are in `INPUT_SHAPE_CODES`: each of these is fixed
- * by a DIFFERENT call, never by re-sending the same one with a better shape.
+ * The compile refusal is the load-bearing branch: `ensurePageCompiled` refuses
+ * a write with the compiler's own errors (block, message, line), and those
+ * must travel VERBATIM — they are the agent's fix list.
  */
 export const liftPageError = (
   err: unknown,
@@ -148,17 +169,22 @@ export const liftPageError = (
     );
   }
   if (err.status === 400) {
-    // The publish gate is the only 400 on that action; ownership is the only
-    // other 400 the services raise. Both messages are written for the agent, so
-    // they travel verbatim.
+    const message = parsed?.message ?? "The page rejected this operation.";
+    if (message.startsWith("Page code failed to compile")) {
+      return toolError(
+        TOOL_ERROR_CODES.INVALID_ARGS,
+        message,
+        "Nothing was saved. Fix the named lines in the SFC and resend it.",
+      );
+    }
     const publishing = ctx.action === "publish";
     return toolError(
       publishing
         ? TOOL_ERROR_CODES.PAGE_NOT_PUBLISHABLE
         : TOOL_ERROR_CODES.FORBIDDEN,
-      parsed?.message ?? "The page rejected this operation.",
+      message,
       publishing
-        ? "Fix the definition first: get the page, correct what the message names with update + patch, then publish again."
+        ? "Fix what the message names (update the page), then publish again."
         : 'A page is either team-shared or private to you — send scope: "team" or scope: "private", never another member\'s page.',
     );
   }
@@ -195,43 +221,100 @@ type PageScope = "team" | "private";
 const scopeOf = (userId: string | null): PageScope =>
   userId ? "private" : "team";
 
+/** What the agent reads back of a page — `compiled` is stripped (build output
+ * is noise; `source` is the document), the error feed's tail is attached. */
+const agentPageView = (page: PageResponse) => ({
+  pageId: page.id,
+  name: page.name,
+  description: page.description,
+  scope: scopeOf(page.userId),
+  url: `/pages/${page.id}`,
+  publicUrl: page.publicUrl,
+  definition: {
+    variables: page.definition.variables,
+    datasets: page.definition.datasets,
+    operations: page.definition.operations,
+    ...(page.definition.theme ? { theme: page.definition.theme } : {}),
+    code: { source: page.definition.code.source },
+  },
+  ...(page.runtimeErrors.length > 0
+    ? {
+        runtimeErrors: page.runtimeErrors
+          .slice(-MAX_RUNTIME_ERRORS_RETURNED)
+          .map((entry) => ({
+            at: entry.at,
+            ...(entry.source ? { source: entry.source } : {}),
+            message: entry.message,
+          })),
+      }
+    : {}),
+});
+
 /**
- * Domain tool (deferred) — the conversational builder for pages: data-bound UI
- * documents the team opens like any other page of the app. The agent authors
- * the definition here; the frontend renders it with no model in the loop, so a
- * page stays live and costs nothing to view.
+ * The page runtime's environment contract — what the code may import, what the
+ * bridge offers, what the sandbox forbids. Served by `get_guide` together with
+ * the data contract, on demand, never in the cached system prompt. Vue, Nuxt
+ * UI, Tailwind and Chart.js themselves are NOT documented: the model knows
+ * them; only what is SPECIFIC to this runtime is.
+ */
+const PAGE_ENVIRONMENT_GUIDE = [
+  "## the page",
+  'A page is ONE complete Vue SFC: `<template>` + `<script setup lang="ts">` (+ optional `<style scoped>`, plain CSS). The server compiles it on save — a compile error refuses the write and names the lines. It renders inside a sandboxed iframe styled with the app\'s design system.',
+  "",
+  "## imports",
+  "Exactly these, nothing else (the compiler refuses others by name): `vue`, `@nuxt/ui`, `chart.js` (or `chart.js/auto`, pre-registered), `#fretik/sdk`, `@vueuse/core` (curated — scroll/virtualise/measure/debounce; storage, fetch and clipboard composables are absent, they cannot work here), `@internationalized/date` (the value type `UCalendar`/`UInputDate`/`UInputTime` take — never a `Date`), and drag-and-drop: `@atlaskit/pragmatic-drag-and-drop/element/adapter`, `/combine`, `/reorder`, `@atlaskit/pragmatic-drag-and-drop-hitbox/closest-edge`. One file — no relative imports.",
+  "",
+  "## components & styling",
+  "Every Nuxt UI component is registered globally — use `<UButton>`, `<UTable>`, `<UModal>`, `<UCard>`… without importing. `useToast()`/`useOverlay()` come from `@nuxt/ui`. The app's UApp wrapper is already mounted (toasts, tooltips, overlays work).",
+  'Tailwind classes compile from your STATIC class strings — never build a class name at runtime (`:class="`bg-${x}-500`"` yields nothing; toggle between full literal strings instead). App tokens are live: `text-muted`, `text-dimmed`, `text-highlighted`, `bg-default`, `bg-elevated`, `bg-accented`, `border-default`, `primary`/`error`/`success` scales, `dark:` variants, `font-display` (headings), `font-mono`. Icons: `<UIcon name="i-lucide-inbox" />` — the `i-lucide-*` set only.',
+  "",
+  "## the bridge — `import { fretik } from '#fretik/sdk'`",
+  "`await fretik.data.query({ variables?, datasetIds?, queries?, fresh? })` → `{ datasets: { <id>: result } }`. A result is `{ status: 'ok', rows, totalCount?, fields?, page?, pageSize? }` or `{ status: 'forbidden' | 'needs_connection' | 'error' }` — render every status, not just ok. `queries` pages/sorts a records dataset server-side: `{ orders: { page: 2, pageSize: 25, sortBy: 'date', sortDir: 'desc' } }`.",
+  "`await fretik.ops.run('<operationId>', { variables? })` → verdict `{ status: 'ok' | 'needs_connection' | 'blocked' | 'cancelled' | 'error', message? }`. The PARENT app shows the confirmation for destructive operations — render the verdict (toast the outcome), never re-confirm.",
+  "`fretik.ui.openUrl(url)` / `fretik.ui.copy(text)` — plain `<a href>` clicks are routed through the parent automatically.",
+  "`fretik.theme.color('blue' | 'blue-600' | 'primary' | '--any-var')` → the CONCRETE colour. Required for anything drawn on a canvas (Chart.js): canvas cannot resolve `var(--…)`, drops it silently and paints black. CSS `:style` bindings need no such thing.",
+  "`fretik.context` — reactive `{ dark, locale, mode }`. Colors/dark-mode are synced automatically; read it only when the CODE must branch.",
+  "",
+  "## sandbox rules",
+  "No `fetch`/XHR/WebSocket (CSP blocks all network — data comes from `fretik.data.query` only). No `localStorage`/`sessionStorage` (opaque origin — they throw; keep state in refs). No `window.open` (use `fretik.ui.openUrl`). External images over https are allowed in `<img>`.",
+  "",
+  "## shape of a page",
+  'Load in `onMounted` (one `fretik.data.query()` for everything, then targeted `datasetIds` refetches) and keep rows in refs. HOW the page should then look and behave — layout, component choice, formatting through `fields`, chart wiring, the four dataset states — is `skills/building-pages/`, and `{ action: "components" }` here gives you the real API of any component before you use it.',
+].join("\n");
+
+/**
+ * Domain tool (deferred) — the conversational builder for pages: live,
+ * data-bound mini-apps the team opens like any other view of the workspace.
+ * The agent writes REAL CODE (a Vue SFC) against a declared data contract; the
+ * server compiles it; no model runs at view time.
  *
- * Every write DRY-RUNS the page against real data before returning, and hands
- * the failures back as warnings. That is deliberate: the catalog is wide
- * enough to get wrong, so the correction loop belongs in the turn that wrote
- * it, not in the user's browser.
- *
- * One defect is refused instead: a spec that renders nothing (`pageBlankError`).
- * A warning only works when something was still produced — a saved blank page
- * reports success, so the model reads a URL, believes it built something, and
- * loops. Returning `INVALID_ARGS` also arms the shared loop guard, which steers
- * after two identical failures and ends the turn after eight.
+ * Two refusal points, everything else sanitize-and-warn:
+ * - a compile failure refuses the write with the compiler's error list;
+ * - an empty `code.source` on a call that claims to have authored a page is
+ *   refused (`pageBlankError`) — a saved blank page reports success, so the
+ *   model reads a URL, believes it built something, and loops.
  */
 export const createManagePageTool = () =>
   tool({
     description: [
-      "Build and manage pages — live dashboards and custom views the team opens in the app, built from their data. A page stores a layout, not a snapshot: it re-queries on every view, so the numbers are never stale and refreshing costs nothing. Deciding WHETHER a page is the right feature (vs a workflow, an object type, or a one-off file) is `skills/platform-guide/SKILL.md` territory. Read `skills/building-pages/SKILL.md` BEFORE writing a definition — layout, binding and chart doctrine live there, not here.",
+      "Build and manage pages — live dashboards, directories and mini-apps the team opens in the app, written as real Vue code over the team's data. A page stores CODE plus a data contract, not a snapshot: datasets re-query on every view, so the numbers are never stale. Deciding WHETHER a page is the right feature (vs a workflow, an object type, or a one-off file) is `skills/platform-guide/SKILL.md` territory. Read `skills/building-pages/SKILL.md` BEFORE writing one — design doctrine and worked patterns live there, not here.",
       "",
-      "- get_catalog: every component with its props and events, plus the dataset/state/binding grammar. Read it before your FIRST definition in a conversation.",
-      "- dry_run: execute a definition WITHOUT saving it. Use it as your probe: it returns each dataset's row count, its distinct group values, its field types and one real row — every question you would otherwise pay a querySql round trip for.",
-      "- create: name + definition (+ icon, color, description, scope team|private, default team). Best-guess icon/color is safe — an off-catalog value is dropped with a warning, never an error.",
-      "- update: pageId + any field. To change PART of an existing page, send `patch` — RFC 6902 ops rooted at the definition, so one op reaches an element, a dataset filter or the theme — rather than a whole `definition`, which replaces the previous one and is how an element that was fine disappears. `get` it first when you are unsure of the current keys.",
-      "  Building in passes uses the same channel: omit `definition.spec` on create to open the page on its datasets, then add the elements a few ops per call. A page that already exists cannot be lost by a later rewrite.",
-      "- list / get: the team's pages (+ your private ones) / one page's full definition.",
-      "- publish / unpublish: mint or revoke a public URL anyone can open without an account. publish FREEZES the current definition for that URL (later edits stay internal until you publish again) while the DATA stays live. It exposes everything the owning team can see, so get the user's explicit agreement first, and hand back the returned publicUrl. A page that reads a connected app or writes to one is refused — an anonymous visitor cannot spend the team's credentials.",
+      "- get_guide: the runtime contract (allowed imports, the fretik bridge API, sandbox rules, styling tokens) + the dataset/variable/operation grammar. Read it before your FIRST page in a conversation.",
+      "- components: the real Nuxt UI API — every prop, slot and variant — for up to 6 components at a time, generated from the library's own docs. Ask for the ones your page will actually use, before writing the template: guessed props are silently dropped and a component that is not registered renders as nothing. The skill says WHICH component fits; this says what it accepts.",
+      "- dry_run: execute a definition WITHOUT saving — runs the datasets, compiles the code. Returns per-dataset samples (row count, real field names, one real row, distinct groups): every question you would otherwise pay a querySql round trip for. A definition without `code` is a pure DATA probe.",
+      "- create: name + definition { variables?, datasets?, operations?, theme?, code? } (+ icon, color, description, scope team|private). The tool stamps the version and fills defaults. Omit `code` to open a data-first draft, then write it via update.",
+      "- update: pageId + any field. `definition` sections REPLACE whole; omitted sections keep their stored value (sending only `{ code: { source } }` rewrites the code and touches nothing else). For small code changes send `edits`: [{ oldString, newString, replaceAll? }] — exact-match-once against the stored source, then recompiled. `get` first when unsure of the current source.",
+      "- get / list: one page's full source + data contract (+ its recent runtime errors — fix those when present) / the team's pages.",
+      "- publish / unpublish: mint or revoke a public URL anyone can open without an account. publish FREEZES the current page for that URL while the DATA stays live. It exposes everything the owning team can see, so get the user's explicit agreement first, and hand back the returned publicUrl. A page that reads or writes a connected app is refused — an anonymous visitor cannot spend the team's credentials.",
       "",
-      "dry_run, create and update all EXECUTE the page: they run the datasets and evaluate every binding against the rows that come back. They return two separate lists. `warnings` is broken — a wrong field name, a chart that cannot draw, a dropped prop; fix it in the same turn rather than reporting a page you have not seen resolve. `polish` is not broken but reads as unfinished — an unlabelled metric, a row of KPIs with nothing to compare against; treat it as the difference between a page that works and a page someone is glad to open.",
+      "dry_run, create and update all EXECUTE the datasets and COMPILE the code. `warnings` is broken — a compile error, a wrong field key, a dataset with no rows; fix it in the same turn rather than reporting a page you have not seen work. `polish` reads as unfinished; treat it as the difference between a page that works and a page someone is glad to open. After a user has the page open, `get` returns its recent RUNTIME errors — what the browser saw; fix and update.",
       "",
-      "A definition is { version: 2, variables, datasets, operations, spec, theme? }: `datasets` fetch or compute the data, `operations` write into connected apps, `variables` hold what the viewer changes, and `spec` is { root, elements } — a flat map keyed by element id, where nesting is a parent listing its children's keys. Three references tie them together — an element names a dataset by id, a dataset filter binds to state, a control writes state — and nothing else is wired. Data alone is not a page: a definition whose `spec.root` names no entry in `spec.elements` is refused rather than saved, so write the elements in the same call. Call describeObjectType for field keys, types and option values BEFORE writing an objects dataset; guessing keys is the main way a page comes back empty.",
+      "Call describeObjectType for field keys, types and option values BEFORE writing an objects dataset; guessing keys is the main way a page comes back empty.",
     ].join("\n"),
     inputSchema: z.object({
       action: z.enum([
-        "get_catalog",
+        "get_guide",
+        "components",
         "dry_run",
         "create",
         "get",
@@ -244,27 +327,29 @@ export const createManagePageTool = () =>
       name: z.string().max(120).optional(),
       description: z.string().max(4000).optional(),
       icon: z.string().max(60).optional(),
-      // The page's own swatch in the hub, and it is a NARROWER palette than the
-      // catalog's `@color` scale: hues only, no semantic token. Undescribed, the
-      // agent read `@color` — which it has just been served — and wrote
-      // "primary", earning a warning for following the documentation. A false
-      // entry in the broken channel is worse than none: the skill's checklist
-      // asks for `warnings` empty before handing a page over.
+      // A NARROWER palette than Tailwind's hues: the hub swatch tokens only.
       color: z
         .string()
         .max(20)
         .optional()
         .describe(`Hub swatch — one of: ${OBJECT_COLOR_TOKENS.join(", ")}.`),
       scope: z.enum(["team", "private"]).optional(),
-      definition: jsonTolerant(PageDraftDefinitionSchema)
+      components: z
+        .array(z.string().max(40))
+        .max(MAX_COMPONENT_DOCS)
         .optional()
         .describe(
-          "The whole page. Replaces the previous definition wholesale on update — send `patch` to change only part of one.",
+          `components only: up to ${MAX_COMPONENT_DOCS} component names — ["UTable", "UBadge", "USlideover"].`,
         ),
-      patch: jsonTolerant(PageDefinitionPatchSchema)
+      definition: jsonTolerant(definitionSectionsSchema)
         .optional()
         .describe(
-          'update only: [{ op, path, value?, from? }], paths rooted at the definition — { op: "replace", path: "/spec/elements/kpi-total/props/label", value: "Revenue" }, { op: "add", path: "/spec/elements/trend", value: { type: "chart_line", props: {} } }, { op: "replace", path: "/datasets/0/filters/0/value", value: "won" }. Ignored when `definition` is sent too.',
+          "Sections of the page. On update, a section you send replaces the stored one whole; sections you omit are kept — code included.",
+        ),
+      edits: jsonTolerant(PageCodeEditsSchema)
+        .optional()
+        .describe(
+          "update only: targeted source edits, applied in order — [{ oldString, newString, replaceAll? }]. oldString must match the stored source exactly once (widen it, or set replaceAll). Cheaper than resending the whole SFC for small changes; ignored when `definition` is sent too.",
         ),
     }),
     execute: async (input, options) => {
@@ -278,70 +363,124 @@ export const createManagePageTool = () =>
 
       try {
         switch (input.action) {
-          // Two halves, one document: `@fretik/render` owns the components (the
-          // same catalog the renderer is built from), this package's schema owns
-          // the data grammar. Served on demand — it is far too large to sit in
-          // the cached system prompt.
-          case "get_catalog":
+          case "get_guide": {
             return {
-              catalog: `${pagesCatalogPrompt()}\n${describePageDataContract()}`,
+              guide: PAGE_ENVIRONMENT_GUIDE,
+              dataContract: describePageDataContract(),
             };
+          }
+
+          case "components": {
+            if (!input.components || input.components.length === 0) {
+              return toolError(
+                TOOL_ERROR_CODES.INVALID_ARGS,
+                "No component names given.",
+                `Send { action: "components", components: ["UTable", "UBadge"] } — up to ${MAX_COMPONENT_DOCS} per call.`,
+              );
+            }
+            const result = await readComponentDocs(input.components);
+            if ("error" in result) {
+              return toolError(TOOL_ERROR_CODES.INTERNAL_ERROR, result.error);
+            }
+            if (result.docs.length === 0) {
+              return toolError(
+                TOOL_ERROR_CODES.INVALID_ARGS,
+                `No such component: ${result.unknown.join(", ")}.`,
+                `The page runtime registers: ${(await listComponentNames()).join(", ")}.`,
+              );
+            }
+            return {
+              docs: result.docs,
+              ...(result.unknown.length > 0
+                ? {
+                    unknown: result.unknown,
+                    hint: "Those are not registered in the page runtime — do not use them in a template; they render as unknown elements.",
+                  }
+                : {}),
+            };
+          }
 
           case "dry_run": {
             if (!input.definition) {
               return toolError(
                 TOOL_ERROR_CODES.INVALID_ARGS,
-                "dry_run needs a definition. Pass the tree you are about to save — nothing is written.",
-                '{ action: "dry_run", definition: { version: 2, variables: [], datasets: [...], spec: {...} } }',
+                "dry_run needs a definition.",
+                "Send { action: 'dry_run', definition: { datasets, code? } }.",
               );
             }
-            // A spec-less dry_run is the DATA probe: the datasets run, the
-            // samples come back, and the layout is written against real rows
-            // instead of guessed ones. A spec that was SENT and renders nothing
-            // is still the mistake it always was.
-            const probing = input.definition.spec === undefined;
-            const blank = probing
-              ? null
-              : pageBlankError(
-                  input.definition.spec ?? EMPTY_PAGE_DEFINITION.spec,
-                );
-            if (blank) {
-              return toolError(
-                TOOL_ERROR_CODES.INVALID_ARGS,
-                blank,
-                BLANK_PAGE_HINT,
-              );
-            }
-            const dryRun = await dryRunPage({
-              definition: {
-                ...input.definition,
-                spec: input.definition.spec ?? EMPTY_PAGE_DEFINITION.spec,
-              },
-              teamId: teamId,
+            const definition = assembleDefinition(
+              EMPTY_PAGE_DEFINITION,
+              input.definition,
+            );
+            const run = await dryRunPage({
+              definition,
+              teamId,
               userId: userId ?? null,
             });
             return {
-              samples: dryRun.samples,
-              warnings: distinctWarnings(dryRun.warnings).slice(
+              samples: run.samples,
+              warnings: distinctWarnings(run.warnings).slice(
                 0,
                 MAX_WARNINGS_RETURNED,
               ),
-              polish: dryRun.polish.slice(0, MAX_POLISH_RETURNED),
+              polish: run.polish.slice(0, MAX_POLISH_RETURNED),
             };
           }
 
-          case "list": {
-            const pages = await listPages({ teamId: teamId, requester });
+          case "create": {
+            if (!input.name) {
+              return toolError(
+                TOOL_ERROR_CODES.INVALID_ARGS,
+                "create needs a name.",
+                "Send { action: 'create', name, definition }.",
+              );
+            }
+            const icon = sanitizeIcon(input.icon);
+            const color = sanitizeColor(input.color);
+            const definition = assembleDefinition(
+              EMPTY_PAGE_DEFINITION,
+              input.definition,
+            );
+            const drafting = definition.code.source.trim().length === 0;
+
+            const created = await createPage({
+              organizationId,
+              teamId,
+              createdByUserId: userId ?? "",
+              input: {
+                name: input.name,
+                description: input.description ?? "",
+                icon: icon.icon,
+                color: color.color,
+                userId: input.scope === "private" ? (userId ?? null) : null,
+                definition,
+                ...(ctx.conversationId
+                  ? { sourceConversationId: ctx.conversationId }
+                  : {}),
+              },
+            });
+
+            const run = await dryRunPage({
+              definition: created.page.definition,
+              teamId,
+              userId: userId ?? null,
+              assumeSanitized: true,
+              assumeCompiled: true,
+            });
+
             return {
-              pages: pages.map((page) => ({
-                pageId: page.id,
-                name: page.name,
-                description: truncateForListing(page.description),
-                scope: scopeOf(page.userId),
-                elementCount: page.elementCount,
-                datasetCount: page.datasetCount,
-                publicUrl: page.publicUrl,
-              })),
+              pageId: created.page.id,
+              url: `/pages/${created.page.id}`,
+              scope: scopeOf(created.page.userId),
+              samples: run.samples,
+              warnings: distinctWarnings([
+                ...icon.warnings,
+                ...color.warnings,
+                ...created.warnings,
+                ...run.warnings,
+              ]).slice(0, MAX_WARNINGS_RETURNED),
+              polish: mergePolish(created.polish, run.polish),
+              ...(drafting ? { next: DRAFT_NEXT_STEP(created.page.id) } : {}),
             };
           }
 
@@ -350,100 +489,30 @@ export const createManagePageTool = () =>
               return toolError(
                 TOOL_ERROR_CODES.INVALID_ARGS,
                 "get needs a pageId.",
-                '{ action: "list" } returns every page with its pageId; then { action: "get", pageId: "<id>" }.',
+                "Call { action: 'list' } to find it.",
               );
             }
             const page = await getPage({
               pageId: input.pageId,
-              teamId: teamId,
+              teamId,
               requester,
             });
-            return {
-              pageId: page.id,
-              name: page.name,
-              description: page.description,
-              icon: page.icon,
-              color: page.color,
-              scope: scopeOf(page.userId),
-              definition: page.definition,
-              publicUrl: page.publicUrl,
-            };
+            return agentPageView(page);
           }
 
-          case "create": {
-            if (!input.name) {
-              return toolError(
-                TOOL_ERROR_CODES.INVALID_ARGS,
-                "create needs a name — it is what the team sees in the page list.",
-                '{ action: "create", name: "Q3 pipeline", definition: {...} }',
-              );
-            }
-            if (!input.definition) {
-              return toolError(
-                TOOL_ERROR_CODES.INVALID_ARGS,
-                "create needs a definition. Call get_catalog first if you have not already in this conversation.",
-                '{ action: "create", name: "...", definition: { version: 2, variables: [], datasets: [...], spec: { root: "page", elements: {...} } } } — or omit `spec` to open the page on its datasets and add the elements by patch.',
-              );
-            }
-            if (!userId) {
-              return toolError(
-                TOOL_ERROR_CODES.REQUIRES_USER,
-                "Creating a page needs an authenticated user and this session has none. Tell the user page building is unavailable here, and continue with the rest of their request.",
-              );
-            }
-            // An OMITTED spec opens the page from its datasets alone — a
-            // declared two-pass build. A SUPPLIED spec that renders nothing is a
-            // mistake, and still refused: the difference is intent, and it is the
-            // difference between a plan and a blank screen reported as success.
-            const drafting = input.definition.spec === undefined;
-            const spec = input.definition.spec ?? EMPTY_PAGE_DEFINITION.spec;
-            const blank = drafting ? null : pageBlankError(spec);
-            if (blank) {
-              return toolError(
-                TOOL_ERROR_CODES.INVALID_ARGS,
-                blank,
-                BLANK_PAGE_HINT,
-              );
-            }
-            const icon = sanitizeIcon(input.icon);
-            const color = sanitizeColor(input.color);
-            const { page, warnings, polish } = await createPage({
-              organizationId: organizationId,
-              teamId: teamId,
-              createdByUserId: userId,
-              input: {
-                name: input.name,
-                description: input.description ?? "",
-                icon: icon.icon,
-                color: color.color,
-                userId: input.scope === "private" ? userId : null,
-                definition: { ...input.definition, spec },
-                sourceConversationId: ctx.conversationId ?? undefined,
-              },
-            });
-            const dryRun = await dryRunPage({
-              definition: page.definition,
-              teamId: teamId,
-              userId: userId ?? null,
-              // `page.definition` is what the service STORED, i.e. already
-              // sanitized — re-running the static pass here only produced a
-              // second copy of every structural warning.
-              assumeSanitized: true,
-            });
+          case "list": {
+            const pages = await listPages({ teamId, requester });
             return {
-              pageId: page.id,
-              name: page.name,
-              scope: scopeOf(page.userId),
-              url: `/pages/${page.id}`,
-              samples: dryRun.samples,
-              warnings: distinctWarnings([
-                ...icon.warnings,
-                ...color.warnings,
-                ...warnings,
-                ...dryRun.warnings,
-              ]).slice(0, MAX_WARNINGS_RETURNED),
-              polish: mergePolish(polish, dryRun.polish),
-              ...(drafting ? { next: DRAFT_NEXT_STEP(page.id) } : {}),
+              pages: pages.map((page) => ({
+                pageId: page.id,
+                name: page.name,
+                description: truncateForListing(page.description),
+                scope: scopeOf(page.userId),
+                datasetCount: page.datasetCount,
+                sourceBytes: page.sourceBytes,
+                published: page.publicToken !== null,
+                updatedAt: page.updatedAt.toISOString(),
+              })),
             };
           }
 
@@ -452,114 +521,95 @@ export const createManagePageTool = () =>
               return toolError(
                 TOOL_ERROR_CODES.INVALID_ARGS,
                 "update needs a pageId.",
-                '{ action: "list" } returns every page with its pageId; then { action: "update", pageId: "<id>", patch: [...] }.',
+                "Call { action: 'list' } to find it.",
               );
             }
-            if (!userId) {
-              return toolError(
-                TOOL_ERROR_CODES.REQUIRES_USER,
-                "Updating a page needs an authenticated user and this session has none. Tell the user page building is unavailable here, and continue with the rest of their request.",
-              );
-            }
-            const icon = sanitizeIcon(input.icon);
-            const color = sanitizeColor(input.color);
+            const existing = await getPage({
+              pageId: input.pageId,
+              teamId,
+              requester,
+            });
 
-            // A spec-less `definition` is the CREATE shape: on update it would
-            // silently erase the layout of a page that already renders. The
-            // incremental path on an existing page is `patch`, so say that.
-            if (input.definition && input.definition.spec === undefined) {
-              return toolError(
-                TOOL_ERROR_CODES.INVALID_ARGS,
-                "update needs the whole definition including its spec — a definition without one would erase the page's layout.",
-                "To change part of the page, send `patch` instead: [{ op, path, value }] rooted at the definition.",
+            let sections = input.definition;
+            if (!sections && input.edits) {
+              const edited = applyPageCodeEdits(
+                existing.definition.code.source,
+                input.edits,
               );
-            }
-            const sent =
-              input.definition?.spec === undefined
-                ? undefined
-                : { ...input.definition, spec: input.definition.spec };
-
-            // A patch edits the STORED definition, so it is read here and applied
-            // before the write. `definition` wins when both are sent: a whole
-            // document and a patch against the old one describe two different
-            // pages, and guessing which was meant is worse than ignoring one.
-            let patched = sent;
-            if (!patched && input.patch) {
-              const current = await getPage({
-                pageId: input.pageId,
-                teamId: teamId,
-                requester,
-              });
-              const result = applyPageDefinitionPatch(
-                current.definition,
-                input.patch,
-              );
-              if ("error" in result) {
-                // The patch ran on a clone and nothing was written, so the two
-                // facts that unblock the next call are: the page is unchanged,
-                // and the model's picture of it may be stale. Deliberately NOT
-                // a corrected op — the intent behind a failed op is unknowable,
-                // and a plausible wrong example is worse than a procedure.
+              if (!edited.ok) {
                 return toolError(
                   TOOL_ERROR_CODES.INVALID_ARGS,
-                  result.error,
-                  `Nothing was saved. Call { action: "get", pageId: "${input.pageId}" } to re-read the current definition — element keys and array indexes may differ from what you remember — then resend corrected ops. Ops apply in order; the message names the one that failed.`,
+                  edited.error,
+                  "Call { action: 'get' } to read the current source, then re-anchor the edit.",
                 );
               }
-              patched = result.definition;
+              sections = { code: { source: edited.source } };
             }
 
-            // Only when this call rewrites the document — a rename must not be
-            // blocked by a spec the model is not touching.
-            const blank = patched ? pageBlankError(patched.spec) : null;
-            if (blank) {
-              return toolError(
-                TOOL_ERROR_CODES.INVALID_ARGS,
-                blank,
-                BLANK_PAGE_HINT,
-              );
+            const definition = sections
+              ? assembleDefinition(existing.definition, sections)
+              : undefined;
+            // A definition that ERASES the code is the blank-page mistake in
+            // update clothing — refuse it before it reaches the store.
+            if (definition) {
+              const blank = pageBlankError(definition.code);
+              if (blank && existing.definition.code.source.trim().length > 0) {
+                return toolError(TOOL_ERROR_CODES.INVALID_ARGS, blank);
+              }
             }
 
-            const { page, warnings, polish } = await updatePage({
+            const icon = sanitizeIcon(input.icon ?? undefined);
+            const color = sanitizeColor(input.color ?? undefined);
+            const updated = await updatePage({
               pageId: input.pageId,
-              teamId: teamId,
-              actingUserId: userId,
+              teamId,
+              actingUserId: userId ?? "",
               requester,
               input: {
                 ...(input.name !== undefined ? { name: input.name } : {}),
                 ...(input.description !== undefined
                   ? { description: input.description }
                   : {}),
-                ...(icon.icon !== undefined ? { icon: icon.icon } : {}),
-                ...(color.color !== undefined ? { color: color.color } : {}),
-                ...(input.scope !== undefined
-                  ? { userId: input.scope === "private" ? userId : null }
+                ...(input.icon !== undefined
+                  ? { icon: icon.icon ?? null }
                   : {}),
-                ...(patched !== undefined ? { definition: patched } : {}),
+                ...(input.color !== undefined
+                  ? { color: color.color ?? null }
+                  : {}),
+                ...(input.scope !== undefined
+                  ? {
+                      userId:
+                        input.scope === "private" ? (userId ?? null) : null,
+                    }
+                  : {}),
+                ...(definition ? { definition } : {}),
               },
             });
-            const dryRun = await dryRunPage({
-              definition: page.definition,
-              teamId: teamId,
-              userId: userId ?? null,
-              // `page.definition` is what the service STORED, i.e. already
-              // sanitized — re-running the static pass here only produced a
-              // second copy of every structural warning.
-              assumeSanitized: true,
-            });
+
+            const run = definition
+              ? await dryRunPage({
+                  definition: updated.page.definition,
+                  teamId,
+                  userId: userId ?? null,
+                  assumeSanitized: true,
+                  assumeCompiled: true,
+                })
+              : { samples: {}, warnings: [], polish: [] };
+
             return {
-              pageId: page.id,
-              name: page.name,
-              scope: scopeOf(page.userId),
-              url: `/pages/${page.id}`,
-              samples: dryRun.samples,
+              pageId: updated.page.id,
+              url: `/pages/${updated.page.id}`,
+              ...(definition ? { samples: run.samples } : {}),
               warnings: distinctWarnings([
                 ...icon.warnings,
                 ...color.warnings,
-                ...warnings,
-                ...dryRun.warnings,
+                ...updated.warnings,
+                ...run.warnings,
               ]).slice(0, MAX_WARNINGS_RETURNED),
-              polish: mergePolish(polish, dryRun.polish),
+              polish: mergePolish(updated.polish, run.polish),
+              ...(updated.page.definition.code.source.trim().length === 0
+                ? { next: DRAFT_NEXT_STEP(updated.page.id) }
+                : {}),
             };
           }
 
@@ -568,35 +618,15 @@ export const createManagePageTool = () =>
               return toolError(
                 TOOL_ERROR_CODES.INVALID_ARGS,
                 "publish needs a pageId.",
-                '{ action: "list" } returns every page with its pageId; then { action: "publish", pageId: "<id>" }.',
-              );
-            }
-            if (!userId) {
-              return toolError(
-                TOOL_ERROR_CODES.REQUIRES_USER,
-                "Publishing a page needs an authenticated user and this session has none. Tell the user the page cannot be published here; it stays available inside the workspace.",
               );
             }
             const page = await publishPage({
               pageId: input.pageId,
-              teamId: teamId,
-              publishedByUserId: userId,
+              teamId,
+              publishedByUserId: userId ?? "",
               requester,
             });
-            return {
-              pageId: page.id,
-              name: page.name,
-              publicUrl: page.publicUrl,
-              // Absent APP_URL leaves the token as the only handle; say so rather
-              // than reporting a share that the user cannot actually send.
-              ...(page.publicUrl
-                ? {}
-                : {
-                    warnings: [
-                      "Published, but the public base URL is not configured — no shareable link could be built.",
-                    ],
-                  }),
-            };
+            return { pageId: page.id, publicUrl: page.publicUrl };
           }
 
           case "unpublish": {
@@ -604,24 +634,23 @@ export const createManagePageTool = () =>
               return toolError(
                 TOOL_ERROR_CODES.INVALID_ARGS,
                 "unpublish needs a pageId.",
-                '{ action: "list" } returns every page with its pageId; then { action: "unpublish", pageId: "<id>" }.',
               );
             }
             const page = await unpublishPage({
               pageId: input.pageId,
-              teamId: teamId,
+              teamId,
               requester,
             });
-            return { pageId: page.id, name: page.name, publicUrl: null };
+            return { pageId: page.id, published: false };
           }
         }
-      } catch (err) {
-        const lifted = liftPageError(err, {
+      } catch (error) {
+        const lifted = liftPageError(error, {
           action: input.action,
-          pageId: input.pageId,
+          ...(input.pageId ? { pageId: input.pageId } : {}),
         });
         if (lifted) return lifted;
-        throw err;
+        throw error;
       }
     },
   });

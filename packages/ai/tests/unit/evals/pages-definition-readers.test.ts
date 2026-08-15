@@ -5,19 +5,23 @@ import {
   definitionText,
   hasNodeMatching,
   nodeTypes,
+  pageSource,
   rendersSomething,
 } from "../../../evals/cases/page-definition-readers";
 
 /**
  * The pages eval grades the STORED definition, and it has to keep grading it
- * across the json-render refonte — otherwise the baseline it records today is
- * not comparable to the score the migration is accepted against.
+ * across format migrations — otherwise the baseline it records under one
+ * format is not comparable to the score the next one is accepted against.
  *
- * That comparability rests entirely on these readers being blind to the tree
- * shape. This test pins exactly that: the SAME logical page, expressed as the
- * current nested `root` tree and as the flat `spec.elements` map that replaces
- * it, must read back identically. If someone tightens a reader to one shape,
- * the suite silently stops measuring the other and this test fails first.
+ * That comparability rests entirely on these readers being blind to the
+ * shape. This test pins exactly that, for all three formats: the SAME logical
+ * page as the v1 nested `root` tree, the v2 flat `spec.elements` map, and the
+ * v3 code page (one Vue SFC), must expose the same facts. v1 and v2 read back
+ * identical node types; v3 has no node tree, so `collectNodes` reads the
+ * TEMPLATE's component tags instead and the chart/prose intents are probed on
+ * `pageSource`. If someone tightens a reader to one shape, the suite silently
+ * stops measuring the others and this test fails first.
  */
 
 /** The reference page: a heading, a chart, and a table with a cell subtree. */
@@ -78,6 +82,55 @@ const FLAT_DEFINITION = {
       cell: { type: "badge", props: { label: "x" }, children: [] },
     },
   },
+};
+
+/**
+ * The same page in the code shape (v3): heading, chart and table are now an
+ * SFC. The script deliberately contains PascalCase (`Chart`, the generic
+ * `ref<HTMLCanvasElement>`) that a whole-source scan would miscount as
+ * components — the tag scan must stay inside the template.
+ */
+const CODE_SOURCE = `<template>
+  <div class="space-y-6 p-6">
+    <h1 class="text-2xl font-display">Pipeline</h1>
+    <UCard variant="soft">
+      <USkeleton v-if="pending" class="h-64" />
+      <canvas v-show="!pending" ref="stageCanvas" />
+    </UCard>
+    <UCard variant="soft">
+      <UEmpty v-if="rows.length === 0" title="No deals" />
+      <UTable v-else :data="rows">
+        <template #stage-cell="{ row }">
+          <UBadge>{{ row.original.stage }}</UBadge>
+        </template>
+      </UTable>
+    </UCard>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { onMounted, ref } from 'vue'
+import Chart from 'chart.js/auto'
+import { fretik } from '#fretik/sdk'
+
+const pending = ref(true)
+const rows = ref<Record<string, unknown>[]>([])
+const stageCanvas = ref<HTMLCanvasElement | null>(null)
+
+onMounted(async () => {
+  const { datasets } = await fretik.data.query({ variables: { stage: '' } })
+  if (datasets.deals?.status === 'ok') rows.value = datasets.deals.rows
+  pending.value = false
+})
+</script>
+`;
+
+const CODE_DEFINITION = {
+  version: 3,
+  variables: [{ key: "stage", type: "string" }],
+  datasets: NESTED_DEFINITION.datasets,
+  operations: [],
+  code: { source: CODE_SOURCE },
 };
 
 describe("pages eval — format-agnostic definition readers", () => {
@@ -157,5 +210,72 @@ describe("pages eval — format-agnostic definition readers", () => {
     expect(definitionText(FLAT_DEFINITION)).toContain("type-1");
     expect(definitionText(FLAT_DEFINITION)).toContain("stage");
     expect(definitionText(undefined)).toBe("{}");
+  });
+});
+
+describe("pages eval — code shape (v3) readers", () => {
+  it("reads the template's component tags as pseudo-nodes, one per occurrence", () => {
+    expect(nodeTypes(CODE_DEFINITION).sort()).toEqual([
+      "UBadge",
+      "UCard",
+      "UCard",
+      "UEmpty",
+      "USkeleton",
+      "UTable",
+      "canvas",
+    ]);
+  });
+
+  it("scans the TEMPLATE only — script PascalCase is not a component", () => {
+    const types = nodeTypes(CODE_DEFINITION);
+    // `import Chart from 'chart.js/auto'` and `ref<HTMLCanvasElement>` live in
+    // the script; counting them would fabricate nodes.
+    expect(types).not.toContain("Chart");
+    expect(types).not.toContain("HTMLCanvasElement");
+    expect(types).not.toContain("Record");
+  });
+
+  it("falls back to scanning the whole source when there is no <template>", () => {
+    const bare = { version: 3, code: { source: '<UAlert title="hi" />' } };
+    expect(nodeTypes(bare)).toEqual(["UAlert"]);
+  });
+
+  it("keeps the shared probes working through the tag scan", () => {
+    // `pageSaved(n)` counts these pseudo-nodes; /table/i must see <UTable>.
+    expect(collectNodes(CODE_DEFINITION).length).toBeGreaterThanOrEqual(5);
+    expect(hasNodeMatching(CODE_DEFINITION, /table/i)).toBe(true);
+    expect(hasNodeMatching(CODE_DEFINITION, /canvas/)).toBe(true);
+    // …and the historical chart-NODE probe does NOT fire: a code page charts
+    // via chart.js on a <canvas>, which is exactly why the suite probes the
+    // SOURCE (`/chart\.js|<canvas/i`), never node types, for charts now.
+    expect(hasNodeMatching(CODE_DEFINITION, /chart/i)).toBe(false);
+  });
+
+  it("exposes the SFC through pageSource, and only on code shapes", () => {
+    expect(pageSource(CODE_DEFINITION)).toContain("Pipeline");
+    expect(pageSource(NESTED_DEFINITION)).toBe("");
+    expect(pageSource(FLAT_DEFINITION)).toBe("");
+    for (const bad of [null, undefined, 42, "nope", [], {}]) {
+      expect(pageSource(bad)).toBe("");
+    }
+  });
+
+  it("reads 'would this draw anything' off the source", () => {
+    expect(rendersSomething(CODE_DEFINITION)).toBe(true);
+    // The blank-page save: a code shape with nothing authored draws nothing.
+    expect(rendersSomething({ version: 3, code: { source: "" } })).toBe(false);
+    expect(rendersSomething({ version: 3, code: { source: "  \n " } })).toBe(
+      false,
+    );
+    expect(rendersSomething({ version: 3, code: {} })).toBe(false);
+  });
+
+  it("reads datasets and reference probes exactly like the other shapes", () => {
+    expect(collectDatasets(CODE_DEFINITION)).toHaveLength(2);
+    // definitionText serialises `code.source`, so text probes (field keys,
+    // chart.js, bridge calls) see the authored code too.
+    expect(definitionText(CODE_DEFINITION)).toContain("type-1");
+    expect(definitionText(CODE_DEFINITION)).toContain("chart.js");
+    expect(definitionText(CODE_DEFINITION)).toContain("fretik.data.query");
   });
 });

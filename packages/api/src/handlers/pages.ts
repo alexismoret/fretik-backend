@@ -19,6 +19,7 @@ import {
   PageRunRequestSchema,
   PageRunResponseSchema,
   PageSummarySchema,
+  ReportPageErrorRequestSchema,
   UpdatePageSchema,
 } from "@fretik/shared/schemas/pages";
 import { isOrgAdmin } from "@fretik/shared/services/organization/member-role";
@@ -32,6 +33,7 @@ import {
   publishPage,
   unpublishPage,
 } from "@fretik/shared/services/pages/publish";
+import { appendPageRuntimeError } from "@fretik/shared/services/pages/report-runtime-error";
 import { getPage, listPages } from "@fretik/shared/services/pages/retrieve";
 import { runPageOperation } from "@fretik/shared/services/pages/run-operation";
 import { runPageData } from "@fretik/shared/services/pages/run-page-data";
@@ -72,6 +74,23 @@ pageRoutes.use(
     keyGenerator: (c) => `${c.get("user").id}:${c.req.param("id") ?? ""}`,
     store: createRedisRateLimitStore<HonoLoggedAppType>("rl:page-run:"),
     requestPropertyName: "rateLimitPageRun",
+  }),
+);
+
+/**
+ * Runtime-error reports from the sandboxed page (via the parent bridge). The
+ * SDK already dedupes per message per 5 s; this cap bounds a hostile or
+ * looping page so the feed cannot become a write amplifier.
+ */
+pageRoutes.use(
+  "/:id/errors",
+  rateLimiter<HonoLoggedAppType>({
+    windowMs: 60_000,
+    limit: 60,
+    standardHeaders: "draft-6",
+    keyGenerator: (c) => `${c.get("user").id}:${c.req.param("id") ?? ""}`,
+    store: createRedisRateLimitStore<HonoLoggedAppType>("rl:page-errors:"),
+    requestPropertyName: "rateLimitPageErrors",
   }),
 );
 
@@ -294,6 +313,34 @@ const runRoute = createRoute({
   },
 });
 
+const errorsRoute = createRoute({
+  method: "post",
+  path: "/{id}/errors",
+  summary: "Report a page runtime error",
+  description:
+    "Appends one runtime error the sandboxed page reported through the bridge to the page's ring buffer (most recent kept). The buffer is the authoring agent's self-heal feed — it reads the tail on its next get/update and fixes what the browser saw.",
+  tags: ["Pages"],
+  request: {
+    params: paramsIdSchema,
+    body: {
+      content: { "application/json": { schema: ReportPageErrorRequestSchema } },
+      required: true,
+    },
+  },
+  responses: {
+    200: {
+      content: {
+        "application/json": { schema: z.object({ ok: z.literal(true) }) },
+      },
+      description: "Recorded",
+    },
+    ...responseBadRequestSchema,
+    ...responseForbiddenSchema,
+    ...responseNotFoundSchema,
+    ...responseInternalErrorSchema,
+  },
+});
+
 // ---- Handlers --------------------------------------------------------
 
 pageRoutes.openapi(listRoute, async (c) => {
@@ -444,6 +491,22 @@ pageRoutes.openapi(runRoute, async (c) => {
     variables,
   });
   return c.json(result, 200);
+});
+
+pageRoutes.openapi(errorsRoute, async (c) => {
+  const team = c.get("team");
+  if (!team) return c.json(teamRequired(), 403);
+  const user = c.get("user");
+  const { id } = c.req.valid("param");
+  const report = c.req.valid("json");
+  const requester = await resolveRequester(user, team);
+  await appendPageRuntimeError({
+    pageId: id,
+    teamId: team.id,
+    requester,
+    report,
+  });
+  return c.json({ ok: true as const }, 200);
 });
 
 export { pageRoutes };

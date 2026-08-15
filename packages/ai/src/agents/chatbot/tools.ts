@@ -394,15 +394,15 @@ export const buildDomainTools = () => ({
     ...createManagePageTool(),
     category: "domain",
     searchHint:
-      "page dashboard interface view chart graph kpi table visualise visualize report display layout custom ui public link share live data",
-    // Writes page definitions (and mints public URLs) — not read-only.
+      "page dashboard app interface view chart graph kpi table visualise visualize report display layout custom ui mini-app tool public link share live data",
+    // Writes page code (and mints public URLs) — not read-only.
     isReadOnly: false,
     // …but every result it returns is RE-FETCHABLE, which is what compaction
-    // actually cares about: get_catalog, list, get and dry_run all replay
+    // actually cares about: get_guide, list, get and dry_run all replay
     // identically, and the one durable fact a create returns (the pageId) is
-    // recoverable with `list`. Without this override the 19 KB catalog stayed
-    // pinned for the life of the conversation — heaviest exactly when the
-    // window is under pressure.
+    // recoverable with `list`. Without this override the guide + page source
+    // stayed pinned for the life of the conversation — heaviest exactly when
+    // the window is under pressure.
     microcompactable: true,
   }),
   manageWorkflow: buildChatbotTool({

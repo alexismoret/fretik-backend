@@ -12,6 +12,7 @@
     "format:check": "prettier --check .",
     "test": "NODE_ENV=test bun test tests/unit",
     "test:integration": "NODE_ENV=test bun test tests/integration",
+    "nuxt-ui:sync-docs": "bun scripts/sync-nuxt-ui-docs.ts",
     "evals:langfuse": "bun run evals/run.ts",
     "evals:recall": "bun run evals/recall/run.ts",
     "evals:memory": "bun run evals/memory/run.ts",
@@ -30,7 +31,6 @@
   "dependencies": {
     "@ai-sdk/provider": "^4.0.3",
     "@fretik/providers": "workspace:*",
-    "@fretik/render": "workspace:*",
     "@fretik/shared": "workspace:*",
     "@hono/zod-openapi": "^1.4.0",
     "@langfuse/client": "^5.9.1",

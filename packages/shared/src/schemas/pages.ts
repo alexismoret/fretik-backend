@@ -1,4 +1,9 @@
 import { z } from "zod";
+// The bulk ceiling is NOT re-derived here: `lib/db-bulk` is the single source
+// of truth for it, and it is the same number the objects bulk services enforce.
+// A page that refused what the service it calls accepts would be a divergence
+// nobody could explain from either side.
+import { MAX_BULK_ITEMS } from "../lib/db-bulk";
 import { dateRangeFilterValueSchema, recordFilterOpSchema } from "./ontology";
 
 /**
@@ -33,11 +38,27 @@ import { dateRangeFilterValueSchema, recordFilterOpSchema } from "./ontology";
 // LIMITS               //
 // ==================== //
 
+/**
+ * Ceilings, sized for the ambition: a page may stand in for a piece of
+ * software, not just report on one. So these are set where a value stops being
+ * a PAGE and starts being a bug — not where a cautious first version happened
+ * to land.
+ *
+ * Measured 2026-08-15 (`compilePageCode` on synthetic sources): compile time is
+ * FLAT at ~220 ms from 30k to 117k chars, so the Tailwind subprocess timeout
+ * has ~40× headroom and source size costs nothing. The binding pair is instead
+ * `maxSourceChars` → `maxCompiledJsChars`: compiled JS measures ~2.5× the
+ * source, so the two must move together or the JS ceiling refuses a source the
+ * source ceiling allowed. Emitted CSS stayed at 3k throughout — Tailwind emits
+ * only used utilities and they dedupe, so that ceiling is nowhere near binding.
+ */
 export const PAGE_LIMITS = {
-  maxDatasets: 24,
-  maxVariables: 24,
+  /** A page over several connected apps plus the team's own records. */
+  maxDatasets: 40,
+  maxVariables: 40,
   maxFilters: 20,
-  maxMetrics: 4,
+  /** Per aggregate dataset — a KPI band of six measures is ordinary. */
+  maxMetrics: 8,
   /** Server-side row ceiling for one `objects` dataset. */
   maxRows: 2000,
   /**
@@ -70,17 +91,28 @@ export const PAGE_LIMITS = {
   minExternalTtlSeconds: 15,
   maxExternalTtlSeconds: 900,
   defaultExternalTtlSeconds: 60,
-  /** Declared write/read operations one page may run. */
-  maxOperations: 16,
+  /**
+   * Declared write/read operations one page may run. The ceiling that binds
+   * ambition first: a mailbox alone wants send, reply, reply-all, forward,
+   * delete, move, flag, mark read/unread, archive and their bulk forms.
+   */
+  maxOperations: 40,
 
   /** The page's Vue SFC source, characters. */
-  maxSourceChars: 120_000,
-  /** Compiled module / stylesheet ceilings — a compile output past these is a bug, not a page. */
-  maxCompiledJsChars: 400_000,
+  maxSourceChars: 240_000,
+  /** Compiled module / stylesheet ceilings — a compile output past these is a
+   * bug, not a page. JS tracks `maxSourceChars` at the measured ~2.5× ratio. */
+  maxCompiledJsChars: 800_000,
   maxCompiledCssChars: 100_000,
-  /** Targeted source edits per update call. */
-  maxEdits: 20,
-  maxEditChars: 4_000,
+  /** Targeted source edits per update call. A bigger file means bigger blocks
+   * to swap, so both the count and the block size grow with the source. */
+  maxEdits: 30,
+  maxEditChars: 8_000,
+
+  /** The brief. Bounded because it is a decision record, not a document —
+   * but the feature list is what a software replacement is measured in. */
+  maxBriefFieldChars: 800,
+  maxBriefFeatures: 40,
 } as const;
 
 /**
@@ -416,40 +448,173 @@ export type PageDataset = z.infer<typeof PageDatasetSchema>;
 // ==================== //
 
 /**
- * A named call INTO a connected app that a page may run — a form's submit, a
- * button that marks an order shipped. Datasets read; operations act.
+ * What a page may DO. Datasets read; operations act.
  *
  * Declared at the top level, for the same reason a dataset is: the STORED
  * definition is the security boundary. The page code calls
  * `fretik.ops.run("<id>", { variables })` through the bridge; the browser
  * sends an operation ID and values for the page's declared VARIABLES — never
- * an action name, never an argument template, never a connection. The server
- * re-resolves the stored `args` against those values, so the worst a forged
- * request can do is pass a different string where a string was already going
- * to go.
+ * an action name, never an argument template, never a connection, never an
+ * object type. The server re-resolves the stored `args` against those values,
+ * so the worst a forged request can do is pass a different string where a
+ * string was already going to go.
  *
- * `confirm` is not decoration: an action the app itself marks destructive is
- * REFUSED server-side unless the page declared one, and the PARENT shell (not
- * the sandboxed page) renders the confirmation — a "delete everything" button
- * cannot be one click, and the page code cannot fake the consent.
+ * FOUR KINDS. `app` was the only one until 2026-08-17, and that was a hole
+ * rather than a design: a page could call out to a connected third party but
+ * could not touch the team's OWN records. Every "the page draws a control that
+ * does nothing" defect since Phase 8 traces back to it — the shipped kanban
+ * pattern told the agent to run `set_stage` over a `records` dataset, which no
+ * operation kind could execute. `record`, `bulk` and `link` close it.
+ *
+ * `confirm` is not decoration: a destructive action is REFUSED server-side
+ * unless the page declared one, and the PARENT shell (not the sandboxed page)
+ * renders the confirmation — a "delete everything" button cannot be one click,
+ * and the page code cannot fake the consent.
  */
-export const PageOperationSchema = z.object({
+export const PAGE_OPERATION_KINDS = ["app", "record", "bulk", "link"] as const;
+export const pageOperationKindSchema = z.enum(PAGE_OPERATION_KINDS);
+export type PageOperationKind = z.infer<typeof pageOperationKindSchema>;
+
+export const PAGE_RECORD_MODES = ["create", "update", "delete"] as const;
+export const pageRecordModeSchema = z.enum(PAGE_RECORD_MODES);
+export type PageRecordMode = z.infer<typeof pageRecordModeSchema>;
+
+const pageConfirmSchema = z.object({
+  title: z.string().max(120),
+  description: z.string().max(400).optional(),
+});
+
+/** Argument template — literals, or `{ "var": "<key>" }` references to state.
+ * Its KEYS are also the writable field allowlist for a record write: nothing
+ * outside them reaches the row. */
+const pageArgsSchema = z.record(z.string(), pageValueSchema);
+
+/** One record id: a literal, or the `{ var }` the viewer fills in. */
+const pageRecordIdSchema = z.union([z.string().max(64), PageVarRefSchema]);
+/** Many: a literal list, or a `string_list` variable holding the selection. */
+const pageRecordIdsSchema = z.union([
+  z.array(z.string().max(64)).max(MAX_BULK_ITEMS),
+  PageVarRefSchema,
+]);
+
+const pageAppOperationSchema = z.object({
+  kind: z.literal("app"),
   id: pageKeySchema,
   /** Pin ONE connection. Omit to resolve per viewer, like a dataset. */
   connectionId: z.uuid().optional(),
   providerKey: z.string().max(80).optional(),
   /** The action to call on it — a name from the app's own catalogue. */
   action: z.string().max(120),
-  /** Argument template — literals, or `{ "var": "<key>" }` references to page state. */
-  args: z.record(z.string(), pageValueSchema).optional(),
-  /** Ask before running. Required for anything the app marks destructive. */
-  confirm: z
-    .object({
-      title: z.string().max(120),
-      description: z.string().max(400).optional(),
-    })
-    .optional(),
+  args: pageArgsSchema.optional(),
+  confirm: pageConfirmSchema.optional(),
 });
+
+const pageRecordOperationSchema = z.object({
+  kind: z.literal("record"),
+  id: pageKeySchema,
+  /** The type this writes to — from the definition, never from the request. */
+  objectTypeId: z.uuid(),
+  mode: pageRecordModeSchema,
+  /** Which row. Omitted for `create`. */
+  recordId: pageRecordIdSchema.optional(),
+  args: pageArgsSchema.optional(),
+  confirm: pageConfirmSchema.optional(),
+});
+
+/**
+ * The same write over a SELECTION.
+ *
+ * `create` is deliberately absent: a bulk operation acts on rows the viewer
+ * picked, and there is no selection to pick before a row exists. Creating many
+ * at once is an import, and the objects UI already owns imports — the skill's
+ * "when a page is the wrong answer" says so already.
+ *
+ * It exists because the bridge allows 30 calls per 10 s SHARED with
+ * `data.query`: approving twelve selected rows one call at a time brushes that
+ * ceiling and refetches twelve times.
+ */
+const pageBulkOperationSchema = z.object({
+  kind: z.literal("bulk"),
+  id: pageKeySchema,
+  objectTypeId: z.uuid(),
+  mode: z.enum(["update", "delete"]),
+  recordIds: pageRecordIdsSchema,
+  args: pageArgsSchema.optional(),
+  confirm: pageConfirmSchema.optional(),
+});
+
+/**
+ * Attach or detach one end of a `relation` field — assign an owner, tag a
+ * record, attach a document.
+ *
+ * A relation is an edge in the links graph, not a column, so it is unreachable
+ * through `record`'s `args`. Without this kind a page can write every field
+ * type EXCEPT the one that connects records to each other.
+ */
+const pageLinkOperationSchema = z.object({
+  kind: z.literal("link"),
+  id: pageKeySchema,
+  objectTypeId: z.uuid(),
+  /** The `relation` field on that type whose edges this operation moves. */
+  fieldKey: pageKeySchema,
+  mode: z.enum(["link", "unlink"]),
+  fromRecordId: pageRecordIdSchema,
+  toRecordId: pageRecordIdSchema,
+  confirm: pageConfirmSchema.optional(),
+});
+
+/**
+ * `kind` defaults to `app` through a PREPROCESS rather than a `.default()`:
+ * a discriminated union picks its arm before any default runs, so a stored
+ * operation written before `kind` existed would fail to match any arm and take
+ * the whole page's definition down with it. What a schema drops, nothing
+ * downstream can put back.
+ */
+export const PageOperationSchema = z
+  .preprocess(
+    (value) =>
+      isPlainObject(value) && value["kind"] === undefined
+        ? { ...value, kind: "app" }
+        : value,
+    z.discriminatedUnion("kind", [
+      pageAppOperationSchema,
+      pageRecordOperationSchema,
+      pageBulkOperationSchema,
+      pageLinkOperationSchema,
+    ]),
+  )
+  .superRefine((op, ctx) => {
+    // Closes a silent authoring trap: `{ id, action, args }` used to validate,
+    // save and warn about nothing, then fail at run time with "a connection
+    // needs providerKey or a pinned connectionId".
+    if (op.kind === "app" && !op.providerKey && !op.connectionId) {
+      ctx.addIssue({
+        code: "custom",
+        message: `operation "${op.id}": an app operation needs providerKey (or a pinned connectionId) — without one there is nothing to call.`,
+        path: ["providerKey"],
+      });
+    }
+    if (op.kind === "record" && op.mode !== "create" && !op.recordId) {
+      ctx.addIssue({
+        code: "custom",
+        message: `operation "${op.id}": ${op.mode} needs recordId naming which row to act on.`,
+        path: ["recordId"],
+      });
+    }
+    // Deleting is destructive by construction — the app path already refuses a
+    // destructive action with no confirm, and a row is no cheaper to lose.
+    if (
+      (op.kind === "record" || op.kind === "bulk") &&
+      op.mode === "delete" &&
+      op.confirm === undefined
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        message: `operation "${op.id}": deleting records needs a confirm step — the app renders it, the page cannot fake the consent.`,
+        path: ["confirm"],
+      });
+    }
+  });
 export type PageOperation = z.infer<typeof PageOperationSchema>;
 
 // ==================== //
@@ -493,6 +658,51 @@ export const PageThemeSchema = z.object({
 export type PageTheme = z.infer<typeof PageThemeSchema>;
 
 // ==================== //
+// BRIEF (INTENT)       //
+// ==================== //
+
+const briefField = z.string().max(PAGE_LIMITS.maxBriefFieldChars);
+
+/**
+ * What this page is FOR and what it should look like — decided before a line
+ * of code and stored beside it.
+ *
+ * It exists because the request that starts a page is usually a sentence from
+ * someone non-technical, and a generator handed a vague sentence under-scopes:
+ * it builds the literal ask and stops. Writing the intent down first turns
+ * taste words into countable commitments ("modern" → these nine features, this
+ * layout, this one memorable element), and keeps them countable later — a
+ * second turn can check the page against its own brief instead of re-reading
+ * a chat history that compaction may already have dropped.
+ *
+ * Stored in the definition rather than in the conversation for exactly that
+ * reason: it has to outlive the turn that produced it.
+ */
+export const PageBriefSchema = z.object({
+  product: z.object({
+    /** The one job. "Work a mailbox without leaving Fretik." */
+    job: briefField,
+    /** Who opens it, and what they are in the middle of doing. */
+    audience: briefField,
+    /**
+     * The features this page commits to, each one a thing a person can DO.
+     * This is the anti-under-scoping device: a vague request becomes a list
+     * that can be counted, argued with, and checked off.
+     */
+    features: z.array(briefField).max(PAGE_LIMITS.maxBriefFeatures).default([]),
+  }),
+  design: z.object({
+    /** The layout in prose — regions, what sits where, what dominates. */
+    layout: briefField,
+    /** The ONE element this page is remembered by. Boldness is spent here. */
+    signature: briefField,
+    /** The single orchestrated moment of motion, if any. */
+    motion: briefField.optional(),
+  }),
+});
+export type PageBrief = z.infer<typeof PageBriefSchema>;
+
+// ==================== //
 // CODE (PRESENTATION)  //
 // ==================== //
 
@@ -532,6 +742,9 @@ export type PageCode = z.infer<typeof PageCodeSchema>;
  */
 export const PageDefinitionSchema = z.object({
   version: z.literal(3),
+  /** Optional, and additive on purpose: every page stored before the brief
+   * existed still parses, so no migration and no version bump. */
+  brief: PageBriefSchema.optional(),
   variables: z
     .array(PageVariableSchema)
     .max(PAGE_LIMITS.maxVariables)
@@ -644,11 +857,17 @@ export const pagePublishError = (definition: PageDefinition): string | null => {
   if (external) {
     return `Dataset "${external.id}" reads a connected app, which a published page may not do — an anonymous visitor would be spending the team's credentials. Sync it into an object type with a workflow and query that instead.`;
   }
-  // Same rule, one step stronger: an operation WRITES to a third party. A link
-  // anyone can open must not carry one, whatever it is guarded by client-side.
+  // Same rule, one step stronger: an operation WRITES — to a third party on the
+  // team's credentials, or to the team's own records. A link anyone can open
+  // must not carry one, whatever it is guarded by client-side. A published page
+  // is a read-only view of live data, and nothing else.
   const [operation] = definition.operations;
   if (operation !== undefined) {
-    return `Operation "${operation.id}" writes to a connected app, which a published page may not do — anyone with the link could run it on the team's credentials. Keep this page internal, or remove its operations.`;
+    const target =
+      operation.kind === "app"
+        ? "writes to a connected app"
+        : "writes to the team's records";
+    return `Operation "${operation.id}" ${target}, which a published page may not do — anyone with the link could run it. Keep this page internal, or remove its operations.`;
   }
   return null;
 };
@@ -704,15 +923,26 @@ export const describePageDataContract = (): string =>
     "UI state that never reaches a query needs no variable — plain refs in the code.",
     "",
     "## operations (writes)",
-    "operations: [{ id, providerKey, action, args?, confirm? }]",
-    "A write into a connected app, run from the page code as",
-    '`await fretik.ops.run("<id>", { variables })`. Connections resolve per viewer,',
-    'exactly as a dataset\'s do. args are literals or { "var": "<key>" } references,',
-    "so a form field is a variable — no separate form model. confirm: { title,",
-    "description? } is rendered by the PARENT app (the page cannot fake consent) and",
-    "is REQUIRED for any action the app marks destructive (the server refuses it",
-    "otherwise). The verdict comes back to the caller: ok | needs_connection |",
-    "blocked | cancelled | error — render it.",
+    'Every one runs as `await fretik.ops.run("<id>", { variables })` and answers',
+    "ok | needs_connection | blocked | cancelled | error — render the verdict.",
+    'args are literals or { "var": "<key>" } references, so a form field is a',
+    "variable and there is no separate form model. Four kinds:",
+    "kind=record → objectTypeId + mode(create|update|delete) + recordId + args.",
+    "                 Writes the team's OWN records. `args` KEYS ARE THE WRITABLE",
+    "                 FIELD LIST — nothing outside them can reach the row, and an",
+    "                 update carrying none of them changes nothing. Fields whose",
+    "                 descriptor says writable:false are refused by name.",
+    "kind=bulk   → the same over recordIds: [] — one call for a whole selection,",
+    `                 up to ${MAX_BULK_ITEMS.toString()}. update|delete only; creating many is an import.`,
+    "kind=link   → fieldKey + mode(link|unlink) + fromRecordId + toRecordId.",
+    "                 Moves a `relation` edge — assigning an owner, tagging,",
+    "                 attaching. A relation is NOT writable through args. On a",
+    "                 cardinality-one relation, linking REPLACES.",
+    "kind=app    → providerKey + action (+ args). A write into a connected app;",
+    "                 connections resolve per viewer, exactly as a dataset's do.",
+    "confirm: { title, description? } is rendered by the PARENT app (the page",
+    "cannot fake consent). REQUIRED for any delete, and for any app action the app",
+    "itself marks destructive — the server refuses the write otherwise.",
     "A page with operations cannot be published: a public link must not write.",
     "",
     "## theme (optional)",
@@ -847,6 +1077,7 @@ export const PageFieldDescriptorSchema = z.object({
         value: z.string(),
         label: z.string(),
         color: z.string().optional(),
+        /** Ready for `<UIcon :name>` as-is — normalised server-side, never wrap it. */
         icon: z.string().optional(),
       }),
     )
@@ -873,6 +1104,15 @@ export const PageFieldDescriptorSchema = z.object({
   isTitle: z.boolean().optional(),
   /** Whether a table may order on this field — false for the computed ones. */
   sortable: z.boolean().optional(),
+  /**
+   * Whether a `record` operation may write this field through `args`.
+   *
+   * False for a relation (an edge — move it with a `link` operation), a rollup,
+   * and the read-only system properties. Binding a form control to one of them
+   * produces a save that reports success and changes nothing, because the write
+   * path strips the key instead of refusing it.
+   */
+  writable: z.boolean().optional(),
 });
 export type PageFieldDescriptor = z.infer<typeof PageFieldDescriptorSchema>;
 

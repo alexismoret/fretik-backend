@@ -1,6 +1,7 @@
 import { pruneWebToolsIfUnavailable } from "../../lib/web-egress";
 import { createAskUserQuestionTool } from "../../tools/ask-user/chat";
 import { createBashTool } from "../../tools/bash";
+import type { createBuildPageTool } from "../../tools/build-page";
 import { createCreateSkillTool } from "../../tools/create-skill";
 import { createDescribeObjectTypeTool } from "../../tools/describe-object-type";
 import type { createDispatchAgentTool } from "../../tools/dispatch-agent";
@@ -431,6 +432,10 @@ export const buildDomainTools = () => ({
  */
 export type DispatchAgentTool = ReturnType<typeof createDispatchAgentTool>;
 
+/** Same construction seam as `DispatchAgentTool`, for the same reason: the
+ * page-builder agent it wraps is assembled in `./index.ts`. */
+export type BuildPageTool = ReturnType<typeof createBuildPageTool>;
+
 /**
  * Full chatbot tool set (core + domain + dispatchAgent). Both halves
  * are passed to `ToolLoopAgent` upfront; the `prepareStep` hook in
@@ -445,8 +450,18 @@ export type DispatchAgentTool = ReturnType<typeof createDispatchAgentTool>;
  */
 export const buildChatbotTools = (extras: {
   dispatchAgent: DispatchAgentTool;
+  buildPage: BuildPageTool;
 }) => {
-  const domainTools = buildDomainTools();
+  // `buildPage` joins the DOMAIN set, not the returned object, and that
+  // distinction is load-bearing: `searchTools` indexes and activates from the
+  // registry it is handed here, so a tool spliced in afterwards is present on
+  // the agent, absent from every search result, and rejected by name when the
+  // model asks for it explicitly. Measured 2026-08-16 — ten eval turns in a
+  // row built their page inline with `managePage` and the page-builder
+  // sub-agent never ran once. It cannot be built INSIDE `buildDomainTools`:
+  // the builder agent is constructed from a tool set, so the caller has to
+  // pass it in.
+  const domainTools = { ...buildDomainTools(), buildPage: extras.buildPage };
   const coreTools = buildCoreTools(domainTools);
   return {
     ...coreTools,
@@ -483,3 +498,35 @@ export const buildSubAgentTools = () => {
 };
 
 export type SubAgentTools = ReturnType<typeof buildSubAgentTools>;
+
+/**
+ * Page-builder tool set — a POSITIVE list, not the sub-agent set minus a few.
+ *
+ * Building a page is one long ordered task, and every tool that is not part of
+ * it is a way to leave the path: the two shipped pages that failed did so by
+ * skipping `components`, not by lacking a capability. So this registry holds
+ * `managePage`, the probes that answer "what is actually in this data", the
+ * icon catalogue, and the two file tools that open the skill — nothing else.
+ * `python`/`bash`-driven analysis, memory, Drive writes, workflows and skill
+ * authoring all belong to the parent agent.
+ *
+ * `bash` is here for one reason (`ls skills/…` to see what the bundle offers);
+ * `read` is what actually opens those files.
+ */
+export const buildPageBuilderTools = () => {
+  const domainTools = buildDomainTools();
+  const coreTools = buildCoreTools(domainTools);
+  return {
+    managePage: domainTools.managePage,
+    describeObjectType: domainTools.describeObjectType,
+    listObjects: domainTools.listObjects,
+    getObject: domainTools.getObject,
+    listDocuments: domainTools.listDocuments,
+    searchIcons: domainTools.searchIcons,
+    querySql: coreTools.querySql,
+    read: coreTools.read,
+    bash: coreTools.bash,
+  };
+};
+
+export type PageBuilderTools = ReturnType<typeof buildPageBuilderTools>;

@@ -104,6 +104,52 @@ const executionClosure = (
 /** A dataset slower than this is worth a line in the logs, not a failure. */
 const SLOW_DATASET_MS = 1000;
 
+/** Postgres `undefined_column` — the dataset named a field the type has not. */
+const UNDEFINED_COLUMN = "42703";
+const MAX_ERROR_CHARS = 300;
+
+/**
+ * What a failed dataset tells the agent.
+ *
+ * The driver's own message is `Failed query: <the entire SQL>`, and that is
+ * what used to travel: a wall of generated SQL naming the physical table
+ * `data.obj_<uuid>`, with the actual cause — one wrong column — buried in it.
+ * Observed on a real run (2026-08-17): the agent read three of those, could not
+ * tell which layer had failed, concluded "the transform keeps failing in the
+ * sandbox" (it was an aggregate, and the sandbox was never involved), and
+ * rewrote the page to bucket its rows in the component instead.
+ *
+ * The inner driver error carries the useful half — a SQLSTATE and one sentence.
+ * That is what goes back, plus the one instruction that fixes the common case.
+ *
+ * RULE: an error crossing into an agent's context is a prompt. A hundred lines
+ * of SQL is not a diagnosis, and it costs tokens to be misled by.
+ */
+export const describeDatasetError = (cause: unknown): string => {
+  const inner =
+    cause instanceof Error && cause.cause instanceof Error
+      ? cause.cause
+      : cause;
+  const code =
+    inner !== null && typeof inner === "object"
+      ? Reflect.get(inner, "code")
+      : undefined;
+  // Deliberately NOT `String(inner)`: on an object that yields the
+  // `[object Object]` this whole helper exists to keep out of the agent's
+  // context.
+  const message =
+    inner instanceof Error
+      ? inner.message
+      : typeof inner === "string"
+        ? inner
+        : "unknown error";
+
+  if (code === UNDEFINED_COLUMN) {
+    return `${message}. A dataset names a field this object type does not have — \`dry_run\` the definition with no code to see the real field keys.`;
+  }
+  return message.slice(0, MAX_ERROR_CHARS);
+};
+
 export const runPageData = async (params: {
   definition: PageDefinition;
   /** Team whose scope the queries run under (viewer's, or the owner's for a
@@ -162,10 +208,7 @@ export const runPageData = async (params: {
         ...(params.fresh !== undefined ? { fresh: params.fresh } : {}),
       });
     } catch (cause) {
-      return {
-        status: "error",
-        message: cause instanceof Error ? cause.message : String(cause),
-      };
+      return { status: "error", message: describeDatasetError(cause) };
     } finally {
       const elapsed = performance.now() - startedAt;
       if (elapsed > SLOW_DATASET_MS) {

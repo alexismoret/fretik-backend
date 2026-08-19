@@ -645,11 +645,23 @@ export const ROLE_TIER: Record<ModelRole, ModelTier | "fixed"> = {
   // FIXED: repair is a SYSTEM reliability component on the hot path of every
   // malformed tool call — a team's pick must not slow it below the 120b.
   "tool-repair": "fixed",
-  // ONE file-capable model (gemini-3.6-flash) backs both the `vision` tool and
+  // ONE file-capable model (gemini-3.5-flash-lite) backs both the `vision` tool and
   // the `extract` engine — no separate extraction role. FIXED: a team's tier
   // pick must not silently degrade document extraction quality.
   vision: "fixed",
   "vision-fallback": "fixed",
+  // FIXED: the page critic is the gate on what a team ships to itself. A
+  // cheaper pick would not fail loudly — it would praise, which is the one
+  // outcome the review exists to prevent.
+  "page-review": "fixed",
+  // FIXED, and for the SAME reason as the critic above — which is exactly the
+  // asymmetry that went unnoticed until 2026-08-18. The critic was pinned so a
+  // cheap pick could not quietly praise; the BUILDER was left on
+  // `resolveModel("chat")` at module load, so every page a team ever generated
+  // was written by the code default no matter which flagship they picked. A
+  // page is the one artefact a team keeps and reopens: what writes it is a
+  // system quality component, not a per-team cost preference.
+  "page-build": "fixed",
   // Tracks the team's workhorse pick: bulk prose transformation is a
   // cost/quality preference a team may legitimately tune, and the fixed
   // fallback catches a weak pick's truncations/refusals.

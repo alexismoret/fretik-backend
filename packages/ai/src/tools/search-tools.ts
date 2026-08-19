@@ -145,8 +145,13 @@ const scoreTool = (
  * Keyword search across the domain tool registry. Supports `+term`
  * required prefixes. Returns the top `maxResults` tool names sorted
  * by descending score.
+ *
+ * Exported for one test that could not be written any other way: whether a
+ * tool is REACHABLE through this gateway is a property of the registry it is
+ * handed, and a tool attached to the agent outside that registry is invisible
+ * with no symptom (`tests/unit/agents/page-builder-discoverable.test.ts`).
  */
-const searchToolsWithKeywords = (
+export const searchToolsWithKeywords = (
   query: string,
   domainTools: SearchableToolRegistry,
   maxResults: number,

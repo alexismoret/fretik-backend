@@ -11,8 +11,14 @@ import {
   type ToolSet,
 } from "ai";
 import { telemetryFor } from "../../lib/langfuse";
-import type { ResolvedModel } from "../../lib/model-registry/resolve";
-import type { ModelProfile } from "../../lib/model-registry/types";
+import {
+  reasoningParamForProfile,
+  type ResolvedModel,
+} from "../../lib/model-registry/resolve";
+import type {
+  ModelProfile,
+  ReasoningLevel,
+} from "../../lib/model-registry/types";
 import { stopOnRepeatedToolErrors, trailingToolErrorRun } from "./agent-set";
 import {
   DynamicToolManager,
@@ -533,10 +539,29 @@ const buildToolLoopAgent = <CALL_OPTIONS, TTools extends ToolSet>(
       // The Langfuse prompt-version link (`ctx.langfusePromptLink`) is surfaced
       // to telemetry in WS2 via `telemetry.includeRuntimeContext` — v7's
       // `TelemetryOptions` no longer carries a `metadata` field.
+      // Thinking depth for a DELEGATE. A top-level turn puts its own reasoning
+      // param on the wire at `.stream()` and arrives here with it already in
+      // `baseCallArgs`; a sub-agent has no such caller, so before 2026-08-18 it
+      // silently ran at its profile's default however deeply the user had asked
+      // the turn to think. Applied only when the ctx carries a level AND the
+      // caller set none — `prepareCall` REPLACES call settings wholesale, so
+      // overriding a param the caller chose would be the same bug in reverse.
+      const reasoning =
+        ctx.reasoningLevel !== undefined &&
+        baseCallArgs.providerOptions === undefined
+          ? reasoningParamForProfile(
+              resolved.profile,
+              ctx.reasoningLevel as ReasoningLevel,
+            )
+          : undefined;
+
       return {
         ...baseCallArgs,
         instructions,
         runtimeContext: branded,
+        ...(reasoning !== undefined
+          ? { providerOptions: { openrouter: { reasoning } } }
+          : {}),
         // Fallback `activeTools` for agents WITHOUT a `prepareStep`. When a
         // `prepareStep` is set it fires on step 0 and supersedes this.
         ...(hasPrepareStep ? {} : { activeTools: fallbackActiveTools }),

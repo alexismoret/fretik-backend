@@ -31,7 +31,7 @@
  *   EVAL_USER_ID    (opt.)    forwarded as X-Context-User-Id
  *   LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY / LANGFUSE_BASE_URL
  *   OPENROUTER_API_KEY                 (judge)
- *   OPENROUTER_EVAL_JUDGE_MODEL  (opt., default google/gemini-3.6-flash)
+ *   OPENROUTER_EVAL_JUDGE_MODEL  (opt., default google/gemini-3.7-flash)
  *
  * ── Invocation ─────────────────────────────────────────────────────
  *
@@ -44,6 +44,7 @@
  *   ...  -- --deterministic-only    # skip the judge
  *   ...  -- --run-name <name>       # explicit dataset-run name
  *   ...  -- --candidate <profileKey> # pin turns to a registry profile (C3 gate)
+ *   ...  -- --page-build-candidate <profileKey> # pin the PAGE BUILDER's model
  * ==================================================================
  */
 
@@ -66,6 +67,13 @@ interface CliOptions {
   runName?: string;
   /** Pin every turn to this registry profile (C3 gate candidate). */
   candidate?: string;
+  /**
+   * Pin the PAGE BUILDER to this registry profile. Separate from `--candidate`
+   * because they are separate models: the candidate pins the turn that decides
+   * to build a page, this pins the one that writes it. Omitted → the
+   * `page-build` role binding.
+   */
+  pageBuildCandidate?: string;
   /** Include model-gate tier probes (the true full suite). */
   all: boolean;
 }
@@ -116,6 +124,11 @@ const parseArgs = (argv: string[]): CliOptions => {
       i++;
       continue;
     }
+    if (flag === "--page-build-candidate" && next) {
+      opts.pageBuildCandidate = next;
+      i += 1;
+      continue;
+    }
     if (flag === "--candidate" && next) {
       opts.candidate = next;
       i++;
@@ -144,6 +157,9 @@ const main = async (): Promise<void> => {
     ...(opts.suite ? { suite: opts.suite } : {}),
     ...(opts.runName ? { runName: opts.runName } : {}),
     candidateProfileKey: pinnedProfileKey,
+    ...(opts.pageBuildCandidate
+      ? { pageBuildProfileKey: opts.pageBuildCandidate }
+      : {}),
     metadata: {
       release: process.env.LANGFUSE_RELEASE ?? "(dev)",
       smoke: opts.smoke,

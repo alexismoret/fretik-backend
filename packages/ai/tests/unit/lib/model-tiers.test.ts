@@ -211,20 +211,29 @@ describe("costLevelFromProfile", () => {
 
   test("verbosity, not headline price, drives the ranking", () => {
     // The reason `costLevelFromProfile` models a real turn instead of a 3:1
-    // blend. GLM-5.2 has a CHEAPER headline than Gemini 3.6 Flash
-    // ($0.67/$2.11 vs $1.50/$7.50) yet is the more verbose model by far
-    // (42 791 vs 23 307 output tokens per task). A blended-price formula would
-    // rank purely on the headline; this one must account for both.
+    // blend: GLM-5.2 emits 42 791 output tokens per task against Gemini 3.7
+    // Flash's 23 307, so the two must not rank alike even when priced alike.
+    //
+    // Held at ONE price through the override deliberately. This test used to
+    // pin a live pair ("GLM has the cheaper headline yet costs more per turn")
+    // and went red the day Flash's settled rate halved to $0.75/$3.75 — the
+    // property held, the fixture did not. A price move must never be able to
+    // turn this assertion into a tautology, nor break it.
     const glm = MODEL_PROFILES["glm-5.2"];
-    const flash = MODEL_PROFILES["gemini-3.6-flash"];
+    const flash = MODEL_PROFILES["gemini-3.7-flash"];
     expect(glm).toBeDefined();
     expect(flash).toBeDefined();
     expect(glm.assessment.verbosity?.outputTokensPerTask).toBeGreaterThan(
       flash.assessment.verbosity?.outputTokensPerTask ?? 0,
     );
-    // Cheap input still wins overall here — but only because the model prices
-    // it that way, not because verbosity was ignored.
-    expect(costLevelFromProfile(glm)).toBeLessThan(costLevelFromProfile(flash));
+    const onePrice = {
+      inputPerMTok: 1,
+      outputPerMTok: 5,
+      cacheReadPerMTok: 0.1,
+    };
+    expect(costLevelFromProfile(glm, onePrice)).toBeGreaterThan(
+      costLevelFromProfile(flash, onePrice),
+    );
   });
 
   test("a model with no verbosity data is neither rewarded nor punished", () => {

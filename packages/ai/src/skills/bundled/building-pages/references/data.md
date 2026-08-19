@@ -6,6 +6,7 @@ The data half of a page is declarative, and it is the security boundary: the cod
 
 - **Variables are the request contract.** Declare one per value the SERVER needs — a filter, an operation argument. Send them with `fretik.data.query({ variables })` and reference them inside filters and args as `{ "var": "key" }`. Purely local UI state (which row is selected, whether a panel is open) is a ref, not a variable.
 - **A figure that must be true is an `aggregate` dataset.** Summing a page of rows in JavaScript lies the moment the table pages. Use `groupBy` / `dateBucket` and metrics with `label` and `unit`.
+- **A filter re-queries; it never narrows the rows already loaded.** Filtering a `computed` over the rows in hand looks identical to the real thing while the team has fewer records than the dataset's `limit`, and silently becomes a filter over the first hundred the day they have more. Send the choice as a variable, read it back in the dataset's filters.
 - **A paginated list gets its own `records` dataset.** The server is the paginator, however many millions sit behind it.
 - **`transform` combines what the queries already reduced** — ratios, joins, derived columns. Plain JavaScript, `return` its rows. Never group or sum there what an aggregate dataset should.
 - **`external` is for small, fresh reads** through the viewer's own connection — an inbox, today's events. Volume and history belong in an object type synced by a workflow: a third party cannot be filtered, grouped or indexed. `dry_run` shows the real answer shape first.
@@ -73,7 +74,7 @@ Anything you interpolate without going through this is a raw key, an object or a
 
 ## Colour and icons come from the schema
 
-Every `select` and `multi_select` option carries `color` (a palette name — `blue`, `amber`, `violet`, …, `zinc` for none) and often `icon` (a bare lucide name — `phone`, `zap`). **Using them is what makes a page look like part of the product rather than a grey report**, and it is what keeps a status the same colour here as everywhere else in the app.
+Every `select` and `multi_select` option carries `color` (a palette name — `blue`, `amber`, `violet`, …, `zinc` for none) and often `icon`, ready for `<UIcon :name>` as it arrives — NEVER wrap it in `i-lucide-`. **Using them is what makes a page look like part of the product rather than a grey report**, and it is what keeps a status the same colour here as everywhere else in the app.
 
 A palette name cannot become a Tailwind class: `bg-${color}-500` is assembled at runtime and compiles to nothing. Bind the CSS variable instead — the whole palette is live in the runtime, and it adapts to light and dark on its own. This is the same recipe the rest of the app uses:
 
@@ -84,7 +85,6 @@ const swatch = (color?: string | null) => {
 };
 // CSS resolves `var()`; a <canvas> does not. For anything drawn — a Chart.js
 // colour — go through `fretik.theme.color(name)` instead (§ Charts).
-const icon = (name?: string | null) => (name ? `i-lucide-${name}` : undefined);
 ```
 
 ```vue
@@ -96,7 +96,7 @@ const icon = (name?: string | null) => (name ? `i-lucide-${name}` : undefined);
     backgroundColor: swatch(opt?.color).bg,
   }"
 >
-  <UIcon v-if="opt?.icon" :name="icon(opt.icon)" class="size-3.5" />
+  <UIcon v-if="opt?.icon" :name="opt.icon" class="size-3.5" />
   {{ opt?.label }}
 </span>
 ```
@@ -133,6 +133,10 @@ if (verdict.status === "ok") {
 ```
 
 Declare `confirm: { title, description? }` on every destructive operation. **The app renders that confirmation itself**, outside the page, from the stored definition — so never build your own confirm dialog for a destructive op, and never treat `cancelled` as a failure. Show pending state on the control that started it, not over the whole page.
+
+- **Declare one operation per verb, each naming only the fields that verb changes.** "Qualify" and "reassign" are two operations, not one with an open payload — `args` is the writable-field list, so narrow ones are what makes a write safe to hand every viewer of the page.
+- **Assigning is a `link` operation, not a field write.** A relation is an edge; the field key in `args` is refused.
+- **A selection is one call.** Approving twelve rows is a `bulk` operation, not twelve — the bridge allows 30 calls per 10 s, shared with `data.query`.
 
 ## Charts
 

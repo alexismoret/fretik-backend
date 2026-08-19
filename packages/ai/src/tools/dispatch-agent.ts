@@ -124,7 +124,7 @@ export const createDispatchAgentTool = <TTools extends ToolSet>(deps: {
     z.infer<typeof inputSchema>,
     ReturnType<typeof formatSubAgentResult>
   >({
-    subAgent: deps.primary,
+    subAgent: () => deps.primary,
     buildMessages: ({ task }) => [{ role: "user", content: task }],
     buildCallOptions: (_input, ctx) => ({
       teamId: ctx.teamId,
@@ -146,7 +146,7 @@ export const createDispatchAgentTool = <TTools extends ToolSet>(deps: {
     z.infer<typeof inputSchema>,
     ReturnType<typeof formatSubAgentResult>
   >({
-    subAgent: deps.cheap,
+    subAgent: () => deps.cheap,
     buildMessages: ({ task }) => [{ role: "user", content: task }],
     buildCallOptions: (_input, ctx) => ({
       teamId: ctx.teamId,

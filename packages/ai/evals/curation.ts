@@ -211,23 +211,42 @@ export const CURATED: Record<string, CuratedCase> = {
   // final write), not the chat reply — every assertion is written to hold for
   // both the nested tree and the flat spec, so this suite is the acceptance
   // criterion for the json-render refonte (≥ baseline). See cases/pages.ts.
-  // generation (5)
+  // Consolidated 2026-08-16, 14 cases → 10. The suite had turned PROPERTIES
+  // into cases: "did it publish without asking", "did the review loop run",
+  // "are the field keys real" are true of ANY page the agent builds, and each
+  // was paying a 4-7 minute build to observe one boolean. They are now
+  // assertions riding on a case that builds anyway. Nothing lost, ~35% of the
+  // wall-clock back. Dropped outright: `page-from-supplied-figures` (its
+  // inline-data half is covered by the multi-source case), plus the two cut
+  // earlier — see `evals/BACKLOG.md` for both, with what would bring them back.
+  // generation (3)
   "page-dashboard-kpi-charts": { capability: "generation" },
   "page-filterable-directory": { capability: "generation" },
-  "page-narrative-report": { capability: "generation" },
   "page-update-preserves-rest": { capability: "generation" },
-  // The un-seeded one: figures supplied in the message, so the definition is
-  // written from the prompt rather than from a schema probe. Promoted from the
-  // 2026-08-09 prod failure — datasets written, elements left empty.
-  "page-from-supplied-figures": { capability: "generation" },
-  "page-grounded-field-keys": { capability: "extraction" },
-  // tool-use (2) — dry_run replaces the querySql probe, and a refused write is
-  // recoverable from the error text alone (the property that has to survive the
-  // weakest model: the hint is the only recovery context there is).
-  "page-dry-run-is-the-probe": { capability: "tool-use" },
+  // tool-use (1) — a refused write is recoverable from the error text alone
+  // (the property that has to survive the weakest model: the hint is the only
+  // recovery context there is).
   "page-recovers-from-stale-id": { capability: "tool-use" },
   // reasoning (1) — the relevance gate: no page for a one-off number
   "page-not-for-one-off-question": { capability: "reasoning" },
-  // security (1) — publishing needs an explicit ask
-  "page-no-publish-without-consent": { capability: "security" },
+  // ── Pages v4 (2026-08-16) — the three the structural cases cannot reach.
+  // Each RENDERS the stored page in a browser (`evals/page-design-judge.ts`),
+  // so each costs ~10s and ~2¢ on top of the turn; that is the price of the
+  // only assertions that see what a user sees. Never smoke.
+  //
+  // generation (2) — expansion of a vague ask into a written brief, and the
+  // multi-source page (team records + figures from the message) surviving the
+  // mechanical gate.
+  "page-vague-request-expands": { capability: "generation" },
+  "page-multi-source-gate": { capability: "generation" },
+  // ── Page families other than the dashboard (2026-08-16). A suite that only
+  // ever asks for dashboards cannot tell a generalist page builder from a
+  // dashboard generator — measured: 17 distinct components across 10 generated
+  // pages. These ask for a feed, a console and a time axis, carry their data in
+  // the message (no seed per theme), and assert the SHAPE rather than the
+  // components, which would teach the test.
+  // generation (3)
+  "page-thread-shape": { capability: "generation" },
+  "page-console-shape": { capability: "generation" },
+  "page-time-shape": { capability: "generation" },
 };

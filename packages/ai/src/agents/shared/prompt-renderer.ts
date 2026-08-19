@@ -94,6 +94,10 @@ const SUB_AGENT_TEMPLATE_URL = new URL(
   "../chatbot/sub-agent-system-prompt.md",
   import.meta.url,
 );
+const PAGE_BUILDER_TEMPLATE_URL = new URL(
+  "../chatbot/page-builder-system-prompt.md",
+  import.meta.url,
+);
 
 /**
  * Match `<!-- ... -->` blocks (including multi-line). The trailing
@@ -112,6 +116,10 @@ export const MANAGED_PROMPTS = {
   system: { name: "fretik-chatbot-system", url: UNIFIED_TEMPLATE_URL },
   workflow: { name: "fretik-workflow-system", url: UNIFIED_TEMPLATE_URL },
   subAgent: { name: "fretik-chatbot-sub-agent", url: SUB_AGENT_TEMPLATE_URL },
+  pageBuilder: {
+    name: "fretik-page-builder",
+    url: PAGE_BUILDER_TEMPLATE_URL,
+  },
 } as const;
 
 /**
@@ -133,6 +141,7 @@ const WORKFLOW_PROMPT_FALLBACK = resolveAgentBlocks(
   "workflow",
 );
 const SUB_AGENT_FALLBACK = await Bun.file(SUB_AGENT_TEMPLATE_URL).text();
+const PAGE_BUILDER_FALLBACK = await Bun.file(PAGE_BUILDER_TEMPLATE_URL).text();
 
 /**
  * Sub-agent system prompt. Managed in Langfuse (label per environment),
@@ -148,6 +157,23 @@ export const buildSubAgentSystemPrompt = async (
   const { text, promptRef } = await fetchManagedPrompt(
     MANAGED_PROMPTS.subAgent.name,
     SUB_AGENT_FALLBACK,
+  );
+  ctx.langfusePrompt = promptRef;
+  return text.replace(HTML_COMMENT_RE, "").trim();
+};
+
+/**
+ * Page-builder system prompt. Same shape as the sub-agent's — static text,
+ * Langfuse-managed, `.md` fallback — and separate from it on purpose: this
+ * agent's value is an ORDERED pipeline (expand → probe → brief → component
+ * APIs → build → review), which is exactly what a shared prompt cannot carry.
+ */
+export const buildPageBuilderSystemPrompt = async (
+  ctx: AgentRuntimeContext,
+): Promise<string> => {
+  const { text, promptRef } = await fetchManagedPrompt(
+    MANAGED_PROMPTS.pageBuilder.name,
+    PAGE_BUILDER_FALLBACK,
   );
   ctx.langfusePrompt = promptRef;
   return text.replace(HTML_COMMENT_RE, "").trim();

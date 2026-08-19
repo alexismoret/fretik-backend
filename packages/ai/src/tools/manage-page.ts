@@ -7,6 +7,7 @@ import { parseApiError } from "@fretik/shared/schemas/errors";
 import {
   EMPTY_PAGE_DEFINITION,
   PAGE_LIMITS,
+  PageBriefSchema,
   PageCodeEditsSchema,
   PageDatasetSchema,
   PageOperationSchema,
@@ -25,6 +26,7 @@ import {
   publishPage,
   unpublishPage,
 } from "@fretik/shared/services/pages/publish";
+import { renderPage } from "@fretik/shared/services/pages/render/render-page";
 import { getPage, listPages } from "@fretik/shared/services/pages/retrieve";
 import { updatePage } from "@fretik/shared/services/pages/update";
 import type { PageRequester } from "@fretik/shared/services/pages/visibility";
@@ -38,8 +40,20 @@ import {
   type ToolErrorOutput,
 } from "../lib/tool-error-codes";
 import {
+  SHIP_SCORE,
+  evaluatePageDesign,
+} from "../services/page-review/evaluate";
+import { gatePageRender } from "../services/page-review/gate";
+import {
+  MAX_PAGE_REVIEW_ITERATIONS,
+  bumpPageReviewIteration,
+  listComponentsRead,
+  recordComponentsRead,
+} from "../services/page-review/page-session-store";
+import {
   MAX_COMPONENT_DOCS,
   listComponentNames,
+  listContractHeavy,
   readComponentDocs,
 } from "./page-component-docs";
 
@@ -52,8 +66,6 @@ const truncateForListing = (text: string): string =>
 
 /** Warnings surfaced per call — past this the list stops teaching anything. */
 const MAX_WARNINGS_RETURNED = 25;
-/** Polish is taste. Past a handful it stops being actionable in the turn. */
-const MAX_POLISH_RETURNED = 10;
 /** Runtime errors surfaced per call — the self-heal feed's readable tail. */
 const MAX_RUNTIME_ERRORS_RETURNED = 5;
 
@@ -67,8 +79,46 @@ const distinctWarnings = (warnings: string[]): string[] => [
   ...new Set(warnings),
 ];
 
-const mergePolish = (...lists: string[][]): string[] =>
-  [...new Set(lists.flat())].slice(0, MAX_POLISH_RETURNED);
+/** `<UModal`, `<u-modal`, `</USlideover>` — every Nuxt UI tag in a template. */
+const USED_COMPONENT_RE = /<\/?[uU][A-Z-][A-Za-z0-9-]*/g;
+
+const componentsUsedIn = (source: string): string[] => [
+  ...new Set(
+    [...source.matchAll(USED_COMPONENT_RE)].map((match) =>
+      match[0].replace(/^<\/?/, ""),
+    ),
+  ),
+];
+
+/**
+ * Name the components this page places by hand without ever having read their
+ * API. Not a refusal — compile stays the only write gate — but the omission
+ * stops being invisible, and the next `review` can be read against it.
+ *
+ * This exists because documenting the rule did not work. The skill says to call
+ * `components` before writing a template; two shipped pages skipped it and both
+ * failed the same way, on a slot placed by intuition. Nuxt UI does not complain
+ * — it renders something plausible — so nothing downstream could catch it.
+ */
+const unreadComponentWarnings = async (
+  source: string,
+  conversationId: string | undefined,
+): Promise<string[]> => {
+  // No conversation, nothing to have remembered: warning about everything
+  // would only teach the agent that this channel is noise.
+  if (!conversationId) return [];
+  const heavy = await listContractHeavy(componentsUsedIn(source));
+  if (heavy.length === 0) return [];
+  const read = await listComponentsRead(conversationId);
+  const unread = heavy.filter((name) => !read.has(name));
+  if (unread.length === 0) return [];
+  return [
+    `Placed without reading their API: ${unread.join(", ")}. These components expect their parts in NAMED slots — put content in the wrong one and it renders somewhere else, or not at all, with no error. Call { action: "components", components: [${unread
+      .slice(0, MAX_COMPONENT_DOCS)
+      .map((name) => `"${name}"`)
+      .join(", ")}] } and check each one you used.`,
+  ];
+};
 
 /**
  * Accept a nested object that arrived JSON-ENCODED.
@@ -95,6 +145,9 @@ const jsonTolerant = <TSchema extends z.ZodType>(schema: TSchema) =>
  * KEEP their stored value on update — send a section to replace it whole.
  */
 const definitionSectionsSchema = z.object({
+  brief: PageBriefSchema.optional().describe(
+    "What the page is for and how it should look. Write it BEFORE the code — `get` returns it to every later turn as the spec to build against, so it outlives the conversation that produced it.",
+  ),
   variables: z
     .array(PageVariableSchema)
     .max(PAGE_LIMITS.maxVariables)
@@ -121,6 +174,9 @@ const assembleDefinition = (
   sections: DefinitionSections | undefined,
 ): PageDefinition => ({
   version: 3,
+  ...((sections?.brief ?? base.brief)
+    ? { brief: sections?.brief ?? base.brief }
+    : {}),
   variables: sections?.variables ?? base.variables,
   datasets: sections?.datasets ?? base.datasets,
   operations: sections?.operations ?? base.operations,
@@ -231,6 +287,10 @@ const agentPageView = (page: PageResponse) => ({
   url: `/pages/${page.id}`,
   publicUrl: page.publicUrl,
   definition: {
+    // First, because it is what the rest is answerable to: a later turn edits
+    // the page against its own brief rather than against a chat history
+    // compaction may already have dropped.
+    ...(page.definition.brief ? { brief: page.definition.brief } : {}),
     variables: page.definition.variables,
     datasets: page.definition.datasets,
     operations: page.definition.operations,
@@ -297,17 +357,18 @@ const PAGE_ENVIRONMENT_GUIDE = [
 export const createManagePageTool = () =>
   tool({
     description: [
-      "Build and manage pages — live dashboards, directories and mini-apps the team opens in the app, written as real Vue code over the team's data. A page stores CODE plus a data contract, not a snapshot: datasets re-query on every view, so the numbers are never stale. Deciding WHETHER a page is the right feature (vs a workflow, an object type, or a one-off file) is `skills/platform-guide/SKILL.md` territory. Read `skills/building-pages/SKILL.md` BEFORE writing one — design doctrine and worked patterns live there, not here.",
+      "Read, edit and publish pages — live dashboards, directories and mini-apps the team opens in the app, written as real Vue code over the team's data. A page stores CODE plus a data contract, not a snapshot: datasets re-query on every view, so the numbers are never stale. Building or redesigning one is `buildPage`'s job, not yours: it runs a specialist that probes the data, reads the component APIs and renders the result in a browser before handing it back. Come here to read a page, make one targeted edit, or publish. Deciding WHETHER a page is the right feature (vs a workflow, an object type, or a one-off file) is `skills/platform-guide/SKILL.md` territory. Read `skills/building-pages/SKILL.md` BEFORE writing one — design doctrine and worked patterns live there, not here.",
       "",
       "- get_guide: the runtime contract (allowed imports, the fretik bridge API, sandbox rules, styling tokens) + the dataset/variable/operation grammar. Read it before your FIRST page in a conversation.",
-      "- components: the real Nuxt UI API — every prop, slot and variant — for up to 6 components at a time, generated from the library's own docs. Ask for the ones your page will actually use, before writing the template: guessed props are silently dropped and a component that is not registered renders as nothing. The skill says WHICH component fits; this says what it accepts.",
+      "- components: the real Nuxt UI API — every prop, slot and variant — for up to 6 components at a time, generated from the library's own docs. Ask for the ones your page will actually use, before writing the template: guessed props are silently dropped, and content put in the wrong named slot renders somewhere else with no error. What you read here is remembered for the conversation, and a write that places a named-slot component you never read says so in `warnings`. The skill says WHICH component fits; this says what it accepts.",
       "- dry_run: execute a definition WITHOUT saving — runs the datasets, compiles the code. Returns per-dataset samples (row count, real field names, one real row, distinct groups): every question you would otherwise pay a querySql round trip for. A definition without `code` is a pure DATA probe.",
-      "- create: name + definition { variables?, datasets?, operations?, theme?, code? } (+ icon, color, description, scope team|private). The tool stamps the version and fills defaults. Omit `code` to open a data-first draft, then write it via update.",
+      "- create: name + definition { brief?, variables?, datasets?, operations?, theme?, code? } (+ icon, color, description, scope team|private). The tool stamps the version and fills defaults. Omit `code` to open a data-first draft, then write it via update.",
       "- update: pageId + any field. `definition` sections REPLACE whole; omitted sections keep their stored value (sending only `{ code: { source } }` rewrites the code and touches nothing else). For small code changes send `edits`: [{ oldString, newString, replaceAll? }] — exact-match-once against the stored source, then recompiled. `get` first when unsure of the current source.",
+      "- review: pageId — RENDER the saved page in a browser and report what using it is like. Three captures (desktop, mobile, and the same page with every dataset emptied), a scripted click pass, then a design critique against `skills/building-pages/references/review-rubric.md`. `blocking` is MEASURED, not judged — an overlay that opens empty, a target that does nothing when clicked, sideways scroll, a blank empty state — and it fails a page the critique liked. Fix those first, apply `findings` with `edits`, review again. `elevations` is the other list — not what is broken, what would make the page better — and it arrives even on a passing verdict: a round left after a page ships is spent there. Three reviews per page, then hand it over with the last elevations as what you would do next.",
       "- get / list: one page's full source + data contract (+ its recent runtime errors — fix those when present) / the team's pages.",
       "- publish / unpublish: mint or revoke a public URL anyone can open without an account. publish FREEZES the current page for that URL while the DATA stays live. It exposes everything the owning team can see, so get the user's explicit agreement first, and hand back the returned publicUrl. A page that reads or writes a connected app is refused — an anonymous visitor cannot spend the team's credentials.",
       "",
-      "dry_run, create and update all EXECUTE the datasets and COMPILE the code. `warnings` is broken — a compile error, a wrong field key, a dataset with no rows; fix it in the same turn rather than reporting a page you have not seen work. `polish` reads as unfinished; treat it as the difference between a page that works and a page someone is glad to open. After a user has the page open, `get` returns its recent RUNTIME errors — what the browser saw; fix and update.",
+      "dry_run, create and update all EXECUTE the datasets and COMPILE the code, and report what they find in `warnings` — a compile error, a wrong field key, a dataset with no rows, a component placed without reading its API. Fix them in the same turn rather than reporting a page you have not seen work. Compiling is not working, though: `review` is the only action here that has SEEN the page, so a page is finished when a review says so, not when the write succeeds. After a user has the page open, `get` returns its recent RUNTIME errors — what the browser saw; fix and update.",
       "",
       "Call describeObjectType for field keys, types and option values BEFORE writing an objects dataset; guessing keys is the main way a page comes back empty.",
     ].join("\n"),
@@ -320,6 +381,7 @@ export const createManagePageTool = () =>
         "get",
         "list",
         "update",
+        "review",
         "publish",
         "unpublish",
       ]),
@@ -389,6 +451,10 @@ export const createManagePageTool = () =>
                 `The page runtime registers: ${(await listComponentNames()).join(", ")}.`,
               );
             }
+            await recordComponentsRead(
+              ctx.conversationId,
+              result.docs.map((doc) => doc.component),
+            );
             return {
               docs: result.docs,
               ...(result.unknown.length > 0
@@ -423,7 +489,6 @@ export const createManagePageTool = () =>
                 0,
                 MAX_WARNINGS_RETURNED,
               ),
-              polish: run.polish.slice(0, MAX_POLISH_RETURNED),
             };
           }
 
@@ -478,8 +543,11 @@ export const createManagePageTool = () =>
                 ...color.warnings,
                 ...created.warnings,
                 ...run.warnings,
+                ...(await unreadComponentWarnings(
+                  created.page.definition.code.source,
+                  ctx.conversationId,
+                )),
               ]).slice(0, MAX_WARNINGS_RETURNED),
-              polish: mergePolish(created.polish, run.polish),
               ...(drafting ? { next: DRAFT_NEXT_STEP(created.page.id) } : {}),
             };
           }
@@ -594,7 +662,7 @@ export const createManagePageTool = () =>
                   assumeSanitized: true,
                   assumeCompiled: true,
                 })
-              : { samples: {}, warnings: [], polish: [] };
+              : { samples: {}, warnings: [] };
 
             return {
               pageId: updated.page.id,
@@ -605,11 +673,131 @@ export const createManagePageTool = () =>
                 ...color.warnings,
                 ...updated.warnings,
                 ...run.warnings,
+                ...(definition
+                  ? await unreadComponentWarnings(
+                      updated.page.definition.code.source,
+                      ctx.conversationId,
+                    )
+                  : []),
               ]).slice(0, MAX_WARNINGS_RETURNED),
-              polish: mergePolish(updated.polish, run.polish),
               ...(updated.page.definition.code.source.trim().length === 0
                 ? { next: DRAFT_NEXT_STEP(updated.page.id) }
                 : {}),
+            };
+          }
+
+          case "review": {
+            if (!input.pageId) {
+              return toolError(
+                TOOL_ERROR_CODES.INVALID_ARGS,
+                "review needs a pageId.",
+                "Call { action: 'list' } to find it.",
+              );
+            }
+            const page = await getPage({
+              pageId: input.pageId,
+              teamId,
+              requester,
+            });
+            const compiled = page.definition.code.compiled;
+            if (!compiled) {
+              return toolError(
+                TOOL_ERROR_CODES.INVALID_ARGS,
+                "This page has no compiled code — there is nothing to render.",
+                `Send the SFC with update { pageId: "${page.id}", definition: { code: { source } } }, then review.`,
+              );
+            }
+
+            const render = await renderPage({
+              compiled,
+              definition: page.definition,
+              teamId,
+              userId: userId ?? null,
+              pageName: page.name,
+            });
+
+            // No browser reachable is OUR failure, not the page's — say so
+            // plainly rather than reporting a page as unreviewable.
+            if (render.degraded !== undefined) {
+              return {
+                pageId: page.id,
+                review: "unavailable",
+                reason: render.degraded,
+                next: "Nobody can look at this page from here. Fall back to the self-critique in skills/building-pages/references/design.md, and tell the user it was not visually verified.",
+              };
+            }
+
+            const gate = gatePageRender(render);
+            const iteration = await bumpPageReviewIteration(
+              ctx.conversationId,
+              page.id,
+            );
+            const overBudget = iteration > MAX_PAGE_REVIEW_ITERATIONS;
+
+            // The critique is skipped when there is nothing to look at, and
+            // past the budget — where its score has stopped moving and the
+            // gate is the only thing still worth measuring.
+            const critique =
+              render.mounted && !overBudget
+                ? await evaluatePageDesign({
+                    pageName: page.name,
+                    brief: page.definition.brief,
+                    shots: render.shots,
+                    known: gate.blocking,
+                  })
+                : null;
+
+            const verdict =
+              critique?.ok !== true
+                ? "unverified"
+                : gate.pass && critique.critique.score >= SHIP_SCORE
+                  ? "ship"
+                  : "revise";
+
+            const elevations =
+              critique?.ok === true ? critique.critique.elevations : [];
+            const roundsLeft = MAX_PAGE_REVIEW_ITERATIONS - iteration;
+
+            const next = !render.mounted
+              ? "The page never mounted. Read its runtime errors with { action: 'get' }, fix the crash, and review again — nothing else about it can be judged until it renders."
+              : overBudget
+                ? "The review budget is spent. Hand the page to the user, and state what you would do next in the words of the last `elevations` you received rather than a vague 'still perfectible' — that is something they can decide about."
+                : !gate.pass
+                  ? "Fix every line of `blocking` first: those are measured, not opinions. Use update { edits } for each one, then review again."
+                  : verdict === "ship"
+                    ? // A passing verdict used to end the loop, which meant a
+                      // working page never spent its remaining budget on being
+                      // better than working. It ends the DEFECT loop; the
+                      // elevations are what the rest of the budget is for.
+                      elevations.length > 0 && roundsLeft > 0
+                      ? `Nothing blocks this page. You have ${roundsLeft.toString()} round(s) left — spend them on \`elevations\`, one update { edits } each, then review again. Stop when they come back empty.`
+                      : "Nothing blocks this page. Hand back its url, and pass on any `elevations` as what you would do next."
+                    : `Apply the findings with update { edits } — one edit per finding, not a rewrite — then review again (${(iteration + 1).toString()} of ${MAX_PAGE_REVIEW_ITERATIONS.toString()}).`;
+
+            return {
+              pageId: page.id,
+              url: `/pages/${page.id}`,
+              iteration: `${iteration.toString()}/${MAX_PAGE_REVIEW_ITERATIONS.toString()}`,
+              gate: gate.pass ? "pass" : "fail",
+              verdict,
+              ...(gate.blocking.length > 0 ? { blocking: gate.blocking } : {}),
+              ...(gate.observations.length > 0
+                ? { observed: gate.observations }
+                : {}),
+              ...(critique?.ok === true
+                ? {
+                    score: critique.critique.score,
+                    scores: critique.critique.scores,
+                    summary: critique.critique.summary,
+                    ...(critique.critique.findings.length > 0
+                      ? { findings: critique.critique.findings }
+                      : {}),
+                    ...(elevations.length > 0 ? { elevations } : {}),
+                  }
+                : critique?.ok === false
+                  ? { critiqueUnavailable: critique.reason }
+                  : {}),
+              next,
             };
           }
 

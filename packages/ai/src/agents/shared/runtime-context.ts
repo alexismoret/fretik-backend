@@ -258,6 +258,23 @@ export interface AgentRuntimeContext {
    * catalog default.
    */
   toolPolicies?: Record<string, ToolPolicyLevel>;
+  /**
+   * Registry profile the page BUILDER should run on for this turn, when
+   * something asked for one explicitly (the eval header). Undefined — the
+   * normal case — means the `page-build` role binding decides.
+   *
+   * It exists because until 2026-08-18 there was no way to point the builder
+   * anywhere: `X-Model-Profile-Key` repointed the parent turn only, so a
+   * candidate run measured the model that DECIDES to build a page while the
+   * one that writes it stayed on the code default.
+   */
+  pageBuildProfileKey?: string;
+  /**
+   * Thinking depth the turn resolved, carried so a delegate can be steered to
+   * the same depth. The parent applies its own level to its wire call; without
+   * this a sub-agent silently ran at its profile's default instead.
+   */
+  reasoningLevel?: string;
 }
 
 /**

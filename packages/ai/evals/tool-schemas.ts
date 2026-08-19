@@ -5,9 +5,9 @@
  * Builds `{ registryName → inputSchema }` from the SAME factories the
  * chatbot registers (`buildCoreTools` / `buildDomainTools`), so the
  * names match the `toolName`s observed on the SSE stream and the
- * schemas can never drift from production. `dispatchAgent`'s schema is
- * imported directly (its factory needs the sub-agent sets; the schema
- * is hoisted precisely for this consumer).
+ * schemas can never drift from production. `dispatchAgent` and `buildPage`
+ * import their schemas directly (their factories need a built agent set; the
+ * schemas are hoisted precisely for this consumer).
  *
  * Deliberately does NOT import `src/agents/chatbot/index.ts` — that
  * module builds full agent sets at init. The tool factories alone are
@@ -15,6 +15,7 @@
  */
 
 import { buildCoreTools, buildDomainTools } from "../src/agents/chatbot/tools";
+import { buildPageInputSchema } from "../src/tools/build-page";
 import { dispatchAgentInputSchema } from "../src/tools/dispatch-agent";
 import type { ToolCallTrace } from "./types";
 
@@ -50,6 +51,9 @@ const buildSchemaMap = (): Map<string, ZodLike> => {
   register(buildCoreTools(domainTools));
   register(domainTools);
   map.set("dispatchAgent", dispatchAgentInputSchema);
+  // Same reason as `dispatchAgent`: its factory needs a built agent set, so
+  // the schema is hoisted for this consumer.
+  map.set("buildPage", buildPageInputSchema);
   return map;
 };
 

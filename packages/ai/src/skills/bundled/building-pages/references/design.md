@@ -58,7 +58,7 @@ This is where most generated screens fail: they render values correctly and mean
 - **Structure should encode something true.** Numbered markers, eyebrows, dividers and groupings are claims about the content. Number things only when order matters; group things only when the grouping is real. Decorative structure is worse than none.
 - **Sort and group by what the reader acts on**, not by what the database returned first.
 - **Show the shape of the data, not just its rows.** A distribution, a trend or a share communicates in one glance what fifty rows do not — but only when the rows behind it stay reachable.
-- **Truncate honestly.** Long values get `truncate` plus the full value in a tooltip or the detail panel, never a silently cut string.
+- **Nothing is cut off silently.** A value a person is not allowed to finish reading is a value you did not show.
 
 ## Colour
 
@@ -68,6 +68,7 @@ Two palettes, and the difference decides everything:
 - **Surfaces are a hierarchy, not a palette.** `bg-default` is the page, and anything sitting ON the page shares it — a card is set apart by its border and its spacing, not by a fill. The raised tokens are a claim that something floats above the page or is currently active: an overlay, a hover, a selected row, one deliberately lifted unit. Give every container the same raised grey and nothing is above anything — you get a field of grey slabs, which is the most recognisable signature of a generated screen. Where a region really must lift, tint rather than fill (`bg-elevated/40`), and keep one level of elevation per screen.
 - **The data brings its own colours, and they are meant to be used.** Categories, statuses, types and owners carry a colour and often an icon in the schema, and the full palette is live in the runtime — bound as CSS variables, since a class name cannot be assembled at runtime (`references/data.md` § Colour and icons). A page that renders every category in grey has thrown away the product's own visual language and reads as a report, not a screen. Reserve neutral for values that genuinely have no colour.
 - **One value, one colour, everywhere on the page** — cell, chart segment, legend, filter chip. A category that changes colour between two regions of the same screen is worse than no colour at all.
+- **One dimension per row leads; the others are text.** A row carries several — status, priority, team, owner — and colouring them all makes them compete until none of them reads: a line of pale badges is a wash the eye skims, and the reader is left hunting for the one that mattered. Pick the dimension the page is FOR, give it the badge and the schema's colour, and set the rest in plain text. This is a question of rank, not of quantity: the answer to a washed-out row is never a louder palette, it is one fewer thing asking to be looked at.
 - **`primary` is scarce** — the one action that matters, and at most one figure. It is the app's accent, not a category colour; never use it to mean a data value.
 - **Never let colour carry meaning alone.** Pair it with an icon, a label or a position.
 
@@ -80,12 +81,12 @@ Restraint reads as quality; scattered animation reads as generated. Prefer one o
 A page that only displays is a screenshot. The gap between "it shows the data" and "the team works in it" is almost entirely made of small, cheap affordances — and a page missing them feels thin no matter how well it is laid out.
 
 - **Detail on demand.** Anything summarised somewhere should be openable in full somewhere else, without leaving the page.
-- **The target is the whole item.** When clicking something opens it, the row — the card, the list item — takes the click, not a word inside it. A small live target inside a large inert surface is both slow to hit and undiscoverable: nothing tells the reader which few pixels respond. Give the container the click, a hover state and a pointer cursor, and let the inner controls that do something _else_ stop the event.
+- **The target is the whole item**, not a word inside it. A small live target in a large inert surface is slow to hit and undiscoverable — nothing tells the reader which few pixels respond.
 - **Controls over every dimension worth slicing.** One filter on a subject with eight meaningful attributes is an unfinished page; so is fifteen filters. Choose the ones a person would actually use to narrow their work, and give each one a visible current state and a way back to "all".
 - **At least one verb.** Something must be doable here — an action on a record, a form to add one, a copy, an export, a link into the rest of the product. A page with no verb sends the user back to chat to do the actual work.
 - **Ordering under the reader's control** where more than a handful of items are shown.
 - **Visible freshness** — a way to refresh, and a refetch that dims rather than blanks.
-- **Every state designed** — loading, populated, empty, failed. An empty box and a raw error string are both unfinished.
+- **The empty and failed states are designed too.** An empty box and a raw error string are both unfinished; the four outcomes themselves are in `references/data.md`.
 - **Depth where the subject has depth.** If the data supports more than one useful view, build more than one and let the user switch, rather than picking one and discarding the rest.
 
 Ambition is part of the brief: when in doubt between shipping one more real capability and shipping one more decorative block, ship the capability.
@@ -100,19 +101,13 @@ Words are design material; write them with the same care as spacing.
 - An empty state is an invitation to act, not a shrug.
 - Sentence case, no filler, no exclamation marks. Each element does one job: a label labels, an example demonstrates.
 
-## Self-critique
+## Before you save
 
-You never see the rendered page — no screenshot, no browser, and nobody downstream will fix it. This pass replaces your eyes. Run it against your own source before saving.
+`review` will look at the page for you — composition, spacing, containers, colour, accents, overflow, dead targets and the empty state are all things it renders, measures or judges, so they are not worth a checklist here. What it CANNOT do is read your source or know the schema, and that is exactly what this pass is for. Run it against your own code, before the first review, or you will spend review rounds on things you could have seen.
 
-1. **Template test** — would this exact layout work for a completely different dataset? Then it encodes nothing about this one. Rework the top band.
-2. **Fold test** — list what is visible in the first screen. Is the user's actual question answered there?
-3. **Raw-value hunt** — find every interpolation of a record field in your template. Each must pass through a label, a formatter or a component. Raw keys, objects and ISO timestamps reaching a user are bugs.
-4. **Meaning audit** — for each figure on the page, name its comparison. Any figure without one either gets one or gets demoted.
-5. **Container audit** — count your bordered containers, then count the distinct fills across them. Delete the ones that group nothing; if they all carry the same raised grey, drop the fill and keep the border.
-6. **Orphaned-space check** — for every region, is its size set by its own content or by a neighbour? Anything sized by a sibling gets rebalanced, deepened or merged.
-7. **Four states** — for every dataset, find loading, populated, empty and failed in your source.
-8. **Schema test** — reread the page assuming the data has moved: a category that was empty now dominates, a field that was uniform now varies. Anything that would look broken or would silently disappear was built from today's rows instead of from the schema.
-9. **Colour test** — how many of the page's coloured elements take their colour from the data? If the answer is none, the schema's own palette is being wasted.
-10. **Overflow test** — for every region, name what happens when its content exceeds it, on BOTH axes. Growing without limit, truncating silently and a bare "+N" are three dead ends.
-11. **Verb check** — name one thing the user can do here, and the exact element they click to do it. If there is none, add detail-on-demand at minimum; if the target is smaller than the thing it opens, move it up to the container.
-12. **Accent count** — more than two `primary` elements means the page has no focus.
+1. **Template test** — would this exact layout work over a completely different dataset? Then it encodes nothing about this one. Rework the top band.
+2. **Schema test** — reread the page assuming the data has moved: a category that was empty now dominates, a field that was uniform now varies. Anything that would look broken or silently disappear was built from today's rows instead of from the schema. This is the check nothing downstream can run for you.
+3. **Raw-value hunt** — find every interpolation of a record field. Each must pass through a label, a formatter or a component. Raw keys, objects and ISO timestamps reaching a user are bugs.
+4. **Meaning audit** — for each figure, name its comparison. Any figure without one either gets one or gets demoted to a line of text.
+5. **Loading and failure** — the review renders the EMPTY state; it never sees the other two. Find `loading` and a failed dataset in your source, for every dataset.
+6. **Verb check** — name one thing the user can do here and the exact element they click to do it. If there is none, add detail-on-demand at minimum; if the target is smaller than the thing it opens, move it up to the container.

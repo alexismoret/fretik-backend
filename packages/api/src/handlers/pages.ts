@@ -484,6 +484,7 @@ pageRoutes.openapi(runRoute, async (c) => {
 
   const result = await runPageOperation({
     pageId: id,
+    organizationId: team.organizationId,
     teamId: team.id,
     userId: user.id,
     requester,

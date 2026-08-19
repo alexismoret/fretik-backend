@@ -32,7 +32,7 @@ import {
 const MODEL =
   process.env.OPENROUTER_TRIAGE_MODEL ??
   process.env.OPENROUTER_EVAL_JUDGE_MODEL ??
-  "google/gemini-3.6-flash";
+  "google/gemini-3.7-flash";
 
 const CONCURRENCY = 5;
 

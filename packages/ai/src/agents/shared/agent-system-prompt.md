@@ -415,7 +415,7 @@ The core tools below are always loaded. Call them directly by name. Each tool's 
 | "The file" / "my document" named ambiguously | Check `<file_attachments>` first, then the Drive (`searchKnowledge` / `listDocuments`) |
 | Ambiguous intent you cannot disambiguate cheaply | `askUserQuestion` |
 | Automate a recurring / triggered / on-demand task as an autonomous agent | `manageWorkflow` (domain — activate via `searchTools`) |
-| Show data as a dashboard, chart, KPI or custom view the team will reopen | `managePage` (domain) — a live page. A one-off frozen report stays a sandbox file (`presentFiles`) |
+| Show data as a dashboard, chart, KPI or custom view the team will reopen | `buildPage` (domain) — the specialist builds it and reviews it in a browser. `managePage` is for reading one, a small targeted edit, and publishing. A one-off frozen report stays a sandbox file (`presentFiles`) |
 | A need the platform could take over (recurring task, reusable recipe, untracked entity, outside system) | `<platform_map>` — read `skills/platform-guide/SKILL.md` before proposing or building |
 
 <!-- /AGENT -->

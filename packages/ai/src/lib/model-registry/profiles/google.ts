@@ -8,7 +8,7 @@ import { NATIVE_FILE_MAX_BYTES, type ModelProfile } from "../types";
  *   `text,image,video,file,audio` upstream, so all four visual modalities are
  *   activated natively. `audio` stays off across the whole registry: no call
  *   site produces audio parts yet, so it would be untested surface.
- * - **Reasoning is MANDATORY on 3.6 Flash and 3.5 Flash-Lite** — never send
+ * - **Reasoning is MANDATORY on 3.7 Flash and 3.5 Flash-Lite** — never send
  *   `none`, OpenRouter rejects it. 3.1 Flash-Lite and 3.1 Pro allow disabling.
  * - **ZDR routes via Google/Vertex.** Vertex is picky about parameters: the
  *   `bare` role envelope deliberately drops `require_parameters` because
@@ -71,12 +71,12 @@ export const GOOGLE_PROFILES: Record<string, ModelProfile> = {
       disabledReason: "cost",
     },
   },
-  "gemini-3.6-flash": {
-    key: "gemini-3.6-flash",
+  "gemini-3.7-flash": {
+    key: "gemini-3.7-flash",
     family: "google",
     tiers: ["flagship", "workhorse"],
     catalog: {
-      id: "google/gemini-3.6-flash",
+      id: "google/gemini-3.7-flash",
       contextLength: 1_048_576,
       maxCompletionTokens: 65_536,
       inputModalities: ["text", "image", "video", "file", "audio"],
@@ -92,18 +92,33 @@ export const GOOGLE_PROFILES: Record<string, ModelProfile> = {
       ],
       reasoning: {
         mandatory: true,
-        supportedEfforts: ["high", "medium", "low", "minimal"],
+        supportedEfforts: ["high", "medium", "low"],
         defaultEffort: "medium",
       },
     },
     assessment: {
       costClass: "standard",
+      // Still the SETTLED price, not the promotion — the rule that a binding
+      // chosen against promotional pricing gets re-litigated the month the
+      // promotion ends has not changed. What changed is the settled price
+      // itself: the announced post-promotion rate is $0.75/$3.75, half what
+      // this block used to carry (an estimate anchored on 3.6 Flash's own
+      // settling, which turned out high). The live headline on 2026-08-18 is
+      // $0.375/$1.875/$0.0375 — still the launch promotion, still deliberately
+      // NOT recorded here.
+      //
+      // REVIEW IN DECEMBER 2026: if the promotion ends above $3.75 output, this
+      // block is what a binding decision was made against, so it has to move
+      // before the binding does. `bun run models:check --prices` will keep
+      // flagging DRIFT against the promotional endpoint until then, which is
+      // expected and not a bug — the live value overrides this at runtime; this
+      // is the fallback and the number bindings are argued from.
       pricing: {
-        inputPerMTok: 1.5,
-        outputPerMTok: 7.5,
-        cacheReadPerMTok: 0.15,
+        inputPerMTok: 0.75,
+        outputPerMTok: 3.75,
+        cacheReadPerMTok: 0.075,
       },
-      aaSlug: "gemini-3-6-flash",
+      aaSlug: "gemini-3-7-flash",
       verbosity: { outputTokensPerTask: 23_307, reasoningToAnswerRatio: 1.21 },
       nativeInput: {
         image: true,
@@ -120,12 +135,12 @@ export const GOOGLE_PROFILES: Record<string, ModelProfile> = {
       cache: { strategy: "implicit" },
       reasoning: { style: "effort", defaultLevel: "low" },
       provider: { requireParameters: true, zdr: true },
-      // Disabled on cost (4.06× an M3 turn), NOT on quality: the 2026-06-16
-      // gate run (d82e121d) passed every correctness capability and beat M3 on
-      // latency, failing only zombie-rate by 0.03. Still serves
-      // `transform-fallback` — `ROLE_BINDINGS` resolves profiles directly and
-      // bypasses `isSelectableForTier`, so `enabled: false` blocks user
-      // selection without touching internal roles.
+      // Disabled on cost at the settled price, NOT on quality — it replaced
+      // 3.6 Flash on 2026-08-15, which carried the same ruling after passing
+      // every correctness capability of the 2026-06-16 gate run (d82e121d).
+      // Still serves `transform-fallback` and `page-review`: `ROLE_BINDINGS`
+      // resolves profiles directly and bypasses `isSelectableForTier`, so
+      // `enabled: false` blocks user selection without touching internal roles.
       enabled: false,
       disabledReason: "cost",
       evalGate: { status: "pending" },

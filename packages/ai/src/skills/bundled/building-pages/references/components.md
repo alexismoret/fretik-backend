@@ -36,7 +36,7 @@ Two rules that decide most of it:
 | Nothing to show               | `UEmpty`                                 | Always. Title says what is missing, description says what to do           |
 | Not loaded yet                | `USkeleton`                              | Shaped like the content it replaces, never a spinner over the whole page  |
 
-Every one of these renders its items through slots, so a value is never stuck as plain text — in `UTable` it is `#<column>-cell` with `row.original`, elsewhere it is the item slot. Headers and labels come from the dataset's own `fields[].label`, colours and icons from its `options` (`references/data.md`). `@tanstack/vue-table` is not importable: sort and paginate through the data contract, not the table's own row models.
+Every one of these renders its items through slots, so a value is never stuck as plain text — in `UTable` it is `#<column>-cell` with `row.original`, elsewhere it is the item slot. Headers and labels come from the dataset's own `fields[].label`, colours and icons from its `options` (`references/data.md`). Sorting and paging go through the data contract, never through a table's own row models.
 
 ## Techniques
 
@@ -48,7 +48,7 @@ These are the moves that separate a working screen from a rendered list. They ar
 
 **More items than fit on one line** → show the first few and put the rest one gesture away: a `UPopover` on hover, a `UTooltip` for plain text, a `UCollapsible` when it is a block. A bare `+4` that cannot be opened is a dead end.
 
-**A value that carries a state** → give it the data's own colour and icon as a badge, a chip or a leading dot, and keep that colour for the same value everywhere on the page — cells, charts, legends, filters.
+**A value that carries a state** → a badge, a chip or a leading dot, wearing the data's own colour and icon (`references/data.md` § Colour).
 
 **Secondary detail that would crowd the primary view** → progressive disclosure, chosen by how much there is: hover for a word or two (`UTooltip`), a `UPopover` for a small block, a `USlideover` for a whole record, a `UModal` only when the user must finish or cancel before anything else.
 
@@ -71,7 +71,7 @@ These are the moves that separate a working screen from a rendered list. They ar
 
 Three rules make it work rather than leak. **Every one of those calls returns a cleanup function** — keep it and call it when the element goes away, or a `v-for` that re-renders registers the same node repeatedly. **Registration needs the real DOM node**, so it happens in a template-ref callback or `onMounted`, never at setup time. And **the drop only reports intent** — you still perform the change: apply it optimistically, call the operation, and put the item back if the verdict is not `ok`.
 
-For "insert between two items" rather than "drop into a container", `attachClosestEdge` adds which edge the pointer is nearest to the drop data and `extractClosestEdge` reads it back on drop; `reorder({ list, startIndex, finishIndex })` does the array move. `references/patterns.md` § Board is a complete working one.
+For "insert between two items" rather than "drop into a container", `attachClosestEdge` adds which edge the pointer is nearest to the drop data and `extractClosestEdge` reads it back on drop; `reorder({ list, startIndex, finishIndex })` does the array move. `references/pattern-board.md` is a complete working one.
 
 **A destination the user will want** → make it a real link. Names, references and identifiers that exist somewhere else in the product should be clickable, not inert text.
 
@@ -113,6 +113,24 @@ Wrap every input in `UFormField` (label, description, error) and the set in `UFo
 | Search-and-jump                  | `UCommandPalette`                              |
 
 Destructive operations are confirmed by the app itself — never build your own confirm for those (`references/data.md`).
+
+**`UModal`, `USlideover` and `UDrawer` are one component with three animations, and their slots are a NESTING, not a list.** Reading them as nine peers is what has broken three shipped pages, each time silently — the page compiled, rendered, and was wrong.
+
+```vue
+<USlideover v-model:open="open" title="…" description="…">
+  <!-- default = the TRIGGER. It renders inline, on the page, always visible.
+       Omit it entirely when you open the panel from code. -->
+  <template #body>…</template>   <!-- the padded region. Your content goes HERE -->
+  <template #footer>…</template> <!-- the actions bar -->
+</USlideover>
+```
+
+- `default` is the trigger, never the content. A form placed there renders permanently in the page flow and the panel opens empty.
+- `content` replaces the **whole panel** — header, body and footer at once. Use it only when you are rebuilding all three; the moment you reach for it you own the padding, the title and the close button, and the usual symptom of using it by mistake is a panel whose content is flush against the edges.
+- `header` / `body` / `footer` are the padded parts. `title` / `description` / `actions` / `close` are pieces of the header, and `title` / `description` exist as props too — prefer the props.
+- `UPopover` follows the same rule with two slots: `default` is the trigger, `content` is the panel.
+
+The general form of the trap, which is worth carrying to any component: **a slot list tells you the names, never which one supersedes which.** When two slots could plausibly hold the same content, one of them is the container of the other — read the component's own example before choosing.
 
 ## Structure the page
 

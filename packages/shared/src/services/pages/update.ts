@@ -30,7 +30,7 @@ export const updatePage = async (params: {
   actingUserId: string;
   requester?: PageRequester;
   input: UpdatePageInput;
-}): Promise<{ page: PageResponse; warnings: string[]; polish: string[] }> => {
+}): Promise<{ page: PageResponse; warnings: string[] }> => {
   const input = UpdatePageSchema.parse(params.input);
 
   const existing = await db.query.pages.findFirst({
@@ -84,10 +84,6 @@ export const updatePage = async (params: {
   if (definition) {
     ensurePageDatasetIndexes({ definition });
   }
-  // Both channels — see `createPage` for why `polish` must not stop here.
-  return {
-    page: serializePage(row),
-    warnings: sanitized?.warnings ?? [],
-    polish: sanitized?.polish ?? [],
-  };
+  // Returned, not logged — see `createPage`.
+  return { page: serializePage(row), warnings: sanitized?.warnings ?? [] };
 };

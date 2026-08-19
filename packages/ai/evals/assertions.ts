@@ -184,6 +184,17 @@ const runOne = async (
     case "custom": {
       // `custom.fn` may be sync or async — `await` accepts both.
       const verdict = await assertion.fn(result, ctx);
+      // A graded verdict carries its own score; the message is kept whether it
+      // passed or not, because the number is what the baseline compares.
+      if (typeof verdict === "object") {
+        return {
+          type: "custom",
+          label: `custom: ${assertion.name}`,
+          passed: verdict.passed,
+          score: Math.min(1, Math.max(0, verdict.score)),
+          message: verdict.message,
+        };
+      }
       const passed = verdict === true;
       return {
         type: "custom",

@@ -111,6 +111,7 @@ const pageWith = (
 const run = (variables: Record<string, PageValue> = {}) =>
   runPageOperation({
     pageId: "page-1",
+    organizationId: "org-1",
     teamId: "team-1",
     userId: "user-1",
     operation: "create",
@@ -123,6 +124,7 @@ beforeEach(() => {
   calledWith = null;
   definition = pageWith([
     {
+      kind: "app",
       id: "create",
       providerKey: "acme-orders",
       action: "create_order",
@@ -174,6 +176,7 @@ describe("what a page may run", () => {
     destructive = true;
     definition = pageWith([
       {
+        kind: "app",
         id: "create",
         providerKey: "acme-orders",
         action: "create_order",
@@ -201,6 +204,7 @@ describe("the argument boundary", () => {
     definition = pageWith(
       [
         {
+          kind: "app",
           id: "create",
           providerKey: "acme-orders",
           action: "create_order",
@@ -226,6 +230,7 @@ describe("the argument boundary", () => {
     definition = pageWith(
       [
         {
+          kind: "app",
           id: "create",
           providerKey: "acme-orders",
           action: "create_order",
@@ -246,6 +251,7 @@ describe("the argument boundary", () => {
     definition = pageWith(
       [
         {
+          kind: "app",
           id: "create",
           providerKey: "acme-orders",
           action: "create_order",

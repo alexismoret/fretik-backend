@@ -119,3 +119,21 @@ synthetic ones.
   example's structure, don't describe it", and "an example output built from the example
   inputs is a worked answer" are properties of a PLAYBOOK, and the harness cannot author or
   execute one. They stay verified by replaying a real build-and-run conversation.
+
+- **`page-narrative-report` and `page-dry-run-is-the-probe`, removed 2026-08-16.** Cut when
+  the pages suite grew from 10 to 14 cases and every case in it now costs a real page build
+  (3-7 min, ~$0.12), so a case has to earn its slot rather than merely pass.
+
+  `page-narrative-report` asserted that a "write me a short report" ask produced a heading or
+  a paragraph and a table. Nothing else in the suite can fail that assertion without also
+  failing `page-dashboard-kpi-charts`, and no shipped defect ever looked like it — a floor of
+  "some prose exists" is not a quality gate, it is a smoke test of the compiler.
+
+  `page-dry-run-is-the-probe` measured the trajectory doctrine (probe with `dry_run`, not
+  `querySql`). Its subject MOVED: pages route to the `buildPage` sub-agent, whose tool calls
+  never reach the parent turn's SSE stream, so the assertion could only ever report "no SQL
+  where I can see". Keeping a check that cannot observe its own subject is worse than not
+  having it — it reads green for the wrong reason. Its structural half duplicated the
+  dashboard case. **To bring it back**, the harness needs to read a sub-agent's calls (the
+  `.page` Langfuse sub-trace, or a tool-trace channel on the invoke response); the doctrine
+  itself is meanwhile visible as cost-per-turn on the run.

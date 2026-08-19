@@ -433,7 +433,7 @@ export interface ModelAssessment {
    *
    * Note this gates SELECTION only. `ROLE_BINDINGS` resolves profiles
    * directly and bypasses `isSelectableForTier`, so a disabled profile can
-   * still serve an internal role (e.g. `gemini-3.6-flash` →
+   * still serve an internal role (e.g. `gemini-3.7-flash` →
    * `transform-fallback`).
    */
   enabled: boolean;
@@ -489,6 +489,8 @@ export type ModelRole =
   | "tool-repair"
   | "vision"
   | "vision-fallback"
+  | "page-review"
+  | "page-build"
   | "transform"
   | "transform-fallback";
 

@@ -96,6 +96,22 @@ export const collectDatasets = (
 };
 
 /**
+ * Operations — the WRITE half, and the only place a page's ability to change
+ * anything is recorded.
+ *
+ * Read from the definition rather than from the source on purpose: a template
+ * can render a status select on every row and change nothing, which looks
+ * identical to a working page until somebody reloads. What a page can do is
+ * what it declared.
+ */
+export const collectOperations = (
+  definition: unknown,
+): Record<string, unknown>[] => {
+  if (!isRecord(definition) || !Array.isArray(definition.operations)) return [];
+  return definition.operations.filter(isRecord);
+};
+
+/**
  * Whether the stored page would actually draw something.
  *
  * `collectNodes` counts elements; this asks the different question of whether

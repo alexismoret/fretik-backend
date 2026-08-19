@@ -28,6 +28,11 @@ export interface RunCaseOptions {
    * default `chat` binding.
    */
   modelProfileKey?: string;
+  /**
+   * Pin the PAGE BUILDER to this profile (`X-Page-Build-Profile-Key`). Distinct
+   * from `modelProfileKey`, which only ever reached the parent turn.
+   */
+  pageBuildProfileKey?: string;
 }
 
 const selectAssertions = (
@@ -77,6 +82,7 @@ export const runCase = async (
     }
     const invoke = await invokeChatbot(c.prompt, conversationId, {
       modelProfileKey: opts?.modelProfileKey,
+      pageBuildProfileKey: opts?.pageBuildProfileKey,
     });
     const assertions = await runAssertions(
       selectAssertions(c.assertions, opts),

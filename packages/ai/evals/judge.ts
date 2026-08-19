@@ -17,7 +17,7 @@
  * throws at import time when `OPENROUTER_CHAT_MODEL` / `_FALLBACK_MODEL`
  * are absent (production-chatbot contracts, not the judge's).
  *
- * Default model: `google/gemini-3.6-flash` via OpenRouter. A STRONG
+ * Default model: `google/gemini-3.7-flash` via OpenRouter. A STRONG
  * model from a DIFFERENT family than the production chatbot (MiniMax
  * M2.7) — avoids the self-enhancement bias where a same-family judge
  * favours outputs it would have produced. Cheap at eval scale. Override
@@ -33,7 +33,7 @@ import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import { generateText } from "ai";
 
 const DEFAULT_JUDGE_MODEL =
-  process.env.OPENROUTER_EVAL_JUDGE_MODEL ?? "google/gemini-3.6-flash";
+  process.env.OPENROUTER_EVAL_JUDGE_MODEL ?? "google/gemini-3.7-flash";
 
 const JUDGE_TIMEOUT_MS = 25_000;
 const JUDGE_MAX_TOKENS = 400;

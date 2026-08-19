@@ -8,6 +8,7 @@ import {
   type ResolvedModel,
 } from "../../lib/model-registry/resolve";
 import { areWebToolsAvailable, WEB_TOOL_NAMES } from "../../lib/web-egress";
+import { createBuildPageTool } from "../../tools/build-page";
 import { createDispatchAgentTool } from "../../tools/dispatch-agent";
 import {
   buildAgentSet,
@@ -23,7 +24,10 @@ import {
   pickDomainRegistry,
   progressiveActiveTools,
 } from "../shared/progressive-disclosure";
-import { buildSubAgentSystemPrompt } from "../shared/prompt-renderer";
+import {
+  buildPageBuilderSystemPrompt,
+  buildSubAgentSystemPrompt,
+} from "../shared/prompt-renderer";
 import { llmRepairToolCall } from "../shared/repair-tool-call";
 import {
   getRuntimeContext,
@@ -33,8 +37,10 @@ import { workflowSubAgentHiddenToolNames } from "../shared/workflow-tool-gate";
 import { buildChatbotSystemPrompt } from "./system-prompt";
 import {
   buildChatbotTools,
+  buildPageBuilderTools,
   buildSubAgentTools,
   type ChatbotTools,
+  type PageBuilderTools,
   type SubAgentTools,
 } from "./tools";
 
@@ -211,6 +217,24 @@ export const ChatbotCallOptionsSchema = z.object({
    * prompt) and per-tool approval routing. Omitted = every tool at its default.
    */
   toolPolicies: z.record(z.string(), toolPolicyLevelSchema).optional(),
+  /**
+   * Registry profile the PAGE BUILDER runs on for this turn — the seam an A/B
+   * of page quality needs, and the one that did not exist until 2026-08-18.
+   *
+   * `X-Model-Profile-Key` only ever repointed the parent turn, so a candidate
+   * run gated the model that DECIDES to build a page while the model that
+   * actually writes it stayed on the code default. Omitted → the `page-build`
+   * role binding, which is the answer on every real request.
+   */
+  pageBuildProfileKey: z.string().optional(),
+  /**
+   * Thinking depth for delegated work. The parent turn resolves its own level
+   * through `effectiveReasoningLevel` and puts it on the wire itself; this
+   * carries the same decision INTO a sub-agent, which previously received no
+   * effort input at all — the page builder ran at its profile's default no
+   * matter how deeply the user asked the turn to think.
+   */
+  reasoningLevel: z.string().optional(),
 });
 
 export type ChatbotCallOptions = z.infer<typeof ChatbotCallOptionsSchema>;
@@ -299,6 +323,8 @@ export const buildChatbotRuntimeContextBase = (
   // undefined for plain chat.
   workflowAutonomy: options.workflowAutonomy,
   toolPolicies: options.toolPolicies,
+  pageBuildProfileKey: options.pageBuildProfileKey,
+  reasoningLevel: options.reasoningLevel,
 });
 
 /**
@@ -335,12 +361,34 @@ const subAgentSystemPrompt = (ctx: AgentRuntimeContext): Promise<string> =>
   buildSubAgentSystemPrompt(ctx);
 
 /**
- * Sub-agent tool gate. Plain-chat sub-agents expose every tool (no Progressive
- * Disclosure inside a sub-agent run). A sub-agent dispatched INSIDE a workflow
- * inherits the run's `workflowAutonomy` (poured in via `dispatchAgent`) and
- * prunes the same tools the main workflow agent would — writes/memory by mode,
- * plus the schema/meta tools the main agent omits at the registry level. Keeps
- * delegation from bypassing the run's write gate.
+ * Which tools a DELEGATE may not call. Team-policy blocked tools are hidden in
+ * every context (chat + workflow); a delegate dispatched INSIDE a workflow run
+ * additionally prunes the writes/memory the main workflow agent would, so
+ * delegation cannot bypass the run's write gate.
+ */
+const delegateHiddenToolNames = (ctx: AgentRuntimeContext): Set<string> => {
+  const hidden = new Set<string>(policyHiddenToolNames(ctx));
+  if (ctx.workflowAutonomy !== undefined) {
+    for (const name of workflowSubAgentHiddenToolNames(ctx.workflowAutonomy))
+      hidden.add(name);
+  }
+  return hidden;
+};
+
+/**
+ * Sub-agent tool gate. Every tool is active on every step — no Progressive
+ * Disclosure inside a delegate run — minus whatever the gate above hides.
+ *
+ * `toolsContext` is LOAD-BEARING and was missing here until 2026-08-15: AI SDK
+ * v7 hands a tool its context ONLY through `toolsContext[toolName]`, so without
+ * it every tool a sub-agent called threw `Missing AgentRuntimeContext`. Nothing
+ * about that failure was visible from outside: the throw came back as
+ * INTERNAL_ERROR, the model read a run of them as an outage and returned a
+ * fluent, entirely false "the platform is down" report instead of the work
+ * (measured on the generalist sub-agent: 6 tool calls, 6 identical errors, one
+ * apology). Written out per concrete tool set rather than once over a generic
+ * `TTools`, because `InferToolSetContext<TTools>` only reduces to the
+ * permissive `{}` at a concrete registry — see `buildToolsContext`.
  */
 const subAgentPrepareStep = (
   tools: SubAgentTools,
@@ -348,14 +396,26 @@ const subAgentPrepareStep = (
   const allNames = Object.keys(tools) as (keyof SubAgentTools)[];
   return (stepContext) => {
     const ctx = getRuntimeContext(stepContext);
-    // Team-policy blocked tools are hidden in every context (chat + workflow);
-    // a workflow sub-agent additionally prunes writes/memory + schema by mode.
-    const hidden = new Set<string>(policyHiddenToolNames(ctx));
-    if (ctx.workflowAutonomy !== undefined) {
-      for (const n of workflowSubAgentHiddenToolNames(ctx.workflowAutonomy))
-        hidden.add(n);
-    }
-    return { activeTools: allNames.filter((n) => !hidden.has(String(n))) };
+    const hidden = delegateHiddenToolNames(ctx);
+    return {
+      activeTools: allNames.filter((name) => !hidden.has(name)),
+      toolsContext: buildToolsContext(tools, ctx),
+    };
+  };
+};
+
+/** The page builder's gate — same contract, its own concrete tool set. */
+const pageBuilderPrepareStep = (
+  tools: PageBuilderTools,
+): PrepareStepFunction<PageBuilderTools> => {
+  const allNames = Object.keys(tools) as (keyof PageBuilderTools)[];
+  return (stepContext) => {
+    const ctx = getRuntimeContext(stepContext);
+    const hidden = delegateHiddenToolNames(ctx);
+    return {
+      activeTools: allNames.filter((name) => !hidden.has(name)),
+      toolsContext: buildToolsContext(tools, ctx),
+    };
   };
 };
 
@@ -413,6 +473,74 @@ const subAgentCheapSet = buildAgentSet<ChatbotCallOptions, SubAgentTools>({
 });
 
 /**
+ * Page-builder step budget. Higher than the generic sub-agent's 25 because a
+ * build is a PIPELINE, not a task: probe, brief, component APIs (up to 6 per
+ * call), the write, then up to three render-review-fix rounds of two calls
+ * each. At 25 the loop would run out of budget precisely during the reviews —
+ * the part that makes the page good. Tunable via `PAGE_BUILDER_MAX_STEPS`.
+ */
+const parsePageBuilderMaxSteps = (): number =>
+  parseIntEnv("PAGE_BUILDER_MAX_STEPS", { fallback: 45, min: 1, max: 120 });
+
+const pageBuilderSystemPrompt = (ctx: AgentRuntimeContext): Promise<string> =>
+  buildPageBuilderSystemPrompt(ctx);
+
+/**
+ * Page-builder agent set — the third delegate, routed by
+ * `dispatchAgent({ agent: "page-builder" })`.
+ *
+ * On the PRIMARY model, never the cheap one: it writes a whole Vue SFC and
+ * then reads a design critique of it. Its tool registry is a short positive
+ * list (`buildPageBuilderTools`), so no gating hook is needed — every tool it
+ * has, it may call on every step. The team policy gate still applies, which is
+ * why it shares `subAgentPrepareStep`: a team that disabled `managePage` must
+ * not get pages through a delegate.
+ */
+const makePageBuilderSet = (
+  model: ResolvedModel,
+): AgentSet<ChatbotCallOptions, PageBuilderTools> =>
+  buildAgentSet<ChatbotCallOptions, PageBuilderTools>({
+    id: "chatbot.page-builder",
+    buildTools: buildPageBuilderTools,
+    systemPrompt: pageBuilderSystemPrompt,
+    model,
+    fallbackModel: resolveModel("chat-fallback"),
+    stopWhen: [isStepCount(parsePageBuilderMaxSteps())],
+    repairToolCall: llmRepairToolCall<PageBuilderTools>(),
+    prepareStep: pageBuilderPrepareStep,
+    buildRuntimeContextBase: buildChatbotRuntimeContextBase,
+    callOptionsSchema: ChatbotCallOptionsSchema,
+  });
+
+const memoPageBuilderSet = memoizeAgentSets(makePageBuilderSet);
+
+/**
+ * The page builder for a given registry profile.
+ *
+ * THIS FUNCTION IS THE FIX for the defect found on 2026-08-18: the builder used
+ * to be a module-level const built from `resolveModel("chat")`, and
+ * `buildPageTool` closed over it. Because that const was evaluated once at
+ * import, every memoized parent set — including the ones `getChatbotAgentSet`
+ * builds per profile — shared the SAME builder on the SAME model. A team that
+ * picked a flagship in Settings got it for the conversation and the code
+ * default for every page that conversation produced.
+ *
+ * Resolution happens per call now, so the profile can come from the turn.
+ * An arbitrary profile resolves through the CHAT envelope on purpose: the
+ * `page-build` binding declares `settingsKind: "chat"` + `wrapCache: true`, so
+ * the two envelopes are the same object and reusing the resolver keeps one
+ * memo table instead of two that could drift.
+ */
+export const getPageBuilderSet = (
+  profileKey?: string,
+): AgentSet<ChatbotCallOptions, PageBuilderTools> =>
+  memoPageBuilderSet(
+    profileKey === undefined
+      ? resolveModel("page-build")
+      : resolveChatModelForProfile(profileKey),
+  );
+
+/**
  * `dispatchAgent` tool — built once against the sub-agent sets above.
  * Routed by the `model` parameter passed by the parent agent at call
  * time: `"primary"` (default) → `subAgentPrimarySet`, `"cheap"` →
@@ -426,6 +554,19 @@ export const dispatchAgentTool = createDispatchAgentTool({
 });
 
 /**
+ * `buildPage` tool — the page builder's only entry point. Deliberately NOT a
+ * mode of `dispatchAgent`: different contract, different cost profile, and it
+ * belongs next to `managePage` in the domain registry where a page request is
+ * actually thought about (`tools/build-page.ts` carries the full rationale).
+ */
+export const buildPageTool = createBuildPageTool({
+  // A RESOLVER, not an agent: the model is chosen when the tool runs, from the
+  // turn's own options. Passing `pageBuilderSet.primary` here is what pinned
+  // every page in the product to one profile for months.
+  resolvePageBuilder: (profileKey) => getPageBuilderSet(profileKey).primary,
+});
+
+/**
  * The chatbot agent pair. Instantiated once at module init; reused
  * across every request. Handlers call
  * `chatbotAgentSet.primary.stream({ messages, options, abortSignal })`
@@ -436,7 +577,11 @@ const makeChatbotAgentSet = (
 ): AgentSet<ChatbotCallOptions, ChatbotTools> =>
   buildAgentSet<ChatbotCallOptions, ChatbotTools>({
     id: "chatbot",
-    buildTools: () => buildChatbotTools({ dispatchAgent: dispatchAgentTool }),
+    buildTools: () =>
+      buildChatbotTools({
+        dispatchAgent: dispatchAgentTool,
+        buildPage: buildPageTool,
+      }),
     systemPrompt: chatbotSystemPrompt,
     model,
     fallbackModel: resolveModel("chat-fallback"),

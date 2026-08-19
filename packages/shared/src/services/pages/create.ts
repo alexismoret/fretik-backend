@@ -20,17 +20,16 @@ import { pageOwnerWriteError } from "./visibility";
  * every problem comes back as a warning, so a model that best-guesses stays
  * unblocked and reads the warnings to fix its next turn.
  *
- * BOTH channels are returned. `polish` was computed here and dropped on the
- * floor, and the caller's dry-run skips the static pass on an already-sanitized
- * definition — so between them the "reads as unfinished" notes reached the
- * agent on `dry_run` only, never on the two actions that write.
+ * Warnings are RETURNED, not logged: the caller's dry run skips the static pass
+ * on an already-sanitized definition, so this is the only place they can reach
+ * the agent on a write.
  */
 export const createPage = async (params: {
   organizationId: string;
   teamId: string;
   createdByUserId: string;
   input: CreatePageInput;
-}): Promise<{ page: PageResponse; warnings: string[]; polish: string[] }> => {
+}): Promise<{ page: PageResponse; warnings: string[] }> => {
   const input = CreatePageSchema.parse(params.input);
 
   const ownerError = pageOwnerWriteError(
@@ -40,7 +39,7 @@ export const createPage = async (params: {
   if (ownerError) return throwHttpError(400, badRequest(ownerError));
 
   const sanitized = sanitizePageDefinition(input.definition);
-  const { warnings, polish } = sanitized;
+  const { warnings } = sanitized;
   // Compile at save. A failing compile REFUSES the create (400 with the
   // compiler's errors) — code is binary, see `services/pages/compile.ts`.
   const definition = await ensurePageCompiled(sanitized.definition);
@@ -65,5 +64,5 @@ export const createPage = async (params: {
   // Deliberately not awaited: `CREATE INDEX CONCURRENTLY` scales with the
   // table, and the page is already saved and queryable without it.
   ensurePageDatasetIndexes({ definition });
-  return { page: serializePage(row), warnings, polish };
+  return { page: serializePage(row), warnings };
 };

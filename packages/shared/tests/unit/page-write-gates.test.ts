@@ -103,7 +103,12 @@ describe("pagePublishError", () => {
     const error = pagePublishError(
       page({
         operations: [
-          { id: "ship", providerKey: "acme-orders", action: "mark_shipped" },
+          {
+            kind: "app" as const,
+            id: "ship",
+            providerKey: "acme-orders",
+            action: "mark_shipped",
+          },
         ],
       }),
     );
@@ -362,5 +367,73 @@ describe("PageDraftDefinitionSchema", () => {
         : null;
     expect(json).toContain('"source"');
     expect(Array.isArray(required) && required.includes("code")).toBe(false);
+  });
+});
+
+/**
+ * The near-miss window. A failed anchor is nearly always a whitespace drift,
+ * not a wrong place — measured on a real run (2026-08-16) where the agent
+ * reported "the anchors have a different indentation from the saved code" and
+ * then resent the whole SFC twice. Telling it to `get` and re-anchor made that
+ * retreat rational: a full read costs what a full rewrite costs, so it did
+ * both. Handing back the real lines removes the reason for either.
+ */
+describe("applyPageCodeEdits near-miss", () => {
+  const source = [
+    "<template>",
+    "  <section>",
+    "        <h1>Pipeline</h1>",
+    "  </section>",
+    "</template>",
+  ].join("\n");
+
+  test("an anchor off by indentation gets the exact line back", () => {
+    // Re-indented by hand, the way a model rewrites a block from memory: the
+    // text is right, the whitespace between the lines is not.
+    const result = applyPageCodeEdits(source, [
+      {
+        oldString: "  <section>\n    <h1>Pipeline</h1>",
+        newString: "  <section>\n    <h1>2026</h1>",
+      },
+    ]);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain("line 2");
+      // The real text, indentation included, is what makes a second attempt
+      // land without a re-read.
+      expect(result.error).toContain("        <h1>Pipeline</h1>");
+      // No point telling it to `get` when the answer is already here.
+      expect(result.error).not.toContain('"get"');
+    }
+  });
+
+  test("an anchor aimed at text the page never had says so plainly", () => {
+    const result = applyPageCodeEdits(source, [
+      { oldString: "<h1>Forecast revenue</h1>", newString: "<h1>2026</h1>" },
+    ]);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toContain("nothing close");
+      expect(result.error).toContain('"get"');
+    }
+  });
+
+  test("an ambiguous probe stays silent rather than pointing anywhere", () => {
+    const repeated = "  <p>Row</p>\n  <p>Row</p>\n  <p>Row</p>";
+    const result = applyPageCodeEdits(repeated, [
+      { oldString: "<p>Row</p>\n<p>Row</p>", newString: "<p>One</p>" },
+    ]);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("nothing close");
+  });
+
+  // A probe shorter than the threshold would match half the file; the window
+  // would point at a coincidence and read as authoritative.
+  test("a tiny anchor produces no window", () => {
+    const result = applyPageCodeEdits(source, [
+      { oldString: "<b>", newString: "<i>" },
+    ]);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("nothing close");
   });
 });

@@ -254,8 +254,19 @@ describe("role bindings — default model ids pinned (chat: gated M3 flip)", () 
     // fallback. See ROLE_BINDINGS.vision.
     vision: "google/gemini-3.5-flash-lite",
     "vision-fallback": "google/gemini-3.1-flash-lite",
+    // Its own role, not `vision`'s: judging whether a screen was designed is a
+    // different job from reading a document, and the two moved apart the day
+    // the A/B on two known-broken pages picked 3.7 Flash here (see the binding).
+    "page-review": "google/gemini-3.7-flash",
+    // Its own role since 2026-08-18. Before that the page BUILDER resolved
+    // `resolveModel("chat")` at module load, so no pin — not the team's
+    // flagship, not the eval header — could reach it, and every page the
+    // product ever generated came from the code default. Pinned here so a
+    // repoint is a deliberate edit with a run behind it, exactly like the
+    // critic above.
+    "page-build": "deepseek/deepseek-v4-flash-0731",
     transform: "deepseek/deepseek-v4-flash-0731",
-    "transform-fallback": "google/gemini-3.6-flash",
+    "transform-fallback": "google/gemini-3.7-flash",
     "tool-repair": "openai/gpt-oss-120b",
     // Stayed on gpt-oss: deepseek runs away on reasoning here (see binding).
     "memory-consolidate": "openai/gpt-oss-120b",
@@ -278,6 +289,10 @@ describe("role bindings — default model ids pinned (chat: gated M3 flip)", () 
       "dispatch-cheap",
       "pre-extract",
       "pre-extract-fallback",
+      // The builder is a multi-step agent replaying a byte-stable system
+      // prompt on every step — the same shape the chat roles wrap for, and the
+      // reason its binding declares the chat envelope rather than `bare`.
+      "page-build",
     ];
     for (const [role, binding] of Object.entries(ROLE_BINDINGS)) {
       expect(binding.wrapCache).toBe(wrapped.includes(role as ModelRole));

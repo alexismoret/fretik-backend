@@ -18,6 +18,7 @@
     "evals:memory": "bun run evals/memory/run.ts",
     "evals:chain": "bun run evals/chain/run.ts",
     "evals:gate": "bun run evals/langfuse/gate.ts",
+    "evals:pages-compare": "bun run evals/page-compare.ts",
     "check": "bun run typecheck && bun run lint && bun run format:check",
     "langfuse:seed-prompts": "bun run scripts/seed-langfuse-prompts.ts",
     "langfuse:triage-cases": "bun run scripts/triage-eval-cases.ts",

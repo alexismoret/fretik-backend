@@ -37,6 +37,31 @@ AI_SERVICE_URL=http://localhost:8083 bun run evals:langfuse -- --deterministic-o
 AI_SERVICE_URL=http://localhost:8083 bun run evals:langfuse -- --run-name <name>      # explicit dataset-run name
 ```
 
+**Keep the output in a file — the per-item report is long and the earliest cases scroll away
+first.** Three runs in a row were read with items 1-6 already gone, which is precisely where a
+case that never ran leaves its only trace:
+
+```bash
+AI_SERVICE_URL=http://localhost:8083 bun run evals:langfuse -- --suite pages 2>&1 | tee /tmp/eval-run.log
+```
+
+A run whose item COUNT is short of the suite is the failure to look for first: the summary
+reports the average over the cases that finished, so a case dropped mid-flight lowers nothing
+and shows up only as a smaller `N items`.
+
+**The pages suite needs a browser.** SEVEN of its ten cases RENDER the page the turn stored,
+in the eval process, via `evals/page-design-judge.ts`: every case that builds one
+(`page-dashboard-kpi-charts`, `page-filterable-directory`, `page-vague-request-expands`,
+`page-multi-source-gate`, `page-thread-shape`, `page-console-shape`, `page-time-shape`). The
+mechanical gate and a design score are the only assertions that see what a user sees. (This
+line said "three" and named a case that no longer exists until 2026-08-18 — browser cost and
+rig-failure blast radius are more than double what it claimed.) That needs the same two
+things the `review` action needs — a Chrome/Chromium on `$PATH` (or `PAGE_RENDER_BROWSER_WS` pointing at a
+browserless sidecar) and the page-runtime assets (`PAGE_RUNTIME_DIR`, or `APP_URL` to fetch
+them). Each judged case costs ~20s and ~2¢ on top of its turn. When no browser is reachable
+those assertions FAIL rather than pass quietly, and say `renderer unavailable` — that phrase
+means the rig, never the page.
+
 **Model pinning.** Every `evals:langfuse` run pins the turn model via
 `X-Model-Profile-Key` — default = the CODE `chat` binding in
 `src/lib/model-registry/profiles.ts` (the flagship held to 1.000), overridden by
@@ -45,6 +70,28 @@ silently overrides the code binding (the 2026-07-17 runs measured `gpt-oss-20b`
 that way). The `evals:memory` / `evals:recall` / `evals:chain` harnesses are
 separate: they run the services IN-PROCESS and take their model from the code
 bindings, overridable with `--profile` / `--judge-profile`.
+
+**Pinning the PAGE BUILDER is a second, separate knob.** `--candidate` reaches the
+parent turn only. Pages are written by a delegate on the `page-build` binding, so
+a run pinned with `--candidate` alone measures the model that DECIDES to build a
+page while the one that writes it stays on the code default — which is what every
+page measurement did before 2026-08-18, when the builder was frozen at module load
+and no pin could reach it at all. Use `--page-build-candidate <profileKey>`
+(header `X-Page-Build-Profile-Key`, `/invoke` only, unknown keys 400):
+
+```bash
+# control, then a candidate builder — same suite, same parent model
+AI_SERVICE_URL=http://localhost:8083 bun run evals:langfuse -- --suite pages --run-name pages-build-control | tee /tmp/control.log
+AI_SERVICE_URL=http://localhost:8083 bun run evals:langfuse -- --suite pages --page-build-candidate gemini-3.7-flash --run-name pages-build-gemini | tee /tmp/gemini.log
+```
+
+The run metadata records `pageBuildProfileKey`, so a run says which model wrote its
+pages, not just which one decided to. **Compare the DESIGN AVERAGE across the seven
+building cases** — correctness moves for many reasons, the design score is what a
+builder swap is for. And if a builder candidate ever lands in the critic's family
+(`page-review` is `gemini-3.7-flash`), repoint the critic in the same change:
+builder and judge on one model is self-review, the exact failure the critic exists
+to prevent.
 
 **The memory harnesses, in one table.** All three share the EVAL team, so the
 fixtures of one decide cases in another — clean up before switching.

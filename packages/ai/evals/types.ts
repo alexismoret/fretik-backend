@@ -107,10 +107,29 @@ export interface EvalCaseContext {
  *                   partial credit; see `evals/judge.ts`)
  *   - `custom`      escape hatch: user-supplied
  *                   `(result, ctx) => boolean | string | Promise<...>`
- *                   returning `true` passes; `false` / a reason string fails.
+ *                   returning `true` passes; `false` / a reason string fails;
+ *                   a `CustomVerdict` grades (see below).
  *                   `ctx` carries the conversationId + IDs so the assertion
  *                   can inspect DB state via `@fretik/shared/db` if needed.
  */
+/**
+ * A GRADED verdict from a `custom` assertion.
+ *
+ * Most custom checks are yes/no and return `true` or a failure string. A few
+ * are MEASUREMENTS — a design score, a coverage ratio — and collapsing those
+ * to pass/fail throws away the only thing they are for: a page that went from
+ * 4.8 to 8.0 and a page that went from 4.8 to 5.1 both read as "still passing".
+ * Returning this instead sends the number through to `correctness` as partial
+ * credit, which is how the baseline gets something to move.
+ */
+export interface CustomVerdict {
+  passed: boolean;
+  /** [0, 1] — clamped by the engine. Folded into the run's `correctness`. */
+  score: number;
+  /** Shown in the report whether it passed or not: the number is the point. */
+  message?: string;
+}
+
 export type Assertion =
   | { type: "contains"; value: string; caseInsensitive?: boolean }
   | { type: "regex"; value: string; flags?: string }
@@ -125,7 +144,11 @@ export type Assertion =
       fn: (
         result: InvokeResult,
         ctx: EvalCaseContext,
-      ) => boolean | string | Promise<boolean | string>;
+      ) =>
+        | boolean
+        | string
+        | CustomVerdict
+        | Promise<boolean | string | CustomVerdict>;
     };
 
 /**

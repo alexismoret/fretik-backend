@@ -80,8 +80,16 @@ export interface CreateSubAgentExecuteConfig<
   INPUT,
   OUTPUT,
 > {
-  /** The wrapped sub-agent instance (primary or dispatcher). */
-  subAgent: Agent<CALL_OPTIONS, TOOLS>;
+  /**
+   * The sub-agent to run, RESOLVED PER CALL from the live runtime context.
+   *
+   * A function rather than an instance because the model a delegate runs on can
+   * be a per-turn decision: `buildPage` reads `pageBuildProfileKey` here so an
+   * A/B can repoint the builder without rebuilding the tool. Callers with one
+   * fixed agent pass `() => theAgent`, which is the same singleton it always
+   * was — the point is that the choice happens at execute time, not at import.
+   */
+  subAgent: (ctx: AgentRuntimeContext) => Agent<CALL_OPTIONS, TOOLS>;
   /**
    * Build the message list the sub-agent consumes from the parent's
    * input and the live runtime context (useful for stitching in
@@ -125,7 +133,7 @@ export const createSubAgentExecute = <
     const ctx = getRuntimeContext(options);
     const messages = config.buildMessages(input, ctx);
     const callOptions = config.buildCallOptions(input, ctx);
-    const result = await config.subAgent.generate({
+    const result = await config.subAgent(ctx).generate({
       messages,
       options: callOptions,
       abortSignal: options.abortSignal,

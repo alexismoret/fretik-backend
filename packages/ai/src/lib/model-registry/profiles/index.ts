@@ -64,7 +64,7 @@ export const MODEL_PROFILES: Record<string, ModelProfile> = {
  *
  * A binding resolves its profile directly and bypasses `isSelectableForTier`,
  * so a role may legitimately point at an `enabled: false` profile — see
- * `transform-fallback` → `gemini-3.6-flash`.
+ * `transform-fallback` → `gemini-3.7-flash`.
  */
 export const ROLE_BINDINGS: Record<ModelRole, RoleBinding> = {
   // Gated flip 2026-08-02 (run 8e3ea13a8b4b3968): minimax-m3 → deepseek-v4-flash.
@@ -281,6 +281,58 @@ export const ROLE_BINDINGS: Record<ModelRole, RoleBinding> = {
     settingsKind: "bare",
     wrapCache: false,
   },
+  // Design critic for `managePage { action: "review" }` — it looks at
+  // screenshots of a rendered page and scores it.
+  //
+  // Chosen on a measured A/B (2026-08-15) over the two pages whose defects were
+  // already known, against gemini-3.5-flash-lite and gemini-3.1-pro. Flash-lite
+  // is 3× cheaper and was the starting assumption; it INVENTED a rendering
+  // artifact ("the digit 5 renders with a strike-through") and rated the
+  // permanently-inline compose form of a broken mail client a MINOR issue,
+  // third in its list. 3.7 Flash named that form the first major finding, and on
+  // the healthy page it was the only one of the three to catch what the page's
+  // own author had complained about — a chart card so tall it pushes the rows
+  // below the fold — plus illegibly small tags and missing column sorting, with
+  // no false findings. 3.1 Pro was accurate too, at 6× the price and no better.
+  // Corroborated by the one public benchmark close to the task: design_arena
+  // "website", where 3.7 Flash ranks 2nd (elo 1333).
+  //
+  // Cost at SETTLED prices (the live headline is a launch promotion): ~1 ¢ per
+  // review against flash-lite's ~0.5 ¢, so ~1.5 ¢ more per page at the
+  // three-review budget — halved on 2026-08-18 when the announced
+  // post-promotion rate came in at $0.75/$3.75, half the estimate this was
+  // first argued against. Re-run the A/B before repointing this.
+  "page-review": {
+    role: "page-review",
+    profileKey: "gemini-3.7-flash",
+    settingsKind: "bare",
+    wrapCache: false,
+  },
+  // The page BUILDER — the agent that writes the SFC, reads the review and
+  // fixes it. Its own role since 2026-08-18, and the reason is a measurement:
+  // `pageBuilderSet` was built at module load from `resolveModel("chat")`, so
+  // it ignored the team's flagship entirely. Every page this product has ever
+  // generated — evals and real teams alike — was written by the code default.
+  //
+  // Starts pinned to the same profile that default resolved to, so the first
+  // run after this change measures the CURRENT behaviour and nothing else. The
+  // A/B that repoints it (gemini-3.7-flash — Design Arena "website" rank 5 and
+  // multimodal, so it could read its own review screenshots — against
+  // gpt-5.6-luna and this control) is the next step, not this one.
+  //
+  // `chat` settings, not `bare`: the builder is a multi-step tool-calling agent
+  // on a long context, so it wants the same envelope and cache wrap a chat turn
+  // gets, not a one-shot's.
+  //
+  // WHEN THIS MOVES TO gemini-3.7-flash, `page-review` MUST LEAVE THAT FAMILY.
+  // Builder and critic sharing a model is self-review, and the whole reason the
+  // critic exists is the documented "confidently praise" failure of it.
+  "page-build": {
+    role: "page-build",
+    profileKey: "deepseek-v4-flash",
+    settingsKind: "chat",
+    wrapCache: true,
+  },
   // Document-scale prose transformation (the `transform` tool): translate,
   // rewrite, restyle a whole document chunk-by-chunk. Separate from the
   // `extract` roles on purpose — extract is native-PDF/vision-pinned, whereas
@@ -297,13 +349,15 @@ export const ROLE_BINDINGS: Record<ModelRole, RoleBinding> = {
   // prose — the observed failure class is a truncated or refused chunk, and a
   // family swap is the most effective second attempt.
   //
-  // Points at an `enabled: false` profile ON PURPOSE: gemini-3.6-flash is too
-  // expensive to OFFER as a team pick (4.06× an M3 turn) but is the right
+  // Points at an `enabled: false` profile ON PURPOSE: gemini-3.7-flash is too
+  // expensive to OFFER as a team pick (~2× an M3 turn at the settled price
+  // corrected 2026-08-18; it was argued at 4.06× against the old estimate) but
+  // is the right
   // second attempt on a low-volume fallback path. Role bindings bypass
   // `isSelectableForTier`, so this is legal and intended.
   "transform-fallback": {
     role: "transform-fallback",
-    profileKey: "gemini-3.6-flash",
+    profileKey: "gemini-3.7-flash",
     settingsKind: "bare",
     wrapCache: false,
   },

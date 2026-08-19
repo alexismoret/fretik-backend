@@ -2849,6 +2849,26 @@ chatbotInternalRoutes.post("/invoke", async (c) => {
     }
   }
 
+  // Second eval seam, and it exists because the first one was NOT enough:
+  // `X-Model-Profile-Key` repoints the parent turn only, so a page candidate
+  // run gated the model that DECIDES to build a page while the model that
+  // WRITES it stayed on the `page-build` binding. Same rules as above — read
+  // here so it cannot reach /stream, unknown keys refused rather than served.
+  const pageBuildProfileKey = c.req.header("X-Page-Build-Profile-Key");
+  if (pageBuildProfileKey !== undefined) {
+    try {
+      resolveChatModelForProfile(pageBuildProfileKey);
+    } catch {
+      return c.json(
+        {
+          code: "UNKNOWN_MODEL_PROFILE",
+          message: `Unknown page-build profile key: "${pageBuildProfileKey}"`,
+        },
+        400,
+      );
+    }
+  }
+
   // D.3 warning: `messages` is silently ignored when `conversationId`
   // is set (the history is loaded from DB instead). Alert the caller
   // via log so this isn't a silent footgun. Not rejected to preserve
@@ -2878,6 +2898,7 @@ chatbotInternalRoutes.post("/invoke", async (c) => {
     // and step lines stay traceless — which is fine, just slightly
     // harder to correlate when debugging.
     traceId: randomUUIDv7(),
+    pageBuildProfileKey,
   };
 
   // Internal `/invoke` callers (e.g. workflow nodes) do NOT go through

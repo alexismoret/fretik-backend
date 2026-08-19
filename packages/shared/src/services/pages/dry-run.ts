@@ -30,7 +30,6 @@ export interface PageDatasetSample {
 export interface PageDryRun {
   warnings: string[];
   /** Works, but reads as unfinished. */
-  polish: string[];
   samples: Record<string, PageDatasetSample>;
 }
 
@@ -70,9 +69,9 @@ export const dryRunPage = async (params: {
   assumeCompiled?: boolean;
 }): Promise<PageDryRun> => {
   const sanitized = params.assumeSanitized
-    ? { definition: params.definition, warnings: [], polish: [] }
+    ? { definition: params.definition, warnings: [] }
     : sanitizePageDefinition(params.definition);
-  const { definition, warnings, polish } = sanitized;
+  const { definition, warnings } = sanitized;
 
   const samples: PageDryRun["samples"] = {};
   // Run against the page's own defaults — the state a first visitor sees.
@@ -166,5 +165,5 @@ export const dryRunPage = async (params: {
     }
   }
 
-  return { warnings, polish, samples };
+  return { warnings, samples };
 };

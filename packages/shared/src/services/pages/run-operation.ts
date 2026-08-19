@@ -7,6 +7,7 @@ import {
 } from "../external-apps/exec/page-run";
 import { getPage } from "./retrieve";
 import { resolvePageState } from "./run-page-data";
+import { runPageRecordOperation } from "./run-record-operation";
 import { resolveExternalArgs } from "./sources/external";
 import type { PageRequester } from "./visibility";
 
@@ -17,9 +18,14 @@ import type { PageRequester } from "./visibility";
  * caller sends an operation id and values for the page's declared VARIABLES;
  * `resolvePageState` coerces those against their declared types and drops
  * everything else, exactly as it does for a dataset filter. The action name,
- * the connection and the argument template all come from the stored
- * definition, so a forged request can change a value that was already going to
- * be sent and nothing more.
+ * the connection, the object type and the argument template all come from the
+ * stored definition, so a forged request can change a value that was already
+ * going to be sent and nothing more.
+ *
+ * This file OWNS the part that is true of every operation — the declaration
+ * check and the state coercion — then routes by kind: `app` reaches a connected
+ * third party (below), while `record` / `bulk` / `link` write the team's own
+ * records (`run-record-operation.ts`, which carries its own boundary notes).
  *
  * Three refusals stand between a click and a third party, and none of them is
  * the client's to make:
@@ -31,6 +37,10 @@ import type { PageRequester } from "./visibility";
  *     both the app's descriptor and the page's definition — the sanitizer is
  *     pure and synchronous, so it cannot know what the app says about an
  *     action, and the frontend's dialog is a courtesy, not a control.
+ *
+ * `approval` is deliberately NOT a fourth: that level gates what an AGENT
+ * decided mid-turn, and a page click is a person deciding, with `confirm` in
+ * front of it. Only `blocked` refuses here — see the test that names it.
  */
 
 /** Result payloads are for a toast and a refetch, never a data feed. */
@@ -50,6 +60,7 @@ const cappedResult = (value: unknown): PageValue | undefined => {
 
 export const runPageOperation = async (params: {
   pageId: string;
+  organizationId: string;
   teamId: string;
   userId: string;
   requester?: PageRequester;
@@ -74,6 +85,16 @@ export const runPageOperation = async (params: {
 
   // Same coercion the data path applies — declared variables only.
   const state = resolvePageState(page.definition, params.variables);
+
+  if (operation.kind !== "app") {
+    return runPageRecordOperation({
+      operation,
+      organizationId: params.organizationId,
+      teamId: params.teamId,
+      userId: params.userId,
+      state,
+    });
+  }
 
   const resolution = await resolvePageConnection({
     teamId: params.teamId,

@@ -30,12 +30,53 @@ import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
  */
 const UNSORTABLE_TYPES: ReadonlySet<string> = new Set(["relation", "rollup"]);
 
+/**
+ * Field types no `record` operation can write through `args`.
+ *
+ * `buildRecordShape` skips every one of them — a relation is an edge in the
+ * links graph (move it with a `link` operation), a rollup and the system
+ * properties are computed on read, and `unique_id` comes from its sequence.
+ * The shape then STRIPS the key rather than complaining, so a form bound to one
+ * saves cleanly and changes nothing. Kept in lockstep with that skip list.
+ */
+const UNWRITABLE_TYPES: ReadonlySet<string> = new Set([
+  "relation",
+  "rollup",
+  "unique_id",
+  "created_time",
+  "last_edited_time",
+  "created_by",
+  "last_edited_by",
+]);
+
 /** Config is a union across field types; read one key without widening it. */
 const configValue = (definition: FieldDefinition, key: string): unknown =>
   Reflect.get(definition.config, key);
 
 const asString = (value: unknown): string | undefined =>
   typeof value === "string" && value.length > 0 ? value : undefined;
+
+/**
+ * Every icon crossing this contract leaves in ONE ready-to-use `<UIcon>` shape.
+ *
+ * The stored shapes are mixed and always have been: object types keep a bare
+ * lucide name (`"circle-dashed"`), while select options written by the icon
+ * picker keep the prefixed one (`"i-lucide-circle-dashed"`). A page cannot tell
+ * them apart, so whatever it assumes is wrong half the time — and a page that
+ * wrapped what was already prefixed asked for `i-lucide-i-lucide-circle-dashed`,
+ * which resolves to nothing and, under the sandbox's `connect-src 'none'`,
+ * spends three blocked CDN round-trips to render a blank square.
+ *
+ * Normalising here rather than asking the page to be careful is the same call
+ * the app's own `objectIcon()` makes at render time: a bare name is prefixed, a
+ * name that already carries a prefix (`i-…`) or a collection (`lucide:…`) is
+ * left alone.
+ */
+const asIconName = (value: unknown): string | undefined => {
+  const raw = asString(value)?.trim();
+  if (raw === undefined || raw.length === 0) return undefined;
+  return raw.startsWith("i-") || raw.includes(":") ? raw : `i-lucide-${raw}`;
+};
 
 const asNumber = (value: unknown): number | undefined =>
   typeof value === "number" && Number.isFinite(value) ? value : undefined;
@@ -58,7 +99,7 @@ const optionsOf = (
       value,
       label: asString(Reflect.get(entry, "label")) ?? value,
       color: asString(Reflect.get(entry, "color")),
-      icon: asString(Reflect.get(entry, "icon")),
+      icon: asIconName(Reflect.get(entry, "icon")),
     });
   }
   return options.length > 0 ? options : undefined;
@@ -88,13 +129,14 @@ const describeField = (
     min: asNumber(configValue(definition, "min")),
     max: asNumber(configValue(definition, "max")),
     ratingMax: asNumber(configValue(definition, "ratingMax")),
-    ratingIcon: asString(configValue(definition, "ratingIcon")),
+    ratingIcon: asIconName(configValue(definition, "ratingIcon")),
     hasTime: asBoolean(configValue(definition, "hasTime")),
     prefix: asString(configValue(definition, "prefix")),
-    targetIcon: target?.icon,
+    targetIcon: asIconName(target?.icon),
     targetColor: target?.color,
     isTitle: definition.isTitle ? true : undefined,
     sortable: !UNSORTABLE_TYPES.has(definition.type),
+    writable: !UNWRITABLE_TYPES.has(definition.type),
   };
 };
 

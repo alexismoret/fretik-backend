@@ -34,9 +34,16 @@ const loadIndex = (): Promise<ComponentIndex> => {
   return indexPromise;
 };
 
-/** `UBadge` / `badge` / `Badge` → `Badge`, the corpus's own file naming. */
+/**
+ * `UBadge` / `badge` / `Badge` / `u-select-menu` → the corpus's own file
+ * naming. Kebab case matters because templates may write either form, and the
+ * contract check reads component names straight out of a template.
+ */
 const canonical = (name: string, known: string[]): string | undefined => {
-  const bare = name.trim().replace(/^U(?=[A-Z])/, "");
+  const bare = name
+    .trim()
+    .replace(/^[uU](?=[A-Z-])/, "")
+    .replaceAll("-", "");
   return known.find(
     (candidate) => candidate.toLowerCase() === bare.toLowerCase(),
   );
@@ -88,4 +95,69 @@ export const listComponentNames = async (): Promise<string[]> => {
   return index === null
     ? []
     : Object.keys(index.components).map((name) => `U${name}`);
+};
+
+/**
+ * Slots whose meaning nobody gets wrong: the content, and what sits either side
+ * of it. Everything outside this set is a component that expects its parts to
+ * be placed by NAME — and placing them by intuition instead is how a compose
+ * form ends up rendered permanently inline because it went into `UModal`'s
+ * default slot, which is the TRIGGER. That defect shipped; so did a `UTable`
+ * row handler written against a guessed signature. Both components declare
+ * slots outside this set; `UButton`, `UBadge`, `UCard`, `UIcon`, `UProgress`
+ * do not, and warning about those would only teach the agent to skim warnings.
+ */
+const OBVIOUS_SLOTS = new Set([
+  "default",
+  "leading",
+  "trailing",
+  "label",
+  "icon",
+  "header",
+  "footer",
+  "title",
+  "description",
+]);
+
+/** Parsed once per component per process — the corpus is immutable at runtime. */
+const contractHeavyCache = new Map<string, Promise<boolean>>();
+
+const SLOTS_BLOCK_RE = /### Slots\s*```ts([\s\S]*?)```/;
+const SLOT_NAME_RE = /^\s{2}([a-zA-Z][A-Za-z0-9:_-]*)\(/gm;
+
+const isContractHeavy = async (resolved: string): Promise<boolean> => {
+  const reference = await Bun.file(join(ASSETS_DIR, `${resolved}.md`))
+    .text()
+    .catch(() => null);
+  if (reference === null) return false;
+  const block = SLOTS_BLOCK_RE.exec(reference)?.[1];
+  if (block === undefined) return false;
+  return [...block.matchAll(SLOT_NAME_RE)].some(
+    (match) => !OBVIOUS_SLOTS.has(match[1] ?? ""),
+  );
+};
+
+/**
+ * Of the components named, which ones expect their parts to be placed by name.
+ * Unknown names are dropped — an unregistered component is a different problem,
+ * already reported by the write's own sanitising pass.
+ */
+export const listContractHeavy = async (names: string[]): Promise<string[]> => {
+  const index = await loadIndex().catch(() => null);
+  if (index === null) return [];
+  const known = Object.keys(index.components);
+
+  const verdicts = await Promise.all(
+    names.map(async (name) => {
+      const resolved = canonical(name, known);
+      if (resolved === undefined) return null;
+      let heavy = contractHeavyCache.get(resolved);
+      if (heavy === undefined) {
+        heavy = isContractHeavy(resolved);
+        contractHeavyCache.set(resolved, heavy);
+      }
+      return (await heavy) ? `U${resolved}` : null;
+    }),
+  );
+  return [...new Set(verdicts.filter((name) => name !== null))];
 };

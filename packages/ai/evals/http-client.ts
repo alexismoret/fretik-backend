@@ -49,6 +49,14 @@ export interface InvokeOptions {
    * the service's default `chat` binding.
    */
   modelProfileKey?: string;
+  /**
+   * Registry profile the PAGE BUILDER runs on, sent as
+   * `X-Page-Build-Profile-Key`. A separate knob because the two are separate
+   * models: `modelProfileKey` pins the turn that DECIDES to build a page, this
+   * pins the one that writes it. Pinning only the first is what made every page
+   * measurement before 2026-08-18 a measurement of the code default.
+   */
+  pageBuildProfileKey?: string;
 }
 
 const buildHeaders = (opts?: InvokeOptions): Record<string, string> => {
@@ -70,6 +78,8 @@ const buildHeaders = (opts?: InvokeOptions): Record<string, string> => {
   // result instead of silently scoring the default model.
   if (opts?.modelProfileKey)
     headers["X-Model-Profile-Key"] = opts.modelProfileKey;
+  if (opts?.pageBuildProfileKey)
+    headers["X-Page-Build-Profile-Key"] = opts.pageBuildProfileKey;
   return headers;
 };
 

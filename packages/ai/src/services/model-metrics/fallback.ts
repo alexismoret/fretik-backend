@@ -60,7 +60,7 @@ export const FALLBACK_METRICS: Record<string, FallbackMetric> = {
   "gpt-oss-20b": { intelligence: 14.9, speed: 242.7, timeToFirstAnswer: 8.7 },
   // Google
   "gemini-3.1-pro": { intelligence: 46.5, speed: 132.2, timeToFirstAnswer: 31 },
-  "gemini-3.6-flash": {
+  "gemini-3.7-flash": {
     intelligence: 50.1,
     speed: 219.4,
     timeToFirstAnswer: 14.5,

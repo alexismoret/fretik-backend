@@ -777,12 +777,45 @@ describe("buildPageFieldDescriptors — the public-safe allowlist", () => {
 
     expect(descriptor?.key).toBe("status");
     expect(descriptor?.options).toEqual([
-      { value: "won", label: "Won", color: "green", icon: "check" },
+      { value: "won", label: "Won", color: "green", icon: "i-lucide-check" },
       { value: "lost", label: "lost", color: undefined, icon: undefined },
     ]);
     expect(Object.keys(descriptor ?? {})).not.toContain("rollupFormula");
     expect(Object.keys(descriptor ?? {})).not.toContain("internalFieldId");
     expect(JSON.stringify(descriptor)).not.toContain("fld_secret");
+  });
+
+  test("every icon leaves in one ready-to-use shape, whatever was stored", async () => {
+    // The stored shapes are mixed — the icon picker writes `i-lucide-check`,
+    // an object type keeps a bare `building-2` — and a page cannot tell them
+    // apart. Whatever it assumed was wrong half the time: the page that wrapped
+    // an already-prefixed name asked for `i-lucide-i-lucide-check` and rendered
+    // a blank square after three CDN round-trips the sandbox blocks anyway.
+    fieldDefinitions = [
+      {
+        key: "stage",
+        label: "Stage",
+        type: "select",
+        isTitle: false,
+        config: {
+          options: [
+            { value: "bare", label: "Bare", icon: "circle-dashed" },
+            { value: "prefixed", label: "Prefixed", icon: "i-lucide-check" },
+            { value: "collection", label: "Collection", icon: "lucide:zap" },
+          ],
+        },
+      },
+    ];
+    const [descriptor] = await buildPageFieldDescriptors({
+      teamId: "team-1",
+      objectTypeId: "type-1",
+    });
+
+    expect(descriptor?.options?.map((option) => option.icon)).toEqual([
+      "i-lucide-circle-dashed",
+      "i-lucide-check",
+      "lucide:zap",
+    ]);
   });
 
   test("an option with no value is dropped rather than shipped half-formed", async () => {

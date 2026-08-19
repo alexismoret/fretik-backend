@@ -55,6 +55,15 @@ export interface ExperimentOptions {
    * model served it.
    */
   candidateProfileKey?: string;
+  /**
+   * Pin the PAGE BUILDER to this registry profile. Distinct from
+   * `candidateProfileKey`, which reaches the parent turn only — the builder is
+   * a different agent on a different binding, and pinning just the parent is
+   * what made every page measurement before 2026-08-18 measure the code
+   * default. Recorded in the run metadata so a run says which model WROTE its
+   * pages, not just which one decided to.
+   */
+  pageBuildProfileKey?: string;
   runName?: string;
   /** Concurrent cases — keep low; each is a real chatbot turn. */
   maxConcurrency?: number;
@@ -186,6 +195,7 @@ export const runChatbotExperiment = async (
   const task = buildExperimentTask({
     deterministicOnly: opts.deterministicOnly,
     modelProfileKey: opts.candidateProfileKey,
+    pageBuildProfileKey: opts.pageBuildProfileKey,
   });
   const evaluators = [buildItemEvaluator(configIds)];
   const runEvaluators = [buildRunEvaluator(configIds), buildCostRunEvaluator()];
@@ -202,6 +212,9 @@ export const runChatbotExperiment = async (
     ...(opts.metadata ?? {}),
     ...(opts.candidateProfileKey
       ? { candidateProfileKey: opts.candidateProfileKey }
+      : {}),
+    ...(opts.pageBuildProfileKey
+      ? { pageBuildProfileKey: opts.pageBuildProfileKey }
       : {}),
   };
   const common = {

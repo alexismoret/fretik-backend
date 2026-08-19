@@ -1,0 +1,289 @@
+import { parseLlmJsonObject } from "@fretik/shared/lib/llm-json";
+import type { PageBrief } from "@fretik/shared/schemas/pages";
+import type { PageRenderShot } from "@fretik/shared/services/pages/render/types";
+import { generateText, type ModelMessage } from "ai";
+import { join } from "node:path";
+import { z } from "zod";
+import { describeLlmError } from "../../lib/describe-llm-error";
+import { telemetryFor } from "../../lib/langfuse";
+import { resolveModel } from "../../lib/model-registry/resolve";
+import { BUNDLED_SKILLS_DIR } from "../../skills/paths";
+
+/**
+ * The judged half of a review: a critic that did not build the page, looking
+ * at what it actually renders.
+ *
+ * Two properties do the work, and both are structural rather than prompted.
+ * The critic runs on a FRESH context — it never sees the source, the
+ * conversation, or its own earlier verdicts, because a model asked to grade
+ * its own output grades it generously and a model shown the code reviews the
+ * code instead of the screen. And it does not decide anything: it returns four
+ * scores and a list of findings, while the weighting, the threshold and the
+ * ship/revise call are computed here. A critic that cannot declare victory
+ * cannot hack its way to one.
+ *
+ * The rubric is the skill's own `references/review-rubric.md` — one file read
+ * by both sides, so the page is judged on the terms it was built to.
+ */
+
+const critic = resolveModel("page-review");
+const CRITIC_MODEL_ID = critic.profile.catalog.id;
+
+/**
+ * Design carries the most weight because it is what the user cannot fix
+ * themselves; originality is deliberately a fifth of the score rather than a
+ * tiebreak, since a page that scores well everywhere else and could have been
+ * generated for any dataset is the exact failure this review exists to catch.
+ */
+export const CRITIQUE_WEIGHTS = {
+  design: 0.35,
+  functionality: 0.25,
+  craft: 0.2,
+  originality: 0.2,
+} as const;
+
+/** Weighted score a page must reach to ship. Also stated in the rubric. */
+export const SHIP_SCORE = 7.5;
+
+/** Applied here rather than asked for: the model reports four observations,
+ * the product decides what they are worth. */
+export const weightedScore = (scores: CritiqueScores): number =>
+  Math.round(
+    (scores.design * CRITIQUE_WEIGHTS.design +
+      scores.functionality * CRITIQUE_WEIGHTS.functionality +
+      scores.craft * CRITIQUE_WEIGHTS.craft +
+      scores.originality * CRITIQUE_WEIGHTS.originality) *
+      10,
+  ) / 10;
+
+/** Gemini 3.x reasons before answering and it counts against the cap. */
+const MAX_OUTPUT_TOKENS = 16_000;
+/**
+ * Reasoning is mandatory on this family, and this is a JUDGEMENT task — the
+ * one kind where thinking earns its tokens. `medium` rather than the `low` the
+ * extract engine pins: that pin answers a failure this call cannot have (bulk
+ * extraction at `medium` plans in thought summaries and emits one record of
+ * twenty-eight, under a 60k cap shared with the answer). A critique is ~1.5k
+ * tokens against a 16k cap, so the cost of the deeper setting is a fraction of
+ * a cent per review and truncation is surfaced below rather than guessed at.
+ */
+const CRITIC_PROVIDER_OPTIONS = {
+  openrouter: { reasoning: { effort: "medium" as const } },
+};
+/** Three screenshots plus reasoning; the call is off the user's hot path. */
+const TIMEOUT_MS = 180_000;
+/** Past this the list stops being a fix list and becomes a mood. */
+const MAX_FINDINGS = 12;
+/** One round can absorb three real improvements; a longer list is a wish list. */
+const MAX_ELEVATIONS = 3;
+
+const CritiqueSchema = z.object({
+  scores: z.object({
+    design: z.number().min(0).max(10),
+    functionality: z.number().min(0).max(10),
+    craft: z.number().min(0).max(10),
+    originality: z.number().min(0).max(10),
+  }),
+  summary: z.string().max(400),
+  findings: z
+    .array(
+      z.object({
+        severity: z.enum(["major", "minor"]),
+        where: z.string().max(160),
+        problem: z.string().max(400),
+        fix: z.string().max(400),
+      }),
+    )
+    .max(MAX_FINDINGS)
+    .default([]),
+  /**
+   * The second channel, and the reason this critic stopped being a rubber
+   * stamp. Findings are defects, so a page with no defect produced nothing —
+   * and measured across four reviews, every page that merely worked came back
+   * with four eights and a compliment. A page that works always has a next
+   * level; asking for it is what turns "ship" into "ship, and here is the one
+   * change that would make someone remember it".
+   */
+  elevations: z
+    .array(
+      z.object({
+        where: z.string().max(160),
+        change: z.string().max(400),
+        gain: z.string().max(240),
+      }),
+    )
+    .max(MAX_ELEVATIONS)
+    .default([]),
+});
+
+export type PageFinding = z.infer<typeof CritiqueSchema>["findings"][number];
+export type PageElevation = z.infer<
+  typeof CritiqueSchema
+>["elevations"][number];
+export type CritiqueScores = z.infer<typeof CritiqueSchema>["scores"];
+
+export interface PageCritique {
+  scores: CritiqueScores;
+  /** Weighted, rounded to one decimal — computed here, never by the model. */
+  score: number;
+  summary: string;
+  findings: PageFinding[];
+  elevations: PageElevation[];
+  model: string;
+}
+
+export type PageCritiqueResult =
+  { ok: true; critique: PageCritique } | { ok: false; reason: string };
+
+let rubricPromise: Promise<string> | null = null;
+const readRubric = (): Promise<string> => {
+  rubricPromise ??= Bun.file(
+    join(
+      BUNDLED_SKILLS_DIR,
+      "building-pages",
+      "references",
+      "review-rubric.md",
+    ),
+  ).text();
+  return rubricPromise;
+};
+
+const INSTRUCTIONS = [
+  "You are reviewing a page built for a business team by another agent. You did not build it, you owe its author nothing, and your job is to be the last person who looks at it before its users do.",
+  "Start from the assumption that it is mediocre and let the screenshots change your mind. A page that renders correctly and decides nothing scores 5 — that is the middle of the scale, not a failing grade, and most pages belong there. Reserve 9 and 10 for work you would show someone.",
+  "8 is not a resting place. A page that works, reads cleanly and decides one thing is a 7 or an 8, and saying so is only half the job: name what separates it from the band above. Four eights and a compliment is the answer of someone who stopped looking.",
+  "You see what the page renders, never its source. Judge the screen. Every finding names where it is on screen, what is wrong, and what to do instead — the builder has the code and will find it from your description.",
+  "Report only what you can see. Do not repeat anything listed as already known.",
+  "The data is live and it is the team's, not yours. A dataset with no rows today is a legitimate state of a working page, not a defect — judge whether the page explains itself and offers the way forward when it is empty, never how much data happens to exist right now. Never ask for more data, more records, or a fuller example.",
+  "Answer with a single JSON object and nothing else:",
+  '{ "scores": { "design": 0-10, "functionality": 0-10, "craft": 0-10, "originality": 0-10 }, "summary": "one sentence on what this page is and where it stands", "findings": [ { "severity": "major" | "minor", "where": "...", "problem": "...", "fix": "..." } ], "elevations": [ { "where": "...", "change": "...", "gain": "..." } ] }',
+  '"major" is something a user would hit or complain about; "minor" is polish. Order them by severity. An empty findings list is a real answer when nothing on the page is wrong.',
+  "`elevations` is the other question, and it is not the same one: not what is broken, but what would make this page better than it is. At most three, ordered by how much they change the page, each naming where on screen it goes, the concrete change, and what the reader gains. Return at least one whenever the page scores below 9 — a page with no defects still has a next level, and this is where it is written down. Reach for the change that is specific to THIS subject: the value that should wear its own colour, the figure that should carry its comparison, the region that should be denser or larger, the view the data supports and the page does not offer. Never propose more data.",
+].join("\n");
+
+const describeBrief = (brief: PageBrief | undefined): string =>
+  brief
+    ? [
+        "## what this page was supposed to be",
+        `Job: ${brief.product.job}`,
+        `Audience: ${brief.product.audience}`,
+        ...(brief.product.features.length > 0
+          ? [`Promised: ${brief.product.features.join("; ")}`]
+          : []),
+        `Layout: ${brief.design.layout}`,
+        `Signature: ${brief.design.signature}`,
+        ...(brief.design.motion ? [`Motion: ${brief.design.motion}`] : []),
+        "",
+        "Score it against this brief as much as against the rubric: a page that quietly dropped what it promised is not finished, however good the part it kept.",
+      ].join("\n")
+    : [
+        "## no brief",
+        "This page was built without a written brief, so judge it on its own terms: what does it look like it is for, and does it do that well.",
+      ].join("\n");
+
+const describeShot = (shot: PageRenderShot): string => {
+  if (shot.label === "mobile") {
+    return `### ${shot.label} — ${shot.width.toString()}px wide. A narrow layout, not a squeezed wide one: columns stack, tables become readable rows or scroll inside their own region.`;
+  }
+  if (shot.label === "desktop-bottom") {
+    return `### ${shot.label} — the SAME page, scrolled to its end. Everything here is below the fold on arrival. A region that grows with its data belongs in a bounded, scrollable area with whatever orients the reader pinned to its edge; a table whose header scrolled away, a list that pushed the rest of the page off the screen, and a stranded footer of empty space all show up here and nowhere else.`;
+  }
+  if (shot.label === "tablet") {
+    return `### ${shot.label} — ${shot.width.toString()}px wide, a laptop window. The same page one breakpoint down: a grid that was one row of four here becomes two rows of two, and any region given a fixed height for the wide layout now splits that height between rows. Judge whether the layout still holds its shape, or merely survives.`;
+  }
+  if (shot.label === "empty-state") {
+    return `### ${shot.label} — the same page with every dataset returning zero rows. This is day one, and any day a filter matches nothing. It should still explain itself and offer the way forward.`;
+  }
+  // Never promises rows: the datasets are live, and a team whose records are
+  // still empty would otherwise have its page marked down for their absence.
+  return `### ${shot.label} — ${shot.width.toString()}×${shot.height.toString()}, the page as someone arrives on it, over whatever the team's data holds today.`;
+};
+
+export const evaluatePageDesign = async (params: {
+  pageName: string;
+  brief: PageBrief | undefined;
+  shots: PageRenderShot[];
+  /** Gate findings — stated so the critic spends its attention elsewhere. */
+  known: string[];
+}): Promise<PageCritiqueResult> => {
+  if (params.shots.length === 0) {
+    return { ok: false, reason: "no screenshots were captured" };
+  }
+
+  const content: ModelMessage[] = [
+    {
+      role: "user",
+      content: [
+        { type: "text", text: await readRubric() },
+        {
+          type: "text",
+          text: `# The page under review\n\nName: ${params.pageName}\n\n${describeBrief(params.brief)}`,
+        },
+        ...(params.known.length > 0
+          ? [
+              {
+                type: "text" as const,
+                text: `## already known — do not report these again\n${params.known.map((line) => `- ${line}`).join("\n")}`,
+              },
+            ]
+          : []),
+        { type: "text", text: "## captures" },
+        ...params.shots.flatMap((shot) => [
+          { type: "text" as const, text: describeShot(shot) },
+          {
+            type: "file" as const,
+            data: shot.png,
+            mediaType: "image/png",
+          },
+        ]),
+      ],
+    },
+  ];
+
+  let raw: string;
+  let truncated = false;
+  try {
+    const { text, finishReason } = await generateText({
+      model: critic.model,
+      instructions: INSTRUCTIONS,
+      messages: content,
+      maxOutputTokens: MAX_OUTPUT_TOKENS,
+      abortSignal: AbortSignal.timeout(TIMEOUT_MS),
+      // Nests under the `managePage` tool call → under `chatbot-turn`.
+      telemetry: telemetryFor("page-review"),
+      providerOptions: CRITIC_PROVIDER_OPTIONS,
+    });
+    raw = text;
+    truncated = finishReason === "length";
+  } catch (error) {
+    return { ok: false, reason: describeLlmError(error) };
+  }
+
+  // Free-form JSON, not constrained decoding: the same Gemini route bails
+  // bimodally under `response_format: json_schema` (see `structured-extract`).
+  const parsed = CritiqueSchema.safeParse(parseLlmJsonObject(raw));
+  if (!parsed.success) {
+    // Two different failures, and telling them apart is what makes the reason
+    // actionable: a cap hit is ours to raise, anything else is the model.
+    return {
+      ok: false,
+      reason: truncated
+        ? "the critique ran past its output budget before it finished"
+        : "the critic did not return a readable verdict",
+    };
+  }
+
+  const { scores } = parsed.data;
+
+  return {
+    ok: true,
+    critique: {
+      scores,
+      score: weightedScore(scores),
+      summary: parsed.data.summary,
+      findings: parsed.data.findings,
+      elevations: parsed.data.elevations,
+      model: CRITIC_MODEL_ID,
+    },
+  };
+};

@@ -74,6 +74,10 @@ const PROMPTS: readonly {
     name: "fretik-chatbot-sub-agent",
     path: `${PROJECT_ROOT}/src/agents/chatbot/sub-agent-system-prompt.md`,
   },
+  {
+    name: "fretik-page-builder",
+    path: `${PROJECT_ROOT}/src/agents/chatbot/page-builder-system-prompt.md`,
+  },
 ] as const;
 
 const client = new LangfuseClient();

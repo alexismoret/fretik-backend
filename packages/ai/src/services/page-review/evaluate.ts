@@ -6,7 +6,11 @@ import { join } from "node:path";
 import { z } from "zod";
 import { describeLlmError } from "../../lib/describe-llm-error";
 import { telemetryFor } from "../../lib/langfuse";
-import { resolveModel } from "../../lib/model-registry/resolve";
+import {
+  resolveModel,
+  resolveModelForRoleProfile,
+  type ResolvedModel,
+} from "../../lib/model-registry/resolve";
 import { BUNDLED_SKILLS_DIR } from "../../skills/paths";
 
 /**
@@ -26,8 +30,20 @@ import { BUNDLED_SKILLS_DIR } from "../../skills/paths";
  * by both sides, so the page is judged on the terms it was built to.
  */
 
-const critic = resolveModel("page-review");
-const CRITIC_MODEL_ID = critic.profile.catalog.id;
+/**
+ * The critic, resolved once per profile key.
+ *
+ * Overridable because "who judges" is a measurement question, not only a
+ * production one: when an A/B pins the BUILDER to a profile, a critic from that
+ * same family scores its own family's work — the self-review the whole role
+ * exists to avoid — and the arm reads high for the wrong reason. The harness
+ * pins a neutral critic for the run; production passes nothing and gets the
+ * `page-review` binding.
+ */
+const criticFor = (profileKey?: string): ResolvedModel =>
+  profileKey === undefined
+    ? resolveModel("page-review")
+    : resolveModelForRoleProfile("page-review", profileKey);
 
 /**
  * Design carries the most weight because it is what the user cannot fix
@@ -205,10 +221,13 @@ export const evaluatePageDesign = async (params: {
   shots: PageRenderShot[];
   /** Gate findings — stated so the critic spends its attention elsewhere. */
   known: string[];
+  /** Override the critic (harness A/Bs only — see `criticFor`). */
+  criticProfileKey?: string;
 }): Promise<PageCritiqueResult> => {
   if (params.shots.length === 0) {
     return { ok: false, reason: "no screenshots were captured" };
   }
+  const critic = criticFor(params.criticProfileKey);
 
   const content: ModelMessage[] = [
     {
@@ -283,7 +302,7 @@ export const evaluatePageDesign = async (params: {
       summary: parsed.data.summary,
       findings: parsed.data.findings,
       elevations: parsed.data.elevations,
-      model: CRITIC_MODEL_ID,
+      model: critic.profile.catalog.id,
     },
   };
 };

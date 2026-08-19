@@ -74,6 +74,15 @@ interface CliOptions {
    * `page-build` role binding.
    */
   pageBuildCandidate?: string;
+  /**
+   * Pin the DESIGN CRITIC to this registry profile, for the run only.
+   * Mandatory whenever `--page-build-candidate` names a profile in the
+   * `page-review` binding's family: builder and critic sharing a family is
+   * self-review, and the arm reads high for the wrong reason.
+   */
+  pageJudgeCandidate?: string;
+  /** Run only these case ids — a subset of whatever the other filters select. */
+  caseIds?: string[];
   /** Include model-gate tier probes (the true full suite). */
   all: boolean;
 }
@@ -88,6 +97,7 @@ const parseArgs = (argv: string[]): CliOptions => {
     deterministicOnly: false,
     all: false,
   };
+  const unknown: string[] = [];
   for (let i = 0; i < argv.length; i++) {
     const flag = argv[i];
     const next = argv[i + 1];
@@ -129,11 +139,34 @@ const parseArgs = (argv: string[]): CliOptions => {
       i += 1;
       continue;
     }
+    if (flag === "--page-judge-candidate" && next) {
+      opts.pageJudgeCandidate = next;
+      i += 1;
+      continue;
+    }
+    if (flag === "--case" && next) {
+      (opts.caseIds ??= []).push(next);
+      i += 1;
+      continue;
+    }
     if (flag === "--candidate" && next) {
       opts.candidate = next;
       i++;
       continue;
     }
+    // Anything left is a typo, a flag that lost its value, or — the one that
+    // cost a full core run — several flags arriving as ONE argv entry because
+    // zsh does not word-split an unquoted `$VAR`. Silently ignoring it meant a
+    // selection quietly widened to the whole dataset, which is the expensive
+    // direction. Refuse instead.
+    unknown.push(flag ?? "");
+  }
+  if (unknown.length > 0) {
+    console.error(
+      `[evals] unrecognised argument(s): ${unknown.map((a) => JSON.stringify(a)).join(", ")}\n` +
+        `[evals] pass each flag as its own argument (in zsh, write them out or use an array — an unquoted "$VAR" arrives as one).`,
+    );
+    process.exit(2);
   }
   return opts;
 };
@@ -148,6 +181,12 @@ const main = async (): Promise<void> => {
   // memory/recall harnesses (`evals:memory`, `evals:recall`) are separate
   // and keep their own gpt-oss defaults.
   const pinnedProfileKey = opts.candidate ?? ROLE_BINDINGS.chat.profileKey;
+  // The critic runs IN this process (unlike the builder, which is pinned
+  // through a header on the service call), so the pin travels by env to the
+  // one place that builds it — `evals/page-design-judge.ts`.
+  if (opts.pageJudgeCandidate) {
+    process.env.EVAL_PAGE_JUDGE_PROFILE = opts.pageJudgeCandidate;
+  }
   const result = await runChatbotExperiment({
     smoke: opts.smoke,
     deterministicOnly: opts.deterministicOnly,
@@ -160,6 +199,7 @@ const main = async (): Promise<void> => {
     ...(opts.pageBuildCandidate
       ? { pageBuildProfileKey: opts.pageBuildCandidate }
       : {}),
+    ...(opts.caseIds ? { caseIds: opts.caseIds } : {}),
     metadata: {
       release: process.env.LANGFUSE_RELEASE ?? "(dev)",
       smoke: opts.smoke,

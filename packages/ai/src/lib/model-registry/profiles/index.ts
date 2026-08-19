@@ -297,14 +297,35 @@ export const ROLE_BINDINGS: Record<ModelRole, RoleBinding> = {
   // Corroborated by the one public benchmark close to the task: design_arena
   // "website", where 3.7 Flash ranks 2nd (elo 1333).
   //
-  // Cost at SETTLED prices (the live headline is a launch promotion): ~1 ¢ per
-  // review against flash-lite's ~0.5 ¢, so ~1.5 ¢ more per page at the
-  // three-review budget — halved on 2026-08-18 when the announced
-  // post-promotion rate came in at $0.75/$3.75, half the estimate this was
-  // first argued against. Re-run the A/B before repointing this.
+  // MOVED OFF GEMINI 2026-08-19, forced by the builder landing there: builder
+  // and critic in one family is self-review, and that is the failure this role
+  // exists to prevent (see `page-build`).
+  //
+  // Re-measured with `evals/compare-critics.ts` — same page, same screenshots,
+  // one render shared by every candidate, scored on "names the real defects,
+  // invents none". A hallucinated finding is the expensive error: the builder
+  // spends a fix round (~3 ¢, a minute) chasing something that is not there.
+  //
+  // The cheap tier failed on capability, not taste: `minimax-m3` (1.1 ¢/page)
+  // and `claude-haiku-4.5` (4 ¢) could not return readable JSON at all — 154 s
+  // and 123 s to produce nothing; `mistral-small` (0.5 ¢) awarded 9/10 while
+  // declaring two MAJOR findings, which is not a gate; `gpt-5.4-nano` (0.9 ¢)
+  // invented a major — "Terminé missing from the mobile legend", checked false
+  // in the browser at 390 px. Vision + a long rubric + structured output is a
+  // floor a small model does not clear.
+  //
+  // `gpt-5.6-luna` is the cheapest that behaves (4.4 ¢/page at three reviews,
+  // ~1.4 ¢ over the Gemini it replaces): five findings, no invention, and it
+  // caught the currency rendering as `€93,000.00` in a French UI. Sonnet 5 is
+  // sharper still — alone in seeing that `Basse` rows lost the colour dot the
+  // other priorities carry — at 8 ¢/page; it stays the REFERENCE judge for
+  // measurements (`--page-judge-candidate`), not the production critic.
+  //
+  // Honest limit: one page, one run. The disqualifications are robust (no
+  // output, invented finding, incoherent score); the luna/sonnet gap is not.
   "page-review": {
     role: "page-review",
-    profileKey: "gemini-3.7-flash",
+    profileKey: "gpt-5.6-luna",
     settingsKind: "bare",
     wrapCache: false,
   },
@@ -314,22 +335,38 @@ export const ROLE_BINDINGS: Record<ModelRole, RoleBinding> = {
   // it ignored the team's flagship entirely. Every page this product has ever
   // generated — evals and real teams alike — was written by the code default.
   //
-  // Starts pinned to the same profile that default resolved to, so the first
-  // run after this change measures the CURRENT behaviour and nothing else. The
-  // A/B that repoints it (gemini-3.7-flash — Design Arena "website" rank 5 and
-  // multimodal, so it could read its own review screenshots — against
-  // gpt-5.6-luna and this control) is the next step, not this one.
+  // Repointed to gemini-3.7-flash on 2026-08-19 by the A/B that role was
+  // created to make possible — three building cases, both arms judged by a
+  // NEUTRAL critic (claude-sonnet-5, `--page-judge-candidate`), because the
+  // candidate and the then-critic shared a family and the arm would otherwise
+  // have scored its own work:
+  //
+  //   case                     deepseek-v4-flash   gemini-3.7-flash
+  //   vague ask                5.4                 5.8
+  //   filterable directory     5.1                 5.8
+  //   detailed dashboard       NO PAGE SAVED       5.6
+  //   correctness              0.750               0.908
+  //   latency / case           ~19.8 min           ~7.4 min
+  //
+  // The control did not fail on a rig error: `finishReason: stop`, 27 minutes,
+  // 25 tool calls (14 of them `managePage`), and nothing persisted — on the
+  // most canonical case in the suite. On design score alone the deltas (+0.4,
+  // +0.7) sit inside a critic's run-to-run variance at n=3; what decides is
+  // correctness, 2.7× the speed, and the page that never existed.
+  //
+  // The bias ran AGAINST the winner, which is why the result is trustworthy:
+  // the Gemini arm still self-reviewed inside its own build loop (the service
+  // resolves `page-review` internally, no header reaches it), so it iterated
+  // against a critic inclined to praise it and still won on a neutral judge.
   //
   // `chat` settings, not `bare`: the builder is a multi-step tool-calling agent
   // on a long context, so it wants the same envelope and cache wrap a chat turn
   // gets, not a one-shot's.
   //
-  // WHEN THIS MOVES TO gemini-3.7-flash, `page-review` MUST LEAVE THAT FAMILY.
-  // Builder and critic sharing a model is self-review, and the whole reason the
-  // critic exists is the documented "confidently praise" failure of it.
+  // THIS AND `page-review` MOVE TOGETHER. They may never share a family.
   "page-build": {
     role: "page-build",
-    profileKey: "deepseek-v4-flash",
+    profileKey: "gemini-3.7-flash",
     settingsKind: "chat",
     wrapCache: true,
   },

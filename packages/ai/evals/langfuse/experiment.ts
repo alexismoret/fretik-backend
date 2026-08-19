@@ -38,6 +38,12 @@ export interface ExperimentOptions {
   /** Run only one suite (`metadata.suite`, e.g. "doctrine"). */
   suite?: string;
   /**
+   * Run only these case ids. Narrows whatever the other filters selected —
+   * an A/B pays for every arm, so it buys the cases that discriminate rather
+   * than the whole suite.
+   */
+  caseIds?: string[];
+  /**
    * Include `tier: "model-gate"` items (per-model probes). Default
    * false: the everyday full baseline runs CORE cases only — model
    * probes measure the model, not the prompt/tool prose, and they are
@@ -170,7 +176,13 @@ const buildCostRunEvaluator = (): RunEvaluator => {
 
 const readMeta = (item: {
   metadata?: unknown;
-}): { smoke?: boolean; capability?: string; tier?: string; suite?: string } => {
+}): {
+  smoke?: boolean;
+  capability?: string;
+  tier?: string;
+  suite?: string;
+  caseId?: string;
+} => {
   const m = item.metadata;
   if (!m || typeof m !== "object") return {};
   const smoke =
@@ -182,7 +194,9 @@ const readMeta = (item: {
   const tier = "tier" in m && typeof m.tier === "string" ? m.tier : undefined;
   const suite =
     "suite" in m && typeof m.suite === "string" ? m.suite : undefined;
-  return { smoke, capability, tier, suite };
+  const caseId =
+    "caseId" in m && typeof m.caseId === "string" ? m.caseId : undefined;
+  return { smoke, capability, tier, suite, caseId };
 };
 
 export const runChatbotExperiment = async (
@@ -200,8 +214,10 @@ export const runChatbotExperiment = async (
   const evaluators = [buildItemEvaluator(configIds)];
   const runEvaluators = [buildRunEvaluator(configIds), buildCostRunEvaluator()];
   const maxConcurrency = opts.maxConcurrency ?? DEFAULT_CONCURRENCY;
+  const caseIds =
+    opts.caseIds && opts.caseIds.length > 0 ? opts.caseIds : undefined;
   const explicitSelection = Boolean(
-    opts.smoke || opts.capability || opts.suite,
+    opts.smoke || opts.capability || opts.suite || caseIds,
   );
   // Default full run = CORE tier only; `includeModelGate` (gate / --all)
   // restores the true unfiltered dataset run.
@@ -236,11 +252,27 @@ export const runChatbotExperiment = async (
       if (opts.smoke && meta.smoke !== true) return false;
       if (opts.capability && meta.capability !== opts.capability) return false;
       if (opts.suite && meta.suite !== opts.suite) return false;
+      if (caseIds && !(meta.caseId && caseIds.includes(meta.caseId)))
+        return false;
       // Core-only default: skip model-gate probes unless the caller
       // selected explicitly (smoke / capability span both tiers).
       if (!explicitSelection && meta.tier === "model-gate") return false;
       return true;
     });
+    // A `--case` that matches nothing is a typo, and an arm that quietly runs
+    // fewer cases than its twin is not comparable to it. Stop rather than
+    // produce a run whose `N items` has to be noticed.
+    if (caseIds) {
+      const matched = new Set(
+        data.map((item) => readMeta(item).caseId).filter(Boolean),
+      );
+      const missing = caseIds.filter((id) => !matched.has(id));
+      if (missing.length > 0) {
+        throw new Error(
+          `no dataset item for case id(s): ${missing.join(", ")} — check the id, or sync the dataset (bun evals/langfuse/dataset-sync.ts)`,
+        );
+      }
+    }
     result = await langfuseClient.experiment.run({ ...common, data });
   }
 

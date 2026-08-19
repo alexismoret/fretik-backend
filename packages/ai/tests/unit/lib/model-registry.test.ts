@@ -255,16 +255,18 @@ describe("role bindings — default model ids pinned (chat: gated M3 flip)", () 
     vision: "google/gemini-3.5-flash-lite",
     "vision-fallback": "google/gemini-3.1-flash-lite",
     // Its own role, not `vision`'s: judging whether a screen was designed is a
-    // different job from reading a document, and the two moved apart the day
-    // the A/B on two known-broken pages picked 3.7 Flash here (see the binding).
-    "page-review": "google/gemini-3.7-flash",
+    // different job from reading a document. Left Gemini on 2026-08-19 when the
+    // BUILDER landed there — the two may never share a family, or the critic
+    // reviews its own work (see both bindings).
+    "page-review": "openai/gpt-5.6-luna",
     // Its own role since 2026-08-18. Before that the page BUILDER resolved
     // `resolveModel("chat")` at module load, so no pin — not the team's
     // flagship, not the eval header — could reach it, and every page the
-    // product ever generated came from the code default. Pinned here so a
-    // repoint is a deliberate edit with a run behind it, exactly like the
-    // critic above.
-    "page-build": "deepseek/deepseek-v4-flash-0731",
+    // product ever generated came from the code default. Repointed 2026-08-19
+    // on a neutral-judge A/B (the control failed to save a page at all on the
+    // canonical case); pinned here so the next move is a deliberate edit with a
+    // run behind it, exactly like the critic above.
+    "page-build": "google/gemini-3.7-flash",
     transform: "deepseek/deepseek-v4-flash-0731",
     "transform-fallback": "google/gemini-3.7-flash",
     "tool-repair": "openai/gpt-oss-120b",
@@ -297,6 +299,19 @@ describe("role bindings — default model ids pinned (chat: gated M3 flip)", () 
     for (const [role, binding] of Object.entries(ROLE_BINDINGS)) {
       expect(binding.wrapCache).toBe(wrapped.includes(role as ModelRole));
     }
+  });
+
+  test("the page builder and its critic never share a family", () => {
+    // The critic exists to catch what the builder cannot see in its own work,
+    // and a model asked to grade its own family praises it — the documented
+    // failure the role was created around. Both bindings carried that rule in
+    // prose and it still had to be remembered by hand on 2026-08-19, when the
+    // builder moved onto the critic's model. Cheaper as an assertion.
+    const builder = MODEL_PROFILES[ROLE_BINDINGS["page-build"].profileKey];
+    const critic = MODEL_PROFILES[ROLE_BINDINGS["page-review"].profileKey];
+    expect(builder).toBeDefined();
+    expect(critic).toBeDefined();
+    expect(critic.family).not.toBe(builder.family);
   });
 });
 

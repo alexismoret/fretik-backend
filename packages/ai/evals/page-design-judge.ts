@@ -89,6 +89,12 @@ const run = async (params: {
     // The critic is told what the gate already caught so it spends its
     // attention on what only a reader can see.
     known: gate.blocking,
+    // Set by `--page-judge-candidate`. A builder A/B MUST pin a critic neutral
+    // to both arms: leave this unset while pinning the builder to the critic's
+    // own family and that arm scores its own work.
+    ...(process.env.EVAL_PAGE_JUDGE_PROFILE
+      ? { criticProfileKey: process.env.EVAL_PAGE_JUDGE_PROFILE }
+      : {}),
   });
 
   return critique.ok

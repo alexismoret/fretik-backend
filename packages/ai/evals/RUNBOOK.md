@@ -80,18 +80,36 @@ and no pin could reach it at all. Use `--page-build-candidate <profileKey>`
 (header `X-Page-Build-Profile-Key`, `/invoke` only, unknown keys 400):
 
 ```bash
-# control, then a candidate builder — same suite, same parent model
-AI_SERVICE_URL=http://localhost:8083 bun run evals:langfuse -- --suite pages --run-name pages-build-control | tee /tmp/control.log
-AI_SERVICE_URL=http://localhost:8083 bun run evals:langfuse -- --suite pages --page-build-candidate gemini-3.7-flash --run-name pages-build-gemini | tee /tmp/gemini.log
+# control, then a candidate builder — same cases, same parent model, NEUTRAL judge
+CASES="--case page-vague-request-expands --case page-dashboard-kpi-charts --case page-filterable-directory --case page-time-shape"
+AI_SERVICE_URL=http://localhost:8083 bun run evals:langfuse -- $CASES --page-build-candidate deepseek-v4-flash --page-judge-candidate claude-sonnet-5 --run-name ab-build-control | tee /tmp/control.log
+AI_SERVICE_URL=http://localhost:8083 bun run evals:langfuse -- $CASES --page-build-candidate gemini-3.7-flash  --page-judge-candidate claude-sonnet-5 --run-name ab-build-gemini  | tee /tmp/gemini.log
 ```
 
 The run metadata records `pageBuildProfileKey`, so a run says which model wrote its
-pages, not just which one decided to. **Compare the DESIGN AVERAGE across the seven
+pages, not just which one decided to. **Compare the DESIGN AVERAGE across the
 building cases** — correctness moves for many reasons, the design score is what a
-builder swap is for. And if a builder candidate ever lands in the critic's family
-(`page-review` is `gemini-3.7-flash`), repoint the critic in the same change:
-builder and judge on one model is self-review, the exact failure the critic exists
-to prevent.
+builder swap is for.
+
+**`--page-judge-candidate` is not optional when the arms straddle the critic's
+family.** `page-review` is `gemini-3.7-flash`; pin a Gemini BUILDER without
+repointing the critic and that arm scores its own family's work. Unlike the
+builder pin (a header on the service call), the critic runs in THIS process, so
+the flag travels by `EVAL_PAGE_JUDGE_PROFILE` to `evals/page-design-judge.ts`.
+A neutral judge costs ~2.7 ¢ per page on `claude-sonnet-5` — noise against a
+~11 ¢ build, and it is the only reason to trust the comparison.
+
+One caveat the flag does NOT cover: the builder's OWN review loop runs inside the
+service on the `page-review` binding, so a Gemini arm still self-reviews while
+building. That biases it DOWNWARD on a neutral judge (a critic that praises its
+own family catches less), so a win under these conditions is trustworthy; a loss
+is not conclusive.
+
+**`--case <id>` (repeatable)** narrows any selection to the cases that
+discriminate. An A/B pays for every arm, so buy the four cases that move the
+design score rather than the whole suite: the vague ask (design initiative), the
+detailed dashboard (faithful execution), the directory (dense data), and one
+non-dashboard shape (does everything collapse into a dashboard?).
 
 **The memory harnesses, in one table.** All three share the EVAL team, so the
 fixtures of one decide cases in another — clean up before switching.

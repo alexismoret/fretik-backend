@@ -41,7 +41,7 @@ describe("the page builder's model", () => {
     // The header (`X-Page-Build-Profile-Key`) is worth nothing if resolution
     // ignores it. Any profile that is NOT the current binding proves the knob
     // is wired.
-    const candidate = "gemini-3.7-flash";
+    const candidate = "deepseek-v4-flash";
     expect(ROLE_BINDINGS["page-build"].profileKey).not.toBe(candidate);
     expect(getPageBuilderSet(candidate)).not.toBe(getPageBuilderSet());
   });

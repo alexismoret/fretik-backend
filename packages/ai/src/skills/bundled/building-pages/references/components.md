@@ -15,6 +15,7 @@ Two rules that decide most of it:
 | A person, an account, an owner    | `UUser` (avatar + name + description in one) or `UAvatar` alone in a cell   |
 | Several people on one row         | `UAvatarGroup` with `:max`                                                  |
 | A ratio, a score, a completion    | `UProgress` (`size="xs"` inside a row)                                      |
+| One total split into named parts  | `UProgressGroup` — segments and legend in one, before reaching for a pie    |
 | A rating out of five              | `UInputRating` with `disabled`                                              |
 | An icon                           | `UIcon` — `i-lucide-*` only                                                 |
 | A keyboard shortcut               | `UKbd`                                                                      |
@@ -61,6 +62,8 @@ These are the moves that separate a working screen from a rendered list. They ar
 **A number that needs a comparison** → pair it with the comparison in place: a `UProgress` under it, a delta beside it, a sparkline behind it.
 
 **Several parallel views of the same subject** → `UTabs` when they are peers and the URL does not matter; a segmented row of `UButton`s when they are filters over one view; never two full tables stacked down the page.
+
+**Two regions the reader weighs against each other** → `USplitter`, so the balance is theirs: a list beside the record it opens, filters beside results, a draft beside its preview. Panes are an `items` array of `{ slot, minSize, collapsible }` filled by the slot each one names, handles appear between them on their own, and the parent must carry a height — the splitter takes its own from it and collapses without one. `auto-save-id` saves nothing behind the sandbox, so never word a layout as remembered.
 
 **Long free text** → `truncate` plus the full value on demand. Never let a cell decide silently how much of a value a person is allowed to read.
 
@@ -138,6 +141,7 @@ The general form of the trap, which is worth carrying to any component: **a slot
 | A grid of those                             | `UPageGrid`                    |
 | A titled section with description           | `UPageHeader`, or plain markup |
 | Side-by-side panes                          | `UPageColumns`, or a grid      |
+| Panes the reader resizes                    | `USplitter` (§ Techniques)     |
 | A max-width wrapper                         | `UContainer`                   |
 | A divider, optionally labelled              | `USeparator`                   |
 | Show/hide a block                           | `UCollapsible`                 |
@@ -149,7 +153,7 @@ The general form of the trap, which is worth carrying to any component: **a slot
 | A scroll region with its own bar            | `UScrollArea`                  |
 | Scoped colour override for a subtree        | `UTheme`                       |
 
-**Not for pages, for two different reasons.** `UApp`, `UHeader`, `UFooter`, `UMain`, `UBanner`, `USidebar`, `UNavigationMenu` and `UDashboardNavbar` / `UDashboardSidebar*` / `UDashboardSearch*` / `UDashboardToolbar`: the app already provides the shell around your page, so a second navbar or sidebar inside it reads as a bug. `UDashboardGroup` / `UDashboardPanel` / `UDashboardResizeHandle` are not shell — they are a resizable split — but they persist their sizes through a cookie or `localStorage`, and neither exists behind an opaque origin. Split a screen with a grid or `UPageColumns` instead; give each side its own scroll region (§ Techniques). `UAuthForm`, `UPricing*`, `UBlog*`, `UChangelog*`, `UPageHero`, `UPageSection`, `UPageCTA`, `UPageLogos` are marketing-site furniture; they look out of place in a working screen.
+**Not for pages, for two different reasons.** `UApp`, `UHeader`, `UFooter`, `UMain`, `UBanner`, `USidebar`, `UNavigationMenu` and `UDashboardNavbar` / `UDashboardSidebar*` / `UDashboardSearch*` / `UDashboardToolbar`: the app already provides the shell around your page, so a second navbar or sidebar inside it reads as a bug. `UDashboardGroup` / `UDashboardPanel` / `UDashboardResizeHandle` are not shell — they are a resizable split — but they answer the app's own sidebar hooks and persist their sizes through a cookie. `USplitter` is the resizable split that belongs in a page (§ Techniques); a grid or `UPageColumns` when the proportions are yours to fix rather than the reader's. `UAuthForm`, `UPricing*`, `UBlog*`, `UChangelog*`, `UPageHero`, `UPageSection`, `UPageCTA`, `UPageLogos` are marketing-site furniture; they look out of place in a working screen.
 
 The general form, and it applies to components you meet later: **a component that persists, navigates, or owns the page shell was written for an app, not for a frame inside one.** Check what it stores and what it wraps before reaching for it.
 

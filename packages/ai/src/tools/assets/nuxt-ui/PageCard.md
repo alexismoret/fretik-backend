@@ -138,7 +138,7 @@ You can pass any property from the [`<NuxtLink>`](https://nuxt.com/docs/api/comp
     title="Tailwind CSS"
     description="Nuxt UI integrates with latest Tailwind CSS, bringing significant improvements."
     icon="i-simple-icons-tailwindcss"
-    to="https://tailwindcss.com/docs/v4-beta"
+    to="https://tailwindcss.com/blog/tailwindcss-v4"
     target="_blank"
   />
 </template>
@@ -154,7 +154,7 @@ Use the `variant` prop to change the style of the card.
     title="Tailwind CSS"
     description="Nuxt UI integrates with latest Tailwind CSS, bringing significant improvements."
     icon="i-simple-icons-tailwindcss"
-    to="https://tailwindcss.com/docs/v4-beta"
+    to="https://tailwindcss.com/blog/tailwindcss-v4"
     target="_blank"
     variant="soft"
   />

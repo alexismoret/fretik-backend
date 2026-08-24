@@ -45,10 +45,11 @@ interface CheckboxProps {
   indicator?: "start" | "end" | "hidden" | undefined;
   /**
    * Highlight the ring color like a focus state.
+   * @default false
    */
   highlight?: boolean | undefined;
   /**
-   * The icon displayed when checked.
+   * The icon displayed when checked, or above the label when `indicator` is `hidden`.
    * @default appConfig.ui.icons.check
    */
   icon?: any;
@@ -287,9 +288,19 @@ Use the `size` prop to change the size of the Checkbox.
 
 Use the `indicator` prop to change the position or hide the indicator. Defaults to `start`.
 
+> \[!NOTE]
+>
+> When `indicator` is `hidden`, the icon is displayed above the label instead.
+
 ```vue
 <template>
-  <UCheckbox indicator="end" variant="card" default-value label="Check me" />
+  <UCheckbox
+    indicator="hidden"
+    variant="card"
+    icon="i-lucide-heart"
+    default-value
+    label="Check me"
+  />
 </template>
 ```
 

@@ -489,7 +489,7 @@ const variants: {
             :variants="variants"
             :animate="open ? 'close' : 'normal'"
             :custom="1"
-            class="outline-none"
+            tabindex="-1"
           />
           <motion.line
             x1="4"
@@ -499,7 +499,7 @@ const variants: {
             :variants="variants"
             :animate="open ? 'close' : 'normal'"
             :custom="2"
-            class="outline-none"
+            tabindex="-1"
           />
           <motion.line
             x1="4"
@@ -509,7 +509,7 @@ const variants: {
             :variants="variants"
             :animate="open ? 'close' : 'normal'"
             :custom="3"
-            class="outline-none"
+            tabindex="-1"
           />
         </svg>
       </UButton>

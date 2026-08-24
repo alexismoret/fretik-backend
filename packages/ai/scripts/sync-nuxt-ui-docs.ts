@@ -2,7 +2,7 @@
  * Regenerates the page runtime's component reference corpus.
  *
  * Pages are written by the agent in real Vue against real Nuxt UI, so the
- * agent needs the real component API — every prop, every slot, for 112
+ * agent needs the real component API — every prop, every slot, for 117
  * components. That does not fit in a skill, and it must not go stale: this
  * script rebuilds it from the library's own published corpus.
  *

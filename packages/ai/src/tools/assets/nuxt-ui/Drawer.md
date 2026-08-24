@@ -502,7 +502,7 @@ defineShortcuts({
 
 > \[!TIP]
 >
-> This allows you to move the trigger outside of the Drawer or remove it entirely.
+> This lets you move the trigger outside of the Drawer or remove it entirely.
 
 ### Responsive drawer
 

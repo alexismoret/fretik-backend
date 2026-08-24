@@ -137,7 +137,7 @@ When accessing the component via a template ref, you can use the following:
 
 ## Usage
 
-Use the Tabs component to display a list of items in a tabs.
+Use the Tabs component to display a list of items in tabs.
 
 ```vue [TabsExample.vue]
 <script setup lang="ts">

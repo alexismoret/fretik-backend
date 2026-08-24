@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
  * The component reference corpus served by `managePage { action: "components" }`.
  *
  * A page is real Vue over real Nuxt UI, so the agent needs the real API of the
- * components it is about to use — every prop, every slot. 109 components of
+ * components it is about to use — every prop, every slot. 117 components of
  * that do not fit in a skill and must not be paraphrased into staleness, so
  * they are generated from the library's own published docs
  * (`scripts/sync-nuxt-ui-docs.ts`, re-run on every `@nuxt/ui` upgrade) and

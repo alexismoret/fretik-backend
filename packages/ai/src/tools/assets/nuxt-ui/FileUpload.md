@@ -245,7 +245,7 @@ Use the `interactive` prop to enable/disable the clickable area. Defaults to `tr
 
 ### Accept
 
-Use the `accept` prop to specify the allowed file types for the input. Provide a comma-separated list of [MIME types](https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/MIME_types){rel="&#x22;nofollow&#x22;"} or file extensions (e.g., `image/png,application/pdf,.jpg`). Defaults to `*` (all file types).
+Use the `accept` prop to specify the allowed file types for the input. Provide a comma-separated list of [MIME types](https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/MIME_types){rel="&#x22;nofollow&#x22;"} or file extensions (e.g. `image/png,application/pdf,.jpg`). Defaults to `*` (all file types).
 
 ```vue
 <template>

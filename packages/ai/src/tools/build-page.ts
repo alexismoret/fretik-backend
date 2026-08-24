@@ -1,5 +1,5 @@
 import { describeRowTypes } from "@fretik/shared/services/pages/describe-row-types";
-import type { Agent, GenerateTextResult, ToolSet } from "ai";
+import type { Agent, ToolSet } from "ai";
 import { z } from "zod";
 import type { ChatbotCallOptions } from "../agents/chatbot";
 import { buildChatbotTool } from "../agents/shared/chatbot-tool";
@@ -86,7 +86,7 @@ const reviewRefSchema = z.object({
  * the pipeline's, and the parent needs them to describe the page honestly.
  */
 export const lastReviewRef = (
-  steps: {
+  steps: readonly {
     readonly toolResults: readonly { toolName: string; output: unknown }[];
   }[],
 ): z.infer<typeof reviewRefSchema> | undefined => {
@@ -99,6 +99,30 @@ export const lastReviewRef = (
   }
   return undefined;
 };
+
+export type BuildSteps = readonly {
+  readonly toolCalls: readonly {
+    toolCallId: string;
+    toolName: string;
+    input: unknown;
+  }[];
+  readonly toolResults: readonly {
+    toolCallId: string;
+    toolName: string;
+    output: unknown;
+  }[];
+}[];
+
+/**
+ * What `formatBuildResult` actually reads of a finished run. Declared
+ * structurally rather than as `GenerateTextResult` so the branches can be
+ * asserted from plain objects — a real result satisfies it.
+ */
+export interface BuildTrajectory {
+  readonly finishReason: string;
+  readonly text: string;
+  readonly steps: BuildSteps;
+}
 
 /**
  * Whether the builder WROTE to the page after its last scored review — the one
@@ -115,20 +139,7 @@ export const lastReviewRef = (
  * stale. Read actions and unscored review attempts settle nothing and are
  * skipped.
  */
-export const editedAfterLastReview = (
-  steps: readonly {
-    readonly toolCalls: readonly {
-      toolCallId: string;
-      toolName: string;
-      input: unknown;
-    }[];
-    readonly toolResults: readonly {
-      toolCallId: string;
-      toolName: string;
-      output: unknown;
-    }[];
-  }[],
-): boolean => {
+export const editedAfterLastReview = (steps: BuildSteps): boolean => {
   const actionByCall = new Map<string, string>();
   for (const step of steps) {
     for (const call of step.toolCalls) {
@@ -171,7 +182,7 @@ export const editedAfterLastReview = (
  * fall through the schema check.
  */
 export const lastPageRef = (
-  steps: {
+  steps: readonly {
     readonly toolResults: readonly { toolName: string; output: unknown }[];
   }[],
 ): { pageId: string; url: string } | undefined => {
@@ -187,6 +198,96 @@ export const lastPageRef = (
     }
   }
   return undefined;
+};
+
+/**
+ * The builder's own closing summary carries the url, what it built and what it
+ * left weak. An unclean finish means the step budget ran out mid-build — usually
+ * mid-review — so the page exists but nobody has confirmed it works. Saying that
+ * plainly is the point: the parent must not hand a url to the user with an
+ * implicit "it's been checked".
+ *
+ * Module-level so the branches below can be asserted without standing up an
+ * agent — every one of them was written from a measured failure, and a branch
+ * nothing pins is a branch that drifts.
+ */
+export const formatBuildResult = (
+  result: BuildTrajectory,
+): {
+  summary: string;
+  pageId?: string;
+  url?: string;
+  incomplete?: boolean;
+  review?: z.infer<typeof reviewRefSchema>;
+  reviewed?: false;
+} => {
+  const text = result.text.trim();
+  const ref = lastPageRef(result.steps);
+  const review = lastReviewRef(result.steps);
+  // Stated as a FIELD, not left to the summary: a build that reviewed nothing
+  // and a build that reviewed and fell short read identically in prose.
+  const outcome = review ? { review } : ref ? { reviewed: false as const } : {};
+  if (result.finishReason === "stop" && text.length > 0) {
+    return { summary: text, ...ref, ...outcome };
+  }
+  /**
+   * A clean finish with NOTHING said. Measured 2026-08-24
+   * (`page-filterable-directory`): the builder's last step ran 77s and
+   * returned zero tokens — no text, no tool call — after creating the page
+   * and scoring one review at 7.0. The run reported `stop`, so no marker
+   * fired and the summary was the empty string; the parent read a result
+   * with a `review` field and no words, and relaunched `buildPage` from
+   * zero. That rebuild cost 454s and 33k tokens to reach a page that
+   * already existed and only needed its remaining fix rounds.
+   *
+   * The empty-run net upstream (`sub-agent.ts`) cannot catch this one: the
+   * build HAD side effects, so a retry from zero is exactly what must not
+   * happen. What was missing is the sentence — with the page named, the
+   * cheap remedy is the one the parent can already perform.
+   */
+  if (result.finishReason === "stop" && ref?.pageId !== undefined) {
+    return {
+      summary: `[incomplete: the builder returned no summary — its last step produced nothing. The page EXISTS and is saved. Do NOT call buildPage again: open it with managePage { action: "review" } to get its findings, apply them with update { edits }, and hand back the url.]`,
+      ...ref,
+      ...outcome,
+      incomplete: true,
+    };
+  }
+  /**
+   * Two different failures arrive with the same non-`stop` finish, and
+   * telling them apart is what keeps the parent honest.
+   *
+   * Measured 2026-08-22 (`page-time-shape`): the builder hit a
+   * reasoning-only zombie step (`finish=other`, logged by `agent-builder`)
+   * and saved NOTHING — while this marker told the parent the page "may be
+   * unreviewed" and to go review it. The agent duly hunted for a page that
+   * did not exist, rebuilt from scratch, zombied again, and finally handed
+   * the user an INVENTED page id. A message that assumes the good half of
+   * its own failure does not degrade, it fabricates.
+   *
+   * The delegate now has the same first line of defence as the parent turn:
+   * `fallbackSubAgent` retries an empty run once on the fallback model
+   * (`agents/shared/sub-agent.ts`). This marker is what is left when even
+   * that came back with nothing, so "call it again" is the remedy — bounded
+   * on purpose, since a third empty build is a failure to report, not a loop
+   * to spin.
+   */
+  const marker =
+    ref?.pageId === undefined
+      ? `[incomplete: the builder stopped at finishReason="${result.finishReason}" and saved NO page — there is nothing to open, review or link. Call buildPage once more with the same task. If it comes back empty again, tell the user the build failed; never name a page this tool did not return.]`
+      : review === undefined
+        ? `[incomplete: the builder stopped at finishReason="${result.finishReason}" — the page exists but was never reviewed. Call managePage { action: "review" } on it before telling the user it is ready.]`
+        : review.gate === "fail"
+          ? `[incomplete: the builder stopped at finishReason="${result.finishReason}" — the page's last review failed its gate (round ${review.iteration}). Call managePage { action: "review" } for the blocking findings, fix them with update { edits }, and stop when the gate passes.]`
+          : editedAfterLastReview(result.steps)
+            ? `[incomplete: the builder stopped at finishReason="${result.finishReason}" — the page passed review (round ${review.iteration}) but was edited after it. Review it once to confirm the edits — if the review refuses because the budget is spent, hand back the url and name the unverified edits plainly.]`
+            : `[incomplete: the builder stopped at finishReason="${result.finishReason}" — but the page already passed review (round ${review.iteration}). Do NOT review again: hand back the url, and pass any leftover findings on as next steps.]`;
+  return {
+    summary: text.length > 0 ? `${marker}\n\n${text}` : marker,
+    ...ref,
+    ...outcome,
+    incomplete: true,
+  };
 };
 
 export const createBuildPageTool = <TTools extends ToolSet>(deps: {
@@ -208,73 +309,7 @@ export const createBuildPageTool = <TTools extends ToolSet>(deps: {
   ) => Agent<ChatbotCallOptions, TTools>;
 }) => {
   const inputSchema = buildPageInputSchema;
-
-  /**
-   * The builder's own closing summary carries the url, what it built and what
-   * it left weak. An unclean finish means the step budget ran out mid-build —
-   * usually mid-review — so the page exists but nobody has confirmed it works.
-   * Saying that plainly is the point: the parent must not hand a url to the
-   * user with an implicit "it's been checked".
-   */
-  const formatResult = (
-    result: GenerateTextResult<TTools, Record<string, unknown>, never>,
-  ): {
-    summary: string;
-    pageId?: string;
-    url?: string;
-    incomplete?: boolean;
-    review?: z.infer<typeof reviewRefSchema>;
-    reviewed?: false;
-  } => {
-    const text = result.text.trim();
-    const ref = lastPageRef(result.steps);
-    const review = lastReviewRef(result.steps);
-    // Stated as a FIELD, not left to the summary: a build that reviewed nothing
-    // and a build that reviewed and fell short read identically in prose.
-    const outcome = review
-      ? { review }
-      : ref
-        ? { reviewed: false as const }
-        : {};
-    if (result.finishReason === "stop") {
-      return { summary: text, ...ref, ...outcome };
-    }
-    /**
-     * Two different failures arrive with the same non-`stop` finish, and
-     * telling them apart is what keeps the parent honest.
-     *
-     * Measured 2026-08-22 (`page-time-shape`): the builder hit a
-     * reasoning-only zombie step (`finish=other`, logged by `agent-builder`)
-     * and saved NOTHING — while this marker told the parent the page "may be
-     * unreviewed" and to go review it. The agent duly hunted for a page that
-     * did not exist, rebuilt from scratch, zombied again, and finally handed
-     * the user an INVENTED page id. A message that assumes the good half of
-     * its own failure does not degrade, it fabricates.
-     *
-     * The delegate now has the same first line of defence as the parent turn:
-     * `fallbackSubAgent` retries an empty run once on the fallback model
-     * (`agents/shared/sub-agent.ts`). This marker is what is left when even
-     * that came back with nothing, so "call it again" is the remedy — bounded
-     * on purpose, since a third empty build is a failure to report, not a loop
-     * to spin.
-     */
-    const marker =
-      ref?.pageId === undefined
-        ? `[incomplete: the builder stopped at finishReason="${result.finishReason}" and saved NO page — there is nothing to open, review or link. Call buildPage once more with the same task. If it comes back empty again, tell the user the build failed; never name a page this tool did not return.]`
-        : review === undefined
-          ? `[incomplete: the builder stopped at finishReason="${result.finishReason}" — the page exists but was never reviewed. Call managePage { action: "review" } on it before telling the user it is ready.]`
-          : review.gate === "fail"
-            ? `[incomplete: the builder stopped at finishReason="${result.finishReason}" — the page's last review failed its gate (round ${review.iteration}). Call managePage { action: "review" } for the blocking findings, fix them with update { edits }, and stop when the gate passes.]`
-            : editedAfterLastReview(result.steps)
-              ? `[incomplete: the builder stopped at finishReason="${result.finishReason}" — the page passed review (round ${review.iteration}) but was edited after it. Review it once to confirm the edits — if the review refuses because the budget is spent, hand back the url and name the unverified edits plainly.]`
-              : `[incomplete: the builder stopped at finishReason="${result.finishReason}" — but the page already passed review (round ${review.iteration}). Do NOT review again: hand back the url, and pass any leftover findings on as next steps.]`;
-    return {
-      summary: text.length > 0 ? `${marker}\n\n${text}` : marker,
-      ...ref,
-      ...outcome,
-      incomplete: true,
-    };
-  };
+  const formatResult = formatBuildResult;
 
   /**
    * What the parent's card draws while the build runs.

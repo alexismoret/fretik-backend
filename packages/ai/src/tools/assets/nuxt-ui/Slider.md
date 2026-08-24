@@ -124,6 +124,12 @@ Use the `default-value` prop to set the initial value when you do not need to co
 </template>
 ```
 
+> \[!TIP]
+>
+> Use `aria-label` or `aria-labelledby` to name a single thumb Slider, they are forwarded to the thumb which is the element with the `slider` role.
+>
+> The thumbs of a multiple thumbs Slider are named by their position so they can be told apart, `Minimum` / `Maximum` for two thumbs and `Value n of m` for three or more. Those names are kept, and an `aria-label` names the Slider as a whole through a `group` role on the root instead of being repeated on every thumb.
+
 ### Min / Max
 
 Use the `min` and `max` props to set the minimum and maximum values of the Slider. Defaults to `0` and `100`.

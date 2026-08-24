@@ -34,9 +34,10 @@ interface ProgressProps {
    */
   size?: "2xs" | "xs" | "sm" | "md" | "lg" | "xl" | "2xl" | undefined;
   /**
+   * Any theme color, or any CSS color value for palettes outside the theme.
    * @default 'primary'
    */
-  color?: "error" | "primary" | "secondary" | "success" | "info" | "warning" | "neutral" | undefined;
+  color?: "error" | "primary" | "secondary" | "success" | "info" | "warning" | "neutral" | string & {} | undefined;
   /**
    * The orientation of the progress bar.
    * @default 'horizontal'
@@ -103,6 +104,10 @@ const value = ref(50);
 </template>
 ```
 
+> \[!NOTE]
+>
+> Use the [`ProgressGroup`](https://ui.nuxt.com/docs/components/progress-group) component to split a single bar into multiple segments that add up to a total.
+
 ### Max
 
 Use the `max` prop to set the maximum value of the Progress.
@@ -146,6 +151,10 @@ const value = ref(50);
 </template>
 ```
 
+> \[!TIP]
+>
+> The status tracks the end of the bar, use `:ui="{ status: 'w-full' }"` to make it span the full width instead.
+
 ### Indeterminate
 
 When no `v-model` is set or the value is `null`, the Progress becomes _indeterminate_. The progress bar is animated as a `carousel`, but you can change it using the [`animation`](https://ui.nuxt.com/#animation) prop.
@@ -186,7 +195,7 @@ Use the `orientation` prop to change the orientation of the Progress. Defaults t
 
 ### Color
 
-Use the `color` prop to change the color of the Slider.
+Use the `color` prop to change the color of the Progress.
 
 ```vue
 <template>
@@ -194,9 +203,13 @@ Use the `color` prop to change the color of the Slider.
 </template>
 ```
 
+> \[!TIP]
+>
+> This prop also accepts any CSS color value for palettes outside the theme.
+
 ### Size
 
-Use the `size` prop to change the size of the Slider.
+Use the `size` prop to change the size of the Progress.
 
 ```vue
 <template>

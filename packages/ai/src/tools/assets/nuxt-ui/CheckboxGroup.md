@@ -95,6 +95,11 @@ interface CheckboxGroupProps {
    */
   required?: boolean | undefined;
   /**
+   * The icon displayed when checked, or above the label when `indicator` is `hidden`.
+   * @default appConfig.ui.icons.check
+   */
+  icon?: any;
+  /**
    * @default 'primary'
    */
   color?:
@@ -108,6 +113,7 @@ interface CheckboxGroupProps {
     | undefined;
   /**
    * Highlight the ring color like a focus state.
+   * @default false
    */
   highlight?: boolean | undefined;
   /**
@@ -115,11 +121,6 @@ interface CheckboxGroupProps {
    * @default 'start'
    */
   indicator?: "start" | "end" | "hidden" | undefined;
-  /**
-   * The icon displayed when checked.
-   * @default appConfig.ui.icons.check
-   */
-  icon?: any;
 }
 ```
 
@@ -184,6 +185,7 @@ You can also pass an array of objects with the following properties:
 - `description?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
 - [`value?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}](https://ui.nuxt.com/#value-key)
 - `disabled?: boolean`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
+- [`icon?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}](https://ui.nuxt.com/#indicator)
 - `class?: any`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
 - `ui?: { item?: ClassNameValue, container?: ClassNameValue, base?: ClassNameValue, 'indicator'?: ClassNameValue, icon?: ClassNameValue, wrapper?: ClassNameValue, label?: ClassNameValue, description?: ClassNameValue }`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
 
@@ -194,17 +196,17 @@ import type { CheckboxGroupItem } from "@nuxt/ui";
 const items = ref<CheckboxGroupItem[]>([
   {
     label: "System",
-    description: "This is the first option.",
+    description: "Matches your device settings.",
     value: "system",
   },
   {
     label: "Light",
-    description: "This is the second option.",
+    description: "Always uses the light theme.",
     value: "light",
   },
   {
     label: "Dark",
-    description: "This is the third option.",
+    description: "Always uses the dark theme.",
     value: "dark",
   },
 ]);
@@ -231,17 +233,17 @@ import type { CheckboxGroupItem } from "@nuxt/ui";
 const items = ref<CheckboxGroupItem[]>([
   {
     label: "System",
-    description: "This is the first option.",
+    description: "Matches your device settings.",
     id: "system",
   },
   {
     label: "Light",
-    description: "This is the second option.",
+    description: "Always uses the light theme.",
     id: "light",
   },
   {
     label: "Dark",
-    description: "This is the third option.",
+    description: "Always uses the dark theme.",
     id: "dark",
   },
 ]);
@@ -287,14 +289,32 @@ Use the `variant` prop to change the variant of the CheckboxGroup.
 
 ```vue
 <script setup lang="ts">
-const items = ref(["System", "Light", "Dark"]);
+import type { CheckboxGroupItem } from "@nuxt/ui";
+
+const items = ref<CheckboxGroupItem[]>([
+  {
+    label: "System",
+    value: "system",
+    description: "Matches your device settings.",
+  },
+  {
+    label: "Light",
+    value: "light",
+    description: "Always uses the light theme.",
+  },
+  {
+    label: "Dark",
+    value: "dark",
+    description: "Always uses the dark theme.",
+  },
+]);
 </script>
 
 <template>
   <UCheckboxGroup
     color="primary"
     variant="card"
-    :default-value="['System']"
+    :default-value="['system']"
     :items="items"
   />
 </template>
@@ -337,7 +357,5 @@ const items = ref(["System", "Light", "Dark"]);
   />
 </template>
 ```
-
-### Indicator
 
 _(truncated — ask for fewer components to see more, or rely on the API block above)_

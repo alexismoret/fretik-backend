@@ -75,7 +75,7 @@ The ChangelogVersion component provides a flexible way to display an `<article>`
 
 ```vue
 <template>
-  <u-changelog-version :authors=[{"name":"Benjamin Canac","description":"@benjamincanac","avatar":{"src":"https://github.com/benjamincanac.png","loading":"lazy"},"to":"https://x.com/benjamincanac","target":"_blank"},{"name":"Sebastien Chopin","description":"@atinux","avatar":{"src":"https://github.com/atinux.png","loading":"lazy"},"to":"https://x.com/atinux","target":"_blank"},{"name":"Hugo Richard","description":"@hugorcd__","avatar":{"src":"https://github.com/hugorcd.png","loading":"lazy"},"to":"https://x.com/hugorcd__","target":"_blank"}] :ui={"container":"max-w-lg"} date=2025-03-12 description=Nuxt UI v3 is out! After 1500+ commits, this major redesign brings improved accessibility, Tailwind CSS support, and full Vue compatibility. image=https://nuxt.com/assets/blog/nuxt-ui-v3.png target=_blank title=Introducing Nuxt UI v3 to=https://nuxt.com/blog/nuxt-ui-v3 />
+  <u-changelog-version :authors=[{"name":"Benjamin Canac","description":"@benjamincanac","avatar":{"src":"https://github.com/benjamincanac.png","loading":"lazy"},"to":"https://x.com/benjamincanac","target":"_blank"},{"name":"Sebastien Chopin","description":"@atinux","avatar":{"src":"https://github.com/atinux.png","loading":"lazy"},"to":"https://x.com/atinux","target":"_blank"},{"name":"Hugo Richard","description":"@hugorcd","avatar":{"src":"https://github.com/hugorcd.png","loading":"lazy"},"to":"https://x.com/hugorcd","target":"_blank"}] :ui={"container":"max-w-lg"} date=2025-03-12 description=Nuxt UI v3 is out! After 1500+ commits, this major redesign brings improved accessibility, Tailwind CSS support, and full Vue compatibility. image=https://nuxt.com/assets/blog/nuxt-ui-v3.png target=_blank title=Introducing Nuxt UI v3 to=https://nuxt.com/blog/nuxt-ui-v3 />
 </template>
 ```
 
@@ -216,12 +216,12 @@ const authors = ref<UserProps[]>([
   },
   {
     name: "Hugo Richard",
-    description: "@hugorcd__",
+    description: "@hugorcd",
     avatar: {
       src: "https://github.com/hugorcd.png",
       loading: "lazy",
     },
-    to: "https://x.com/hugorcd__",
+    to: "https://x.com/hugorcd",
     target: "_blank",
   },
 ]);

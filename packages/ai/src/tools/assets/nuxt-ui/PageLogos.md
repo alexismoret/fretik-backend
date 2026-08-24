@@ -89,7 +89,7 @@ You can display logos in two ways:
 
 1. Using the `items` prop to provide a list of logos. Each item can be either:
 
-- An icon name (e.g., `i-simple-icons-github`)
+- An icon name (e.g. `i-simple-icons-github`)
 - An object containing `src` and `alt` properties for images, which will be utilized in a `UAvatar` component
 
 2. Using the default slot to have complete control over the content

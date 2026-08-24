@@ -259,12 +259,26 @@ export const renderPage = async (params: {
   });
 
   const nonce = Bun.randomUUIDv7();
+  /**
+   * The name the BROWSER reaches this harness by.
+   *
+   * The frame is served by an ephemeral listener in this process, and the
+   * browser is the one that fetches it — so with `PAGE_RENDER_BROWSER_WS`
+   * pointing at a browser in its OWN container, `127.0.0.1` is that
+   * container's loopback and resolves to nothing: every render comes back
+   * blank, which reads as a broken page rather than a broken network.
+   * `PAGE_RENDER_SELF_HOST` is the name that container can reach us by (a
+   * compose service name, an IP). It also widens the bind, so it is opt-in
+   * rather than derived from `PAGE_RENDER_BROWSER_WS` — the harness serves
+   * this page's data fixtures, and loopback is the right default.
+   */
+  const selfHost = Bun.env.PAGE_RENDER_SELF_HOST ?? "";
   /** Set once the listener is up; the harness needs its own origin to build
    * the CSP, the import map and the bridge's expected parent origin. */
   let origin = "";
   const server = Bun.serve({
     port: 0,
-    hostname: "127.0.0.1",
+    hostname: selfHost === "" ? "127.0.0.1" : "0.0.0.0",
     idleTimeout: 30,
     fetch: async (request) => {
       const { pathname } = new URL(request.url);
@@ -307,7 +321,7 @@ export const renderPage = async (params: {
     },
   });
 
-  origin = `http://127.0.0.1:${(server.port ?? 0).toString()}`;
+  origin = `http://${selfHost === "" ? "127.0.0.1" : selfHost}:${(server.port ?? 0).toString()}`;
 
   try {
     return await withRenderView(async (view, consoleErrors) => {

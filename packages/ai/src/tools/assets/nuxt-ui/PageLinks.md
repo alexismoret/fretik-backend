@@ -60,7 +60,7 @@ const links = ref<PageLink[]>([
   {
     label: "Edit this page",
     icon: "i-lucide-file-pen",
-    to: "https://github.com/nuxt/ui/blob/v4/docs/content/3.components/page-links.md",
+    to: "https://github.com/nuxt/ui/blob/v4/docs/content/docs/2.components/page-links.md",
   },
   {
     label: "Star on GitHub",
@@ -99,7 +99,7 @@ const links = ref<PageLink[]>([
   {
     label: "Edit this page",
     icon: "i-lucide-file-pen",
-    to: "https://github.com/nuxt/ui/blob/v4/docs/content/3.components/page-links.md",
+    to: "https://github.com/nuxt/ui/blob/v4/docs/content/docs/2.components/page-links.md",
   },
   {
     label: "Star on GitHub",
@@ -131,7 +131,7 @@ const links = ref<PageLink[]>([
   {
     label: "Edit this page",
     icon: "i-lucide-file-pen",
-    to: "https://github.com/nuxt/ui/blob/v4/docs/content/3.components/page-links.md",
+    to: "https://github.com/nuxt/ui/blob/v4/docs/content/docs/2.components/page-links.md",
   },
   {
     label: "Star on GitHub",

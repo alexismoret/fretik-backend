@@ -164,7 +164,7 @@ defineShortcuts({
 
 > \[!TIP]
 >
-> This allows you to move the trigger outside of the Collapsible or remove it entirely.
+> This lets you move the trigger outside of the Collapsible or remove it entirely.
 
 ### With rotating icon
 

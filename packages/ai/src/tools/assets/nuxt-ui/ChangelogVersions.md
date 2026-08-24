@@ -64,7 +64,7 @@ interface ChangelogVersionsSlots {
 
 > \[!TIP]
 >
-> You can use all the slots of the [`ChangelogVersion`](https://ui.nuxt.com/docs/components/changelog-version#slots) component inside ChangelogVersions, they are automatically forwarded allowing you to customize individual versions when using the `versions` prop.
+> You can use all the slots of the [`ChangelogVersion`](https://ui.nuxt.com/docs/components/changelog-version#slots) component inside ChangelogVersions, they are automatically forwarded so you can customize individual versions when using the `versions` prop.
 >
 > ```vue {3-5}
 > <template>

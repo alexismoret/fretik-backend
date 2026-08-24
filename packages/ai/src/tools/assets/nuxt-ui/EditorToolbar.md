@@ -230,7 +230,7 @@ const items: EditorToolbarItem[][] = [
 
 > \[!NOTE]
 >
-> The bubble and floating layouts use TipTap's [BubbleMenu](https://tiptap.dev/docs/editor/extensions/functionality/bubble-menu){rel="&#x22;nofollow&#x22;"} and [FloatingMenu](https://tiptap.dev/docs/editor/extensions/functionality/floating-menu){rel="&#x22;nofollow&#x22;"} extensions.
+> The bubble and floating layouts use TipTap's [BubbleMenu](https://tiptap.dev/docs/editor/extensions/functionality/bubble-menu){rel="&#x22;nofollow&#x22;"} and [FloatingMenu](https://tiptap.dev/docs/editor/extensions/functionality/floatingmenu){rel="&#x22;nofollow&#x22;"} extensions.
 
 ### Items
 

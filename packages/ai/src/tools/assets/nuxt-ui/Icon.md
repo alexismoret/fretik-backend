@@ -20,7 +20,7 @@ interface IconProps {
 
 ## Usage
 
-Use the `name` prop to display an icon:
+Use the `name` prop to display an icon.
 
 ```vue
 <template>

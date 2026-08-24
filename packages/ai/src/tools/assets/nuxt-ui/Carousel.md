@@ -190,8 +190,8 @@ This will give you access to the following:
 
 | Name                                                                                                                           | Type                    |
 | ------------------------------------------------------------------------------------------------------------------------------ | ----------------------- |
-| `emblaRef`{.language-ts-type.shiki.shiki-themes.material-theme-lighter.material-theme.material-theme-palenight lang="ts-type"} | `Ref<HTMLElement        | null>`{.language-ts-type.shiki.shiki-themes.material-theme-lighter.material-theme.material-theme-palenight lang="ts-type"}                                                                                      |
-| `emblaApi`{.language-ts-type.shiki.shiki-themes.material-theme-lighter.material-theme.material-theme-palenight lang="ts-type"} | [`Ref<EmblaCarouselType | null>`{.language-ts-type.shiki.shiki-themes.material-theme-lighter.material-theme.material-theme-palenight lang="ts-type"}](https://www.embla-carousel.com/api/methods/#typescript){rel="&#x22;nofollow&#x22;"} |
+| `emblaRef`{.language-ts-type.shiki.shiki-themes.material-theme-lighter.material-theme.material-theme-palenight lang="ts-type"} | `Ref<HTMLElement        | null>`{.language-ts-type.shiki.shiki-themes.material-theme-lighter.material-theme.material-theme-palenight lang="ts-type"}                                                                                             |
+| `emblaApi`{.language-ts-type.shiki.shiki-themes.material-theme-lighter.material-theme.material-theme-palenight lang="ts-type"} | [`Ref<EmblaCarouselType | null>`{.language-ts-type.shiki.shiki-themes.material-theme-lighter.material-theme.material-theme-palenight lang="ts-type"}](https://www.embla-carousel.com/docs/v8/api/methods#typescript){rel="&#x22;nofollow&#x22;"} |
 
 ## Usage
 
@@ -463,7 +463,7 @@ _(truncated — ask for fewer components to see more, or rely on the API block a
 
 ### With thumbnails
 
-You can use the [`emblaApi`](https://ui.nuxt.com/#expose) function [scrollTo](https://www.embla-carousel.com/api/methods/#scrollto){rel="&#x22;nofollow&#x22;"} to display thumbnails under the carousel that allows you to navigate to a specific slide.
+You can use the [`scrollTo`](https://www.embla-carousel.com/docs/v8/api/methods#scrollto){rel="&#x22;nofollow&#x22;"} method on [`emblaApi`](https://ui.nuxt.com/#expose) to display thumbnails under the carousel that navigate to a specific slide.
 
 ```vue [CarouselThumbnailsExample.vue]
 <script setup lang="ts">

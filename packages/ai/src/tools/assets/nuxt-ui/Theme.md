@@ -36,7 +36,7 @@ interface ThemeSlots {
 
 ## Usage
 
-The Theme component allows you to override default **slot classes** and **props** of all child components without modifying each one individually. It uses Vue's `provide` / `inject` mechanism under the hood, so the overrides apply at any depth.
+The Theme component overrides default **slot classes** and **props** of all child components without modifying each one individually. It uses Vue's `provide` / `inject` mechanism under the hood, so the overrides apply at any depth.
 
 > \[!NOTE]
 >

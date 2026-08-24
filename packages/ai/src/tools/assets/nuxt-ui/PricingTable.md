@@ -106,10 +106,10 @@ Use the `tiers` prop as an array of objects to define your pricing plans. Each t
 - `id: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"} - Unique identifier for the tier (required)
 - `title?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"} - Name of the pricing plan
 - `description?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"} - Short description of the plan
-- `price?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"} - The current price of the plan (e.g., "$99", "€99", "Free")
-- `discount?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"} - The discounted price that will display the `price` with strikethrough (e.g., "$79", "€79")
-- `billingCycle?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"} - The unit price period that appears next to the price (e.g., "/month", "/seat/month")
-- `billingPeriod?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"} - Additional billing context that appears above the billing cycle (e.g., "billed monthly")
+- `price?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"} - The current price of the plan (e.g. "$99", "€99", "Free")
+- `discount?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"} - The discounted price that will display the `price` with strikethrough (e.g. "$79", "€79")
+- `billingCycle?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"} - The unit price period that appears next to the price (e.g. "/month", "/seat/month")
+- `billingPeriod?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"} - Additional billing context that appears above the billing cycle (e.g. "billed monthly")
 - `badge?: string | BadgeProps`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"} - Display a badge next to the title `{ color: 'primary', variant: 'subtle' }`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
 - `button?: ButtonProps`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"} - Configure the CTA button `{ size: 'lg', block: true }`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
 - `highlight?: boolean`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"} - Whether to visually emphasize this tier as the recommended option
@@ -170,8 +170,8 @@ Use the `sections` prop to organize features into logical groups. Each section r
 - `features: PricingTableSectionFeature[]`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}- An array of features with their availability in each tier:
   - Each feature requires a `title` and a `tiers` object mapping tier IDs to values
   - Boolean values (`true`/`false`) will display as checkmarks (✓) or minus icons (-)
-  - String values will be shown as text (e.g., "Unlimited", "Up to 5 users")
-  - Numeric values will be displayed as is (e.g., 10, 100)
+  - String values will be shown as text (e.g. "Unlimited", "Up to 5 users")
+  - Numeric values will be displayed as is (e.g. 10, 100)
 
 ```vue
 <script setup lang="ts">
@@ -362,4 +362,4 @@ The component supports various slot types for maximum customization flexibility:
 
 > \[!NOTE]
 >
-> When no `id` is provided, the slot name is auto-generated from the title (e.g., "Premium Features!" becomes `#section-premium-features-title`).
+> When no `id` is provided, the slot name is auto-generated from the title (e.g. "Premium Features!" becomes `#section-premium-features-title`).

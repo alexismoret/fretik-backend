@@ -171,7 +171,7 @@ When used inside a [Form](https://ui.nuxt.com/docs/components/form), this is aut
 >
 > This sets the `color` to `error` on the form control. You can change it globally in your `app.config.ts`.
 
-### Error pattern
+### Error Pattern
 
 Use the `error-pattern` prop to match form errors with a regular expression. This is especially relevant for components with array values such as [InputTags](https://ui.nuxt.com/docs/components/input-tags), where errors include array indices in their name (e.g. `tags.0`).
 

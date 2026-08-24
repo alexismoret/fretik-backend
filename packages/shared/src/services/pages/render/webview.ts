@@ -11,6 +11,9 @@
  *   1. `PAGE_RENDER_BROWSER_WS` — a browser running in ITS OWN container
  *      (browserless on Dokploy). The production shape: the service image
  *      carries no Chrome, and a browser OOM cannot take the chatbot down.
+ *      It needs `PAGE_RENDER_SELF_HOST` beside it — the harness listener
+ *      lives in THIS process and a remote browser cannot reach it on
+ *      loopback (see `render-page.ts`).
  *   2. an explicit local binary (`PAGE_RENDER_CHROMIUM_PATH` / `BUN_CHROME_PATH`).
  *   3. macOS — an installed Chrome, out of process over CDP. WKWebView is
  *      the LAST resort only (in-process engine; measured starving the

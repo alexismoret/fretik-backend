@@ -397,7 +397,7 @@ defineShortcuts({
 
 > \[!TIP]
 >
-> This allows you to move the trigger outside of the Slideover or remove it entirely.
+> This lets you move the trigger outside of the Slideover or remove it entirely.
 
 ### Programmatic usage
 
@@ -443,7 +443,7 @@ const emit = defineEmits<{ close: [boolean] }>();
 
 > \[!NOTE]
 >
-> We are emitting a `close` event when the slideover is closed or dismissed here. You can emit any data through the `close` event, however, the event must be emitted in order to capture the return value.
+> We are emitting a `close` event when the slideover is closed or dismissed here. You can emit any data through the `close` event, and that data becomes the resolved value of `open()`. The event must be emitted for the promise to resolve.
 
 Then, use it in your app:
 

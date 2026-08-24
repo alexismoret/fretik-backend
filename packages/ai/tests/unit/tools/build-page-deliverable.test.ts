@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import {
   editedAfterLastReview,
+  formatBuildResult,
   lastPageRef,
+  type BuildSteps,
+  type BuildTrajectory,
 } from "../../../src/tools/build-page";
 
 /**
@@ -195,5 +198,112 @@ describe("editedAfterLastReview", () => {
         ),
       ]),
     ).toBe(true);
+  });
+});
+
+/**
+ * What the PARENT reads back — the one channel that decides whether a build's
+ * outcome costs a sentence or a second build.
+ */
+
+const buildResult = (over: {
+  finishReason: string;
+  text: string;
+  steps?: BuildSteps;
+}): BuildTrajectory => ({
+  finishReason: over.finishReason,
+  text: over.text,
+  steps: over.steps ?? [],
+});
+
+const createdAndReviewed = [
+  {
+    toolCalls: [
+      { toolCallId: "c1", toolName: "managePage", input: { action: "create" } },
+    ],
+    toolResults: [
+      {
+        toolCallId: "c1",
+        toolName: "managePage",
+        output: { pageId: "p1", url: "/pages/p1" },
+      },
+    ],
+  },
+  {
+    toolCalls: [
+      { toolCallId: "c2", toolName: "managePage", input: { action: "review" } },
+    ],
+    toolResults: [
+      {
+        toolCallId: "c2",
+        toolName: "managePage",
+        output: {
+          pageId: "p1",
+          url: "/pages/p1",
+          iteration: "1/3",
+          gate: "pass",
+          verdict: "revise",
+          score: 7,
+        },
+      },
+    ],
+  },
+];
+
+describe("formatBuildResult", () => {
+  test("a clean finish with words is passed through as the summary", () => {
+    const out = formatBuildResult(
+      buildResult({
+        finishReason: "stop",
+        text: "Built the page.",
+        steps: createdAndReviewed,
+      }),
+    );
+    expect(out.summary).toBe("Built the page.");
+    expect(out.incomplete).toBeUndefined();
+    expect(out.pageId).toBe("p1");
+  });
+
+  /**
+   * Measured 2026-08-24 (`page-filterable-directory`): the builder's last step
+   * ran 77s and returned zero tokens, the run still reported `stop`, and the
+   * empty summary sent the parent to rebuild from zero — 454s and 33k tokens
+   * for a page that already existed.
+   */
+  test("a clean finish with NOTHING said names the page and forbids a rebuild", () => {
+    const out = formatBuildResult(
+      buildResult({
+        finishReason: "stop",
+        text: "   ",
+        steps: createdAndReviewed,
+      }),
+    );
+    expect(out.incomplete).toBe(true);
+    expect(out.pageId).toBe("p1");
+    expect(out.summary).toContain("Do NOT call buildPage again");
+    expect(out.summary).toContain("review");
+    // The review facts still travel as a FIELD, not only as prose.
+    expect(out.review?.verdict).toBe("revise");
+  });
+
+  test("said nothing AND saved nothing still asks for another build", () => {
+    const out = formatBuildResult(
+      buildResult({ finishReason: "stop", text: "" }),
+    );
+    expect(out.incomplete).toBe(true);
+    expect(out.pageId).toBeUndefined();
+    expect(out.summary).toContain("saved NO page");
+  });
+
+  test("a non-stop finish keeps its own diagnosis rather than the empty-summary one", () => {
+    const out = formatBuildResult(
+      buildResult({
+        finishReason: "length",
+        text: "",
+        steps: createdAndReviewed,
+      }),
+    );
+    expect(out.incomplete).toBe(true);
+    expect(out.summary).toContain('finishReason="length"');
   });
 });

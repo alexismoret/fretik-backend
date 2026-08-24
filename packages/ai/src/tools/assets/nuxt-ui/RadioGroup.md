@@ -69,6 +69,7 @@ interface RadioGroupProps {
     | undefined;
   /**
    * Highlight the ring color like a focus state.
+   * @default false
    */
   highlight?: boolean | undefined;
   /**
@@ -92,6 +93,7 @@ interface RadioGroupProps {
         indicator?: SlotClass;
         wrapper?: SlotClass;
         label?: SlotClass;
+        icon?: SlotClass;
         description?: SlotClass;
       }
     | undefined;
@@ -175,8 +177,9 @@ You can also pass an array of objects with the following properties:
 - `description?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
 - [`value?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}](https://ui.nuxt.com/#value-key)
 - `disabled?: boolean`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
+- [`icon?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}](https://ui.nuxt.com/#indicator)
 - `class?: any`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `ui?: { item?: ClassNameValue, container?: ClassNameValue, base?: ClassNameValue, 'indicator'?: ClassNameValue, wrapper?: ClassNameValue, label?: ClassNameValue, description?: ClassNameValue }`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
+- `ui?: { item?: ClassNameValue, container?: ClassNameValue, base?: ClassNameValue, 'indicator'?: ClassNameValue, wrapper?: ClassNameValue, label?: ClassNameValue, icon?: ClassNameValue, description?: ClassNameValue }`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
 
 ```vue
 <script setup lang="ts">
@@ -185,17 +188,17 @@ import type { RadioGroupItem } from "@nuxt/ui";
 const items = ref<RadioGroupItem[]>([
   {
     label: "System",
-    description: "This is the first option.",
+    description: "Matches your device settings.",
     value: "system",
   },
   {
     label: "Light",
-    description: "This is the second option.",
+    description: "Always uses the light theme.",
     value: "light",
   },
   {
     label: "Dark",
-    description: "This is the third option.",
+    description: "Always uses the dark theme.",
     value: "dark",
   },
 ]);
@@ -222,17 +225,17 @@ import type { RadioGroupItem } from "@nuxt/ui";
 const items = ref<RadioGroupItem[]>([
   {
     label: "System",
-    description: "This is the first option.",
+    description: "Matches your device settings.",
     id: "system",
   },
   {
     label: "Light",
-    description: "This is the second option.",
+    description: "Always uses the light theme.",
     id: "light",
   },
   {
     label: "Dark",
-    description: "This is the third option.",
+    description: "Always uses the dark theme.",
     id: "dark",
   },
 ]);
@@ -282,19 +285,19 @@ import type { RadioGroupItem } from "@nuxt/ui";
 
 const items = ref<RadioGroupItem[]>([
   {
-    label: "Pro",
-    value: "pro",
-    description: "Tailored for indie hackers, freelancers and solo founders.",
+    label: "System",
+    value: "system",
+    description: "Matches your device settings.",
   },
   {
-    label: "Startup",
-    value: "startup",
-    description: "Best suited for small teams, startups and agencies.",
+    label: "Light",
+    value: "light",
+    description: "Always uses the light theme.",
   },
   {
-    label: "Enterprise",
-    value: "enterprise",
-    description: "Ideal for larger teams and organizations.",
+    label: "Dark",
+    value: "dark",
+    description: "Always uses the dark theme.",
   },
 ]);
 </script>
@@ -302,8 +305,8 @@ const items = ref<RadioGroupItem[]>([
 <template>
   <URadioGroup
     color="primary"
-    variant="table"
-    default-value="pro"
+    variant="card"
+    default-value="system"
     :items="items"
   />
 </template>
@@ -345,20 +348,5 @@ const items = ref(["System", "Light", "Dark"]);
 ### Indicator
 
 Use the `indicator` prop to change the position or hide the indicator. Defaults to `start`.
-
-```vue
-<script setup lang="ts">
-const items = ref(["System", "Light", "Dark"]);
-</script>
-
-<template>
-  <URadioGroup
-    indicator="end"
-    variant="card"
-    default-value="System"
-    :items="items"
-  />
-</template>
-```
 
 _(truncated — ask for fewer components to see more, or rely on the API block above)_

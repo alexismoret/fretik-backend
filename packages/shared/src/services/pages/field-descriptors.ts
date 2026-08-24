@@ -1,5 +1,6 @@
 import db from "../../db";
 import type { FieldDefinition } from "../../db/schema";
+import { NON_WRITABLE_FIELD_TYPES } from "../../db/schema/field-types";
 import type { PageFieldDescriptor } from "../../schemas/pages";
 import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
 
@@ -31,23 +32,13 @@ import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
 const UNSORTABLE_TYPES: ReadonlySet<string> = new Set(["relation", "rollup"]);
 
 /**
- * Field types no `record` operation can write through `args`.
- *
- * `buildRecordShape` skips every one of them — a relation is an edge in the
- * links graph (move it with a `link` operation), a rollup and the system
- * properties are computed on read, and `unique_id` comes from its sequence.
- * The shape then STRIPS the key rather than complaining, so a form bound to one
- * saves cleanly and changes nothing. Kept in lockstep with that skip list.
+ * Field types no `record` operation can write through `args` — the SAME set
+ * `buildRecordShape` skips, imported rather than restated so the two can never
+ * disagree. The shape STRIPS such a key rather than complaining, so a form bound
+ * to one saves cleanly and changes nothing: the page has to know before it draws
+ * the input.
  */
-const UNWRITABLE_TYPES: ReadonlySet<string> = new Set([
-  "relation",
-  "rollup",
-  "unique_id",
-  "created_time",
-  "last_edited_time",
-  "created_by",
-  "last_edited_by",
-]);
+const UNWRITABLE_TYPES = NON_WRITABLE_FIELD_TYPES;
 
 /** Config is a union across field types; read one key without widening it. */
 const configValue = (definition: FieldDefinition, key: string): unknown =>
@@ -121,7 +112,13 @@ const describeField = (
     label: definition.label,
     type: definition.type,
     options: optionsOf(definition),
-    currencyCode: asString(configValue(definition, "defaultCurrencyCode")),
+    // What a `formula` evaluates to. Without it a page has no way to know
+    // whether a computed column holds a number or a date, and would format it
+    // as text — the exact failure the descriptors exist to prevent.
+    resultType: asString(configValue(definition, "resultType")),
+    currencyCode:
+      asString(configValue(definition, "defaultCurrencyCode")) ??
+      asString(configValue(definition, "currencyCode")),
     numberFormat: asString(configValue(definition, "numberFormat")),
     precision: asNumber(configValue(definition, "precision")),
     suffix: asString(configValue(definition, "suffix")),

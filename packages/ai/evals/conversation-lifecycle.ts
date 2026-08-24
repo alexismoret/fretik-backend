@@ -33,11 +33,9 @@ import {
   aiMessages,
   fileExtractions,
 } from "@fretik/shared/db/schema";
+import { EXT_TO_MIME, isImageMime } from "@fretik/shared/file-types";
+import { resolveFileType } from "@fretik/shared/file-types/detect";
 import { writeExtractionSidecar } from "@fretik/shared/services/file-extraction/storage";
-import {
-  detectMimeFromBytes,
-  isImageMime,
-} from "@fretik/shared/utils/mimeTypes";
 import { SHA256 } from "bun";
 import { eq } from "drizzle-orm";
 import { dirname, extname, resolve } from "node:path";
@@ -96,56 +94,12 @@ const seedExtractionCache = async (
 };
 
 /**
- * Lightweight MIME guess — keeps us free from node:mime dependencies.
- * Defaults to `application/octet-stream` so unknown formats still get
- * seeded; the agent receives the literal extension in the filename
- * and can route correctly.
+ * Seed-time MIME for a fixture file. The registry owns the table; the
+ * fallback keeps unknown formats seedable — the agent still receives the
+ * literal extension in the filename and can route on it.
  */
-const guessMime = (filename: string): string => {
-  const ext = extname(filename).toLowerCase();
-  switch (ext) {
-    case ".pdf":
-      return "application/pdf";
-    case ".xlsx":
-      return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
-    case ".xls":
-      return "application/vnd.ms-excel";
-    case ".docx":
-      return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-    case ".pptx":
-      return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
-    case ".jpg":
-    case ".jpeg":
-      return "image/jpeg";
-    case ".png":
-      return "image/png";
-    case ".webp":
-      return "image/webp";
-    case ".gif":
-      return "image/gif";
-    case ".svg":
-      return "image/svg+xml";
-    case ".md":
-    case ".markdown":
-      return "text/markdown";
-    case ".txt":
-      return "text/plain";
-    case ".csv":
-      return "text/csv";
-    case ".json":
-      return "application/json";
-    case ".xml":
-      return "application/xml";
-    case ".html":
-    case ".htm":
-      return "text/html";
-    case ".yaml":
-    case ".yml":
-      return "application/yaml";
-    default:
-      return "application/octet-stream";
-  }
-};
+const guessMime = (filename: string): string =>
+  EXT_TO_MIME[extname(filename).toLowerCase()] ?? "application/octet-stream";
 
 /**
  * Push a fixture's ORIGINAL binary into the conversation sandbox at
@@ -180,7 +134,13 @@ const pushFixtureIntoSandbox = async (
   const bytes = new Uint8Array(await srcFile.arrayBuffer());
   await attachUserFile(conversationId, filename, bytes);
 
-  const mimeType = await detectMimeFromBytes(bytes, guessMime(filename));
+  const mimeType = (
+    await resolveFileType({
+      bytes,
+      declaredMime: guessMime(filename),
+      filename,
+    })
+  ).mimeType;
   const fileHash = SHA256.hash(bytes, "hex");
 
   // Pre-seed the extraction cache from the operator's `{stem}.md`

@@ -49,13 +49,39 @@ describe("page-builder tool registry", () => {
 });
 
 describe("buildPage input", () => {
-  test("takes a task and a label, and nothing that could carry media", () => {
-    // Same isolation contract as `dispatchAgent`: the builder's whole channel
-    // is one string, so parent attachments cannot leak into it.
+  test("carries text only — no channel a parent attachment could ride", () => {
+    // Same isolation contract as `dispatchAgent`: everything the builder is
+    // handed is a string it can read, so a file part in the parent's
+    // conversation has no way through. Pinned as an exact list, because a new
+    // key IS a new channel and this is where that gets decided rather than
+    // noticed.
     expect(Object.keys(buildPageInputSchema.shape).sort()).toEqual([
       "description",
+      "objectTypeKeys",
       "task",
     ]);
+  });
+
+  test("bounds the type keys it will resolve", () => {
+    // Each key costs a field-definition read and a count; eight is already more
+    // types than one page reads. The cap is what keeps a hallucinated list from
+    // turning into a database sweep before the build even starts.
+    expect(
+      buildPageInputSchema.safeParse({
+        task: "build the deals dashboard",
+        description: "deals dashboard",
+        objectTypeKeys: Array.from({ length: 9 }, (_, i) => `type_${i}`),
+      }).success,
+    ).toBe(false);
+  });
+
+  test("the type keys are optional — the builder can still probe for itself", () => {
+    expect(
+      buildPageInputSchema.safeParse({
+        task: "build the deals dashboard",
+        description: "deals dashboard",
+      }).success,
+    ).toBe(true);
   });
 
   test("refuses a one-word task", () => {

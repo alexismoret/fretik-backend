@@ -34,6 +34,8 @@ Filters over the dimensions a person actually slices by, ordering, detail on dem
 
 A shape that promises a mutation must be able to perform one. Lanes invite a card to be dragged between them, a checkbox invites a toggle, a status chip invites a change — draw any of them on a page that declares no operation and you have built a promise nothing keeps. Either wire the write, or choose the shape that reads as a view.
 
+A board is the shape with no read-only excuse: when the lane field is writable, cards move by DRAG wired to the write, and a board shipped without it — whatever control stands in for it — is a **finding**, named as such, not a style note. "Choose the shape that reads as a view" is an out only where the data truly cannot be written from the page.
+
 - **0–3** display-only, or a control that does nothing.
 - **4–6** the obvious controls exist and stop there.
 - **7–8** the page covers the work someone opens it to do, including the empty and failed paths.

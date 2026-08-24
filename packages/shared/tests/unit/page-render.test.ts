@@ -43,13 +43,23 @@ const SOURCE = `<template>
       <div class="hidden">stranded content</div>
     </UModal>
     <UButton label="open-bad" @click="badOpen = true" />
+
+    <!-- A control that really calls the bridge, next to one that only looks
+         like it does. The harness answers both without executing anything, so
+         the CALL is the only thing separating them. -->
+    <UButton label="run-op" @click="runOp" />
+    <UButton label="fake-op" @click="faked = true" />
+    <p v-if="faked" class="text-sm">Saved!</p>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref } from "vue";
+import { fretik } from "#fretik/sdk";
 const goodOpen = ref(false);
 const badOpen = ref(false);
+const faked = ref(false);
+const runOp = async () => { await fretik.ops.run("archive", {}); };
 </script>`;
 
 const definitionFor = (
@@ -104,6 +114,7 @@ describe("page srcdoc", () => {
       pageName: "probe",
       dark: false,
       locale: "en",
+      accent: null,
     });
     expect(html).toContain("simulated in review");
   });
@@ -131,16 +142,38 @@ describe("page renderer", () => {
     }
 
     expect(result.mounted).toBe(true);
-    // `desktop-bottom` is conditional — this probe page fits one screen — so
-    // the fixed part of the list is asserted, in order.
+    // `desktop-bottom` is conditional — this probe page fits one screen — and
+    // the `overlay-*` captures depend on what the click pass opens, so the
+    // fixed part of the list is asserted, in order.
     expect(
       result.shots
         .map((shot) => shot.label)
-        .filter((label) => label !== "desktop-bottom"),
+        .filter(
+          (label) =>
+            label !== "desktop-bottom" && !label.startsWith("overlay-"),
+        ),
     ).toEqual(["desktop", "tablet", "mobile", "empty-state"]);
     for (const shot of result.shots)
       expect(shot.png.length).toBeGreaterThan(1_000);
     expect(result.pageErrors).toEqual([]);
+
+    // An overlay is photographed WHILE it is open — the whole reason the click
+    // pass is stepped. Judging panels on their text tree alone is what let
+    // pages ship with modals visibly cruder than the page behind them.
+    const overlayShots = result.shots.filter((shot) =>
+      shot.label.startsWith("overlay-"),
+    );
+    expect(overlayShots.length).toBeGreaterThan(0);
+    // The caption names the control that opened it, so the critic judges the
+    // panel as an answer to a click rather than as a loose screenshot.
+    expect(overlayShots[0]?.caption ?? "").not.toBe("");
+
+    // Ordered before the empty-state capture: the clicks come last, and a
+    // capture taken after the page was re-navigated would be of the wrong page.
+    const labels = result.shots.map((shot) => shot.label);
+    expect(labels.indexOf("overlay-1")).toBeLessThan(
+      labels.indexOf("empty-state"),
+    );
 
     const opened = result.interactions.filter(
       (interaction) => interaction.overlayOpened,
@@ -153,6 +186,23 @@ describe("page renderer", () => {
       (interaction) => interaction.overlayContentCount > 0,
     );
     expect(healthy.length).toBeGreaterThan(0);
+
+    // The panel's own structure, serialised while it was open. It answers what
+    // is IN the panel where the capture answers what it looks like — the gate
+    // reasons over this one. It must carry the panel's real text and its
+    // inputs, and stay bounded: the string goes straight into a model's
+    // context.
+    const snapshot = healthy[0]?.overlaySnapshot ?? "";
+    expect(snapshot).toContain("This panel has real content.");
+    expect(snapshot).toContain("placeholder=");
+    expect(snapshot.length).toBeLessThan(1_500);
+
+    // What separates a control that writes from one that pretends to. Both
+    // buttons change the DOM, both read as "live" to the click probe, and the
+    // harness answers `ops.run` without executing it — so counting the calls
+    // is the only evidence left. A mail client whose send button resolved a
+    // `setTimeout` and toasted "sent" cleared three rounds of review.
+    expect(result.opsRuns).toContain("archive");
 
     closeRenderViews();
   }, 120_000);

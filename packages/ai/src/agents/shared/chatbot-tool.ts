@@ -59,13 +59,31 @@ const guardToolExecute = <TInput, TOutput, TContext>(
       console.error("[chatbot-tool] uncaught error in tool execute", err);
       return Promise.resolve(internalError());
     }
-    // Streaming tool result — pass through (no chatbot tool uses this today).
+    // Streaming tool result. The SDK emits every yield as a `preliminary`
+    // tool-output and the LAST one as the real result, which is how a tool that
+    // runs for minutes (`buildPage`) can show its progress instead of a
+    // spinner. It used to be passed through untouched — meaning the two
+    // guarantees this wrapper exists for, never-throw and JSON-safe, both
+    // stopped applying the moment a tool started streaming. They apply per
+    // yield now, and a throw mid-iteration ends the stream on a readable
+    // error instead of tearing down the turn.
     if (
       result !== null &&
       typeof result === "object" &&
       Symbol.asyncIterator in result
     ) {
-      return result;
+      const source = result;
+      const guardedStream = async function* (): AsyncIterable<
+        TOutput | ToolErrorOutput
+      > {
+        try {
+          for await (const chunk of source) yield toJsonSafeOutput(chunk);
+        } catch (err) {
+          console.error("[chatbot-tool] error in streaming tool execute", err);
+          yield internalError();
+        }
+      };
+      return guardedStream();
     }
     return Promise.resolve(result).then(toJsonSafeOutput, (err: unknown) => {
       console.error("[chatbot-tool] rejected promise in tool execute", err);

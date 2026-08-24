@@ -39,7 +39,10 @@ let schemaMap: Map<string, ZodLike> | undefined;
 
 const buildSchemaMap = (): Map<string, ZodLike> => {
   const map = new Map<string, ZodLike>();
-  const domainTools = buildDomainTools();
+  // Non-authoring, because this validates the calls observed on the PARENT's
+  // stream and the parent has no authoring actions. A build's own calls run
+  // inside `buildPage`'s execute and never reach this signal.
+  const domainTools = buildDomainTools({ pageAuthoring: false });
   const register = (tools: Record<string, unknown>): void => {
     for (const [name, tool] of Object.entries(tools)) {
       if (typeof tool !== "object" || tool === null) continue;

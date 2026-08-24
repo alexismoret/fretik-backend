@@ -1,4 +1,9 @@
 import db from "@fretik/shared/db";
+import {
+  extensionOf,
+  FILE_TYPES,
+  typeForExtension,
+} from "@fretik/shared/file-types";
 import { parseExtractedImagePath } from "@fretik/shared/services/file-extraction/image-refs";
 import {
   buildExtractionImageKey,
@@ -77,53 +82,26 @@ const buildVisionPayload = (
  * typed `error` fields so the agent can see and reason about them.
  */
 
-const SUPPORTED_VISION_EXTENSIONS = new Set([
-  ".png",
-  ".jpg",
-  ".jpeg",
-  ".webp",
-  ".pdf",
-  ".mp4",
-  ".webm",
-  ".mov",
+/**
+ * What a vision model can look at: raster images, PDFs and the video
+ * formats the chat surface accepts. SVG is excluded on purpose — it is
+ * markup, and `read` returns it verbatim.
+ */
+const SUPPORTED_VISION_IDS = new Set([
+  "png",
+  "jpeg",
+  "webp",
+  "gif",
+  "pdf",
+  "mp4",
+  "webm",
+  "quicktime",
 ]);
 
-const SUPPORTED_VISION_MIMES = new Set([
-  "image/png",
-  "image/jpeg",
-  "image/webp",
-  "application/pdf",
-  "video/mp4",
-  "video/webm",
-  "video/quicktime",
-]);
-
-const getExtension = (path: string): string => {
-  const dotIndex = path.lastIndexOf(".");
-  return dotIndex > 0 ? path.slice(dotIndex).toLowerCase() : "";
-};
-
-const guessMimeFromExtension = (ext: string): string | null => {
-  switch (ext) {
-    case ".png":
-      return "image/png";
-    case ".jpg":
-    case ".jpeg":
-      return "image/jpeg";
-    case ".webp":
-      return "image/webp";
-    case ".pdf":
-      return "application/pdf";
-    case ".mp4":
-      return "video/mp4";
-    case ".webm":
-      return "video/webm";
-    case ".mov":
-      return "video/quicktime";
-    default:
-      return null;
-  }
-};
+const supportedVisionExtensions = (): string[] =>
+  FILE_TYPES.filter((def) => SUPPORTED_VISION_IDS.has(def.id)).flatMap(
+    (def) => [...def.extensions],
+  );
 
 export const createVisionTool = () =>
   tool({
@@ -145,7 +123,7 @@ export const createVisionTool = () =>
       "",
       "Do NOT call vision to extract text from a scan (`read` returns it), to pull structured fields or rows out of a document (`extract` returns validated JSON), or out of curiosity when nothing visual was asked — vision is a paid model call.",
       "",
-      "Accepted formats: .png, .jpg, .jpeg, .webp, .pdf, .mp4, .webm, .mov, plus extracted-figure paths. PDFs and videos are sent natively (not OCR-converted) so layout, motion, diagrams, and signatures are preserved.",
+      "Accepted formats: .png, .jpg, .jpeg, .webp, .gif, .pdf, .mp4, .webm, .mov, plus extracted-figure paths. PDFs and videos are sent natively (not OCR-converted) so layout, motion, diagrams, and signatures are preserved.",
       "",
       "Output: { description, model, truncated, notice? }. `truncated: true` means the description hit the output cap — narrow the question or target fewer pages.",
     ].join("\n"),
@@ -154,7 +132,7 @@ export const createVisionTool = () =>
         .string()
         .min(1)
         .describe(
-          "Workspace-relative or absolute path under '/workspace/'. Accepts .png, .jpg, .jpeg, .webp, .pdf, .mp4, .webm, .mov, and extracted-figure paths ('attachments/<file>/img-N.jpeg').",
+          "Workspace-relative or absolute path under '/workspace/'. Accepts .png, .jpg, .jpeg, .webp, .gif, .pdf, .mp4, .webm, .mov, and extracted-figure paths ('attachments/<file>/img-N.jpeg').",
         ),
       question: z
         .string()
@@ -237,21 +215,15 @@ export const createVisionTool = () =>
         }
       }
 
-      const ext = getExtension(resolved.relative);
-      if (!SUPPORTED_VISION_EXTENSIONS.has(ext)) {
+      const ext = extensionOf(resolved.relative);
+      const def = typeForExtension(ext);
+      if (!def || !SUPPORTED_VISION_IDS.has(def.id)) {
         return {
-          error: `Not a supported vision format (${ext || "no extension"}). Use read instead — vision only accepts .png, .jpg, .jpeg, .webp, .pdf, .mp4, .webm, or .mov.`,
+          error: `Not a supported vision format (${ext || "no extension"}). Use read instead — vision only accepts ${supportedVisionExtensions().join(", ")}.`,
           code: TOOL_ERROR_CODES.UNSUPPORTED_VISION_TYPE,
         };
       }
-
-      const mimeType = guessMimeFromExtension(ext);
-      if (!mimeType || !SUPPORTED_VISION_MIMES.has(mimeType)) {
-        return {
-          error: `Unsupported MIME type for ${ext}.`,
-          code: TOOL_ERROR_CODES.UNSUPPORTED_VISION_TYPE,
-        };
-      }
+      const mimeType = def.mime;
 
       if (!(await fileExists(conversationId, resolved.relative))) {
         return {

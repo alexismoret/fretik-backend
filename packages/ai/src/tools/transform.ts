@@ -1,5 +1,6 @@
 import db from "@fretik/shared/db";
 import { aiChatFiles } from "@fretik/shared/db/schema";
+import { extensionOf, typeForExtension } from "@fretik/shared/file-types";
 import {
   getSessionFilePresignedUrl,
   readSessionFile,
@@ -42,25 +43,12 @@ import { withTraceSession } from "../lib/trace-tool";
  * mini-summaries). The description routes those elsewhere.
  */
 
-const TEXT_EXTENSIONS = new Set([
-  ".md",
-  ".markdown",
-  ".txt",
-  ".text",
-  ".html",
-  ".htm",
-  ".rst",
-  ".tex",
-  ".csv", // translating a CSV's text is valid; tabular COMPUTE stays on python
-]);
-const DOCUMENT_EXTENSIONS = new Set([".pdf", ".docx", ".doc", ".pptx", ".ppt"]);
-const SPREADSHEET_EXTENSIONS = new Set([".xlsx", ".xls"]);
-const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif"]);
-
-const getExtension = (path: string): string => {
-  const dotIndex = path.lastIndexOf(".");
-  return dotIndex > 0 ? path.slice(dotIndex).toLowerCase() : "";
-};
+/**
+ * Extensionless files and a couple of prose formats the registry does
+ * not catalogue (`.rst`, `.tex`) are still valid transform input — they
+ * are UTF-8 prose, which is all this tool needs.
+ */
+const EXTRA_TEXT_EXTENSIONS = new Set([".rst", ".tex", ".text", ""]);
 
 /**
  * Pull prose out of a `.json` file. Persisted tool results (webFetch, a
@@ -171,15 +159,16 @@ export const createTransformTool = () =>
         };
       }
 
-      const ext = getExtension(resolved.relative);
-      if (SPREADSHEET_EXTENSIONS.has(ext)) {
+      const ext = extensionOf(resolved.relative);
+      const def = typeForExtension(ext);
+      if (def?.agentAccess === "tabular") {
         return {
           error: `Spreadsheets are tabular data, not prose — process '${resolved.absolute}' with python (pandas), not transform.`,
           code: TOOL_ERROR_CODES.BINARY_NOT_READABLE,
           hint: "python",
         };
       }
-      if (IMAGE_EXTENSIONS.has(ext)) {
+      if (def?.agentAccess === "image") {
         return {
           error: `Images carry no text stream — describe '${resolved.absolute}' with vision instead.`,
           code: TOOL_ERROR_CODES.NO_TEXT_CONTENT,
@@ -189,7 +178,10 @@ export const createTransformTool = () =>
 
       // Resolve the source text.
       let sourceText: string;
-      if (DOCUMENT_EXTENSIONS.has(ext)) {
+      if (
+        def?.agentAccess === "ocr-sidecar" ||
+        def?.agentAccess === "email-sidecar"
+      ) {
         // PDF/Office: transform's models have no native document path, so
         // ride the cached OCR markdown (same content-addressed extraction
         // `read`/`extract` use). Mirrors the Office branch of tools/extract.ts.
@@ -254,7 +246,7 @@ export const createTransformTool = () =>
           };
         }
         sourceText = extraction.pages.map((page) => page.markdown).join("\n\n");
-      } else if (TEXT_EXTENSIONS.has(ext) || ext === ".json" || ext === "") {
+      } else if (def?.textual || EXTRA_TEXT_EXTENSIONS.has(ext)) {
         let raw: string;
         try {
           raw = await readFileText(conversationId, resolved.relative);

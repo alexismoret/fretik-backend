@@ -1,5 +1,6 @@
 import db from "@fretik/shared/db";
 import { aiChatFiles } from "@fretik/shared/db/schema";
+import { agentAccessFor } from "@fretik/shared/file-types";
 import {
   readContextOriginal,
   readContextSidecar,
@@ -14,13 +15,6 @@ import {
   parseExtractedImagePath,
   rewriteExtractedImageRefs,
 } from "@fretik/shared/services/file-extraction/image-refs";
-import {
-  isImageMime,
-  isOcrDocumentMime,
-  isSpreadsheetMime,
-  isTextMime,
-  isVideoMime,
-} from "@fretik/shared/utils/mimeTypes";
 import { tool } from "ai";
 import { SHA256 } from "bun";
 import { eq } from "drizzle-orm";
@@ -89,10 +83,6 @@ const MAX_READ_CHARS = 30_000;
 
 /** Defense-in-depth persisted-output ceiling for `read` results. */
 const READ_PERSIST_THRESHOLD_CHARS = 120_000;
-
-const OCR_SIDECAR_EXTENSIONS = new Set([".pdf", ".docx", ".pptx"]);
-const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp"]);
-const SPREADSHEET_EXTENSIONS = new Set([".xlsx", ".xls"]);
 
 type ReadSource = "original" | "ocr-sidecar" | "persisted-output";
 
@@ -198,9 +188,12 @@ const resolveAttachmentContent = async (args: {
     };
   }
   const mimeType = row.mimeType;
+  // How this type is reachable as text is declared once, in the file-type
+  // registry — never re-derived from the extension here.
+  const access = agentAccessFor(mimeType, name);
 
-  // Plain text / source code / CSV (text/csv is text/*): decode verbatim.
-  if (isTextMime(mimeType)) {
+  // Plain text, source code, CSV, HTML, SVG: decode verbatim.
+  if (access === "raw-text") {
     const bytes = await readSessionFile(conversationId, relative);
     if (!bytes) {
       return {
@@ -214,7 +207,7 @@ const resolveAttachmentContent = async (args: {
   }
 
   // Spreadsheets: code-execution is higher-precision than any text dump.
-  if (isSpreadsheetMime(mimeType)) {
+  if (access === "tabular") {
     return {
       error: {
         error: `Spreadsheet files (${mimeType}) can't be read as text without losing formulas and types. Use python with pandas.read_excel('${absolute}') or openpyxl to inspect the data.`,
@@ -227,7 +220,7 @@ const resolveAttachmentContent = async (args: {
   // Videos: nothing to extract as text — route to the vision tool. (A
   // multimodal profile sees attached videos natively; this branch is for
   // the agent that explicitly tries to `read` one.)
-  if (isVideoMime(mimeType)) {
+  if (access === "opaque") {
     return {
       error: {
         error: `Video files (${mimeType}) have no extractable text. Use vision("${absolute}", "<question>") to analyse what happens in the video.`,
@@ -238,7 +231,11 @@ const resolveAttachmentContent = async (args: {
   }
 
   // Documents / images: lazy content-addressed extraction.
-  if (isOcrDocumentMime(mimeType) || isImageMime(mimeType)) {
+  if (
+    access === "ocr-sidecar" ||
+    access === "email-sidecar" ||
+    access === "image"
+  ) {
     // Backfill a content hash for legacy rows uploaded before hashing.
     let fileHash = row.fileHash;
     if (!fileHash) {
@@ -380,9 +377,10 @@ const resolveContextContent = async (args: {
     };
   }
   const mimeType = file.mimeType;
+  const access = agentAccessFor(mimeType, name);
 
-  // Plain text / source code / CSV: decode the original bytes verbatim.
-  if (isTextMime(mimeType)) {
+  // Plain text, source code, CSV, HTML, SVG: decode the bytes verbatim.
+  if (access === "raw-text") {
     const bytes = await readContextOriginal(
       file.profileId,
       file.id,
@@ -400,7 +398,7 @@ const resolveContextContent = async (args: {
   }
 
   // Spreadsheets: code-execution is higher-precision than any text dump.
-  if (isSpreadsheetMime(mimeType)) {
+  if (access === "tabular") {
     return {
       error: {
         error: `Spreadsheet files (${mimeType}) can't be read as text without losing formulas and types. Use python with pandas.read_excel('${absolute}') or openpyxl to inspect the data.`,
@@ -411,14 +409,18 @@ const resolveContextContent = async (args: {
   }
 
   // Documents / images: return the markdown extracted at upload time.
-  if (isOcrDocumentMime(mimeType) || isImageMime(mimeType)) {
+  if (
+    access === "ocr-sidecar" ||
+    access === "email-sidecar" ||
+    access === "image"
+  ) {
     let markdown = file.content;
     if (markdown === null || markdown.length === 0) {
       const bytes = await readContextSidecar(file.profileId, file.id);
       markdown = bytes ? new TextDecoder().decode(bytes) : null;
     }
     if (markdown === null || markdown.length === 0) {
-      if (isImageMime(mimeType)) {
+      if (access === "image") {
         return {
           error: {
             error: `This image has no extractable text. Use vision(file_path, question) with a specific visual question to inspect it.`,
@@ -454,7 +456,7 @@ export const createReadTool = () =>
       "- View a file you already know exists (filename came from an attachment, `listDocuments`, or a previous tool result). Cross-tool routing (bash for multi-file scans, vision for visual questions, searchKnowledge for topic discovery) lives in `<tool_routing>`.",
       "- `read(path, offset, limit)` targets a section in a large file (`offset` is 1-indexed, `limit` defaults to 2000 lines).",
       "- Spreadsheets (`.xlsx` / `.xls`), programmatic processing, and MODIFYING a file (docx / pptx / xlsx editing) → use `python` (pandas, openpyxl, python-docx, python-pptx) — the original bytes are at `attachments/<filename>`; spreadsheets are NOT readable as text here.",
-      "- Path inputs: `attachments/invoice.pdf` (workspace-relative, preferred), `/workspace/attachments/invoice.pdf` (absolute), or bare `invoice.pdf` (assumed under `attachments/`). Documents and images are made readable transparently — just pass the original filename.",
+      "- Path inputs: `attachments/invoice.pdf` (workspace-relative, preferred), `/workspace/attachments/invoice.pdf` (absolute), or bare `invoice.pdf` (assumed under `attachments/`). Documents, mail and images are made readable transparently — just pass the original filename; source files (code, config, HTML) come back verbatim, markup included.",
       "- Document text may contain figure refs like `![chart](attachments/report.pdf/img-2.jpeg)` — pass that path to `vision` to look at THAT figure (it is not readable or python-openable).",
       `- A byte safety cap (~${(MAX_READ_CHARS / 1000).toFixed(0)}K chars) fires on dense content; when it does, \`truncatedByBytes: true\` + a \`notice\` field tell you exactly how to paginate.`,
       "",
@@ -587,11 +589,34 @@ export const createReadTool = () =>
         const sidecarRel = join(dirname(resolved.relative), sidecarBase);
         const sidecarResolved = resolveWorkspacePath(sidecarRel);
 
-        if (OCR_SIDECAR_EXTENSIONS.has(ext)) {
-          if (
-            !sidecarResolved ||
-            !(await fileExists(conversationId, sidecarResolved.relative))
-          ) {
+        // These files carry no DB row, so the extension is the only
+        // signal — but the routing it feeds is the registry's, the same
+        // one the attachment and context paths use.
+        const pathAccess = agentAccessFor("", basename(resolved.relative));
+        const sidecarExists =
+          sidecarResolved !== null &&
+          (await fileExists(conversationId, sidecarResolved.relative));
+
+        if (
+          pathAccess === "ocr-sidecar" ||
+          pathAccess === "email-sidecar" ||
+          pathAccess === "image"
+        ) {
+          if (!sidecarResolved || !sidecarExists) {
+            if (pathAccess === "image") {
+              return {
+                error: `This image has no extractable text. Use vision(file_path, question) with a specific visual question to inspect it.`,
+                code: TOOL_ERROR_CODES.NO_TEXT_CONTENT,
+                hint: "vision",
+              };
+            }
+            if (pathAccess === "email-sidecar") {
+              return {
+                error: `Mail files (${ext}) can't be read directly here. Use python with extract_msg (.msg) or the email module (.eml) to read the headers, body and attachments.`,
+                code: TOOL_ERROR_CODES.BINARY_NOT_READABLE,
+                hint: "python",
+              };
+            }
             return {
               error: `Binary ${ext} files can't be read directly here. For structured data use extract(file_path, schema, shape); to modify the file use python (python-docx / python-pptx); for visual layout use vision(file_path, question).`,
               code: TOOL_ERROR_CODES.BINARY_NOT_READABLE,
@@ -601,21 +626,7 @@ export const createReadTool = () =>
           finalRelative = sidecarResolved.relative;
           finalAbsolute = sidecarResolved.absolute;
           source = "ocr-sidecar";
-        } else if (IMAGE_EXTENSIONS.has(ext)) {
-          if (
-            !sidecarResolved ||
-            !(await fileExists(conversationId, sidecarResolved.relative))
-          ) {
-            return {
-              error: `This image has no extractable text. Use vision(file_path, question) with a specific visual question to inspect it.`,
-              code: TOOL_ERROR_CODES.NO_TEXT_CONTENT,
-              hint: "vision",
-            };
-          }
-          finalRelative = sidecarResolved.relative;
-          finalAbsolute = sidecarResolved.absolute;
-          source = "ocr-sidecar";
-        } else if (SPREADSHEET_EXTENSIONS.has(ext)) {
+        } else if (pathAccess === "tabular") {
           return {
             error: `Spreadsheet files (${ext}) can't be read as text. Use python with pandas.read_excel('${resolved.absolute}') or openpyxl to inspect the data.`,
             code: TOOL_ERROR_CODES.BINARY_NOT_READABLE,

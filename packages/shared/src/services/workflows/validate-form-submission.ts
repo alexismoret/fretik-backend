@@ -1,10 +1,10 @@
+import { resolveFileType } from "../../file-types/detect";
 import {
   WORKFLOW_FORM_FILE_MAX_MB,
   type WorkflowFormConfig,
   type WorkflowFormField,
 } from "../../schemas/workflow-forms";
 import { MAX_FILE_SIZE_BYTES } from "../../utils/chatbot-limits";
-import { detectMimeFromBytes, isChatbotSupported } from "../../utils/mimeTypes";
 import type { RunAttachment } from "./attach-run-files";
 
 /**
@@ -159,8 +159,13 @@ export const validateFormSubmission = async (params: {
         if (bytes.byteLength > perFileCap) {
           return { ok: false, message: `"${file.name}" is too large.` };
         }
-        const mime = await detectMimeFromBytes(bytes, file.type);
-        if (!isChatbotSupported(mime)) {
+        const resolved = await resolveFileType({
+          bytes,
+          declaredMime: file.type,
+          filename: file.name,
+        });
+        const mime = resolved.mimeType;
+        if (!resolved.type?.surfaces.includes("workflow-form")) {
           return {
             ok: false,
             message: `"${file.name}" is an unsupported file type.`,

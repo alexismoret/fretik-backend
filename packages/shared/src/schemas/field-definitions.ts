@@ -1,8 +1,10 @@
 import { z } from "zod";
 import { fieldDefinitionTypeEnum } from "../db/schema";
+import { FORMULA_RESULT_TYPES } from "../db/schema/field-types";
 import {
   FIELD_DEFINITION_KEY_REGEX,
   FIELD_DEFINITION_LIMITS,
+  FORMULA_LIMITS,
 } from "../services/field-definitions/constants";
 
 // ============================================================================
@@ -77,6 +79,60 @@ export const fieldConfigSchema = z.object({
       "percent_checked",
     ])
     .optional(),
+  // formula (a read-only column the database computes from this record's own
+  // fields). `resultType` is INFERRED by the compiler at save — accepted here
+  // only so a config can round-trip; whatever a caller sends is overwritten.
+  expression: z.string().max(FORMULA_LIMITS.MAX_EXPRESSION_CHARS).optional(),
+  resultType: z.enum(FORMULA_RESULT_TYPES).optional(),
+  currencyCode: z.string().max(3).optional(),
+});
+
+/**
+ * Dry-run a formula without saving. `ok: false` is a 200: an expression that
+ * does not compile is the normal state while someone is typing one, and the
+ * editor needs the message and the position to point at it.
+ */
+export const checkFormulaRequestSchema = z.object({
+  objectTypeId: z.uuid(),
+  expression: z.string().max(FORMULA_LIMITS.MAX_EXPRESSION_CHARS),
+  /** The field being edited, so its own previous version is not in scope. */
+  fieldId: z.uuid().optional(),
+});
+
+/**
+ * The parsed tree, so the visual builder can open an existing formula. Typed
+ * loosely on the wire (`z.unknown()` for the recursive parts) because the shape
+ * is defined by the compiler, not by this schema — restating a recursive union
+ * here would be a second definition free to disagree with the parser's.
+ */
+const formulaAstSchema = z.looseObject({ kind: z.string() });
+
+export const checkFormulaResponseSchema = z.union([
+  z.object({
+    ok: z.literal(true),
+    resultType: z.enum(FORMULA_RESULT_TYPES),
+    dependsOn: z.array(z.string()),
+    ast: formulaAstSchema,
+  }),
+  z.object({
+    ok: z.literal(false),
+    message: z.string(),
+    /** 0-based character offset in the expression. */
+    at: z.number().int(),
+  }),
+]);
+
+/** The function palette the visual builder draws from. Static per deploy. */
+export const formulaFunctionsResponseSchema = z.object({
+  functions: z.array(
+    z.object({
+      name: z.string(),
+      hint: z.string(),
+      variadic: z.boolean(),
+      minArgs: z.number().int(),
+      params: z.array(z.object({ name: z.string(), type: z.string() })),
+    }),
+  ),
 });
 
 export const fieldDefinitionKeySchema = z

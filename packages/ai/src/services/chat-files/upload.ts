@@ -1,5 +1,7 @@
 import db from "@fretik/shared/db";
 import { aiChatFiles, type AiChatFile } from "@fretik/shared/db/schema";
+import { expectsSidecar } from "@fretik/shared/file-types";
+import { resolveFileType } from "@fretik/shared/file-types/detect";
 import {
   extractChatFileSnapshot,
   type ChatFileSnapshot,
@@ -18,11 +20,6 @@ import {
   MAX_FILE_SIZE_BYTES,
   MAX_FILES_PER_CONVERSATION,
 } from "@fretik/shared/utils/chatbot-limits";
-import {
-  detectMimeFromBytes,
-  isChatbotSupported,
-  requiresOcrPreprocessing,
-} from "@fretik/shared/utils/mimeTypes";
 import { and, eq, ne } from "drizzle-orm";
 import { attachUserFile } from "../../lib/conversation-storage";
 
@@ -37,7 +34,7 @@ import { attachUserFile } from "../../lib/conversation-storage";
  *
  *  1. Verify the conversation exists and belongs to the calling team.
  *  2. Read the bytes once, resolve the REAL MIME from magic bytes
- *     (`detectMimeFromBytes` — never trust the extension / browser type),
+ *     (`resolveFileType` — never trust the extension / browser type),
  *     and validate size / MIME / aggregate conversation cap
  *     (HTTP 413 / 415 / 409 respectively).
  *  3. Hash the bytes (SHA-256) and dedup the filename on
@@ -126,7 +123,12 @@ export const uploadChatFile = async (
   //    (never trust the extension / browser-provided file.type), then
   //    validate size / MIME / aggregate cap.
   const bytes = new Uint8Array(await file.arrayBuffer());
-  const mimeType = await detectMimeFromBytes(bytes, file.type);
+  const resolved = await resolveFileType({
+    bytes,
+    declaredMime: file.type,
+    filename: file.name,
+  });
+  const mimeType = resolved.mimeType;
 
   if (file.size > MAX_FILE_SIZE_BYTES) {
     return throwHttpError(
@@ -134,7 +136,7 @@ export const uploadChatFile = async (
       fileTooLarge(file.name, file.size, MAX_FILE_SIZE_BYTES),
     );
   }
-  if (!isChatbotSupported(mimeType)) {
+  if (!resolved.type?.surfaces.includes("chatbot")) {
     return throwHttpError(415, unsupportedMediaType(mimeType));
   }
   const activeCount = await countActiveFiles(conversationId);
@@ -196,7 +198,12 @@ export const uploadChatFile = async (
     //    `opaque` — never break the upload because of preview extraction.
     let snapshot: ChatFileSnapshot;
     try {
-      snapshot = await extractChatFileSnapshot(bytes, mimeType, undefined);
+      snapshot = await extractChatFileSnapshot(
+        bytes,
+        mimeType,
+        undefined,
+        dedupedFilename,
+      );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       snapshot = {
@@ -205,10 +212,10 @@ export const uploadChatFile = async (
       };
     }
 
-    // `hasMarkdown` reflects "an OCR extraction is expected for this MIME"
-    // (PDF / office / image) — the sidecar is produced lazily on first
-    // `read`, not here. Spreadsheet / text never get a markdown sidecar.
-    const hasMarkdown = requiresOcrPreprocessing(mimeType);
+    // `hasMarkdown` reflects "a markdown sidecar is expected for this
+    // type" (documents, images, mail, HTML) — it is produced lazily on
+    // first `read`, not here. Text and source files never get one.
+    const hasMarkdown = expectsSidecar(mimeType, dedupedFilename);
 
     // 7. Finalize. `documentId` stays null — it is set later, only if the
     // user promotes the file to the Drive on send (`promote-to-drive.ts`).

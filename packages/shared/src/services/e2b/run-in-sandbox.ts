@@ -1,7 +1,7 @@
 import type { Context, Result } from "@e2b/code-interpreter";
 import { Sandbox } from "@e2b/code-interpreter";
 import { FileType } from "e2b";
-import { extname } from "node:path";
+import { mimeFromFilename } from "../../file-types";
 import { acquireSandbox } from "./acquire-sandbox";
 import { SANDBOX_TIMEOUT_MS } from "./client";
 import { killSandbox } from "./kill-sandbox";
@@ -115,27 +115,12 @@ const toRelWorkspacePath = (absPath: string): string =>
     ? absPath.slice(WORKSPACE_PREFIX.length)
     : absPath;
 
-const MIME_BY_EXT: Record<string, string> = {
-  ".csv": "text/csv",
-  ".json": "application/json",
-  ".md": "text/markdown",
-  ".txt": "text/plain",
-  ".png": "image/png",
-  ".jpg": "image/jpeg",
-  ".jpeg": "image/jpeg",
-  ".webp": "image/webp",
-  ".pdf": "application/pdf",
-  ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-  ".xls": "application/vnd.ms-excel",
-  ".docx":
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-  ".pptx":
-    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-  ".html": "text/html",
-};
-
-const inferMime = (path: string): string =>
-  MIME_BY_EXT[extname(path).toLowerCase()] ?? "application/octet-stream";
+/**
+ * Type a sandbox artefact from its path. The extension is all we have
+ * here — these files are produced by the agent's own code, so nothing
+ * declares a MIME for them.
+ */
+const inferMime = mimeFromFilename;
 
 interface FileSnapshot {
   size: number;

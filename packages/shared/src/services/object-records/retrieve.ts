@@ -224,14 +224,23 @@ const extensionScopeCondition = (input: {
 const buildFilterCondition = (
   f: RecordFilter,
   objectTypeId: string,
-  fieldType?: FieldDefinitionType,
+  field?: FieldDefinition,
 ): SQL | null => {
+  const fieldType = field?.type;
   // System properties filter on the registry row itself — the predicate is built
   // against the registry column and needs no extension EXISTS.
   const sysCol = fieldType ? SYSTEM_FIELD_COLUMN[fieldType] : undefined;
   if (sysCol) return buildFieldFilterPredicate(f, fieldType, sysCol);
 
-  const pred = buildFieldFilterPredicate(f, fieldType);
+  // The config travels because a `formula` compares as whatever its expression
+  // evaluates to — without it the column falls back to a TEXT comparison, where
+  // `'1500' > '500'` is false.
+  const pred = buildFieldFilterPredicate(
+    f,
+    fieldType,
+    undefined,
+    field?.config,
+  );
   if (!pred) return null;
   const table = sql.raw(qualifiedObjectTable(objectTypeId));
   return sql`EXISTS (SELECT 1 FROM ${table} e WHERE e."id" = ${objectRecords.id} AND ${pred})`;
@@ -377,16 +386,14 @@ export const listObjectRecords = async (data: {
     }
     conditions.push(sql`(${sql.join(arms, sql` OR `)})`);
   }
-  const fieldTypeByKey = new Map<string, FieldDefinitionType>(
-    fieldDefs.map((d) => [d.key, d.type]),
+  // The whole definition, not just its type: a `formula` filter needs the config
+  // to know what its expression evaluates to.
+  const fieldByKey = new Map<string, FieldDefinition>(
+    fieldDefs.map((d) => [d.key, d]),
   );
   if (filters.length > 0) {
     for (const f of filters) {
-      const cond = buildFilterCondition(
-        f,
-        objectTypeId,
-        fieldTypeByKey.get(f.key),
-      );
+      const cond = buildFilterCondition(f, objectTypeId, fieldByKey.get(f.key));
       if (cond) conditions.push(cond);
     }
   }
@@ -410,7 +417,7 @@ export const listObjectRecords = async (data: {
   });
 
   const sortFieldType = sortBy.startsWith("field:")
-    ? fieldTypeByKey.get(sortBy.slice("field:".length))
+    ? fieldByKey.get(sortBy.slice("field:".length))?.type
     : undefined;
 
   // Sorting by a typed value used to ORDER BY a correlated subquery, which

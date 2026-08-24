@@ -1,21 +1,28 @@
 import { randomUUIDv7 } from "bun";
 import { eq, sql } from "drizzle-orm";
-import { fileTypeFromBuffer } from "file-type";
-import { extname } from "node:path";
 
-import db from "../../db";
+import db, { type Transaction } from "../../db";
 import { folders, teamSettings } from "../../db/schema";
-import { documents, type NewDocument } from "../../db/schema/documents";
-import { buildDocumentOriginalKey } from "../../lib/document-storage";
-import { fileValidationError, throwHttpError } from "../../lib/errors";
-import { uploadToS3 } from "../../lib/s3";
 import {
-  ALLOWED_EXTENSIONS,
-  ALLOWED_MIME_TYPES,
-  isPdf,
-} from "../../utils/mimeTypes";
+  documents,
+  type DocumentSource,
+  type DocumentStatus,
+  type NewDocument,
+} from "../../db/schema/documents";
+import { thumbnailFor } from "../../file-types";
+import { resolveFileType } from "../../file-types/detect";
+import { buildDocumentOriginalKey } from "../../lib/document-storage";
+import {
+  createApiError,
+  fileValidationError,
+  throwHttpError,
+} from "../../lib/errors";
+import { uploadToS3 } from "../../lib/s3";
+import { ERROR_CODES } from "../../schemas/errors";
+import { findNameCollision, nextAvailableFilename } from "./name-collision";
 import { type DocumentFileMetadata, finalizeFailedDocument } from "./process";
 import { enqueueDocumentProcessing } from "./processing-queue";
+import { replaceDocumentContent } from "./versions/replace-content";
 
 // ==================== //
 // CONFIGURATION        //
@@ -28,18 +35,26 @@ const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
 // ==================== //
 
 /**
- * Validates a single uploaded file (type, size)
+ * Validate one uploaded file and resolve its REAL type.
+ *
+ * The decision is made on the BYTES, never on the browser-supplied
+ * `file.type` or the extension: both are trivially wrong (a `.txt` that
+ * is really a PDF, an extensionless export, a mail client that labels
+ * everything `application/octet-stream`). The MIME returned here is what
+ * gets persisted, so every downstream router can trust it.
  */
-const assertFile = (file: File): void => {
+const assertFile = async (file: File, bytes: Uint8Array): Promise<string> => {
   const validationErrors: string[] = [];
 
-  const extension = extname(file.name).toLowerCase();
-  if (
-    !ALLOWED_MIME_TYPES.includes(file.type) &&
-    !ALLOWED_EXTENSIONS.includes(extension)
-  ) {
+  const resolved = await resolveFileType({
+    bytes,
+    declaredMime: file.type,
+    filename: file.name,
+  });
+
+  if (!resolved.type?.surfaces.includes("drive")) {
     validationErrors.push(
-      `${file.name}: Invalid type. Allowed formats: PDF, Word, Excel, CSV, PowerPoint, Text.`,
+      `${file.name}: unsupported file type (${resolved.mimeType}).`,
     );
   }
 
@@ -52,6 +67,8 @@ const assertFile = (file: File): void => {
   if (validationErrors.length > 0) {
     throwHttpError(400, fileValidationError(validationErrors));
   }
+
+  return resolved.mimeType;
 };
 
 // ==================== //
@@ -68,10 +85,36 @@ export const createDocumentRecord = async (args: {
   metadata: DocumentFileMetadata;
   teamId: string;
   userId: string;
+  /**
+   * `authored` for markdown written in-app — its bytes are the source of
+   * truth, not an ingested artefact. Defaults to `uploaded`.
+   */
+  source?: DocumentSource;
+  /**
+   * Overrides the ingestion-derived starting status. The authored path passes
+   * `ready`: nothing has to be converted, OCR'd or thumbnailed for the document
+   * to be usable, so parking it in `converting` would only make it look broken
+   * until a worker it never needs picked it up.
+   */
+  status?: DocumentStatus;
+  /**
+   * Enlist in a caller's transaction instead of opening one. Anything that
+   * must land WITH the document row — its first version, say — passes its own
+   * `tx` so a failure between the two cannot leave a document behind whose
+   * provenance is gone.
+   */
+  tx?: Transaction;
 }): Promise<typeof documents.$inferSelect> => {
   const { metadata, teamId, userId } = args;
 
-  const initialStatus = isPdf(metadata.mimeType) ? "uploading" : "converting";
+  // `converting` means "a Gotenberg render stands between this file and a
+  // usable thumbnail". Everything else — PDFs, images, text, code, mail —
+  // goes straight to `uploading`.
+  const thumbnail = thumbnailFor(metadata.mimeType, metadata.originalFilename);
+  const needsRender =
+    thumbnail === "libreoffice" || thumbnail === "chromium-screenshot";
+  const initialStatus =
+    args.status ?? (needsRender ? "converting" : "uploading");
   const documentToInsert: NewDocument = {
     id: metadata.id,
     folderId: metadata.folderId,
@@ -81,10 +124,11 @@ export const createDocumentRecord = async (args: {
     fileHash: metadata.fileHash,
     teamId,
     status: initialStatus,
+    source: args.source ?? "uploaded",
     uploadedById: userId,
   };
 
-  const [savedDocument] = await db.transaction(async (tx) => {
+  const run = async (tx: Transaction) => {
     const result = await tx
       .insert(documents)
       .values(documentToInsert)
@@ -106,7 +150,11 @@ export const createDocumentRecord = async (args: {
     }
 
     return result;
-  });
+  };
+
+  const [savedDocument] = args.tx
+    ? await run(args.tx)
+    : await db.transaction(run);
 
   if (!savedDocument) {
     return throwHttpError(500, {
@@ -117,6 +165,28 @@ export const createDocumentRecord = async (args: {
 
   return savedDocument;
 };
+
+/**
+ * How the upload path answers a same-name collision.
+ *
+ * `ask` refuses so the person decides — no file manager resolves this on your
+ * behalf, and neither should we. The other two are the answers they give back.
+ */
+export type UploadConflictPolicy = "ask" | "replace" | "keepBoth";
+
+export interface UploadDocumentResult {
+  document: typeof documents.$inferSelect;
+  /**
+   * What actually happened, because it is not always "a new document":
+   * `alreadyPresent` means these exact bytes were already filed under this
+   * name, `replaced` means the existing document gained a version, and
+   * `created` covers a fresh file and a `keepBoth` rename alike — the caller
+   * reads `document.originalFilename` to see which name it ended up with.
+   */
+  outcome: "created" | "replaced" | "alreadyPresent";
+  /** Set only for `replaced` — the version the previous content became. */
+  versionNumber?: number;
+}
 
 /**
  * Uploads a single document: validates, persists the original to S3,
@@ -133,26 +203,77 @@ export const uploadDocument = async (
   teamId: string,
   userId: string,
   folderId: string | undefined,
-): Promise<typeof documents.$inferSelect> => {
-  // 1. Validate file
-  assertFile(file);
-
-  // 2. Read file into buffer + prepare metadata
+  /**
+   * What to do when the folder already holds a file with this name. `ask` (the
+   * default) refuses with a 409 carrying the existing document's id, so the
+   * caller can put the choice to the person who dropped the file — the same
+   * thing every file manager does. Identical bytes never reach the question.
+   */
+  onConflict: UploadConflictPolicy = "ask",
+): Promise<UploadDocumentResult> => {
+  // 1. Read the file, then validate it against its actual content — the
+  //    resolved MIME is what we persist.
   const documentId = randomUUIDv7();
   const arrayBuffer = await file.arrayBuffer();
   const buffer = new Uint8Array(arrayBuffer);
   const fileHash = Bun.SHA256.hash(arrayBuffer, "hex");
 
-  let mimeType = file.type;
-  if (!mimeType || mimeType.trim().length == 0) {
-    const fileType = await fileTypeFromBuffer(buffer);
-    mimeType = fileType?.mime ?? "application/pdf";
+  const mimeType = await assertFile(file, buffer);
+
+  // 2b. Same name, same folder — decide before any bytes move.
+  const collision = await findNameCollision({
+    teamId,
+    folderId: folderId ?? null,
+    filename: file.name,
+    fileHash,
+  });
+  let filename = file.name;
+
+  if (collision.kind === "identical") {
+    // Already filed, byte for byte. Re-uploading it is not a new version and
+    // not a second document; the honest answer is the one that is already there.
+    const existing = await db.query.documents.findFirst({
+      where: { id: collision.documentId, teamId },
+    });
+    if (existing) return { document: existing, outcome: "alreadyPresent" };
+  } else if (collision.kind === "different") {
+    if (onConflict === "ask") {
+      return throwHttpError(
+        409,
+        createApiError(
+          ERROR_CODES.DOCUMENT_NAME_CONFLICT,
+          `A different file named "${file.name}" is already in this folder.`,
+          collision.documentId,
+        ),
+      );
+    }
+    if (onConflict === "replace") {
+      const result = await replaceDocumentContent({
+        documentId: collision.documentId,
+        teamId,
+        organizationId,
+        bytes: buffer,
+        operation: "replace",
+        actorContext: { actor: "human", userId },
+        mimeType,
+      });
+      return {
+        document: result.document,
+        outcome: "replaced",
+        versionNumber: result.version.versionNumber,
+      };
+    }
+    filename = await nextAvailableFilename({
+      teamId,
+      folderId: folderId ?? null,
+      filename: file.name,
+    });
   }
 
   const metadata: DocumentFileMetadata = {
     id: documentId,
     folderId: folderId ?? null,
-    originalFilename: file.name,
+    originalFilename: filename,
     fileSize: file.size,
     mimeType,
     fileHash,
@@ -202,5 +323,5 @@ export const uploadDocument = async (
     throw err;
   }
 
-  return savedDocument;
+  return { document: savedDocument, outcome: "created" };
 };

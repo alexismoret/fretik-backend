@@ -15,9 +15,9 @@ export type { DocumentProcessingJobData } from "./process";
 /**
  * BullMQ queue for the document-processing pipeline (OCR → extraction →
  * vectorise). Producers (`@fretik/api` upload route, `@fretik/ai`
- * Save-on-drive) enqueue; the Worker runs IN-PROCESS inside every
- * `@fretik/api` replica (`startDocumentProcessingWorker`), so processing
- * scales by adding API replicas and never blocks the AI service.
+ * Save-on-drive) enqueue; the Worker runs in `@fretik/jobs`
+ * (`startDocumentProcessingWorker` in its `index.ts`), so processing scales by
+ * adding jobs replicas and never blocks the API or the AI service.
  *
  * Robustness this buys over the old fire-and-forget promise:
  *  - jobs survive a process crash and are reclaimed (no documents stuck

@@ -1,3 +1,8 @@
+import {
+  extensionOf,
+  FILE_TYPES,
+  typeForExtension,
+} from "@fretik/shared/file-types";
 import { tool } from "ai";
 import { basename } from "node:path";
 import { z } from "zod";
@@ -30,20 +35,19 @@ import { withTraceSession } from "../lib/trace-tool";
  * reads them inline via `read`; spreadsheets/CSV go through `python` (pandas).
  */
 
-const PDF_EXTENSION = ".pdf";
-const IMAGE_MIMES: Record<string, string> = {
-  ".png": "image/png",
-  ".jpg": "image/jpeg",
-  ".jpeg": "image/jpeg",
-  ".webp": "image/webp",
-};
-const SPREADSHEET_EXTENSIONS = new Set([".xlsx", ".xls", ".csv"]);
-const OFFICE_EXTENSIONS = new Set([".docx", ".doc", ".pptx", ".ppt"]);
+/**
+ * Types a file-capable model ingests NATIVELY — the registry ids behind
+ * `nativeInput.fileMimeTypes` (PDF) and the image modality. This is a
+ * limit of the extraction MODEL, not of OCR: office and OpenDocument
+ * files are excluded here because `read` already returns their text
+ * (its OCR route handles them), so a second native call buys nothing.
+ */
+const NATIVE_EXTRACT_IDS = new Set(["pdf", "png", "jpeg", "webp"]);
 
-const getExtension = (path: string): string => {
-  const dotIndex = path.lastIndexOf(".");
-  return dotIndex > 0 ? path.slice(dotIndex).toLowerCase() : "";
-};
+const nativeExtractExtensions = (): string[] =>
+  FILE_TYPES.filter((def) => NATIVE_EXTRACT_IDS.has(def.id)).flatMap((def) => [
+    ...def.extensions,
+  ]);
 
 /** Above this serialized size the records stay in the file only — the model
  * works from `dataPath` with `python` instead of reading them inline. */
@@ -165,29 +169,35 @@ export const createExtractTool = () =>
         };
       }
 
-      const ext = getExtension(resolved.relative);
-      if (SPREADSHEET_EXTENSIONS.has(ext)) {
+      const ext = extensionOf(resolved.relative);
+      const def = typeForExtension(ext);
+      const isNative = def !== undefined && NATIVE_EXTRACT_IDS.has(def.id);
+
+      if (!isNative && def?.family === "spreadsheet") {
         return {
           error: `Spreadsheet/CSV files parse deterministically — use python (pandas.read_excel / read_csv on '${resolved.absolute}') instead of extract.`,
           code: TOOL_ERROR_CODES.BINARY_NOT_READABLE,
           hint: "python",
         };
       }
-      if (OFFICE_EXTENSIONS.has(ext)) {
+      if (
+        !isNative &&
+        (def?.extraction === "mistral-ocr" || def?.extraction === "convert-ocr")
+      ) {
         return {
           error: `extract is for native PDF/images. An Office document is already text — read it (the main model extracts fields directly from the text), or convert it to PDF first.`,
           code: TOOL_ERROR_CODES.UNSUPPORTED_EXTENSION,
           hint: "read",
         };
       }
-      const imageMime = IMAGE_MIMES[ext];
-      const isPdf = ext === PDF_EXTENSION;
-      if (!isPdf && imageMime === undefined) {
+      if (!isNative || def === undefined) {
         return {
-          error: `Not a native document for extract (${ext || "no extension"}). extract accepts .pdf, .png, .jpg, .jpeg, .webp. For text or CSV, read/python already have the content.`,
+          error: `Not a native document for extract (${ext || "no extension"}). extract accepts ${nativeExtractExtensions().join(", ")}. For text or CSV, read/python already have the content.`,
           code: TOOL_ERROR_CODES.UNSUPPORTED_EXTENSION,
         };
       }
+      const isPdf = def.id === "pdf";
+      const imageMime = isPdf ? undefined : def.mime;
       if (pageSelection !== undefined && !isPdf) {
         return {
           error: `"pages" only applies to PDFs — images are extracted whole.`,

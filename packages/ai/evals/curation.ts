@@ -195,7 +195,10 @@ export const CURATED: Record<string, CuratedCase> = {
   // records), so NOT smoke. Graded on the tool trajectory + judge; the
   // partial-update case asserts DB state (no data loss). See
   // evals/cases/objects-autonomy.ts.
-  // objects (9)
+  // The three formula cases are the computed-column DECISION, which is one
+  // choice with three outcomes: pick it (margin), don't pick it (notes — a
+  // formula there is a field nobody can ever type into), and never write to it.
+  // objects (12)
   "obj-explicit-create": { capability: "objects" },
   "obj-implicit-create": { capability: "objects" },
   "obj-relevance-gate": { capability: "objects" },
@@ -205,6 +208,9 @@ export const CURATED: Record<string, CuratedCase> = {
   "obj-bulk-csv-import": { capability: "objects" },
   "obj-sql-to-csv": { capability: "objects" },
   "obj-location-create": { capability: "objects" },
+  "obj-formula-margin": { capability: "objects" },
+  "obj-formula-not-for-entered-values": { capability: "objects" },
+  "obj-formula-is-read-only": { capability: "objects" },
   // ── Pages generation (2026-08) — the quality gate `managePage` shipped
   // without. Seeds its own deterministic object type, so NOT smoke. Graded on
   // the STORED definition (structure + the dry-run `warnings` channel of the
@@ -249,4 +255,29 @@ export const CURATED: Record<string, CuratedCase> = {
   "page-thread-shape": { capability: "generation" },
   "page-console-shape": { capability: "generation" },
   "page-time-shape": { capability: "generation" },
+  // ── SIZE (2026-08-21). Every case above is a page that fits one answer, so a
+  // builder that writes exactly one screen passes all of them — while the
+  // request the product actually receives is "put everything in one place".
+  // That shape fails its own way: not a bad layout, a source that stops
+  // halfway, because the binding ceiling is one completion's output and not the
+  // page's 240k characters. The most expensive case in the suite (a bigger
+  // budget, a bigger render) and the only one that measures reach.
+  // generation (1)
+  "page-giga-multi-view": { capability: "generation" },
+  // ── The two write kinds nothing ever exercised (2026-08-21). `record` was
+  // covered by the directory case; `bulk` and `link` were shipped, documented
+  // and never measured, and each fails a way the page cannot show: a selection
+  // run as N `record` calls half-succeeds against the bridge's rate limit, and
+  // an assignment written as a field write is refused by name while the control
+  // still renders. One case for both — a browser render is the expensive part.
+  // tool-use (1)
+  "page-bulk-and-link-writes": { capability: "tool-use" },
+  // ── The chain, end to end (2026-08-21). Every other page case starts from a
+  // type that already exists and rows that are already there, so none of them
+  // measures `buildPage` where the product actually meets it: a file someone
+  // dropped in the chat. Read, import, build — and the assertion follows the
+  // PAGE back to the type it reads rather than guessing the key the agent
+  // chose, so it grades the chain and not the assistant's vocabulary.
+  // tool-use (1)
+  "page-from-uploaded-file": { capability: "tool-use" },
 };

@@ -1,3 +1,4 @@
+import { describeRowTypes } from "@fretik/shared/services/pages/describe-row-types";
 import type { Agent, GenerateTextResult, ToolSet } from "ai";
 import { z } from "zod";
 import type { ChatbotCallOptions } from "../agents/chatbot";
@@ -38,7 +39,155 @@ export const buildPageInputSchema = z.object({
     .describe(
       "Short (3-5 word) label shown in traces and the UI. Example: 'Build deals dashboard'.",
     ),
+  objectTypeKeys: z
+    .array(z.string().min(1).max(60))
+    .max(8)
+    .optional()
+    .describe(
+      "Type keys from <team_objects> the page reads. Their fields and ids are handed to the builder up front, saving it a probe per type. List every type it will touch; a wrong key is reported back, not guessed at.",
+    ),
 });
+
+const pageRefSchema = z.object({
+  pageId: z.string(),
+  url: z.string().optional(),
+});
+
+/**
+ * The builder's `managePage` actions that leave nothing behind — what makes a
+ * dead run safe to retry (`hasSideEffect` below). Listed rather than derived
+ * from the action enum on purpose: a new action must be classified by hand,
+ * and the failure of forgetting is a build retried after it wrote, which is
+ * worse than one not retried at all.
+ */
+const PAGE_BUILDER_READ_ACTIONS = new Set([
+  "get_guide",
+  "components",
+  "dry_run",
+  "get",
+  "list",
+]);
+
+const reviewRefSchema = z.object({
+  gate: z.enum(["pass", "fail"]),
+  verdict: z.string(),
+  iteration: z.string(),
+  score: z.number().optional(),
+});
+
+/**
+ * How the last review actually ended, read from the builder's trajectory rather
+ * than from the sentence it wrote about itself.
+ *
+ * The two are not the same thing. `gate: "pass"` with `verdict: "revise"` and a
+ * 5.8 is an ordinary outcome — the measured checks cleared, the judged bar did
+ * not — and the builder reported that combination to the user as "✅ Gate
+ * Validée (Score : 5.8/10)". The prose is the builder's; these four fields are
+ * the pipeline's, and the parent needs them to describe the page honestly.
+ */
+export const lastReviewRef = (
+  steps: {
+    readonly toolResults: readonly { toolName: string; output: unknown }[];
+  }[],
+): z.infer<typeof reviewRefSchema> | undefined => {
+  for (const step of [...steps].reverse()) {
+    for (const toolResult of [...step.toolResults].reverse()) {
+      if (toolResult.toolName !== "managePage") continue;
+      const parsed = reviewRefSchema.safeParse(toolResult.output);
+      if (parsed.success) return parsed.data;
+    }
+  }
+  return undefined;
+};
+
+/**
+ * Whether the builder WROTE to the page after its last scored review — the one
+ * fact that decides if that review still describes the page on the server.
+ *
+ * Measured 2026-08-23 (`page-dashboard-kpi-charts`): the builder passed review,
+ * spent its remaining steps on elevation edits, and ran out before the closing
+ * review. The old marker said only "may be unreviewed", so the parent re-ran a
+ * FULL inspect→edit→review cycle on a page that had already been judged —
+ * ~150s and two critic calls duplicating work the builder had done.
+ *
+ * Reads: walking the trajectory from the end, a scored review reached first
+ * means nothing changed since it; a write reached first means the review is
+ * stale. Read actions and unscored review attempts settle nothing and are
+ * skipped.
+ */
+export const editedAfterLastReview = (
+  steps: readonly {
+    readonly toolCalls: readonly {
+      toolCallId: string;
+      toolName: string;
+      input: unknown;
+    }[];
+    readonly toolResults: readonly {
+      toolCallId: string;
+      toolName: string;
+      output: unknown;
+    }[];
+  }[],
+): boolean => {
+  const actionByCall = new Map<string, string>();
+  for (const step of steps) {
+    for (const call of step.toolCalls) {
+      if (call.toolName !== "managePage") continue;
+      if (typeof call.input !== "object" || call.input === null) continue;
+      const action = Reflect.get(call.input, "action");
+      if (typeof action === "string") {
+        actionByCall.set(call.toolCallId, action);
+      }
+    }
+  }
+  for (const step of [...steps].reverse()) {
+    for (const toolResult of [...step.toolResults].reverse()) {
+      if (toolResult.toolName !== "managePage") continue;
+      if (reviewRefSchema.safeParse(toolResult.output).success) return false;
+      const action = actionByCall.get(toolResult.toolCallId);
+      if (
+        action !== undefined &&
+        action !== "review" &&
+        !PAGE_BUILDER_READ_ACTIONS.has(action)
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
+};
+
+/**
+ * The page the builder worked on, read from its own trajectory: the last
+ * `managePage` result carrying a `pageId`.
+ *
+ * This is what lets the app open the finished page next to the conversation.
+ * The panel keys on the IDENTIFIER, never on display text, and the builder's
+ * summary is prose — so until this existed, the delegated path (the one both
+ * tool descriptions recommend) was the one path whose page never opened.
+ *
+ * Read from the END: a build creates then edits then reviews, and all of those
+ * name the same page. Error outputs (`{ error, code }`) carry no `pageId` and
+ * fall through the schema check.
+ */
+export const lastPageRef = (
+  steps: {
+    readonly toolResults: readonly { toolName: string; output: unknown }[];
+  }[],
+): { pageId: string; url: string } | undefined => {
+  for (const step of [...steps].reverse()) {
+    for (const toolResult of [...step.toolResults].reverse()) {
+      if (toolResult.toolName !== "managePage") continue;
+      const parsed = pageRefSchema.safeParse(toolResult.output);
+      if (!parsed.success) continue;
+      return {
+        pageId: parsed.data.pageId,
+        url: parsed.data.url ?? `/pages/${parsed.data.pageId}`,
+      };
+    }
+  }
+  return undefined;
+};
 
 export const createBuildPageTool = <TTools extends ToolSet>(deps: {
   /**
@@ -48,6 +197,13 @@ export const createBuildPageTool = <TTools extends ToolSet>(deps: {
    * every page in the product to one profile from import time.
    */
   resolvePageBuilder: (
+    profileKey?: string,
+  ) => Agent<ChatbotCallOptions, TTools>;
+  /**
+   * The builder on its fallback model, for the one retry a build gets when it
+   * comes back having produced nothing. See `fallbackSubAgent`.
+   */
+  resolvePageBuilderFallback: (
     profileKey?: string,
   ) => Agent<ChatbotCallOptions, TTools>;
 }) => {
@@ -62,13 +218,92 @@ export const createBuildPageTool = <TTools extends ToolSet>(deps: {
    */
   const formatResult = (
     result: GenerateTextResult<TTools, Record<string, unknown>, never>,
-  ): { summary: string; incomplete?: boolean } => {
+  ): {
+    summary: string;
+    pageId?: string;
+    url?: string;
+    incomplete?: boolean;
+    review?: z.infer<typeof reviewRefSchema>;
+    reviewed?: false;
+  } => {
     const text = result.text.trim();
-    if (result.finishReason === "stop") return { summary: text };
-    const marker = `[incomplete: the builder stopped at finishReason="${result.finishReason}" — the page may be unreviewed or half-fixed. Call managePage { action: "review" } on it before telling the user it is ready.]`;
+    const ref = lastPageRef(result.steps);
+    const review = lastReviewRef(result.steps);
+    // Stated as a FIELD, not left to the summary: a build that reviewed nothing
+    // and a build that reviewed and fell short read identically in prose.
+    const outcome = review
+      ? { review }
+      : ref
+        ? { reviewed: false as const }
+        : {};
+    if (result.finishReason === "stop") {
+      return { summary: text, ...ref, ...outcome };
+    }
+    /**
+     * Two different failures arrive with the same non-`stop` finish, and
+     * telling them apart is what keeps the parent honest.
+     *
+     * Measured 2026-08-22 (`page-time-shape`): the builder hit a
+     * reasoning-only zombie step (`finish=other`, logged by `agent-builder`)
+     * and saved NOTHING — while this marker told the parent the page "may be
+     * unreviewed" and to go review it. The agent duly hunted for a page that
+     * did not exist, rebuilt from scratch, zombied again, and finally handed
+     * the user an INVENTED page id. A message that assumes the good half of
+     * its own failure does not degrade, it fabricates.
+     *
+     * The delegate now has the same first line of defence as the parent turn:
+     * `fallbackSubAgent` retries an empty run once on the fallback model
+     * (`agents/shared/sub-agent.ts`). This marker is what is left when even
+     * that came back with nothing, so "call it again" is the remedy — bounded
+     * on purpose, since a third empty build is a failure to report, not a loop
+     * to spin.
+     */
+    const marker =
+      ref?.pageId === undefined
+        ? `[incomplete: the builder stopped at finishReason="${result.finishReason}" and saved NO page — there is nothing to open, review or link. Call buildPage once more with the same task. If it comes back empty again, tell the user the build failed; never name a page this tool did not return.]`
+        : review === undefined
+          ? `[incomplete: the builder stopped at finishReason="${result.finishReason}" — the page exists but was never reviewed. Call managePage { action: "review" } on it before telling the user it is ready.]`
+          : review.gate === "fail"
+            ? `[incomplete: the builder stopped at finishReason="${result.finishReason}" — the page's last review failed its gate (round ${review.iteration}). Call managePage { action: "review" } for the blocking findings, fix them with update { edits }, and stop when the gate passes.]`
+            : editedAfterLastReview(result.steps)
+              ? `[incomplete: the builder stopped at finishReason="${result.finishReason}" — the page passed review (round ${review.iteration}) but was edited after it. Review it once to confirm the edits — if the review refuses because the budget is spent, hand back the url and name the unverified edits plainly.]`
+              : `[incomplete: the builder stopped at finishReason="${result.finishReason}" — but the page already passed review (round ${review.iteration}). Do NOT review again: hand back the url, and pass any leftover findings on as next steps.]`;
     return {
       summary: text.length > 0 ? `${marker}\n\n${text}` : marker,
+      ...ref,
+      ...outcome,
       incomplete: true,
+    };
+  };
+
+  /**
+   * What the parent's card draws while the build runs.
+   *
+   * FACTS, not sentences: the tool the builder just reached for, and the
+   * action when that tool has one. The wording is the browser's job — it has
+   * both locales and this file has neither — and keeping it there also means a
+   * new builder step needs no change on this side.
+   *
+   * `progress` is the discriminator: every preliminary yield carries it and
+   * the final result never does, so the card can tell "still working" from
+   * "here is your page" without depending on the SDK's `preliminary` flag
+   * reaching the browser intact.
+   */
+  const progress = (event: {
+    step: number;
+    toolName: string;
+    input: unknown;
+  }): { progress: { step: number; tool: string; action?: string } } => {
+    const action =
+      typeof event.input === "object" && event.input !== null
+        ? Reflect.get(event.input, "action")
+        : undefined;
+    return {
+      progress: {
+        step: event.step,
+        tool: event.toolName,
+        ...(typeof action === "string" ? { action } : {}),
+      },
     };
   };
 
@@ -76,10 +311,47 @@ export const createBuildPageTool = <TTools extends ToolSet>(deps: {
     ChatbotCallOptions,
     TTools,
     z.infer<typeof inputSchema>,
-    ReturnType<typeof formatResult>
+    ReturnType<typeof formatResult>,
+    ReturnType<typeof progress>
   >({
     subAgent: (ctx) => deps.resolvePageBuilder(ctx.pageBuildProfileKey),
-    buildMessages: ({ task }) => [{ role: "user", content: task }],
+    fallbackSubAgent: (ctx) =>
+      deps.resolvePageBuilderFallback(ctx.pageBuildProfileKey),
+    // What a retry must not duplicate. Everything the builder does before it
+    // saves — the environment guide, a component API lookup, a dry run against
+    // the data — leaves nothing behind, and a build that died in that opening
+    // stretch is exactly the one worth attempting again. `review` counts as a
+    // write: it stores a round of the page.
+    hasSideEffect: ({ toolName, input }) => {
+      if (toolName !== "managePage") return true;
+      const action =
+        typeof input === "object" && input !== null && "action" in input
+          ? (input as { action?: unknown }).action
+          : undefined;
+      return !PAGE_BUILDER_READ_ACTIONS.has(String(action));
+    },
+    progress,
+    buildMessages: async ({ task, objectTypeKeys }, ctx) => {
+      // Read the schema here, once, rather than letting the builder spend a
+      // tool step per type on it. A failure is not worth the build: the types
+      // are an accelerator, and the builder can still probe for itself.
+      const rowTypes = objectTypeKeys?.length
+        ? await describeRowTypes({
+            organizationId: ctx.organizationId,
+            teamId: ctx.teamId,
+            keys: objectTypeKeys,
+          }).catch(() => "")
+        : "";
+      return [
+        {
+          role: "user",
+          content:
+            rowTypes.length > 0
+              ? `${task}\n\n<object_types>\n${rowTypes}\n</object_types>`
+              : task,
+        },
+      ];
+    },
     buildCallOptions: (_input, ctx) => ({
       teamId: ctx.teamId,
       organizationId: ctx.organizationId,
@@ -97,6 +369,19 @@ export const createBuildPageTool = <TTools extends ToolSet>(deps: {
       reasoningLevel: ctx.reasoningLevel,
     }),
     formatResult,
+    // Sized to catch a HANG, never to police slowness. The 2026-08-23 runs
+    // proved that claim needs enforcing, not assuming: two of three builds hit
+    // this wall mid-generation because every fix round was re-emitting the
+    // whole page. The soft deadline in `sub-agent.ts` now tells the builder to
+    // wrap up at 75% of this budget, so reaching the hard cut again means a
+    // real hang — what it replaces is infinity (measured 2026-08-21, a stalled
+    // in-process render held the parent turn open 45+ minutes).
+    deadlineMs: 15 * 60 * 1000,
+    onDeadline: () => ({
+      summary:
+        '[incomplete: the build was cut after 15 minutes — a step hung. The page may exist in an unreviewed state: call managePage { action: "list" } to check, and { action: "review" } before telling the user it is ready.]',
+      incomplete: true,
+    }),
   });
 
   return buildChatbotTool({
@@ -107,12 +392,14 @@ export const createBuildPageTool = <TTools extends ToolSet>(deps: {
     description: [
       "Build a page — the whole thing, by a specialist that can SEE what it made. It probes the data for real field names, writes the page's brief, reads the API of every component it uses, writes the Vue SFC, then renders the page in a real browser, clicks through it, and fixes what is broken before handing it back. Returns the url plus what it built and what is still weak.",
       "",
-      "- Send it any page request beyond a one-line change: a new page, a new view or feature on an existing one, a redesign. `managePage` is for reading a page, a small targeted edit, and publishing.",
+      "- Send it any page request beyond a one-line change: a new page, a new view or feature on an existing one, a redesign. `managePage` is for reading a page, a small targeted edit, and publishing — it has no `create`, so this is not a preference, it is the only route.",
+      "- It carries the design doctrine, the runtime contract and the data-shape rules in its own prompt: there is NOTHING for you to read before calling it. Reading `skills/building-pages/references/` yourself buys the page nothing and costs a turn.",
       "- Put EVERYTHING in `task`: what the user asked for in their own words, the object types by name, the pageId when editing, and any constraint they stated. It never sees this conversation — what you omit, it decides for itself.",
       "- Send the SHAPE of the data, never its values. Type and field names, yes; totals and counts you queried, no. A page reads its own figures live, and a task that already answers the question invites a page that prints the answer instead of fetching it — one shipped showing a total the code never loaded.",
       "- Do not narrow the request on the user's behalf. A vague ask is not a small ask; the builder is built to expand it, and a task string that pre-trims it to a title and a table produces exactly that.",
       "- One call per page. A build runs long (data probe, then up to three render-and-fix rounds), so do not launch it in parallel with itself.",
       "- Hand back the url it returns, and repeat what it says is still weak rather than smoothing it over.",
+      '- Trust `review` over the summary: `gate` is measured, `verdict` and `score` are judged, and they disagree routinely. Anything other than `verdict: "ship"` — or `reviewed: false`, meaning nobody looked at the page — is told to the user in one plain sentence, never as a checkmark.',
     ].join("\n"),
     inputSchema,
     execute,

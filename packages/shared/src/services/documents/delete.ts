@@ -42,11 +42,35 @@ export const deleteDocuments = async (data: {
     folderIdsCountMap[x] = (folderIdsCountMap[x] || 0) + 1;
   });
 
-  // Calculate total storage to free
-  const totalFileSize = existingDocuments.reduce(
-    (acc, doc) => acc + doc.fileSize,
-    0,
+  // Superseded versions are real objects alongside the live original, so they
+  // are freed and refunded too. Read them BEFORE the delete: the FK is
+  // `ON DELETE SET NULL` (the rows outlive the document as an audit trail), so
+  // afterwards they are no longer reachable by `documentId`. An archive is any
+  // version not pointing at its document's live original key — that one is
+  // already accounted for by `documents.fileSize`.
+  const versionRows =
+    ids.length > 0
+      ? await db.query.documentVersions.findMany({
+          columns: { documentId: true, storageKey: true, fileSize: true },
+          where: { documentId: { in: ids }, teamId },
+        })
+      : [];
+  const originalKeyById = new Map(
+    existingDocuments.map((d) => [
+      d.id,
+      buildDocumentOriginalKey(d.id, d.originalFilename),
+    ]),
   );
+  const archives = versionRows.filter(
+    (v) =>
+      v.documentId !== null &&
+      v.storageKey !== originalKeyById.get(v.documentId),
+  );
+
+  // Calculate total storage to free
+  const totalFileSize =
+    existingDocuments.reduce((acc, doc) => acc + doc.fileSize, 0) +
+    archives.reduce((acc, v) => acc + v.fileSize, 0);
   const totalGo = totalFileSize / 1024 ** 3;
 
   const res = await db.transaction(async (tx) => {
@@ -105,15 +129,16 @@ export const deleteDocuments = async (data: {
     // (via `deleteObjects`) treats missing keys as success, so it's safe to
     // include every doc's sidecar key unconditionally.
     await deleteFilesFromS3([
-      ...new Set(
-        existingDocuments
+      ...new Set([
+        ...existingDocuments
           .filter((d) => d.status !== "uploading")
           .flatMap((d) => [
             buildDocumentOriginalKey(d.id, d.originalFilename),
             buildDocumentThumbnailKey(d.id),
             buildDocumentSidecarKey(d.id),
           ]),
-      ),
+        ...archives.map((v) => v.storageKey),
+      ]),
     ]);
 
     return deleteRes;

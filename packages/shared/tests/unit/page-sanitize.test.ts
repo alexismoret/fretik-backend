@@ -41,7 +41,15 @@ const definition = (extra: Partial<PageDefinition> = {}): PageDefinition => ({
 describe("sanitize, don't reject", () => {
   test("the definition comes back untouched, whatever it warned about", () => {
     const input = definition({
-      datasets: [{ id: "ghost_reader", kind: "transform", code: "1 + 1" }],
+      datasets: [
+        {
+          id: "totals",
+          kind: "objects",
+          mode: "aggregate",
+          objectTypeId: OBJECT_TYPE_ID,
+          metrics: [{ name: "spend", fn: "sum" }],
+        },
+      ],
     });
     const result = sanitizePageDefinition(input);
     expect(result.definition).toBe(input);
@@ -139,122 +147,6 @@ describe("variable references", () => {
     const found = warnings.find((w) => w.includes('"reference"'));
     expect(found).toBeDefined();
     expect(found).toContain('operation "create" args');
-  });
-});
-
-describe("transforms", () => {
-  test("code that never returns warns — an empty dataset would read as 'no rows'", () => {
-    const { warnings } = sanitizePageDefinition(
-      definition({
-        datasets: [
-          {
-            id: "totals",
-            kind: "transform",
-            code: "data.sales.map(r => r.amount)",
-          },
-        ],
-      }),
-    );
-    const found = warnings.find((w) => w.includes('dataset "totals"'));
-    expect(found).toBeDefined();
-    expect(found).toContain("never returns");
-  });
-
-  test("code that returns says nothing", () => {
-    const { warnings } = sanitizePageDefinition(
-      definition({
-        datasets: [
-          { id: "totals", kind: "transform", code: "return [{ n: 1 }];" },
-        ],
-      }),
-    );
-    expect(warnings).toEqual([]);
-  });
-
-  test("a transform reading an oversized records input says so", () => {
-    const big: PageDataset = {
-      id: "big",
-      kind: "objects",
-      mode: "records",
-      objectTypeId: OBJECT_TYPE_ID,
-      limit: 2000,
-    };
-    const { warnings } = sanitizePageDefinition(
-      definition({
-        datasets: [
-          big,
-          {
-            id: "derived",
-            kind: "transform",
-            inputs: ["big"],
-            code: "return data.big;",
-          },
-        ],
-      }),
-    );
-    const found = warnings.find((p: string) => p.includes('dataset "derived"'));
-    expect(found).toBeDefined();
-    expect(found).toContain("2000 rows");
-    expect(found).toContain("aggregate dataset");
-  });
-
-  test("a modest input raises nothing — the query already reduced it", () => {
-    const { warnings: quiet } = sanitizePageDefinition(
-      definition({
-        datasets: [
-          {
-            id: "small",
-            kind: "objects",
-            mode: "records",
-            objectTypeId: OBJECT_TYPE_ID,
-            limit: 100,
-          },
-          {
-            id: "derived",
-            kind: "transform",
-            inputs: ["small"],
-            code: "return data.small;",
-          },
-        ],
-      }),
-    );
-    expect(quiet).toEqual([]);
-  });
-});
-
-describe("dataset inputs", () => {
-  test("an input no dataset declares is warned by name", () => {
-    const { warnings } = sanitizePageDefinition(
-      definition({
-        datasets: [
-          {
-            id: "derived",
-            kind: "transform",
-            inputs: ["nowhere"],
-            code: "return [];",
-          },
-        ],
-      }),
-    );
-    expect(warnings).toContain(
-      'dataset "derived": input "nowhere" does not exist',
-    );
-  });
-
-  test("a dataset feeding itself is warned", () => {
-    const { warnings } = sanitizePageDefinition(
-      definition({
-        datasets: [
-          {
-            id: "loop",
-            kind: "transform",
-            inputs: ["loop"],
-            code: "return data.loop;",
-          },
-        ],
-      }),
-    );
-    expect(warnings).toContain('dataset "loop": cannot take itself as input');
   });
 });
 
@@ -517,6 +409,79 @@ describe("ids the code asks for — what is NOT a request", () => {
 });
 
 /**
+ * The variable keys the CODE sends, against the ones the page DECLARES.
+ *
+ * `resolvePageState` matches exactly and drops the rest, so a mismatch leaves
+ * the variable on its initial and the control does nothing. Measured on the
+ * stored corpus (2026-08-21): 2 of the 7 pages declaring a write sent camelCase
+ * for snake_case variables. Nothing else can catch it — `render/harness.ts`
+ * answers every `ops.run` with `ok` WITHOUT executing, because a review must
+ * not write, so no rendered review ever sees the failure.
+ */
+describe("variable keys the code sends", () => {
+  const warnFor = (source: string, keys: string[] = ["item_id"]) =>
+    sanitizePageDefinition(
+      definition({
+        variables: keys.map((key) => ({ key, type: "string" })),
+        code: { source },
+      }),
+    ).warnings.filter((warning) => warning.startsWith("the code sends"));
+
+  test("a key that is not declared is named, with the declared ones", () => {
+    const warnings = warnFor(
+      `<script setup>fretik.ops.run("save", { variables: { itemId: x } })</script>`,
+    );
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('"itemId"');
+    expect(warnings[0]).toContain("Declared: item_id");
+  });
+
+  test("a declared key is silent, shorthand included", () => {
+    expect(
+      warnFor(
+        `<script setup>fretik.data.query({ variables: { item_id } })</script>`,
+      ),
+    ).toEqual([]);
+  });
+
+  test("a spread makes the site unreadable, so it is skipped whole", () => {
+    // Not guessed at: the spread may carry the declared key. The same rule the
+    // id scan follows — a warning about a page that works is worse than none.
+    expect(
+      warnFor(
+        `<script setup>fretik.ops.run("save", { variables: { ...state, itemId: x } })</script>`,
+      ),
+    ).toEqual([]);
+  });
+
+  test("a nested object does not swallow the closing brace", () => {
+    // The reason this reads a real AST: a character scanner has to track depth
+    // and quotes to know which `}` ends the object, and gets `{ a: { b: 1 } }`
+    // wrong or reads `"}"` inside a string as the end.
+    const warnings = warnFor(
+      `<script setup>fretik.data.query({ variables: { range: { from: "}" }, itemId: 1 } })</script>`,
+      ["range"],
+    );
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('"itemId"');
+  });
+
+  test("a `variables` key on something that is not a bridge call is ignored", () => {
+    expect(
+      warnFor(
+        `<script setup>const cfg = { variables: { itemId: 1 } }</script>`,
+      ),
+    ).toEqual([]);
+  });
+
+  test("source the compiler will refuse warns about nothing here", () => {
+    // Unparseable code is the compiler's verdict to give, and it refuses the
+    // write outright. Noise in front of that helps nobody.
+    expect(warnFor(`<script setup>const = = =</script>`)).toEqual([]);
+  });
+});
+
+/**
  * A metric that can only ever return NULL. `count` counts rows; every other
  * function needs a column, and without one the SQL composes a literal NULL —
  * so the page shows a blank figure that reads exactly like "the data says
@@ -559,6 +524,123 @@ describe("metrics that cannot compute", () => {
   test("a metric with its key draws nothing", () => {
     expect(
       aggregate([{ name: "b", fn: "sum", key: "budget", kind: "money" }]),
+    ).toEqual([]);
+  });
+});
+
+/**
+ * The two silent failures a page can ship looking finished, both measured on
+ * real pages on 2026-08-22 and neither visible to anything downstream: the
+ * review's click probe reads a success toast as a live control, and a component
+ * handed an unknown colour renders without complaint.
+ */
+describe("a declared operation nothing runs", () => {
+  const withOps = (source: string, ids: string[]) =>
+    sanitizePageDefinition(
+      definition({
+        code: { source },
+        operations: ids.map((id) => ({
+          id,
+          kind: "record" as const,
+          mode: "update" as const,
+          objectTypeId: OBJECT_TYPE_ID,
+          recordId: { var: "row" },
+          args: { stage: { var: "stage" } },
+        })),
+        variables: [
+          { key: "row", type: "string" },
+          { key: "stage", type: "string" },
+        ],
+      }),
+    ).warnings.filter((w) => w.includes("never runs it"));
+
+  test("an operation the source never calls is named", () => {
+    const warnings = withOps("<template><div/></template>", ["archive"]);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('"archive"');
+  });
+
+  test("an operation the source calls literally is not", () => {
+    expect(
+      withOps(
+        "<template><div/></template><script setup>fretik.ops.run('archive', {})</script>",
+        ["archive"],
+      ),
+    ).toEqual([]);
+  });
+
+  test("a computed id keeps every id it names as a literal, and still catches the rest", () => {
+    const warnings = withOps(
+      `<template><div/></template><script setup>
+       const id = ready ? 'mark_read' : 'mark_unread'
+       fretik.ops.run(id, {})
+       </script>`,
+      ["mark_read", "mark_unread", "move_messages"],
+    );
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('"move_messages"');
+  });
+
+  test("an apostrophe in the copy does not shift what counts as a literal", () => {
+    // The naive `'([^']+)'` scan pairs this apostrophe with the next quote and
+    // loses every literal after it — which is why the check tests one known id.
+    expect(
+      withOps(
+        `<template><p>Échec de l'envoi</p></template><script setup>
+         const id = flag ? 'archive' : 'archive'
+         fretik.ops.run(id, {})
+         </script>`,
+        ["archive"],
+      ),
+    ).toEqual([]);
+  });
+});
+
+describe("a colour no component knows", () => {
+  const colours = (source: string) =>
+    sanitizePageDefinition(definition({ code: { source } })).warnings.filter(
+      (w) => w.includes("colour") || w.includes("Nuxt UI colour"),
+    );
+
+  test("a static hue on a Nuxt UI component is named", () => {
+    const warnings = colours(
+      '<template><UBadge color="violet">x</UBadge></template>',
+    );
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("violet");
+    expect(warnings[0]).toContain("var(--color-violet-500)");
+  });
+
+  test("a semantic alias says nothing", () => {
+    expect(
+      colours('<template><UBadge color="success">x</UBadge></template>'),
+    ).toEqual([]);
+  });
+
+  test("a plain element is not a Nuxt UI component", () => {
+    expect(colours('<template><div color="violet">x</div></template>')).toEqual(
+      [],
+    );
+  });
+
+  test("a hue parked in a colour-named property is suspected, since the prop is bound", () => {
+    // The measured shape: the literal sits two hops from the `color` prop, so
+    // reading the template alone sees nothing.
+    const warnings = colours(
+      `<template><UBadge :color="t.badgeColor">x</UBadge></template>
+       <script setup>const t = { badgeColor: 'violet' }</script>`,
+    );
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("badgeColor");
+  });
+
+  test("the same hue stays quiet once the page uses the documented recipe", () => {
+    expect(
+      colours(
+        `<template><span :style="{ color: dot }"/></template>
+         <script setup>const c = { dotColor: 'violet' }
+         const dot = \`var(--color-\${c.dotColor}-500)\`</script>`,
+      ),
     ).toEqual([]);
   });
 });

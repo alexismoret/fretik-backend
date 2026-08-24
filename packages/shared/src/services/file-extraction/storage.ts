@@ -1,3 +1,4 @@
+import { EXT_TO_MIME, extensionOf } from "../../file-types";
 import type { OcrExtractedImage } from "../../lib/mistral-ocr";
 import { getObjectBytes, putObject } from "../../lib/s3";
 import { EXTRACTED_IMAGE_ID_RE } from "./image-refs";
@@ -27,19 +28,13 @@ const PREFIX = "file-extractions";
 export const MAX_EXTRACTED_IMAGES = 12;
 export const MAX_EXTRACTED_IMAGE_BYTES = 3 * 1024 * 1024;
 
-const IMAGE_CONTENT_TYPES: Record<string, string> = {
-  jpg: "image/jpeg",
-  jpeg: "image/jpeg",
-  png: "image/png",
-  webp: "image/webp",
-  gif: "image/gif",
-};
-
-/** MIME type for a validated extracted-image id (extension-derived). */
-export const extractedImageContentType = (imageId: string): string => {
-  const ext = imageId.slice(imageId.lastIndexOf(".") + 1).toLowerCase();
-  return IMAGE_CONTENT_TYPES[ext] ?? "application/octet-stream";
-};
+/**
+ * MIME type for a validated extracted-image id (`img-3.png`). The id is
+ * produced by `image-refs.ts`, whose pattern only admits raster
+ * extensions, so the registry lookup always lands on an image type.
+ */
+export const extractedImageContentType = (imageId: string): string =>
+  EXT_TO_MIME[extensionOf(imageId)] ?? "application/octet-stream";
 
 export const buildExtractionSidecarKey = (
   organizationId: string,

@@ -10,6 +10,12 @@ import {
   documents,
   type NewDocumentProperties,
 } from "../../db/schema/documents";
+import {
+  extractionFor,
+  isHtmlMime,
+  thumbnailFor,
+  type ThumbnailStrategy,
+} from "../../file-types";
 import { callAiService } from "../../lib/ai-service";
 import {
   buildDocumentOriginalKey,
@@ -21,11 +27,15 @@ import {
 import { deleteFilesFromS3, getObjectBytes, uploadToS3 } from "../../lib/s3";
 import { emitUploadEvent } from "../../lib/upload-events";
 import { preExtractionResponseSchema } from "../../schemas/pre-extraction";
-import { isImage, isPdf, isSpreadsheet } from "../../utils/mimeTypes";
 import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
 import { readRecordData } from "../object-schema/record-io";
 import { MENTIONS_LINK_TYPE_KEY } from "../object-types/seed-system-types";
-import { convertDocumentToPdf, convertFirstPageToPdf } from "./convert";
+import {
+  captureHtmlScreenshot,
+  captureMarkdownScreenshot,
+  convertDocumentToPdf,
+  convertFirstPageToPdf,
+} from "./convert";
 import { joinDocumentPagesMarkdown } from "./markdown";
 import { syncDocumentGraph } from "./sync-document-graph";
 import { generateImageThumbnail, generatePdfThumbnail } from "./thumbnails";
@@ -113,6 +123,40 @@ const aiVectorizeResponseSchema = z.object({
  * `finalizeFailedDocument`, invoked by the worker once retries are
  * exhausted.
  */
+/**
+ * Turn the original bytes into the WebP thumbnail its registry strategy
+ * calls for. Every branch ends on `generateImageThumbnail`, so the stored
+ * thumbnail is the same 400px WebP whatever the source format was.
+ */
+const renderThumbnail = async (args: {
+  strategy: ThumbnailStrategy;
+  mimeType: string;
+  original: Uint8Array;
+  firstPagePdf: Uint8Array | null;
+}): Promise<Uint8Array> => {
+  switch (args.strategy) {
+    case "native-image":
+      return generateImageThumbnail(args.original);
+    case "pdf-first-page":
+      return generatePdfThumbnail(args.original);
+    case "libreoffice":
+      if (!args.firstPagePdf) {
+        throw new Error(
+          "LibreOffice thumbnail requested without a rendered PDF",
+        );
+      }
+      return generatePdfThumbnail(args.firstPagePdf);
+    case "chromium-screenshot": {
+      const png = isHtmlMime(args.mimeType)
+        ? await captureHtmlScreenshot(args.original)
+        : await captureMarkdownScreenshot(args.original);
+      return generateImageThumbnail(png);
+    }
+    case "none":
+      throw new Error("renderThumbnail called for a type with no thumbnail");
+  }
+};
+
 export const processDocument = async (
   job: DocumentProcessingJobData,
 ): Promise<void> => {
@@ -150,17 +194,24 @@ export const processDocument = async (
     );
   }
 
-  // Step 2: Convert first page to PDF if needed (ephemeral, not saved to S3)
-  const isNativePdf = isPdf(metadata.mimeType);
-  const isNativeImage = isImage(metadata.mimeType);
+  // Step 2: Render the file to something a thumbnail can be cut from.
+  // The strategy comes from the file-type registry — LibreOffice for
+  // office formats, Chromium for HTML / markdown, nothing at all for
+  // types that have no page to show (mail, source code, SVG).
+  const thumbnailStrategy = thumbnailFor(
+    metadata.mimeType,
+    metadata.originalFilename,
+  );
   let firstPagePdfBuffer: Uint8Array | null = null;
 
-  if (!isNativePdf && !isNativeImage) {
+  if (thumbnailStrategy === "libreoffice") {
     firstPagePdfBuffer = await convertFirstPageToPdf(
       buffer,
       extname(metadata.originalFilename),
     );
+  }
 
+  if (thumbnailStrategy !== "none") {
     await db
       .update(documents)
       .set({ status: "uploading" })
@@ -170,16 +221,21 @@ export const processDocument = async (
   }
 
   // Step 3: Upload the thumbnail (original already on S3 under originalKey).
-  const thumbnailBuffer = isNativeImage
-    ? await generateImageThumbnail(buffer)
-    : await generatePdfThumbnail(firstPagePdfBuffer ?? buffer);
+  if (thumbnailStrategy !== "none") {
+    const thumbnailBuffer = await renderThumbnail({
+      strategy: thumbnailStrategy,
+      mimeType: metadata.mimeType,
+      original: buffer,
+      firstPagePdf: firstPagePdfBuffer,
+    });
 
-  await uploadToS3({
-    buffer: thumbnailBuffer,
-    key: buildDocumentThumbnailKey(documentId),
-    contentType: "image/webp",
-    ...sharedMetadata,
-  });
+    await uploadToS3({
+      buffer: thumbnailBuffer,
+      key: buildDocumentThumbnailKey(documentId),
+      contentType: "image/webp",
+      ...sharedMetadata,
+    });
+  }
 
   await db
     .update(documents)
@@ -261,37 +317,43 @@ export const processDocument = async (
   }
 
   // Step 5: Prepare the OCR-consumable input for pre-extraction.
-  const isDocumentSpreadsheet = isSpreadsheet(metadata.mimeType);
-  const isDocumentPdf = isPdf(metadata.mimeType);
-  const isDocumentImage = isImage(metadata.mimeType);
-  const isDocumentTextPlain = metadata.mimeType === "text/plain";
+  //
+  // Mistral OCR only ingests PDFs and images. Anything whose extraction
+  // route needs conversion is rendered to PDF here and handed over under
+  // that MIME; PDFs, images and every textual format (text, markdown,
+  // HTML, mail, code, config) are passed through untouched — their own
+  // extraction route knows how to read them.
+  const extraction = extractionFor(
+    metadata.mimeType,
+    metadata.originalFilename,
+  );
+  const needsPdfForOcr =
+    extraction === "convert-ocr" ||
+    (extraction === "mistral-ocr" && metadata.mimeType !== "application/pdf");
 
   let preExtractMimeType = metadata.mimeType;
   let ephemeralPreExtractKey: string | null = null;
 
-  if (isDocumentSpreadsheet) {
-    if (!firstPagePdfBuffer) {
+  if (extraction === "spreadsheet" || needsPdfForOcr) {
+    // Spreadsheets reuse the first-page render from Step 2 — the extra
+    // sheets of a multi-sheet monster don't help classification.
+    const pdfBuffer =
+      extraction === "spreadsheet"
+        ? firstPagePdfBuffer
+        : await convertDocumentToPdf(
+            buffer,
+            extname(metadata.originalFilename),
+          );
+
+    if (!pdfBuffer) {
       throw new Error(
         "Spreadsheet without first-page PDF buffer — Step 2 should have produced one",
       );
     }
+
     ephemeralPreExtractKey = `documents/${documentId}-preextract.pdf`;
     await uploadToS3({
-      buffer: firstPagePdfBuffer,
-      key: ephemeralPreExtractKey,
-      contentType: "application/pdf",
-      ...sharedMetadata,
-      temporary: true,
-    });
-    preExtractMimeType = "application/pdf";
-  } else if (!isDocumentPdf && !isDocumentImage && !isDocumentTextPlain) {
-    const fullPdfBuffer = await convertDocumentToPdf(
-      buffer,
-      extname(metadata.originalFilename),
-    );
-    ephemeralPreExtractKey = `documents/${documentId}-preextract.pdf`;
-    await uploadToS3({
-      buffer: fullPdfBuffer,
+      buffer: pdfBuffer,
       key: ephemeralPreExtractKey,
       contentType: "application/pdf",
       ...sharedMetadata,
@@ -341,11 +403,28 @@ export const processDocument = async (
   }
 
   // Step 6: Persist processing results (idempotent — safe on retry).
-  const vectorContent = !isDocumentSpreadsheet
-    ? joinDocumentPagesMarkdown(preExtractResult.pages)
-    : null;
+  //
+  // THE CORRUPTION GUARD. For a `.md` document the two keys are the same
+  // object — `buildDocumentOriginalKey(id, "x.md")` and
+  // `buildDocumentSidecarKey(id)` both resolve to `documents/{id}.md`. Writing
+  // the sidecar here would therefore overwrite the SOURCE with
+  // `joinDocumentPagesMarkdown`'s rendering of itself: `## Page N` headers
+  // injected and the tail cut at the char cap. An authored document would lose
+  // its content on its first re-extraction. When the keys coincide the file
+  // already IS its own extraction, so nothing is written and the raw bytes —
+  // better material than the page-joined rendering — go to the vectoriser.
+  const sidecarIsOriginal =
+    buildDocumentSidecarKey(documentId) ===
+    buildDocumentOriginalKey(documentId, metadata.originalFilename);
 
-  if (vectorContent !== null) {
+  const vectorContent =
+    extraction === "spreadsheet"
+      ? null
+      : sidecarIsOriginal
+        ? new TextDecoder().decode(buffer)
+        : joinDocumentPagesMarkdown(preExtractResult.pages);
+
+  if (vectorContent !== null && !sidecarIsOriginal) {
     await uploadDocumentSidecar(documentId, vectorContent, {
       documentId,
       organizationId,

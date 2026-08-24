@@ -1,63 +1,23 @@
 ---
 name: building-pages
-description: Build a page — a live, data-bound screen the team opens in the app, written as a real Vue SFC over their data. Covers design doctrine, the Nuxt UI catalogue, the data/action contract, the review rubric, and worked page patterns. Use for any dashboard, directory, board, console or mini-app request.
+description: Pages — live, data-bound screens the team opens in the app, written as real Vue over their data. When a page is the right answer, what you can do to one yourself, and what `buildPage` does for you. Read this to decide; you cannot build a page by hand.
 ---
 
-# Building pages
+# Pages
 
-A page is ONE Vue SFC you write. The server compiles it on save and the app runs it in a sandboxed frame, styled with the team's own design system. You have all of Vue, all of Nuxt UI, Tailwind and Chart.js — and nothing renders, formats or decorates anything for you. What you write is exactly what the team gets.
+A page is ONE Vue SFC over the team's data. The server compiles it on save and the app runs it in a sandboxed frame styled with the team's own design system. It stores CODE plus a data contract, never a snapshot — it re-queries every time someone opens it, so its figures are never stale.
 
-The bar is not "it displays the data". It is: **someone reopens this page every Monday instead of asking you.** That means it answers its question in the first screen, stays legible when a dataset is empty or slow, shows values the way a person reads them, and offers the next action in place.
+The bar is not "it displays the data". It is: **someone reopens this page every Monday instead of asking you.**
 
-You do get to see it. `managePage { action: "review" }` renders the saved page in a real browser at two widths, clicks what looks clickable, empties every dataset, and comes back with measured defects plus a design critique. A page nobody has reviewed is a page nobody has seen.
+## Who writes it
 
-## Process
+`buildPage`, and only `buildPage`. You have no `create`.
 
-1. **Probe the data first.** `dry_run` a definition with datasets and no `code`: it returns real field names, a real row, real distinct groups. Designing against imagined fields is the single biggest cause of a page that ships `[object Object]`.
-2. **Write the brief before the code** — `definition.brief`: the page's job, who opens it, the features you commit to; then the layout in prose, ONE signature element, at most ONE moment of motion. Then ask whether that same brief would come out of a similar request over a completely different dataset. If it would, it encodes nothing about this subject — redo it. `references/design.md` is the input to this step.
-3. **Read the API of the components you will use** — `{ action: "components" }`, before the template. Not optional: an unknown prop is dropped in silence and content in the wrong named slot renders somewhere else, with no error. A write that places one you never read says so in `warnings`.
-4. **Build**, `dry_run`, save.
-5. **Review, fix, review.** `blocking` first — those are measured, not opinions. Then the findings, one `edits` call each. A passing verdict closes the defect list, not the page: rounds left over go to `elevations`, the review's answer to what would make it better. Three reviews per page, then hand it over with the last elevations as what you would do next.
+It runs a specialist on the model the team picked for page design, with the design doctrine, the runtime contract and the row shapes of the data already in its prompt — so it starts writing where you would still be reading. It probes the data for real field names, writes the page's brief, reads the API of every component it uses, then RENDERS the page in a real browser, clicks through it, and fixes what it saw before handing back a url.
 
-## Where the knowledge lives
+Send it everything past a targeted edit: a new page, a new view or feature on an existing one, a redesign, a section that needs different data. Put the whole request in `task`, in the user's own words, with the object types by name and the pageId when there is one — it never sees this conversation, so what you leave out it decides for itself. Do not narrow a vague ask on the user's behalf; the builder is built to expand it.
 
-Three layers, and using the wrong one is how pages come out generic:
-
-| Layer                | What it answers                                                                               | How to get it                                                                                                       |
-| -------------------- | --------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| **Runtime contract** | What may I import, what does the bridge offer, what does the sandbox forbid                   | `managePage { action: "get_guide" }` — once per conversation, before your first page                                |
-| **Component API**    | What does `UTable` / `USlideover` / `USelectMenu` actually accept — every prop, slot, variant | `managePage { action: "components", components: [...] }` — up to 6 at a time, generated from the library's own docs |
-| **Judgment**         | Which component, which layout, which density, which words                                     | this skill's references, below                                                                                      |
-
-## References
-
-Load what the task needs.
-
-| You are about to                                                          | Read                                                                                                                                   |
-| ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| Lay out the page — composition, hierarchy, density, colour, motion, copy  | `references/design.md`                                                                                                                 |
-| Decide what would make this page memorable rather than competent          | `references/taste.md`                                                                                                                  |
-| Choose components, or render a table, list, form or overlay well          | `references/components.md`                                                                                                             |
-| Wire datasets, filters, pagination, formatting, charts, or a write action | `references/data.md`                                                                                                                   |
-| Start from a working page of the same family                              | `references/pattern-directory.md` (filter, scan, open, act) · `pattern-overview.md` (figure band) · `pattern-board.md` (drag and drop) |
-| Know what the review will hold the page to                                | `references/review-rubric.md`                                                                                                          |
-
-Anything real needs `design.md`. Anything with records needs `components.md` and `data.md`.
-
-## Non-negotiables
-
-The compiler refuses the write, or the sandbox silently drops the result, when you break these.
-
-- **Static Tailwind classes only.** The compiler scans your source text; a class assembled at runtime (``:class="`bg-${c}-500`"``) styles nothing. Toggle between complete literal strings, or use `:style` for a value that is genuinely dynamic (a hex from the data, a computed width).
-- **Icons are `i-lucide-*` only**, prefix included and written literally — a name is parsed as `i-<collection>-<icon>`, so `` `i-${icon}` `` asks for a collection that does not exist and silently renders an empty box. Icons reaching you from the data (`fields[].options[].icon`, `targetIcon`) already carry their prefix: pass them straight to `<UIcon :name>`, NEVER wrap them.
-- **The import allowlist is closed** — `get_guide` names it, `references/components.md` § Beyond Nuxt UI says what each one is for. Nothing else, no relative files: it is one file. `@tanstack/vue-table` in particular is NOT importable — paginate and sort through the data contract.
-- **No `fetch`, no storage, no `window.open`.** The bridge is the only door out; state lives in refs. Plain `<a href>` is fine — the app routes it.
-- **Every dataset result has four outcomes**, and a page that renders one of them is broken for the other three: loading, `ok` with rows, `ok` with zero rows, and a failure (`error` / `forbidden` / `needs_connection`).
-- `<style scoped>` exists but Tailwind covers almost everything; no `@import`, no `url()`.
-
-## Publishing
-
-`publish` mints a link anyone can open without an account. The code is frozen at that moment; the data stays live under the owning team's scope. **Ask the user before publishing** — it exposes what the team can see. Pages that read or write a connected app are refused at the gate. Re-publish to refresh the snapshot; `unpublish` kills the link for good.
+What is yours, through `managePage`: read a page, retouch a word, a label, a colour or a threshold with `edits`, `review` one to see what is actually wrong, publish it, delete it. That split is worth what it costs — a delegate to change one title is waste, and a title changed by hand is instant.
 
 ## When a page is the wrong answer
 
@@ -67,3 +27,20 @@ The compiler refuses the write, or the sandbox silently drops the result, when y
 - A recurring process with steps and approvals → a workflow.
 
 A page earns its keep when the team will REOPEN it.
+
+## Publishing
+
+`publish` mints a link anyone can open without an account. The code is frozen at that moment; the data stays live under the owning team's scope. **Ask the user before publishing** — it exposes what the team can see. Pages that read or write a connected app are refused at the gate. Re-publish to refresh the snapshot; `unpublish` kills the link for good.
+
+## The builder's references
+
+The files under `references/` are the page builder's manual, not background reading — open them only if you are the one writing the SFC.
+
+| You are about to                                                          | Read                                                                                                                                   |
+| ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| Choose components, or render a table, list, form or overlay well          | `references/components.md`                                                                                                             |
+| Wire datasets, filters, pagination, formatting, charts, or a write action | `references/data.md`                                                                                                                   |
+| Start from a working page of the same family                              | `references/pattern-directory.md` (filter, scan, open, act) · `pattern-overview.md` (figure band) · `pattern-board.md` (drag and drop) |
+| Use a third-party library the runtime allows                              | `references/libraries/<name>.md` — one file per library that behaves differently here than its own docs assume                         |
+
+`design.md` and `taste.md` are in the builder's system prompt verbatim — reading them is a step spent re-fetching what it already has. `review-rubric.md` is the critic's own copy, nobody else's.

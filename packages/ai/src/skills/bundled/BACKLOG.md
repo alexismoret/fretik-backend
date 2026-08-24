@@ -30,5 +30,5 @@ Findings worth recording:
 
 1. `shiptify/guidance.md` — tightening pass: compress repeated `run_plan` scaffolding across examples; target ≤180 lines without losing the validation traps.
 2. `front/guidance.md` — same pass; target ≤150.
-3. `doc-coauthoring/SKILL.md` — subjective prose review (longest non-reference bundled body after docx); check anti-patterns B/D.
+3. ~~`doc-coauthoring/SKILL.md` — subjective prose review~~ **DONE 2026-08-19**: rewritten from scratch (16 KB → 9 KB). It was an adapted Claude.ai workflow whose every "if artifacts are available" fork had no answer here, and whose deliverable went to `outputs/`; it now targets Drive documents via `manageDocument`, gathers context from the workspace before asking the user, and runs the reader test with `dispatchAgent` instead of telling the user to open another conversation.
 4. Full-prose (non-mechanical) review of data-viz against §3 patterns — deferred, no signal of violations.

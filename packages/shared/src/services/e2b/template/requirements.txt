@@ -1,6 +1,7 @@
 # Sandbox worker image — Python deps pre-installed so code_interpreter-style
 # execution works offline (network_mode=none blocks pip at runtime).
-# Mirrors backend/packages/ai/requirements.txt; bump versions in lockstep.
+# This file is the ONLY source of truth: `e2b/template/build.ts` reads it and
+# nothing else does. Changing it requires a `bun run e2b:build` to take effect.
 
 # Data frames & arrays
 pandas==3.0.2
@@ -18,6 +19,21 @@ xlsxwriter==3.2.9
 # Office docs
 python-docx==1.2.0
 python-pptx==1.0.2
+# OpenDocument reader, so pandas can open a .ods the way it opens an .xlsx.
+odfpy==1.4.1
+
+# Outlook .msg reader. The backend already extracts a mail's headers and
+# body to markdown; this is what lets the agent go further in the sandbox —
+# unpack the attachments, and open a .msg nested inside another .msg.
+extract-msg==0.56.1
+compressed-rtf==1.0.7
+ebcdic==2.0.1
+olefile==0.47
+red-black-tree-mod==1.22
+RTFDE==0.1.2.2
+tzlocal==5.4.4
+beautifulsoup4==4.15.0
+soupsieve==2.9.2
 # Markdown extraction from Office / PDF files. Used by the pptx and
 # pdf skills to read content without parsing XML manually.
 markitdown==0.1.5

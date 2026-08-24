@@ -33,6 +33,25 @@ void mock.module("../../src/lib/mistral", () => ({
   },
 }));
 
+// Writes are FORBIDDEN by default — the size guard's contract is that it
+// returns before claiming a cache row. The blob-route tests below opt in.
+let dbWritesAllowed = false;
+
+const claimedRow = [{ id: "extraction-row" }];
+const insertChain = {
+  values: () => insertChain,
+  onConflictDoNothing: () => insertChain,
+  returning: async () => claimedRow,
+};
+const updateChain = {
+  set: () => updateChain,
+  where: () => updateChain,
+  returning: async () => claimedRow,
+  then: (resolve: (value: undefined) => void) => {
+    resolve(undefined);
+  },
+};
+
 void mock.module("../../src/db", () => ({
   default: {
     query: new Proxy(
@@ -45,10 +64,16 @@ void mock.module("../../src/db", () => ({
       },
     ),
     insert: () => {
-      throw new Error("db.insert must not be reached by guarded paths");
+      if (!dbWritesAllowed) {
+        throw new Error("db.insert must not be reached by guarded paths");
+      }
+      return insertChain;
     },
     update: () => {
-      throw new Error("db.update must not be reached by guarded paths");
+      if (!dbWritesAllowed) {
+        throw new Error("db.update must not be reached by guarded paths");
+      }
+      return updateChain;
     },
   },
 }));
@@ -83,6 +108,62 @@ const { getOrCreateExtraction } =
 beforeEach(() => {
   ocrCalls.length = 0;
   ocrBehavior = () => ({ pages: [] });
+  dbWritesAllowed = false;
+});
+
+/**
+ * Blob routes — the ones that produce one markdown string instead of OCR
+ * pages — still owe their callers a page. Drive's pre-extract reads
+ * `pages` and treats an empty list as a failed extraction, which is how
+ * an HTML upload used to fail on its first pass and succeed on the
+ * second: the live path returned no page, the cache hit rebuilt one.
+ */
+describe("getOrCreateExtraction — blob routes yield a page", () => {
+  test("the inline text route (json, svg, source code) returns one page", async () => {
+    const result = await getOrCreateExtraction({
+      organizationId: "org-1",
+      fileHash: "hash-json",
+      mimeType: "application/json",
+      filename: "config.json",
+      getBytes: async () => new TextEncoder().encode('{"a":1}'),
+      getPresignedUrl: async () => "https://s3/presigned",
+    });
+    expect(result.route).toBe("text");
+    expect(result.pages).toHaveLength(1);
+    expect(result.pages[0]?.markdown).toBe(result.markdown ?? "");
+    expect(result.markdown).toContain('"a": 1');
+  });
+
+  test("HTML extracts to markdown on a single page", async () => {
+    dbWritesAllowed = true;
+    const result = await getOrCreateExtraction({
+      organizationId: "org-1",
+      fileHash: "hash-html",
+      mimeType: "text/html",
+      filename: "page.html",
+      getBytes: async () =>
+        new TextEncoder().encode("<h1>Title</h1><p>Body</p>"),
+      getPresignedUrl: async () => "https://s3/presigned",
+    });
+    expect(result.route).toBe("html");
+    expect(result.pages).toHaveLength(1);
+    expect(result.pages[0]?.markdown).toContain("# Title");
+    expect(ocrCalls).toHaveLength(0);
+  });
+
+  test("a horizontal rule in the markdown does not split it into pages", async () => {
+    dbWritesAllowed = true;
+    const result = await getOrCreateExtraction({
+      organizationId: "org-1",
+      fileHash: "hash-html-hr",
+      mimeType: "text/html",
+      filename: "ruled.html",
+      getBytes: async () =>
+        new TextEncoder().encode("<p>before</p><hr /><p>after</p>"),
+      getPresignedUrl: async () => "https://s3/presigned",
+    });
+    expect(result.pages).toHaveLength(1);
+  });
 });
 
 describe("getOrCreateExtraction — file-size guard", () => {

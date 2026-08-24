@@ -114,6 +114,22 @@ export const createDispatchAgentTool = <TTools extends ToolSet>(deps: {
     };
   };
 
+  // Hang insurance, NOT a pace limit — sized ABOVE the longest work this
+  // tool should ever legitimately host, so it can only fire on a genuinely
+  // stuck step. Deliberately generous: dispatched agents are meant to grow
+  // into hour-scale intensive work, and the real bound on a healthy run is
+  // the step budget, not the clock. (Work that legitimately outgrows even
+  // this belongs in `conversationBackgroundTasks`, where a deploy or a
+  // dropped tab cannot kill it — a turn held open for hours is the wrong
+  // vehicle, not a deadline problem.)
+  const DISPATCH_DEADLINE_MS = 90 * 60 * 1000;
+  const onDeadline = (): ReturnType<typeof formatSubAgentResult> => ({
+    summary:
+      "[incomplete: the sub-agent was cut after 90 minutes — a step hung. Retry with a smaller task, or do the work directly.]",
+    incomplete: true,
+    finishReason: "deadline",
+  });
+
   // C5 invariant: a sub-agent's message channel is the `task` STRING only —
   // never the parent conversation history. So native image/video parts can
   // never leak into a sub-agent (v1 excludes them by construction). See
@@ -138,6 +154,8 @@ export const createDispatchAgentTool = <TTools extends ToolSet>(deps: {
       workflowAutonomy: ctx.workflowAutonomy,
     }),
     formatResult: formatSubAgentResult,
+    deadlineMs: DISPATCH_DEADLINE_MS,
+    onDeadline,
   });
 
   const executeCheap = createSubAgentExecute<
@@ -160,6 +178,8 @@ export const createDispatchAgentTool = <TTools extends ToolSet>(deps: {
       workflowAutonomy: ctx.workflowAutonomy,
     }),
     formatResult: formatSubAgentResult,
+    deadlineMs: DISPATCH_DEADLINE_MS,
+    onDeadline,
   });
 
   return buildChatbotTool({

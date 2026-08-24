@@ -65,14 +65,50 @@ const scalarSqlType = (type: FieldDefinitionType): string => {
 };
 
 /**
+ * Physical column type of a `formula` field, from the result type its compiler
+ * inferred.
+ *
+ * `number` is `double precision`, NOT `numeric`, and that choice is load-bearing:
+ * the driver hands `numeric` back as a STRING, which is exactly how `rollup`
+ * ends up returning `"0"` for a count — a difference nobody notices until a
+ * comparison or a sum silently misbehaves in a page. A formula must arrive as a
+ * JS number.
+ */
+const formulaSqlType = (config: FieldDefinition["config"]): string => {
+  const result =
+    "resultType" in config && typeof config.resultType === "string"
+      ? config.resultType
+      : "number";
+  switch (result) {
+    case "text":
+      return "text";
+    case "boolean":
+      return "boolean";
+    case "date":
+      return "timestamptz";
+    default:
+      return "double precision";
+  }
+};
+
+/**
  * The physical column(s) a field definition maps to. Most fields → one column;
  * `money` → two (`<key>_amount numeric`, `<key>_currency text`); `member` → one
  * (`uuid` single, `uuid[]` multiple). Virtual fields (relation/rollup) → none.
+ *
+ * A `formula` DOES get a column — a `GENERATED … STORED` one. The generating
+ * expression is not composed here (it needs the type's other fields, which this
+ * function does not have); `table.ts` adds it at DDL time. Everything else —
+ * reconciling, dropping, renaming, projecting, sorting — then treats a formula
+ * as the ordinary column it is.
  */
 export const columnsForField = (def: FieldDefinition): ColumnSpec[] => {
   if (isVirtualField(def)) return [];
   assertSafeKey(def.key, "field key");
 
+  if (def.type === "formula") {
+    return [{ name: def.key, sqlType: formulaSqlType(def.config) }];
+  }
   if (def.type === "money") {
     return [
       { name: `${def.key}_amount`, sqlType: "numeric" },

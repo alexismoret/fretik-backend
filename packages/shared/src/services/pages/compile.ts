@@ -10,6 +10,7 @@ import {
   type PageCompiled,
   type PageDefinition,
 } from "../../schemas/pages";
+import { autofixPageSource, type PageAutofix } from "./autofix";
 
 /**
  * Server-side compile of a page's Vue SFC — validation and build in one step.
@@ -35,9 +36,32 @@ export const PAGE_RUNTIME_VERSION = "v1";
 /** Import specifiers the iframe's import map serves. Anything else cannot
  * resolve at runtime, so it is refused at compile time with its name.
  *
- * Every entry here MUST also be in the import map (`app/utils/pageSrcdoc.ts`):
- * a specifier that passes the compiler but is unmapped fails at mount, in the
- * user's face, instead of at save with a named error. */
+ * ADDING A LIBRARY — four edits, in three packages, and no constant can join
+ * them: the Nuxt app is outside this workspace, so it cannot import from here.
+ * The list is therefore duplicated by construction; the checklist is the only
+ * thing holding it together.
+ *
+ *   1. `app/page-runtime/src/<name>-entry.ts` re-exporting the surface the
+ *      pages may use, plus its `input` in `page-runtime/vite.config.ts`.
+ *   2. Every specifier a page may write → that bundle, in the import map
+ *      (`app/utils/pageSrcdoc.ts`). A specifier that passes the compiler but
+ *      is unmapped fails at MOUNT, in the user's face, instead of at save
+ *      with a named error.
+ *   3. This set — the compile-time gate.
+ *   4. The `## imports` line of `ai/src/tools/page-environment-guide.ts`, so
+ *      the builder knows the library exists at all.
+ *
+ * A library earns a further file under
+ * `ai/src/skills/bundled/building-pages/references/libraries/` on ONE test:
+ * does misusing it fail SILENTLY? Pragmatic drag-and-drop does — a board whose
+ * elements are registered wrongly renders, animates, and never drops, and the
+ * visual review clicks rather than drags, so nothing downstream catches it. It
+ * has a file. VueUse does not: an absent export fails at MOUNT with a named
+ * error and a blank page, which the first render shows. Its curated list in
+ * `app/page-runtime/src/vueuse-entry.ts` plus the guide line is the whole
+ * documentation it needs. Resist a file per dependency — prose the builder
+ * must read is the scarcest thing here.
+ */
 const ALLOWED_IMPORTS = new Set([
   "vue",
   "@nuxt/ui",
@@ -61,7 +85,18 @@ export interface PageCompileError {
 }
 
 export type PageCompileResult =
-  | { ok: true; compiled: PageCompiled }
+  | {
+      ok: true;
+      compiled: PageCompiled;
+      /**
+       * Deterministic repairs applied before compiling, and the source they
+       * produced. Present only when something was actually changed — and when
+       * it is, `source` is what MUST be stored: the compiled artifacts belong
+       * to it, and the agent's next edit anchors against it.
+       */
+      autofixes?: PageAutofix[];
+      source?: string;
+    }
   | { ok: false; errors: PageCompileError[] };
 
 /** One line per error, agent-facing — travels verbatim inside the 400 that
@@ -414,30 +449,37 @@ const inflight = new Map<string, Promise<PageCompileResult>>();
 export const compilePageCode = async (params: {
   source: string;
 }): Promise<PageCompileResult> => {
-  const key = await pageSourceHash(params.source);
+  // Repair first, then hash: the artifacts, the dedupe key and the stored
+  // source must all describe the SAME text. Hashing the original would cache a
+  // compile under a source nobody keeps.
+  const repair = autofixPageSource(params.source);
+  const source = repair.source;
+  const changed = repair.autofixes.length > 0;
+
+  const key = await pageSourceHash(source);
   const running = inflight.get(key);
   if (running) return running;
 
   const task = (async (): Promise<PageCompileResult> => {
-    if (params.source.length > PAGE_LIMITS.maxSourceChars) {
+    if (source.length > PAGE_LIMITS.maxSourceChars) {
       return {
         ok: false,
         errors: [
           {
             block: "size",
-            message: `source is ${params.source.length.toString()} chars; the ceiling is ${PAGE_LIMITS.maxSourceChars.toString()}.`,
+            message: `source is ${source.length.toString()} chars; the ceiling is ${PAGE_LIMITS.maxSourceChars.toString()}.`,
           },
         ],
       };
     }
 
-    const sfc = compileSfc(params.source);
+    const sfc = compileSfc(source);
     if (!sfc.ok) return sfc;
 
     const badImports = importErrors(sfc.output.js);
     if (badImports.length > 0) return { ok: false, errors: badImports };
 
-    const tailwind = await compileTailwind(params.source);
+    const tailwind = await compileTailwind(source);
     if (!tailwind.ok) return { ok: false, errors: [tailwind.error] };
 
     const css = `${tailwind.css}\n${sfc.output.css}`.trim();
@@ -475,6 +517,7 @@ export const compilePageCode = async (params: {
         sourceHash: key,
         compiledAt: new Date().toISOString(),
       },
+      ...(changed ? { autofixes: repair.autofixes, source } : {}),
     };
   })();
 
@@ -497,15 +540,23 @@ export const compilePageCode = async (params: {
 export const ensurePageCompiled = async (
   definition: PageDefinition,
   options?: { previous?: PageCompiled },
-): Promise<PageDefinition> => {
+): Promise<{ definition: PageDefinition; autofixes: PageAutofix[] }> => {
   const source = definition.code.source;
   if (source.trim().length === 0) {
-    return { ...definition, code: { source } };
+    return { definition: { ...definition, code: { source } }, autofixes: [] };
   }
   const hash = await pageSourceHash(source);
-  if (definition.code.compiled?.sourceHash === hash) return definition;
+  if (definition.code.compiled?.sourceHash === hash) {
+    return { definition, autofixes: [] };
+  }
   if (options?.previous?.sourceHash === hash) {
-    return { ...definition, code: { source, compiled: options.previous } };
+    return {
+      definition: {
+        ...definition,
+        code: { source, compiled: options.previous },
+      },
+      autofixes: [],
+    };
   }
   const result = await compilePageCode({ source });
   if (!result.ok) {
@@ -514,5 +565,14 @@ export const ensurePageCompiled = async (
       badRequest(formatPageCompileErrors(result.errors)),
     );
   }
-  return { ...definition, code: { source, compiled: result.compiled } };
+  // When a repair fired, the REPAIRED source is what gets stored — the
+  // compiled artifacts belong to it, and a stored source the agent's edits
+  // could not anchor against would be worse than the mistake it fixed.
+  return {
+    definition: {
+      ...definition,
+      code: { source: result.source ?? source, compiled: result.compiled },
+    },
+    autofixes: result.autofixes ?? [],
+  };
 };

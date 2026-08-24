@@ -13,6 +13,7 @@ const DEFAULT_LIMIT = 10;
  */
 const DISPLAY_EVENT_TYPES = [
   "document.uploaded",
+  "document.revised",
   "document.deleted",
   "document.reextracted",
   "record.created",

@@ -1,6 +1,6 @@
 # Bundled skills — origin and licensing
 
-Every skill in this folder was authored in-house for Fretik. No skill body was copied or ported from any third-party source; each was written from scratch by the team using the public documentation of the underlying libraries (openpyxl, python-docx, python-pptx, reportlab, matplotlib) and standard software-engineering practice.
+Every skill in this folder was authored in-house for Fretik. No skill body is copied or ported from any third-party source; each was written from scratch by the team using the public documentation of the underlying libraries (openpyxl, python-docx, python-pptx, reportlab, matplotlib) and standard software-engineering practice. Where a public skill informed our thinking, we took the approach and wrote our own prose against our own platform — an approach is not expression.
 
 | Skill             | Origin   | License            | Notes                                                                                      |
 | ----------------- | -------- | ------------------ | ------------------------------------------------------------------------------------------ |
@@ -14,15 +14,15 @@ Every skill in this folder was authored in-house for Fretik. No skill body was c
 
 ## `building-pages` and its sources
 
-The skill body is ours. Two third-party sources informed it, neither of them copied:
+The skill body is ours. One third-party source feeds it, and it is not copied into this folder:
 
 - **Nuxt UI docs** (MIT, https://ui.nuxt.com). The component API corpus served by `managePage { action: "components" }` is generated verbatim from the library's published `llms-full.txt` by `scripts/sync-nuxt-ui-docs.ts`, and lives OUTSIDE this folder, under `src/tools/assets/nuxt-ui/`. Each generated file carries its source and licence line. MIT permits this; regenerate it on every `@nuxt/ui` upgrade rather than editing a file by hand.
-- **Anthropic's `frontend-design` skill** (Apache-2.0). Read for its approach to design process and restraint; nothing was reproduced. Our doctrine had to diverge anyway — that skill tells an agent to choose its own palette and typefaces, while a generated page must inherit the product's.
 
-## A note on Anthropic's public skills
+## Adding a skill to this folder
 
-Anthropic publishes a reference skills repository at https://github.com/anthropics/skills. Some skills in that repo are released under Apache-2.0 and may be vendored into this folder in the future (with their `LICENSE.txt` preserved and an entry added to this table).
+Two acceptable routes, and nothing between them:
 
-The four document skills (`xlsx`, `docx`, `pptx`, `pdf`) in that repo are **source-available but proprietary** (each ships its own `LICENSE.txt` forbidding reproduction, derivative works, and redistribution). Fretik's same-named skills here were written independently from Anthropic's OSS library documentation and do **not** reproduce, paraphrase, or derive from Anthropic's proprietary SKILL.md files.
+- **Write it from scratch** — your own prose, our own tools and vocabulary. Reading a public skill for its approach first is fine; reproducing or paraphrasing its text is not.
+- **Vendor it verbatim** when its licence explicitly allows redistribution — keep the upstream `LICENSE.txt` beside the SKILL.md and add a row to the table above naming the source and the licence.
 
-If you add a new skill to this folder in the future, follow the same rule: write from scratch using OSS library docs and your own voice, or vendor an Apache-2.0 (or equivalent) skill verbatim with its license preserved. Don't download-and-tweak proprietary material.
+A public skill that ships **no licence file** is not implicitly permissive: treat it as un-vendorable and take the first route. Never download-and-tweak.

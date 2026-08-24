@@ -11,6 +11,10 @@ import { countNonNullColumnValues } from "../object-records/field-data";
 import { refreshObjectTableAfterCatalogChange } from "../object-schema/catalog-sync";
 import { isDocumentObjectType } from "../object-types/is-document-type";
 import { invalidateFieldDefinitionsCache } from "./cache";
+import {
+  assertNoFormulaDependents,
+  readFormulaSiblings,
+} from "./formula-config";
 
 /**
  * Delete a field definition. Dropping the field drops its real column (and the
@@ -54,6 +58,20 @@ export const deleteFieldDefinition = async (data: {
         ),
       );
     }
+
+    // A formula reading this field would lose its meaning — and Postgres would
+    // refuse the column drop anyway, with a message naming a physical column and
+    // an anonymous dependency. Name the formulas instead, so the fix is obvious.
+    assertNoFormulaDependents({
+      key: existing.key,
+      label: existing.label,
+      fields: await readFormulaSiblings({
+        exec: tx,
+        objectTypeId: existing.objectTypeId,
+        teamId: existing.teamId,
+      }),
+      action: "delete",
+    });
 
     const valueCount = await countNonNullColumnValues({
       tx,

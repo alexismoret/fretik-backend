@@ -1,10 +1,12 @@
 # Pattern — board: columns you can drag between
 
-A skeleton with REAL wiring, not a template to fill in. This is also the reference for drag-and-drop in general. Siblings: `pattern-directory.md` (filter, scan, open, act), `pattern-overview.md` (the figure band).
+A skeleton with REAL wiring, not a template to fill in. Siblings: `pattern-directory.md` (filter, scan, open, act), `pattern-overview.md` (the figure band).
 
-The Kanban shape, and the reference for drag-and-drop generally. Nothing here is a board-specific component: the lanes are a flex row, the cards are yours, and Pragmatic decorates them. Change the markup freely — a tree, a scheduler and a two-pane picker are the same four calls on different elements.
+**The drag mechanics are `libraries/drag-and-drop.md`, and it is not optional reading** — it holds the registration rule this file's `bind` helper obeys, and getting that wrong is why boards ship looking finished and never move a card. What is here is what makes a BOARD good: lanes that exist at zero, a count per lane, and a move that is written back.
 
-Lanes come from the field's `options`, so every stage exists even at zero (`references/data.md`), and the move is optimistic with a rollback, because a drop that silently fails is worse than one that refuses.
+**Drag IS the board's contract when the lane field is writable.** A board over records whose status can be written moves cards by dragging them, wired to the write through a declared operation — shipping the lanes read-only and offering to wire the drag later is shipping half the pattern, and the review treats it as a blocking finding. A `USelectMenu` on the card is an accessibility complement, never the substitute. Read-only lanes are legitimate ONLY when the underlying data truly cannot be written from this page.
+
+Nothing below is a board-specific component: the lanes are a flex row, the cards are yours, and Pragmatic decorates them.
 
 ```vue
 <template>
@@ -79,28 +81,33 @@ const draggingId = ref<string | null>(null);
 const overLane = ref<string | null>(null);
 const toast = useToast();
 
-// One cleanup per registered element. Pragmatic returns a teardown from every
-// call and a v-for re-registers the same ids, so dropping these leaks
-// listeners onto detached nodes.
-const cleanups = new Map<string, () => void>();
-const bind = (key: string, cleanup: (() => void) | null) => {
-  cleanups.get(key)?.();
-  if (cleanup) cleanups.set(key, cleanup);
-  else cleanups.delete(key);
+// Register ONCE per element and do nothing when the node is unchanged. An
+// inline `:ref` arrow re-runs on every render with the same node, and these
+// handlers cause renders themselves — `libraries/drag-and-drop.md` § the
+// registration trap has the measurement and the reason this shape is not
+// negotiable.
+const bound = new Map<string, { el: HTMLElement; cleanup: () => void }>();
+const bind = (
+  key: string,
+  el: HTMLElement | null,
+  register: (el: HTMLElement) => () => void,
+) => {
+  const previous = bound.get(key);
+  if (previous && previous.el === el) return;
+  previous?.cleanup();
+  bound.delete(key);
+  if (!el) return;
+  bound.set(key, { el, cleanup: register(el) });
 };
 onBeforeUnmount(() => {
-  cleanups.forEach((c) => c());
-  cleanups.clear();
+  bound.forEach((entry) => entry.cleanup());
+  bound.clear();
 });
 
-// Ref callbacks fire with the real node on mount and with null on unmount —
-// which is exactly the register / unregister pair Pragmatic wants.
-const registerCard = (el: HTMLElement | null, card: Card) => {
-  if (!el) return bind(`card:${card.id}`, null);
-  bind(
-    `card:${card.id}`,
+const registerCard = (el: HTMLElement | null, card: Card) =>
+  bind(`card:${card.id}`, el, (node) =>
     draggable({
-      element: el,
+      element: node,
       getInitialData: () => ({ cardId: card.id, from: card.stage }),
       onDragStart: () => (draggingId.value = card.id),
       onDrop: () => {
@@ -109,15 +116,12 @@ const registerCard = (el: HTMLElement | null, card: Card) => {
       },
     }),
   );
-};
 
-const registerLane = (el: HTMLElement | null, stage: string) => {
-  if (!el) return bind(`lane:${stage}`, null);
-  bind(
-    `lane:${stage}`,
+const registerLane = (el: HTMLElement | null, stage: string) =>
+  bind(`lane:${stage}`, el, (node) =>
     combine(
       dropTargetForElements({
-        element: el,
+        element: node,
         canDrop: ({ source }) => source.data.from !== stage,
         onDragEnter: () => (overLane.value = stage),
         onDragLeave: () => {
@@ -131,7 +135,6 @@ const registerLane = (el: HTMLElement | null, stage: string) => {
       }),
     ),
   );
-};
 
 // Optimistic: the card lands where it was dropped, and goes back if the
 // server refuses. A drop that only *looks* like it worked is a bug.
@@ -178,4 +181,4 @@ The definition behind it: a `records` dataset for the cards, two variables (`car
 
 This operation can move a card between lanes and can do nothing else. **A board without it does not work** — the lanes render, the drag animates, and the drop silently changes nothing.
 
-**For a reorder inside one list** rather than a move between containers, the same two calls apply to the rows, plus `attachClosestEdge` in the drop target's `getData` (so the drop knows whether the pointer was above or below the row it landed on), `extractClosestEdge` on drop, and `reorder({ list, startIndex, finishIndex })` for the array move.
+Lanes come from the field's `options`, so every stage exists even at zero (`references/data.md`). A lane that appears only when it holds something makes a board that changes shape as people work in it.

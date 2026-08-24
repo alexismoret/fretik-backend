@@ -114,6 +114,12 @@ export interface BuildAgentSetConfig<CALL_OPTIONS, TTools extends ToolSet> {
    */
   prepareStep?: (tools: TTools) => PrepareStepFunction<TTools>;
   /**
+   * Optional wall-clock wrap-up steer — see `withSoftDeadline`. Set it on an
+   * agent that runs under a dispatch `deadlineMs`, at ~75% of that budget,
+   * with `text` saying what "land it now" means for THAT agent's job.
+   */
+  softDeadline?: { afterMs: number; text: string };
+  /**
    * Map typed `CALL_OPTIONS` → the pure-data part of
    * `AgentRuntimeContext`. The builder appends
    * `dynamicToolManager` to finalise the ctx.
@@ -395,6 +401,47 @@ export const withReasoningReplayStrip = <TTools extends ToolSet>(
 };
 
 /**
+ * Wrap an agent's `prepareStep` with a WALL-CLOCK steer: past `afterMs` of run
+ * time, append one transient user message telling the model to wrap up. The
+ * injection mechanics are `withLoopGuard`'s (transient user message, dedup by
+ * exact text) — the workflow engine's `wrapUp` flag is the same idea but lives
+ * in the handler because a workflow run re-enters between turns; a sub-agent's
+ * generate loop never leaves its tool call, so the steer must ride a step.
+ *
+ * This is the soft half of a dispatch deadline. The hard half
+ * (`createSubAgentExecute.deadlineMs`) is an AbortSignal that cuts mid-
+ * generation and throws away whatever was in flight — measured 2026-08-23,
+ * two of three page builds died at exactly 900s with a paid, half-streamed
+ * generation and left the parent to redo the closing review. A model told at
+ * 75% of the budget to land what it has turns that cliff into an ending.
+ *
+ * Anchored on the FIRST step's response timestamp rather than a closure: the
+ * agent is a singleton shared by concurrent runs, so per-run state cannot
+ * live in the wrapper. The anchor misses the first generation's duration,
+ * which only makes the steer later, never earlier.
+ */
+export const withSoftDeadline = <TTools extends ToolSet>(
+  base: PrepareStepFunction<TTools>,
+  soft: { afterMs: number; text: string } | undefined,
+): PrepareStepFunction<TTools> => {
+  if (!soft) return base;
+  return async (options) => {
+    const result = (await base(options)) ?? {};
+    const anchor = options.steps[0]?.response.timestamp;
+    if (!anchor || Date.now() - anchor.getTime() < soft.afterMs) return result;
+    const messages = result.messages ?? options.messages;
+    const alreadyInjected = messages.some(
+      (message) => message.role === "user" && message.content === soft.text,
+    );
+    if (alreadyInjected) return result;
+    return {
+      ...result,
+      messages: [...messages, { role: "user" as const, content: soft.text }],
+    };
+  };
+};
+
+/**
  * The argument type the framework hands to `prepareCall` — derived from the
  * SDK settings so the callback body stays fully typed even though the settings
  * object is asserted past the generic `ToolsContextParameter` conditional.
@@ -409,9 +456,12 @@ const buildToolLoopAgent = <CALL_OPTIONS, TTools extends ToolSet>(
 ): ToolLoopAgent<CALL_OPTIONS, TTools> => {
   const model: LanguageModel = resolved.model;
   const tools = config.buildTools();
-  const prepareStep = withReasoningReplayStrip(
-    withLoopGuard(config.prepareStep?.(tools)),
-    resolved.profile,
+  const prepareStep = withSoftDeadline(
+    withReasoningReplayStrip(
+      withLoopGuard(config.prepareStep?.(tools)),
+      resolved.profile,
+    ),
+    config.softDeadline,
   );
   const configuredStop = config.stopWhen ?? isStepCount(12);
   // Compose the loop guard's hard backstop into every agent's stop set.

@@ -36,13 +36,19 @@ export const buildWorkflowTools = (extras: {
     updateSkill: _updateSkill,
     manageWorkflow: _manageWorkflow,
     ...domainTools
-  } = buildDomainTools();
+  } = buildDomainTools({ pageAuthoring: false });
   const { askUserQuestion: _askUserQuestion, ...coreTools } =
     buildCoreTools(domainTools);
   // The domain tools destructured out above are the canonical
   // `WORKFLOW_FORBIDDEN_DOMAIN_TOOLS` (see `../shared/workflow-tool-gate`): a
   // run never edits schema, drafts skills, or builds workflows. Keep the two
   // lists in sync — sub-agents prune the same names by string.
+  //
+  // `pageAuthoring: false` extends that same doctrine to pages: a run reads,
+  // retouches and publishes one, but never AUTHORS one. Authoring lives behind
+  // `buildPage`, which is a chat-agent tool — so this is a real capability a
+  // run no longer has, and it is the intended shape: a durable artifact of the
+  // workspace gets designed by a person's request, not by a cron tick.
   //
   // Web tools stay in by default; `pruneWebToolsIfUnavailable` only honours
   // the operator kill switch, which headless runs would otherwise ignore.
@@ -90,7 +96,7 @@ export const workflowToolHintNames = (): ReadonlySet<string> => {
     updateSkill: _updateSkill,
     manageWorkflow: _manageWorkflow,
     ...domainTools
-  } = buildDomainTools();
+  } = buildDomainTools({ pageAuthoring: false });
   const { askUserQuestion: _askUserQuestion, ...coreTools } =
     buildCoreTools(domainTools);
   cachedHintNames = new Set<string>([

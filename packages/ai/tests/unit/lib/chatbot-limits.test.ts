@@ -1,21 +1,21 @@
 import {
+  isChatbotSupported,
+  mimesForSurface,
+  requiresOcrPreprocessing,
+} from "@fretik/shared/file-types";
+import {
   CHAT_FILE_ERROR_CODES,
   MAX_FILES_PER_CONVERSATION,
   MAX_FILES_PER_MESSAGE,
   MAX_FILE_SIZE_BYTES,
 } from "@fretik/shared/utils/chatbot-limits";
-import {
-  CHATBOT_ACCEPTED_MIMES,
-  isChatbotSupported,
-  requiresOcrPreprocessing,
-} from "@fretik/shared/utils/mimeTypes";
 import { describe, expect, test } from "bun:test";
 
 /**
- * Phase 11 limits contract. The same constants are mirrored on the
- * frontend (`app/app/utils/chatbot-limits.ts` +
- * `app/app/utils/mimeTypes.ts`). If any value drifts, this test is
- * the first alarm.
+ * Phase 11 limits contract. The numeric caps are mirrored on the
+ * frontend (`app/app/utils/chatbot-limits.ts`); the accepted-type list is
+ * not — both sides read the same file-type registry. If a cap drifts,
+ * this test is the first alarm.
  */
 
 describe("chatbot-limits — numeric caps", () => {
@@ -43,8 +43,9 @@ describe("chatbot-limits — numeric caps", () => {
   });
 });
 
-describe("mimeTypes — chatbot whitelist", () => {
+describe("file types — chatbot surface", () => {
   test("accepts PDF / DOCX / XLSX / PPTX / CSV / images / video / text formats", () => {
+    const accepted = mimesForSurface("chatbot");
     const expected = [
       "application/pdf",
       "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -64,7 +65,18 @@ describe("mimeTypes — chatbot whitelist", () => {
       "application/json",
     ];
     for (const mime of expected) {
-      expect(CHATBOT_ACCEPTED_MIMES).toContain(mime);
+      expect(accepted).toContain(mime);
+    }
+  });
+
+  test("mail, HTML and OpenDocument joined the chatbot surface", () => {
+    for (const mime of [
+      "message/rfc822",
+      "application/vnd.ms-outlook",
+      "text/html",
+      "application/vnd.oasis.opendocument.text",
+    ]) {
+      expect(isChatbotSupported(mime)).toBe(true);
     }
   });
 

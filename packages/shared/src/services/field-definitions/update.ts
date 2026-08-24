@@ -10,9 +10,20 @@ import {
 } from "../domain-events/emit";
 import { countNonNullColumnValues } from "../object-records/field-data";
 import { refreshObjectTableAfterCatalogChange } from "../object-schema/catalog-sync";
-import { changeFieldColumns, renameFieldColumns } from "../object-schema/table";
+import {
+  changeFieldColumns,
+  rebuildFormulaColumn,
+  renameFieldColumns,
+} from "../object-schema/table";
 import { isDocumentObjectType } from "../object-types/is-document-type";
 import { invalidateFieldDefinitionsCache } from "./cache";
+import {
+  assertNoFormulaDependents,
+  formulaExpressionOf,
+  formulasToRebuildAfter,
+  readFormulaSiblings,
+  resolveFormulaConfig,
+} from "./formula-config";
 import { fillOptionColors } from "./normalize-config";
 import {
   assertScopeEnabledCap,
@@ -72,6 +83,46 @@ export const updateFieldDefinition = async (data: {
     const keyChanged = patch.key !== undefined && patch.key !== existing.key;
     const typeChanged =
       patch.type !== undefined && patch.type !== existing.type;
+    const effectiveConfig = patch.config ?? existing.config;
+
+    // Siblings are read once here and reused: the formula compiler needs them,
+    // and so do the dependency guards below.
+    const siblings =
+      (patch.type ?? existing.type) === "formula" || keyChanged || typeChanged
+        ? await readFormulaSiblings({
+            exec: tx,
+            objectTypeId: existing.objectTypeId,
+            teamId: existing.teamId,
+            excludeFieldId: existing.id,
+          })
+        : [];
+
+    // Renaming or retyping a field that a formula READS is refused by name.
+    // Postgres would not stop either one: a rename silently rewrites the
+    // generated expression while the stored formula text keeps naming the old
+    // key, and a retype leaves an expression that no longer type-checks — both
+    // fail much later, far from the change that caused them.
+    if (keyChanged || typeChanged) {
+      assertNoFormulaDependents({
+        key: existing.key,
+        label: existing.label,
+        fields: [...siblings, existing],
+        action: keyChanged ? "rename" : "change the type of",
+      });
+    }
+
+    // Compile the formula (and infer its result type) before anything is
+    // written, so an unusable expression never becomes a stored definition.
+    if ((patch.type ?? existing.type) === "formula") {
+      patch = {
+        ...patch,
+        config: resolveFormulaConfig({
+          config: effectiveConfig,
+          siblings,
+          label: patch.label ?? existing.label,
+        }),
+      };
+    }
 
     // Converting to/from `relation` changes storage (data ↔ links) and link-type
     // binding — recreate the field instead. (Editing a relation field's target
@@ -184,6 +235,7 @@ export const updateFieldDefinition = async (data: {
           objectTypeId: updatedRow.objectTypeId,
           oldField: existing,
           newField: updatedRow,
+          siblings: [...siblings, updatedRow],
         });
       } else if (keyChanged) {
         await renameFieldColumns({
@@ -192,6 +244,32 @@ export const updateFieldDefinition = async (data: {
           oldField: existing,
           newKey: updatedRow.key,
         });
+      } else if (
+        updatedRow.type === "formula" &&
+        formulaExpressionOf(existing.config) !==
+          formulaExpressionOf(updatedRow.config)
+      ) {
+        // Editing a formula is invisible to every idempotent path: the column
+        // name did not change, so `reconcileObjectTable` sees nothing to do and
+        // `ADD COLUMN IF NOT EXISTS` finds it already there. Without this the
+        // edit would appear to succeed while every row kept its old value —
+        // plausible numbers that are simply no longer what the formula says.
+        //
+        // Formulas that READ this one are rebuilt with it, and in order: each
+        // holds an inlined COPY of the old SQL, so leaving them alone produces
+        // the same silent staleness one level up.
+        const scope = [...siblings, updatedRow];
+        for (const field of [
+          updatedRow,
+          ...formulasToRebuildAfter({ key: updatedRow.key, fields: scope }),
+        ]) {
+          await rebuildFormulaColumn({
+            tx,
+            objectTypeId: updatedRow.objectTypeId,
+            field,
+            siblings: scope,
+          });
+        }
       }
     }
 

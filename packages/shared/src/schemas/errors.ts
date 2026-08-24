@@ -39,6 +39,21 @@ export const ERROR_CODES = {
   MEMORY_RENAME_DEST_EXISTS: "MEMORY_RENAME_DEST_EXISTS",
   MEMORY_PATTERN_TOO_GENERIC: "MEMORY_PATTERN_TOO_GENERIC",
 
+  // Documents (authoring + versions)
+  /** 409 — the document moved since the editor loaded it. The client reloads
+   * rather than overwriting a concurrent save. */
+  DOCUMENT_STALE: "DOCUMENT_STALE",
+  /** 400 — a new version must keep the document's file type. */
+  DOCUMENT_TYPE_MISMATCH: "DOCUMENT_TYPE_MISMATCH",
+  /** 400 — the operation only applies to documents authored in-app. */
+  DOCUMENT_NOT_AUTHORED: "DOCUMENT_NOT_AUTHORED",
+  /**
+   * 409 — the folder already holds a different file under this name. Never
+   * resolved for the caller: `details` carries the existing document's id so
+   * the choice (replace, or keep both) can be put to the person uploading.
+   */
+  DOCUMENT_NAME_CONFLICT: "DOCUMENT_NAME_CONFLICT",
+
   // Database
   TEAM_SETTINGS_NOT_FOUND: "TEAM_SETTINGS_NOT_FOUND",
   DATABASE_ERROR: "DATABASE_ERROR",

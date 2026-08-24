@@ -1,6 +1,9 @@
 import { parseLlmJsonObject } from "@fretik/shared/lib/llm-json";
 import type { PageBrief } from "@fretik/shared/schemas/pages";
-import type { PageRenderShot } from "@fretik/shared/services/pages/render/types";
+import type {
+  PageRenderInteraction,
+  PageRenderShot,
+} from "@fretik/shared/services/pages/render/types";
 import { generateText, type ModelMessage } from "ai";
 import { join } from "node:path";
 import { z } from "zod";
@@ -197,9 +200,46 @@ const describeBrief = (brief: PageBrief | undefined): string =>
         "This page was built without a written brief, so judge it on its own terms: what does it look like it is for, and does it do that well.",
       ].join("\n");
 
+/**
+ * The overlays the click pass opened, as text — alongside their captures.
+ *
+ * The two answer different questions and neither replaces the other: the tree
+ * says what is IN a panel (is there anything, does it name its fields as
+ * database keys, can it be acted on), the capture says what it LOOKS like. This
+ * block used to be the only one of the pair, and the result was measurable —
+ * pages whose own layout scored well shipped with modals that did not, because
+ * no judge in the loop had ever seen one.
+ */
+const describeOverlays = (
+  interactions: readonly PageRenderInteraction[] | undefined,
+): { type: "text"; text: string }[] => {
+  const opened = (interactions ?? []).filter(
+    (interaction) =>
+      interaction.overlaySnapshot !== undefined &&
+      interaction.overlaySnapshot.length > 0,
+  );
+  if (opened.length === 0) return [];
+  return [
+    {
+      type: "text",
+      text: [
+        "## overlays opened during the click pass",
+        "Structure: one indented line per element, with its own text, input types and placeholders. The `overlay-*` captures below show these same panels — read the two together. Judge them as part of the page: an overlay that opens with a title and nothing else, one that names its fields as database keys, one with no way to act on what it shows, or one whose layout is visibly cruder than the page behind it is a defect of the page, and belongs in `findings` like any other.",
+        ...opened.map(
+          (interaction) =>
+            `### ${interaction.target}\n\`\`\`\n${interaction.overlaySnapshot ?? ""}\n\`\`\``,
+        ),
+      ].join("\n\n"),
+    },
+  ];
+};
+
 const describeShot = (shot: PageRenderShot): string => {
   if (shot.label === "mobile") {
     return `### ${shot.label} — ${shot.width.toString()}px wide. A narrow layout, not a squeezed wide one: columns stack, tables become readable rows or scroll inside their own region.`;
+  }
+  if (shot.label === "desktop-mid") {
+    return `### ${shot.label} — the SAME page, halfway down. It is here only because the page runs more than two and a half screens deep, so this band is one nobody would ever see in a single capture: judge whether the sections here still belong to the page above them, or whether it has turned into a stack of unrelated blocks that lost its subject partway.`;
   }
   if (shot.label === "desktop-bottom") {
     return `### ${shot.label} — the SAME page, scrolled to its end. Everything here is below the fold on arrival. A region that grows with its data belongs in a bounded, scrollable area with whatever orients the reader pinned to its edge; a table whose header scrolled away, a list that pushed the rest of the page off the screen, and a stranded footer of empty space all show up here and nowhere else.`;
@@ -210,72 +250,110 @@ const describeShot = (shot: PageRenderShot): string => {
   if (shot.label === "empty-state") {
     return `### ${shot.label} — the same page with every dataset returning zero rows. This is day one, and any day a filter matches nothing. It should still explain itself and offer the way forward.`;
   }
+  if (shot.label.startsWith("overlay")) {
+    return `### ${shot.label} — the panel that opened on clicking ${shot.caption ?? "a control"}, captured while it was open. It is part of the page and held to the same bar: its own spacing, hierarchy and states, not a looser standard because it sits on top.`;
+  }
   // Never promises rows: the datasets are live, and a team whose records are
   // still empty would otherwise have its page marked down for their absence.
   return `### ${shot.label} — ${shot.width.toString()}×${shot.height.toString()}, the page as someone arrives on it, over whatever the team's data holds today.`;
 };
 
-export const evaluatePageDesign = async (params: {
+export interface PageCritiqueInput {
   pageName: string;
   brief: PageBrief | undefined;
   shots: PageRenderShot[];
   /** Gate findings — stated so the critic spends its attention elsewhere. */
   known: string[];
-  /** Override the critic (harness A/Bs only — see `criticFor`). */
-  criticProfileKey?: string;
-}): Promise<PageCritiqueResult> => {
+  /**
+   * The click pass's results, for the overlays it managed to open. The critic
+   * sees the page with every panel dismissed, so without these the half of a
+   * page that lives behind a click is judged by nobody.
+   */
+  interactions?: readonly PageRenderInteraction[];
+}
+
+/**
+ * Everything the critic is shown, assembled — exported so what reaches it can
+ * be asserted without paying for a completion.
+ *
+ * The ORDER is part of the message: the overlay block points at the
+ * `overlay-*` captures as "below", which holds only while it sits above
+ * `## captures`. An overlay that reached neither this array nor a capture is a
+ * panel no judge in the loop has ever seen.
+ */
+export const buildCritiqueContent = async (
+  params: PageCritiqueInput,
+): Promise<ModelMessage[]> => [
+  {
+    role: "user",
+    content: [
+      { type: "text", text: await readRubric() },
+      {
+        type: "text",
+        text: `# The page under review\n\nName: ${params.pageName}\n\n${describeBrief(params.brief)}`,
+      },
+      ...(params.known.length > 0
+        ? [
+            {
+              type: "text" as const,
+              text: `## already known — do not report these again\n${params.known.map((line) => `- ${line}`).join("\n")}`,
+            },
+          ]
+        : []),
+      ...describeOverlays(params.interactions),
+      { type: "text", text: "## captures" },
+      ...params.shots.flatMap((shot) => [
+        { type: "text" as const, text: describeShot(shot) },
+        {
+          type: "file" as const,
+          data: shot.png,
+          mediaType: "image/png",
+        },
+      ]),
+    ],
+  },
+];
+
+export const evaluatePageDesign = async (
+  params: PageCritiqueInput & {
+    /** Override the critic (harness A/Bs only — see `criticFor`). */
+    criticProfileKey?: string;
+  },
+): Promise<PageCritiqueResult> => {
   if (params.shots.length === 0) {
     return { ok: false, reason: "no screenshots were captured" };
   }
   const critic = criticFor(params.criticProfileKey);
 
-  const content: ModelMessage[] = [
-    {
-      role: "user",
-      content: [
-        { type: "text", text: await readRubric() },
-        {
-          type: "text",
-          text: `# The page under review\n\nName: ${params.pageName}\n\n${describeBrief(params.brief)}`,
-        },
-        ...(params.known.length > 0
-          ? [
-              {
-                type: "text" as const,
-                text: `## already known — do not report these again\n${params.known.map((line) => `- ${line}`).join("\n")}`,
-              },
-            ]
-          : []),
-        { type: "text", text: "## captures" },
-        ...params.shots.flatMap((shot) => [
-          { type: "text" as const, text: describeShot(shot) },
-          {
-            type: "file" as const,
-            data: shot.png,
-            mediaType: "image/png",
-          },
-        ]),
-      ],
-    },
-  ];
+  const content = await buildCritiqueContent(params);
 
-  let raw: string;
+  let raw = "";
   let truncated = false;
-  try {
-    const { text, finishReason } = await generateText({
-      model: critic.model,
-      instructions: INSTRUCTIONS,
-      messages: content,
-      maxOutputTokens: MAX_OUTPUT_TOKENS,
-      abortSignal: AbortSignal.timeout(TIMEOUT_MS),
-      // Nests under the `managePage` tool call → under `chatbot-turn`.
-      telemetry: telemetryFor("page-review"),
-      providerOptions: CRITIC_PROVIDER_OPTIONS,
-    });
-    raw = text;
-    truncated = finishReason === "length";
-  } catch (error) {
-    return { ok: false, reason: describeLlmError(error) };
+  // A rate-limited critic gets two more tries before the caller hears about
+  // it: on 2026-08-23 a single upstream 429 (2s) cost a build one of its three
+  // review rounds. Anything other than a rate limit surfaces immediately.
+  for (let attempt = 1; ; attempt++) {
+    try {
+      const { text, finishReason } = await generateText({
+        model: critic.model,
+        instructions: INSTRUCTIONS,
+        messages: content,
+        maxOutputTokens: MAX_OUTPUT_TOKENS,
+        abortSignal: AbortSignal.timeout(TIMEOUT_MS),
+        // Nests under the `managePage` tool call → under `chatbot-turn`.
+        telemetry: telemetryFor("page-review"),
+        providerOptions: CRITIC_PROVIDER_OPTIONS,
+      });
+      raw = text;
+      truncated = finishReason === "length";
+      break;
+    } catch (error) {
+      const reason = describeLlmError(error);
+      if (attempt >= 3 || !/rate.?limit/i.test(reason)) {
+        return { ok: false, reason };
+      }
+      await Bun.sleep(10_000 * attempt);
+    }
   }
 
   // Free-form JSON, not constrained decoding: the same Gemini route bails

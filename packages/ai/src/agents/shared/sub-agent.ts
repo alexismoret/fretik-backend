@@ -79,6 +79,7 @@ export interface CreateSubAgentExecuteConfig<
   TOOLS extends ToolSet,
   INPUT,
   OUTPUT,
+  PROGRESS = never,
 > {
   /**
    * The sub-agent to run, RESOLVED PER CALL from the live runtime context.
@@ -91,11 +92,42 @@ export interface CreateSubAgentExecuteConfig<
    */
   subAgent: (ctx: AgentRuntimeContext) => Agent<CALL_OPTIONS, TOOLS>;
   /**
+   * A second agent to run ONCE when the first came back having produced
+   * nothing — the reasoning-only zombie (`agent-builder.ts` logs it): the model
+   * spends its output budget on hidden reasoning and finishes `other`/`length`
+   * with no text and no tool call.
+   *
+   * The parent turn has had this chain since C4; a delegate had only the
+   * detection, which is how the most expensive call in the product ended up
+   * being the one nothing could recover. Measured 2026-08-22 across an eval
+   * run: 2 page builds out of 8, both returning no page at all.
+   *
+   * Retried only when the failed run CHANGED nothing, so a second attempt
+   * cannot duplicate a side effect or a half-written page. Optional: without it
+   * the behaviour is exactly what it was.
+   */
+  fallbackSubAgent?: (ctx: AgentRuntimeContext) => Agent<CALL_OPTIONS, TOOLS>;
+  /**
+   * Which of this sub-agent's tool calls could have changed something.
+   * Reads — a guide, a schema lookup, a dry run — return false, and a run that
+   * made only those is still safe to retry. Omit it and any tool call at all
+   * blocks the retry, which is the conservative default. See `changedNothing`.
+   */
+  hasSideEffect?: (call: { toolName: string; input: unknown }) => boolean;
+  /**
    * Build the message list the sub-agent consumes from the parent's
    * input and the live runtime context (useful for stitching in
    * team/user identity or a tight scoping preamble).
+   *
+   * May be async: a briefing worth sending is often one the database has to be
+   * asked for (`buildPage` reads the row types of the object types it was
+   * handed). Doing that read here rather than letting the sub-agent spend tool
+   * steps on it is the point.
    */
-  buildMessages: (input: INPUT, ctx: AgentRuntimeContext) => ModelMessage[];
+  buildMessages: (
+    input: INPUT,
+    ctx: AgentRuntimeContext,
+  ) => ModelMessage[] | Promise<ModelMessage[]>;
   /**
    * Build the sub-agent's typed `CALL_OPTIONS` from the parent's
    * runtime context. Runs on every invocation so team/user scoping
@@ -110,7 +142,78 @@ export interface CreateSubAgentExecuteConfig<
   formatResult: (
     result: GenerateTextResult<TOOLS, Record<string, unknown>, never>,
   ) => OUTPUT;
+  /**
+   * Hard wall-clock cap on one dispatch, REQUIRED. A sub-agent runs an
+   * unbounded tool loop inside a single parent tool call: without a
+   * deadline, one hung step holds the parent's whole turn open — measured
+   * 2026-08-21, a page build whose in-process render stalled kept its turn
+   * alive for 45+ minutes, streaming nothing, persisting nothing. The
+   * signal is merged with the parent's own abort, so a cancelled turn
+   * still cancels the sub-agent immediately.
+   */
+  deadlineMs: number;
+  /**
+   * The tool-shaped result returned when the deadline (not the parent's
+   * abort) cuts the run. Tool errors are RETURNED, never thrown — a throw
+   * surfaces as a 500 and hides the failure from the model.
+   */
+  onDeadline: (input: INPUT) => OUTPUT;
+  /**
+   * Turn each of the sub-agent's tool executions into a snapshot the PARENT's
+   * tool card can render while the run is still going. Optional: without it
+   * the execute stays an ordinary promise, which is what every caller but
+   * `buildPage` wants.
+   *
+   * This is the answer to "the user watches a spinner for five minutes and
+   * cannot tell whether anything is happening". A delegate's own tool calls
+   * never reach the parent's stream — they run inside one tool execution — so
+   * the only way out is for that execution to keep yielding.
+   *
+   * Return STRUCTURE, not sentences: the shape crosses into the browser and
+   * the wording belongs to the locale files, not here.
+   */
+  progress?: (event: {
+    /** 1 for the sub-agent's first tool call, incrementing thereafter. */
+    step: number;
+    toolName: string;
+    input: unknown;
+  }) => PROGRESS | undefined;
 }
+
+/**
+ * A run that finished having CHANGED nothing — the only shape a retry cannot
+ * make worse.
+ *
+ * What makes a retry unsafe is a side effect, not a tool call. "No tool call at
+ * all" was standing in for that, and it stands in badly for an agent that reads
+ * before it writes: the page builder opens every run with its environment
+ * guide, a component lookup and a data probe, so a build that died before
+ * saving anything still had three tool calls against it and the net never
+ * caught it. Measured 2026-08-23: two of four eval cases lost a whole build
+ * that way, and the parent's remedy — call `buildPage` again from zero — is the
+ * most expensive recovery in the product (a full rebuild, ~250s).
+ *
+ * `hasSideEffect` is how a sub-agent names its own writes. Without it the old,
+ * stricter test still applies, so a caller that has not thought about it keeps
+ * exactly the behaviour it had.
+ */
+const changedNothing = (
+  result: {
+    finishReason: string;
+    text: string;
+    steps: readonly {
+      readonly toolCalls: readonly { toolName: string; input: unknown }[];
+    }[];
+  },
+  hasSideEffect?: (call: { toolName: string; input: unknown }) => boolean,
+): boolean =>
+  result.finishReason !== "stop" &&
+  result.text.trim().length === 0 &&
+  result.steps.every((step) =>
+    hasSideEffect
+      ? step.toolCalls.every((call) => !hasSideEffect(call))
+      : step.toolCalls.length === 0,
+  );
 
 /**
  * Build a strongly-typed `execute` closure that dispatches the
@@ -123,21 +226,120 @@ export const createSubAgentExecute = <
   TOOLS extends ToolSet,
   INPUT,
   OUTPUT,
+  PROGRESS = never,
 >(
-  config: CreateSubAgentExecuteConfig<CALL_OPTIONS, TOOLS, INPUT, OUTPUT>,
+  config: CreateSubAgentExecuteConfig<
+    CALL_OPTIONS,
+    TOOLS,
+    INPUT,
+    OUTPUT,
+    PROGRESS
+  >,
 ) => {
-  return async (
+  /** One run, shared by both modes. Resolves to the tool-shaped result. */
+  const run = async (
     input: INPUT,
     options: ToolExecutionOptions<unknown>,
+    onToolStart: ((toolName: string, toolInput: unknown) => void) | undefined,
   ): Promise<OUTPUT> => {
     const ctx = getRuntimeContext(options);
-    const messages = config.buildMessages(input, ctx);
+    const messages = await config.buildMessages(input, ctx);
     const callOptions = config.buildCallOptions(input, ctx);
-    const result = await config.subAgent(ctx).generate({
-      messages,
-      options: callOptions,
-      abortSignal: options.abortSignal,
+    const deadline = AbortSignal.timeout(config.deadlineMs);
+    const signal = options.abortSignal
+      ? AbortSignal.any([options.abortSignal, deadline])
+      : deadline;
+    try {
+      const generate = async (
+        agent: Agent<CALL_OPTIONS, TOOLS>,
+      ): Promise<GenerateTextResult<TOOLS, Record<string, unknown>, never>> =>
+        agent.generate({
+          messages,
+          options: callOptions,
+          abortSignal: signal,
+          // Always passed: a conditional spread here collapses the SDK's
+          // `[CALL_OPTIONS] extends [never]` branch and the whole call stops
+          // typechecking. A no-op callback costs nothing.
+          onToolExecutionStart: (event) => {
+            onToolStart?.(event.toolCall.toolName, event.toolCall.input);
+          },
+        });
+
+      let result = await generate(config.subAgent(ctx));
+      if (
+        config.fallbackSubAgent &&
+        changedNothing(result, config.hasSideEffect)
+      ) {
+        console.error(
+          `[sub-agent] empty run (finish=${result.finishReason}) — retrying once on the fallback model`,
+        );
+        result = await generate(config.fallbackSubAgent(ctx));
+      }
+      return config.formatResult(result);
+    } catch (err) {
+      // Only the DEADLINE is absorbed into a tool-shaped result. A parent
+      // abort must keep propagating (the turn is being torn down), and any
+      // other throw is a real bug the caller's error path should see.
+      if (deadline.aborted && !options.abortSignal?.aborted) {
+        return config.onDeadline(input);
+      }
+      throw err;
+    }
+  };
+
+  const report = config.progress;
+  if (!report) {
+    return (input: INPUT, options: ToolExecutionOptions<unknown>) =>
+      run(input, options, undefined);
+  }
+
+  /**
+   * Progress mode. The run is started ONCE and raced against a signal that the
+   * tool-start callback fires; every wake-up yields the latest snapshot, and
+   * the finished result is yielded last — the SDK marks every earlier yield
+   * `preliminary`, so the parent's card redraws and the model still receives
+   * exactly one result.
+   *
+   * A promise-per-event rather than an unbounded queue on purpose: a snapshot
+   * is a REPLACEMENT, not an entry in a log. If several steps land while the
+   * consumer is away, the newest one is the only one worth drawing.
+   */
+  return async function* (
+    input: INPUT,
+    options: ToolExecutionOptions<unknown>,
+  ): AsyncIterable<OUTPUT | PROGRESS> {
+    let step = 0;
+    let latest: PROGRESS | undefined;
+    let wake: (() => void) | undefined;
+    const onToolStart = (toolName: string, toolInput: unknown): void => {
+      step += 1;
+      const snapshot = report({ step, toolName, input: toolInput });
+      if (snapshot === undefined) return;
+      latest = snapshot;
+      wake?.();
+    };
+
+    let settled = false;
+    const finished = run(input, options, onToolStart).finally(() => {
+      settled = true;
+      wake?.();
     });
-    return config.formatResult(result);
+
+    while (!settled) {
+      await Promise.race([
+        finished.catch(() => undefined),
+        new Promise<void>((resolve) => {
+          wake = resolve;
+        }),
+      ]);
+      wake = undefined;
+      if (settled) break;
+      if (latest !== undefined) {
+        yield latest;
+        latest = undefined;
+      }
+    }
+    // Awaited outside the race so a rejection still propagates to the guard.
+    yield await finished;
   };
 };

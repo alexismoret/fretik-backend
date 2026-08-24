@@ -39,7 +39,7 @@ RUN --mount=type=cache,target=/root/.bun/install/cache \
 FROM install AS release
 ENV NODE_ENV=production
 
-# poppler-utils for PDF parsing in shared/file-parsing. `sharp` ships
+# poppler-utils for PDF parsing in shared/services/file-extraction. `sharp` ships
 # its own prebuilt libvips binaries — no extra apt deps for it.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends poppler-utils ca-certificates \

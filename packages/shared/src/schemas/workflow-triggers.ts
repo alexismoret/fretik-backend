@@ -258,6 +258,22 @@ export const WORKFLOW_TRIGGERABLE_EVENT_DESCRIPTORS: WorkflowEventTypeDescriptor
       ],
     },
     {
+      type: "document.revised",
+      icon: "i-lucide-file-stack",
+      labelKey: "workflows.eventTypes.document_revised",
+      params: [
+        param({
+          key: "event.filter.folderId",
+          kind: "folder",
+          labelKey: "workflows.triggerParams.folder",
+          icon: "i-lucide-folder",
+          required: false,
+          agentHint:
+            "Only fire when the revised document lives in this folder. Value = a folder id (obtain it via the drive/objects tools). Omit to fire for any folder.",
+        }),
+      ],
+    },
+    {
       type: "document.deleted",
       icon: "i-lucide-file-x",
       labelKey: "workflows.eventTypes.document_deleted",

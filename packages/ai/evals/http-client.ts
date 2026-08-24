@@ -141,7 +141,26 @@ interface StreamState {
   error: string | undefined;
 }
 
-const absorbChunk = (chunk: UnknownRecord, state: StreamState): void => {
+/**
+ * Exported for `tests/unit/evals/stream-accounting.test.ts`. What this reducer
+ * counts becomes `tool-call-count`, `redundant-call-count` and
+ * `tool-budget-overage`, so a drift here does not fail — it reports a plausible
+ * wrong number. It already did once, by a factor of ten.
+ */
+export const createStreamState = (): StreamState => ({
+  textParts: [],
+  toolInputs: new Map<string, PendingToolCall>(),
+  toolCalls: [],
+  finishReason: undefined,
+  usage: undefined,
+  traceId: undefined,
+  stepsUsed: 0,
+  servedBy: undefined,
+  modelProfileKey: undefined,
+  error: undefined,
+});
+
+export const absorbChunk = (chunk: UnknownRecord, state: StreamState): void => {
   const type = readString(chunk, "type");
   if (!type) return;
   switch (type) {
@@ -201,6 +220,17 @@ const absorbChunk = (chunk: UnknownRecord, state: StreamState): void => {
       return;
     }
     case "tool-output-available": {
+      // A streaming tool (today: `buildPage`, which reports its delegate's
+      // steps) emits one of these PER YIELD, all under the same toolCallId,
+      // and the SDK flags every one but the last `preliminary`. They are
+      // progress, not calls: counting them inflated `buildPage` to 20 calls
+      // for a single build (measured 2026-08-22), which then fired
+      // `tool-budget-overage` and `redundant-call-count` on runs where the
+      // model had done nothing wrong. The model's own view was always
+      // correct — `stepsUsed` stayed at 4 — so the numbers disagreed with
+      // each other rather than with reality, which is the expensive kind of
+      // wrong measurement.
+      if (chunk["preliminary"] === true) return;
       const id = readString(chunk, "toolCallId");
       const entry = id ? state.toolInputs.get(id) : undefined;
       const latencyMs =
@@ -290,18 +320,7 @@ const readStream = async (
     });
   }
   const decoder = new TextDecoder();
-  const state: StreamState = {
-    textParts: [],
-    toolInputs: new Map<string, PendingToolCall>(),
-    toolCalls: [],
-    finishReason: undefined,
-    usage: undefined,
-    traceId: undefined,
-    stepsUsed: 0,
-    servedBy: undefined,
-    modelProfileKey: undefined,
-    error: undefined,
-  };
+  const state = createStreamState();
   let buffer = "";
 
   // eslint-disable-next-line no-await-in-loop -- serial by design: each

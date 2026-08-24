@@ -2,6 +2,8 @@ import { TOOL_PERMISSIONS_REMEDIATION } from "@fretik/shared/services/ai/remedia
 import { fetchManagedPrompt } from "../../lib/langfuse-prompts";
 import type { NativeIngestionPlan } from "../../services/native-input/prepare-model-messages";
 import { buildSessionStateBlock } from "../../services/session-state/build-block";
+import { renderPageEnvironmentContract } from "../../tools/page-environment-guide";
+import { renderPageDesignDoctrine } from "../chatbot/page-design-doctrine";
 import type { SearchableToolRegistry } from "./chatbot-tool";
 import { policyHiddenToolNames } from "./policy-tool-gate";
 import { resolveAgentBlocks } from "./prompt-blocks";
@@ -176,7 +178,23 @@ export const buildPageBuilderSystemPrompt = async (
     PAGE_BUILDER_FALLBACK,
   );
   ctx.langfusePrompt = promptRef;
-  return text.replace(HTML_COMMENT_RE, "").trim();
+  // The environment contract is APPENDED rather than templated in, and it is
+  // the only prompt here built from code. The reason is canonicity: it is
+  // generated from `schemas/pages` and the runtime guide, so a copy authored
+  // into the .md would drift the day either changes. Appending keeps one
+  // source, needs nothing from the seeding script, and stays cache-safe —
+  // constant text after constant text is still a constant prefix. This agent
+  // writes a page on every run, so paying a tool step to fetch what never
+  // varies was a step spent on nothing.
+  // The design doctrine rides along for the same reason and by the same rule:
+  // this agent designs on every run, so the two files its prompt used to ORDER
+  // it to read are not references — they are its prompt, arriving late and at
+  // full price. The skill keeps them; nothing is copied.
+  return [
+    text.replace(HTML_COMMENT_RE, "").trim(),
+    `<environment_contract>\n${renderPageEnvironmentContract()}\n</environment_contract>`,
+    `<design_doctrine>\n${renderPageDesignDoctrine()}\n</design_doctrine>`,
+  ].join("\n\n");
 };
 
 /**

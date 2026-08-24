@@ -442,7 +442,9 @@ describe("dryRunPage — characterisation of today's output", () => {
   test("a failing dataset is reported with its own message", async () => {
     const result = await dryRunPage({
       definition: withDatasets([
-        { id: "broken", kind: "transform", code: "return this is ( not js" },
+        // No `objectTypeId`: the objects source refuses it by message rather
+        // than throwing, which is the degradation this pins.
+        { id: "broken", kind: "objects" },
       ]),
       teamId: "team-1",
       userId: null,
@@ -523,27 +525,31 @@ describe("dryRunPage — characterisation of today's output", () => {
       definition: withDatasets([
         {
           id: "derived",
-          kind: "transform",
-          inputs: ["nowhere"],
-          code: "return [{ seen: data.nowhere === null }];",
+          kind: "objects",
+          mode: "aggregate",
+          objectTypeId: "018f0000-0000-7000-8000-000000000000",
+          metrics: [{ name: "spend", fn: "sum" }],
         },
       ]),
       teamId: "team-1",
       userId: null,
       assumeCompiled: true,
     });
-    expect(result.warnings).toContain(
-      'dataset "derived": input "nowhere" does not exist',
-    );
+    expect(
+      result.warnings.some(
+        (w) => w.includes('dataset "derived"') && w.includes("needs a `key`"),
+      ),
+    ).toBe(true);
   });
 
   test("assumeSanitized skips the static pass — the caller already ran it", async () => {
     const definition = withDatasets([
       {
         id: "derived",
-        kind: "transform",
-        inputs: ["nowhere"],
-        code: "return [{ seen: data.nowhere === null }];",
+        kind: "objects",
+        mode: "aggregate",
+        objectTypeId: "018f0000-0000-7000-8000-000000000000",
+        metrics: [{ name: "spend", fn: "sum" }],
       },
     ]);
     // Same definition, both ways: the static finding is the difference.
@@ -561,8 +567,8 @@ describe("dryRunPage — characterisation of today's output", () => {
       assumeCompiled: true,
     });
 
-    expect(fresh.warnings.some((w) => w.includes('"nowhere"'))).toBe(true);
-    expect(preSanitized.warnings.some((w) => w.includes('"nowhere"'))).toBe(
+    expect(fresh.warnings.some((w) => w.includes("needs a `key`"))).toBe(true);
+    expect(preSanitized.warnings.some((w) => w.includes("needs a `key`"))).toBe(
       false,
     );
     // The DATA phase still runs either way — that is the half a caller cannot

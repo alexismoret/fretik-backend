@@ -81,7 +81,19 @@ export const PAGE_LIMITS = {
   maxOffset: 50_000,
   /** `inline` dataset payload, measured on the JSON string. */
   maxInlineBytes: 200_000,
-  maxTransformChars: 20_000,
+  /**
+   * What ONE dataset may put on the wire, measured on its serialized rows.
+   *
+   * Every other bound here counts ROWS, and rows are not a size: 2 000 records
+   * whose `markdown` field holds a page each is a response nobody's browser
+   * wants and nothing was refusing. The retired `transform` sandbox capped its
+   * own output at 1 MB, so removing it removed the only byte ceiling in the
+   * path — this replaces it, and covers the two sources that never had one.
+   *
+   * Enforced by TRUNCATING, never by failing: the page renders what fits and
+   * `truncated` says so, which is a state every dataset already has to handle.
+   */
+  maxDatasetResponseBytes: 2_000_000,
   /**
    * How long an external dataset's upstream answer may be reused, seconds.
    * The floor exists because a page renders far more often than a third party
@@ -104,10 +116,30 @@ export const PAGE_LIMITS = {
    * bug, not a page. JS tracks `maxSourceChars` at the measured ~2.5× ratio. */
   maxCompiledJsChars: 800_000,
   maxCompiledCssChars: 100_000,
-  /** Targeted source edits per update call. A bigger file means bigger blocks
-   * to swap, so both the count and the block size grow with the source. */
-  maxEdits: 30,
-  maxEditChars: 8_000,
+  /**
+   * Targeted source edits per update call.
+   *
+   * 30 was set against the wrong picture of the work: few, fat blocks. The
+   * real workload is many, thin ones — measured over 33 updates from real
+   * builds (2026-08-23), the median update touches 31 separate sites, the p90
+   * touches 68, and 18 of the 33 needed more than 30. Under a cap the changes
+   * do not fit, the model merges distant sites into one block that swallows
+   * the untouched lines between them, and then pays for those lines TWICE, as
+   * `oldString` and again as `newString`. The cap was buying the padding it
+   * was meant to prevent. 80 clears the p90 with headroom; `maxEditChars`
+   * still bounds any single block.
+   */
+  maxEdits: 80,
+  /**
+   * One edited block. Sized for the way a LARGE page is written: the model
+   * emits a compilable skeleton with named section stubs, then replaces each
+   * stub with its finished region — so a `newString` here is a whole section
+   * (a board with its columns and card, a table with its cells and toolbar),
+   * not a tweak. 8 000 cut those in half and forced a second chained edit for
+   * no reason; the real ceiling on one turn is the model's output budget, and
+   * this sits well under it.
+   */
+  maxEditChars: 12_000,
 
   /** The brief. Bounded because it is a decision record, not a document —
    * but the feature list is what a software replacement is measured in. */
@@ -119,7 +151,7 @@ export const PAGE_LIMITS = {
  * Identifier for datasets, variables, metrics and filter keys.
  *
  * Narrow on purpose: these names are read back as PROPERTIES in JavaScript —
- * `data.sales` in a transform, `datasets.sales.rows` in the page code — where
+ * `datasets.sales.rows` in the page code — where
  * a hyphen would force bracket syntax and a leading digit would not parse.
  */
 const PAGE_KEY_RE = /^[a-z][a-z0-9_]{0,59}$/;
@@ -260,13 +292,19 @@ export type PageVariable = z.infer<typeof PageVariableSchema>;
  * orders. Volume, history and anything published stay on the workflow → object
  * type path: a third party cannot be filtered, grouped or indexed the way an
  * object type can.
+ *
+ * `transform` was a fourth kind, REMOVED 2026-08-21. It ran JavaScript in a
+ * server-side QuickJS-WASM sandbox over the results of other datasets, and the
+ * two things it was for both had better homes on either side of it: grouping
+ * and summing belong in an `aggregate` dataset, in SQL, over every row — which
+ * the contract already forbade it from doing — and joining, ratios and derived
+ * columns belong in the page's own `computed()`, which runs in the browser the
+ * page is already rendering in. What remained was a second execution
+ * environment to secure, a 9.2 MB dependency, and a dependency-wave scheduler
+ * in `run-page-data.ts` that existed for this one source. Stored definitions
+ * were migrated (`…_retire_page_transform_datasets`).
  */
-export const PAGE_DATASET_KINDS = [
-  "inline",
-  "objects",
-  "transform",
-  "external",
-] as const;
+export const PAGE_DATASET_KINDS = ["inline", "objects", "external"] as const;
 export const pageDatasetKindSchema = z.enum(PAGE_DATASET_KINDS);
 export type PageDatasetKind = z.infer<typeof pageDatasetKindSchema>;
 
@@ -290,15 +328,6 @@ export const PAGE_DATE_BUCKETS = [
 ] as const;
 export const pageDateBucketSchema = z.enum(PAGE_DATE_BUCKETS);
 export type PageDateBucket = z.infer<typeof pageDateBucketSchema>;
-
-/**
- * A transform is JavaScript, run in the server's QuickJS-WASM sandbox
- * (`lib/js-sandbox.ts`) — no IO, no host access, hard time/memory caps. One
- * language, and it is the one the model writes best.
- */
-export const PAGE_TRANSFORM_LANGS = ["js"] as const;
-export const pageTransformLangSchema = z.enum(PAGE_TRANSFORM_LANGS);
-export type PageTransformLang = z.infer<typeof pageTransformLangSchema>;
 
 /**
  * A record filter whose value may be a `{ var }` reference — `{ key: "stage",
@@ -338,9 +367,10 @@ export type PageMetric = z.infer<typeof PageMetricSchema>;
 
 /**
  * Where a page's data comes from. Objects are ONE source, not the only one —
- * a page may be built entirely from `inline` data, and `transform` computes
- * whatever the base data cannot express (derived columns, set differences,
- * joins across datasets).
+ * a page may be built entirely from `inline` data, or read a connected app
+ * live. Derived columns, ratios and joins across datasets are the PAGE's own
+ * work, in a `computed()`; grouping and summing are an `aggregate` dataset's,
+ * in SQL, over every row rather than over the window that happened to load.
  */
 export const PageDatasetSchema = z
   .object({
@@ -371,13 +401,6 @@ export const PageDatasetSchema = z
     /** aggregate: optional second dimension (stacked bars, multi-series). */
     seriesBy: pageKeySchema.optional(),
     metrics: z.array(PageMetricSchema).max(PAGE_LIMITS.maxMetrics).optional(),
-
-    // --- transform: compute over other datasets ---
-    /** Dataset ids fed to the transform as `data.<id>`. */
-    inputs: z.array(pageKeySchema).max(PAGE_LIMITS.maxDatasets).optional(),
-    lang: pageTransformLangSchema.optional(),
-    /** The body of `(data, state) => …` — it must `return` its rows. */
-    code: z.string().max(PAGE_LIMITS.maxTransformChars).optional(),
 
     // --- external: a live read from a connected app ---
     // Every field lives in the DEFINITION, never in a request: a viewer cannot
@@ -415,13 +438,6 @@ export const PageDatasetSchema = z
         code: "custom",
         message: `dataset "${ds.id}": an objects dataset needs objectTypeId`,
         path: ["objectTypeId"],
-      });
-    }
-    if (ds.kind === "transform" && !ds.code) {
-      ctx.addIssue({
-        code: "custom",
-        message: `dataset "${ds.id}": a transform dataset needs code`,
-        path: ["code"],
       });
     }
     if (ds.kind === "external") {
@@ -648,6 +664,28 @@ export const PAGE_ACCENT_TOKENS = [
 ] as const;
 
 /**
+ * The only values a Nuxt UI `color` prop accepts — the seven SEMANTIC aliases
+ * the runtime's theme declares, which is a different alphabet from the Tailwind
+ * hues above.
+ *
+ * The distinction has no runtime enforcement and fails silently: the prop has
+ * no validator, so `<UBadge color="violet">` matches no variant, and because
+ * the prop IS set the component's own default never applies either. The badge
+ * renders with its base and size classes alone — transparent, inherited grey,
+ * no console warning. A data hue reaches a component through `:style` and
+ * `var(--color-violet-500)`, never through `color`.
+ */
+export const PAGE_COMPONENT_COLORS = [
+  "primary",
+  "secondary",
+  "success",
+  "info",
+  "warning",
+  "error",
+  "neutral",
+] as const;
+
+/**
  * Page-wide look. `accent` re-points the primary color scale for the page's
  * iframe (the host pushes it through the bridge context), so every Nuxt UI
  * component keeps its native variants and only changes hue.
@@ -781,6 +819,7 @@ export const PageCodeEditSchema = z.object({
   oldString: z.string().min(1).max(PAGE_LIMITS.maxEditChars),
   newString: z.string().max(PAGE_LIMITS.maxEditChars),
   replaceAll: z.boolean().optional(),
+  after: z.string().min(1).max(PAGE_LIMITS.maxEditChars).optional(),
 });
 export type PageCodeEdit = z.infer<typeof PageCodeEditSchema>;
 export const PageCodeEditsSchema = z
@@ -899,13 +938,6 @@ export const describePageDataContract = (): string =>
     "(25–100), server-side paging/sorting via the per-dataset `queries` parameter, and",
     "`totalCount` is the real total however many millions sit behind it. A column total",
     "over one page would lie — add an aggregate dataset for figures that must hold.",
-    "kind=transform → inputs:[datasetIds] + code. Computes what the query cannot:",
-    "                 derived columns, ratios between datasets, set differences, joins.",
-    "                 The code is the BODY of (data, state) => … in JAVASCRIPT: read",
-    "                 `data.<inputId>`, read `state.<key>`, and `return` an array of rows",
-    "                 (or one object). Plain JSON in, plain JSON out — no IO, no await,",
-    "                 500 ms. It runs on results the query ALREADY reduced: never group or",
-    "                 sum here, an aggregate dataset does that in SQL over every row.",
     "kind=external  → providerKey + operation (+ args, resultPath?, cacheTtlSeconds?).",
     "                 A live read from a connected app. Name the PROVIDER: each viewer",
     "                 then reads through their own connection, the team's otherwise.",
@@ -914,6 +946,27 @@ export const describePageDataContract = (): string =>
     '                 args are literals or { "var": "<variableKey>" } references.',
     "                 resultPath is a dot path to the rows inside the answer",
     '                 ("value.items") — run dry_run to see the real shape first.',
+    "                 Its rows ship `fields` too, inferred from the answer: the",
+    "                 provider's key humanised, and a type only where every value",
+    "                 agrees (`unknown` otherwise — do not format one blind).",
+    "",
+    "## row shapes (objects datasets)",
+    "A row is `{ id, label, …fields }`; `label` is the record's own title.",
+    "text/url/email/phone/markdown → string. number/rating → number. boolean → boolean.",
+    "select       → the option's VALUE, never its label — the label is in `fields`.",
+    "multi_select → string[].                    money → { amount, currencyCode }.",
+    'date         → "2026-09-21", ISO datetime when the descriptor says hasTime.',
+    "relation     → [{ id, label }] — `[]` when nothing is linked, never null.",
+    'rollup       → a string even when it counts ("0"): Number() it before comparing.',
+    "unique_id    → the bare number; the descriptor's `prefix` makes the display form.",
+    "member, created_by, last_edited_by → raw user uuids with no name attached.",
+    "location     → { address, lat, lng }.",
+    "formula      → its declared kind, already computed (a number arrives as a",
+    "               number). Read-only, and sortable/filterable like any column.",
+    "A derived value the page must SORT, FILTER or AGGREGATE on belongs in a",
+    "`formula` field on the object type, not in the page: sorting a table by",
+    "margin only works if the server knows margin. Reshaping for display — a",
+    "label, a merge of two datasets, chart buckets — stays in the page's own JS.",
     "",
     "## variables (state)",
     `variables: [{ key, type(${PAGE_VARIABLE_TYPES.join("|")}), label?, initial? }]`,
@@ -1019,7 +1072,7 @@ export type PageSummary = z.infer<typeof PageSummarySchema>;
  * an identifier in a query.
  *
  * Only `objects` datasets in `records` mode read it — for an aggregate the
- * grouping IS the query, and for inline/transform rows the client already holds
+ * grouping IS the query, and for inline rows the client already holds
  * everything.
  */
 export const PageDatasetQuerySchema = z.object({
@@ -1083,6 +1136,12 @@ export const PageFieldDescriptorSchema = z.object({
     )
     .optional(),
   currencyCode: z.string().optional(),
+  /**
+   * formula: what the expression evaluates to (`number` | `text` | `boolean` |
+   * `date`). A computed column's VALUE cannot tell a page which one it is —
+   * an empty cell tells it nothing at all — so the kind travels with it.
+   */
+  resultType: z.string().optional(),
   /** number: display config that changes the SHAPE of the render. */
   numberFormat: z.string().optional(),
   precision: z.number().optional(),

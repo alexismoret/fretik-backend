@@ -34,6 +34,7 @@ const render = (over: Partial<PageRenderResult>): PageRenderResult => ({
   },
   consoleErrors: [],
   pageErrors: [],
+  opsRuns: [],
   ...over,
 });
 
@@ -179,6 +180,53 @@ describe("page gate", () => {
     expect(gate.blocking.join(" ")).toContain("no empty state");
   });
 
+  test("one sideways-scrolling layout is one finding, not one per scroll position", () => {
+    // `desktop`, `desktop-mid` and `desktop-bottom` are the same 1280px layout
+    // read three times — measured on a real render, the three rows come back
+    // identical, because both measures are horizontal and scrolling down moves
+    // neither. Reporting each would spend a quarter of the fix list restating
+    // one defect.
+    const wide = { horizontalOverflow: true, clipped: 5, textLength: 2_400 };
+    const gate = gatePageRender(
+      render({
+        layout: {
+          desktop: wide,
+          "desktop-mid": wide,
+          "desktop-bottom": wide,
+          "empty-state": {
+            horizontalOverflow: false,
+            clipped: 0,
+            textLength: 420,
+          },
+        },
+      }),
+    );
+    expect(
+      gate.blocking.filter((line) => line.includes("scrolls sideways")),
+    ).toHaveLength(1);
+    expect(
+      gate.blocking.filter((line) => line.includes("cut off")),
+    ).toHaveLength(1);
+    expect(gate.blocking.join(" ")).toContain("at the desktop width");
+    expect(gate.blocking.join(" ")).not.toContain("desktop-mid");
+  });
+
+  test("the emptied page keeps its own name — same width, different state", () => {
+    const gate = gatePageRender(
+      render({
+        layout: {
+          desktop: { horizontalOverflow: false, clipped: 0, textLength: 2_400 },
+          "empty-state": {
+            horizontalOverflow: true,
+            clipped: 0,
+            textLength: 420,
+          },
+        },
+      }),
+    );
+    expect(gate.blocking.join(" ")).toContain("at the empty-state width");
+  });
+
   test("a page that never mounted says so first, before anything else", () => {
     const gate = gatePageRender(
       render({
@@ -196,5 +244,184 @@ describe("page gate", () => {
       render({ consoleErrors: Array.from({ length: 30 }, () => "same boom") }),
     );
     expect(gate.blocking).toHaveLength(1);
+  });
+});
+
+/**
+ * Inside the overlay — the one region nothing else in this pipeline can see.
+ *
+ * The captures are taken with every panel dismissed, so a detail slideover is
+ * judged by no screenshot and no critic. These are the same raw-value defects
+ * the page itself is already held to, run over the panel's structure.
+ */
+describe("page gate — drag pass", () => {
+  const drag = {
+    draggablesAtMount: 24,
+    draggablesBeforeDrag: 24,
+    dragoverAccepted: true,
+    dropHandled: true,
+    domChanged: true,
+    draggablesAfterDrop: 24,
+  };
+
+  test("the teardown collapse — draggables die after the drag's own re-render — is blocking", () => {
+    const gate = gatePageRender(
+      render({ drag: { ...drag, draggablesAfterDrop: 0 } }),
+    );
+    expect(gate.pass).toBe(false);
+    expect(gate.blocking.join(" ")).toContain("drag-and-drop.md");
+  });
+
+  test("no drop target accepting the drag is blocking — the inert board", () => {
+    const gate = gatePageRender(
+      render({
+        drag: {
+          ...drag,
+          dragoverAccepted: false,
+          dropHandled: false,
+          domChanged: false,
+        },
+      }),
+    );
+    expect(gate.pass).toBe(false);
+    expect(gate.blocking.join(" ")).toContain("no drop target accepted");
+  });
+
+  test("live drag wiring is reported so the reader knows it was exercised", () => {
+    const gate = gatePageRender(render({ drag }));
+    expect(gate.pass).toBe(true);
+    expect(gate.observations.join(" ")).toContain("Drag wiring is live");
+  });
+
+  test("a page with nothing draggable says nothing about drag", () => {
+    const gate = gatePageRender(render({}));
+    expect(gate.observations.join(" ")).not.toContain("drag");
+  });
+});
+
+describe("page gate — overlay snapshots", () => {
+  const opened = (snapshot: string): PageRenderResult =>
+    render({
+      interactions: [
+        interaction({
+          overlayOpened: true,
+          overlayContentCount: 6,
+          overlayTextLength: 220,
+          overlaySnapshot: snapshot,
+        }),
+      ],
+    });
+
+  test("catches an object printed as JSON — how Vue actually renders one", () => {
+    // Read off a real render, not assumed: `{{ money }}` on a money field puts
+    // `{ "amount": 5250, "currencyCode": "EUR" }` on screen. A check written
+    // only for "[object Object]" — the shape everyone remembers — would have
+    // missed the common case and passed the page.
+    const gate = gatePageRender(
+      opened(
+        'h2 Deal detail\n  dt Budget\n  dd { "amount": 5250, "currencyCode": "EUR" }',
+      ),
+    );
+    expect(gate.pass).toBe(false);
+    expect(gate.blocking.join(" ")).toContain("prints an object");
+  });
+
+  test("catches the other shape too", () => {
+    expect(
+      gatePageRender(opened("h2 Deal detail\n  dd [object Object]")).pass,
+    ).toBe(false);
+  });
+
+  test("catches a machine timestamp shown to a person", () => {
+    const gate = gatePageRender(
+      opened("h2 Deal detail\n  dt Created\n  dd 2026-08-20T14:31:00Z"),
+    );
+    expect(gate.pass).toBe(false);
+    expect(gate.blocking.join(" ")).toContain("raw ISO timestamp");
+  });
+
+  test("does NOT flag a calendar date the page formatted itself", () => {
+    // `date` fields arrive as "2026-09-21" and rendering one is correct. A rule
+    // that fired on any dash-separated date would fail working pages, which is
+    // a worse outcome than missing a defect.
+    expect(
+      gatePageRender(opened("h2 Deal\n  dt Due\n  dd 2026-09-21")).pass,
+    ).toBe(true);
+  });
+
+  test("catches a record id printed where a name belongs", () => {
+    const gate = gatePageRender(
+      opened("h2 Owner\n  p 01a00f76-e653-7033-8292-fd2099ddad0b"),
+    );
+    expect(gate.pass).toBe(false);
+    expect(gate.blocking.join(" ")).toContain("raw uuid");
+  });
+
+  test("a well-built panel passes", () => {
+    expect(
+      gatePageRender(
+        opened(
+          [
+            "h2 GEODIS France",
+            "  dt Budget",
+            "  dd 5 250,00 €",
+            "  dt Owner",
+            "  dd Dara Nilsson",
+            "  button Mark won",
+          ].join("\n"),
+        ),
+      ).pass,
+    ).toBe(true);
+  });
+
+  test("an overlay the probe never serialised is not judged", () => {
+    // Only the first few overlays of a pass carry a snapshot. Absence is a
+    // budget, never evidence of a clean panel.
+    expect(
+      gatePageRender(
+        render({
+          interactions: [
+            interaction({ overlayOpened: true, overlayContentCount: 6 }),
+          ],
+        }),
+      ).pass,
+    ).toBe(true);
+  });
+});
+
+/**
+ * A click that changes the DOM proves the control is alive, never that it
+ * wrote anything — the harness answers every `ops.run` without executing it,
+ * and a success toast is a mutation whether or not one was made. The measured
+ * case: a mail client whose send button resolved a `setTimeout` and toasted
+ * "sent" cleared three rounds of this gate.
+ */
+describe("page gate — operation traffic", () => {
+  test("clicks that ran nothing are called out", () => {
+    const gate = gatePageRender(
+      render({
+        interactions: [interaction({ target: 'button "Envoyer"' })],
+        opsRuns: [],
+      }),
+    );
+    expect(gate.pass).toBe(true);
+    expect(gate.observations.join(" ")).toContain("NO operation ran");
+  });
+
+  test("the operations that did run are named", () => {
+    const gate = gatePageRender(
+      render({
+        interactions: [interaction({ target: 'button "Envoyer"' })],
+        opsRuns: ["send_mail", "send_mail", "mark_read"],
+      }),
+    );
+    const observed = gate.observations.join(" ");
+    expect(observed).toContain("3 operation calls");
+    expect(observed).toContain("send_mail, mark_read");
+  });
+
+  test("a page nobody clicked says nothing either way", () => {
+    const gate = gatePageRender(render({ interactions: [], opsRuns: [] }));
+    expect(gate.observations.join(" ")).not.toContain("operation");
   });
 });

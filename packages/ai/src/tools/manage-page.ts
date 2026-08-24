@@ -1,3 +1,4 @@
+import db from "@fretik/shared/db";
 import {
   OBJECT_COLOR_TOKENS,
   isValidObjectColor,
@@ -21,19 +22,26 @@ import {
 import { isOrgAdmin } from "@fretik/shared/services/organization/member-role";
 import { applyPageCodeEdits } from "@fretik/shared/services/pages/apply-code-edits";
 import { createPage } from "@fretik/shared/services/pages/create";
+import { deletePage } from "@fretik/shared/services/pages/delete";
 import { dryRunPage } from "@fretik/shared/services/pages/dry-run";
 import {
   publishPage,
   unpublishPage,
 } from "@fretik/shared/services/pages/publish";
 import { renderPage } from "@fretik/shared/services/pages/render/render-page";
+import { restorePageVersion } from "@fretik/shared/services/pages/restore";
 import { getPage, listPages } from "@fretik/shared/services/pages/retrieve";
 import { updatePage } from "@fretik/shared/services/pages/update";
+import { writePageVersion } from "@fretik/shared/services/pages/versions";
 import type { PageRequester } from "@fretik/shared/services/pages/visibility";
 import { tool } from "ai";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 import { getRuntimeContext } from "../agents/shared/runtime-context";
+import {
+  DOMAIN_TOOL_THRESHOLD_CHARS,
+  maybePersistLargeOutput,
+} from "../lib/persisted-output";
 import {
   TOOL_ERROR_CODES,
   toolError,
@@ -46,9 +54,19 @@ import {
 import { gatePageRender } from "../services/page-review/gate";
 import {
   MAX_PAGE_REVIEW_ITERATIONS,
+  bestEarlierRound,
   bumpPageReviewIteration,
+  clearPageDraft,
+  hashPageSource,
   listComponentsRead,
+  listPageReviewRounds,
+  readPageDraft,
+  readPageReviewIterations,
+  readPageReviewVerdict,
   recordComponentsRead,
+  recordPageReviewRound,
+  recordPageReviewVerdict,
+  savePageDraft,
 } from "../services/page-review/page-session-store";
 import {
   MAX_COMPONENT_DOCS,
@@ -56,6 +74,38 @@ import {
   listContractHeavy,
   readComponentDocs,
 } from "./page-component-docs";
+import { PAGE_ENVIRONMENT_GUIDE } from "./page-environment-guide";
+
+/**
+ * A page's own name, when the `create` call forgot to send one.
+ *
+ * Refusing was measured to be the expensive answer: on 2026-08-22 a builder
+ * spent an 8 000-token generation writing a complete page, called `create`
+ * without `name`, was refused — and the only way to retry is to regenerate the
+ * whole SFC, which is exactly where that build produced a zombie step and saved
+ * nothing at all. Two of thirteen eval cases died that way, having written
+ * their page correctly.
+ *
+ * Derived, never invented: the `<h1>` a page renders IS its title, so there is
+ * exactly one correct answer — the condition `autofix.ts` sets for repairing
+ * rather than reporting. A heading built entirely from an interpolation gives
+ * nothing, and the caller still refuses.
+ */
+const H1_RE = /<h1[^>]*>([\s\S]*?)<\/h1>/i;
+
+const derivePageName = (
+  definition: DefinitionSections | undefined,
+): string | null => {
+  const heading = H1_RE.exec(definition?.code?.source ?? "")?.[1] ?? "";
+  const text = heading
+    .replace(/\{\{[\s\S]*?\}\}/g, " ")
+    .replace(/<[^>]*>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (text.length > 0) return text.slice(0, 120);
+  const job = definition?.brief?.product?.job?.trim() ?? "";
+  return job.length > 0 ? job.slice(0, 120) : null;
+};
 
 /** A `list` entry states what the page shows, not its whole document. */
 const LISTING_DESCRIPTION_CHARS = 200;
@@ -247,6 +297,35 @@ export const liftPageError = (
   return null;
 };
 
+/**
+ * The one shape of whole-file update the guard still refuses: a replacement
+ * dramatically shorter than what it replaces. 0.7 is set from the measured
+ * destructive case (370 of 1272 lines kept, ratio 0.29) with room for honest
+ * shrink — dead code removed, a section consolidated — which stays above it.
+ */
+export const isDestructiveRewrite = (
+  storedSource: string,
+  submittedSource: string,
+): boolean =>
+  storedSource.trim().length > 0 &&
+  submittedSource.length < storedSource.length * 0.7;
+
+/**
+ * Draft slot for a page that does not exist yet — a `create` the compiler
+ * refused. One per turn: a builder writes one page at a time.
+ */
+const NEW_PAGE_DRAFT = "new";
+
+/** The compiler's own message when `err` is a compile refusal, else null. */
+const compileRefusalMessage = (err: unknown): string | null => {
+  if (!(err instanceof HTTPException) || err.status !== 400) return null;
+  const message = parseApiError(err.message)?.message;
+  return message !== undefined &&
+    message.startsWith("Page code failed to compile")
+    ? message
+    : null;
+};
+
 const sanitizeIcon = (
   icon: string | undefined,
 ): { icon: string | undefined; warnings: string[] } => {
@@ -311,38 +390,6 @@ const agentPageView = (page: PageResponse) => ({
 });
 
 /**
- * The page runtime's environment contract — what the code may import, what the
- * bridge offers, what the sandbox forbids. Served by `get_guide` together with
- * the data contract, on demand, never in the cached system prompt. Vue, Nuxt
- * UI, Tailwind and Chart.js themselves are NOT documented: the model knows
- * them; only what is SPECIFIC to this runtime is.
- */
-const PAGE_ENVIRONMENT_GUIDE = [
-  "## the page",
-  'A page is ONE complete Vue SFC: `<template>` + `<script setup lang="ts">` (+ optional `<style scoped>`, plain CSS). The server compiles it on save — a compile error refuses the write and names the lines. It renders inside a sandboxed iframe styled with the app\'s design system.',
-  "",
-  "## imports",
-  "Exactly these, nothing else (the compiler refuses others by name): `vue`, `@nuxt/ui`, `chart.js` (or `chart.js/auto`, pre-registered), `#fretik/sdk`, `@vueuse/core` (curated — scroll/virtualise/measure/debounce; storage, fetch and clipboard composables are absent, they cannot work here), `@internationalized/date` (the value type `UCalendar`/`UInputDate`/`UInputTime` take — never a `Date`), and drag-and-drop: `@atlaskit/pragmatic-drag-and-drop/element/adapter`, `/combine`, `/reorder`, `@atlaskit/pragmatic-drag-and-drop-hitbox/closest-edge`. One file — no relative imports.",
-  "",
-  "## components & styling",
-  "Every Nuxt UI component is registered globally — use `<UButton>`, `<UTable>`, `<UModal>`, `<UCard>`… without importing. `useToast()`/`useOverlay()` come from `@nuxt/ui`. The app's UApp wrapper is already mounted (toasts, tooltips, overlays work).",
-  'Tailwind classes compile from your STATIC class strings — never build a class name at runtime (`:class="`bg-${x}-500`"` yields nothing; toggle between full literal strings instead). App tokens are live: `text-muted`, `text-dimmed`, `text-highlighted`, `bg-default`, `bg-elevated`, `bg-accented`, `border-default`, `primary`/`error`/`success` scales, `dark:` variants, `font-display` (headings), `font-mono`. Icons: `<UIcon name="i-lucide-inbox" />` — the `i-lucide-*` set only.',
-  "",
-  "## the bridge — `import { fretik } from '#fretik/sdk'`",
-  "`await fretik.data.query({ variables?, datasetIds?, queries?, fresh? })` → `{ datasets: { <id>: result } }`. A result is `{ status: 'ok', rows, totalCount?, fields?, page?, pageSize? }` or `{ status: 'forbidden' | 'needs_connection' | 'error' }` — render every status, not just ok. `queries` pages/sorts a records dataset server-side: `{ orders: { page: 2, pageSize: 25, sortBy: 'date', sortDir: 'desc' } }`.",
-  "`await fretik.ops.run('<operationId>', { variables? })` → verdict `{ status: 'ok' | 'needs_connection' | 'blocked' | 'cancelled' | 'error', message? }`. The PARENT app shows the confirmation for destructive operations — render the verdict (toast the outcome), never re-confirm.",
-  "`fretik.ui.openUrl(url)` / `fretik.ui.copy(text)` — plain `<a href>` clicks are routed through the parent automatically.",
-  "`fretik.theme.color('blue' | 'blue-600' | 'primary' | '--any-var')` → the CONCRETE colour. Required for anything drawn on a canvas (Chart.js): canvas cannot resolve `var(--…)`, drops it silently and paints black. CSS `:style` bindings need no such thing.",
-  "`fretik.context` — reactive `{ dark, locale, mode }`. Colors/dark-mode are synced automatically; read it only when the CODE must branch.",
-  "",
-  "## sandbox rules",
-  "No `fetch`/XHR/WebSocket (CSP blocks all network — data comes from `fretik.data.query` only). No `localStorage`/`sessionStorage` (opaque origin — they throw; keep state in refs). No `window.open` (use `fretik.ui.openUrl`). External images over https are allowed in `<img>`.",
-  "",
-  "## shape of a page",
-  'Load in `onMounted` (one `fretik.data.query()` for everything, then targeted `datasetIds` refetches) and keep rows in refs. HOW the page should then look and behave — layout, component choice, formatting through `fields`, chart wiring, the four dataset states — is `skills/building-pages/`, and `{ action: "components" }` here gives you the real API of any component before you use it.',
-].join("\n");
-
-/**
  * Domain tool (deferred) — the conversational builder for pages: live,
  * data-bound mini-apps the team opens like any other view of the workspace.
  * The agent writes REAL CODE (a Vue SFC) against a declared data contract; the
@@ -353,38 +400,86 @@ const PAGE_ENVIRONMENT_GUIDE = [
  * - an empty `code.source` on a call that claims to have authored a page is
  *   refused (`pageBlankError`) — a saved blank page reports success, so the
  *   model reads a URL, believes it built something, and loops.
+ *
+ * TWO INSTANCES, and the split is a capability rather than a sentence because
+ * the sentence lost. Measured 2026-08-21 on a real conversation: the parent had
+ * `buildPage` loaded (`searchTools` had activated it by name) and this
+ * description opened with "building one is `buildPage`'s job, not yours" — and
+ * it read 91 344 characters of the build corpus, then authored the page itself
+ * across 22 steps on the conversation's own model instead of the one the
+ * `page-build` role picks. The page was visibly worse than the delegate's.
+ * A prohibition the model must obey is weaker than an action it does not have,
+ * and a description that goes on to teach the whole craft reads as permission
+ * whatever its first line says.
+ *
+ * So `authoring: false` (the parent, and generic sub-agents) keeps the actions
+ * that operate on a page that already exists — read it, tweak it, look at it,
+ * publish it — and loses the four that AUTHOR one. `authoring: true` (the page
+ * builder, whose prompt owns the process) keeps everything.
  */
-export const createManagePageTool = () =>
+
+/** Actions that operate on an EXISTING page. Both instances have these. */
+const PAGE_ACTIONS = [
+  "get",
+  "list",
+  "update",
+  "review",
+  "delete",
+  "publish",
+  "unpublish",
+] as const;
+
+/** Actions that AUTHOR a page. The builder's instance only. */
+const AUTHORING_ACTIONS = [
+  "get_guide",
+  "components",
+  "dry_run",
+  "create",
+  ...PAGE_ACTIONS,
+] as const;
+
+const authoringDescription = [
+  "Read, write and publish pages — live dashboards, directories and mini-apps the team opens in the app, written as real Vue code over the team's data. A page stores CODE plus a data contract, not a snapshot: datasets re-query on every view, so the numbers are never stale.",
+  "",
+  "- get_guide: the runtime contract (allowed imports, the fretik bridge API, sandbox rules, styling tokens) + the dataset/variable/operation grammar. Read it before your FIRST page in a conversation.",
+  "- components: the real Nuxt UI API — every prop, slot and emit — for up to 6 components at a time, generated from the library's own docs. Add `full: true` for usage notes and worked examples when the API alone leaves you guessing. Ask for the ones your page will actually use, before writing the template: guessed props are silently dropped, and content put in the wrong named slot renders somewhere else with no error. What you read here is remembered for the conversation, and a write that places a named-slot component you never read says so in `warnings`. The skill says WHICH component fits; this says what it accepts.",
+  "- dry_run: execute a definition WITHOUT saving — runs the datasets, compiles the code. Returns per-dataset samples (row count, real field names, one real row, distinct groups): every question you would otherwise pay a querySql round trip for. A definition without `code` is a pure DATA probe. Never dry_run a page you are about to save or just saved: create and update already compile and return the same samples and warnings, so a dry_run there re-sends the whole source to learn nothing.",
+  "- create: name + definition { brief?, variables?, datasets?, operations?, theme?, code? } (+ icon, color, description, scope team|private). The tool stamps the version and fills defaults. Omit `code` to open a data-first draft, then write it via update. When a create fails to compile the source you sent is KEPT for 15 minutes: repeat create with `name` + `edits` — one per named line, against that kept source — rather than writing the page a second time.",
+  '- update: pageId + any field. Code changes go through `edits` — [{ oldString, newString, after?, replaceAll? }], exact-match-once against the stored source, then recompiled — however many sites they touch; that is the normal path, not a small-change path. `get` first when unsure of the current source. The non-code `definition` sections REPLACE whole and omitted ones keep their stored value, so datasets, operations and the brief change here too, in the same call as the edits that use them. A whole-file `definition.code` much SMALLER than the stored source is refused without `rewrite: true` — that shape is how a "targeted repair" once destroyed a page. When a write fails to compile, the source you sent is KEPT for 15 minutes: fix the named lines with `edits` (they apply to that kept source) instead of resending the file.',
+  '- review: pageId — RENDER the saved page in a browser and report what using it is like. Captures at desktop, tablet and mobile widths, plus below the fold when the page is taller than the screen and the same page with every dataset emptied, a scripted click pass — which also serialises the overlays it opens, so what is behind a click is judged too — then a design critique. `blocking` is MEASURED, not judged — an overlay that opens empty or prints a raw object, id or timestamp, a target that does nothing when clicked, sideways scroll, a blank empty state — and it fails a page the critique liked. Fix those first, apply `findings` with `edits`, review again. `verdict: "ship"` ENDS the loop: hand back the url and pass `elevations` (what would make the page better, not what is broken) on as next steps — an unchanged page returns its standing verdict rather than a re-score, and the budget is three scored reviews per turn, shared with whoever else reviews this page. Every scored round is SAVED, and if an earlier one scored clearly higher the page is restored to it and `restoredFromRound` says so — when that happens the stored source is no longer the one you sent, so `get` before editing again.',
+  "- get / list: one page's full source + data contract (+ its recent runtime errors — fix those when present) / the team's pages.",
+  "- delete: pageId — remove a page for good, and its public URL with it. Yours to call when a page you just made is the wrong answer, or when the user asks; ask first otherwise. There is no undo.",
+  "- publish / unpublish: mint or revoke a public URL anyone can open without an account. publish FREEZES the current page for that URL while the DATA stays live. It exposes everything the owning team can see, so get the user's explicit agreement first, and hand back the returned publicUrl. A page that reads or writes a connected app is refused — an anonymous visitor cannot spend the team's credentials.",
+  "",
+  "dry_run, create and update all EXECUTE the datasets and COMPILE the code, and report what they find in `warnings` — a compile error, a wrong field key, a dataset with no rows, a component placed without reading its API. Fix them in the same turn rather than reporting a page you have not seen work. Compiling is not working, though: `review` is the only action here that has SEEN the page, so a page is finished when a review says so, not when the write succeeds. After a user has the page open, `get` returns its recent RUNTIME errors — what the browser saw; fix and update.",
+  "",
+  "Call describeObjectType for field keys, types and option values BEFORE writing an objects dataset; guessing keys is the main way a page comes back empty.",
+].join("\n");
+
+const editingDescription = [
+  "Work with pages that already exist — live dashboards, directories and mini-apps the team opens in the app, written as real Vue code over the team's data. A page stores CODE plus a data contract, not a snapshot: datasets re-query on every view, so the numbers are never stale.",
+  "",
+  "You cannot author a page here, and that is the routing: **`buildPage` makes every page and every change worth calling a change** — a new page, a new view or feature, a redesign, a section that needs different data. It runs a specialist that probes the data, reads the component APIs, and renders the result in a real browser before handing it back; it carries its own design doctrine, so there is nothing for you to read first. What is left here is what you do to a page you did not have to write: read it, retouch a word, look at it, publish it.",
+  "",
+  "- update: pageId + `edits`: [{ oldString, newString, after?, replaceAll? }] — exact-match-once against the stored source, then recompiled. This is for a TARGETED change: a label, a wording, a colour, a threshold, a column the user wants gone. `get` first when unsure of the current source. Anything larger — a new view, a new dataset, a layout the user is unhappy with — is `buildPage` with the pageId in its task, not a pile of edits here. Page metadata (name, icon, color, description, scope) also lives on this action.",
+  "- get / list: one page's full source + data contract (+ its recent runtime errors — fix those when present) / the team's pages.",
+  "- review: pageId — RENDER the saved page in a browser and report what using it is like: captures at three widths plus below the fold and with every dataset emptied, a scripted click pass that serialises the overlays it opens, then a design critique. Call it to CHECK a page — after a build came back `incomplete`, or when the user says something is broken and you want to see it. `blocking` is MEASURED, not judged. If it comes back with real work in it, that work is `buildPage`'s, not a repair campaign of your own.",
+  "- delete: pageId — remove a page for good, and its public URL with it. Yours to call when a page just built is the wrong answer, or when the user asks; ask first otherwise. There is no undo.",
+  "- publish / unpublish: mint or revoke a public URL anyone can open without an account. publish FREEZES the current page for that URL while the DATA stays live. It exposes everything the owning team can see, so get the user's explicit agreement first, and hand back the returned publicUrl. A page that reads or writes a connected app is refused — an anonymous visitor cannot spend the team's credentials.",
+  "",
+  "An `update` EXECUTES the datasets and COMPILES the code, and reports what it finds in `warnings` — fix those in the same turn rather than reporting a page you have not seen work. Compiling is not working, though: `review` is the only action here that has SEEN the page. After a user has the page open, `get` returns its recent RUNTIME errors — what the browser saw.",
+  "",
+  "Deciding WHETHER a page is the right feature (vs a workflow, an object type, or a one-off file) is `skills/platform-guide/SKILL.md` territory.",
+].join("\n");
+
+export const createManagePageTool = (config: { authoring: boolean }) =>
   tool({
-    description: [
-      "Read, edit and publish pages — live dashboards, directories and mini-apps the team opens in the app, written as real Vue code over the team's data. A page stores CODE plus a data contract, not a snapshot: datasets re-query on every view, so the numbers are never stale. Building or redesigning one is `buildPage`'s job, not yours: it runs a specialist that probes the data, reads the component APIs and renders the result in a browser before handing it back. Come here to read a page, make one targeted edit, or publish. Deciding WHETHER a page is the right feature (vs a workflow, an object type, or a one-off file) is `skills/platform-guide/SKILL.md` territory. Read `skills/building-pages/SKILL.md` BEFORE writing one — design doctrine and worked patterns live there, not here.",
-      "",
-      "- get_guide: the runtime contract (allowed imports, the fretik bridge API, sandbox rules, styling tokens) + the dataset/variable/operation grammar. Read it before your FIRST page in a conversation.",
-      "- components: the real Nuxt UI API — every prop, slot and variant — for up to 6 components at a time, generated from the library's own docs. Ask for the ones your page will actually use, before writing the template: guessed props are silently dropped, and content put in the wrong named slot renders somewhere else with no error. What you read here is remembered for the conversation, and a write that places a named-slot component you never read says so in `warnings`. The skill says WHICH component fits; this says what it accepts.",
-      "- dry_run: execute a definition WITHOUT saving — runs the datasets, compiles the code. Returns per-dataset samples (row count, real field names, one real row, distinct groups): every question you would otherwise pay a querySql round trip for. A definition without `code` is a pure DATA probe.",
-      "- create: name + definition { brief?, variables?, datasets?, operations?, theme?, code? } (+ icon, color, description, scope team|private). The tool stamps the version and fills defaults. Omit `code` to open a data-first draft, then write it via update.",
-      "- update: pageId + any field. `definition` sections REPLACE whole; omitted sections keep their stored value (sending only `{ code: { source } }` rewrites the code and touches nothing else). For small code changes send `edits`: [{ oldString, newString, replaceAll? }] — exact-match-once against the stored source, then recompiled. `get` first when unsure of the current source.",
-      "- review: pageId — RENDER the saved page in a browser and report what using it is like. Three captures (desktop, mobile, and the same page with every dataset emptied), a scripted click pass, then a design critique against `skills/building-pages/references/review-rubric.md`. `blocking` is MEASURED, not judged — an overlay that opens empty, a target that does nothing when clicked, sideways scroll, a blank empty state — and it fails a page the critique liked. Fix those first, apply `findings` with `edits`, review again. `elevations` is the other list — not what is broken, what would make the page better — and it arrives even on a passing verdict: a round left after a page ships is spent there. Three reviews per page, then hand it over with the last elevations as what you would do next.",
-      "- get / list: one page's full source + data contract (+ its recent runtime errors — fix those when present) / the team's pages.",
-      "- publish / unpublish: mint or revoke a public URL anyone can open without an account. publish FREEZES the current page for that URL while the DATA stays live. It exposes everything the owning team can see, so get the user's explicit agreement first, and hand back the returned publicUrl. A page that reads or writes a connected app is refused — an anonymous visitor cannot spend the team's credentials.",
-      "",
-      "dry_run, create and update all EXECUTE the datasets and COMPILE the code, and report what they find in `warnings` — a compile error, a wrong field key, a dataset with no rows, a component placed without reading its API. Fix them in the same turn rather than reporting a page you have not seen work. Compiling is not working, though: `review` is the only action here that has SEEN the page, so a page is finished when a review says so, not when the write succeeds. After a user has the page open, `get` returns its recent RUNTIME errors — what the browser saw; fix and update.",
-      "",
-      "Call describeObjectType for field keys, types and option values BEFORE writing an objects dataset; guessing keys is the main way a page comes back empty.",
-    ].join("\n"),
+    description: config.authoring ? authoringDescription : editingDescription,
     inputSchema: z.object({
-      action: z.enum([
-        "get_guide",
-        "components",
-        "dry_run",
-        "create",
-        "get",
-        "list",
-        "update",
-        "review",
-        "publish",
-        "unpublish",
-      ]),
+      // One `z.enum` over a narrowed list, not two schemas: the model's JSON
+      // schema really does lose the four authoring actions, while the switch
+      // below stays exhaustive over both instances.
+      action: z.enum(config.authoring ? AUTHORING_ACTIONS : PAGE_ACTIONS),
       pageId: z.uuid().optional(),
       name: z.string().max(120).optional(),
       description: z.string().max(4000).optional(),
@@ -403,6 +498,12 @@ export const createManagePageTool = () =>
         .describe(
           `components only: up to ${MAX_COMPONENT_DOCS} component names — ["UTable", "UBadge", "USlideover"].`,
         ),
+      full: z
+        .boolean()
+        .optional()
+        .describe(
+          "components only: add the usage notes and worked examples to the API. Ask for it when the props and slots alone leave you guessing — it costs about three times the tokens.",
+        ),
       definition: jsonTolerant(definitionSectionsSchema)
         .optional()
         .describe(
@@ -411,8 +512,18 @@ export const createManagePageTool = () =>
       edits: jsonTolerant(PageCodeEditsSchema)
         .optional()
         .describe(
-          "update only: targeted source edits, applied in order — [{ oldString, newString, replaceAll? }]. oldString must match the stored source exactly once (widen it, or set replaceAll). Cheaper than resending the whole SFC for small changes; ignored when `definition` is sent too.",
+          'Targeted source edits, applied in order — [{ oldString, newString, after?, replaceAll? }]. On update they patch the stored source; on create they patch the source a refused create kept. oldString must match exactly once. In a file that repeats itself — twenty cards built the same way — do NOT widen the anchor until it is unique: name a nearby landmark in `after` and keep oldString short, e.g. { after: "Overdue invoices", oldString: "color=\\"neutral\\"", newString: "color=\\"error\\"" }. Widening is what makes an update cost more than writing the page did, because every line inside the anchor is sent twice. Send one edit per changed site rather than one block spanning several. Edits that match are applied and stored even when a sibling misses; the misses come back in `editsNotApplied` with the real surrounding lines — re-send only those. Combine `edits` with the other `definition` sections in one call; they are ignored only when `definition.code` is sent too.',
         ),
+      ...(config.authoring
+        ? {
+            rewrite: z
+              .boolean()
+              .optional()
+              .describe(
+                "update only: confirm replacing the SFC with a much SMALLER one. Required only when the sent code shrinks the page past what a fix plausibly would — set it when the user asked for a different, smaller page; a fix, a new section or a review finding is `edits`.",
+              ),
+          }
+        : {}),
     }),
     execute: async (input, options) => {
       const ctx = getRuntimeContext(options);
@@ -422,6 +533,18 @@ export const createManagePageTool = () =>
       const requester: PageRequester | undefined = userId
         ? { userId, isAdmin: await isOrgAdmin(organizationId, userId) }
         : undefined;
+      /**
+       * What "this build session" means for everything Redis remembers: the
+       * review budget, the standing verdict, the draft a refused write left.
+       *
+       * The TURN, identified by its trace. The page builder runs under
+       * `${traceId}.page`, so stripping the suffix puts the delegate and its
+       * parent on the SAME budget — keyed per-agent they had one each, and the
+       * three-round budget measured five rounds (2026-08-23). A new user
+       * message is a new trace, hence a fresh budget and a fresh look at the
+       * page, which is what a turn saying "this looks broken" needs.
+       */
+      const turnScope = ctx.traceId?.split(".")[0] ?? ctx.conversationId;
 
       try {
         switch (input.action) {
@@ -440,7 +563,9 @@ export const createManagePageTool = () =>
                 `Send { action: "components", components: ["UTable", "UBadge"] } — up to ${MAX_COMPONENT_DOCS} per call.`,
               );
             }
-            const result = await readComponentDocs(input.components);
+            const result = await readComponentDocs(input.components, {
+              ...(input.full !== undefined ? { full: input.full } : {}),
+            });
             if ("error" in result) {
               return toolError(TOOL_ERROR_CODES.INTERNAL_ERROR, result.error);
             }
@@ -455,15 +580,23 @@ export const createManagePageTool = () =>
               ctx.conversationId,
               result.docs.map((doc) => doc.component),
             );
-            return {
-              docs: result.docs,
-              ...(result.unknown.length > 0
-                ? {
-                    unknown: result.unknown,
-                    hint: "Those are not registered in the page runtime — do not use them in a template; they render as unknown elements.",
-                  }
-                : {}),
-            };
+            // Six heavy components measure ~120k chars. Without this the
+            // stream truncates and the model reads a mangled API — the exact
+            // failure this action exists to prevent.
+            return await maybePersistLargeOutput(
+              {
+                docs: result.docs,
+                ...(result.unknown.length > 0
+                  ? {
+                      unknown: result.unknown,
+                      hint: "Those are not registered in the page runtime — do not use them in a template; they render as unknown elements.",
+                    }
+                  : {}),
+              },
+              ctx.conversationId,
+              options.toolCallId,
+              DOMAIN_TOOL_THRESHOLD_CHARS,
+            );
           }
 
           case "dry_run": {
@@ -493,10 +626,44 @@ export const createManagePageTool = () =>
           }
 
           case "create": {
-            if (!input.name) {
+            // A create refused on compile keeps its source too, and this is
+            // the most expensive emission in the product to lose: the page
+            // does not exist yet, so the only retry is to write the whole SFC
+            // again. `edits` on `create` are how that retry gets paid once —
+            // they anchor on the kept source, exactly like the update path.
+            const pendingDraft = await readPageDraft(turnScope, NEW_PAGE_DRAFT);
+            let createSections = input.definition;
+            let createEditFailures: string[] = [];
+            if (input.edits && !input.definition?.code) {
+              if (pendingDraft === null) {
+                return toolError(
+                  TOOL_ERROR_CODES.INVALID_ARGS,
+                  "There is no page to edit: `edits` on create only re-anchor a source a refused create left behind, and none is pending.",
+                  "Send { action: 'create', name, definition } with the full SFC — or, for a page that exists, update { pageId, edits }.",
+                );
+              }
+              const edited = applyPageCodeEdits(pendingDraft, input.edits);
+              if (!edited.ok) {
+                return toolError(
+                  TOOL_ERROR_CODES.INVALID_ARGS,
+                  edited.error,
+                  "Re-anchor the edit on the source you last sent — it is what these edits apply to.",
+                );
+              }
+              createEditFailures = edited.failures.map(
+                (failure) => failure.error,
+              );
+              createSections = {
+                ...(createSections ?? {}),
+                code: { source: edited.source },
+              };
+            }
+
+            const derivedName = input.name ?? derivePageName(createSections);
+            if (!derivedName) {
               return toolError(
                 TOOL_ERROR_CODES.INVALID_ARGS,
-                "create needs a name.",
+                "create needs a name, and the page carries no heading to take one from.",
                 "Send { action: 'create', name, definition }.",
               );
             }
@@ -504,26 +671,53 @@ export const createManagePageTool = () =>
             const color = sanitizeColor(input.color);
             const definition = assembleDefinition(
               EMPTY_PAGE_DEFINITION,
-              input.definition,
+              createSections,
             );
             const drafting = definition.code.source.trim().length === 0;
 
-            const created = await createPage({
-              organizationId,
-              teamId,
-              createdByUserId: userId ?? "",
-              input: {
-                name: input.name,
-                description: input.description ?? "",
-                icon: icon.icon,
-                color: color.color,
-                userId: input.scope === "private" ? (userId ?? null) : null,
-                definition,
-                ...(ctx.conversationId
-                  ? { sourceConversationId: ctx.conversationId }
-                  : {}),
-              },
-            });
+            let created: Awaited<ReturnType<typeof createPage>>;
+            try {
+              created = await createPage({
+                organizationId,
+                teamId,
+                createdByUserId: userId ?? "",
+                input: {
+                  name: derivedName,
+                  description: input.description ?? "",
+                  icon: icon.icon,
+                  color: color.color,
+                  userId: input.scope === "private" ? (userId ?? null) : null,
+                  definition,
+                  ...(ctx.conversationId
+                    ? { sourceConversationId: ctx.conversationId }
+                    : {}),
+                },
+                // Labelled as the agent's work so the history reads "the agent
+                // wrote this", and so the coalescing window never folds a
+                // person's state into a build's.
+                actor: {
+                  actor: "agent",
+                  userId: userId ?? null,
+                  conversationId: ctx.conversationId ?? null,
+                },
+              });
+            } catch (error) {
+              const compileMessage = compileRefusalMessage(error);
+              if (compileMessage !== null && !drafting) {
+                await savePageDraft(
+                  turnScope,
+                  NEW_PAGE_DRAFT,
+                  definition.code.source,
+                );
+                return toolError(
+                  TOOL_ERROR_CODES.INVALID_ARGS,
+                  compileMessage,
+                  'No page was created, but the source you sent WAS KEPT for 15 minutes. Do not write it again: repeat { action: "create", name, edits } with one edit per named line — they apply to the kept source.',
+                );
+              }
+              throw error;
+            }
+            await clearPageDraft(turnScope, NEW_PAGE_DRAFT);
 
             const run = await dryRunPage({
               definition: created.page.definition,
@@ -538,7 +732,11 @@ export const createManagePageTool = () =>
               url: `/pages/${created.page.id}`,
               scope: scopeOf(created.page.userId),
               samples: run.samples,
+              ...(createEditFailures.length > 0
+                ? { editsNotApplied: createEditFailures }
+                : {}),
               warnings: distinctWarnings([
+                ...createEditFailures,
                 ...icon.warnings,
                 ...color.warnings,
                 ...created.warnings,
@@ -565,7 +763,33 @@ export const createManagePageTool = () =>
               teamId,
               requester,
             });
-            return agentPageView(page);
+            // A page's source can reach 240k chars. Persisting beats
+            // truncating: the agent anchors its edits on exact text, and a
+            // half-streamed SFC is text it cannot anchor on.
+            return await maybePersistLargeOutput(
+              agentPageView(page),
+              ctx.conversationId,
+              options.toolCallId,
+            );
+          }
+
+          case "delete": {
+            if (!input.pageId) {
+              return toolError(
+                TOOL_ERROR_CODES.INVALID_ARGS,
+                "delete needs a pageId.",
+                "Call { action: 'list' } to find it.",
+              );
+            }
+            // Read it first so the result names what went — a bare "deleted"
+            // leaves the agent unable to tell the user which page it removed.
+            const doomed = await getPage({
+              pageId: input.pageId,
+              teamId,
+              requester,
+            });
+            await deletePage({ pageId: input.pageId, teamId, requester });
+            return { pageId: doomed.id, name: doomed.name, deleted: true };
           }
 
           case "list": {
@@ -592,18 +816,73 @@ export const createManagePageTool = () =>
                 "Call { action: 'list' } to find it.",
               );
             }
+            // The other half of the authoring split. Removing `create` from the
+            // enum closes the front door; a `definition` on update is the back
+            // one — `{ code: { source } }` replaces the whole SFC, which is
+            // authoring a page under an edit's name. `edits` stay open: a
+            // targeted patch against the stored source is the cheap change the
+            // parent SHOULD make rather than paying for a delegate to retitle
+            // a card.
+            if (!config.authoring && input.definition) {
+              return toolError(
+                TOOL_ERROR_CODES.PAGE_REQUIRES_BUILDER,
+                "Rewriting a page's definition is `buildPage`'s work, not this tool's.",
+                "For a targeted change send `edits` instead — [{ oldString, newString }] against the stored source. For anything larger, call buildPage with this pageId and the full request in its task.",
+              );
+            }
             const existing = await getPage({
               pageId: input.pageId,
               teamId,
               requester,
             });
+            const storedSource = existing.definition.code.source;
+
+            // The builder's own door. The first cut of this guard refused
+            // EVERY whole-file `definition.code` without `rewrite: true` — and
+            // the measured result (2026-08-23) was the worst of both worlds:
+            // the refusal lands AFTER the model has already paid ~16k output
+            // tokens for the definition, and it re-emits the identical bytes
+            // with the flag added, so every page-scale write was billed twice
+            // and nothing got smaller. What the guard exists to stop is
+            // DESTRUCTION — the "targeted repair" that kept 370 of 1272 lines
+            // (2026-08-22) — so that is all it refuses now: a replacement
+            // dramatically shorter than what it replaces. Growth and mild
+            // shrink pass; keeping fixes cheap is the prompt's job, not a
+            // post-payment toll booth's.
+            if (
+              config.authoring &&
+              input.definition?.code &&
+              input.rewrite !== true &&
+              isDestructiveRewrite(storedSource, input.definition.code.source)
+            ) {
+              return toolError(
+                TOOL_ERROR_CODES.INVALID_ARGS,
+                `The sent code is ${input.definition.code.source.length.toString()} chars against ${storedSource.length.toString()} stored — replacing the page with a much smaller one destroys work nobody asked to lose.`,
+                "If the user asked for a different, smaller page, repeat with `rewrite: true`. Otherwise change only what needs changing, with `edits`.",
+              );
+            }
 
             let sections = input.definition;
-            if (!sections && input.edits) {
-              const edited = applyPageCodeEdits(
-                existing.definition.code.source,
-                input.edits,
-              );
+            let editFailures: string[] = [];
+            let draftConsumed = false;
+            // `edits` compose with the OTHER sections, and only `definition.code`
+            // displaces them. Declaring an operation and wiring the button that
+            // runs it is one change; making the tool take it as two calls is
+            // what pushed a whole-file `definition` back into the normal path.
+            if (input.edits && !input.definition?.code) {
+              const edits = input.edits;
+              // A refused write leaves its source behind (see the compile
+              // catch below); edits sent right after a refusal mean "fix MY
+              // version", so they anchor on the draft first and fall back to
+              // the stored source only when none of them match it.
+              const draft = await readPageDraft(turnScope, input.pageId);
+              const onDraft =
+                draft !== null ? applyPageCodeEdits(draft, edits) : null;
+              const edited =
+                onDraft?.ok === true
+                  ? onDraft
+                  : applyPageCodeEdits(storedSource, edits);
+              draftConsumed = onDraft?.ok === true;
               if (!edited.ok) {
                 return toolError(
                   TOOL_ERROR_CODES.INVALID_ARGS,
@@ -611,7 +890,15 @@ export const createManagePageTool = () =>
                   "Call { action: 'get' } to read the current source, then re-anchor the edit.",
                 );
               }
-              sections = { code: { source: edited.source } };
+              // What landed is kept; what missed is named. The alternative —
+              // refusing all of them over one drifted anchor — bills a whole
+              // re-emission for a write that was mostly right, which is the
+              // single most expensive shape an update takes.
+              editFailures = edited.failures.map((failure) => failure.error);
+              sections = {
+                ...(sections ?? {}),
+                code: { source: edited.source },
+              };
             }
 
             const definition = sections
@@ -628,31 +915,68 @@ export const createManagePageTool = () =>
 
             const icon = sanitizeIcon(input.icon ?? undefined);
             const color = sanitizeColor(input.color ?? undefined);
-            const updated = await updatePage({
-              pageId: input.pageId,
-              teamId,
-              actingUserId: userId ?? "",
-              requester,
-              input: {
-                ...(input.name !== undefined ? { name: input.name } : {}),
-                ...(input.description !== undefined
-                  ? { description: input.description }
+            let updated: Awaited<ReturnType<typeof updatePage>>;
+            try {
+              updated = await updatePage({
+                pageId: input.pageId,
+                teamId,
+                actingUserId: userId ?? "",
+                requester,
+                input: {
+                  ...(input.name !== undefined ? { name: input.name } : {}),
+                  ...(input.description !== undefined
+                    ? { description: input.description }
+                    : {}),
+                  ...(input.icon !== undefined
+                    ? { icon: icon.icon ?? null }
+                    : {}),
+                  ...(input.color !== undefined
+                    ? { color: color.color ?? null }
+                    : {}),
+                  ...(input.scope !== undefined
+                    ? {
+                        userId:
+                          input.scope === "private" ? (userId ?? null) : null,
+                      }
+                    : {}),
+                  ...(definition ? { definition } : {}),
+                },
+                // Fills the provenance of a page the hub created empty; never
+                // re-parents one that already names its conversation.
+                ...(ctx.conversationId
+                  ? { sourceConversationId: ctx.conversationId }
                   : {}),
-                ...(input.icon !== undefined
-                  ? { icon: icon.icon ?? null }
-                  : {}),
-                ...(input.color !== undefined
-                  ? { color: color.color ?? null }
-                  : {}),
-                ...(input.scope !== undefined
-                  ? {
-                      userId:
-                        input.scope === "private" ? (userId ?? null) : null,
-                    }
-                  : {}),
-                ...(definition ? { definition } : {}),
-              },
-            });
+                actor: {
+                  actor: "agent",
+                  userId: userId ?? null,
+                  conversationId: ctx.conversationId ?? null,
+                },
+              });
+            } catch (error) {
+              // A write refused on compile keeps what it carried: the resend
+              // of a 60k-char page is ~16k output tokens paid twice, and it
+              // was measured as roughly half the builder's answer tokens
+              // (2026-08-23). The next `edits` call anchors on this draft.
+              const compileMessage = compileRefusalMessage(error);
+              if (compileMessage !== null && sections?.code) {
+                await savePageDraft(
+                  turnScope,
+                  input.pageId,
+                  sections.code.source,
+                );
+                return toolError(
+                  TOOL_ERROR_CODES.INVALID_ARGS,
+                  compileMessage,
+                  "Nothing was saved, but the source you sent WAS KEPT for 15 minutes. Do not resend it: fix the named lines with update { edits } — they apply to the kept source, which then compiles and saves.",
+                );
+              }
+              throw error;
+            }
+            // The write landed, so the page IS the state the agent means —
+            // a draft left behind would hijack the next edits.
+            if (sections?.code || draftConsumed) {
+              await clearPageDraft(turnScope, input.pageId);
+            }
 
             const run = definition
               ? await dryRunPage({
@@ -668,7 +992,14 @@ export const createManagePageTool = () =>
               pageId: updated.page.id,
               url: `/pages/${updated.page.id}`,
               ...(definition ? { samples: run.samples } : {}),
+              // Its own field, ahead of `warnings`: those are advice and get
+              // truncated, this is the part of the change that is NOT in the
+              // page. Re-send only these — the rest is already stored.
+              ...(editFailures.length > 0
+                ? { editsNotApplied: editFailures }
+                : {}),
               warnings: distinctWarnings([
+                ...editFailures,
                 ...icon.warnings,
                 ...color.warnings,
                 ...updated.warnings,
@@ -708,6 +1039,41 @@ export const createManagePageTool = () =>
               );
             }
 
+            // Identical bytes get the verdict already paid for: re-scoring an
+            // unchanged page measures the critic's variance, not the page
+            // (the same source scored 6.8 then 7.8 two minutes apart,
+            // 2026-08-23). This is also what makes "ship" final — a shipped
+            // page cannot be re-reviewed into a revise without changing first.
+            const sourceHash = hashPageSource(page.definition.code.source);
+            const cachedVerdict = await readPageReviewVerdict(
+              turnScope,
+              page.id,
+            );
+            if (cachedVerdict && cachedVerdict.sourceHash === sourceHash) {
+              return {
+                ...cachedVerdict.result,
+                cached: true,
+                next: cachedVerdict.shipped
+                  ? "This exact version was already reviewed: the verdict stands — ship. Hand back the url; do not review again."
+                  : `This exact version was already reviewed (round ${cachedVerdict.round.toString()}) and the findings stand. Apply them with update { edits } — a review re-scores only after the page changes.`,
+              };
+            }
+
+            // The budget is shared by EVERYONE reviewing in this turn — the
+            // builder and the parent count against `turnScope`, which is what
+            // "three reviews" means. Checked BEFORE the render so a spent
+            // budget costs no browser, screenshots or critic.
+            const spent = await readPageReviewIterations(turnScope, page.id);
+            if (spent >= MAX_PAGE_REVIEW_ITERATIONS) {
+              return {
+                pageId: page.id,
+                url: `/pages/${page.id}`,
+                review: "refused",
+                iteration: `${spent.toString()}/${MAX_PAGE_REVIEW_ITERATIONS.toString()}`,
+                next: "The review budget is spent. Hand the page to the user, and state what you would do next in the words of the last `elevations` you received rather than a vague 'still perfectible' — that is something they can decide about.",
+              };
+            }
+
             const render = await renderPage({
               compiled,
               definition: page.definition,
@@ -723,82 +1089,186 @@ export const createManagePageTool = () =>
                 pageId: page.id,
                 review: "unavailable",
                 reason: render.degraded,
-                next: "Nobody can look at this page from here. Fall back to the self-critique in skills/building-pages/references/design.md, and tell the user it was not visually verified.",
+                // Sending the reader to design.md would be wrong for either
+                // caller: the builder already carries it verbatim, and the
+                // parent cannot act on it — it has no way to author a fix.
+                next: "Nobody can look at this page from here. Self-critique against the doctrine you already have, and say plainly that the page was not visually verified.",
               };
             }
 
             const gate = gatePageRender(render);
-            const iteration = await bumpPageReviewIteration(
-              ctx.conversationId,
-              page.id,
-            );
-            const overBudget = iteration > MAX_PAGE_REVIEW_ITERATIONS;
+            // A page that never mounted was not judged, so the attempt
+            // consumes no round: this is a crash-fix loop, not a review.
+            if (!render.mounted) {
+              return {
+                pageId: page.id,
+                url: `/pages/${page.id}`,
+                gate: "fail",
+                verdict: "unverified",
+                ...(gate.blocking.length > 0
+                  ? { blocking: gate.blocking }
+                  : {}),
+                next: "The page never mounted, so no review round was spent. Read its runtime errors with { action: 'get' }, fix the crash, and review again — nothing else about it can be judged until it renders.",
+              };
+            }
 
-            // The critique is skipped when there is nothing to look at, and
-            // past the budget — where its score has stopped moving and the
-            // gate is the only thing still worth measuring.
-            const critique =
-              render.mounted && !overBudget
-                ? await evaluatePageDesign({
-                    pageName: page.name,
-                    brief: page.definition.brief,
-                    shots: render.shots,
-                    known: gate.blocking,
-                  })
-                : null;
+            const critique = await evaluatePageDesign({
+              pageName: page.name,
+              brief: page.definition.brief,
+              shots: render.shots,
+              interactions: render.interactions,
+              known: gate.blocking,
+            });
+            // Same rule as the crash: a critic that failed (even after its
+            // own retries) judged nothing, so the round is not consumed — on
+            // 2026-08-23 a single upstream rate limit silently ate one of a
+            // build's three rounds.
+            if (!critique.ok) {
+              return {
+                pageId: page.id,
+                url: `/pages/${page.id}`,
+                gate: gate.pass ? "pass" : "fail",
+                verdict: "unverified",
+                ...(gate.blocking.length > 0
+                  ? { blocking: gate.blocking }
+                  : {}),
+                ...(gate.observations.length > 0
+                  ? { observed: gate.observations }
+                  : {}),
+                critiqueUnavailable: critique.reason,
+                next: "The critic was unavailable — this attempt did not consume a review round. Fix any `blocking` lines with update { edits }, then review again.",
+              };
+            }
+
+            const iteration = await bumpPageReviewIteration(turnScope, page.id);
 
             const verdict =
-              critique?.ok !== true
-                ? "unverified"
-                : gate.pass && critique.critique.score >= SHIP_SCORE
-                  ? "ship"
-                  : "revise";
+              gate.pass && critique.critique.score >= SHIP_SCORE
+                ? "ship"
+                : "revise";
 
-            const elevations =
-              critique?.ok === true ? critique.critique.elevations : [];
+            const elevations = critique.critique.elevations;
             const roundsLeft = MAX_PAGE_REVIEW_ITERATIONS - iteration;
 
-            const next = !render.mounted
-              ? "The page never mounted. Read its runtime errors with { action: 'get' }, fix the crash, and review again — nothing else about it can be judged until it renders."
-              : overBudget
-                ? "The review budget is spent. Hand the page to the user, and state what you would do next in the words of the last `elevations` you received rather than a vague 'still perfectible' — that is something they can decide about."
-                : !gate.pass
-                  ? "Fix every line of `blocking` first: those are measured, not opinions. Use update { edits } for each one, then review again."
-                  : verdict === "ship"
-                    ? // A passing verdict used to end the loop, which meant a
-                      // working page never spent its remaining budget on being
-                      // better than working. It ends the DEFECT loop; the
-                      // elevations are what the rest of the budget is for.
-                      elevations.length > 0 && roundsLeft > 0
-                      ? `Nothing blocks this page. You have ${roundsLeft.toString()} round(s) left — spend them on \`elevations\`, one update { edits } each, then review again. Stop when they come back empty.`
-                      : "Nothing blocks this page. Hand back its url, and pass on any `elevations` as what you would do next."
-                    : `Apply the findings with update { edits } — one edit per finding, not a rewrite — then review again (${(iteration + 1).toString()} of ${MAX_PAGE_REVIEW_ITERATIONS.toString()}).`;
+            /**
+             * Checkpoint what was just judged, so a round that scored well can
+             * be returned to. Refinement is not monotonic — revisions regress,
+             * and keeping only the last state discards the best one by
+             * construction.
+             */
+            const checkpoint = await writePageVersion(db, {
+              pageId: page.id,
+              teamId,
+              name: page.name,
+              operation: "review-round",
+              definition: page.definition,
+              actor: {
+                actor: "agent",
+                userId: userId ?? null,
+                conversationId: ctx.conversationId ?? null,
+              },
+              meta: { round: iteration, score: critique.critique.score },
+            });
+            await recordPageReviewRound(turnScope, page.id, {
+              round: iteration,
+              versionNumber: checkpoint.versionNumber,
+              score: critique.critique.score,
+              gatePass: gate.pass,
+            });
 
-            return {
+            // On the LAST round only: if an earlier round was clearly better
+            // and passed its gate, put the page back into it. "Clearly" is a
+            // margin, not a tie-break — the critic's own run-to-run variance
+            // is a few tenths, and swapping the page over noise would be its
+            // own kind of damage.
+            let restoredFrom: number | undefined;
+            const isLastRound = roundsLeft <= 0 || verdict === "ship";
+            if (isLastRound) {
+              const rounds = await listPageReviewRounds(turnScope, page.id);
+              const best = bestEarlierRound(rounds, {
+                round: iteration,
+                score: critique.critique.score,
+              });
+              if (best) {
+                await restorePageVersion({
+                  pageId: page.id,
+                  teamId,
+                  versionNumber: best.versionNumber,
+                  actingUserId: userId ?? "",
+                  requester,
+                  actor: {
+                    actor: "agent",
+                    userId: userId ?? null,
+                    conversationId: ctx.conversationId ?? null,
+                  },
+                });
+                restoredFrom = best.round;
+              }
+            }
+
+            const next =
+              restoredFrom !== undefined
+                ? // Said first and said plainly: the source on the server is no
+                  // longer the one this agent last wrote, so any edit anchored
+                  // on its own memory would miss — or, worse, match the wrong
+                  // place.
+                  `Round ${restoredFrom.toString()} scored higher than this one, so the page was RESTORED to that version. Its source is no longer what you last sent: call { action: "get" } before any further edit. Hand back the url and stop here.`
+                : !gate.pass
+                  ? roundsLeft <= 0
+                    ? "This was the last round. Apply what you can of `blocking` with update { edits }, then hand the page over naming what you did not get to — the review will not score another pass."
+                    : "Fix every line of `blocking` first: those are measured, not opinions. Use update { edits } for each one, then review again."
+                  : verdict === "ship"
+                    ? // Ship ends the loop, full stop. The polish round this
+                      // branch used to invite spent ~200s and a page-scale
+                      // write chasing tenths inside the critic's own variance
+                      // (measured ≥1.0 on identical bytes, 2026-08-23) — the
+                      // elevations are the user's decision now, not a round.
+                      "Nothing blocks this page: it ships as it stands. Hand back its url and pass on any `elevations` as what you would do next. Do NOT edit or review again — the verdict is final for this version."
+                    : roundsLeft <= 0
+                      ? // The last round still has findings. Inviting a
+                        // fourth review — which the next call refuses to
+                        // score — sends the builder to spend its remaining
+                        // steps on a door that is already shut.
+                        "This was the last round. Apply what you can with update { edits }, then hand the page over naming the findings you did not get to — the review will not score another pass."
+                      : `Apply the findings with update { edits } — one edit per finding, not a rewrite — then review again (${(iteration + 1).toString()} of ${MAX_PAGE_REVIEW_ITERATIONS.toString()}).`;
+
+            const result = {
               pageId: page.id,
               url: `/pages/${page.id}`,
               iteration: `${iteration.toString()}/${MAX_PAGE_REVIEW_ITERATIONS.toString()}`,
-              gate: gate.pass ? "pass" : "fail",
+              gate: gate.pass ? ("pass" as const) : ("fail" as const),
               verdict,
+              ...(restoredFrom !== undefined
+                ? { restoredFromRound: restoredFrom }
+                : {}),
               ...(gate.blocking.length > 0 ? { blocking: gate.blocking } : {}),
               ...(gate.observations.length > 0
                 ? { observed: gate.observations }
                 : {}),
-              ...(critique?.ok === true
-                ? {
-                    score: critique.critique.score,
-                    scores: critique.critique.scores,
-                    summary: critique.critique.summary,
-                    ...(critique.critique.findings.length > 0
-                      ? { findings: critique.critique.findings }
-                      : {}),
-                    ...(elevations.length > 0 ? { elevations } : {}),
-                  }
-                : critique?.ok === false
-                  ? { critiqueUnavailable: critique.reason }
-                  : {}),
-              next,
+              score: critique.critique.score,
+              scores: critique.critique.scores,
+              summary: critique.critique.summary,
+              ...(critique.critique.findings.length > 0
+                ? { findings: critique.critique.findings }
+                : {}),
+              ...(elevations.length > 0 ? { elevations } : {}),
             };
+
+            // Pin the verdict to the bytes it judged — after a restore those
+            // are the restored version's, so re-read rather than assume.
+            const judgedSource =
+              restoredFrom !== undefined
+                ? (await getPage({ pageId: page.id, teamId, requester }))
+                    .definition.code.source
+                : page.definition.code.source;
+            await recordPageReviewVerdict(turnScope, page.id, {
+              sourceHash: hashPageSource(judgedSource),
+              shipped: verdict === "ship" || restoredFrom !== undefined,
+              round: iteration,
+              result,
+            });
+
+            return { ...result, next };
           }
 
           case "publish": {

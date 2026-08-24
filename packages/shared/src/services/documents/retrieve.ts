@@ -5,6 +5,7 @@ import { documents, objectTypes, team } from "../../db/schema";
 import {
   buildDocumentOriginalKey,
   buildDocumentThumbnailKey,
+  hasStoredThumbnail,
 } from "../../lib/document-storage";
 import { notFound, throwHttpError } from "../../lib/errors";
 import { getPresignedUrl } from "../../lib/s3";
@@ -156,6 +157,7 @@ export const searchDocuments = async (
       fileSize: true,
       mimeType: true,
       status: true,
+      source: true,
       createdAt: true,
       updatedAt: true,
     },
@@ -197,7 +199,7 @@ export const searchDocuments = async (
 
   const thumbnailMap = new Map<string, string>();
   if (includeThumbnailUrl) {
-    const readyRows = pageRows.filter((r) => r.status === "ready");
+    const readyRows = pageRows.filter(hasStoredThumbnail);
     const urls = await Promise.all(
       readyRows.map((r) => getPresignedUrl(buildDocumentThumbnailKey(r.id))),
     );

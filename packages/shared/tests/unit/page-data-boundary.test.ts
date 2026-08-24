@@ -188,188 +188,6 @@ describe("runPageData — orchestration and degradation", () => {
     });
   });
 
-  test("a transform runs after the dataset it depends on, whatever the order", async () => {
-    const { datasets } = await runPageData({
-      definition: page(
-        [],
-        [
-          {
-            id: "total",
-            kind: "transform",
-            inputs: ["sales"],
-            code: "return { sum: data.sales.reduce((t, r) => t + r.amount, 0) };",
-          },
-          inline("sales", [{ amount: 10 }, { amount: 32 }]),
-        ],
-      ),
-      teamId: "team-1",
-      userId: null,
-      variables: {},
-    });
-    expect(datasets.total).toEqual({
-      status: "ok",
-      rows: [{ sum: 42 }],
-      truncated: false,
-    });
-  });
-
-  test("a transform reads page state, and only declared variables reach it", async () => {
-    const { datasets } = await runPageData({
-      definition: page(
-        [{ key: "floor", type: "number", initial: 0 }],
-        [
-          inline("sales", [{ amount: 10 }, { amount: 32 }]),
-          {
-            id: "kept",
-            kind: "transform",
-            inputs: ["sales"],
-            code: "return data.sales.filter(r => r.amount > state.floor);",
-          },
-        ],
-      ),
-      teamId: "team-1",
-      userId: null,
-      variables: { floor: 20, secret: "ignored" },
-    });
-    expect(datasets.kept).toEqual({
-      status: "ok",
-      rows: [{ amount: 32 }],
-      truncated: false,
-    });
-  });
-
-  test("mutually dependent datasets are reported, not looped over", async () => {
-    const { datasets } = await runPageData({
-      definition: page(
-        [],
-        [
-          { id: "a", kind: "transform", inputs: ["b"], code: "return data.b;" },
-          { id: "b", kind: "transform", inputs: ["a"], code: "return data.a;" },
-        ],
-      ),
-      teamId: "team-1",
-      userId: null,
-      variables: {},
-    });
-    // The message has to name the stuck datasets: an agent that only reads
-    // "there is a cycle" has to re-derive which ones from the definition.
-    expect(datasets.a?.status).toBe("error");
-    expect(datasets.b?.status).toBe("error");
-    const message =
-      datasets.a?.status === "error" ? datasets.a.message : undefined;
-    expect(message).toContain('"a"');
-    expect(message).toContain('"b"');
-    expect(message).toContain("cycle");
-  });
-
-  test("an input no dataset declares resolves to null rather than stalling the page", async () => {
-    // Deliberate: the executor does not stall on a dangling input, and the
-    // cycle branch never sees one. `sanitize` is what reports it, by name, at
-    // write time — this pins which layer owns the message.
-    const { datasets } = await runPageData({
-      definition: page(
-        [],
-        [
-          {
-            id: "derived",
-            kind: "transform",
-            inputs: ["nowhere"],
-            code: "return [{ seen: data.nowhere === null }];",
-          },
-        ],
-      ),
-      teamId: "team-1",
-      userId: null,
-      variables: {},
-    });
-    expect(datasets.derived).toEqual({
-      status: "ok",
-      rows: [{ seen: true }],
-      truncated: false,
-    });
-  });
-
-  test("one failing dataset costs its own block, not the page", async () => {
-    const { datasets } = await runPageData({
-      definition: page(
-        [],
-        [
-          inline("good", [{ ok: true }]),
-          { id: "bad", kind: "transform", code: "return (;" },
-        ],
-      ),
-      teamId: "team-1",
-      userId: null,
-      variables: {},
-    });
-    expect(datasets.good?.status).toBe("ok");
-    expect(datasets.bad?.status).toBe("error");
-  });
-
-  test("a targeted refetch withholds other outputs but still feeds dependents", async () => {
-    const { datasets } = await runPageData({
-      definition: page(
-        [],
-        [
-          inline("sales", [{ amount: 10 }]),
-          {
-            id: "total",
-            kind: "transform",
-            inputs: ["sales"],
-            code: "return { sum: data.sales.reduce((t, r) => t + r.amount, 0) };",
-          },
-        ],
-      ),
-      teamId: "team-1",
-      userId: null,
-      variables: {},
-      datasetIds: ["total"],
-    });
-    expect(Object.keys(datasets)).toEqual(["total"]);
-    expect(datasets.total).toEqual({
-      status: "ok",
-      rows: [{ sum: 10 }],
-      truncated: false,
-    });
-  });
-
-  test("a targeted refetch runs the inputs it needs and NOTHING else", async () => {
-    // The regression this pins: `datasetIds` used to filter the OUTPUT while
-    // still executing every dataset, so re-sorting one table re-ran every query
-    // on the page. The closure is what makes it targeted.
-    listCalls.length = 0;
-    listResult = { count: 0, data: [] };
-    fieldDefinitions = [];
-    const { datasets } = await runPageData({
-      definition: page(
-        [],
-        [
-          inline("sales", [{ amount: 10 }]),
-          {
-            id: "total",
-            kind: "transform",
-            inputs: ["sales"],
-            code: "return { sum: data.sales.reduce((t, r) => t + r.amount, 0) };",
-          },
-          { id: "untouched", kind: "objects", objectTypeId: "type-1" },
-        ],
-      ),
-      teamId: "team-1",
-      userId: null,
-      variables: {},
-      datasetIds: ["total"],
-    });
-    expect(Object.keys(datasets)).toEqual(["total"]);
-    // `sales` still ran — a transform is worthless without its inputs.
-    expect(datasets.total).toEqual({
-      status: "ok",
-      rows: [{ sum: 10 }],
-      truncated: false,
-    });
-    // `untouched` did not: no query left for a dataset nobody asked for.
-    expect(listCalls).toHaveLength(0);
-  });
-
   test("independent datasets run together, not one after the other", async () => {
     // A dashboard's widgets are independent by construction, so running them in
     // series made its latency the SUM of its queries. Overlap is the proof:
@@ -419,32 +237,6 @@ describe("runPageData — orchestration and degradation", () => {
       },
     }));
   });
-
-  test("a transform that forgets to return fails by name, not by silence", async () => {
-    // The single most likely mistake in a body-of-a-function contract. An empty
-    // dataset would read exactly like "the query found nothing".
-    const { datasets } = await runPageData({
-      definition: page(
-        [],
-        [
-          inline("sales", [{ amount: 10 }]),
-          {
-            id: "js",
-            kind: "transform",
-            inputs: ["sales"],
-            code: "data.sales.map(r => r.amount)",
-          },
-        ],
-      ),
-      teamId: "team-1",
-      userId: null,
-      variables: {},
-    });
-    expect(datasets.js?.status).toBe("error");
-    expect(
-      datasets.js?.status === "error" ? datasets.js.message : "",
-    ).toContain("returned nothing JSON can carry");
-  });
 });
 
 describe("objectsSource — the stored definition owns the query", () => {
@@ -458,7 +250,7 @@ describe("objectsSource — the stored definition owns the query", () => {
         objectTypeId: "type-1",
         filters: [{ key: "status", op: "eq", value: { var: "status" } }],
       },
-      { teamId: "team-1", userId: null, state: { status: "won" }, data: {} },
+      { teamId: "team-1", userId: null, state: { status: "won" } },
     );
     expect(listCalls[0]?.filters).toEqual([
       { key: "status", op: "eq", value: "won" },
@@ -475,7 +267,7 @@ describe("objectsSource — the stored definition owns the query", () => {
         objectTypeId: "type-1",
         filters: [{ key: "status", op: "eq", value: { var: "status" } }],
       },
-      { teamId: "team-1", userId: null, state: { status: "" }, data: {} },
+      { teamId: "team-1", userId: null, state: { status: "" } },
     );
     expect(listCalls[0]?.filters).toEqual([]);
   });
@@ -490,7 +282,7 @@ describe("objectsSource — the stored definition owns the query", () => {
         objectTypeId: "type-1",
         limit: 999_999,
       },
-      { teamId: "team-1", userId: null, state: {}, data: {} },
+      { teamId: "team-1", userId: null, state: {} },
     );
     expect(listCalls[0]?.limit).toBe(PAGE_LIMITS.maxRows);
   });
@@ -498,16 +290,106 @@ describe("objectsSource — the stored definition owns the query", () => {
   test("an object type the team cannot see degrades to forbidden", async () => {
     const result = await objectsSource.resolve(
       { id: "records", kind: "objects", objectTypeId: "type-unknown" },
-      { teamId: "team-1", userId: null, state: {}, data: {} },
+      { teamId: "team-1", userId: null, state: {} },
     );
     expect(result.status).toBe("forbidden");
+  });
+
+  test("one failing dataset costs its own block, not the page", async () => {
+    // Degradation is per WIDGET. A source that throws must come back as its own
+    // error result so the rest of the page still renders — the alternative is
+    // one bad query blanking a screen someone opens every morning.
+    listResult = { count: 0, data: [] };
+    fieldDefinitions = [];
+    void mock.module("../../src/services/object-records/retrieve", () => ({
+      listObjectRecords: () => {
+        throw new Error("boom");
+      },
+    }));
+    const { runPageData: runFresh } =
+      await import("../../src/services/pages/run-page-data");
+    const { datasets } = await runFresh({
+      definition: page(
+        [],
+        [
+          inline("sales", [{ amount: 10 }]),
+          { id: "broken", kind: "objects", objectTypeId: "type-1" },
+        ],
+      ),
+      teamId: "team-1",
+      userId: null,
+      variables: {},
+    });
+    expect(datasets.broken?.status).toBe("error");
+    expect(datasets.sales?.status).toBe("ok");
+
+    void mock.module("../../src/services/object-records/retrieve", () => ({
+      listObjectRecords: (params: Record<string, unknown>) => {
+        listCalls.push(params);
+        return Promise.resolve(listResult);
+      },
+    }));
+  });
+
+  test("a targeted refetch runs exactly what was asked for and nothing else", async () => {
+    // The regression this pins: `datasetIds` used to filter the OUTPUT while
+    // still executing every dataset, so re-sorting one table re-ran every query
+    // on the page. Since `transform` was retired no dataset reads another, so
+    // "exactly its own set" is now the whole rule — there is no closure left.
+    listCalls.length = 0;
+    listResult = { count: 0, data: [] };
+    fieldDefinitions = [];
+    const { datasets } = await runPageData({
+      definition: page(
+        [],
+        [
+          inline("sales", [{ amount: 10 }]),
+          { id: "untouched", kind: "objects", objectTypeId: "type-1" },
+        ],
+      ),
+      teamId: "team-1",
+      userId: null,
+      variables: {},
+      datasetIds: ["sales"],
+    });
+    expect(Object.keys(datasets)).toEqual(["sales"]);
+    expect(listCalls).toHaveLength(0);
+  });
+
+  test("a dataset whose rows outgrow the byte ceiling is truncated, not refused", async () => {
+    // Every other bound counts ROWS, and a row has no size — a legal row count
+    // over a type with a long text field serializes to megabytes. The retired
+    // transform sandbox capped its own output at 1 MB and was the only thing in
+    // the path measuring bytes at all.
+    const big = "x".repeat(20_000);
+    const { datasets } = await runPageData({
+      definition: page(
+        [],
+        [
+          inline(
+            "heavy",
+            Array.from({ length: 200 }, (_, i) => ({ id: i, body: big })),
+          ),
+        ],
+      ),
+      teamId: "team-1",
+      userId: null,
+      variables: {},
+    });
+    expect(datasets.heavy?.status).toBe("ok");
+    if (datasets.heavy?.status !== "ok") return;
+    expect(datasets.heavy.truncated).toBe(true);
+    expect(datasets.heavy.rows.length).toBeLessThan(200);
+    expect(JSON.stringify(datasets.heavy.rows).length).toBeLessThanOrEqual(
+      PAGE_LIMITS.maxDatasetResponseBytes,
+    );
   });
 
   test("truncation is reported when the query had more rows than it returned", async () => {
     listResult = { count: 500, data: [{ id: "r1", label: "R1", data: {} }] };
     const result = await objectsSource.resolve(
       { id: "records", kind: "objects", objectTypeId: "type-1" },
-      { teamId: "team-1", userId: null, state: {}, data: {} },
+      { teamId: "team-1", userId: null, state: {} },
     );
     expect(result.status === "ok" && result.truncated).toBe(true);
   });
@@ -541,7 +423,6 @@ describe("objectsSource — the window and ordering a viewer may ask for", () =>
       teamId: "team-1",
       userId: null,
       state: {},
-      data: {},
       query: { page: 4, pageSize: 50 },
     });
     // The service is 0-based; the wire is 1-based, because that is what a
@@ -561,7 +442,6 @@ describe("objectsSource — the window and ordering a viewer may ask for", () =>
       teamId: "team-1",
       userId: null,
       state: {},
-      data: {},
       query: { page: 1000, pageSize: 200 },
     });
     // `page × pageSize` is what Postgres skips row by row, so the product is
@@ -583,7 +463,6 @@ describe("objectsSource — the window and ordering a viewer may ask for", () =>
         teamId: "team-1",
         userId: null,
         state: {},
-        data: {},
         query: { sortBy: "montant", sortDir: "asc" },
       },
     );
@@ -602,7 +481,6 @@ describe("objectsSource — the window and ordering a viewer may ask for", () =>
         teamId: "team-1",
         userId: null,
         state: {},
-        data: {},
         query: { sortBy: key },
       });
       expect(listCalls[0]?.sortBy).toBe(key);
@@ -617,7 +495,6 @@ describe("objectsSource — the window and ordering a viewer may ask for", () =>
       teamId: "team-1",
       userId: null,
       state: {},
-      data: {},
       query: { sortBy: "montant; DROP TABLE object_records" },
     });
     // Dropping it is what keeps a runtime sort safe to accept from a browser:
@@ -635,7 +512,6 @@ describe("objectsSource — the window and ordering a viewer may ask for", () =>
       teamId: "team-1",
       userId: null,
       state: {},
-      data: {},
       query: { sortBy: "client" },
     });
     expect(listCalls[0]?.sortBy).toBeUndefined();
@@ -657,7 +533,6 @@ describe("objectsSource — the window and ordering a viewer may ask for", () =>
         teamId: "team-1",
         userId: null,
         state: {},
-        data: {},
         query: { page: 2, sortBy: "montant" },
       },
     );
@@ -666,7 +541,7 @@ describe("objectsSource — the window and ordering a viewer may ask for", () =>
     ]);
   });
 
-  test("an aggregate ignores the window — its grouping IS the query", async () => {
+  test("an aggregate has no offset to walk, so `page` means nothing to it", async () => {
     aggregateCalls.length = 0;
     fieldDefinitions = sortableFields;
     const result = await objectsSource.resolve(
@@ -675,12 +550,64 @@ describe("objectsSource — the window and ordering a viewer may ask for", () =>
         teamId: "team-1",
         userId: null,
         state: {},
-        data: {},
-        query: { page: 7, pageSize: 200 },
+        query: { page: 7 },
       },
     );
     expect(aggregateCalls[0]?.limit).toBe(25);
     expect(result.status === "ok" && result.page).toBeUndefined();
+  });
+
+  test("`pageSize` on an aggregate is how many GROUPS — top 10 becomes top 20", async () => {
+    // Narrowed on 2026-08-21 from "an aggregate ignores the window": `page`
+    // still means nothing, but the group COUNT is the one thing a viewer may
+    // legitimately want to change at runtime and had no other way to say.
+    // `limit` is not variable-bindable, so without this a chart is stuck at
+    // whatever its author guessed.
+    aggregateCalls.length = 0;
+    fieldDefinitions = sortableFields;
+    await objectsSource.resolve(
+      { ...dataset, mode: "aggregate", groupBy: "montant" },
+      {
+        teamId: "team-1",
+        userId: null,
+        state: {},
+        query: { pageSize: 60 },
+      },
+    );
+    expect(aggregateCalls[0]?.limit).toBe(60);
+  });
+
+  test("an aggregate sorts by a metric NAME, and refuses one it never declared", async () => {
+    // `resolveSortKey` validates against the type's fields and would reject
+    // every one of an aggregate's own columns, which is why the branch used to
+    // drop `query` whole. An unknown name still falls back to the author's
+    // order rather than reaching an ORDER BY.
+    aggregateCalls.length = 0;
+    fieldDefinitions = sortableFields;
+    const aggregate = {
+      ...dataset,
+      mode: "aggregate" as const,
+      groupBy: "montant",
+      sortBy: "group",
+      metrics: [{ name: "total", fn: "sum" as const, key: "montant" }],
+    };
+    await objectsSource.resolve(aggregate, {
+      teamId: "team-1",
+      userId: null,
+      state: {},
+      query: { sortBy: "total", sortDir: "asc" },
+    });
+    expect(aggregateCalls[0]?.sortBy).toBe("total");
+    expect(aggregateCalls[0]?.sortDir).toBe("asc");
+
+    aggregateCalls.length = 0;
+    await objectsSource.resolve(aggregate, {
+      teamId: "team-1",
+      userId: null,
+      state: {},
+      query: { sortBy: "montant" },
+    });
+    expect(aggregateCalls[0]?.sortBy).toBe("group");
   });
 });
 

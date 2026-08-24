@@ -12,5 +12,5 @@ export { deleteKeysByPrefix, redis } from "./lib/redis";
 export * from "./lib/s3";
 
 // Utilities
-export * from "./utils/mimeTypes";
+export * from "./file-types";
 export { normalizeEntityName } from "./utils/normalizeEntityName";

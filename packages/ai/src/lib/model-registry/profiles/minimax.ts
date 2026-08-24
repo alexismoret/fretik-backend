@@ -86,21 +86,36 @@ export const MINIMAX_PROFILES: Record<string, ModelProfile> = {
         // never reached the cap on the probe prompt — inconclusive).
         replayInHistory: false,
       },
-      // `order: ["Novita"]` — Novita SPLITS the `</think>` boundary while
-      // streaming (opening chunk of the answer lands on the `reasoning`
-      // channel, `content` resumes mid-word at `\n\n` + the remainder), but
-      // it is the only ZDR upstream that is both fast and reliably up:
-      // DeepInfra is slow enough that streams cut mid-response, and
-      // Parasail/AtlasCloud were unstable. The leak is contained downstream —
-      // `stripOrphanThinkTags` (`../resolve.ts`) strips the dangling tag from
-      // both streamed deltas and persisted history — so the corrupted-text
-      // failure mode from 2026-07-26 (prod 9/50 turns) no longer reaches the
-      // user or gets written to history; only latency/availability trade off
-      // here, not correctness.
+      // A POOL, not a pin — the same shape `deepseek-v4-flash` carries, and
+      // for the reason that profile spells out: `order` is consulted BEFORE
+      // `sort` and silently disables it, so `order: ["Novita"]` was not "prefer
+      // Novita", it was "Novita or nothing". That pin is why M3 turns are slow.
+      // Novita is the upstream that ignores `reasoning.max_tokens` outright
+      // (see the budget above, which it could never honour) and that SPLITS the
+      // `</think>` boundary mid-stream; the split is contained downstream by
+      // `stripOrphanThinkTags` (`../resolve.ts`), so it costs latency rather
+      // than correctness — but a pin means paying that latency every turn with
+      // no way for a faster member to win.
+      //
+      // CoreWeave leads the pool on price and decode. It is admitted on
+      // OpenRouter's live figures and on its behaviour under
+      // `deepseek-v4-flash`, where it serves 3/3 intact — NOT on a local
+      // `models:bench` of THIS model, which has not been run. Two consequences,
+      // stated rather than implied: the ordering is `sort`'s to decide from
+      // live p50, not ours, and this block is due a bench before anyone quotes
+      // it as measured. `bun run models:bench` is the instrument, and its
+      // `intact` column is the admission criterion that matters most on a
+      // family with a known boundary bug.
+      //
+      // Novita and DeepInfra stay as members. Under the pool doctrine a member
+      // the sort never promotes costs nothing, and they are the two upstreams
+      // known to be reachable on ZDR — dropping them to make a point about
+      // CoreWeave would trade a slow turn for an empty pool.
       provider: {
         requireParameters: true,
         zdr: true,
-        order: ["Novita"],
+        sort: "throughput",
+        only: ["CoreWeave", "Novita", "DeepInfra"],
       },
       enabled: true,
       // Promoted via the C3 gate, 2026-06-12. All capabilities at or

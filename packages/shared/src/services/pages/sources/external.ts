@@ -1,4 +1,8 @@
-import { isPageVarRef, type PageValue } from "../../../schemas/pages";
+import {
+  isPageVarRef,
+  type PageFieldDescriptor,
+  type PageValue,
+} from "../../../schemas/pages";
 import type { PageDataSource } from "./types";
 import { toPageValue } from "./values";
 
@@ -143,6 +147,87 @@ export const resolveExternalArgs = (
   return { ok: true, args: resolved };
 };
 
+/** Rows sampled to infer the shape. Enough to see a key that is null in the
+ *  first row, cheap enough to run on every read. */
+const INFER_SAMPLE_ROWS = 20;
+/** A third party with more columns than this is not a page's data source. */
+const INFER_MAX_FIELDS = 40;
+
+const ISO_DATETIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/;
+const CALENDAR_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+/** `givenName` / `given_name` / `given-name` → `Given name`. */
+const humanise = (key: string): string => {
+  const words = key
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[_-]+/g, " ")
+    .trim()
+    .toLowerCase();
+  return words.length === 0
+    ? key
+    : words.charAt(0).toUpperCase() + words.slice(1);
+};
+
+/**
+ * The display dictionary an external dataset never shipped.
+ *
+ * An `objects` dataset comes back with `fields`, and that one descriptor is
+ * what makes a column render as a labelled, formatted value instead of a raw
+ * key. External datasets shipped rows and nothing else, so every page over a
+ * connected app had to invent its own headers — which is why they show the
+ * provider's own key (`givenName`, `dateTimeCreated`) to a person.
+ *
+ * Inference is deliberately timid. The LABEL is the gap this closes and it is
+ * always safe; the TYPE is only claimed when every value observed for a key
+ * agrees, and anything mixed, nested or empty comes back `unknown` rather than
+ * as a guess. A wrong `type` is worse than none: it sends a page through a
+ * formatter the value cannot survive.
+ */
+export const inferExternalFields = (
+  rows: readonly PageValue[],
+): PageFieldDescriptor[] => {
+  const seen = new Map<string, Set<string>>();
+  for (const row of rows.slice(0, INFER_SAMPLE_ROWS)) {
+    if (typeof row !== "object" || row === null || Array.isArray(row)) continue;
+    for (const [key, value] of Object.entries(row)) {
+      if (!seen.has(key) && seen.size >= INFER_MAX_FIELDS) continue;
+      const kinds = seen.get(key) ?? new Set<string>();
+      seen.set(key, kinds);
+      // A null says nothing about the type and must not make it `unknown` —
+      // a column that is empty in row one and a number in row two is a number.
+      if (value === null || value === undefined) continue;
+      if (typeof value === "number") kinds.add("number");
+      else if (typeof value === "boolean") kinds.add("boolean");
+      else if (typeof value === "string")
+        kinds.add(
+          ISO_DATETIME.test(value)
+            ? "datetime"
+            : CALENDAR_DATE.test(value)
+              ? "date"
+              : "text",
+        );
+      else kinds.add("unknown");
+    }
+  }
+
+  const fields: PageFieldDescriptor[] = [];
+  for (const [key, kinds] of seen) {
+    const [only] = [...kinds];
+    const inferred = kinds.size === 1 && only !== undefined ? only : "unknown";
+    fields.push({
+      key,
+      label: humanise(key),
+      type: inferred === "datetime" ? "date" : inferred,
+      // Nothing here is stored, so nothing can be written back or ordered by
+      // the server — a third party's answer is a snapshot, not a table.
+      sortable: false,
+      writable: false,
+      ...(inferred === "datetime" ? { hasTime: true } : {}),
+    });
+  }
+  return fields;
+};
+
 export const externalSource: PageDataSource = {
   kind: "external",
   resolve: async (dataset, { teamId, userId, state, fresh }) => {
@@ -178,7 +263,13 @@ export const externalSource: PageDataSource = {
       ...(fresh !== undefined ? { fresh } : {}),
     });
     if (result.status === "ok") {
-      return { status: "ok", rows: result.rows, truncated: result.truncated };
+      const fields = inferExternalFields(result.rows);
+      return {
+        status: "ok",
+        rows: result.rows,
+        truncated: result.truncated,
+        ...(fields.length > 0 ? { fields } : {}),
+      };
     }
     if (result.status === "needs_connection") {
       return {

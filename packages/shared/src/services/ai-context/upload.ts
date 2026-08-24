@@ -8,18 +8,15 @@ import {
   type AiContextFile,
   type AiContextProfile,
 } from "../../db/schema/ai-context";
+import { shouldWriteSidecar } from "../../file-types";
+import { resolveFileType } from "../../file-types/detect";
 import { uploadContextSidecar } from "../../lib/ai-context-storage";
 import {
   fileTooLarge,
   throwHttpError,
   unsupportedMediaType,
 } from "../../lib/errors";
-import {
-  FileParsingError,
-  SUPPORTED_PARSING_MIMES,
-} from "../../lib/file-parsing";
 import { getPresignedUrl, putObject } from "../../lib/s3";
-import { detectMimeFromBytes } from "../../utils/mimeTypes";
 import { getOrCreateExtraction } from "../file-extraction/extract";
 import { findContextProfile, type ScopeKey } from "./retrieve";
 import { triggerContextVectorRefresh } from "./vector-refresh";
@@ -44,10 +41,7 @@ export const CHATBOT_CONTEXT_MAX_FILE_SIZE = 30 * 1024 * 1024;
 const s3KeyFor = (profileId: string, fileId: string, ext: string): string =>
   `ai-context/${profileId}/${fileId}${ext}`;
 
-const validate = (file: File): void => {
-  if (!SUPPORTED_PARSING_MIMES.includes(file.type)) {
-    throwHttpError(415, unsupportedMediaType(file.type));
-  }
+const assertSize = (file: File): void => {
   if (file.size > CHATBOT_CONTEXT_MAX_FILE_SIZE) {
     throwHttpError(
       413,
@@ -93,49 +87,6 @@ export const findOrCreateContextProfile = async (
     });
   }
   return created;
-};
-
-/**
- * Decide whether to write a `.md` sidecar to S3 alongside the
- * original. Mirrors the chat-files preprocessor heuristic
- * (`@fretik/ai/services/chat-files/preprocess.ts`):
- *  - PDF / DOCX / PPTX (and legacy DOC / PPT) → always (OCR markdown
- *    is the only practical way for the agent to read the contents).
- *  - Spreadsheet (XLSX / XLS / CSV) → always (one markdown table per
- *    sheet — much easier than re-parsing binary bytes).
- *  - Image (PNG / JPEG / WEBP) → only when the OCR yielded enough
- *    text to be useful (≥ 20 non-whitespace chars). A logo or a
- *    selfie keeps the original and the agent reaches for `vision`.
- *  - Text / Markdown / JSON → never (the original is already a
- *    valid input for `read`; a sidecar would be redundant).
- */
-export const shouldWriteSidecar = (
-  mimeType: string,
-  markdown: string,
-): boolean => {
-  if (
-    mimeType === "application/pdf" ||
-    mimeType ===
-      "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
-    mimeType ===
-      "application/vnd.openxmlformats-officedocument.presentationml.presentation" ||
-    mimeType === "application/msword" ||
-    mimeType === "application/vnd.ms-powerpoint"
-  ) {
-    return true;
-  }
-  if (
-    mimeType ===
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" ||
-    mimeType === "application/vnd.ms-excel" ||
-    mimeType === "text/csv"
-  ) {
-    return true;
-  }
-  if (mimeType.startsWith("image/")) {
-    return markdown.replace(/\s+/g, "").length >= 20;
-  }
-  return false;
 };
 
 /**
@@ -206,14 +157,7 @@ const runExtractionForFile = async (args: {
     // swallows errors internally.
     void triggerContextVectorRefresh(args.fileId);
   } catch (error) {
-    let message: string;
-    if (error instanceof FileParsingError) {
-      message = `${error.code}: ${error.message}`;
-    } else if (error instanceof Error) {
-      message = error.message;
-    } else {
-      message = String(error);
-    }
+    const message = error instanceof Error ? error.message : String(error);
     console.error(
       `[ai-context] parsing failed for file ${args.fileId} (${args.filename}):`,
       message,
@@ -241,16 +185,25 @@ export interface UploadContextFileArgs {
 export const uploadContextFile = async (
   args: UploadContextFileArgs,
 ): Promise<AiContextFile> => {
-  validate(args.file);
+  assertSize(args.file);
 
   const profile = await findOrCreateContextProfile(args.scope);
 
   const arrayBuffer = await args.file.arrayBuffer();
   const bytes = new Uint8Array(arrayBuffer);
   const fileHash = Bun.SHA256.hash(arrayBuffer, "hex");
-  // Resolve the REAL MIME from magic bytes (never trust the extension /
-  // browser type) so routing + cross-surface dedup stay consistent.
-  const mimeType = await detectMimeFromBytes(bytes, args.file.type);
+  // Resolve the REAL type from the bytes, then accept or reject on THAT.
+  // Validating the browser-declared type and storing the detected one
+  // would let a file in under one identity and file it under another.
+  const resolved = await resolveFileType({
+    bytes,
+    declaredMime: args.file.type,
+    filename: args.file.name,
+  });
+  if (!resolved.type?.surfaces.includes("context")) {
+    throwHttpError(415, unsupportedMediaType(resolved.mimeType));
+  }
+  const mimeType = resolved.mimeType;
 
   const fileId = randomUUIDv7();
   const ext = extname(args.file.name).toLowerCase();

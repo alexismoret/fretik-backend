@@ -1,5 +1,6 @@
 import db from "@fretik/shared/db";
 import { aiContextFiles } from "@fretik/shared/db/schema";
+import { shouldWriteSidecar } from "@fretik/shared/file-types";
 import {
   buildContextOriginalKey,
   readContextOriginal,
@@ -7,7 +8,6 @@ import {
   uploadContextSidecar,
 } from "@fretik/shared/lib/ai-context-storage";
 import { sanitizeSessionPath } from "@fretik/shared/lib/chatbot-session-storage";
-import { shouldWriteSidecar } from "@fretik/shared/services/ai-context/upload";
 import type { SandboxLease } from "@fretik/shared/services/e2b/types";
 import { eq } from "drizzle-orm";
 import { extname } from "node:path";

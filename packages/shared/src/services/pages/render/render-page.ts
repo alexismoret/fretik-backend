@@ -8,6 +8,7 @@ import { assetContentType, readRuntimeAsset } from "./assets";
 import { buildHarnessHtml } from "./harness";
 import { buildPageSrcdoc } from "./srcdoc";
 import type {
+  PageRenderDrag,
   PageRenderInteraction,
   PageRenderLayout,
   PageRenderResult,
@@ -65,6 +66,7 @@ interface ProbeStat {
   textLength: number;
   horizontalOverflow: boolean;
   clipped: number;
+  draggables: number;
 }
 
 /** The probe answers over postMessage, so its payload is untyped JSON on
@@ -83,7 +85,52 @@ const asProbeStat = (value: unknown): ProbeStat | null => {
       typeof record["textLength"] === "number" ? record["textLength"] : 0,
     horizontalOverflow: record["horizontalOverflow"] === true,
     clipped: typeof record["clipped"] === "number" ? record["clipped"] : 0,
+    draggables:
+      typeof record["draggables"] === "number" ? record["draggables"] : 0,
   };
+};
+
+const asDrag = (
+  value: unknown,
+  draggablesAtMount: number,
+): PageRenderDrag | null => {
+  const record = asRecord(value);
+  if (!record) return null;
+  return {
+    draggablesAtMount,
+    draggablesBeforeDrag:
+      typeof record["draggables"] === "number" ? record["draggables"] : 0,
+    dragoverAccepted: record["dragoverAccepted"] === true,
+    dropHandled: record["dropHandled"] === true,
+    domChanged: record["domChanged"] === true,
+    draggablesAfterDrop:
+      typeof record["draggablesAfter"] === "number"
+        ? record["draggablesAfter"]
+        : 0,
+  };
+};
+
+/** Matches the probe's own cap; enforced again on this side of the frame. */
+const OVERLAY_SNAPSHOT_LIMIT = 1400;
+
+/**
+ * Screens of content past which a top and a bottom no longer cover the page.
+ * At 2.5 the unseen band is at most about a screen and a half; below it, a
+ * midpoint capture would mostly repeat one of the two it sits between.
+ */
+const TALL_PAGE_RATIO = 2.5;
+
+const asGeometry = (
+  value: unknown,
+): { scrollHeight: number; viewport: number } | null => {
+  const record = asRecord(value);
+  if (!record) return null;
+  const scrollHeight = record["scrollHeight"];
+  const viewport = record["viewport"];
+  if (typeof scrollHeight !== "number" || typeof viewport !== "number") {
+    return null;
+  }
+  return { scrollHeight, viewport };
 };
 
 const asInteractions = (value: unknown): PageRenderInteraction[] => {
@@ -110,10 +157,40 @@ const asInteractions = (value: unknown): PageRenderInteraction[] => {
         typeof record["overlayContentCount"] === "number"
           ? record["overlayContentCount"]
           : 0,
+      // Re-capped on this side too. The probe bounds it, but the probe runs in
+      // the page's own frame: everything crossing that boundary is treated as
+      // something the page could have written, and an unbounded string here
+      // would land straight in a model's context.
+      ...(typeof record["overlaySnapshot"] === "string" &&
+      record["overlaySnapshot"].length > 0
+        ? {
+            overlaySnapshot: record["overlaySnapshot"].slice(
+              0,
+              OVERLAY_SNAPSHOT_LIMIT,
+            ),
+          }
+        : {}),
     });
   }
   return out;
 };
+
+/** One step of the stepped click pass, or null once the pass is exhausted. */
+const asInteractionStep = (value: unknown): PageRenderInteraction | null => {
+  const record = asRecord(value);
+  if (!record || record["done"] === true) return null;
+  return asInteractions([value])[0] ?? null;
+};
+
+/**
+ * How many overlays a review is worth capturing.
+ *
+ * Each one is a full image in the critic's context, and pages repeat their
+ * panels — five rows opening the same slideover teach nothing after the first.
+ * Matched to the probe's own snapshot cap so the text tree and the picture
+ * cover the same overlays.
+ */
+const MAX_OVERLAY_SHOTS = 4;
 
 /** Same datasets, no rows — the empty state, without waiting for a quiet day. */
 const emptyFixtures = (
@@ -159,6 +236,7 @@ export const renderPage = async (params: {
     layout: {},
     consoleErrors: [],
     pageErrors: [],
+    opsRuns: [],
   };
 
   const runtimeReady =
@@ -221,6 +299,7 @@ export const renderPage = async (params: {
         pageName: params.pageName,
         dark: params.dark ?? false,
         locale: params.locale ?? "en",
+        accent: params.definition.theme?.accent ?? null,
       });
       return new Response(html, {
         headers: { "content-type": "text/html; charset=utf-8" },
@@ -246,9 +325,9 @@ export const renderPage = async (params: {
           SETTLE_TIMEOUT_MS,
         )) === true;
 
-      const probe = async (cmd: string): Promise<unknown> => {
+      const probe = async (cmd: string, arg?: number): Promise<unknown> => {
         const id = await view.evaluate<number>(
-          `window.__probe(${JSON.stringify(cmd)})`,
+          `window.__probe(${JSON.stringify(cmd)}, ${arg === undefined ? "undefined" : arg.toString()})`,
         );
         const raw = await waitFor(
           () =>
@@ -281,7 +360,8 @@ export const renderPage = async (params: {
       await view.navigate(origin);
       const settled = await settle();
 
-      const mounted = asProbeStat(await probe("stat"))?.mounted === true;
+      const mountStat = asProbeStat(await probe("stat"));
+      const mounted = mountStat?.mounted === true;
       await capture(DESKTOP);
 
       // The half nobody was looking at. A capture is the VIEWPORT, so a page
@@ -289,18 +369,34 @@ export const renderPage = async (params: {
       // the region that grows without bound is precisely the one that looks
       // fine at the top. Skipped when the page fits: a second identical
       // capture would cost image tokens and teach the critic nothing.
+      //
+      // Past `TALL_PAGE_RATIO` screens, top-and-bottom stops covering it: a
+      // page of five sections has three nobody has ever looked at, and that is
+      // exactly the shape a large multi-view page takes. One more capture at
+      // the midpoint bounds the blind region at roughly a screen and a half,
+      // whatever the page's height.
+      const geometry = asGeometry(await probe("geometry"));
+      const tall =
+        geometry !== null &&
+        geometry.viewport > 0 &&
+        geometry.scrollHeight > geometry.viewport * TALL_PAGE_RATIO;
+      if (tall) {
+        await probe("scrollTo", 0.5);
+        await Bun.sleep(REFLOW_MS);
+        await capture({ ...DESKTOP, label: "desktop-mid" });
+      }
       const scrolled = await probe("scrollEnd");
       if (
         typeof scrolled === "object" &&
         scrolled !== null &&
         Reflect.get(scrolled, "scrolled") === true
       ) {
-        shots.push({
-          label: "desktop-bottom",
-          width: DESKTOP.width,
-          height: DESKTOP.height,
-          png: await view.screenshot(),
-        });
+        // `capture` and not a bare screenshot: `stat()` at the bottom is what
+        // finally puts `desktop-bottom` in `layout`, so the gate can see a
+        // table running sideways or a region clipped below the fold. It was
+        // pushing a picture and measuring nothing.
+        await Bun.sleep(REFLOW_MS);
+        await capture({ ...DESKTOP, label: "desktop-bottom" });
       }
       await probe("scrollStart");
 
@@ -314,13 +410,47 @@ export const renderPage = async (params: {
       await view.resize(DESKTOP.width, DESKTOP.height);
       await Bun.sleep(REFLOW_MS);
 
+      // The drag pass, before the clicks: it needs the board in its arrival
+      // state, and it runs only after every capture so a card it moves cannot
+      // change what the critic sees. Skipped for pages with nothing draggable.
+      const drag =
+        mountStat !== null && mountStat.draggables > 0
+          ? asDrag(await probe("dragCheck"), mountStat.draggables)
+          : null;
+
       // Clicks last: they mutate the page, so every capture above is of the
       // state a visitor actually arrives in.
-      const interactions = asInteractions(await probe("interact"));
+      //
+      // Stepped, so an overlay can be photographed while it is still open. It
+      // used to be one call that clicked everything and dismissed each panel
+      // on its way, which left the critic judging modals on a text tree — and
+      // pages whose own layout scored well kept shipping overlays that did not.
+      const interactions: PageRenderInteraction[] = [];
+      const begun = asRecord(await probe("interactBegin"));
+      const steps = typeof begun?.["count"] === "number" ? begun["count"] : 0;
+      let overlayShots = 0;
+      for (let index = 0; index < steps; index += 1) {
+        const step = asInteractionStep(await probe("interactStep"));
+        if (!step) break;
+        interactions.push(step);
+        if (!step.overlayOpened || overlayShots >= MAX_OVERLAY_SHOTS) continue;
+        overlayShots += 1;
+        await Bun.sleep(REFLOW_MS);
+        shots.push({
+          label: `overlay-${overlayShots.toString()}`,
+          width: DESKTOP.width,
+          height: DESKTOP.height,
+          png: await view.screenshot(),
+          caption: step.target,
+        });
+      }
+      await probe("interactEnd");
 
       const pageErrors = await view.evaluate<string[]>(
         "window.__STATE__.pageErrors",
       );
+      const opsRuns =
+        (await view.evaluate<string[]>("window.__STATE__.opsRuns")) ?? [];
 
       await view.navigate(`${origin}/empty`);
       await settle();
@@ -334,6 +464,8 @@ export const renderPage = async (params: {
         layout,
         consoleErrors: [...consoleErrors],
         pageErrors,
+        opsRuns,
+        ...(drag ? { drag } : {}),
       };
     });
   } catch (error) {

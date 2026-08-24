@@ -7,6 +7,7 @@ import {
   isFreeform,
   isMultiMember,
   MAPBOX_FEATURE_TYPES,
+  NON_WRITABLE_FIELD_TYPES,
   numberBounds,
   ratingMax,
 } from "../db/schema/field-types";
@@ -110,15 +111,17 @@ export const zodForField = (
     }
     case "relation":
     case "rollup":
+    case "formula":
     case "unique_id":
     case "created_time":
     case "last_edited_time":
     case "created_by":
     case "last_edited_by": {
       // None is written through `data`: relations live in the `links` graph,
-      // rollups + system properties are computed from the registry, and
-      // `unique_id` is filled by its sequence. `buildRecordShape` skips them;
-      // this keeps the switch exhaustive.
+      // rollups + system properties are computed from the registry, `formula`
+      // is a generated column the database itself computes (and refuses writes
+      // to), and `unique_id` is filled by its sequence. `buildRecordShape` skips
+      // them; this keeps the switch exhaustive.
       return z.unknown().nullish().describe(description);
     }
     case "boolean": {
@@ -240,6 +243,7 @@ export const describeFieldExpectation = (def: FieldDefinition): string => {
       return `${key} (unique_id): auto-assigned reference, read-only`;
     case "relation":
     case "rollup":
+    case "formula":
     case "created_time":
     case "last_edited_time":
     case "created_by":
@@ -391,6 +395,7 @@ export const coerceRecordValue = (
     case "email":
     case "relation":
     case "rollup":
+    case "formula":
     case "unique_id":
     case "created_time":
     case "last_edited_time":
@@ -490,18 +495,9 @@ export const buildRecordShape = (
   const shape: Record<string, z.ZodTypeAny> = {};
   for (const def of fieldDefs) {
     if (!def.enabled) continue;
-    // Relations are graph edges (`links`), rollups are view-computed aggregates,
-    // and `unique_id` is sequence-filled — none is written through `data`.
-    if (
-      def.type === "relation" ||
-      def.type === "rollup" ||
-      def.type === "unique_id" ||
-      def.type === "created_time" ||
-      def.type === "last_edited_time" ||
-      def.type === "created_by" ||
-      def.type === "last_edited_by"
-    )
-      continue;
+    // Derived values are never written through `data` — see the set's docblock
+    // for what each one is filled by instead.
+    if (NON_WRITABLE_FIELD_TYPES.has(def.type)) continue;
     shape[def.key] = zodForField(def, { strict });
   }
   return z.object(shape);

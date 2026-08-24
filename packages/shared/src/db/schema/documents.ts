@@ -3,15 +3,18 @@ import {
   bigint,
   decimal,
   index,
+  integer,
   pgEnum,
   pgTable,
   smallint,
   text,
   timestamp,
   unique,
+  uniqueIndex,
   uuid,
   varchar,
 } from "drizzle-orm/pg-core";
+import { aiConversations } from "./ai";
 import { team, user } from "./auth-schema";
 import { folders } from "./folders";
 
@@ -24,6 +27,30 @@ export const documentStatusEnum = pgEnum("document_status", [
   "processing",
   "ready",
   "error",
+]);
+
+/**
+ * Where a document's bytes come from.
+ *
+ * `uploaded` — a file the user (or the agent, via `uploadToDrive`) brought in.
+ * `authored` — markdown written INSIDE Fretik: the S3 object IS the source of
+ * truth and is editable, versioned (`document_versions`) and re-savable.
+ *
+ * Deliberately NOT a new `status`: `status` models the ingestion pipeline and
+ * an authored document travels the same states (it is `ready` immediately, and
+ * goes back through `processing` on a user-triggered re-extraction). The two
+ * axes are orthogonal — this one answers "may I edit it", `status` answers
+ * "is it usable yet".
+ */
+export const documentSourceEnum = pgEnum("document_source", [
+  "uploaded",
+  "authored",
+]);
+
+/** Who produced a document version — a person in the UI, or the agent. */
+export const documentVersionActorEnum = pgEnum("document_version_actor", [
+  "agent",
+  "human",
 ]);
 
 /**
@@ -55,6 +82,9 @@ export const documents = pgTable(
     // Processing status
     status: documentStatusEnum("status").notNull().default("uploading"),
     errorMessage: text("error_message"),
+
+    // Uploaded bytes vs markdown authored in-app (see `documentSourceEnum`).
+    source: documentSourceEnum("source").notNull().default("uploaded"),
 
     // File metadata
     originalFilename: varchar("original_filename").notNull(),
@@ -135,10 +165,118 @@ export const documentProperties = pgTable(
   ],
 );
 
+/**
+ * Version history — for EVERY document, whatever its type.
+ *
+ * The product rule is deliberately one sentence with no format in it: a
+ * document has a history, and any change to its content is a new version you
+ * can go back to. Authoring markdown in-app, the agent rewriting it, or someone
+ * dropping newer bytes over an uploaded PDF all land here. Restricting history
+ * to the one editable format (the Claude Artifacts / Notion doctrine) only
+ * stays coherent when the product has a single first-class content type; a
+ * Drive holding PDFs, spreadsheets, authored markdown and — later — media has
+ * to follow the Drive/SharePoint doctrine instead, where the version stack is
+ * universal and diffing is the format-dependent bonus.
+ *
+ * A version is a POINTER, never content: `storageKey` + mime/size/hash. Bytes
+ * belong on S3 (a 10 MB PDF base64'd into a text column is 13 MB of TOAST per
+ * version, carried by every dump and every replica). Restoring is therefore a
+ * server-side `copyObject` and works identically for markdown and for video.
+ *
+ * STORAGE INVARIANT — the newest version's `storageKey` IS the document's live
+ * original key (`buildDocumentOriginalKey`). Creating a document costs no extra
+ * byte, so the ~95% of documents nobody ever edits pay nothing. Only a
+ * replacement archives the outgoing bytes to an immutable
+ * `documents/{id}/v{n}{ext}` and repoints that row — one copy per replacement.
+ *
+ * Not S3 bucket versioning: that is a bucket-wide switch, so it would version
+ * thumbnails, OCR sidecars and `temporary: true` scratch objects too, turn every
+ * DELETE into a delete-marker (permanently drifting `storageUsedGb`), and still
+ * carry none of the actor columns below — the table would survive regardless.
+ *
+ * Retention: `DOCUMENT_VERSION_RETENTION` per document, trimmed after each
+ * write (`services/document-versions/record.ts`).
+ */
+export const documentVersions = pgTable(
+  "document_versions",
+  {
+    id: uuid("id")
+      .default(sql`uuid_generate_v7()`)
+      .primaryKey(),
+
+    /**
+     * `set null` on document delete, like `ai_memory_history.memoryId`: the
+     * rows outlive the parent so an activity view can still account for what
+     * happened. The denormalised `teamId` carries the scope once it is gone.
+     */
+    documentId: uuid("document_id").references(() => documents.id, {
+      onDelete: "set null",
+    }),
+
+    /** Denormalised so the history stays queryable — and RLS-scopable —
+     * without joining `documents`, which may already be deleted. */
+    teamId: uuid("team_id")
+      .notNull()
+      .references(() => team.id, { onDelete: "cascade" }),
+
+    /** 1-based, monotonic per document. What the UI labels "v3". */
+    versionNumber: integer("version_number").notNull(),
+
+    /**
+     * `'create' | 'edit' | 'replace' | 'restore'`. Text, not an enum, so a new
+     * operation never costs a migration — same call as `ai_memory_history`.
+     * `edit` is an in-app authored save; `replace` is newer bytes dropped over
+     * any document (re-upload, or the agent promoting a regenerated file).
+     */
+    operation: text("operation").notNull(),
+
+    /** S3 key holding THIS version's bytes. See the storage invariant above. */
+    storageKey: text("storage_key").notNull(),
+
+    mimeType: varchar("mime_type", { length: 100 }).notNull(),
+    fileSize: bigint("file_size", { mode: "number" }).notNull(),
+    /** SHA-256 — also the dedup guard: bytes identical to the current version
+     * produce no new version (the accidental re-upload of the same file). */
+    fileHash: text("file_hash").notNull(),
+
+    byUserId: uuid("by_user_id").references(() => user.id, {
+      onDelete: "set null",
+    }),
+    byActor: documentVersionActorEnum("by_actor").notNull(),
+    /** Conversation behind an agent write. Null for edits made in the UI. */
+    byConversationId: uuid("by_conversation_id").references(
+      () => aiConversations.id,
+      { onDelete: "set null" },
+    ),
+
+    createdAt: timestamp("created_at", { mode: "date", withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (table) => [
+    index("document_versions_document_idx").on(table.documentId),
+    index("document_versions_team_created_idx").on(
+      table.teamId,
+      table.createdAt,
+    ),
+    // Two writers must not mint the same version number. NULL documentIds
+    // (post-delete rows) don't conflict in Postgres, which is what we want.
+    uniqueIndex("document_versions_document_number_unique").on(
+      table.documentId,
+      table.versionNumber,
+    ),
+  ],
+);
+
 // Type inference
 export type Document = typeof documents.$inferSelect;
 export type DocumentStatus = Document["status"];
 
 export type NewDocument = typeof documents.$inferInsert;
+export type DocumentSource = Document["source"];
 export type DocumentProperties = typeof documentProperties.$inferSelect;
 export type NewDocumentProperties = typeof documentProperties.$inferInsert;
+
+export type DocumentVersion = typeof documentVersions.$inferSelect;
+export type NewDocumentVersion = typeof documentVersions.$inferInsert;
+export type DocumentVersionActor = DocumentVersion["byActor"];

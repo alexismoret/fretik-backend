@@ -1,6 +1,6 @@
+import { mimeFromFilename } from "@fretik/shared/file-types";
 import { uploadSessionFile } from "@fretik/shared/lib/chatbot-session-storage";
 import { tool } from "ai";
-import { extname } from "node:path";
 import { z } from "zod";
 import { getRuntimeContext } from "../agents/shared/runtime-context";
 import {
@@ -52,41 +52,13 @@ const READ_ONLY_PRESENT_BLOCKLIST = new Set<string>([
 ]);
 
 /**
- * Minimal extension → mime-type map. Covers every format the bundled
- * skills ship plus a short fallback list for adjacent types the agent
- * might produce. Anything outside the list falls back to
- * `application/octet-stream` — the frontend will render a generic
- * document card with a Download button and no "Open with …" action.
+ * Type the agent's own output from its filename — the file was produced
+ * in the sandbox, so nothing declares a MIME for it. Anything outside
+ * the registry falls back to `application/octet-stream`: the frontend
+ * renders a generic document card with a Download button and no
+ * "Open with …" action.
  */
-const MIME_BY_EXT: Readonly<Record<string, string>> = {
-  ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-  ".xls": "application/vnd.ms-excel",
-  ".csv": "text/csv",
-  ".docx":
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-  ".doc": "application/msword",
-  ".pptx":
-    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-  ".ppt": "application/vnd.ms-powerpoint",
-  ".pdf": "application/pdf",
-  ".txt": "text/plain",
-  ".md": "text/markdown",
-  ".json": "application/json",
-  ".xml": "application/xml",
-  ".html": "text/html",
-  ".png": "image/png",
-  ".jpg": "image/jpeg",
-  ".jpeg": "image/jpeg",
-  ".webp": "image/webp",
-  ".gif": "image/gif",
-  ".svg": "image/svg+xml",
-  ".zip": "application/zip",
-};
-
-const resolveMimeType = (filename: string): string => {
-  const ext = extname(filename).toLowerCase();
-  return MIME_BY_EXT[ext] ?? "application/octet-stream";
-};
+const resolveMimeType = mimeFromFilename;
 
 export interface PresentedFile {
   /** Workspace-relative path (e.g. `outputs/chart.png`). */

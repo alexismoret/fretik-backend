@@ -1,7 +1,7 @@
 ---
 name: imap-smtp
 description: Email over IMAP/SMTP — read, search, and send email on the user's connected mailbox for any standards-based provider (Gmail app password, OVH, Fastmail, custom servers, …).
-version: abaf82c829ef
+version: dfe6d94f548a
 ---
 
 # Email (IMAP/SMTP) — 19 actions
@@ -10,10 +10,10 @@ You can interact with the user's Email (IMAP/SMTP) account via the `fretik_apps.
 
 ## Read actions (auto-approved, eager)
 
-- `imap_smtp.list_messages(folder="inbox", unread_only=None, limit=25, offset=0)` — List emails from a well-known mail folder
+- `imap_smtp.list_messages(folder="inbox", unread_only=None, limit=25, offset=0)` — List emails from a well-known mail folder, newest received_at first
 - `imap_smtp.get_message(message_id)` — Fetch one email by ID, with its full HTML body
-- `imap_smtp.search_messages(query=None, query_or=None, limit=25, offset=0)` — Full-text search across the INBOX
-- `imap_smtp.list_messages_in_folder(folder_id, unread_only=None, limit=25, offset=0)` — List emails from a custom folder by its folder ID
+- `imap_smtp.search_messages(query=None, query_or=None, limit=25, offset=0)` — Full-text search across the INBOX, newest received_at first
+- `imap_smtp.list_messages_in_folder(folder_id, unread_only=None, limit=25, offset=0)` — List emails from a custom folder by its folder ID, newest received_at first
 - `imap_smtp.list_folders()` — List every mail folder of the mailbox
 - `imap_smtp.list_message_attachments(message_id)` — List attachments on a message (metadata only — no content)
 - `imap_smtp.download_message_attachment(message_id, attachment_id)` — Download one attachment — binary is spilled to `sandbox_path`

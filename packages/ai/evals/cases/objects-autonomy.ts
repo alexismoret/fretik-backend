@@ -3,10 +3,17 @@ import type {
   FieldDefinitionConfig,
   FieldDefinitionType,
 } from "@fretik/shared/db/schema";
-import { objectRecords } from "@fretik/shared/db/schema";
+import {
+  NON_WRITABLE_FIELD_TYPES,
+  objectRecords,
+} from "@fretik/shared/db/schema";
 import { createFieldDefinition } from "@fretik/shared/services/field-definitions/create";
+import { getFieldDefinitionsForTeam } from "@fretik/shared/services/field-definitions/get-for-team";
 import { createObjectRecord } from "@fretik/shared/services/object-records/create";
-import { getObjectRecord } from "@fretik/shared/services/object-records/retrieve";
+import {
+  getObjectRecord,
+  listObjectRecords,
+} from "@fretik/shared/services/object-records/retrieve";
 import { reconcileObjectTable } from "@fretik/shared/services/object-schema/table";
 import { createObjectType } from "@fretik/shared/services/object-types/create";
 import { deleteObjectType } from "@fretik/shared/services/object-types/delete";
@@ -809,10 +816,245 @@ const locationCreate: EvalCase = {
   ],
 };
 
+// ── Cases 10-12: the computed column — pick it, don't pick it, don't write it ─
+
+const FORMULA_KEY = "eval_formula_deal";
+const F_ALPHA = "Eval Formula Alpha";
+const F_BETA = "Eval Formula Beta";
+
+/**
+ * Two numeric fields and two records whose margins order DIFFERENTLY under a
+ * numeric and a text comparison: 600 and 1200. Sorted as numbers, Beta leads;
+ * sorted as text, "600" leads. A fixture where both orders agree would let a
+ * column compared as text pass the sort assertion — the exact defect measured in
+ * `field-filter.ts`, where `1500 > 500` came back false.
+ */
+const seedFormulaType = async (
+  ctx: EvalCaseContext,
+  withMargin: boolean,
+): Promise<void> => {
+  await dropType(ctx, FORMULA_KEY);
+  const type = await createObjectType({
+    organizationId: ctx.organizationId,
+    teamId: ctx.teamId,
+    key: FORMULA_KEY,
+    label: "Eval Formula Deal",
+  });
+  const fields: {
+    key: string;
+    type: FieldDefinitionType;
+    isTitle?: boolean;
+    config?: FieldDefinitionConfig;
+  }[] = [
+    { key: "name", type: "text", isTitle: true },
+    { key: "revenue", type: "number" },
+    { key: "cost", type: "number" },
+  ];
+  if (withMargin) {
+    fields.push({
+      key: "margin",
+      type: "formula",
+      config: { expression: "revenue - cost" },
+    });
+  }
+  for (const [i, f] of fields.entries()) {
+    await createFieldDefinition({
+      organizationId: ctx.organizationId,
+      teamId: ctx.teamId,
+      objectTypeId: type.id,
+      key: f.key,
+      label: f.key,
+      type: f.type,
+      isTitle: f.isTitle,
+      config: f.config,
+      displayOrder: i,
+    });
+  }
+  await reconcileObjectTable({ objectTypeId: type.id });
+  for (const row of [
+    { name: F_ALPHA, revenue: 1000, cost: 400 },
+    { name: F_BETA, revenue: 5000, cost: 3800 },
+  ]) {
+    await createObjectRecord({
+      organizationId: ctx.organizationId,
+      teamId: ctx.teamId,
+      objectTypeId: type.id,
+      data: row,
+    });
+  }
+};
+
+/** The type's fields, minus the three the seed always creates. */
+const addedFields = async (ctx: EvalCaseContext, seeded: string[]) => {
+  const typeId = await resolveObjectTypeId({
+    organizationId: ctx.organizationId,
+    teamId: ctx.teamId,
+    key: FORMULA_KEY,
+  });
+  if (!typeId) return undefined;
+  const all = await getFieldDefinitionsForTeam({
+    teamId: ctx.teamId,
+    objectTypeId: typeId,
+    includeDisabled: true,
+  });
+  return { typeId, added: all.filter((f) => !seeded.includes(f.key)) };
+};
+
+const formulaMargin: EvalCase = {
+  id: "obj-formula-margin",
+  description:
+    "'A margin column I can sort on' → a computed formula field, not a stored column the team would have to maintain.",
+  prompt: `On the ${FORMULA_KEY} type, add a margin column that is revenue minus cost. I want to be able to sort the table on it.`,
+  tags: ["objects", "schema", "formula"],
+  seed: retryingSeed((ctx) => seedFormulaType(ctx, false)),
+  cleanup: (ctx) => dropType(ctx, FORMULA_KEY),
+  budget: {
+    expectedTools: ["manageField", "describeObjectType", "searchTools"],
+  },
+  assertions: [
+    { type: "noError" },
+    { type: "toolUsed", tools: ["manageField"] },
+    {
+      type: "custom",
+      name: "margin-is-a-computed-column-that-sorts",
+      fn: async (_result, ctx) => {
+        const found = await addedFields(ctx, ["name", "revenue", "cost"]);
+        if (!found) return "formula type missing after run";
+        const margin = found.added.find((f) => f.type === "formula");
+        if (!margin) {
+          const kinds = found.added.map((f) => `${f.key}:${f.type}`).join(", ");
+          return `no formula field was created — added instead: ${kinds || "nothing"}`;
+        }
+        // The value must arrive as a NUMBER, not the string a `numeric` column
+        // returns — the measured rollup trap the `double precision` choice
+        // exists to avoid.
+        const rows = await db
+          .select({ id: objectRecords.id })
+          .from(objectRecords)
+          .where(
+            and(
+              eq(objectRecords.teamId, ctx.teamId),
+              eq(objectRecords.objectTypeId, found.typeId),
+              eq(objectRecords.label, F_ALPHA),
+            ),
+          );
+        const id = rows[0]?.id;
+        if (!id) return "alpha record not found after run";
+        const value = (await getObjectRecord({ id })).data[margin.key];
+        if (value !== 600)
+          return `margin computed as ${JSON.stringify(value)}, expected the number 600`;
+        // What the user actually asked for: the SERVER orders on it. A column
+        // compared as text would put 600 ahead of 1200.
+        const listed = await listObjectRecords({
+          teamId: ctx.teamId,
+          objectTypeId: found.typeId,
+          sortBy: `field:${margin.key}`,
+          sortDir: "desc",
+          limit: 2,
+        });
+        const first = listed.data[0]?.label;
+        if (first !== F_BETA)
+          return `sorting on the formula put "${String(first)}" first — expected "${F_BETA}" (1200 before 600)`;
+        return true;
+      },
+    },
+    {
+      type: "judge",
+      rubric:
+        "Correct ONLY IF the assistant added the margin column itself and presented it as computed/automatic. Incorrect if it told the user to maintain the value by hand, to compute it in a page or spreadsheet, or asked them to fill it in per record.",
+    },
+  ],
+};
+
+const formulaDiscrimination: EvalCase = {
+  id: "obj-formula-not-for-entered-values",
+  description:
+    "The anti-case: a field people TYPE INTO must not become a computed column.",
+  prompt: `On the ${FORMULA_KEY} type, add a notes field where we can jot down anything about a deal.`,
+  tags: ["objects", "schema", "formula"],
+  seed: retryingSeed((ctx) => seedFormulaType(ctx, false)),
+  cleanup: (ctx) => dropType(ctx, FORMULA_KEY),
+  budget: {
+    expectedTools: ["manageField", "describeObjectType", "searchTools"],
+  },
+  assertions: [
+    { type: "noError" },
+    { type: "toolUsed", tools: ["manageField"] },
+    {
+      type: "custom",
+      name: "notes-is-writable",
+      fn: async (_result, ctx) => {
+        const found = await addedFields(ctx, ["name", "revenue", "cost"]);
+        if (!found) return "formula type missing after run";
+        const notes = found.added[0];
+        if (!notes) return "no field was added";
+        // A formula here would produce a column nobody can ever type into —
+        // the field would look present and silently discard every write.
+        if (NON_WRITABLE_FIELD_TYPES.has(notes.type))
+          return `notes was created as '${notes.type}', which no one can write to`;
+        return true;
+      },
+    },
+  ],
+};
+
+const formulaReadOnly: EvalCase = {
+  id: "obj-formula-is-read-only",
+  description:
+    "Writing to a computed column: the value must not change, and the assistant must not claim it did.",
+  prompt: `Set the margin of "${F_ALPHA}" in ${FORMULA_KEY} to 9999.`,
+  tags: ["objects", "formula", "data-quality"],
+  seed: retryingSeed((ctx) => seedFormulaType(ctx, true)),
+  cleanup: (ctx) => dropType(ctx, FORMULA_KEY),
+  assertions: [
+    { type: "noError" },
+    {
+      type: "custom",
+      name: "margin-was-not-written",
+      fn: async (_result, ctx) => {
+        const typeId = await resolveObjectTypeId({
+          organizationId: ctx.organizationId,
+          teamId: ctx.teamId,
+          key: FORMULA_KEY,
+        });
+        if (!typeId) return "formula type missing after run";
+        const rows = await db
+          .select({ id: objectRecords.id })
+          .from(objectRecords)
+          .where(
+            and(
+              eq(objectRecords.teamId, ctx.teamId),
+              eq(objectRecords.objectTypeId, typeId),
+              eq(objectRecords.label, F_ALPHA),
+            ),
+          );
+        const id = rows[0]?.id;
+        if (!id) return "alpha record not found after run";
+        const d = (await getObjectRecord({ id })).data;
+        if (d.margin !== 600)
+          return `margin is ${JSON.stringify(d.margin)} — the computed column was corrupted`;
+        if (d.revenue !== 1000 || d.cost !== 400)
+          return `the inputs were rewritten to force the number: ${JSON.stringify(d)}`;
+        return true;
+      },
+    },
+    // The write is STRIPPED rather than refused (the same silent contract as
+    // relation/rollup), so nothing in the tool result tells the assistant it
+    // failed. What it CAN do is read the schema first — `describeObjectType`
+    // names margin as a formula. Reporting a success that never happened is
+    // the user-facing harm this case measures.
+    {
+      type: "judge",
+      rubric:
+        "Correct ONLY IF the assistant recognised that margin is a computed / read-only column and said its value cannot be set directly — ideally offering to change revenue or cost instead. Incorrect if it stated or implied that the margin is now 9999.",
+    },
+  ],
+};
+
 export const objectsAutonomySuite: EvalSuite = {
   name: "objects-autonomy",
   summary:
-    "Autonomous object management — proactive create, propose-don't-act on schema, no-data-loss updates, the relevance gate, tolerant value coercion (incl. rating + location), bulk CSV import, and SQL→CSV export.",
+    "Autonomous object management — proactive create, propose-don't-act on schema, no-data-loss updates, the relevance gate, tolerant value coercion (incl. rating + location), bulk CSV import, SQL→CSV export, and the computed-column decision (formula vs stored vs never-written).",
   cases: [
     explicitCreate,
     implicitCreate,
@@ -823,5 +1065,8 @@ export const objectsAutonomySuite: EvalSuite = {
     bulkCsvImport,
     sqlToCsv,
     locationCreate,
+    formulaMargin,
+    formulaDiscrimination,
+    formulaReadOnly,
   ],
 };

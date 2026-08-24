@@ -1,4 +1,5 @@
 import { extname } from "node:path";
+import { thumbnailFor } from "../file-types";
 import { deleteObject, getObjectBytes, putObject } from "./s3";
 
 /**
@@ -29,11 +30,14 @@ import { deleteObject, getObjectBytes, putObject } from "./s3";
 const DOCUMENTS_PREFIX = "documents";
 
 /**
- * S3 key for the original binary. Extension is sourced from
- * `originalFilename` so the key carries the correct content-type
- * marker even when MIME type detection falls back. Defaults to
- * `.pdf` when the filename has no extension — same fallback as
- * the upload pipeline (`services/documents/upload.ts:124`).
+ * S3 key for the original binary. The extension comes from
+ * `originalFilename` so the key carries a content-type marker.
+ *
+ * The `.pdf` default for extensionless filenames is a FROZEN legacy
+ * constant, not a type guess: it is baked into the keys of every
+ * document already stored, so changing it would strand their objects.
+ * The document's real type lives in `documents.mime_type`, resolved from
+ * the bytes at upload — never read a type back out of this key.
  */
 export const buildDocumentOriginalKey = (
   documentId: string,
@@ -55,6 +59,47 @@ export const buildDocumentThumbnailKey = (documentId: string): string =>
 
 export const buildDocumentSidecarKey = (documentId: string): string =>
   `${DOCUMENTS_PREFIX}/${documentId}.md`;
+
+/**
+ * Whether a thumbnail object exists for this document — a presigned URL is
+ * signed locally and says nothing about the object being there, so handing
+ * one out for bytes that were never written renders a broken image where
+ * the type icon belongs.
+ *
+ * Two conditions, both necessary: the registry must define a thumbnail
+ * strategy for the type (mail, source code and SVG have none), and the
+ * document must have gone through `processDocument`, which is what renders
+ * it. Authored markdown never does — it is `ready` the moment it is
+ * written — so it shows its icon until a re-extraction is requested.
+ */
+export const hasStoredThumbnail = (document: {
+  status: string;
+  source: string;
+  mimeType: string;
+  originalFilename: string;
+}): boolean =>
+  document.status === "ready" &&
+  document.source !== "authored" &&
+  thumbnailFor(document.mimeType, document.originalFilename) !== "none";
+
+/**
+ * S3 key archiving one SUPERSEDED version's bytes
+ * (`documents/{documentId}/v3.pdf`).
+ *
+ * Only past versions live here. The newest version's `storageKey` is the LIVE
+ * original key, so a document nobody ever edits stores exactly one object —
+ * see the storage invariant on `documentVersions`. The nested prefix keeps
+ * archives from ever colliding with the flat original / thumbnail / sidecar
+ * keys above, whatever the extension.
+ */
+export const buildDocumentVersionKey = (
+  documentId: string,
+  versionNumber: number,
+  originalFilename: string,
+): string => {
+  const ext = extname(originalFilename) || ".pdf";
+  return `${DOCUMENTS_PREFIX}/${documentId}/v${versionNumber.toString()}${ext}`;
+};
 
 /**
  * Upload the OCR markdown sidecar to S3. Errors bubble up — unlike

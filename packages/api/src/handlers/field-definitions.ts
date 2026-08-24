@@ -12,11 +12,18 @@ import {
   responseNotFoundSchema,
 } from "@fretik/shared/schemas/common/responses";
 import {
+  checkFormulaRequestSchema,
+  checkFormulaResponseSchema,
   createFieldDefinitionRequestSchema,
   fieldDefinitionResponseSchema,
+  formulaFunctionsResponseSchema,
   reorderFieldDefinitionsRequestSchema,
   updateFieldDefinitionRequestSchema,
 } from "@fretik/shared/schemas/field-definitions";
+import {
+  checkFormula,
+  formulaFunctionCatalog,
+} from "@fretik/shared/services/field-definitions/check-formula";
 import { createFieldDefinition } from "@fretik/shared/services/field-definitions/create";
 import { deleteFieldDefinition } from "@fretik/shared/services/field-definitions/delete";
 import { getFieldDefinitionsForOrganization } from "@fretik/shared/services/field-definitions/get-for-org";
@@ -183,6 +190,52 @@ const reorderRoute = createRoute({
   },
 });
 
+const checkFormulaRoute = createRoute({
+  method: "post",
+  path: "/check-formula",
+  summary: "Dry-run a formula expression",
+  description:
+    "Compiles a formula against an object type's fields WITHOUT saving, and returns the type it evaluates to or the reason it cannot compile. Powers the live feedback in the formula editor; an invalid expression is a 200 with `ok: false`, not an error — it is the normal state while one is being typed.",
+  tags: ["FieldDefinitions"],
+  request: {
+    body: {
+      content: {
+        "application/json": { schema: checkFormulaRequestSchema },
+      },
+      required: true,
+    },
+  },
+  responses: {
+    200: {
+      content: {
+        "application/json": { schema: checkFormulaResponseSchema },
+      },
+      description: "Formula checked",
+    },
+    ...responseForbiddenSchema,
+    ...responseInternalErrorSchema,
+  },
+});
+
+const formulaFunctionsRoute = createRoute({
+  method: "get",
+  path: "/formula-functions",
+  summary: "List the formula language's functions",
+  description:
+    "Every function a formula may call, with its parameters in order. Drives the visual formula builder, which renders one labelled slot per parameter — the list is served rather than mirrored client-side so the form always matches the function it builds.",
+  tags: ["FieldDefinitions"],
+  responses: {
+    200: {
+      content: {
+        "application/json": { schema: formulaFunctionsResponseSchema },
+      },
+      description: "Function catalog",
+    },
+    ...responseForbiddenSchema,
+    ...responseInternalErrorSchema,
+  },
+});
+
 // ============================================================================
 // Handlers
 // ============================================================================
@@ -321,5 +374,31 @@ fieldDefinitionRoutes.openapi(reorderRoute, async (c) => {
   });
   return c.json({ ok: true }, 200);
 });
+
+fieldDefinitionRoutes.openapi(checkFormulaRoute, async (c) => {
+  const team = c.get("team");
+  if (!team) return c.json(teamRequired(), 403);
+
+  const { objectTypeId, expression, fieldId } = c.req.valid("json");
+  // Reading a type's field NAMES is what the check exposes, so it is gated on
+  // being able to write the type — the same door the save goes through.
+  await assertCanWriteType({
+    objectTypeId,
+    teamId: team.id,
+    organizationId: team.organizationId,
+  });
+
+  const result = await checkFormula({
+    objectTypeId,
+    teamId: team.id,
+    excludeFieldId: fieldId,
+    expression,
+  });
+  return c.json(result, 200);
+});
+
+fieldDefinitionRoutes.openapi(formulaFunctionsRoute, (c) =>
+  c.json({ functions: formulaFunctionCatalog() }, 200),
+);
 
 export { fieldDefinitionRoutes };

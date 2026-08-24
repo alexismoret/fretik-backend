@@ -10,6 +10,35 @@ import { readRecordData } from "../object-schema/record-io";
 import { triggerDocumentVectorRefresh } from "./vector-refresh";
 
 /**
+ * A rename must not change the file's EXTENSION.
+ *
+ * Every S3 key a document owns is derived from `originalFilename` —
+ * `documents/{id}.pdf` for the bytes, `documents/{id}/v2.pdf` for each archived
+ * version. Storing "Rapport Q3" over "rapport.pdf" therefore repoints every
+ * lookup at `documents/{id}` while the objects stay where they were: the
+ * document silently becomes unreadable, undownloadable, and its whole history
+ * unreachable. Nothing in the pipeline notices, because nothing re-reads the
+ * bytes on a rename.
+ *
+ * So the extension is APPENDED rather than trusted, and never stripped: a user
+ * naming a file "Rapport Q3" means the title, not a conversion. Passing a
+ * different extension yields `name.docx.pdf` — clumsy, but honest about what
+ * the bytes are, and lossless. Changing an actual format means a new document.
+ */
+const keepFileExtension = (
+  current: string,
+  next: string | undefined,
+): string | undefined => {
+  if (next === undefined) return undefined;
+  const dot = current.lastIndexOf(".");
+  const extension = dot > 0 ? current.slice(dot) : "";
+  if (extension === "") return next;
+  return next.toLowerCase().endsWith(extension.toLowerCase())
+    ? next
+    : `${next}${extension}`;
+};
+
+/**
  * Update a document and its associated data.
  * Handles folder changes (counts), universal property edits (summary,
  * language) and dynamic field values (per-team configured fields).
@@ -23,7 +52,7 @@ export const updateDocument = async (data: {
   const { id, teamId, organizationId, updates } = data;
 
   const existingDocument = await db.query.documents.findFirst({
-    columns: { id: true, folderId: true },
+    columns: { id: true, folderId: true, originalFilename: true },
     where: { id, teamId },
   });
   if (!existingDocument) {
@@ -31,6 +60,10 @@ export const updateDocument = async (data: {
   }
 
   const folderHasChanged = existingDocument.folderId !== updates.folderId;
+  const originalFilename = keepFileExtension(
+    existingDocument.originalFilename,
+    updates.originalFilename,
+  );
 
   const updatedDoc = await db.transaction(async (tx) => {
     if (folderHasChanged) {
@@ -52,7 +85,7 @@ export const updateDocument = async (data: {
     const [doc] = await tx
       .update(documents)
       .set({
-        originalFilename: updates.originalFilename,
+        originalFilename,
         folderId: updates.folderId,
       })
       .where(eq(documents.id, id))

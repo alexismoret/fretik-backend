@@ -1,401 +1,115 @@
 ---
 name: doc-coauthoring
-description: Guide users through a structured workflow for co-authoring documentation. Use when user wants to write documentation, proposals, technical specs, decision docs, or similar structured content. This workflow helps users efficiently transfer context, refine content through iteration, and verify the doc works for readers. Trigger when user mentions writing docs, creating proposals, drafting specs, or similar documentation tasks.
+description: Co-author a substantial document with the user — proposal, spec, decision doc, report, internal note — through context gathering, section-by-section drafting, and a blind reader test before anyone else sees it. Use when the user asks to write, draft or write up something other people will read.
 ---
 
-> **Fretik sandbox conventions.** This is a prose workflow — no
-> scripts to run. When you produce a deliverable (markdown spec, Word
-> doc, PDF), write it under `outputs/` and surface it with
-> `presentFiles({ paths: ["outputs/spec.md"] })`. Compose with the
-> `docx` or `pdf` skills when the deliverable must be a Word document
-> or PDF rather than markdown.
+# Co-authoring a document
 
-# Doc Co-Authoring Workflow
+A long document fails for one reason: the author knows things the reader does not, and cannot see which ones. This workflow closes that gap in three stages — **gather the context**, **build section by section**, **test it on a reader who has none of it**.
 
-This skill provides a structured workflow for guiding users through collaborative document creation. Act as an active guide, walking users through three stages: Context Gathering, Refinement & Structure, and Reader Testing.
+Use it when the document is substantial and other people will read it. A short answer, a note for the user alone, a recap of what is already in this conversation: just write it. Offer the workflow, name the three stages in a sentence each, and say they can work freeform instead. If they decline, work freeform.
 
-## When to Offer This Workflow
+## Where the document lives
 
-**Trigger conditions:**
+The deliverable is a **Drive document**, not a scratch file — the team can find it, search it, and reopen it in any conversation.
 
-- User mentions writing documentation: "write a doc", "draft a proposal", "create a spec", "write up"
-- User mentions specific doc types: "PRD", "design doc", "decision doc", "RFC"
-- User seems to be starting a substantial writing task
+| Step                  | How                                                                                           |
+| --------------------- | --------------------------------------------------------------------------------------------- |
+| Create the scaffold   | `manageDocument { action: "create", title, content }`                                         |
+| Every edit after that | `get` for the live text and its `revision`, then `update` with `edits` and that same revision |
+| Show progress         | Nothing to paste — the document card is already in the conversation                           |
 
-**Initial offer:**
-Offer the user a structured workflow for co-authoring the document. Explain the three stages:
+- **Never reprint the document after an edit.** Say what changed, in one line.
+- **Every save is a version.** Revise the document; never draft `spec-v2.md`. `history` says what changed and `restore` puts a version back, so nothing is lost by editing in place.
+- **A Word file, a PDF or a deck is a final format, not a drafting one.** Do everything below in the Drive document, and only at the end build the file with the `docx` / `pdf` / `pptx` skills under `outputs/` and save it with `uploadToDrive`.
 
-1. **Context Gathering**: User provides all relevant context while Claude asks clarifying questions
-2. **Refinement & Structure**: Iteratively build each section through brainstorming and editing
-3. **Reader Testing**: Test the doc with a fresh Claude (no context) to catch blind spots before others read it
+## Stage 1 — Context
 
-Explain that this approach helps ensure the doc works well when others read it (including when they paste it into Claude). Ask if they want to try this workflow or prefer to work freeform.
+**Goal:** close the gap between what the user knows and what you know, so you can guide instead of transcribe.
 
-If user declines, work freeform. If user accepts, proceed to Stage 1.
+### Look before you ask
 
-## Stage 1: Context Gathering
+Asking the user for something the workspace already holds wastes the one resource this stage runs on: their patience. Exhaust these first, and tell them what you found rather than what you looked for.
 
-**Goal:** Close the gap between what the user knows and what Claude knows, enabling smart guidance later.
+| Source                                                   | How                                                        |
+| -------------------------------------------------------- | ---------------------------------------------------------- |
+| Documents the team already wrote on the subject          | `searchKnowledge`, then `listDocuments` for the neighbours |
+| Data the document will have to state — figures, entities | `<team_objects>`, `listObjects`, `getObject`, `querySql`   |
+| Conventions and preferences already learned              | `<active_memory>` and `<chatbot_context>`                  |
+| A system outside Fretik (mailbox, CRM, project tool)     | The team's external app connections                        |
 
-### Initial Questions
+### Then ask the user
 
-Start by asking the user for meta-context about the document:
+Five questions, and say they can answer in shorthand or dump it however suits them:
 
-1. What type of document is this? (e.g., technical spec, decision doc, proposal)
-2. Who's the primary audience?
-3. What's the desired impact when someone reads this?
-4. Is there a template or specific format to follow?
-5. Any other constraints or context to know?
+1. What type of document is this?
+2. Who reads it?
+3. What should happen once they have read it?
+4. Is there a template or a format to follow?
+5. Anything else you should know — constraints, history, politics?
 
-Inform them they can answer in shorthand or dump information however works best for them.
+**If they name a template**: it is usually already a Drive document — find it and read it rather than asking them to describe it. Otherwise ask them to attach it.
 
-**If user provides a template or mentions a doc type:**
+**If they are revising an existing document**: `get` it and work from the live text; the version history means you can edit it directly without fear.
 
-- Ask if they have a template document to share
-- If they provide a link to a shared document, use the appropriate integration to fetch it
-- If they provide a file, read it
+**If it contains images with no alt text**: say that a figure without alt text is invisible to search and to anyone reading the document through you, and offer to write the alt text.
 
-**If user mentions editing an existing shared document:**
+### Info dump
 
-- Use the appropriate integration to read the current state
-- Check for images without alt-text
-- If images exist without alt-text, explain that when others use Claude to understand the doc, Claude won't be able to see them. Ask if they want alt-text generated. If so, request they paste each image into chat for descriptive alt-text generation.
+Once the five are answered, ask them to dump everything they have — background, why the alternatives were dropped, team dynamics, timelines, dependencies, stakeholder concerns. Tell them not to organise it. Offer the shapes that suit them: stream of consciousness, a document to read, records to look at, a connected app to search. Ask before searching anything on their behalf.
 
-### Info Dumping
+Then ask 5-10 numbered clarifying questions built from the gaps you actually have. Tell them shorthand answers are fine ("1: yes, 2: see the March contract, 3: no, backwards compat").
 
-Once initial questions are answered, encourage the user to dump all the context they have. Request information such as:
+**Exit condition:** you can ask about edge cases and trade-offs without needing the basics explained. Ask whether they have more to add, or if it is time to draft.
 
-- Background on the project/problem
-- Related team discussions or shared documents
-- Why alternative solutions aren't being used
-- Organizational context (team dynamics, past incidents, politics)
-- Timeline pressures or constraints
-- Technical architecture or dependencies
-- Stakeholder concerns
+## Stage 2 — Build
 
-Advise them not to worry about organizing it - just get it all out. Offer multiple ways to provide context:
+**Goal:** one section at a time, each one brainstormed and curated before it is written.
 
-- Info dump stream-of-consciousness
-- Point to team channels or threads to read
-- Link to shared documents
+**Order the sections by unknowns, not by their order in the document.** The core proposal or the technical approach first; summaries and introductions last, when there is something to summarise. If the structure is unclear, propose 3-5 sections for this type of document and let them adjust.
 
-**If integrations are available** (e.g., Slack, Teams, Google Drive, SharePoint, or other MCP servers), mention that these can be used to pull in context directly.
+Then `create` the document with every heading in place and an explicit placeholder under each — `[to be written]`. That scaffold is what you both work against.
 
-**If no integrations are detected and in Claude.ai or Claude app:** Suggest they can enable connectors in their Claude settings to allow pulling context from messaging apps and document storage directly.
+For each section:
 
-Inform them clarifying questions will be asked once they've done their initial dump.
+1. **Clarify.** 5-10 questions specific to this section.
+2. **Brainstorm.** 5-20 numbered candidates for what it could contain — including things they mentioned in passing and angles nobody has raised. Offer more if they want.
+3. **Curate.** Ask what to keep, cut or merge, with brief reasons ("keep 1, 4, 9 · cut 3, duplicates 1 · merge 11 and 12"). The reasons are what teach you their priorities for the next sections. If they answer freeform instead, extract the intent and move on.
+4. **Gap check.** Ask what is missing from what they picked.
+5. **Draft.** Replace that section's placeholder with `update` + `edits`.
+6. **Refine.** Iterate on their feedback, one `edits` call per round.
 
-**During context gathering:**
+**Say this once, when you draft the first section:** ask them to tell you what to change rather than editing the document themselves — you learn their style for the sections still to come. If they edit it anyway, `get` it, note what they changed, and apply that taste from then on.
 
-- If user mentions team channels or shared documents:
-  - If integrations available: Inform them the content will be read now, then use the appropriate integration
-  - If integrations not available: Explain lack of access. Suggest they enable connectors in Claude settings, or paste the relevant content directly.
+**After three rounds with no substantial change**, ask what could be cut without losing anything. That question ends more sections than any other.
 
-- If user mentions entities/projects that are unknown:
-  - Ask if connected tools should be searched to learn more
-  - Wait for user confirmation before searching
+**At around 80% drafted**, read the whole document and report on flow between sections, contradictions, repetition, generic filler, and whether every sentence is carrying weight.
 
-- As user provides context, track what's being learned and what's still unclear
+## Stage 3 — Reader test
 
-**Asking clarifying questions:**
+**Goal:** find what only makes sense to the two of you.
 
-When user signals they've done their initial dump (or after substantial context provided), ask clarifying questions to ensure understanding:
+You can run this yourself — never send the user to another conversation for it.
 
-Generate 5-10 numbered questions based on gaps in the context.
+1. **Predict what readers will ask.** 5-10 questions someone would genuinely bring to this document.
+2. **Send each to a fresh reader.** `dispatchAgent`, one per question, each told: read this document with `manageDocument { action: "get", documentId }`; you have no context from any conversation; answer the question from the document alone, then say what was ambiguous and what knowledge it assumed you already had.
+3. **Run one adversarial pass**: internal contradictions, unsupported claims, terms used before they are defined, figures with no source.
+4. **Report and fix.** Say what the readers got wrong, fix those sections, and re-test the ones you changed.
 
-Inform them they can use shorthand to answer (e.g., "1: yes, 2: see #channel, 3: no because backwards compat"), link to more docs, point to channels to read, or just keep info-dumping. Whatever's most efficient for them.
+**Before any of this, check your own scaffold for surviving placeholders.** A `[to be written]` reaching a reader is the most common way this workflow fails.
 
-**Exit condition:**
-Sufficient context has been gathered when questions show understanding - when edge cases and trade-offs can be asked about without needing basics explained.
+**Exit condition:** readers answer correctly and surface nothing new.
 
-**Transition:**
-Ask if there's any more context they want to provide at this stage, or if it's time to move on to drafting the document.
+## Handing it over
 
-If user wants to add more, let them. When ready, proceed to Stage 2.
-
-## Stage 2: Refinement & Structure
-
-**Goal:** Build the document section by section through brainstorming, curation, and iterative refinement.
-
-**Instructions to user:**
-Explain that the document will be built section by section. For each section:
-
-1. Clarifying questions will be asked about what to include
-2. 5-20 options will be brainstormed
-3. User will indicate what to keep/remove/combine
-4. The section will be drafted
-5. It will be refined through surgical edits
-
-Start with whichever section has the most unknowns (usually the core decision/proposal), then work through the rest.
-
-**Section ordering:**
-
-If the document structure is clear:
-Ask which section they'd like to start with.
-
-Suggest starting with whichever section has the most unknowns. For decision docs, that's usually the core proposal. For specs, it's typically the technical approach. Summary sections are best left for last.
-
-If user doesn't know what sections they need:
-Based on the type of document and template, suggest 3-5 sections appropriate for the doc type.
-
-Ask if this structure works, or if they want to adjust it.
-
-**Once structure is agreed:**
-
-Create the initial document structure with placeholder text for all sections.
-
-**If access to artifacts is available:**
-Use `create_file` to create an artifact. This gives both Claude and the user a scaffold to work from.
-
-Inform them that the initial structure with placeholders for all sections will be created.
-
-Create artifact with all section headers and brief placeholder text like "[To be written]" or "[Content here]".
-
-Provide the scaffold link and indicate it's time to fill in each section.
-
-**If no access to artifacts:**
-Create a markdown file in the working directory. Name it appropriately (e.g., `decision-doc.md`, `technical-spec.md`).
-
-Inform them that the initial structure with placeholders for all sections will be created.
-
-Create file with all section headers and placeholder text.
-
-Confirm the filename has been created and indicate it's time to fill in each section.
-
-**For each section:**
-
-### Step 1: Clarifying Questions
-
-Announce work will begin on the [SECTION NAME] section. Ask 5-10 clarifying questions about what should be included:
-
-Generate 5-10 specific questions based on context and section purpose.
-
-Inform them they can answer in shorthand or just indicate what's important to cover.
-
-### Step 2: Brainstorming
-
-For the [SECTION NAME] section, brainstorm [5-20] things that might be included, depending on the section's complexity. Look for:
-
-- Context shared that might have been forgotten
-- Angles or considerations not yet mentioned
-
-Generate 5-20 numbered options based on section complexity. At the end, offer to brainstorm more if they want additional options.
-
-### Step 3: Curation
-
-Ask which points should be kept, removed, or combined. Request brief justifications to help learn priorities for the next sections.
-
-Provide examples:
-
-- "Keep 1,4,7,9"
-- "Remove 3 (duplicates 1)"
-- "Remove 6 (audience already knows this)"
-- "Combine 11 and 12"
-
-**If user gives freeform feedback** (e.g., "looks good" or "I like most of it but...") instead of numbered selections, extract their preferences and proceed. Parse what they want kept/removed/changed and apply it.
-
-### Step 4: Gap Check
-
-Based on what they've selected, ask if there's anything important missing for the [SECTION NAME] section.
-
-### Step 5: Drafting
-
-Use `str_replace` to replace the placeholder text for this section with the actual drafted content.
-
-Announce the [SECTION NAME] section will be drafted now based on what they've selected.
-
-**If using artifacts:**
-After drafting, provide a link to the artifact.
-
-Ask them to read through it and indicate what to change. Note that being specific helps learning for the next sections.
-
-**If using a file (no artifacts):**
-After drafting, confirm completion.
-
-Inform them the [SECTION NAME] section has been drafted in [filename]. Ask them to read through it and indicate what to change. Note that being specific helps learning for the next sections.
-
-**Key instruction for user (include when drafting the first section):**
-Provide a note: Instead of editing the doc directly, ask them to indicate what to change. This helps learning of their style for future sections. For example: "Remove the X bullet - already covered by Y" or "Make the third paragraph more concise".
-
-### Step 6: Iterative Refinement
-
-As user provides feedback:
-
-- Use `str_replace` to make edits (never reprint the whole doc)
-- **If using artifacts:** Provide link to artifact after each edit
-- **If using files:** Just confirm edits are complete
-- If user edits doc directly and asks to read it: mentally note the changes they made and keep them in mind for future sections (this shows their preferences)
-
-**Continue iterating** until user is satisfied with the section.
-
-### Quality Checking
-
-After 3 consecutive iterations with no substantial changes, ask if anything can be removed without losing important information.
-
-When section is done, confirm [SECTION NAME] is complete. Ask if ready to move to the next section.
-
-**Repeat for all sections.**
-
-### Near Completion
-
-As approaching completion (80%+ of sections done), announce intention to re-read the entire document and check for:
-
-- Flow and consistency across sections
-- Redundancy or contradictions
-- Anything that feels like "slop" or generic filler
-- Whether every sentence carries weight
-
-Read entire document and provide feedback.
-
-**When all sections are drafted and refined:**
-Announce all sections are drafted. Indicate intention to review the complete document one more time.
-
-Review for overall coherence, flow, completeness.
-
-Provide any final suggestions.
-
-Ask if ready to move to Reader Testing, or if they want to refine anything else.
-
-## Stage 3: Reader Testing
-
-**Goal:** Test the document with a fresh Claude (no context bleed) to verify it works for readers.
-
-**Instructions to user:**
-Explain that testing will now occur to see if the document actually works for readers. This catches blind spots - things that make sense to the authors but might confuse others.
-
-### Testing Approach
-
-**If access to sub-agents is available (e.g., in Claude Code):**
-
-Perform the testing directly without user involvement.
-
-### Step 1: Predict Reader Questions
-
-Announce intention to predict what questions readers might ask when trying to discover this document.
-
-Generate 5-10 questions that readers would realistically ask.
-
-### Step 2: Test with Sub-Agent
-
-Announce that these questions will be tested with a fresh Claude instance (no context from this conversation).
-
-For each question, invoke a sub-agent with just the document content and the question.
-
-Summarize what Reader Claude got right/wrong for each question.
-
-### Step 3: Run Additional Checks
-
-Announce additional checks will be performed.
-
-Invoke sub-agent to check for ambiguity, false assumptions, contradictions.
-
-Summarize any issues found.
-
-### Step 4: Report and Fix
-
-If issues found:
-Report that Reader Claude struggled with specific issues.
-
-List the specific issues.
-
-Indicate intention to fix these gaps.
-
-Loop back to refinement for problematic sections.
-
----
-
-**If no access to sub-agents (e.g., claude.ai web interface):**
-
-The user will need to do the testing manually.
-
-### Step 1: Predict Reader Questions
-
-Ask what questions people might ask when trying to discover this document. What would they type into Claude.ai?
-
-Generate 5-10 questions that readers would realistically ask.
-
-### Step 2: Setup Testing
-
-Provide testing instructions:
-
-1. Open a fresh Claude conversation: https://claude.ai
-2. Paste or share the document content (if using a shared doc platform with connectors enabled, provide the link)
-3. Ask Reader Claude the generated questions
-
-For each question, instruct Reader Claude to provide:
-
-- The answer
-- Whether anything was ambiguous or unclear
-- What knowledge/context the doc assumes is already known
-
-Check if Reader Claude gives correct answers or misinterprets anything.
-
-### Step 3: Additional Checks
-
-Also ask Reader Claude:
-
-- "What in this doc might be ambiguous or unclear to readers?"
-- "What knowledge or context does this doc assume readers already have?"
-- "Are there any internal contradictions or inconsistencies?"
-
-### Step 4: Iterate Based on Results
-
-Ask what Reader Claude got wrong or struggled with. Indicate intention to fix those gaps.
-
-Loop back to refinement for any problematic sections.
-
----
-
-### Exit Condition (Both Approaches)
-
-When Reader Claude consistently answers questions correctly and doesn't surface new gaps or ambiguities, the doc is ready.
-
-## Final Review
-
-When Reader Testing passes:
-Announce the doc has passed Reader Claude testing. Before completion:
-
-1. Recommend they do a final read-through themselves - they own this document and are responsible for its quality
-2. Suggest double-checking any facts, links, or technical details
-3. Ask them to verify it achieves the impact they wanted
-
-Ask if they want one more review, or if the work is done.
-
-**If user wants final review, provide it. Otherwise:**
-Announce document completion. Provide a few final tips:
-
-- Consider linking this conversation in an appendix so readers can see how the doc was developed
-- Use appendices to provide depth without bloating the main doc
-- Update the doc as feedback is received from real readers
-
-## Tips for Effective Guidance
-
-**Tone:**
-
-- Be direct and procedural
-- Explain rationale briefly when it affects user behavior
-- Don't try to "sell" the approach - just execute it
-
-**Handling Deviations:**
-
-- If user wants to skip a stage: Ask if they want to skip this and write freeform
-- If user seems frustrated: Acknowledge this is taking longer than expected. Suggest ways to move faster
-- Always give user agency to adjust the process
-
-**Context Management:**
-
-- Throughout, if context is missing on something mentioned, proactively ask
-- Don't let gaps accumulate - address them as they come up
-
-**Artifact Management:**
-
-- Use `create_file` for drafting full sections
-- Use `str_replace` for all edits
-- Provide artifact link after every change
-- Never use artifacts for brainstorming lists - that's just conversation
-
-**Quality over Speed:**
-
-- Don't rush through stages
-- Each iteration should make meaningful improvements
-- The goal is a document that actually works for readers
+- Tell them to do a final read themselves, and to verify facts, links and figures. They own this document.
+- File it where the team will look for it (`manageDrive`) — the Drive root is where documents go to be lost.
+- Then, at most one suggestion, once: a format they will rebuild every month is a team skill (`createSkill`); a durable convention this document taught you is a memory; a document that mostly restates numbers that keep moving wants to be a page (`managePage`) instead.
+
+## Traps
+
+- **Do not run this workflow on a request that did not need it.** The offer is part of the workflow; the ceremony is not free.
+- **Brainstorm lists stay in the conversation.** Nothing goes in the document until it has been curated.
+- **Never draft a section whose questions are still open** — that is how a document fills up with plausible filler nobody asked for.
+- **`oldString` must appear exactly once, verbatim.** Widen the anchor rather than guessing which occurrence you meant.
+- **A refused `revision` means someone changed the document under you.** `get` it again and rebuild the edits from what it now says; retrying the same ones fails the same way.

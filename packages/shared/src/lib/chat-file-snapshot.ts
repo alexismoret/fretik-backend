@@ -1,4 +1,10 @@
 import ExcelJS from "exceljs";
+import {
+  isImageMime,
+  isTextMime,
+  isVideoMime,
+  resolveTypeForFile,
+} from "../file-types";
 
 /**
  * Structured preview of a user-uploaded chat file. Computed once at
@@ -379,37 +385,9 @@ const parseTextSnapshot = (bytes: Uint8Array): ChatFileSnapshot => {
   return parseTextSnapshotFromString(text);
 };
 
-const isCsvMime = (mimeType: string): boolean =>
-  mimeType === "text/csv" ||
-  mimeType === "application/csv" ||
-  mimeType === "text/tab-separated-values";
-
-const isXlsxMime = (mimeType: string): boolean =>
-  mimeType.includes("spreadsheet") ||
-  mimeType.includes("excel") ||
-  mimeType === "application/vnd.ms-excel" ||
-  mimeType ===
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
-
-const isOcrSidecarMime = (mimeType: string): boolean =>
-  mimeType === "application/pdf" ||
-  mimeType ===
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
-  mimeType ===
-    "application/vnd.openxmlformats-officedocument.presentationml.presentation" ||
-  mimeType === "application/msword" ||
-  mimeType === "application/vnd.ms-powerpoint";
-
-const isPlainTextMime = (mimeType: string): boolean =>
-  mimeType.startsWith("text/") ||
-  mimeType === "application/json" ||
-  mimeType === "application/xml" ||
-  mimeType === "application/x-yaml";
-
 const opaqueHint = (mimeType: string): string => {
-  if (mimeType.startsWith("image/")) return "image (use vision tool)";
-  if (mimeType.startsWith("audio/")) return "audio (no in-context preview)";
-  if (mimeType.startsWith("video/")) return "video (use vision tool)";
+  if (isImageMime(mimeType)) return "image (use vision tool)";
+  if (isVideoMime(mimeType)) return "video (use vision tool)";
   return `${mimeType || "unknown mime"} (binary)`;
 };
 
@@ -426,17 +404,24 @@ export const extractChatFileSnapshot = async (
   bytes: Uint8Array,
   mimeType: string,
   ocrSidecar: { markdown: string; pageCount: number | undefined } | undefined,
+  filename?: string,
 ): Promise<ChatFileSnapshot> => {
   try {
-    if (isCsvMime(mimeType)) return parseCsvSnapshot(bytes);
-    if (isXlsxMime(mimeType)) return await parseXlsxSnapshot(bytes);
-    if (isOcrSidecarMime(mimeType)) {
+    const def = resolveTypeForFile({ mime: mimeType, filename });
+    // CSV is tabular but arrives as text — parse the bytes directly
+    // rather than going through the spreadsheet reader.
+    if (def?.id === "csv") return parseCsvSnapshot(bytes);
+    if (def?.agentAccess === "tabular") return await parseXlsxSnapshot(bytes);
+    if (
+      def?.agentAccess === "ocr-sidecar" ||
+      def?.agentAccess === "email-sidecar"
+    ) {
       if (ocrSidecar) {
         return parseDocumentSnapshot(ocrSidecar.markdown, ocrSidecar.pageCount);
       }
       return { kind: "opaque", reason: "call read(path) to view the text" };
     }
-    if (isPlainTextMime(mimeType)) return parseTextSnapshot(bytes);
+    if (isTextMime(mimeType)) return parseTextSnapshot(bytes);
     return { kind: "opaque", reason: opaqueHint(mimeType) };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

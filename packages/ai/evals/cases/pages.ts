@@ -10,7 +10,13 @@
 import "@hono/zod-openapi";
 
 import db from "@fretik/shared/db";
-import { pages } from "@fretik/shared/db/schema";
+import {
+  domainEvents,
+  objectRecords,
+  objectTypes,
+  pageVersions,
+  pages,
+} from "@fretik/shared/db/schema";
 import {
   PageDefinitionSchema,
   type PageDefinition,
@@ -32,8 +38,7 @@ import {
   dryRunPage,
   type PageDryRun,
 } from "@fretik/shared/services/pages/dry-run";
-import { and, eq, lt } from "drizzle-orm";
-import { readPageReviewIterations } from "../../src/services/page-review/page-session-store";
+import { and, eq, inArray, lt } from "drizzle-orm";
 import { judgePage } from "../page-design-judge";
 import {
   designScoreAtLeast,
@@ -476,34 +481,119 @@ const pageForConversation = async (
 };
 
 /**
- * How long a page built by an eval survives its run.
+ * When this eval process started — the line between "this run's pages" and
+ * "an earlier run's".
  *
- * It used to be zero: every case deleted its own page the moment the
- * assertions were done. That is tidy and it destroys the evidence — the run of
- * 2026-08-16 produced one page whose filter was better than the assertion that
- * failed it, and there was nothing left to look at. Scores tell you a page was
- * worth 6.8; only the page tells you why.
+ * Sweeping used to be zero-retention: every case deleted its own page the
+ * moment the assertions were done. That is tidy and it destroys the evidence —
+ * the run of 2026-08-16 produced one page whose filter was better than the
+ * assertion that failed it, and there was nothing left to look at. Scores tell
+ * you a page was worth 6.8; only the page tells you why.
  *
  * So a run's output is kept and the PREVIOUS runs' output is what gets swept.
- * Half a day covers "run it, then read it", and the eval team never grows
- * without bound.
+ * That intent was written down and then implemented as "older than 12 hours",
+ * which is a different rule and a weaker one: two runs inside the window leave
+ * each other's pages standing. Measured 2026-08-22 — a page named `Pilotage
+ * Eval Work Items`, 7½ hours old, survived into the next run, and the agent
+ * did the RIGHT thing with it: it found an existing page covering the ask and
+ * declined to duplicate it. Two cases scored 0.25 and 0.30 for correct
+ * behaviour against a workspace the harness had polluted.
+ *
+ * A process-start boundary is the rule the docblock always meant, and it needs
+ * no window: a page created by a CONCURRENT sibling is necessarily newer than
+ * the start of the process both cases run in, so nothing can race.
  */
-const PAGE_RETENTION_MS = 12 * 60 * 60 * 1000;
+const RUN_STARTED_AT = new Date();
 
 /**
  * Sweep pages left by EARLIER runs, keep this one's. Runs from a `cleanup`
  * hook, so it fires once per case — the delete is idempotent and cheap, and
  * putting it here means no separate maintenance step anyone can forget.
+ *
+ * It fires AFTER a case, so the first wave of a run can still see what the
+ * previous run left; what this guarantees is that a run never leaves anything
+ * for the NEXT one. When a suite is being re-run to compare against itself,
+ * that is the property that matters.
  */
 const cleanupPages = async (ctx: EvalCaseContext): Promise<void> => {
   await db
     .delete(pages)
     .where(
+      and(eq(pages.teamId, ctx.teamId), lt(pages.createdAt, RUN_STARTED_AT)),
+    );
+  await forgetFixtureActivity(ctx);
+};
+
+/**
+ * Make a named-page seed idempotent. `cleanupPages` keeps the CURRENT run's
+ * pages and sweeps them only on the NEXT run — after that run's cases have
+ * already seeded. A case that inserts a page by name therefore finds last
+ * run's twin standing next to its own (measured 2026-08-23: the agent found
+ * two "Eval Pipeline Overview" pages and — correctly — stopped to ask which
+ * one to edit, failing the case for the fixture's sin, not its own).
+ */
+const sweepSameNamePages = async (
+  ctx: EvalCaseContext,
+  name: string,
+): Promise<void> => {
+  await db
+    .delete(pages)
+    .where(and(eq(pages.teamId, ctx.teamId), eq(pages.name, name)));
+};
+
+/**
+ * What a FULL BUILD is allowed to take, distinct from the 180s the light
+ * cases keep.
+ *
+ * 180s was written before the builder ran its own review loop and never
+ * revisited: a healthy build now runs create → render → critic → fixes →
+ * re-review, measured at 444s/case on the 2026-08-19 A/B and 532-1021s on
+ * the 2026-08-23 confirmation run — so every build failed on latency even
+ * when everything worked, `pass-rate` sat at 0 on green runs, and the score
+ * stopped meaning anything. 600s holds the A/B's healthy median with one
+ * slow round of margin and still fails tonight's two worst cases: it is a
+ * bar to reach, not a bar moved to wherever the suite already stands. Cases
+ * that ANSWER instead of building (the one-off-question and multi-source
+ * gates) and targeted edits keep 180s — nothing about the loop applies to
+ * them. `page-giga-multi-view` and the uploaded-file chain get 1.5x: SIZE
+ * and a read+import prefix are their explicit subjects.
+ */
+const BUILD_LATENCY_MS = 600_000;
+const HEAVY_BUILD_LATENCY_MS = 900_000;
+
+/**
+ * Drop the journal entries the FIXTURE wrote.
+ *
+ * Seeding records is not a silent write: `createObjectRecord` emits a domain
+ * event inside its own transaction, and the journal is what memory reads —
+ * `services/memory/distill-record-activity` selects by `subjectRecordId` and
+ * turns a record's activity into an episode. Left alone, every eval run would
+ * hand the memory worker a pile of fixture history to remember, and the team
+ * that runs the suite would slowly accumulate recollections of test data.
+ *
+ * The RECORDS stay. The fixture is reused across cases and across runs on
+ * purpose (`fixtureIsCurrent`), and re-seeding per run is what the 2026-08-17
+ * concurrency note warns about. What has no reason to persist is the activity
+ * trail, so that is what goes.
+ */
+const forgetFixtureActivity = async (ctx: EvalCaseContext): Promise<void> => {
+  const seeded = await db
+    .select({ id: objectRecords.id })
+    .from(objectRecords)
+    .innerJoin(objectTypes, eq(objectRecords.objectTypeId, objectTypes.id))
+    .where(
       and(
-        eq(pages.teamId, ctx.teamId),
-        lt(pages.createdAt, new Date(Date.now() - PAGE_RETENTION_MS)),
+        eq(objectRecords.teamId, ctx.teamId),
+        inArray(objectTypes.key, [ITEM_KEY, OWNER_KEY]),
       ),
     );
+  if (seeded.length === 0) return;
+  await db.delete(domainEvents).where(
+    inArray(
+      domainEvents.subjectRecordId,
+      seeded.map((row) => row.id),
+    ),
+  );
 };
 
 const managePageCalls = (result: InvokeResult): InvokeResult["toolCalls"] =>
@@ -721,6 +811,12 @@ const notPublished: EvalCase["assertions"][number] = {
  * moving it; the edit is `updatedAt > createdAt` on the row. A turn that hands
  * over an unreviewed page fails here, which is the number this whole chantier
  * exists to move.
+ *
+ * Carried by EVERY case that builds a page since 2026-08-21. It was on two of
+ * eight, which measured the review loop on the two scenarios that happened to
+ * carry it rather than on the behaviour — and "did anyone look at this page"
+ * is a property of a build, not a scenario of its own. It costs no model call:
+ * one Redis read and two timestamps.
  */
 const reviewedThenFixed: EvalCase["assertions"][number] = {
   type: "custom",
@@ -728,7 +824,22 @@ const reviewedThenFixed: EvalCase["assertions"][number] = {
   fn: async (_r, ctx) => {
     const page = await pageForConversation(ctx);
     if (!page) return "no page was saved";
-    const reviews = await readPageReviewIterations(ctx.conversationId, page.id);
+    // Counted from the VERSION HISTORY, not from the review budget's Redis
+    // counter. The budget is scoped to the TURN (its trace), which an eval
+    // assertion running after the turn cannot reconstruct — it read zero and
+    // reported pages that had been reviewed three times as never reviewed at
+    // all. The rounds are checkpointed as `review-round` versions anyway,
+    // which is the durable record and outlives the counter's TTL.
+    const rounds = await db
+      .select({ id: pageVersions.id })
+      .from(pageVersions)
+      .where(
+        and(
+          eq(pageVersions.pageId, page.id),
+          eq(pageVersions.operation, "review-round"),
+        ),
+      );
+    const reviews = rounds.length;
     if (reviews === 0)
       return "the page was never rendered for review — it was handed over without anyone looking at it";
     // A first review that finds nothing IS a legitimate stop, so one clean
@@ -760,11 +871,36 @@ const reviewedThenFixed: EvalCase["assertions"][number] = {
  *
  * 6 is the first rung that means something: above the "nothing decided" midpoint
  * and still well under ship, so it fails genuinely mediocre pages without
- * failing a build for the critic's ±0.5 run-to-run variance. It goes to 6.5
- * once the builder A/B lands — not before, because raising a floor and changing
- * the model in the same run would leave neither measured.
+ * failing a build for the critic's ±0.5 run-to-run variance.
+ *
+ * RAISED 6 → 6.5 on 2026-08-21, on the condition the note above set: the
+ * builder A/B has landed (`page-build` is pinned to gemini-3.7-flash, the
+ * critic to another family), and the baseline it produced — a 7.03 design
+ * average on `pages-v6-gemini-builder` — sits half a point clear of 6.5. A
+ * floor a full point under the measured average is not measuring the next
+ * regression, it is recording the last one.
  */
-const DESIGN_FLOOR = 6;
+/**
+ * An operation is only real when the SOURCE calls it.
+ *
+ * Declaring one is the half a page can satisfy while nothing on screen ever
+ * runs it: a perfectly-formed operation no `ops.run` names is a control that
+ * looks live and saves nothing, and it is indistinguishable from working until
+ * somebody reloads. The id is the join between the two halves.
+ */
+const operationIsCalled = (
+  operation: Record<string, unknown>,
+  source: string,
+): string | true => {
+  const id = operation["id"];
+  if (typeof id !== "string" || id.length === 0)
+    return "the declared operation has no id, so no code could call it";
+  if (!new RegExp(`ops\\.run\\(\\s*['"\`]${id}['"\`]`).test(source))
+    return `the page declares the operation "${id}" and never calls it — no \`fretik.ops.run("${id}")\` anywhere in the source, so every control over it is inert`;
+  return true;
+};
+
+const DESIGN_FLOOR = 6.5;
 
 const designIsAtLeastCompetent: EvalCase["assertions"][number] = {
   type: "custom",
@@ -821,10 +957,28 @@ const dashboard: EvalCase = {
         const page = await pageForConversation(ctx);
         if (!page) return "no page was saved";
         const source = pageSource(page.definition);
-        // A code page has no chart NODE — Chart.js drawing on a <canvas> is
-        // the one way this runtime charts.
-        if (!/chart\.js|<canvas/i.test(source))
-          return "no chart — the code neither imports chart.js nor draws on a <canvas>";
+        // A code page has no chart NODE, so this reads the source — and it
+        // reads for the RESULT, not one implementation of it. The probe used
+        // to accept only Chart.js on a <canvas> and failed a page that drew a
+        // month-by-month bar chart with a legend out of proportional divs
+        // (2026-08-23, `Work Items & Budget Tracker`). That is a chart, and on
+        // a themable bar it is the better build: no canvas, so no
+        // `fretik.theme.color` round trip and nothing to redraw on a dark-mode
+        // switch. Same lesson the `pageSaved` floor above already records for
+        // KPI tiles written as divs.
+        const chartsOnCanvas = /chart\.js|<canvas/i.test(source);
+        // A bar/progress geometry driven BY THE DATA: a width or height bound
+        // to an interpolated expression ending in `%`. A literal `width: 50%`
+        // does not match, which is what keeps this from passing static layout.
+        const chartsWithProportionalNodes =
+          /(?:width|height)\s*:\s*[`'"]?\$\{[^}]+\}%/.test(source);
+        // An SVG plot: a drawing primitive whose geometry is bound, not fixed.
+        const chartsWithSvg =
+          /<(?:polyline|polygon|path|rect|circle)\b[^>]*:(?:points|d|x|y|width|height|cx|cy|r)=/i.test(
+            source,
+          );
+        if (!chartsOnCanvas && !chartsWithProportionalNodes && !chartsWithSvg)
+          return "no chart — nothing draws on a <canvas>, sizes a node from the data, or plots an SVG shape from it";
         // No stat node either: a KPI is a big rendered number, and the house
         // idiom for one is `text-3xl font-display tabular-nums`
         // (skills/building-pages). The class probe is a proxy for "a headline
@@ -850,6 +1004,8 @@ const dashboard: EvalCase = {
       },
     },
     notPublished,
+    { type: "latencyUnder", ms: BUILD_LATENCY_MS },
+    reviewedThenFixed,
     rendersAndWorks,
     designIsAtLeastCompetent,
     {
@@ -944,7 +1100,10 @@ const filterableDirectory: EvalCase = {
           Object.keys(args).length === 0
         )
           return "the operation names no args, and args IS the writable-field list — it would save and change nothing";
-        return true;
+        // Declared is not wired. The read path is checked end to end below
+        // (`control-wired-to-state`) and the write path stopped at the
+        // contract.
+        return operationIsCalled(write, pageSource(page.definition));
       },
     },
     {
@@ -988,6 +1147,8 @@ const filterableDirectory: EvalCase = {
     },
     noFinalWarnings,
     notPublished,
+    { type: "latencyUnder", ms: BUILD_LATENCY_MS },
+    reviewedThenFixed,
     rendersAndWorks,
     designIsAtLeastCompetent,
     {
@@ -1153,6 +1314,7 @@ onUnmounted(() => {
       ],
       code: { source },
     };
+    await sweepSameNamePages(ctx, UPDATE_PAGE_NAME);
     await db.insert(pages).values({
       organizationId: ctx.organizationId,
       teamId: ctx.teamId,
@@ -1276,6 +1438,7 @@ onMounted(async () => {
       ],
       code: { source },
     };
+    await sweepSameNamePages(ctx, RECOVERY_PAGE_NAME);
     await db.insert(pages).values({
       organizationId: ctx.organizationId,
       teamId: ctx.teamId,
@@ -1384,6 +1547,7 @@ const vagueRequestExpands: EvalCase = {
     },
     datasetsReturnedRows,
     noFinalWarnings,
+    { type: "latencyUnder", ms: BUILD_LATENCY_MS },
     reviewedThenFixed,
     rendersAndWorks,
     designIsAtLeastCompetent,
@@ -1468,6 +1632,8 @@ const multiSourcePage: EvalCase = {
     },
     datasetsReturnedRows,
     noFinalWarnings,
+    { type: "latencyUnder", ms: 180_000 },
+    reviewedThenFixed,
     rendersAndWorks,
     designIsAtLeastCompetent,
     {
@@ -1554,6 +1720,8 @@ const threadPage: EvalCase = {
       },
     },
     noFinalWarnings,
+    { type: "latencyUnder", ms: BUILD_LATENCY_MS },
+    reviewedThenFixed,
     rendersAndWorks,
     designIsAtLeastCompetent,
     {
@@ -1608,6 +1776,8 @@ const consolePage: EvalCase = {
       },
     },
     noFinalWarnings,
+    { type: "latencyUnder", ms: BUILD_LATENCY_MS },
+    reviewedThenFixed,
     rendersAndWorks,
     designIsAtLeastCompetent,
     {
@@ -1666,6 +1836,8 @@ const scheduledPage: EvalCase = {
       },
     },
     noFinalWarnings,
+    { type: "latencyUnder", ms: BUILD_LATENCY_MS },
+    reviewedThenFixed,
     rendersAndWorks,
     designIsAtLeastCompetent,
     {
@@ -1676,10 +1848,346 @@ const scheduledPage: EvalCase = {
   ],
 };
 
+/**
+ * The GIGA page: one screen a team runs its week on, several views deep.
+ *
+ * Nothing else in this suite measures SIZE. Every other case is a page that
+ * fits one answer, and a builder that writes exactly one screen passes all of
+ * them — while the request this product actually receives is "put everything
+ * about our work in one place". That shape has its own failure, and it is not
+ * a bad layout: it is a source that stops halfway, because the ceiling is not
+ * the page's 240 000 characters but how much the model can emit in ONE answer.
+ * The skeleton-first doctrine exists for this case and this case is what
+ * measures it.
+ *
+ * The floors are deliberately about REACH rather than quality — the render
+ * gate and the design floor already judge quality, and stacking one more
+ * opinion here would only make the case ambiguous when it fails.
+ */
+const gigaPage: EvalCase = {
+  id: "page-giga-multi-view",
+  description:
+    "A large multi-view page arrives whole: several sections, a real aggregate, a working write — not a source that stopped halfway.",
+  prompt: [
+    `Build us the one page the team opens every morning for our "${ITEM_LABEL}" records. It has to replace the three views we keep switching between, so put it all on one screen:`,
+    "",
+    "- the headline figures at the top — how many are open, how much budget is committed, how much is late;",
+    "- how the work splits by team, and how it splits by priority;",
+    "- the full list, filterable and sortable, with the detail of any item openable in place;",
+    "- and a board of the items by status so we can see where things are stuck.",
+    "",
+    "We also want to change an item's status from the page instead of going elsewhere to do it.",
+  ].join("\n"),
+  tags: ["pages", "generation", "scale"],
+  seed: seedItems,
+  cleanup: cleanupPages,
+  budget: {
+    // Higher than any other build case, on purpose: a skeleton plus one edit
+    // per section IS the expected shape here, and a budget that forbade it
+    // would measure the ceiling instead of the page.
+    maxToolCalls: 26,
+    expectedTools: [
+      "searchTools",
+      "buildPage",
+      "describeObjectType",
+      "managePage",
+    ],
+  },
+  assertions: [
+    { type: "noError" },
+    { type: "toolUsed", tools: pageTools },
+    pageSaved(14),
+    usesSeededType,
+    {
+      type: "custom",
+      name: "the-source-arrived-whole",
+      fn: async (_r, ctx) => {
+        const page = await pageForConversation(ctx);
+        if (!page) return "no page was saved";
+        const source = pageSource(page.definition);
+        if (source.length < 18_000)
+          return `the source is ${source.length.toString()} characters — four views and a write do not fit in that, so something was dropped rather than built`;
+        // A skeleton marker still in the stored source is the exact failure
+        // the doctrine is meant to prevent: a section that was planned, left
+        // as a placeholder, and handed over as if it were finished.
+        if (/SECTION:\s*[a-z0-9_-]+/i.test(source))
+          return "an unfilled `SECTION:` stub is still in the page — the skeleton was handed over before every section was written";
+        return true;
+      },
+    },
+    {
+      type: "custom",
+      name: "every-view-is-a-real-query",
+      fn: async (_r, ctx) => {
+        const page = await pageForConversation(ctx);
+        if (!page) return "no page was saved";
+        const datasets = collectDatasets(page.definition);
+        if (datasets.length < 4)
+          return `the page declares ${datasets.length.toString()} dataset(s) — four views were asked for and figures that must hold cannot be summed off a list`;
+        const aggregate = datasets.filter(
+          (dataset) => dataset["mode"] === "aggregate",
+        );
+        if (aggregate.length === 0)
+          return "no aggregate dataset — the headline figures and the two splits are being computed over one loaded page of rows, which stops being true the moment the type outgrows the limit";
+        const records = datasets.filter(
+          (dataset) => dataset["mode"] === "records",
+        );
+        if (records.length === 0)
+          return "no records dataset — the full list has nothing paginated behind it";
+        return true;
+      },
+    },
+    datasetsReturnedRows,
+    noFinalWarnings,
+    notPublished,
+    { type: "latencyUnder", ms: HEAVY_BUILD_LATENCY_MS },
+    reviewedThenFixed,
+    rendersAndWorks,
+    designIsAtLeastCompetent,
+    {
+      type: "judge",
+      rubric:
+        "The assistant built one large page covering the four views the user listed (headline figures, the two splits, the filterable list with detail, the status board) plus changing an item's status, and reported what it built. CORRECT if it reports the page and the reader can tell all four views and the status change are there. PARTIAL if the page exists but the reply is vague about what it covers, or one of the views is missing and unmentioned. INCORRECT if no page was built, or several of the requested views are simply absent.",
+    },
+  ],
+};
+
+/**
+ * The two write kinds nothing has ever exercised: `bulk` and `link`.
+ *
+ * `record` is covered — a status control on one row — and the other two were
+ * shipped, documented and never measured. Each fails its OWN way, and neither
+ * failure looks like a bug from the page:
+ *
+ * - `bulk` is what a selection is for. The page that "works" without it runs
+ *   `record` in a loop, which is twelve calls against a bridge that allows
+ *   thirty per ten seconds, and it half-succeeds: some rows change, some are
+ *   rate-limited, and the table shows a state that never existed.
+ * - `link` moves an edge in the links graph. A relation is NOT writable through
+ *   `args`, so an assignment written as a field write is refused by name — and
+ *   the page still renders, still shows the control, and changes nothing.
+ *
+ * One case rather than two: the request is natural as one page, the assertions
+ * separate cleanly, and a browser render is the expensive part of a page case.
+ */
+const bulkAndLinkWrites: EvalCase = {
+  id: "page-bulk-and-link-writes",
+  description:
+    "A page that assigns an owner and acts on a whole selection — the `link` and `bulk` operation kinds, wired end to end.",
+  prompt: [
+    `Build a page to triage our "${ITEM_LABEL}" records.`,
+    "",
+    `I need to give an item its ${OWNER_LABEL.toLowerCase()} straight from the page — pick the person, done.`,
+    "And I need to select several items at once and push them all to done in one go, not one by one.",
+  ].join("\n"),
+  tags: ["pages", "generation", "writes"],
+  seed: seedItems,
+  cleanup: cleanupPages,
+  budget: {
+    maxToolCalls: 18,
+    expectedTools: [
+      "searchTools",
+      "buildPage",
+      "describeObjectType",
+      "managePage",
+    ],
+  },
+  assertions: [
+    { type: "noError" },
+    { type: "toolUsed", tools: pageTools },
+    pageSaved(6),
+    usesSeededType,
+    {
+      type: "custom",
+      name: "assigning-is-a-link-operation",
+      fn: async (_r, ctx) => {
+        const page = await pageForConversation(ctx);
+        if (!page) return "no page was saved";
+        const link = collectOperations(page.definition).find(
+          (operation) => operation["kind"] === "link",
+        );
+        if (!link)
+          return `the page declares no \`link\` operation, so it cannot assign an ${OWNER_LABEL.toLowerCase()} — a relation is an edge in the links graph and the field key is REFUSED inside \`args\`, which fails silently from the page's point of view`;
+        if (link["fieldKey"] !== OWNER_FIELD_KEY)
+          return `the link operation moves "${String(link["fieldKey"])}" — the relation the request is about is "${OWNER_FIELD_KEY}"`;
+        return operationIsCalled(link, pageSource(page.definition));
+      },
+    },
+    {
+      type: "custom",
+      name: "a-selection-is-one-call",
+      fn: async (_r, ctx) => {
+        const page = await pageForConversation(ctx);
+        if (!page) return "no page was saved";
+        const operations = collectOperations(page.definition);
+        const bulk = operations.find(
+          (operation) => operation["kind"] === "bulk",
+        );
+        if (!bulk)
+          return "the page declares no `bulk` operation, so acting on a selection means one call per row — twelve rows is twelve calls against a bridge that allows thirty per ten seconds, and the ones that get rate-limited leave the table showing a state that never existed";
+        if (bulk["mode"] !== "update")
+          return `the bulk operation is a ${String(bulk["mode"])} — pushing a selection to done is an update`;
+        const args = bulk["args"];
+        if (
+          args === null ||
+          typeof args !== "object" ||
+          Object.keys(args).length === 0
+        )
+          return "the bulk operation names no args, and args IS the writable-field list — it would run over every selected row and change none of them";
+        return operationIsCalled(bulk, pageSource(page.definition));
+      },
+    },
+    noFinalWarnings,
+    notPublished,
+    { type: "latencyUnder", ms: BUILD_LATENCY_MS },
+    reviewedThenFixed,
+    rendersAndWorks,
+    designIsAtLeastCompetent,
+    {
+      type: "judge",
+      rubric: `The assistant built a page that can assign an ${OWNER_LABEL.toLowerCase()} to an item and act on several selected items at once, and reported it. CORRECT if it reports the page and names both capabilities. PARTIAL if the page exists but only one of the two is described, or the reply is vague about how either works. INCORRECT if no page was built, or neither write is mentioned.`,
+    },
+  ],
+};
+
+// ── The long chain: a file becomes records, and the records become a page ────
+
+/**
+ * The `ventes.csv` fixture, as facts an assertion can check.
+ *
+ * Written here rather than parsed from the file on purpose: the point of the
+ * case is that the numbers on the page came from the FILE, and a check that
+ * re-derives them from the same file would pass on an empty import.
+ */
+const SALES_ROW_COUNT = 5;
+const SALES_TOTAL = 42_000;
+
+/**
+ * Every object type the page's datasets read, minus the fixtures this suite
+ * seeds — i.e. the ones the AGENT created during the run.
+ *
+ * Identifying the type through the PAGE is what makes the case robust: the
+ * agent names its own type, so a key-matching assertion would grade the
+ * assistant's vocabulary, and a "created in the last N minutes" query would
+ * grade the clock. The chain under test is file → records → page, and the page
+ * is the end of it — whatever it reads is what the import produced.
+ */
+const typesBehindThePage = async (
+  ctx: EvalCaseContext,
+): Promise<{ id: string; key: string }[]> => {
+  const page = await pageForConversation(ctx);
+  if (!page) return [];
+  const text = definitionText(page.definition);
+  const seeded = await Promise.all(
+    [ITEM_KEY, OWNER_KEY].map((key) =>
+      resolveObjectTypeId({
+        organizationId: ctx.organizationId,
+        teamId: ctx.teamId,
+        key,
+      }),
+    ),
+  );
+  const rows = await db.query.objectTypes.findMany({
+    columns: { id: true, key: true },
+    where: { teamId: ctx.teamId },
+  });
+  return rows.filter(
+    (row) => text.includes(row.id) && !seeded.includes(row.id),
+  );
+};
+
+const fileToObjectsToPage: EvalCase = {
+  id: "page-from-uploaded-file",
+  description:
+    "The whole chain in one turn: read an attached CSV, file its rows as records, then build a page over those records.",
+  // Deliberately does NOT name a type key or a chart. Naming the key would
+  // grade the assistant's obedience; the case is about whether the three steps
+  // connect at all — the only measurement of `buildPage` inside a real chain.
+  prompt:
+    "Voici nos ventes du trimestre en pièce jointe (ventes.csv). Range-les dans nos objets pour qu'on puisse les retrouver, puis fais-nous une page qui montre le total par région et le détail ligne par ligne.",
+  tags: ["pages", "generation", "multi-step", "files"],
+  fixtures: ["ventes.csv"],
+  cleanup: async (ctx) => {
+    // Drop what the AGENT created before sweeping pages — the page is how the
+    // types are found, so the order is load-bearing.
+    for (const type of await typesBehindThePage(ctx)) {
+      await invalidateObjectTypeIdCache({
+        organizationId: ctx.organizationId,
+        teamId: ctx.teamId,
+        key: type.key,
+      });
+      await deleteObjectType({ id: type.id });
+    }
+    await cleanupPages(ctx);
+  },
+  budget: {
+    expectedTools: ["searchTools", "read", "python", "buildPage"],
+  },
+  assertions: [
+    { type: "noError" },
+    { type: "toolUsed", tools: pageTools },
+    pageSaved(6),
+    {
+      type: "custom",
+      name: "the-file-became-records-the-page-reads",
+      fn: async (_r, ctx) => {
+        const types = await typesBehindThePage(ctx);
+        if (types.length === 0)
+          return "no page dataset points at a type the agent created — either nothing was imported, or the page was built over something else";
+        for (const type of types) {
+          const rows = await queryObjectRecords({
+            teamId: ctx.teamId,
+            objectTypeId: type.id,
+            limit: 50,
+          });
+          if (rows.length !== SALES_ROW_COUNT) continue;
+          // The sum is what separates "five records exist" from "the file's
+          // five rows were imported". A hand-typed placeholder set passes the
+          // count and fails here.
+          //
+          // `money` is read as well as `number`: the CSV carries no currency,
+          // so both are defensible models for an amount and the doctrine
+          // actively offers `money`. Grading the modelling choice here would
+          // fail a correct import for picking the richer type.
+          const total = rows.reduce((sum, row) => {
+            const amount = Object.values(row.data)
+              .map((v) =>
+                typeof v === "object" && v !== null && "amount" in v
+                  ? Reflect.get(v, "amount")
+                  : v,
+              )
+              .find((v) => typeof v === "number" && v >= 1000);
+            return sum + (typeof amount === "number" ? amount : 0);
+          }, 0);
+          if (total === SALES_TOTAL) return true;
+          return `'${type.key}' holds ${SALES_ROW_COUNT.toString()} records but their amounts total ${total.toString()} instead of ${SALES_TOTAL.toString()} — the rows were not read off the file`;
+        }
+        const shape = types.map((t) => t.key).join(", ");
+        return `the page reads '${shape}', which does not hold the file's ${SALES_ROW_COUNT.toString()} rows`;
+      },
+    },
+    datasetsReturnedRows,
+    noFinalWarnings,
+    notPublished,
+    // The longest chain in the suite — a file read, an import, and a full build
+    // in one turn. A build-only budget here would measure the chain against a
+    // ceiling set for one of its three steps.
+    { type: "latencyUnder", ms: HEAVY_BUILD_LATENCY_MS },
+    reviewedThenFixed,
+    rendersAndWorks,
+    designIsAtLeastCompetent,
+    {
+      type: "judge",
+      rubric:
+        "CORRECT if the assistant read the attached ventes.csv, filed its rows into the team's objects, built a page over those records, and reported all three. PARTIAL if the page exists but the reply is vague about where the data came from, or if it answered the totals in chat as well as building the page. INCORRECT if it answered from the file alone without storing anything, or if no page was built.",
+    },
+  ],
+};
+
 export const pagesSuite: EvalSuite = {
   name: "pages",
   summary:
-    "Chatbot-authored pages: live datasets grounded in the real schema, KPI/chart/table structure, wired filters, safe updates, and the two negatives (no page for a one-off question, no publishing without consent).",
+    "Chatbot-authored pages: live datasets grounded in the real schema, KPI/chart/table structure, wired filters, safe updates, the full file→objects→page chain, and the two negatives (no page for a one-off question, no publishing without consent).",
   cases: [
     dashboard,
     filterableDirectory,
@@ -1688,8 +2196,11 @@ export const pagesSuite: EvalSuite = {
     noPageForOneOffQuestion,
     vagueRequestExpands,
     multiSourcePage,
+    gigaPage,
+    bulkAndLinkWrites,
     threadPage,
     consolePage,
     scheduledPage,
+    fileToObjectsToPage,
   ],
 };

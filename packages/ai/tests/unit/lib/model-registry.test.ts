@@ -61,15 +61,27 @@ describe("settingsForRole — parity with historical settings objects", () => {
   test("chat-fallback carries minimax-m3's own envelope, not the historical one", () => {
     // Rebound to minimax-m3 on 2026-08-02 so the fallback shares neither
     // family nor upstream with the DeepSeek primary. It therefore brings M3's
-    // pinned 5 000-token reasoning budget and Novita pin rather than the
-    // 1 500 / unpinned envelope deepseek-v4-pro used to produce here.
+    // pinned 5 000-token reasoning budget rather than the 1 500 / unpinned
+    // envelope deepseek-v4-pro used to produce here.
+    //
+    // The Novita PIN is gone as of 2026-08-23. This role is what the page
+    // builder falls back to when a build dies, so every M3 turn was being
+    // served by the one upstream that ignores the reasoning budget above — and
+    // `order` disables `sort`, so nothing faster could ever win. What this test
+    // now pins is that the fallback routes through a POOL: `sort` present,
+    // `order` absent.
     expect(
       settingsForRole(
         ROLE_BINDINGS["chat-fallback"],
         getProfileForRole("chat-fallback"),
       ),
     ).toEqual({
-      provider: { require_parameters: true, zdr: true, order: ["Novita"] },
+      provider: {
+        require_parameters: true,
+        zdr: true,
+        only: ["CoreWeave", "Novita", "DeepInfra"],
+        sort: "throughput",
+      },
       reasoning: { enabled: true, max_tokens: 5_000 },
       usage: { include: true },
     });

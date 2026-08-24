@@ -91,6 +91,20 @@ A page that only displays is a screenshot. The gap between "it shows the data" a
 
 Ambition is part of the brief: when in doubt between shipping one more real capability and shipping one more decorative block, ship the capability.
 
+### The floor
+
+Nobody asks for these, and a page without them reads as a first draft. They are the baseline a page is expected to clear before anything it was actually asked for counts as delivered — countable on purpose, so "is this finished" has an answer:
+
+- **A filter over the dimension the page is for**, wired as a variable so it re-queries, from about twenty rows; a text search from about thirty; a clickable sort on the columns whose descriptor says `sortable`; pagination whenever `totalCount` exceeds the page size.
+- **A detail view for the entity being listed** — an overlay is enough — and, when the type is writable, at least one action inside it.
+- **A writable type means a write.** Declare at least one `record` operation and CALL it from the code; a declared operation nothing runs is a page that still sends the user elsewhere to do the work.
+- **A layout that groups by a changeable value is itself the control.** Columns for a status, lanes for an owner, cells for a date: when the arrangement encodes a field, moving an item between groups sets that field. Drawing that arrangement and then routing the change through a dropdown elsewhere withholds the affordance the layout just promised — which reads as broken, not as simpler. Mechanics in `references/pattern-board.md`, and the registration rule in `libraries/drag-and-drop.md` before any `draggable()`.
+- **A figure band whenever an aggregate means something** — one `aggregate` dataset, not a sum over the loaded page.
+- **Nothing inert that looks live.** A card, a row, a tab or a chip styled as a target must do something when clicked — filter, open, navigate. The render gate MEASURES this and fails the page on it, because a decorative target costs a reader more than a plain one: they try it, nothing happens, and they stop trusting the rest. If there is nothing for it to do, style it as text.
+- **The four dataset states, and the interactive ones**: hover, focus, disabled and pending on every control that writes.
+
+Clear the floor first, then spend what is left on the signature.
+
 ## Copy
 
 Words are design material; write them with the same care as spacing.

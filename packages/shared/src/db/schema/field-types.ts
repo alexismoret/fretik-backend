@@ -74,9 +74,40 @@ export const FIELD_TYPES = [
   // Read-only aggregate over a `relation` field's linked records (Notion
   // rollup). Computed in the typed view; never stored in `data`.
   "rollup",
+  // Read-only value derived from the record's OWN fields by a formula, computed
+  // by the database itself (a `GENERATED … STORED` column). Being a real column
+  // is the point: it sorts, filters and aggregates server-side like any other.
+  // Distinct from `rollup`, which reaches across a relation to OTHER records.
+  "formula",
 ] as const;
 
 export type FieldDefinitionType = (typeof FIELD_TYPES)[number];
+
+/**
+ * Field types no record write can ever set — their value is DERIVED, never
+ * entered: a relation is an edge in the `links` graph (moved with a link
+ * operation), a rollup aggregates other records, a formula is a column the
+ * database computes and physically refuses to accept a value for, `unique_id`
+ * comes from its sequence, and the system properties mirror the registry.
+ *
+ * One exported set rather than a copy per consumer: `buildRecordShape` (which
+ * strips these keys from a write) and the pages field descriptors (which tell a
+ * generated page not to offer them in a form) previously carried the same list
+ * twice, coupled only by a comment — so a new derived type was one forgotten
+ * edit away from being offered as writable in a form that silently saves
+ * nothing.
+ */
+export const NON_WRITABLE_FIELD_TYPES: ReadonlySet<FieldDefinitionType> =
+  new Set([
+    "relation",
+    "rollup",
+    "formula",
+    "unique_id",
+    "created_time",
+    "last_edited_time",
+    "created_by",
+    "last_edited_by",
+  ]);
 
 /**
  * An option for the select-family fields. `group` (optional) gives the option
@@ -258,6 +289,43 @@ export type RollupFieldConfig = {
   fn?: RollupFn;
 };
 
+/**
+ * What a formula evaluates to. Kept here rather than in the formula compiler
+ * because it is a PERSISTED value (`config.resultType`) — the schema owns the
+ * vocabulary, the language re-exports it so the two can never drift.
+ */
+export const FORMULA_RESULT_TYPES = [
+  "number",
+  "text",
+  "boolean",
+  "date",
+] as const;
+
+export type FormulaResultType = (typeof FORMULA_RESULT_TYPES)[number];
+
+export type FormulaFieldConfig = {
+  /**
+   * The formula, in Fretik's formula language (`revenue - cost`,
+   * `round(margin / revenue * 100, 1)`, `if(status = "won", amount, 0)`).
+   * Compiled to SQL server-side; raw SQL is never accepted here.
+   */
+  expression?: string;
+  /**
+   * What the expression evaluates to — INFERRED by the compiler at save and
+   * stored so readers never re-infer. Writing it by hand would create a second
+   * source of truth that can disagree with the expression itself.
+   */
+  resultType?: FormulaResultType;
+  /** Display options, mirroring their `number` / `money` / `date` counterparts. */
+  precision?: number;
+  suffix?: string;
+  numberFormat?: FieldNumberFormat;
+  /** ISO-4217 code — renders a `number` result as money. */
+  currencyCode?: string;
+  /** `date` result: show the time of day too. */
+  hasTime?: boolean;
+};
+
 /** Field type → its config shape. Add a row here per new field type. */
 export type FieldTypeConfigMap = {
   text: TextFieldConfig;
@@ -281,6 +349,7 @@ export type FieldTypeConfigMap = {
   created_by: NoFieldConfig;
   last_edited_by: NoFieldConfig;
   rollup: RollupFieldConfig;
+  formula: FormulaFieldConfig;
 };
 
 /** Config for a known field type — use this in per-type code. */

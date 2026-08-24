@@ -278,6 +278,34 @@ export const responseAlreadyExistSchema = {
 };
 
 /**
+ * 409 Conflict — the request clashes with the resource's current state.
+ *
+ * Distinct from `responseAlreadyExistSchema`, which pins one code and carries
+ * nothing else. This one keeps `details`, because the useful conflicts are the
+ * ones the caller can act on: a name collision hands back the id of the
+ * document already sitting there, so the client can offer to replace it.
+ */
+export const responseConflictSchema = {
+  409: {
+    content: {
+      "application/json": {
+        schema: z.object({
+          code: z.string(),
+          message: z.string().optional(),
+          details: z.union([z.string(), z.array(z.string())]).optional(),
+        }),
+        example: {
+          code: "DOCUMENT_NAME_CONFLICT",
+          message: 'A different file named "report.pdf" is already here.',
+          details: "018f3a3a-3a3a-3a3a-3a3a-3a3a3a3a3a3a",
+        },
+      },
+    },
+    description: "Conflict — the request clashes with the current state",
+  },
+};
+
+/**
  * 500 Internal Server Error - Unexpected server error
  */
 export const responseInternalErrorSchema = {

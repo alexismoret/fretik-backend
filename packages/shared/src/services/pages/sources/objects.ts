@@ -5,6 +5,7 @@ import type {
   PageDatasetQuery,
   PageDatasetResult,
   PageFieldDescriptor,
+  PageMetric,
   PageValue,
 } from "../../../schemas/pages";
 import { PAGE_LIMITS, isPageVarRef } from "../../../schemas/pages";
@@ -108,6 +109,29 @@ const resolveSortKey = (
 };
 
 /**
+ * The same question for an AGGREGATE, whose sort names are not field keys.
+ *
+ * An aggregate's columns are `group`, `series` and the metric names the dataset
+ * declared, so `resolveSortKey` — which validates against the type's fields —
+ * would reject every one of them. Without this the aggregate branch ignored
+ * `query` entirely: a chart could not be re-sorted and a "top 10" could not
+ * become a "top 20" without the author having foreseen it, which is the one
+ * thing a large page is made of.
+ *
+ * Unknown names are DROPPED rather than passed through, exactly as above: the
+ * name reaches an ORDER BY, and the honest answer to a stale one is the
+ * author's own order.
+ */
+const resolveAggregateSortKey = (
+  sortBy: string | undefined,
+  metrics: PageMetric[],
+): string | undefined => {
+  if (!sortBy) return undefined;
+  if (sortBy === "group" || sortBy === "series") return sortBy;
+  return metrics.some((metric) => metric.name === sortBy) ? sortBy : undefined;
+};
+
+/**
  * The window of rows to read: what the viewer asked for, bounded by what the
  * page allows.
  *
@@ -175,6 +199,13 @@ export const objectsSource: PageDataSource = {
     });
 
     if (dataset.mode === "aggregate") {
+      const metrics = dataset.metrics ?? [{ name: "count", fn: "count" }];
+      // An aggregate honours `query` too. It used to ignore it, which made
+      // every chart on a page permanently sorted and sized the way its author
+      // guessed — no clickable legend, no "top 20 instead of top 10".
+      const sortBy =
+        resolveAggregateSortKey(query?.sortBy, metrics) ??
+        resolveAggregateSortKey(dataset.sortBy, metrics);
       const { rows, truncated } = await aggregateRecords({
         teamId,
         objectTypeId: dataset.objectTypeId,
@@ -182,10 +213,15 @@ export const objectsSource: PageDataSource = {
         groupBy: dataset.groupBy,
         dateBucket: dataset.dateBucket,
         seriesBy: dataset.seriesBy,
-        metrics: dataset.metrics ?? [{ name: "count", fn: "count" }],
-        limit: dataset.limit,
-        sortBy: dataset.sortBy,
-        sortDir: dataset.sortDir,
+        metrics,
+        // `pageSize` is how many GROUPS to return here — an aggregate has no
+        // offset to page through, so `page` means nothing and is ignored.
+        limit: Math.min(
+          query?.pageSize ?? dataset.limit ?? PAGE_LIMITS.maxRows,
+          PAGE_LIMITS.maxRows,
+        ),
+        ...(sortBy !== undefined ? { sortBy } : {}),
+        sortDir: query?.sortDir ?? dataset.sortDir,
       });
       // An aggregate's columns are metrics, not fields — but the grouping
       // dimension IS a field, and shipping its descriptor is what lets a chart

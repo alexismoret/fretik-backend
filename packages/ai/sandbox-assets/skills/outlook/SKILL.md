@@ -1,7 +1,7 @@
 ---
 name: outlook
 description: Microsoft Outlook — read and send email, organize mail folders, and manage calendar events and contacts on the user's connected Outlook account.
-version: 4a50eb8c8c2c
+version: fd2da5f63d6e
 ---
 
 # Microsoft Outlook — 38 actions
@@ -12,7 +12,7 @@ You can interact with the user's Microsoft Outlook account via the `fretik_apps.
 
 - `outlook.list_messages(folder="inbox", unread_only=None, limit=25, offset=0)` — List emails from a well-known mail folder
 - `outlook.get_message(message_id)` — Fetch one email by ID, with its full HTML body
-- `outlook.search_messages(query, limit=25, offset=0)` — Full-text search across the mailbox
+- `outlook.search_messages(query, limit=25, offset=0)` — Full-text search across the mailbox, ordered by relevance not date
 - `outlook.list_messages_in_folder(folder_id, unread_only=None, limit=25, offset=0)` — List emails from a custom folder by its folder ID
 - `outlook.list_folders()` — List the top-level mail folders of the mailbox
 - `outlook.list_message_attachments(message_id)` — List attachments on a message (metadata only — no content)

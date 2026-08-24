@@ -1,38 +1,37 @@
-import {
-  isImageMime,
-  isOcrDocumentMime,
-  isSpreadsheetMime,
-  isTextMime,
-} from "../../utils/mimeTypes";
+import { extractionFor } from "../../file-types";
 import type { ExtractionRoute } from "./types";
 
 /**
  * MIME → extraction-route dispatcher. The MIME passed here is the REAL
- * type already resolved from magic bytes at the upload boundary
- * (`detectMimeFromBytes`), so routing trusts it directly — no extension
- * guessing. All category logic delegates to the canonical predicates in
- * `utils/mimeTypes` so the lists live in exactly one place.
+ * type already resolved from the bytes at the upload boundary
+ * (`resolveFileType`), so routing trusts it directly — no extension
+ * guessing. The strategy itself is declared once per type in the
+ * file-type registry; this only maps it onto the route union and names
+ * the one case the registry has no word for (`unsupported`).
  *
- *  - PDF / DOCX / DOC / PPTX / PPT → `mistral-ocr` (native, reads
- *    embedded-image text; PDFs keep table fidelity).
- *  - images → `image-ocr` (caller downgrades to `image-skip` when OCR
- *    yields no usable text).
- *  - XLSX / XLS / CSV → `spreadsheet` (exceljs; context only — the
- *    chatbot routes spreadsheets to `python` instead).
- *  - any UTF-8 text/code/data → `text` (decoded inline, not cached).
- *  - genuinely-binary unknown → `unsupported`.
+ * The `filename` is optional and only refines textual types whose MIME
+ * under-describes them (`text/plain` → source code), which changes
+ * nothing about the route — both land on `text`.
  */
-export const routeForMime = (mimeType: string): ExtractionRoute => {
-  if (isOcrDocumentMime(mimeType)) return "mistral-ocr";
-  if (isImageMime(mimeType)) return "image-ocr";
-  if (isSpreadsheetMime(mimeType)) return "spreadsheet";
-  if (isTextMime(mimeType)) return "text";
-  return "unsupported";
+export const routeForMime = (
+  mimeType: string,
+  filename?: string,
+): ExtractionRoute => {
+  const strategy = extractionFor(mimeType, filename);
+  return strategy === "none" ? "unsupported" : strategy;
 };
 
-/** Routes whose result is worth persisting in the content-addressed cache. */
+/**
+ * Routes whose result is worth persisting in the content-addressed
+ * cache. `text` is excluded — decoding UTF-8 is cheaper than a cache
+ * lookup — but every route that calls out to OCR, Gotenberg or a mail
+ * parser earns its row.
+ */
 export const isCacheableRoute = (route: ExtractionRoute): boolean =>
   route === "mistral-ocr" ||
+  route === "convert-ocr" ||
   route === "image-ocr" ||
   route === "spreadsheet" ||
+  route === "email" ||
+  route === "html" ||
   route === "legacy-import";

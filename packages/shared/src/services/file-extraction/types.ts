@@ -18,9 +18,12 @@ import type { OcrPage, OcrResult, RunOcrArgs } from "../../lib/mistral-ocr";
 
 export type ExtractionRoute =
   | "mistral-ocr" // PDF / DOCX / PPTX → Mistral OCR (handles them natively)
+  | "convert-ocr" // ODT / ODS / ODP / RTF → Gotenberg PDF → Mistral OCR
   | "image-ocr" // image with usable OCR text
   | "image-skip" // image whose OCR yielded no usable text → no sidecar
   | "spreadsheet" // XLSX / XLS / CSV → exceljs markdown tables (context only)
+  | "email" // EML / MSG → headers + body + attachment list as markdown
+  | "html" // HTML → markdown (the raw source stays readable too)
   | "text" // plain text / markdown / JSON → decoded inline, not cached
   | "legacy-import" // imported from a pre-refonte session-prefix sidecar
   | "unsupported";

@@ -248,7 +248,8 @@ export const imapSmtpManifest: ProviderManifest = {
     {
       name: "list_messages",
       kind: "read",
-      summary: "List emails from a well-known mail folder",
+      summary:
+        "List emails from a well-known mail folder, newest received_at first",
       handler: "listMessages",
       params: {
         folder: {
@@ -301,7 +302,7 @@ export const imapSmtpManifest: ProviderManifest = {
     {
       name: "search_messages",
       kind: "read",
-      summary: "Full-text search across the INBOX",
+      summary: "Full-text search across the INBOX, newest received_at first",
       handler: "searchMessages",
       params: {
         query: {
@@ -332,7 +333,8 @@ export const imapSmtpManifest: ProviderManifest = {
     {
       name: "list_messages_in_folder",
       kind: "read",
-      summary: "List emails from a custom folder by its folder ID",
+      summary:
+        "List emails from a custom folder by its folder ID, newest received_at first",
       handler: "listMessagesInFolder",
       params: {
         folder_id: {

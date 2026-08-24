@@ -507,7 +507,7 @@ export type ModelRole =
  *   call sites own their per-call options).
  */
 export type RoleSettingsKind =
-  "chat" | "preextract" | "active-memory" | "recall" | "bare";
+  "chat" | "page-build" | "preextract" | "active-memory" | "recall" | "bare";
 
 export interface RoleBinding {
   role: ModelRole;

@@ -15,7 +15,15 @@ import {
   throwHttpError,
 } from "@fretik/shared/lib/errors";
 import { getPresignedUrl } from "@fretik/shared/lib/s3";
+import {
+  PromoteSandboxFileError,
+  promoteSandboxFileToDrive,
+} from "@fretik/shared/services/chat-files/promote-sandbox-file-to-drive";
 import { promoteChatFilesToDrive } from "@fretik/shared/services/chat-files/promote-to-drive";
+import {
+  listConversationWorkspaceFiles,
+  resolveDriveState,
+} from "@fretik/shared/services/chat-files/workspace-files";
 import { OpenAPIHono } from "@hono/zod-openapi";
 import { and, desc, eq, ne } from "drizzle-orm";
 import {
@@ -159,6 +167,197 @@ chatFilesRoutes.post("/conversation/:id/files", async (c) => {
   });
 
   return c.json(row, 201);
+});
+
+// ==================== //
+// GET workspace hub    //
+// ==================== //
+
+/** Shared guard: the conversation exists AND belongs to the caller's team. */
+const assertConversationInTeam = async (
+  conversationId: string,
+  teamId: string,
+): Promise<void> => {
+  const conversation = await db.query.aiConversations.findFirst({
+    where: { id: conversationId },
+    columns: { id: true, teamId: true },
+  });
+  if (!conversation) {
+    return throwHttpError(404, notFound("Conversation not found"));
+  }
+  if (conversation.teamId !== teamId) {
+    return throwHttpError(403, forbidden());
+  }
+};
+
+/**
+ * Everything this conversation holds — what the user attached AND what the
+ * agent produced — as one list. `/files` above stays what it always was: the
+ * attachment rows the prompt bar counts against its cap.
+ */
+chatFilesRoutes.get("/conversation/:id/workspace", async (c) => {
+  const team = c.get("team");
+  if (!team) return throwHttpError(403, teamRequired());
+
+  const conversationId = c.req.param("id");
+  await assertConversationInTeam(conversationId, team.id);
+
+  const files = await listConversationWorkspaceFiles({
+    conversationId,
+    teamId: team.id,
+  });
+  return c.json({ files });
+});
+
+/**
+ * Whether ONE file is already in the Drive — asked per file, on demand.
+ *
+ * Not folded into the listing above: for an output the answer means reading
+ * and hashing the bytes, so answering it for every file on every open would
+ * download the whole workspace to render a list of names.
+ */
+chatFilesRoutes.get("/conversation/:id/workspace/drive-state", async (c) => {
+  const team = c.get("team");
+  if (!team) return throwHttpError(403, teamRequired());
+
+  const conversationId = c.req.param("id");
+  await assertConversationInTeam(conversationId, team.id);
+
+  const path = c.req.query("path");
+  if (!path) {
+    return c.json(
+      { code: "VALIDATION_ERROR", message: "Missing `path` query parameter" },
+      400,
+    );
+  }
+
+  const resolved = resolveWorkspacePath(path);
+  if (
+    !resolved ||
+    !DOWNLOADABLE_DIRS.has(resolved.relative.split("/")[0] ?? "")
+  ) {
+    return c.json(
+      { code: "VALIDATION_ERROR", message: "Path is not a workspace file" },
+      400,
+    );
+  }
+
+  const state = await resolveDriveState({
+    conversationId,
+    teamId: team.id,
+    path: resolved.relative,
+  });
+  return c.json(state);
+});
+
+/**
+ * File one of this conversation's files into the Drive.
+ *
+ * Branches on where the file lives, because the two families keep different
+ * books: an attachment has a row whose `documentId` must end up pointing at
+ * the new document, an output has nothing but bytes. Sending both through one
+ * path would leave the attachment row saying "not filed" about a file that is.
+ *
+ * `replaceDocumentId` lands the bytes on an existing document as its next
+ * VERSION — what the `supersedes` state above exists to offer.
+ */
+chatFilesRoutes.post("/conversation/:id/workspace/promote", async (c) => {
+  const user = c.get("user");
+  const team = c.get("team");
+  const organization = c.get("organization");
+  if (!team) return throwHttpError(403, teamRequired());
+
+  const conversationId = c.req.param("id");
+  await assertConversationInTeam(conversationId, team.id);
+
+  let body: unknown;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json(
+      { code: "VALIDATION_ERROR", message: "Invalid JSON body" },
+      400,
+    );
+  }
+  const parsed =
+    typeof body === "object" && body !== null
+      ? (body as { path?: unknown; replaceDocumentId?: unknown })
+      : {};
+  const path = typeof parsed.path === "string" ? parsed.path : null;
+  if (!path) {
+    return c.json({ code: "VALIDATION_ERROR", message: "Missing `path`" }, 400);
+  }
+  const replaceDocumentId =
+    typeof parsed.replaceDocumentId === "string"
+      ? parsed.replaceDocumentId
+      : undefined;
+
+  const resolved = resolveWorkspacePath(path);
+  if (
+    !resolved ||
+    !DOWNLOADABLE_DIRS.has(resolved.relative.split("/")[0] ?? "")
+  ) {
+    return c.json(
+      { code: "VALIDATION_ERROR", message: "Path is not a workspace file" },
+      400,
+    );
+  }
+
+  const isAttachment =
+    resolved.relative.split("/")[0] === WORKSPACE_DIRS.attachments;
+
+  if (isAttachment && replaceDocumentId === undefined) {
+    const filename = resolved.relative.split("/").pop() ?? resolved.relative;
+    const row = await db.query.aiChatFiles.findFirst({
+      where: { conversationId, filename },
+      columns: { id: true },
+    });
+    if (!row) return throwHttpError(404, notFound("File not found"));
+
+    const result = await promoteChatFilesToDrive({
+      fileIds: [row.id],
+      conversationId,
+      organizationId: organization.id,
+      teamId: team.id,
+      userId: user.id,
+    });
+    const promoted = result.promoted[0];
+    if (!promoted) {
+      const failure = result.failed[0];
+      return c.json(
+        {
+          code: "VALIDATION_ERROR",
+          message: failure?.reason ?? "Could not save this file to the Drive",
+        },
+        400,
+      );
+    }
+    return c.json({
+      documentId: promoted.documentId,
+      filename,
+      versionNumber: 1,
+      created: true,
+      unchanged: false,
+    });
+  }
+
+  try {
+    const result = await promoteSandboxFileToDrive({
+      conversationId,
+      path: resolved.relative,
+      organizationId: organization.id,
+      teamId: team.id,
+      userId: user.id,
+      ...(replaceDocumentId !== undefined ? { replaceDocumentId } : {}),
+      actorContext: { actor: "human", userId: user.id, conversationId },
+    });
+    return c.json(result);
+  } catch (err) {
+    if (err instanceof PromoteSandboxFileError) {
+      return c.json({ code: "VALIDATION_ERROR", message: err.message }, 400);
+    }
+    throw err;
+  }
 });
 
 // ==================== //

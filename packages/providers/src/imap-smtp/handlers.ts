@@ -97,6 +97,41 @@ const attachmentsFromArgs = (value: unknown): OutgoingAttachment[] =>
     contentBase64: str(prop(att, "content_base64")),
   }));
 
+/**
+ * Order a fetched page newest-first by the message's own `received_at`
+ * (the sender's `Date` header, falling back to the server's
+ * `internalDate` — see `toMessageSummary` in `client.ts`).
+ *
+ * What this fixes: IMAP hands rows back in UID order (≈ server arrival),
+ * which disagrees with the Date header whenever a sender's clock is off
+ * or a message was APPENDed/MOVEd into the folder after the fact. Without
+ * this sort, consumers rendered the page out of chronological order.
+ *
+ * What this does NOT fix: the page is still WINDOWED by UID — the
+ * `slice(offset, offset + limit)` over the reversed UID list picks WHICH
+ * messages are fetched, and that stays arrival-based. A message whose
+ * date disagrees with its arrival can therefore still fall outside the
+ * window, i.e. a newer-dated message may sit on a later page. This orders
+ * the rows of one page; it is not a mailbox-wide sort by date.
+ *
+ * Rows with a missing or unparseable `received_at` sort last rather than
+ * letting `NaN` scramble the comparator. `Array.prototype.sort` is stable,
+ * so ties (and those trailing rows) keep their UID order.
+ */
+export const byReceivedAtDesc = (
+  a: { received_at: string },
+  b: { received_at: string },
+): number => {
+  const left = Date.parse(a.received_at);
+  const right = Date.parse(b.received_at);
+  const leftBad = Number.isNaN(left);
+  const rightBad = Number.isNaN(right);
+  if (leftBad && rightBad) return 0;
+  if (leftBad) return 1;
+  if (rightBad) return -1;
+  return right - left;
+};
+
 // ── Read handlers ─────────────────────────────────────────────────────
 
 const listMessages: ProviderHandler = async (args, ctx) => {
@@ -144,6 +179,9 @@ const listMessagesInFolder: ProviderHandler = async (args, ctx) => {
  * `[offset, offset + limit)`. Stable as long as no new messages arrive
  * between pages (rare in chatbot turn-cycles); for very volatile
  * mailboxes the agent should request a larger first page instead.
+ *
+ * The fetched page is then ordered by `received_at` — see
+ * `byReceivedAtDesc` for exactly what that does and does not guarantee.
  */
 const listMessagesInFolderImpl = async (
   client: ImapFlow,
@@ -162,7 +200,7 @@ const listMessagesInFolderImpl = async (
     const reversed = [...uids].reverse(); // newest UID first
     const slice = reversed.slice(offset, offset + limit);
     if (slice.length === 0) return [];
-    const results: unknown[] = [];
+    const results: Array<ReturnType<typeof toMessageSummary>> = [];
     for await (const msg of client.fetch(
       slice,
       { envelope: true, flags: true, bodyStructure: true },
@@ -170,7 +208,8 @@ const listMessagesInFolderImpl = async (
     )) {
       results.push(toMessageSummary(folder, msg));
     }
-    return results;
+    // Window picked by UID above, display order by date here.
+    return results.sort(byReceivedAtDesc);
   } finally {
     lock.release();
   }
@@ -215,7 +254,7 @@ const searchMessages: ProviderHandler = async (args, ctx) => {
     const reversed = [...uids].reverse();
     const slice = reversed.slice(offset, offset + limit);
     if (slice.length === 0) return [];
-    const results: unknown[] = [];
+    const results: Array<ReturnType<typeof toMessageSummary>> = [];
     for await (const msg of client.fetch(
       slice,
       { envelope: true, flags: true, bodyStructure: true },
@@ -223,7 +262,8 @@ const searchMessages: ProviderHandler = async (args, ctx) => {
     )) {
       results.push(toMessageSummary("INBOX", msg));
     }
-    return results;
+    // Window picked by UID above, display order by date here.
+    return results.sort(byReceivedAtDesc);
   });
 };
 

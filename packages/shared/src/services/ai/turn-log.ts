@@ -22,12 +22,13 @@ import { subscribeChannel } from "../../lib/redis-subscriber";
  * client-output-buffer limit, Redis killed the replica's shared subscriber
  * connection and froze every attached viewer.
  *
- * Producer liveness rides the log itself: a transient `data-ping` entry is
- * appended every `TURN_LOG_PING_MS` while nothing else is written, so the
- * newest entry id is always a fresh producer heartbeat. A log whose last
- * entry is older than `TURN_LOG_ORPHAN_MS` with no end marker means the
- * producing process died — consumers close, and the resume endpoint clears
- * the conversation's active-stream slot.
+ * Producer liveness is read from the log's CONTENT (`isTurnLogOrphan`):
+ * every entry carries how many tool calls are in flight, and the silence a
+ * turn is owed depends on it — a tool executing is expected silence, a
+ * generating model is not. The transient `data-ping` heartbeat remains as
+ * a freshness fast-path, but nothing depends on it firing: it measurably
+ * starves when the event loop is loaded. A log judged orphaned is DRAINED
+ * into history (`turn-drain.ts`), then its slot is cleared.
  */
 
 const logKey = (streamId: string): string => `fretik-chatbot-turn:${streamId}`;
@@ -36,8 +37,30 @@ const wakeChannel = (streamId: string): string =>
 
 /** Producer heartbeat cadence while no chunk is being written. */
 export const TURN_LOG_PING_MS = 5_000;
-/** Last-entry age past which a not-ended log is considered orphaned. */
-export const TURN_LOG_ORPHAN_MS = 20_000;
+/**
+ * Orphan deadlines — how long a not-ended log may go silent before its
+ * producer is considered dead. TWO deadlines, chosen by what the log says
+ * the turn is doing, because the two silences mean different things:
+ *
+ *  - `TOOL`: the newest entry says one or more tool calls are executing
+ *    (`pendingTools > 0`). Silence is the EXPECTED state — a `buildPage`
+ *    runs for minutes and streams nothing while it does. The deadline only
+ *    has to catch a truly hung tool, so it sits above the slowest
+ *    legitimate tool (the giga-page build budget is 240s).
+ *  - `IDLE`: the model is generating; deltas normally land every few
+ *    seconds, and the slow case is first-token latency on a large prompt.
+ *
+ * Why so much larger than the ping cadence: liveness must never DEPEND on
+ * the ping. Measured 2026-08-21 on the loaded dev service: the 5s ping
+ * interval fired minutes apart (timer starvation; pings landed only when
+ * other Redis activity woke the loop), so every tool call slower than the
+ * old 20s single deadline had its live turn declared dead — viewers
+ * closed, the slot was cleared, and the finished work was never shown.
+ * The ping remains as a freshness fast-path when the event loop is
+ * healthy; the deadlines are sized to stay correct when it is not.
+ */
+export const TURN_LOG_IDLE_ORPHAN_MS = 120_000;
+export const TURN_LOG_TOOL_ORPHAN_MS = 600_000;
 /** Read batch size for the XRANGE loop. */
 const READ_BATCH = 256;
 /** Wakeup-miss backstop: re-poll even without a wake signal. */
@@ -66,6 +89,42 @@ const encodePingChunk = (): string =>
     data: { t: Date.now() },
     transient: true,
   });
+
+/**
+ * How many tool calls are executing after this chunk, given how many were
+ * executing before it. Pure — this is the whole liveness model, so it is
+ * exported and pinned by tests.
+ *
+ * A call opens at `tool-input-available` (the input is complete, `execute`
+ * starts — the moment the wire goes quiet) and closes when its output or
+ * error lands. `tool-input-start`/`-delta` are NOT openings: the model is
+ * still streaming the arguments, so the wire is demonstrably alive.
+ */
+export const pendingToolsAfter = (chunk: unknown, current: number): number => {
+  if (typeof chunk !== "object" || chunk === null) return current;
+  const type = Reflect.get(chunk, "type");
+  if (type === "tool-input-available") return current + 1;
+  if (type === "tool-output-available" || type === "tool-output-error") {
+    return Math.max(0, current - 1);
+  }
+  return current;
+};
+
+/**
+ * The single orphan rule, shared by every consumer (chat resume, workflow
+ * transcript, the sweeper, the SSE reader): a log with an end marker is
+ * never an orphan, and a silent one is judged against the deadline for
+ * what its tail says the turn is doing.
+ */
+export const isTurnLogOrphan = (
+  status: Pick<TurnLogStatus, "ended" | "lastEntryMs" | "pendingTools">,
+  nowMs: number,
+): boolean => {
+  if (status.ended) return false;
+  const deadline =
+    status.pendingTools > 0 ? TURN_LOG_TOOL_ORPHAN_MS : TURN_LOG_IDLE_ORPHAN_MS;
+  return nowMs - status.lastEntryMs > deadline;
+};
 
 /**
  * Create the log the moment the turn's slot is claimed — BEFORE any turn
@@ -133,10 +192,21 @@ export const pumpChunksToTurnLog = async (
 ): Promise<void> => {
   let lastWriteAt = Date.now();
   let degradedLogged = false;
+  // Tools in flight, stamped as field `p` on EVERY entry (pings included).
+  // This is what liveness is read from: the ping timer is advisory only —
+  // measured starving for minutes on the loaded service — so the tail of
+  // the log has to say, on its own, whether silence is a tool executing or
+  // a dead producer.
+  let pendingTools = 0;
   const ping = setInterval(() => {
     if (Date.now() - lastWriteAt < TURN_LOG_PING_MS - 500) return;
     lastWriteAt = Date.now();
-    appendEntry(streamId, ["d", encodePingChunk()]).catch(() => {
+    appendEntry(streamId, [
+      "d",
+      encodePingChunk(),
+      "p",
+      String(pendingTools),
+    ]).catch(() => {
       // Degradation already surfaced by the data path below.
     });
   }, TURN_LOG_PING_MS);
@@ -148,8 +218,14 @@ export const pumpChunksToTurnLog = async (
       const { done, value } = await reader.read();
       if (done) break;
       lastWriteAt = Date.now();
+      pendingTools = pendingToolsAfter(value, pendingTools);
       try {
-        await appendEntry(streamId, ["d", JSON.stringify(value)]);
+        await appendEntry(streamId, [
+          "d",
+          JSON.stringify(value),
+          "p",
+          String(pendingTools),
+        ]);
       } catch (err) {
         if (!degradedLogged) {
           degradedLogged = true;
@@ -178,25 +254,50 @@ export interface TurnLogStatus {
   exists: boolean;
   ended: boolean;
   lastEntryMs: number;
+  /** Tool calls executing as of the newest entry (field `p`). Entries
+   * written before the field existed report 0 — they degrade to the idle
+   * deadline, never to a longer one. */
+  pendingTools: number;
 }
+
+/** The `p` field of one entry's field list, 0 when absent or malformed. */
+const pendingToolsOf = (fields: string[]): number => {
+  for (let i = 0; i < fields.length - 1; i += 2) {
+    if (fields[i] === "p") {
+      const parsed = Number.parseInt(fields[i + 1] ?? "", 10);
+      return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+    }
+  }
+  return 0;
+};
 
 /**
  * Snapshot of a log's tail: whether it exists, whether the end marker is
- * written (always the final entry), and the newest entry's timestamp —
- * which, thanks to the producer ping, is a live-producer heartbeat.
+ * written (always the final entry), the newest entry's timestamp, and how
+ * many tool calls that entry says are in flight. Together with
+ * `isTurnLogOrphan` this is the liveness verdict — derived entirely from
+ * the log's CONTENT, never from trusting that a producer-side timer got
+ * scheduled.
  */
 export const getTurnLogStatus = async (
   streamId: string,
 ): Promise<TurnLogStatus> => {
   const last = await redis.xrevrange(logKey(streamId), "+", "-", "COUNT", 1);
   const entry = last[0];
-  if (!entry) return { exists: false, ended: false, lastEntryMs: 0 };
+  if (!entry) {
+    return { exists: false, ended: false, lastEntryMs: 0, pendingTools: 0 };
+  }
   const [entryId, fields] = entry;
   let ended = false;
   for (let i = 0; i < fields.length - 1; i += 2) {
     if (fields[i] === "m" && fields[i + 1] === "end") ended = true;
   }
-  return { exists: true, ended, lastEntryMs: entryTimestampMs(entryId) };
+  return {
+    exists: true,
+    ended,
+    lastEntryMs: entryTimestampMs(entryId),
+    pendingTools: pendingToolsOf(fields),
+  };
 };
 
 /**
@@ -214,6 +315,13 @@ export const readTurnLogAsSse = (
   const key = logKey(streamId);
   const encoder = new TextEncoder();
   let lastId = cursor;
+  // Tools in flight as of the last entry SEEN — decides which orphan
+  // deadline applies while we block. Seeded lazily from the log's tail on
+  // the first pull: a viewer attaching mid-tool-call has forwarded nothing
+  // yet, and judging that silence by the idle deadline would close a
+  // stream whose turn is simply executing a slow tool.
+  let pendingTools = 0;
+  let seeded = false;
   let wake: (() => void) | null = null;
   let woken = false;
   let cancelled = false;
@@ -247,6 +355,11 @@ export const readTurnLogAsSse = (
     async pull(controller) {
       try {
         /* oxlint-disable no-await-in-loop -- cursor loop is inherently serial */
+        if (!seeded) {
+          seeded = true;
+          const tail = await redis.xrevrange(key, "+", "-", "COUNT", 1);
+          if (tail[0]) pendingTools = pendingToolsOf(tail[0][1]);
+        }
         while (!cancelled) {
           woken = false;
           const batch = await redis.xrange(
@@ -259,6 +372,7 @@ export const readTurnLogAsSse = (
           if (batch.length > 0) {
             for (const [entryId, fields] of batch) {
               lastId = entryId;
+              pendingTools = pendingToolsOf(fields);
               for (let i = 0; i < fields.length - 1; i += 2) {
                 if (fields[i] === "d") {
                   controller.enqueue(
@@ -279,11 +393,19 @@ export const readTurnLogAsSse = (
             return;
           }
           if (woken) continue; // a write landed while we were querying
-          // Orphan check before blocking: a live producer pings every 5s,
-          // so a stale tail with no end marker means the process died.
+          // Orphan check before blocking — the deadline depends on what
+          // the tail says the turn is doing (a tool executing is EXPECTED
+          // silence), and never assumes the ping timer fired: measured
+          // 2026-08-21, an in-process page render starved every timer for
+          // minutes while the turn was alive and productive.
           const tailMs =
             lastId === "0-0" ? Date.now() : entryTimestampMs(lastId);
-          if (Date.now() - tailMs > TURN_LOG_ORPHAN_MS) {
+          if (
+            isTurnLogOrphan(
+              { ended: false, lastEntryMs: tailMs, pendingTools },
+              Date.now(),
+            )
+          ) {
             controller.close();
             off();
             return;

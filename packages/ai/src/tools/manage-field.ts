@@ -27,14 +27,14 @@ import { TOOL_ERROR_CODES, toolError } from "../lib/tool-error-codes";
 export const createManageFieldTool = () =>
   tool({
     description: [
-      "Manage a field on an object type (the typed column). Get current fields from describeObjectType. The field TYPE decides what the team can filter, sum, and view on — when unsure which type fits (select vs text, relation vs field, number config), read `skills/designing-object-types/SKILL.md` first.",
+      "Manage a field on an object type (the typed column). Get current fields from describeObjectType. The field TYPE decides what the team can filter, sum, and view on — when unsure which type fits (stored vs computed, select vs text, relation vs field), read `skills/designing-object-types/SKILL.md` first.",
       "",
       "- add: typeKey + label + type + description (one line — what it holds). Optional config (select options, number bounds, …) and key.",
       "- update: typeKey + fieldKey + any of label, description, config, enabled. Keeps stored values.",
       "- changeType: typeKey + fieldKey + type (+ config). RESETS the field's values.",
       "- delete: typeKey + fieldKey. Pass cascade=true to drop a field that holds values.",
       "",
-      "type is one of the field types in describeObjectType. relation/rollup are virtual (no column).",
+      "type is one of the field types in describeObjectType. relation/rollup are virtual (no column); formula is computed by the database — pass `config.expression` alone, its result type is inferred.",
       "`id` / `created_at` / `updated_at` are reserved system columns every table already has — never add a date field for creation/update time.",
     ].join("\n"),
     inputSchema: z.object({

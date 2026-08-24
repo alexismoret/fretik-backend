@@ -9,7 +9,8 @@ import {
 import { publishConversationTaskResume } from "../../lib/conversation-task-resume";
 import { uuidv7TimestampMs } from "../../lib/uuidv7-time";
 import { clearConversationActiveStream } from "../ai/active-stream";
-import { getTurnLogStatus, TURN_LOG_ORPHAN_MS } from "../ai/turn-log";
+import { drainTurnLogToHistory } from "../ai/turn-drain";
+import { getTurnLogStatus, isTurnLogOrphan } from "../ai/turn-log";
 import { completeConversationTask } from "./complete";
 import { CONVERSATION_TASK_RECONCILERS } from "./kinds";
 
@@ -70,12 +71,20 @@ export const sweepConversationTasks = async (params?: {
       claimedAt !== null && now.getTime() - claimedAt < STREAM_CLAIM_GRACE_MS;
     if (freshClaim) continue;
     const log = await getTurnLogStatus(streamId);
-    // A live producer pings its log every 5s; `ended` with the slot still
-    // set means the producer died between the end marker and its cleanup.
+    // Liveness is read from the log's content (`isTurnLogOrphan`), never
+    // from trusting the ping timer — and `ended` with the slot still set
+    // means the producer died between the end marker and its cleanup.
     const dead = log.exists
-      ? now.getTime() - log.lastEntryMs > TURN_LOG_ORPHAN_MS
+      ? log.ended || isTurnLogOrphan(log, now.getTime())
       : true;
     if (!dead) continue;
+    // Salvage before clearing: whatever the dead turn streamed becomes
+    // history instead of expiring unread in Redis. No-op on an `ended`
+    // log's already-persisted turn (the partial-gated upsert refuses to
+    // downgrade finished rows).
+    if (log.exists && !log.ended) {
+      await drainTurnLogToHistory({ conversationId: conv.id, streamId });
+    }
     await clearConversationActiveStream(conv.id, streamId);
     slotsCleared += 1;
   }

@@ -169,7 +169,7 @@ def list_messages(
     offset: int | None = 0,
     connection_id: str | None = None,
 ) -> list[Message]:
-    """List emails from a well-known mail folder
+    """List emails from a well-known mail folder, newest received_at first
 
     folder: Well-known folder (RFC 6154 SPECIAL-USE + Gmail's \\Important extension)
 
@@ -208,7 +208,7 @@ def search_messages(
     offset: int | None = 0,
     connection_id: str | None = None,
 ) -> list[Message]:
-    """Full-text search across the INBOX
+    """Full-text search across the INBOX, newest received_at first
 
     query: Free-text search query. IMAP SEARCH does NOT parse the 'OR' keyword — use `query_or` for alternatives instead.
 
@@ -229,7 +229,7 @@ def list_messages_in_folder(
     offset: int | None = 0,
     connection_id: str | None = None,
 ) -> list[Message]:
-    """List emails from a custom folder by its folder ID
+    """List emails from a custom folder by its folder ID, newest received_at first
 
     folder_id: Folder ID returned by list_folders
 

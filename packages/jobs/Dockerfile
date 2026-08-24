@@ -35,7 +35,7 @@ FROM install AS release
 ENV NODE_ENV=production
 
 # poppler-utils: the document-processing worker parses PDFs via
-# node-poppler (@fretik/shared/file-parsing).
+# node-poppler (@fretik/shared/services/file-extraction).
 RUN apt-get update \
  && apt-get install -y --no-install-recommends poppler-utils ca-certificates \
  && rm -rf /var/lib/apt/lists/*

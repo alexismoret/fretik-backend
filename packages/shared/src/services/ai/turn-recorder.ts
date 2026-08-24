@@ -22,6 +22,17 @@ import { aiMessages } from "../../db/schema";
  * `partial`. To make the reverse order safe (a late recorder flush racing
  * the final write), the recorder's upsert only applies when the existing
  * row is still marked partial — it can never downgrade a finished row.
+ *
+ * Flushing is driven BY THE CHUNK LOOP, never by a timer. The first
+ * version used a `setInterval` and it wrote nothing, ever: measured
+ * 2026-08-21, an in-process page render starved the service's timers for
+ * minutes at a stretch, so the interval that was supposed to fire every
+ * 2s simply did not — thousands of chunks streamed through and zero
+ * partial rows landed, which voided the recorder's whole reason to exist
+ * (the crash happened, and history had nothing). A flush decided inline,
+ * on chunk arrival, needs no scheduler: while chunks flow it runs at most
+ * every `FLUSH_INTERVAL_MS`, and while chunks don't flow there is nothing
+ * new to persist anyway.
  */
 
 const FLUSH_INTERVAL_MS = 2_000;
@@ -34,7 +45,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
  * new; on conflict the update is gated on the existing row still being
  * partial (same-conversation check included, mirroring `saveMessages`).
  */
-const upsertPartialMessage = async (params: {
+export const upsertPartialMessage = async (params: {
   conversationId: string;
   turnId: string;
   message: UIMessage;
@@ -117,9 +128,7 @@ export const recordTurnIncrementally = async (params: {
     }
   };
 
-  const interval = setInterval(() => {
-    void flush();
-  }, FLUSH_INTERVAL_MS);
+  let lastFlushAt = 0;
 
   try {
     for await (const message of readUIMessageStream({
@@ -135,6 +144,13 @@ export const recordTurnIncrementally = async (params: {
       if (!UUID_RE.test(message.id)) continue;
       latest.set(message.id, message);
       dirty.add(message.id);
+      // Inline cadence — see the module docblock for why no timer. The
+      // await is deliberate: it paces this tee branch (the sibling wire
+      // branch buffers a few chunks meanwhile), and a flush is one upsert.
+      if (Date.now() - lastFlushAt >= FLUSH_INTERVAL_MS) {
+        lastFlushAt = Date.now();
+        await flush();
+      }
     }
   } catch (err) {
     console.warn(
@@ -142,6 +158,10 @@ export const recordTurnIncrementally = async (params: {
       err instanceof Error ? err.message : err,
     );
   } finally {
-    clearInterval(interval);
+    // Trailing flush, ALWAYS. On a clean turn `onFinish` overwrites these
+    // rows moments later (the partial-gated upsert converges in either
+    // order); on a torn-down turn this is the last chance for the tail
+    // that streamed since the previous flush to reach history.
+    await flush();
   }
 };

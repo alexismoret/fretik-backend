@@ -7,6 +7,7 @@ import type {
   PageValue,
   PageVariable,
 } from "../../schemas/pages";
+import { PAGE_LIMITS } from "../../schemas/pages";
 import { pageDataSource } from "./sources/registry";
 
 /**
@@ -74,31 +75,36 @@ export const resolvePageState = (
 };
 
 /**
- * The datasets a targeted refetch has to run: the ones asked for, plus
- * everything they read, transitively.
+ * Keep one dataset's answer under the byte ceiling by dropping rows from the
+ * end, and say so.
  *
- * Without this, asking for one dataset executed ALL of them and threw away the
- * rest of the output — so re-sorting one table re-ran every query on the page.
- * The closure is the other half: a transform is worthless without its inputs,
- * so they come along, but nothing else does.
+ * Every other bound in `PAGE_LIMITS` counts rows, and a row has no size: a
+ * `records` dataset over a type with a long markdown field, or an external
+ * answer nobody bounded, can serialize to tens of megabytes inside a perfectly
+ * legal row count. The retired `transform` sandbox capped its own output at
+ * 1 MB and was the only thing in the path that measured bytes at all.
+ *
+ * Truncating rather than failing is the whole design: `truncated` is a flag the
+ * result already carries and every page already renders, so a page that runs
+ * into this shows fewer rows instead of an error block. Halving is used rather
+ * than a per-row scan because the cost has to stay proportional to the OVERSIZE
+ * case, not to the ordinary one — an answer under the ceiling is serialized
+ * once and touched no further.
  */
-const executionClosure = (
-  datasets: PageDataset[],
-  wanted: Set<string>,
-): Set<string> => {
-  const byId = new Map(datasets.map((dataset) => [dataset.id, dataset]));
-  const keep = new Set<string>();
-  const stack = [...wanted];
-  while (stack.length > 0) {
-    const id = stack.pop();
-    if (id === undefined || keep.has(id)) continue;
-    const dataset = byId.get(id);
-    if (!dataset) continue;
-    keep.add(id);
-    const inputs = pageDataSource(dataset.kind)?.dependsOn?.(dataset) ?? [];
-    stack.push(...inputs);
+export const capDatasetBytes = (
+  result: PageDatasetResult,
+): PageDatasetResult => {
+  if (result.status !== "ok" || result.rows.length === 0) return result;
+  if (JSON.stringify(result.rows).length <= PAGE_LIMITS.maxDatasetResponseBytes)
+    return result;
+  let rows = result.rows;
+  while (
+    rows.length > 1 &&
+    JSON.stringify(rows).length > PAGE_LIMITS.maxDatasetResponseBytes
+  ) {
+    rows = rows.slice(0, Math.floor(rows.length / 2));
   }
-  return keep;
+  return { ...result, rows, truncated: true };
 };
 
 /** A dataset slower than this is worth a line in the logs, not a failure. */
@@ -170,24 +176,16 @@ export const runPageData = async (params: {
 
   const wanted = params.datasetIds ? new Set(params.datasetIds) : null;
   const results: Record<string, PageDatasetResult> = {};
-  const rowsById: Record<string, PageValue> = {};
 
-  // A source may read other datasets, so run in dependency order. A pass that
-  // resolves nothing means the rest is cyclic or dangling — report it rather
-  // than looping.
-  const runnable = wanted
-    ? executionClosure(params.definition.datasets, wanted)
-    : null;
-  const pending = new Map<string, PageDataset>(
-    params.definition.datasets
-      .filter((dataset) => !runnable || runnable.has(dataset.id))
-      .map((dataset) => [dataset.id, dataset]),
+  // Only what was asked for. Datasets are INDEPENDENT since `transform` was
+  // retired — nothing reads another's rows — so a targeted refetch runs
+  // exactly its own set, with no closure to walk and nothing else to drag in.
+  const toRun = params.definition.datasets.filter(
+    (dataset) => !wanted || wanted.has(dataset.id),
   );
 
-  const runOne = async (
-    id: string,
-    dataset: PageDataset,
-  ): Promise<PageDatasetResult> => {
+  const runOne = async (dataset: PageDataset): Promise<PageDatasetResult> => {
+    const id = dataset.id;
     const source = pageDataSource(dataset.kind);
     if (!source) {
       return {
@@ -201,7 +199,6 @@ export const runPageData = async (params: {
         teamId: params.teamId,
         userId: params.userId,
         state,
-        data: rowsById,
         ...(params.queries?.[id] !== undefined
           ? { query: params.queries[id] }
           : {}),
@@ -219,59 +216,22 @@ export const runPageData = async (params: {
     }
   };
 
-  while (pending.size > 0) {
-    // Everything whose inputs are settled runs TOGETHER. A dashboard's widgets
-    // are independent by construction, so running them in series made its
-    // latency the SUM of its queries; in parallel it is the slowest one. This
-    // is also what keeps a single slow source from freezing the whole page once
-    // datasets can reach a third party.
-    const ready: [string, PageDataset][] = [];
-    for (const [id, dataset] of pending) {
-      const inputs = pageDataSource(dataset.kind)?.dependsOn?.(dataset) ?? [];
-      const isReady = inputs.every(
-        (input) => input in rowsById || !pending.has(input),
-      );
-      if (isReady) ready.push([id, dataset]);
-    }
-
-    if (ready.length === 0) {
-      // Naming the stuck set is the whole fix here: "inputs are missing or form
-      // a cycle" told the agent neither WHICH dataset nor WHICH input, so the
-      // only way forward was to re-read the definition and guess.
-      //
-      // Only a genuine cycle reaches this branch. An input NO dataset declares
-      // passes the readiness test above and resolves to null — `sanitize`
-      // reports that one, at write time, by name.
-      const stuck = [...pending.keys()].map((id) => `"${id}"`).join(", ");
-      for (const [id, dataset] of pending) {
-        const inputs = pageDataSource(dataset.kind)?.dependsOn?.(dataset) ?? [];
-        const waiting = inputs
-          .filter((input) => !(input in rowsById))
-          .map((input) => `"${input}"`)
-          .join(", ");
-        results[id] = {
-          status: "error",
-          message: `dataset "${id}" waits on ${waiting}, which waits back: ${stuck} form a cycle. Break it by inlining one side, or by reading the shared source twice.`,
-        };
-      }
-      break;
-    }
-
-    for (const [id] of ready) pending.delete(id);
-    // `runOne` never rejects — a source that throws degrades to its own error
-    // block, so one broken dataset costs its widget and not the page.
-    const settled = await Promise.all(
-      ready.map(
-        async ([id, dataset]) => [id, await runOne(id, dataset)] as const,
-      ),
-    );
-    for (const [id, result] of settled) {
-      if (result.status === "ok") rowsById[id] = result.rows;
-      // A dataset pulled in by the closure is still executed — a transform
-      // needs its inputs — but only what was ASKED for is returned.
-      if (!wanted || wanted.has(id)) results[id] = result;
-    }
-  }
+  // Everything at once. A dashboard's widgets are independent by construction,
+  // so running them in series made a page's latency the SUM of its queries;
+  // flat it is the slowest one. This is also what keeps a single slow source
+  // from freezing a whole page now that a dataset can reach a third party.
+  //
+  // This was a dependency-WAVE loop until 2026-08-21, with a readiness test and
+  // a cycle report — machinery that existed for `transform`, the only source
+  // that ever read another dataset. Nothing left has inputs, so there is
+  // nothing to order and no cycle to detect.
+  //
+  // `runOne` never rejects: a source that throws degrades to its own error
+  // block, so one broken dataset costs its widget and not the page.
+  const settled = await Promise.all(
+    toRun.map(async (dataset) => [dataset.id, await runOne(dataset)] as const),
+  );
+  for (const [id, result] of settled) results[id] = capDatasetBytes(result);
 
   return { datasets: results };
 };

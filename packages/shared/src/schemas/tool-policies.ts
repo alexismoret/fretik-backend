@@ -119,6 +119,7 @@ export const BUILTIN_TOOL_POLICY_CATALOG: Record<
   manageLink: writeTool("manageLink", "tool_call"),
   manageDrive: writeTool("manageDrive", "tool_call"),
   uploadToDrive: writeTool("uploadToDrive", "tool_call"),
+  manageDocument: writeTool("manageDocument", "tool_call"),
   installSkill: writeTool("installSkill", "tool_call"),
 
   // Config write — blockable only (auto default, no approval gate yet).

@@ -53,10 +53,18 @@ const isZodLike = (value: unknown): value is ZodLike =>
 const isZodType = (value: unknown): value is z.ZodType =>
   isZodLike(value) && "_zod" in value;
 
-/** `{ registryName → inputSchema }` for every tool the chatbot registers. */
+/**
+ * `{ registryName → inputSchema }` for every tool schema that reaches a model.
+ *
+ * `managePage` is built twice: the parent agent gets the editing surface and
+ * the page builder gets the authoring one (a wider `action` enum). They ship to
+ * the same upstream pool, so a variant that never appears here is a variant
+ * these invariants do not cover.
+ */
 const registeredSchemas = (): Map<string, z.ZodType> => {
   const map = new Map<string, z.ZodType>();
-  const domainTools = buildDomainTools();
+  const domainTools = buildDomainTools({ pageAuthoring: false });
+  const authoringTools = buildDomainTools({ pageAuthoring: true });
   const register = (tools: Record<string, unknown>): void => {
     for (const [name, tool] of Object.entries(tools)) {
       if (typeof tool !== "object" || tool === null) continue;
@@ -67,6 +75,10 @@ const registeredSchemas = (): Map<string, z.ZodType> => {
   };
   register(buildCoreTools(domainTools));
   register(domainTools);
+  const authoringManagePage = authoringTools.managePage.inputSchema;
+  if (isZodType(authoringManagePage)) {
+    map.set("managePage(authoring)", authoringManagePage);
+  }
   map.set("dispatchAgent", dispatchAgentInputSchema);
   return map;
 };

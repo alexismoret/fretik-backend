@@ -15,6 +15,7 @@ import {
 import { refreshObjectTableAfterCatalogChange } from "../object-schema/catalog-sync";
 import { isDocumentObjectType } from "../object-types/is-document-type";
 import { invalidateFieldDefinitionsCache } from "./cache";
+import { readFormulaSiblings, resolveFormulaConfig } from "./formula-config";
 import { fillOptionColors } from "./normalize-config";
 import { bindRelationFieldLinkType } from "./relation-link";
 import { slugifyFieldKey } from "./slugify-key";
@@ -115,7 +116,22 @@ export const createFieldDefinition = async (
         })
       : (input.config ?? {});
   // Server owns option colors — fill any the writer left unset.
-  const config = fillOptionColors(input.type, resolvedConfig);
+  const withColors = fillOptionColors(input.type, resolvedConfig);
+  // A formula is compiled BEFORE the insert, so a bad expression is a 400 that
+  // names the problem instead of a DDL failure rolling back a transaction that
+  // already emitted a domain event. Compiling also fills in `resultType`, which
+  // decides the physical column type.
+  const config =
+    input.type === "formula"
+      ? resolveFormulaConfig({
+          config: withColors,
+          siblings: await readFormulaSiblings({
+            objectTypeId: input.objectTypeId,
+            teamId: input.teamId,
+          }),
+          label: input.label,
+        })
+      : withColors;
 
   const willBeEnabled = input.enabled ?? true;
   if (willBeEnabled) {

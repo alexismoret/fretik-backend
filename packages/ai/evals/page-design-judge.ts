@@ -8,8 +8,8 @@
  * (v3 audit, 2026-08-15), and the only way to see them is to render the page.
  *
  * So this module runs the REAL review pipeline on the page the turn stored:
- * `renderPage` (browser, two widths, plus the same page with every dataset
- * emptied) → `gatePageRender` (mechanical) → `evaluatePageDesign` (the critic).
+ * `renderPage` (browser, three widths plus below the fold, and the same page
+ * with every dataset emptied) → `gatePageRender` (mechanical) → `evaluatePageDesign` (the critic).
  * Same code the `review` action runs, so the eval holds a page to exactly the
  * bar the builder was told to clear, and a change to the rubric moves both at
  * once instead of drifting apart.
@@ -45,6 +45,37 @@ import type { EvalCaseContext } from "./types";
  * cleanup, so nothing here outlives the case that filled it.
  */
 const judged = new Map<string, Promise<PageJudgement>>();
+
+/**
+ * OpenRouter surfaces an upstream rate limit as a thrown `AI_APICallError`
+ * whose message says "temporarily rate-limited upstream" (HTTP 200, error in
+ * the body). Measured 2026-08-23 (`pages-reduced-20260823`): one such throw
+ * zeroed a case's design-score and dragged run correctness down — a transient
+ * upstream condition scored as if the page were bad. Retried here, in the
+ * EVAL's judge only: the in-product review path has its own remediation, and
+ * any other error still propagates on the first throw.
+ */
+const RATE_LIMITED = /rate.?limited/i;
+
+const critiqueWithRetry = async (
+  input: Parameters<typeof evaluatePageDesign>[0],
+): Promise<Awaited<ReturnType<typeof evaluatePageDesign>>> => {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    if (attempt > 0) {
+      await new Promise((resolve) => setTimeout(resolve, 15_000 * attempt));
+    }
+    try {
+      return await evaluatePageDesign(input);
+    } catch (err) {
+      if (!(err instanceof Error) || !RATE_LIMITED.test(err.message)) {
+        throw err;
+      }
+      lastError = err;
+    }
+  }
+  throw lastError;
+};
 
 const run = async (params: {
   pageId: string;
@@ -82,7 +113,7 @@ const run = async (params: {
   const gate = gatePageRender(render);
   if (!render.mounted) return { mounted: false, gate, critique: null };
 
-  const critique = await evaluatePageDesign({
+  const critique = await critiqueWithRetry({
     pageName: params.pageName,
     brief: params.definition.brief,
     shots: render.shots,

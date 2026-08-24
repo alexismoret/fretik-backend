@@ -12,6 +12,7 @@ import { createInstallSkillTool } from "../../tools/install-skill";
 import { createListDocumentsTool } from "../../tools/list-documents";
 import { createListFoldersTool } from "../../tools/list-folders";
 import { createListObjectsTool } from "../../tools/list-objects";
+import { createManageDocumentTool } from "../../tools/manage-document";
 import { createManageDriveTool } from "../../tools/manage-drive";
 import { createManageFieldTool } from "../../tools/manage-field";
 import { createManageLinkTool } from "../../tools/manage-link";
@@ -237,7 +238,14 @@ export const buildCoreTools = (domainTools: SearchableToolRegistry) => ({
  * auto-sets `shouldDefer: true` and `prepareStep` in `./index.ts`
  * keeps them inactive until `searchTools` activates them by name.
  */
-export const buildDomainTools = () => ({
+/**
+ * @param config.pageAuthoring — whether this registry's `managePage` may WRITE
+ * a page (`create`, `dry_run`, and the two reference actions that only matter
+ * to whoever writes code). True for the page builder alone; every other agent
+ * routes a page through `buildPage`. Explicit at all three call sites rather
+ * than defaulted, because a default is how the wrong one gets picked silently.
+ */
+export const buildDomainTools = (config: { pageAuthoring: boolean }) => ({
   listDocuments: buildChatbotTool({
     ...createListDocumentsTool(),
     category: "domain",
@@ -284,7 +292,7 @@ export const buildDomainTools = () => ({
     ...createManageFieldTool(),
     category: "domain",
     searchHint:
-      "add edit remove change field column attribute property type schema select options number bounds relation rollup",
+      "add edit remove change field column attribute property type schema select options number bounds relation rollup formula computed calculated derived",
   }),
   searchIcons: buildChatbotTool({
     ...createSearchIconsTool(),
@@ -341,11 +349,22 @@ export const buildDomainTools = () => ({
     // Copies bytes into the Drive + enqueues processing — not read-only.
     isReadOnly: false,
   }),
+  manageDocument: buildChatbotTool({
+    ...createManageDocumentTool(),
+    category: "domain",
+    searchHint:
+      "write author create edit update revise document report note summary spec markdown text version history restore revert previous version rollback what changed",
+    // `get` returns a whole document, so a long one is worth persisting; the
+    // write actions return small descriptors and are re-fetchable via `get`.
+    microcompactable: true,
+    // Writes document content + mints versions — not read-only.
+    isReadOnly: false,
+  }),
   manageDrive: buildChatbotTool({
     ...createManageDriveTool(),
     category: "domain",
     searchHint:
-      "create rename move delete folder directory organize drive tree relocate document into folder file structure",
+      "create rename move delete folder directory organize drive tree relocate document rename file into folder file structure",
     // Mutates the folder tree + document locations — not read-only.
     isReadOnly: false,
   }),
@@ -392,7 +411,10 @@ export const buildDomainTools = () => ({
     isReadOnly: false,
   }),
   managePage: buildChatbotTool({
-    ...createManagePageTool(),
+    // Authoring belongs to `buildPage`, which resolves the `page-build` model
+    // and carries the doctrine in its cached prompt. See the docblock on
+    // `createManagePageTool` for the measurement behind the split.
+    ...createManagePageTool({ authoring: config.pageAuthoring }),
     category: "domain",
     searchHint:
       "page dashboard app interface view chart graph kpi table visualise visualize report display layout custom ui mini-app tool public link share live data",
@@ -461,7 +483,10 @@ export const buildChatbotTools = (extras: {
   // sub-agent never ran once. It cannot be built INSIDE `buildDomainTools`:
   // the builder agent is constructed from a tool set, so the caller has to
   // pass it in.
-  const domainTools = { ...buildDomainTools(), buildPage: extras.buildPage };
+  const domainTools = {
+    ...buildDomainTools({ pageAuthoring: false }),
+    buildPage: extras.buildPage,
+  };
   const coreTools = buildCoreTools(domainTools);
   return {
     ...coreTools,
@@ -488,7 +513,9 @@ export type ChatbotTools = ReturnType<typeof buildChatbotTools>;
  * the sub-agent has direct access to every tool from the start.
  */
 export const buildSubAgentTools = () => {
-  const domainTools = buildDomainTools();
+  // A generic delegate authors no page either: the door to the builder is
+  // `dispatchAgent({ agent: "page-builder" })`, which its parent already has.
+  const domainTools = buildDomainTools({ pageAuthoring: false });
   const allCoreTools = buildCoreTools(domainTools);
   const { searchTools: _searchTools, ...coreWithoutSearch } = allCoreTools;
   // Sub-agents keep the web tools like everyone else; this only honours the
@@ -514,7 +541,9 @@ export type SubAgentTools = ReturnType<typeof buildSubAgentTools>;
  * `read` is what actually opens those files.
  */
 export const buildPageBuilderTools = () => {
-  const domainTools = buildDomainTools();
+  // The one registry that may AUTHOR a page. `create`, `dry_run`, `get_guide`
+  // and `components` exist here and nowhere else in the product.
+  const domainTools = buildDomainTools({ pageAuthoring: true });
   const coreTools = buildCoreTools(domainTools);
   return {
     managePage: domainTools.managePage,

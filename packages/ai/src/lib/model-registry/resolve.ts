@@ -165,6 +165,14 @@ const RECALL_JUDGE_UPSTREAMS = ["cerebras", "groq"] as const;
 const MEMORY_REASONING_MAX_TOKENS = 256;
 
 /**
+ * Thinking allowance for the `page-build` role — see its `settingsForRole`
+ * case for the measurement and the doctrine (role-owned, like the memory
+ * budget above; never a profile-level `maxTokens`, which would take the
+ * depth picker away from teams using the same model in chat).
+ */
+const PAGE_BUILD_REASONING_MAX_TOKENS = 8_000;
+
+/**
  * Reasoning envelope for the memory roles. Effort-style families keep the level
  * they always had; `max-tokens` families get the tight budget above instead of
  * the level table's, which they overshoot anyway.
@@ -219,6 +227,47 @@ export const settingsForRole = (
           ...(sort ? { sort } : {}),
         },
         reasoning: reasoningParamForProfile(profile),
+        usage: { include: true },
+      };
+    // The chat envelope with the ROLE's own thinking budget — same doctrine
+    // as `MEMORY_REASONING_MAX_TOKENS`: the budget belongs to the role,
+    // because the profile also serves user-facing chat, where pinning
+    // `maxTokens` on the profile empties `selectableReasoningLevels` and
+    // takes the depth picker away from every team that chose the model.
+    //
+    // Why the role wants a budget at all: reasoning is MANDATORY on the bound
+    // profile (Gemini 3.7 Flash) and a Gemini thinking budget is an
+    // ALLOWANCE, not just a ceiling — the model thinks to the room it is
+    // given. Under the 32 000 first tried at the profile level (2026-08-23),
+    // the dashboard build spent 745s of a 1 029s turn inside Gemini
+    // generations: 28 calls averaging ~27s for a median answer of ~450
+    // output tokens — room 70× the median answer. The zombie failure that
+    // budget was bought for is covered by the delegate's fallback retry now
+    // (`agents/shared/sub-agent.ts`, zombie rate 0 across the three
+    // 2026-08-23 runs), so the budget's only remaining job is to bound
+    // thinking TIME. 8 000 clears the build's biggest observed step (the
+    // full-SFC write, ~14k total output, thinking share within budget) at a
+    // quarter of the runaway allowance. Benched against the
+    // `pages-final-v2-20260823` baseline (786/1029/1058s per build) — if
+    // builds do not speed up, this is not the lever; say so here rather than
+    // halving again.
+    case "page-build":
+      return {
+        provider: {
+          require_parameters: true,
+          zdr,
+          ...(order ? { order: [...order] } : {}),
+          ...(ignore ? { ignore: [...ignore] } : {}),
+          ...(only ? { only: [...only] } : {}),
+          ...(sort ? { sort } : {}),
+        },
+        reasoning:
+          profile.assessment.reasoning.style === "none"
+            ? undefined
+            : {
+                enabled: true,
+                max_tokens: PAGE_BUILD_REASONING_MAX_TOKENS,
+              },
         usage: { include: true },
       };
     case "preextract":
@@ -538,7 +587,7 @@ const buildResolved = (binding: RoleBinding): ResolvedModel => {
     ? openrouter.chat(profile.catalog.id, settings)
     : openrouter.chat(profile.catalog.id);
   const cleaned =
-    binding.settingsKind === "chat"
+    binding.settingsKind === "chat" || binding.settingsKind === "page-build"
       ? wrapLanguageModel({
           model: raw,
           // Order matters: extractReasoning innermost (sees raw output
@@ -603,6 +652,34 @@ export const resolveChatModelForProfile = (
     wrapCache: true,
   });
   chatResolvedByProfile.set(profileKey, entry);
+  return entry;
+};
+
+// Bounded the same way as `chatResolvedByProfile`.
+const pageBuildResolvedByProfile = new Map<string, ResolvedModel>();
+
+/**
+ * Resolve an ARBITRARY profile under the `page-build` envelope — the seam the
+ * `--page-build-candidate` A/B path resolves through. Without this twin, a
+ * candidate builder resolved through the CHAT envelope and silently ran
+ * without the role's reasoning allowance (`PAGE_BUILD_REASONING_MAX_TOKENS`),
+ * so the A/B compared two different envelopes instead of two models.
+ */
+export const resolvePageBuildModelForProfile = (
+  profileKey: string,
+): ResolvedModel => {
+  if (profileKey === ROLE_BINDINGS["page-build"].profileKey) {
+    return resolveModel("page-build");
+  }
+  const cached = pageBuildResolvedByProfile.get(profileKey);
+  if (cached) return cached;
+  const entry = buildResolved({
+    role: "page-build",
+    profileKey,
+    settingsKind: "page-build",
+    wrapCache: true,
+  });
+  pageBuildResolvedByProfile.set(profileKey, entry);
   return entry;
 };
 

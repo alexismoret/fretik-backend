@@ -3,6 +3,10 @@
 // creates a telemetry span. No-op when LANGFUSE_* env vars are absent.
 import "./lib/langfuse";
 
+// AI SDK warning routing (and the one provider warning it silences — see the
+// module). Side-effect import, before any model call.
+import "./lib/sdk-warnings";
+
 // Patches Zod with `.openapi()`. Side-effect import, and it MUST precede every
 // `@fretik/*` import: the formatter sorts `@fretik` before `@hono`, so any
 // shared module reaching `schemas/common/params` (which calls `.openapi()` at

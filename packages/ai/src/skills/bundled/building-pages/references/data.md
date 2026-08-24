@@ -8,8 +8,9 @@ The data half of a page is declarative, and it is the security boundary: the cod
 - **A figure that must be true is an `aggregate` dataset.** Summing a page of rows in JavaScript lies the moment the table pages. Use `groupBy` / `dateBucket` and metrics with `label` and `unit`.
 - **A filter re-queries; it never narrows the rows already loaded.** Filtering a `computed` over the rows in hand looks identical to the real thing while the team has fewer records than the dataset's `limit`, and silently becomes a filter over the first hundred the day they have more. Send the choice as a variable, read it back in the dataset's filters.
 - **A paginated list gets its own `records` dataset.** The server is the paginator, however many millions sit behind it.
-- **`transform` combines what the queries already reduced** — ratios, joins, derived columns. Plain JavaScript, `return` its rows. Never group or sum there what an aggregate dataset should.
+- **Ratios, joins and derived columns are the PAGE's work, in a `computed()`** — over rows it already has, in the browser it is already running in. There is no server-side transform dataset; anything that has to be true over every row is an `aggregate`, in SQL.
 - **`external` is for small, fresh reads** through the viewer's own connection — an inbox, today's events. Volume and history belong in an object type synced by a workflow: a third party cannot be filtered, grouped or indexed. `dry_run` shows the real answer shape first.
+- **An `external` dataset pages through its own `args`, or not at all.** `queries` is the `objects` paginator and is ignored here. Where the action takes an offset, a cursor or a page token, bind a variable to it and raise it to load more; where it takes none, one call is the whole answer, and the list must not look like one that scrolls to an end it never reaches.
 - **Probe before you design.** `dry_run` with datasets and no `code` returns real field names, a real row and real distinct values. Never design against imagined fields.
 
 ## Reading

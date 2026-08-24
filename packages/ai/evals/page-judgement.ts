@@ -40,7 +40,7 @@ export const rigFailure = (degraded: string): string =>
 /**
  * The measured half: the page mounted, its console is clean, every overlay a
  * click opens has content, every clickable target does something, nothing is
- * cut off at either width, and the emptied page still says something.
+ * cut off at any width, and the emptied page still says something.
  */
 export const gatePasses = (judgement: PageJudgement): true | string => {
   if (judgement.degraded !== undefined) return rigFailure(judgement.degraded);

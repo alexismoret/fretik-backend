@@ -74,15 +74,44 @@ const extractOpenRouterProvider = (
 };
 
 /**
- * Write the cost + serving upstream onto the currently active Langfuse
- * generation. Soft-fail: telemetry must never break a model call.
+ * Write the cost + serving upstream + reasoning share onto the currently
+ * active Langfuse generation. Soft-fail: telemetry must never break a model
+ * call.
+ *
+ * The reasoning split is written TWICE, on purpose. Providers fold reasoning
+ * INTO the output count, so the stored `output` answers "what did this cost"
+ * and never "what was it spent on" — and the second question is the one that
+ * decides whether a role's reasoning effort is worth its price. Measured need
+ * (2026-08-23): a page update emits ~11k output tokens to change 155 lines,
+ * and nothing in the trace said how much of that was thinking.
+ *
+ * `usageDetails` is the aggregatable home — its keys are the metrics API's
+ * `usageType` dimension, so a question like "what share of the page builder's
+ * output is reasoning" is one query. It is also the one that may not survive:
+ * the AI SDK's OTel integration writes its own usage block when it ENDS the
+ * span, after this middleware has tapped `finish`. `metadata` is not
+ * aggregatable — it is not a metrics dimension — but it always lands, and it
+ * is readable per observation in the UI. Writing both costs nothing and leaves
+ * no version of this instrument that reports silence.
  */
 const writeCost = (
   providerMetadata: SharedV4ProviderMetadata | undefined,
+  outputTokens?: { text: number | undefined; reasoning: number | undefined },
 ): void => {
   const cost = extractOpenRouterCost(providerMetadata);
   const provider = extractOpenRouterProvider(providerMetadata);
-  if (cost === undefined && provider === undefined) return;
+  const finite = (value: number | undefined) =>
+    typeof value === "number" && Number.isFinite(value) ? value : undefined;
+  const reasoning = finite(outputTokens?.reasoning);
+  const text = finite(outputTokens?.text);
+  if (
+    cost === undefined &&
+    provider === undefined &&
+    reasoning === undefined &&
+    text === undefined
+  ) {
+    return;
+  }
   // No active observation → this model call isn't traced (no
   // `experimental_telemetry`), so there's no generation to attach cost to.
   // Skip silently — otherwise `updateActiveObservation` logs a "no active
@@ -93,8 +122,30 @@ const writeCost = (
     updateActiveObservation(
       {
         ...(cost !== undefined ? { costDetails: { total: cost } } : {}),
-        ...(provider !== undefined
-          ? { metadata: { openrouterProvider: provider } }
+        ...(reasoning !== undefined || text !== undefined
+          ? {
+              usageDetails: {
+                ...(reasoning !== undefined
+                  ? { output_reasoning: reasoning }
+                  : {}),
+                ...(text !== undefined ? { output_answer: text } : {}),
+              },
+            }
+          : {}),
+        ...(provider !== undefined ||
+        reasoning !== undefined ||
+        text !== undefined
+          ? {
+              metadata: {
+                ...(provider !== undefined
+                  ? { openrouterProvider: provider }
+                  : {}),
+                ...(reasoning !== undefined
+                  ? { reasoningTokens: reasoning }
+                  : {}),
+                ...(text !== undefined ? { answerTokens: text } : {}),
+              },
+            }
           : {}),
       },
       { asType: "generation" },
@@ -148,7 +199,7 @@ export const costCaptureMiddleware: LanguageModelV4Middleware = {
   specificationVersion: "v4",
   wrapGenerate: async ({ doGenerate }) => {
     const result = await doGenerate();
-    writeCost(result.providerMetadata);
+    writeCost(result.providerMetadata, result.usage.outputTokens);
     return result;
   },
   wrapStream: async ({ doStream }) => {
@@ -161,7 +212,7 @@ export const costCaptureMiddleware: LanguageModelV4Middleware = {
             // OpenRouter cost. Tapping it here runs inside the generation
             // span's context, so `updateActiveObservation` targets it.
             if (part.type === "finish") {
-              writeCost(part.providerMetadata);
+              writeCost(part.providerMetadata, part.usage.outputTokens);
             }
             controller.enqueue(part);
           },

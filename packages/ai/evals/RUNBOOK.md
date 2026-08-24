@@ -49,22 +49,46 @@ A run whose item COUNT is short of the suite is the failure to look for first: t
 reports the average over the cases that finished, so a case dropped mid-flight lowers nothing
 and shows up only as a smaller `N items`.
 
-**The pages suite needs a browser.** SEVEN of its ten cases RENDER the page the turn stored,
+**The pages suite needs a browser.** TEN of its thirteen cases RENDER the page the turn stored,
 in the eval process, via `evals/page-design-judge.ts`: every case that builds one
 (`page-dashboard-kpi-charts`, `page-filterable-directory`, `page-vague-request-expands`,
-`page-multi-source-gate`, `page-thread-shape`, `page-console-shape`, `page-time-shape`). The
+`page-multi-source-gate`, `page-giga-multi-view`, `page-bulk-and-link-writes`,
+`page-thread-shape`, `page-console-shape`, `page-time-shape`,
+`page-from-uploaded-file`). The
 mechanical gate and a design score are the only assertions that see what a user sees. (This
-line said "three" and named a case that no longer exists until 2026-08-18 — browser cost and
-rig-failure blast radius are more than double what it claimed.) That needs the same two
+line said "three" until 2026-08-18 and "nine of twelve" until 2026-08-22 — it has understated
+the rig every time a case was added, so re-count it from `rendersAndWorks` in
+`evals/cases/pages.ts` rather than trusting the sentence.) That needs the same two
 things the `review` action needs — a Chrome/Chromium on `$PATH` (or `PAGE_RENDER_BROWSER_WS` pointing at a
 browserless sidecar) and the page-runtime assets (`PAGE_RUNTIME_DIR`, or `APP_URL` to fetch
-them). Each judged case costs ~20s and ~2¢ on top of its turn. When no browser is reachable
+them). On macOS an installed `/Applications/Google Chrome.app` is found without any `$PATH`
+entry and is PREFERRED over WKWebView (`render/webview.ts`). When no browser is reachable
 those assertions FAIL rather than pass quietly, and say `renderer unavailable` — that phrase
 means the rig, never the page.
 
+**What a judged case costs, and what changed it (2026-08-21).** The old figure — ~20s and
+~2¢ per case — predates three additions, and two of them are not free:
+a `desktop-mid` capture on any page taller than 2.5 screens (one more IMAGE for the critic,
+the expensive kind of token), the overlay structure snapshots (text, and cheap — measured at
+**201 characters for a full detail panel**, against ~1 000 tokens for the equivalent picture),
+and one more page family in the suite. **Re-measure before quoting a number**: read
+`cost-per-turn-usd` off the last full run in the Langfuse UI rather than trusting this
+paragraph, because the giga case alone renders a page several screens deep and is the most
+expensive item in the suite by construction.
+
+**Build cases are bounded by their CLOCK, not by their tool calls.** `maxToolCalls` cannot see
+a delegated build — `buildPage` runs its own loop inside one tool execution and streams
+nothing, so a page built the recommended way counts as one call however many steps it took.
+Every case that builds a page therefore carries `{ type: "latencyUnder", ms: 180_000 }`
+(240 000 for the giga case, which is a skeleton plus one edit per section by design). Cost
+stays a RUN-level score: `cost-agent-usd` / `cost-per-turn-usd`, summed from each turn's
+Langfuse observations. Per-case cost would mean a per-item fetch against an asynchronous
+ingestion, which buys a flaky assertion and answers a question the run-level score already
+answers.
+
 **Model pinning.** Every `evals:langfuse` run pins the turn model via
 `X-Model-Profile-Key` — default = the CODE `chat` binding in
-`src/lib/model-registry/profiles.ts` (the flagship held to 1.000), overridden by
+`src/lib/model-registry/profiles/` (the flagship held to 1.000), overridden by
 `--candidate <profileKey>`. Without the pin, the EVAL team's C8 picker choice
 silently overrides the code binding (the 2026-07-17 runs measured `gpt-oss-20b`
 that way). The `evals:memory` / `evals:recall` / `evals:chain` harnesses are
@@ -91,19 +115,21 @@ pages, not just which one decided to. **Compare the DESIGN AVERAGE across the
 building cases** — correctness moves for many reasons, the design score is what a
 builder swap is for.
 
-**`--page-judge-candidate` is not optional when the arms straddle the critic's
-family.** `page-review` is `gemini-3.7-flash`; pin a Gemini BUILDER without
-repointing the critic and that arm scores its own family's work. Unlike the
-builder pin (a header on the service call), the critic runs in THIS process, so
-the flag travels by `EVAL_PAGE_JUDGE_PROFILE` to `evals/page-design-judge.ts`.
+**`--page-judge-candidate` is not optional when an arm straddles the critic's
+family.** The two bindings are kept in different families on purpose — today
+`page-build` is `gemini-3.7-flash` and `page-review` is `gpt-5.6-luna` — so the
+default pairing is already neutral. Pin a builder from the CRITIC's family and
+that arm scores its own family's work; repoint the judge for that arm. Unlike
+the builder pin (a header on the service call), the critic runs in THIS process,
+so the flag travels by `EVAL_PAGE_JUDGE_PROFILE` to `evals/page-design-judge.ts`.
 A neutral judge costs ~2.7 ¢ per page on `claude-sonnet-5` — noise against a
-~11 ¢ build, and it is the only reason to trust the comparison.
+~11 ¢ build, and it is the only reason to trust a cross-family comparison.
 
 One caveat the flag does NOT cover: the builder's OWN review loop runs inside the
-service on the `page-review` binding, so a Gemini arm still self-reviews while
-building. That biases it DOWNWARD on a neutral judge (a critic that praises its
-own family catches less), so a win under these conditions is trustworthy; a loss
-is not conclusive.
+service on the `page-review` binding. An arm pinned to the critic's family
+therefore self-reviews while building, which biases it DOWNWARD on a neutral
+judge (a critic that praises its own family catches less) — a win under those
+conditions is trustworthy; a loss is not conclusive.
 
 **`--case <id>` (repeatable)** narrows any selection to the cases that
 discriminate. An A/B pays for every arm, so buy the four cases that move the
@@ -185,7 +211,7 @@ case (`origin: "prod"`) — this is how the dataset grows into the real gold set
 
 ## Model promotion (C3 gate)
 
-Every change of a model-registry binding (`src/lib/model-registry/profiles.ts`) goes
+Every change of a model-registry binding (`src/lib/model-registry/profiles/`) goes
 through the promotion gate — never a hand swap. The gate runs the curated suite twice
 **back-to-back** (baseline = current `chat` binding, then candidate, both pinned via the
 `X-Model-Profile-Key` header on `/invoke`) and compares paired same-data/same-day runs.
@@ -503,7 +529,7 @@ signal — do NOT invent a failure taxonomy or tune against synthetic targets.
 5. **Phase 8 — model strategy, data-driven**: compare agent models on the grown dataset
    (correctness/capability + cost-per-turn + latency). Mechanism: the **C3 promotion gate**
    (`evals:gate -- --candidate <profileKey>`, see "Model promotion" above) — model env vars no
-   longer exist; bindings live in `src/lib/model-registry/profiles.ts` and flip via a reviewed PR.
+   longer exist; bindings live in `src/lib/model-registry/profiles/` and flip via a reviewed PR.
    Adopt hybrid escalation (cheap default + escalate hard steps) only where experiments prove it pays.
 6. **Phase 6 — GEPA/DSPy auto-optimization**: once taxonomy + prod dataset are solid, pull the
    dataset + judge rationales, let a strong reflection model propose prompt / tool-description / skill

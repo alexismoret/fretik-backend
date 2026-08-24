@@ -133,6 +133,20 @@ export const GOOGLE_PROFILES: Record<string, ModelProfile> = {
         },
       },
       cache: { strategy: "implicit" },
+      // Effort-style, and it must STAY effort-style: this profile serves
+      // user-facing chat, where the depth picker is the product surface — a
+      // profile-level `maxTokens` pin empties `selectableReasoningLevels`
+      // and silently removes that control from every team on the model.
+      //
+      // The thinking-budget experiment briefly pinned `maxTokens: 32_000`
+      // here (2026-08-23) against the reasoning-only zombie (mandatory
+      // reasoning + ratio 1.21 → a runaway step spends the whole completion
+      // budget thinking and finishes `length` with nothing). That budget now
+      // lives where it belongs — on the `page-build` ROLE
+      // (`resolve.ts`, `PAGE_BUILD_REASONING_MAX_TOKENS`), same doctrine as
+      // the memory roles' budget — and the zombie is independently covered
+      // by the delegate's fallback retry (`agents/shared/sub-agent.ts`,
+      // rate 0 across the three 2026-08-23 eval runs).
       reasoning: { style: "effort", defaultLevel: "low" },
       provider: { requireParameters: true, zdr: true },
       // Disabled on cost at the settled price, NOT on quality — it replaced

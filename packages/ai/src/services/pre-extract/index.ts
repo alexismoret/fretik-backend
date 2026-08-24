@@ -1,4 +1,5 @@
 import type { FieldDefinition } from "@fretik/shared/db/schema";
+import { isMarkdownMime } from "@fretik/shared/file-types";
 import { buildDocumentOriginalKey } from "@fretik/shared/lib/document-storage";
 import { getFileFromS3, getPresignedUrl } from "@fretik/shared/lib/s3";
 import type { PreExtractionResponse } from "@fretik/shared/schemas/pre-extraction";
@@ -209,7 +210,11 @@ export const runPreExtract = (
 const runPreExtractImpl = async (
   args: PreExtractArgs,
 ): Promise<PreExtractionResponse> => {
-  const isPlainText = args.mimeType === "text/plain";
+  // Markdown joins `text/plain` here: it is already text, so it is READ rather
+  // than OCR'd. Routing it to Mistral would spend a call to get back a worse
+  // copy of bytes we hold — and for an authored document, of the source itself.
+  const isPlainText =
+    args.mimeType === "text/plain" || isMarkdownMime(args.mimeType);
   // Derive the S3 key from `documentId` + `originalFilename` unless the
   // caller pinned an ephemeral conversion key.
   const s3Key =

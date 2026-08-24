@@ -44,12 +44,13 @@ import {
   publishTyping,
   removePresent,
 } from "@fretik/shared/services/ai/presence";
+import { drainTurnLogToHistory } from "@fretik/shared/services/ai/turn-drain";
 import {
   getTurnLogStatus,
+  isTurnLogOrphan,
   openTurnLog,
   pumpChunksToTurnLog,
   readTurnLogAsSse,
-  TURN_LOG_ORPHAN_MS,
 } from "@fretik/shared/services/ai/turn-log";
 import { recordTurnIncrementally } from "@fretik/shared/services/ai/turn-recorder";
 import { updateConversation } from "@fretik/shared/services/ai/update";
@@ -2376,11 +2377,13 @@ chatbotRoutes.get("/:conversationId/stream", async (c) => {
     }
     return new Response(null, { status: 204 });
   }
-  if (!status.ended && Date.now() - status.lastEntryMs > TURN_LOG_ORPHAN_MS) {
-    // Dead producer (deploy/crash mid-turn): a live one pings its log
-    // every 5s. Clear the slot so the conversation isn't stuck behind the
-    // 409 guard; the client falls back to history, which carries the
-    // incrementally-persisted partial turn.
+  if (isTurnLogOrphan(status, Date.now())) {
+    // Dead producer (deploy/crash mid-turn — or a stall long past even
+    // the tool-aware deadline). SALVAGE, then clear: everything the turn
+    // streamed becomes persisted history, so the client's fallback shows
+    // the interrupted turn instead of nothing. Then clear the slot so the
+    // conversation isn't stuck behind the 409 guard.
+    await drainTurnLogToHistory({ conversationId, streamId: activeStreamId });
     await clearConversationActiveStream(conversationId, activeStreamId);
     return new Response(null, { status: 204 });
   }

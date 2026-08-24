@@ -16,6 +16,7 @@ describe("manageDrive input schema — per-action validation is deferred to exec
     "moveFolder",
     "deleteFolder",
     "moveDocument",
+    "renameDocument",
   ])(
     "accepts action-only input for %s (reaches execute → toolError)",
     (action) => {

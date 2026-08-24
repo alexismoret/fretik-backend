@@ -34,8 +34,6 @@ export interface PageDataSourceContext {
   userId: string | null;
   /** Declared variables, already coerced. The only viewer input that gets in. */
   state: Record<string, PageValue>;
-  /** Rows of the datasets resolved before this one, keyed by dataset id. */
-  data: Record<string, PageValue>;
   /**
    * The window and ordering the viewer asked for, already bounded by the
    * schema. A source that has no meaningful window (inline rows, an aggregate)
@@ -52,11 +50,12 @@ export interface PageDataSourceContext {
 export interface PageDataSource {
   kind: PageDatasetKind;
   /**
-   * Dataset ids that must resolve before this one. Declared by the source
-   * because only it knows what it reads — a transform names its `inputs`, and
-   * a future source may name something else entirely.
+   * `dependsOn` lived here until 2026-08-21, for `transform` — the only source
+   * that ever read another dataset's rows. With it gone every dataset is
+   * independent, so they all run in ONE wave and `data` is dead weight in the
+   * context above. Re-adding either means re-adding the scheduler; do not do it
+   * for a source that could read its own inputs directly.
    */
-  dependsOn?: (dataset: PageDataset) => string[];
   resolve: (
     dataset: PageDataset,
     context: PageDataSourceContext,

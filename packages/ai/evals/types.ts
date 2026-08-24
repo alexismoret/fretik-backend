@@ -197,7 +197,17 @@ export type Capability = (typeof CAPABILITIES)[number];
  * legitimate exploration. See `evals/tool-efficiency.ts`.
  */
 export interface CaseBudget {
-  /** Soft ceiling on total tool calls for the turn. */
+  /**
+   * Soft ceiling on total tool calls for the turn.
+   *
+   * BLIND TO A DELEGATED BUILD, and knowing that is what keeps it honest.
+   * `toolCalls[]` comes off the SSE stream of the chatbot turn, while a
+   * sub-agent (`buildPage`) runs its own loop inside one tool execution and
+   * streams nothing — so a page built the recommended way counts as ONE call
+   * however many steps it took. On those cases this measures the parent's
+   * chattiness and nothing else; the turn's real envelope is its wall clock,
+   * declared as a `latencyUnder` assertion, and its cost, scored per run.
+   */
   maxToolCalls?: number;
   /** Tool names a good trajectory stays within (off-list calls are flagged). */
   expectedTools?: readonly string[];

@@ -269,7 +269,8 @@ export const outlookManifest: ProviderManifest = {
     {
       name: "search_messages",
       kind: "read",
-      summary: "Full-text search across the mailbox",
+      summary:
+        "Full-text search across the mailbox, ordered by relevance not date",
       endpoint: { method: "GET", path: "/v1.0/me/messages" },
       params: {
         query: { type: "string", description: "Free-text search query" },

@@ -1,5 +1,8 @@
 import { EMPTY_OVERLAY_CHARS } from "@fretik/shared/services/pages/render/probe";
-import type { PageRenderResult } from "@fretik/shared/services/pages/render/types";
+import type {
+  PageRenderLayout,
+  PageRenderResult,
+} from "@fretik/shared/services/pages/render/types";
 
 /**
  * The measured half of a review — no model, no opinion, no cost.
@@ -48,6 +51,63 @@ export interface PageGateResult {
 const truncate = (text: string, max: number): string =>
   text.length > max ? `${text.slice(0, max).trimEnd()}…` : text;
 
+/**
+ * An object that reached the screen without a formatter, in BOTH the shapes it
+ * actually takes.
+ *
+ * `[object Object]` is the famous one and it is the rarer one here: measured on
+ * a real render, Vue interpolation prints an object as its JSON — a money field
+ * lands as `{ "amount": 5250, "currencyCode": "EUR" }`. Checking only for the
+ * famous string would have missed the common case entirely.
+ *
+ * The JSON form is matched on `{ "key":`, which a page's own prose does not
+ * produce; deliberate JSON would sit in a `<pre>`/`<code>`, and the snapshot
+ * emits no line for either.
+ */
+const STRINGIFIED_OBJECT = /\[object \w+\]|\{\s*"[\w-]+":/;
+/**
+ * A machine timestamp shown to a person: `2026-08-20T14:31:00Z`. Bounded on
+ * both sides so a date a page formatted itself (`2026-08-20`) is not flagged —
+ * that one is a legitimate rendering of a `date` field.
+ */
+const RAW_ISO_TIMESTAMP = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/;
+/** A uuid, printed where a name belongs. */
+const RAW_UUID =
+  /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i;
+
+/**
+ * What the open overlay was holding.
+ *
+ * These are the same defects the gate already refuses on the page itself — a
+ * raw value in front of a user — checked in the one region nothing else can
+ * see. The overlay is exactly where they hide: a detail panel is written last,
+ * interpolates the record's own fields directly, and is never in a screenshot.
+ */
+const inspectOverlaySnapshot = (interaction: {
+  target: string;
+  overlaySnapshot?: string;
+}): string[] => {
+  const snapshot = interaction.overlaySnapshot;
+  if (snapshot === undefined || snapshot.length === 0) return [];
+  const defects: string[] = [];
+  if (STRINGIFIED_OBJECT.test(snapshot)) {
+    defects.push(
+      `The overlay opened by ${interaction.target} prints an object instead of a value — money arrives as \`{ amount, currencyCode }\` and a relation as \`[{ id, label }]\`, and one of them reached the template raw. Route it through the dataset's \`fields\` descriptor.`,
+    );
+  }
+  if (RAW_ISO_TIMESTAMP.test(snapshot)) {
+    defects.push(
+      `The overlay opened by ${interaction.target} shows a raw ISO timestamp. Format it with \`Intl.DateTimeFormat(fretik.context.locale, …)\`.`,
+    );
+  }
+  if (RAW_UUID.test(snapshot)) {
+    defects.push(
+      `The overlay opened by ${interaction.target} shows a raw uuid. A record id is a key, not a value a person reads — show its \`label\`, and resolve a relation through the \`{ id, label }\` it already carries.`,
+    );
+  }
+  return defects;
+};
+
 export const gatePageRender = (render: PageRenderResult): PageGateResult => {
   const blocking: string[] = [];
   const observations: string[] = [];
@@ -90,10 +150,42 @@ export const gatePageRender = (render: PageRenderResult): PageGateResult => {
       blocking.push(
         `Clicking ${interaction.target} changes nothing. It looks clickable, so it must do something — filter the list below it, open the detail, or stop presenting itself as a target.`,
       );
+      continue;
+    }
+    for (const defect of inspectOverlaySnapshot(interaction)) {
+      blocking.push(defect);
     }
   }
 
+  // `desktop`, `desktop-mid` and `desktop-bottom` are ONE layout read at three
+  // scroll positions, and both measures here are horizontal: `scrollWidth` and
+  // an element's `left`/`right` do not move when the page scrolls down.
+  // Measured on a real render, the three rows come back identical — so without
+  // this fold a single sideways-scrolling table would spend three of a
+  // twelve-slot fix list saying the same thing three times.
+  //
+  // They are still read at each position rather than once, because content
+  // that mounts lazily (a virtualised list) has no width until it is scrolled
+  // to. `empty-state` keeps its own name: same width, different state, and an
+  // overflow that appears only once the data is gone is its own finding.
+  const widest = new Map<string, PageRenderLayout>();
   for (const [label, layout] of Object.entries(render.layout)) {
+    const family = label.replace(/-(mid|bottom)$/, "");
+    const seen = widest.get(family);
+    widest.set(
+      family,
+      seen === undefined
+        ? layout
+        : {
+            horizontalOverflow:
+              seen.horizontalOverflow || layout.horizontalOverflow,
+            clipped: Math.max(seen.clipped, layout.clipped),
+            textLength: Math.max(seen.textLength, layout.textLength),
+          },
+    );
+  }
+
+  for (const [label, layout] of widest) {
     if (layout.horizontalOverflow) {
       blocking.push(
         `The page scrolls sideways at the ${label} width. Something has a fixed width or a table runs past its container.`,
@@ -113,12 +205,60 @@ export const gatePageRender = (render: PageRenderResult): PageGateResult => {
     );
   }
 
+  // The drag pass. Two rules block, both proven end to end against real
+  // Pragmatic boards in `shared/tests/unit/page-render-drag.test.ts`:
+  //
+  //  - the teardown collapse — the page HAD draggables, the drag itself
+  //    re-rendered something, and every registration died. Nothing else can
+  //    produce it: a page with no drag wiring cannot re-render from synthetic
+  //    drag events, and a view switch cannot be triggered by them.
+  //  - the inert board — draggable elements whose drag no target ever accepts
+  //    (a live target calls preventDefault on the cancelable dragover; the
+  //    healthy fixture proves the synthetic sequence arms the real library,
+  //    so silence here is the page's, not the probe's).
+  const drag = render.drag;
+  if (drag) {
+    if (
+      drag.draggablesBeforeDrag > 0 &&
+      drag.domChanged &&
+      drag.draggablesAfterDrop === 0
+    ) {
+      blocking.push(
+        `${drag.draggablesBeforeDrag.toString()} elements were draggable, the drag re-rendered the page, and now none are — every re-render unregisters them. This is the bind-helper teardown bug: read skills/building-pages/references/libraries/drag-and-drop.md and pass a register CALLBACK, never a value, to the bind helper.`,
+      );
+    } else if (drag.draggablesBeforeDrag > 0 && !drag.dragoverAccepted) {
+      blocking.push(
+        `${drag.draggablesBeforeDrag.toString()} elements are draggable but no drop target accepted a simulated drag (dragover never prevented) — the board animates and nothing can ever land. Register a dropTargetForElements on each lane; skills/building-pages/references/libraries/drag-and-drop.md has the shape.`,
+      );
+    } else if (drag.draggablesBeforeDrag > 0) {
+      observations.push(
+        `Drag wiring is live: a simulated drag was accepted by a drop target${drag.dropHandled ? " and the drop was handled" : ""}${drag.domChanged ? ", and the DOM updated" : ""}.`,
+      );
+    }
+  }
+
   const dead = render.interactions.filter(
     (interaction) => !interaction.domChanged && !interaction.overlayOpened,
   ).length;
   if (render.interactions.length > 0 && dead === 0) {
     observations.push(
       `${render.interactions.length.toString()} clickable targets tested, all of them live.`,
+    );
+  }
+
+  // What the clicks actually asked the bridge to DO.
+  //
+  // "Live" above only means the DOM moved, and a toast moves the DOM whether or
+  // not anything was written — which is how a mail client whose send button
+  // resolved a `setTimeout` and toasted "sent" passed three rounds of this.
+  // Reported rather than blocked: plenty of good pages are read-only, and the
+  // reader (builder or critic) is the one who knows which this is.
+  if (render.interactions.length > 0) {
+    const calls = render.opsRuns.length;
+    observations.push(
+      calls === 0
+        ? `${render.interactions.length.toString()} targets clicked and NO operation ran — every write on this page is either unwired or faked in local state.`
+        : `${calls.toString()} operation ${calls === 1 ? "call" : "calls"} fired by those clicks: ${[...new Set(render.opsRuns)].join(", ")}.`,
     );
   }
 

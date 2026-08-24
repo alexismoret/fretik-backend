@@ -1,7 +1,11 @@
 import { recordSharingSchema } from "../../schemas/object-sharing";
 import { recordRelationInputSchema } from "../../schemas/ontology";
+import { promoteSandboxFileToDrive } from "../chat-files/promote-sandbox-file-to-drive";
 import { promoteChatFilesToDrive } from "../chat-files/promote-to-drive";
+import { saveAuthoredContent } from "../documents/authored/content";
+import { createAuthoredDocument } from "../documents/authored/create";
 import { updateDocument } from "../documents/update";
+import { restoreDocumentVersion } from "../documents/versions/restore";
 import type { EventActor } from "../domain-events/emit";
 import { createFolder } from "../folders/create";
 import { deleteFolders } from "../folders/delete";
@@ -137,7 +141,24 @@ const applyManageDrive: ToolCallApplyFn = async (ctx, args) => {
     await deleteFolders({ ids: [folderId], teamId: ctx.teamId, actor });
     return { ok: true, deleted: true, folderId };
   }
-  // moveDocument
+  if (action === "renameDocument") {
+    const documentId = str(args, "documentId");
+    const renamed = await updateDocument({
+      id: documentId,
+      teamId: ctx.teamId,
+      organizationId: ctx.organizationId,
+      updates: { originalFilename: str(args, "name") },
+    });
+    return {
+      ok: true,
+      document: {
+        id: renamed?.id ?? documentId,
+        name: renamed?.originalFilename,
+      },
+    };
+  }
+  // moveDocument — the fall-through, so every action ABOVE must be handled
+  // explicitly: an unmatched one would silently move the document to the root.
   const documentId = str(args, "documentId");
   const doc = await updateDocument({
     id: documentId,
@@ -151,9 +172,107 @@ const applyManageDrive: ToolCallApplyFn = async (ctx, args) => {
   };
 };
 
+// ---- manageDocument (authoring + rollback) --------------------------------
+
+const applyManageDocument: ToolCallApplyFn = async (ctx, args) => {
+  const action = str(args, "action");
+  const actorContext = {
+    actor: "agent" as const,
+    userId: ctx.userId,
+    conversationId: ctx.conversationId,
+  };
+
+  if (action === "create") {
+    const document = await createAuthoredDocument({
+      organizationId: ctx.organizationId,
+      teamId: ctx.teamId,
+      userId: ctx.userId,
+      title: str(args, "title"),
+      content: strOrNull(args, "content") ?? "",
+      folderId: strOrNull(args, "folderId"),
+      actorContext,
+      eventActor: {
+        actorType: "agent",
+        actorUserId: ctx.userId,
+        conversationId: ctx.conversationId,
+      },
+    });
+    return {
+      ok: true,
+      documentId: document.id,
+      title: document.originalFilename,
+      versionNumber: 1,
+    };
+  }
+
+  if (action === "restore") {
+    const result = await restoreDocumentVersion({
+      organizationId: ctx.organizationId,
+      teamId: ctx.teamId,
+      documentId: str(args, "documentId"),
+      versionId: str(args, "versionId"),
+      actorContext,
+    });
+    return {
+      ok: true,
+      documentId: result.document.id,
+      versionNumber: result.version.versionNumber,
+    };
+  }
+
+  // update. The edits were already applied when the proposal was built, so the
+  // stored `content` is the finished text — the grant only writes it. The
+  // revision still travels: the document may have moved between proposal and
+  // approval, and overwriting a newer version silently is exactly what the
+  // read-before-write contract exists to prevent.
+  const result = await saveAuthoredContent({
+    organizationId: ctx.organizationId,
+    teamId: ctx.teamId,
+    documentId: str(args, "documentId"),
+    content: strOrNull(args, "content") ?? "",
+    actorContext,
+    expectedFileHash: str(args, "revision"),
+  });
+  return {
+    ok: true,
+    documentId: result.document.id,
+    versionNumber: result.version.versionNumber,
+    unchanged: result.unchanged,
+  };
+};
+
 // ---- uploadToDrive --------------------------------------------------------
 
 const applyUploadToDrive: ToolCallApplyFn = async (ctx, args) => {
+  // Two proposal shapes, one per source: `path` is a file the agent produced in
+  // its workspace, `fileId` an attachment the user brought. Same split as the
+  // tool's own `execute`.
+  const path = strOrNull(args, "path");
+  if (path !== null) {
+    const replaceDocumentId = strOrNull(args, "replaceDocumentId");
+    const result = await promoteSandboxFileToDrive({
+      conversationId: ctx.conversationId,
+      path,
+      organizationId: ctx.organizationId,
+      teamId: ctx.teamId,
+      userId: ctx.userId,
+      folderId: strOrNull(args, "folderId"),
+      ...(replaceDocumentId !== null ? { replaceDocumentId } : {}),
+      actorContext: {
+        actor: "agent",
+        userId: ctx.userId,
+        conversationId: ctx.conversationId,
+      },
+    });
+    return {
+      ok: true,
+      documentId: result.documentId,
+      versionNumber: result.versionNumber,
+      created: result.created,
+      status: "processing",
+    };
+  }
+
   const fileId = str(args, "fileId");
   const { promoted, failed } = await promoteChatFilesToDrive({
     fileIds: [fileId],
@@ -267,6 +386,7 @@ export const TOOL_CALL_APPLY: Record<string, ToolCallApplyFn> = {
   manageLink: applyManageLink,
   manageDrive: applyManageDrive,
   uploadToDrive: applyUploadToDrive,
+  manageDocument: applyManageDocument,
   manageRecord: applyManageRecord,
   installSkill: applyInstallSkill,
 };

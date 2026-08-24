@@ -14,8 +14,8 @@ import {
 } from "@fretik/shared/services/ai/active-stream";
 import {
   getTurnLogStatus,
+  isTurnLogOrphan,
   readTurnLogAsSse,
-  TURN_LOG_ORPHAN_MS,
 } from "@fretik/shared/services/ai/turn-log";
 import { isOrgAdmin } from "@fretik/shared/services/organization/member-role";
 import { getWorkflowRunRow } from "@fretik/shared/services/workflows/get-run";
@@ -91,11 +91,11 @@ workflowTranscriptRoutes.get("/:runId/transcript/stream", async (c) => {
     }
     return new Response(null, { status: 204 });
   }
-  if (!status.ended && Date.now() - status.lastEntryMs > TURN_LOG_ORPHAN_MS) {
-    // Dead producer (deploy/crash mid-turn): a live pump pings its log
-    // every 5s. Clear the slot so the next turn's force-set is not even
-    // needed for the viewer to recover; the client falls back to the
-    // persisted transcript.
+  if (isTurnLogOrphan(status, Date.now())) {
+    // Dead producer (deploy/crash mid-turn). The deadline is tool-aware —
+    // a workflow step executing a slow tool is expected silence, not a
+    // death. No drain here: workflow turns persist through their own
+    // turn-indexed path, and the client falls back to that transcript.
     await clearConversationActiveStream(conversationId, activeStreamId);
     return new Response(null, { status: 204 });
   }

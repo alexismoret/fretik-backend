@@ -406,7 +406,7 @@ def search_messages(
     offset: int | None = 0,
     connection_id: str | None = None,
 ) -> list[Message]:
-    """Full-text search across the mailbox
+    """Full-text search across the mailbox, ordered by relevance not date
 
     query: Free-text search query
 

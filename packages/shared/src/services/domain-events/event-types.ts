@@ -18,6 +18,15 @@ export const DOMAIN_EVENT_TYPES = [
   "link.invalidated",
   // Documents (Drive).
   "document.uploaded",
+  /**
+   * The document's CONTENT changed — someone edited it, the agent rewrote it,
+   * a newer file replaced it, or a version was restored. One type for the
+   * three, with `operation` in the payload: what a workflow reacts to is "these
+   * bytes are not the bytes I last checked", which is the same fact however it
+   * happened. `document.uploaded` still covers the first version, so creating a
+   * document emits one event, not two.
+   */
+  "document.revised",
   "document.deleted",
   "document.reextracted",
   // Conversations + agent turns.
@@ -105,6 +114,7 @@ export const isValidDomainEventType = (type: string): boolean =>
  */
 export const WORKFLOW_TRIGGERABLE_EVENT_TYPES = [
   "document.uploaded",
+  "document.revised",
   "document.deleted",
   "document.reextracted",
   "record.created",

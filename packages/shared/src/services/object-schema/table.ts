@@ -4,6 +4,7 @@ import db, { type Executor, type Transaction } from "../../db";
 import type { FieldDefinition } from "../../db/schema";
 import { fieldDefinitions } from "../../db/schema";
 import { columnsForField } from "./columns";
+import { compileFormula } from "./formula/compile";
 import {
   assertSafeUuid,
   DATA_SCHEMA,
@@ -100,10 +101,19 @@ export const ensureObjectTable = async (input: {
        ${SYS_COL.updatedAt} timestamptz NOT NULL DEFAULT now()
      )`,
   );
-  for (const def of input.fields) {
+  // Formula columns go LAST: a generated column's expression names the columns
+  // it reads, so adding one before them fails with a bare "column does not
+  // exist". Catalog order is arbitrary — a formula created before the field it
+  // uses is perfectly ordinary — so the ordering has to be imposed here.
+  const ordered = [
+    ...input.fields.filter((f) => f.type !== "formula"),
+    ...input.fields.filter((f) => f.type === "formula"),
+  ];
+  for (const def of ordered) {
     await addFieldColumns({
       objectTypeId: input.objectTypeId,
       field: def,
+      siblings: input.fields,
       tx: input.tx,
     });
   }
@@ -161,14 +171,56 @@ export const reconcileObjectTable = async (input: {
   }
 };
 
+/**
+ * The `GENERATED ALWAYS AS (…) STORED` tail of a formula field's column.
+ *
+ * The expression is COMPILED here, never stored: `config.expression` holds the
+ * author's formula, and the SQL is derived from it against the type's current
+ * fields every time the column is built. That is what keeps a formula honest
+ * when the fields under it move — there is no second copy of the SQL to go
+ * stale — and it keeps `compileFormula` the only path from text to SQL.
+ */
+const formulaTail = (
+  field: FieldDefinition,
+  siblings: FieldDefinition[],
+): string => {
+  const source =
+    "expression" in field.config && typeof field.config.expression === "string"
+      ? field.config.expression
+      : "";
+  // Compiles, or throws a FormulaError the caller surfaces. A formula field
+  // whose expression no longer resolves must NOT silently become a plain
+  // column: the values it held would stop updating with nothing to show for it.
+  const compiled = compileFormula({ source, fields: siblings });
+  return ` GENERATED ALWAYS AS (${compiled.sql}) STORED`;
+};
+
 /** `ALTER TABLE … ADD COLUMN IF NOT EXISTS` for a newly-added field. No-op for virtual fields. */
 export const addFieldColumns = async (input: {
   objectTypeId: string;
   field: FieldDefinition;
+  /**
+   * The type's other fields — required to build a `formula` column, whose
+   * expression names them. Unused by every other field type.
+   */
+  siblings?: FieldDefinition[];
   tx?: Transaction;
 }): Promise<void> => {
   const exec = input.tx ?? db;
   const table = qualifiedObjectTable(input.objectTypeId);
+  // A formula is a generated column: it carries its expression, and the DB
+  // itself then refuses any write to it — a stronger guarantee than the
+  // write-path skip lists, and one the SQL tool cannot get around either.
+  if (input.field.type === "formula") {
+    const [c] = columnsForField(input.field);
+    if (!c) return;
+    const tail = formulaTail(input.field, input.siblings ?? [input.field]);
+    await ddl(
+      exec,
+      `ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS "${c.name}" ${c.sqlType}${tail}`,
+    );
+    return;
+  }
   // `unique_id`: a dedicated sequence fills the column (Notion "Unique ID" — a
   // sequential per-type counter). Adding a NOT NULL column with a volatile
   // default backfills every existing row with a distinct value; `OWNED BY` ties
@@ -216,6 +268,7 @@ export const changeFieldColumns = async (input: {
   objectTypeId: string;
   oldField: FieldDefinition;
   newField: FieldDefinition;
+  siblings?: FieldDefinition[];
   tx?: Transaction;
 }): Promise<void> => {
   await dropFieldColumns({
@@ -226,6 +279,39 @@ export const changeFieldColumns = async (input: {
   await addFieldColumns({
     objectTypeId: input.objectTypeId,
     field: input.newField,
+    siblings: input.siblings,
+    tx: input.tx,
+  });
+};
+
+/**
+ * Rebuild a formula's column after its EXPRESSION changed — drop, then re-add
+ * with the newly compiled clause.
+ *
+ * It needs its own entry point because the idempotent path cannot see the
+ * change: `reconcileObjectTable` compares column NAMES, and `ADD COLUMN IF NOT
+ * EXISTS` finds the column already there and does nothing. Editing a formula
+ * would appear to succeed while every row kept the old value — the worst
+ * available outcome, since the numbers stay plausible.
+ *
+ * Dropping recomputes every row on the way back in, which is the point: a stored
+ * generated column has no other way to be brought up to date.
+ */
+export const rebuildFormulaColumn = async (input: {
+  objectTypeId: string;
+  field: FieldDefinition;
+  siblings: FieldDefinition[];
+  tx?: Transaction;
+}): Promise<void> => {
+  await dropFieldColumns({
+    objectTypeId: input.objectTypeId,
+    field: input.field,
+    tx: input.tx,
+  });
+  await addFieldColumns({
+    objectTypeId: input.objectTypeId,
+    field: input.field,
+    siblings: input.siblings,
     tx: input.tx,
   });
 };

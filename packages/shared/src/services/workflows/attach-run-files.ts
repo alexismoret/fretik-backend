@@ -1,5 +1,7 @@
 import db from "../../db";
 import { aiChatFiles } from "../../db/schema";
+import { expectsSidecar } from "../../file-types";
+import { extractChatFileSnapshot } from "../../lib/chat-file-snapshot";
 import {
   sanitizeSessionPath,
   uploadSessionFile,
@@ -46,12 +48,26 @@ export const attachRunFiles = async (
       att.bytes,
       att.mimeType,
     );
+    // Same row shape a chat upload writes (`ai/services/chat-files/upload`).
+    // Without the hash, these files missed the content-addressed extraction
+    // cache and `read` had to backfill one on the fly; without the snapshot,
+    // their `<attached_file>` block arrived blind.
+    const snapshot = await extractChatFileSnapshot(
+      att.bytes,
+      att.mimeType,
+      undefined,
+      name,
+    ).catch(() => undefined);
+
     await db.insert(aiChatFiles).values({
       conversationId,
       uploadedById: null,
       filename: name,
       mimeType: att.mimeType,
       size: att.bytes.byteLength,
+      fileHash: Bun.SHA256.hash(att.bytes, "hex"),
+      hasMarkdown: expectsSidecar(att.mimeType, name),
+      ...(snapshot ? { snapshot } : {}),
       status: "ready",
     });
   }

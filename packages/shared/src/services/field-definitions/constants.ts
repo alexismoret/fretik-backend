@@ -19,6 +19,15 @@ export const FIELD_DEFINITION_LIMITS = {
   MAX_LABEL_CHARS: 80,
 } as const;
 
+export const FORMULA_LIMITS = {
+  /**
+   * Max characters in a formula expression. Generous for anything a person
+   * writes, and a bound on what gets compiled into DDL — the parser has its own
+   * nesting cap, this one stops the work before it starts.
+   */
+  MAX_EXPRESSION_CHARS: 2000,
+} as const;
+
 /**
  * Slug grammar for `fieldDefinitions.key`: lowercase alphanum + underscores,
  * starts with a letter, 1-60 chars total. Matches the column varchar(60).

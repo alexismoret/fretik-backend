@@ -101,6 +101,7 @@ export const relations = defineRelations(schema, (r) => ({
     }),
     folders: r.many.folders(),
     documents: r.many.documents(),
+    documentVersions: r.many.documentVersions(),
     activityLogs: r.many.activityLogs(),
     webhooks: r.many.webhooks(),
     usageMetrics: r.many.usageMetrics(),
@@ -246,12 +247,36 @@ export const relations = defineRelations(schema, (r) => ({
       optional: true,
     }),
     chatFiles: r.many.aiChatFiles(),
+    versions: r.many.documentVersions(),
   },
 
   documentProperties: {
     document: r.one.documents({
       from: r.documentProperties.documentId,
       to: r.documents.id,
+    }),
+  },
+
+  documentVersions: {
+    document: r.one.documents({
+      from: r.documentVersions.documentId,
+      to: r.documents.id,
+      optional: true,
+    }),
+    team: r.one.team({
+      from: r.documentVersions.teamId,
+      to: r.team.id,
+    }),
+    byUser: r.one.user({
+      from: r.documentVersions.byUserId,
+      to: r.user.id,
+      optional: true,
+    }),
+    byConversation: r.one.aiConversations({
+      from: r.documentVersions.byConversationId,
+      to: r.aiConversations.id,
+      alias: "documentVersionConversation",
+      optional: true,
     }),
   },
 
@@ -583,6 +608,9 @@ export const relations = defineRelations(schema, (r) => ({
     triggeredMemoryHistory: r.many.aiMemoryHistory({
       alias: "memoryHistoryConversation",
     }),
+    triggeredDocumentVersions: r.many.documentVersions({
+      alias: "documentVersionConversation",
+    }),
     toolApprovalRequests: r.many.toolApprovalRequests(),
     backgroundTasks: r.many.conversationBackgroundTasks(),
   },
@@ -902,6 +930,31 @@ export const relations = defineRelations(schema, (r) => ({
       from: r.pages.createdByUserId,
       to: r.user.id,
       alias: "pageCreator",
+      optional: true,
+    }),
+    versions: r.many.pageVersions(),
+  },
+
+  pageVersions: {
+    page: r.one.pages({
+      from: r.pageVersions.pageId,
+      to: r.pages.id,
+      optional: true,
+    }),
+    team: r.one.team({
+      from: r.pageVersions.teamId,
+      to: r.team.id,
+    }),
+    byUser: r.one.user({
+      from: r.pageVersions.byUserId,
+      to: r.user.id,
+      alias: "pageVersionAuthor",
+      optional: true,
+    }),
+    byConversation: r.one.aiConversations({
+      from: r.pageVersions.byConversationId,
+      to: r.aiConversations.id,
+      alias: "pageVersionConversation",
       optional: true,
     }),
   },

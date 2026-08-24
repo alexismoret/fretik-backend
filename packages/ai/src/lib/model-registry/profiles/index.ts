@@ -359,15 +359,17 @@ export const ROLE_BINDINGS: Record<ModelRole, RoleBinding> = {
   // resolves `page-review` internally, no header reaches it), so it iterated
   // against a critic inclined to praise it and still won on a neutral judge.
   //
-  // `chat` settings, not `bare`: the builder is a multi-step tool-calling agent
-  // on a long context, so it wants the same envelope and cache wrap a chat turn
-  // gets, not a one-shot's.
+  // `page-build` settings: the `chat` envelope and cache wrap (the builder is
+  // a multi-step tool-calling agent on a long context, not a one-shot) plus
+  // the role's OWN reasoning budget — a delegated build is an internal
+  // pipeline whose thinking allowance is a system decision, not the profile's
+  // user-facing effort ladder (`settingsForRole` carries the measurement).
   //
   // THIS AND `page-review` MOVE TOGETHER. They may never share a family.
   "page-build": {
     role: "page-build",
     profileKey: "gemini-3.7-flash",
-    settingsKind: "chat",
+    settingsKind: "page-build",
     wrapCache: true,
   },
   // Document-scale prose transformation (the `transform` tool): translate,

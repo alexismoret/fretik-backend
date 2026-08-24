@@ -51,7 +51,7 @@ FROM install AS release
 ENV NODE_ENV=production
 
 # poppler-utils is required by node-poppler (PDF parsing inside
-# @fretik/shared/file-parsing).
+# @fretik/shared/services/file-extraction).
 RUN apt-get update \
  && apt-get install -y --no-install-recommends poppler-utils ca-certificates \
  && rm -rf /var/lib/apt/lists/*

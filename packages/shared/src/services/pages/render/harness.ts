@@ -26,6 +26,8 @@ export interface HarnessParams {
   pageName: string;
   dark: boolean;
   locale: "en" | "fr";
+  /** The page's own accent, so the review sees the palette the viewer will. */
+  accent: string | null;
 }
 
 export const buildHarnessHtml = (params: HarnessParams): string => {
@@ -38,6 +40,7 @@ export const buildHarnessHtml = (params: HarnessParams): string => {
       pageName: params.pageName,
       dark: params.dark,
       locale: params.locale,
+      accent: params.accent,
     }),
   );
 
@@ -55,12 +58,15 @@ export const buildHarnessHtml = (params: HarnessParams): string => {
   const frame = document.getElementById('frame');
 
   // What the renderer reads back through evaluate().
-  window.__STATE__ = { initialized: false, dataAnswered: false, lastMessageAt: 0, pageErrors: [], probe: {} };
+  window.__STATE__ = { initialized: false, dataAnswered: false, lastMessageAt: 0, pageErrors: [], probe: {}, opsRuns: [] };
   const state = window.__STATE__;
 
   const hostContext = () => ({
     dark: BOOT.dark,
-    accent: null,
+    // The page's real accent: a palette the review never applied is a palette
+    // the review cannot judge, and the accent path is exactly where a page has
+    // rendered grey in production while every screenshot here looked right.
+    accent: BOOT.accent,
     // Left empty on purpose: in the app these carry the LIVE palette so a
     // theme switch reaches the page. Here the runtime bundle's own theme is
     // the truth, and pushing nothing keeps the review reproducible.
@@ -102,15 +108,23 @@ export const buildHarnessHtml = (params: HarnessParams): string => {
     if (data.method === 'initialize') { state.initialized = true; respond(data.id, hostContext()); return; }
     if (data.method === 'data.query') { state.dataAnswered = true; respond(data.id, answerData(data.params)); return; }
     // A review clicks buttons. Operations must answer, and must not run.
-    if (data.method === 'ops.run') { respond(data.id, { status: 'ok', message: 'simulated in review' }); return; }
+    // Recorded on the way past: answering 'ok' without executing is what makes
+    // a real write indistinguishable from a faked one on screen, so the COUNT
+    // of calls is the only evidence left that the controls are wired at all.
+    if (data.method === 'ops.run') {
+      const opId = data.params && typeof data.params.operationId === 'string' ? data.params.operationId : '?';
+      state.opsRuns.push(opId);
+      respond(data.id, { status: 'ok', message: 'simulated in review' });
+      return;
+    }
     if (data.method === 'ui.openUrl' || data.method === 'ui.copy') { respond(data.id, { ok: true }); return; }
     post({ kind: 'res', id: data.id, error: { code: 'UNKNOWN_METHOD', message: data.method } });
   });
 
   let probeSeq = 0;
-  window.__probe = (cmd) => {
+  window.__probe = (cmd, arg) => {
     const id = ++probeSeq;
-    frame.contentWindow?.postMessage({ __probe__: 'run', id, cmd }, '*');
+    frame.contentWindow?.postMessage({ __probe__: 'run', id, cmd, arg }, '*');
     return id;
   };
   window.__probeResult = (id) => (id in state.probe ? JSON.stringify(state.probe[id]) : null);

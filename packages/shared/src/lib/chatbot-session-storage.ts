@@ -4,6 +4,7 @@ import {
   getObjectBytes,
   getPresignedUrl,
   listObjects,
+  listObjectsDetailed,
   putObject,
 } from "./s3";
 
@@ -159,6 +160,36 @@ export const listSessionPaths = async (
   return keys
     .map((key) => key.slice(sessionPrefix.length))
     .filter((path) => path.length > 0);
+};
+
+export interface SessionFileEntry {
+  /** Session-relative path, e.g. `outputs/report.xlsx`. */
+  path: string;
+  size: number;
+  lastModified: Date | null;
+}
+
+/**
+ * Same listing as `listSessionPaths`, keeping the size and mtime S3 already
+ * returns — what anything SHOWING these files to a person needs.
+ */
+export const listSessionEntries = async (
+  conversationId: string,
+  subdirPrefix?: string,
+): Promise<SessionFileEntry[]> => {
+  const sessionPrefix = buildSessionPrefix(conversationId);
+  const fullPrefix =
+    subdirPrefix !== undefined && subdirPrefix.length > 0
+      ? `${sessionPrefix}${sanitizeSessionPath(subdirPrefix)}/`
+      : sessionPrefix;
+  const entries = await listObjectsDetailed(fullPrefix);
+  return entries
+    .map((entry) => ({
+      path: entry.key.slice(sessionPrefix.length),
+      size: entry.size,
+      lastModified: entry.lastModified,
+    }))
+    .filter((entry) => entry.path.length > 0);
 };
 
 /**

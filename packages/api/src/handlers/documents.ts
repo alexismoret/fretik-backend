@@ -1,4 +1,4 @@
-import type { Document } from "@fretik/shared/db/schema";
+import type { Document, DocumentVersion } from "@fretik/shared/db/schema";
 import {
   authMiddleware,
   type HonoLoggedAppType,
@@ -10,12 +10,19 @@ import {
 } from "@fretik/shared/lib/errors";
 import { applyAntiBufferingHeaders } from "@fretik/shared/lib/sse-headers";
 import {
+  AuthoredContentResponseSchema,
   bodyIdListSchema,
+  CreateAuthoredDocumentSchema,
   DocumentResponseSchema,
+  DocumentVersionDownloadSchema,
+  DocumentVersionSchema,
   GetDocumentDetailsResponseSchema,
   RecentDocumentSchema,
+  SaveAuthoredContentResponseSchema,
+  SaveAuthoredContentSchema,
   UpdateDocumentSchema,
   UploadDocumentSchema,
+  UploadOutcomeSchema,
 } from "@fretik/shared/schemas";
 import {
   paramsIdSchema,
@@ -23,6 +30,7 @@ import {
 } from "@fretik/shared/schemas/common/params";
 import {
   responseBadRequestSchema,
+  responseConflictSchema,
   responseCreatedSchemaBuilder,
   responseForbiddenSchema,
   responseInternalErrorSchema,
@@ -30,6 +38,11 @@ import {
   responseNotFoundSchema,
   responseSuccessDeletedSchema,
 } from "@fretik/shared/schemas/common/responses";
+import {
+  getAuthoredContent,
+  saveAuthoredContent,
+} from "@fretik/shared/services/documents/authored/content";
+import { createAuthoredDocument } from "@fretik/shared/services/documents/authored/create";
 import { deleteDocuments } from "@fretik/shared/services/documents/delete";
 import { listRecentDocuments } from "@fretik/shared/services/documents/list-recent";
 import { streamUploadProgress } from "@fretik/shared/services/documents/progress";
@@ -40,6 +53,9 @@ import {
 } from "@fretik/shared/services/documents/retrieve";
 import { updateDocument } from "@fretik/shared/services/documents/update";
 import { uploadDocument } from "@fretik/shared/services/documents/upload";
+import { getDocumentVersionDownloadUrl } from "@fretik/shared/services/documents/versions/download";
+import { listDocumentVersions } from "@fretik/shared/services/documents/versions/list";
+import { restoreDocumentVersion } from "@fretik/shared/services/documents/versions/restore";
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import { streamSSE } from "hono/streaming";
 
@@ -59,6 +75,7 @@ const formatDocumentResponse = (doc: Document) => ({
   teamId: doc.teamId,
   folderId: doc.folderId,
   status: doc.status,
+  source: doc.source,
   errorMessage: doc.errorMessage,
   originalFilename: doc.originalFilename,
   fileSize: doc.fileSize,
@@ -66,6 +83,18 @@ const formatDocumentResponse = (doc: Document) => ({
   uploadedById: doc.uploadedById,
   createdAt: doc.createdAt,
   updatedAt: doc.updatedAt,
+});
+
+/** Version rows without their storage key — an S3 key is never client-facing. */
+const formatVersionResponse = (version: DocumentVersion) => ({
+  id: version.id,
+  versionNumber: version.versionNumber,
+  operation: version.operation,
+  fileSize: version.fileSize,
+  byActor: version.byActor,
+  byUserId: version.byUserId,
+  byConversationId: version.byConversationId,
+  createdAt: version.createdAt,
 });
 
 // ==================== //
@@ -91,11 +120,12 @@ const uploadDocumentRoute = createRoute({
   },
   responses: {
     ...responseCreatedSchemaBuilder(
-      DocumentResponseSchema,
-      "Document created and processing started",
+      DocumentResponseSchema.extend({ outcome: UploadOutcomeSchema }),
+      "Document created, replaced, or already present",
     ),
     ...responseBadRequestSchema,
     ...responseForbiddenSchema,
+    ...responseConflictSchema,
     ...responseInternalErrorSchema,
   },
 });
@@ -229,6 +259,168 @@ const reextractDocumentRoute = createRoute({
   },
 });
 
+/**
+ * -- AUTHORING + VERSIONS
+ * --
+ * Authoring writes a document instead of uploading one; versions apply to
+ * EVERY document, not just written ones — one history, one restore, whatever
+ * the file type.
+ */
+const createAuthoredDocumentRoute = createRoute({
+  method: "post",
+  path: "/authored",
+  summary: "Create a written document",
+  description:
+    "Creates a markdown document authored in Fretik. Unlike an upload it is `ready` immediately — nothing to convert or OCR — and is mirrored into the graph and indexed for search like any other document.",
+  tags: ["Documents"],
+  request: {
+    body: {
+      content: {
+        "application/json": { schema: CreateAuthoredDocumentSchema },
+      },
+      required: true,
+    },
+  },
+  responses: {
+    ...responseCreatedSchemaBuilder(DocumentResponseSchema, "Document created"),
+    ...responseBadRequestSchema,
+    ...responseForbiddenSchema,
+    ...responseInternalErrorSchema,
+  },
+});
+
+const getDocumentContentRoute = createRoute({
+  method: "get",
+  path: "/{id}/content",
+  summary: "Read a written document's text",
+  description:
+    "Returns the markdown of a document authored in Fretik. Uploaded files are not text and are read through their presigned URL instead.",
+  tags: ["Documents"],
+  request: { params: paramsIdSchema },
+  responses: {
+    200: {
+      content: {
+        "application/json": { schema: AuthoredContentResponseSchema },
+      },
+      description: "Content retrieved",
+    },
+    ...responseBadRequestSchema,
+    ...responseNotFoundSchema,
+    ...responseForbiddenSchema,
+    ...responseInternalErrorSchema,
+  },
+});
+
+// PATCH, not PUT: every other update route in this API is PATCH, and the body
+// is not a complete representation of the resource — `baseUpdatedAt` is an
+// optimistic-concurrency token, not part of the content.
+const saveDocumentContentRoute = createRoute({
+  method: "patch",
+  path: "/{id}/content",
+  summary: "Save a written document's text",
+  description:
+    "Replaces the markdown and records a version. Consecutive saves by the same author within a few minutes fold into one version. Send `baseUpdatedAt` to be refused with 409 rather than overwrite a concurrent save.",
+  tags: ["Documents"],
+  request: {
+    params: paramsIdSchema,
+    body: {
+      content: { "application/json": { schema: SaveAuthoredContentSchema } },
+      required: true,
+    },
+  },
+  responses: {
+    200: {
+      content: {
+        "application/json": { schema: SaveAuthoredContentResponseSchema },
+      },
+      description: "Content saved",
+    },
+    409: {
+      content: {
+        "application/json": {
+          schema: z.object({
+            code: z.enum(["DOCUMENT_STALE"]),
+            message: z.string().optional(),
+          }),
+        },
+      },
+      description:
+        "The document changed since it was loaded — reload before saving",
+    },
+    ...responseBadRequestSchema,
+    ...responseNotFoundSchema,
+    ...responseForbiddenSchema,
+    ...responseInternalErrorSchema,
+  },
+});
+
+const listDocumentVersionsRoute = createRoute({
+  method: "get",
+  path: "/{id}/versions",
+  summary: "List a document's versions",
+  description:
+    "History of a document, newest first, with who produced each version. Available for every document — a written one, an uploaded file that was replaced, or one that was never touched (which has a single version).",
+  tags: ["Documents"],
+  request: { params: paramsIdSchema },
+  responses: {
+    200: {
+      content: {
+        "application/json": { schema: z.array(DocumentVersionSchema) },
+      },
+      description: "Versions retrieved",
+    },
+    ...responseNotFoundSchema,
+    ...responseForbiddenSchema,
+    ...responseInternalErrorSchema,
+  },
+});
+
+const restoreDocumentVersionRoute = createRoute({
+  method: "post",
+  path: "/{id}/versions/{versionId}/restore",
+  summary: "Restore a document version",
+  description:
+    "Brings back a previous version's content. The rollback becomes the newest version rather than truncating history, so it can itself be undone. Files that carry derived data (thumbnail, extracted fields) are re-processed against the restored bytes.",
+  tags: ["Documents"],
+  request: {
+    params: paramsIdSchema.extend({ versionId: z.uuid() }),
+  },
+  responses: {
+    200: {
+      content: {
+        "application/json": { schema: SaveAuthoredContentResponseSchema },
+      },
+      description: "Version restored",
+    },
+    ...responseNotFoundSchema,
+    ...responseForbiddenSchema,
+    ...responseInternalErrorSchema,
+  },
+});
+
+const downloadDocumentVersionRoute = createRoute({
+  method: "get",
+  path: "/{id}/versions/{versionId}/download",
+  summary: "Download one version",
+  description:
+    "A short-lived link to a past version's bytes. Reading an old version must not move the document, so this is what the history offers instead of restoring: the file downloads under a name carrying its version number.",
+  tags: ["Documents"],
+  request: {
+    params: paramsIdSchema.extend({ versionId: z.uuid() }),
+  },
+  responses: {
+    200: {
+      content: {
+        "application/json": { schema: DocumentVersionDownloadSchema },
+      },
+      description: "Signed download url",
+    },
+    ...responseNotFoundSchema,
+    ...responseForbiddenSchema,
+    ...responseInternalErrorSchema,
+  },
+});
+
 // ==================== //
 // ROUTE HANDLERS       //
 // ==================== //
@@ -246,17 +438,24 @@ documentRoutes.openapi(uploadDocumentRoute, async (c) => {
     return c.json(teamRequired(), 403);
   }
 
-  const { file, folderId } = c.req.valid("form");
+  const { file, folderId, onConflict } = c.req.valid("form");
 
-  const savedDocument = await uploadDocument(
+  const result = await uploadDocument(
     file,
     organization.id,
     team.id,
     user.id,
     folderId,
+    onConflict,
   );
 
-  return c.json(formatDocumentResponse(savedDocument), 201);
+  // `outcome` rides on the document rather than wrapping it: every existing
+  // caller reads `id` / `status` off the top level, and a same-name upload that
+  // landed as a new version is still, to them, "the document you just sent".
+  return c.json(
+    { ...formatDocumentResponse(result.document), outcome: result.outcome },
+    201,
+  );
 });
 
 /**
@@ -341,6 +540,162 @@ documentRoutes.openapi(reextractDocumentRoute, async (c) => {
 });
 
 /**
+ * -- CREATE A WRITTEN DOCUMENT
+ * --
+ */
+documentRoutes.openapi(createAuthoredDocumentRoute, async (c) => {
+  const user = c.get("user");
+  const team = c.get("team");
+  if (!team) {
+    return throwHttpError(403, teamRequired());
+  }
+
+  const { title, content, folderId } = c.req.valid("json");
+
+  const document = await createAuthoredDocument({
+    organizationId: team.organizationId,
+    teamId: team.id,
+    userId: user.id,
+    title,
+    content,
+    folderId: folderId ?? null,
+    actorContext: { actor: "human", userId: user.id },
+    eventActor: { actorType: "user", actorUserId: user.id },
+  });
+
+  return c.json(formatDocumentResponse(document), 201);
+});
+
+/**
+ * -- READ A WRITTEN DOCUMENT
+ * --
+ */
+documentRoutes.openapi(getDocumentContentRoute, async (c) => {
+  const team = c.get("team");
+  if (!team) {
+    return throwHttpError(403, teamRequired());
+  }
+
+  const { id } = c.req.valid("param");
+  const { document, content } = await getAuthoredContent({
+    documentId: id,
+    teamId: team.id,
+  });
+
+  return c.json({ document: formatDocumentResponse(document), content }, 200);
+});
+
+/**
+ * -- SAVE A WRITTEN DOCUMENT
+ * --
+ */
+documentRoutes.openapi(saveDocumentContentRoute, async (c) => {
+  const user = c.get("user");
+  const team = c.get("team");
+  if (!team) {
+    return throwHttpError(403, teamRequired());
+  }
+
+  const { id } = c.req.valid("param");
+  const { content, baseUpdatedAt } = c.req.valid("json");
+
+  const result = await saveAuthoredContent({
+    documentId: id,
+    teamId: team.id,
+    organizationId: team.organizationId,
+    content,
+    actorContext: { actor: "human", userId: user.id },
+    ...(baseUpdatedAt ? { expectedUpdatedAt: baseUpdatedAt } : {}),
+  });
+
+  return c.json(
+    {
+      document: formatDocumentResponse(result.document),
+      version: formatVersionResponse(result.version),
+      unchanged: result.unchanged,
+    },
+    200,
+  );
+});
+
+/**
+ * -- LIST VERSIONS
+ * --
+ */
+documentRoutes.openapi(listDocumentVersionsRoute, async (c) => {
+  const team = c.get("team");
+  if (!team) {
+    return throwHttpError(403, teamRequired());
+  }
+
+  const { id } = c.req.valid("param");
+  const versions = await listDocumentVersions({
+    documentId: id,
+    teamId: team.id,
+  });
+
+  return c.json(
+    versions.map((v) => ({
+      ...formatVersionResponse(v),
+      byUserName: v.byUserName,
+      origin: v.origin,
+      isCurrent: v.isCurrent,
+    })),
+    200,
+  );
+});
+
+/**
+ * -- RESTORE A VERSION
+ * --
+ */
+documentRoutes.openapi(restoreDocumentVersionRoute, async (c) => {
+  const user = c.get("user");
+  const team = c.get("team");
+  if (!team) {
+    return throwHttpError(403, teamRequired());
+  }
+
+  const { id, versionId } = c.req.valid("param");
+  const result = await restoreDocumentVersion({
+    documentId: id,
+    teamId: team.id,
+    organizationId: team.organizationId,
+    versionId,
+    actorContext: { actor: "human", userId: user.id },
+  });
+
+  return c.json(
+    {
+      document: formatDocumentResponse(result.document),
+      version: formatVersionResponse(result.version),
+      unchanged: result.unchanged,
+    },
+    200,
+  );
+});
+
+/**
+ * -- DOWNLOAD ONE VERSION
+ * --
+ */
+documentRoutes.openapi(downloadDocumentVersionRoute, async (c) => {
+  const team = c.get("team");
+  if (!team) {
+    return throwHttpError(403, teamRequired());
+  }
+
+  const { id, versionId } = c.req.valid("param");
+  const result = await getDocumentVersionDownloadUrl({
+    documentId: id,
+    versionId,
+    teamId: team.id,
+  });
+
+  return c.json(result, 200);
+});
+
+/**
  * -- LIST RECENT DOCUMENTS
  * --
  * Team-wide recent documents for the home "Recent files" card.
@@ -402,6 +757,7 @@ documentRoutes.openapi(getDocumentDetailsRoute, async (c) => {
       teamId: document.teamId,
       folderId: document.folderId,
       status: document.status,
+      source: document.source,
       errorMessage: document.errorMessage,
       originalFilename: document.originalFilename,
       fileSize: document.fileSize,

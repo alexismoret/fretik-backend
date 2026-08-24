@@ -1,6 +1,11 @@
 import db from "@fretik/shared/db";
 import { aiChatFiles } from "@fretik/shared/db/schema";
 import { getProvider } from "@fretik/shared/external-apps/registry";
+import {
+  agentAccessFor,
+  isHtmlMime,
+  isImageMime,
+} from "@fretik/shared/file-types";
 import { renderSnapshot } from "@fretik/shared/lib/chat-file-snapshot";
 import { signSandboxJwt } from "@fretik/shared/lib/external-apps/sandbox-jwt";
 import { listConnections } from "@fretik/shared/services/external-apps/connections/list";
@@ -345,23 +350,33 @@ export const buildAttachedFilesBlock = async (
     // is the most file-adjacent instruction the model gets, and while it
     // listed only read/vision/python the model routed document data through
     // an ad-hoc python parser even with the hint in its playbook.
+    // Dispatch on the registry's access class, NOT on `hasMarkdown`: a
+    // source file (HTML above all) carries a markdown sidecar for search
+    // while `read` still hands back its raw bytes — describing it as
+    // "returns its text" would hide the markup the model came for.
+    const access = agentAccessFor(row.mimeType, filename);
     const extractsNatively =
-      row.mimeType === "application/pdf" || row.mimeType.startsWith("image/");
-    if (row.hasMarkdown) {
+      row.mimeType === "application/pdf" || isImageMime(row.mimeType);
+    if (access === "email-sidecar") {
+      body.push(
+        `Mail — \`read({ file_path: '${relativePath}' })\` returns its headers and body. Unpack attachments in \`python\` with \`extract_msg\` (.msg) or the \`email\` module (.eml).`,
+      );
+    } else if (isHtmlMime(row.mimeType)) {
+      body.push(
+        `Web page — \`read({ file_path: '${relativePath}' })\` returns the raw HTML, markup included, so you can reuse or rewrite its markup as well as read it.`,
+      );
+    } else if (access === "ocr-sidecar" && row.hasMarkdown) {
       const extractLead = extractsNatively
         ? `\`extract\` for structured data (line items, table rows, named fields). `
         : "";
       body.push(
         `${extractLead}\`read({ file_path: '${relativePath}' })\` returns its text; figure refs in it are vision-targetable. For layout / signature questions use \`vision\`; to modify the file use \`python\` on '${relativePath}'.`,
       );
-    } else if (row.mimeType.startsWith("image/")) {
+    } else if (access === "image") {
       body.push(
         `\`extract\` for structured data. Call \`vision({ file_path: '${relativePath}', question: '...' })\` for visual questions (\`read\` has no text for this image).`,
       );
-    } else if (
-      row.mimeType.includes("spreadsheet") ||
-      row.mimeType.includes("excel")
-    ) {
+    } else if (access === "tabular") {
       body.push(
         `Spreadsheet — open in \`python\` with \`pandas.read_excel('${relativePath}')\` / \`openpyxl\`.`,
       );

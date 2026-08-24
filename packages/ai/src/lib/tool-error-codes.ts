@@ -25,6 +25,10 @@ export const TOOL_ERROR_CODES = {
   // it stays out of the input-shape family: re-sending the same publish call is
   // exactly the wrong move.
   PAGE_NOT_PUBLISHABLE: "PAGE_NOT_PUBLISHABLE",
+  // The caller reached for authoring on the instance that only reads, tweaks
+  // and publishes. Same family reasoning as above: no argument fixes it — the
+  // work belongs to `buildPage`, so the loop guard must not steer a retry.
+  PAGE_REQUIRES_BUILDER: "PAGE_REQUIRES_BUILDER",
 
   // Workflow (headless workflow-agent tools)
   NO_WORKFLOW_RUN: "NO_WORKFLOW_RUN",
@@ -89,6 +93,13 @@ export const TOOL_ERROR_CODES = {
   S3_FETCH_FAILED: "S3_FETCH_FAILED",
   S3_OBJECT_MISSING: "S3_OBJECT_MISSING",
   S3_UPLOAD_FAILED: "S3_UPLOAD_FAILED",
+
+  // Document authoring (manageDocument). The content moved since the agent
+  // read it, so its edit anchors were composed against text that is gone. Its
+  // own code, not an input-shape one: re-sending a corrected call shape is
+  // exactly wrong — the fix is to read the document again. Same reasoning as
+  // `PAGE_NOT_PUBLISHABLE`.
+  DOCUMENT_STALE: "DOCUMENT_STALE",
 
   // Domain query tools
   LIST_DOCUMENTS_ERROR: "LIST_DOCUMENTS_ERROR",

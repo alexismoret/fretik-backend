@@ -5,6 +5,7 @@ import { z } from "zod";
 import {
   resolveChatModelForProfile,
   resolveModel,
+  resolvePageBuildModelForProfile,
   type ResolvedModel,
 } from "../../lib/model-registry/resolve";
 import { areWebToolsAvailable, WEB_TOOL_NAMES } from "../../lib/web-egress";
@@ -486,8 +487,10 @@ const pageBuilderSystemPrompt = (ctx: AgentRuntimeContext): Promise<string> =>
   buildPageBuilderSystemPrompt(ctx);
 
 /**
- * Page-builder agent set — the third delegate, routed by
- * `dispatchAgent({ agent: "page-builder" })`.
+ * Page-builder agent set — the third delegate, reached through the `buildPage`
+ * tool and nothing else (`dispatchAgent` has no route to it). Since
+ * 2026-08-21 that door is also the ONLY way a page gets authored at all: every
+ * other agent's `managePage` is built with `pageAuthoring: false`.
  *
  * On the PRIMARY model, never the cheap one: it writes a whole Vue SFC and
  * then reads a design critique of it. Its tool registry is a short positive
@@ -507,6 +510,13 @@ const makePageBuilderSet = (
     fallbackModel: resolveModel("chat-fallback"),
     stopWhen: [isStepCount(parsePageBuilderMaxSteps())],
     repairToolCall: llmRepairToolCall<PageBuilderTools>(),
+    // 75% of `buildPage`'s 15-minute dispatch deadline. Past this the hard
+    // cut is close enough that starting anything — a fix round, a review —
+    // loses the whole run's tail; landing what exists beats polishing it.
+    softDeadline: {
+      afterMs: 675_000,
+      text: "[deadline] The build is nearly out of time and will be cut off shortly. Land it NOW: make sure the page is saved, then stop — no more edits, no more reviews. Hand back the url with an honest one-line status of what was and was not verified.",
+    },
     prepareStep: pageBuilderPrepareStep,
     buildRuntimeContextBase: buildChatbotRuntimeContextBase,
     callOptionsSchema: ChatbotCallOptionsSchema,
@@ -526,10 +536,10 @@ const memoPageBuilderSet = memoizeAgentSets(makePageBuilderSet);
  * default for every page that conversation produced.
  *
  * Resolution happens per call now, so the profile can come from the turn.
- * An arbitrary profile resolves through the CHAT envelope on purpose: the
- * `page-build` binding declares `settingsKind: "chat"` + `wrapCache: true`, so
- * the two envelopes are the same object and reusing the resolver keeps one
- * memo table instead of two that could drift.
+ * An override resolves through the PAGE-BUILD envelope, same as the default:
+ * the role carries its own reasoning allowance (`settingsKind: "page-build"`,
+ * `resolve.ts`), and a candidate resolved through the chat envelope would A/B
+ * two envelopes instead of two models.
  */
 export const getPageBuilderSet = (
   profileKey?: string,
@@ -537,7 +547,7 @@ export const getPageBuilderSet = (
   memoPageBuilderSet(
     profileKey === undefined
       ? resolveModel("page-build")
-      : resolveChatModelForProfile(profileKey),
+      : resolvePageBuildModelForProfile(profileKey),
   );
 
 /**
@@ -564,6 +574,11 @@ export const buildPageTool = createBuildPageTool({
   // turn's own options. Passing `pageBuilderSet.primary` here is what pinned
   // every page in the product to one profile for months.
   resolvePageBuilder: (profileKey) => getPageBuilderSet(profileKey).primary,
+  // The set has carried a fallback model all along; nothing reached for it. A
+  // build that comes back having written nothing now gets the one retry the
+  // parent turn has had since C4.
+  resolvePageBuilderFallback: (profileKey) =>
+    getPageBuilderSet(profileKey).fallback,
 });
 
 /**

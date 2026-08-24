@@ -1,5 +1,8 @@
 import { and, sql, type SQL } from "drizzle-orm";
-import type { FieldDefinitionType } from "../../db/schema";
+import type {
+  FieldDefinitionConfig,
+  FieldDefinitionType,
+} from "../../db/schema";
 import type { RecordFilter } from "../../schemas/ontology";
 
 const SLUG = /^[a-z][a-z0-9_]{0,58}[a-z0-9]$|^[a-z]$/;
@@ -65,8 +68,38 @@ const CAST_ACCEPTS: Record<string, (value: string) => boolean> = {
 type Comparison =
   { kind: "direct" } | { kind: "cast"; cast: string } | { kind: "text" };
 
-const comparisonFor = (fieldType?: FieldDefinitionType): Comparison => {
+/**
+ * What a `formula` column compares as, from the result type its compiler
+ * inferred. It cannot go in `VALUE_CAST` because it is not fixed by the field
+ * TYPE — it is fixed by the expression, which is why the config has to be read.
+ *
+ * Getting this wrong is not a lost index, it is a wrong answer: without the
+ * cast the column falls back to a text comparison, where `'1500' > '500'` is
+ * FALSE. Verified in Postgres before writing this.
+ */
+const formulaComparison = (config?: FieldDefinitionConfig): Comparison => {
+  const result =
+    config && "resultType" in config && typeof config.resultType === "string"
+      ? config.resultType
+      : "number";
+  switch (result) {
+    case "text":
+      return { kind: "direct" };
+    case "boolean":
+      return { kind: "cast", cast: "boolean" };
+    case "date":
+      return { kind: "cast", cast: "timestamptz" };
+    default:
+      return { kind: "cast", cast: "double precision" };
+  }
+};
+
+const comparisonFor = (
+  fieldType?: FieldDefinitionType,
+  config?: FieldDefinitionConfig,
+): Comparison => {
   if (!fieldType) return { kind: "text" };
+  if (fieldType === "formula") return formulaComparison(config);
   const cast = VALUE_CAST[fieldType];
   if (cast) return { kind: "cast", cast };
   return TEXT_TYPES.has(fieldType) ? { kind: "direct" } : { kind: "text" };
@@ -126,13 +159,16 @@ export const buildFieldFilterPredicate = (
   // registry column they project (created_at / updated_at / …), so the same
   // per-operator SQL serves both without an extension EXISTS.
   columnOverride?: SQL,
+  // A `formula` compares as whatever its expression evaluates to, which only
+  // its config knows. Unused by every other field type.
+  config?: FieldDefinitionConfig,
 ): SQL | null => {
   if (!columnOverride && !SLUG.test(f.key)) return null;
   const isMoney = fieldType === "money";
   const isMulti = fieldType === "multi_select";
   const colName = isMoney ? `${f.key}_amount` : f.key;
   const col = columnOverride ?? sql.raw(`e."${colName}"`);
-  const comparison = comparisonFor(fieldType);
+  const comparison = comparisonFor(fieldType, config);
   const left = lhs(col, comparison);
 
   switch (f.op) {

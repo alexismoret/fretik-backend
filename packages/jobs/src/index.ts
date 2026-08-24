@@ -4,6 +4,7 @@ import "@fretik/shared/db";
 
 import { startBulkOperationWorker } from "@fretik/shared/services/bulk-operations/queue";
 import { startDocumentProcessingWorker } from "@fretik/shared/services/documents/processing-queue";
+import { startDocumentVectorRefreshWorker } from "@fretik/shared/services/documents/vector-refresh-queue";
 import packagejson from "../package.json";
 import { healthApp } from "./health";
 import { registerSchedulers } from "./queues/schedulers";
@@ -27,6 +28,7 @@ import { startWorkflowRunCreateWorker } from "./workers/workflow-run-create";
  */
 
 startDocumentProcessingWorker();
+startDocumentVectorRefreshWorker();
 startMemoryResolveWorker();
 startMemoryDistillWorker();
 startRecordCardWorker();
@@ -41,7 +43,7 @@ await registerSchedulers();
 console.log(`
 ---------------------------
 fretik jobs v${packagejson.version}
-workers: document-processing · memory-resolve · memory-distill · record-card · memory-dreaming · memory-maintenance · workflow-trigger · mcp-refresh · object-index · bulk-operation
+workers: document-processing · document-vector-refresh · memory-resolve · memory-distill · record-card · memory-dreaming · memory-maintenance · workflow-trigger · mcp-refresh · object-index · bulk-operation
 ---------------------------
 `);
 

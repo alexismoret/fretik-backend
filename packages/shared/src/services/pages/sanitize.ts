@@ -1,5 +1,11 @@
+import { babelParse, parse as parseSfc } from "vue/compiler-sfc";
 import type { PageDefinition } from "../../schemas/pages";
-import { PAGE_LIMITS, eachPageVarRef } from "../../schemas/pages";
+import {
+  PAGE_ACCENT_TOKENS,
+  PAGE_COMPONENT_COLORS,
+  PAGE_LIMITS,
+  eachPageVarRef,
+} from "../../schemas/pages";
 
 /**
  * Static pass over the DATA half of a page definition — datasets, variables,
@@ -20,10 +26,6 @@ import { PAGE_LIMITS, eachPageVarRef } from "../../schemas/pages";
  */
 
 const WARNING_CAP = 60;
-
-/** A transform reads its inputs whole, in memory — an input sized past this
- * is a GROUP BY that never happened. */
-const TRANSFORM_INPUT_ROWS = 500;
 
 export interface SanitizedPage {
   definition: PageDefinition;
@@ -81,6 +83,26 @@ const OPS_RUN_RE = /ops\s*\.\s*run\s*\(\s*['"]([^'"]+)['"]/g;
 const STRING_LITERAL_RE = /['"]([^'"]+)['"]/g;
 
 /**
+ * `fretik.ops.run(action.id, …)` — an id this pass cannot read. One of these
+ * and the literal set above stops being the whole list of what the code runs,
+ * so any check that reasons from its ABSENCE has to stand down.
+ */
+const OPS_RUN_COMPUTED_RE = /ops\s*\.\s*run\s*\(\s*(?!['"])/;
+
+/**
+ * Whether an exact quoted `"id"` occurs anywhere in the source.
+ *
+ * A substring test rather than a scan for every literal in the file: the naive
+ * `'([^']+)'` pairing walks straight off the rails on real page source, where
+ * French copy is full of apostrophes and each one shifts the pairing for
+ * everything after it. Asking about ONE known id cannot drift.
+ */
+const appearsAsLiteral = (source: string, id: string): boolean =>
+  source.includes(`'${id}'`) ||
+  source.includes(`"${id}"`) ||
+  source.includes(`\`${id}\``);
+
+/**
  * Ids the SFC asks the bridge for at runtime. Literal forms only: an id built
  * from a variable is unknowable here, and guessing would warn about a page that
  * works.
@@ -103,6 +125,211 @@ const idsRequestedByCode = (
     if (match[1]) operations.add(match[1]);
   }
   return { datasets, operations };
+};
+
+/** Enough of a Babel node to read one without importing `@babel/types`, which
+ * is installed only as a transitive of `vue/compiler-sfc` and would have to
+ * become a direct dependency to be imported by name. */
+interface AstNode {
+  type: string;
+  [key: string]: unknown;
+}
+const isAstNode = (value: unknown): value is AstNode =>
+  typeof value === "object" &&
+  value !== null &&
+  typeof Reflect.get(value, "type") === "string";
+
+const visitAst = (value: unknown, fn: (node: AstNode) => void): void => {
+  if (Array.isArray(value)) {
+    for (const item of value) visitAst(item, fn);
+    return;
+  }
+  if (!isAstNode(value)) return;
+  fn(value);
+  for (const key of Object.keys(value)) {
+    if (key === "loc" || key === "leadingComments") continue;
+    visitAst(value[key], fn);
+  }
+};
+
+/** The non-computed name of an object property key, or null. */
+const propertyKeyName = (node: AstNode): string | null => {
+  if (node.type !== "ObjectProperty" || node["computed"] === true) return null;
+  const key = node["key"];
+  if (!isAstNode(key)) return null;
+  const name = key.type === "Identifier" ? key["name"] : key["value"];
+  return typeof name === "string" ? name : null;
+};
+
+/**
+ * The variable keys the SFC SENDS to the bridge — the `{ variables: { … } }` of
+ * a `data.query` or an `ops.run`.
+ *
+ * This is the other half of the joint `checkVarRefs` already guards.
+ * `resolvePageState` matches keys EXACTLY and drops what the page never
+ * declared, so a source sending `recordId` at a variable declared `record_id`
+ * leaves that variable on its initial. Measured on the stored corpus
+ * (2026-08-21): **2 of the 7 pages that declare a write** send camelCase for
+ * snake_case variables, and their buttons answer `no record id to act on — the
+ * variable it reads is empty`.
+ *
+ * It has to be caught HERE and nowhere else. The rendered review cannot see it:
+ * `render/harness.ts` answers every `ops.run` with `ok` without executing,
+ * because a review must not write. So a save-time read of the source is the
+ * only thing between a mismatch and the first person to click the button.
+ *
+ * Read from a real AST, not a regex, and the reason is the same one written
+ * above `DATASETS_ACCESS_RE`: a character-level reader of a language mistakes
+ * spreads and nested objects for what it is looking for, and a warning about a
+ * page that works is worse than no warning. `babelParse` comes from
+ * `vue/compiler-sfc`, which this package already compiles every page with —
+ * exact reading, no new dependency. A call site carrying a spread or a computed
+ * key is skipped WHOLE: what cannot be read literally is not guessed at.
+ *
+ * Scope stated: `<script>` only. A `variables` object written inline in the
+ * TEMPLATE is not read, which costs a missed warning, never a false one.
+ */
+export const variableKeysSentByCode = (source: string): Set<string> => {
+  const keys = new Set<string>();
+  const { descriptor } = parseSfc(source);
+  const script = descriptor.scriptSetup ?? descriptor.script;
+  if (!script) return keys;
+
+  let ast;
+  try {
+    ast = babelParse(script.content, {
+      sourceType: "module",
+      plugins: ["typescript"],
+    });
+  } catch {
+    // Unparseable source is the COMPILER's verdict to give, and it refuses the
+    // write outright. Saying anything here would just be noise in front of it.
+    return keys;
+  }
+
+  visitAst(ast.program, (node) => {
+    if (node.type !== "CallExpression") return;
+    const callee = node["callee"];
+    if (!isAstNode(callee) || callee.type !== "MemberExpression") return;
+    const method = callee["property"];
+    if (!isAstNode(method) || callee["computed"] === true) return;
+    // `ops.run(...)` and `data.query(...)` — the two calls that carry state.
+    if (method["name"] !== "run" && method["name"] !== "query") return;
+    const args = node["arguments"];
+    if (!Array.isArray(args)) return;
+    for (const arg of args) {
+      if (!isAstNode(arg) || arg.type !== "ObjectExpression") continue;
+      const properties = arg["properties"];
+      if (!Array.isArray(properties)) continue;
+      for (const property of properties) {
+        if (!isAstNode(property) || propertyKeyName(property) !== "variables") {
+          continue;
+        }
+        const value = property["value"];
+        if (!isAstNode(value) || value.type !== "ObjectExpression") continue;
+        const entries = value["properties"];
+        if (!Array.isArray(entries)) continue;
+        const sent: string[] = [];
+        for (const entry of entries) {
+          if (!isAstNode(entry)) continue;
+          const name = propertyKeyName(entry);
+          // A spread or a computed key makes the whole site unreadable.
+          if (name === null) return;
+          sent.push(name);
+        }
+        for (const name of sent) keys.add(name);
+      }
+    }
+  });
+  return keys;
+};
+
+/**
+ * Static `color="…"` attributes on `U*` components whose value is not one of
+ * the seven semantic aliases.
+ *
+ * Worth a pass of its own because this failure is invisible from every other
+ * angle: the prop has no validator, the compiler only sees a string, and the
+ * component renders — just with no colour at all (see `PAGE_COMPONENT_COLORS`).
+ * Measured on a real board (2026-08-22) carrying `violet`, `teal` and `orange`
+ * badges, all of which drew grey.
+ *
+ * Static attributes only. `:color="x"` is a binding this pass cannot resolve,
+ * and a warning about a page that works is worse than no warning.
+ */
+const invalidComponentColors = (source: string): Set<string> => {
+  const found = new Set<string>();
+  const valid = new Set<string>(PAGE_COMPONENT_COLORS);
+  let root: unknown;
+  try {
+    root = parseSfc(source).descriptor.template?.ast;
+  } catch {
+    return found;
+  }
+  if (!root) return found;
+
+  // Its own walker: the template AST types its nodes with a NUMERIC enum, so
+  // `visitAst` — which recognises a node by a string `type` — walks straight
+  // past every one of them. Recognise an element by its shape instead.
+  const walk = (node: unknown): void => {
+    if (Array.isArray(node)) {
+      for (const item of node) walk(item);
+      return;
+    }
+    if (typeof node !== "object" || node === null) return;
+    const tag = Reflect.get(node, "tag");
+    const props = Reflect.get(node, "props");
+    if (
+      typeof tag === "string" &&
+      /^U[A-Z]/.test(tag) &&
+      Array.isArray(props)
+    ) {
+      for (const prop of props) {
+        if (typeof prop !== "object" || prop === null) continue;
+        if (Reflect.get(prop, "name") !== "color") continue;
+        // A directive (`:color`) carries `arg`/`exp`, never a literal `value`.
+        const value = Reflect.get(prop, "value");
+        if (typeof value !== "object" || value === null) continue;
+        const content = Reflect.get(value, "content");
+        if (typeof content !== "string" || valid.has(content)) continue;
+        found.add(content);
+      }
+    }
+    walk(Reflect.get(node, "children"));
+    // `v-if` holds its children one level deeper, under each branch.
+    walk(Reflect.get(node, "branches"));
+  };
+  walk(root);
+  return found;
+};
+
+/**
+ * `badgeColor: "violet"` in the SCRIPT — a Tailwind hue parked in a
+ * colour-named property.
+ *
+ * The measured board reached its `color` prop through `:color="t.badgeColor"`,
+ * two hops and an index away from the literal, so the template pass above sees
+ * nothing. Resolving that chain is not worth attempting; noticing the hue is.
+ *
+ * A hue in a colour-named property has exactly two destinations: the documented
+ * `var(--color-<hue>-500)` recipe, or a `color` prop that will silently draw
+ * nothing. So the suspicion is raised only when the source never uses the
+ * recipe at all — a page doing it right stays quiet.
+ */
+const HUE_PROPERTY_RE = /\b(\w*[Cc]olor)\s*:\s*['"]([a-z]+)['"]/g;
+const COLOR_VAR_RECIPE_RE = /var\(\s*--color-|theme\s*\.\s*color\s*\(/;
+
+const suspectHueProperties = (source: string): Map<string, string> => {
+  const found = new Map<string, string>();
+  if (COLOR_VAR_RECIPE_RE.test(source)) return found;
+  const hues = new Set<string>(PAGE_ACCENT_TOKENS);
+  const valid = new Set<string>(PAGE_COMPONENT_COLORS);
+  for (const match of source.matchAll(HUE_PROPERTY_RE)) {
+    const [, key, value] = match;
+    if (!key || !value || valid.has(value) || !hues.has(value)) continue;
+    found.set(value, key);
+  }
+  return found;
 };
 
 export const sanitizePageDefinition = (
@@ -152,20 +379,6 @@ export const sanitizePageDefinition = (
         `dataset "${dataset.id}" filter "${filter.key}"`,
       );
     }
-    for (const input of dataset.inputs ?? []) {
-      if (!datasetIds.has(input)) {
-        pushPageWarning(
-          warnings,
-          `dataset "${dataset.id}": input "${input}" does not exist`,
-        );
-      }
-      if (input === dataset.id) {
-        pushPageWarning(
-          warnings,
-          `dataset "${dataset.id}": cannot take itself as input`,
-        );
-      }
-    }
     // `count` counts rows; every other function needs a column to work on, and
     // without one the metric compiles to a literal NULL. The figure then reads
     // as blank or zero on the page — indistinguishable from "the data says
@@ -176,27 +389,6 @@ export const sanitizePageDefinition = (
         warnings,
         `dataset "${dataset.id}" metric "${metric.name}": ${metric.fn} needs a \`key\` naming the field to aggregate — without one it always returns nothing, which the page shows as a blank figure.`,
       );
-    }
-    if (dataset.kind === "transform" && dataset.code) {
-      // A transform is the BODY of `(data, state) => …`, so code that never
-      // returns evaluates to `undefined` and yields an empty dataset — which
-      // reads exactly like "the query found nothing". Cheap to catch here,
-      // confusing to debug at render time.
-      if (!/\breturn\b/.test(dataset.code)) {
-        pushPageWarning(
-          warnings,
-          `dataset "${dataset.id}": the code never returns, so the dataset would come back empty. It is the body of (data, state) => … — end it with \`return rows\`.`,
-        );
-      }
-      for (const inputId of dataset.inputs ?? []) {
-        const input = definition.datasets.find((d) => d.id === inputId);
-        if (input?.kind !== "objects" || input.mode === "aggregate") continue;
-        if ((input.limit ?? 100) <= TRANSFORM_INPUT_ROWS) continue;
-        pushPageWarning(
-          warnings,
-          `dataset "${dataset.id}" reads "${inputId}", which asks for ${(input.limit ?? 0).toString()} rows. A transform combines results the database already reduced — group and sum in an aggregate dataset, then transform the tens of rows it returns.`,
-        );
-      }
     }
     if (dataset.kind === "inline" && dataset.rows) {
       const bytes = JSON.stringify(dataset.rows).length;
@@ -286,6 +478,52 @@ export const sanitizePageDefinition = (
     pushPageWarning(
       warnings,
       `the code runs operation "${id}", which the page does not declare — the call fails at the bridge. Declare it, or drop the call.`,
+    );
+  }
+  // The same joint from the DECLARATION side, and the sharper half. An
+  // operation nothing runs is the shape a page takes when its controls only
+  // pretend to write: measured on a real mail client (2026-08-22) that declared
+  // nine operations, called three, and answered every other button with a
+  // success toast. Nothing downstream catches it — a toast IS a DOM change, so
+  // the review's click probe reads the control as live — and the page ships
+  // looking finished. Skipped entirely when any id is computed, because then
+  // the literal set above is not the whole list of what runs.
+  //
+  // When an id IS computed — `ops.run(isRead ? 'mark_read' : 'mark_unread')` —
+  // the precise set stops being the whole list, so the test weakens to one that
+  // stays sound: an id that appears nowhere in the source as a string literal
+  // cannot be the one a computed expression resolves to. Measured on that same
+  // page, this weaker form still names all three dead declarations.
+  const computedOperationId = OPS_RUN_COMPUTED_RE.test(definition.code.source);
+  for (const operation of definition.operations) {
+    const called = computedOperationId
+      ? appearsAsLiteral(definition.code.source, operation.id)
+      : requested.operations.has(operation.id);
+    if (called) continue;
+    pushPageWarning(
+      warnings,
+      `the page declares operation "${operation.id}" and never runs it — the id appears in no \`fretik.ops.run\` call in the source, so every control that promises it is inert. Wire the control to it, or drop both.`,
+    );
+  }
+  for (const color of invalidComponentColors(definition.code.source)) {
+    pushPageWarning(
+      warnings,
+      `color="${color}" is not a Nuxt UI colour — the component draws with no colour at all, silently. Use one of ${PAGE_COMPONENT_COLORS.join(", ")}; for a data hue, bind \`:style\` to \`var(--color-${color}-500)\` instead.`,
+    );
+  }
+  for (const [hue, key] of suspectHueProperties(definition.code.source)) {
+    pushPageWarning(
+      warnings,
+      `"${key}: '${hue}'" holds a Tailwind hue, and this page never uses the \`var(--color-…)\` recipe — if it reaches a component's \`color\` prop, that component draws with no colour at all, silently. A \`color\` prop takes only ${PAGE_COMPONENT_COLORS.join(", ")}; a data hue belongs in \`:style\` as \`var(--color-${hue}-500)\`.`,
+    );
+  }
+  // Same joint, the other side: the ids line up but the VARIABLE KEYS do not.
+  const declaredList = [...variableKeys].join(", ");
+  for (const key of variableKeysSentByCode(definition.code.source)) {
+    if (variableKeys.has(key)) continue;
+    pushPageWarning(
+      warnings,
+      `the code sends variable "${key}", which the page does not declare — undeclared keys are dropped, so the variable it should fill keeps its initial and the control does nothing. Declared: ${declaredList || "none"}.`,
     );
   }
 

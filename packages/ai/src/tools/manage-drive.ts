@@ -25,12 +25,15 @@ export const manageDriveInputSchema = z.object({
     "moveFolder",
     "deleteFolder",
     "moveDocument",
+    "renameDocument",
   ]),
   name: z
     .string()
     .max(100)
     .optional()
-    .describe("Folder name. Required for createFolder / renameFolder."),
+    .describe(
+      "New name. Required for createFolder / renameFolder / renameDocument.",
+    ),
   folderId: z
     .string()
     .uuid()
@@ -42,7 +45,9 @@ export const manageDriveInputSchema = z.object({
     .string()
     .uuid()
     .optional()
-    .describe("Document id to relocate. Required for moveDocument."),
+    .describe(
+      "Document to act on. Required for moveDocument / renameDocument.",
+    ),
   parentFolderId: z
     .string()
     .uuid()
@@ -83,8 +88,9 @@ export const createManageDriveTool = () =>
       "- moveFolder: folderId + parentFolderId (new parent; null = root).",
       "- deleteFolder: folderId. Deletes the folder AND its documents/subfolders — confirm with the user first.",
       "- moveDocument: documentId + parentFolderId (destination; null = root).",
+      "- renameDocument: documentId + name. The file type is kept whatever you send, so name it as a title.",
       "",
-      "Get folder ids from `listFolders`, document ids from `listDocuments`. To save a conversation attachment into the Drive, use `uploadToDrive`.",
+      "Get folder ids from `listFolders`, document ids from `listDocuments`. To save a conversation attachment into the Drive, use `uploadToDrive`; to change what a document SAYS, use `manageDocument`.",
     ].join("\n"),
     inputSchema: manageDriveInputSchema,
     execute: async (input, options) => {
@@ -209,6 +215,32 @@ export const createManageDriveTool = () =>
             action: input.action,
             deleted: true,
             folderId: input.folderId,
+          };
+        }
+
+        if (input.action === "renameDocument") {
+          if (!input.documentId || !input.name) {
+            return toolError(
+              TOOL_ERROR_CODES.DRIVE_ERROR,
+              "renameDocument requires documentId and name.",
+            );
+          }
+          // `updateDocument` re-appends the current extension: every S3 key a
+          // document owns derives from this name, so a rename that changed the
+          // extension would leave the bytes behind.
+          const renamed = await updateDocument({
+            id: input.documentId,
+            teamId: ctx.teamId,
+            organizationId: ctx.organizationId,
+            updates: { originalFilename: input.name },
+          });
+          return {
+            ok: true,
+            action: input.action,
+            document: {
+              id: input.documentId,
+              name: renamed?.originalFilename ?? input.name,
+            },
           };
         }
 

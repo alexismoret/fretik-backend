@@ -6,6 +6,7 @@ import "@hono/zod-openapi";
 import type { PageDataset } from "../../src/schemas/pages";
 import {
   externalSource,
+  inferExternalFields,
   registerExternalPageQueryExecutor,
   resetExternalPageQueryExecutor,
   resolveExternalArgs,
@@ -179,5 +180,74 @@ describe("resolveExternalArgs — declared state only", () => {
         query: { folders: ["inbox", "fixed"], flag: true },
       });
     }
+  });
+});
+
+/**
+ * The display dictionary an external dataset never shipped.
+ *
+ * An `objects` dataset comes back with `fields`, and that descriptor is what
+ * turns a column into a labelled, formatted value. External datasets shipped
+ * rows alone, which is the structural reason every page over a connected app
+ * shows the provider's own key — `givenName`, `dateTimeCreated` — to a person.
+ */
+describe("inferred fields for an external dataset", () => {
+  test("names the columns the way a person would", () => {
+    const fields = inferExternalFields([
+      { givenName: "Marion", family_name: "Blay", "job-title": "Analyst" },
+    ]);
+    expect(fields.map((f) => f.label)).toEqual([
+      "Given name",
+      "Family name",
+      "Job title",
+    ]);
+  });
+
+  test("claims a type only when every observed value agrees", () => {
+    const fields = inferExternalFields([
+      { seats: 4, live: true, name: "Board room", mixed: 1 },
+      { seats: 12, live: false, name: "Small room", mixed: "many" },
+    ]);
+    const typeOf = (key: string): string =>
+      fields.find((f) => f.key === key)?.type ?? "";
+    expect(typeOf("seats")).toBe("number");
+    expect(typeOf("live")).toBe("boolean");
+    expect(typeOf("name")).toBe("text");
+    // A wrong type is worse than none: it routes the value into a formatter it
+    // cannot survive. Mixed columns say so instead of guessing.
+    expect(typeOf("mixed")).toBe("unknown");
+  });
+
+  test("a null says nothing about a type — it must not poison one", () => {
+    // A key empty in the first row and a number in the second is a number.
+    // Treating the null as its own kind would mark every sparse column mixed.
+    const fields = inferExternalFields([{ seats: null }, { seats: 12 }]);
+    expect(fields[0]?.type).toBe("number");
+  });
+
+  test("tells a timestamp from a calendar day", () => {
+    const fields = inferExternalFields([
+      { startsAt: "2026-08-21T09:30:00Z", day: "2026-08-21" },
+    ]);
+    const startsAt = fields.find((f) => f.key === "startsAt");
+    const day = fields.find((f) => f.key === "day");
+    expect(startsAt?.type).toBe("date");
+    expect(startsAt?.hasTime).toBe(true);
+    expect(day?.type).toBe("date");
+    expect(day?.hasTime).toBeUndefined();
+  });
+
+  test("nothing from a third party is sortable or writable", () => {
+    // The server holds none of it: there is no column to order by and nothing
+    // a `record` operation could write back to.
+    for (const field of inferExternalFields([{ a: 1, b: "x" }])) {
+      expect(field.sortable).toBe(false);
+      expect(field.writable).toBe(false);
+    }
+  });
+
+  test("a shapeless answer yields no dictionary rather than a wrong one", () => {
+    expect(inferExternalFields([])).toEqual([]);
+    expect(inferExternalFields(["a", "b"])).toEqual([]);
   });
 });

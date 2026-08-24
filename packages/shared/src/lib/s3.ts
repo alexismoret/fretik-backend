@@ -137,13 +137,26 @@ export const copyObject = async (args: {
   );
 };
 
+export interface S3ObjectEntry {
+  key: string;
+  size: number;
+  lastModified: Date | null;
+}
+
 /**
- * List every key under a prefix. Handles paginated continuation via
- * `NextContinuationToken`. Returns `[]` on error so callers can treat
- * the result as "nothing to do".
+ * List every object under a prefix WITH its size and mtime. Handles paginated
+ * continuation via `NextContinuationToken`. Returns `[]` on error so callers
+ * can treat the result as "nothing to do".
+ *
+ * The listing already carries size and mtime — `listObjects` below throws them
+ * away, which is right for the callers that only need to enumerate or delete,
+ * and wrong for anything showing a file to a person. Getting them any other way
+ * would be one HEAD request per object.
  */
-export const listObjects = async (prefix: string): Promise<string[]> => {
-  const keys: string[] = [];
+export const listObjectsDetailed = async (
+  prefix: string,
+): Promise<S3ObjectEntry[]> => {
+  const entries: S3ObjectEntry[] = [];
   let continuationToken: string | undefined;
   try {
     do {
@@ -159,7 +172,12 @@ export const listObjects = async (prefix: string): Promise<string[]> => {
         }),
       );
       for (const entry of response.Contents ?? []) {
-        if (typeof entry.Key === "string") keys.push(entry.Key);
+        if (typeof entry.Key !== "string") continue;
+        entries.push({
+          key: entry.Key,
+          size: entry.Size ?? 0,
+          lastModified: entry.LastModified ?? null,
+        });
       }
       continuationToken = response.IsTruncated
         ? response.NextContinuationToken
@@ -172,8 +190,12 @@ export const listObjects = async (prefix: string): Promise<string[]> => {
     );
     return [];
   }
-  return keys;
+  return entries;
 };
+
+/** Keys only — the shape every enumerate-and-act caller wants. */
+export const listObjects = async (prefix: string): Promise<string[]> =>
+  (await listObjectsDetailed(prefix)).map((entry) => entry.key);
 
 /**
  * Best-effort delete of a single object. Failures are logged and

@@ -1,4 +1,4 @@
-import { inArray, sql } from "drizzle-orm";
+import { inArray, sql, type SQL } from "drizzle-orm";
 import db from "../../db";
 import type { FieldDefinition } from "../../db/schema";
 import { objectRecords } from "../../db/schema";
@@ -25,6 +25,48 @@ import { collectMemberUserIds } from "./validate-members";
 const REGISTRY_UPDATE_PARAMS_PER_ROW = 5;
 /** System columns `buildExtensionUpdateBatch` binds per row, before the fields. */
 const EXTENSION_UPDATE_SYS_PARAMS = 2;
+
+/**
+ * The registry half of a bulk update, as one `UPDATE … FROM (VALUES …)`.
+ *
+ * Pure and exported so it can be asserted, because the thing that has to stay
+ * true here is invisible at the call site: **`updated_at` is stamped
+ * EXPLICITLY**. The column declares `$onUpdate` in the schema, which the
+ * single-row `updateObjectRecord` gets for free — but that is a Drizzle
+ * query-builder convenience, and a set-based statement never triggers it.
+ * Omitting it froze the registry's `updated_at` at creation for every bulk
+ * write, so `last_edited_time` and "sort by recently updated" both read the
+ * creation date, sitting beside an updated-BY stamp that HAD been refreshed —
+ * the worst shape a stale value can take, because half of it is right.
+ * `now()` is the transaction clock: one write, one timestamp for the batch,
+ * in step with `buildExtensionUpdateBatch`'s own.
+ */
+export const buildRegistryUpdateBatch = (input: {
+  rows: {
+    id: string;
+    label: string;
+    normalizedLabel: string;
+    searchText: string;
+    eventId: string;
+  }[];
+  actor: EventActor;
+}): SQL => {
+  const tuples = input.rows.map(
+    (r) =>
+      sql`(${r.id}::uuid, ${r.label}::text, ${r.normalizedLabel}::text, ${r.searchText}::text, ${r.eventId}::uuid)`,
+  );
+  return sql`UPDATE object_records AS r
+      SET label = v.label,
+          normalized_label = v.normalized_label,
+          search_vector = to_tsvector('simple', v.search_text),
+          source_event_id = v.event_id,
+          updated_by_actor = ${input.actor.actorType}::domain_event_actor,
+          updated_by_user_id = ${input.actor.actorUserId ?? null}::uuid,
+          updated_at = now()
+      FROM (VALUES ${sql.join(tuples, sql`, `)})
+        AS v(id, label, normalized_label, search_text, event_id)
+      WHERE r.id = v.id`;
+};
 
 /** Result of a bulk update: the records actually rewritten + per-id failures. */
 export interface BulkUpdateResult {
@@ -256,23 +298,17 @@ export const bulkUpdateObjectRecords = async (input: {
           })),
         });
 
-        // Registry: label / normalized_label / search_vector / source_event_id
-        // per row; updated-by stamp is constant across the batch.
-        const regTuples = batch.map(
-          (p, i) =>
-            sql`(${p.id}::uuid, ${p.label}::text, ${p.normalizedLabel}::text, ${p.searchText}::text, ${eventIds[i]}::uuid)`,
-        );
         await tx.execute(
-          sql`UPDATE object_records AS r
-              SET label = v.label,
-                  normalized_label = v.normalized_label,
-                  search_vector = to_tsvector('simple', v.search_text),
-                  source_event_id = v.event_id,
-                  updated_by_actor = ${actor.actorType}::domain_event_actor,
-                  updated_by_user_id = ${actor.actorUserId ?? null}::uuid
-              FROM (VALUES ${sql.join(regTuples, sql`, `)})
-                AS v(id, label, normalized_label, search_text, event_id)
-              WHERE r.id = v.id`,
+          buildRegistryUpdateBatch({
+            rows: batch.map((p, i) => ({
+              id: p.id,
+              label: p.label,
+              normalizedLabel: p.normalizedLabel,
+              searchText: p.searchText,
+              eventId: eventIds[i] ?? "",
+            })),
+            actor,
+          }),
         );
 
         const ext = buildExtensionUpdateBatch({

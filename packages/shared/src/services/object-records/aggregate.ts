@@ -189,6 +189,10 @@ export const aggregateRecords = async (data: {
     const predicate = buildFieldFilterPredicate(
       filter,
       fieldTypes.get(filter.key),
+      undefined,
+      // A `formula` compares as whatever its expression evaluates to — without
+      // the config it would fall back to comparing the column as text.
+      definitions.find((d) => d.key === filter.key)?.config,
     );
     if (predicate) conditions.push(predicate);
   }

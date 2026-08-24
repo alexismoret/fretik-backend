@@ -206,13 +206,15 @@ const extractDescriptionBlock = (
   return readBlockFromIndex(source, looser);
 };
 
-const resolveIdentifierBlock = (source: string, block: string): string => {
-  const identMatch = block.match(/description:\s*([A-Za-z_][A-Za-z0-9_]*)/);
-  if (!identMatch) return "";
-  const ident = identMatch[1];
-  const constIdx = source.indexOf(`const ${ident}`);
-  if (constIdx === -1) return "";
-  const bodyStart = source.indexOf("=", constIdx);
+/** The body of `const <ident> = …;`, or "" when there is no such const. */
+const resolveConstBody = (source: string, ident: string): string => {
+  // `indexOf("const " + ident)` would match `const editingDescription`
+  // for the identifier `editing`; the boundary keeps a prefix from
+  // resolving to a longer neighbour. `ident` is already known to be
+  // `[A-Za-z_][A-Za-z0-9_]*`, so it carries no regex metacharacters.
+  const declared = new RegExp(`const\\s+${ident}\\b`).exec(source);
+  if (!declared) return "";
+  const bodyStart = source.indexOf("=", declared.index);
   if (bodyStart === -1) return "";
   // Walk forward tracking bracket depth; stop at the first `;` at
   // depth 0. Handles `[...].join("\n")` cleanly.
@@ -228,13 +230,37 @@ const resolveIdentifierBlock = (source: string, block: string): string => {
   return source.slice(bodyStart, i);
 };
 
+/**
+ * A description can be a ternary over two named consts — `managePage`
+ * serves a narrower surface to the parent agent than to the page builder
+ * (see `createManagePageTool`). Every identifier in the block is resolved
+ * and the LARGEST variant wins: this table is a per-tool budget, and the
+ * budget is the most any model is ever handed.
+ *
+ * Before this, the single-identifier regex captured `config` out of
+ * `config.authoring ? … : …`, found no `const config`, and reported
+ * `manage-page` at ZERO description tokens — the tool with the longest
+ * description in the registry, silently exempt from its own budget.
+ */
+const resolveIdentifierBlock = (source: string, block: string): string => {
+  const afterKey = block.slice(block.indexOf("description:"));
+  const idents = afterKey.match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? [];
+  let widest = "";
+  for (const ident of idents) {
+    const text = concatStringLiterals(resolveConstBody(source, ident));
+    if (text.length > widest.length) widest = text;
+  }
+  return widest;
+};
+
 const extractDescriptionText = (source: string): string => {
   const head = extractDescriptionBlock(source);
   if (!head) return "";
-  const target = head.isIdentifier
+  // An identifier block is resolved all the way to its literals; an
+  // inline block still has to be concatenated.
+  return head.isIdentifier
     ? resolveIdentifierBlock(source, head.block)
-    : head.block;
-  return concatStringLiterals(target);
+    : concatStringLiterals(head.block);
 };
 
 // Match `.describe("...")` or `.describe('...')`, tolerating any

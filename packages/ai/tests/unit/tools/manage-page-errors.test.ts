@@ -194,7 +194,11 @@ describe("liftPageError — what it deliberately does NOT translate", () => {
  */
 describe("managePage accepts a stringified definition", () => {
   const inputSchema = (): z.ZodType => {
-    const schema: unknown = createManagePageTool().inputSchema;
+    // The authoring instance: `dry_run` and `definition` are the builder's
+    // surface, and the builder is the model that sends the deep argument.
+    const schema: unknown = createManagePageTool({
+      authoring: true,
+    }).inputSchema;
     if (!(schema instanceof z.ZodType)) {
       throw new Error("managePage has no Zod input schema");
     }
@@ -227,5 +231,108 @@ describe("managePage accepts a stringified definition", () => {
     // not by a JSON parser complaining about a field the model does not know
     // it sent as text.
     expect(call("the Q3 pipeline page").success).toBe(false);
+  });
+});
+
+/**
+ * The authoring split, pinned on the two surfaces a model can actually reach.
+ *
+ * This is a capability boundary, not advice, and it exists because advice lost:
+ * measured 2026-08-21, a parent holding `buildPage` and a description that said
+ * "building one is buildPage's job, not yours" read 91k characters of the build
+ * corpus and authored the page itself, on the wrong model, without the browser
+ * pass. So the assertion is about what the JSON schema OFFERS, not about what a
+ * sentence asks for.
+ */
+describe("managePage authoring is a capability, not an instruction", () => {
+  const actionValues = (authoring: boolean): string[] => {
+    const schema: unknown = createManagePageTool({ authoring }).inputSchema;
+    if (!(schema instanceof z.ZodObject)) {
+      throw new Error("managePage has no Zod object input schema");
+    }
+    const action: unknown = schema.shape.action;
+    if (!(action instanceof z.ZodEnum)) {
+      throw new Error("managePage action is not a Zod enum");
+    }
+    return Object.values(action.enum).map(String);
+  };
+
+  test("the parent's instance offers no action that authors a page", () => {
+    const actions = actionValues(false);
+    for (const authoring of ["create", "dry_run", "get_guide", "components"]) {
+      expect(actions).not.toContain(authoring);
+    }
+    // …while everything you do to a page that already exists stays.
+    for (const kept of ["get", "list", "update", "review", "publish"]) {
+      expect(actions).toContain(kept);
+    }
+  });
+
+  test("the builder's instance keeps all of them", () => {
+    const actions = actionValues(true);
+    for (const authoring of ["create", "dry_run", "get_guide", "components"]) {
+      expect(actions).toContain(authoring);
+    }
+  });
+
+  /**
+   * The prose half, and it is the half that actually failed. The old
+   * description opened with "not yours" and then taught `get_guide`, the
+   * component API, `dry_run`, `create` and the review loop — a manual with a
+   * disclaimer reads as permission. So the parent's text must not name an
+   * action it does not have, and must not describe the whole-`definition`
+   * write that `update`'s guard refuses.
+   *
+   * (The guard itself is not exercised here: reaching `execute` needs a fully
+   * branded runtime context including a real `ModelProfile`. The enum above is
+   * the boundary the model meets; the guard is depth behind it.)
+   */
+  test("the parent's description teaches nothing it cannot do", () => {
+    const description = createManagePageTool({ authoring: false }).description;
+    if (typeof description !== "string") {
+      throw new Error("managePage has no string description");
+    }
+    for (const absent of ["get_guide", "dry_run", "`definition`"]) {
+      expect(description).not.toContain(absent);
+    }
+    // And it names where the work goes instead, which is the whole point.
+    expect(description).toContain("buildPage");
+    expect(description).toContain("edits");
+  });
+});
+
+/**
+ * The rewrite door, pinned on the schema.
+ *
+ * Same logic as the authoring split above and the same reason: advice lost.
+ * Measured across one real session (2026-08-22), the builder answered five
+ * consecutive `update` calls with a whole-file `definition` — 10-14k output
+ * tokens each — against a prompt that asked for `edits`, and the last of them
+ * kept 370 of the previous 1272 lines while repairing three named bugs. A flag
+ * the model must pass turns a rewrite into a decision; prose did not.
+ */
+describe("managePage — the rewrite flag", () => {
+  const shapeOf = (authoring: boolean): Record<string, unknown> => {
+    const schema: unknown = createManagePageTool({ authoring }).inputSchema;
+    if (!(schema instanceof z.ZodObject)) {
+      throw new Error("managePage has no Zod object schema");
+    }
+    return schema.shape;
+  };
+
+  test("the builder can ask for a rewrite", () => {
+    expect(Object.keys(shapeOf(true))).toContain("rewrite");
+  });
+
+  test("the editing instance is never offered one", () => {
+    // It cannot send a `definition` at all, so a flag governing how definitions
+    // are applied would be a parameter naming a capability it does not have.
+    expect(Object.keys(shapeOf(false))).not.toContain("rewrite");
+  });
+
+  test("edits stay available to both", () => {
+    for (const authoring of [true, false]) {
+      expect(Object.keys(shapeOf(authoring))).toContain("edits");
+    }
   });
 });

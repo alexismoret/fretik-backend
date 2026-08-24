@@ -16,11 +16,16 @@ import {
   fieldDefinitions,
   folders,
   objectTypes,
+  type DocumentSource,
   type DocumentStatus,
+  type FieldDefinitionConfig,
   type FieldDefinitionType,
 } from "../../db/schema";
 import { team } from "../../db/schema/auth-schema";
-import { buildDocumentThumbnailKey } from "../../lib/document-storage";
+import {
+  buildDocumentThumbnailKey,
+  hasStoredThumbnail,
+} from "../../lib/document-storage";
 import { notFound, throwHttpError } from "../../lib/errors";
 import { getPresignedUrl } from "../../lib/s3";
 import type {
@@ -127,6 +132,7 @@ type DocWithRelations = {
   fileSize: number;
   mimeType: string;
   status: DocumentStatus;
+  source: DocumentSource;
   createdAt: Date;
   updatedAt: Date;
   mirrorRecord: { id: string; objectTypeId: string } | null;
@@ -136,7 +142,7 @@ const mapDocsToDriveItems = async (
   docs: DocWithRelations[],
   teamId: string,
 ): Promise<DriveItem[]> => {
-  const readyDocs = docs.filter((d) => d.status === "ready");
+  const readyDocs = docs.filter(hasStoredThumbnail);
   const thumbnailUrls = await Promise.all(
     readyDocs.map((d) => getPresignedUrl(buildDocumentThumbnailKey(d.id))),
   );
@@ -201,8 +207,9 @@ const documentFilterExists = (
   f: RecordFilter,
   fieldType: FieldDefinitionType | undefined,
   docTable: string,
+  config?: FieldDefinitionConfig,
 ): SQL | null => {
-  const pred = buildFieldFilterPredicate(f, fieldType);
+  const pred = buildFieldFilterPredicate(f, fieldType, undefined, config);
   if (!pred) return null;
   return sql`EXISTS (SELECT 1 FROM object_records r JOIN ${sql.raw(docTable)} e ON e."id" = r.id WHERE r.document_id = ${documents.id} AND ${pred})`;
 };
@@ -232,6 +239,9 @@ const getFilteredDocuments = async (data: {
       .select({
         key: fieldDefinitions.key,
         type: fieldDefinitions.type,
+        // A `formula` compares as whatever its expression evaluates to, which
+        // only its config records.
+        config: fieldDefinitions.config,
       })
       .from(fieldDefinitions)
       .innerJoin(objectTypes, eq(fieldDefinitions.objectTypeId, objectTypes.id))
@@ -242,14 +252,13 @@ const getFilteredDocuments = async (data: {
           inArray(fieldDefinitions.key, keys),
         ),
       );
-    const typeByKey = new Map<string, FieldDefinitionType>(
-      defs.map((d) => [d.key, d.type]),
-    );
+    const defByKey = new Map(defs.map((d) => [d.key, d]));
     const docTypeId = await resolveDocumentTypeId(teamId);
     if (docTypeId) {
       const docTable = qualifiedObjectTable(docTypeId);
       for (const f of params.filters) {
-        const cond = documentFilterExists(f, typeByKey.get(f.key), docTable);
+        const def = defByKey.get(f.key);
+        const cond = documentFilterExists(f, def?.type, docTable, def?.config);
         if (cond) baseConditions.push(cond);
       }
     }
@@ -287,6 +296,7 @@ const getFilteredDocuments = async (data: {
       fileSize: true,
       mimeType: true,
       status: true,
+      source: true,
       createdAt: true,
       updatedAt: true,
     },
@@ -389,6 +399,7 @@ const getFolderExplorer = async (data: {
     fileSize: true,
     mimeType: true,
     status: true,
+    source: true,
     createdAt: true,
     updatedAt: true,
   } as const;

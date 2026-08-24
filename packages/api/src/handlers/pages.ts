@@ -34,10 +34,12 @@ import {
   unpublishPage,
 } from "@fretik/shared/services/pages/publish";
 import { appendPageRuntimeError } from "@fretik/shared/services/pages/report-runtime-error";
+import { restorePageVersion } from "@fretik/shared/services/pages/restore";
 import { getPage, listPages } from "@fretik/shared/services/pages/retrieve";
 import { runPageOperation } from "@fretik/shared/services/pages/run-operation";
 import { runPageData } from "@fretik/shared/services/pages/run-page-data";
 import { updatePage } from "@fretik/shared/services/pages/update";
+import { listPageVersions } from "@fretik/shared/services/pages/versions";
 import type { PageRequester } from "@fretik/shared/services/pages/visibility";
 import { createRoute, OpenAPIHono, z } from "@hono/zod-openapi";
 import { rateLimiter } from "hono-rate-limiter";
@@ -216,6 +218,75 @@ const deleteRouteDef = createRoute({
       },
       description: "Page deleted",
     },
+    ...responseForbiddenSchema,
+    ...responseNotFoundSchema,
+    ...responseInternalErrorSchema,
+  },
+});
+
+const pageVersionSummarySchema = z.object({
+  versionNumber: z.number().int(),
+  operation: z.string(),
+  byActor: z.string(),
+  byUserId: z.string().nullable(),
+  meta: z
+    .object({
+      round: z.number().int().optional(),
+      score: z.number().optional(),
+      restoredFrom: z.number().int().optional(),
+    })
+    .nullable(),
+  createdAt: z.date(),
+});
+
+const versionsRoute = createRoute({
+  method: "get",
+  path: "/{id}/versions",
+  summary: "List a page's saved states",
+  description:
+    "Newest first, up to the retention window. Definitions are omitted — fetch one version to read its source.",
+  tags: ["Pages"],
+  request: { params: paramsIdSchema },
+  responses: {
+    200: {
+      content: {
+        "application/json": {
+          schema: z.object({ versions: z.array(pageVersionSummarySchema) }),
+        },
+      },
+      description: "Saved states",
+    },
+    ...responseForbiddenSchema,
+    ...responseNotFoundSchema,
+    ...responseInternalErrorSchema,
+  },
+});
+
+const restoreVersionRoute = createRoute({
+  method: "post",
+  path: "/{id}/versions/{versionNumber}/restore",
+  summary: "Put a page back into one of its saved states",
+  description:
+    "Records a NEW version whose content is the old one, so restoring is itself undoable. A version that no longer compiles is refused rather than saved.",
+  tags: ["Pages"],
+  request: {
+    params: paramsIdSchema.extend({
+      versionNumber: z.coerce.number().int().positive(),
+    }),
+  },
+  responses: {
+    200: {
+      content: {
+        "application/json": {
+          schema: z.object({
+            page: PageResponseSchema,
+            restoredFrom: z.number().int(),
+          }),
+        },
+      },
+      description: "Restored page",
+    },
+    ...responseBadRequestSchema,
     ...responseForbiddenSchema,
     ...responseNotFoundSchema,
     ...responseInternalErrorSchema,
@@ -401,6 +472,34 @@ pageRoutes.openapi(deleteRouteDef, async (c) => {
   const requester = await resolveRequester(user, team);
   await deletePage({ pageId: id, teamId: team.id, requester });
   return c.json({ ok: true }, 200);
+});
+
+pageRoutes.openapi(versionsRoute, async (c) => {
+  const team = c.get("team");
+  if (!team) return c.json(teamRequired(), 403);
+  const user = c.get("user");
+  const { id } = c.req.valid("param");
+  const requester = await resolveRequester(user, team);
+  // Through `getPage` so a private page's history is as private as the page.
+  await getPage({ pageId: id, teamId: team.id, requester });
+  const versions = await listPageVersions({ pageId: id, teamId: team.id });
+  return c.json({ versions }, 200);
+});
+
+pageRoutes.openapi(restoreVersionRoute, async (c) => {
+  const team = c.get("team");
+  if (!team) return c.json(teamRequired(), 403);
+  const user = c.get("user");
+  const { id, versionNumber } = c.req.valid("param");
+  const requester = await resolveRequester(user, team);
+  const restored = await restorePageVersion({
+    pageId: id,
+    teamId: team.id,
+    versionNumber,
+    actingUserId: user.id,
+    requester,
+  });
+  return c.json(restored, 200);
 });
 
 pageRoutes.openapi(publishRoute, async (c) => {

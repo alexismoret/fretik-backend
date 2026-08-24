@@ -49,8 +49,31 @@ const canonical = (name: string, known: string[]): string | undefined => {
   );
 };
 
+/**
+ * Where a reference stops being the CONTRACT and starts being illustration.
+ *
+ * Each generated file is `## API` (props, slots, emits) then `## Usage` and
+ * `## Examples`. The API half is what a page cannot guess and must not get
+ * wrong; the rest is prose about a library the model already knows. Measured
+ * across the corpus, the API is 33% of the bytes — a six-component call drops
+ * from ~32k tokens to ~12k, which is the difference between reading the docs
+ * and drowning in them.
+ *
+ * Sliced at READ time rather than emitted as a second file by the sync script:
+ * a derived artifact committed next to its source is one more thing that can
+ * fall out of date, and this one cannot.
+ */
+const API_ENDS_AT = /\n## (?:Usage|Examples)\b/;
+
+const apiDigest = (reference: string): string => {
+  const cut = API_ENDS_AT.exec(reference);
+  if (!cut) return reference;
+  return `${reference.slice(0, cut.index).trimEnd()}\n\n> Usage notes and worked examples are omitted. Ask for this component again with \`full: true\` if the API alone leaves the question open.\n`;
+};
+
 export const readComponentDocs = async (
   names: string[],
+  options?: { full?: boolean },
 ): Promise<
   | { docs: { component: string; reference: string }[]; unknown: string[] }
   | { error: string }
@@ -79,7 +102,15 @@ export const readComponentDocs = async (
 
   const docs = results.flatMap((result) =>
     result.reference !== null && result.resolved !== undefined
-      ? [{ component: `U${result.resolved}`, reference: result.reference }]
+      ? [
+          {
+            component: `U${result.resolved}`,
+            reference:
+              options?.full === true
+                ? result.reference
+                : apiDigest(result.reference),
+          },
+        ]
       : [],
   );
   const unknown = results

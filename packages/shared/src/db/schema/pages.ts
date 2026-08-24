@@ -1,10 +1,12 @@
 import { sql } from "drizzle-orm";
 import {
   index,
+  integer,
   jsonb,
   pgTable,
   text,
   timestamp,
+  uniqueIndex,
   uuid,
   varchar,
 } from "drizzle-orm/pg-core";
@@ -95,5 +97,101 @@ export const pages = pgTable(
   ],
 );
 
+/**
+ * One saved state of a page, so a write is never the end of the previous one.
+ *
+ * Pages were the last first-class deliverable without a net: documents have
+ * `document_versions`, memories have `ai_memory_history`, and a page — the
+ * surface the agent rewrites MOST, under an `auto` policy, sometimes several
+ * times inside one build — had nothing. A single unlucky `edits` was
+ * unrecoverable.
+ *
+ * Modelled on `ai_memory_history` rather than `document_versions`: a document
+ * version is a POINTER to S3 because a document can be a 10 MB PDF, while a
+ * page definition is tens of KB of JSON that belongs in a column. Storing the
+ * whole DEFINITION and not just the source is deliberate — datasets,
+ * operations and the brief change too, and restoring source alone would
+ * resurrect code against a contract that no longer matches it.
+ *
+ * `code.compiled` is stripped before writing: it is ~2.5x the source, it is
+ * derived, and `ensurePageCompiled` rebuilds it on restore.
+ *
+ * Retention: latest 20 per page, trimmed post-INSERT — same strategy, same
+ * reason, as the two tables above.
+ */
+export const pageVersions = pgTable(
+  "page_versions",
+  {
+    id: uuid("id")
+      .default(sql`uuid_generate_v7()`)
+      .primaryKey(),
+
+    /**
+     * `set null` on page delete, mirroring `ai_memory_history`: the rows
+     * outlive the page so "who deleted what, and when" survives, carried by
+     * the denormalised `teamId` and `name`.
+     */
+    pageId: uuid("page_id").references(() => pages.id, {
+      onDelete: "set null",
+    }),
+
+    teamId: uuid("team_id")
+      .notNull()
+      .references(() => team.id, { onDelete: "cascade" }),
+
+    /** 1-based, monotonic per page. */
+    versionNumber: integer("version_number").notNull(),
+
+    /**
+     * `'create' | 'update' | 'restore' | 'review-round'`. Text, not an enum,
+     * so a new kind of write needs no migration. `review-round` is the
+     * builder's own checkpoint — see `services/pages/versions.ts`.
+     */
+    operation: text("operation").notNull(),
+
+    /** The page's definition AFTER this operation, minus `code.compiled`. */
+    definition: jsonb("definition").$type<PageDefinition>().notNull(),
+
+    /** Denormalised so a deleted page's history still names itself. */
+    name: varchar("name", { length: 120 }).notNull(),
+
+    byUserId: uuid("by_user_id").references(() => user.id, {
+      onDelete: "set null",
+    }),
+    /** `'user' | 'agent'` — who drove this write. */
+    byActor: text("by_actor").notNull(),
+    byConversationId: uuid("by_conversation_id").references(
+      () => aiConversations.id,
+      { onDelete: "set null" },
+    ),
+
+    /**
+     * Why this state exists: which review round produced it and what the
+     * critic scored it, or which version a restore came from.
+     */
+    meta: jsonb("meta").$type<{
+      round?: number;
+      score?: number;
+      restoredFrom?: number;
+    }>(),
+
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (t) => [
+    // Two writers racing on one page must collide loudly rather than mint the
+    // same version number twice — restoring "version 4" has to mean one state.
+    // Rows orphaned by a page delete carry `pageId` NULL, and Postgres treats
+    // NULLs as distinct, so they never collide with each other.
+    uniqueIndex("page_versions_page_number_unique").on(
+      t.pageId,
+      t.versionNumber,
+    ),
+    index("page_versions_team_created_idx").on(t.teamId, t.createdAt),
+  ],
+);
+
 export type Page = typeof pages.$inferSelect;
 export type NewPage = typeof pages.$inferInsert;
+export type PageVersion = typeof pageVersions.$inferSelect;

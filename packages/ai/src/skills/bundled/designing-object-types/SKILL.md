@@ -1,6 +1,6 @@
 ---
 name: designing-object-types
-description: Design or modify the team's object types, fields, and select options (field types, config, icons) — AND bulk-import or migrate MANY records via the Python objects SDK. Use when the user asks to create/rename/restructure a type, add/change/remove fields, set up options, or import/restructure many records at once (e.g. paste a CSV of rows to add). A single record is manageRecord; reading is querySql.
+description: Design or modify the team's object types, fields, and select options (field types, config, icons) — AND bulk-import or migrate MANY records via the Python objects SDK. Use when the user asks to create/rename/restructure a type, add/change/remove fields (including a computed/formula column), set up options, or import/restructure many records at once (e.g. paste a CSV of rows to add). A single record is manageRecord; reading is querySql.
 ---
 
 # Designing object types
@@ -36,6 +36,20 @@ Choose by the data's meaning, not its surface. Each type's config is set via `ma
 - `member` — a team member (Better Auth user). Config: `multiple:true` for several.
 - `relation` — a link to records of another type. Config: `targetTypeKey`, `cardinality:'one'` or `'many'`.
 - `rollup` — a read-only aggregate over a relation. Config: `relationFieldKey`, `fn`, `targetFieldKey`.
+- `formula` — a read-only value the DATABASE computes from the record's own fields. Config: `expression`; the result type is inferred. It is a real column, so `querySql` reads it like any other.
+
+**Stored, computed, or neither** — four cases, decided once per field:
+
+1. Someone types, imports or corrects the value → a **stored** field (`text`, `number`, `money`, …).
+2. It derives from other fields ON THE SAME RECORD → **`formula`**. It never drifts from its inputs, and it costs one computation instead of one per reader.
+3. It aggregates LINKED records → **`rollup`**.
+4. It is presentation for one screen (a display label, a merge of two datasets, chart buckets) → keep it out of the schema; the page computes it in JS.
+
+Case 2 vs 4 turns on ONE question: will anyone sort, filter, aggregate or query on it? Sorting a table by margin only works if the server knows margin.
+
+**Formula language** — compiled to SQL, so raw SQL is refused. Field keys as bare identifiers · `+ - * / %` · `= <> < <= > >=` · `and or not` · numbers, `"text"`, `true`, `false`, `null` · `round abs ceil floor least greatest coalesce nullif length lower upper trim concat text if days_between`. A formula may read another formula: `revenue - cost`, then `round(margin / revenue * 100, 1)`. Also `if(status = "won", amount, 0)`, `days_between(delivered_at, ordered_at)`. `least`/`greatest` compare values on ONE row; averaging or summing ACROSS records is `rollup`.
+
+It reads the STORED fields of its own row — `relation`, `rollup`, `multi_select`, `member`, `location` and the system properties are refused by name. Dividing by zero gives an empty cell, never an error. Deleting or renaming a field a formula reads is refused until that formula is updated.
 
 Notes that bite:
 

@@ -13,6 +13,7 @@ import { withPipelineTrace } from "../../lib/trace-tool";
 import { splitMarkdown } from "./chunker";
 import { enrichChunks, type EnrichedChunk } from "./contextual-enrichment";
 import { embedBatch } from "./embedder";
+import { flattenRichBlocks } from "./flatten-rich-blocks";
 import { buildMetadataOnlyText, buildSemanticHeader } from "./format-content";
 import { upsertVectors } from "./upsert";
 
@@ -350,8 +351,15 @@ const vectorizeSourceImpl = async (
     return runMetadataOnly(input, metadata);
   }
 
+  // Stage 0 — flatten MDC blocks. Both document paths reach this endpoint
+  // (`process.ts` with the raw bytes, `vector-refresh.ts` with the sidecar),
+  // so doing it here rather than in the callers is what keeps ONE
+  // representation in the index whichever path last ran. A no-op on markdown
+  // that carries no MDC, hence unconditional.
+  const indexText = flattenRichBlocks(content);
+
   // Stage 1 — chunking.
-  const chunks = splitMarkdown(content);
+  const chunks = splitMarkdown(indexText);
   if (chunks.length === 0) {
     // Still upsert so stale rows are cleared for this source.
     const result = await upsertVectors({
@@ -383,7 +391,7 @@ const vectorizeSourceImpl = async (
   const enriched: EnrichedChunk[] =
     sourceType === "records" || sourceType === "workflows"
       ? chunks.map((c) => ({ ...c, contextualPrefix: "" }))
-      : await enrichChunks(content, chunks);
+      : await enrichChunks(indexText, chunks);
   const enrichedCount = enriched.filter(
     (c) => c.contextualPrefix.length > 0,
   ).length;

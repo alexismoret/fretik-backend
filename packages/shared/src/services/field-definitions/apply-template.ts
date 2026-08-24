@@ -1,4 +1,4 @@
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, notInArray } from "drizzle-orm";
 import db from "../../db";
 import type { NewFieldDefinition } from "../../db/schema";
 import { fieldDefinitions } from "../../db/schema";
@@ -29,8 +29,11 @@ import { getTeamLocale } from "./get-locale";
  *     (auto-applies the `default` template) and by the admin org-fields page.
  *
  * Modes:
- *   - `replace` (default at org-creation, on-demand otherwise): drop every
- *     existing field definition for the scope, then insert the template.
+ *   - `replace` (default at org-creation, on-demand otherwise): drop the
+ *     scope's existing field definitions FOR THE DOCUMENT TYPE, then insert
+ *     the template. Other object types' fields are never touched, and neither
+ *     is the document's locked title or its computed provenance fields — those
+ *     belong to the system ontology, not to a template.
  *   - `merge`: insert template fields whose `key` does not already exist in
  *     the scope. Leaves existing fields untouched.
  *
@@ -91,7 +94,16 @@ export const applyDocumentFieldTemplate = async (data: {
     if (mode === "replace") {
       const droppedRows = await tx
         .delete(fieldDefinitions)
-        .where(scopePredicate({ organizationId, teamId }))
+        .where(
+          and(
+            scopePredicate({ organizationId, teamId, objectTypeId }),
+            // Mirror the guards the single-field delete service enforces: the
+            // document's title is locked, and the provenance fields are
+            // computed. A template owns neither.
+            eq(fieldDefinitions.isTitle, false),
+            notInArray(fieldDefinitions.type, ["created_time", "created_by"]),
+          ),
+        )
         .returning({ key: fieldDefinitions.key });
       dropped = droppedRows.length;
       // The dropped defs' columns (and their values) are removed by the table
@@ -100,7 +112,7 @@ export const applyDocumentFieldTemplate = async (data: {
       const existing = await tx
         .select({ key: fieldDefinitions.key })
         .from(fieldDefinitions)
-        .where(scopePredicate({ organizationId, teamId }));
+        .where(scopePredicate({ organizationId, teamId, objectTypeId }));
       existingKeys = new Set(existing.map((r) => r.key));
     }
 
@@ -151,14 +163,18 @@ export const applyDocumentFieldTemplate = async (data: {
 const scopePredicate = (data: {
   organizationId: string;
   teamId: string | null;
+  objectTypeId: string;
 }) => {
-  const { organizationId, teamId } = data;
-  return teamId === null
-    ? and(
-        eq(fieldDefinitions.organizationId, organizationId),
-        isNull(fieldDefinitions.teamId),
-      )
-    : eq(fieldDefinitions.teamId, teamId);
+  const { organizationId, teamId, objectTypeId } = data;
+  const scope =
+    teamId === null
+      ? and(
+          eq(fieldDefinitions.organizationId, organizationId),
+          isNull(fieldDefinitions.teamId),
+        )
+      : eq(fieldDefinitions.teamId, teamId);
+  // Document-field templates own the document type's fields and nothing else.
+  return and(scope, eq(fieldDefinitions.objectTypeId, objectTypeId));
 };
 
 const buildRowFromSeed = (data: {

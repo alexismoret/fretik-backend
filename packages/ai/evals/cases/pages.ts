@@ -1606,7 +1606,7 @@ const multiSourcePage: EvalCase = {
         if (!page) return "no page was saved";
         const datasets = collectDatasets(page.definition);
         const kinds = new Set(datasets.map((d) => String(d.kind)));
-        if (!kinds.has("objects"))
+        if (!kinds.has("collections"))
           return `no dataset reads the team's records — kinds present: ${[...kinds].join(",") || "none"}`;
         // The budgets must live in the CONTRACT, not in the template. Which
         // shape they take is the agent's call — an `inline` dataset or a

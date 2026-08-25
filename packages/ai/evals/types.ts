@@ -179,10 +179,14 @@ export const CAPABILITIES = [
   // not on whether `vision` was called, so the A/B (native vs
   // tool-mediated) isolates the multimodal accuracy delta from tool-use.
   "multimodal",
-  // Autonomous object management (P8) — proactively reading/writing the team's
-  // structured records, INCLUDING the relevance gate (NOT touching objects on
-  // unrelated turns). Graded on the tool trajectory + outcome, not on a single
-  // expected call.
+  // Autonomous collection management (P8) — proactively reading/writing the
+  // team's structured records, INCLUDING the relevance gate (NOT touching
+  // collections on unrelated turns). Graded on the tool trajectory + outcome,
+  // not on a single expected call.
+  //
+  // Spelled `objects` on purpose, after the collections rename: this string is
+  // a Langfuse score-config category, and score configs cannot be deleted.
+  // Renaming it strands the old one and resets the capability's score trend.
   "objects",
 ] as const;
 

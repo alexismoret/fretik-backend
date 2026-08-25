@@ -198,7 +198,10 @@ export const CURATED: Record<string, CuratedCase> = {
   // The three formula cases are the computed-column DECISION, which is one
   // choice with three outcomes: pick it (margin), don't pick it (notes — a
   // formula there is a field nobody can ever type into), and never write to it.
-  // objects (12)
+  // collections (12) — the `obj-` ids are Langfuse dataset item PRIMARY KEYS.
+  // `dataset-sync.ts` upserts on the id and archives any item whose id
+  // disappears, so renaming them here would archive 12 items, create 12 fresh
+  // ones and reset the correctness history of the largest suite. They stay.
   "obj-explicit-create": { capability: "objects" },
   "obj-implicit-create": { capability: "objects" },
   "obj-relevance-gate": { capability: "objects" },

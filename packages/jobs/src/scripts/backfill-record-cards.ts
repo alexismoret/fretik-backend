@@ -1,5 +1,5 @@
 import db from "@fretik/shared/db";
-import { isCardIndexedType } from "@fretik/shared/services/object-records/card-indexing-policy";
+import { isCardIndexedType } from "@fretik/shared/services/collection-records/card-indexing-policy";
 import { getRecordCardQueue } from "../queues/queues";
 
 /**
@@ -29,12 +29,12 @@ const limitRaw =
 const limit =
   Number.isFinite(limitRaw) && limitRaw > 0 ? limitRaw : DEFAULT_LIMIT;
 
-const candidates = await db.query.objectRecords.findMany({
+const candidates = await db.query.collectionRecords.findMany({
   columns: {
     id: true,
     teamId: true,
     organizationId: true,
-    objectTypeId: true,
+    collectionId: true,
     label: true,
   },
   where: { status: "confirmed", documentId: { isNull: true } },
@@ -45,11 +45,11 @@ const candidates = await db.query.objectRecords.findMany({
 // One verdict per distinct type, not per record — the policy caches, but this
 // also keeps the log honest about WHY rows were dropped.
 const indexedTypes = new Map<string, boolean>();
-for (const typeId of new Set(candidates.map((row) => row.objectTypeId))) {
+for (const typeId of new Set(candidates.map((row) => row.collectionId))) {
   indexedTypes.set(typeId, await isCardIndexedType(typeId));
 }
 const rows = candidates.filter(
-  (row) => indexedTypes.get(row.objectTypeId) === true,
+  (row) => indexedTypes.get(row.collectionId) === true,
 );
 const excluded = candidates.length - rows.length;
 

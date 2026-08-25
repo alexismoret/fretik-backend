@@ -98,7 +98,7 @@ describe("createSubAgentExecute — progress", () => {
   });
 
   test("with `progress` it yields snapshots and the result LAST", async () => {
-    const execute = build(["describeObjectType", "managePage"], true);
+    const execute = build(["describeCollection", "managePage"], true);
     const yielded = await drain(execute({ task: "x" }, options()));
 
     // The model reads the last yield; a snapshot arriving after the result
@@ -107,7 +107,7 @@ describe("createSubAgentExecute — progress", () => {
     const snapshots = yielded.slice(0, -1);
     expect(snapshots.length).toBeGreaterThan(0);
     expect(snapshots.at(0)).toEqual({
-      progress: { step: 1, tool: "describeObjectType" },
+      progress: { step: 1, tool: "describeCollection" },
     });
   });
 

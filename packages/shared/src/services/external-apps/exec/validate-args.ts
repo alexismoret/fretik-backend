@@ -6,7 +6,7 @@ import type {
 } from "../../../external-apps/manifest-schema";
 
 /**
- * Compile a manifest action's param specs into a Zod object schema, then
+ * Compile a manifest action's param specs into a Zod collection schema, then
  * validate the agent's incoming args against it. Defense in depth on top
  * of the Pydantic models that already failed-fast in the sandbox SDK.
  *

@@ -223,9 +223,9 @@ def _post(payload: dict[str, Any]) -> Any:
     return data.get("data")
 
 
-def _call_objects(op: str, args: dict[str, Any]) -> Any:
-    """Dispatch one objects.* op for the code-mode ontology SDK
-    (`fretik_apps.objects`). Record writes are gated by workflow autonomy: an
+def _call_collections(op: str, args: dict[str, Any]) -> Any:
+    """Dispatch one collections.* op for the code-mode ontology SDK
+    (`fretik_apps.collections`). Record writes are gated by workflow autonomy: an
     `approval_required` run pauses on a record_write approval (this call raises
     ApprovalPending); a read_only run is refused; plain chat and autonomous runs
     write directly. Schema changes are blocked for any workflow run. Validation,
@@ -233,7 +233,7 @@ def _call_objects(op: str, args: dict[str, Any]) -> Any:
     Returns the op's small result summary (ids, counts, per-row errors) — never
     the bulk rows themselves.
     """
-    return _post({"kind": "objects", "op": op, "args": args})
+    return _post({"kind": "collections", "op": op, "args": args})
 
 
 # Rows a single `records.bulk_create` request may carry. Past this the whole
@@ -283,10 +283,10 @@ def _clean_nan(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
-def _import(type_key: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
+def _import(collection_key: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
     """Stream a large create load: announce it, upload it in chunks, commit it.
 
-    Called by `objects.records.bulk_create` past `SDK_INLINE_ROW_LIMIT`. The
+    Called by `collections.records.bulk_create` past `SDK_INLINE_ROW_LIMIT`. The
     agent never calls this directly and never chooses between the two paths.
 
     Resumable by construction. Every step is keyed by content, so re-running the
@@ -299,11 +299,11 @@ def _import(type_key: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
 
     begin = _post(
         {
-            "kind": "objects",
+            "kind": "collections",
             "op": "records.import_begin",
             "args": {
                 "op": "create",
-                "typeKey": type_key,
+                "collectionKey": collection_key,
                 "totalRows": len(rows),
                 "rowsDigest": _rows_digest(rows),
                 "sample": rows[:3],
@@ -331,7 +331,7 @@ def _import(type_key: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
             continue
         result = _post(
             {
-                "kind": "objects",
+                "kind": "collections",
                 "op": "records.import_chunk",
                 "args": {
                     "operationId": operation_id,
@@ -349,7 +349,7 @@ def _import(type_key: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
     # re-runs this exact code and lands on the `replay` branch above.
     commit = _post(
         {
-            "kind": "objects",
+            "kind": "collections",
             "op": "records.import_commit",
             "args": {"operationId": operation_id},
         }

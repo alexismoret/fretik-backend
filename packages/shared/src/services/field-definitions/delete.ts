@@ -2,14 +2,14 @@ import { eq } from "drizzle-orm";
 import db from "../../db";
 import { fieldDefinitions } from "../../db/schema";
 import { badRequest, notFound, throwHttpError } from "../../lib/errors";
+import { countNonNullColumnValues } from "../collection-records/field-data";
+import { refreshCollectionTableAfterCatalogChange } from "../collection-schema/catalog-sync";
+import { isDocumentCollection } from "../collections/is-document-type";
 import {
   emitDomainEvent,
   type EventActor,
   SYSTEM_ACTOR,
 } from "../domain-events/emit";
-import { countNonNullColumnValues } from "../object-records/field-data";
-import { refreshObjectTableAfterCatalogChange } from "../object-schema/catalog-sync";
-import { isDocumentObjectType } from "../object-types/is-document-type";
 import { invalidateFieldDefinitionsCache } from "./cache";
 import {
   assertNoFormulaDependents,
@@ -45,10 +45,10 @@ export const deleteFieldDefinition = async (data: {
     // cannot be dropped — it must always keep exactly one title.
     if (
       existing.isTitle &&
-      (await isDocumentObjectType({
+      (await isDocumentCollection({
         organizationId: existing.organizationId,
         teamId: existing.teamId,
-        objectTypeId: existing.objectTypeId,
+        collectionId: existing.collectionId,
       }))
     ) {
       return throwHttpError(
@@ -67,7 +67,7 @@ export const deleteFieldDefinition = async (data: {
       label: existing.label,
       fields: await readFormulaSiblings({
         exec: tx,
-        objectTypeId: existing.objectTypeId,
+        collectionId: existing.collectionId,
         teamId: existing.teamId,
       }),
       action: "delete",
@@ -75,7 +75,7 @@ export const deleteFieldDefinition = async (data: {
 
     const valueCount = await countNonNullColumnValues({
       tx,
-      objectTypeId: existing.objectTypeId,
+      collectionId: existing.collectionId,
       field: existing,
     });
     if (valueCount > 0 && !cascade) {
@@ -100,7 +100,7 @@ export const deleteFieldDefinition = async (data: {
         subjectType: "field",
         payload: {
           fieldDefinitionId: id,
-          objectTypeId: existing.objectTypeId,
+          collectionId: existing.collectionId,
           key: existing.key,
         },
         dedupKey: `field.deleted:${id}`,
@@ -111,10 +111,10 @@ export const deleteFieldDefinition = async (data: {
 
     // Reconcile drops the now-orphaned column (+ refresh search vectors), in the
     // SAME tx so the catalog change is atomic.
-    await refreshObjectTableAfterCatalogChange({
+    await refreshCollectionTableAfterCatalogChange({
       tx,
       organizationId: existing.organizationId,
-      objectTypeId: existing.objectTypeId,
+      collectionId: existing.collectionId,
       teamId: existing.teamId,
     });
 

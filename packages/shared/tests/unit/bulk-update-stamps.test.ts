@@ -1,12 +1,12 @@
 import { describe, expect, it } from "bun:test";
 import { PgDialect } from "drizzle-orm/pg-core";
-import { buildRegistryUpdateBatch } from "../../src/services/object-records/bulk-update";
+import { buildRegistryUpdateBatch } from "../../src/services/collection-records/bulk-update";
 
 /**
  * Regression: a bulk update must stamp the REGISTRY's `updated_at`.
  *
  * The column declares `$onUpdate` in the schema, so the single-row
- * `updateObjectRecord` gets the stamp for free — but that is a Drizzle
+ * `updateCollectionRecord` gets the stamp for free — but that is a Drizzle
  * query-builder convenience, and this statement is set-based SQL, which never
  * triggers it. It was omitted, and the result was a value that is wrong in the
  * most expensive way: `last_edited_time` and "sort by recently updated" both

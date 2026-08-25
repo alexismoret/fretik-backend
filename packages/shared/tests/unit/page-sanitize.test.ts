@@ -26,7 +26,7 @@ import {
  * about its own output.
  */
 
-const OBJECT_TYPE_ID = "00000000-0000-4000-8000-000000000000";
+const COLLECTION_ID = "00000000-0000-4000-8000-000000000000";
 const CONNECTION_ID = "00000000-0000-4000-8000-000000000001";
 
 const definition = (extra: Partial<PageDefinition> = {}): PageDefinition => ({
@@ -44,9 +44,9 @@ describe("sanitize, don't reject", () => {
       datasets: [
         {
           id: "totals",
-          kind: "objects",
+          kind: "collections",
           mode: "aggregate",
-          objectTypeId: OBJECT_TYPE_ID,
+          collectionId: COLLECTION_ID,
           metrics: [{ name: "spend", fn: "sum" }],
         },
       ],
@@ -63,8 +63,8 @@ describe("sanitize, don't reject", () => {
         datasets: [
           {
             id: "deals",
-            kind: "objects",
-            objectTypeId: OBJECT_TYPE_ID,
+            kind: "collections",
+            collectionId: COLLECTION_ID,
             filters: [{ key: "stage", op: "eq", value: { var: "stage" } }],
           },
         ],
@@ -82,8 +82,8 @@ describe("variable references", () => {
         datasets: [
           {
             id: "sales",
-            kind: "objects",
-            objectTypeId: OBJECT_TYPE_ID,
+            kind: "collections",
+            collectionId: COLLECTION_ID,
             filters: [{ key: "month", op: "eq", value: { var: "month" } }],
           },
         ],
@@ -98,8 +98,8 @@ describe("variable references", () => {
         datasets: [
           {
             id: "sales",
-            kind: "objects",
-            objectTypeId: OBJECT_TYPE_ID,
+            kind: "collections",
+            collectionId: COLLECTION_ID,
             filters: [{ key: "month", op: "eq", value: { var: "week" } }],
           },
         ],
@@ -163,7 +163,7 @@ describe("inline rows", () => {
     expect(found).toContain(
       `${Math.round(PAGE_LIMITS.maxInlineBytes / 1000).toString()}KB cap`,
     );
-    expect(found).toContain("object type");
+    expect(found).toContain("collection");
   });
 
   test("rows within the cap say nothing", () => {
@@ -290,8 +290,8 @@ describe("warnings never duplicate", () => {
         datasets: [
           {
             id: "sales",
-            kind: "objects",
-            objectTypeId: OBJECT_TYPE_ID,
+            kind: "collections",
+            collectionId: COLLECTION_ID,
             filters: [
               { key: "month", op: "eq", value: { var: "week" } },
               { key: "month", op: "neq", value: { var: "week" } },
@@ -342,7 +342,7 @@ describe("ids the code asks for", () => {
       `<script setup>await fretik.data.query({ datasetIds: ['items'] }); res.datasets.items</script>`,
       {
         datasets: [
-          { id: "items", kind: "objects", objectTypeId: OBJECT_TYPE_ID },
+          { id: "items", kind: "collections", collectionId: COLLECTION_ID },
         ],
       },
     );
@@ -494,9 +494,9 @@ describe("metrics that cannot compute", () => {
         datasets: [
           {
             id: "agg",
-            kind: "objects",
+            kind: "collections",
             mode: "aggregate",
-            objectTypeId: OBJECT_TYPE_ID,
+            collectionId: COLLECTION_ID,
             groupBy: "status",
             metrics,
           },
@@ -543,7 +543,7 @@ describe("a declared operation nothing runs", () => {
           id,
           kind: "record" as const,
           mode: "update" as const,
-          objectTypeId: OBJECT_TYPE_ID,
+          collectionId: COLLECTION_ID,
           recordId: { var: "row" },
           args: { stage: { var: "stage" } },
         })),

@@ -29,7 +29,7 @@ const listRoute = createRoute({
   summary: "List relation types",
   tags: ["LinkTypes"],
   request: {
-    query: z.object({ fromObjectTypeId: z.uuid().optional() }),
+    query: z.object({ fromCollectionId: z.uuid().optional() }),
   },
   responses: {
     200: {
@@ -67,11 +67,11 @@ const createRouteDef = createRoute({
 linkTypeRoutes.openapi(listRoute, async (c) => {
   const team = c.get("team");
   if (!team) return c.json(teamRequired(), 403);
-  const { fromObjectTypeId } = c.req.valid("query");
+  const { fromCollectionId } = c.req.valid("query");
   const types = await listLinkTypes({
     organizationId: team.organizationId,
     teamId: team.id,
-    fromObjectTypeId,
+    fromCollectionId,
   });
   return c.json(types, 200);
 });
@@ -86,8 +86,8 @@ linkTypeRoutes.openapi(createRouteDef, async (c) => {
     teamId: team.id,
     key: body.key,
     label: body.label,
-    fromObjectTypeId: body.fromObjectTypeId,
-    toObjectTypeId: body.toObjectTypeId ?? null,
+    fromCollectionId: body.fromCollectionId,
+    toCollectionId: body.toCollectionId ?? null,
     inverseKey: body.inverseKey ?? null,
     inverseLabel: body.inverseLabel ?? null,
     cardinality: body.cardinality,

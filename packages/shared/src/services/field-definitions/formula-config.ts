@@ -3,8 +3,8 @@ import db, { type Executor } from "../../db";
 import type { FieldDefinition, FieldDefinitionConfig } from "../../db/schema";
 import { fieldDefinitions } from "../../db/schema";
 import { badRequest, throwHttpError } from "../../lib/errors";
-import { FormulaError } from "../object-schema/formula/ast";
-import { compileFormula } from "../object-schema/formula/compile";
+import { FormulaError } from "../collection-schema/formula/ast";
+import { compileFormula } from "../collection-schema/formula/compile";
 
 /**
  * Validation and result-type inference for `formula` fields.
@@ -21,20 +21,20 @@ import { compileFormula } from "../object-schema/formula/compile";
  */
 
 /**
- * The type's fields as a formula may see them: same object type, same scope, and
+ * The type's fields as a formula may see them: same collection, same scope, and
  * (when updating) with the field being edited replaced by its new definition —
  * so a formula that references itself is caught by the cycle detector rather
  * than resolving against its own previous version.
  */
 export const readFormulaSiblings = async (input: {
   exec?: Executor;
-  objectTypeId: string;
+  collectionId: string;
   teamId: string | null;
   excludeFieldId?: string;
 }): Promise<FieldDefinition[]> => {
   const exec = input.exec ?? db;
   const conditions = [
-    eq(fieldDefinitions.objectTypeId, input.objectTypeId),
+    eq(fieldDefinitions.collectionId, input.collectionId),
     input.teamId === null
       ? isNull(fieldDefinitions.teamId)
       : eq(fieldDefinitions.teamId, input.teamId),

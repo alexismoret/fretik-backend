@@ -1,0 +1,181 @@
+import { and, eq, isNull } from "drizzle-orm";
+import db from "../../db";
+import {
+  collections,
+  type FieldDefinitionConfig,
+  fieldDefinitions,
+  type FieldDefinitionType,
+  linkTypes,
+  type NewFieldDefinition,
+  type NewLinkType,
+} from "../../db/schema";
+import { DOCUMENT_COLLECTION_KEY } from "./constants";
+
+/**
+ * Key of the one generic system relation: "document mentions X". The document
+ * pipeline depends on it (replaces the old per-role document↔entity links).
+ * Polymorphic and industry-agnostic — every other relation is user/AI-created.
+ */
+export const MENTIONS_LINK_TYPE_KEY = "mentions";
+
+type SeedField = {
+  key: string;
+  label: string;
+  type: FieldDefinitionType;
+  isTitle?: boolean;
+  config?: FieldDefinitionConfig;
+  aiExtractionEnabled?: boolean;
+  vectorizeInclude?: boolean;
+  displayOrder: number;
+};
+
+type SeedCollection = {
+  key: string;
+  label: string;
+  labelPlural: string;
+  description: string;
+  icon: string;
+  fields: SeedField[];
+};
+
+/**
+ * The ONLY truly system collection. `document_record` is delete-protected (the
+ * delete service refuses it): it is the anchor for document field definitions
+ * and the uploaded-file record mirror, so the upload pipeline depends on it. Its
+ * only seeded field is the locked `name` title (defaults to the filename — the
+ * one title a document may have; field create/update/delete refuse to move or
+ * drop it). The rest come from the document-field template applied right after
+ * (org-creation hook).
+ *
+ * Everything else a team starts with (company, note, task) ships as a
+ * deletable, editable STARTER template (`templates/collections`), not as a
+ * hardcoded system type — a generic B2B workspace must not force a CRM-ish
+ * ontology on every team. Relations are NOT seeded — link types are created on
+ * demand by users / the AI (canonicalized to avoid sprawl).
+ */
+const SYSTEM_COLLECTIONS: SeedCollection[] = [
+  {
+    key: DOCUMENT_COLLECTION_KEY,
+    label: "Document",
+    labelPlural: "Documents",
+    description:
+      "One record per uploaded file — its extracted metadata and the entities it mentions. Link a record to a file via its document record.",
+    icon: "file-text",
+    fields: [
+      // The locked title — defaults to the filename, the one title a document may
+      // have (field create/update/delete refuse to move or drop it).
+      {
+        key: "name",
+        label: "Name",
+        type: "text",
+        isTitle: true,
+        displayOrder: 0,
+      },
+      // Provenance, computed from the record row (no stored column). Never fed to
+      // the AI / RAG — they describe the upload, not the document's content.
+      {
+        key: "created_time",
+        label: "Created time",
+        type: "created_time",
+        aiExtractionEnabled: false,
+        vectorizeInclude: false,
+        displayOrder: 100,
+      },
+      {
+        key: "created_by",
+        label: "Created by",
+        type: "created_by",
+        aiExtractionEnabled: false,
+        vectorizeInclude: false,
+        displayOrder: 101,
+      },
+    ],
+  },
+];
+
+/**
+ * Seed the standard collections (+ their generic default field definitions, at
+ * org-template scope) for an organization. Idempotent — safe to re-run. Called
+ * from the org-creation hook BEFORE the document-field template is applied (the
+ * template resolves the `document` collection and throws if it is missing).
+ * Teams inherit the org-scope field definitions via `duplicateOrgDefsToTeam` at
+ * team creation. Existing orgs were seeded by the dynamic-data migration.
+ */
+export const seedSystemOntology = async (
+  organizationId: string,
+): Promise<void> => {
+  await db
+    .insert(collections)
+    .values(
+      SYSTEM_COLLECTIONS.map((t) => ({
+        organizationId,
+        teamId: null,
+        key: t.key,
+        label: t.label,
+        labelPlural: t.labelPlural,
+        description: t.description,
+        icon: t.icon,
+        isSystem: true,
+      })),
+    )
+    .onConflictDoNothing();
+
+  const types = await db
+    .select({ id: collections.id, key: collections.key })
+    .from(collections)
+    .where(
+      and(
+        eq(collections.organizationId, organizationId),
+        isNull(collections.teamId),
+      ),
+    );
+  const idByKey = new Map(types.map((t) => [t.key, t.id]));
+
+  const rows: NewFieldDefinition[] = [];
+  for (const type of SYSTEM_COLLECTIONS) {
+    const collectionId = idByKey.get(type.key);
+    if (!collectionId) continue;
+    for (const field of type.fields) {
+      rows.push({
+        organizationId,
+        teamId: null,
+        collectionId,
+        key: field.key,
+        label: field.label,
+        type: field.type,
+        config: field.config ?? {},
+        isTitle: field.isTitle ?? false,
+        aiExtractionEnabled: field.aiExtractionEnabled ?? true,
+        vectorizeInclude: field.vectorizeInclude ?? true,
+        displayOrder: field.displayOrder,
+      });
+    }
+  }
+  if (rows.length > 0) {
+    await db.insert(fieldDefinitions).values(rows).onConflictDoNothing();
+  }
+
+  // The single generic system relation the document pipeline depends on:
+  // "document mentions X". Polymorphic (toCollection NULL) so a document can
+  // mention a company, a person, or any future type — no industry-specific
+  // roles. Industry relations (a pricing's carrier, …) are NOT seeded; users
+  // and the AI create those, canonicalized to avoid sprawl. Idempotent on the
+  // org-scope `(organizationId, normalizedKey) WHERE team_id IS NULL` index.
+  const documentTypeId = idByKey.get(DOCUMENT_COLLECTION_KEY);
+  if (documentTypeId) {
+    const mentions: NewLinkType = {
+      organizationId,
+      teamId: null,
+      key: MENTIONS_LINK_TYPE_KEY,
+      normalizedKey: MENTIONS_LINK_TYPE_KEY,
+      label: "Mentions",
+      fromCollectionId: documentTypeId,
+      toCollectionId: null,
+      cardinality: "many_to_many",
+      inverseKey: "mentioned_in",
+      inverseLabel: "Mentioned in",
+      source: "system",
+    };
+    await db.insert(linkTypes).values(mentions).onConflictDoNothing();
+  }
+};

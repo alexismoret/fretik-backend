@@ -17,7 +17,7 @@ import {
 
 const create = (value: unknown) => ({
   action: "create",
-  typeKey: "client",
+  collectionKey: "client",
   data: [{ key: "field", value }],
 });
 
@@ -56,7 +56,7 @@ describe("manageRecord input schema — string-dominant value (lossless)", () =>
     // recovers the value. No more AI_InvalidToolInputError for this case.
     const parsed = manageRecordInputSchema.safeParse({
       action: "create",
-      typeKey: "client",
+      collectionKey: "client",
       data: [{ key: "regions", item: "apac" }],
     });
     expect(parsed.success).toBe(true);
@@ -66,8 +66,10 @@ describe("manageRecord input schema — string-dominant value (lossless)", () =>
     // `create requires data` is enforced in execute, not the schema — so the
     // call still reaches execute and returns a recoverable {error,code}.
     expect(
-      manageRecordInputSchema.safeParse({ action: "create", typeKey: "client" })
-        .success,
+      manageRecordInputSchema.safeParse({
+        action: "create",
+        collectionKey: "client",
+      }).success,
     ).toBe(true);
   });
 });

@@ -186,7 +186,7 @@ describe("resolveExternalArgs — declared state only", () => {
 /**
  * The display dictionary an external dataset never shipped.
  *
- * An `objects` dataset comes back with `fields`, and that descriptor is what
+ * An `collections` dataset comes back with `fields`, and that descriptor is what
  * turns a column into a labelled, formatted value. External datasets shipped
  * rows alone, which is the structural reason every page over a connected app
  * shows the provider's own key — `givenName`, `dateTimeCreated` — to a person.

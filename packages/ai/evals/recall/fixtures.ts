@@ -2,7 +2,7 @@
  * Deterministic fixture universe for the recall eval (P5-bis).
  *
  * Everything is seeded through the REAL pipelines — records via
- * `createObjectRecord` (typed tables + journal events), cards/episodes/
+ * `createCollectionRecord` (typed tables + journal events), cards/episodes/
  * memories/documents indexed via the in-process `vectorizeSource` — so
  * the gather arms behave exactly as in production. Fictional,
  * industry-agnostic names ("Nordwind", "Sirius") keep the universe
@@ -23,21 +23,21 @@ import type {
 } from "@fretik/shared/db/schema";
 import { aiEpisodes, aiMemories, aiVectors } from "@fretik/shared/db/schema";
 import { deleteMemoryVectors } from "@fretik/shared/services/ai-memory/vector-refresh";
+import { buildRecordCard } from "@fretik/shared/services/collection-records/build-card";
+import { bulkDeleteCollectionRecords } from "@fretik/shared/services/collection-records/bulk-delete";
+import { deleteRecordCardVectors } from "@fretik/shared/services/collection-records/card-vectors";
+import { createCollectionRecord } from "@fretik/shared/services/collection-records/create";
+import { createCollectionWithFields } from "@fretik/shared/services/collections/create-with-fields";
+import { deleteCollection } from "@fretik/shared/services/collections/delete";
 import { upsertEpisode } from "@fretik/shared/services/episodes/upsert";
 import { deleteEpisodeVectors } from "@fretik/shared/services/episodes/vectors";
 import { createLinkType } from "@fretik/shared/services/link-types/create";
 import { createLink } from "@fretik/shared/services/links/create";
-import { buildRecordCard } from "@fretik/shared/services/object-records/build-card";
-import { bulkDeleteObjectRecords } from "@fretik/shared/services/object-records/bulk-delete";
-import { deleteRecordCardVectors } from "@fretik/shared/services/object-records/card-vectors";
-import { createObjectRecord } from "@fretik/shared/services/object-records/create";
-import { createObjectTypeWithFields } from "@fretik/shared/services/object-types/create-with-fields";
-import { deleteObjectType } from "@fretik/shared/services/object-types/delete";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { vectorizeSource } from "../../src/services/vectorize";
 
-const SUPPLIER_TYPE_KEY = "recall_eval_supplier";
-const PROJECT_TYPE_KEY = "recall_eval_project";
+const SUPPLIER_COLLECTION_KEY = "recall_eval_supplier";
+const PROJECT_COLLECTION_KEY = "recall_eval_project";
 
 export interface RecallFixtures {
   organizationId: string;
@@ -107,7 +107,7 @@ const findTypeId = async (
   scope: Scope,
   key: string,
 ): Promise<string | null> => {
-  const row = await db.query.objectTypes.findFirst({
+  const row = await db.query.collections.findFirst({
     where: { teamId: scope.teamId, key },
     columns: { id: true },
   });
@@ -122,7 +122,7 @@ const ensureType = async (
 ): Promise<string> => {
   const existing = await findTypeId(scope, key);
   if (existing) return existing;
-  const created = await createObjectTypeWithFields({
+  const created = await createCollectionWithFields({
     organizationId: scope.organizationId,
     teamId: scope.teamId,
     key,
@@ -143,11 +143,11 @@ const ensureType = async (
 
 const findRecordId = async (
   scope: Scope,
-  objectTypeId: string,
+  collectionId: string,
   label: string,
 ): Promise<string | null> => {
-  const row = await db.query.objectRecords.findFirst({
-    where: { teamId: scope.teamId, objectTypeId, label },
+  const row = await db.query.collectionRecords.findFirst({
+    where: { teamId: scope.teamId, collectionId, label },
     columns: { id: true },
   });
   return row?.id ?? null;
@@ -156,16 +156,16 @@ const findRecordId = async (
 /** Create + card-index one record (idempotent by label). */
 const ensureRecord = async (
   scope: Scope,
-  objectTypeId: string,
+  collectionId: string,
   label: string,
   data: Record<string, unknown>,
 ): Promise<string> => {
-  const existing = await findRecordId(scope, objectTypeId, label);
+  const existing = await findRecordId(scope, collectionId, label);
   if (existing) return existing;
-  const record = await createObjectRecord({
+  const record = await createCollectionRecord({
     organizationId: scope.organizationId,
     teamId: scope.teamId,
-    objectTypeId,
+    collectionId,
     data: { nom: label, ...data },
     labelOverride: label,
     status: "confirmed",
@@ -379,7 +379,7 @@ export const ensureRecallFixtures = async (
 ): Promise<RecallFixtures> => {
   const supplierTypeId = await ensureType(
     scope,
-    SUPPLIER_TYPE_KEY,
+    SUPPLIER_COLLECTION_KEY,
     "Fournisseur (recall-eval)",
     [
       { label: "Ville", vectorize: true },
@@ -389,7 +389,7 @@ export const ensureRecallFixtures = async (
   );
   const projectTypeId = await ensureType(
     scope,
-    PROJECT_TYPE_KEY,
+    PROJECT_COLLECTION_KEY,
     "Projet (recall-eval)",
     [{ label: "Objectif", vectorize: true }],
   );
@@ -466,8 +466,8 @@ export const ensureRecallFixtures = async (
         teamId: scope.teamId,
         key: "recall_eval_fournit",
         label: "fournit",
-        fromObjectTypeId: supplierTypeId,
-        toObjectTypeId: projectTypeId,
+        fromCollectionId: supplierTypeId,
+        toCollectionId: projectTypeId,
       })
     ).id;
   const existingLink = await db.query.links.findFirst({
@@ -699,19 +699,19 @@ export const cleanupRecallFixtures = async (scope: Scope): Promise<void> => {
     );
 
   // Records (+ cards), then the fixture types (drops typed tables + link type).
-  for (const key of [SUPPLIER_TYPE_KEY, PROJECT_TYPE_KEY]) {
+  for (const key of [SUPPLIER_COLLECTION_KEY, PROJECT_COLLECTION_KEY]) {
     const typeId = await findTypeId(scope, key);
     if (!typeId) continue;
-    const records = await db.query.objectRecords.findMany({
-      where: { teamId: scope.teamId, objectTypeId: typeId },
+    const records = await db.query.collectionRecords.findMany({
+      where: { teamId: scope.teamId, collectionId: typeId },
       columns: { id: true },
     });
     const ids = records.map((r) => r.id);
     for (const id of ids) await deleteRecordCardVectors(id);
     if (ids.length > 0) {
-      await bulkDeleteObjectRecords({ teamId: scope.teamId, ids });
+      await bulkDeleteCollectionRecords({ teamId: scope.teamId, ids });
     }
-    await deleteObjectType({ id: typeId });
+    await deleteCollection({ id: typeId });
   }
   console.log("[recall-fixtures] cleaned up");
 };

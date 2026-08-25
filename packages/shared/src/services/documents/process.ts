@@ -27,9 +27,9 @@ import {
 import { deleteFilesFromS3, getObjectBytes, uploadToS3 } from "../../lib/s3";
 import { emitUploadEvent } from "../../lib/upload-events";
 import { preExtractionResponseSchema } from "../../schemas/pre-extraction";
+import { readRecordData } from "../collection-schema/record-io";
+import { MENTIONS_LINK_TYPE_KEY } from "../collections/seed-system-types";
 import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
-import { readRecordData } from "../object-schema/record-io";
-import { MENTIONS_LINK_TYPE_KEY } from "../object-types/seed-system-types";
 import {
   captureHtmlScreenshot,
   captureMarkdownScreenshot,
@@ -488,7 +488,7 @@ export const processDocument = async (
   const mentionVectorInfo = graphResult.mentionedRecords.map((c) => ({
     id: c.id,
     name: c.name,
-    type: graphResult.mentionTargetTypeKey,
+    type: graphResult.mentionTargetCollectionKey,
     role: MENTIONS_LINK_TYPE_KEY,
   }));
 
@@ -623,7 +623,7 @@ const findExistingProcessingByHash = async (
       document: {
         columns: { id: true, teamId: true },
         with: {
-          mirrorRecord: { columns: { id: true, objectTypeId: true } },
+          mirrorRecord: { columns: { id: true, collectionId: true } },
         },
       },
     },
@@ -637,11 +637,11 @@ const findExistingProcessingByHash = async (
   const customFieldValues: Record<string, unknown> =
     mirror && existing.document
       ? await readRecordData({
-          objectTypeId: mirror.objectTypeId,
+          collectionId: mirror.collectionId,
           recordId: mirror.id,
           fields: await getFieldDefinitionsForTeam({
             teamId: existing.document.teamId,
-            objectTypeId: mirror.objectTypeId,
+            collectionId: mirror.collectionId,
           }),
         })
       : {};

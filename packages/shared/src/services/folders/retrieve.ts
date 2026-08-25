@@ -12,10 +12,10 @@ import {
 } from "drizzle-orm";
 import db from "../../db";
 import {
+  collections,
   documents,
   fieldDefinitions,
   folders,
-  objectTypes,
   type DocumentSource,
   type DocumentStatus,
   type FieldDefinitionConfig,
@@ -35,25 +35,25 @@ import type {
   FolderResponse,
 } from "../../schemas/folders";
 import type { RecordFilter } from "../../schemas/ontology";
+import { buildFieldFilterPredicate } from "../collection-schema/field-filter";
+import { qualifiedCollectionTable } from "../collection-schema/identifiers";
+import { readRecordDataBatch } from "../collection-schema/record-io";
+import { DOCUMENT_COLLECTION_KEY } from "../collections/constants";
 import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
-import { buildFieldFilterPredicate } from "../object-schema/field-filter";
-import { qualifiedObjectTable } from "../object-schema/identifiers";
-import { readRecordDataBatch } from "../object-schema/record-io";
-import { DOCUMENT_TYPE_KEY } from "../object-types/constants";
 
 /** Resolve a team's org-scoped `document` object-type id (its extension table). */
 const resolveDocumentTypeId = async (
   teamId: string,
 ): Promise<string | null> => {
   const [row] = await db
-    .select({ id: objectTypes.id })
-    .from(objectTypes)
-    .innerJoin(team, eq(team.organizationId, objectTypes.organizationId))
+    .select({ id: collections.id })
+    .from(collections)
+    .innerJoin(team, eq(team.organizationId, collections.organizationId))
     .where(
       and(
         eq(team.id, teamId),
-        eq(objectTypes.key, DOCUMENT_TYPE_KEY),
-        isNull(objectTypes.teamId),
+        eq(collections.key, DOCUMENT_COLLECTION_KEY),
+        isNull(collections.teamId),
       ),
     )
     .limit(1);
@@ -135,7 +135,7 @@ type DocWithRelations = {
   source: DocumentSource;
   createdAt: Date;
   updatedAt: Date;
-  mirrorRecord: { id: string; objectTypeId: string } | null;
+  mirrorRecord: { id: string; collectionId: string } | null;
 };
 
 const mapDocsToDriveItems = async (
@@ -160,11 +160,11 @@ const mapDocsToDriveItems = async (
   const fieldValuesById =
     docTypeId && mirrorIds.length > 0
       ? await readRecordDataBatch({
-          objectTypeId: docTypeId,
+          collectionId: docTypeId,
           recordIds: mirrorIds,
           fields: await getFieldDefinitionsForTeam({
             teamId,
-            objectTypeId: docTypeId,
+            collectionId: docTypeId,
           }),
         })
       : new Map<string, Record<string, unknown>>();
@@ -211,7 +211,7 @@ const documentFilterExists = (
 ): SQL | null => {
   const pred = buildFieldFilterPredicate(f, fieldType, undefined, config);
   if (!pred) return null;
-  return sql`EXISTS (SELECT 1 FROM object_records r JOIN ${sql.raw(docTable)} e ON e."id" = r.id WHERE r.document_id = ${documents.id} AND ${pred})`;
+  return sql`EXISTS (SELECT 1 FROM collection_records r JOIN ${sql.raw(docTable)} e ON e."id" = r.id WHERE r.document_id = ${documents.id} AND ${pred})`;
 };
 
 /**
@@ -244,18 +244,18 @@ const getFilteredDocuments = async (data: {
         config: fieldDefinitions.config,
       })
       .from(fieldDefinitions)
-      .innerJoin(objectTypes, eq(fieldDefinitions.objectTypeId, objectTypes.id))
+      .innerJoin(collections, eq(fieldDefinitions.collectionId, collections.id))
       .where(
         and(
           eq(fieldDefinitions.teamId, teamId),
-          eq(objectTypes.key, DOCUMENT_TYPE_KEY),
+          eq(collections.key, DOCUMENT_COLLECTION_KEY),
           inArray(fieldDefinitions.key, keys),
         ),
       );
     const defByKey = new Map(defs.map((d) => [d.key, d]));
     const docTypeId = await resolveDocumentTypeId(teamId);
     if (docTypeId) {
-      const docTable = qualifiedObjectTable(docTypeId);
+      const docTable = qualifiedCollectionTable(docTypeId);
       for (const f of params.filters) {
         const def = defByKey.get(f.key);
         const cond = documentFilterExists(f, def?.type, docTable, def?.config);
@@ -303,7 +303,7 @@ const getFilteredDocuments = async (data: {
     where: { id: { in: ids } },
     with: {
       mirrorRecord: {
-        columns: { id: true, objectTypeId: true },
+        columns: { id: true, collectionId: true },
       },
     },
   });
@@ -434,7 +434,7 @@ const getFolderExplorer = async (data: {
         columns: docColumns,
         where: docWhere,
         with: {
-          mirrorRecord: { columns: { id: true, objectTypeId: true } },
+          mirrorRecord: { columns: { id: true, collectionId: true } },
         },
         orderBy: { updatedAt: "desc" },
         limit: remainingLimit,
@@ -448,7 +448,7 @@ const getFolderExplorer = async (data: {
       columns: docColumns,
       where: docWhere,
       with: {
-        mirrorRecord: { columns: { id: true, objectTypeId: true } },
+        mirrorRecord: { columns: { id: true, collectionId: true } },
       },
       orderBy: { updatedAt: "desc" },
       limit: limit,

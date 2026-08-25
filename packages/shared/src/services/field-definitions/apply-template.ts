@@ -11,9 +11,9 @@ import type {
   DocumentFieldTemplate,
   FieldDefinitionSeed,
 } from "../../templates/document-fields/types";
-import { refreshObjectTableAfterCatalogChange } from "../object-schema/catalog-sync";
-import { DOCUMENT_TYPE_KEY } from "../object-types/constants";
-import { resolveOrgObjectTypeId } from "../object-types/resolve";
+import { refreshCollectionTableAfterCatalogChange } from "../collection-schema/catalog-sync";
+import { DOCUMENT_COLLECTION_KEY } from "../collections/constants";
+import { resolveOrgCollectionId } from "../collections/resolve";
 import { invalidateFieldDefinitionsCache } from "./cache";
 import { FIELD_DEFINITION_LIMITS } from "./constants";
 import { getTeamLocale } from "./get-locale";
@@ -31,7 +31,7 @@ import { getTeamLocale } from "./get-locale";
  * Modes:
  *   - `replace` (default at org-creation, on-demand otherwise): drop the
  *     scope's existing field definitions FOR THE DOCUMENT TYPE, then insert
- *     the template. Other object types' fields are never touched, and neither
+ *     the template. Other collections' fields are never touched, and neither
  *     is the document's locked title or its computed provenance fields — those
  *     belong to the system ontology, not to a template.
  *   - `merge`: insert template fields whose `key` does not already exist in
@@ -66,9 +66,9 @@ export const applyDocumentFieldTemplate = async (data: {
 
   // These are document-field templates — resolve the system document type
   // once and stamp every seeded row with it.
-  const objectTypeId = await resolveOrgObjectTypeId({
+  const collectionId = await resolveOrgCollectionId({
     organizationId,
-    key: DOCUMENT_TYPE_KEY,
+    key: DOCUMENT_COLLECTION_KEY,
   });
 
   const template = DOCUMENT_FIELD_TEMPLATES[templateKey];
@@ -96,7 +96,7 @@ export const applyDocumentFieldTemplate = async (data: {
         .delete(fieldDefinitions)
         .where(
           and(
-            scopePredicate({ organizationId, teamId, objectTypeId }),
+            scopePredicate({ organizationId, teamId, collectionId }),
             // Mirror the guards the single-field delete service enforces: the
             // document's title is locked, and the provenance fields are
             // computed. A template owns neither.
@@ -112,7 +112,7 @@ export const applyDocumentFieldTemplate = async (data: {
       const existing = await tx
         .select({ key: fieldDefinitions.key })
         .from(fieldDefinitions)
-        .where(scopePredicate({ organizationId, teamId, objectTypeId }));
+        .where(scopePredicate({ organizationId, teamId, collectionId }));
       existingKeys = new Set(existing.map((r) => r.key));
     }
 
@@ -129,7 +129,7 @@ export const applyDocumentFieldTemplate = async (data: {
           seed,
           organizationId,
           teamId,
-          objectTypeId,
+          collectionId,
           locale,
         }),
       );
@@ -146,10 +146,10 @@ export const applyDocumentFieldTemplate = async (data: {
 
     // Reconcile the team's extension table + search vectors for the
     // (replaced/merged) field set, atomic with the template application.
-    await refreshObjectTableAfterCatalogChange({
+    await refreshCollectionTableAfterCatalogChange({
       tx,
       organizationId,
-      objectTypeId,
+      collectionId,
       teamId,
     });
 
@@ -163,9 +163,9 @@ export const applyDocumentFieldTemplate = async (data: {
 const scopePredicate = (data: {
   organizationId: string;
   teamId: string | null;
-  objectTypeId: string;
+  collectionId: string;
 }) => {
-  const { organizationId, teamId, objectTypeId } = data;
+  const { organizationId, teamId, collectionId } = data;
   const scope =
     teamId === null
       ? and(
@@ -174,17 +174,17 @@ const scopePredicate = (data: {
         )
       : eq(fieldDefinitions.teamId, teamId);
   // Document-field templates own the document type's fields and nothing else.
-  return and(scope, eq(fieldDefinitions.objectTypeId, objectTypeId));
+  return and(scope, eq(fieldDefinitions.collectionId, collectionId));
 };
 
 const buildRowFromSeed = (data: {
   seed: FieldDefinitionSeed;
   organizationId: string;
   teamId: string | null;
-  objectTypeId: string;
+  collectionId: string;
   locale: string;
 }): NewFieldDefinition => {
-  const { seed, organizationId, teamId, objectTypeId, locale } = data;
+  const { seed, organizationId, teamId, collectionId, locale } = data;
   const label = translateTemplateKey(seed.labelKey, locale);
   const description = seed.descriptionKey
     ? translateTemplateKey(seed.descriptionKey, locale)
@@ -209,7 +209,7 @@ const buildRowFromSeed = (data: {
   return {
     organizationId,
     teamId,
-    objectTypeId,
+    collectionId,
     key: seed.key,
     label,
     description,

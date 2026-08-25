@@ -76,7 +76,7 @@ const writeTool = (
 /**
  * A write tool that is BLOCKABLE but not (yet) approval-gated. Default `auto`
  * (today's behaviour), levels `auto | blocked`, no `approvalKind`. Used for the
- * schema/automation config tools (`manageObjectType`, `manageField`,
+ * schema/automation config tools (`manageCollection`, `manageField`,
  * `manageWorkflow`): they are FORBIDDEN in every workflow run
  * (`WORKFLOW_FORBIDDEN_DOMAIN_TOOLS`) and run directly in chat, so they never
  * reach the approval gate — an approval level would have no executor. A team
@@ -103,9 +103,9 @@ export const BUILTIN_TOOL_POLICY_CATALOG: Record<
 > = {
   // Read path — browse/inspect the workspace. Blockable, never approval.
   listDocuments: readTool("listDocuments"),
-  describeObjectType: readTool("describeObjectType"),
-  listObjects: readTool("listObjects"),
-  getObject: readTool("getObject"),
+  describeCollection: readTool("describeCollection"),
+  listRecords: readTool("listRecords"),
+  getRecord: readTool("getRecord"),
   listFolders: readTool("listFolders"),
   searchIcons: readTool("searchIcons"),
   searchWeb: readTool("searchWeb"),
@@ -123,7 +123,7 @@ export const BUILTIN_TOOL_POLICY_CATALOG: Record<
   installSkill: writeTool("installSkill", "tool_call"),
 
   // Config write — blockable only (auto default, no approval gate yet).
-  manageObjectType: configWriteTool("manageObjectType"),
+  manageCollection: configWriteTool("manageCollection"),
   manageField: configWriteTool("manageField"),
   manageWorkflow: configWriteTool("manageWorkflow"),
   managePage: configWriteTool("managePage"),

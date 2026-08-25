@@ -57,7 +57,7 @@ export const dispatchAgentSuite: EvalSuite = {
         {
           type: "judge",
           rubric:
-            "The answer states a client count (including zero). It must be a direct number derived from a single tool call (querySql or listObjects), not a meta-explanation about delegation. PASS if a count is given. FAIL if the answer talks about sub-agents, delegation, or refuses to answer.",
+            "The answer states a client count (including zero). It must be a direct number derived from a single tool call (querySql or listRecords), not a meta-explanation about delegation. PASS if a count is given. FAIL if the answer talks about sub-agents, delegation, or refuses to answer.",
         },
       ],
     },

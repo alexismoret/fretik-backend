@@ -3,20 +3,20 @@ import { createAskUserQuestionTool } from "../../tools/ask-user/chat";
 import { createBashTool } from "../../tools/bash";
 import type { createBuildPageTool } from "../../tools/build-page";
 import { createCreateSkillTool } from "../../tools/create-skill";
-import { createDescribeObjectTypeTool } from "../../tools/describe-object-type";
+import { createDescribeCollectionTool } from "../../tools/describe-collection";
 import type { createDispatchAgentTool } from "../../tools/dispatch-agent";
 import { createDownloadDriveDocumentTool } from "../../tools/download-drive-document";
 import { createExtractTool } from "../../tools/extract";
-import { createGetObjectTool } from "../../tools/get-object";
+import { createGetRecordTool } from "../../tools/get-record";
 import { createInstallSkillTool } from "../../tools/install-skill";
 import { createListDocumentsTool } from "../../tools/list-documents";
 import { createListFoldersTool } from "../../tools/list-folders";
-import { createListObjectsTool } from "../../tools/list-objects";
+import { createListRecordsTool } from "../../tools/list-records";
+import { createManageCollectionTool } from "../../tools/manage-collection";
 import { createManageDocumentTool } from "../../tools/manage-document";
 import { createManageDriveTool } from "../../tools/manage-drive";
 import { createManageFieldTool } from "../../tools/manage-field";
 import { createManageLinkTool } from "../../tools/manage-link";
-import { createManageObjectTypeTool } from "../../tools/manage-object-type";
 import { createManagePageTool } from "../../tools/manage-page";
 import { createManageRecordTool } from "../../tools/manage-record";
 import { createManageWorkflowTool } from "../../tools/manage-workflow";
@@ -204,17 +204,17 @@ export const buildCoreTools = (domainTools: SearchableToolRegistry) => ({
  * - **listDocuments**: paginated browse over the team's documents.
  *   Backed by a shared service in `@fretik/shared/services/*` — the same
  *   code path the API handlers use, so filter semantics stay consistent.
- * - **describeObjectType / listObjects / getObject**:
+ * - **describeCollection / listRecords / getRecord**:
  *   the AI READ path over the dynamic-data graph — inspect one type's
  *   fields + relations, browse a type's records, and fetch one record with
  *   its links. The no-SQL companions to `querySql` over the per-type typed
- *   tables + registry. The type catalogue itself is the `<team_objects>`
- *   prompt block, so there is no separate `listObjectTypes` tool.
- * - **manageRecord / manageLink / manageObjectType / manageField**:
+ *   tables + registry. The type catalogue itself is the `<team_collections>`
+ *   prompt block, so there is no separate `listCollections` tool.
+ * - **manageRecord / manageLink / manageCollection / manageField**:
  *   the AI WRITE path — single-record CRUD + status, relation link/unlink,
  *   and type/field schema edits. Each routes through the validated shared
  *   services (field validation, typed table, `domain_events`). Bulk writes
- *   and type migrations go through the Python `objects` SDK (fretik_apps),
+ *   and type migrations go through the Python `collections` SDK (fretik_apps),
  *   not these tools.
  * - **webFetch**: pulls up to 5 public URLs as cleaned Markdown via
  *   Tavily `/extract`. Paired with the core `searchWeb` tool —
@@ -252,23 +252,23 @@ export const buildDomainTools = (config: { pageAuthoring: boolean }) => ({
     searchHint:
       "search filter list team documents by type folder status filename",
   }),
-  describeObjectType: buildChatbotTool({
-    ...createDescribeObjectTypeTool(),
+  describeCollection: buildChatbotTool({
+    ...createDescribeCollectionTool(),
     category: "domain",
     searchHint:
-      "describe object type fields columns schema metadata key label type description config options enum allowed values choices select multi_select bounds min max relations typed view what fields",
+      "describe collection fields columns schema metadata key label type description config options enum allowed values choices select multi_select bounds min max relations typed view what fields",
   }),
-  listObjects: buildChatbotTool({
-    ...createListObjectsTool(),
+  listRecords: buildChatbotTool({
+    ...createListRecordsTool(),
     category: "domain",
     searchHint:
-      "list browse object records of a type rows entities companies people custom records search status confirmed suggested pending pagination",
+      "list browse records of a type rows entities companies people custom records search status confirmed suggested pending pagination",
   }),
-  getObject: buildChatbotTool({
-    ...createGetObjectTool(),
+  getRecord: buildChatbotTool({
+    ...createGetRecordTool(),
     category: "domain",
     searchHint:
-      "get object record by id detail fields linked records relations connections neighbors what is connected to",
+      "get record by id detail fields linked records relations connections neighbors what is connected to",
   }),
   manageRecord: buildChatbotTool({
     ...createManageRecordTool(),
@@ -282,11 +282,11 @@ export const buildDomainTools = (config: { pageAuthoring: boolean }) => ({
     searchHint:
       "link unlink connect disconnect relate records relationship edge association attach detach",
   }),
-  manageObjectType: buildChatbotTool({
-    ...createManageObjectTypeTool(),
+  manageCollection: buildChatbotTool({
+    ...createManageCollectionTool(),
     category: "domain",
     searchHint:
-      "create update delete object type schema table model define new kind of thing entity category rename",
+      "create update delete collection schema table model define new kind of thing entity category rename",
   }),
   manageField: buildChatbotTool({
     ...createManageFieldTool(),
@@ -298,7 +298,7 @@ export const buildDomainTools = (config: { pageAuthoring: boolean }) => ({
     ...createSearchIconsTool(),
     category: "domain",
     searchHint:
-      "find icon lucide glyph symbol for object type select option picker visual",
+      "find icon lucide glyph symbol for collection select option picker visual",
   }),
   webFetch: buildChatbotTool({
     ...createWebFetchTool(),
@@ -547,9 +547,9 @@ export const buildPageBuilderTools = () => {
   const coreTools = buildCoreTools(domainTools);
   return {
     managePage: domainTools.managePage,
-    describeObjectType: domainTools.describeObjectType,
-    listObjects: domainTools.listObjects,
-    getObject: domainTools.getObject,
+    describeCollection: domainTools.describeCollection,
+    listRecords: domainTools.listRecords,
+    getRecord: domainTools.getRecord,
     listDocuments: domainTools.listDocuments,
     searchIcons: domainTools.searchIcons,
     querySql: coreTools.querySql,

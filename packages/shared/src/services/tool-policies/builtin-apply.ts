@@ -1,7 +1,11 @@
-import { recordSharingSchema } from "../../schemas/object-sharing";
+import { recordSharingSchema } from "../../schemas/collection-sharing";
 import { recordRelationInputSchema } from "../../schemas/ontology";
 import { promoteSandboxFileToDrive } from "../chat-files/promote-sandbox-file-to-drive";
 import { promoteChatFilesToDrive } from "../chat-files/promote-to-drive";
+import { createCollectionRecord } from "../collection-records/create";
+import { deleteCollectionRecord } from "../collection-records/delete";
+import { setRecordStatus } from "../collection-records/set-status";
+import { setRecordData } from "../collection-records/update";
 import { saveAuthoredContent } from "../documents/authored/content";
 import { createAuthoredDocument } from "../documents/authored/create";
 import { updateDocument } from "../documents/update";
@@ -12,10 +16,6 @@ import { deleteFolders } from "../folders/delete";
 import { updateFolder } from "../folders/update";
 import { createLink } from "../links/create";
 import { invalidateLink } from "../links/invalidate";
-import { createObjectRecord } from "../object-records/create";
-import { deleteObjectRecord } from "../object-records/delete";
-import { setRecordStatus } from "../object-records/set-status";
-import { setRecordData } from "../object-records/update";
 import { installSkillFromCatalog } from "../skills/install-from-catalog";
 
 /**
@@ -28,7 +28,7 @@ import { installSkillFromCatalog } from "../skills/install-from-catalog";
  * `withToolCallGate` call sites in `@fretik/ai`).
  *
  * Only the data/drive write tools are here. Schema/automation config tools
- * (`manageObjectType`, `manageField`, `manageWorkflow`) are blockable-only (no
+ * (`manageCollection`, `manageField`, `manageWorkflow`) are blockable-only (no
  * approval level) so they never reach this map.
  */
 
@@ -302,11 +302,11 @@ const applyManageRecord: ToolCallApplyFn = async (ctx, args) => {
   const action = str(args, "action");
 
   if (action === "create") {
-    const record = await createObjectRecord({
+    const record = await createCollectionRecord({
       organizationId: ctx.organizationId,
       teamId: ctx.teamId,
       userId: ctx.userId,
-      objectTypeId: str(args, "objectTypeId"),
+      collectionId: str(args, "collectionId"),
       data: recordArg(args, "data"),
       labelOverride: strOrNull(args, "labelOverride"),
       relations:
@@ -340,7 +340,7 @@ const applyManageRecord: ToolCallApplyFn = async (ctx, args) => {
   }
 
   if (action === "delete") {
-    const result = await deleteObjectRecord({
+    const result = await deleteCollectionRecord({
       id: str(args, "recordId"),
       actor,
     });

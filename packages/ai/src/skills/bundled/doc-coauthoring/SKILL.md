@@ -31,12 +31,12 @@ The deliverable is a **Drive document**, not a scratch file — the team can fin
 
 Asking the user for something the workspace already holds wastes the one resource this stage runs on: their patience. Exhaust these first, and tell them what you found rather than what you looked for.
 
-| Source                                                   | How                                                        |
-| -------------------------------------------------------- | ---------------------------------------------------------- |
-| Documents the team already wrote on the subject          | `searchKnowledge`, then `listDocuments` for the neighbours |
-| Data the document will have to state — figures, entities | `<team_objects>`, `listObjects`, `getObject`, `querySql`   |
-| Conventions and preferences already learned              | `<active_memory>` and `<chatbot_context>`                  |
-| A system outside Fretik (mailbox, CRM, project tool)     | The team's external app connections                        |
+| Source                                                   | How                                                          |
+| -------------------------------------------------------- | ------------------------------------------------------------ |
+| Documents the team already wrote on the subject          | `searchKnowledge`, then `listDocuments` for the neighbours   |
+| Data the document will have to state — figures, entities | `<team_collections>`, `listRecords`, `getRecord`, `querySql` |
+| Conventions and preferences already learned              | `<active_memory>` and `<chatbot_context>`                    |
+| A system outside Fretik (mailbox, CRM, project tool)     | The team's external app connections                          |
 
 ### Then ask the user
 

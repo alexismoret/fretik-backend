@@ -21,6 +21,12 @@ import {
   updateFieldDefinitionRequestSchema,
 } from "@fretik/shared/schemas/field-definitions";
 import {
+  assertCanWriteField,
+  assertCanWriteType,
+} from "@fretik/shared/services/collection-sharing/write-access";
+import { DOCUMENT_COLLECTION_KEY } from "@fretik/shared/services/collections/constants";
+import { resolveOrgCollectionId } from "@fretik/shared/services/collections/resolve";
+import {
   checkFormula,
   formulaFunctionCatalog,
 } from "@fretik/shared/services/field-definitions/check-formula";
@@ -30,12 +36,6 @@ import { getFieldDefinitionsForOrganization } from "@fretik/shared/services/fiel
 import { getFieldDefinitionsForTeam } from "@fretik/shared/services/field-definitions/get-for-team";
 import { reorderFieldDefinitions } from "@fretik/shared/services/field-definitions/reorder";
 import { updateFieldDefinition } from "@fretik/shared/services/field-definitions/update";
-import {
-  assertCanWriteField,
-  assertCanWriteType,
-} from "@fretik/shared/services/object-sharing/write-access";
-import { DOCUMENT_TYPE_KEY } from "@fretik/shared/services/object-types/constants";
-import { resolveOrgObjectTypeId } from "@fretik/shared/services/object-types/resolve";
 import { createRoute, OpenAPIHono } from "@hono/zod-openapi";
 import { z } from "zod";
 
@@ -195,7 +195,7 @@ const checkFormulaRoute = createRoute({
   path: "/check-formula",
   summary: "Dry-run a formula expression",
   description:
-    "Compiles a formula against an object type's fields WITHOUT saving, and returns the type it evaluates to or the reason it cannot compile. Powers the live feedback in the formula editor; an invalid expression is a 200 with `ok: false`, not an error — it is the normal state while one is being typed.",
+    "Compiles a formula against a collection's fields WITHOUT saving, and returns the type it evaluates to or the reason it cannot compile. Powers the live feedback in the formula editor; an invalid expression is a 200 with `ok: false`, not an error — it is the normal state while one is being typed.",
   tags: ["FieldDefinitions"],
   request: {
     body: {
@@ -277,15 +277,15 @@ fieldDefinitionRoutes.openapi(createRouteDef, async (c) => {
     });
   }
 
-  const objectTypeId =
-    body.objectTypeId ??
-    (await resolveOrgObjectTypeId({
+  const collectionId =
+    body.collectionId ??
+    (await resolveOrgCollectionId({
       organizationId: team.organizationId,
-      key: body.objectTypeKey ?? DOCUMENT_TYPE_KEY,
+      key: body.collectionKey ?? DOCUMENT_COLLECTION_KEY,
     }));
 
   await assertCanWriteType({
-    objectTypeId,
+    collectionId,
     teamId: team.id,
     organizationId: team.organizationId,
   });
@@ -293,7 +293,7 @@ fieldDefinitionRoutes.openapi(createRouteDef, async (c) => {
   const created = await createFieldDefinition({
     organizationId: team.organizationId,
     teamId: body.scope === "organization" ? null : team.id,
-    objectTypeId,
+    collectionId,
     key: body.key,
     label: body.label,
     description: body.description ?? null,
@@ -379,17 +379,17 @@ fieldDefinitionRoutes.openapi(checkFormulaRoute, async (c) => {
   const team = c.get("team");
   if (!team) return c.json(teamRequired(), 403);
 
-  const { objectTypeId, expression, fieldId } = c.req.valid("json");
+  const { collectionId, expression, fieldId } = c.req.valid("json");
   // Reading a type's field NAMES is what the check exposes, so it is gated on
   // being able to write the type — the same door the save goes through.
   await assertCanWriteType({
-    objectTypeId,
+    collectionId,
     teamId: team.id,
     organizationId: team.organizationId,
   });
 
   const result = await checkFormula({
-    objectTypeId,
+    collectionId,
     teamId: team.id,
     excludeFieldId: fieldId,
     expression,

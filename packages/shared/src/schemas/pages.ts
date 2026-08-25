@@ -1,6 +1,6 @@
 import { z } from "zod";
 // The bulk ceiling is NOT re-derived here: `lib/db-bulk` is the single source
-// of truth for it, and it is the same number the objects bulk services enforce.
+// of truth for it, and it is the same number the collection bulk services enforce.
 // A page that refused what the service it calls accepts would be a divergence
 // nobody could explain from either side.
 import { MAX_BULK_ITEMS } from "../lib/db-bulk";
@@ -20,7 +20,7 @@ import { dateRangeFilterValueSchema, recordFilterOpSchema } from "./ontology";
  * - The DATA half — variables, datasets, operations — is declarative and
  *   server-enforced. `run-page-data.ts` accepts nothing from a viewer's
  *   browser but VALUES for declared variables; every filter key, operator,
- *   object type, connection and argument template comes from the stored
+ *   collection, connection and argument template comes from the stored
  *   definition. That asymmetry is what makes the same executor safe on the
  *   anonymous public route, and it is untouched by the code redesign.
  * - The PRESENTATION half is `code`: one Vue SFC, compiled server-side,
@@ -59,7 +59,7 @@ export const PAGE_LIMITS = {
   maxFilters: 20,
   /** Per aggregate dataset — a KPI band of six measures is ordinary. */
   maxMetrics: 8,
-  /** Server-side row ceiling for one `objects` dataset. */
+  /** Server-side row ceiling for one `collections` dataset. */
   maxRows: 2000,
   /**
    * Runtime pagination, for a table that walks a type the page never holds in
@@ -98,7 +98,7 @@ export const PAGE_LIMITS = {
    * How long an external dataset's upstream answer may be reused, seconds.
    * The floor exists because a page renders far more often than a third party
    * wants to be called; the ceiling because past 15 minutes the data is not
-   * "live" and belongs in an object type.
+   * "live" and belongs in a collection.
    */
   minExternalTtlSeconds: 15,
   maxExternalTtlSeconds: 900,
@@ -264,7 +264,7 @@ export type PageVariableType = z.infer<typeof pageVariableTypeSchema>;
  *
  * State is also the ONLY thing a viewer's browser may send back: the data
  * endpoint validates incoming values against these declarations and takes
- * every filter key, operator and object type from the stored definition. That
+ * every filter key, operator and collection from the stored definition. That
  * is what makes the public endpoint safe to expose anonymously.
  */
 export const PageVariableSchema = z.object({
@@ -291,7 +291,7 @@ export type PageVariable = z.infer<typeof PageVariableSchema>;
  * for SMALL, FRESH reads whose value is their recency — an inbox, today's
  * orders. Volume, history and anything published stay on the workflow → object
  * type path: a third party cannot be filtered, grouped or indexed the way an
- * object type can.
+ * collection can.
  *
  * `transform` was a fourth kind, REMOVED 2026-08-21. It ran JavaScript in a
  * server-side QuickJS-WASM sandbox over the results of other datasets, and the
@@ -304,7 +304,11 @@ export type PageVariable = z.infer<typeof PageVariableSchema>;
  * in `run-page-data.ts` that existed for this one source. Stored definitions
  * were migrated (`…_retire_page_transform_datasets`).
  */
-export const PAGE_DATASET_KINDS = ["inline", "objects", "external"] as const;
+export const PAGE_DATASET_KINDS = [
+  "inline",
+  "collections",
+  "external",
+] as const;
 export const pageDatasetKindSchema = z.enum(PAGE_DATASET_KINDS);
 export type PageDatasetKind = z.infer<typeof pageDatasetKindSchema>;
 
@@ -386,8 +390,8 @@ export const PageDatasetSchema = z
      */
     rows: z.array(z.record(z.string(), pageValueSchema)).optional(),
 
-    // --- objects: a live query over object records ---
-    objectTypeId: z.uuid().optional(),
+    // --- collections: a live query over records ---
+    collectionId: z.uuid().optional(),
     /** `records` = rows; `aggregate` = grouped metrics. Defaults to records. */
     mode: z.enum(["records", "aggregate"]).optional(),
     filters: z.array(PageFilterSchema).max(PAGE_LIMITS.maxFilters).optional(),
@@ -433,11 +437,11 @@ export const PageDatasetSchema = z
       .optional(),
   })
   .superRefine((ds, ctx) => {
-    if (ds.kind === "objects" && !ds.objectTypeId) {
+    if (ds.kind === "collections" && !ds.collectionId) {
       ctx.addIssue({
         code: "custom",
-        message: `dataset "${ds.id}": an objects dataset needs objectTypeId`,
-        path: ["objectTypeId"],
+        message: `dataset "${ds.id}": a collections dataset needs collectionId`,
+        path: ["collectionId"],
       });
     }
     if (ds.kind === "external") {
@@ -471,7 +475,7 @@ export type PageDataset = z.infer<typeof PageDatasetSchema>;
  * `fretik.ops.run("<id>", { variables })` through the bridge; the browser
  * sends an operation ID and values for the page's declared VARIABLES — never
  * an action name, never an argument template, never a connection, never an
- * object type. The server re-resolves the stored `args` against those values,
+ * collection. The server re-resolves the stored `args` against those values,
  * so the worst a forged request can do is pass a different string where a
  * string was already going to go.
  *
@@ -529,7 +533,7 @@ const pageRecordOperationSchema = z.object({
   kind: z.literal("record"),
   id: pageKeySchema,
   /** The type this writes to — from the definition, never from the request. */
-  objectTypeId: z.uuid(),
+  collectionId: z.uuid(),
   mode: pageRecordModeSchema,
   /** Which row. Omitted for `create`. */
   recordId: pageRecordIdSchema.optional(),
@@ -542,7 +546,7 @@ const pageRecordOperationSchema = z.object({
  *
  * `create` is deliberately absent: a bulk operation acts on rows the viewer
  * picked, and there is no selection to pick before a row exists. Creating many
- * at once is an import, and the objects UI already owns imports — the skill's
+ * at once is an import, and the collections UI already owns imports — the skill's
  * "when a page is the wrong answer" says so already.
  *
  * It exists because the bridge allows 30 calls per 10 s SHARED with
@@ -552,7 +556,7 @@ const pageRecordOperationSchema = z.object({
 const pageBulkOperationSchema = z.object({
   kind: z.literal("bulk"),
   id: pageKeySchema,
-  objectTypeId: z.uuid(),
+  collectionId: z.uuid(),
   mode: z.enum(["update", "delete"]),
   recordIds: pageRecordIdsSchema,
   args: pageArgsSchema.optional(),
@@ -570,7 +574,7 @@ const pageBulkOperationSchema = z.object({
 const pageLinkOperationSchema = z.object({
   kind: z.literal("link"),
   id: pageKeySchema,
-  objectTypeId: z.uuid(),
+  collectionId: z.uuid(),
   /** The `relation` field on that type whose edges this operation moves. */
   fieldKey: pageKeySchema,
   mode: z.enum(["link", "unlink"]),
@@ -894,7 +898,7 @@ export const pagePublishError = (definition: PageDefinition): string | null => {
     (dataset) => dataset.kind === "external",
   );
   if (external) {
-    return `Dataset "${external.id}" reads a connected app, which a published page may not do — an anonymous visitor would be spending the team's credentials. Sync it into an object type with a workflow and query that instead.`;
+    return `Dataset "${external.id}" reads a connected app, which a published page may not do — an anonymous visitor would be spending the team's credentials. Sync it into a collection with a workflow and query that instead.`;
   }
   // Same rule, one step stronger: an operation WRITES — to a third party on the
   // team's credentials, or to the team's own records. A link anyone can open
@@ -926,14 +930,14 @@ export const describePageDataContract = (): string =>
     "## datasets",
     `kind=inline    → rows: [{ column: value }, …] embedded in the page (≤${Math.floor(PAGE_LIMITS.maxInlineBytes / 1000).toString()}KB).`,
     "                 One object per row, keyed by column name — no header row.",
-    "kind=objects   → objectTypeId + mode(records|aggregate) + filters/sortBy/limit,",
+    "kind=collections   → collectionId + mode(records|aggregate) + filters/sortBy/limit,",
     `                 or groupBy/dateBucket(${PAGE_DATE_BUCKETS.join("|")})/seriesBy + metrics.`,
     `                 metric = { name, fn(${PAGE_AGGREGATE_FNS.join("|")}), key?, label, unit? }.`,
     "                 `key` is required by every fn except count.",
     '                 A filter value may be { "var": "<variableKey>" } → the server',
     "                 substitutes that variable's current value on every query, which is",
     "                 how a page control re-filters server-side.",
-    "                 An objects dataset also ships its FIELD TYPES with the rows.",
+    "                 A collections dataset also ships its FIELD TYPES with the rows.",
     "mode=records reads a WINDOW of the type, not all of it: `limit` is the page size",
     "(25–100), server-side paging/sorting via the per-dataset `queries` parameter, and",
     "`totalCount` is the real total however many millions sit behind it. A column total",
@@ -950,7 +954,7 @@ export const describePageDataContract = (): string =>
     "                 provider's key humanised, and a type only where every value",
     "                 agrees (`unknown` otherwise — do not format one blind).",
     "",
-    "## row shapes (objects datasets)",
+    "## row shapes (collections datasets)",
     "A row is `{ id, label, …fields }`; `label` is the record's own title.",
     "text/url/email/phone/markdown → string. number/rating → number. boolean → boolean.",
     "select       → the option's VALUE, never its label — the label is in `fields`.",
@@ -964,7 +968,7 @@ export const describePageDataContract = (): string =>
     "formula      → its declared kind, already computed (a number arrives as a",
     "               number). Read-only, and sortable/filterable like any column.",
     "A derived value the page must SORT, FILTER or AGGREGATE on belongs in a",
-    "`formula` field on the object type, not in the page: sorting a table by",
+    "`formula` field on the collection, not in the page: sorting a table by",
     "margin only works if the server knows margin. Reshaping for display — a",
     "label, a merge of two datasets, chart buckets — stays in the page's own JS.",
     "",
@@ -980,7 +984,7 @@ export const describePageDataContract = (): string =>
     "ok | needs_connection | blocked | cancelled | error — render the verdict.",
     'args are literals or { "var": "<key>" } references, so a form field is a',
     "variable and there is no separate form model. Four kinds:",
-    "kind=record → objectTypeId + mode(create|update|delete) + recordId + args.",
+    "kind=record → collectionId + mode(create|update|delete) + recordId + args.",
     "                 Writes the team's OWN records. `args` KEYS ARE THE WRITABLE",
     "                 FIELD LIST — nothing outside them can reach the row, and an",
     "                 update carrying none of them changes nothing. Fields whose",
@@ -1071,7 +1075,7 @@ export type PageSummary = z.infer<typeof PageSummarySchema>;
  * dataset's own fields and drops if it does not know it, so it can never become
  * an identifier in a query.
  *
- * Only `objects` datasets in `records` mode read it — for an aggregate the
+ * Only `collections` datasets in `records` mode read it — for an aggregate the
  * grouping IS the query, and for inline rows the client already holds
  * everything.
  */
@@ -1087,7 +1091,7 @@ export type PageDatasetQuery = z.infer<typeof PageDatasetQuerySchema>;
 
 /**
  * Data request. The viewer's browser may send NOTHING BUT variable values:
- * every filter key, operator and object type comes from the stored
+ * every filter key, operator and collection comes from the stored
  * definition. That asymmetry is what makes the same executor safe to expose on
  * the anonymous public route.
  */
@@ -1159,7 +1163,7 @@ export const PageFieldDescriptorSchema = z.object({
   /** relation: the target type's own look, resolved server-side. */
   targetIcon: z.string().optional(),
   targetColor: z.string().optional(),
-  /** The field the object type treats as its title. */
+  /** The field the collection treats as its title. */
   isTitle: z.boolean().optional(),
   /** Whether a table may order on this field — false for the computed ones. */
   sortable: z.boolean().optional(),
@@ -1182,7 +1186,7 @@ export const PageDatasetResultSchema = z.discriminatedUnion("status", [
     truncated: z.boolean(),
     /**
      * Rows matching the dataset's filters, ignoring `limit` — the difference
-     * between "25 rows" and "25 of 3 214 987". Only `objects`/`records`
+     * between "25 rows" and "25 of 3 214 987". Only `collections`/`records`
      * datasets know it.
      */
     totalCount: z.number().int().nonnegative().optional(),
@@ -1197,10 +1201,10 @@ export const PageDatasetResultSchema = z.discriminatedUnion("status", [
     /** The ordering actually applied, once resolved against the real fields. */
     sortBy: z.string().optional(),
     sortDir: z.enum(["asc", "desc"]).optional(),
-    /** Present for `objects` datasets — typed rendering without guesswork. */
+    /** Present for `collections` datasets — typed rendering without guesswork. */
     fields: z.array(PageFieldDescriptorSchema).optional(),
   }),
-  /** The viewer's team has no grant on that object type — this block only. */
+  /** The viewer's team has no grant on that collection — this block only. */
   z.object({ status: z.literal("forbidden") }),
   /**
    * An external dataset found no usable connection FOR THIS VIEWER — the page

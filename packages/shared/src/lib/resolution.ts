@@ -1,6 +1,6 @@
 /**
  * Trigram similarity floor for FUZZY auto-linking during entity / relation
- * resolution (object-records and link-types `match.ts`).
+ * resolution (collection-records and link-types `match.ts`).
  *
  * Deliberately high — the product is precision-first: prefer a MISSED match
  * (which safely becomes a `status='suggested'` record/relation for human or

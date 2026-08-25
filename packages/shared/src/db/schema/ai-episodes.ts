@@ -13,7 +13,7 @@ import {
 } from "drizzle-orm/pg-core";
 import { aiConversations } from "./ai";
 import { organization, team, user } from "./auth-schema";
-import { objectRecords } from "./object-records";
+import { collectionRecords } from "./collection-records";
 
 /**
  * What an episode distills:
@@ -80,7 +80,7 @@ export const aiEpisodes = pgTable(
       { onDelete: "set null" },
     ),
     anchorRecordId: uuid("anchor_record_id").references(
-      () => objectRecords.id,
+      () => collectionRecords.id,
       { onDelete: "set null" },
     ),
 
@@ -150,7 +150,7 @@ export const aiEpisodeRecords = pgTable(
       .references(() => aiEpisodes.id, { onDelete: "cascade" }),
     recordId: uuid("record_id")
       .notNull()
-      .references(() => objectRecords.id, { onDelete: "cascade" }),
+      .references(() => collectionRecords.id, { onDelete: "cascade" }),
   },
   (table) => [
     uniqueIndex("ai_episode_records_uniq").on(table.episodeId, table.recordId),

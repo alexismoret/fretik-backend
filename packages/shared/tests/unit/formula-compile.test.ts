@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import type { FieldDefinition } from "../../src/db/schema";
+import { FormulaError } from "../../src/services/collection-schema/formula/ast";
+import { compileFormula } from "../../src/services/collection-schema/formula/compile";
+import { parseFormula } from "../../src/services/collection-schema/formula/parse";
 import { formulasToRebuildAfter } from "../../src/services/field-definitions/formula-config";
-import { FormulaError } from "../../src/services/object-schema/formula/ast";
-import { compileFormula } from "../../src/services/object-schema/formula/compile";
-import { parseFormula } from "../../src/services/object-schema/formula/parse";
 
 /**
  * The formula compiler is a SECURITY boundary, not a convenience: its output
@@ -34,7 +34,7 @@ const field = (
     id: `00000000-0000-7000-8000-${String(nextId).padStart(12, "0")}`,
     organizationId: "org",
     teamId: "team",
-    objectTypeId: "type",
+    collectionId: "type",
     key,
     label: key.replaceAll("_", " "),
     description: null,
@@ -158,7 +158,7 @@ const outsideLiterals = (sql: string): string =>
 
 describe("nothing an author writes reaches the SQL", () => {
   test.each([
-    `concat(name, "'; DROP TABLE data.obj_x; --")`,
+    `concat(name, "'; DROP TABLE data.coll_x; --")`,
     `concat(name, "') STORED, x text GENERATED ALWAYS AS ('")`,
     `concat(name, "'||pg_read_file('/etc/passwd')||'")`,
   ])("a hostile text literal stays inside its quotes: %s", (source) => {
@@ -191,7 +191,7 @@ describe("nothing an author writes reaches the SQL", () => {
 
   test("an unknown field is refused by name, never passed through", () => {
     expect(refusal("nope + 1")).toBe(
-      "There is no field called `nope` on this object type.",
+      "There is no field called `nope` on this collection.",
     );
   });
 

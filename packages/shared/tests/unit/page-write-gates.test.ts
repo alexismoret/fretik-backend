@@ -116,15 +116,15 @@ describe("pagePublishError", () => {
     expect(error).toContain("remove its operations");
   });
 
-  test("the same page over an object type publishes", () => {
+  test("the same page over a collection publishes", () => {
     expect(
       pagePublishError(
         page({
           datasets: [
             {
               id: "crm",
-              kind: "objects",
-              objectTypeId: "00000000-0000-4000-8000-000000000000",
+              kind: "collections",
+              collectionId: "00000000-0000-4000-8000-000000000000",
             },
           ],
         }),

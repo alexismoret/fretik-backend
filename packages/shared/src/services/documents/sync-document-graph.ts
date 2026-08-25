@@ -1,9 +1,15 @@
 import { inArray } from "drizzle-orm";
 import db, { type Transaction } from "../../db";
-import { objectRecords } from "../../db/schema";
+import { collectionRecords } from "../../db/schema";
 import { internalError, throwHttpError } from "../../lib/errors";
 import { selectOrCache } from "../../lib/redis";
 import { MENTION_MIN_CONFIDENCE } from "../../lib/resolution";
+import { createCollectionRecord } from "../collection-records/create";
+import { resolveRecord } from "../collection-records/match";
+import { setRecordData } from "../collection-records/update";
+import { DOCUMENT_COLLECTION_KEY } from "../collections/constants";
+import { resolveCollectionId } from "../collections/resolve";
+import { MENTIONS_LINK_TYPE_KEY } from "../collections/seed-system-types";
 import {
   emitDomainEvent,
   SYSTEM_ACTOR,
@@ -11,12 +17,6 @@ import {
 } from "../domain-events/emit";
 import { resolveOrgLinkTypeId } from "../link-types/resolve";
 import { bulkCreateLinks, type LinkInput } from "../links/bulk-create";
-import { createObjectRecord } from "../object-records/create";
-import { resolveRecord } from "../object-records/match";
-import { setRecordData } from "../object-records/update";
-import { DOCUMENT_TYPE_KEY } from "../object-types/constants";
-import { resolveObjectTypeId } from "../object-types/resolve";
-import { MENTIONS_LINK_TYPE_KEY } from "../object-types/seed-system-types";
 
 /** A party extracted from a document, mirrored into a linked mention-target record. */
 export interface DocumentGraphMention {
@@ -31,21 +31,21 @@ export interface LinkedMention {
 }
 
 /**
- * Resolve the object type extracted parties are folded into. Configurable per
- * org (`organization_settings.document_mention_target_type_key`); falls back to
+ * Resolve the collection extracted parties are folded into. Configurable per
+ * org (`organization_settings.document_mention_target_collection_key`); falls back to
  * `company` for back-compat. Decoupled from a hardcoded `company` so a team can
  * retarget extraction and deleting `company` degrades gracefully. Cached 30 min
  * (config, rarely changed) under `organization:{orgId}:document-mention-target`.
  */
-const resolveMentionTargetTypeKey = async (
+const resolveMentionTargetCollectionKey = async (
   organizationId: string,
 ): Promise<string> =>
   selectOrCache(async () => {
     const settings = await db.query.organizationSettings.findFirst({
-      columns: { documentMentionTargetTypeKey: true },
+      columns: { documentMentionTargetCollectionKey: true },
       where: { organizationId },
     });
-    return settings?.documentMentionTargetTypeKey ?? "company";
+    return settings?.documentMentionTargetCollectionKey ?? "company";
   }, `organization:${organizationId}:document-mention-target`);
 
 /**
@@ -82,7 +82,7 @@ export const syncDocumentGraph = async (input: {
 }): Promise<{
   mirrorRecordId: string;
   mentionedRecords: LinkedMention[];
-  mentionTargetTypeKey: string;
+  mentionTargetCollectionKey: string;
 }> => {
   const { organizationId, teamId, documentId, filename, customFields } = input;
   const actor = input.actor ?? SYSTEM_ACTOR;
@@ -92,22 +92,22 @@ export const syncDocumentGraph = async (input: {
   ): Promise<{
     mirrorRecordId: string;
     mentionedRecords: LinkedMention[];
-    mentionTargetTypeKey: string;
+    mentionTargetCollectionKey: string;
   }> => {
-    const documentTypeId = await resolveObjectTypeId({
+    const documentTypeId = await resolveCollectionId({
       organizationId,
       teamId,
-      key: DOCUMENT_TYPE_KEY,
+      key: DOCUMENT_COLLECTION_KEY,
     });
     if (!documentTypeId) {
       return throwHttpError(
         500,
-        internalError("Document object type missing for organization"),
+        internalError("Document collection missing for organization"),
       );
     }
 
     // 1. Upsert the 1:1 document mirror (data = extracted custom fields).
-    const existing = await tx.query.objectRecords.findFirst({
+    const existing = await tx.query.collectionRecords.findFirst({
       columns: { id: true },
       where: { documentId },
     });
@@ -123,11 +123,11 @@ export const syncDocumentGraph = async (input: {
           strict: false,
           actor,
         })
-      : await createObjectRecord({
+      : await createCollectionRecord({
           tx,
           organizationId,
           teamId,
-          objectTypeId: documentTypeId,
+          collectionId: documentTypeId,
           // Seed the `name` title from the filename; `labelOverride` keeps the
           // record label correct even before the `name` field def exists.
           data: { ...customFields, name: filename },
@@ -140,13 +140,13 @@ export const syncDocumentGraph = async (input: {
         });
 
     // 2. Resolve mentioned parties to mention-target records + `mentions` links.
-    const mentionTargetTypeKey =
-      await resolveMentionTargetTypeKey(organizationId);
+    const mentionTargetCollectionKey =
+      await resolveMentionTargetCollectionKey(organizationId);
     const mentionedRecords = await linkMentions({
       tx,
       organizationId,
       teamId,
-      targetTypeKey: mentionTargetTypeKey,
+      targetCollectionKey: mentionTargetCollectionKey,
       mirrorRecordId: mirror.id,
       mentions: input.mentions,
       actor,
@@ -177,7 +177,7 @@ export const syncDocumentGraph = async (input: {
     return {
       mirrorRecordId: mirror.id,
       mentionedRecords,
-      mentionTargetTypeKey,
+      mentionTargetCollectionKey,
     };
   };
 
@@ -194,7 +194,7 @@ const linkMentions = async (input: {
   tx: Transaction;
   organizationId: string;
   teamId: string;
-  targetTypeKey: string;
+  targetCollectionKey: string;
   mirrorRecordId: string;
   mentions: DocumentGraphMention[];
   actor: EventActor;
@@ -203,7 +203,7 @@ const linkMentions = async (input: {
     tx,
     organizationId,
     teamId,
-    targetTypeKey,
+    targetCollectionKey,
     mirrorRecordId,
     mentions,
     actor,
@@ -211,7 +211,7 @@ const linkMentions = async (input: {
   if (mentions.length === 0) return [];
 
   const [targetTypeId, mentionsLinkTypeId] = await Promise.all([
-    resolveObjectTypeId({ organizationId, teamId, key: targetTypeKey }),
+    resolveCollectionId({ organizationId, teamId, key: targetCollectionKey }),
     resolveOrgLinkTypeId({ organizationId, key: MENTIONS_LINK_TYPE_KEY }),
   ]);
   if (!targetTypeId || !mentionsLinkTypeId) return [];
@@ -230,7 +230,7 @@ const linkMentions = async (input: {
     const resolved = await resolveRecord({
       tx,
       teamId,
-      objectTypeId: targetTypeId,
+      collectionId: targetTypeId,
       rawLabel: name,
       createIfMissing,
     });
@@ -261,8 +261,8 @@ const linkMentions = async (input: {
   // Read canonical labels once for vectorize metadata (resolveRecord returns
   // only ids; an existing company's label can differ from the raw mention).
   const rows = await tx
-    .select({ id: objectRecords.id, label: objectRecords.label })
-    .from(objectRecords)
-    .where(inArray(objectRecords.id, [...linkedIds]));
+    .select({ id: collectionRecords.id, label: collectionRecords.label })
+    .from(collectionRecords)
+    .where(inArray(collectionRecords.id, [...linkedIds]));
   return rows.map((r) => ({ id: r.id, name: r.label }));
 };

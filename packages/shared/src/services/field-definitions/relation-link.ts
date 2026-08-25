@@ -3,14 +3,14 @@ import db from "../../db";
 import type { FieldDefinitionConfig } from "../../db/schema";
 import { linkTypes } from "../../db/schema";
 import { badRequest, throwHttpError } from "../../lib/errors";
+import { DOCUMENT_COLLECTION_KEY } from "../collections/constants";
+import { resolveCollectionId } from "../collections/resolve";
 import { createLinkType } from "../link-types/create";
-import { DOCUMENT_TYPE_KEY } from "../object-types/constants";
-import { resolveObjectTypeId } from "../object-types/resolve";
 
 /**
  * Resolve the backing link type for a `relation` field, creating it on first
  * use. A relation field is a typed projection over the `links` graph: its
- * instances are edges of one link type, never values in `object_records.data`.
+ * instances are edges of one link type, never values in `collection_records.data`.
  * This binds the two so the typed-view generator and the links API agree on
  * which edges belong to the field.
  *
@@ -23,8 +23,8 @@ import { resolveObjectTypeId } from "../object-types/resolve";
  *     and the projection shape; the active-edge unique index already prevents
  *     duplicate edges, so a stricter link cardinality would buy nothing.
  *   - `widget: "attachment"` targets the `document` type. An explicit
- *     `targetTypeKey` resolves to that type (self-relation when it equals the
- *     field's own type). Neither set = polymorphic (link `toObjectType` NULL).
+ *     `targetCollectionKey` resolves to that type (self-relation when it equals the
+ *     field's own type). Neither set = polymorphic (link `toCollection` NULL).
  *
  * Idempotent: when `config.linkTypeKey` already points to an existing link type
  * for the team, it is reused (re-saving a relation field never sprawls edges).
@@ -33,11 +33,11 @@ import { resolveObjectTypeId } from "../object-types/resolve";
 export const bindRelationFieldLinkType = async (input: {
   organizationId: string;
   teamId: string | null;
-  objectTypeId: string;
+  collectionId: string;
   label: string;
   config: FieldDefinitionConfig;
 }): Promise<FieldDefinitionConfig> => {
-  const { organizationId, teamId, objectTypeId, label, config } = input;
+  const { organizationId, teamId, collectionId, label, config } = input;
 
   if (teamId === null) {
     return throwHttpError(
@@ -50,20 +50,20 @@ export const bindRelationFieldLinkType = async (input: {
 
   const targetKey =
     "widget" in config && config.widget === "attachment"
-      ? DOCUMENT_TYPE_KEY
-      : "targetTypeKey" in config
-        ? config.targetTypeKey
+      ? DOCUMENT_COLLECTION_KEY
+      : "targetCollectionKey" in config
+        ? config.targetCollectionKey
         : undefined;
 
   // Polymorphic when no target is named; otherwise the target type must exist.
-  let toObjectTypeId: string | null = null;
+  let toCollectionId: string | null = null;
   if (targetKey) {
-    toObjectTypeId = await resolveObjectTypeId({
+    toCollectionId = await resolveCollectionId({
       organizationId,
       teamId,
       key: targetKey,
     });
-    if (!toObjectTypeId) {
+    if (!toCollectionId) {
       return throwHttpError(
         400,
         badRequest(`Relation target type '${targetKey}' does not exist.`),
@@ -91,8 +91,8 @@ export const bindRelationFieldLinkType = async (input: {
     organizationId,
     teamId,
     label,
-    fromObjectTypeId: objectTypeId,
-    toObjectTypeId,
+    fromCollectionId: collectionId,
+    toCollectionId,
     cardinality: "many_to_many",
     source: "user_manual",
   });

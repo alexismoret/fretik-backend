@@ -69,7 +69,7 @@ Output strict JSON, nothing else:
 interface RecordInfo {
   id: string;
   label: string;
-  objectTypeId: string;
+  collectionId: string;
   typeLabel: string;
 }
 
@@ -99,10 +99,10 @@ export const extractRelations = async (input: {
   if (text.length === 0 || uniqueRecordIds.length < 2) return ZERO;
 
   // Records with their types (the relation endpoints + link-type validation).
-  const recordRows = await db.query.objectRecords.findMany({
+  const recordRows = await db.query.collectionRecords.findMany({
     where: { id: { in: uniqueRecordIds }, teamId },
-    columns: { id: true, label: true, objectTypeId: true },
-    with: { objectType: { columns: { label: true } } },
+    columns: { id: true, label: true, collectionId: true },
+    with: { collection: { columns: { label: true } } },
   });
   if (recordRows.length < 2) return ZERO;
   const records = new Map<string, RecordInfo>(
@@ -111,8 +111,8 @@ export const extractRelations = async (input: {
       {
         id: r.id,
         label: r.label,
-        objectTypeId: r.objectTypeId,
-        typeLabel: r.objectType?.label ?? "record",
+        collectionId: r.collectionId,
+        typeLabel: r.collection?.label ?? "record",
       },
     ]),
   );
@@ -137,10 +137,10 @@ export const extractRelations = async (input: {
   // into borrowing a key valid for a different type pair, and the edge is then
   // rejected downstream. Relevant catalog only.
   const recordTypeIds = [
-    ...new Set([...records.values()].map((r) => r.objectTypeId)),
+    ...new Set([...records.values()].map((r) => r.collectionId)),
   ];
   const catalog = await db.query.linkTypes.findMany({
-    where: { teamId, fromObjectTypeId: { in: recordTypeIds } },
+    where: { teamId, fromCollectionId: { in: recordTypeIds } },
     columns: { key: true, label: true },
     limit: 40,
   });
@@ -226,8 +226,8 @@ export const extractRelations = async (input: {
         organizationId,
         teamId,
         rawKey: r.predicate,
-        fromObjectTypeId: from.objectTypeId,
-        toObjectTypeId: to.objectTypeId,
+        fromCollectionId: from.collectionId,
+        toCollectionId: to.collectionId,
       }));
     } catch (err) {
       console.warn(

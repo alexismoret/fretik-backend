@@ -1,7 +1,7 @@
 /**
  * Icons the curated catalog must always contain regardless of category budgets —
  * the status glyphs and generic business objects an agent/user reaches for most
- * (object types, select-option states). All are canonical Lucide names; the
+ * (collections, select-option states). All are canonical Lucide names; the
  * build script warns if any drifts out of Lucide.
  */
 export const ICON_ESSENTIALS: readonly string[] = [

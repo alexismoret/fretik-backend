@@ -25,7 +25,7 @@ export type { HybridCandidate } from "./fuse-arms";
  *   semantic:   ORDER BY embedding <=> :qvec::halfvec   → top 150
  *   bm25    :   ORDER BY ts_rank_cd(search_vector, plainto_tsquery('simple', :q)) DESC
  *                                                       → top 150
- *   registry:   same probe against `object_records.search_vector` → top 150
+ *   registry:   same probe against `collection_records.search_vector` → top 150
  *   fusion  :   score = Ws/(rank+1)_sem + Wb/(rank+1)_bm25 + Wr/(rank+1)_reg
  *   output  :   top 50 by fused score
  *
@@ -81,7 +81,7 @@ const BM25_WEIGHT = 0.2;
 
 /**
  * Weight of the record-registry arm — the same as BM25, because it IS a BM25
- * arm, only over `object_records.search_vector` instead of `ai_vectors`.
+ * arm, only over `collection_records.search_vector` instead of `ai_vectors`.
  *
  * It does not need to be higher, and raising it would be a mistake. RRF here is
  * a RECALL stage: its only job is to get a candidate into the 50 that reach the

@@ -4,18 +4,18 @@ import {
   ONTOLOGY_SOURCES,
   ONTOLOGY_STATUSES,
 } from "../db/schema";
+import { COLLECTION_LIMITS } from "../services/collections/constants";
 import { FIELD_DEFINITION_LIMITS } from "../services/field-definitions/constants";
-import { OBJECT_TYPE_LIMITS } from "../services/object-types/constants";
+import { audienceSchema, recordSharingSchema } from "./collection-sharing";
 import { cursorParamSchema, paramsListSchema } from "./common/params";
 import { nextCursorSchema } from "./common/responses";
 import {
   fieldConfigSchema,
   fieldDefinitionTypeSchema,
 } from "./field-definitions";
-import { audienceSchema, recordSharingSchema } from "./object-sharing";
 
 /**
- * Wire schemas for the dynamic-data (ontology) API — object types, records,
+ * Wire schemas for the dynamic-data (ontology) API — collections, records,
  * links, and the activity timeline. Shared across the four handlers so request
  * validation and response shapes stay in lockstep. Timestamps use
  * `z.coerce.date()` (accepts both `Date` rows and ISO strings) like the
@@ -29,10 +29,10 @@ export const linkCardinalitySchema = z.enum(linkTypeCardinalityEnum.enumValues);
 const jsonMap = z.record(z.string(), z.unknown());
 
 // ---------------------------------------------------------------------------
-// Object types
+// Collections
 // ---------------------------------------------------------------------------
 
-export const objectTypeResponseSchema = z.object({
+export const collectionResponseSchema = z.object({
   id: z.uuid(),
   organizationId: z.uuid(),
   teamId: z.uuid().nullable(),
@@ -49,11 +49,11 @@ export const objectTypeResponseSchema = z.object({
 });
 
 /**
- * One object type plus its live record counts — the home "Your objects" grid
+ * One collection plus its live record counts — the home "Your objects" grid
  * and the "AI suggestions to review" tally. `total` = confirmed records the
  * team owns; `suggested` = AI-proposed records still awaiting confirmation.
  */
-export const objectTypeOverviewItemSchema = z.object({
+export const collectionOverviewItemSchema = z.object({
   id: z.uuid(),
   key: z.string(),
   label: z.string(),
@@ -63,15 +63,15 @@ export const objectTypeOverviewItemSchema = z.object({
   suggested: z.number(),
 });
 
-export const objectTypeOverviewResponseSchema = z.object({
-  types: z.array(objectTypeOverviewItemSchema),
+export const collectionOverviewResponseSchema = z.object({
+  types: z.array(collectionOverviewItemSchema),
 });
 
-export type ObjectTypeOverviewItem = z.infer<
-  typeof objectTypeOverviewItemSchema
+export type CollectionOverviewItem = z.infer<
+  typeof collectionOverviewItemSchema
 >;
 
-export const createObjectTypeRequestSchema = z.object({
+export const createCollectionRequestSchema = z.object({
   key: z
     .string()
     .trim()
@@ -86,7 +86,7 @@ export const createObjectTypeRequestSchema = z.object({
   description: z
     .string()
     .trim()
-    .max(OBJECT_TYPE_LIMITS.MAX_DESCRIPTION_CHARS)
+    .max(COLLECTION_LIMITS.MAX_DESCRIPTION_CHARS)
     .nullish(),
   icon: z.string().trim().max(60).nullish(),
   color: z.string().trim().max(20).nullish(),
@@ -94,13 +94,13 @@ export const createObjectTypeRequestSchema = z.object({
   sharing: audienceSchema.optional(),
 });
 
-export const updateObjectTypeRequestSchema = z.object({
+export const updateCollectionRequestSchema = z.object({
   label: z.string().trim().min(1).optional(),
   labelPlural: z.string().trim().min(1).nullish(),
   description: z
     .string()
     .trim()
-    .max(OBJECT_TYPE_LIMITS.MAX_DESCRIPTION_CHARS)
+    .max(COLLECTION_LIMITS.MAX_DESCRIPTION_CHARS)
     .nullish(),
   icon: z.string().trim().max(60).nullish(),
   color: z.string().trim().max(20).nullish(),
@@ -108,17 +108,17 @@ export const updateObjectTypeRequestSchema = z.object({
   // Override the semantic-indexing size heuristic. `null` restores "decide
   // from the row count"; `false` also drops the type's existing record cards.
   semanticIndex: z.boolean().nullish(),
-  // Change the cross-team audience (owner-only). Reconciles `object_grants`.
+  // Change the cross-team audience (owner-only). Reconciles `collection_grants`.
   sharing: audienceSchema.optional(),
 });
 
 /**
  * One draft field inside the "create type with fields" payload — a field's
- * intrinsic shape minus the per-field routing keys (`scope`, `objectTypeId`):
+ * intrinsic shape minus the per-field routing keys (`scope`, `collectionId`):
  * the type is created in the same call, and `key` is derived server-side.
  * Select / multi_select still require non-empty options.
  */
-const objectTypeFieldInputSchema = z
+const collectionFieldInputSchema = z
   .object({
     label: z
       .string()
@@ -153,14 +153,14 @@ const objectTypeFieldInputSchema = z
   });
 
 /**
- * Create an object type and its initial fields in one atomic request (the
+ * Create a collection and its initial fields in one atomic request (the
  * composer's "create"). Extends the plain type-create shape with a `fields`
  * array.
  */
-export const createObjectTypeWithFieldsRequestSchema =
-  createObjectTypeRequestSchema.extend({
+export const createCollectionWithFieldsRequestSchema =
+  createCollectionRequestSchema.extend({
     fields: z
-      .array(objectTypeFieldInputSchema)
+      .array(collectionFieldInputSchema)
       .max(FIELD_DEFINITION_LIMITS.MAX_FIELDS_PER_TYPE)
       .default([]),
   });
@@ -169,12 +169,12 @@ export const createObjectTypeWithFieldsRequestSchema =
 // Records
 // ---------------------------------------------------------------------------
 
-export const objectRecordResponseSchema = z.object({
+export const collectionRecordResponseSchema = z.object({
   id: z.uuid(),
   organizationId: z.uuid(),
   teamId: z.uuid(),
   userId: z.uuid().nullable(),
-  objectTypeId: z.uuid(),
+  collectionId: z.uuid(),
   data: jsonMap,
   label: z.string(),
   normalizedLabel: z.string(),
@@ -209,8 +209,8 @@ export const recordRelationInputSchema = z.object({
   toDocumentId: z.uuid().optional(),
 });
 
-export const createObjectRecordRequestSchema = z.object({
-  objectTypeId: z.uuid(),
+export const createCollectionRecordRequestSchema = z.object({
+  collectionId: z.uuid(),
   data: jsonMap.default({}),
   status: ontologyStatusSchema.optional(),
   source: ontologySourceSchema.optional(),
@@ -226,7 +226,7 @@ export const createObjectRecordRequestSchema = z.object({
  * must be present. A data-only patch is the field autosave; a sharing-only patch
  * is the share popover (reset-to-inherit = `{ inherit: true }`, owner-only).
  */
-export const updateObjectRecordRequestSchema = z
+export const updateCollectionRecordRequestSchema = z
   .object({
     data: jsonMap.optional(),
     sharing: recordSharingSchema.optional(),
@@ -286,7 +286,7 @@ export type RecordFilter = z.infer<typeof recordFilterSchema>;
 
 export const recordListQuerySchema = paramsListSchema.extend({
   ...cursorParamSchema.shape,
-  objectTypeId: z.uuid(),
+  collectionId: z.uuid(),
   status: ontologyStatusSchema.default("confirmed"),
   // Resolve the mirror record of an uploaded document (attachment fields link
   // to the mirror, keyed by the drive document id).
@@ -301,7 +301,7 @@ export const recordListQuerySchema = paramsListSchema.extend({
   sortBy: z.string().max(80).default("createdAt"),
   sortDir: z.enum(["asc", "desc"]).default("desc"),
   // `cursor` walks forward and skips the exact count; falls back to paging
-  // when the order is not the default one. See `listObjectRecords`.
+  // when the order is not the default one. See `listCollectionRecords`.
   paginate: z.enum(["page", "cursor"]).default("page"),
   // JSON-encoded `RecordFilter[]` (query params are strings). Malformed input
   // degrades to "no filters" rather than erroring the list.
@@ -322,7 +322,7 @@ export const recordListQuerySchema = paramsListSchema.extend({
 
 // Group aggregate (kanban column headers): exact count + optional sum per group.
 export const recordAggregateQuerySchema = z.object({
-  objectTypeId: z.uuid(),
+  collectionId: z.uuid(),
   groupKey: z
     .string()
     .regex(/^[a-z][a-z0-9_]*$/)
@@ -346,7 +346,7 @@ export const groupAggregateSchema = z.object({
 // scoped to the current camera bounding box. Above a cap the server returns
 // grid-aggregated clusters instead of individual points (see `getMapPoints`).
 export const recordMapQuerySchema = z.object({
-  objectTypeId: z.uuid(),
+  collectionId: z.uuid(),
   fieldKey: z
     .string()
     .regex(/^[a-z][a-z0-9_]*$/)
@@ -418,8 +418,8 @@ export const linkTypeResponseSchema = z.object({
   key: z.string(),
   normalizedKey: z.string(),
   label: z.string(),
-  fromObjectTypeId: z.uuid(),
-  toObjectTypeId: z.uuid().nullable(),
+  fromCollectionId: z.uuid(),
+  toCollectionId: z.uuid().nullable(),
   inverseKey: z.string().nullable(),
   inverseLabel: z.string().nullable(),
   cardinality: linkCardinalitySchema,
@@ -434,7 +434,7 @@ export const linkTypeResponseSchema = z.object({
 // A link endpoint record carries only its registry columns — never the typed
 // `data` (that lives in the per-type extension table and isn't fetched for link
 // chips). So the nested toRecord/fromRecord omit `data`/`computed`.
-const linkedRecordSchema = objectRecordResponseSchema.omit({
+const linkedRecordSchema = collectionRecordResponseSchema.omit({
   data: true,
   computed: true,
 });
@@ -451,8 +451,8 @@ const incomingLinkResponseSchema = linkResponseSchema.extend({
   linkType: linkTypeResponseSchema.nullable(),
 });
 
-export const objectRecordWithLinksResponseSchema =
-  objectRecordResponseSchema.extend({
+export const collectionRecordWithLinksResponseSchema =
+  collectionRecordResponseSchema.extend({
     outgoingLinks: z.array(outgoingLinkResponseSchema),
     incomingLinks: z.array(incomingLinkResponseSchema),
   });
@@ -472,13 +472,14 @@ export const recordLinkSummarySchema = z.object({
   toRecord: z.object({
     id: z.uuid(),
     label: z.string(),
-    objectTypeId: z.uuid(),
+    collectionId: z.uuid(),
   }),
 });
 
-export const objectRecordListItemSchema = objectRecordResponseSchema.extend({
-  outgoingLinks: z.array(recordLinkSummarySchema).optional(),
-});
+export const collectionRecordListItemSchema =
+  collectionRecordResponseSchema.extend({
+    outgoingLinks: z.array(recordLinkSummarySchema).optional(),
+  });
 
 export const createLinkRequestSchema = z.object({
   linkTypeId: z.uuid(),
@@ -500,8 +501,8 @@ export const createLinkTypeRequestSchema = z.object({
     )
     .optional(),
   label: z.string().trim().min(1),
-  fromObjectTypeId: z.uuid(),
-  toObjectTypeId: z.uuid().nullish(),
+  fromCollectionId: z.uuid(),
+  toCollectionId: z.uuid().nullish(),
   inverseKey: z.string().trim().max(60).nullish(),
   inverseLabel: z.string().trim().nullish(),
   cardinality: linkCardinalitySchema.default("many_to_many"),

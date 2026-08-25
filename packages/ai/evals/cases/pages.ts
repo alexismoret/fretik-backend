@@ -11,9 +11,9 @@ import "@hono/zod-openapi";
 
 import db from "@fretik/shared/db";
 import {
+  collectionRecords,
+  collections,
   domainEvents,
-  objectRecords,
-  objectTypes,
   pageVersions,
   pages,
 } from "@fretik/shared/db/schema";
@@ -21,19 +21,19 @@ import {
   PageDefinitionSchema,
   type PageDefinition,
 } from "@fretik/shared/schemas/pages";
+import { createCollectionRecord } from "@fretik/shared/services/collection-records/create";
+import { queryCollectionRecords } from "@fretik/shared/services/collection-records/query";
+import { reconcileCollectionTable } from "@fretik/shared/services/collection-schema/table";
+import { createCollection } from "@fretik/shared/services/collections/create";
+import { deleteCollection } from "@fretik/shared/services/collections/delete";
+import {
+  invalidateCollectionIdCache,
+  resolveCollectionId,
+} from "@fretik/shared/services/collections/resolve";
 import { createFieldDefinition } from "@fretik/shared/services/field-definitions/create";
 import { getFieldDefinitionsForTeam } from "@fretik/shared/services/field-definitions/get-for-team";
 import { createLinkType } from "@fretik/shared/services/link-types/create";
 import { createLink } from "@fretik/shared/services/links/create";
-import { createObjectRecord } from "@fretik/shared/services/object-records/create";
-import { queryObjectRecords } from "@fretik/shared/services/object-records/query";
-import { reconcileObjectTable } from "@fretik/shared/services/object-schema/table";
-import { createObjectType } from "@fretik/shared/services/object-types/create";
-import { deleteObjectType } from "@fretik/shared/services/object-types/delete";
-import {
-  invalidateObjectTypeIdCache,
-  resolveObjectTypeId,
-} from "@fretik/shared/services/object-types/resolve";
 import {
   dryRunPage,
   type PageDryRun,
@@ -100,7 +100,7 @@ import {
  * ASSERTIONS on a case that builds anyway, never cases of their own: a case
  * costs four to seven minutes, and that is a lot to pay for one boolean.
  *
- * Seeds its own throwaway object type with a deterministic record set so group
+ * Seeds its own throwaway collection with a deterministic record set so group
  * counts, sums and date buckets are knowable. The pages a run builds are KEPT
  * (see `PAGE_RETENTION_MS`) — they are the evidence — and the previous run's
  * are swept. Not smoke (needs the seed).
@@ -109,7 +109,7 @@ import {
 // ── Seeded fixture ──────────────────────────────────────────────────────────
 
 /**
- * Two linked object types, deliberately dull and cross-industry: work items and
+ * Two linked collections, deliberately dull and cross-industry: work items and
  * the people who own them.
  *
  * It replaced a single "deal" type, for two measured reasons. Every seeded case
@@ -143,17 +143,17 @@ const OWNER_FIELD_KEY = "owner";
 /** Drop both seeded types (cascades fields, records and links). Idempotent. */
 const dropSeededTypes = async (ctx: EvalCaseContext): Promise<void> => {
   for (const key of [ITEM_KEY, OWNER_KEY]) {
-    await invalidateObjectTypeIdCache({
+    await invalidateCollectionIdCache({
       organizationId: ctx.organizationId,
       teamId: ctx.teamId,
       key,
     });
-    const id = await resolveObjectTypeId({
+    const id = await resolveCollectionId({
       organizationId: ctx.organizationId,
       teamId: ctx.teamId,
       key,
     });
-    if (id) await deleteObjectType({ id });
+    if (id) await deleteCollection({ id });
   }
 };
 
@@ -182,12 +182,12 @@ const FIELD_KEYS = [
  */
 const fixtureIsCurrent = async (ctx: EvalCaseContext): Promise<boolean> => {
   const scope = { organizationId: ctx.organizationId, teamId: ctx.teamId };
-  const typeId = await resolveObjectTypeId({ ...scope, key: ITEM_KEY });
-  const ownerTypeId = await resolveObjectTypeId({ ...scope, key: OWNER_KEY });
+  const typeId = await resolveCollectionId({ ...scope, key: ITEM_KEY });
+  const ownerTypeId = await resolveCollectionId({ ...scope, key: OWNER_KEY });
   if (!typeId || !ownerTypeId) return false;
-  const rows = await queryObjectRecords({
+  const rows = await queryCollectionRecords({
     teamId: ctx.teamId,
-    objectTypeId: typeId,
+    collectionId: typeId,
     limit: ITEM_ROW_COUNT + 1,
   });
   if (rows.length !== ITEM_ROW_COUNT) return false;
@@ -200,8 +200,8 @@ const fixtureIsCurrent = async (ctx: EvalCaseContext): Promise<boolean> => {
   if (!FIELD_KEYS.every((k) => k in first)) return false;
   const fields = await getFieldDefinitionsForTeam({
     teamId: ctx.teamId,
-    objectTypeId: typeId,
-    objectTypeKey: ITEM_KEY,
+    collectionId: typeId,
+    collectionKey: ITEM_KEY,
   });
   if (!fields.some((f) => f.key === OWNER_FIELD_KEY && f.type === "relation"))
     return false;
@@ -219,9 +219,9 @@ const fixtureIsCurrent = async (ctx: EvalCaseContext): Promise<boolean> => {
  * a sibling case's turn. Hence: reuse when already correct, rebuild only when
  * it isn't.
  *
- * Retries the whole thing: the DDL on `data.obj_…` can transiently race the
+ * Retries the whole thing: the DDL on `data.coll_…` can transiently race the
  * live AI service's own table provisioning on the shared dev DB (the same
- * cross-process race `objects-autonomy.ts` documents).
+ * cross-process race `collections-autonomy.ts` documents).
  *
  * The fixture is deliberately NOT dropped on cleanup: it is static reference
  * data, rebuilding it per case would cost seconds × 10, and leaving it makes
@@ -236,14 +236,14 @@ const seedItemsOnce = async (ctx: EvalCaseContext): Promise<void> => {
       await dropSeededTypes(ctx);
 
       // 1. The owners — created first, because the items link TO them.
-      const owner = await createObjectType({
+      const owner = await createCollection({
         ...base,
         key: OWNER_KEY,
         label: OWNER_LABEL,
       });
       await createFieldDefinition({
         ...base,
-        objectTypeId: owner.id,
+        collectionId: owner.id,
         key: "name",
         label: "Name",
         type: "text",
@@ -252,33 +252,33 @@ const seedItemsOnce = async (ctx: EvalCaseContext): Promise<void> => {
       });
       await createFieldDefinition({
         ...base,
-        objectTypeId: owner.id,
+        collectionId: owner.id,
         key: "capacity",
         label: "Capacity (days/week)",
         type: "number",
         displayOrder: 1,
       });
-      await reconcileObjectTable({ objectTypeId: owner.id });
+      await reconcileCollectionTable({ collectionId: owner.id });
 
       const ownerIdByName = new Map<string, string>();
       for (const person of OWNERS) {
-        const record = await createObjectRecord({
+        const record = await createCollectionRecord({
           ...base,
-          objectTypeId: owner.id,
+          collectionId: owner.id,
           data: { name: person.name, capacity: person.capacity },
         });
         ownerIdByName.set(person.name, record.id);
       }
 
       // 2. The work items.
-      const item = await createObjectType({
+      const item = await createCollection({
         ...base,
         key: ITEM_KEY,
         label: ITEM_LABEL,
       });
       await createFieldDefinition({
         ...base,
-        objectTypeId: item.id,
+        collectionId: item.id,
         key: "title",
         label: "Title",
         type: "text",
@@ -287,7 +287,7 @@ const seedItemsOnce = async (ctx: EvalCaseContext): Promise<void> => {
       });
       await createFieldDefinition({
         ...base,
-        objectTypeId: item.id,
+        collectionId: item.id,
         key: "status",
         label: "Status",
         type: "select",
@@ -296,7 +296,7 @@ const seedItemsOnce = async (ctx: EvalCaseContext): Promise<void> => {
       });
       await createFieldDefinition({
         ...base,
-        objectTypeId: item.id,
+        collectionId: item.id,
         key: "priority",
         label: "Priority",
         type: "select",
@@ -315,7 +315,7 @@ const seedItemsOnce = async (ctx: EvalCaseContext): Promise<void> => {
       // put the correlation back that this fixture exists to avoid.
       await createFieldDefinition({
         ...base,
-        objectTypeId: item.id,
+        collectionId: item.id,
         key: "team",
         label: "Team",
         type: "select",
@@ -324,7 +324,7 @@ const seedItemsOnce = async (ctx: EvalCaseContext): Promise<void> => {
       });
       await createFieldDefinition({
         ...base,
-        objectTypeId: item.id,
+        collectionId: item.id,
         key: "effort",
         label: "Effort (days)",
         type: "number",
@@ -332,7 +332,7 @@ const seedItemsOnce = async (ctx: EvalCaseContext): Promise<void> => {
       });
       await createFieldDefinition({
         ...base,
-        objectTypeId: item.id,
+        collectionId: item.id,
         key: "budget",
         label: "Budget",
         type: "money",
@@ -341,21 +341,21 @@ const seedItemsOnce = async (ctx: EvalCaseContext): Promise<void> => {
       });
       await createFieldDefinition({
         ...base,
-        objectTypeId: item.id,
+        collectionId: item.id,
         key: "due_at",
         label: "Due date",
         type: "date",
         displayOrder: 6,
       });
-      await reconcileObjectTable({ objectTypeId: item.id });
+      await reconcileCollectionTable({ collectionId: item.id });
 
       // 3. The relation, and the rows that use it.
       const ownerLink = await createLinkType({
         ...base,
         key: OWNER_LINK_KEY,
         label: "Owner",
-        fromObjectTypeId: item.id,
-        toObjectTypeId: owner.id,
+        fromCollectionId: item.id,
+        toCollectionId: owner.id,
       });
 
       // The link type alone is invisible to a page: `objects` reads a type's
@@ -368,12 +368,12 @@ const seedItemsOnce = async (ctx: EvalCaseContext): Promise<void> => {
       // seeded below are the field's own edges.
       await createFieldDefinition({
         ...base,
-        objectTypeId: item.id,
+        collectionId: item.id,
         key: OWNER_FIELD_KEY,
         label: "Owner",
         type: "relation",
         config: {
-          targetTypeKey: OWNER_KEY,
+          targetCollectionKey: OWNER_KEY,
           cardinality: "one",
           linkTypeKey: OWNER_LINK_KEY,
         },
@@ -382,9 +382,9 @@ const seedItemsOnce = async (ctx: EvalCaseContext): Promise<void> => {
 
       for (const row of itemRows(Date.now())) {
         const { owner: ownerName, ...data } = row;
-        const record = await createObjectRecord({
+        const record = await createCollectionRecord({
           ...base,
-          objectTypeId: item.id,
+          collectionId: item.id,
           data,
         });
         const toRecordId =
@@ -564,7 +564,7 @@ const HEAVY_BUILD_LATENCY_MS = 900_000;
 /**
  * Drop the journal entries the FIXTURE wrote.
  *
- * Seeding records is not a silent write: `createObjectRecord` emits a domain
+ * Seeding records is not a silent write: `createCollectionRecord` emits a domain
  * event inside its own transaction, and the journal is what memory reads —
  * `services/memory/distill-record-activity` selects by `subjectRecordId` and
  * turns a record's activity into an episode. Left alone, every eval run would
@@ -578,13 +578,13 @@ const HEAVY_BUILD_LATENCY_MS = 900_000;
  */
 const forgetFixtureActivity = async (ctx: EvalCaseContext): Promise<void> => {
   const seeded = await db
-    .select({ id: objectRecords.id })
-    .from(objectRecords)
-    .innerJoin(objectTypes, eq(objectRecords.objectTypeId, objectTypes.id))
+    .select({ id: collectionRecords.id })
+    .from(collectionRecords)
+    .innerJoin(collections, eq(collectionRecords.collectionId, collections.id))
     .where(
       and(
-        eq(objectRecords.teamId, ctx.teamId),
-        inArray(objectTypes.key, [ITEM_KEY, OWNER_KEY]),
+        eq(collectionRecords.teamId, ctx.teamId),
+        inArray(collections.key, [ITEM_KEY, OWNER_KEY]),
       ),
     );
   if (seeded.length === 0) return;
@@ -713,7 +713,7 @@ const usesSeededType: EvalCase["assertions"][number] = {
     if (!page) return "no page was saved";
     const datasets = collectDatasets(page.definition);
     if (datasets.length === 0) return "page has no datasets — nothing is live";
-    const typeId = await resolveObjectTypeId({
+    const typeId = await resolveCollectionId({
       organizationId: ctx.organizationId,
       teamId: ctx.teamId,
       key: ITEM_KEY,
@@ -935,7 +935,7 @@ const dashboard: EvalCase = {
     expectedTools: [
       "searchTools",
       "buildPage",
-      "describeObjectType",
+      "describeCollection",
       "managePage",
     ],
   },
@@ -1043,7 +1043,7 @@ const filterableDirectory: EvalCase = {
     expectedTools: [
       "searchTools",
       "buildPage",
-      "describeObjectType",
+      "describeCollection",
       "managePage",
     ],
   },
@@ -1086,13 +1086,13 @@ const filterableDirectory: EvalCase = {
         );
         if (!write)
           return "the page declares no record operation, so nothing it draws can change a status — a control over a read-only page is a promise nothing keeps";
-        const typeId = await resolveObjectTypeId({
+        const typeId = await resolveCollectionId({
           organizationId: ctx.organizationId,
           teamId: ctx.teamId,
           key: ITEM_KEY,
         });
-        if (typeId && write["objectTypeId"] !== typeId)
-          return `the write targets a different object type than the one the page lists`;
+        if (typeId && write["collectionId"] !== typeId)
+          return `the write targets a different collection than the one the page lists`;
         const args = write["args"];
         if (
           args === null ||
@@ -1210,7 +1210,7 @@ const updatePreservesRest: EvalCase = {
   tags: ["pages", "generation", "data-loss"],
   seed: async (ctx) => {
     await seedItems(ctx);
-    const typeId = await resolveObjectTypeId({
+    const typeId = await resolveCollectionId({
       organizationId: ctx.organizationId,
       teamId: ctx.teamId,
       key: ITEM_KEY,
@@ -1298,15 +1298,15 @@ onUnmounted(() => {
       datasets: [
         {
           id: "items",
-          kind: "objects",
-          objectTypeId: typeId,
+          kind: "collections",
+          collectionId: typeId,
           mode: "records",
           limit: 50,
         },
         {
           id: "by_status",
-          kind: "objects",
-          objectTypeId: typeId,
+          kind: "collections",
+          collectionId: typeId,
           mode: "aggregate",
           groupBy: "status",
           metrics: [{ name: "item_count", fn: "count", label: "Items" }],
@@ -1378,7 +1378,7 @@ const recoversFromStalePageId: EvalCase = {
   tags: ["pages", "generation", "recovery"],
   seed: async (ctx) => {
     await seedItems(ctx);
-    const typeId = await resolveObjectTypeId({
+    const typeId = await resolveCollectionId({
       organizationId: ctx.organizationId,
       teamId: ctx.teamId,
       key: ITEM_KEY,
@@ -1430,8 +1430,8 @@ onMounted(async () => {
       datasets: [
         {
           id: "items",
-          kind: "objects",
-          objectTypeId: typeId,
+          kind: "collections",
+          collectionId: typeId,
           mode: "records",
           limit: 50,
         },
@@ -1515,7 +1515,7 @@ const vagueRequestExpands: EvalCase = {
     expectedTools: [
       "searchTools",
       "buildPage",
-      "describeObjectType",
+      "describeCollection",
       "managePage",
     ],
   },
@@ -1589,7 +1589,7 @@ const multiSourcePage: EvalCase = {
     expectedTools: [
       "searchTools",
       "buildPage",
-      "describeObjectType",
+      "describeCollection",
       "managePage",
     ],
   },
@@ -1619,7 +1619,7 @@ const multiSourcePage: EvalCase = {
         // code. A page whose second source is hard-coded is not multi-source,
         // it is single-source with literals.
         const contract = JSON.stringify({
-          datasets: datasets.filter((d) => d.kind !== "objects"),
+          datasets: datasets.filter((d) => d.kind !== "collections"),
           variables: Reflect.get(
             page.definition as Record<string, unknown>,
             "variables",
@@ -1889,7 +1889,7 @@ const gigaPage: EvalCase = {
     expectedTools: [
       "searchTools",
       "buildPage",
-      "describeObjectType",
+      "describeCollection",
       "managePage",
     ],
   },
@@ -1988,7 +1988,7 @@ const bulkAndLinkWrites: EvalCase = {
     expectedTools: [
       "searchTools",
       "buildPage",
-      "describeObjectType",
+      "describeCollection",
       "managePage",
     ],
   },
@@ -2063,7 +2063,7 @@ const SALES_ROW_COUNT = 5;
 const SALES_TOTAL = 42_000;
 
 /**
- * Every object type the page's datasets read, minus the fixtures this suite
+ * Every collection the page's datasets read, minus the fixtures this suite
  * seeds — i.e. the ones the AGENT created during the run.
  *
  * Identifying the type through the PAGE is what makes the case robust: the
@@ -2080,14 +2080,14 @@ const typesBehindThePage = async (
   const text = definitionText(page.definition);
   const seeded = await Promise.all(
     [ITEM_KEY, OWNER_KEY].map((key) =>
-      resolveObjectTypeId({
+      resolveCollectionId({
         organizationId: ctx.organizationId,
         teamId: ctx.teamId,
         key,
       }),
     ),
   );
-  const rows = await db.query.objectTypes.findMany({
+  const rows = await db.query.collections.findMany({
     columns: { id: true, key: true },
     where: { teamId: ctx.teamId },
   });
@@ -2111,12 +2111,12 @@ const fileToObjectsToPage: EvalCase = {
     // Drop what the AGENT created before sweeping pages — the page is how the
     // types are found, so the order is load-bearing.
     for (const type of await typesBehindThePage(ctx)) {
-      await invalidateObjectTypeIdCache({
+      await invalidateCollectionIdCache({
         organizationId: ctx.organizationId,
         teamId: ctx.teamId,
         key: type.key,
       });
-      await deleteObjectType({ id: type.id });
+      await deleteCollection({ id: type.id });
     }
     await cleanupPages(ctx);
   },
@@ -2135,9 +2135,9 @@ const fileToObjectsToPage: EvalCase = {
         if (types.length === 0)
           return "no page dataset points at a type the agent created — either nothing was imported, or the page was built over something else";
         for (const type of types) {
-          const rows = await queryObjectRecords({
+          const rows = await queryCollectionRecords({
             teamId: ctx.teamId,
-            objectTypeId: type.id,
+            collectionId: type.id,
             limit: 50,
           });
           if (rows.length !== SALES_ROW_COUNT) continue;

@@ -1,17 +1,17 @@
 import db from "../../db";
 import type { PageFieldDescriptor } from "../../schemas/pages";
-import { countRecordsForType } from "../object-records/count";
+import { countRecordsForType } from "../collection-records/count";
 import { buildPageFieldDescriptors } from "./field-descriptors";
 
 /**
- * The row type of every object type a page is about to be built over, written
+ * The row type of every collection a page is about to be built over, written
  * out before the builder asks.
  *
- * A build opens by probing: `describeObjectType` per type for the field keys and
- * the `objectTypeId` a dataset cannot be written without, then a `dry_run` for a
+ * A build opens by probing: `describeCollection` per type for the field keys and
+ * the `collectionId` a dataset cannot be written without, then a `dry_run` for a
  * real row. The first half of that is knowable the moment the parent names the
  * types — it costs a database read, not a model step — and it is the half the
- * builder is worst at skipping, because a dataset needs an `objectTypeId` uuid
+ * builder is worst at skipping, because a dataset needs an `collectionId` uuid
  * that is derivable from nothing.
  *
  * What this does NOT replace is the `dry_run`. Field names are a schema; whether
@@ -94,12 +94,12 @@ const annotation = (field: PageFieldDescriptor): string => {
 export const renderRowType = (params: {
   key: string;
   label: string;
-  objectTypeId: string;
+  collectionId: string;
   recordCount: number;
   fields: PageFieldDescriptor[];
 }): string => {
   const lines = [
-    `// ${params.label} · objectTypeId: ${params.objectTypeId} · ${params.recordCount.toString()} records`,
+    `// ${params.label} · collectionId: ${params.collectionId} · ${params.recordCount.toString()} records`,
     `type ${rowTypeName(params.key)} = {`,
     "  id: string; label: string",
   ];
@@ -112,7 +112,7 @@ export const renderRowType = (params: {
 
 /**
  * Render the row types for the given type keys, resolved exactly the way
- * `resolveObjectTypeId` resolves them: the team's own type wins, the org/system
+ * `resolveCollectionId` resolves them: the team's own type wins, the org/system
  * one is the fallback.
  *
  * A key that resolves to nothing is NAMED rather than dropped. The parent agent
@@ -130,7 +130,7 @@ export const describeRowTypes = async (params: {
   );
   if (keys.length === 0) return "";
 
-  const candidates = await db.query.objectTypes.findMany({
+  const candidates = await db.query.collections.findMany({
     columns: { id: true, key: true, label: true, teamId: true },
     where: {
       key: { in: keys },
@@ -153,9 +153,9 @@ export const describeRowTypes = async (params: {
     const [fields, recordCount] = await Promise.all([
       buildPageFieldDescriptors({
         teamId: params.teamId,
-        objectTypeId: type.id,
+        collectionId: type.id,
       }),
-      countRecordsForType({ objectTypeId: type.id, teamId: params.teamId }),
+      countRecordsForType({ collectionId: type.id, teamId: params.teamId }),
     ]);
     if (fields.length === 0) {
       unknown.push(key);
@@ -165,7 +165,7 @@ export const describeRowTypes = async (params: {
       renderRowType({
         key,
         label: type.label,
-        objectTypeId: type.id,
+        collectionId: type.id,
         recordCount,
         fields,
       }),
@@ -175,14 +175,14 @@ export const describeRowTypes = async (params: {
   if (blocks.length === 0 && unknown.length === 0) return "";
 
   const parts = [
-    "The object types this page is about, as their rows will arrive. The uuids are the `objectTypeId` a dataset needs. Still `dry_run` before you design — this is the schema, not the data.",
+    "The collections this page is about, as their rows will arrive. The uuids are the `collectionId` a dataset needs. Still `dry_run` before you design — this is the schema, not the data.",
     "",
     ...blocks,
   ];
   if (unknown.length > 0) {
     parts.push(
       "",
-      `No object type for: ${unknown.join(", ")}. Find the real key in <team_objects> before building against it.`,
+      `No collection for: ${unknown.join(", ")}. Find the real key in <team_collections> before building against it.`,
     );
   }
   return parts.join("\n");

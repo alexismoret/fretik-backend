@@ -10,7 +10,7 @@ import {
   computeRecordIdentity,
   describeFieldExpectation,
 } from "../../src/schemas/record-shape";
-import { validateRecordData } from "../../src/services/object-records/validate";
+import { validateRecordData } from "../../src/services/collection-records/validate";
 
 /**
  * Pure (no-DB) guarantees for the record runtime shape + identity helpers.
@@ -29,7 +29,7 @@ const makeField = (
   id: `00000000-0000-7000-0000-${(seq++).toString().padStart(12, "0")}`,
   organizationId: "11111111-1111-1111-1111-111111111111",
   teamId: "22222222-2222-2222-2222-222222222222",
-  objectTypeId: "33333333-3333-3333-3333-333333333333",
+  collectionId: "33333333-3333-3333-3333-333333333333",
   label: partial.key,
   description: null,
   config: {},
@@ -187,7 +187,7 @@ describe("buildRecordShape", () => {
       makeField({
         key: "vendor",
         type: "relation",
-        config: { targetTypeKey: "company", linkTypeKey: "vendor" },
+        config: { targetCollectionKey: "company", linkTypeKey: "vendor" },
       }),
     ]);
     // `vendor` is not a key in the shape, so any value for it is stripped and
@@ -513,7 +513,7 @@ describe("describeFieldExpectation", () => {
     const moneyHint = describeFieldExpectation(
       makeField({ key: "total", type: "money" }),
     );
-    // Names BOTH forms and the exact object key so a bulk-create row never
+    // Names BOTH forms and the exact collection key so a bulk-create row never
     // slips `{ amount, currency }` (the 4.32M-token incident's root cause).
     expect(moneyHint).toContain("1500 EUR");
     expect(moneyHint).toContain("currencyCode");

@@ -10,7 +10,7 @@ import { ERROR_CODES } from "../../schemas/errors";
 /**
  * INSERT a fresh `pending` row for a `record_write` approval — one gated bulk
  * object write (create / update / delete) the workflow executor issued through
- * the Python `objects` SDK. The card renders each item (selectable); grant
+ * the Python `collections` SDK. The card renders each item (selectable); grant
  * re-executes the approved subset via the bulk services. `lookupHash` freezes
  * the write so an identical re-run of the agent's code matches the grant.
  */

@@ -41,14 +41,14 @@ export const WORKFLOW_APPROVAL_HIDDEN_TOOLS = WORKFLOW_WRITE_TOOLS;
 
 /**
  * Schema + meta tools a run NEVER uses, in any mode: schema edits
- * (`manageObjectType`/`manageField`), skill drafts that need chat confirmation
+ * (`manageCollection`/`manageField`), skill drafts that need chat confirmation
  * (`createSkill`/`updateSkill`), and workflow building (`manageWorkflow`,
  * anti-recursion). The main workflow agent drops these from its registry at
  * build time (`buildWorkflowTools`); a sub-agent shares the chat registry, so
  * it hides them per-step instead. Keep in sync with `buildWorkflowTools`.
  */
 export const WORKFLOW_FORBIDDEN_DOMAIN_TOOLS = [
-  "manageObjectType",
+  "manageCollection",
   "manageField",
   "createSkill",
   "updateSkill",

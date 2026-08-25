@@ -1,8 +1,8 @@
-import { stampEpisodeRecall } from "@fretik/shared/services/episodes/stamp-recall";
 import {
   anchorTextToRecords,
   type RecordAnchor,
-} from "@fretik/shared/services/object-records/anchor";
+} from "@fretik/shared/services/collection-records/anchor";
+import { stampEpisodeRecall } from "@fretik/shared/services/episodes/stamp-recall";
 import { getActiveSpanId, startObservation } from "@langfuse/tracing";
 import { generateText } from "ai";
 import { langfuseEnabled, telemetryFor } from "../../lib/langfuse";

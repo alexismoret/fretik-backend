@@ -14,5 +14,5 @@ Every write is indexed into `searchKnowledge`, and each turn's relevant memories
 ## Memory in compositions
 
 - A workflow that derives a durable mapping (sender ↔ client, code ↔ site) can persist it so future runs skip the re-derivation — the workflow-side bar for writing is in `<memory_protocol>`.
-- When a memory starts accumulating STRUCTURE (the same fields for many entities), it has outgrown memory — propose an object type and migrate.
+- When a memory starts accumulating STRUCTURE (the same fields for many entities), it has outgrown memory — propose a collection and migrate.
 - When several memories describe one procedure, they have outgrown memory — propose a team skill.

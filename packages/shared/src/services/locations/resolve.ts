@@ -6,7 +6,7 @@ import {
   geocodeAddressCached,
   isLocationValue,
   normalizeAddressKey,
-} from "../object-records/geocode-location";
+} from "../collection-records/geocode-location";
 
 /**
  * Resolve the `location` field values in a record's `data` to FK ids into the

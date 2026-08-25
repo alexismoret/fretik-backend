@@ -4,9 +4,9 @@ import { documentProperties, documents, folders } from "../../db/schema";
 import { notFound, throwHttpError } from "../../lib/errors";
 import { deleteKeysByPrefix } from "../../lib/redis";
 import type { UpdateDocumentInput } from "../../schemas/documents";
+import { setRecordData } from "../collection-records/update";
+import { readRecordData } from "../collection-schema/record-io";
 import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
-import { setRecordData } from "../object-records/update";
-import { readRecordData } from "../object-schema/record-io";
 import { triggerDocumentVectorRefresh } from "./vector-refresh";
 
 /**
@@ -111,18 +111,18 @@ export const updateDocument = async (data: {
     // (the caller sends only the fields the user changed). Editing the set of
     // linked records (the former `entities`) moves to the generic object editor.
     if (updates.fieldValues !== undefined) {
-      const mirror = await tx.query.objectRecords.findFirst({
-        columns: { id: true, objectTypeId: true, teamId: true },
+      const mirror = await tx.query.collectionRecords.findFirst({
+        columns: { id: true, collectionId: true, teamId: true },
         where: { documentId: id },
       });
       if (mirror) {
         const current = await readRecordData({
           tx,
-          objectTypeId: mirror.objectTypeId,
+          collectionId: mirror.collectionId,
           recordId: mirror.id,
           fields: await getFieldDefinitionsForTeam({
             teamId: mirror.teamId,
-            objectTypeId: mirror.objectTypeId,
+            collectionId: mirror.collectionId,
           }),
         });
         const merged: Record<string, unknown> = { ...current };

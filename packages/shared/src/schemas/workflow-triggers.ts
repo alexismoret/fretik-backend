@@ -53,7 +53,7 @@ export const TRIGGER_PARAMETER_KINDS = [
   "timezone",
   "event_type",
   "folder",
-  "object_type",
+  "collection",
   "text",
   "number",
   "boolean",
@@ -227,16 +227,16 @@ export type WorkflowEventTypeDescriptor = z.infer<
 >;
 
 /** Scaffolded (not yet wired) — record.* object-type filter. Declared so the
- * pattern is visible; needs `objectTypeKey` on the record.* payload to work. */
-const objectTypeFilterParam = param({
-  key: "event.filter.objectTypeKey",
-  kind: "object_type",
-  labelKey: "workflows.triggerParams.objectType",
+ * pattern is visible; needs `collectionKey` on the record.* payload to work. */
+const collectionFilterParam = param({
+  key: "event.filter.collectionKey",
+  kind: "collection",
+  labelKey: "workflows.triggerParams.collection",
   icon: "i-lucide-shapes",
   required: false,
   available: false,
   agentHint:
-    "Only fire for records of this object type (by type key). Not yet available.",
+    "Only fire for records of this collection (by type key). Not yet available.",
 });
 
 export const WORKFLOW_TRIGGERABLE_EVENT_DESCRIPTORS: WorkflowEventTypeDescriptor[] =
@@ -253,7 +253,7 @@ export const WORKFLOW_TRIGGERABLE_EVENT_DESCRIPTORS: WorkflowEventTypeDescriptor
           icon: "i-lucide-folder",
           required: false,
           agentHint:
-            "Only fire when the document was uploaded into this folder. Value = a folder id (obtain it via the drive/objects tools). Omit to fire for any folder.",
+            "Only fire when the document was uploaded into this folder. Value = a folder id (obtain it via the drive/collections tools). Omit to fire for any folder.",
         }),
       ],
     },
@@ -269,7 +269,7 @@ export const WORKFLOW_TRIGGERABLE_EVENT_DESCRIPTORS: WorkflowEventTypeDescriptor
           icon: "i-lucide-folder",
           required: false,
           agentHint:
-            "Only fire when the revised document lives in this folder. Value = a folder id (obtain it via the drive/objects tools). Omit to fire for any folder.",
+            "Only fire when the revised document lives in this folder. Value = a folder id (obtain it via the drive/collections tools). Omit to fire for any folder.",
         }),
       ],
     },
@@ -289,13 +289,13 @@ export const WORKFLOW_TRIGGERABLE_EVENT_DESCRIPTORS: WorkflowEventTypeDescriptor
       type: "record.created",
       icon: "i-lucide-circle-plus",
       labelKey: "workflows.eventTypes.record_created",
-      params: [objectTypeFilterParam],
+      params: [collectionFilterParam],
     },
     {
       type: "record.updated",
       icon: "i-lucide-pencil",
       labelKey: "workflows.eventTypes.record_updated",
-      params: [objectTypeFilterParam],
+      params: [collectionFilterParam],
     },
     {
       type: "record.deleted",

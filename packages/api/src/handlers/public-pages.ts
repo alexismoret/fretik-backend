@@ -35,11 +35,11 @@ import { rateLimiter } from "hono-rate-limiter";
  * here would trip the frontend's global 401 → /login redirect on a page that is
  * meant to be readable while signed out.
  *
- * SECURITY — the request body carries ONLY variable values. Every object type,
+ * SECURITY — the request body carries ONLY variable values. Every collection,
  * filter key and operator comes from the stored (frozen) definition, so an
  * anonymous caller cannot widen the query: unknown variable keys are dropped
  * and the executor never reads a type id, filter or query fragment from the
- * request. Filters, object type ids and SQL must NEVER be accepted from the
+ * request. Filters, collection ids and SQL must NEVER be accepted from the
  * request under any circumstance.
  *
  * Redis caches both endpoints behind short TTLs (definition 5 min, data 60 s
@@ -169,7 +169,7 @@ const postDataRoute = createRoute({
   path: "/{token}/data",
   summary: "Execute a published page's datasets",
   description:
-    "Always 200. Runs under the OWNING team's scope (that is what makes a public page show real numbers) against the FROZEN definition. The body carries variable values, an optional dataset subset, and an optional window/ordering per dataset — never filters, object type ids or query fragments.",
+    "Always 200. Runs under the OWNING team's scope (that is what makes a public page show real numbers) against the FROZEN definition. The body carries variable values, an optional dataset subset, and an optional window/ordering per dataset — never filters, collection ids or query fragments.",
   tags: ["Pages"],
   request: {
     params: tokenParamSchema,

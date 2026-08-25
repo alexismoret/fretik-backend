@@ -337,7 +337,7 @@ const dataRoute = createRoute({
   path: "/{id}/data",
   summary: "Execute a page's datasets",
   description:
-    "Runs under the CALLER's team scope. The body carries variable values, an optional dataset subset, and an optional window/ordering per dataset — never a filter, an object type or a query fragment, which all come from the stored definition. Datasets degrade individually (`forbidden`/`error`) instead of failing the request.",
+    "Runs under the CALLER's team scope. The body carries variable values, an optional dataset subset, and an optional window/ordering per dataset — never a filter, a collection or a query fragment, which all come from the stored definition. Datasets degrade individually (`forbidden`/`error`) instead of failing the request.",
   tags: ["Pages"],
   request: {
     params: paramsIdSchema,

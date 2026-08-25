@@ -95,7 +95,7 @@ describe("recordWriteWire", () => {
 describe("record_write lookup hash", () => {
   const base: ToolApprovalRecordWritePayload = {
     op: "create",
-    objectTypeId: "type-1",
+    collectionId: "type-1",
     items: [{ data: { name: "Acme" } }],
   };
 
@@ -116,7 +116,7 @@ describe("record_write lookup hash", () => {
           data: { name: "Acme" },
           currentLabel: "Acme Corp",
           currentData: { name: "Acme", stale: true },
-          typeKey: "company",
+          collectionKey: "company",
         },
       ],
     };
@@ -163,7 +163,7 @@ describe("record_write lookup hash", () => {
 });
 
 describe("canonicalHash", () => {
-  test("is order-independent over object keys", () => {
+  test("is order-independent over collection keys", () => {
     expect(canonicalHash({ a: 1, b: 2 })).toBe(canonicalHash({ b: 2, a: 1 }));
   });
 

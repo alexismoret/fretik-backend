@@ -23,7 +23,7 @@ describe("workflowToolHintNames", () => {
 
   test("excludes the forbidden schema / meta / builder tools", () => {
     for (const forbidden of [
-      "manageObjectType",
+      "manageCollection",
       "manageField",
       "createSkill",
       "updateSkill",

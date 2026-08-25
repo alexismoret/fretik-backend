@@ -15,7 +15,7 @@
  *     high-value content beats both a 300-token squeeze (a 1500-char
  *     episode would collapse to a title) and an unfiltered dump. Each
  *     bullet carries its provenance marker verbatim — the main agent digs
- *     deeper with those ids (`searchKnowledge`, `getObject`, SQL).
+ *     deeper with those ids (`searchKnowledge`, `getRecord`, SQL).
  *   - Never invents: only distills candidate/graph content.
  *
  * DELIBERATE REPETITION: the user-message trailer built in `recall.ts`

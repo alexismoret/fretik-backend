@@ -15,7 +15,7 @@ The bar is not "it displays the data". It is: **someone reopens this page every 
 
 It runs a specialist on the model the team picked for page design, with the design doctrine, the runtime contract and the row shapes of the data already in its prompt — so it starts writing where you would still be reading. It probes the data for real field names, writes the page's brief, reads the API of every component it uses, then RENDERS the page in a real browser, clicks through it, and fixes what it saw before handing back a url.
 
-Send it everything past a targeted edit: a new page, a new view or feature on an existing one, a redesign, a section that needs different data. Put the whole request in `task`, in the user's own words, with the object types by name and the pageId when there is one — it never sees this conversation, so what you leave out it decides for itself. Do not narrow a vague ask on the user's behalf; the builder is built to expand it.
+Send it everything past a targeted edit: a new page, a new view or feature on an existing one, a redesign, a section that needs different data. Put the whole request in `task`, in the user's own words, with the collections by name and the pageId when there is one — it never sees this conversation, so what you leave out it decides for itself. Do not narrow a vague ask on the user's behalf; the builder is built to expand it.
 
 What is yours, through `managePage`: read a page, retouch a word, a label, a colour or a threshold with `edits`, `review` one to see what is actually wrong, publish it, delete it. That split is worth what it costs — a delegate to change one title is waste, and a title changed by hand is instant.
 
@@ -23,7 +23,7 @@ What is yours, through `managePage`: read a page, retouch a word, a label, a col
 
 - A one-off number, or a question → answer in chat.
 - A frozen report to send someone → a sandbox file (`presentFiles`).
-- Data entry at scale, imports, records management → the objects UI already does it.
+- Data entry at scale, imports, records management → the collections UI already does it.
 - A recurring process with steps and approvals → a workflow.
 
 A page earns its keep when the team will REOPEN it.

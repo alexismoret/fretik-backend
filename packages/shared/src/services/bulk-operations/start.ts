@@ -49,7 +49,7 @@ export const startBulkOperation = async (
       // word goes through i18n.
       title: BULK_OPERATION_EXECUTORS[row.kind].describe(row),
       metadata: {
-        importTypeKey: row.params.typeKey,
+        importCollectionKey: row.params.collectionKey,
         importRows: row.totalItems,
       },
     });

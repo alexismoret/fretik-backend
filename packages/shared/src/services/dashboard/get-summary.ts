@@ -1,6 +1,6 @@
 import { and, count, eq, gte, sql } from "drizzle-orm";
 import db from "../../db";
-import { documents, objectRecords, workflowRuns } from "../../db/schema";
+import { collectionRecords, documents, workflowRuns } from "../../db/schema";
 import type { DashboardSummaryResponse } from "../../schemas/dashboard";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -36,8 +36,8 @@ const weekTrend = (series: number[]): number | null => {
 
 /** Grouped daily counts of a timestamp column for a team, bucketed in UTC. */
 const dailyCounts = async (
-  column: typeof documents.createdAt | typeof objectRecords.createdAt,
-  table: typeof documents | typeof objectRecords,
+  column: typeof documents.createdAt | typeof collectionRecords.createdAt,
+  table: typeof documents | typeof collectionRecords,
   teamId: string,
   since: Date,
 ): Promise<{ day: string; count: number }[]> => {
@@ -69,14 +69,19 @@ export const getDashboardSummary = async (data: {
   const [recordsTotalRow, recordDaily, runRows, docDaily] = await Promise.all([
     db
       .select({ count: count() })
-      .from(objectRecords)
+      .from(collectionRecords)
       .where(
         and(
-          eq(objectRecords.teamId, teamId),
-          eq(objectRecords.status, "confirmed"),
+          eq(collectionRecords.teamId, teamId),
+          eq(collectionRecords.status, "confirmed"),
         ),
       ),
-    dailyCounts(objectRecords.createdAt, objectRecords, teamId, since14),
+    dailyCounts(
+      collectionRecords.createdAt,
+      collectionRecords,
+      teamId,
+      since14,
+    ),
     db
       .select({ status: workflowRuns.status, count: count() })
       .from(workflowRuns)

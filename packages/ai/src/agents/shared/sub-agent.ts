@@ -120,7 +120,7 @@ export interface CreateSubAgentExecuteConfig<
    * team/user identity or a tight scoping preamble).
    *
    * May be async: a briefing worth sending is often one the database has to be
-   * asked for (`buildPage` reads the row types of the object types it was
+   * asked for (`buildPage` reads the row types of the collections it was
    * handed). Doing that read here rather than letting the sub-agent spend tool
    * steps on it is the point.
    */

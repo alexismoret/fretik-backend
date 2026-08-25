@@ -8,12 +8,12 @@ import { startDocumentVectorRefreshWorker } from "@fretik/shared/services/docume
 import packagejson from "../package.json";
 import { healthApp } from "./health";
 import { registerSchedulers } from "./queues/schedulers";
+import { startCollectionIndexWorker } from "./workers/collection-index-sweep";
 import { startDreamingWorker } from "./workers/dreaming";
 import { startMaintenanceWorker } from "./workers/maintenance";
 import { startMcpRefreshWorker } from "./workers/mcp-refresh";
 import { startMemoryDistillWorker } from "./workers/memory-distill";
 import { startMemoryResolveWorker } from "./workers/memory-resolve";
-import { startObjectIndexWorker } from "./workers/object-index-sweep";
 import { startRecordCardWorker } from "./workers/record-card";
 import { startWorkflowRunCreateWorker } from "./workers/workflow-run-create";
 
@@ -36,14 +36,14 @@ startDreamingWorker();
 startWorkflowRunCreateWorker();
 startMaintenanceWorker();
 startMcpRefreshWorker();
-startObjectIndexWorker();
+startCollectionIndexWorker();
 startBulkOperationWorker();
 await registerSchedulers();
 
 console.log(`
 ---------------------------
 fretik jobs v${packagejson.version}
-workers: document-processing · document-vector-refresh · memory-resolve · memory-distill · record-card · memory-dreaming · memory-maintenance · workflow-trigger · mcp-refresh · object-index · bulk-operation
+workers: document-processing · document-vector-refresh · memory-resolve · memory-distill · record-card · memory-dreaming · memory-maintenance · workflow-trigger · mcp-refresh · collection-index · bulk-operation
 ---------------------------
 `);
 

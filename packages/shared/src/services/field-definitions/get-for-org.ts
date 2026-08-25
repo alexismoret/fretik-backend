@@ -1,9 +1,9 @@
 import { and, asc, eq, isNull } from "drizzle-orm";
 import db from "../../db";
 import type { FieldDefinition } from "../../db/schema";
-import { fieldDefinitions, objectTypes } from "../../db/schema";
+import { collections, fieldDefinitions } from "../../db/schema";
 import { selectOrCache } from "../../lib/redis";
-import { DOCUMENT_TYPE_KEY } from "../object-types/constants";
+import { DOCUMENT_COLLECTION_KEY } from "../collections/constants";
 import { fieldDefinitionsCacheKeyOrg } from "./cache";
 
 /**
@@ -11,8 +11,8 @@ import { fieldDefinitionsCacheKeyOrg } from "./cache";
  * These rows are the template Fretik copies into a freshly created team —
  * editing them never propagates to existing teams.
  *
- * The object type is resolved by `objectTypeId` when provided, otherwise by
- * `objectTypeKey` (default `document_record`) via an INNER JOIN on `object_types`.
+ * The collection is resolved by `collectionId` when provided, otherwise by
+ * `collectionKey` (default `document_record`) via an INNER JOIN on `collections`.
  *
  * Cached under `organization:{orgId}:field-definitions:…` (30 min TTL).
  *
@@ -21,14 +21,14 @@ import { fieldDefinitionsCacheKeyOrg } from "./cache";
  */
 export const getFieldDefinitionsForOrganization = async (data: {
   organizationId: string;
-  objectTypeId?: string;
-  objectTypeKey?: string;
+  collectionId?: string;
+  collectionKey?: string;
   includeDisabled?: boolean;
 }): Promise<FieldDefinition[]> => {
   const {
     organizationId,
-    objectTypeId,
-    objectTypeKey = DOCUMENT_TYPE_KEY,
+    collectionId,
+    collectionKey = DOCUMENT_COLLECTION_KEY,
     includeDisabled = false,
   } = data;
 
@@ -38,16 +38,16 @@ export const getFieldDefinitionsForOrganization = async (data: {
         eq(fieldDefinitions.organizationId, organizationId),
         isNull(fieldDefinitions.teamId),
       ];
-      if (objectTypeId) {
-        conditions.push(eq(fieldDefinitions.objectTypeId, objectTypeId));
+      if (collectionId) {
+        conditions.push(eq(fieldDefinitions.collectionId, collectionId));
       } else {
-        conditions.push(eq(objectTypes.key, objectTypeKey));
+        conditions.push(eq(collections.key, collectionKey));
       }
       if (!includeDisabled) {
         conditions.push(eq(fieldDefinitions.enabled, true));
       }
 
-      if (objectTypeId) {
+      if (collectionId) {
         return await db
           .select()
           .from(fieldDefinitions)
@@ -59,8 +59,8 @@ export const getFieldDefinitionsForOrganization = async (data: {
         .select()
         .from(fieldDefinitions)
         .innerJoin(
-          objectTypes,
-          eq(fieldDefinitions.objectTypeId, objectTypes.id),
+          collections,
+          eq(fieldDefinitions.collectionId, collections.id),
         )
         .where(and(...conditions))
         .orderBy(asc(fieldDefinitions.displayOrder));
@@ -68,7 +68,7 @@ export const getFieldDefinitionsForOrganization = async (data: {
     },
     fieldDefinitionsCacheKeyOrg(
       organizationId,
-      objectTypeId ?? objectTypeKey,
+      collectionId ?? collectionKey,
       includeDisabled,
     ),
   );

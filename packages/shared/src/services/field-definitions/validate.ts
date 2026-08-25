@@ -4,7 +4,7 @@ import type {
   FieldDefinitionConfig,
   FieldDefinitionType,
 } from "../../db/schema";
-import { fieldDefinitions, objectTypes } from "../../db/schema";
+import { collections, fieldDefinitions } from "../../db/schema";
 import { fieldOptions } from "../../db/schema/field-types";
 import { badRequest, throwHttpError } from "../../lib/errors";
 import {
@@ -120,13 +120,13 @@ export const validateFieldDefinitionShape = (
 export const countEnabledForScope = async (data: {
   organizationId: string;
   teamId: string | null;
-  objectTypeId: string;
+  collectionId: string;
   excludeId?: string;
 }): Promise<number> => {
-  const { organizationId, teamId, objectTypeId, excludeId } = data;
+  const { organizationId, teamId, collectionId, excludeId } = data;
   const conditions = [
     eq(fieldDefinitions.organizationId, organizationId),
-    eq(fieldDefinitions.objectTypeId, objectTypeId),
+    eq(fieldDefinitions.collectionId, collectionId),
     eq(fieldDefinitions.enabled, true),
     teamId === null
       ? isNull(fieldDefinitions.teamId)
@@ -143,14 +143,14 @@ export const countEnabledForScope = async (data: {
 };
 
 /**
- * The enabled-field cap for an object type: the `document_record` system type
+ * The enabled-field cap for a collection: the `document_record` system type
  * keeps the tight pre-extract budget, every other type gets the larger cap.
  */
-const enabledCapForType = async (objectTypeId: string): Promise<number> => {
+const enabledCapForType = async (collectionId: string): Promise<number> => {
   const [row] = await db
-    .select({ key: objectTypes.key })
-    .from(objectTypes)
-    .where(eq(objectTypes.id, objectTypeId))
+    .select({ key: collections.key })
+    .from(collections)
+    .where(eq(collections.id, collectionId))
     .limit(1);
   return row?.key === "document_record"
     ? FIELD_DEFINITION_LIMITS.MAX_ENABLED_PER_SCOPE
@@ -164,7 +164,7 @@ const enabledCapForType = async (objectTypeId: string): Promise<number> => {
 export const assertScopeEnabledCap = async (data: {
   organizationId: string;
   teamId: string | null;
-  objectTypeId: string;
+  collectionId: string;
   addEnabled: number;
   excludeId?: string;
 }): Promise<void> => {
@@ -172,10 +172,10 @@ export const assertScopeEnabledCap = async (data: {
     countEnabledForScope({
       organizationId: data.organizationId,
       teamId: data.teamId,
-      objectTypeId: data.objectTypeId,
+      collectionId: data.collectionId,
       excludeId: data.excludeId,
     }),
-    enabledCapForType(data.objectTypeId),
+    enabledCapForType(data.collectionId),
   ]);
   if (current + data.addEnabled > cap) {
     return throwHttpError(

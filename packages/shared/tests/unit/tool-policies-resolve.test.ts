@@ -164,7 +164,7 @@ describe("resolveBuiltinToolPolicy — catalog-driven", () => {
   test("read tool defaults to auto in chat", () => {
     expect(
       resolveBuiltinToolPolicy({
-        toolName: "listObjects",
+        toolName: "listRecords",
         teamPolicies: {},
         autonomy: null,
       }),

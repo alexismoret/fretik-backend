@@ -11,10 +11,10 @@ import type { FieldDefinition, FieldDefinitionType } from "../../src/db/schema";
 process.env.DATABASE_URL ??= "postgres://test:test@localhost:5432/test";
 
 const { buildExtensionUpdateBatch } =
-  await import("../../src/services/object-schema/record-io");
+  await import("../../src/services/collection-schema/record-io");
 
 /**
- * Regression: `bulkUpdateObjectRecords` builds `UPDATE … AS e SET … FROM
+ * Regression: `bulkUpdateCollectionRecords` builds `UPDATE … AS e SET … FROM
  * (VALUES …) AS v`. Postgres rejects an alias-qualified SET TARGET
  * (`SET e."x" = …` is a syntax error); the target must be bare and only the
  * source reads from `v`. A prior bug emitted `e.${c}` on the target, so every
@@ -29,7 +29,7 @@ const makeField = (
   id: `00000000-0000-7000-0000-${(seq++).toString().padStart(12, "0")}`,
   organizationId: "11111111-1111-1111-1111-111111111111",
   teamId: "22222222-2222-2222-2222-222222222222",
-  objectTypeId: "33333333-3333-3333-3333-333333333333",
+  collectionId: "33333333-3333-3333-3333-333333333333",
   key,
   label: key,
   type,
@@ -50,7 +50,7 @@ const makeField = (
 describe("buildExtensionUpdateBatch", () => {
   it("emits bare SET targets (no alias-qualified target column)", () => {
     const stmt = buildExtensionUpdateBatch({
-      objectTypeId: "019f0b8a-c6e7-7fa7-9ff6-7cc1cdba8862",
+      collectionId: "019f0b8a-c6e7-7fa7-9ff6-7cc1cdba8862",
       fields: [makeField("name", "text"), makeField("regions", "multi_select")],
       rows: [
         {

@@ -57,7 +57,7 @@ export interface ExtractedMention {
   /** The mention verbatim from the text. */
   label: string;
   /** Optional lowercase noun guessing the entity kind ("company", "person"). */
-  typeKeyHint?: string;
+  collectionKeyHint?: string;
   /** 0..1 — how sure the mention denotes one distinct, identifiable entity. */
   confidence: number;
 }
@@ -66,7 +66,7 @@ const mentionsOutputSchema = z.object({
   mentions: z.array(
     z.object({
       label: z.string().min(1),
-      typeKeyHint: z.string().optional(),
+      collectionKeyHint: z.string().optional(),
       confidence: z.number().min(0).max(1),
     }),
   ),
@@ -75,10 +75,10 @@ const mentionsOutputSchema = z.object({
 const SYSTEM_PROMPT = `Extract the mentions in the input text that denote specific, distinct entities — anything referred to by a proper name or unique identifier that could correspond to a tracked record. The text is free-form: any language, any casing, any domain, possibly casual.
 
 Output strict JSON, nothing else:
-{"mentions":[{"label":"...","typeKeyHint":"...","confidence":0.0}]}
+{"mentions":[{"label":"...","collectionKeyHint":"...","confidence":0.0}]}
 
 - label: the mention verbatim as written.
-- typeKeyHint: lowercase noun guessing the entity kind (e.g. "company", "person"); omit when unsure.
+- collectionKeyHint: lowercase noun guessing the entity kind (e.g. "company", "person"); omit when unsure.
 - confidence: 0..1 — how sure the mention denotes one identifiable entity. 1.0 for a proper name or code; ≤0.4 for vague references ("the client", "that file").
 - Max ${MAX_MENTIONS.toString()} mentions, most salient first. Nothing qualifies → {"mentions":[]}.
 - Precision over recall: skip generic nouns, dates, quantities, and small talk. An inflated confidence is worse than a low one.`;

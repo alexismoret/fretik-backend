@@ -18,7 +18,7 @@ import { PAGE_LIMITS, PageDataRequestSchema } from "../../src/schemas/pages";
  * This is the half of the feature the unit suite never covered — it was only
  * ever checked by hand over HTTP. What it protects is precise: a viewer's
  * browser may send values for the variables a page DECLARES, and nothing else.
- * Object type, filter keys and operators all come from the stored definition,
+ * Collection, filter keys and operators all come from the stored definition,
  * so a forged body cannot widen a page's reach.
  *
  * The db and the two record services are mocked at module level — the dynamic
@@ -26,9 +26,9 @@ import { PAGE_LIMITS, PageDataRequestSchema } from "../../src/schemas/pages";
  * filters and limits reached the query layer.
  */
 
-/** Object type ids the mocked db "knows"; anything else resolves forbidden. */
-const knownObjectTypes = new Set<string>(["type-1"]);
-/** Field definitions the mocked team owns, per object type. */
+/** Collection ids the mocked db "knows"; anything else resolves forbidden. */
+const knownCollections = new Set<string>(["type-1"]);
+/** Field definitions the mocked team owns, per collection. */
 let fieldDefinitions: unknown[] = [];
 /** Every call the objects source made into the record services. */
 const listCalls: Record<string, unknown>[] = [];
@@ -38,10 +38,10 @@ let listResult: { count: number; data: unknown[] } = { count: 0, data: [] };
 void mock.module("../../src/db", () => ({
   default: {
     query: {
-      objectTypes: {
+      collections: {
         findFirst: (args: { where?: { id?: string } }) =>
           Promise.resolve(
-            args.where?.id !== undefined && knownObjectTypes.has(args.where.id)
+            args.where?.id !== undefined && knownCollections.has(args.where.id)
               ? { id: args.where.id }
               : undefined,
           ),
@@ -51,14 +51,14 @@ void mock.module("../../src/db", () => ({
   },
 }));
 
-void mock.module("../../src/services/object-records/retrieve", () => ({
-  listObjectRecords: (params: Record<string, unknown>) => {
+void mock.module("../../src/services/collection-records/retrieve", () => ({
+  listCollectionRecords: (params: Record<string, unknown>) => {
     listCalls.push(params);
     return Promise.resolve(listResult);
   },
 }));
 
-void mock.module("../../src/services/object-records/aggregate", () => ({
+void mock.module("../../src/services/collection-records/aggregate", () => ({
   aggregateRecords: (params: Record<string, unknown>) => {
     aggregateCalls.push(params);
     return Promise.resolve({ rows: [], truncated: false });
@@ -73,8 +73,8 @@ const { resolvePageState, runPageData } =
   await import("../../src/services/pages/run-page-data");
 const { buildPageFieldDescriptors } =
   await import("../../src/services/pages/field-descriptors");
-const { objectsSource } =
-  await import("../../src/services/pages/sources/objects");
+const { collectionsSource } =
+  await import("../../src/services/pages/sources/collections");
 
 const page = (
   variables: PageVariable[],
@@ -99,7 +99,7 @@ const inline = (
 describe("resolvePageState — the security boundary", () => {
   test("a variable the page does not declare never reaches state", () => {
     const state = resolvePageState(page([]), {
-      objectTypeId: "type-evil",
+      collectionId: "type-evil",
       filters: [{ key: "amount", op: "gt", value: 0 }],
       teamId: "another-team",
       userId: null,
@@ -110,7 +110,7 @@ describe("resolvePageState — the security boundary", () => {
   test("declared variables survive; undeclared ones are dropped alongside", () => {
     const state = resolvePageState(
       page([{ key: "status", type: "string", initial: "open" }]),
-      { status: "won", objectTypeId: "type-evil" },
+      { status: "won", collectionId: "type-evil" },
     );
     expect(state).toEqual({ status: "won" });
   });
@@ -204,8 +204,8 @@ describe("runPageData — orchestration and degradation", () => {
       inFlight -= 1;
       return listResult;
     });
-    void mock.module("../../src/services/object-records/retrieve", () => ({
-      listObjectRecords: slow,
+    void mock.module("../../src/services/collection-records/retrieve", () => ({
+      listCollectionRecords: slow,
     }));
     const { runPageData: runFresh } =
       await import("../../src/services/pages/run-page-data");
@@ -215,9 +215,9 @@ describe("runPageData — orchestration and degradation", () => {
       definition: page(
         [],
         [
-          { id: "a", kind: "objects", objectTypeId: "type-1" },
-          { id: "b", kind: "objects", objectTypeId: "type-1" },
-          { id: "c", kind: "objects", objectTypeId: "type-1" },
+          { id: "a", kind: "collections", collectionId: "type-1" },
+          { id: "b", kind: "collections", collectionId: "type-1" },
+          { id: "c", kind: "collections", collectionId: "type-1" },
         ],
       ),
       teamId: "team-1",
@@ -230,8 +230,8 @@ describe("runPageData — orchestration and degradation", () => {
     expect(elapsed).toBeLessThan(120);
 
     // Restore the recording mock for the tests that follow.
-    void mock.module("../../src/services/object-records/retrieve", () => ({
-      listObjectRecords: (params: Record<string, unknown>) => {
+    void mock.module("../../src/services/collection-records/retrieve", () => ({
+      listCollectionRecords: (params: Record<string, unknown>) => {
         listCalls.push(params);
         return Promise.resolve(listResult);
       },
@@ -239,15 +239,15 @@ describe("runPageData — orchestration and degradation", () => {
   });
 });
 
-describe("objectsSource — the stored definition owns the query", () => {
+describe("collectionsSource — the stored definition owns the query", () => {
   test("a filter bound to state carries the viewer's value into the query", async () => {
     listCalls.length = 0;
     listResult = { count: 0, data: [] };
-    await objectsSource.resolve(
+    await collectionsSource.resolve(
       {
         id: "records",
-        kind: "objects",
-        objectTypeId: "type-1",
+        kind: "collections",
+        collectionId: "type-1",
         filters: [{ key: "status", op: "eq", value: { var: "status" } }],
       },
       { teamId: "team-1", userId: null, state: { status: "won" } },
@@ -260,11 +260,11 @@ describe("objectsSource — the stored definition owns the query", () => {
   test('the "All" option — an empty value — drops its filter entirely', async () => {
     listCalls.length = 0;
     listResult = { count: 0, data: [] };
-    await objectsSource.resolve(
+    await collectionsSource.resolve(
       {
         id: "records",
-        kind: "objects",
-        objectTypeId: "type-1",
+        kind: "collections",
+        collectionId: "type-1",
         filters: [{ key: "status", op: "eq", value: { var: "status" } }],
       },
       { teamId: "team-1", userId: null, state: { status: "" } },
@@ -275,11 +275,11 @@ describe("objectsSource — the stored definition owns the query", () => {
   test("the row limit is capped at the page ceiling, whatever the definition asks", async () => {
     listCalls.length = 0;
     listResult = { count: 0, data: [] };
-    await objectsSource.resolve(
+    await collectionsSource.resolve(
       {
         id: "records",
-        kind: "objects",
-        objectTypeId: "type-1",
+        kind: "collections",
+        collectionId: "type-1",
         limit: 999_999,
       },
       { teamId: "team-1", userId: null, state: {} },
@@ -287,9 +287,9 @@ describe("objectsSource — the stored definition owns the query", () => {
     expect(listCalls[0]?.limit).toBe(PAGE_LIMITS.maxRows);
   });
 
-  test("an object type the team cannot see degrades to forbidden", async () => {
-    const result = await objectsSource.resolve(
-      { id: "records", kind: "objects", objectTypeId: "type-unknown" },
+  test("a collection the team cannot see degrades to forbidden", async () => {
+    const result = await collectionsSource.resolve(
+      { id: "records", kind: "collections", collectionId: "type-unknown" },
       { teamId: "team-1", userId: null, state: {} },
     );
     expect(result.status).toBe("forbidden");
@@ -301,8 +301,8 @@ describe("objectsSource — the stored definition owns the query", () => {
     // one bad query blanking a screen someone opens every morning.
     listResult = { count: 0, data: [] };
     fieldDefinitions = [];
-    void mock.module("../../src/services/object-records/retrieve", () => ({
-      listObjectRecords: () => {
+    void mock.module("../../src/services/collection-records/retrieve", () => ({
+      listCollectionRecords: () => {
         throw new Error("boom");
       },
     }));
@@ -313,7 +313,7 @@ describe("objectsSource — the stored definition owns the query", () => {
         [],
         [
           inline("sales", [{ amount: 10 }]),
-          { id: "broken", kind: "objects", objectTypeId: "type-1" },
+          { id: "broken", kind: "collections", collectionId: "type-1" },
         ],
       ),
       teamId: "team-1",
@@ -323,8 +323,8 @@ describe("objectsSource — the stored definition owns the query", () => {
     expect(datasets.broken?.status).toBe("error");
     expect(datasets.sales?.status).toBe("ok");
 
-    void mock.module("../../src/services/object-records/retrieve", () => ({
-      listObjectRecords: (params: Record<string, unknown>) => {
+    void mock.module("../../src/services/collection-records/retrieve", () => ({
+      listCollectionRecords: (params: Record<string, unknown>) => {
         listCalls.push(params);
         return Promise.resolve(listResult);
       },
@@ -344,7 +344,7 @@ describe("objectsSource — the stored definition owns the query", () => {
         [],
         [
           inline("sales", [{ amount: 10 }]),
-          { id: "untouched", kind: "objects", objectTypeId: "type-1" },
+          { id: "untouched", kind: "collections", collectionId: "type-1" },
         ],
       ),
       teamId: "team-1",
@@ -387,8 +387,8 @@ describe("objectsSource — the stored definition owns the query", () => {
 
   test("truncation is reported when the query had more rows than it returned", async () => {
     listResult = { count: 500, data: [{ id: "r1", label: "R1", data: {} }] };
-    const result = await objectsSource.resolve(
-      { id: "records", kind: "objects", objectTypeId: "type-1" },
+    const result = await collectionsSource.resolve(
+      { id: "records", kind: "collections", collectionId: "type-1" },
       { teamId: "team-1", userId: null, state: {} },
     );
     expect(result.status === "ok" && result.truncated).toBe(true);
@@ -399,15 +399,15 @@ describe("objectsSource — the stored definition owns the query", () => {
  * The runtime query — the half a viewer controls.
  *
  * It is bounded on purpose to a WINDOW and an ORDER. Everything that decides
- * WHICH rows exist (object type, filters, operators) stays in the stored
+ * WHICH rows exist (collection, filters, operators) stays in the stored
  * definition, which is what lets the same executor serve an anonymous page. The
  * tests below pin both halves: what the query may move, and what it may not.
  */
-describe("objectsSource — the window and ordering a viewer may ask for", () => {
+describe("collectionsSource — the window and ordering a viewer may ask for", () => {
   const dataset: PageDataset = {
     id: "records",
-    kind: "objects",
-    objectTypeId: "type-1",
+    kind: "collections",
+    collectionId: "type-1",
     limit: 25,
   };
   const sortableFields = [
@@ -419,7 +419,7 @@ describe("objectsSource — the window and ordering a viewer may ask for", () =>
     listCalls.length = 0;
     listResult = { count: 3_214_987, data: [] };
     fieldDefinitions = sortableFields;
-    const result = await objectsSource.resolve(dataset, {
+    const result = await collectionsSource.resolve(dataset, {
       teamId: "team-1",
       userId: null,
       state: {},
@@ -438,7 +438,7 @@ describe("objectsSource — the window and ordering a viewer may ask for", () =>
     listCalls.length = 0;
     listResult = { count: 0, data: [] };
     fieldDefinitions = sortableFields;
-    const result = await objectsSource.resolve(dataset, {
+    const result = await collectionsSource.resolve(dataset, {
       teamId: "team-1",
       userId: null,
       state: {},
@@ -457,7 +457,7 @@ describe("objectsSource — the window and ordering a viewer may ask for", () =>
     listCalls.length = 0;
     listResult = { count: 0, data: [] };
     fieldDefinitions = sortableFields;
-    await objectsSource.resolve(
+    await collectionsSource.resolve(
       { ...dataset, sortBy: "montant", sortDir: "desc" },
       {
         teamId: "team-1",
@@ -477,7 +477,7 @@ describe("objectsSource — the window and ordering a viewer may ask for", () =>
       listCalls.length = 0;
       listResult = { count: 0, data: [] };
       fieldDefinitions = sortableFields;
-      await objectsSource.resolve(dataset, {
+      await collectionsSource.resolve(dataset, {
         teamId: "team-1",
         userId: null,
         state: {},
@@ -491,11 +491,11 @@ describe("objectsSource — the window and ordering a viewer may ask for", () =>
     listCalls.length = 0;
     listResult = { count: 0, data: [] };
     fieldDefinitions = sortableFields;
-    const result = await objectsSource.resolve(dataset, {
+    const result = await collectionsSource.resolve(dataset, {
       teamId: "team-1",
       userId: null,
       state: {},
-      query: { sortBy: "montant; DROP TABLE object_records" },
+      query: { sortBy: "montant; DROP TABLE collection_records" },
     });
     // Dropping it is what keeps a runtime sort safe to accept from a browser:
     // an unknown name never becomes an identifier in a query. Passing it
@@ -508,7 +508,7 @@ describe("objectsSource — the window and ordering a viewer may ask for", () =>
     listCalls.length = 0;
     listResult = { count: 0, data: [] };
     fieldDefinitions = sortableFields;
-    const result = await objectsSource.resolve(dataset, {
+    const result = await collectionsSource.resolve(dataset, {
       teamId: "team-1",
       userId: null,
       state: {},
@@ -527,7 +527,7 @@ describe("objectsSource — the window and ordering a viewer may ask for", () =>
     listCalls.length = 0;
     listResult = { count: 0, data: [] };
     fieldDefinitions = sortableFields;
-    await objectsSource.resolve(
+    await collectionsSource.resolve(
       { ...dataset, filters: [{ key: "montant", op: "gt", value: 100 }] },
       {
         teamId: "team-1",
@@ -544,7 +544,7 @@ describe("objectsSource — the window and ordering a viewer may ask for", () =>
   test("an aggregate has no offset to walk, so `page` means nothing to it", async () => {
     aggregateCalls.length = 0;
     fieldDefinitions = sortableFields;
-    const result = await objectsSource.resolve(
+    const result = await collectionsSource.resolve(
       { ...dataset, mode: "aggregate", groupBy: "montant" },
       {
         teamId: "team-1",
@@ -565,7 +565,7 @@ describe("objectsSource — the window and ordering a viewer may ask for", () =>
     // whatever its author guessed.
     aggregateCalls.length = 0;
     fieldDefinitions = sortableFields;
-    await objectsSource.resolve(
+    await collectionsSource.resolve(
       { ...dataset, mode: "aggregate", groupBy: "montant" },
       {
         teamId: "team-1",
@@ -591,7 +591,7 @@ describe("objectsSource — the window and ordering a viewer may ask for", () =>
       sortBy: "group",
       metrics: [{ name: "total", fn: "sum" as const, key: "montant" }],
     };
-    await objectsSource.resolve(aggregate, {
+    await collectionsSource.resolve(aggregate, {
       teamId: "team-1",
       userId: null,
       state: {},
@@ -601,7 +601,7 @@ describe("objectsSource — the window and ordering a viewer may ask for", () =>
     expect(aggregateCalls[0]?.sortDir).toBe("asc");
 
     aggregateCalls.length = 0;
-    await objectsSource.resolve(aggregate, {
+    await collectionsSource.resolve(aggregate, {
       teamId: "team-1",
       userId: null,
       state: {},
@@ -644,18 +644,18 @@ describe("PageDataRequestSchema — what a hostile body cannot get through", () 
     // it here would put the ontology's rules in two places.
     const parsed = parse({
       variables: {},
-      queries: { t: { sortBy: "'; DROP TABLE object_records --" } },
+      queries: { t: { sortBy: "'; DROP TABLE collection_records --" } },
     });
     expect(parsed.success).toBe(true);
   });
 
-  test("no filter, object type or limit can be smuggled in beside them", () => {
+  test("no filter, collection or limit can be smuggled in beside them", () => {
     const parsed = parse({
       variables: {},
       queries: {
         t: {
           page: 1,
-          objectTypeId: "type-evil",
+          collectionId: "type-evil",
           filters: [{ key: "amount", op: "gt", value: 0 }],
         },
       },
@@ -693,13 +693,13 @@ describe("buildPageFieldDescriptors — the public-safe allowlist", () => {
           // None of these may reach an anonymous page.
           rollupFormula: "SUM(deals.amount)",
           internalFieldId: "fld_secret",
-          targetTypeKey: "company",
+          targetCollectionKey: "company",
         },
       },
     ];
     const [descriptor] = await buildPageFieldDescriptors({
       teamId: "team-1",
-      objectTypeId: "type-1",
+      collectionId: "type-1",
     });
 
     expect(descriptor?.key).toBe("status");
@@ -714,7 +714,7 @@ describe("buildPageFieldDescriptors — the public-safe allowlist", () => {
 
   test("every icon leaves in one ready-to-use shape, whatever was stored", async () => {
     // The stored shapes are mixed — the icon picker writes `i-lucide-check`,
-    // an object type keeps a bare `building-2` — and a page cannot tell them
+    // a collection keeps a bare `building-2` — and a page cannot tell them
     // apart. Whatever it assumed was wrong half the time: the page that wrapped
     // an already-prefixed name asked for `i-lucide-i-lucide-check` and rendered
     // a blank square after three CDN round-trips the sandbox blocks anyway.
@@ -735,7 +735,7 @@ describe("buildPageFieldDescriptors — the public-safe allowlist", () => {
     ];
     const [descriptor] = await buildPageFieldDescriptors({
       teamId: "team-1",
-      objectTypeId: "type-1",
+      collectionId: "type-1",
     });
 
     expect(descriptor?.options?.map((option) => option.icon)).toEqual([
@@ -757,7 +757,7 @@ describe("buildPageFieldDescriptors — the public-safe allowlist", () => {
     ];
     const [descriptor] = await buildPageFieldDescriptors({
       teamId: "team-1",
-      objectTypeId: "type-1",
+      collectionId: "type-1",
     });
     expect(descriptor?.options).toEqual([
       { value: "ok", label: "ok", color: undefined, icon: undefined },
@@ -769,7 +769,7 @@ describe("buildPageFieldDescriptors — the public-safe allowlist", () => {
     expect(
       await buildPageFieldDescriptors({
         teamId: "team-1",
-        objectTypeId: "type-1",
+        collectionId: "type-1",
       }),
     ).toEqual([]);
   });

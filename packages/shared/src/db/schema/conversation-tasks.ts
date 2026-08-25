@@ -44,7 +44,7 @@ export interface ConversationTaskMetadata {
   workflowId?: string;
   isTest?: boolean;
   /** `bulk_operation` — what is being loaded, for the row's label. */
-  importTypeKey?: string;
+  importCollectionKey?: string;
   importRows?: number;
   /**
    * How far along, in whatever unit the kind counts (rows, steps, files).

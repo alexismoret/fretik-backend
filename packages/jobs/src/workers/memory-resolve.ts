@@ -5,12 +5,12 @@ import {
   RESOLUTION_AUTO_THRESHOLD,
   RESOLUTION_SUGGEST_THRESHOLD,
 } from "@fretik/shared/lib/resolution";
-import { linkEventToRecords } from "@fretik/shared/services/domain-events/link-records";
 import {
   anchorTextToRecords,
   matchSpansToRecords,
   type RecordAnchor,
-} from "@fretik/shared/services/object-records/anchor";
+} from "@fretik/shared/services/collection-records/anchor";
+import { linkEventToRecords } from "@fretik/shared/services/domain-events/link-records";
 import { type Job, Worker } from "bullmq";
 import { z } from "zod";
 import {
@@ -51,7 +51,7 @@ const mentionsResponseSchema = z.object({
   mentions: z.array(
     z.object({
       label: z.string(),
-      typeKeyHint: z.string().optional(),
+      collectionKeyHint: z.string().optional(),
       confidence: z.number().optional(),
     }),
   ),

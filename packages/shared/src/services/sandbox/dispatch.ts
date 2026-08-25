@@ -1,6 +1,6 @@
 import { dispatchPlan } from "../external-apps/exec/plan";
 import { dispatchRead } from "../external-apps/exec/read";
-import { dispatchObjects } from "./objects";
+import { dispatchCollections } from "./collections";
 import type {
   ExecContext,
   SandboxExecRequest,
@@ -20,8 +20,8 @@ export const dispatchSandboxExec = async (
   if (request.kind === "read") {
     return dispatchRead(ctx, request.action, request.args);
   }
-  if (request.kind === "objects") {
-    return dispatchObjects(ctx, request.op, request.args);
+  if (request.kind === "collections") {
+    return dispatchCollections(ctx, request.op, request.args);
   }
   return dispatchPlan(ctx, request.operations);
 };

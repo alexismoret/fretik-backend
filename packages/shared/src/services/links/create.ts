@@ -8,7 +8,7 @@ import { bulkCreateLinks } from "./bulk-create";
  * Create a typed edge between two records — the single-edge front to the
  * set-based `bulkCreateLinks`, so there is ONE link-write + journal path. Both
  * ends are validated against the link type (`fromRecord` type =
- * `linkType.fromObjectTypeId`; `toRecord` type = `linkType.toObjectTypeId`
+ * `linkType.fromCollectionId`; `toRecord` type = `linkType.toCollectionId`
  * unless polymorphic/null). Idempotent on the active-edge unique index: at most
  * one active edge of a type between two records — on conflict it returns the
  * existing active edge and emits nothing. Pass `tx` to enlist in a caller's

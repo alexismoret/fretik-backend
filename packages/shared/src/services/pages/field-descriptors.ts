@@ -50,7 +50,7 @@ const asString = (value: unknown): string | undefined =>
 /**
  * Every icon crossing this contract leaves in ONE ready-to-use `<UIcon>` shape.
  *
- * The stored shapes are mixed and always have been: object types keep a bare
+ * The stored shapes are mixed and always have been: collections keep a bare
  * lucide name (`"circle-dashed"`), while select options written by the icon
  * picker keep the prefixed one (`"i-lucide-circle-dashed"`). A page cannot tell
  * them apart, so whatever it assumes is wrong half the time — and a page that
@@ -59,7 +59,7 @@ const asString = (value: unknown): string | undefined =>
  * spends three blocked CDN round-trips to render a blank square.
  *
  * Normalising here rather than asking the page to be careful is the same call
- * the app's own `objectIcon()` makes at render time: a bare name is prefixed, a
+ * the app's own `collectionIcon()` makes at render time: a bare name is prefixed, a
  * name that already carries a prefix (`i-…`) or a collection (`lucide:…`) is
  * left alone.
  */
@@ -103,7 +103,7 @@ const describeField = (
   const target =
     definition.type === "relation"
       ? relationLook.get(
-          asString(configValue(definition, "targetTypeKey")) ?? "",
+          asString(configValue(definition, "targetCollectionKey")) ?? "",
         )
       : undefined;
 
@@ -139,11 +139,11 @@ const describeField = (
 
 export const buildPageFieldDescriptors = async (params: {
   teamId: string;
-  objectTypeId: string;
+  collectionId: string;
 }): Promise<PageFieldDescriptor[]> => {
   const definitions = await getFieldDefinitionsForTeam({
     teamId: params.teamId,
-    objectTypeId: params.objectTypeId,
+    collectionId: params.collectionId,
   });
   if (definitions.length === 0) return [];
 
@@ -153,13 +153,13 @@ export const buildPageFieldDescriptors = async (params: {
   const targetKeys = new Set<string>();
   for (const definition of definitions) {
     if (definition.type !== "relation") continue;
-    const key = asString(configValue(definition, "targetTypeKey"));
+    const key = asString(configValue(definition, "targetCollectionKey"));
     if (key) targetKeys.add(key);
   }
 
   const relationLook = new Map<string, { icon?: string; color?: string }>();
   if (targetKeys.size > 0) {
-    const types = await db.query.objectTypes.findMany({
+    const types = await db.query.collections.findMany({
       columns: { key: true, icon: true, color: true },
       where: { key: { in: [...targetKeys] } },
     });

@@ -1,12 +1,12 @@
 import { getProducerConnection } from "@fretik/shared/lib/queue/connection";
 import { Queue } from "bullmq";
 import {
+  COLLECTION_INDEX_QUEUE,
   MCP_REFRESH_QUEUE,
   MEMORY_DISTILL_QUEUE,
   MEMORY_DREAMING_QUEUE,
   MEMORY_MAINTENANCE_QUEUE,
   MEMORY_RESOLVE_QUEUE,
-  OBJECT_INDEX_QUEUE,
   RECORD_CARD_QUEUE,
   WORKFLOW_TRIGGER_QUEUE,
   type DreamingTeamJobData,
@@ -86,11 +86,11 @@ export const getMcpRefreshQueue = (): Queue => {
   return mcpRefreshQueue;
 };
 
-let objectIndexQueue: Queue | null = null;
+let collectionIndexQueue: Queue | null = null;
 
-export const getObjectIndexQueue = (): Queue => {
-  objectIndexQueue ??= new Queue(OBJECT_INDEX_QUEUE, {
+export const getCollectionIndexQueue = (): Queue => {
+  collectionIndexQueue ??= new Queue(COLLECTION_INDEX_QUEUE, {
     connection: getProducerConnection(),
   });
-  return objectIndexQueue;
+  return collectionIndexQueue;
 };

@@ -171,32 +171,32 @@ describe("sanitizeSelect — table allowlist", () => {
   });
 });
 
-describe("sanitizeSelect — object graph surface (typed tables)", () => {
-  test("accepts the registry object_records (RLS-fenced, granted)", () => {
+describe("sanitizeSelect — collection graph surface (typed tables)", () => {
+  test("accepts the registry collection_records (RLS-fenced, granted)", () => {
     const sql = sanitizeSelect(
-      "SELECT id, label, status FROM object_records WHERE status = 'confirmed'",
+      "SELECT id, label, status FROM collection_records WHERE status = 'confirmed'",
     );
-    expect(sql).toContain("object_records");
+    expect(sql).toContain("collection_records");
   });
 
-  test("accepts object_types (the catalog, joined for the type key)", () => {
+  test("accepts collections (the catalog, joined for the type key)", () => {
     const sql = sanitizeSelect(
-      "SELECT r.label, t.key FROM object_records r JOIN object_types t ON t.id = r.object_type_id",
+      "SELECT r.label, t.key FROM collection_records r JOIN collections t ON t.id = r.collection_id",
     );
-    expect(sql).toContain("object_types");
+    expect(sql).toContain("collections");
   });
 
-  test("accepts a per-type typed table in the data schema (data.obj_*)", () => {
+  test("accepts a per-type typed table in the data schema (data.coll_*)", () => {
     const sql = sanitizeSelect(
-      "SELECT id, price FROM data.obj_3f9a2b1c4d5e WHERE status = 'confirmed'",
+      "SELECT id, price FROM data.coll_3f9a2b1c4d5e WHERE status = 'confirmed'",
     );
-    expect(sql).toContain("data.obj_3f9a2b1c4d5e");
+    expect(sql).toContain("data.coll_3f9a2b1c4d5e");
   });
 
   test("accepts a JOIN to locations with a PostGIS spatial filter", () => {
     const sql = sanitizeSelect(
       `SELECT o.id, loc.resolved_address
-       FROM data.obj_3f9a2b1c4d5e o
+       FROM data.coll_3f9a2b1c4d5e o
        JOIN locations loc ON loc.id = o."site"
        WHERE loc.geom && ST_MakeEnvelope(2.2, 48.8, 2.4, 48.9, 4326)`,
     );
@@ -213,17 +213,17 @@ describe("sanitizeSelect — object graph surface (typed tables)", () => {
   test("accepts the killer-query JOIN across typed tables + links", () => {
     const sql = sanitizeSelect(
       `SELECT p.price, c.label
-       FROM data.obj_3f9a2b1c4d5e p
+       FROM data.coll_3f9a2b1c4d5e p
        JOIN links l ON l.from_record_id = p.id AND l.valid_to IS NULL AND l.invalidated_at IS NULL
        JOIN link_types lt ON lt.id = l.link_type_id AND lt.key = 'carrier'
-       JOIN data.obj_company_aaaa c ON c.id = l.to_record_id
+       JOIN data.coll_company_aaaa c ON c.id = l.to_record_id
        WHERE p.status = 'confirmed' AND p.destination_port ILIKE 'shanghai' AND p.year = 2025
        ORDER BY p.price ASC LIMIT 1`,
     );
-    expect(sql).toContain("data.obj_3f9a2b1c4d5e");
+    expect(sql).toContain("data.coll_3f9a2b1c4d5e");
   });
 
-  test("REJECTS a non-obj_ table in the data schema", () => {
+  test("REJECTS a non-coll_ table in the data schema", () => {
     expectRejection("SELECT * FROM data.secrets", "SQL_TABLE_NOT_ALLOWED");
   });
 });

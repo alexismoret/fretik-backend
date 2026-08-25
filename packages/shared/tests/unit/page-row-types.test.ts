@@ -27,17 +27,17 @@ const render = (fields: PageFieldDescriptor[]): string =>
   renderRowType({
     key: "eval_page_item",
     label: "Eval Item",
-    objectTypeId: "01a00f76-e915-7346-9eb6-f7c25f641db6",
+    collectionId: "01a00f76-e915-7346-9eb6-f7c25f641db6",
     recordCount: 24,
     fields,
   });
 
 describe("row type rendering", () => {
-  test("leads with the objectTypeId, which is derivable from nothing else", () => {
+  test("leads with the collectionId, which is derivable from nothing else", () => {
     // A dataset cannot be written without this uuid, and the table name drops
-    // its dashes — reconstructing it from `data.obj_<hex>` matches nothing.
+    // its dashes — reconstructing it from `data.coll_<hex>` matches nothing.
     expect(render([field("title", "text")])).toContain(
-      "objectTypeId: 01a00f76-e915-7346-9eb6-f7c25f641db6",
+      "collectionId: 01a00f76-e915-7346-9eb6-f7c25f641db6",
     );
   });
 
@@ -104,7 +104,7 @@ describe("row type rendering", () => {
 describe("the generic row-shape table in the data contract", () => {
   test("states the three shapes that are not guessable", () => {
     const contract = describePageDataContract();
-    expect(contract).toContain("## row shapes (objects datasets)");
+    expect(contract).toContain("## row shapes (collections datasets)");
     expect(contract).toContain("[{ id, label }]");
     expect(contract).toContain("Number() it");
     expect(contract).toContain("{ amount, currencyCode }");

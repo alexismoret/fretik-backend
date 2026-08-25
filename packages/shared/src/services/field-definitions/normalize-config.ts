@@ -2,7 +2,7 @@ import type {
   FieldDefinitionConfig,
   FieldDefinitionType,
 } from "../../db/schema";
-import { autoColorAt } from "../../lib/colors/object-colors";
+import { autoColorAt } from "../../lib/colors/collection-colors";
 
 /**
  * Auto-assign a palette color to every select/multi_select option that lacks

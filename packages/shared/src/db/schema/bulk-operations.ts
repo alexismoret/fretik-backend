@@ -66,8 +66,8 @@ export type BulkOperationMode = (typeof BULK_OPERATION_MODES)[number];
 /** Kind-specific static input, frozen at creation. `record_import` today. */
 export interface RecordImportParams {
   op: "create";
-  objectTypeId: string;
-  typeKey: string;
+  collectionId: string;
+  collectionKey: string;
 }
 
 export type BulkOperationParams = RecordImportParams;

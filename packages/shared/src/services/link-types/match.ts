@@ -22,7 +22,7 @@ const slugifyLinkTypeKey = (raw: string): string =>
 /**
  * Canonicalize a proposed relation against existing link types to prevent
  * predicate sprawl (`works_for` vs `employed_by`). Within the double-arm scope
- * (team + org/system) and the same `fromObjectTypeId`:
+ * (team + org/system) and the same `fromCollectionId`:
  *   1. exact `normalizedKey` match
  *   2. trigram similarity on `normalizedKey` >= FUZZY_MATCH_THRESHOLD (best
  *      match; deliberately strict — precision-first)
@@ -35,15 +35,15 @@ export const resolveLinkType = async (data: {
   organizationId: string;
   teamId: string;
   rawKey: string;
-  fromObjectTypeId: string;
-  toObjectTypeId?: string | null;
+  fromCollectionId: string;
+  toCollectionId?: string | null;
 }): Promise<ResolveLinkTypeResult> => {
-  const { organizationId, teamId, rawKey, fromObjectTypeId, toObjectTypeId } =
+  const { organizationId, teamId, rawKey, fromCollectionId, toCollectionId } =
     data;
   const normalizedKey = slugifyLinkTypeKey(rawKey);
 
   const scope = and(
-    eq(linkTypes.fromObjectTypeId, fromObjectTypeId),
+    eq(linkTypes.fromCollectionId, fromCollectionId),
     or(
       eq(linkTypes.teamId, teamId),
       and(
@@ -80,8 +80,8 @@ export const resolveLinkType = async (data: {
     teamId,
     key: rawKey,
     label: rawKey,
-    fromObjectTypeId,
-    toObjectTypeId: toObjectTypeId ?? null,
+    fromCollectionId,
+    toCollectionId: toCollectionId ?? null,
     status: "suggested",
     source: "ai_extraction",
   });
@@ -100,10 +100,10 @@ export const resolveLinkType = async (data: {
 export const resolveLinkTypes = async (data: {
   organizationId: string;
   teamId: string;
-  fromObjectTypeId: string;
+  fromCollectionId: string;
   rawKeys: string[];
 }): Promise<Map<string, string>> => {
-  const { organizationId, teamId, fromObjectTypeId } = data;
+  const { organizationId, teamId, fromCollectionId } = data;
   const distinct = [...new Set(data.rawKeys)];
   const map = new Map<string, string>();
   if (distinct.length === 0) return map;
@@ -113,7 +113,7 @@ export const resolveLinkTypes = async (data: {
     .from(linkTypes)
     .where(
       and(
-        eq(linkTypes.fromObjectTypeId, fromObjectTypeId),
+        eq(linkTypes.fromCollectionId, fromCollectionId),
         or(
           eq(linkTypes.teamId, teamId),
           and(
@@ -136,7 +136,7 @@ export const resolveLinkTypes = async (data: {
       organizationId,
       teamId,
       rawKey,
-      fromObjectTypeId,
+      fromCollectionId,
     });
     map.set(rawKey, linkTypeId);
     byNormalized.set(normalized, linkTypeId);

@@ -121,7 +121,7 @@ export const consolidateEpisodes = async (input: {
   ];
   const records =
     recordIds.length > 0
-      ? await db.query.objectRecords.findMany({
+      ? await db.query.collectionRecords.findMany({
           where: { id: { in: recordIds }, teamId },
           columns: { id: true, label: true },
         })

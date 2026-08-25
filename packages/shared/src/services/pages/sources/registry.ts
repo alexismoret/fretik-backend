@@ -1,7 +1,7 @@
 import type { PageDatasetKind } from "../../../schemas/pages";
+import { collectionsSource } from "./collections";
 import { externalSource } from "./external";
 import { inlineSource } from "./inline";
-import { objectsSource } from "./objects";
 import type { PageDataSource } from "./types";
 
 /**
@@ -11,7 +11,11 @@ import type { PageDataSource } from "./types";
  * source is one file plus one line, and nothing about ordering, degradation or
  * the security boundary has to be touched.
  */
-const SOURCES: PageDataSource[] = [inlineSource, objectsSource, externalSource];
+const SOURCES: PageDataSource[] = [
+  inlineSource,
+  collectionsSource,
+  externalSource,
+];
 
 const BY_KIND = new Map<PageDatasetKind, PageDataSource>(
   SOURCES.map((source) => [source.kind, source]),

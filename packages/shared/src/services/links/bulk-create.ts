@@ -1,7 +1,7 @@
 import { and, inArray, isNull, sql } from "drizzle-orm";
 import db, { type Executor, type Transaction } from "../../db";
 import type { OntologySource, OntologyStatus } from "../../db/schema";
-import { links, linkTypes, objectRecords } from "../../db/schema";
+import { collectionRecords, links, linkTypes } from "../../db/schema";
 import { chunkForBulk, DB_BULK_CHUNK_SIZE } from "../../lib/db-bulk";
 import { type EventActor, SYSTEM_ACTOR } from "../domain-events/emit";
 import { emitDomainEventsBulk } from "../domain-events/emit-bulk";
@@ -78,18 +78,21 @@ export const bulkCreateLinks = async (input: {
   const linkTypeRows = await reader
     .select({
       id: linkTypes.id,
-      fromObjectTypeId: linkTypes.fromObjectTypeId,
-      toObjectTypeId: linkTypes.toObjectTypeId,
+      fromCollectionId: linkTypes.fromCollectionId,
+      toCollectionId: linkTypes.toCollectionId,
       isTemporal: linkTypes.isTemporal,
     })
     .from(linkTypes)
     .where(inArray(linkTypes.id, linkTypeIds));
   const recordRows = await reader
-    .select({ id: objectRecords.id, objectTypeId: objectRecords.objectTypeId })
-    .from(objectRecords)
-    .where(inArray(objectRecords.id, recordIds));
+    .select({
+      id: collectionRecords.id,
+      collectionId: collectionRecords.collectionId,
+    })
+    .from(collectionRecords)
+    .where(inArray(collectionRecords.id, recordIds));
   const linkTypeById = new Map(linkTypeRows.map((r) => [r.id, r]));
-  const typeByRecord = new Map(recordRows.map((r) => [r.id, r.objectTypeId]));
+  const typeByRecord = new Map(recordRows.map((r) => [r.id, r.collectionId]));
 
   // In-memory validation — same rules as createLink, no per-row SQL.
   const valid: ValidLink[] = [];
@@ -105,14 +108,14 @@ export const bulkCreateLinks = async (input: {
       errors.push({ index, error: "Record not found." });
       continue;
     }
-    if (fromType !== lt.fromObjectTypeId) {
+    if (fromType !== lt.fromCollectionId) {
       errors.push({
         index,
         error: "Source record type does not match the relation.",
       });
       continue;
     }
-    if (lt.toObjectTypeId !== null && toType !== lt.toObjectTypeId) {
+    if (lt.toCollectionId !== null && toType !== lt.toCollectionId) {
       errors.push({
         index,
         error: "Target record type does not match the relation.",

@@ -1,9 +1,12 @@
 import type { FormulaResultType } from "../../db/schema/field-types";
-import type { FormulaNode } from "../object-schema/formula/ast";
-import { FormulaError } from "../object-schema/formula/ast";
-import { compileFormula } from "../object-schema/formula/compile";
-import { arityOf, FORMULA_FUNCTIONS } from "../object-schema/formula/functions";
-import { parseFormula } from "../object-schema/formula/parse";
+import type { FormulaNode } from "../collection-schema/formula/ast";
+import { FormulaError } from "../collection-schema/formula/ast";
+import { compileFormula } from "../collection-schema/formula/compile";
+import {
+  arityOf,
+  FORMULA_FUNCTIONS,
+} from "../collection-schema/formula/functions";
+import { parseFormula } from "../collection-schema/formula/parse";
 import { readFormulaSiblings } from "./formula-config";
 
 /**
@@ -34,14 +37,14 @@ export type FormulaCheck =
   | { ok: false; message: string; at: number };
 
 export const checkFormula = async (input: {
-  objectTypeId: string;
+  collectionId: string;
   teamId: string | null;
   /** The field being edited, so a formula cannot resolve against its old self. */
   excludeFieldId?: string;
   expression: string;
 }): Promise<FormulaCheck> => {
   const fields = await readFormulaSiblings({
-    objectTypeId: input.objectTypeId,
+    collectionId: input.collectionId,
     teamId: input.teamId,
     excludeFieldId: input.excludeFieldId,
   });

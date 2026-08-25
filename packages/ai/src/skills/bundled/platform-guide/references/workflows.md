@@ -13,7 +13,7 @@ A workflow is this assistant running unattended: a trigger fires, the playbook's
 
 - **manual** — the user clicks Run, or you fire one for them with `run`. Right for "on demand but too long/repeatable for chat".
 - **cron** — 5-field pattern + optional IANA timezone ("every Monday 9am" → `0 9 * * 1`).
-- **event** — fires on a workspace event: `document.uploaded` (filterable by folder), `record.created` (filterable by object type), or a connector event (`connector.<app>.<kind>`). The backbone of ingest pipelines.
+- **event** — fires on a workspace event: `document.uploaded` (filterable by folder), `record.created` (filterable by collection), or a connector event (`connector.<app>.<kind>`). The backbone of ingest pipelines.
 - **form** — Fretik hosts a shareable public form; each submission (answers + attached files) starts a run. Right for collecting structured input from people outside the conversation — clients, field staff, other departments.
 
 ## Design for the input space
@@ -54,7 +54,7 @@ The same discipline covers the deliverable. When the output leaves a real choice
 
 ## Traps
 
-- The executor cannot create or modify object types, fields, skills, or workflows mid-run. Build schema and skills in the conversation FIRST; the workflow only fills them.
-- A playbook that needs data from an object type should name the type by its human label and let the run resolve it — hardcoding table names breaks on schema evolution.
+- The executor cannot create or modify collections, fields, skills, or workflows mid-run. Build schema and skills in the conversation FIRST; the workflow only fills them.
+- A playbook that needs data from a collection should name the type by its human label and let the run resolve it — hardcoding table names breaks on schema evolution.
 - Bulk record writes inside a run go through the Python objects SDK in ONE script (one approval covers all rows).
 - When a proposal replaces something the team does by hand, run the first execution as a test on real recent data and show the user the run before activating — trust comes from the visible run, not the description.

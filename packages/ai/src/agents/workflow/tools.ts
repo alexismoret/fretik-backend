@@ -14,7 +14,7 @@ import { buildChatbotTool } from "../shared/chatbot-tool";
  *   `question` approval and the answer arrives substituted on resume.
  * - `createSkill` / `updateSkill` OUT — both return drafts a user must
  *   confirm in chat; meaningless headless.
- * - `manageObjectType` / `manageField` OUT — hard gate behind the prompt
+ * - `manageCollection` / `manageField` OUT — hard gate behind the prompt
  *   rule: a run never changes the team's schema. Excluding them from the
  *   registry means the model has no schema for them, period.
  * - `manageWorkflow` OUT — a run never builds or launches workflows
@@ -30,7 +30,7 @@ export const buildWorkflowTools = (extras: {
   dispatchAgent: ReturnType<typeof createDispatchAgentTool>;
 }) => {
   const {
-    manageObjectType: _manageObjectType,
+    manageCollection: _manageCollection,
     manageField: _manageField,
     createSkill: _createSkill,
     updateSkill: _updateSkill,
@@ -90,7 +90,7 @@ let cachedHintNames: ReadonlySet<string> | undefined;
 export const workflowToolHintNames = (): ReadonlySet<string> => {
   if (cachedHintNames) return cachedHintNames;
   const {
-    manageObjectType: _manageObjectType,
+    manageCollection: _manageCollection,
     manageField: _manageField,
     createSkill: _createSkill,
     updateSkill: _updateSkill,

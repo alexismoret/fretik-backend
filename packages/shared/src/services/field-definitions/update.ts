@@ -3,19 +3,19 @@ import db from "../../db";
 import type { FieldDefinition } from "../../db/schema";
 import { fieldDefinitions } from "../../db/schema";
 import { badRequest, notFound, throwHttpError } from "../../lib/errors";
+import { countNonNullColumnValues } from "../collection-records/field-data";
+import { refreshCollectionTableAfterCatalogChange } from "../collection-schema/catalog-sync";
+import {
+  changeFieldColumns,
+  rebuildFormulaColumn,
+  renameFieldColumns,
+} from "../collection-schema/table";
+import { isDocumentCollection } from "../collections/is-document-type";
 import {
   emitDomainEvent,
   type EventActor,
   SYSTEM_ACTOR,
 } from "../domain-events/emit";
-import { countNonNullColumnValues } from "../object-records/field-data";
-import { refreshObjectTableAfterCatalogChange } from "../object-schema/catalog-sync";
-import {
-  changeFieldColumns,
-  rebuildFormulaColumn,
-  renameFieldColumns,
-} from "../object-schema/table";
-import { isDocumentObjectType } from "../object-types/is-document-type";
 import { invalidateFieldDefinitionsCache } from "./cache";
 import {
   assertNoFormulaDependents,
@@ -91,7 +91,7 @@ export const updateFieldDefinition = async (data: {
       (patch.type ?? existing.type) === "formula" || keyChanged || typeChanged
         ? await readFormulaSiblings({
             exec: tx,
-            objectTypeId: existing.objectTypeId,
+            collectionId: existing.collectionId,
             teamId: existing.teamId,
             excludeFieldId: existing.id,
           })
@@ -143,7 +143,7 @@ export const updateFieldDefinition = async (data: {
       const hasValues =
         (await countNonNullColumnValues({
           tx,
-          objectTypeId: existing.objectTypeId,
+          collectionId: existing.collectionId,
           field: existing,
         })) > 0;
 
@@ -167,10 +167,10 @@ export const updateFieldDefinition = async (data: {
 
     // The document type's title is locked to its `name` field — neither promote
     // another field nor demote `name`. Drop any isTitle change there.
-    const isDocument = await isDocumentObjectType({
+    const isDocument = await isDocumentCollection({
       organizationId: existing.organizationId,
       teamId: existing.teamId,
-      objectTypeId: existing.objectTypeId,
+      collectionId: existing.collectionId,
     });
     if (isDocument && patch.isTitle !== undefined) {
       patch = { ...patch, isTitle: undefined };
@@ -192,7 +192,7 @@ export const updateFieldDefinition = async (data: {
         .set({ isTitle: false })
         .where(
           and(
-            eq(fieldDefinitions.objectTypeId, existing.objectTypeId),
+            eq(fieldDefinitions.collectionId, existing.collectionId),
             existing.teamId === null
               ? isNull(fieldDefinitions.teamId)
               : eq(fieldDefinitions.teamId, existing.teamId),
@@ -210,7 +210,7 @@ export const updateFieldDefinition = async (data: {
       await assertScopeEnabledCap({
         organizationId: existing.organizationId,
         teamId: existing.teamId,
-        objectTypeId: existing.objectTypeId,
+        collectionId: existing.collectionId,
         addEnabled: 1,
         excludeId: existing.id,
       });
@@ -232,7 +232,7 @@ export const updateFieldDefinition = async (data: {
       if (typeChanged) {
         await changeFieldColumns({
           tx,
-          objectTypeId: updatedRow.objectTypeId,
+          collectionId: updatedRow.collectionId,
           oldField: existing,
           newField: updatedRow,
           siblings: [...siblings, updatedRow],
@@ -240,7 +240,7 @@ export const updateFieldDefinition = async (data: {
       } else if (keyChanged) {
         await renameFieldColumns({
           tx,
-          objectTypeId: updatedRow.objectTypeId,
+          collectionId: updatedRow.collectionId,
           oldField: existing,
           newKey: updatedRow.key,
         });
@@ -250,7 +250,7 @@ export const updateFieldDefinition = async (data: {
           formulaExpressionOf(updatedRow.config)
       ) {
         // Editing a formula is invisible to every idempotent path: the column
-        // name did not change, so `reconcileObjectTable` sees nothing to do and
+        // name did not change, so `reconcileCollectionTable` sees nothing to do and
         // `ADD COLUMN IF NOT EXISTS` finds it already there. Without this the
         // edit would appear to succeed while every row kept its old value —
         // plausible numbers that are simply no longer what the formula says.
@@ -265,7 +265,7 @@ export const updateFieldDefinition = async (data: {
         ]) {
           await rebuildFormulaColumn({
             tx,
-            objectTypeId: updatedRow.objectTypeId,
+            collectionId: updatedRow.collectionId,
             field,
             siblings: scope,
           });
@@ -275,10 +275,10 @@ export const updateFieldDefinition = async (data: {
 
     // Reconcile remaining columns + refresh search vectors, atomic with the
     // field-def change.
-    await refreshObjectTableAfterCatalogChange({
+    await refreshCollectionTableAfterCatalogChange({
       tx,
       organizationId: updatedRow.organizationId,
-      objectTypeId: updatedRow.objectTypeId,
+      collectionId: updatedRow.collectionId,
       teamId: updatedRow.teamId,
     });
 
@@ -294,7 +294,7 @@ export const updateFieldDefinition = async (data: {
         subjectType: "field",
         payload: {
           fieldDefinitionId: updatedRow.id,
-          objectTypeId: updatedRow.objectTypeId,
+          collectionId: updatedRow.collectionId,
           key: updatedRow.key,
           changed: Object.keys(patch).filter(
             (k) => patch[k as keyof typeof patch] !== undefined,

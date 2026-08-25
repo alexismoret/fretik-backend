@@ -8,7 +8,7 @@ import {
   geocodeLocationFieldsBatch,
   isLocationValue,
   normalizeAddressKey,
-} from "../object-records/geocode-location";
+} from "../collection-records/geocode-location";
 
 /**
  * Bulk sibling of `resolveLocationRefs` for `bulkCreate` / `bulkUpdate`: geocode

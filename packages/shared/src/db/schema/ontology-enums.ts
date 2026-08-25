@@ -2,7 +2,7 @@ import { pgEnum } from "drizzle-orm/pg-core";
 
 /**
  * Shared lifecycle vocabulary for the dynamic-data system. Both `links`,
- * `object_records`, and `link_types` carry these — trust is a first-class
+ * `collection_records`, and `link_types` carry these — trust is a first-class
  * dimension, not a second table. Reuses the proven `entities` model
  * (suggested → confirmed → rejected): user-created rows are born `confirmed`,
  * AI-extracted ones `suggested` until reviewed.
@@ -36,9 +36,9 @@ export type OntologySource = (typeof ONTOLOGY_SOURCES)[number];
  * (`agent`), the document pipeline / seeds (`system`), an external connector
  * (`connector`), or the future autonomous-agent engine (`workflow` — reserved,
  * nothing emits it yet). Carried on every `domain_events` row AND denormalized
- * as the actor stamps on `object_records`. Lives here (not in
- * `domain-events.ts`) so `object-records.ts` can use it without a circular
- * import — `domain-events.ts` already imports `object_records` for its
+ * as the actor stamps on `collection_records`. Lives here (not in
+ * `domain-events.ts`) so `collection-records.ts` can use it without a circular
+ * import — `domain-events.ts` already imports `collection_records` for its
  * provenance FK.
  */
 export const domainEventActorEnum = pgEnum("domain_event_actor", [

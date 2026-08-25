@@ -12,10 +12,10 @@ import {
 } from "drizzle-orm/pg-core";
 import { aiConversations } from "./ai";
 import { organization, team, user } from "./auth-schema";
-import { objectRecords } from "./object-records";
-// `domainEventActorEnum` lives in `ontology-enums.ts` (so `object-records` can
+import { collectionRecords } from "./collection-records";
+// `domainEventActorEnum` lives in `ontology-enums.ts` (so `collection-records` can
 // use it for actor stamps without a circular import — this module imports
-// `object_records` for its provenance FK). The schema barrel exports it once,
+// `collection_records` for its provenance FK). The schema barrel exports it once,
 // from there.
 import {
   domainEventActorEnum,
@@ -70,7 +70,7 @@ export const domainEvents = pgTable(
     // Denormalized convenience subject (the real graph is domain_event_links).
     subjectType: varchar("subject_type", { length: 60 }),
     subjectRecordId: uuid("subject_record_id").references(
-      () => objectRecords.id,
+      () => collectionRecords.id,
       { onDelete: "set null" },
     ),
 
@@ -118,7 +118,7 @@ export const domainEventLinks = pgTable(
       .references(() => domainEvents.id, { onDelete: "cascade" }),
     recordId: uuid("record_id")
       .notNull()
-      .references(() => objectRecords.id, { onDelete: "cascade" }),
+      .references(() => collectionRecords.id, { onDelete: "cascade" }),
     // subject | mentioned | created | affected
     role: varchar("role", { length: 60 }).notNull().default("mentioned"),
     // Trust of the edge. Links written at the mutation source are exact

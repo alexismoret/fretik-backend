@@ -9,7 +9,7 @@ import { describeDatasetError } from "../../src/services/pages/run-page-data";
  *
  * The driver's message is `Failed query: <the entire SQL>`, and that is what
  * used to travel: a wall of generated SQL naming the physical table
- * `data.obj_<uuid>`, with the cause — one wrong column — buried inside it.
+ * `data.coll_<uuid>`, with the cause — one wrong column — buried inside it.
  * Observed on a real run (2026-08-17): the agent read three of those, could not
  * tell which layer had failed, concluded "the transform keeps failing in the
  * sandbox" (it was an aggregate, and no sandbox was involved), and rewrote the
@@ -21,7 +21,7 @@ const drizzleError = (innerMessage: string, code?: string): Error => {
   const inner = new Error(innerMessage);
   if (code !== undefined) Reflect.set(inner, "code", code);
   const outer = new Error(
-    `Failed query: SELECT e."status"::text AS group_value, COALESCE(sum(e."nope"), 0)::float8 AS m0 FROM "object_records" JOIN data.obj_01a00f76e915 e ON e."id" = "object_records"."id" WHERE (("object_records"."object_type_id" = $1))`,
+    `Failed query: SELECT e."status"::text AS group_value, COALESCE(sum(e."nope"), 0)::float8 AS m0 FROM "collection_records" JOIN data.coll_01a00f76e915 e ON e."id" = "collection_records"."id" WHERE (("collection_records"."collection_id" = $1))`,
   );
   Reflect.set(outer, "cause", inner);
   return outer;
@@ -36,7 +36,7 @@ describe("describeDatasetError", () => {
     expect(message).toContain("dry_run");
     // The whole point: none of the SQL, and none of the physical table name.
     expect(message).not.toContain("SELECT");
-    expect(message).not.toContain("data.obj_");
+    expect(message).not.toContain("data.coll_");
   });
 
   test("any other database error still loses the SQL wrapper", () => {

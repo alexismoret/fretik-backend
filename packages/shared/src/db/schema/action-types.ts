@@ -11,7 +11,7 @@ import {
   varchar,
 } from "drizzle-orm/pg-core";
 import { organization, team } from "./auth-schema";
-import { objectTypes } from "./object-types";
+import { collections } from "./collections";
 
 /**
  * Action types — SKELETON (no runtime behavior in V1). The catalog of governed
@@ -31,9 +31,9 @@ export const actionTypes = pgTable(
       .references(() => organization.id, { onDelete: "cascade" }),
     teamId: uuid("team_id").references(() => team.id, { onDelete: "cascade" }),
 
-    objectTypeId: uuid("object_type_id")
+    collectionId: uuid("collection_id")
       .notNull()
-      .references(() => objectTypes.id, { onDelete: "cascade" }),
+      .references(() => collections.id, { onDelete: "cascade" }),
 
     key: varchar("key", { length: 60 }).notNull(),
     label: text("label").notNull(),
@@ -57,7 +57,10 @@ export const actionTypes = pgTable(
       .notNull(),
   },
   (table) => [
-    uniqueIndex("action_types_type_key_uniq").on(table.objectTypeId, table.key),
+    uniqueIndex("action_types_collection_key_uniq").on(
+      table.collectionId,
+      table.key,
+    ),
     index("action_types_org_idx").on(table.organizationId),
     index("action_types_team_idx").on(table.teamId),
   ],

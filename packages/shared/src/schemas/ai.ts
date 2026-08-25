@@ -166,13 +166,13 @@ export const episodeVectorMetadataSchema = z.object({
 
 /**
  * Zod counterpart of `RecordVectorMetadata` (db/schema/ai-vectors.ts).
- * One "card" per CONFIRMED object record — content is built by
- * `services/object-records/build-card.ts`, single chunk per record.
- * `object_type_key` + `label` ride along for citation rendering.
+ * One "card" per CONFIRMED record — content is built by
+ * `services/collection-records/build-card.ts`, single chunk per record.
+ * `collection_key` + `label` ride along for citation rendering.
  */
 export const recordVectorMetadataSchema = z.object({
-  object_type_id: z.uuid(),
-  object_type_key: z.string().min(1),
+  collection_id: z.uuid(),
+  collection_key: z.string().min(1),
   label: z.string().min(1),
 });
 
@@ -338,7 +338,7 @@ export const ConversationBackgroundTaskSchema = z.object({
   workflowId: z.uuid().nullable(),
   isTest: z.boolean(),
   /** `bulk_operation` — the parts its row composes its label from. */
-  importTypeKey: z.string().nullable(),
+  importCollectionKey: z.string().nullable(),
   importRows: z.number().int().nullable(),
   /** How far along, in the kind's own unit. Null when it counts nothing. */
   progress: z

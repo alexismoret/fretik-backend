@@ -47,7 +47,7 @@ export const pages = pgTable(
 
     name: varchar("name", { length: 120 }).notNull(),
     description: text("description").notNull().default(""),
-    // Same icon/color convention as object_types and workflows (Lucide name +
+    // Same icon/color convention as collections and workflows (Lucide name +
     // semantic color token).
     icon: varchar("icon", { length: 60 }),
     color: varchar("color", { length: 20 }),

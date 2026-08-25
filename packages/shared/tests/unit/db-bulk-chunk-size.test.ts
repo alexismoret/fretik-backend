@@ -9,7 +9,7 @@ import {
 
 /**
  * The chunk size stopped being a constant and became a function of how wide one
- * row of a given object type is. Exactly one property is a correctness
+ * row of a given collection is. Exactly one property is a correctness
  * requirement rather than a tuning preference: `rows × paramsPerRow` must never
  * reach Postgres' bind-parameter ceiling, because crossing it is not a slow
  * query, it is a failed statement in the middle of a load.

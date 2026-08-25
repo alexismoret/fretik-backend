@@ -13,7 +13,7 @@ import {
   varchar,
 } from "drizzle-orm/pg-core";
 import { organization, team } from "./auth-schema";
-import { objectTypes } from "./object-types";
+import { collections } from "./collections";
 import { ontologySourceEnum, ontologyStatusEnum } from "./ontology-enums";
 
 /**
@@ -28,12 +28,12 @@ export const linkTypeCardinalityEnum = pgEnum("link_type_cardinality", [
 ]);
 
 /**
- * Link types — the catalog of typed relations between object types
+ * Link types — the catalog of typed relations between collections
  * (`pricing → carrier → organization`). Created by users OR the AI. A `link`
  * row carries no semantics of its own; it points at a link type via a NOT NULL
  * FK. Per-edge qualifiers go in `links.props`.
  *
- * `toObjectTypeId` is NULLABLE → a polymorphic relation (Twenty-style): the
+ * `toCollectionId` is NULLABLE → a polymorphic relation (Twenty-style): the
  * target record may be of any type (e.g. a note attachable to several types).
  *
  * Lifecycle (status/source/confidence) mirrors records so the AI can propose a
@@ -60,11 +60,11 @@ export const linkTypes = pgTable(
     normalizedKey: varchar("normalized_key", { length: 60 }).notNull(),
     label: text("label").notNull(),
 
-    fromObjectTypeId: uuid("from_object_type_id")
+    fromCollectionId: uuid("from_collection_id")
       .notNull()
-      .references(() => objectTypes.id, { onDelete: "cascade" }),
-    // NULL = polymorphic (target may be any object type)
-    toObjectTypeId: uuid("to_object_type_id").references(() => objectTypes.id, {
+      .references(() => collections.id, { onDelete: "cascade" }),
+    // NULL = polymorphic (target may be any collection)
+    toCollectionId: uuid("to_collection_id").references(() => collections.id, {
       onDelete: "cascade",
     }),
 
@@ -101,7 +101,7 @@ export const linkTypes = pgTable(
       .notNull(),
   },
   (table) => [
-    // A predicate is unique PER SOURCE TYPE, not per scope. `fromObjectTypeId`
+    // A predicate is unique PER SOURCE TYPE, not per scope. `fromCollectionId`
     // is load-bearing here: without it the constraint contradicted everything
     // that reads these rows — `resolveLinkType` looks up scoped by source type,
     // `bulkCreateLinks` validates an edge's endpoints against the link type's
@@ -113,15 +113,15 @@ export const linkTypes = pgTable(
     // SILENT in production — the memory-resolve worker catches it and logs
     // "relation extraction unavailable", losing the whole pass for that event.
     uniqueIndex("link_types_org_key_uniq")
-      .on(table.organizationId, table.normalizedKey, table.fromObjectTypeId)
+      .on(table.organizationId, table.normalizedKey, table.fromCollectionId)
       .where(sql`team_id IS NULL`),
     uniqueIndex("link_types_team_key_uniq")
-      .on(table.teamId, table.normalizedKey, table.fromObjectTypeId)
+      .on(table.teamId, table.normalizedKey, table.fromCollectionId)
       .where(sql`team_id IS NOT NULL`),
     index("link_types_org_idx").on(table.organizationId),
     index("link_types_team_idx").on(table.teamId),
-    index("link_types_from_idx").on(table.fromObjectTypeId),
-    index("link_types_to_idx").on(table.toObjectTypeId),
+    index("link_types_from_idx").on(table.fromCollectionId),
+    index("link_types_to_idx").on(table.toCollectionId),
   ],
 );
 

@@ -8,15 +8,15 @@ import {
 } from "@fretik/shared/file-types";
 import { renderSnapshot } from "@fretik/shared/lib/chat-file-snapshot";
 import { signSandboxJwt } from "@fretik/shared/lib/external-apps/sandbox-jwt";
+import { describeTeamSchema } from "@fretik/shared/services/collections/describe-team-schema";
 import { listConnections } from "@fretik/shared/services/external-apps/connections/list";
 import { isMcpConnection } from "@fretik/shared/services/external-apps/mcp/connection-kind";
-import { describeTeamSchema } from "@fretik/shared/services/object-types/describe-team-schema";
 import { listEnabledSkillsForTeam } from "@fretik/shared/services/skills/list-enabled-for-team";
 import { and, eq, inArray, ne } from "drizzle-orm";
 import { writeSandboxAuthFile } from "../../lib/conversation-storage";
 import { withSoftTimeout } from "../../lib/stream-errors";
 import { buildChatbotContextManifest } from "../../services/chatbot-context/build-manifest";
-import { formatTeamObjectsBlock } from "../chatbot/team-objects-block";
+import { formatTeamCollectionsBlock } from "../chatbot/team-collections-block";
 import type { ExternalAppConnectionLite } from "./runtime-context";
 
 /**
@@ -38,7 +38,7 @@ export interface FragmentScope {
 
 export interface ContextFragments {
   chatbotContextManifest?: string;
-  teamObjectsBlock?: string;
+  teamCollectionsBlock?: string;
   enabledSkillsBlock?: string;
 }
 
@@ -51,7 +51,7 @@ export interface ContextFragments {
 export const assembleContextFragments = async (
   scope: FragmentScope,
 ): Promise<ContextFragments> => {
-  const [chatbotContextManifest, teamObjectsBlock, enabledSkillsBlock] =
+  const [chatbotContextManifest, teamCollectionsBlock, enabledSkillsBlock] =
     await Promise.all([
       withSoftTimeout(
         buildChatbotContextManifest({
@@ -82,7 +82,7 @@ export const assembleContextFragments = async (
           organizationId: scope.organizationId,
           teamId: scope.teamId,
         })
-          .then((types) => formatTeamObjectsBlock(types))
+          .then((types) => formatTeamCollectionsBlock(types))
           .catch((error: unknown) => {
             console.warn(
               `${scope.logPrefix} describeTeamSchema failed, continuing without team objects:`,
@@ -121,8 +121,8 @@ export const assembleContextFragments = async (
       chatbotContextManifest.manifest.length > 0
         ? chatbotContextManifest.manifest
         : undefined,
-    teamObjectsBlock:
-      teamObjectsBlock.length > 0 ? teamObjectsBlock : undefined,
+    teamCollectionsBlock:
+      teamCollectionsBlock.length > 0 ? teamCollectionsBlock : undefined,
     enabledSkillsBlock:
       enabledSkillsBlock.length > 0 ? enabledSkillsBlock : undefined,
   };

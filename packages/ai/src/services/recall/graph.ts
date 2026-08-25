@@ -1,5 +1,5 @@
 import db from "@fretik/shared/db";
-import type { RecordAnchor } from "@fretik/shared/services/object-records/anchor";
+import type { RecordAnchor } from "@fretik/shared/services/collection-records/anchor";
 
 /**
  * Deterministic graph neighborhood of the records anchored in the user's

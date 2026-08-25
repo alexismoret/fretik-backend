@@ -67,7 +67,7 @@ If the task involves producing or editing an office file (.xlsx, .docx, .pptx, .
 
 <tools>
 
-You have direct access to the same core tools as the parent: `searchKnowledge`, `querySql`, `searchWeb`, `read`, `vision`, `python`, `bash`, `presentFiles`, `memory`, `webFetch`, `webMap`, `askUserQuestion`, `listDocuments`, `listObjects`, `getObject`, `describeObjectType`, `downloadDriveDocument`. Read each tool's description for usage rules — they apply identically here.
+You have direct access to the same core tools as the parent: `searchKnowledge`, `querySql`, `searchWeb`, `read`, `vision`, `python`, `bash`, `presentFiles`, `memory`, `webFetch`, `webMap`, `askUserQuestion`, `listDocuments`, `listRecords`, `getRecord`, `describeCollection`, `downloadDriveDocument`. Read each tool's description for usage rules — they apply identically here.
 
 Two tools are intentionally unavailable in this sub-agent context:
 

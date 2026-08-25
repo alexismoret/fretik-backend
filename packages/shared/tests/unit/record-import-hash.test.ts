@@ -20,7 +20,7 @@ import { isRecordImportPayload } from "../../src/services/approvals/payload-guar
 
 const base = {
   op: "create",
-  objectTypeId: "018f0000-0000-7000-8000-000000000001",
+  collectionId: "018f0000-0000-7000-8000-000000000001",
   totalRows: 200_000,
   rowsDigest: "a".repeat(64),
 };
@@ -34,7 +34,7 @@ describe("recordImportLookupHash — the same load is the same key", () => {
     const reordered = {
       rowsDigest: base.rowsDigest,
       totalRows: base.totalRows,
-      objectTypeId: base.objectTypeId,
+      collectionId: base.collectionId,
       op: base.op,
     };
     expect(recordImportLookupHash(reordered)).toBe(
@@ -60,7 +60,7 @@ describe("recordImportLookupHash — a different load is a different key", () =>
     expect(
       recordImportLookupHash({
         ...base,
-        objectTypeId: "018f0000-0000-7000-8000-000000000002",
+        collectionId: "018f0000-0000-7000-8000-000000000002",
       }),
     ).not.toBe(recordImportLookupHash(base));
   });
@@ -79,12 +79,12 @@ describe("isRecordImportPayload — a refinement, not a sibling", () => {
     op: "create",
     operationId: "018f0000-0000-7000-8000-00000000000a",
     totalRows: 200_000,
-    typeKey: "client",
+    collectionKey: "client",
     items: [{ data: { name: "ACME" } }],
   };
   const writePayload: ToolApprovalRecordWritePayload = {
     op: "create",
-    typeKey: "client",
+    collectionKey: "client",
     items: [{ data: { name: "ACME" } }],
   };
   const questionPayload: ToolApprovalQuestionPayload = { questions: [] };

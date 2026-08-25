@@ -1,6 +1,6 @@
 /**
  * Chain-eval fixtures — a universe owned by THIS suite, deliberately disjoint
- * from `evals/memory` and `evals/recall` (own object type, own labels), so a
+ * from `evals/memory` and `evals/recall` (own collection, own labels), so a
  * chain run never decides a case in another suite.
  *
  * Same isolation trap as the memory suite: these rows live in the shared eval
@@ -21,14 +21,14 @@ import {
   aiMessages,
 } from "@fretik/shared/db/schema";
 import { deleteMemoryVectorsBulk } from "@fretik/shared/services/ai-memory/vector-refresh";
+import { bulkDeleteCollectionRecords } from "@fretik/shared/services/collection-records/bulk-delete";
+import { deleteRecordCardVectors } from "@fretik/shared/services/collection-records/card-vectors";
+import { createCollectionRecord } from "@fretik/shared/services/collection-records/create";
+import { createCollectionWithFields } from "@fretik/shared/services/collections/create-with-fields";
+import { deleteCollection } from "@fretik/shared/services/collections/delete";
 import { emitDomainEventsBulk } from "@fretik/shared/services/domain-events/emit-bulk";
 import { upsertEpisode } from "@fretik/shared/services/episodes/upsert";
 import { deleteEpisodeVectors } from "@fretik/shared/services/episodes/vectors";
-import { bulkDeleteObjectRecords } from "@fretik/shared/services/object-records/bulk-delete";
-import { deleteRecordCardVectors } from "@fretik/shared/services/object-records/card-vectors";
-import { createObjectRecord } from "@fretik/shared/services/object-records/create";
-import { createObjectTypeWithFields } from "@fretik/shared/services/object-types/create-with-fields";
-import { deleteObjectType } from "@fretik/shared/services/object-types/delete";
 import { inArray } from "drizzle-orm";
 
 export interface ChainScope {
@@ -49,12 +49,12 @@ const RECORD_LABEL = "Calliope Verre";
 const CONVERSATION_TITLE = "[chain-eval] négociation Calliope Verre";
 
 const ensureType = async (scope: ChainScope): Promise<string> => {
-  const existing = await db.query.objectTypes.findFirst({
+  const existing = await db.query.collections.findFirst({
     where: { teamId: scope.teamId, key: TYPE_KEY },
     columns: { id: true },
   });
   if (existing) return existing.id;
-  const created = await createObjectTypeWithFields({
+  const created = await createCollectionWithFields({
     organizationId: scope.organizationId,
     teamId: scope.teamId,
     key: TYPE_KEY,
@@ -70,17 +70,17 @@ const ensureType = async (scope: ChainScope): Promise<string> => {
 
 const ensureRecord = async (
   scope: ChainScope,
-  objectTypeId: string,
+  collectionId: string,
 ): Promise<string> => {
-  const existing = await db.query.objectRecords.findFirst({
-    where: { teamId: scope.teamId, objectTypeId, label: RECORD_LABEL },
+  const existing = await db.query.collectionRecords.findFirst({
+    where: { teamId: scope.teamId, collectionId, label: RECORD_LABEL },
     columns: { id: true },
   });
   if (existing) return existing.id;
-  const created = await createObjectRecord({
+  const created = await createCollectionRecord({
     organizationId: scope.organizationId,
     teamId: scope.teamId,
-    objectTypeId,
+    collectionId,
     data: { nom: RECORD_LABEL, secteur: "verrerie industrielle" },
     labelOverride: RECORD_LABEL,
     status: "confirmed",
@@ -379,14 +379,14 @@ export const cleanupChainFixtures = async (
     })
   ).map((c) => c.id);
 
-  const type = await db.query.objectTypes.findFirst({
+  const type = await db.query.collections.findFirst({
     where: { teamId: scope.teamId, key: TYPE_KEY },
     columns: { id: true },
   });
   const recIds = type
     ? (
-        await db.query.objectRecords.findMany({
-          where: { teamId: scope.teamId, objectTypeId: type.id },
+        await db.query.collectionRecords.findMany({
+          where: { teamId: scope.teamId, collectionId: type.id },
           columns: { id: true },
         })
       ).map((r) => r.id)
@@ -444,9 +444,9 @@ export const cleanupChainFixtures = async (
 
   if (recIds.length > 0) {
     for (const id of recIds) await deleteRecordCardVectors(id);
-    await bulkDeleteObjectRecords({ teamId: scope.teamId, ids: recIds });
+    await bulkDeleteCollectionRecords({ teamId: scope.teamId, ids: recIds });
   }
   if (type) {
-    await deleteObjectType({ id: type.id });
+    await deleteCollection({ id: type.id });
   }
 };

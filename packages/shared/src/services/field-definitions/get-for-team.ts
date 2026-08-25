@@ -1,9 +1,9 @@
 import { and, asc, eq } from "drizzle-orm";
 import db from "../../db";
 import type { FieldDefinition } from "../../db/schema";
-import { fieldDefinitions, objectTypes } from "../../db/schema";
+import { collections, fieldDefinitions } from "../../db/schema";
 import { selectOrCache } from "../../lib/redis";
-import { DOCUMENT_TYPE_KEY } from "../object-types/constants";
+import { DOCUMENT_COLLECTION_KEY } from "../collections/constants";
 import { fieldDefinitionsCacheKeyTeam } from "./cache";
 
 /**
@@ -12,11 +12,11 @@ import { fieldDefinitionsCacheKeyTeam } from "./cache";
  * (`duplicate-org-to-team.ts`), so the team table already contains its
  * own snapshot of every field it should see.
  *
- * The object type is resolved by `objectTypeId` when provided, otherwise by
- * `objectTypeKey` (default `document_record`) via an INNER JOIN on `object_types`
+ * The collection is resolved by `collectionId` when provided, otherwise by
+ * `collectionKey` (default `document_record`) via an INNER JOIN on `collections`
  * — which avoids a separate org lookup to map the key to an id.
  *
- * Cached under `team:{teamId}:field-definitions:{objectTypeId|key}:…` with a
+ * Cached under `team:{teamId}:field-definitions:{collectionId|key}:…` with a
  * 30-min TTL. Writes invalidate the matching prefix via
  * `invalidateFieldDefinitionsCache`.
  *
@@ -28,30 +28,30 @@ import { fieldDefinitionsCacheKeyTeam } from "./cache";
  */
 export const getFieldDefinitionsForTeam = async (data: {
   teamId: string;
-  objectTypeId?: string;
-  objectTypeKey?: string;
+  collectionId?: string;
+  collectionKey?: string;
   includeDisabled?: boolean;
 }): Promise<FieldDefinition[]> => {
   const {
     teamId,
-    objectTypeId,
-    objectTypeKey = DOCUMENT_TYPE_KEY,
+    collectionId,
+    collectionKey = DOCUMENT_COLLECTION_KEY,
     includeDisabled = false,
   } = data;
 
   return await selectOrCache(
     async () => {
       const conditions = [eq(fieldDefinitions.teamId, teamId)];
-      if (objectTypeId) {
-        conditions.push(eq(fieldDefinitions.objectTypeId, objectTypeId));
+      if (collectionId) {
+        conditions.push(eq(fieldDefinitions.collectionId, collectionId));
       } else {
-        conditions.push(eq(objectTypes.key, objectTypeKey));
+        conditions.push(eq(collections.key, collectionKey));
       }
       if (!includeDisabled) {
         conditions.push(eq(fieldDefinitions.enabled, true));
       }
 
-      if (objectTypeId) {
+      if (collectionId) {
         return await db
           .select()
           .from(fieldDefinitions)
@@ -63,8 +63,8 @@ export const getFieldDefinitionsForTeam = async (data: {
         .select()
         .from(fieldDefinitions)
         .innerJoin(
-          objectTypes,
-          eq(fieldDefinitions.objectTypeId, objectTypes.id),
+          collections,
+          eq(fieldDefinitions.collectionId, collections.id),
         )
         .where(and(...conditions))
         .orderBy(asc(fieldDefinitions.displayOrder));
@@ -72,7 +72,7 @@ export const getFieldDefinitionsForTeam = async (data: {
     },
     fieldDefinitionsCacheKeyTeam(
       teamId,
-      objectTypeId ?? objectTypeKey,
+      collectionId ?? collectionKey,
       includeDisabled,
     ),
   );

@@ -311,7 +311,7 @@ export const toolPortabilitySuite: EvalSuite = {
           name: "both counts were actually looked up (≥2 data lookups)",
           fn: (result) => {
             const lookups = result.toolCalls.filter((c) =>
-              ["querySql", "listDocuments", "listObjects"].includes(c.name),
+              ["querySql", "listDocuments", "listRecords"].includes(c.name),
             );
             return (
               lookups.length >= 2 ||

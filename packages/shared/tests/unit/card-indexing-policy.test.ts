@@ -3,8 +3,8 @@ import {
   CARD_INDEX_ROW_CEILING,
   cardIndexVerdict,
   needsFreshEstimate,
-} from "../../src/services/object-records/card-indexing-policy";
-import { INDEX_ROW_THRESHOLD } from "../../src/services/object-schema/indexes";
+} from "../../src/services/collection-records/card-indexing-policy";
+import { INDEX_ROW_THRESHOLD } from "../../src/services/collection-schema/indexes";
 
 /**
  * The policy has two halves worth locking down, and neither is about the

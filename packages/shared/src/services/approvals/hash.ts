@@ -42,7 +42,7 @@ export const recordWriteLookupHash = (
   if (payload.op === "create") {
     return canonicalHash({
       op: "create",
-      objectTypeId: payload.objectTypeId,
+      collectionId: payload.collectionId,
       rows: payload.items.map((i) => ({
         data: i.data,
         relations: i.relations,
@@ -82,7 +82,7 @@ export const recordWriteLookupHash = (
  */
 export const recordImportLookupHash = (input: {
   op: string;
-  objectTypeId: string;
+  collectionId: string;
   totalRows: number;
   rowsDigest: string;
 }): string => canonicalHash({ kind: "record_import", ...input });

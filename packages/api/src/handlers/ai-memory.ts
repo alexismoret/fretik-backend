@@ -385,12 +385,12 @@ aiMemoryRoutes.openapi(getEpisodeRoute, async (c) => {
       updatedAt: episode.updatedAt,
       summary: episode.summary,
       records: episode.episodeRecords.flatMap((r) =>
-        r.record && r.record.objectType
+        r.record && r.record.collection
           ? [
               {
                 id: r.record.id,
                 label: r.record.label,
-                typeKey: r.record.objectType.key,
+                collectionKey: r.record.collection.key,
               },
             ]
           : [],

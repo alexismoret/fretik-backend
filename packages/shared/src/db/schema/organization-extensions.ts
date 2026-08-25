@@ -24,13 +24,16 @@ export const organizationSettings = pgTable("organization_settings", {
   storageQuotaGb: integer("storage_quota_gb").default(100).notNull(),
   maxAgencies: integer("max_agencies").default(10).notNull(),
 
-  // Object type key that parties extracted from uploaded documents are folded
+  // Collection key that parties extracted from uploaded documents are folded
   // into (the document→graph "mentions" target). NULL falls back to `company`
   // for back-compat. Decoupled from a hardcoded `company` so a team can point
   // extraction at any type, and deleting `company` degrades gracefully.
-  documentMentionTargetTypeKey: varchar("document_mention_target_type_key", {
-    length: 60,
-  }),
+  documentMentionTargetCollectionKey: varchar(
+    "document_mention_target_collection_key",
+    {
+      length: 60,
+    },
+  ),
 
   // Timestamps
   createdAt: timestamp("created_at", { mode: "date", withTimezone: true })

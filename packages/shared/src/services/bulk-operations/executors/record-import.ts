@@ -3,16 +3,16 @@ import type {
   BulkOperation,
   ToolApprovalRecordImportPayload,
 } from "../../../db/schema";
+import { bulkCreateCollectionRecords } from "../../collection-records/bulk-create";
+import { reconcileFieldIndexes } from "../../collection-schema/reconcile-indexes";
 import type { EventActor } from "../../domain-events/emit";
-import { bulkCreateObjectRecords } from "../../object-records/bulk-create";
-import { reconcileFieldIndexes } from "../../object-schema/reconcile-indexes";
 import { importAgentKey } from "../agent-key";
 import type { BulkOperationExecutor, ChunkOutcome } from "../types";
 
 /**
- * `record_import` — many new records of ONE object type, uploaded in chunks.
+ * `record_import` — many new records of ONE collection, uploaded in chunks.
  *
- * Every row still goes through `bulkCreateObjectRecords`, so field validation,
+ * Every row still goes through `bulkCreateCollectionRecords`, so field validation,
  * the typed extension table, relations and the `record.created` journal are
  * exactly what a small `bulk_create` produces. What changes at this size is
  * only WHEN the work happens, never WHAT it does.
@@ -44,11 +44,11 @@ export const recordImportExecutor: BulkOperationExecutor = {
   kind: "record_import",
 
   validateSample: async (op) => {
-    const { errors } = await bulkCreateObjectRecords({
+    const { errors } = await bulkCreateCollectionRecords({
       organizationId: op.organizationId,
       teamId: op.teamId,
       userId: op.userId,
-      objectTypeId: op.params.objectTypeId,
+      collectionId: op.params.collectionId,
       rows: rowsOf(op.sample),
       dryRun: true,
     });
@@ -56,11 +56,11 @@ export const recordImportExecutor: BulkOperationExecutor = {
   },
 
   applyChunk: async ({ op, items }): Promise<ChunkOutcome> => {
-    const result = await bulkCreateObjectRecords({
+    const result = await bulkCreateCollectionRecords({
       organizationId: op.organizationId,
       teamId: op.teamId,
       userId: op.userId,
-      objectTypeId: op.params.objectTypeId,
+      collectionId: op.params.collectionId,
       rows: rowsOf(items),
       // One reconcile for the whole load, in `finalize`.
       skipIndexReconcile: true,
@@ -76,10 +76,10 @@ export const recordImportExecutor: BulkOperationExecutor = {
 
   // The moment to build the type's field indexes: once, after the whole load.
   // The runner fires this WITHOUT waiting, for the same reason
-  // `bulkCreateObjectRecords` does not wait for its own — `CREATE INDEX
+  // `bulkCreateCollectionRecords` does not wait for its own — `CREATE INDEX
   // CONCURRENTLY` scales with the table and the rows are readable without it.
   finalize: async (op) => {
-    await reconcileFieldIndexes({ objectTypeId: op.params.objectTypeId });
+    await reconcileFieldIndexes({ collectionId: op.params.collectionId });
   },
 
   buildApprovalPayload: async (
@@ -87,17 +87,17 @@ export const recordImportExecutor: BulkOperationExecutor = {
   ): Promise<ToolApprovalRecordImportPayload> => {
     // Display metadata only — the card names the target type, it does not
     // render its schema, so this stays a three-column read rather than
-    // `getObjectType`'s type + full field catalog.
-    const type = await db.query.objectTypes.findFirst({
+    // `getCollection`'s type + full field catalog.
+    const type = await db.query.collections.findFirst({
       columns: { label: true, icon: true, color: true },
-      where: { id: op.params.objectTypeId },
+      where: { id: op.params.collectionId },
     });
     return {
       op: "create",
       operationId: op.id,
       totalRows: op.totalItems,
-      typeKey: op.params.typeKey,
-      objectTypeId: op.params.objectTypeId,
+      collectionKey: op.params.collectionKey,
+      collectionId: op.params.collectionId,
       ...(type?.label ? { typeName: type.label } : {}),
       ...(type?.icon ? { typeIcon: type.icon } : {}),
       ...(type?.color ? { typeColor: type.color } : {}),
@@ -106,12 +106,12 @@ export const recordImportExecutor: BulkOperationExecutor = {
       // uses — the reviewer checks the MAPPING here, not the rows.
       items: op.sample.map((data) => ({
         data,
-        objectTypeId: op.params.objectTypeId,
-        typeKey: op.params.typeKey,
+        collectionId: op.params.collectionId,
+        collectionKey: op.params.collectionKey,
       })),
     };
   },
 
   describe: (op) =>
-    `Importing ${op.totalItems.toString()} records into ${op.params.typeKey}`,
+    `Importing ${op.totalItems.toString()} records into ${op.params.collectionKey}`,
 };

@@ -20,10 +20,10 @@ export const sandboxExecRequestSchema = z.discriminatedUnion("kind", [
     turnId: z.string().min(1),
   }),
   z.object({
-    // Code-mode ontology SDK (`fretik_apps.objects`): bulk record writes +
+    // Code-mode ontology SDK (`fretik_apps.collections`): bulk record writes +
     // schema migrations. Record writes are gated by workflow autonomy in
-    // `dispatchObjects`; schema changes are blocked for any workflow run.
-    kind: z.literal("objects"),
+    // `dispatchCollections`; schema changes are blocked for any workflow run.
+    kind: z.literal("collections"),
     op: z.string().min(1),
     args: z.record(z.string(), z.unknown()),
     turnId: z.string().min(1),

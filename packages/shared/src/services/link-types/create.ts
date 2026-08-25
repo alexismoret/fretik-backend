@@ -37,7 +37,7 @@ const slugifyLinkTypeKey = (raw: string): string =>
  * slugify the base (label when no key is supplied), then append `_2`, `_3`, …
  * until it clears the uniqueness index. Keeps relation keys out of the UI.
  *
- * Scoped by `fromObjectTypeId` because the index is (see `link-types.ts`):
+ * Scoped by `fromCollectionId` because the index is (see `link-types.ts`):
  * without it a team that had `supplies` on one type would get `supplies_2` on
  * the next, for a key that is in fact free — sprawl invented by the guard
  * meant to prevent it.
@@ -45,7 +45,7 @@ const slugifyLinkTypeKey = (raw: string): string =>
 const resolveUniqueLinkKey = async (data: {
   organizationId: string;
   teamId: string;
-  fromObjectTypeId: string;
+  fromCollectionId: string;
   base: string;
 }): Promise<string> => {
   const rows = await db
@@ -54,7 +54,7 @@ const resolveUniqueLinkKey = async (data: {
     .where(
       and(
         eq(linkTypes.organizationId, data.organizationId),
-        eq(linkTypes.fromObjectTypeId, data.fromObjectTypeId),
+        eq(linkTypes.fromCollectionId, data.fromCollectionId),
         data.teamId === null
           ? isNull(linkTypes.teamId)
           : eq(linkTypes.teamId, data.teamId),
@@ -71,7 +71,7 @@ const resolveUniqueLinkKey = async (data: {
 };
 
 /**
- * Create a typed relation between two object types (`toObjectTypeId` null =
+ * Create a typed relation between two collections (`toCollectionId` null =
  * polymorphic). `normalizedKey` is the slugified `key`. Defaults match the
  * trust model: user writes are born `confirmed` / `user_manual`.
  */
@@ -81,8 +81,8 @@ export const createLinkType = async (input: {
   // Optional: omitted from the UI and derived server-side from the label.
   key?: string;
   label: string;
-  fromObjectTypeId: string;
-  toObjectTypeId?: string | null;
+  fromCollectionId: string;
+  toCollectionId?: string | null;
   cardinality?: LinkTypeCardinality;
   inverseKey?: string | null;
   inverseLabel?: string | null;
@@ -97,7 +97,7 @@ export const createLinkType = async (input: {
     : await resolveUniqueLinkKey({
         organizationId: input.organizationId,
         teamId: input.teamId,
-        fromObjectTypeId: input.fromObjectTypeId,
+        fromCollectionId: input.fromCollectionId,
         base: input.label,
       });
   if (
@@ -121,8 +121,8 @@ export const createLinkType = async (input: {
         key: input.key ?? normalizedKey,
         normalizedKey,
         label: input.label,
-        fromObjectTypeId: input.fromObjectTypeId,
-        toObjectTypeId: input.toObjectTypeId ?? null,
+        fromCollectionId: input.fromCollectionId,
+        toCollectionId: input.toCollectionId ?? null,
         cardinality: input.cardinality ?? "many_to_many",
         inverseKey: input.inverseKey ?? null,
         inverseLabel: input.inverseLabel ?? null,
@@ -145,8 +145,8 @@ export const createLinkType = async (input: {
         linkTypeId: row.id,
         key: row.normalizedKey,
         label: row.label,
-        fromObjectTypeId: row.fromObjectTypeId,
-        toObjectTypeId: row.toObjectTypeId,
+        fromCollectionId: row.fromCollectionId,
+        toCollectionId: row.toCollectionId,
       },
       dedupKey: `link_type.created:${row.id}`,
     });

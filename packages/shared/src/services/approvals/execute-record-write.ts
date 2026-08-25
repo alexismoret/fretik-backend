@@ -1,16 +1,16 @@
 import { eq, inArray } from "drizzle-orm";
 import db from "../../db";
 import {
-  objectRecords,
+  collectionRecords,
   toolApprovalRequests,
   type ToolApprovalRecordResult,
   type ToolApprovalRecordWriteItem,
   type ToolApprovalRequest,
 } from "../../db/schema";
+import { bulkCreateCollectionRecords } from "../collection-records/bulk-create";
+import { bulkDeleteCollectionRecords } from "../collection-records/bulk-delete";
+import { bulkUpdateCollectionRecords } from "../collection-records/bulk-update";
 import type { EventActor } from "../domain-events/emit";
-import { bulkCreateObjectRecords } from "../object-records/bulk-create";
-import { bulkDeleteObjectRecords } from "../object-records/bulk-delete";
-import { bulkUpdateObjectRecords } from "../object-records/bulk-update";
 import { markConsumed } from "./complete";
 import { isRecordWritePayload } from "./payload-guards";
 
@@ -61,7 +61,7 @@ export const executeRecordWriteApproval = async (params: {
     if (selected.has(index)) chosen.push({ index, item });
   });
 
-  // Attribute like the direct objects SDK path (execActor in sandbox/objects.ts).
+  // Attribute like the direct collections SDK path (execActor in sandbox/collections.ts).
   const actor: EventActor = {
     actorType: "connector",
     actorUserId: params.approval.userId,
@@ -70,17 +70,17 @@ export const executeRecordWriteApproval = async (params: {
 
   const byIndex = new Map<number, ToolApprovalRecordResult>();
 
-  if (payload.op === "create" && payload.objectTypeId !== undefined) {
-    const objectTypeId = payload.objectTypeId;
+  if (payload.op === "create" && payload.collectionId !== undefined) {
+    const collectionId = payload.collectionId;
     const rows = chosen.map((c) => ({
       data: c.item.data ?? {},
       relations: c.item.relations,
     }));
-    const { ids, errors } = await bulkCreateObjectRecords({
+    const { ids, errors } = await bulkCreateCollectionRecords({
       organizationId: params.approval.organizationId,
       teamId: params.approval.teamId,
       userId: params.approval.userId,
-      objectTypeId,
+      collectionId,
       rows,
       actor,
     });
@@ -88,9 +88,12 @@ export const executeRecordWriteApproval = async (params: {
     const labelRows =
       createdIds.length > 0
         ? await db
-            .select({ id: objectRecords.id, label: objectRecords.label })
-            .from(objectRecords)
-            .where(inArray(objectRecords.id, createdIds))
+            .select({
+              id: collectionRecords.id,
+              label: collectionRecords.label,
+            })
+            .from(collectionRecords)
+            .where(inArray(collectionRecords.id, createdIds))
         : [];
     const labelById = new Map(labelRows.map((r) => [r.id, r.label]));
     const errorByRow = new Map(errors.map((e) => [e.index, e.error]));
@@ -110,7 +113,7 @@ export const executeRecordWriteApproval = async (params: {
     const updates = chosen
       .filter((c) => c.item.recordId !== undefined)
       .map((c) => ({ id: c.item.recordId ?? "", data: c.item.data ?? {} }));
-    const { updatedIds, errors } = await bulkUpdateObjectRecords({
+    const { updatedIds, errors } = await bulkUpdateCollectionRecords({
       teamId: params.approval.teamId,
       updates,
       merge: payload.merge,
@@ -139,7 +142,7 @@ export const executeRecordWriteApproval = async (params: {
     const ids = chosen
       .map((c) => c.item.recordId)
       .filter((id): id is string => id !== undefined);
-    const { deletedIds, errors } = await bulkDeleteObjectRecords({
+    const { deletedIds, errors } = await bulkDeleteCollectionRecords({
       teamId: params.approval.teamId,
       ids,
       actor,

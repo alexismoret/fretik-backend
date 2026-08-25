@@ -143,15 +143,15 @@ export const ChatbotCallOptionsSchema = z.object({
    */
   availableCapabilitiesBlock: z.string().optional(),
   /**
-   * Catalogue of the team's object types for the AI query path — one line
+   * Catalogue of the team's collections for the AI query path — one line
    * per type (typed view + field columns + outgoing relations). The
    * handler builds it via `describeTeamSchema`. Threaded into
-   * `AgentRuntimeContext.teamObjectsBlock` and substituted into the
-   * `{{teamObjects}}` placeholder under `<team_objects>` in the dynamic
+   * `AgentRuntimeContext.teamCollectionsBlock` and substituted into the
+   * `{{teamCollections}}` placeholder under `<team_collections>` in the dynamic
    * suffix. Lets the LLM write correct typed-view + `links` queries
    * without an extra tool call. Omitted when the team has no types.
    */
-  teamObjectsBlock: z.string().optional(),
+  teamCollectionsBlock: z.string().optional(),
   /**
    * Catalogue of skills enabled for this team — one line per skill
    * (`- **name** — description`). The handler builds it via
@@ -314,7 +314,7 @@ export const buildChatbotRuntimeContextBase = (
   chatbotContextManifest: options.chatbotContextManifest,
   activeMemoryBlock: options.activeMemoryBlock,
   availableCapabilitiesBlock: options.availableCapabilitiesBlock,
-  teamObjectsBlock: options.teamObjectsBlock,
+  teamCollectionsBlock: options.teamCollectionsBlock,
   enabledSkillsBlock: options.enabledSkillsBlock,
   participantsBlock: options.participantsBlock,
   externalAppConnections: options.externalAppConnections,

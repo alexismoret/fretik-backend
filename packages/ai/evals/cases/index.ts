@@ -12,6 +12,8 @@
 import type { EvalSuite } from "../types";
 import { b2bEfficiencySuite } from "./b2b-efficiency";
 import { bashExecutionSuite } from "./bash-execution";
+import { collectionGraphSuite } from "./collection-graph";
+import { collectionsAutonomySuite } from "./collections-autonomy";
 import { dispatchAgentSuite } from "./dispatch-agent";
 import { doctrineSuite } from "./doctrine";
 import { edgeCasesSuite } from "./edge-cases";
@@ -22,8 +24,6 @@ import { longContextSuite } from "./long-context";
 import { memorySuite } from "./memory";
 import { multiStepSuite } from "./multi-step";
 import { multimodalSuite } from "./multimodal";
-import { objectGraphSuite } from "./object-graph";
-import { objectsAutonomySuite } from "./objects-autonomy";
 import { pagesSuite } from "./pages";
 import { ragMetadataSuite } from "./rag-metadata";
 import { ragPrecisionSuite } from "./rag-precision";
@@ -51,7 +51,7 @@ export const allSuites: EvalSuite[] = [
   securitySuite,
   b2bEfficiencySuite,
   multimodalSuite,
-  objectGraphSuite,
-  objectsAutonomySuite,
+  collectionGraphSuite,
+  collectionsAutonomySuite,
   pagesSuite,
 ];

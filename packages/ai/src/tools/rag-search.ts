@@ -47,7 +47,7 @@ const TOP_K = 20;
 export const createRagSearchTool = () =>
   tool({
     description: [
-      "Semantic search across team knowledge: documents, memories, skills, context, past episodes, object records, and workflows. Returns up to 20 most-relevant text chunks with source metadata.",
+      "Semantic search across team knowledge: documents, memories, skills, context, past episodes, records, and workflows. Returns up to 20 most-relevant text chunks with source metadata.",
       "",
       'THE first move whenever the answer lives in the text of a document, memory, skill, or context file — "what does this contract say about penalties", "summarize the latest audit report", "do we have a process for onboarding". This works even when you already know exactly WHICH document: pass its id in `filters.sourceIds` and ask — cheaper and faster than downloading the file. Reach for `downloadDriveDocument` ONLY when you need the original bytes (parsing, vision, template reuse), never to answer a content question.',
       "",

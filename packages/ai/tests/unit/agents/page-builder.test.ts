@@ -16,8 +16,8 @@ describe("page-builder tool registry", () => {
   test("carries the page tool and the probes that answer what is in the data", () => {
     for (const required of [
       "managePage",
-      "describeObjectType",
-      "listObjects",
+      "describeCollection",
+      "listRecords",
       "querySql",
       "read",
     ]) {
@@ -56,8 +56,8 @@ describe("buildPage input", () => {
     // key IS a new channel and this is where that gets decided rather than
     // noticed.
     expect(Object.keys(buildPageInputSchema.shape).sort()).toEqual([
+      "collectionKeys",
       "description",
-      "objectTypeKeys",
       "task",
     ]);
   });
@@ -70,7 +70,7 @@ describe("buildPage input", () => {
       buildPageInputSchema.safeParse({
         task: "build the deals dashboard",
         description: "deals dashboard",
-        objectTypeKeys: Array.from({ length: 9 }, (_, i) => `type_${i}`),
+        collectionKeys: Array.from({ length: 9 }, (_, i) => `type_${i}`),
       }).success,
     ).toBe(false);
   });

@@ -1,15 +1,15 @@
-import { recordSharingSchema } from "@fretik/shared/schemas/object-sharing";
+import { recordSharingSchema } from "@fretik/shared/schemas/collection-sharing";
 import { deferredToolOutput } from "@fretik/shared/services/ai/approval-pending";
 import { gateRecordWriteApproval } from "@fretik/shared/services/approvals/gate-record-write";
-import { bulkCreateObjectRecords } from "@fretik/shared/services/object-records/bulk-create";
-import { bulkUpdateObjectRecords } from "@fretik/shared/services/object-records/bulk-update";
-import { createObjectRecord } from "@fretik/shared/services/object-records/create";
-import { deleteObjectRecord } from "@fretik/shared/services/object-records/delete";
-import { setRecordStatus } from "@fretik/shared/services/object-records/set-status";
-import { getRecordSnapshots } from "@fretik/shared/services/object-records/snapshot-batch";
-import { setRecordData } from "@fretik/shared/services/object-records/update";
-import { assertCanWriteRecord } from "@fretik/shared/services/object-sharing/write-access";
-import { resolveObjectTypeId } from "@fretik/shared/services/object-types/resolve";
+import { bulkCreateCollectionRecords } from "@fretik/shared/services/collection-records/bulk-create";
+import { bulkUpdateCollectionRecords } from "@fretik/shared/services/collection-records/bulk-update";
+import { createCollectionRecord } from "@fretik/shared/services/collection-records/create";
+import { deleteCollectionRecord } from "@fretik/shared/services/collection-records/delete";
+import { setRecordStatus } from "@fretik/shared/services/collection-records/set-status";
+import { getRecordSnapshots } from "@fretik/shared/services/collection-records/snapshot-batch";
+import { setRecordData } from "@fretik/shared/services/collection-records/update";
+import { assertCanWriteRecord } from "@fretik/shared/services/collection-sharing/write-access";
+import { resolveCollectionId } from "@fretik/shared/services/collections/resolve";
 import type {
   ExecContext,
   SandboxExecResponse,
@@ -40,11 +40,11 @@ import { TOOL_ERROR_CODES, toolError } from "../lib/tool-error-codes";
  */
 export const manageRecordInputSchema = z.object({
   action: z.enum(["create", "update", "delete", "setStatus"]),
-  typeKey: z
+  collectionKey: z
     .string()
     .max(60)
     .optional()
-    .describe("Object type slug. Required for create."),
+    .describe("Collection slug. Required for create."),
   recordId: z
     .string()
     .optional()
@@ -162,7 +162,7 @@ const mapRecordWriteResp = (resp: SandboxExecResponse) => {
     return deferredToolOutput(resp.blockingApprovalId);
   }
   if (resp.status === "error") {
-    return toolError(TOOL_ERROR_CODES.OBJECT_QUERY_ERROR, resp.message);
+    return toolError(TOOL_ERROR_CODES.COLLECTION_QUERY_ERROR, resp.message);
   }
   const data =
     typeof resp.data === "object" && resp.data !== null ? resp.data : {};
@@ -170,7 +170,7 @@ const mapRecordWriteResp = (resp: SandboxExecResponse) => {
 };
 
 /**
- * Domain tool (deferred) — write ONE object record (create / update / delete /
+ * Domain tool (deferred) — write ONE record (create / update / delete /
  * setStatus) through the validated shared services, so field validation, the
  * typed table, and the `domain_events` journal stay consistent. Record writes
  * (create / update / delete) park the SAME `record_write` approval + editable
@@ -181,15 +181,15 @@ const mapRecordWriteResp = (resp: SandboxExecResponse) => {
 export const createManageRecordTool = () =>
   tool({
     description: [
-      "Write ONE object record. Schema-validated and journaled; team-scoped.",
+      "Write ONE record. Schema-validated and journaled; team-scoped.",
       "≥2 records of a type → ONE python `objects.records.bulk_create` / `bulk_update` / `bulk_delete` call (one approval card for all rows), NEVER repeated or parallel manageRecord calls.",
       "",
-      "- create: typeKey + data (+ optional relations to link in the same write). Born confirmed.",
+      "- create: collectionKey + data (+ optional relations to link in the same write). Born confirmed.",
       "- update: recordId + data. PATCH — only the fields you pass change; omitted ones are kept (value null clears one).",
       "- delete: recordId.",
       "- setStatus: recordId + status ('confirmed' accepts an AI suggestion, 'rejected' retires it).",
       "",
-      "`data` is a list of { key, value } — keys are the type's field keys (describeObjectType).",
+      "`data` is a list of { key, value } — keys are the type's field keys (describeCollection).",
       "Records follow their type's audience by default; `sharing` overrides it (owner team only, and only to teams that already have the type). Propose with askUserQuestion before sharing beyond the team.",
     ].join("\n"),
     inputSchema: manageRecordInputSchema,
@@ -207,29 +207,29 @@ export const createManageRecordTool = () =>
         (input.action === "create" || input.action === "update")
       ) {
         return toolError(
-          TOOL_ERROR_CODES.OBJECT_QUERY_ERROR,
+          TOOL_ERROR_CODES.COLLECTION_QUERY_ERROR,
           `Missing value for: ${missing.join(", ")}. Send each field as {"key":"…","value":"…"}.`,
         );
       }
 
       try {
         if (input.action === "create") {
-          if (!input.typeKey || Object.keys(values).length === 0) {
+          if (!input.collectionKey || Object.keys(values).length === 0) {
             return toolError(
-              TOOL_ERROR_CODES.OBJECT_QUERY_ERROR,
-              "create requires typeKey and data.",
+              TOOL_ERROR_CODES.COLLECTION_QUERY_ERROR,
+              "create requires collectionKey and data.",
             );
           }
-          const objectTypeId = await resolveObjectTypeId({
+          const collectionId = await resolveCollectionId({
             organizationId: ctx.organizationId,
             teamId: ctx.teamId,
-            key: input.typeKey,
+            key: input.collectionKey,
           });
-          if (!objectTypeId) {
+          if (!collectionId) {
             return toolError(
-              TOOL_ERROR_CODES.OBJECT_TYPE_NOT_FOUND,
-              `No object type '${input.typeKey}' for this team.`,
-              "Check the available type keys in <team_objects>.",
+              TOOL_ERROR_CODES.COLLECTION_NOT_FOUND,
+              `No collection '${input.collectionKey}' for this team.`,
+              "Check the available type keys in <team_collections>.",
             );
           }
           // Plain data write → rich `record_write` card (single item), same as
@@ -242,21 +242,21 @@ export const createManageRecordTool = () =>
                 autonomy: ctx.workflowAutonomy ?? null,
                 teamPolicies: ctx.toolPolicies ?? {},
                 op: "create",
-                objectTypeId,
+                collectionId,
                 hashItems: [
                   {
                     data: values,
                     relations: input.relations,
-                    objectTypeId,
-                    typeKey: input.typeKey,
+                    collectionId,
+                    collectionKey: input.collectionKey,
                   },
                 ],
                 validateBeforePending: async () => {
-                  const { errors } = await bulkCreateObjectRecords({
+                  const { errors } = await bulkCreateCollectionRecords({
                     organizationId: ctx.organizationId,
                     teamId: ctx.teamId,
                     userId: ctx.userId ?? null,
-                    objectTypeId,
+                    collectionId,
                     rows: [{ data: values, relations: input.relations }],
                     dryRun: true,
                   });
@@ -265,23 +265,23 @@ export const createManageRecordTool = () =>
                 buildPayload: () =>
                   Promise.resolve({
                     op: "create",
-                    typeKey: input.typeKey,
-                    objectTypeId,
+                    collectionKey: input.collectionKey,
+                    collectionId,
                     items: [
                       {
                         data: values,
                         relations: input.relations,
-                        objectTypeId,
-                        typeKey: input.typeKey,
+                        collectionId,
+                        collectionKey: input.collectionKey,
                       },
                     ],
                   }),
                 directWrite: async () => {
-                  const record = await createObjectRecord({
+                  const record = await createCollectionRecord({
                     organizationId: ctx.organizationId,
                     teamId: ctx.teamId,
                     userId: ctx.userId ?? null,
-                    objectTypeId,
+                    collectionId,
                     data: values,
                     labelOverride: null,
                     relations: input.relations,
@@ -301,7 +301,7 @@ export const createManageRecordTool = () =>
             toolName: "manageRecord",
             args: {
               action: "create",
-              objectTypeId,
+              collectionId,
               data: values,
               labelOverride: input.labelOverride ?? null,
               relations: input.relations,
@@ -309,11 +309,11 @@ export const createManageRecordTool = () =>
             },
           });
           if (gate !== null) return gate;
-          const record = await createObjectRecord({
+          const record = await createCollectionRecord({
             organizationId: ctx.organizationId,
             teamId: ctx.teamId,
             userId: ctx.userId ?? null,
-            objectTypeId,
+            collectionId,
             data: values,
             labelOverride: input.labelOverride ?? null,
             relations: input.relations,
@@ -325,7 +325,7 @@ export const createManageRecordTool = () =>
 
         if (!input.recordId) {
           return toolError(
-            TOOL_ERROR_CODES.OBJECT_QUERY_ERROR,
+            TOOL_ERROR_CODES.COLLECTION_QUERY_ERROR,
             `${input.action} requires recordId.`,
           );
         }
@@ -341,7 +341,7 @@ export const createManageRecordTool = () =>
           const hasData = Object.keys(values).length > 0;
           if (!hasData && input.labelOverride == null && !input.sharing) {
             return toolError(
-              TOOL_ERROR_CODES.OBJECT_QUERY_ERROR,
+              TOOL_ERROR_CODES.COLLECTION_QUERY_ERROR,
               "update requires data naming the field(s) to set, labelOverride to set the display label, or sharing to change the audience.",
             );
           }
@@ -366,7 +366,7 @@ export const createManageRecordTool = () =>
                 merge: true,
                 hashItems: [{ recordId, data: values }],
                 validateBeforePending: async () => {
-                  const { errors } = await bulkUpdateObjectRecords({
+                  const { errors } = await bulkUpdateCollectionRecords({
                     teamId: ctx.teamId,
                     updates: [{ id: recordId, data: values }],
                     merge: true,
@@ -389,7 +389,7 @@ export const createManageRecordTool = () =>
                         data: values,
                         currentLabel: snap?.label,
                         currentData: snap?.data,
-                        objectTypeId: snap?.objectTypeId,
+                        collectionId: snap?.collectionId,
                       },
                     ],
                   };
@@ -460,13 +460,13 @@ export const createManageRecordTool = () =>
                         recordId,
                         currentLabel: snap?.label,
                         currentData: snap?.data,
-                        objectTypeId: snap?.objectTypeId,
+                        collectionId: snap?.collectionId,
                       },
                     ],
                   };
                 },
                 directWrite: async () => {
-                  const result = await deleteObjectRecord({
+                  const result = await deleteCollectionRecord({
                     id: recordId,
                     actor,
                   });
@@ -480,7 +480,7 @@ export const createManageRecordTool = () =>
             args: { action: "delete", recordId: input.recordId },
           });
           if (gate !== null) return gate;
-          const result = await deleteObjectRecord({
+          const result = await deleteCollectionRecord({
             id: input.recordId,
             actor,
           });
@@ -489,7 +489,7 @@ export const createManageRecordTool = () =>
 
         if (!input.status) {
           return toolError(
-            TOOL_ERROR_CODES.OBJECT_QUERY_ERROR,
+            TOOL_ERROR_CODES.COLLECTION_QUERY_ERROR,
             "setStatus requires status ('confirmed' | 'rejected').",
           );
         }
@@ -510,7 +510,7 @@ export const createManageRecordTool = () =>
         return { ok: true, record: serializeRecord(record) };
       } catch (err) {
         return toolError(
-          TOOL_ERROR_CODES.OBJECT_QUERY_ERROR,
+          TOOL_ERROR_CODES.COLLECTION_QUERY_ERROR,
           `manageRecord ${input.action} failed: ${errMsg(err)}`,
         );
       }

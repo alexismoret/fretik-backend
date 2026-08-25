@@ -153,7 +153,7 @@ export const unwrapResult = (raw: unknown): unknown => {
 /**
  * Pull the 26-character token out of `GetToken`'s response. The vendor
  * documents the value but not the envelope, and .NET hosts vary between a
- * bare JSON string and an object key — accept both rather than guess.
+ * bare JSON string and a collection key — accept both rather than guess.
  */
 const extractToken = (raw: unknown): string | undefined => {
   const direct = asString(raw);

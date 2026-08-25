@@ -5,7 +5,7 @@
  * (P6), and mention extraction (P3).
  *
  * Seeded through the REAL rows the services read: records via
- * `createObjectRecord`, a conversation via `ai_conversations` + `ai_messages`
+ * `createCollectionRecord`, a conversation via `ai_conversations` + `ai_messages`
  * + a linked `chat.turn` journal event (so the distiller's candidate-record
  * query behaves as in prod), an activity record with a real event log, and
  * episode clusters via `upsertEpisode`.
@@ -33,16 +33,16 @@ import {
 import { createMemory } from "@fretik/shared/services/ai-memory/create";
 import { deleteMemoryVectors } from "@fretik/shared/services/ai-memory/vector-refresh";
 import { getTeamBotUserId } from "@fretik/shared/services/auth/bot-user";
+import { bulkDeleteCollectionRecords } from "@fretik/shared/services/collection-records/bulk-delete";
+import { deleteRecordCardVectors } from "@fretik/shared/services/collection-records/card-vectors";
+import { createCollectionRecord } from "@fretik/shared/services/collection-records/create";
+import { createCollectionWithFields } from "@fretik/shared/services/collections/create-with-fields";
+import { deleteCollection } from "@fretik/shared/services/collections/delete";
 import { emitDomainEventsBulk } from "@fretik/shared/services/domain-events/emit-bulk";
 import { upsertEpisode } from "@fretik/shared/services/episodes/upsert";
 import { deleteEpisodeVectors } from "@fretik/shared/services/episodes/vectors";
 import { resolveLinkType } from "@fretik/shared/services/link-types/match";
 import { bulkCreateLinks } from "@fretik/shared/services/links/bulk-create";
-import { bulkDeleteObjectRecords } from "@fretik/shared/services/object-records/bulk-delete";
-import { deleteRecordCardVectors } from "@fretik/shared/services/object-records/card-vectors";
-import { createObjectRecord } from "@fretik/shared/services/object-records/create";
-import { createObjectTypeWithFields } from "@fretik/shared/services/object-types/create-with-fields";
-import { deleteObjectType } from "@fretik/shared/services/object-types/delete";
 import { and, eq, inArray, like, or } from "drizzle-orm";
 
 const TYPE_KEY = "memory_eval_supplier";
@@ -62,7 +62,7 @@ export interface MemoryFixtures {
   organizationId: string;
   teamId: string;
   userId: string;
-  /** Fixture object type — the relation endpoints all share it (company↔company). */
+  /** Fixture collection — the relation endpoints all share it (company↔company). */
   typeId: string;
   records: { meridian: string; volta: string; northwind: string };
   /** Distillable conversation (kind `conversation` episode). */
@@ -80,7 +80,7 @@ export type RelationKind = "explicit" | "supersession" | "noise";
 export type PromotionKind = "durable" | "oneoff" | "dedup";
 
 const findTypeId = async (scope: Scope): Promise<string | null> => {
-  const row = await db.query.objectTypes.findFirst({
+  const row = await db.query.collections.findFirst({
     where: { teamId: scope.teamId, key: TYPE_KEY },
     columns: { id: true },
   });
@@ -90,7 +90,7 @@ const findTypeId = async (scope: Scope): Promise<string | null> => {
 const ensureType = async (scope: Scope): Promise<string> => {
   const existing = await findTypeId(scope);
   if (existing) return existing;
-  const created = await createObjectTypeWithFields({
+  const created = await createCollectionWithFields({
     organizationId: scope.organizationId,
     teamId: scope.teamId,
     key: TYPE_KEY,
@@ -111,19 +111,19 @@ const ensureType = async (scope: Scope): Promise<string> => {
 
 const ensureRecord = async (
   scope: Scope,
-  objectTypeId: string,
+  collectionId: string,
   label: string,
   secteur: string,
 ): Promise<string> => {
-  const existing = await db.query.objectRecords.findFirst({
-    where: { teamId: scope.teamId, objectTypeId, label },
+  const existing = await db.query.collectionRecords.findFirst({
+    where: { teamId: scope.teamId, collectionId, label },
     columns: { id: true },
   });
   if (existing) return existing.id;
-  const record = await createObjectRecord({
+  const record = await createCollectionRecord({
     organizationId: scope.organizationId,
     teamId: scope.teamId,
-    objectTypeId,
+    collectionId,
     data: { nom: label, secteur },
     labelOverride: label,
     status: "confirmed",
@@ -282,11 +282,11 @@ const ensureSensitiveConversation = async (scope: Scope): Promise<string> => {
 /** A record with a ≥5-event log for the activity digest. */
 const ensureActivityRecord = async (
   scope: Scope,
-  objectTypeId: string,
+  collectionId: string,
 ): Promise<string> => {
   const recordId = await ensureRecord(
     scope,
-    objectTypeId,
+    collectionId,
     "Volta Energie",
     "énergie renouvelable",
   );
@@ -500,8 +500,8 @@ export const makeRelationScenario = async (
     organizationId,
     teamId,
     rawKey: "subsidiary_of",
-    fromObjectTypeId: typeId,
-    toObjectTypeId: typeId,
+    fromCollectionId: typeId,
+    toCollectionId: typeId,
   });
   const { ids } = await bulkCreateLinks({
     organizationId,
@@ -724,8 +724,8 @@ export const cleanupMemoryFixtures = async (scope: Scope): Promise<void> => {
   // eval rows (conversation episode, activity digest, consolidation survivor).
   const evalRecordIds = new Set<string>();
   if (typeId) {
-    const recs = await db.query.objectRecords.findMany({
-      where: { teamId: scope.teamId, objectTypeId: typeId },
+    const recs = await db.query.collectionRecords.findMany({
+      where: { teamId: scope.teamId, collectionId: typeId },
       columns: { id: true },
     });
     for (const r of recs) evalRecordIds.add(r.id);
@@ -802,9 +802,9 @@ export const cleanupMemoryFixtures = async (scope: Scope): Promise<void> => {
     const ids = [...evalRecordIds];
     for (const id of ids) await deleteRecordCardVectors(id);
     if (ids.length > 0) {
-      await bulkDeleteObjectRecords({ teamId: scope.teamId, ids });
+      await bulkDeleteCollectionRecords({ teamId: scope.teamId, ids });
     }
-    await deleteObjectType({ id: typeId });
+    await deleteCollection({ id: typeId });
   }
   console.log("[memory-fixtures] cleaned up");
 };

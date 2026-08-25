@@ -22,18 +22,18 @@ export * from "./folders";
 // Documents (file storage and pre-extraction)
 export * from "./documents";
 
-// Dynamic data system (ontology) — runtime-defined object types, fields,
+// Dynamic data system (ontology) — runtime-defined collections, fields,
 // relations, and governed actions. The catalog half of the unified graph.
 export * from "./action-types";
+export * from "./collections";
 export * from "./link-types";
-export * from "./object-types";
 export * from "./ontology-enums";
 
-// Dynamic data system — the data plane: typed nodes (object_records), typed
+// Dynamic data system — the data plane: typed nodes (collection_records), typed
 // edges (links), and the durable journal (domain_events) feeding memory + audit.
+export * from "./collection-records";
 export * from "./domain-events";
 export * from "./links";
-export * from "./object-records";
 
 // Named journal-consumption cursors (memory sweep, future trigger engine)
 export * from "./worker-cursors";
@@ -50,9 +50,9 @@ export * from "./mapbox-geocode-cache";
 // `location` columns FK into it; the map view + spatial filters query its geom.
 export * from "./locations";
 
-// Object sharing (cross-team ACL: object_grants = share a type, record_shares =
-// share one record). Consulted by the object_records RLS predicate.
-export * from "./object-sharing";
+// Collection sharing (cross-team ACL: collection_grants = share a type, record_shares =
+// share one record). Consulted by the collection_records RLS predicate.
+export * from "./collection-sharing";
 
 // Metrics and logs (usage_metrics, activity_logs, webhooks)
 export * from "./metrics";

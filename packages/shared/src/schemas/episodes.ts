@@ -65,8 +65,8 @@ export type EpisodeListResponse = z.infer<typeof episodeListResponseSchema>;
 const episodeRecordRefSchema = z.object({
   id: z.uuid(),
   label: z.string(),
-  /** Object-type key — the `/objects/{typeKey}/{id}` route segment. */
-  typeKey: z.string(),
+  /** Object-type key — the `/collections/{collectionKey}/{id}` route segment. */
+  collectionKey: z.string(),
 });
 
 const episodeConversationRefSchema = z.object({

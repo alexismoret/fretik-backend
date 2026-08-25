@@ -2,7 +2,7 @@ import { and, eq, isNull } from "drizzle-orm";
 import db from "../../db";
 import type { NewFieldDefinition } from "../../db/schema";
 import { fieldDefinitions } from "../../db/schema";
-import { syncAllObjectTablesForTeam } from "../object-schema/catalog-sync";
+import { syncAllCollectionTablesForTeam } from "../collection-schema/catalog-sync";
 import { invalidateTeamFieldDefinitionsCache } from "./cache";
 
 /**
@@ -38,7 +38,7 @@ export const duplicateOrgDefsToTeam = async (data: {
       const rows: NewFieldDefinition[] = orgDefs.map((def) => ({
         organizationId,
         teamId,
-        objectTypeId: def.objectTypeId,
+        collectionId: def.collectionId,
         key: def.key,
         label: def.label,
         description: def.description,
@@ -64,7 +64,7 @@ export const duplicateOrgDefsToTeam = async (data: {
     // per visible type (its own + org/system). Atomic with the copy and cheap (a
     // new team has no records). Runs even when 0 defs were copied so the system
     // types still get a structural table.
-    await syncAllObjectTablesForTeam({ tx, organizationId, teamId });
+    await syncAllCollectionTablesForTeam({ tx, organizationId, teamId });
 
     return { inserted };
   });

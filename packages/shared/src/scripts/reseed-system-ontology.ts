@@ -1,17 +1,17 @@
 import { eq, sql } from "drizzle-orm";
 import db from "../db";
-import { objectTypes, organization, team } from "../db/schema";
-import { duplicateOrgDefsToTeam } from "../services/field-definitions/duplicate-org-to-team";
+import { collections, organization, team } from "../db/schema";
 import {
-  objectTableName,
-  qualifiedObjectTable,
-} from "../services/object-schema/identifiers";
-import { DOCUMENT_TYPE_KEY } from "../services/object-types/constants";
-import { seedStarterObjectTypes } from "../services/object-types/seed-starter-types";
-import { seedSystemOntology } from "../services/object-types/seed-system-types";
+  collectionTableName,
+  qualifiedCollectionTable,
+} from "../services/collection-schema/identifiers";
+import { DOCUMENT_COLLECTION_KEY } from "../services/collections/constants";
+import { seedStarterCollections } from "../services/collections/seed-starter-types";
+import { seedSystemOntology } from "../services/collections/seed-system-types";
+import { duplicateOrgDefsToTeam } from "../services/field-definitions/duplicate-org-to-team";
 
 /**
- * Idempotent maintenance script: seed the standard object types (+ default
+ * Idempotent maintenance script: seed the standard collections (+ default
  * fields) for every organization, propagate org-scope field definitions to every
  * existing team (materialising their per-type tables), and backfill the document
  * `name` title from each file's label. Safe to re-run. Used to bring existing
@@ -28,9 +28,9 @@ import { seedSystemOntology } from "../services/object-types/seed-system-types";
  */
 const backfillDocumentNames = async (): Promise<void> => {
   const docTypes = await db
-    .select({ id: objectTypes.id })
-    .from(objectTypes)
-    .where(eq(objectTypes.key, DOCUMENT_TYPE_KEY));
+    .select({ id: collections.id })
+    .from(collections)
+    .where(eq(collections.key, DOCUMENT_COLLECTION_KEY));
 
   let totalRows = 0;
   for (const dt of docTypes) {
@@ -38,14 +38,14 @@ const backfillDocumentNames = async (): Promise<void> => {
       sql`SELECT EXISTS (
             SELECT 1 FROM information_schema.columns
             WHERE table_schema = 'data'
-              AND table_name = ${objectTableName(dt.id)}
+              AND table_name = ${collectionTableName(dt.id)}
               AND column_name = 'name'
           ) AS present`,
     );
     if (hasColumn.rows[0]?.present !== true) continue;
 
     const res = await db.execute(
-      sql`UPDATE ${sql.raw(qualifiedObjectTable(dt.id))}
+      sql`UPDATE ${sql.raw(qualifiedCollectionTable(dt.id))}
           SET "name" = "_label"
           WHERE ("name" IS NULL OR "name" = '')
             AND "_label" IS NOT NULL
@@ -60,9 +60,9 @@ const run = async (): Promise<void> => {
   const orgs = await db.select({ id: organization.id }).from(organization);
   for (const org of orgs) {
     await seedSystemOntology(org.id);
-    await seedStarterObjectTypes(org.id);
+    await seedStarterCollections(org.id);
     console.log(
-      `[reseed] seeded system + starter object types for org ${org.id}`,
+      `[reseed] seeded system + starter collections for org ${org.id}`,
     );
   }
 

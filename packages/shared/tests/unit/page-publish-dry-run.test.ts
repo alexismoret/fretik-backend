@@ -116,7 +116,7 @@ void mock.module("../../src/db", () => ({
           return Promise.resolve(storedPage);
         },
       },
-      objectTypes: {
+      collections: {
         findFirst: () => Promise.resolve(undefined),
         findMany: () => Promise.resolve([]),
       },
@@ -435,16 +435,16 @@ describe("dryRunPage — characterisation of today's output", () => {
       assumeCompiled: true,
     });
     expect(result.warnings).toContain(
-      'dataset "sales" returned no rows — check its filters, or the object type may be empty.',
+      'dataset "sales" returned no rows — check its filters, or the collection may be empty.',
     );
   });
 
   test("a failing dataset is reported with its own message", async () => {
     const result = await dryRunPage({
       definition: withDatasets([
-        // No `objectTypeId`: the objects source refuses it by message rather
+        // No `collectionId`: the objects source refuses it by message rather
         // than throwing, which is the degradation this pins.
-        { id: "broken", kind: "objects" },
+        { id: "broken", kind: "collections" },
       ]),
       teamId: "team-1",
       userId: null,
@@ -455,15 +455,15 @@ describe("dryRunPage — characterisation of today's output", () => {
     ).toBe(true);
   });
 
-  test("an unreadable object type degrades to its own forbidden warning", async () => {
-    // The mocked db knows no object types, so any objects dataset resolves
+  test("an unreadable collection degrades to its own forbidden warning", async () => {
+    // The mocked db knows no collections, so any objects dataset resolves
     // forbidden — one dataset's grant costs its block, not the page.
     const result = await dryRunPage({
       definition: withDatasets([
         {
           id: "records",
-          kind: "objects",
-          objectTypeId: "00000000-0000-4000-8000-000000000000",
+          kind: "collections",
+          collectionId: "00000000-0000-4000-8000-000000000000",
         },
       ]),
       teamId: "team-1",
@@ -475,7 +475,7 @@ describe("dryRunPage — characterisation of today's output", () => {
       rowCount: 0,
     });
     expect(result.warnings).toContain(
-      'dataset "records": this team cannot read that object type.',
+      'dataset "records": this team cannot read that collection.',
     );
   });
 
@@ -525,9 +525,9 @@ describe("dryRunPage — characterisation of today's output", () => {
       definition: withDatasets([
         {
           id: "derived",
-          kind: "objects",
+          kind: "collections",
           mode: "aggregate",
-          objectTypeId: "018f0000-0000-7000-8000-000000000000",
+          collectionId: "018f0000-0000-7000-8000-000000000000",
           metrics: [{ name: "spend", fn: "sum" }],
         },
       ]),
@@ -546,9 +546,9 @@ describe("dryRunPage — characterisation of today's output", () => {
     const definition = withDatasets([
       {
         id: "derived",
-        kind: "objects",
+        kind: "collections",
         mode: "aggregate",
-        objectTypeId: "018f0000-0000-7000-8000-000000000000",
+        collectionId: "018f0000-0000-7000-8000-000000000000",
         metrics: [{ name: "spend", fn: "sum" }],
       },
     ]);

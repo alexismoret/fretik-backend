@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { PgDialect } from "drizzle-orm/pg-core";
 import type { FieldDefinitionType } from "../../src/db/schema";
 import type { RecordFilter } from "../../src/schemas/ontology";
-import { buildFieldFilterPredicate } from "../../src/services/object-schema/field-filter";
+import { buildFieldFilterPredicate } from "../../src/services/collection-schema/field-filter";
 
 /**
  * Field-filter SQL, pinned at the shape level.

@@ -411,7 +411,7 @@ const executeTurn = async (params: {
     playbookBlock: buildPlaybookBlock(workflow, runForPrompt),
     toolHints: unionToolHints(run.taskStates),
     chatbotContextManifest: fragments.chatbotContextManifest,
-    teamObjectsBlock: fragments.teamObjectsBlock,
+    teamCollectionsBlock: fragments.teamCollectionsBlock,
     enabledSkillsBlock: fragments.enabledSkillsBlock,
     externalAppConnections: externalApps.externalAppConnections,
     externalAppsBlock: externalApps.externalAppsBlock,

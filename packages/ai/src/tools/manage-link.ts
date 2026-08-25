@@ -1,10 +1,10 @@
+import { resolveDocumentRecordId } from "@fretik/shared/services/collection-records/resolve-document-record";
+import { getCollectionRecord } from "@fretik/shared/services/collection-records/retrieve";
+import { assertCanWriteRecord } from "@fretik/shared/services/collection-sharing/write-access";
 import type { EventActor } from "@fretik/shared/services/domain-events/emit";
 import { resolveLinkType } from "@fretik/shared/services/link-types/match";
 import { createLink } from "@fretik/shared/services/links/create";
 import { invalidateLink } from "@fretik/shared/services/links/invalidate";
-import { resolveDocumentRecordId } from "@fretik/shared/services/object-records/resolve-document-record";
-import { getObjectRecord } from "@fretik/shared/services/object-records/retrieve";
-import { assertCanWriteRecord } from "@fretik/shared/services/object-sharing/write-access";
 import { tool } from "ai";
 import { z } from "zod";
 import { gateBuiltinWriteTool } from "../agents/shared/policy-tool-gate";
@@ -24,10 +24,10 @@ import { TOOL_ERROR_CODES, toolError } from "../lib/tool-error-codes";
 export const createManageLinkTool = () =>
   tool({
     description: [
-      "Connect or disconnect two object records over a relation.",
+      "Connect or disconnect two records over a relation.",
       "",
       "- link: relationKey + a from end + a to end. Resolves the relation by key (creates it if new) and adds the edge.",
-      "- unlink: linkId (from getObject's links).",
+      "- unlink: linkId (from getRecord's links).",
       "",
       "Each end is a record id (fromRecordId / toRecordId) OR an uploaded file id (fromDocumentId / toDocumentId — links to the file's document record).",
     ].join("\n"),
@@ -64,7 +64,7 @@ export const createManageLinkTool = () =>
         if (input.action === "unlink") {
           if (!input.linkId) {
             return toolError(
-              TOOL_ERROR_CODES.OBJECT_QUERY_ERROR,
+              TOOL_ERROR_CODES.COLLECTION_QUERY_ERROR,
               "unlink requires linkId.",
             );
           }
@@ -89,7 +89,7 @@ export const createManageLinkTool = () =>
         );
         if (!input.relationKey || !fromRecordId || !toRecordId) {
           return toolError(
-            TOOL_ERROR_CODES.OBJECT_QUERY_ERROR,
+            TOOL_ERROR_CODES.COLLECTION_QUERY_ERROR,
             "link requires relationKey, a from end (fromRecordId or fromDocumentId), and a to end (toRecordId or toDocumentId).",
           );
         }
@@ -101,12 +101,12 @@ export const createManageLinkTool = () =>
           organizationId: ctx.organizationId,
         });
 
-        const fromRecord = await getObjectRecord({ id: fromRecordId });
+        const fromRecord = await getCollectionRecord({ id: fromRecordId });
         const { linkTypeId } = await resolveLinkType({
           organizationId: ctx.organizationId,
           teamId: ctx.teamId,
           rawKey: input.relationKey,
-          fromObjectTypeId: fromRecord.objectTypeId,
+          fromCollectionId: fromRecord.collectionId,
         });
         const gate = await gateBuiltinWriteTool(ctx, {
           toolName: "manageLink",
@@ -124,7 +124,7 @@ export const createManageLinkTool = () =>
         return { ok: true, linkId: link.id };
       } catch (err) {
         return toolError(
-          TOOL_ERROR_CODES.OBJECT_QUERY_ERROR,
+          TOOL_ERROR_CODES.COLLECTION_QUERY_ERROR,
           `manageLink ${input.action} failed: ${err instanceof Error ? err.message : String(err)}`,
         );
       }

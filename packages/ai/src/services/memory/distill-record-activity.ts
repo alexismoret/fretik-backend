@@ -68,10 +68,10 @@ export const distillRecordActivity = async (input: {
 }): Promise<DistillRecordActivityResult> => {
   const { recordId, teamId, organizationId } = input;
 
-  const record = await db.query.objectRecords.findFirst({
+  const record = await db.query.collectionRecords.findFirst({
     where: { id: recordId, teamId },
     columns: { id: true, label: true },
-    with: { objectType: { columns: { label: true } } },
+    with: { collection: { columns: { label: true } } },
   });
   if (!record) return { distilled: false };
 
@@ -91,7 +91,7 @@ export const distillRecordActivity = async (input: {
     return `- ${e.recordedAt.toISOString()} ${e.type} (${e.actorType})${payload}`;
   });
   const prompt = [
-    `<record>\n${record.objectType?.label ?? "Record"}: ${record.label}\n</record>`,
+    `<record>\n${record.collection?.label ?? "Record"}: ${record.label}\n</record>`,
     `<events>\n${eventLines.join("\n")}\n</events>`,
   ].join("\n\n");
 

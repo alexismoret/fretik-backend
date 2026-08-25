@@ -4,9 +4,9 @@ import db from "../../db";
 import type { DocumentVectorMetadata } from "../../db/schema/ai-vectors";
 import { callAiService } from "../../lib/ai-service";
 import { getDocumentSidecarBytes } from "../../lib/document-storage";
+import { readRecordData } from "../collection-schema/record-io";
+import { MENTIONS_LINK_TYPE_KEY } from "../collections/seed-system-types";
 import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
-import { readRecordData } from "../object-schema/record-io";
-import { MENTIONS_LINK_TYPE_KEY } from "../object-types/seed-system-types";
 
 const aiVectorizeResponseSchema = z.object({
   success: z.boolean(),
@@ -39,7 +39,7 @@ const buildDocumentVectorMetadata = async (
     with: {
       properties: true,
       mirrorRecord: {
-        columns: { id: true, objectTypeId: true },
+        columns: { id: true, collectionId: true },
         with: {
           outgoingLinks: {
             columns: { id: true },
@@ -76,7 +76,7 @@ const buildDocumentVectorMetadata = async (
   );
   const recordData = document.mirrorRecord
     ? await readRecordData({
-        objectTypeId: document.mirrorRecord.objectTypeId,
+        collectionId: document.mirrorRecord.collectionId,
         recordId: document.mirrorRecord.id,
         fields: definitions,
       })

@@ -186,15 +186,15 @@ export const CURATED: Record<string, CuratedCase> = {
   "mm-image-plus-text": { capability: "multimodal", tier: "model-gate" },
   "mm-video-qa": { capability: "multimodal", tier: "model-gate" },
   // ── Dynamic-data AI query path (2026-06-20) — the typed-view + links
-  // "killer query". Seeds its own object-graph dataset (industry-agnostic),
-  // so NOT smoke (needs a DB seed). See evals/cases/object-graph.ts.
+  // "killer query". Seeds its own collection-graph dataset (industry-agnostic),
+  // so NOT smoke (needs a DB seed). See evals/cases/collection-graph.ts.
   // tool-use (1)
   "graph-killer-query": { capability: "tool-use" },
   // ── Objects autonomy (P8) — proactive object management + the relevance
   // gate. Seeds its own ontology (dedicated throwaway types / labelled company
   // records), so NOT smoke. Graded on the tool trajectory + judge; the
   // partial-update case asserts DB state (no data loss). See
-  // evals/cases/objects-autonomy.ts.
+  // evals/cases/collections-autonomy.ts.
   // The three formula cases are the computed-column DECISION, which is one
   // choice with three outcomes: pick it (margin), don't pick it (notes — a
   // formula there is a field nobody can ever type into), and never write to it.
@@ -212,7 +212,7 @@ export const CURATED: Record<string, CuratedCase> = {
   "obj-formula-not-for-entered-values": { capability: "objects" },
   "obj-formula-is-read-only": { capability: "objects" },
   // ── Pages generation (2026-08) — the quality gate `managePage` shipped
-  // without. Seeds its own deterministic object type, so NOT smoke. Graded on
+  // without. Seeds its own deterministic collection, so NOT smoke. Graded on
   // the STORED definition (structure + the dry-run `warnings` channel of the
   // final write), not the chat reply — every assertion is written to hold for
   // both the nested tree and the flat spec, so this suite is the acceptance

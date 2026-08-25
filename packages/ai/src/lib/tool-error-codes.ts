@@ -107,9 +107,9 @@ export const TOOL_ERROR_CODES = {
   // Drive management tools (uploadToDrive / manageDrive / listFolders):
   // invalid action args or a failed folder/document operation.
   DRIVE_ERROR: "DRIVE_ERROR",
-  // Object graph (ontology) query tools
-  OBJECT_QUERY_ERROR: "OBJECT_QUERY_ERROR",
-  OBJECT_TYPE_NOT_FOUND: "OBJECT_TYPE_NOT_FOUND",
+  // Collection graph (ontology) query tools
+  COLLECTION_QUERY_ERROR: "COLLECTION_QUERY_ERROR",
+  COLLECTION_NOT_FOUND: "COLLECTION_NOT_FOUND",
 
   // Memory
   MEMORY_INVALID_INPUT: "MEMORY_INVALID_INPUT",

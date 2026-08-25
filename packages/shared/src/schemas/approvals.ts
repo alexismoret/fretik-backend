@@ -64,14 +64,14 @@ export const approvalRecordWriteItemSchema = z.object({
   /** Snapshot of the target record's field values (before→after / preview). */
   currentData: z.record(z.string(), z.unknown()).optional(),
   /** Per-item type (update/delete may span types). */
-  objectTypeId: z.uuid().optional(),
-  typeKey: z.string().optional(),
+  collectionId: z.uuid().optional(),
+  collectionKey: z.string().optional(),
 });
 
 export const approvalRecordWritePayloadSchema = z.object({
   op: approvalRecordWriteOpSchema,
-  typeKey: z.string().optional(),
-  objectTypeId: z.uuid().optional(),
+  collectionKey: z.string().optional(),
+  collectionId: z.uuid().optional(),
   typeName: z.string().optional(),
   typeIcon: z.string().optional(),
   typeColor: z.string().optional(),

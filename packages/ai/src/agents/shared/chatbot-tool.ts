@@ -228,12 +228,12 @@ const injectCaptionField = <TSchema>(schema: TSchema): TSchema => {
   // entire input JSON to land. The previous `extend({caption})`
   // appended it last and the caption often only arrived just before
   // `tool-input-available`.
-  const objectSchema = schema as unknown as {
+  const collectionSchema = schema as unknown as {
     shape: Record<string, z.ZodTypeAny>;
   };
   return z.object({
     caption: CAPTION_FIELD,
-    ...objectSchema.shape,
+    ...collectionSchema.shape,
   }) as unknown as TSchema;
 };
 

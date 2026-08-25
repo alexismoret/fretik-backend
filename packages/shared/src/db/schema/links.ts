@@ -10,8 +10,8 @@ import {
   uuid,
 } from "drizzle-orm/pg-core";
 import { organization, team } from "./auth-schema";
+import { collectionRecords } from "./collection-records";
 import { linkTypes } from "./link-types";
-import { objectRecords } from "./object-records";
 import { ontologySourceEnum, ontologyStatusEnum } from "./ontology-enums";
 
 /**
@@ -22,7 +22,7 @@ import { ontologySourceEnum, ontologyStatusEnum } from "./ontology-enums";
  * `invalidatedAt`, insert a new row).
  *
  * Both ends are validated against the link type at write (`fromRecord` type =
- * link_type.fromObjectType; `toRecord` type = link_type.toObjectType unless it
+ * link_type.fromCollection; `toRecord` type = link_type.toCollection unless it
  * is NULL = polymorphic).
  */
 export const links = pgTable(
@@ -45,10 +45,10 @@ export const links = pgTable(
       .references(() => linkTypes.id, { onDelete: "cascade" }),
     fromRecordId: uuid("from_record_id")
       .notNull()
-      .references(() => objectRecords.id, { onDelete: "cascade" }),
+      .references(() => collectionRecords.id, { onDelete: "cascade" }),
     toRecordId: uuid("to_record_id")
       .notNull()
-      .references(() => objectRecords.id, { onDelete: "cascade" }),
+      .references(() => collectionRecords.id, { onDelete: "cascade" }),
 
     // Per-edge qualifiers ONLY (no semantic role column).
     props: jsonb("props")
@@ -62,7 +62,7 @@ export const links = pgTable(
     // existing edge (and the UI/user write path) `confirmed`.
     status: ontologyStatusEnum("status").notNull().default("confirmed"),
     confidence: decimal("confidence", { precision: 4, scale: 3 }),
-    // Soft ref to domain_events (append-only; see object_records.sourceEventId).
+    // Soft ref to domain_events (append-only; see collection_records.sourceEventId).
     sourceEventId: uuid("source_event_id"),
 
     // Bi-temporal — NULL unless the link type is temporal.

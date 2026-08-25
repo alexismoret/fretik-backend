@@ -16,8 +16,8 @@ import {
 import { createApiError, notFound, throwHttpError } from "../../../lib/errors";
 import { copyObject, uploadToS3 } from "../../../lib/s3";
 import { ERROR_CODES } from "../../../schemas/errors";
+import { resolveDocumentRecordId } from "../../collection-records/resolve-document-record";
 import { emitDomainEvent, type EventActor } from "../../domain-events/emit";
-import { resolveDocumentRecordId } from "../../object-records/resolve-document-record";
 import { enqueueDocumentProcessing } from "../processing-queue";
 import { scheduleDocumentVectorRefresh } from "../vector-refresh-queue";
 import {

@@ -172,7 +172,7 @@ The definition behind it: a `records` dataset for the cards, two variables (`car
 {
   "kind": "record",
   "id": "set_stage",
-  "objectTypeId": "<the cards' type>",
+  "collectionId": "<the cards' type>",
   "mode": "update",
   "recordId": { "var": "cardId" },
   "args": { "stage": { "var": "stage" } }

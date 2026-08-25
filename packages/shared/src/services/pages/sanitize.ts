@@ -395,7 +395,7 @@ export const sanitizePageDefinition = (
       if (bytes > PAGE_LIMITS.maxInlineBytes) {
         pushPageWarning(
           warnings,
-          `dataset "${dataset.id}": inline rows are ${Math.round(bytes / 1000).toString()}KB, over the ${Math.round(PAGE_LIMITS.maxInlineBytes / 1000).toString()}KB cap — query an object type instead`,
+          `dataset "${dataset.id}": inline rows are ${Math.round(bytes / 1000).toString()}KB, over the ${Math.round(PAGE_LIMITS.maxInlineBytes / 1000).toString()}KB cap — query a collection instead`,
         );
       }
     }

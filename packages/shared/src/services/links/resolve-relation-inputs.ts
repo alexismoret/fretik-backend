@@ -1,5 +1,5 @@
+import { resolveDocumentRecordIds } from "../collection-records/resolve-document-record";
 import { resolveLinkTypes } from "../link-types/match";
-import { resolveDocumentRecordIds } from "../object-records/resolve-document-record";
 
 /**
  * One outgoing relation to attach to a record being created. Name the relation
@@ -22,18 +22,18 @@ export interface ResolvedRelationTarget {
 }
 
 /**
- * Resolve relation inputs against a FIXED source object type — fully batched:
+ * Resolve relation inputs against a FIXED source collection — fully batched:
  * ONE grouped link-type resolution (distinct keys) + ONE grouped document-mirror
  * read (distinct file ids), then a pure in-memory map per input. Returns, per
  * input position, the resolved `{ linkTypeId, toRecordId }` or null with a
  * reason in `errors`. No per-input query — UI inputs that already carry
  * `linkTypeId` + `toRecordId` resolve with zero reads. Shared by the single
- * (`createObjectRecord`) and bulk (`bulkCreateObjectRecords`) create paths.
+ * (`createCollectionRecord`) and bulk (`bulkCreateCollectionRecords`) create paths.
  */
 export const resolveRelationInputs = async (input: {
   organizationId: string;
   teamId: string;
-  fromObjectTypeId: string;
+  fromCollectionId: string;
   relations: RecordRelationInput[];
 }): Promise<{
   resolved: (ResolvedRelationTarget | null)[];
@@ -57,7 +57,7 @@ export const resolveRelationInputs = async (input: {
       ? await resolveLinkTypes({
           organizationId: input.organizationId,
           teamId: input.teamId,
-          fromObjectTypeId: input.fromObjectTypeId,
+          fromCollectionId: input.fromCollectionId,
           rawKeys,
         })
       : new Map<string, string>();

@@ -54,13 +54,13 @@ describe("conversation task DTO — generic progress", () => {
   test("the kind's own display fields survive alongside it", () => {
     const dto = serializeConversationTask(
       task({
-        importTypeKey: "client",
+        importCollectionKey: "client",
         importRows: 200_000,
         progressDone: 1,
         progressTotal: 200_000,
       }),
     );
-    expect(dto.importTypeKey).toBe("client");
+    expect(dto.importCollectionKey).toBe("client");
     expect(dto.importRows).toBe(200_000);
     expect(dto.progress).toEqual({ done: 1, total: 200_000 });
     // Workflow-only fields stay at their neutral values for another kind.

@@ -8,7 +8,7 @@ import {
 /**
  * The write gate is the ONLY thing keeping a non-autonomous run from writing
  * team data directly (`manageRecord`/`manageLink`) or touching schema
- * (`manageObjectType`/…). It is applied identically to the main workflow agent
+ * (`manageCollection`/…). It is applied identically to the main workflow agent
  * and to workflow-dispatched sub-agents, so a regression here silently reopens
  * the delegation-bypass hole. These pin each mode's hidden set.
  */
@@ -80,7 +80,7 @@ describe("workflowSubAgentHiddenToolNames", () => {
   test("approval_required hides writes + schema/meta, keeps memory", () => {
     const hidden = workflowSubAgentHiddenToolNames("approval_required");
     expect(hidden.has("manageRecord")).toBe(true);
-    expect(hidden.has("manageObjectType")).toBe(true);
+    expect(hidden.has("manageCollection")).toBe(true);
     expect(hidden.has("memory")).toBe(false);
   });
 

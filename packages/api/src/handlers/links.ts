@@ -14,10 +14,10 @@ import {
   linkResponseSchema,
   recordLinksResponseSchema,
 } from "@fretik/shared/schemas/ontology";
+import { assertCanWriteRecord } from "@fretik/shared/services/collection-sharing/write-access";
 import { createLink } from "@fretik/shared/services/links/create";
 import { invalidateLink } from "@fretik/shared/services/links/invalidate";
 import { listLinksForRecord } from "@fretik/shared/services/links/retrieve";
-import { assertCanWriteRecord } from "@fretik/shared/services/object-sharing/write-access";
 import { createRoute, OpenAPIHono } from "@hono/zod-openapi";
 import { z } from "zod";
 

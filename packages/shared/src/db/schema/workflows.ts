@@ -76,7 +76,7 @@ export const workflows = pgTable(
 
     name: varchar("name", { length: 120 }).notNull(),
     description: text("description").notNull().default(""),
-    // Reuses the object_types icon/color convention (Lucide icon name +
+    // Reuses the collections icon/color convention (Lucide icon name +
     // semantic color token); the builder picks the icon via `searchIcons`.
     icon: varchar("icon", { length: 60 }),
     color: varchar("color", { length: 20 }),
@@ -199,7 +199,7 @@ export const workflowRuns = pgTable(
       .default({}),
 
     // Soft reference to the domain_events row that fired an event-triggered
-    // run (no FK — same rationale as object_records.sourceEventId). The
+    // run (no FK — same rationale as collection_records.sourceEventId). The
     // partial unique index below dedups re-sweeps.
     sourceEventId: uuid("source_event_id"),
 

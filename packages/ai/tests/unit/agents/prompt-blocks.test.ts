@@ -88,12 +88,12 @@ describe("resolveAgentBlocks", () => {
       "<drive_documents>",
       "<domain_tools>",
       "<citations>",
-      "<objects>",
+      "<collections>",
       "<sql_rules>",
       "<database_schema>",
       "<platform_map>",
       "<critical_reminders>",
-      "{{teamObjects}}",
+      "{{teamCollections}}",
     ]) {
       expect(chatbot).toContain(section);
       expect(workflow).toContain(section);

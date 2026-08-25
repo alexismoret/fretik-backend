@@ -5,7 +5,7 @@ import type { FieldDefinitionConfig } from "../../src/db/schema/field-types";
 import {
   buildRecordDataValidator,
   validateRecordData,
-} from "../../src/services/object-records/validate";
+} from "../../src/services/collection-records/validate";
 
 /**
  * The validator was hoisted out of the bulk services' row loop
@@ -34,7 +34,7 @@ const field = (
     id: `00000000-0000-7000-8000-${key.padEnd(12, "0").slice(0, 12)}`,
     organizationId: "11111111-1111-7111-8111-111111111111",
     teamId: "22222222-2222-7222-8222-222222222222",
-    objectTypeId: "33333333-3333-7333-8333-333333333333",
+    collectionId: "33333333-3333-7333-8333-333333333333",
     key,
     label: key,
     description: null,

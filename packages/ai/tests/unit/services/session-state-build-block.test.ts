@@ -26,14 +26,14 @@ describe("buildSessionStateBlock", () => {
 
   test("renders activated tools when any are present", () => {
     const inputs = makeInputs();
-    inputs.dynamicToolManager.activate(["listDocuments", "getObject"]);
+    inputs.dynamicToolManager.activate(["listDocuments", "getRecord"]);
     const block = buildSessionStateBlock(inputs);
     expect(block).toContain("Activated domain tools");
     expect(block).toContain("listDocuments");
-    expect(block).toContain("getObject");
+    expect(block).toContain("getRecord");
     // Order of names mirrors `getSnapshot()` insertion order.
     expect(block.indexOf("listDocuments")).toBeLessThan(
-      block.indexOf("getObject"),
+      block.indexOf("getRecord"),
     );
   });
 });

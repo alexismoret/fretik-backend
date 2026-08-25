@@ -14,14 +14,14 @@ import { pageDataSource } from "./sources/registry";
  * Execute a page's datasets and return their rows.
  *
  * THE SECURITY BOUNDARY LIVES HERE. A viewer's browser may send exactly one
- * thing: values for the variables the page DECLARES. Every object type, filter
+ * thing: values for the variables the page DECLARES. Every collection, filter
  * key and operator comes from the stored definition, so no caller — authed or
  * anonymous — can widen a page's reach beyond what its author froze into it.
  * Unknown variable keys are dropped rather than honoured.
  *
  * What this file owns is what is true of EVERY source: the boundary above,
  * dependency ordering, per-dataset degradation (`forbidden` / `error` instead
- * of failing the request — one unreadable object type must cost its own block,
+ * of failing the request — one unreadable collection must cost its own block,
  * not the page), and targeted refetch. Where rows come from is a resolver in
  * `sources/`, looked up by kind.
  */
@@ -119,7 +119,7 @@ const MAX_ERROR_CHARS = 300;
  *
  * The driver's own message is `Failed query: <the entire SQL>`, and that is
  * what used to travel: a wall of generated SQL naming the physical table
- * `data.obj_<uuid>`, with the actual cause — one wrong column — buried in it.
+ * `data.coll_<uuid>`, with the actual cause — one wrong column — buried in it.
  * Observed on a real run (2026-08-17): the agent read three of those, could not
  * tell which layer had failed, concluded "the transform keeps failing in the
  * sandbox" (it was an aggregate, and the sandbox was never involved), and
@@ -151,7 +151,7 @@ export const describeDatasetError = (cause: unknown): string => {
         : "unknown error";
 
   if (code === UNDEFINED_COLUMN) {
-    return `${message}. A dataset names a field this object type does not have — \`dry_run\` the definition with no code to see the real field keys.`;
+    return `${message}. A dataset names a field this collection does not have — \`dry_run\` the definition with no code to see the real field keys.`;
   }
   return message.slice(0, MAX_ERROR_CHARS);
 };

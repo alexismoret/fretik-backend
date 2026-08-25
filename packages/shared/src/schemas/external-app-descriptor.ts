@@ -128,7 +128,7 @@ export const externalAppDescriptorSchema = z.object({
    */
   fingerprint: z.string().min(1),
   categories: z.array(z.string()).min(1),
-  /** Named reusable object types referenced by `returns` / params. */
+  /** Named reusable collections referenced by `returns` / params. */
   types: z.record(z.string(), z.record(z.string(), paramSpecSchema)),
   actions: z.array(externalAppDescriptorActionSchema).min(1),
   triggers: z.array(externalAppTriggerSchema),

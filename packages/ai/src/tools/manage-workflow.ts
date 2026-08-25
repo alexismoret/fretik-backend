@@ -1,9 +1,9 @@
 import db from "@fretik/shared/db";
 import { readSessionFile } from "@fretik/shared/lib/chatbot-session-storage";
 import {
-  OBJECT_COLOR_TOKENS,
-  isValidObjectColor,
-} from "@fretik/shared/lib/colors/object-colors";
+  COLLECTION_COLOR_TOKENS,
+  isValidCollectionColor,
+} from "@fretik/shared/lib/colors/collection-colors";
 import { isValidIcon } from "@fretik/shared/lib/icons/search";
 import { describeFormFieldsForAgent } from "@fretik/shared/schemas/workflow-forms";
 import {
@@ -268,13 +268,13 @@ export const sanitizeIcon = (
 export const sanitizeColor = (
   color: string | undefined,
 ): { color: string | undefined; warnings: string[] } => {
-  if (color === undefined || isValidObjectColor(color)) {
+  if (color === undefined || isValidCollectionColor(color)) {
     return { color, warnings: [] };
   }
   return {
     color: undefined,
     warnings: [
-      `Ignored unknown color '${color}' — kept the default. Valid tokens: ${OBJECT_COLOR_TOKENS.join(", ")}.`,
+      `Ignored unknown color '${color}' — kept the default. Valid tokens: ${COLLECTION_COLOR_TOKENS.join(", ")}.`,
     ],
   };
 };
@@ -292,7 +292,7 @@ const scopeOf = (userId: string | null): WorkflowScope =>
 export const createManageWorkflowTool = () =>
   tool({
     description: [
-      "Build and manage workflows — autonomous agents that run a playbook of tasks on a schedule, an event, or on demand, with the same tools you have. Deciding WHETHER a workflow is the right feature (vs a team skill, an object type, or just doing the task now) — and how features compose — is `skills/platform-guide/SKILL.md` territory: read it before proposing.",
+      "Build and manage workflows — autonomous agents that run a playbook of tasks on a schedule, an event, or on demand, with the same tools you have. Deciding WHETHER a workflow is the right feature (vs a team skill, a collection, or just doing the task now) — and how features compose — is `skills/platform-guide/SKILL.md` territory: read it before proposing.",
       "",
       "- create_draft: name + playbook (one goal + 1-20 ordered tasks; each task = title + instructions, optional expectedOutput + toolHints) + icon + color — set both at creation, best-guess is safe (an off-catalog value is dropped with a warning, never an error). Optional description, triggerType (manual|cron|event|form) + triggerConfig, autonomy (read_only|approval_required|autonomous, default approval_required), modelProfileKey, scope (team|private, default team). Starts as draft. The user sets run time/token limits themselves on the workflow page.",
       "- update: workflowId + any field, including scope (re-scope anytime). Safe anytime — runs snapshot the playbook, so edits never disturb a running or past run.",
@@ -312,7 +312,7 @@ export const createManageWorkflowTool = () =>
       "After activate, `get` returns `formUrl` — the shareable link to hand the user.",
       "",
       "Writing a playbook (the run has no user to ask — be specific, stay industry-agnostic):",
-      "- Task `instructions` state the GOAL and the expected output — WHAT to achieve, never a tool name or its arguments. `toolHints` is the ONLY place a tool name may appear. The executor picks the tool and its exact argument shape from the live schema (`describeObjectType`). A playbook that dictates `manageRecord` calls or field formats goes stale and breaks.",
+      "- Task `instructions` state the GOAL and the expected output — WHAT to achieve, never a tool name or its arguments. `toolHints` is the ONLY place a tool name may appear. The executor picks the tool and its exact argument shape from the live schema (`describeCollection`). A playbook that dictates `manageRecord` calls or field formats goes stale and breaks.",
       "- A playbook runs against whatever its trigger delivers, run after run. Decide from the user's request how variable that input is — fixed template / stable format with varying content / open input — and generalize each task to that level; `skills/platform-guide/references/workflows.md` § 'Design for the input space' carries the doctrine. Variability ambiguous? askUserQuestion before baking an example file's structure into a task.",
       "- When the conversation shows what the output must look like (example file, exact columns, required format), capture it in `playbook.deliverable` = { format, description } — a run executes in a FRESH conversation and never sees this chat, so a contract left only here is invisible to the executor. Copy the example's structure line AND two of its data rows as read, never a description of them — the rows are the only place the way a value is written is visible. Details + the diff-vs-example check: workflows.md.",
       "- A run always produces its deliverable. A value it cannot establish leaves that cell empty and names the affected rows in the summary; a playbook that withholds the whole file until every value is confirmed spends the run and returns nothing to read or correct. Only refuse to produce when the user asked for that.",
@@ -357,7 +357,7 @@ export const createManageWorkflowTool = () =>
         .string()
         .max(20)
         .optional()
-        .describe(`Palette token: ${OBJECT_COLOR_TOKENS.join(" | ")}.`),
+        .describe(`Palette token: ${COLLECTION_COLOR_TOKENS.join(" | ")}.`),
       triggerType: workflowTriggerTypeSchema.optional(),
       triggerConfig: WorkflowTriggerConfigSchema.optional().describe(
         describeTriggerConfigForAgent(),

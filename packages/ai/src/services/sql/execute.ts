@@ -120,7 +120,7 @@ export const executeSql = async (
     const detail = fixableSqlError(err);
     return {
       error: detail
-        ? `Query failed: ${detail} Check the column and table names against the schema in <database_schema> / <team_objects>, then retry once.`
+        ? `Query failed: ${detail} Check the column and table names against the schema in <database_schema> / <team_collections>, then retry once.`
         : "Query failed to execute. Check column and table names against the schema in the system prompt, then retry. If it still fails, stop and explain to the user.",
       code: "SQL_EXECUTION_ERROR",
     };

@@ -1,7 +1,7 @@
 import { callAiService } from "@fretik/shared/lib/ai-service";
 import { createWorkerConnection } from "@fretik/shared/lib/queue/connection";
-import { buildRecordCard } from "@fretik/shared/services/object-records/build-card";
-import { deleteRecordCardVectors } from "@fretik/shared/services/object-records/card-vectors";
+import { buildRecordCard } from "@fretik/shared/services/collection-records/build-card";
+import { deleteRecordCardVectors } from "@fretik/shared/services/collection-records/card-vectors";
 import { type Job, Worker } from "bullmq";
 import { z } from "zod";
 import { intFromEnv } from "../lib/env";

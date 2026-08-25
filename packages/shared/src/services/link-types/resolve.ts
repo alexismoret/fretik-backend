@@ -6,7 +6,7 @@ import { selectOrCache } from "../../lib/redis";
 /**
  * Resolve the org-scoped (`teamId IS NULL`) link-type id for a normalized key —
  * the document pipeline uses it to find the seeded system `mentions` relation.
- * Returns null when absent (non-throwing, like `resolveObjectTypeId`) so the
+ * Returns null when absent (non-throwing, like `resolveCollectionId`) so the
  * caller can degrade gracefully rather than fail a whole document. Cached 30 min
  * under `organization:{orgId}:link-type-id:{key}`.
  */

@@ -21,4 +21,4 @@ A single durable rule is a **memory**, not a skill. A skill earns its file by ha
 ## Traps
 
 - The skill's `description` is its router — it decides whether future conversations load the skill at the right moment. Spend effort on it.
-- Don't fold standing FACTS into a skill body (prices, contacts, thresholds that change) — point the skill at an object type or context file instead, so data changes don't require re-editing the recipe.
+- Don't fold standing FACTS into a skill body (prices, contacts, thresholds that change) — point the skill at a collection or context file instead, so data changes don't require re-editing the recipe.

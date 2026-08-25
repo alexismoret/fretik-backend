@@ -51,7 +51,7 @@ export const fieldConfigSchema = z.object({
   color: z.string().max(20).optional(),
   showNumber: z.boolean().optional(),
   // relation
-  targetTypeKey: z.string().max(60).optional(),
+  targetCollectionKey: z.string().max(60).optional(),
   cardinality: z.enum(["one", "many"]).optional(),
   linkTypeKey: z.string().max(60).optional(),
   widget: z.literal("attachment").optional(),
@@ -93,7 +93,7 @@ export const fieldConfigSchema = z.object({
  * editor needs the message and the position to point at it.
  */
 export const checkFormulaRequestSchema = z.object({
-  objectTypeId: z.uuid(),
+  collectionId: z.uuid(),
   expression: z.string().max(FORMULA_LIMITS.MAX_EXPRESSION_CHARS),
   /** The field being edited, so its own previous version is not in scope. */
   fieldId: z.uuid().optional(),
@@ -149,7 +149,7 @@ export const fieldDefinitionResponseSchema = z.object({
   id: z.uuid(),
   organizationId: z.uuid(),
   teamId: z.uuid().nullable(),
-  objectTypeId: z.uuid(),
+  collectionId: z.uuid(),
   key: fieldDefinitionKeySchema,
   label: z.string(),
   description: z.string().nullable(),
@@ -194,10 +194,10 @@ export type FieldDefinitionResponse = z.infer<
 export const createFieldDefinitionRequestSchema = z
   .object({
     scope: z.enum(["organization", "team"]),
-    // The object type the field attaches to. Resolve by id when known,
+    // The collection the field attaches to. Resolve by id when known,
     // otherwise by key (the handler defaults to the document_record system type).
-    objectTypeId: z.uuid().optional(),
-    objectTypeKey: z.string().optional(),
+    collectionId: z.uuid().optional(),
+    collectionKey: z.string().optional(),
     // Optional: omitted from the UI and derived server-side from the label.
     // Templates / imports may still pass an explicit key.
     key: fieldDefinitionKeySchema.optional(),

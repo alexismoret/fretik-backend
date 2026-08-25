@@ -1,17 +1,17 @@
 import {
+  COLLECTION_INDEX_SWEEP_JOB,
   CONVERSATION_TASK_SWEEP_JOB,
   DREAMING_SWEEP_JOB,
   GC_DEMOTE_JOB,
   JOURNAL_SWEEP_JOB,
   MCP_SNAPSHOT_REFRESH_JOB,
-  OBJECT_INDEX_SWEEP_JOB,
   WORKFLOW_STALL_SWEEP_JOB,
   WORKFLOW_TRIGGER_SWEEP_JOB,
 } from "./names";
 import {
+  getCollectionIndexQueue,
   getMcpRefreshQueue,
   getMemoryMaintenanceQueue,
-  getObjectIndexQueue,
 } from "./queues";
 
 /**
@@ -23,7 +23,7 @@ import {
  * + workflow-trigger sweeps are cheap (reads + enqueue), the nightly triggers
  * fan work out elsewhere, and the stall sweep is one bounded UPDATE. A job that
  * can occupy that worker for MINUTES gets its own queue instead — see the MCP
- * refresh and the object-index sweep at the bottom.
+ * refresh and the collection-index sweep at the bottom.
  */
 
 const SWEEP_INTERVAL_MS = 15_000;
@@ -38,7 +38,7 @@ const MCP_REFRESH_CRON = "0 5 * * *";
 /** Object-index sweep at 02:00 UTC, ahead of the memory window: it issues
  * `CREATE INDEX CONCURRENTLY`, which is IO-heavy and best kept away from the
  * dreaming and GC passes. */
-const OBJECT_INDEX_CRON = "0 2 * * *";
+const COLLECTION_INDEX_CRON = "0 2 * * *";
 
 const CRON_OPTS = {
   removeOnComplete: { count: 30 },
@@ -92,10 +92,10 @@ export const registerSchedulers = async (): Promise<void> => {
   // Dedicated queue — one pass can hold a `CREATE INDEX CONCURRENTLY` for
   // minutes, which on the concurrency-1 maintenance queue would stop the 15s
   // sweeps outright for the duration.
-  await getObjectIndexQueue().upsertJobScheduler(
-    OBJECT_INDEX_SWEEP_JOB,
-    { pattern: OBJECT_INDEX_CRON, tz: "UTC" },
-    { name: OBJECT_INDEX_SWEEP_JOB, opts: CRON_OPTS },
+  await getCollectionIndexQueue().upsertJobScheduler(
+    COLLECTION_INDEX_SWEEP_JOB,
+    { pattern: COLLECTION_INDEX_CRON, tz: "UTC" },
+    { name: COLLECTION_INDEX_SWEEP_JOB, opts: CRON_OPTS },
   );
 
   // Dedicated queue — the refresh re-introspects every MCP connection over the

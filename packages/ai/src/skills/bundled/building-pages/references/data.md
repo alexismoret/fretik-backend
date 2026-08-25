@@ -9,8 +9,8 @@ The data half of a page is declarative, and it is the security boundary: the cod
 - **A filter re-queries; it never narrows the rows already loaded.** Filtering a `computed` over the rows in hand looks identical to the real thing while the team has fewer records than the dataset's `limit`, and silently becomes a filter over the first hundred the day they have more. Send the choice as a variable, read it back in the dataset's filters.
 - **A paginated list gets its own `records` dataset.** The server is the paginator, however many millions sit behind it.
 - **Ratios, joins and derived columns are the PAGE's work, in a `computed()`** — over rows it already has, in the browser it is already running in. There is no server-side transform dataset; anything that has to be true over every row is an `aggregate`, in SQL.
-- **`external` is for small, fresh reads** through the viewer's own connection — an inbox, today's events. Volume and history belong in an object type synced by a workflow: a third party cannot be filtered, grouped or indexed. `dry_run` shows the real answer shape first.
-- **An `external` dataset pages through its own `args`, or not at all.** `queries` is the `objects` paginator and is ignored here. Where the action takes an offset, a cursor or a page token, bind a variable to it and raise it to load more; where it takes none, one call is the whole answer, and the list must not look like one that scrolls to an end it never reaches.
+- **`external` is for small, fresh reads** through the viewer's own connection — an inbox, today's events. Volume and history belong in a collection synced by a workflow: a third party cannot be filtered, grouped or indexed. `dry_run` shows the real answer shape first.
+- **An `external` dataset pages through its own `args`, or not at all.** `queries` is the `collections` paginator and is ignored here. Where the action takes an offset, a cursor or a page token, bind a variable to it and raise it to load more; where it takes none, one call is the whole answer, and the list must not look like one that scrolls to an end it never reaches.
 - **Probe before you design.** `dry_run` with datasets and no `code` returns real field names, a real row and real distinct values. Never design against imagined fields.
 
 ## Reading
@@ -89,7 +89,7 @@ const swatch = (color?: string | null) => {
 ```
 
 ```vue
-<!-- a select value, rendered the way the objects UI renders it -->
+<!-- a select value, rendered the way the collections UI renders it -->
 <span
   class="inline-flex items-center gap-1.5 rounded-md px-2 py-0.5 text-xs font-medium"
   :style="{
@@ -117,7 +117,7 @@ Three rules make this hold together:
 - **Columns and sections are chosen from the fields worth scanning**, once, not from whichever keys the first row happened to carry.
 - A dataset that is empty today still gets its section and its empty state. Sections that appear and disappear with the data make a page impossible to learn.
 
-Read the type with `describeObjectType` before writing the datasets: it gives you every field, every option, and the icons and colours attached to them.
+Read the type with `describeCollection` before writing the datasets: it gives you every field, every option, and the icons and colours attached to them.
 
 ## Writing
 

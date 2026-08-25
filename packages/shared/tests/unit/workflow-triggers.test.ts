@@ -65,8 +65,8 @@ describe("trigger catalog", () => {
   test("record object-type filter is declared but not yet available", () => {
     const catalog = buildTriggerCatalog();
     const created = catalog.eventTypes.find((e) => e.type === "record.created");
-    const objectType = created?.params.find((p) => p.kind === "object_type");
-    expect(objectType?.available).toBe(false);
+    const collection = created?.params.find((p) => p.kind === "collection");
+    expect(collection?.available).toBe(false);
   });
 
   test("agent describe names every kind + the folder filter key", () => {

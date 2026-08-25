@@ -24,7 +24,7 @@ const OUT = new URL("../lib/icons/catalog.ts", import.meta.url).pathname;
 // drizzle/aws-sdk/e2b), so the icon picker mirrors the SAME curated set via a
 // generated JSON (name + tags) it imports directly. One script, both sides.
 const FRONTEND_OUT = new URL(
-  "../../../../../app/app/app/utils/objectIconCatalog.json",
+  "../../../../../app/app/app/utils/collectionIconCatalog.json",
   import.meta.url,
 ).pathname;
 const MAX_TOTAL = 480;

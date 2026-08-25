@@ -20,7 +20,7 @@ const JOB_NAME = "drain";
 
 /**
  * Low on purpose. A drain is a long sequence of large write transactions
- * against ONE object type; running several at once mostly means they contend
+ * against ONE collection; running several at once mostly means they contend
  * for the same table's locks and WAL bandwidth, and a bigger number would buy
  * throughput only for the rare case of unrelated types importing at once.
  */

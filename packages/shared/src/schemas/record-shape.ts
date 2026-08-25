@@ -479,7 +479,7 @@ const toIsoDateTime = (raw: string): string => {
 };
 
 /**
- * Build the strict runtime Zod object an object record's `data` validates
+ * Build the strict runtime Zod object a record's `data` validates
  * against. Generalizes `buildPreExtractCustomShape`: one optional key per
  * ENABLED field definition (filtered by `enabled` only — every enabled field
  * is user-writable, regardless of `aiExtractionEnabled`). Concrete-typed and
@@ -504,7 +504,7 @@ export const buildRecordShape = (
 };
 
 // Field types whose values feed the search text. Kept in lockstep with the same
-// set in `services/object-records/field-data.ts` (the background recompute).
+// set in `services/collection-records/field-data.ts` (the background recompute).
 const TEXT_LIKE_TYPES: ReadonlySet<FieldDefinition["type"]> = new Set([
   "text",
   "markdown",

@@ -25,15 +25,15 @@ export const workflowWriteBackstop = (
 ): ToolErrorOutput | null => {
   if (ctx.workflowAutonomy === "read_only") {
     return toolError(
-      TOOL_ERROR_CODES.OBJECT_QUERY_ERROR,
+      TOOL_ERROR_CODES.COLLECTION_QUERY_ERROR,
       "READ_ONLY workflow run — no record or link writes. Record what would change in the task summary instead.",
       "Direct writes are disabled in this autonomy mode.",
     );
   }
   if (ctx.workflowAutonomy === "approval_required") {
     return toolError(
-      TOOL_ERROR_CODES.OBJECT_QUERY_ERROR,
-      "APPROVAL_REQUIRED workflow run — write object records through the Python objects SDK (`records.bulk_create` / `bulk_update` / `bulk_delete`), which pauses on a record_write approval.",
+      TOOL_ERROR_CODES.COLLECTION_QUERY_ERROR,
+      "APPROVAL_REQUIRED workflow run — write records through the Python objects SDK (`records.bulk_create` / `bulk_update` / `bulk_delete`), which pauses on a record_write approval.",
       "Build the rows in `python` and call the SDK; the run pauses for human review, then resumes with the outcome.",
     );
   }

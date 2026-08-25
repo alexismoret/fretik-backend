@@ -32,8 +32,8 @@ import { toPageValue } from "./values";
  *    (`pagePublishError`), unchanged.
  *
  * WHAT THIS IS NOT FOR: large volumes. A third party cannot be filtered,
- * grouped or indexed the way an object type can. The documented path for real
- * volume is unchanged — a workflow syncs the data into an object type, and the
+ * grouped or indexed the way a collection can. The documented path for real
+ * volume is unchanged — a workflow syncs the data into a collection, and the
  * page queries THAT, in SQL, over indexed columns. This source is for small,
  * live reads whose value is their freshness.
  */
@@ -88,7 +88,7 @@ export const resetExternalPageQueryExecutor = (): void => {
 };
 
 const NOT_ENABLED =
-  "External app datasets are not enabled in this process. Query the connected app in this conversation and store what the page needs, or model the data as an object type.";
+  "External app datasets are not enabled in this process. Query the connected app in this conversation and store what the page needs, or model the data as a collection.";
 
 /**
  * Resolve `{ "$": … }` bindings anywhere inside the args against page STATE
@@ -171,7 +171,7 @@ const humanise = (key: string): string => {
 /**
  * The display dictionary an external dataset never shipped.
  *
- * An `objects` dataset comes back with `fields`, and that one descriptor is
+ * An `collections` dataset comes back with `fields`, and that one descriptor is
  * what makes a column render as a labelled, formatted value instead of a raw
  * key. External datasets shipped rows and nothing else, so every page over a
  * connected app had to invent its own headers — which is why they show the

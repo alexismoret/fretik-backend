@@ -25,15 +25,15 @@ export const WORKFLOW_TRIGGER_QUEUE = "workflow-trigger";
 // re-introspects every active MCP connection over the network (Nango proxy), so
 // it must never share the 15s maintenance queue.
 export const MCP_REFRESH_QUEUE = "mcp-refresh";
-// Dedicated queue for the nightly object-index sweep — one pass issues a
+// Dedicated queue for the nightly collection-index sweep — one pass issues a
 // `CREATE INDEX CONCURRENTLY` per missing index, each of which can run for
 // minutes on a large table. On the concurrency-1 maintenance queue that is
 // head-of-line blocking: the 15s journal and workflow-trigger sweeps would not
 // run at all for the duration, once a night, right when a nightly import has
 // just filled the journal.
-export const OBJECT_INDEX_QUEUE = "object-index";
+export const COLLECTION_INDEX_QUEUE = "collection-index";
 
-/** One journal event to resolve against the object graph (P3). */
+/** One journal event to resolve against the collection graph (P3). */
 export interface MemoryResolveJobData {
   eventId: string;
   organizationId: string;
@@ -100,11 +100,11 @@ export const WORKFLOW_STALL_SWEEP_JOB = "workflow-stall-sweep";
 /** 5min — reconciles the conversation wait registry and re-signals owed
  * resumes (backstop for a completion or resume signal lost to a restart). */
 export const CONVERSATION_TASK_SWEEP_JOB = "conversation-task-sweep";
-/** 02:00 UTC cron — builds the field indexes big object tables are missing and
+/** 02:00 UTC cron — builds the field indexes big collection tables are missing and
  * retires the ones Postgres never reads. The catch-all trigger, for tables that
  * crossed the size threshold by growing row by row rather than through an
  * import or a page save. */
-export const OBJECT_INDEX_SWEEP_JOB = "object-index-sweep";
+export const COLLECTION_INDEX_SWEEP_JOB = "collection-index-sweep";
 
 /** Job name on MCP_REFRESH_QUEUE — 05:00 UTC cron, re-introspects every active
  * MCP connection and adopts any tool-surface change. */

@@ -69,10 +69,10 @@ export const relations = defineRelations(schema, (r) => ({
     aiContextFiles: r.many.aiContextFiles(),
     aiMemories: r.many.aiMemories(),
     fieldDefinitions: r.many.fieldDefinitions(),
-    objectTypes: r.many.objectTypes(),
+    collections: r.many.collections(),
     linkTypes: r.many.linkTypes(),
     actionTypes: r.many.actionTypes(),
-    objectRecords: r.many.objectRecords(),
+    collectionRecords: r.many.collectionRecords(),
     links: r.many.links(),
     domainEvents: r.many.domainEvents(),
     externalAppConnections: r.many.externalAppConnections(),
@@ -111,10 +111,10 @@ export const relations = defineRelations(schema, (r) => ({
     aiMemories: r.many.aiMemories(),
     aiMemoryHistory: r.many.aiMemoryHistory(),
     fieldDefinitions: r.many.fieldDefinitions(),
-    objectTypes: r.many.objectTypes(),
+    collections: r.many.collections(),
     linkTypes: r.many.linkTypes(),
     actionTypes: r.many.actionTypes(),
-    objectRecords: r.many.objectRecords(),
+    collectionRecords: r.many.collectionRecords(),
     links: r.many.links(),
     domainEvents: r.many.domainEvents(),
     teamSkills: r.many.teamSkills(),
@@ -238,12 +238,12 @@ export const relations = defineRelations(schema, (r) => ({
       to: r.documentProperties.documentId,
       optional: true,
     }),
-    // The 1:1 mirror of this document in the unified graph (object_records of
+    // The 1:1 mirror of this document in the unified graph (collection_records of
     // type `document`). Its `data` holds the extracted custom field values and
     // its outgoing links are the `mentions` edges to referenced records.
-    mirrorRecord: r.one.objectRecords({
+    mirrorRecord: r.one.collectionRecords({
       from: r.documents.id,
-      to: r.objectRecords.documentId,
+      to: r.collectionRecords.documentId,
       optional: true,
     }),
     chatFiles: r.many.aiChatFiles(),
@@ -294,9 +294,9 @@ export const relations = defineRelations(schema, (r) => ({
       to: r.team.id,
       optional: true,
     }),
-    objectType: r.one.objectTypes({
-      from: r.fieldDefinitions.objectTypeId,
-      to: r.objectTypes.id,
+    collection: r.one.collections({
+      from: r.fieldDefinitions.collectionId,
+      to: r.collections.id,
     }),
   },
 
@@ -304,19 +304,19 @@ export const relations = defineRelations(schema, (r) => ({
   // Dynamic data system (ontology) — catalog relations
   // ============================================================================
 
-  objectTypes: {
+  collections: {
     organization: r.one.organization({
-      from: r.objectTypes.organizationId,
+      from: r.collections.organizationId,
       to: r.organization.id,
     }),
     team: r.one.team({
-      from: r.objectTypes.teamId,
+      from: r.collections.teamId,
       to: r.team.id,
       optional: true,
     }),
     fieldDefinitions: r.many.fieldDefinitions(),
     actionTypes: r.many.actionTypes(),
-    objectRecords: r.many.objectRecords(),
+    collectionRecords: r.many.collectionRecords(),
   },
 
   linkTypes: {
@@ -342,32 +342,32 @@ export const relations = defineRelations(schema, (r) => ({
       to: r.team.id,
       optional: true,
     }),
-    objectType: r.one.objectTypes({
-      from: r.actionTypes.objectTypeId,
-      to: r.objectTypes.id,
+    collection: r.one.collections({
+      from: r.actionTypes.collectionId,
+      to: r.collections.id,
     }),
   },
 
-  objectRecords: {
+  collectionRecords: {
     organization: r.one.organization({
-      from: r.objectRecords.organizationId,
+      from: r.collectionRecords.organizationId,
       to: r.organization.id,
     }),
     team: r.one.team({
-      from: r.objectRecords.teamId,
+      from: r.collectionRecords.teamId,
       to: r.team.id,
     }),
     owner: r.one.user({
-      from: r.objectRecords.userId,
+      from: r.collectionRecords.userId,
       to: r.user.id,
       optional: true,
     }),
-    objectType: r.one.objectTypes({
-      from: r.objectRecords.objectTypeId,
-      to: r.objectTypes.id,
+    collection: r.one.collections({
+      from: r.collectionRecords.collectionId,
+      to: r.collections.id,
     }),
     document: r.one.documents({
-      from: r.objectRecords.documentId,
+      from: r.collectionRecords.documentId,
       to: r.documents.id,
       optional: true,
     }),
@@ -390,14 +390,14 @@ export const relations = defineRelations(schema, (r) => ({
       from: r.links.linkTypeId,
       to: r.linkTypes.id,
     }),
-    fromRecord: r.one.objectRecords({
+    fromRecord: r.one.collectionRecords({
       from: r.links.fromRecordId,
-      to: r.objectRecords.id,
+      to: r.collectionRecords.id,
       alias: "linkFrom",
     }),
-    toRecord: r.one.objectRecords({
+    toRecord: r.one.collectionRecords({
       from: r.links.toRecordId,
-      to: r.objectRecords.id,
+      to: r.collectionRecords.id,
       alias: "linkTo",
     }),
   },
@@ -421,9 +421,9 @@ export const relations = defineRelations(schema, (r) => ({
       to: r.aiConversations.id,
       optional: true,
     }),
-    subjectRecord: r.one.objectRecords({
+    subjectRecord: r.one.collectionRecords({
       from: r.domainEvents.subjectRecordId,
-      to: r.objectRecords.id,
+      to: r.collectionRecords.id,
       optional: true,
     }),
     eventLinks: r.many.domainEventLinks(),
@@ -434,9 +434,9 @@ export const relations = defineRelations(schema, (r) => ({
       from: r.domainEventLinks.eventId,
       to: r.domainEvents.id,
     }),
-    record: r.one.objectRecords({
+    record: r.one.collectionRecords({
       from: r.domainEventLinks.recordId,
-      to: r.objectRecords.id,
+      to: r.collectionRecords.id,
     }),
   },
 
@@ -459,9 +459,9 @@ export const relations = defineRelations(schema, (r) => ({
       to: r.aiConversations.id,
       optional: true,
     }),
-    anchorRecord: r.one.objectRecords({
+    anchorRecord: r.one.collectionRecords({
       from: r.aiEpisodes.anchorRecordId,
-      to: r.objectRecords.id,
+      to: r.collectionRecords.id,
       optional: true,
     }),
     supersededBy: r.one.aiEpisodes({
@@ -476,30 +476,30 @@ export const relations = defineRelations(schema, (r) => ({
       from: r.aiEpisodeRecords.episodeId,
       to: r.aiEpisodes.id,
     }),
-    record: r.one.objectRecords({
+    record: r.one.collectionRecords({
       from: r.aiEpisodeRecords.recordId,
-      to: r.objectRecords.id,
+      to: r.collectionRecords.id,
     }),
   },
 
-  objectGrants: {
+  collectionGrants: {
     organization: r.one.organization({
-      from: r.objectGrants.organizationId,
+      from: r.collectionGrants.organizationId,
       to: r.organization.id,
     }),
-    objectType: r.one.objectTypes({
-      from: r.objectGrants.objectTypeId,
-      to: r.objectTypes.id,
+    collection: r.one.collections({
+      from: r.collectionGrants.collectionId,
+      to: r.collections.id,
     }),
     ownerTeam: r.one.team({
-      from: r.objectGrants.ownerTeamId,
+      from: r.collectionGrants.ownerTeamId,
       to: r.team.id,
-      alias: "objectGrantOwnerTeam",
+      alias: "collectionGrantOwnerTeam",
     }),
     granteeTeam: r.one.team({
-      from: r.objectGrants.granteeTeamId,
+      from: r.collectionGrants.granteeTeamId,
       to: r.team.id,
-      alias: "objectGrantGranteeTeam",
+      alias: "collectionGrantGranteeTeam",
       optional: true,
     }),
   },
@@ -509,9 +509,9 @@ export const relations = defineRelations(schema, (r) => ({
       from: r.recordShares.organizationId,
       to: r.organization.id,
     }),
-    record: r.one.objectRecords({
+    record: r.one.collectionRecords({
       from: r.recordShares.recordId,
-      to: r.objectRecords.id,
+      to: r.collectionRecords.id,
     }),
     ownerTeam: r.one.team({
       from: r.recordShares.ownerTeamId,

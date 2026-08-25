@@ -17,11 +17,11 @@ import {
   hasPendingInvitation,
   isEmailAllowlisted,
 } from "../services/auth/signup-gate";
+import { seedStarterCollections } from "../services/collections/seed-starter-types";
+import { seedSystemOntology } from "../services/collections/seed-system-types";
 import { applyDocumentFieldTemplate } from "../services/field-definitions/apply-template";
 import { duplicateOrgDefsToTeam } from "../services/field-definitions/duplicate-org-to-team";
 import { getTeamLocale } from "../services/field-definitions/get-locale";
-import { seedStarterObjectTypes } from "../services/object-types/seed-starter-types";
-import { seedSystemOntology } from "../services/object-types/seed-system-types";
 import { scrubWorkflowNotificationRecipient } from "../services/workflows/scrub-notification-recipient";
 import { OTP_EXPIRY_SECONDS } from "./auth-constants";
 import {
@@ -254,10 +254,10 @@ const options = {
           });
           // Seed the one required system type (`document`) + the `mentions`
           // link type FIRST — the document-field template below resolves the
-          // `document` object type and throws if it is missing.
+          // `document` collection and throws if it is missing.
           await seedSystemOntology(data.organization.id);
           // Seed the deletable starter ontology (company, person, note, task).
-          await seedStarterObjectTypes(data.organization.id);
+          await seedStarterCollections(data.organization.id);
           // Seed the org-scope document field definitions with the
           // default template. New teams created under this org inherit
           // this set at creation time.

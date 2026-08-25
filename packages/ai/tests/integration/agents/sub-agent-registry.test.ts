@@ -34,7 +34,7 @@ describe("sub-agent tool registry", () => {
       "python",
       "bash",
       "listDocuments",
-      "listObjects",
+      "listRecords",
     ]) {
       expect(names).toContain(expected);
     }

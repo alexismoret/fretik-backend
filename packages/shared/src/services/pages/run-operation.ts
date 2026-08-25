@@ -18,7 +18,7 @@ import type { PageRequester } from "./visibility";
  * caller sends an operation id and values for the page's declared VARIABLES;
  * `resolvePageState` coerces those against their declared types and drops
  * everything else, exactly as it does for a dataset filter. The action name,
- * the connection, the object type and the argument template all come from the
+ * the connection, the collection and the argument template all come from the
  * stored definition, so a forged request can change a value that was already
  * going to be sent and nothing more.
  *

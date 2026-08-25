@@ -9,7 +9,7 @@ export const FIELD_DEFINITION_LIMITS = {
    * pre-extract LLM prompt budget is calibrated around this cap — keep it tight.
    */
   MAX_ENABLED_PER_SCOPE: 15,
-  /** Max enabled fields on a regular (non-`document_record`) object type. */
+  /** Max enabled fields on a regular (non-`document_record`) collection. */
   MAX_FIELDS_PER_TYPE: 30,
   /** Max `options[]` length on a single select / multi_select field. */
   MAX_OPTIONS_PER_FIELD: 50,

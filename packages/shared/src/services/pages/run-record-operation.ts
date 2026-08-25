@@ -7,12 +7,12 @@ import type {
   PageValue,
 } from "../../schemas/pages";
 import { isPageVarRef } from "../../schemas/pages";
+import { bulkDeleteCollectionRecords } from "../collection-records/bulk-delete";
+import { bulkUpdateCollectionRecords } from "../collection-records/bulk-update";
+import { createCollectionRecord } from "../collection-records/create";
 import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
 import { createLink } from "../links/create";
 import { invalidateLink } from "../links/invalidate";
-import { bulkDeleteObjectRecords } from "../object-records/bulk-delete";
-import { bulkUpdateObjectRecords } from "../object-records/bulk-update";
-import { createObjectRecord } from "../object-records/create";
 // The `{ var }` template resolver. It lives next to the external dataset
 // because that is where it was first needed, not because it is external-only:
 // an operation's `args` is the same template with the same rules.
@@ -29,7 +29,7 @@ import { resolveExternalArgs } from "./sources/external";
  *
  * THREE THINGS ARE THE SECURITY BOUNDARY, and none of them is the client's:
  *
- *  1. The TARGET comes from the stored definition — `objectTypeId`, `fieldKey`,
+ *  1. The TARGET comes from the stored definition — `collectionId`, `fieldKey`,
  *     and the `args` template. A browser sends an operation id and values for
  *     declared variables, exactly as it does for a dataset filter.
  *  2. The WRITABLE FIELDS are exactly the keys of `args`. A value the template
@@ -116,15 +116,15 @@ const resolveIds = (
  */
 const ownedRecordIds = async (params: {
   teamId: string;
-  objectTypeId: string;
+  collectionId: string;
   ids: string[];
 }): Promise<Set<string>> => {
   if (params.ids.length === 0) return new Set();
-  const rows = await db.query.objectRecords.findMany({
+  const rows = await db.query.collectionRecords.findMany({
     columns: { id: true },
     where: {
       id: { in: params.ids },
-      objectTypeId: params.objectTypeId,
+      collectionId: params.collectionId,
       teamId: params.teamId,
     },
   });
@@ -152,13 +152,13 @@ const UNWRITABLE_FIELD_TYPES: ReadonlySet<string> = new Set([
 
 const unwritableArgKeys = async (params: {
   teamId: string;
-  objectTypeId: string;
+  collectionId: string;
   keys: string[];
 }): Promise<string[]> => {
   if (params.keys.length === 0) return [];
   const fields = await getFieldDefinitionsForTeam({
     teamId: params.teamId,
-    objectTypeId: params.objectTypeId,
+    collectionId: params.collectionId,
   });
   const typeByKey = new Map(fields.map((field) => [field.key, field.type]));
   return params.keys.filter((key) => {
@@ -169,13 +169,13 @@ const unwritableArgKeys = async (params: {
 
 /** The declared type, only if this team owns it. Writes are owner-team only —
  * stricter than the read scope, which also honours cross-team grants. */
-const ownsObjectType = async (params: {
+const ownsCollection = async (params: {
   teamId: string;
-  objectTypeId: string;
+  collectionId: string;
 }): Promise<boolean> => {
-  const row = await db.query.objectTypes.findFirst({
+  const row = await db.query.collections.findFirst({
     columns: { id: true },
-    where: { id: params.objectTypeId, teamId: params.teamId },
+    where: { id: params.collectionId, teamId: params.teamId },
   });
   return row !== undefined;
 };
@@ -189,18 +189,18 @@ const ownsObjectType = async (params: {
 const relationLinkTypeId = async (params: {
   organizationId: string;
   teamId: string;
-  objectTypeId: string;
+  collectionId: string;
   fieldKey: string;
 }): Promise<{ ok: true; id: string } | { ok: false; message: string }> => {
   const fields = await getFieldDefinitionsForTeam({
     teamId: params.teamId,
-    objectTypeId: params.objectTypeId,
+    collectionId: params.collectionId,
   });
   const field = fields.find((candidate) => candidate.key === params.fieldKey);
   if (!field || field.type !== "relation") {
     return {
       ok: false,
-      message: `"${params.fieldKey}" is not a relation field on this object type — only a relation has edges to move.`,
+      message: `"${params.fieldKey}" is not a relation field on this collection — only a relation has edges to move.`,
     };
   }
   const linkTypeKey =
@@ -211,7 +211,7 @@ const relationLinkTypeId = async (params: {
   if (!linkTypeKey) {
     return {
       ok: false,
-      message: `relation field "${params.fieldKey}" has no link type bound yet — open it once in the objects UI, or re-save the field definition.`,
+      message: `relation field "${params.fieldKey}" has no link type bound yet — open it once in the collections UI, or re-save the field definition.`,
     };
   }
   // Team's own link type first, then the org-level one — the same double-arm
@@ -220,7 +220,7 @@ const relationLinkTypeId = async (params: {
     columns: { id: true },
     where: {
       normalizedKey: linkTypeKey,
-      fromObjectTypeId: params.objectTypeId,
+      fromCollectionId: params.collectionId,
       OR: [
         { teamId: params.teamId },
         { teamId: { isNull: true }, organizationId: params.organizationId },
@@ -264,7 +264,7 @@ export const runPageRecordOperation = async (params: {
     const linkType = await relationLinkTypeId({
       organizationId,
       teamId,
-      objectTypeId: operation.objectTypeId,
+      collectionId: operation.collectionId,
       fieldKey: operation.fieldKey,
     });
     if (!linkType.ok) return { status: "error", message: linkType.message };
@@ -279,13 +279,13 @@ export const runPageRecordOperation = async (params: {
     }
     const owned = await ownedRecordIds({
       teamId,
-      objectTypeId: operation.objectTypeId,
+      collectionId: operation.collectionId,
       ids: [fromId],
     });
     if (!owned.has(fromId)) {
       return {
         status: "error",
-        message: `record "${fromId}" is not a record of this page's object type in your team.`,
+        message: `record "${fromId}" is not a record of this page's collection in your team.`,
       };
     }
 
@@ -312,7 +312,7 @@ export const runPageRecordOperation = async (params: {
       // the relation renders two chips where the UI offers one picker.
       const fields = await getFieldDefinitionsForTeam({
         teamId,
-        objectTypeId: operation.objectTypeId,
+        collectionId: operation.collectionId,
       });
       const field = fields.find(
         (candidate) => candidate.key === operation.fieldKey,
@@ -351,11 +351,11 @@ export const runPageRecordOperation = async (params: {
   }
 
   if (
-    !(await ownsObjectType({ teamId, objectTypeId: operation.objectTypeId }))
+    !(await ownsCollection({ teamId, collectionId: operation.collectionId }))
   ) {
     return {
       status: "error",
-      message: `this page writes to an object type your team does not own.`,
+      message: `this page writes to a collection your team does not own.`,
     };
   }
 
@@ -374,23 +374,23 @@ export const runPageRecordOperation = async (params: {
   // that gets fixed.
   const unwritable = await unwritableArgKeys({
     teamId,
-    objectTypeId: operation.objectTypeId,
+    collectionId: operation.collectionId,
     keys: Object.keys(data),
   });
   if (unwritable.length > 0) {
     return {
       status: "error",
-      message: `operation "${operation.id}" writes ${unwritable.map((key) => `"${key}"`).join(", ")}, which this object type does not store as a field value — a relation moves with a link operation, and rollups and system properties are computed on read.`,
+      message: `operation "${operation.id}" writes ${unwritable.map((key) => `"${key}"`).join(", ")}, which this collection does not store as a field value — a relation moves with a link operation, and rollups and system properties are computed on read.`,
     };
   }
 
   if (operation.kind === "record" && operation.mode === "create") {
     try {
-      const created = await createObjectRecord({
+      const created = await createCollectionRecord({
         organizationId,
         teamId,
         userId,
-        objectTypeId: operation.objectTypeId,
+        collectionId: operation.collectionId,
         data,
         actor,
       });
@@ -416,27 +416,27 @@ export const runPageRecordOperation = async (params: {
   if (requested.length > BULK_CEILING) {
     return {
       status: "error",
-      message: `operation "${operation.id}": ${requested.length.toString()} records is over the ${BULK_CEILING.toString()} ceiling for one write. Narrow the selection, or import through the objects UI.`,
+      message: `operation "${operation.id}": ${requested.length.toString()} records is over the ${BULK_CEILING.toString()} ceiling for one write. Narrow the selection, or import through the collections UI.`,
     };
   }
 
   const owned = await ownedRecordIds({
     teamId,
-    objectTypeId: operation.objectTypeId,
+    collectionId: operation.collectionId,
     ids: requested,
   });
   const refused = requested.filter((id) => !owned.has(id));
   if (owned.size === 0) {
     return {
       status: "error",
-      message: `none of the ${requested.length.toString()} ids is a record of this page's object type in your team.`,
+      message: `none of the ${requested.length.toString()} ids is a record of this page's collection in your team.`,
     };
   }
   const ids = requested.filter((id) => owned.has(id));
 
   try {
     if (operation.mode === "delete") {
-      const result = await bulkDeleteObjectRecords({ teamId, ids, actor });
+      const result = await bulkDeleteCollectionRecords({ teamId, ids, actor });
       const failed = summariseErrors(result.errors);
       return failed
         ? { status: "error", message: failed }
@@ -446,7 +446,7 @@ export const runPageRecordOperation = async (params: {
           };
     }
 
-    const result = await bulkUpdateObjectRecords({
+    const result = await bulkUpdateCollectionRecords({
       teamId,
       updates: ids.map((id) => ({ id, data })),
       // PATCH, never replace: an operation names the fields it changes, and

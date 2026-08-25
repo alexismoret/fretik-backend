@@ -21,7 +21,7 @@ import { TOOL_ERROR_CODES } from "../lib/tool-error-codes";
  * Filters are now fully dynamic: instead of a hardcoded `documentType`
  * enum, the tool accepts a generic `customFilters` list of
  * `{ fieldKey, value }` pairs. The model can discover available keys
- * via `describeObjectType("document")` (or by inspecting field values
+ * via `describeCollection("document")` (or by inspecting field values
  * returned here) and use them to refine searches. Universal filters
  * (linked records) remain typed.
  */

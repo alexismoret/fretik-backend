@@ -170,16 +170,16 @@ export interface AgentRuntimeContext {
    */
   availableCapabilitiesBlock?: string;
   /**
-   * Rendered `{{teamObjects}}` fragment for the system prompt — one line
-   * per object type the team can query (`- **key** (view …) — columns: ….
+   * Rendered `{{teamCollections}}` fragment for the system prompt — one line
+   * per collection the team can query (`- **key** (view …) — columns: ….
    * relations: …`). The AI query path's schema-discovery block: it names
    * each type's typed SQL view + columns + outgoing relations. Full field
-   * metadata is fetched on demand via `describeObjectType`. Built by the
+   * metadata is fetched on demand via `describeCollection`. Built by the
    * handler from `describeTeamSchema`. Empty string when the team has no
    * types — the prompt section then renders as
-   * `_No object types configured for this team._`.
+   * `_No collections configured for this team._`.
    */
-  teamObjectsBlock?: string;
+  teamCollectionsBlock?: string;
   /**
    * Rendered `{{skillsCatalog}}` fragment for the system prompt — one
    * line per skill enabled for this team (`- **name** — description`),

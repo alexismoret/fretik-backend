@@ -52,7 +52,7 @@ export const getEpisode = async (input: {
     with: {
       episodeRecords: {
         with: {
-          record: { with: { objectType: { columns: { key: true } } } },
+          record: { with: { collection: { columns: { key: true } } } },
         },
       },
       conversation: true,

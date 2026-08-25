@@ -8,8 +8,8 @@ import {
   buildDocumentThumbnailKey,
 } from "../../lib/document-storage";
 import { deleteFilesFromS3 } from "../../lib/s3";
-import { bulkDeleteObjectRecords } from "../object-records/bulk-delete";
-import { resolveDocumentRecordIds } from "../object-records/resolve-document-record";
+import { bulkDeleteCollectionRecords } from "../collection-records/bulk-delete";
+import { resolveDocumentRecordIds } from "../collection-records/resolve-document-record";
 
 /**
  * Deletes multiple documents and updates parent folder counts.
@@ -84,7 +84,7 @@ export const deleteDocuments = async (data: {
       ).values(),
     ];
     if (mirrorIds.length > 0) {
-      await bulkDeleteObjectRecords({ teamId, ids: mirrorIds, tx });
+      await bulkDeleteCollectionRecords({ teamId, ids: mirrorIds, tx });
     }
 
     // Decrement parent's documentCount. Sequential, NOT Promise.all: a

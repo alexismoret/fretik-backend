@@ -150,7 +150,7 @@ export const hasNodeMatching = (definition: unknown, re: RegExp): boolean =>
 
 /**
  * The whole definition as one string, for "does anything in here mention X"
- * probes (a field key, an object type id, a `{ "var": … }` reference). Shape-
+ * probes (a field key, a collection id, a `{ "var": … }` reference). Shape-
  * blind by construction — on v3 the JSON includes `code.source`, so text
  * probes see the authored code too.
  */

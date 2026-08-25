@@ -21,9 +21,9 @@ const DISPLAY_EVENT_TYPES = [
   "record.confirmed",
   "record.rejected",
   "record.deleted",
-  "object_type.created",
-  "object_type.updated",
-  "object_type.deleted",
+  "collection.created",
+  "collection.updated",
+  "collection.deleted",
   "folder.created",
   "folder.renamed",
   "folder.deleted",
@@ -73,12 +73,12 @@ export const getDashboardActivity = async (data: {
       u.name AS actor_name,
       de.payload->>'status' AS status,
       orr.document_id::text AS document_id,
-      ot.key AS object_type_key,
+      ot.key AS collection_key,
       de.payload->>'workflowId' AS workflow_id,
       de.payload->>'runId' AS run_id
     FROM domain_events de
-    LEFT JOIN object_records orr ON orr.id = de.subject_record_id
-    LEFT JOIN object_types ot ON ot.id = orr.object_type_id
+    LEFT JOIN collection_records orr ON orr.id = de.subject_record_id
+    LEFT JOIN collections ot ON ot.id = orr.collection_id
     LEFT JOIN workflows w ON w.id = (de.payload->>'workflowId')::uuid
     LEFT JOIN "user" u ON u.id = de.actor_user_id
     WHERE de.team_id = ${teamId}
@@ -101,7 +101,7 @@ export const getDashboardActivity = async (data: {
       actorName: asString(row.actor_name),
       status: asString(row.status),
       documentId: asString(row.document_id),
-      objectTypeKey: asString(row.object_type_key),
+      collectionKey: asString(row.collection_key),
       workflowId: asString(row.workflow_id),
       runId: asString(row.run_id),
       at: at instanceof Date ? at : new Date(String(at)),

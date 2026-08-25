@@ -6,7 +6,7 @@ import {
 import type { RegistryRow } from "../../../../src/services/search/record-registry-search";
 
 /**
- * The registry arm reads `object_records`, while the two vector arms read
+ * The registry arm reads `collection_records`, while the two vector arms read
  * `ai_vectors` — two identity spaces for the same underlying record. Fusion is
  * where that has to be reconciled, and getting it wrong is silent: a record
  * would be listed twice, each copy carrying a fraction of its true score, and
@@ -38,8 +38,8 @@ const registryRow = (recordId: string, label = "ACME"): RegistryRow => ({
   recordId,
   label,
   aliases: [],
-  objectTypeId: "type-1",
-  typeKey: "company",
+  collectionId: "type-1",
+  collectionKey: "company",
   typeLabel: "Company",
   createdAt: new Date("2026-01-01T00:00:00Z"),
 });
@@ -143,8 +143,8 @@ describe("fuseArms — the arm that carries above-ceiling records", () => {
       registryRows: [registryRow("record-1", "ACME Corp")],
     });
     expect(fused[0]?.metadata).toEqual({
-      object_type_id: "type-1",
-      object_type_key: "company",
+      collection_id: "type-1",
+      collection_key: "company",
       label: "ACME Corp",
     });
   });

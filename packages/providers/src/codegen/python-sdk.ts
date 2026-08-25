@@ -21,9 +21,9 @@ import type { CodegenAction, CodegenProvider } from "./types";
  */
 
 // Hand-maintained, non-manifest modules copied verbatim into the SDK (like
-// `_runtime.py`). `objects` is the code-mode ontology SDK (object types +
-// records); it talks to `/sandbox/exec` `kind: "objects"`, not a provider.
-export const STATIC_MODULE_TEMPLATES = ["objects"];
+// `_runtime.py`). `collections` is the code-mode ontology SDK (collections +
+// records); it talks to `/sandbox/exec` `kind: "collections"`, not a provider.
+export const STATIC_MODULE_TEMPLATES = ["collections"];
 
 // ── Generators ────────────────────────────────────────────────────────
 

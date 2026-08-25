@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { parseFormula } from "../../src/services/object-schema/formula/parse";
+import { parseFormula } from "../../src/services/collection-schema/formula/parse";
 import {
   normalizeFormula,
   printFormula,
-} from "../../src/services/object-schema/formula/print";
+} from "../../src/services/collection-schema/formula/print";
 
 /**
  * Printing exists so a formula can be BUILT by clicking instead of typed, and

@@ -34,9 +34,9 @@ export const DOMAIN_EVENT_TYPES = [
   "conversation.created",
   "conversation.deleted",
   // Ontology catalog mutations.
-  "object_type.created",
-  "object_type.updated",
-  "object_type.deleted",
+  "collection.created",
+  "collection.updated",
+  "collection.deleted",
   "field.created",
   "field.updated",
   "field.deleted",

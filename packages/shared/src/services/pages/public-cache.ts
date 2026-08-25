@@ -27,7 +27,7 @@ export const publicPageDataCacheKey = (
 ): string => `${prefix(token)}:data:${requestHash}`;
 
 /**
- * Stable rendering of a value: object keys sorted at every depth, so `{a,b}`
+ * Stable rendering of a value: collection keys sorted at every depth, so `{a,b}`
  * and `{b,a}` land on the same entry. Depth matters here — a dataset query is
  * itself an object nested under its dataset id.
  */

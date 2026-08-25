@@ -124,7 +124,7 @@ sandboxRoutes.openapi(execRoute, async (c) => {
   const dispatchDetail =
     body.kind === "read"
       ? `action=${body.action}`
-      : body.kind === "objects"
+      : body.kind === "collections"
         ? `op=${body.op}`
         : `ops=${body.operations.length.toString()}`;
   console.info(
@@ -142,8 +142,8 @@ sandboxRoutes.openapi(execRoute, async (c) => {
     ctx,
     body.kind === "read"
       ? { kind: "read", action: body.action, args: body.args }
-      : body.kind === "objects"
-        ? { kind: "objects", op: body.op, args: body.args }
+      : body.kind === "collections"
+        ? { kind: "collections", op: body.op, args: body.args }
         : { kind: "plan", operations: body.operations },
   );
 

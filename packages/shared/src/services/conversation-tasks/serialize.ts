@@ -12,7 +12,7 @@ export const serializeConversationTask = (
   status: task.status,
   workflowId: task.metadata?.workflowId ?? null,
   isTest: task.metadata?.isTest ?? false,
-  importTypeKey: task.metadata?.importTypeKey ?? null,
+  importCollectionKey: task.metadata?.importCollectionKey ?? null,
   importRows: task.metadata?.importRows ?? null,
   // Kind-agnostic: whatever the work counts. Absent when it counts nothing.
   progress:

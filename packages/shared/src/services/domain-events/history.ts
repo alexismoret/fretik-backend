@@ -40,7 +40,7 @@ interface HistoryEvent {
 
 /**
  * Reconstruct a record's attribute history by FOLDING the durable journal. The
- * `object_records` row stores only the CURRENT value of each field; every prior
+ * `collection_records` row stores only the CURRENT value of each field; every prior
  * value is derived here — there is no record-level bi-temporal column.
  *
  * Reads the record's latest events (via `domain_event_links`), bounded by

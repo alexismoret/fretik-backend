@@ -1,8 +1,8 @@
 import db from "@fretik/shared/db";
 import {
-  OBJECT_COLOR_TOKENS,
-  isValidObjectColor,
-} from "@fretik/shared/lib/colors/object-colors";
+  COLLECTION_COLOR_TOKENS,
+  isValidCollectionColor,
+} from "@fretik/shared/lib/colors/collection-colors";
 import { isValidIcon } from "@fretik/shared/lib/icons/search";
 import { parseApiError } from "@fretik/shared/schemas/errors";
 import {
@@ -341,13 +341,13 @@ const sanitizeIcon = (
 const sanitizeColor = (
   color: string | undefined,
 ): { color: string | undefined; warnings: string[] } => {
-  if (color === undefined || isValidObjectColor(color)) {
+  if (color === undefined || isValidCollectionColor(color)) {
     return { color, warnings: [] };
   }
   return {
     color: undefined,
     warnings: [
-      `Ignored unknown color '${color}' — kept the default. Valid tokens: ${OBJECT_COLOR_TOKENS.join(", ")}.`,
+      `Ignored unknown color '${color}' — kept the default. Valid tokens: ${COLLECTION_COLOR_TOKENS.join(", ")}.`,
     ],
   };
 };
@@ -453,7 +453,7 @@ const authoringDescription = [
   "",
   "dry_run, create and update all EXECUTE the datasets and COMPILE the code, and report what they find in `warnings` — a compile error, a wrong field key, a dataset with no rows, a component placed without reading its API. Fix them in the same turn rather than reporting a page you have not seen work. Compiling is not working, though: `review` is the only action here that has SEEN the page, so a page is finished when a review says so, not when the write succeeds. After a user has the page open, `get` returns its recent RUNTIME errors — what the browser saw; fix and update.",
   "",
-  "Call describeObjectType for field keys, types and option values BEFORE writing an objects dataset; guessing keys is the main way a page comes back empty.",
+  "Call describeCollection for field keys, types and option values BEFORE writing a collections dataset; guessing keys is the main way a page comes back empty.",
 ].join("\n");
 
 const editingDescription = [
@@ -469,7 +469,7 @@ const editingDescription = [
   "",
   "An `update` EXECUTES the datasets and COMPILES the code, and reports what it finds in `warnings` — fix those in the same turn rather than reporting a page you have not seen work. Compiling is not working, though: `review` is the only action here that has SEEN the page. After a user has the page open, `get` returns its recent RUNTIME errors — what the browser saw.",
   "",
-  "Deciding WHETHER a page is the right feature (vs a workflow, an object type, or a one-off file) is `skills/platform-guide/SKILL.md` territory.",
+  "Deciding WHETHER a page is the right feature (vs a workflow, a collection, or a one-off file) is `skills/platform-guide/SKILL.md` territory.",
 ].join("\n");
 
 export const createManagePageTool = (config: { authoring: boolean }) =>
@@ -489,7 +489,9 @@ export const createManagePageTool = (config: { authoring: boolean }) =>
         .string()
         .max(20)
         .optional()
-        .describe(`Hub swatch — one of: ${OBJECT_COLOR_TOKENS.join(", ")}.`),
+        .describe(
+          `Hub swatch — one of: ${COLLECTION_COLOR_TOKENS.join(", ")}.`,
+        ),
       scope: z.enum(["team", "private"]).optional(),
       components: z
         .array(z.string().max(40))

@@ -844,7 +844,7 @@ const buildTurnCallOptions = async (
     ]);
 
   console.info(
-    `${params.logPrefix} contextManifestChars=${(fragments.chatbotContextManifest ?? "").length.toString()} activeMemory=${activeMemoryRecall ? "hit" : "miss"} teamObjectsChars=${(fragments.teamObjectsBlock ?? "").length.toString()} enabledSkillsChars=${(fragments.enabledSkillsBlock ?? "").length.toString()}`,
+    `${params.logPrefix} contextManifestChars=${(fragments.chatbotContextManifest ?? "").length.toString()} activeMemory=${activeMemoryRecall ? "hit" : "miss"} teamCollectionsChars=${(fragments.teamCollectionsBlock ?? "").length.toString()} enabledSkillsChars=${(fragments.enabledSkillsBlock ?? "").length.toString()}`,
   );
 
   return {
@@ -854,7 +854,7 @@ const buildTurnCallOptions = async (
     chatbotContextManifest: fragments.chatbotContextManifest,
     activeMemoryBlock: activeMemoryRecall?.block,
     availableCapabilitiesBlock: activeMemoryRecall?.capabilityBlock,
-    teamObjectsBlock: fragments.teamObjectsBlock,
+    teamCollectionsBlock: fragments.teamCollectionsBlock,
     enabledSkillsBlock: fragments.enabledSkillsBlock,
     externalAppConnections: externalApps.externalAppConnections,
     externalAppsBlock: externalApps.externalAppsBlock,

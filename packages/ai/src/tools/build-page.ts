@@ -30,7 +30,7 @@ export const buildPageInputSchema = z.object({
     .string()
     .min(10)
     .describe(
-      "Everything the user said about this page, plus what you know that it needs — the page's purpose, the data it must show, the object types by name, any layout or feature the user asked for by name, and the page id when editing an existing one. The builder never sees this conversation: what you leave out, it invents.",
+      "Everything the user said about this page, plus what you know that it needs — the page's purpose, the data it must show, the collections by name, any layout or feature the user asked for by name, and the page id when editing an existing one. The builder never sees this conversation: what you leave out, it invents.",
     ),
   description: z
     .string()
@@ -39,12 +39,12 @@ export const buildPageInputSchema = z.object({
     .describe(
       "Short (3-5 word) label shown in traces and the UI. Example: 'Build deals dashboard'.",
     ),
-  objectTypeKeys: z
+  collectionKeys: z
     .array(z.string().min(1).max(60))
     .max(8)
     .optional()
     .describe(
-      "Type keys from <team_objects> the page reads. Their fields and ids are handed to the builder up front, saving it a probe per type. List every type it will touch; a wrong key is reported back, not guessed at.",
+      "Type keys from <team_collections> the page reads. Their fields and ids are handed to the builder up front, saving it a probe per type. List every type it will touch; a wrong key is reported back, not guessed at.",
     ),
 });
 
@@ -366,15 +366,15 @@ export const createBuildPageTool = <TTools extends ToolSet>(deps: {
       return !PAGE_BUILDER_READ_ACTIONS.has(String(action));
     },
     progress,
-    buildMessages: async ({ task, objectTypeKeys }, ctx) => {
+    buildMessages: async ({ task, collectionKeys }, ctx) => {
       // Read the schema here, once, rather than letting the builder spend a
       // tool step per type on it. A failure is not worth the build: the types
       // are an accelerator, and the builder can still probe for itself.
-      const rowTypes = objectTypeKeys?.length
+      const rowTypes = collectionKeys?.length
         ? await describeRowTypes({
             organizationId: ctx.organizationId,
             teamId: ctx.teamId,
-            keys: objectTypeKeys,
+            keys: collectionKeys,
           }).catch(() => "")
         : "";
       return [
@@ -382,7 +382,7 @@ export const createBuildPageTool = <TTools extends ToolSet>(deps: {
           role: "user",
           content:
             rowTypes.length > 0
-              ? `${task}\n\n<object_types>\n${rowTypes}\n</object_types>`
+              ? `${task}\n\n<collections>\n${rowTypes}\n</collections>`
               : task,
         },
       ];
@@ -429,7 +429,7 @@ export const createBuildPageTool = <TTools extends ToolSet>(deps: {
       "",
       "- Send it any page request beyond a one-line change: a new page, a new view or feature on an existing one, a redesign. `managePage` is for reading a page, a small targeted edit, and publishing — it has no `create`, so this is not a preference, it is the only route.",
       "- It carries the design doctrine, the runtime contract and the data-shape rules in its own prompt: there is NOTHING for you to read before calling it. Reading `skills/building-pages/references/` yourself buys the page nothing and costs a turn.",
-      "- Put EVERYTHING in `task`: what the user asked for in their own words, the object types by name, the pageId when editing, and any constraint they stated. It never sees this conversation — what you omit, it decides for itself.",
+      "- Put EVERYTHING in `task`: what the user asked for in their own words, the collections by name, the pageId when editing, and any constraint they stated. It never sees this conversation — what you omit, it decides for itself.",
       "- Send the SHAPE of the data, never its values. Type and field names, yes; totals and counts you queried, no. A page reads its own figures live, and a task that already answers the question invites a page that prints the answer instead of fetching it — one shipped showing a total the code never loaded.",
       "- Do not narrow the request on the user's behalf. A vague ask is not a small ask; the builder is built to expand it, and a task string that pre-trims it to a title and a table produces exactly that.",
       "- One call per page. A build runs long (data probe, then up to three render-and-fix rounds), so do not launch it in parallel with itself.",

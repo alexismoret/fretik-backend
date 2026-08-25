@@ -119,7 +119,7 @@ export const dryRunPage = async (params: {
       if (result.rows.length === 0) {
         pushPageWarning(
           warnings,
-          `dataset "${id}" returned no rows — check its filters, or the object type may be empty.`,
+          `dataset "${id}" returned no rows — check its filters, or the collection may be empty.`,
         );
       }
     } else {
@@ -127,7 +127,7 @@ export const dryRunPage = async (params: {
       if (result.status === "forbidden") {
         pushPageWarning(
           warnings,
-          `dataset "${id}": this team cannot read that object type.`,
+          `dataset "${id}": this team cannot read that collection.`,
         );
       } else if (result.status === "needs_connection") {
         // Not a defect — the page renders a connect prompt for viewers in this

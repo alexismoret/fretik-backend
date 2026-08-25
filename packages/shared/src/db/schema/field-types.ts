@@ -1,6 +1,6 @@
 /**
  * Field-type registry — the single source of truth for what kinds of fields an
- * object type can have, and the per-type configuration each one carries.
+ * collection can have, and the per-type configuration each one carries.
  *
  * Why a registry (and not one flat config bag):
  *   - `FIELD_TYPES` drives BOTH the Drizzle `field_definition_type` pg enum and
@@ -28,7 +28,7 @@
 /**
  * Every field type, in display order. Source of truth for the pg enum.
  *
- * Storage note: most types store their value in `object_records.data` under the
+ * Storage note: most types store their value in `collection_records.data` under the
  * field key. `relation` is the exception — its instances live in the `links`
  * graph (see `RelationFieldConfig`), never in `data`.
  */
@@ -46,7 +46,7 @@ export const FIELD_TYPES = [
   // Relation to other records, backed by the `links` graph.
   "relation",
   // A team member (Better Auth user); userId(s) in `data`. Distinct from the
-  // `person` object type, which models external contacts.
+  // `person` collection, which models external contacts.
   "member",
   // Monetary amount in a currency: `{ amount, currencyCode }`. Named `money`
   // (not `currency`) because the value IS the amount, not just the ISO code.
@@ -177,10 +177,10 @@ export type SelectFieldConfig = {
 
 export type RelationFieldConfig = {
   /**
-   * Target object type. Omitted = polymorphic (any type). Equal to the field's
-   * own object type = self-relation (sub-items / parent-child).
+   * Target collection. Omitted = polymorphic (any type). Equal to the field's
+   * own collection = self-relation (sub-items / parent-child).
    */
-  targetTypeKey?: string;
+  targetCollectionKey?: string;
   cardinality?: FieldRelationCardinality;
   /** Key of the backing `link_type` this field projects (set on create). */
   linkTypeKey?: string;

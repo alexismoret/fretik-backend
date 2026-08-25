@@ -130,7 +130,7 @@ const stripBinary = (value: unknown): unknown => {
 };
 
 /**
- * Whatever shape the app answered in, hand the page an array of row OBJECTS —
+ * Whatever shape the app answered in, hand the page an array of row COLLECTIONS —
  * the one shape a table column or a chart axis can read. Scalars are wrapped
  * under `value` so `item.value` always works.
  */

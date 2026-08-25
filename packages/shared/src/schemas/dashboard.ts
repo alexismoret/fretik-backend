@@ -56,7 +56,7 @@ export const dashboardActivityItemSchema = z.object({
   status: z.string().nullable(),
   // Routing hints — the frontend builds the href from these + `type`.
   documentId: z.string().nullable(),
-  objectTypeKey: z.string().nullable(),
+  collectionKey: z.string().nullable(),
   workflowId: z.string().nullable(),
   runId: z.string().nullable(),
   at: z.date(),

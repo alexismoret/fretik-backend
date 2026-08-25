@@ -16,7 +16,7 @@ const READ_ONLY_MSG =
 
 /**
  * THE single record-write approval entrypoint, shared by both producers of
- * record writes: the Python `objects` SDK bulk path (`services/sandbox/objects.ts`)
+ * record writes: the Python `collections` SDK bulk path (`services/sandbox/collections.ts`)
  * and the builtin `manageRecord` tool (`@fretik/ai`). Both feed items through
  * here so a single OR a bulk record write parks the SAME `record_write` kind and
  * renders the SAME rich, editable card — never a raw `tool_call` dump.
@@ -35,7 +35,7 @@ export const gateRecordWriteApproval = (params: {
   autonomy: WorkflowAutonomy | null;
   teamPolicies: Record<string, ToolPolicyLevel>;
   op: ToolApprovalRecordWritePayload["op"];
-  objectTypeId?: string;
+  collectionId?: string;
   merge?: boolean;
   hashItems: ToolApprovalRecordWriteItem[];
   buildPayload: () => Promise<ToolApprovalRecordWritePayload>;
@@ -64,7 +64,7 @@ export const gateRecordWriteApproval = (params: {
   }
   const lookupHash = recordWriteLookupHash({
     op: params.op,
-    objectTypeId: params.objectTypeId,
+    collectionId: params.collectionId,
     merge: params.merge,
     items: params.hashItems,
   });

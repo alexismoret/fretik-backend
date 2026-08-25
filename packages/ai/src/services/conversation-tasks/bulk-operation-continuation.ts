@@ -9,7 +9,7 @@ import type { ConversationTaskContinuation } from "./continuation-registry";
  * back into the very context the streamed path exists to protect.
  */
 const IMPORT_DOCTRINE =
-  "Report the counters to the user and point them at the object type to check the data — an import is worth verifying, and they are the one who knows what the source was supposed to contain. When rows failed, the errors above give the row number and the reason: state the pattern (one bad column, one wrong format) rather than listing the rows, and offer to re-import just those. Do NOT re-run the whole import to fix a few rows.";
+  "Report the counters to the user and point them at the collection to check the data — an import is worth verifying, and they are the one who knows what the source was supposed to contain. When rows failed, the errors above give the row number and the reason: state the pattern (one bad column, one wrong format) rather than listing the rows, and offer to re-import just those. Do NOT re-run the whole import to fix a few rows.";
 
 export const buildBulkOperationContinuation: ConversationTaskContinuation = {
   buildLine: async (task) => {
@@ -36,7 +36,7 @@ export const buildBulkOperationContinuation: ConversationTaskContinuation = {
 
     return {
       line: [
-        `Import into "${operation.params.typeKey}" ${outcome}.`,
+        `Import into "${operation.params.collectionKey}" ${outcome}.`,
         ...(sample ? [`First errors — ${sample}${more}.`] : []),
       ].join(" "),
       actingUserId: operation.userId,

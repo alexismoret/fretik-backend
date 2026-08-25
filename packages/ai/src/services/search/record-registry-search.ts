@@ -1,5 +1,5 @@
 import db from "@fretik/shared/db";
-import { objectRecords, objectTypes } from "@fretik/shared/db/schema";
+import { collectionRecords, collections } from "@fretik/shared/db/schema";
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 
 /**
@@ -14,7 +14,7 @@ import { and, eq, inArray, isNull, sql } from "drizzle-orm";
  * stops being able to find any of them by name. This is the piece that makes
  * the ceiling affordable.
  *
- * Why it costs nothing. `object_records.search_vector` is an EXISTING
+ * Why it costs nothing. `collection_records.search_vector` is an EXISTING
  * GIN-indexed tsvector over label + the type's text fields, maintained by the
  * write path on every insert and update INCLUDING bulk — no embedding call, no
  * second corpus to keep in sync, complete at any volume. The arm is a `@@`
@@ -38,8 +38,8 @@ export interface RegistryRow {
   recordId: string;
   label: string;
   aliases: string[];
-  objectTypeId: string;
-  typeKey: string;
+  collectionId: string;
+  collectionKey: string;
   typeLabel: string;
   createdAt: Date;
 }
@@ -52,38 +52,40 @@ export const runRecordRegistrySearch = async (input: {
   recordIds?: string[];
   limit: number;
 }): Promise<RegistryRow[]> => {
-  // `'simple'` matches the tokeniser `object_records.search_vector` is built
+  // `'simple'` matches the tokeniser `collection_records.search_vector` is built
   // with, exactly as the BM25 arm matches `ai_vectors.search_vector` — any
   // other regconfig builds a different lexeme set and the GIN index is skipped.
   const tsquery = sql`plainto_tsquery('simple', ${input.queryText})`;
 
   const clauses = [
-    eq(objectRecords.teamId, input.teamId),
-    eq(objectRecords.organizationId, input.organizationId),
-    eq(objectRecords.status, "confirmed"),
+    eq(collectionRecords.teamId, input.teamId),
+    eq(collectionRecords.organizationId, input.organizationId),
+    eq(collectionRecords.status, "confirmed"),
     // Document mirrors are already indexed as `source_type='documents'` with
     // their full content — the same exclusion `buildRecordCard` applies, for
     // the same reason: one document must not occupy two slots in one sweep.
-    isNull(objectRecords.documentId),
-    sql`${objectRecords.searchVector} @@ ${tsquery}`,
+    isNull(collectionRecords.documentId),
+    sql`${collectionRecords.searchVector} @@ ${tsquery}`,
   ];
   if (input.recordIds && input.recordIds.length > 0) {
-    clauses.push(inArray(objectRecords.id, input.recordIds));
+    clauses.push(inArray(collectionRecords.id, input.recordIds));
   }
 
   return db
     .select({
-      recordId: objectRecords.id,
-      label: objectRecords.label,
-      aliases: objectRecords.aliases,
-      objectTypeId: objectRecords.objectTypeId,
-      typeKey: objectTypes.key,
-      typeLabel: objectTypes.label,
-      createdAt: objectRecords.createdAt,
+      recordId: collectionRecords.id,
+      label: collectionRecords.label,
+      aliases: collectionRecords.aliases,
+      collectionId: collectionRecords.collectionId,
+      collectionKey: collections.key,
+      typeLabel: collections.label,
+      createdAt: collectionRecords.createdAt,
     })
-    .from(objectRecords)
-    .innerJoin(objectTypes, eq(objectTypes.id, objectRecords.objectTypeId))
+    .from(collectionRecords)
+    .innerJoin(collections, eq(collections.id, collectionRecords.collectionId))
     .where(and(...clauses))
-    .orderBy(sql`ts_rank_cd(${objectRecords.searchVector}, ${tsquery}) DESC`)
+    .orderBy(
+      sql`ts_rank_cd(${collectionRecords.searchVector}, ${tsquery}) DESC`,
+    )
     .limit(input.limit);
 };

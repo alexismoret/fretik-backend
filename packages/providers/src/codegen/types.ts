@@ -34,7 +34,7 @@ export interface CodegenProvider {
    */
   description?: string;
   categories: readonly string[];
-  /** Named reusable object types referenced by `returns` / params. */
+  /** Named reusable collections referenced by `returns` / params. */
   types: Record<string, Record<string, ParamSpec>>;
   actions: readonly CodegenAction[];
 }

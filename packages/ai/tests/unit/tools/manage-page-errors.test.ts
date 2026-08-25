@@ -315,7 +315,7 @@ describe("managePage — the rewrite flag", () => {
   const shapeOf = (authoring: boolean): Record<string, unknown> => {
     const schema: unknown = createManagePageTool({ authoring }).inputSchema;
     if (!(schema instanceof z.ZodObject)) {
-      throw new Error("managePage has no Zod object schema");
+      throw new Error("managePage has no Zod collection schema");
     }
     return schema.shape;
   };

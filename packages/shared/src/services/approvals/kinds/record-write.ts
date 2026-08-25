@@ -10,7 +10,7 @@ const iso = (d: Date | null): string => (d ?? new Date()).toISOString();
 
 /**
  * `record_write` — a gated bulk object write (create / update / delete) the
- * workflow executor issued through the Python `objects` SDK. Grant re-executes
+ * workflow executor issued through the Python `collections` SDK. Grant re-executes
  * the user-selected subset through the same bulk services the direct path uses.
  *
  * A STAGED IMPORT is the same kind with its rows parked in `bulk_operations`

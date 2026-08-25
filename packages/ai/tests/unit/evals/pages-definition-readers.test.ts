@@ -29,11 +29,16 @@ const NESTED_DEFINITION = {
   version: 1,
   variables: [{ key: "stage", type: "string" }],
   datasets: [
-    { id: "deals", kind: "objects", objectTypeId: "type-1", mode: "records" },
+    {
+      id: "deals",
+      kind: "collections",
+      collectionId: "type-1",
+      mode: "records",
+    },
     {
       id: "by_stage",
-      kind: "objects",
-      objectTypeId: "type-1",
+      kind: "collections",
+      collectionId: "type-1",
       mode: "aggregate",
     },
   ],

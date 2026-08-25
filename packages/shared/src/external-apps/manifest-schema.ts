@@ -654,7 +654,7 @@ export const providerManifestSchema = z
           .regex(/^[a-z][a-z0-9-]*$/, "category must be a kebab-case slug"),
       )
       .min(1),
-    /** Named reusable object types referenced by `returns` / params. */
+    /** Named reusable collections referenced by `returns` / params. */
     types: z.record(z.string(), z.record(z.string(), paramSpecSchema)),
     actions: z.array(actionSchema).min(1),
   })

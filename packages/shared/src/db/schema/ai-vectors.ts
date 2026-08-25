@@ -185,14 +185,14 @@ type EpisodeVectorMetadata = {
 
 /*
  * Metadata for `source_type='records'` rows — one "card" per CONFIRMED
- * object record (label + aliases + type + key text fields), refreshed
+ * record (label + aliases + type + key text fields), refreshed
  * async on record create/update, deleted with the record. Powers semantic
  * record search ("the client in Lyon") in recall + `searchKnowledge`.
  * `source_id` = the record id; single chunk per record.
  */
 type RecordVectorMetadata = {
-  object_type_id: string;
-  object_type_key: string;
+  collection_id: string;
+  collection_key: string;
   label: string;
 };
 

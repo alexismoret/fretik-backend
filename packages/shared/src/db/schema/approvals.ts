@@ -54,11 +54,11 @@ export const toolApprovalStatusEnum = pgEnum("tool_approval_status", [
  *  - `external_app_read` : ONE gated external-app read action (a connection
  *                          whose policy escalated the read to `approval`) →
  *                          the read runs on grant, its raw data replayed.
- *  - `record_write`      : object records the agent proposes → written via
- *                          `bulk{Create,Update,Delete}ObjectRecords` on grant
+ *  - `record_write`      : records the agent proposes → written via
+ *                          `bulk{Create,Update,Delete}CollectionRecords` on grant
  *                          (the user may select a subset).
  *  - `tool_call`         : ONE gated builtin write tool (manageLink, manageDrive,
- *                          uploadToDrive, manageWorkflow, manageObjectType,
+ *                          uploadToDrive, manageWorkflow, manageCollection,
  *                          manageField, and non-record manageRecord variants) →
  *                          applied on grant via the shared apply map.
  *  - `question`          : a structured question (askUserQuestion shape) →
@@ -133,7 +133,7 @@ export const toolApprovalRequests = pgTable(
 
     /**
      * Kind-specific structured payload the frontend renders directly:
-     *  - `record_write` → `ToolApprovalRecordWritePayload` (object type +
+     *  - `record_write` → `ToolApprovalRecordWritePayload` (collection +
      *    proposed records, shown field-by-field, selectable).
      *  - `question`     → `ToolApprovalQuestionPayload` (askUserQuestion shape).
      * NULL for `external_app_plan` (which uses `operations` + `summary`).
@@ -247,14 +247,14 @@ export interface ToolApprovalQuestionPayload {
 // ---- Record-write payload -------------------------------------------------
 
 /** Which record write a `record_write` approval gates — one bulk op from the
- * Python `objects` SDK (`records.bulk_create` / `bulk_update` / `bulk_delete`). */
+ * Python `collections` SDK (`records.bulk_create` / `bulk_update` / `bulk_delete`). */
 export type ToolApprovalRecordWriteOp = "create" | "update" | "delete";
 
 /** One item in a gated record write, shown on the card and re-executed on
  * grant. `create` → `data` (new fields) + optional outgoing `relations`;
  * `update` → `recordId` + `data` (changed fields) + `currentData`/`currentLabel`
  * for the before→after view; `delete` → `recordId` + `currentData`/`currentLabel`
- * for the full-record preview. `objectTypeId` is per-item because update/delete
+ * for the full-record preview. `collectionId` is per-item because update/delete
  * may span types. */
 export interface ToolApprovalRecordWriteItem {
   data?: Record<string, unknown>;
@@ -265,18 +265,18 @@ export interface ToolApprovalRecordWriteItem {
    * the field-type-aware before→after (update) / preview (delete) card.
    * Display-only: excluded from the lookup hash. */
   currentData?: Record<string, unknown>;
-  /** Per-item type, for update/delete cards that span object types. */
-  objectTypeId?: string;
-  typeKey?: string;
+  /** Per-item type, for update/delete cards that span collections. */
+  collectionId?: string;
+  collectionKey?: string;
 }
 
 export interface ToolApprovalRecordWritePayload {
   op: ToolApprovalRecordWriteOp;
-  /** Object type of the affected records — present for create (single type);
-   * for update/delete the per-item `objectTypeId` is authoritative (may span
+  /** Collection of the affected records — present for create (single type);
+   * for update/delete the per-item `collectionId` is authoritative (may span
    * types). Display metadata for the card. */
-  typeKey?: string;
-  objectTypeId?: string;
+  collectionKey?: string;
+  collectionId?: string;
   typeName?: string;
   typeIcon?: string;
   typeColor?: string;

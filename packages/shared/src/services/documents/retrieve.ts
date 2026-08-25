@@ -1,7 +1,7 @@
 import { and, eq, isNull, sql } from "drizzle-orm";
 import db from "../../db";
 import type { DocumentStatus, FieldDefinition } from "../../db/schema";
-import { documents, objectTypes, team } from "../../db/schema";
+import { collections, documents, team } from "../../db/schema";
 import {
   buildDocumentOriginalKey,
   buildDocumentThumbnailKey,
@@ -10,28 +10,31 @@ import {
 import { notFound, throwHttpError } from "../../lib/errors";
 import { getPresignedUrl } from "../../lib/s3";
 import type { FolderBreadcrumb } from "../../schemas/folders";
-import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
-import { getFolderBreadcrumbs } from "../folders/retrieve";
-import { qualifiedObjectTable, SAFE_IDENT } from "../object-schema/identifiers";
+import {
+  qualifiedCollectionTable,
+  SAFE_IDENT,
+} from "../collection-schema/identifiers";
 import {
   readRecordData,
   readRecordDataBatch,
-} from "../object-schema/record-io";
-import { DOCUMENT_TYPE_KEY } from "../object-types/constants";
+} from "../collection-schema/record-io";
+import { DOCUMENT_COLLECTION_KEY } from "../collections/constants";
+import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
+import { getFolderBreadcrumbs } from "../folders/retrieve";
 
 /** Resolve a team's org-scoped `document` object-type id (its extension table). */
 const resolveDocumentTypeId = async (
   teamId: string,
 ): Promise<string | null> => {
   const [row] = await db
-    .select({ id: objectTypes.id })
-    .from(objectTypes)
-    .innerJoin(team, eq(team.organizationId, objectTypes.organizationId))
+    .select({ id: collections.id })
+    .from(collections)
+    .innerJoin(team, eq(team.organizationId, collections.organizationId))
     .where(
       and(
         eq(team.id, teamId),
-        eq(objectTypes.key, DOCUMENT_TYPE_KEY),
-        isNull(objectTypes.teamId),
+        eq(collections.key, DOCUMENT_COLLECTION_KEY),
+        isNull(collections.teamId),
       ),
     )
     .limit(1);
@@ -124,13 +127,13 @@ export const searchDocuments = async (
   // real typed column (as text, so any primitive value works). Keys are
   // slug-guarded; values parameterized. No-op when the document type is absent.
   const docTypeId = await resolveDocumentTypeId(teamId);
-  const docTable = docTypeId ? qualifiedObjectTable(docTypeId) : null;
+  const docTable = docTypeId ? qualifiedCollectionTable(docTypeId) : null;
   const customFilterExists = docTable
     ? (customFilters ?? [])
         .filter((cf) => SAFE_IDENT.test(cf.fieldKey))
         .map(
           (cf) =>
-            sql`EXISTS (SELECT 1 FROM object_records r JOIN ${sql.raw(docTable)} e ON e."id" = r.id WHERE r.document_id = ${documents.id} AND e.${sql.raw(`"${cf.fieldKey}"`)}::text = ${String(cf.value)})`,
+            sql`EXISTS (SELECT 1 FROM collection_records r JOIN ${sql.raw(docTable)} e ON e."id" = r.id WHERE r.document_id = ${documents.id} AND e.${sql.raw(`"${cf.fieldKey}"`)}::text = ${String(cf.value)})`,
         )
     : [];
 
@@ -188,11 +191,11 @@ export const searchDocuments = async (
   const fieldValuesById =
     docTypeId && mirrorIds.length > 0
       ? await readRecordDataBatch({
-          objectTypeId: docTypeId,
+          collectionId: docTypeId,
           recordIds: mirrorIds,
           fields: await getFieldDefinitionsForTeam({
             teamId,
-            objectTypeId: docTypeId,
+            collectionId: docTypeId,
           }),
         })
       : new Map<string, Record<string, unknown>>();
@@ -301,7 +304,7 @@ export const getDocumentDetails = async (data: {
 
   const fieldValues: Record<string, unknown> = document.mirrorRecord
     ? await readRecordData({
-        objectTypeId: document.mirrorRecord.objectTypeId,
+        collectionId: document.mirrorRecord.collectionId,
         recordId: document.mirrorRecord.id,
         fields: fieldDefinitions,
       })
@@ -332,7 +335,7 @@ const loadDocument = async (data: { id: string; teamId: string }) => {
         },
       },
       mirrorRecord: {
-        columns: { id: true, objectTypeId: true },
+        columns: { id: true, collectionId: true },
       },
     },
   });

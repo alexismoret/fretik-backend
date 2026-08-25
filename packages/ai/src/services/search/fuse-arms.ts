@@ -129,8 +129,8 @@ export const fuseArms = (input: {
       content: renderRegistryContent(row),
       contextualPrefix: "",
       metadata: {
-        object_type_id: row.objectTypeId,
-        object_type_key: row.typeKey,
+        collection_id: row.collectionId,
+        collection_key: row.collectionKey,
         label: row.label,
       },
       sourceType: "records",

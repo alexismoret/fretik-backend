@@ -13,8 +13,8 @@ import {
   varchar,
 } from "drizzle-orm/pg-core";
 import { organization, team } from "./auth-schema";
+import { collections } from "./collections";
 import { type FieldDefinitionConfig, FIELD_TYPES } from "./field-types";
-import { objectTypes } from "./object-types";
 
 // The field-type catalogue + per-type config shapes live in `./field-types`
 // (the single source of truth that also backs the runtime Zod registry and the
@@ -58,14 +58,14 @@ export const fieldDefinitions = pgTable(
     // NULL = organization scope (template), set = team scope (runtime)
     teamId: uuid("team_id").references(() => team.id, { onDelete: "cascade" }),
 
-    // The object type this field belongs to (was the document-only
-    // `resourceType` enum). A field now attaches to ANY object type.
-    objectTypeId: uuid("object_type_id")
+    // The collection this field belongs to (was the document-only
+    // `resourceType` enum). A field now attaches to ANY collection.
+    collectionId: uuid("collection_id")
       .notNull()
-      .references(() => objectTypes.id, { onDelete: "cascade" }),
+      .references(() => collections.id, { onDelete: "cascade" }),
 
     // Stable slug. Immutable post-create when values exist (enforced in the
-    // service layer). Maps 1:1 with a key inside `object_records.data`.
+    // service layer). Maps 1:1 with a key inside `collection_records.data`.
     key: varchar("key", { length: 60 }).notNull(),
     label: text("label").notNull(),
     // User-facing description AND `.describe()` source for the pre-extract
@@ -85,7 +85,7 @@ export const fieldDefinitions = pgTable(
       .default(true),
     vectorizeInclude: boolean("vectorize_include").notNull().default(true),
     displayInPanel: boolean("display_in_panel").notNull().default(true),
-    // Designates the display-label field for the object type. At most one per
+    // Designates the display-label field for the collection. At most one per
     // type per scope (enforced by partial unique index + service). The record's
     // denormalized `label` is computed from this field.
     isTitle: boolean("is_title").notNull().default(false),
@@ -94,7 +94,7 @@ export const fieldDefinitions = pgTable(
 
     /**
      * Auto-index bookkeeping — the two timestamps that close the create/drop
-     * loop on this field's column index (see `services/object-schema/indexes`).
+     * loop on this field's column index (see `services/collection-schema/indexes`).
      *
      * `indexUnusedSince` is stamped by the maintenance pass the first time
      * Postgres reports ZERO scans for the index, and cleared as soon as it
@@ -132,25 +132,25 @@ export const fieldDefinitions = pgTable(
   (table) => [
     // Two partial unique indexes — Postgres treats NULLs as distinct in a
     // standard UNIQUE so we need explicit partials to enforce "one (key) per
-    // object type" at org scope and "one (key) per (team, object type)" at
+    // collection" at org scope and "one (key) per (team, collection)" at
     // team scope.
     uniqueIndex("field_definitions_org_key_uniq")
-      .on(table.objectTypeId, table.key)
+      .on(table.collectionId, table.key)
       .where(sql`team_id IS NULL`),
     uniqueIndex("field_definitions_team_key_uniq")
-      .on(table.teamId, table.objectTypeId, table.key)
+      .on(table.teamId, table.collectionId, table.key)
       .where(sql`team_id IS NOT NULL`),
-    // At most one title field per object type per scope.
+    // At most one title field per collection per scope.
     uniqueIndex("field_definitions_org_title_uniq")
-      .on(table.objectTypeId)
+      .on(table.collectionId)
       .where(sql`is_title AND team_id IS NULL`),
     uniqueIndex("field_definitions_team_title_uniq")
-      .on(table.teamId, table.objectTypeId)
+      .on(table.teamId, table.collectionId)
       .where(sql`is_title AND team_id IS NOT NULL`),
-    // Runtime lookup hot path: a team's enabled fields for an object type.
-    index("field_definitions_object_type_idx").on(table.objectTypeId),
-    index("field_definitions_team_object_type_idx")
-      .on(table.teamId, table.objectTypeId)
+    // Runtime lookup hot path: a team's enabled fields for a collection.
+    index("field_definitions_collection_idx").on(table.collectionId),
+    index("field_definitions_team_collection_idx")
+      .on(table.teamId, table.collectionId)
       .where(sql`team_id IS NOT NULL`),
   ],
 );

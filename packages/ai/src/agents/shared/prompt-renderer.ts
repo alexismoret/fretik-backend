@@ -424,10 +424,10 @@ export const buildChatbotSystemPrompt = async (
         ctx.availableCapabilitiesBlock.length > 0
           ? ctx.availableCapabilitiesBlock
           : "_None._",
-      teamObjects:
-        ctx.teamObjectsBlock && ctx.teamObjectsBlock.length > 0
-          ? ctx.teamObjectsBlock
-          : "_No object types configured for this team._",
+      teamCollections:
+        ctx.teamCollectionsBlock && ctx.teamCollectionsBlock.length > 0
+          ? ctx.teamCollectionsBlock
+          : "_No collections configured for this team._",
       externalAppsBlock:
         ctx.externalAppsBlock && ctx.externalAppsBlock.length > 0
           ? ctx.externalAppsBlock
@@ -493,10 +493,10 @@ export const buildWorkflowSystemPrompt = async (
         ctx.chatbotContextManifest && ctx.chatbotContextManifest.length > 0
           ? ctx.chatbotContextManifest
           : "_No persistent context configured._",
-      teamObjects:
-        ctx.teamObjectsBlock && ctx.teamObjectsBlock.length > 0
-          ? ctx.teamObjectsBlock
-          : "_No object types configured for this team._",
+      teamCollections:
+        ctx.teamCollectionsBlock && ctx.teamCollectionsBlock.length > 0
+          ? ctx.teamCollectionsBlock
+          : "_No collections configured for this team._",
       externalAppsBlock:
         ctx.externalAppsBlock && ctx.externalAppsBlock.length > 0
           ? ctx.externalAppsBlock

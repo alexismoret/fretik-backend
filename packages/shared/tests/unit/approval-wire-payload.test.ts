@@ -26,8 +26,8 @@ const item = (n: number): ToolApprovalRecordWriteItem => ({
 
 const recordWrite = (count: number): ToolApprovalRecordWritePayload => ({
   op: "create",
-  typeKey: "client",
-  objectTypeId: "11111111-1111-7111-8111-111111111111",
+  collectionKey: "client",
+  collectionId: "11111111-1111-7111-8111-111111111111",
   items: Array.from({ length: count }, (_, i) => item(i)),
 });
 
@@ -66,8 +66,8 @@ describe("toWirePayload — record_write truncation", () => {
       recordWrite(5_000),
     ) as ToolApprovalRecordWritePayload;
     expect(wire.op).toBe("create");
-    expect(wire.typeKey).toBe("client");
-    expect(wire.objectTypeId).toBe("11111111-1111-7111-8111-111111111111");
+    expect(wire.collectionKey).toBe("client");
+    expect(wire.collectionId).toBe("11111111-1111-7111-8111-111111111111");
   });
 
   test("never mutates the stored payload — the grant executes from it", () => {

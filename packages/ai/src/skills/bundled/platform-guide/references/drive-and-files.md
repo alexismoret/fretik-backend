@@ -1,6 +1,6 @@
 # Drive and files
 
-The Drive is the team's document home. Everything uploaded to it is processed automatically: text extracted (including scans), indexed for semantic search (`searchKnowledge`), key fields extracted into its mirror record (`document_record`), and entity mentions linked to the team's object records. A document in the Drive works for the whole team, in every conversation, forever — a conversation attachment works only here.
+The Drive is the team's document home. Everything uploaded to it is processed automatically: text extracted (including scans), indexed for semantic search (`searchKnowledge`), key fields extracted into its mirror record (`document_record`), and entity mentions linked to the team's records. A document in the Drive works for the whole team, in every conversation, forever — a conversation attachment works only here.
 
 Two ways a document gets there: the team uploads it, or you write it (`manageDocument`). Both are ordinary Drive documents afterwards — same processing, same search, same mirror record. What differs is only what you can do to one: a written document is editable text, an uploaded PDF or spreadsheet is replaced rather than edited.
 

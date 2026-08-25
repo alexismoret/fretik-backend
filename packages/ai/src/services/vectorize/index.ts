@@ -201,14 +201,14 @@ const buildEpisodeSemanticHeader = (metadata: EpisodeVectorMetadata): string =>
 /**
  * Source-aware contextual header for record cards. The card body already
  * opens with `{type label}: {record label}` (human-facing, possibly
- * localised); the tag adds the stable `object_type_key` discriminator so
+ * localised); the tag adds the stable `collection_key` discriminator so
  * key-based queries and retrieval-log greps stay aligned with the other
  * source kinds.
  *
  *   `[RECORD:company] Acme Corp`
  */
 const buildRecordSemanticHeader = (metadata: RecordVectorMetadata): string =>
-  `[RECORD:${metadata.object_type_key}] ${metadata.label}`;
+  `[RECORD:${metadata.collection_key}] ${metadata.label}`;
 
 /**
  * Source-aware contextual header for workflow cards. The trigger kind is in

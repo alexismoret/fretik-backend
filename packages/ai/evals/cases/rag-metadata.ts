@@ -52,14 +52,14 @@ export const ragMetadataSuite: EvalSuite = {
       assertions: [
         { type: "noError" },
         // "documents issued by <organization>" is answerable either by RAG
-        // (searchKnowledge) or by the structured path (listObjects →
+        // (searchKnowledge) or by the structured path (listRecords →
         // listDocuments / querySql) — both correct, so accept any. The
         // ragFoundDocument outcome below is what actually grades recall.
         {
           type: "toolUsed",
           tools: [
             "searchKnowledge",
-            "listObjects",
+            "listRecords",
             "listDocuments",
             "querySql",
           ],

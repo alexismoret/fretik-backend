@@ -3,10 +3,10 @@ import type { PageDefinition } from "../../schemas/pages";
 import {
   noteIndexWanted,
   reconcileFieldIndexes,
-} from "../object-schema/reconcile-indexes";
+} from "../collection-schema/reconcile-indexes";
 
 /**
- * Saving a page is a promise that its object types are about to be read, over
+ * Saving a page is a promise that its collections are about to be read, over
  * and over, by every viewer — so it is one of the moments worth reconciling
  * indexes on, alongside a finished bulk import and the maintenance sweep.
  *
@@ -28,27 +28,27 @@ export const ensurePageDatasetIndexes = (input: {
 }): void => {
   const keysByType = new Map<string, Set<string>>();
   for (const dataset of input.definition.datasets) {
-    if (dataset.kind !== "objects" || !dataset.objectTypeId) continue;
-    const keys = keysByType.get(dataset.objectTypeId) ?? new Set<string>();
+    if (dataset.kind !== "collections" || !dataset.collectionId) continue;
+    const keys = keysByType.get(dataset.collectionId) ?? new Set<string>();
     if (dataset.sortBy) keys.add(dataset.sortBy);
     if (dataset.groupBy) keys.add(dataset.groupBy);
     if (dataset.seriesBy) keys.add(dataset.seriesBy);
     for (const filter of dataset.filters ?? []) keys.add(filter.key);
-    keysByType.set(dataset.objectTypeId, keys);
+    keysByType.set(dataset.collectionId, keys);
   }
   if (keysByType.size === 0) return;
 
   void (async () => {
-    for (const [objectTypeId, keys] of keysByType) {
+    for (const [collectionId, keys] of keysByType) {
       try {
         const fields = await db.query.fieldDefinitions.findMany({
-          where: { objectTypeId },
+          where: { collectionId },
         });
         noteIndexWanted({ fields, keys });
-        await reconcileFieldIndexes({ objectTypeId });
+        await reconcileFieldIndexes({ collectionId });
       } catch (cause) {
         console.warn(
-          `[pages] index reconcile skipped for object type ${objectTypeId}:`,
+          `[pages] index reconcile skipped for collection ${collectionId}:`,
           cause instanceof Error ? cause.message : cause,
         );
       }

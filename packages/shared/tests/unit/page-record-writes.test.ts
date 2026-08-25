@@ -28,7 +28,7 @@ const OTHER_TYPE = "01a00000-0000-7000-8000-000000000002";
 
 interface RecordRow {
   id: string;
-  objectTypeId: string;
+  collectionId: string;
   teamId: string;
 }
 
@@ -49,21 +49,21 @@ let invalidatedIds: string[] = [];
 
 const matches = (
   row: RecordRow,
-  where: { id?: { in?: string[] }; objectTypeId?: string; teamId?: string },
+  where: { id?: { in?: string[] }; collectionId?: string; teamId?: string },
 ): boolean =>
   (where.id?.in === undefined || where.id.in.includes(row.id)) &&
-  (where.objectTypeId === undefined ||
-    where.objectTypeId === row.objectTypeId) &&
+  (where.collectionId === undefined ||
+    where.collectionId === row.collectionId) &&
   (where.teamId === undefined || where.teamId === row.teamId);
 
 void mock.module("../../src/db", () => ({
   default: {
     query: {
-      objectRecords: {
+      collectionRecords: {
         findMany: (args: { where: Parameters<typeof matches>[1] }) =>
           Promise.resolve(records.filter((row) => matches(row, args.where))),
       },
-      objectTypes: {
+      collections: {
         findFirst: (args: { where: { id: string; teamId: string } }) =>
           Promise.resolve(
             args.where.teamId === TEAM && ownedTypes.includes(args.where.id)
@@ -91,8 +91,8 @@ void mock.module("../../src/services/field-definitions/get-for-team", () => ({
   getFieldDefinitionsForTeam: () => Promise.resolve(fields),
 }));
 
-void mock.module("../../src/services/object-records/bulk-update", () => ({
-  bulkUpdateObjectRecords: (input: {
+void mock.module("../../src/services/collection-records/bulk-update", () => ({
+  bulkUpdateCollectionRecords: (input: {
     updates: { id: string; data: Record<string, unknown> }[];
   }) => {
     updatedWith = input.updates;
@@ -103,15 +103,15 @@ void mock.module("../../src/services/object-records/bulk-update", () => ({
   },
 }));
 
-void mock.module("../../src/services/object-records/bulk-delete", () => ({
-  bulkDeleteObjectRecords: (input: { ids: string[] }) => {
+void mock.module("../../src/services/collection-records/bulk-delete", () => ({
+  bulkDeleteCollectionRecords: (input: { ids: string[] }) => {
     deletedIds = input.ids;
     return Promise.resolve({ deletedIds: input.ids, errors: [] });
   },
 }));
 
-void mock.module("../../src/services/object-records/create", () => ({
-  createObjectRecord: (input: { data: Record<string, unknown> }) => {
+void mock.module("../../src/services/collection-records/create", () => ({
+  createCollectionRecord: (input: { data: Record<string, unknown> }) => {
     createdWith = input.data;
     return Promise.resolve({ id: "new-1" });
   },
@@ -151,7 +151,7 @@ const run = (
 const updateOp = (args: Record<string, PageValue>): PageOperation => ({
   kind: "record",
   id: "set_status",
-  objectTypeId: TYPE,
+  collectionId: TYPE,
   mode: "update",
   recordId: { var: "row_id" },
   args,
@@ -159,9 +159,9 @@ const updateOp = (args: Record<string, PageValue>): PageOperation => ({
 
 beforeEach(() => {
   records = [
-    { id: "rec-mine", objectTypeId: TYPE, teamId: TEAM },
-    { id: "rec-other-type", objectTypeId: OTHER_TYPE, teamId: TEAM },
-    { id: "rec-other-team", objectTypeId: TYPE, teamId: OTHER_TEAM },
+    { id: "rec-mine", collectionId: TYPE, teamId: TEAM },
+    { id: "rec-other-type", collectionId: OTHER_TYPE, teamId: TEAM },
+    { id: "rec-other-team", collectionId: TYPE, teamId: OTHER_TEAM },
   ];
   ownedTypes = [TYPE, OTHER_TYPE];
   fields = [
@@ -205,7 +205,7 @@ describe("what the schema refuses before a page is even saved", () => {
     const result = PageOperationSchema.safeParse({
       kind: "record",
       id: "set_status",
-      objectTypeId: TYPE,
+      collectionId: TYPE,
       mode: "update",
       args: { status: "done" },
     });
@@ -217,7 +217,7 @@ describe("what the schema refuses before a page is even saved", () => {
       const result = PageOperationSchema.safeParse({
         kind,
         id: "remove",
-        objectTypeId: TYPE,
+        collectionId: TYPE,
         mode: "delete",
         ...(kind === "bulk"
           ? { recordIds: ["rec-mine"] }
@@ -231,7 +231,7 @@ describe("what the schema refuses before a page is even saved", () => {
     const result = PageOperationSchema.safeParse({
       kind: "bulk",
       id: "add_many",
-      objectTypeId: TYPE,
+      collectionId: TYPE,
       mode: "create",
       recordIds: [],
     });
@@ -258,7 +258,7 @@ describe("what a record write refuses", () => {
     expect(updatedWith).toBeNull();
   });
 
-  test("an object type the team does not own is refused before anything runs", async () => {
+  test("a collection the team does not own is refused before anything runs", async () => {
     ownedTypes = [];
     const result = await run(updateOp({ status: "done" }), {
       row_id: "rec-mine",
@@ -291,7 +291,7 @@ describe("what a record write refuses", () => {
       {
         kind: "bulk",
         id: "approve_all",
-        objectTypeId: TYPE,
+        collectionId: TYPE,
         mode: "update",
         recordIds: { var: "selection" },
         args: { status: "done" },
@@ -317,14 +317,14 @@ describe("what it writes", () => {
 
   test("a selection writes once, not once per row", async () => {
     records.push(
-      { id: "rec-2", objectTypeId: TYPE, teamId: TEAM },
-      { id: "rec-3", objectTypeId: TYPE, teamId: TEAM },
+      { id: "rec-2", collectionId: TYPE, teamId: TEAM },
+      { id: "rec-3", collectionId: TYPE, teamId: TEAM },
     );
     const result = await run(
       {
         kind: "bulk",
         id: "approve_all",
-        objectTypeId: TYPE,
+        collectionId: TYPE,
         mode: "update",
         recordIds: { var: "selection" },
         args: { status: "done" },
@@ -340,7 +340,7 @@ describe("what it writes", () => {
       {
         kind: "bulk",
         id: "approve_all",
-        objectTypeId: TYPE,
+        collectionId: TYPE,
         mode: "delete",
         recordIds: { var: "selection" },
         confirm: { title: "Delete these?" },
@@ -362,7 +362,7 @@ describe("what it writes", () => {
       {
         kind: "record",
         id: "add",
-        objectTypeId: TYPE,
+        collectionId: TYPE,
         mode: "create",
         args: { status: { var: "initial" } },
       },
@@ -377,7 +377,7 @@ describe("relations", () => {
   const linkOp = (mode: "link" | "unlink"): PageOperation => ({
     kind: "link",
     id: "assign",
-    objectTypeId: TYPE,
+    collectionId: TYPE,
     fieldKey: "owner",
     mode,
     fromRecordId: { var: "row_id" },
@@ -430,7 +430,7 @@ describe("relations", () => {
       {
         kind: "link",
         id: "assign",
-        objectTypeId: TYPE,
+        collectionId: TYPE,
         fieldKey: "status",
         mode: "link",
         fromRecordId: { var: "row_id" },

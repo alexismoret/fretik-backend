@@ -1,20 +1,20 @@
 import { eq, inArray } from "drizzle-orm";
 import db from "../db";
 import {
+  collectionRecords,
   documents,
   domainEventLinks,
   domainEvents,
   links,
-  objectRecords,
 } from "../db/schema";
+import { createCollectionRecord } from "../services/collection-records/create";
+import { setRecordData } from "../services/collection-records/update";
+import { DOCUMENT_COLLECTION_KEY } from "../services/collections/constants";
+import { resolveCollectionId } from "../services/collections/resolve";
+import { MENTIONS_LINK_TYPE_KEY } from "../services/collections/seed-system-types";
 import { syncDocumentGraph } from "../services/documents/sync-document-graph";
 import { getRecordHistory } from "../services/domain-events/history";
 import { resolveOrgLinkTypeId } from "../services/link-types/resolve";
-import { createObjectRecord } from "../services/object-records/create";
-import { setRecordData } from "../services/object-records/update";
-import { DOCUMENT_TYPE_KEY } from "../services/object-types/constants";
-import { resolveObjectTypeId } from "../services/object-types/resolve";
-import { MENTIONS_LINK_TYPE_KEY } from "../services/object-types/seed-system-types";
 
 /**
  * Phase-2 smoke: drives the document→graph fold + the domain-events outbox +
@@ -36,12 +36,12 @@ const run = async (): Promise<void> => {
   const { id: teamId, organizationId } = team;
   console.log(`[smoke] team=${teamId} org=${organizationId}`);
 
-  const documentTypeId = await resolveObjectTypeId({
+  const documentTypeId = await resolveCollectionId({
     organizationId,
     teamId,
-    key: DOCUMENT_TYPE_KEY,
+    key: DOCUMENT_COLLECTION_KEY,
   });
-  const companyTypeId = await resolveObjectTypeId({
+  const companyTypeId = await resolveCollectionId({
     organizationId,
     teamId,
     key: "company",
@@ -50,8 +50,8 @@ const run = async (): Promise<void> => {
     organizationId,
     key: MENTIONS_LINK_TYPE_KEY,
   });
-  assert(!!documentTypeId, "document object type seeded");
-  assert(!!companyTypeId, "company object type seeded");
+  assert(!!documentTypeId, "document collection seeded");
+  assert(!!companyTypeId, "company collection seeded");
   assert(
     !!mentionsLinkTypeId,
     "mentions link type seeded (migration backfill)",
@@ -91,13 +91,13 @@ const run = async (): Promise<void> => {
       ...fold.mentionedRecords.map((c) => c.id),
     );
 
-    const mirror = await db.query.objectRecords.findFirst({
+    const mirror = await db.query.collectionRecords.findFirst({
       where: { documentId },
     });
-    assert(!!mirror, "1 object_record mirror created for the document");
+    assert(!!mirror, "1 collection_record mirror created for the document");
     assert(mirror!.label === "smoke-invoice.pdf", "mirror label = filename");
     assert(
-      mirror!.objectTypeId === documentTypeId,
+      mirror!.collectionId === documentTypeId,
       "mirror is the document type",
     );
     assert(
@@ -160,10 +160,10 @@ const run = async (): Promise<void> => {
     // --- Part B: attribute history fold ---------------------------------------
     // A directly-created record carries record.created/updated field diffs, so
     // `getRecordHistory` can reconstruct a field over time.
-    const rec = await createObjectRecord({
+    const rec = await createCollectionRecord({
       organizationId,
       teamId,
-      objectTypeId: companyTypeId!,
+      collectionId: companyTypeId!,
       data: { name: "HistTest Inc" },
     });
     createdRecordIds.push(rec.id);
@@ -208,8 +208,8 @@ const run = async (): Promise<void> => {
         await db.delete(domainEvents).where(inArray(domainEvents.id, eventIds));
       }
       await db
-        .delete(objectRecords)
-        .where(inArray(objectRecords.id, createdRecordIds));
+        .delete(collectionRecords)
+        .where(inArray(collectionRecords.id, createdRecordIds));
     }
     await db.delete(documents).where(eq(documents.id, documentId));
     console.log("[smoke] cleaned up");

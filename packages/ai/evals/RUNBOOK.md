@@ -424,7 +424,7 @@ follow-up).
   (a) The model genuinely missed → fix the **system** (prompt line, tool description, routing, or even the base structure of the chatbot).
   (b) The model behaved correctly but was penalized → fix the **eval** (an over-strict assertion,
   a mis-specified expected tool, or a bad judge rubric). Example: demanding a `LIMIT` on a
-  `COUNT(*)` query, or asserting `searchKnowledge` when a structured `listObjects`/`querySql`
+  `COUNT(*)` query, or asserting `searchKnowledge` when a structured `listRecords`/`querySql`
   path answers the prompt just as correctly. Keep iterating until M3 is at 1.000 with no
   capability regression.
 - The **online billing rule** is created in the UI (verify its observation filter against live

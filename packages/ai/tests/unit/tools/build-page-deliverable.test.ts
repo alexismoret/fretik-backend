@@ -38,7 +38,7 @@ describe("lastPageRef", () => {
     expect(
       lastPageRef([
         step([{ toolName: "managePage", output: { pageId: "created" } }]),
-        step([{ toolName: "describeObjectType", output: { fields: [] } }]),
+        step([{ toolName: "describeCollection", output: { fields: [] } }]),
         step([{ toolName: "managePage", output: { pageId: "reviewed" } }]),
       ])?.pageId,
     ).toBe("reviewed");

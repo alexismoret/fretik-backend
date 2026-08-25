@@ -7,21 +7,21 @@ import { notFound, throwHttpError } from "../../lib/errors";
 /**
  * List the link types a team can see: its own plus the org/system ones
  * (`teamId IS NULL`) — the double-arm scope. Optionally narrowed to relations
- * starting from a given object type. Ordered by label.
+ * starting from a given collection. Ordered by label.
  */
 export const listLinkTypes = async (data: {
   organizationId: string;
   teamId: string;
-  fromObjectTypeId?: string;
+  fromCollectionId?: string;
 }): Promise<LinkType[]> => {
-  const { organizationId, teamId, fromObjectTypeId } = data;
+  const { organizationId, teamId, fromCollectionId } = data;
 
   const scope = or(
     eq(linkTypes.teamId, teamId),
     and(isNull(linkTypes.teamId), eq(linkTypes.organizationId, organizationId)),
   );
-  const conditions = fromObjectTypeId
-    ? and(scope, eq(linkTypes.fromObjectTypeId, fromObjectTypeId))
+  const conditions = fromCollectionId
+    ? and(scope, eq(linkTypes.fromCollectionId, fromCollectionId))
     : scope;
 
   return await db

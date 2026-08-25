@@ -84,12 +84,12 @@ describe("eval stream accounting — a progress yield is not a call", () => {
     const state = createStreamState();
     absorbChunk(inputAvailable("call_1", "querySql"), state);
     absorbChunk(outputAvailable("call_1", { rows: [] }), state);
-    absorbChunk(inputAvailable("call_2", "describeObjectType"), state);
+    absorbChunk(inputAvailable("call_2", "describeCollection"), state);
     absorbChunk(outputAvailable("call_2", { fields: [] }), state);
 
     expect(state.toolCalls.map((c) => c.name)).toEqual([
       "querySql",
-      "describeObjectType",
+      "describeCollection",
     ]);
   });
 

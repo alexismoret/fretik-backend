@@ -1,0 +1,102 @@
+import db from "../../db";
+import type { RecordVectorMetadata } from "../../db/schema/ai-vectors";
+import { readRecordData } from "../collection-schema/record-io";
+import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
+import { isCardIndexedType } from "./card-indexing-policy";
+
+/**
+ * Card size guard: one card = ONE vectorize chunk (the chunker window is
+ * ~2000 chars), so semantic record search costs exactly one ai_vectors row
+ * per record. Field values are clipped rather than dropped.
+ */
+const MAX_CARD_CHARS = 1_800;
+const MAX_FIELD_VALUE_CHARS = 200;
+
+export interface RecordCard {
+  content: string;
+  metadata: RecordVectorMetadata;
+  teamId: string;
+  organizationId: string;
+}
+
+const isScalarish = (
+  v: unknown,
+): v is string | number | boolean | (string | number)[] =>
+  typeof v === "string" ||
+  typeof v === "number" ||
+  typeof v === "boolean" ||
+  (Array.isArray(v) &&
+    v.every((x) => typeof x === "string" || typeof x === "number"));
+
+const renderValue = (
+  v: string | number | boolean | (string | number)[],
+): string =>
+  (Array.isArray(v) ? v.join(", ") : String(v)).slice(0, MAX_FIELD_VALUE_CHARS);
+
+/**
+ * Build the semantic "card" of one CONFIRMED record — label + aliases + type
+ * + its `vectorizeInclude` field values — the content indexed into
+ * `ai_vectors` as `source_type='records'`. Returns null for missing,
+ * non-confirmed, or document-mirror records (documents are already indexed
+ * as `source_type='documents'` with their full content; a card would only
+ * duplicate them in every hybrid sweep), and for records of a type the size
+ * policy excludes from semantic indexing.
+ *
+ * Null is the single lever for all of those: the card worker degrades a null
+ * card to a vector DELETE, so every exclusion reason cleans up after itself
+ * with no purge path of its own. That is why the policy is enforced HERE
+ * rather than at the enqueue sites — one gate, and no caller can bypass it.
+ */
+export const buildRecordCard = async (
+  recordId: string,
+): Promise<RecordCard | null> => {
+  const record = await db.query.collectionRecords.findFirst({
+    where: { id: recordId },
+    with: { collection: true },
+  });
+  if (!record || !record.collection || record.status !== "confirmed") {
+    return null;
+  }
+  if (record.documentId) return null;
+  // Checked before the two heavier loads below, and after the cheap guards:
+  // an excluded type must not pay for field definitions and a row read.
+  if (!(await isCardIndexedType(record.collectionId))) return null;
+  const collection = record.collection;
+
+  const fieldDefs = await getFieldDefinitionsForTeam({
+    teamId: record.teamId,
+    collectionId: record.collectionId,
+  });
+  const data = await readRecordData({
+    collectionId: record.collectionId,
+    recordId: record.id,
+    fields: fieldDefs,
+  });
+
+  const lines: string[] = [
+    `${collection.label}: ${record.label}`,
+    ...(record.aliases && record.aliases.length > 0
+      ? [`Aliases: ${record.aliases.join(", ")}`]
+      : []),
+  ];
+  for (const def of fieldDefs) {
+    if (!def.vectorizeInclude || !def.enabled || def.isTitle) continue;
+    const value = data[def.key];
+    if (value == null || value === "") continue;
+    if (!isScalarish(value)) continue;
+    const line = `${def.label}: ${renderValue(value)}`;
+    if (lines.join("\n").length + line.length > MAX_CARD_CHARS) break;
+    lines.push(line);
+  }
+
+  return {
+    content: lines.join("\n"),
+    metadata: {
+      collection_id: record.collectionId,
+      collection_key: collection.key,
+      label: record.label,
+    },
+    teamId: record.teamId,
+    organizationId: record.organizationId,
+  };
+};

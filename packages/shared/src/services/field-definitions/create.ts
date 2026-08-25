@@ -7,13 +7,13 @@ import type {
 } from "../../db/schema";
 import { fieldDefinitions } from "../../db/schema";
 import { internalError, throwHttpError } from "../../lib/errors";
+import { refreshCollectionTableAfterCatalogChange } from "../collection-schema/catalog-sync";
+import { isDocumentCollection } from "../collections/is-document-type";
 import {
   emitDomainEvent,
   type EventActor,
   SYSTEM_ACTOR,
 } from "../domain-events/emit";
-import { refreshObjectTableAfterCatalogChange } from "../object-schema/catalog-sync";
-import { isDocumentObjectType } from "../object-types/is-document-type";
 import { invalidateFieldDefinitionsCache } from "./cache";
 import { readFormulaSiblings, resolveFormulaConfig } from "./formula-config";
 import { fillOptionColors } from "./normalize-config";
@@ -27,7 +27,7 @@ import {
 export type CreateFieldDefinitionInput = {
   organizationId: string;
   teamId: string | null;
-  objectTypeId: string;
+  collectionId: string;
   // Optional: when omitted, the key is derived from the label and made unique
   // within the scope. Callers that own a stable key (templates, imports) pass it.
   key?: string;
@@ -52,12 +52,12 @@ export type CreateFieldDefinitionInput = {
 /**
  * Resolve a unique field key within a scope: slugify the label (or the
  * caller-provided base), then append `_2`, `_3`, … until it clears the
- * `(objectTypeId, key)` uniqueness index. Avoids surfacing keys to end users.
+ * `(collectionId, key)` uniqueness index. Avoids surfacing keys to end users.
  */
 const resolveUniqueFieldKey = async (data: {
   organizationId: string;
   teamId: string | null;
-  objectTypeId: string;
+  collectionId: string;
   base: string;
 }): Promise<string> => {
   const rows = await db
@@ -66,7 +66,7 @@ const resolveUniqueFieldKey = async (data: {
     .where(
       and(
         eq(fieldDefinitions.organizationId, data.organizationId),
-        eq(fieldDefinitions.objectTypeId, data.objectTypeId),
+        eq(fieldDefinitions.collectionId, data.collectionId),
         data.teamId === null
           ? isNull(fieldDefinitions.teamId)
           : eq(fieldDefinitions.teamId, data.teamId),
@@ -91,7 +91,7 @@ export const createFieldDefinition = async (
     : await resolveUniqueFieldKey({
         organizationId: input.organizationId,
         teamId: input.teamId,
-        objectTypeId: input.objectTypeId,
+        collectionId: input.collectionId,
         base: input.label,
       });
 
@@ -110,7 +110,7 @@ export const createFieldDefinition = async (
       ? await bindRelationFieldLinkType({
           organizationId: input.organizationId,
           teamId: input.teamId,
-          objectTypeId: input.objectTypeId,
+          collectionId: input.collectionId,
           label: input.label,
           config: input.config ?? {},
         })
@@ -126,7 +126,7 @@ export const createFieldDefinition = async (
       ? resolveFormulaConfig({
           config: withColors,
           siblings: await readFormulaSiblings({
-            objectTypeId: input.objectTypeId,
+            collectionId: input.collectionId,
             teamId: input.teamId,
           }),
           label: input.label,
@@ -138,7 +138,7 @@ export const createFieldDefinition = async (
     await assertScopeEnabledCap({
       organizationId: input.organizationId,
       teamId: input.teamId,
-      objectTypeId: input.objectTypeId,
+      collectionId: input.collectionId,
       addEnabled: 1,
     });
   }
@@ -147,10 +147,10 @@ export const createFieldDefinition = async (
   // exists there, no new field may take it. (A document type with no title yet —
   // e.g. a not-yet-backfilled legacy one — still lets its first `name` land as
   // the title.)
-  const isDocument = await isDocumentObjectType({
+  const isDocument = await isDocumentCollection({
     organizationId: input.organizationId,
     teamId: input.teamId,
-    objectTypeId: input.objectTypeId,
+    collectionId: input.collectionId,
   });
 
   const row = await db.transaction(async (tx) => {
@@ -162,7 +162,7 @@ export const createFieldDefinition = async (
       .from(fieldDefinitions)
       .where(
         and(
-          eq(fieldDefinitions.objectTypeId, input.objectTypeId),
+          eq(fieldDefinitions.collectionId, input.collectionId),
           input.teamId === null
             ? isNull(fieldDefinitions.teamId)
             : eq(fieldDefinitions.teamId, input.teamId),
@@ -190,7 +190,7 @@ export const createFieldDefinition = async (
       .values({
         organizationId: input.organizationId,
         teamId: input.teamId,
-        objectTypeId: input.objectTypeId,
+        collectionId: input.collectionId,
         key,
         label: input.label,
         description: input.description ?? null,
@@ -208,10 +208,10 @@ export const createFieldDefinition = async (
       return throwHttpError(500, internalError());
     }
     // Add the new column to the type's extension table, atomic with the insert.
-    await refreshObjectTableAfterCatalogChange({
+    await refreshCollectionTableAfterCatalogChange({
       tx,
       organizationId: input.organizationId,
-      objectTypeId: input.objectTypeId,
+      collectionId: input.collectionId,
       teamId: input.teamId,
     });
     // Journal the catalog change. Org-scope templates (teamId null) are outside
@@ -226,7 +226,7 @@ export const createFieldDefinition = async (
         subjectType: "field",
         payload: {
           fieldDefinitionId: inserted.id,
-          objectTypeId: input.objectTypeId,
+          collectionId: input.collectionId,
           key,
         },
         dedupKey: `field.created:${inserted.id}`,

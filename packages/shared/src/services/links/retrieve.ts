@@ -7,7 +7,7 @@ import db from "../../db";
  */
 export type NeighborhoodNode = {
   id: string;
-  objectTypeId: string;
+  collectionId: string;
   label: string;
   status: string;
   depth: number;
@@ -53,7 +53,7 @@ export const getNeighborhood = async (data: {
   const nodesResult = await db.execute<NeighborhoodNode>(sql`
     WITH RECURSIVE reachable AS (
       SELECT r.id AS record_id, 0 AS depth
-      FROM object_records r
+      FROM collection_records r
       WHERE r.team_id = ${teamId}
         AND r.id = ANY(${sql.param(seedRecordIds)}::uuid[])
 
@@ -73,11 +73,11 @@ export const getNeighborhood = async (data: {
       ) step ON TRUE
       WHERE rch.depth < ${depth}
     )
-    SELECT r.id, r.object_type_id AS "objectTypeId", r.label, r.status,
+    SELECT r.id, r.collection_id AS "collectionId", r.label, r.status,
            MIN(rch.depth)::int AS depth
     FROM reachable rch
-    JOIN object_records r ON r.id = rch.record_id
-    GROUP BY r.id, r.object_type_id, r.label, r.status
+    JOIN collection_records r ON r.id = rch.record_id
+    GROUP BY r.id, r.collection_id, r.label, r.status
     ORDER BY depth ASC
     LIMIT ${limit}
   `);

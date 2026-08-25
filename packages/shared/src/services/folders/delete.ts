@@ -8,10 +8,10 @@ import {
 } from "../../lib/document-storage";
 import { notFound, throwHttpError } from "../../lib/errors";
 import { deleteFilesFromS3 } from "../../lib/s3";
+import { bulkDeleteCollectionRecords } from "../collection-records/bulk-delete";
+import { resolveDocumentRecordIds } from "../collection-records/resolve-document-record";
 import { type EventActor, SYSTEM_ACTOR } from "../domain-events/emit";
 import { emitDomainEventsBulk } from "../domain-events/emit-bulk";
-import { bulkDeleteObjectRecords } from "../object-records/bulk-delete";
-import { resolveDocumentRecordIds } from "../object-records/resolve-document-record";
 
 /**
  * Deletes multiple folders and updates parent folder counts.
@@ -83,7 +83,7 @@ export const deleteFolders = async (data: {
       ).values(),
     ];
     if (mirrorIds.length > 0) {
-      await bulkDeleteObjectRecords({ teamId, ids: mirrorIds, tx });
+      await bulkDeleteCollectionRecords({ teamId, ids: mirrorIds, tx });
     }
 
     // Journal the folders before the rows vanish — one set-based emit.

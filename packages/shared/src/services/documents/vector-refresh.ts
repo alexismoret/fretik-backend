@@ -105,52 +105,57 @@ const buildDocumentVectorMetadata = async (
  * `POST /internal/vectorize` endpoint. The endpoint DELETEs existing
  * vectors for this source before re-inserting, so the call is idempotent.
  *
- * Fire-and-forget: errors are logged but not thrown.
+ * THROWS BY DESIGN — the queue owns the retry. Its only caller is the
+ * `document-vector-refresh` worker, which needs the throw to mark the job
+ * failed and retry it. Swallowing here is what made `attempts` dead code: the
+ * job always completed, so the backoff never ran and every failure was final.
+ * From a mutation path call `scheduleDocumentVectorRefresh` instead — it is
+ * best-effort by contract and gives you the debounce as well.
  */
 export const triggerDocumentVectorRefresh = async (
   documentId: string,
   teamId: string,
   organizationId: string,
 ): Promise<void> => {
-  try {
-    const metadata = await buildDocumentVectorMetadata(documentId, teamId);
+  const metadata = await buildDocumentVectorMetadata(documentId, teamId);
 
-    if (!metadata) {
-      console.warn(
-        `[VectorRefresh] Document ${documentId} not found or not ready, skipping`,
-      );
-      return;
-    }
-
-    // Pull the OCR markdown from the S3 sidecar. `null` (spreadsheet,
-    // or missing sidecar) triggers the metadata-only vectorise branch
-    // in `@fretik/ai` — spreadsheets still become searchable via
-    // their structured metadata embedding.
-    const sidecarBytes = await getDocumentSidecarBytes(documentId);
-    const vectorContent = sidecarBytes
-      ? new TextDecoder().decode(sidecarBytes)
-      : null;
-
-    const vectorResult = await callAiService(
-      "/internal/vectorize",
-      {
-        sourceType: "documents",
-        sourceId: documentId,
-        content: vectorContent,
-        metadata,
-        teamId,
-        organizationId,
-      },
-      aiVectorizeResponseSchema,
-      { teamId, organizationId },
+  // Not a failure: a document that is gone or not yet `ready` has nothing to
+  // index, and retrying would not change that.
+  if (!metadata) {
+    console.warn(
+      `[VectorRefresh] Document ${documentId} not found or not ready, skipping`,
     );
+    return;
+  }
 
-    if (!vectorResult.success) {
-      console.warn(
-        `[VectorRefresh] AI service returned success=false for document ${documentId}`,
-      );
-    }
-  } catch (error) {
-    console.error(`[VectorRefresh] Failed for document ${documentId}:`, error);
+  // Pull the OCR markdown from the S3 sidecar. `null` (spreadsheet,
+  // or missing sidecar) triggers the metadata-only vectorise branch
+  // in `@fretik/ai` — spreadsheets still become searchable via
+  // their structured metadata embedding.
+  const sidecarBytes = await getDocumentSidecarBytes(documentId);
+  const vectorContent = sidecarBytes
+    ? new TextDecoder().decode(sidecarBytes)
+    : null;
+
+  const vectorResult = await callAiService(
+    "/internal/vectorize",
+    {
+      sourceType: "documents",
+      sourceId: documentId,
+      content: vectorContent,
+      metadata,
+      teamId,
+      organizationId,
+    },
+    aiVectorizeResponseSchema,
+    { teamId, organizationId },
+  );
+
+  // `success: false` means no rows were written. Warning and returning would
+  // complete the job — the same dead retry, one level down.
+  if (!vectorResult.success) {
+    throw new Error(
+      `Vectorize returned success=false for document ${documentId}`,
+    );
   }
 };

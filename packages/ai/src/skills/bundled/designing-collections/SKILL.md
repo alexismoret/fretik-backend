@@ -54,6 +54,7 @@ It reads the STORED fields of its own row — `relation`, `rollup`, `multi_selec
 Notes that bite:
 
 - **progress:** a completion field → `number` with `display:'bar'` (or `'ring'`) and `min:0`/`max:100`; the bar fills by the value's position in that range.
+- **scannable codes:** `display:'qr'` renders the value as a QR — on `text`, `number`, `unique_id`, `formula`, and on `url`/`phone`/`email`, where scanning opens, dials or writes. Those first four also take `display:'barcode'` (`barcodeFormat` defaults to CODE128; EAN13/UPC demand a valid check digit). Set it for a reference someone scans off a label — asset tag, SKU, tracking number — never for prose.
 - **`select` vs `multi_select`:** one value (status, priority) → `select`; many (tags, regions) → `multi_select`.
 - **option `group`** (`'todo'|'in_progress'|'done'`) turns a `select` into kanban lanes — set it for status fields.
 - **`relation` vs `member`:** `member` is an internal teammate; `relation` links to another collection's records. A relation is added with `manageField` `type:'relation'`; changing a field to/from relation isn't supported — recreate it. To create a record already linked, pass `manageRecord create` `relations: [{relationKey, toRecordId|toDocumentId}]` (one record) or a bulk row's `relations` (many) — no separate manageLink call.

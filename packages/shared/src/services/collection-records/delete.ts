@@ -24,7 +24,6 @@ export const deleteCollectionRecord = async (data: {
 }): Promise<{ id: string }> => {
   const actor = data.actor ?? SYSTEM_ACTOR;
 
-  let hiddenEpisodeIds: string[] = [];
   const run = async (tx: Transaction): Promise<{ id: string }> => {
     const existing = await tx.query.collectionRecords.findFirst({
       columns: { id: true, organizationId: true, teamId: true, label: true },
@@ -46,18 +45,16 @@ export const deleteCollectionRecord = async (data: {
     // Hide the record-activity episode anchored on this record BEFORE the row
     // goes (the `anchorRecordId` FK nulls on delete). It leaves recall now and
     // the GC purges it after 30 days.
-    hiddenEpisodeIds = await hideEpisodesForRecords(tx, [data.id]);
+    const hiddenEpisodeIds = await hideEpisodesForRecords(tx, [data.id]);
+    // Inside the tx, not after it: `ai_vectors` has no FK to episodes, so the
+    // demotion and the vector drop have to commit together. Run outside, a
+    // rollback would leave the episode `active` with its vectors already gone
+    // on another connection — invisible to recall, with nothing to rebuild it.
+    await deleteEpisodeVectors(hiddenEpisodeIds, tx);
 
     await tx.delete(collectionRecords).where(eq(collectionRecords.id, data.id));
     return { id: data.id };
   };
 
-  const result = await (data.tx ? run(data.tx) : db.transaction(run));
-
-  // Drop the hidden episodes' recall vectors (no FK from `ai_vectors`).
-  // Fire-and-forget; vectors regenerate on re-promote, so a rolled-back parent
-  // tx (when `data.tx` is supplied) at worst re-vectorizes a still-live episode.
-  void deleteEpisodeVectors(hiddenEpisodeIds);
-
-  return result;
+  return data.tx ? run(data.tx) : db.transaction(run);
 };

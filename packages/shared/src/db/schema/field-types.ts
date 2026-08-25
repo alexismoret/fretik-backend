@@ -123,8 +123,51 @@ export type FieldDefinitionOption = {
 };
 
 export type FieldRelationCardinality = "one" | "many";
-/** Number display ("Progress" in Notion is a display option of Number). */
-export type FieldNumberDisplay = "plain" | "bar" | "ring";
+
+/**
+ * Machine-readable rendering: the field's own value becomes a scannable code.
+ * Offered on the types whose value IS an identifier someone scans.
+ *
+ * Only two words ever reach a user — "QR code" and "barcode" — because those are
+ * the only two they know. Everything else (symbology grammar, error correction,
+ * quiet zone) is decided here with a sane default rather than asked.
+ */
+export type FieldCodeDisplay = "qr" | "barcode";
+
+/**
+ * Linear (1D) symbologies. Deliberately four: CODE128 encodes anything and is
+ * the default, EAN13 / UPC are the retail product codes, CODE39 is the legacy
+ * industrial one. Adding EAN8 / ITF14 / codabar would be four more choices no
+ * one can tell apart.
+ */
+export const BARCODE_FORMATS = ["CODE128", "EAN13", "UPC", "CODE39"] as const;
+
+export type BarcodeFormat = (typeof BARCODE_FORMATS)[number];
+
+/** The one barcode knob a user is ever asked for — and it is pre-answered. */
+export type CodeDisplayConfig = {
+  /** Symbology of a `display: "barcode"` field. Defaults to CODE128. */
+  barcodeFormat?: BarcodeFormat;
+};
+
+/**
+ * Display of a value that is otherwise plain text: itself, or either code.
+ * Number keeps its own wider union (it also has the progress meters).
+ */
+export type FieldTextDisplay = "plain" | FieldCodeDisplay;
+
+/**
+ * Display of a contact-shaped value (url / phone / email). QR only: a linear
+ * barcode of a URL or an address is unreadable in practice and nothing scans it,
+ * whereas every phone camera opens a QR.
+ */
+export type FieldQrDisplay = "plain" | "qr";
+
+/**
+ * Number display ("Progress" in Notion is a display option of Number), plus the
+ * code renderings shared with the text-ish types.
+ */
+export type FieldNumberDisplay = "plain" | "bar" | "ring" | FieldCodeDisplay;
 /**
  * Text format of a plain number (Notion: Number / Number with commas /
  * Percent). `commas` groups thousands; `percent` renders the value ×100 with a
@@ -139,6 +182,16 @@ export type NoFieldConfig = Record<string, never>;
 export type TextFieldConfig = {
   /** Render as a textarea rather than a single-line input. */
   multiline?: boolean;
+  display?: FieldTextDisplay;
+} & CodeDisplayConfig;
+
+/**
+ * The contact-shaped types (url / phone / email) share one config: render the
+ * value, or a QR someone points a phone at. The QR encodes the actionable form
+ * (`tel:` / `mailto:` / the URL itself), so scanning it dials, composes, or opens.
+ */
+export type ContactFieldConfig = {
+  display?: FieldQrDisplay;
 };
 
 export type DateFieldConfig = {
@@ -166,7 +219,7 @@ export type NumberFieldConfig = {
   display?: FieldNumberDisplay;
   color?: string;
   showNumber?: boolean;
-};
+} & CodeDisplayConfig;
 
 export type SelectFieldConfig = {
   /** Closed list of allowed values. */
@@ -208,7 +261,8 @@ export type RatingFieldConfig = {
 export type UniqueIdFieldConfig = {
   /** Text shown before the counter, e.g. "TASK" → "TASK-42". */
   prefix?: string;
-};
+  display?: FieldTextDisplay;
+} & CodeDisplayConfig;
 
 /**
  * Mapbox feature types (Geocoding v6 + Search Box). Open union: known literals
@@ -324,7 +378,9 @@ export type FormulaFieldConfig = {
   currencyCode?: string;
   /** `date` result: show the time of day too. */
   hasTime?: boolean;
-};
+  /** `text` / `number` results only — a computed reference is still scannable. */
+  display?: FieldTextDisplay;
+} & CodeDisplayConfig;
 
 /** Field type → its config shape. Add a row here per new field type. */
 export type FieldTypeConfigMap = {
@@ -334,14 +390,14 @@ export type FieldTypeConfigMap = {
   boolean: NoFieldConfig;
   select: SelectFieldConfig;
   multi_select: SelectFieldConfig;
-  url: NoFieldConfig;
-  email: NoFieldConfig;
+  url: ContactFieldConfig;
+  email: ContactFieldConfig;
   relation: RelationFieldConfig;
   member: MemberFieldConfig;
   money: MoneyFieldConfig;
   markdown: NoFieldConfig;
   rating: RatingFieldConfig;
-  phone: NoFieldConfig;
+  phone: ContactFieldConfig;
   location: NoFieldConfig;
   unique_id: UniqueIdFieldConfig;
   created_time: NoFieldConfig;
@@ -416,6 +472,39 @@ export const hasTime = (config: FieldDefinitionConfig): boolean =>
 /** Prefix for a `unique_id` field (e.g. "TASK"), empty when unset. */
 export const uniqueIdPrefix = (config: FieldDefinitionConfig): string =>
   "prefix" in config && typeof config.prefix === "string" ? config.prefix : "";
+
+/**
+ * Field types that can render their value as a scannable code, and which codes
+ * each one offers. One map so the API guard, the config editor and the field
+ * descriptors all read the same rule instead of restating it three times.
+ */
+export const CODE_DISPLAY_BY_FIELD_TYPE: Partial<
+  Record<FieldDefinitionType, readonly FieldCodeDisplay[]>
+> = {
+  text: ["qr", "barcode"],
+  number: ["qr", "barcode"],
+  unique_id: ["qr", "barcode"],
+  formula: ["qr", "barcode"],
+  url: ["qr"],
+  phone: ["qr"],
+  email: ["qr"],
+};
+
+/** The code rendering a field asks for, if any (`undefined` for a plain value). */
+export const codeDisplay = (
+  config: FieldDefinitionConfig,
+): FieldCodeDisplay | undefined => {
+  if (!("display" in config)) return undefined;
+  return config.display === "qr" || config.display === "barcode"
+    ? config.display
+    : undefined;
+};
+
+/** Symbology of a barcode field (CODE128 unless another was picked). */
+export const barcodeFormat = (config: FieldDefinitionConfig): BarcodeFormat =>
+  "barcodeFormat" in config && config.barcodeFormat
+    ? config.barcodeFormat
+    : "CODE128";
 
 /** Icon count for a `rating` field (default 5). */
 export const ratingMax = (config: FieldDefinitionConfig): number =>

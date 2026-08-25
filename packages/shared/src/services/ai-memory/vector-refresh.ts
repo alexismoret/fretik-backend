@@ -33,8 +33,58 @@ const aiVectorizeResponseSchema = z.object({
  * hook would re-create orphan vectors that the cascade DELETE just
  * removed.
  *
- * Fire-and-forget: errors are logged but never thrown. The memory row
- * is the source of truth — failing to vectorise must not roll back
+ * THROWS — this is the variant the reconciliation worker calls, because a job
+ * that cannot fail cannot be retried. Mutation paths want
+ * `triggerMemoryVectorRefresh` below instead.
+ */
+export const triggerMemoryVectorRefreshOrThrow = async (
+  memoryId: string,
+  teamId: string,
+  organizationId: string,
+): Promise<void> => {
+  const memory = await db.query.aiMemories.findFirst({
+    where: { id: memoryId },
+  });
+
+  if (!memory) {
+    // Memory was deleted between the hook firing and now — nothing to
+    // re-vectorise. The cascade DELETE in `deleteMemoryVectors` (or
+    // the `delete.ts` hook) has already cleared any pre-existing
+    // vectors, so this branch is intentionally silent.
+    return;
+  }
+
+  const metadata: MemoryVectorMetadata = {
+    scope: memory.scope,
+    path: memory.path,
+    size_bytes: memory.sizeBytes,
+    created_at: memory.createdAt.toISOString(),
+    updated_at: memory.updatedAt.toISOString(),
+  };
+
+  const result = await callAiService(
+    "/internal/vectorize",
+    {
+      sourceType: "memories",
+      sourceId: memory.id,
+      content: memory.content,
+      metadata,
+      teamId,
+      organizationId,
+      userId: memory.userId,
+    },
+    aiVectorizeResponseSchema,
+    { teamId, organizationId },
+  );
+
+  if (!result.success) {
+    throw new Error(`Vectorize returned success=false for memory ${memoryId}`);
+  }
+};
+
+/**
+ * The mutation-path variant: same work, errors logged and swallowed. The
+ * memory row is the source of truth — failing to vectorise must not roll back
  * the user-visible memory write.
  */
 export const triggerMemoryVectorRefresh = async (
@@ -43,46 +93,7 @@ export const triggerMemoryVectorRefresh = async (
   organizationId: string,
 ): Promise<void> => {
   try {
-    const memory = await db.query.aiMemories.findFirst({
-      where: { id: memoryId },
-    });
-
-    if (!memory) {
-      // Memory was deleted between the hook firing and now — nothing to
-      // re-vectorise. The cascade DELETE in `deleteMemoryVectors` (or
-      // the `delete.ts` hook) has already cleared any pre-existing
-      // vectors, so this branch is intentionally silent.
-      return;
-    }
-
-    const metadata: MemoryVectorMetadata = {
-      scope: memory.scope,
-      path: memory.path,
-      size_bytes: memory.sizeBytes,
-      created_at: memory.createdAt.toISOString(),
-      updated_at: memory.updatedAt.toISOString(),
-    };
-
-    const result = await callAiService(
-      "/internal/vectorize",
-      {
-        sourceType: "memories",
-        sourceId: memory.id,
-        content: memory.content,
-        metadata,
-        teamId,
-        organizationId,
-        userId: memory.userId,
-      },
-      aiVectorizeResponseSchema,
-      { teamId, organizationId },
-    );
-
-    if (!result.success) {
-      console.warn(
-        `[MemoryVectorRefresh] AI service returned success=false for memory ${memoryId}`,
-      );
-    }
+    await triggerMemoryVectorRefreshOrThrow(memoryId, teamId, organizationId);
   } catch (error) {
     console.error(
       `[MemoryVectorRefresh] Failed for memory ${memoryId}:`,

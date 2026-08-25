@@ -18,6 +18,7 @@
  */
 
 import { mock } from "bun:test";
+import { redisDouble } from "./lib/redis-double";
 import { getTeamAiSettings } from "./lib/team-ai-settings-double";
 
 // OpenRouter — src/lib/openrouter.ts, src/lib/embeddings.ts,
@@ -84,6 +85,21 @@ void mock.module(
   "@fretik/shared/services/team-ai-settings/get-for-team",
   () => ({ getTeamAiSettings }),
 );
+
+// Redis — the singleton is imported by dozens of modules, so the first file
+// to load it wins the module cache and a per-file mock loses the race. With a
+// dead-port URL ioredis does not fail, it RETRIES: the page-review budget
+// tests died on the 5 s timeout instead of asserting. The double is in-memory
+// and throws by name on any command it does not implement.
+void mock.module("@fretik/shared/lib/redis", () => ({
+  redis: redisDouble,
+  selectOrCache: async <T>(
+    _key: string,
+    _ttl: number,
+    fetcher: () => Promise<T>,
+  ): Promise<T> => fetcher(),
+  deleteKeysByPrefix: (): Promise<void> => Promise.resolve(),
+}));
 
 // Capture the REAL `@fretik/shared/db` export values before any test
 // file loads (and before any per-file db mock registers), so tests that

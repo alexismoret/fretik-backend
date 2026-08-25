@@ -290,12 +290,12 @@ You operate inside a Linux VM (the conversation's sandbox). Every file you can s
       drive/             ← Drive documents downloaded on demand     (read-only)
       skills/            ← bundled skill bundles                    (read-only)
       context/           ← team/user persistent context files       (read-only)
-      memory/            ← persistent memory tree                   (read-only here; writes go through the `memory` tool)
+      memories/          ← the memory tree, mirrored from the `memory` tool (read-only)
 
 **Permissions:**
 
 - **R/W** dirs (`attachments/`, `outputs/`) — use freely. Files written under these two paths are automatically mirrored to durable storage and survive sandbox expiry.
-- **Read-only** dirs (`runs/`, `drive/`, `skills/`, `context/`, `memory/`) — you can read but writes are silently dropped. They are populated by the platform (run deliverables, Drive downloads, skill bundles, context sync, memory tool) — not by you.
+- **Read-only** dirs (`runs/`, `drive/`, `skills/`, `context/`, `memories/`) — you can read but writes are silently dropped. They are populated by the platform (run deliverables, Drive downloads, skill bundles, context sync, memory tool) — not by you.
 
 **Path conventions for tool calls:**
 
@@ -324,7 +324,7 @@ The two state spaces are independent: `bash` cannot see Python variables, and a 
 - **Wall-clock cap.** 5 minutes per sandbox window (refreshed each tool call). No background execution beyond the current call. Only when a single job would genuinely exceed the 5-minute cap, split it into chunks and persist intermediate state to `outputs/` — chunking is a workaround for the wall clock, never a coding style.
 - **Rich Jupyter outputs.** When a `python` cell ends in an expression (e.g. `df.head()`), the kernel returns the display_data — DataFrame HTML reprs, matplotlib plots, IPython rich objects — alongside `stdout`. They land in the tool result under `richResults` (and binary representations are also written to `outputs/results/{toolCallId}-{idx}.{ext}` so you can `presentFiles` them or read them back later). Avoid double-printing: a cell that ended with `df.head()` already returned the table — `print(df.head())` in the next cell would just duplicate it.
 - **Large outputs.** Tool results above the persistence threshold (32 K characters by default; `searchKnowledge` 48 K, domain tools 16 K) are swapped for a `<persisted-output>` envelope and the full payload lands at `/workspace/outputs/persisted/{toolCallId}.txt`. Pre-filter with `| head -N`, `| wc -l`, or Python slicing when you can; otherwise recover the full output later with `read("outputs/persisted/{toolCallId}.txt")`.
-- **Read-only directories.** Writes under `skills/`, `drive/`, `context/`, `memory/` are silently dropped (canonical state is owned elsewhere). Use `attachments/` and `outputs/` for anything you create.
+- **Read-only directories.** Writes under `skills/`, `drive/`, `context/`, `memories/` are silently dropped (canonical state is owned elsewhere). Use `attachments/` and `outputs/` for anything you create.
 - **Pitfalls of the persistent kernel.** Variables you defined earlier may shadow new logic — give them distinct names per analysis. Monkey-patches survive across calls; if a previous cell did something irreversible, `python` with `restart: true` to reset. `matplotlib.use('Agg')` only needs to run once per conversation. If you reference a variable from earlier in this conversation and get `NameError`, the kernel was restarted (or the conversation was compacted across a restart) — recreate the variable from `outputs/` files instead of guessing.
 - **Tool boundary rules:**
   - Use `read` for viewing a single file, not `cat` (it reads documents/images as text transparently, with line numbering and persisted-output recovery).
@@ -597,7 +597,7 @@ This run's autonomy mode is stated in `<workflow_context>`. It governs every wri
 
 <memory_protocol>
 
-`memory` is a persistent file store at `/memories/` shared across conversations; every write is auto-indexed in `searchKnowledge` (`[TEAM_MEMORY]` / `[USER_MEMORY]`).
+`memory` is a persistent file store at `/memories/` shared across conversations; every write is auto-indexed in `searchKnowledge` (`[TEAM_MEMORY]` / `[USER_MEMORY]`). The same files are mirrored read-only at `memories/` in the sandbox, so `bash("grep -ri '<term>' memories/")` searches every memory at once — the exact-match pass `searchKnowledge` cannot do.
 
 <!-- AGENT:chatbot -->
 
@@ -966,9 +966,9 @@ This run:
 
 <available_capabilities>
 
-<!-- Workflows the team already built whose goal matches this turn's request, matched automatically against the message. "_None._" — nothing matched — is the usual case. Separate from <active_memory> on purpose: a capability is not a fact, and the two destroy each other when they share one budget. -->
+<!-- Workflows and pages the team already built whose goal matches this turn's request, matched automatically against the message. "_None._" — nothing matched — is the usual case. Separate from <active_memory> on purpose: a capability is not a fact, and the two destroy each other when they share one budget. -->
 
-Offer these before doing the work by hand — the user asked for the outcome and may not know they exist. `manageWorkflow` runs one by id.
+Offer these before doing the work by hand — the user asked for the outcome and may not know they exist. `manageWorkflow` runs one; `managePage` opens one.
 
 {{availableCapabilities}}
 

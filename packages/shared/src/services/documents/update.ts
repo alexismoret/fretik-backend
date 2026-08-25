@@ -7,7 +7,7 @@ import type { UpdateDocumentInput } from "../../schemas/documents";
 import { setRecordData } from "../collection-records/update";
 import { readRecordData } from "../collection-schema/record-io";
 import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
-import { triggerDocumentVectorRefresh } from "./vector-refresh";
+import { scheduleDocumentVectorRefresh } from "./vector-refresh-queue";
 
 /**
  * A rename must not change the file's EXTENSION.
@@ -145,7 +145,14 @@ export const updateDocument = async (data: {
     return doc;
   });
 
-  triggerDocumentVectorRefresh(id, teamId, organizationId).catch(() => {});
+  // Through the queue, like the create and replace-content paths: a metadata
+  // edit gets the same 30 s debounce and the same retry. Awaiting is safe —
+  // scheduling is best-effort by contract and swallows its own Redis failure.
+  await scheduleDocumentVectorRefresh({
+    documentId: id,
+    teamId,
+    organizationId,
+  });
 
   return updatedDoc;
 };

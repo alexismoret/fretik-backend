@@ -1151,6 +1151,8 @@ export const PageFieldDescriptorSchema = z.object({
   precision: z.number().optional(),
   suffix: z.string().optional(),
   display: z.string().optional(),
+  /** barcode: the symbology, when `display` is `"barcode"`. */
+  barcodeFormat: z.string().optional(),
   min: z.number().optional(),
   max: z.number().optional(),
   /** rating */

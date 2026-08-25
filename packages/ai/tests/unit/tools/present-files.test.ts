@@ -1,6 +1,6 @@
 /**
  * Unit tests for the `presentFiles` tool. Covers path sandboxing, the
- * read-only blocklist (skills/, drive/, context/, memory/), missing
+ * read-only blocklist (skills/, drive/, context/, memories/), missing
  * files, MIME inference, and the S3 mirror call that makes a
  * generated file downloadable to the user.
  */
@@ -131,9 +131,9 @@ describe("presentFiles — read-only blocklist", () => {
       head: "context",
     },
     {
-      label: "rejects memory/",
-      path: "memory/team/carrier.md",
-      head: "memory",
+      label: "rejects memories/",
+      path: "memories/team/pricing.md",
+      head: "memories",
     },
   ];
 

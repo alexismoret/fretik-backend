@@ -45,55 +45,68 @@ export const buildWorkflowCard = (workflow: Workflow): string =>
  * request. Idempotent: the AI service skips the embed round-trip when the
  * card is unchanged, and DELETEs the previous rows otherwise.
  *
- * Fire-and-forget: errors are logged, never thrown — the workflow row is the
- * source of truth and a failed index must not roll back a save. The card is
- * refreshed on the next save, so a miss is self-healing.
+ * THROWS — this is the variant the reconciliation worker calls, because a job
+ * that cannot fail cannot be retried. Mutation paths want
+ * `refreshWorkflowVectors` below instead.
+ */
+export const refreshWorkflowVectorsOrThrow = async (
+  workflowId: string,
+): Promise<void> => {
+  const workflow = await db.query.workflows.findFirst({
+    where: { id: workflowId },
+  });
+  if (!workflow) return;
+  // An archived workflow must stop being discoverable — nothing should
+  // propose running it.
+  if (workflow.status === "archived") {
+    await deleteWorkflowVectorRows(workflowId);
+    return;
+  }
+
+  const result = await callAiService(
+    "/internal/vectorize",
+    {
+      sourceType: "workflows",
+      sourceId: workflow.id,
+      content: buildWorkflowCard(workflow),
+      metadata: {
+        name: workflow.name,
+        description: workflow.description ?? "",
+        trigger_type: workflow.triggerType,
+        status: workflow.status,
+        task_count: workflow.playbook.tasks.length,
+      },
+      teamId: workflow.teamId,
+      organizationId: workflow.organizationId,
+      // A private workflow is only its owner's to find.
+      userId: workflow.userId,
+    },
+    aiVectorizeResponseSchema,
+    {
+      teamId: workflow.teamId,
+      organizationId: workflow.organizationId,
+    },
+  );
+
+  if (!result.success) {
+    throw new Error(
+      `Vectorize returned success=false for workflow ${workflowId}`,
+    );
+  }
+};
+
+/**
+ * The mutation-path variant: same work, errors logged and swallowed.
+ *
+ * A failed index must not roll back a save — the workflow row is the source of
+ * truth. A miss self-heals on the next save, and the nightly reconciliation
+ * sweep catches the ones nobody saves again.
  */
 export const refreshWorkflowVectors = async (
   workflowId: string,
 ): Promise<void> => {
   try {
-    const workflow = await db.query.workflows.findFirst({
-      where: { id: workflowId },
-    });
-    if (!workflow) return;
-    // An archived workflow must stop being discoverable — nothing should
-    // propose running it.
-    if (workflow.status === "archived") {
-      await deleteWorkflowVectorRows(workflowId);
-      return;
-    }
-
-    const result = await callAiService(
-      "/internal/vectorize",
-      {
-        sourceType: "workflows",
-        sourceId: workflow.id,
-        content: buildWorkflowCard(workflow),
-        metadata: {
-          name: workflow.name,
-          description: workflow.description ?? "",
-          trigger_type: workflow.triggerType,
-          status: workflow.status,
-          task_count: workflow.playbook.tasks.length,
-        },
-        teamId: workflow.teamId,
-        organizationId: workflow.organizationId,
-        // A private workflow is only its owner's to find.
-        userId: workflow.userId,
-      },
-      aiVectorizeResponseSchema,
-      {
-        teamId: workflow.teamId,
-        organizationId: workflow.organizationId,
-      },
-    );
-
-    if (!result.success) {
-      console.warn(
-        `[WorkflowVectorRefresh] AI service returned success=false for ${workflowId}`,
-      );
-    }
+    await refreshWorkflowVectorsOrThrow(workflowId);
   } catch (error) {
     console.error(`[WorkflowVectorRefresh] Failed for ${workflowId}:`, error);
   }

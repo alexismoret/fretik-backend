@@ -65,5 +65,7 @@ export const hideEpisode = async (input: {
     });
   }
 
-  void deleteEpisodeVectors([episode.id]);
+  // Awaited: this function's contract is that the episode leaves recall
+  // immediately, and returning before the vectors are gone made that a lie.
+  await deleteEpisodeVectors([episode.id]);
 };

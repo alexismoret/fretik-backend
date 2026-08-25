@@ -1,3 +1,5 @@
+import type { AiVectorSourceType } from "@fretik/shared/db/schema";
+
 /**
  * Queue names + typed job payloads — the single source for every queue this
  * package owns. `document-processing` is NOT here: its queue/worker pair
@@ -32,6 +34,12 @@ export const MCP_REFRESH_QUEUE = "mcp-refresh";
 // run at all for the duration, once a night, right when a nightly import has
 // just filled the journal.
 export const COLLECTION_INDEX_QUEUE = "collection-index";
+// Dedicated queue for the nightly vector reconciliation. Not on
+// `collection-index`: that queue is isolated precisely because one of its
+// passes holds a `CREATE INDEX CONCURRENTLY` for minutes, and a pass that
+// calls the AI service per repair would serialise behind it. Not on
+// `memory-maintenance` either — concurrency 1, behind the 15s sweeps.
+export const VECTOR_RECONCILE_QUEUE = "vector-reconcile";
 
 /** One journal event to resolve against the collection graph (P3). */
 export interface MemoryResolveJobData {
@@ -116,3 +124,17 @@ export const EAGER_CONSOLIDATE_JOB = "eager-consolidate";
 
 /** Job name on WORKFLOW_TRIGGER_QUEUE. */
 export const WORKFLOW_RUN_CREATE_JOB = "workflow-run-create";
+
+/**
+ * Job names on VECTOR_RECONCILE_QUEUE. The sweep detects and enqueues; each
+ * repair is its own job so a failure retries alone instead of poisoning the
+ * whole pass — same shape as `journal-sweep` feeding `record-card`.
+ */
+export const VECTOR_RECONCILE_SWEEP_JOB = "vector-reconcile-sweep";
+export const VECTOR_REPAIR_JOB = "vector-repair";
+
+/** One source whose vectors are missing or stale, to rebuild. */
+export interface VectorRepairJobData {
+  sourceType: AiVectorSourceType;
+  sourceId: string;
+}

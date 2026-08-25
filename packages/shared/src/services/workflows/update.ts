@@ -7,6 +7,7 @@ import {
   type UpdateWorkflowInput,
   type WorkflowResponse,
 } from "../../schemas/workflows";
+import { resyncVectorUserScope } from "../ai-vectors/resync-user-scope";
 import { filterTeamMemberIds } from "../team/members";
 import { getWorkflowRow } from "./get";
 import { serializeWorkflow } from "./serialize";
@@ -78,38 +79,58 @@ export const updateWorkflow = async (params: {
     };
   }
 
-  const [row] = await db
-    .update(workflows)
-    .set({
-      ...(input.name !== undefined ? { name: input.name } : {}),
-      ...(input.description !== undefined
-        ? { description: input.description }
-        : {}),
-      ...(input.icon !== undefined ? { icon: input.icon } : {}),
-      ...(input.color !== undefined ? { color: input.color } : {}),
-      ...(input.triggerType !== undefined
-        ? { triggerType: input.triggerType }
-        : {}),
-      ...(input.triggerConfig !== undefined
-        ? { triggerConfig: input.triggerConfig }
-        : {}),
-      ...(input.playbook !== undefined ? { playbook: input.playbook } : {}),
-      ...(input.autonomy !== undefined ? { autonomy: input.autonomy } : {}),
-      ...(input.modelProfileKey !== undefined
-        ? { modelProfileKey: input.modelProfileKey }
-        : {}),
-      ...(input.reasoningLevel !== undefined
-        ? { reasoningLevel: input.reasoningLevel }
-        : {}),
-      ...(input.limits !== undefined ? { limits: input.limits } : {}),
-      ...(notifications !== undefined ? { notifications } : {}),
-      ...(input.userId !== undefined ? { userId: input.userId } : {}),
-      ...(formToken !== undefined ? { formToken } : {}),
-    })
-    .where(
-      and(eq(workflows.id, params.id), eq(workflows.teamId, params.teamId)),
-    )
-    .returning();
+  // One transaction, because a scope change has to move the workflow row and
+  // its vectors' `user_id` together — see `resyncVectorUserScope`.
+  const row = await db.transaction(async (tx) => {
+    const [updated] = await tx
+      .update(workflows)
+      .set({
+        ...(input.name !== undefined ? { name: input.name } : {}),
+        ...(input.description !== undefined
+          ? { description: input.description }
+          : {}),
+        ...(input.icon !== undefined ? { icon: input.icon } : {}),
+        ...(input.color !== undefined ? { color: input.color } : {}),
+        ...(input.triggerType !== undefined
+          ? { triggerType: input.triggerType }
+          : {}),
+        ...(input.triggerConfig !== undefined
+          ? { triggerConfig: input.triggerConfig }
+          : {}),
+        ...(input.playbook !== undefined ? { playbook: input.playbook } : {}),
+        ...(input.autonomy !== undefined ? { autonomy: input.autonomy } : {}),
+        ...(input.modelProfileKey !== undefined
+          ? { modelProfileKey: input.modelProfileKey }
+          : {}),
+        ...(input.reasoningLevel !== undefined
+          ? { reasoningLevel: input.reasoningLevel }
+          : {}),
+        ...(input.limits !== undefined ? { limits: input.limits } : {}),
+        ...(notifications !== undefined ? { notifications } : {}),
+        ...(input.userId !== undefined ? { userId: input.userId } : {}),
+        ...(formToken !== undefined ? { formToken } : {}),
+      })
+      .where(
+        and(eq(workflows.id, params.id), eq(workflows.teamId, params.teamId)),
+      )
+      .returning();
+
+    if (!updated) return undefined;
+
+    // Visibility moves NOW, inside the transaction. The async refresh below
+    // rewrites the card text, but it swallows its own errors, so a dropped
+    // refresh would leave a privatised workflow readable by the whole team
+    // until someone saved it again. One indexed UPDATE, no embedding.
+    if (input.userId !== undefined) {
+      await resyncVectorUserScope({
+        sourceType: "workflows",
+        sourceId: updated.id,
+        userId: input.userId,
+        tx,
+      });
+    }
+    return updated;
+  });
 
   if (!row) return undefined;
   // The card describes the playbook — re-index whenever it changes.

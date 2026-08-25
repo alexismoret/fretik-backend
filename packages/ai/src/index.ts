@@ -40,6 +40,7 @@ import { workflowTriggerRoutes } from "./handlers/workflow";
 import { workflowTranscriptRoutes } from "./handlers/workflow-transcript";
 import { registerOrphanCleanupCron } from "./services/chat-files/orphan-cron";
 import { subscribeConversationTaskResumes } from "./services/conversation-tasks/subscribe-resume";
+import { backfillPageVectors } from "./services/vectorize/pages";
 import { backfillWorkflowVectors } from "./services/vectorize/workflows";
 import {
   loadSkillCatalog,
@@ -173,6 +174,20 @@ void backfillWorkflowVectors()
   .catch((err: unknown) => {
     console.error(
       "[boot] workflow vectorize backfill failed:",
+      err instanceof Error ? err.message : err,
+    );
+  });
+
+// Same for pages that predate the discovery feature — see above.
+void backfillPageVectors()
+  .then(({ indexed }) => {
+    if (indexed > 0) {
+      console.log(`[boot] indexed ${indexed.toString()} page(s) for discovery`);
+    }
+  })
+  .catch((err: unknown) => {
+    console.error(
+      "[boot] page vectorize backfill failed:",
       err instanceof Error ? err.message : err,
     );
   });

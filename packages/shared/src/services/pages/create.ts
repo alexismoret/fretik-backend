@@ -7,9 +7,11 @@ import {
   type PageResponse,
 } from "../../schemas/pages";
 import { ensurePageCompiled } from "./compile";
+import { derivePageDescription } from "./derive-description";
 import { ensurePageDatasetIndexes } from "./ensure-dataset-indexes";
 import { sanitizePageDefinition } from "./sanitize";
 import { serializePage } from "./serialize";
+import { refreshPageVectors } from "./vector-refresh";
 import type { PageVersionActor } from "./versions";
 import { trimPageVersions, writePageVersion } from "./versions";
 import { pageOwnerWriteError } from "./visibility";
@@ -66,7 +68,11 @@ export const createPage = async (params: {
         teamId: params.teamId,
         userId: input.userId ?? null,
         name: input.name,
-        description: input.description,
+        description:
+          derivePageDescription({
+            current: input.description,
+            definition,
+          }) ?? input.description,
         icon: input.icon ?? null,
         color: input.color ?? null,
         definition,
@@ -97,5 +103,7 @@ export const createPage = async (params: {
   // user just made.
   ensurePageDatasetIndexes({ definition });
   await trimPageVersions(row.id);
+  // Fire-and-forget by contract — see `refreshPageVectors`.
+  void refreshPageVectors(row.id);
   return { page: serializePage(row), warnings };
 };

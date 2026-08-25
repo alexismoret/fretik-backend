@@ -40,6 +40,6 @@ export const hideAllEpisodes = async (input: {
     .returning({ id: aiEpisodes.id });
 
   const ids = rows.map((r) => r.id);
-  void deleteEpisodeVectors(ids);
+  await deleteEpisodeVectors(ids);
   return { hidden: ids.length };
 };

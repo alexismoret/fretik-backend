@@ -4,6 +4,7 @@ import { pages } from "../../db/schema";
 import { notFound, throwHttpError } from "../../lib/errors";
 import { deletePinsForTarget } from "../pins/cleanup";
 import { invalidatePublicPageCache } from "./public-cache";
+import { deletePageVectorRows } from "./vector-refresh";
 import { pageVisibilityWhere, type PageRequester } from "./visibility";
 
 /** Delete a page. Its shares cascade; a published token stops resolving. */
@@ -41,4 +42,7 @@ export const deletePage = async (params: {
   if (existing.publicToken) {
     await invalidatePublicPageCache(existing.publicToken);
   }
+  // Awaited, unlike the refreshes: a deleted page must stop being proposed
+  // immediately, and there is nothing to re-run later that would fix it.
+  await deletePageVectorRows(params.pageId);
 };

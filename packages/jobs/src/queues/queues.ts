@@ -8,6 +8,7 @@ import {
   MEMORY_MAINTENANCE_QUEUE,
   MEMORY_RESOLVE_QUEUE,
   RECORD_CARD_QUEUE,
+  VECTOR_RECONCILE_QUEUE,
   WORKFLOW_TRIGGER_QUEUE,
   type DreamingTeamJobData,
   type EagerConsolidateJobData,
@@ -93,4 +94,13 @@ export const getCollectionIndexQueue = (): Queue => {
     connection: getProducerConnection(),
   });
   return collectionIndexQueue;
+};
+
+let vectorReconcileQueue: Queue | null = null;
+
+export const getVectorReconcileQueue = (): Queue => {
+  vectorReconcileQueue ??= new Queue(VECTOR_RECONCILE_QUEUE, {
+    connection: getProducerConnection(),
+  });
+  return vectorReconcileQueue;
 };

@@ -67,8 +67,8 @@ import { BUNDLED_SKILLS_DIR, EXTERNAL_APP_SKILLS_DIR } from "../skills/paths";
  *                  human attached.
  *   drive/         Drive documents downloaded on demand    (R-only, NOT backed up)
  *   skills/        bundled skills pushed at first init     (R-only)
- *   context/       team/user context snapshots              (R-only, future)
- *   memory/        memory tool surface                      (R via tool, future)
+ *   context/       team/user context snapshots              (R-only)
+ *   memories/      the memory tree, mirrored from the DB    (R-only)
  *
  * The Python skill loader (`skill_loader`) is pre-installed at
  * `/opt/fretik/skill_loader.py` by the E2B template build, exposed via
@@ -116,14 +116,20 @@ export const WORKSPACE_DIRS = {
   drive: "drive",
   skills: "skills",
   context: "context",
-  memory: "memory",
+  /**
+   * PLURAL, matching the `memory` tool's `/memories/` namespace exactly. The
+   * two names differed by one letter, for one store, which is a reliable way
+   * to make an agent guess a path wrong. Now the rule is one line: the
+   * workspace path is the tool path without its leading slash.
+   */
+  memories: "memories",
 } as const;
 
 /**
  * Top-level directories whose content is backed up to S3 so the
  * sandbox can be re-hydrated after expiry. Drive downloads are
  * NOT backed up (cheap to re-download from the documents S3 bucket).
- * Skills/context/memory are read-only from the sandbox's perspective
+ * Skills/context/memories are read-only from the sandbox's perspective
  * so backup would be redundant.
  */
 const BACKUP_ELIGIBLE_DIRS: readonly string[] = ["attachments", "outputs"];
@@ -536,7 +542,7 @@ const createWorkspaceDirs = async (conversationId: string): Promise<void> => {
       WORKSPACE_DIRS.drive,
       WORKSPACE_DIRS.skills,
       WORKSPACE_DIRS.context,
-      WORKSPACE_DIRS.memory,
+      WORKSPACE_DIRS.memories,
     ].map(async (dir) => {
       try {
         await makeSandboxDir(conversationId, dir);

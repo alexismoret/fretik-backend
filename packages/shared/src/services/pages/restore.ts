@@ -6,6 +6,7 @@ import type { PageResponse } from "../../schemas/pages";
 import { ensurePageCompiled } from "./compile";
 import { ensurePageDatasetIndexes } from "./ensure-dataset-indexes";
 import { serializePage } from "./serialize";
+import { refreshPageVectors } from "./vector-refresh";
 import {
   getPageVersion,
   trimPageVersions,
@@ -88,5 +89,6 @@ export const restorePageVersion = async (params: {
   if (!row) return throwHttpError(404, notFound("Page"));
   ensurePageDatasetIndexes({ definition });
   await trimPageVersions(row.id);
+  void refreshPageVectors(row.id);
   return { page: serializePage(row), restoredFrom: params.versionNumber };
 };

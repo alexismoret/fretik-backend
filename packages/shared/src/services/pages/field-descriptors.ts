@@ -123,6 +123,7 @@ const describeField = (
     precision: asNumber(configValue(definition, "precision")),
     suffix: asString(configValue(definition, "suffix")),
     display: asString(configValue(definition, "display")),
+    barcodeFormat: asString(configValue(definition, "barcodeFormat")),
     min: asNumber(configValue(definition, "min")),
     max: asNumber(configValue(definition, "max")),
     ratingMax: asNumber(configValue(definition, "ratingMax")),

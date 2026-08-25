@@ -80,8 +80,9 @@ export const deleteConversations = async (data: {
   });
 
   // Drop the recall vectors of the hidden episodes (no FK from `ai_vectors`).
-  // Fire-and-forget, same contract as the memory-delete path.
-  void deleteEpisodeVectors(hiddenEpisodeIds);
+  // Awaited: one indexed DELETE, and a deleted conversation must not keep
+  // answering recall.
+  await deleteEpisodeVectors(hiddenEpisodeIds);
 
   // The FK cascade just reaped every `ai_chat_files` row for these
   // conversations; the S3 session folders have no such relationship

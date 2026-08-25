@@ -1,5 +1,6 @@
 import type { Page } from "../../db/schema";
 import type { PageResponse, PageSummary } from "../../schemas/pages";
+import { derivePageDescription } from "./derive-description";
 
 /** Public URL of a published page; null while unpublished. */
 export const buildPageUrl = (token: string | null): string | null => {
@@ -32,11 +33,22 @@ export const serializePage = (row: Page): PageResponse => ({
   updatedAt: row.updatedAt,
 });
 
-/** List projection — sizes instead of the whole document. */
+/**
+ * List projection — sizes instead of the whole document.
+ *
+ * A listing is the only place a page is read WITHOUT its definition, so it is
+ * also the only place the brief cannot be consulted. Pages built before the
+ * description was derived from it would list themselves as a bare name, so the
+ * fallback happens here: it covers the assistant's listing and the hub's search
+ * at once, and it disappears on that page's next save.
+ */
 export const serializePageSummary = (row: Page): PageSummary => {
   const { definition, ...rest } = serializePage(row);
   return {
     ...rest,
+    description:
+      derivePageDescription({ current: rest.description, definition }) ??
+      rest.description,
     sourceBytes: definition.code.source.length,
     datasetCount: definition.datasets.length,
   };

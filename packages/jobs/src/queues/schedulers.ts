@@ -5,6 +5,7 @@ import {
   GC_DEMOTE_JOB,
   JOURNAL_SWEEP_JOB,
   MCP_SNAPSHOT_REFRESH_JOB,
+  VECTOR_RECONCILE_SWEEP_JOB,
   WORKFLOW_STALL_SWEEP_JOB,
   WORKFLOW_TRIGGER_SWEEP_JOB,
 } from "./names";
@@ -12,6 +13,7 @@ import {
   getCollectionIndexQueue,
   getMcpRefreshQueue,
   getMemoryMaintenanceQueue,
+  getVectorReconcileQueue,
 } from "./queues";
 
 /**
@@ -39,6 +41,8 @@ const MCP_REFRESH_CRON = "0 5 * * *";
  * `CREATE INDEX CONCURRENTLY`, which is IO-heavy and best kept away from the
  * dreaming and GC passes. */
 const COLLECTION_INDEX_CRON = "0 2 * * *";
+/** 01:00 UTC — opens the nightly chain, before the index sweep at 02:00. */
+const VECTOR_RECONCILE_CRON = "0 1 * * *";
 
 const CRON_OPTS = {
   removeOnComplete: { count: 30 },
@@ -104,5 +108,14 @@ export const registerSchedulers = async (): Promise<void> => {
     MCP_SNAPSHOT_REFRESH_JOB,
     { pattern: MCP_REFRESH_CRON, tz: "UTC" },
     { name: MCP_SNAPSHOT_REFRESH_JOB, opts: CRON_OPTS },
+  );
+
+  // First of the nightly chain, and on its own queue: the pass calls the AI
+  // service once per repair, so it must not queue behind the index sweep's
+  // minutes-long `CREATE INDEX CONCURRENTLY`.
+  await getVectorReconcileQueue().upsertJobScheduler(
+    VECTOR_RECONCILE_SWEEP_JOB,
+    { pattern: VECTOR_RECONCILE_CRON, tz: "UTC" },
+    { name: VECTOR_RECONCILE_SWEEP_JOB, opts: CRON_OPTS },
   );
 };

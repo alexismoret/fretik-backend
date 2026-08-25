@@ -49,7 +49,7 @@ import { readSkillWorkspaceFile } from "../skills/read-skill-file";
  *  - Workflow-run deliverables pulled in on demand at `runs/<runId>/`
  *  - Skill bundles at `skills/<name>/...`
  *  - Context files at `context/...`
- *  - Memory files at `memory/...`
+ *  - Memory files at `memories/user/...` and `memories/team/...`
  *
  * For chat attachments, extraction is TRANSPARENT and lazy: the model
  * passes the original filename and gets readable text back. Behind the
@@ -145,6 +145,9 @@ const buildFileNotFoundHint = (relative: string): string | undefined => {
   }
   if (relative.startsWith(`${WORKSPACE_DIRS.outputs}/`)) {
     return `The file may not have been generated yet. Check the stdout of the previous \`python\` / \`bash\` call for the actual output path.`;
+  }
+  if (relative.startsWith(`${WORKSPACE_DIRS.memories}/`)) {
+    return `Memory paths mirror the \`memory\` tool's namespace: \`${WORKSPACE_DIRS.memories}/user/<path>\` or \`${WORKSPACE_DIRS.memories}/team/<path>\`. Call \`memory({ command: "view", path: "/memories/team/" })\` to list what exists.`;
   }
   return undefined;
 };
@@ -501,7 +504,7 @@ export const createReadTool = () =>
       const resolved = resolveReadPath(file_path);
       if (!resolved) {
         return {
-          error: `Path is outside the conversation's sandbox (/workspace/). Only files under attachments/, outputs/, runs/, drive/, skills/, context/, or memory/ are readable.`,
+          error: `Path is outside the conversation's sandbox (/workspace/). Only files under attachments/, outputs/, runs/, drive/, skills/, context/, or memories/ are readable.`,
           code: TOOL_ERROR_CODES.PATH_OUT_OF_SANDBOX,
         };
       }
@@ -581,7 +584,7 @@ export const createReadTool = () =>
         if ("error" in result) return result.error;
         text = result.text;
       } else {
-        // Non-attachment workspace paths (drive/, outputs/, memory/): read
+        // Non-attachment workspace paths (drive/, outputs/, memories/): read
         // via the sandbox. Binary documents under these prefixes are
         // resolved against the `{basename}.md` text file dropped next to
         // them by their own hydrator.

@@ -82,7 +82,7 @@ describe("WORKSPACE_DIRS / WORKSPACE_ROOT exports", () => {
     expect(WORKSPACE_DIRS.drive).toBe("drive");
     expect(WORKSPACE_DIRS.skills).toBe("skills");
     expect(WORKSPACE_DIRS.context).toBe("context");
-    expect(WORKSPACE_DIRS.memory).toBe("memory");
+    expect(WORKSPACE_DIRS.memories).toBe("memories");
   });
 });
 

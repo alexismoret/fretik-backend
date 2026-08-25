@@ -5,6 +5,7 @@ import { badRequest, notFound, throwHttpError } from "../../lib/errors";
 import { pagePublishError, type PageResponse } from "../../schemas/pages";
 import { invalidatePublicPageCache } from "./public-cache";
 import { serializePage } from "./serialize";
+import { refreshPageVectors } from "./vector-refresh";
 import { pageVisibilityWhere, type PageRequester } from "./visibility";
 
 /**
@@ -52,6 +53,8 @@ export const publishPage = async (params: {
 
   if (!row) return throwHttpError(404, notFound("Page"));
   if (row.publicToken) await invalidatePublicPageCache(row.publicToken);
+  // The card says whether a page can be handed out as a link.
+  void refreshPageVectors(row.id);
   return serializePage(row);
 };
 
@@ -86,5 +89,6 @@ export const unpublishPage = async (params: {
   if (existing.publicToken) {
     await invalidatePublicPageCache(existing.publicToken);
   }
+  void refreshPageVectors(row.id);
   return serializePage(row);
 };

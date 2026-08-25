@@ -36,93 +36,104 @@ const aiVectorizeResponseSchema = z.object({
  *     vectorizer rejects `content.trim().length === 0` for non-document
  *     sources).
  *
- * Fire-and-forget: errors are logged, never thrown. The aiContextFiles
- * row is the source of truth — failing to vectorise must not roll back
- * the user-visible status flip.
+ * THROWS — this is the variant the reconciliation worker calls, because a job
+ * that cannot fail cannot be retried. Mutation paths want
+ * `triggerContextVectorRefresh` below instead.
+ */
+export const triggerContextVectorRefreshOrThrow = async (
+  fileId: string,
+): Promise<void> => {
+  const file = await db.query.aiContextFiles.findFirst({
+    where: { id: fileId },
+  });
+
+  if (!file) {
+    // Row was deleted between the upload hook firing and now —
+    // nothing to re-vectorise. The cascade DELETE in
+    // `deleteContextVectors` (or the `delete.ts` hook) has already
+    // cleared any pre-existing vectors, so this branch is silent.
+    return;
+  }
+  if (file.status !== "ready") {
+    // Extraction failed (status='error') or is still mid-flight
+    // (status='extracting' / 'uploading'). Either way: nothing
+    // useful to embed. The hook only fires after the success update
+    // in upload.ts, so this branch is rare but defensive.
+    return;
+  }
+  if (!file.content || file.content.trim().length === 0) {
+    // Empty extraction (e.g. an image OCR that produced no text).
+    // Skip silently — the row stays queryable in the settings UI
+    // but nothing for retrieval to surface.
+    return;
+  }
+
+  const profile = await db.query.aiContextProfiles.findFirst({
+    where: { id: file.profileId },
+  });
+  if (!profile) {
+    console.warn(
+      `[ContextVectorRefresh] Parent profile ${file.profileId} missing for file ${fileId} — skipping vectorise`,
+    );
+    return;
+  }
+
+  const metadata: ContextVectorMetadata = {
+    scope: profile.scope,
+    filename: file.filename,
+    mime_type: file.mimeType,
+    size_bytes: file.size,
+    profile_id: profile.id,
+    created_at: file.createdAt.toISOString(),
+    updated_at: file.updatedAt.toISOString(),
+  };
+
+  // For team-scope profiles `userId` stays NULL (every team member
+  // reads). For user-scope profiles the parent's `userId` is the
+  // owner — guaranteed non-null by `ai_context_profiles_scope_check`.
+  const userId = profile.scope === "user" ? profile.userId : null;
+
+  // The internal middleware needs a UUID-shaped `X-Context-Team-Id`
+  // header even though `/internal/vectorize` reads the truthful
+  // value from the body. For user-scope profiles `profile.teamId`
+  // is NULL — we fall back to `organizationId` so the header is a
+  // valid UUID; the body still carries `teamId: null` and lands
+  // that NULL on `ai_vectors.team_id`.
+  const result = await callAiService(
+    "/internal/vectorize",
+    {
+      sourceType: "context",
+      sourceId: file.id,
+      content: file.content,
+      metadata,
+      teamId: profile.teamId,
+      organizationId: profile.organizationId,
+      userId,
+    },
+    aiVectorizeResponseSchema,
+    {
+      teamId: profile.teamId ?? profile.organizationId,
+      organizationId: profile.organizationId,
+    },
+  );
+
+  if (!result.success) {
+    throw new Error(
+      `Vectorize returned success=false for context file ${fileId}`,
+    );
+  }
+};
+
+/**
+ * The mutation-path variant: same work, errors logged and swallowed. The
+ * `ai_context_files` row is the source of truth — failing to vectorise must
+ * not roll back the user-visible status flip.
  */
 export const triggerContextVectorRefresh = async (
   fileId: string,
 ): Promise<void> => {
   try {
-    const file = await db.query.aiContextFiles.findFirst({
-      where: { id: fileId },
-    });
-
-    if (!file) {
-      // Row was deleted between the upload hook firing and now —
-      // nothing to re-vectorise. The cascade DELETE in
-      // `deleteContextVectors` (or the `delete.ts` hook) has already
-      // cleared any pre-existing vectors, so this branch is silent.
-      return;
-    }
-    if (file.status !== "ready") {
-      // Extraction failed (status='error') or is still mid-flight
-      // (status='extracting' / 'uploading'). Either way: nothing
-      // useful to embed. The hook only fires after the success update
-      // in upload.ts, so this branch is rare but defensive.
-      return;
-    }
-    if (!file.content || file.content.trim().length === 0) {
-      // Empty extraction (e.g. an image OCR that produced no text).
-      // Skip silently — the row stays queryable in the settings UI
-      // but nothing for retrieval to surface.
-      return;
-    }
-
-    const profile = await db.query.aiContextProfiles.findFirst({
-      where: { id: file.profileId },
-    });
-    if (!profile) {
-      console.warn(
-        `[ContextVectorRefresh] Parent profile ${file.profileId} missing for file ${fileId} — skipping vectorise`,
-      );
-      return;
-    }
-
-    const metadata: ContextVectorMetadata = {
-      scope: profile.scope,
-      filename: file.filename,
-      mime_type: file.mimeType,
-      size_bytes: file.size,
-      profile_id: profile.id,
-      created_at: file.createdAt.toISOString(),
-      updated_at: file.updatedAt.toISOString(),
-    };
-
-    // For team-scope profiles `userId` stays NULL (every team member
-    // reads). For user-scope profiles the parent's `userId` is the
-    // owner — guaranteed non-null by `ai_context_profiles_scope_check`.
-    const userId = profile.scope === "user" ? profile.userId : null;
-
-    // The internal middleware needs a UUID-shaped `X-Context-Team-Id`
-    // header even though `/internal/vectorize` reads the truthful
-    // value from the body. For user-scope profiles `profile.teamId`
-    // is NULL — we fall back to `organizationId` so the header is a
-    // valid UUID; the body still carries `teamId: null` and lands
-    // that NULL on `ai_vectors.team_id`.
-    const result = await callAiService(
-      "/internal/vectorize",
-      {
-        sourceType: "context",
-        sourceId: file.id,
-        content: file.content,
-        metadata,
-        teamId: profile.teamId,
-        organizationId: profile.organizationId,
-        userId,
-      },
-      aiVectorizeResponseSchema,
-      {
-        teamId: profile.teamId ?? profile.organizationId,
-        organizationId: profile.organizationId,
-      },
-    );
-
-    if (!result.success) {
-      console.warn(
-        `[ContextVectorRefresh] AI service returned success=false for file ${fileId}`,
-      );
-    }
+    await triggerContextVectorRefreshOrThrow(fileId);
   } catch (error) {
     console.error(`[ContextVectorRefresh] Failed for file ${fileId}:`, error);
   }

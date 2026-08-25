@@ -5,7 +5,11 @@ import type {
   FieldDefinitionType,
 } from "../../db/schema";
 import { collections, fieldDefinitions } from "../../db/schema";
-import { fieldOptions } from "../../db/schema/field-types";
+import {
+  CODE_DISPLAY_BY_FIELD_TYPE,
+  codeDisplay,
+  fieldOptions,
+} from "../../db/schema/field-types";
 import { badRequest, throwHttpError } from "../../lib/errors";
 import {
   FIELD_DEFINITION_KEY_REGEX,
@@ -82,6 +86,34 @@ export const validateFieldDefinitionShape = (
         "Select / multi_select fields require at least one option in config.options.",
       ),
     );
+  }
+  // `display` is stored in the flat config superset, so nothing but this guard
+  // stops a caller (the agent included) from asking for a barcode on a `date` or
+  // a progress bar on a `text` — a config that saves fine and then renders as
+  // nothing at all.
+  if (patch.type && patch.config) {
+    const wanted = codeDisplay(patch.config);
+    const allowed = CODE_DISPLAY_BY_FIELD_TYPE[patch.type] ?? [];
+    if (wanted && !allowed.includes(wanted)) {
+      return throwHttpError(
+        400,
+        badRequest(
+          allowed.length === 0
+            ? `A '${patch.type}' field cannot render as a code — drop config.display.`
+            : `A '${patch.type}' field only supports config.display '${allowed.join("' or '")}'.`,
+        ),
+      );
+    }
+    const display =
+      "display" in patch.config ? patch.config.display : undefined;
+    if (patch.type !== "number" && (display === "bar" || display === "ring")) {
+      return throwHttpError(
+        400,
+        badRequest(
+          `config.display '${display}' is a number-only progress meter; '${patch.type}' fields do not have one.`,
+        ),
+      );
+    }
   }
   if (patch.type === "rollup" && patch.config) {
     const cfg = patch.config;

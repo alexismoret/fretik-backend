@@ -4,6 +4,7 @@ import {
   documentVectorMetadataSchema,
   episodeVectorMetadataSchema,
   memoryVectorMetadataSchema,
+  pageVectorMetadataSchema,
   recordVectorMetadataSchema,
   workflowVectorMetadataSchema,
 } from "@fretik/shared/schemas/ai";
@@ -11,6 +12,7 @@ import { OpenAPIHono } from "@hono/zod-openapi";
 import { z } from "zod";
 import { internalMiddleware } from "../middlewares/internal";
 import { vectorizeSource } from "../services/vectorize";
+import { vectorizePage } from "../services/vectorize/pages";
 import { vectorizeWorkflow } from "../services/vectorize/workflows";
 import type { HonoInternalAppType } from "../types/hono";
 
@@ -46,6 +48,7 @@ const CONTEXT_SOURCE: AiVectorSourceType = "context";
 const EPISODES_SOURCE: AiVectorSourceType = "episodes";
 const RECORDS_SOURCE: AiVectorSourceType = "records";
 const WORKFLOWS_SOURCE: AiVectorSourceType = "workflows";
+const PAGES_SOURCE: AiVectorSourceType = "pages";
 
 /**
  * Discriminated union on sourceType: a `documents` source must ship a
@@ -146,6 +149,22 @@ const VectorizeRequestSchema = z.discriminatedUnion("sourceType", [
     /** Owner of a private workflow; NULL when team-shared. */
     userId: z.uuid().nullable(),
   }),
+  z.object({
+    sourceType: z.literal(PAGES_SOURCE),
+    /** The page id — a page card is identified by the page. */
+    sourceId: z.uuid(),
+    /** The page "card" built by `buildPageCard` — one chunk. */
+    content: z.string().min(1),
+    /** `content_hash` + `version_indexed_at` are computed here, not sent. */
+    metadata: pageVectorMetadataSchema.omit({
+      content_hash: true,
+      version_indexed_at: true,
+    }),
+    teamId: z.uuid(),
+    organizationId: z.uuid(),
+    /** Owner of a private page; NULL when team-shared. */
+    userId: z.uuid().nullable(),
+  }),
 ]);
 
 const vectorizeRoutes = new OpenAPIHono<HonoInternalAppType>();
@@ -169,25 +188,40 @@ vectorizeRoutes.post("/", async (c) => {
     // Forward the whole validated payload. The Zod discriminated union
     // has already narrowed `metadata` against `sourceType`, so this
     // assignment is type-safe without any runtime cast.
-    // Workflow cards go through their own entry point: it owns the
-    // `content_hash` short-circuit, so re-saving a workflow without a
-    // meaningful change costs no embedding.
+    // Workflow and page cards go through their own entry points: they own the
+    // `content_hash` short-circuit, so re-saving one without a meaningful
+    // change costs no embedding.
     const data = parsed.data;
-    const result =
-      data.sourceType === "workflows"
-        ? await vectorizeWorkflow({
-            workflowId: data.sourceId,
-            teamId: data.teamId,
-            organizationId: data.organizationId,
-            userId: data.userId,
-            name: data.metadata.name,
-            description: data.metadata.description,
-            triggerType: data.metadata.trigger_type,
-            status: data.metadata.status,
-            taskCount: data.metadata.task_count,
-            content: data.content,
-          })
-        : await vectorizeSource(data);
+    const runVectorize = () => {
+      if (data.sourceType === "workflows") {
+        return vectorizeWorkflow({
+          workflowId: data.sourceId,
+          teamId: data.teamId,
+          organizationId: data.organizationId,
+          userId: data.userId,
+          name: data.metadata.name,
+          description: data.metadata.description,
+          triggerType: data.metadata.trigger_type,
+          status: data.metadata.status,
+          taskCount: data.metadata.task_count,
+          content: data.content,
+        });
+      }
+      if (data.sourceType === "pages") {
+        return vectorizePage({
+          pageId: data.sourceId,
+          teamId: data.teamId,
+          organizationId: data.organizationId,
+          userId: data.userId,
+          name: data.metadata.name,
+          job: data.metadata.job,
+          published: data.metadata.published,
+          content: data.content,
+        });
+      }
+      return vectorizeSource(data);
+    };
+    const result = await runVectorize();
     return c.json(
       {
         success: true,

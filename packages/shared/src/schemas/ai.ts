@@ -186,6 +186,14 @@ export const workflowVectorMetadataSchema = z.object({
   version_indexed_at: z.string().min(1),
 });
 
+export const pageVectorMetadataSchema = z.object({
+  name: z.string().min(1),
+  job: z.string(),
+  published: z.boolean(),
+  content_hash: z.string().min(1),
+  version_indexed_at: z.string().min(1),
+});
+
 // ==================== //
 // Conversation CRUD    //
 // ==================== //

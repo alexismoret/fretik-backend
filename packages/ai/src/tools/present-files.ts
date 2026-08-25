@@ -48,7 +48,7 @@ const READ_ONLY_PRESENT_BLOCKLIST = new Set<string>([
   WORKSPACE_DIRS.skills,
   WORKSPACE_DIRS.drive,
   WORKSPACE_DIRS.context,
-  WORKSPACE_DIRS.memory,
+  WORKSPACE_DIRS.memories,
 ]);
 
 /**

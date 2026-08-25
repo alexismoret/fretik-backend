@@ -76,6 +76,17 @@ export const vectorizeWorkflow = async (
     "content_hash" in previous &&
     previous.content_hash === contentHash
   ) {
+    // See `vectorizePage`: `updated_at` has to mean "last verified fresh" for
+    // the reconciliation sweep to converge.
+    await db
+      .update(aiVectors)
+      .set({ updatedAt: new Date() })
+      .where(
+        and(
+          eq(aiVectors.sourceType, "workflows"),
+          eq(aiVectors.sourceId, input.workflowId),
+        ),
+      );
     return SKIPPED;
   }
 
@@ -115,13 +126,16 @@ export const vectorizeWorkflow = async (
 export const backfillWorkflowVectors = async (): Promise<{
   indexed: number;
 }> => {
+  // Both sides are uuid — comparing against `workflows.id::text` made Postgres
+  // refuse the query ("no operator matches uuid = text"), so this backfill threw
+  // on every boot and no pre-existing workflow was ever indexed.
   const alreadyIndexed = db
     .select({ one: sql`1` })
     .from(aiVectors)
     .where(
       and(
         eq(aiVectors.sourceType, "workflows"),
-        eq(aiVectors.sourceId, sql`${workflows.id}::text`),
+        eq(aiVectors.sourceId, workflows.id),
       ),
     );
 

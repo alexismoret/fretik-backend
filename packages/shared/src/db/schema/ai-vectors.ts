@@ -49,6 +49,9 @@ const tsvector = customType<{ data: string }>({
  *   - 'workflows': what a workflow does and what it takes, so the assistant
  *                  finds an existing one from a request that never says
  *                  "workflow" — and never builds a duplicate
+ *   - 'pages'    : what a page shows and who it is for, so the assistant
+ *                  points at the dashboard the team already has instead of
+ *                  rebuilding it
  */
 export const aiVectorSourceTypeEnum = pgEnum("ai_vector_source_type", [
   "documents",
@@ -58,6 +61,7 @@ export const aiVectorSourceTypeEnum = pgEnum("ai_vector_source_type", [
   "episodes",
   "records",
   "workflows",
+  "pages",
 ]);
 
 export const AI_VECTOR_SOURCE_TYPES = aiVectorSourceTypeEnum.enumValues;
@@ -212,6 +216,22 @@ type WorkflowVectorMetadata = {
   version_indexed_at: string;
 };
 
+/*
+ * Metadata for `source_type='pages'` rows — one card per page (what it shows,
+ * who it is for, what it can do), refreshed on every save and deleted with the
+ * page. `source_id` = the page id; single chunk, like records and workflows.
+ *
+ * `published` rides along because "can I hand this to someone outside the
+ * team" is half of what makes a page the right answer to a request.
+ */
+type PageVectorMetadata = {
+  name: string;
+  job: string;
+  published: boolean;
+  content_hash: string;
+  version_indexed_at: string;
+};
+
 export type AiVectorMetadata =
   | DocumentVectorMetadata
   | MemoryVectorMetadata
@@ -219,7 +239,8 @@ export type AiVectorMetadata =
   | ContextVectorMetadata
   | EpisodeVectorMetadata
   | RecordVectorMetadata
-  | WorkflowVectorMetadata;
+  | WorkflowVectorMetadata
+  | PageVectorMetadata;
 
 export type {
   ContextVectorMetadata,
@@ -227,6 +248,7 @@ export type {
   EpisodeVectorMetadata,
   MemoryVectorMetadata,
   MentionVectorInfo,
+  PageVectorMetadata,
   RecordVectorMetadata,
   SkillVectorMetadata,
   WorkflowVectorMetadata,
@@ -411,8 +433,11 @@ export const aiVectors = pgTable(
     //     team-scope profiles have both). organization_id is therefore
     //     mandatory; team_id is optional. user_id follows scope at the
     //     application layer.
-    //   - documents/memories: TENANT-scoped, both team_id and
-    //     organization_id mandatory.
+    //   - everything else (documents, memories, episodes, records,
+    //     workflows, pages): TENANT-scoped, both team_id and
+    //     organization_id mandatory. `user_id` stays optional here — a
+    //     private workflow or page carries its owner, a team-shared one
+    //     leaves it NULL.
     check(
       "ai_vectors_scope_consistency",
       sql`(${table.sourceType} = 'skills' AND ${table.teamId} IS NULL AND ${table.organizationId} IS NULL AND ${table.userId} IS NULL) OR (${table.sourceType} = 'context' AND ${table.organizationId} IS NOT NULL) OR (${table.sourceType} NOT IN ('skills', 'context') AND ${table.teamId} IS NOT NULL AND ${table.organizationId} IS NOT NULL)`,

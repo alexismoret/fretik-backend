@@ -1,0 +1,7 @@
+[test]
+# Stubs env vars consumed at module-load by modules transitively imported
+# from unit tests (Postgres / Redis / S3 / email fail-fast checks). Without
+# it the suite passes locally — Bun side-loads `.env` — and fails in CI,
+# which has neither the file nor a database.
+# See tests/preload.ts for the rationale.
+preload = "./tests/preload.ts"

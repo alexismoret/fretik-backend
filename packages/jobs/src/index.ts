@@ -15,6 +15,7 @@ import { startMcpRefreshWorker } from "./workers/mcp-refresh";
 import { startMemoryDistillWorker } from "./workers/memory-distill";
 import { startMemoryResolveWorker } from "./workers/memory-resolve";
 import { startRecordCardWorker } from "./workers/record-card";
+import { startVectorReconcileWorker } from "./workers/vector-reconcile";
 import { startWorkflowRunCreateWorker } from "./workers/workflow-run-create";
 
 /**
@@ -37,13 +38,14 @@ startWorkflowRunCreateWorker();
 startMaintenanceWorker();
 startMcpRefreshWorker();
 startCollectionIndexWorker();
+startVectorReconcileWorker();
 startBulkOperationWorker();
 await registerSchedulers();
 
 console.log(`
 ---------------------------
 fretik jobs v${packagejson.version}
-workers: document-processing · document-vector-refresh · memory-resolve · memory-distill · record-card · memory-dreaming · memory-maintenance · workflow-trigger · mcp-refresh · collection-index · bulk-operation
+workers: document-processing · document-vector-refresh · memory-resolve · memory-distill · record-card · memory-dreaming · memory-maintenance · workflow-trigger · mcp-refresh · collection-index · vector-reconcile · bulk-operation
 ---------------------------
 `);
 

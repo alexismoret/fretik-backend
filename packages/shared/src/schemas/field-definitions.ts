@@ -1,6 +1,9 @@
 import { z } from "zod";
 import { fieldDefinitionTypeEnum } from "../db/schema";
-import { FORMULA_RESULT_TYPES } from "../db/schema/field-types";
+import {
+  BARCODE_FORMATS,
+  FORMULA_RESULT_TYPES,
+} from "../db/schema/field-types";
 import {
   FIELD_DEFINITION_KEY_REGEX,
   FIELD_DEFINITION_LIMITS,
@@ -47,9 +50,14 @@ export const fieldConfigSchema = z.object({
   numberFormat: z.enum(["plain", "commas", "percent"]).optional(),
   precision: z.number().int().min(0).max(10).optional(),
   suffix: z.string().max(8).optional(),
-  display: z.enum(["plain", "bar", "ring"]).optional(),
   color: z.string().max(20).optional(),
   showNumber: z.boolean().optional(),
+  // How the value renders: itself, a progress meter (number only), or a
+  // scannable code (text / number / unique_id / formula; url / phone / email
+  // take `qr` only). Which values a given type accepts is enforced by
+  // `validateFieldDefinitionShape` — this superset is flat like the rest.
+  display: z.enum(["plain", "bar", "ring", "qr", "barcode"]).optional(),
+  barcodeFormat: z.enum(BARCODE_FORMATS).optional(),
   // relation
   targetCollectionKey: z.string().max(60).optional(),
   cardinality: z.enum(["one", "many"]).optional(),

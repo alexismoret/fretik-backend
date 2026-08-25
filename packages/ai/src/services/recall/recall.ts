@@ -26,8 +26,8 @@ import { RECALL_JUDGE_SYSTEM_PROMPT } from "./prompt";
  *   - `searchRAG(documents)` — uploaded content. Context and skills are
  *     excluded: their catalogues are already injected every turn.
  *
- * A fourth arm retrieves workflow cards. It is the CAPABILITY channel and
- * never reaches the judge — see `CAPABILITY_TOP_K`.
+ * A fourth arm retrieves workflow and page cards. It is the CAPABILITY channel
+ * and never reaches the judge — see `CAPABILITY_TOP_K`.
  *
  * Agent-agnostic on purpose: the signature carries scope + message only,
  * so `/internal/agents/*\/invoke` (and future Trigger.dev workflow tasks)
@@ -109,8 +109,9 @@ const CANDIDATE_MAX_CHARS = 700;
  * revisiting this starts from data rather than from scratch.
  */
 /**
- * Capability channel — workflow cards, retrieved alongside the memory arms and
- * rendered on their OWN budget, never mixed into the judge's candidates.
+ * Capability channel — workflow and page cards, retrieved alongside the memory
+ * arms and rendered on their OWN budget, never mixed into the judge's
+ * candidates.
  *
  * A capability is not a fact. Putting the cards in the judge's pool was tried
  * and reverted: it does not add a fifth source, it competes with the other four
@@ -188,8 +189,9 @@ export interface UnifiedRecallResult {
   /** Episodes the judge cited — already stamped, exposed for telemetry. */
   recalledEpisodeIds: string[];
   /**
-   * One workflow card when an existing workflow already produces what the
-   * message asks for. Independent of `block`: it is the judge-free channel, so
+   * One card — a workflow or a page — when something the team already has
+   * produces what the message asks for. Independent of `block`: it is the
+   * judge-free channel, so
    * it survives a `NONE` verdict — a request nothing in memory helps with is
    * precisely where "this already exists" is worth raising.
    */
@@ -313,7 +315,7 @@ export interface RecallGathered {
   documentResults: RecallSearchHit[];
   graph: GraphNeighborhood | null;
   /** Capability channel — NEVER passed to the judge (see `CAPABILITY_TOP_K`). */
-  workflowResults: RecallSearchHit[];
+  capabilityResults: RecallSearchHit[];
 }
 
 /**
@@ -325,7 +327,7 @@ export const gatherRecallCandidates = async (
   params: UnifiedRecallParams,
 ): Promise<RecallGathered> => {
   const query = buildRecallQuery(params);
-  const [anchors, knowledge, documents, workflows] = await Promise.all([
+  const [anchors, knowledge, documents, capabilities] = await Promise.all([
     withArmBudget<RecordAnchor[]>(
       anchorTextToRecords({
         teamId: params.teamId,
@@ -357,13 +359,15 @@ export const gatherRecallCandidates = async (
     }).catch(() => ({ results: [] })),
     // Capability arm. Free in wall-clock terms — the arms already race in
     // parallel and the reranker has no concurrency cap — and deliberately
-    // kept out of the judge's pool.
+    // kept out of the judge's pool. Workflows and pages share one pool and one
+    // gate: they answer the same question in two shapes — something that
+    // already produces this exists, either by running or by being opened.
     searchRAG({
       query,
       teamId: params.teamId,
       organizationId: params.organizationId,
       userId: params.userId,
-      filters: { sourceTypes: ["workflows"] },
+      filters: { sourceTypes: ["workflows", "pages"] },
       topK: CAPABILITY_TOP_K,
       skipMultiQuery: true,
     }).catch(() => ({ results: [] })),
@@ -382,7 +386,7 @@ export const gatherRecallCandidates = async (
   recordCandidateScores(
     knowledge.results,
     documents.results,
-    workflows.results,
+    capabilities.results,
   );
 
   return {
@@ -390,21 +394,24 @@ export const gatherRecallCandidates = async (
     knowledgeResults: knowledge.results,
     documentResults: documents.results,
     graph,
-    workflowResults: workflows.results,
+    capabilityResults: capabilities.results,
   };
 };
 
 /**
- * The capability block — at most one workflow card, or `null`.
+ * The capability block — at most one card, a workflow or a page, or `null`.
  *
  * Ranked against the memory arms rather than against its own arm: the gate
  * asks "is a capability the best thing retrieval found for this message",
  * which is the question that separates "produce me the late-delivery list"
  * (the card tops everything) from "how is this supplier doing" (a record
  * does). See `CAPABILITY_MARGIN`.
+ *
+ * The `workflow:` / `page:` prefix is what tells the agent which tool reaches
+ * it — one runs, the other opens.
  */
 const buildCapabilityBlock = (gathered: RecallGathered): string | null => {
-  const top = gathered.workflowResults[0];
+  const top = gathered.capabilityResults[0];
   const score = top?.rerankScore;
   if (!top || typeof score !== "number") return null;
   const best = Math.max(
@@ -414,12 +421,13 @@ const buildCapabilityBlock = (gathered: RecallGathered): string | null => {
     ),
   );
   if (score < best * CAPABILITY_MARGIN) return null;
-  const name = metadataString(top.metadata, "name") ?? "Untitled workflow";
+  const kind = top.sourceType === "pages" ? "page" : "workflow";
+  const name = metadataString(top.metadata, "name") ?? `Untitled ${kind}`;
   const summary = top.content
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, CAPABILITY_MAX_CHARS);
-  return `- **${name}** (workflow:${top.sourceId}) — ${summary}`;
+  return `- **${name}** (${kind}:${top.sourceId}) — ${summary}`;
 };
 
 /**
@@ -439,7 +447,7 @@ const buildCapabilityBlock = (gathered: RecallGathered): string | null => {
 const recordCandidateScores = (
   knowledge: RecallSearchHit[],
   documents: RecallSearchHit[],
-  workflows: RecallSearchHit[],
+  capabilities: RecallSearchHit[],
 ): void => {
   if (!langfuseEnabled || getActiveSpanId() === undefined) return;
   const scores = (hits: RecallSearchHit[]): (number | null)[] =>
@@ -451,8 +459,11 @@ const recordCandidateScores = (
         knowledgeTypes: knowledge.map((h) => h.sourceType),
         documents: scores(documents),
         // The capability arm competes with the memory arms for its gate, so
-        // its scores only mean anything next to theirs.
-        workflows: scores(workflows),
+        // its scores only mean anything next to theirs. Kinds ride alongside:
+        // workflows and pages share the pool and calibration has to tell them
+        // apart.
+        capabilities: scores(capabilities),
+        capabilityTypes: capabilities.map((h) => h.sourceType),
       },
     }).end();
   } catch {

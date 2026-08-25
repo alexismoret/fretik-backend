@@ -1,3 +1,4 @@
+import { getDocumentVectorRefreshQueue } from "@fretik/shared/services/documents/vector-refresh-queue";
 import { listWorkerCursors } from "@fretik/shared/services/domain-events/consume";
 import { Hono } from "hono";
 import {
@@ -6,6 +7,7 @@ import {
   getMemoryMaintenanceQueue,
   getMemoryResolveQueue,
   getRecordCardQueue,
+  getVectorReconcileQueue,
 } from "./queues/queues";
 
 /**
@@ -17,20 +19,32 @@ import {
 export const healthApp = new Hono();
 
 healthApp.get("/health", async (c) => {
-  const [resolve, distill, card, dreaming, maintenance, cursors] =
-    await Promise.all([
-      getMemoryResolveQueue().getJobCounts("wait", "active", "failed"),
-      getMemoryDistillQueue().getJobCounts(
-        "wait",
-        "active",
-        "delayed",
-        "failed",
-      ),
-      getRecordCardQueue().getJobCounts("wait", "active", "delayed", "failed"),
-      getMemoryDreamingQueue().getJobCounts("wait", "active", "failed"),
-      getMemoryMaintenanceQueue().getJobCounts("wait", "active", "failed"),
-      listWorkerCursors(),
-    ]);
+  const [
+    resolve,
+    distill,
+    card,
+    dreaming,
+    maintenance,
+    docVectors,
+    vectorReconcile,
+    cursors,
+  ] = await Promise.all([
+    getMemoryResolveQueue().getJobCounts("wait", "active", "failed"),
+    getMemoryDistillQueue().getJobCounts("wait", "active", "delayed", "failed"),
+    getRecordCardQueue().getJobCounts("wait", "active", "delayed", "failed"),
+    getMemoryDreamingQueue().getJobCounts("wait", "active", "failed"),
+    getMemoryMaintenanceQueue().getJobCounts("wait", "active", "failed"),
+    // The two vector-maintenance queues. Both retain their terminal jobs, so a
+    // non-zero `failed` here is the only place a dropped index becomes visible.
+    getDocumentVectorRefreshQueue().getJobCounts(
+      "wait",
+      "active",
+      "delayed",
+      "failed",
+    ),
+    getVectorReconcileQueue().getJobCounts("wait", "active", "failed"),
+    listWorkerCursors(),
+  ]);
   return c.json({
     status: "ok",
     queues: {
@@ -39,6 +53,8 @@ healthApp.get("/health", async (c) => {
       "record-card": card,
       "memory-dreaming": dreaming,
       "memory-maintenance": maintenance,
+      "document-vector-refresh": docVectors,
+      "vector-reconcile": vectorReconcile,
     },
     cursors: cursors.map((cur) => ({
       name: cur.name,

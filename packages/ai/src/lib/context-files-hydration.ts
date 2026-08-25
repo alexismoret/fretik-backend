@@ -21,6 +21,7 @@ import {
   WORKSPACE_DIRS,
   writeFile,
 } from "./conversation-storage";
+import { hydrateMemoryTree } from "./memory-hydration";
 
 /**
  * Hydrate the persistent chatbot-context files (`aiContextFiles`)
@@ -244,6 +245,31 @@ export const prepareSandboxForCode = async (ctx: {
     } catch (err) {
       console.warn(
         "[context-hydration] prepareSandboxForCode hydration failed, proceeding with whatever is in the sandbox:",
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
+  // Memories are NOT behind the per-turn memo above: the agent rewrites them
+  // mid-turn through the `memory` tool, so "already hydrated this turn" would
+  // serve a stale tree for exactly the case that matters — write a memory,
+  // then grep for it. Its own fingerprint gate makes the check cheap enough to
+  // run on every code call (one indexed SELECT, no sandbox traffic when the
+  // tree has not moved).
+  if (ctx.userId !== undefined) {
+    try {
+      await hydrateMemoryTree({
+        conversationId: ctx.conversationId,
+        sandboxId: lease.sandboxId,
+        scopeKey: {
+          organizationId: ctx.organizationId,
+          teamId: ctx.teamId,
+          userId: ctx.userId,
+        },
+      });
+    } catch (err) {
+      console.warn(
+        "[memory-hydration] failed, proceeding with whatever is in the sandbox:",
         err instanceof Error ? err.message : err,
       );
     }

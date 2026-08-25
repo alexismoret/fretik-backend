@@ -7,10 +7,13 @@ import {
   type PageResponse,
   type UpdatePageInput,
 } from "../../schemas/pages";
+import { resyncVectorUserScope } from "../ai-vectors/resync-user-scope";
 import { ensurePageCompiled } from "./compile";
+import { derivePageDescription } from "./derive-description";
 import { ensurePageDatasetIndexes } from "./ensure-dataset-indexes";
 import { sanitizePageDefinition } from "./sanitize";
 import { serializePage } from "./serialize";
+import { refreshPageVectors } from "./vector-refresh";
 import type {
   PageVersionActor,
   PageVersionMeta,
@@ -54,7 +57,12 @@ export const updatePage = async (params: {
   const input = UpdatePageSchema.parse(params.input);
 
   const existing = await db.query.pages.findFirst({
-    columns: { id: true, definition: true, sourceConversationId: true },
+    columns: {
+      id: true,
+      definition: true,
+      description: true,
+      sourceConversationId: true,
+    },
     where: {
       id: params.pageId,
       teamId: params.teamId,
@@ -85,14 +93,23 @@ export const updatePage = async (params: {
     autofixes.push(...compiled.autofixes.map((fix) => fix.message));
   }
 
+  // A definition write is when the brief lands, so it is also the moment to
+  // give a page still listing itself as a bare name its one line. An explicit
+  // description always wins, including an empty one that clears it.
+  const nextDescription =
+    input.description ??
+    (definition
+      ? derivePageDescription({ current: existing.description, definition })
+      : undefined);
+
   // The write and its history entry commit together — see `createPage`.
   const row = await db.transaction(async (tx) => {
     const [updated] = await tx
       .update(pages)
       .set({
         ...(input.name !== undefined ? { name: input.name } : {}),
-        ...(input.description !== undefined
-          ? { description: input.description }
+        ...(nextDescription !== undefined
+          ? { description: nextDescription }
           : {}),
         ...(input.icon !== undefined ? { icon: input.icon } : {}),
         ...(input.color !== undefined ? { color: input.color } : {}),
@@ -108,6 +125,19 @@ export const updatePage = async (params: {
       .where(and(eq(pages.id, params.pageId), eq(pages.teamId, params.teamId)))
       .returning();
     if (!updated) return undefined;
+
+    // Visibility moves NOW, in this transaction. The async refresh below
+    // rewrites the card text, but it swallows its own errors, so a dropped
+    // refresh would leave a privatised page readable by the whole team until
+    // someone saved it again. One indexed UPDATE, no embedding.
+    if (input.userId !== undefined) {
+      await resyncVectorUserScope({
+        sourceType: "pages",
+        sourceId: updated.id,
+        userId: input.userId,
+        tx,
+      });
+    }
 
     // Only a DEFINITION change is a version. Renaming a page or recolouring
     // its icon leaves nothing to restore, and versioning those would push the
@@ -136,6 +166,10 @@ export const updatePage = async (params: {
     ensurePageDatasetIndexes({ definition });
     await trimPageVersions(row.id);
   }
+  // Unconditional, unlike the version write above: a rename, a new description
+  // and — the one that matters — a switch between team-shared and private all
+  // change the card without touching the definition.
+  void refreshPageVectors(row.id);
   // Returned, not logged — see `createPage`.
   return {
     page: serializePage(row),

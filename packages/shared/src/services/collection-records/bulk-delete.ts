@@ -70,7 +70,6 @@ export const bulkDeleteCollectionRecords = async (input: {
     .map((id) => ({ id, error: "Record not found in your team." }));
 
   const deletedIds: string[] = [];
-  const hiddenEpisodeIds: string[] = [];
   const runBatch = async (
     tx: Transaction,
     batch: typeof owned,
@@ -91,12 +90,15 @@ export const bulkDeleteCollectionRecords = async (input: {
     // Hide record-activity episodes anchored on these records BEFORE the rows
     // go (the `anchorRecordId` FK nulls on delete). This is the common path —
     // deleting a document/folder bulk-deletes its mirror records through here.
-    hiddenEpisodeIds.push(
-      ...(await hideEpisodesForRecords(
-        tx,
-        batch.map((r) => r.id),
-      )),
+    const hiddenEpisodeIds = await hideEpisodesForRecords(
+      tx,
+      batch.map((r) => r.id),
     );
+    // In the same tx as the demotion, per batch — see `deleteCollectionRecord`.
+    // Per batch and not hoisted out of the loop: with `input.tx` every batch
+    // shares one transaction, without it each gets its own, and only per-batch
+    // is correct for both.
+    await deleteEpisodeVectors(hiddenEpisodeIds, tx);
     await tx.delete(collectionRecords).where(
       inArray(
         collectionRecords.id,
@@ -109,9 +111,6 @@ export const bulkDeleteCollectionRecords = async (input: {
     else await db.transaction((tx) => runBatch(tx, batch));
     for (const r of batch) deletedIds.push(r.id);
   }
-
-  // Drop the hidden episodes' recall vectors (no FK from `ai_vectors`).
-  void deleteEpisodeVectors(hiddenEpisodeIds);
 
   return { deletedIds, errors };
 };

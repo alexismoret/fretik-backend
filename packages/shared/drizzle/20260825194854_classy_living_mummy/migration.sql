@@ -1,0 +1,1 @@
+ALTER TYPE "ai_vector_source_type" ADD VALUE 'pages';

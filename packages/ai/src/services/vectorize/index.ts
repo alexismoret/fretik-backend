@@ -5,6 +5,7 @@ import type {
   DocumentVectorMetadata,
   EpisodeVectorMetadata,
   MemoryVectorMetadata,
+  PageVectorMetadata,
   RecordVectorMetadata,
   SkillVectorMetadata,
   WorkflowVectorMetadata,
@@ -138,6 +139,11 @@ const isWorkflowMetadata = (
   _metadata: AiVectorMetadata,
 ): _metadata is WorkflowVectorMetadata => sourceType === "workflows";
 
+const isPageMetadata = (
+  sourceType: AiVectorSourceType,
+  _metadata: AiVectorMetadata,
+): _metadata is PageVectorMetadata => sourceType === "pages";
+
 /**
  * Source-aware contextual header injected into every chunk's
  * `contextualPrefix` before embedding. Anthropic Contextual Retrieval
@@ -223,6 +229,19 @@ const buildWorkflowSemanticHeader = (
   `[WORKFLOW:${metadata.trigger_type}] ${metadata.name} — ${metadata.status}`;
 
 /**
+ * Source-aware contextual header for page cards. Whether the page is published
+ * is in the tag because "can I hand this to someone outside the team" is half
+ * of what makes a page the right answer to a request.
+ *
+ *   `[PAGE:published] Monthly margins — team`
+ *   `[PAGE:internal] Scratch view — private`
+ */
+const buildPageSemanticHeader = (metadata: PageVectorMetadata): string =>
+  `[PAGE:${metadata.published ? "published" : "internal"}] ${metadata.name}${
+    metadata.job ? ` — ${metadata.job}` : ""
+  }`;
+
+/**
  * Dispatcher for the source-aware semantic header injected into every
  * chunk's contextual prefix before embedding. Returns `null` for
  * source kinds that intentionally skip the header.
@@ -251,6 +270,8 @@ const buildSourceSemanticHeader = (
     return buildRecordSemanticHeader(metadata);
   if (isWorkflowMetadata(sourceType, metadata))
     return buildWorkflowSemanticHeader(metadata);
+  if (isPageMetadata(sourceType, metadata))
+    return buildPageSemanticHeader(metadata);
   return null;
 };
 
@@ -384,12 +405,14 @@ const vectorizeSourceImpl = async (
   }
 
   // Stage 2 — contextual enrichment (individual-chunk failures soften
-  // to an empty prefix; stage-wide failure propagates). Record and
-  // workflow cards skip it: a card is ONE self-describing chunk — there
+  // to an empty prefix; stage-wide failure propagates). Record, workflow
+  // and page cards skip it: a card is ONE self-describing chunk — there
   // is no surrounding document to situate it in, so the LLM call would
   // only add cost. The semantic header (stage 2b) still applies.
   const enriched: EnrichedChunk[] =
-    sourceType === "records" || sourceType === "workflows"
+    sourceType === "records" ||
+    sourceType === "workflows" ||
+    sourceType === "pages"
       ? chunks.map((c) => ({ ...c, contextualPrefix: "" }))
       : await enrichChunks(indexText, chunks);
   const enrichedCount = enriched.filter(

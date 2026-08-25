@@ -31,7 +31,7 @@ import { triggerDocumentVectorRefresh } from "./vector-refresh";
 const QUEUE_NAME = "document-vector-refresh";
 const JOB_NAME = "refresh";
 const DEBOUNCE_MS = 30_000;
-const MAX_ATTEMPTS = 2;
+const MAX_ATTEMPTS = 3;
 
 /**
  * A pass is downstream-bound — most of its wall time is the AI service
@@ -69,18 +69,25 @@ const getQueue = (): Queue<DocumentVectorRefreshJobData> => {
   return queue;
 };
 
+/** The queue itself, for `/health` to read its job counts. */
+export const getDocumentVectorRefreshQueue =
+  (): Queue<DocumentVectorRefreshJobData> => getQueue();
+
 /**
  * (Re)arm the debounce for one document.
  *
  * Drops the pending job before re-adding: a delayed job with the same `jobId`
  * would otherwise be silently deduped and the deadline would never move, which
  * turns the trailing-edge debounce into a leading-edge one that indexes the
- * FIRST keystroke's text. `removeOnComplete`/`removeOnFail` free the id as soon
- * as the pass ends — a retained terminal job would swallow the next save's
- * schedule entirely (the trap documented on `reenqueueDocumentProcessing`).
+ * FIRST keystroke's text. That explicit `remove` is also what lets terminal
+ * jobs be RETAINED (`{ count }` rather than `true`): the trap it guards
+ * against — a retained terminal job swallowing the next save's schedule — is
+ * already neutralised one line above. Retaining them is what makes a failure
+ * readable in `/health` instead of vanishing the instant it happens.
  *
- * Best-effort, like `triggerDocumentVectorRefresh` itself: a save must not fail
- * because the index could not be scheduled.
+ * Best-effort by contract: a save must not fail because the index could not be
+ * scheduled. Note the contrast with `triggerDocumentVectorRefresh`, which
+ * throws — the retry belongs to the queue, not to the producer.
  */
 export const scheduleDocumentVectorRefresh = async (
   data: DocumentVectorRefreshJobData,
@@ -93,8 +100,8 @@ export const scheduleDocumentVectorRefresh = async (
       delay: DEBOUNCE_MS,
       attempts: MAX_ATTEMPTS,
       backoff: { type: "exponential", delay: 10_000 },
-      removeOnComplete: true,
-      removeOnFail: true,
+      removeOnComplete: { count: 1_000 },
+      removeOnFail: { count: 1_000 },
     });
   } catch (error) {
     console.error(
@@ -126,6 +133,13 @@ export const startDocumentVectorRefreshWorker = (): void => {
   worker.on("error", (err) => {
     console.error(
       "[document-vector-refresh] worker error:",
+      err instanceof Error ? err.message : err,
+    );
+  });
+
+  worker.on("failed", (job, err) => {
+    console.error(
+      `[document-vector-refresh] job ${job?.id ?? "?"} failed (attempt ${(job?.attemptsMade ?? 0).toString()}/${MAX_ATTEMPTS.toString()}):`,
       err instanceof Error ? err.message : err,
     );
   });

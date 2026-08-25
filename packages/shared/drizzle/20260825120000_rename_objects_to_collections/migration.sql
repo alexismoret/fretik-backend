@@ -221,15 +221,17 @@ UPDATE "page_versions" SET "definition" = replace(replace(replace(replace(
     AND ("definition"::text LIKE '%"objectType%'
       OR "definition"::text LIKE '%"object_type_%');
 --> statement-breakpoint
-UPDATE "ai_vectors" SET "metadata" = replace(replace(replace(replace(
-      "metadata"::text,
-      '"objectTypeId"', '"collectionId"'),
-      '"objectTypeKey"', '"collectionKey"'),
-      '"object_type_id"', '"collection_id"'),
-      '"object_type_key"', '"collection_key"')::jsonb
-  WHERE "metadata" IS NOT NULL
-    AND ("metadata"::text LIKE '%"objectType%'
-      OR "metadata"::text LIKE '%"object_type_%');
+-- ai_vectors.metadata is deliberately NOT migrated here. Every matching row
+-- carries an embedding, so the rewrite costs ~6KB/row: measured at 77s for 20k
+-- rows, against ~2s for everything else in this migration combined. Migrations
+-- run at container boot inside ONE transaction, so on a large table that window
+-- outlives the orchestrator's health check — the container gets killed, the
+-- transaction rolls back, and the deploy restart-loops.
+-- Run `src/scripts/migrate-vector-metadata-keys.ts` after the deploy instead:
+-- batched, resumable, and safe to run while the app serves traffic. Until it
+-- does, the only casualty is `purgeCardVectorsForType`, which probes
+-- `metadata @> {"collection_id": …}` and would leave orphan cards behind when a
+-- collection is deleted. Retrieval itself does not read these keys.
 --> statement-breakpoint
 UPDATE "bulk_operations" SET "params" = replace(replace(replace(replace(
       "params"::text,

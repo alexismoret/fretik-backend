@@ -6,6 +6,7 @@ import { badRequest, throwHttpError } from "../../lib/errors";
 import type { WorkflowResponse } from "../../schemas/workflows";
 import { killSandbox } from "../e2b/kill-sandbox";
 import { hideEpisodesForWorkflow } from "../episodes/hide-for-workflow";
+import { deletePinsForTarget } from "../pins/cleanup";
 import { cancelWorkflowRun } from "./cancel-run";
 import { getWorkflowRow } from "./get";
 import { serializeWorkflow } from "./serialize";
@@ -23,8 +24,8 @@ const NON_TERMINAL_RUN_STATUSES = ["queued", "running", "needs_approval"];
  *   1. cancels any run still in flight (archiving doesn't stop in-flight runs —
  *      deleting the row under a live Trigger.dev task would orphan it);
  *   2. demotes the runs' memory episodes (idempotent — archive already did it);
- *   3. one tx: the workflow row (cascades `workflow_runs`) + the runs' own
- *      conversations (cascades `ai_chat_files`);
+ *   3. one tx: the workflow row (cascades `workflow_runs`) + every user's pin
+ *      on it + the runs' own conversations (cascades `ai_chat_files`);
  *   4. the runs' S3 session folders + E2B sandboxes (no FK — would leak).
  * A run's `sourceConversationId` (the CHAT thread that launched a builder test)
  * is left untouched — only run-owned conversations are destroyed.
@@ -88,6 +89,16 @@ export const deleteWorkflow = async (params: {
       .where(
         and(eq(workflows.id, params.id), eq(workflows.teamId, params.teamId)),
       );
+    // Pins carry no FK to their target (one column, several possible parents),
+    // so the cascade is written by hand — in this tx, so a rollback leaves the
+    // sidebars pointing at the workflow that survived. Only the HARD delete
+    // reaps them: archiving is reversible, and an archived workflow must come
+    // back to the sidebar it was pinned to.
+    await deletePinsForTarget({
+      targetType: "workflow",
+      targetId: params.id,
+      tx,
+    });
     if (conversationIds.length > 0) {
       await tx
         .delete(aiConversations)

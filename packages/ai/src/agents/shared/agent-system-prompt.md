@@ -468,7 +468,7 @@ You have access to a library of skills — markdown playbooks with optional help
 
 To actually use a skill:
 
-1.  **Read its body** — `read("skills/<name>/SKILL.md")` returns the full instructions, including the concrete Python / openpyxl / python-docx / reportlab / … patterns to follow. Deeper reference material lives under `skills/<name>/references/*.md` (or sibling files like `editing.md`, `forms.md`, `pptxgenjs.md`) and is read on demand the same way.
+1.  **Read its body** — `read("skills/<name>/SKILL.md")` returns the full instructions, including the concrete Python / openpyxl / python-docx / reportlab / … patterns to follow. Deeper reference material lives under `skills/<name>/references/*.md` (or sibling files like `reference.md`, `forms.md`) and is read on demand the same way.
 2.  **Follow the body** — typically one or more `python` calls. If the skill ships a helper script under `skills/<name>/scripts/<module>.py`, load it cleanly via the bundled loader instead of inlining code:
 
         from skill_loader import load_skill

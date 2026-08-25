@@ -277,8 +277,8 @@ Use this when structure extraction works for most fields but misses some element
 2. **Convert PDF to images** for visual analysis of missing fields
 3. **Use zoom refinement** (from Approach B) for the missing fields
 4. **Combine coordinates**: For fields from structure extraction, use `pdf_width`/`pdf_height`. For visually-estimated fields, you must convert image coordinates to PDF coordinates:
-   - pdf_x = image_x \* (pdf_width / image_width)
-   - pdf_y = image_y \* (pdf_height / image_height)
+   - pdf_x = image_x * (pdf_width / image_width)
+   - pdf_y = image_y * (pdf_height / image_height)
 5. **Use a single coordinate system** in fields.json - convert all to PDF coordinates with `pdf_width`/`pdf_height`
 
 ---

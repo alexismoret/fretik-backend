@@ -19,6 +19,10 @@ xlsxwriter==3.2.9
 # Office docs
 python-docx==1.2.0
 python-pptx==1.0.2
+# Safe XML parsing. The pptx skill mandates it for OOXML transforms:
+# round-tripping through `xml.etree.ElementTree` rewrites namespace
+# prefixes and corrupts the deck.
+defusedxml==0.7.1
 # OpenDocument reader, so pandas can open a .ods the way it opens an .xlsx.
 odfpy==1.4.1
 
@@ -37,6 +41,12 @@ soupsieve==2.9.2
 # Markdown extraction from Office / PDF files. Used by the pptx and
 # pdf skills to read content without parsing XML manually.
 markitdown==0.1.5
+
+# OCR for scanned PDFs — the pdf skill prescribes both by name. `pytesseract`
+# is only a wrapper around the `tesseract` binary, installed via apt in
+# build.ts; `pdf2image` wraps `pdftoppm`, already there via poppler-utils.
+pytesseract==0.3.13
+pdf2image==1.17.0
 
 # PDF parsing & generation
 pypdf==6.11.0

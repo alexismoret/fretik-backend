@@ -103,3 +103,6 @@ export * from "./bulk-operations";
 
 // Pages (agent-authored, data-bound UI documents rendered without an LLM)
 export * from "./pages";
+
+// Per-user sidebar pins (collections + pages kept one click away)
+export * from "./pins";

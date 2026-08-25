@@ -63,18 +63,38 @@ const tmpl = Template()
   //                         encoding, magic bytes) in ONE bash call, instead of
   //                         a hand-rolled Python hex loop that is easy to get
   //                         wrong — `xxd` is not in the base image.
+  //   - tesseract-ocr     → pdf skill: the OCR path prescribes `pytesseract`,
+  //                         which is only a wrapper — without this binary it
+  //                         imports fine and then fails at the first call.
   // `--no-install-recommends` keeps the layer small (libreoffice's
   // suggested deps add ~400MB of unused packages).
   .runCmd(
     [
       "apt-get update",
-      "DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pandoc libreoffice-core libreoffice-writer libreoffice-calc libreoffice-impress poppler-utils xxd file",
+      "DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pandoc libreoffice-core libreoffice-writer libreoffice-calc libreoffice-impress poppler-utils xxd file tesseract-ocr",
       "apt-get clean",
       "rm -rf /var/lib/apt/lists/*",
     ].join(" && "),
     { user: "root" },
   )
   .pipInstall(requirements)
+  // Node libraries the bundled Office skills prescribe BY NAME. The base
+  // image already ships node + npm (v20 / v10, measured), so only the
+  // packages are missing.
+  //   - pptxgenjs                         → pptx skill, "create from scratch"
+  //   - docx                              → docx skill, JS generation path
+  //   - react / react-dom / react-icons / sharp → pptx skill, icon rendering
+  // Installed under a FIXED prefix instead of npm's default, which differs
+  // between base images, so `NODE_PATH` can point at it deterministically
+  // (set in `acquire-sandbox.ts`). That env var is load-bearing: a global
+  // install is otherwise INVISIBLE to `require("pptxgenjs")` from /workspace,
+  // because Node only walks `node_modules` upward from the script's own
+  // directory. Pre-baking these keeps the documented path working with zero
+  // network; the npm registry is allowlisted only for what goes beyond them.
+  .runCmd(
+    "npm install -g --prefix /opt/fretik/node pptxgenjs docx react react-dom react-icons sharp",
+    { user: "root" },
+  )
   // The base image already provides the `user` account; we just need
   // /workspace owned by it. Privileged steps require `user: "root"`
   // because runCmd defaults to the unprivileged user.

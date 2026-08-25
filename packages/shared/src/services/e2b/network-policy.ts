@@ -27,6 +27,19 @@ export const SANDBOX_ALLOWED_DOMAINS = {
   pypi: ["pypi.org", "*.pythonhosted.org"],
 
   /**
+   * Node package manager. Same rationale and same risk profile as
+   * `pypi` above — the sandbox already executes agent-authored code, so
+   * a registry adds no capability, only a supply-chain surface we
+   * accept symmetrically for both ecosystems. Load-bearing: the bundled
+   * Office skills create decks and documents with Node libraries
+   * (`pptxgenjs`, `docx`), and without this entry every `npm install`
+   * they prescribe dies on a silent TLS timeout. The common ones are
+   * pre-baked in the template so the happy path needs no network at
+   * all; this covers what a skill or a user asks for beyond them.
+   */
+  npm: ["registry.npmjs.org", "*.npmjs.org"],
+
+  /**
    * Source repos. `git clone` / raw fetches for analysis scripts or
    * skills pointing at public references.
    */
@@ -125,6 +138,7 @@ export const buildSandboxNetworkPolicy = (
   allowOut: [
     ...SANDBOX_ALLOWED_DOMAINS.fretik,
     ...SANDBOX_ALLOWED_DOMAINS.pypi,
+    ...SANDBOX_ALLOWED_DOMAINS.npm,
     ...SANDBOX_ALLOWED_DOMAINS.vcs,
     ...SANDBOX_ALLOWED_DOMAINS.b2b,
     ...detectBackendHostsForAllowlist(),

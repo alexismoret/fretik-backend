@@ -6,6 +6,11 @@ section names, industry vocabulary in bundled skills, approval-flow
 duplication vs the system prompt, line counts vs value) + sampled prose
 review. NOT shipped to the model — maintainer notes only.
 
+> **Stale for the four Office skills since 2026-08-25.** `docx`, `pdf`, `pptx` and
+> `xlsx` were re-synced from upstream, which had restructured them — `docx` 735 → 90
+> lines, `pptx` folded `pptxgenjs.md` + `editing.md` into its SKILL.md. The line
+> counts and verdicts below predate that; re-audit those four before trusting them.
+
 ## Verdicts
 
 | File                                                                  | Lines           | Verdict                                                                                                                      |

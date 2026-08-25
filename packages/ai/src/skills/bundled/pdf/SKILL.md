@@ -1,25 +1,15 @@
 ---
 name: pdf
-description: Use this skill whenever the user wants to transform or produce PDF files. This includes combining or merging multiple PDFs into one, splitting PDFs apart, rotating pages, adding watermarks, creating new PDFs, filling PDF forms, encrypting/decrypting PDFs, extracting embedded images, and OCR on scanned PDFs to make them searchable. If the user asks to produce or rework a .pdf file, use this skill. Reading a PDF's text is `read` and structured data out of one is `extract` — neither needs this skill.
+description: Use this skill whenever the user wants to do anything with PDF files. This includes reading or extracting text/tables from PDFs, combining or merging multiple PDFs into one, splitting PDFs apart, rotating pages, adding watermarks, creating new PDFs, filling PDF forms, encrypting/decrypting PDFs, extracting images, and OCR on scanned PDFs to make them searchable. If the user mentions a .pdf file or asks to produce one, use this skill.
 ---
 
-> **Fretik sandbox conventions.** Helper script paths in this guide
-> are relative to the skill folder. From your `/workspace/` working
-> directory, prefix them with `skills/pdf/` — e.g.
-> `python skills/pdf/scripts/extract_form_structure.py …` — or
-> `cd skills/pdf/` first. For Python imports, prefer the loader:
-> `from skill_loader import load_skill; load_skill("pdf")`. Deeper
-> references live next to this file as `reference.md` (advanced
-> patterns) and `forms.md` (fillable forms) — read on demand via
-> `read("skills/pdf/reference.md")`. Write every deliverable under
-> `outputs/` (e.g. `outputs/report.pdf`) and surface it with
-> `presentFiles({ paths: ["outputs/report.pdf"] })`.
+> **Fretik sandbox.** You work in `/workspace`; this skill lives in `skills/pdf/`. Prefix every script path below with it (`python skills/pdf/scripts/…`) or `cd skills/pdf/` first. Python imports go through the loader: `from skill_loader import load_skill; load_skill("pdf")`. Write deliverables under `outputs/` and surface them with `presentFiles({ paths: ["outputs/report.pdf"] })`.
 
 # PDF Processing Guide
 
 ## Overview
 
-This guide covers essential PDF processing operations using Python libraries and command-line tools. For advanced features, JavaScript libraries, and detailed examples, see REFERENCE.md. If you need to fill out a PDF form, read FORMS.md and follow its instructions.
+This guide covers essential PDF processing operations using Python libraries and command-line tools. For advanced features, JavaScript libraries, and detailed examples, read `skills/pdf/reference.md`. If you need to fill out a PDF form, read `skills/pdf/forms.md` and follow its instructions.
 
 ## Quick Start
 
@@ -92,8 +82,6 @@ with open("rotated.pdf", "wb") as output:
 ```
 
 ### pdfplumber - Text and Table Extraction
-
-Only for a PDF you are transforming (locating content to split, redact, or rebuild). Pulling data OUT of a PDF is `extract` — it needs no script and no layout assumptions.
 
 #### Extract Text with Layout
 
@@ -325,17 +313,16 @@ with open("encrypted.pdf", "wb") as output:
 
 ## Quick Reference
 
-| Task                                  | Best Tool                       | Command/Code                               |
-| ------------------------------------- | ------------------------------- | ------------------------------------------ |
-| Merge PDFs                            | pypdf                           | `writer.add_page(page)`                    |
-| Split PDFs                            | pypdf                           | One page per file                          |
-| Read a PDF's text                     | `read`                          | no script needed                           |
-| Data out of a PDF                     | `extract`                       | name the fields                            |
-| Locate text/tables while transforming | pdfplumber                      | `page.extract_text()` / `extract_tables()` |
-| Create PDFs                           | reportlab                       | Canvas or Platypus                         |
-| Command line merge                    | qpdf                            | `qpdf --empty --pages ...`                 |
-| OCR scanned PDFs                      | pytesseract                     | Convert to image first                     |
-| Fill PDF forms                        | pdf-lib or pypdf (see FORMS.md) | See FORMS.md                               |
+| Task               | Best Tool                       | Command/Code               |
+| ------------------ | ------------------------------- | -------------------------- |
+| Merge PDFs         | pypdf                           | `writer.add_page(page)`    |
+| Split PDFs         | pypdf                           | One page per file          |
+| Extract text       | pdfplumber                      | `page.extract_text()`      |
+| Extract tables     | pdfplumber                      | `page.extract_tables()`    |
+| Create PDFs        | reportlab                       | Canvas or Platypus         |
+| Command line merge | qpdf                            | `qpdf --empty --pages ...` |
+| OCR scanned PDFs   | pytesseract                     | Convert to image first     |
+| Fill PDF forms     | pdf-lib or pypdf (see FORMS.md) | See FORMS.md               |
 
 ## Next Steps
 

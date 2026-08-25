@@ -9,6 +9,7 @@ import {
   type EventActor,
   SYSTEM_ACTOR,
 } from "../domain-events/emit";
+import { deletePinsForTarget } from "../pins/cleanup";
 import { DOCUMENT_COLLECTION_KEY } from "./constants";
 import { invalidateCollectionIdCache } from "./resolve";
 
@@ -71,6 +72,10 @@ export const deleteCollection = async (data: {
     // In the SAME transaction as the cascade: a rollback must leave the index
     // describing the type that survived, not a type stripped of its cards.
     await purgeCardVectorsForType({ collectionId: id, tx });
+    // Pins carry no FK to their target (one column, two possible parents), so
+    // the cascade is written by hand — in this tx, so a rollback leaves the
+    // sidebar pointing at the collection that survived.
+    await deletePinsForTarget({ targetType: "collection", targetId: id, tx });
     await tx.delete(collections).where(eq(collections.id, id));
     await dropCollectionTable({ tx, collectionId: id });
   });

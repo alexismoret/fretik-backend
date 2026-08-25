@@ -41,6 +41,7 @@ import { linkTypeRoutes } from "./handlers/link-types";
 import { linkRoutes } from "./handlers/links";
 import { organizationRoutes } from "./handlers/organization";
 import { pageRoutes } from "./handlers/pages";
+import { pinRoutes } from "./handlers/pins";
 import { publicFormRoutes } from "./handlers/public-forms";
 import { publicPageRoutes } from "./handlers/public-pages";
 import { signupAccessRoutes } from "./handlers/signup-access";
@@ -119,6 +120,7 @@ app.route("/tool-policies", toolPoliciesRoutes);
 app.route("/team-settings", teamSettingsRoutes);
 app.route("/workflows", workflowRoutes);
 app.route("/pages", pageRoutes);
+app.route("/pins", pinRoutes);
 app.route("/forms", publicFormRoutes);
 // Anonymous ingress for published pages — no auth, always answers 200.
 app.route("/p", publicPageRoutes);

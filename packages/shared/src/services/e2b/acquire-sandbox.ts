@@ -141,7 +141,15 @@ export const acquireSandbox = async (
       lifecycle: { onTimeout: "pause", autoResume: true },
       allowInternetAccess: true,
       network: { allowOut: policy.allowOut, denyOut: policy.denyOut },
-      envs: { FRETIK_CONVERSATION_ID: conversationId },
+      envs: {
+        FRETIK_CONVERSATION_ID: conversationId,
+        // Where the template pre-installs the Office skills' Node
+        // libraries (see `template/build.ts`). Without this, a global
+        // npm install is invisible to `require("pptxgenjs")` from
+        // /workspace — Node resolves `node_modules` only by walking up
+        // from the script's own directory, never the global prefix.
+        NODE_PATH: "/opt/fretik/node/lib/node_modules",
+      },
     });
     await setSandboxIdInRegistry(conversationId, sbx.sandboxId);
     return { sandboxId: sbx.sandboxId, conversationId };

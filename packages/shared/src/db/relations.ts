@@ -27,6 +27,7 @@ export const relations = defineRelations(schema, (r) => ({
     uploadedContextFiles: r.many.aiContextFiles(),
     contextFileMutes: r.many.aiContextUserFileMutes(),
     contextProfileMutes: r.many.aiContextUserProfileMutes(),
+    pins: r.many.userPins(),
     aiMemories: r.many.aiMemories({ alias: "memoryOwner" }),
     createdMemories: r.many.aiMemories({ alias: "memoryCreator" }),
     modifiedMemories: r.many.aiMemories({ alias: "memoryModifier" }),
@@ -734,6 +735,25 @@ export const relations = defineRelations(schema, (r) => ({
     profile: r.one.aiContextProfiles({
       from: r.aiContextUserProfileMutes.profileId,
       to: r.aiContextProfiles.id,
+    }),
+  },
+
+  // ============================================================================
+  // User Pin Relations (per-user sidebar shortcuts)
+  // ============================================================================
+
+  userPins: {
+    user: r.one.user({
+      from: r.userPins.userId,
+      to: r.user.id,
+    }),
+    organization: r.one.organization({
+      from: r.userPins.organizationId,
+      to: r.organization.id,
+    }),
+    team: r.one.team({
+      from: r.userPins.teamId,
+      to: r.team.id,
     }),
   },
 

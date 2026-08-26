@@ -18,12 +18,12 @@ import {
   beforeEach,
   describe,
   expect,
-  mock,
   test,
 } from "bun:test";
 import { eq } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { getProfileForRole } from "../../../src/lib/model-registry/resolve";
+import { mockModuleStrict } from "../../lib/mock-module";
 import { installSandboxMocks, sandboxFs } from "../../lib/sandbox-fixture";
 
 installSandboxMocks();
@@ -33,12 +33,12 @@ installSandboxMocks();
 // --------------------------------------------------------------- //
 
 const s3Bytes = new Map<string, Uint8Array>();
-// Mock the full `lib/s3` surface. Bun's `mock.module` is process-global,
-// so any export consumed by a downstream test file (chat-files
-// handlers, sql, …) must exist here even if it's a no-op — otherwise
-// the bare-import of `getPresignedUrl` in another file fails to
-// resolve.
-void mock.module("@fretik/shared/lib/s3", () => ({
+// `mockModuleStrict` keeps every export this factory does not name, so a
+// downstream file's bare import of, say, `getPresignedUrl` still resolves —
+// but calling an unlisted one throws instead of reaching the real bucket.
+// The list below is still exhaustive: a stray call should fail as an
+// assertion, not as a network timeout.
+await mockModuleStrict("@fretik/shared/lib/s3", {
   putObject: async () => {
     /* no-op */
   },
@@ -58,7 +58,7 @@ void mock.module("@fretik/shared/lib/s3", () => ({
   deleteFilesFromS3: async () => {
     /* no-op */
   },
-}));
+});
 
 const { createDownloadDriveDocumentTool } =
   await import("../../../src/tools/download-drive-document");

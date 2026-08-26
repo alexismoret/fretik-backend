@@ -6,8 +6,9 @@
  * live evals against the real E2B sandbox; here we stub the sandbox
  * layer and assert the tool calls it the right way.
  */
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
 import { getProfileForRole } from "../../../src/lib/model-registry/resolve";
+import { mockModuleStrict } from "../../lib/mock-module";
 import { installSandboxMocks, sandboxFs } from "../../lib/sandbox-fixture";
 
 installSandboxMocks();
@@ -63,7 +64,7 @@ let nextRunResult: MockRunResult = {
 
 let nextRestartError: Error | null = null;
 
-void mock.module("@fretik/shared/services/e2b/run-in-sandbox", () => ({
+await mockModuleStrict("@fretik/shared/services/e2b/run-in-sandbox", {
   runInSandbox: async (
     conversationId: string,
     options: {
@@ -81,24 +82,24 @@ void mock.module("@fretik/shared/services/e2b/run-in-sandbox", () => ({
     callOrder.push(`run:${conversationId}:${options.code}`);
     return nextRunResult;
   },
-}));
+});
 
-void mock.module("@fretik/shared/services/e2b/restart-python-kernel", () => ({
+await mockModuleStrict("@fretik/shared/services/e2b/restart-python-kernel", {
   restartPythonKernel: async (conversationId: string) => {
     restartCalls.push(conversationId);
     callOrder.push(`restart:${conversationId}`);
     if (nextRestartError) throw nextRestartError;
   },
-}));
+});
 
 // Stub the Redis-backed approval signal so the tool's post-run consume()
 // doesn't reach for a real Redis. `nextPendingApprovalId` lets a test drive
 // the swallowed-ApprovalPending → approval_pending fallback path.
 let nextPendingApprovalId: string | undefined;
-void mock.module("@fretik/shared/services/approvals/sandbox-signal", () => ({
+await mockModuleStrict("@fretik/shared/services/approvals/sandbox-signal", {
   consumeSandboxApprovalPending: async () => nextPendingApprovalId,
   markSandboxApprovalPending: async () => undefined,
-}));
+});
 
 // --------------------------------------------------------------- //
 // SUT imports — must come AFTER mocks                              //

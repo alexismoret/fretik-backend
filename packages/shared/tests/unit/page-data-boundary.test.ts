@@ -10,6 +10,7 @@ import type {
   PageVariable,
 } from "../../src/schemas/pages";
 import { PAGE_LIMITS, PageDataRequestSchema } from "../../src/schemas/pages";
+import { mockModule } from "./mock-module";
 
 /**
  * The page DATA path: the security boundary, dataset orchestration, and the
@@ -35,7 +36,7 @@ const listCalls: Record<string, unknown>[] = [];
 const aggregateCalls: Record<string, unknown>[] = [];
 let listResult: { count: number; data: unknown[] } = { count: 0, data: [] };
 
-void mock.module("../../src/db", () => ({
+await mockModule("../../src/db", {
   default: {
     query: {
       collections: {
@@ -49,25 +50,25 @@ void mock.module("../../src/db", () => ({
       },
     },
   },
-}));
+});
 
-void mock.module("../../src/services/collection-records/retrieve", () => ({
+await mockModule("../../src/services/collection-records/retrieve", {
   listCollectionRecords: (params: Record<string, unknown>) => {
     listCalls.push(params);
     return Promise.resolve(listResult);
   },
-}));
+});
 
-void mock.module("../../src/services/collection-records/aggregate", () => ({
+await mockModule("../../src/services/collection-records/aggregate", {
   aggregateRecords: (params: Record<string, unknown>) => {
     aggregateCalls.push(params);
     return Promise.resolve({ rows: [], truncated: false });
   },
-}));
+});
 
-void mock.module("../../src/services/field-definitions/get-for-team", () => ({
+await mockModule("../../src/services/field-definitions/get-for-team", {
   getFieldDefinitionsForTeam: () => Promise.resolve(fieldDefinitions),
-}));
+});
 
 const { resolvePageState, runPageData } =
   await import("../../src/services/pages/run-page-data");
@@ -204,9 +205,9 @@ describe("runPageData — orchestration and degradation", () => {
       inFlight -= 1;
       return listResult;
     });
-    void mock.module("../../src/services/collection-records/retrieve", () => ({
+    await mockModule("../../src/services/collection-records/retrieve", {
       listCollectionRecords: slow,
-    }));
+    });
     const { runPageData: runFresh } =
       await import("../../src/services/pages/run-page-data");
 
@@ -230,12 +231,12 @@ describe("runPageData — orchestration and degradation", () => {
     expect(elapsed).toBeLessThan(120);
 
     // Restore the recording mock for the tests that follow.
-    void mock.module("../../src/services/collection-records/retrieve", () => ({
+    await mockModule("../../src/services/collection-records/retrieve", {
       listCollectionRecords: (params: Record<string, unknown>) => {
         listCalls.push(params);
         return Promise.resolve(listResult);
       },
-    }));
+    });
   });
 });
 
@@ -301,11 +302,11 @@ describe("collectionsSource — the stored definition owns the query", () => {
     // one bad query blanking a screen someone opens every morning.
     listResult = { count: 0, data: [] };
     fieldDefinitions = [];
-    void mock.module("../../src/services/collection-records/retrieve", () => ({
+    await mockModule("../../src/services/collection-records/retrieve", {
       listCollectionRecords: () => {
         throw new Error("boom");
       },
-    }));
+    });
     const { runPageData: runFresh } =
       await import("../../src/services/pages/run-page-data");
     const { datasets } = await runFresh({
@@ -323,12 +324,12 @@ describe("collectionsSource — the stored definition owns the query", () => {
     expect(datasets.broken?.status).toBe("error");
     expect(datasets.sales?.status).toBe("ok");
 
-    void mock.module("../../src/services/collection-records/retrieve", () => ({
+    await mockModule("../../src/services/collection-records/retrieve", {
       listCollectionRecords: (params: Record<string, unknown>) => {
         listCalls.push(params);
         return Promise.resolve(listResult);
       },
-    }));
+    });
   });
 
   test("a targeted refetch runs exactly what was asked for and nothing else", async () => {

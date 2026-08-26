@@ -1,6 +1,7 @@
 import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
 import { PDFDocument } from "pdf-lib";
 import { getProfileForRole } from "../../../src/lib/model-registry/resolve";
+import { mockModule, mockModuleStrict } from "../../lib/mock-module";
 import { realDbExports } from "../../lib/real-db";
 import { installSandboxMocks, sandboxFs } from "../../lib/sandbox-fixture";
 
@@ -36,7 +37,7 @@ const visionCalls: { mimeType: string; filename?: string; bytes: number }[] =
 const rowKey = (conversationId: string, filename: string): string =>
   `${conversationId}::${filename}`;
 
-void mock.module("@fretik/shared/db", () => ({
+await mockModuleStrict("@fretik/shared/db", {
   default: {
     query: new Proxy(
       {},
@@ -69,12 +70,12 @@ void mock.module("@fretik/shared/db", () => ({
     ),
     update: () => ({ set: () => ({ where: async () => undefined }) }),
   },
-}));
+});
 
-// Mirror the real module's full export surface (mock.module is
-// process-global — see read.test.ts); only `readExtractionImage` is
-// backed by the in-memory map, the pure helpers keep real behavior.
-void mock.module("@fretik/shared/services/file-extraction/storage", () => ({
+// Only `readExtractionImage` is backed by the in-memory map; everything else
+// keeps real behaviour, now by construction rather than by re-implementation
+// (`mockModule` carries the exports nobody overrides).
+await mockModuleStrict("@fretik/shared/services/file-extraction/storage", {
   MAX_EXTRACTED_IMAGES: 12,
   MAX_EXTRACTED_IMAGE_BYTES: 3 * 1024 * 1024,
   extractedImageContentType: (imageId: string) =>
@@ -87,14 +88,14 @@ void mock.module("@fretik/shared/services/file-extraction/storage", () => ({
   writeExtractionImages: async () => [],
   readExtractionSidecar: async () => null,
   readExtractionImage: async (key: string) => s3Images.get(key) ?? null,
-}));
+});
 
 /** Flip per-test to simulate the model stopping at its output cap. */
 let nextTruncated = false;
 /** Raw bytes of the last describeVisionFile call, for slice assertions. */
 let lastVisionBytes: Uint8Array | null = null;
 
-void mock.module("../../../src/lib/vision", () => ({
+await mockModule("../../../src/lib/vision", {
   describeVisionFile: async (args: {
     bytes: Uint8Array;
     mimeType: string;
@@ -114,7 +115,7 @@ void mock.module("../../../src/lib/vision", () => ({
       truncated: nextTruncated,
     };
   },
-}));
+});
 
 const { createVisionTool } = await import("../../../src/tools/vision");
 const { DynamicToolManager } =

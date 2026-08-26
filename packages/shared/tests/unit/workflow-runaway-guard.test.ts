@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
+import { mockModule } from "./mock-module";
 
 // ---------------------------------------------------------------- //
 // Runaway guard + queued-backlog cancel: the pause must stamp the   //
@@ -19,7 +20,7 @@ let triggerCancelFails = false;
 /** Run ids whose finalize loses the transition race (already terminal). */
 let alreadyTerminal = new Set<string>();
 
-void mock.module("../../src/db", () => ({
+await mockModule("../../src/db", {
   default: {
     query: new Proxy(
       {},
@@ -36,9 +37,9 @@ void mock.module("../../src/db", () => ({
       }),
     }),
   },
-}));
+});
 
-void mock.module("../../src/services/workflows/pause", () => ({
+await mockModule("../../src/services/workflows/pause", {
   pauseWorkflow: async (params: {
     id: string;
     teamId: string;
@@ -47,38 +48,23 @@ void mock.module("../../src/services/workflows/pause", () => ({
     pauseCalls.push(params);
     return undefined;
   },
-}));
+});
 
-// Mirror the full export surface — mock.module is process-global; an
-// incomplete mock breaks other files' imports with "Export named ... not
-// found".
-void mock.module("../../src/lib/trigger-client", () => ({
-  workflowTeamTag: (teamId: string) => `team:${teamId}`,
-  workflowTag: (workflowId: string) => `workflow:${workflowId}`,
-  triggerWorkflowRun: async () => ({
-    runId: "run_mock",
-    publicAccessToken: "tok_mock",
-  }),
-  createWorkflowCronSchedule: async () => ({ scheduleId: "sched_mock" }),
-  deleteWorkflowSchedule: async () => undefined,
+// Only the one call under test is replaced: `mockModule` keeps the rest of
+// the client's surface, so the mirror this used to hand-maintain is gone.
+await mockModule("../../src/lib/trigger-client", {
   cancelWorkflowTriggerRun: async (triggerRunId: string) => {
     triggerCancelCalls.push(triggerRunId);
     if (triggerCancelFails) throw new Error("trigger API down");
   },
-  completeWorkflowWaitToken: async () => undefined,
-  createWorkflowRealtimeToken: async () => ({
-    token: "tok_mock",
-    url: "https://trigger.test",
-    tag: "team:mock",
-  }),
-}));
+});
 
-void mock.module("../../src/services/workflows/finalize-run", () => ({
+await mockModule("../../src/services/workflows/finalize-run", {
   finalizeRun: async (params: { runId: string; status: string }) => {
     finalizeCalls.push(params);
     return { transitioned: !alreadyTerminal.has(params.runId) };
   },
-}));
+});
 
 const { tripRunawayGuard, RUNAWAY_REASON_PREFIX } =
   await import("../../src/services/workflows/trip-runaway-guard");

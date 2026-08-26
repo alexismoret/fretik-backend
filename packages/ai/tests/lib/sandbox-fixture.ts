@@ -21,6 +21,7 @@
  */
 
 import { mock } from "bun:test";
+import { loadRealModule, strictOverrides } from "./mock-module";
 
 // --------------------------------------------------------------- //
 // Env stubs (must run BEFORE any shared module is loaded)         //
@@ -34,6 +35,39 @@ process.env.S3_REGION ??= "fr-par";
 process.env.REDIS_URL ??= "redis://127.0.0.1:1";
 process.env.E2B_API_KEY ??= "test-e2b";
 process.env.OPENROUTER_VISION_FALLBACK_MODEL ??= "openai/gpt-4o-mini";
+
+// --------------------------------------------------------------- //
+// Real namespaces, for export-complete fakes                       //
+// --------------------------------------------------------------- //
+
+// `mock.module` replaces a module WHOLE, for the whole process: an export a
+// factory below does not mention stops existing for every other file in the
+// run, which kills an unrelated suite at LINK time (`Export named … not
+// found`) in whichever readdir order runs the mocker first. Each factory is
+// therefore closed over its real namespace via `strictOverrides`, which keeps
+// the missing names present but makes calling one throw — a fixture whose
+// whole point is "no real E2B, no real S3" must not fall through to the real
+// implementation just because it forgot a helper.
+//
+// Loaded here, at module scope, so `installSandboxMocks` can stay
+// SYNCHRONOUS — see `loadRealModule`. Must come AFTER the env stubs above:
+// `lib/s3` validates its vars at import.
+const realE2bFiles = await loadRealModule("@fretik/shared/services/e2b/files");
+const realAcquireSandbox = await loadRealModule(
+  "@fretik/shared/services/e2b/acquire-sandbox",
+);
+const realRegistry = await loadRealModule(
+  "@fretik/shared/services/e2b/registry",
+);
+const realTeamSkills = await loadRealModule(
+  "@fretik/shared/services/skills/list-enabled-team-uploaded-with-body",
+);
+const realActiveProviders = await loadRealModule(
+  "@fretik/shared/services/external-apps/connections/list-active-providers-for-conversation",
+);
+const realSessionStorage = await loadRealModule(
+  "@fretik/shared/lib/chatbot-session-storage",
+);
 
 // --------------------------------------------------------------- //
 // In-memory stores                                                 //
@@ -132,104 +166,112 @@ export const installSandboxMocks = (): void => {
   installed = true;
 
   // E2B sandbox files — every helper is now an in-memory map operation.
-  void mock.module("@fretik/shared/services/e2b/files", () => ({
-    writeSandboxFile: async (
-      conversationId: string,
-      path: string,
-      bytes: Uint8Array,
-    ): Promise<void> => {
-      sandboxStore.set(buildKey(conversationId, path), bytes);
-      registeredSandboxes.add(conversationId);
-    },
-    readSandboxFile: async (
-      conversationId: string,
-      path: string,
-    ): Promise<Uint8Array> => {
-      const bytes = sandboxStore.get(buildKey(conversationId, path));
-      if (!bytes) throw new Error(`Sandbox file not found: ${path}`);
-      return bytes;
-    },
-    listSandboxFiles: async (
-      conversationId: string,
-      prefix?: string,
-    ): Promise<{ path: string; size: number; mtimeMs: number }[]> => {
-      const cprefix = `${conversationId}::${prefix ? `${prefix.replace(/\/+$/, "")}/` : ""}`;
-      return [...sandboxStore.entries()]
-        .filter(([k]) => k.startsWith(cprefix))
-        .map(([k, v]) => ({
-          path: k.slice(`${conversationId}::`.length),
-          size: v.byteLength,
-          mtimeMs: 0,
-        }));
-    },
-    removeSandboxFile: async (
-      conversationId: string,
-      path: string,
-    ): Promise<void> => {
-      sandboxStore.delete(buildKey(conversationId, path));
-    },
-    sandboxFileExists: async (
-      conversationId: string,
-      path: string,
-    ): Promise<boolean> => {
-      return sandboxStore.has(buildKey(conversationId, path));
-    },
-    makeSandboxDir: async (
-      _conversationId: string,
-      _path: string,
-    ): Promise<void> => {
-      // No-op: in-memory store has no directory concept; writes
-      // implicitly create the path.
-    },
-    execSandboxCommand: async (
-      _conversationId: string,
-      _command: string,
-    ): Promise<{ exitCode: number; stdout: string; stderr: string }> => {
-      // No-op stub: the conversation-storage tarball bootstrap calls
-      // `tar -xzf …` via this helper. The in-memory sandbox has no
-      // real filesystem so we simply pretend the extract succeeded —
-      // tests that need actual skill files in the sandbox seed them
-      // through `sandboxFs.write(...)` directly.
-      return { exitCode: 0, stdout: "", stderr: "" };
-    },
-  }));
+  void mock.module("@fretik/shared/services/e2b/files", () =>
+    strictOverrides("e2b/files", realE2bFiles, {
+      writeSandboxFile: async (
+        conversationId: string,
+        path: string,
+        bytes: Uint8Array,
+      ): Promise<void> => {
+        sandboxStore.set(buildKey(conversationId, path), bytes);
+        registeredSandboxes.add(conversationId);
+      },
+      readSandboxFile: async (
+        conversationId: string,
+        path: string,
+      ): Promise<Uint8Array> => {
+        const bytes = sandboxStore.get(buildKey(conversationId, path));
+        if (!bytes) throw new Error(`Sandbox file not found: ${path}`);
+        return bytes;
+      },
+      listSandboxFiles: async (
+        conversationId: string,
+        prefix?: string,
+      ): Promise<{ path: string; size: number; mtimeMs: number }[]> => {
+        const cprefix = `${conversationId}::${prefix ? `${prefix.replace(/\/+$/, "")}/` : ""}`;
+        return [...sandboxStore.entries()]
+          .filter(([k]) => k.startsWith(cprefix))
+          .map(([k, v]) => ({
+            path: k.slice(`${conversationId}::`.length),
+            size: v.byteLength,
+            mtimeMs: 0,
+          }));
+      },
+      removeSandboxFile: async (
+        conversationId: string,
+        path: string,
+      ): Promise<void> => {
+        sandboxStore.delete(buildKey(conversationId, path));
+      },
+      sandboxFileExists: async (
+        conversationId: string,
+        path: string,
+      ): Promise<boolean> => {
+        return sandboxStore.has(buildKey(conversationId, path));
+      },
+      makeSandboxDir: async (
+        _conversationId: string,
+        _path: string,
+      ): Promise<void> => {
+        // No-op: in-memory store has no directory concept; writes
+        // implicitly create the path.
+      },
+      execSandboxCommand: async (
+        _conversationId: string,
+        _command: string,
+      ): Promise<{ exitCode: number; stdout: string; stderr: string }> => {
+        // No-op stub: the conversation-storage tarball bootstrap calls
+        // `tar -xzf …` via this helper. The in-memory sandbox has no
+        // real filesystem so we simply pretend the extract succeeded —
+        // tests that need actual skill files in the sandbox seed them
+        // through `sandboxFs.write(...)` directly.
+        return { exitCode: 0, stdout: "", stderr: "" };
+      },
+    }),
+  );
 
   // Acquire/release sandbox — return a stable mock id so the
   // bootstrap path's "sandbox already initialised" Set hit works.
-  void mock.module("@fretik/shared/services/e2b/acquire-sandbox", () => ({
-    acquireSandbox: async (conversationId: string) => ({
-      sandboxId: `mock-${conversationId}`,
-      conversationId,
+  void mock.module("@fretik/shared/services/e2b/acquire-sandbox", () =>
+    strictOverrides("e2b/acquire-sandbox", realAcquireSandbox, {
+      acquireSandbox: async (conversationId: string) => ({
+        sandboxId: `mock-${conversationId}`,
+        conversationId,
+      }),
     }),
-  }));
+  );
 
   // Bootstrap lock — always grant immediately.
-  void mock.module("@fretik/shared/services/e2b/registry", () => ({
-    acquireSandboxBootstrapLock: async () => true,
-    releaseSandboxBootstrapLock: async () => {
-      /* no-op */
-    },
-    // Unused by tests but keep the surface intact for completeness.
-    acquireSandboxLock: async () => true,
-    releaseSandboxLock: async () => {
-      /* no-op */
-    },
-    getSandboxIdFromRegistry: async (conversationId: string) =>
-      registeredSandboxes.has(conversationId) ? `mock-${conversationId}` : null,
-    setSandboxIdInRegistry: async () => {
-      /* no-op */
-    },
-    clearSandboxFromRegistry: async () => {
-      /* no-op */
-    },
-    // Lazy-attachment generation counter (Redis-backed in prod). Tests
-    // never restore from S3, so a stable 0 keeps `reconcileAttachments`
-    // a no-op (currentGen <= restoredGen). Without these two stubs the
-    // real ioredis client runs and hangs the test against the unreachable
-    // stub REDIS_URL — see the `connect ECONNREFUSED 127.0.0.1:1` flood.
-    getAttachmentGeneration: async () => 0,
-    bumpAttachmentGeneration: async () => 1,
-  }));
+  void mock.module("@fretik/shared/services/e2b/registry", () =>
+    strictOverrides("e2b/registry", realRegistry, {
+      acquireSandboxBootstrapLock: async () => true,
+      releaseSandboxBootstrapLock: async () => {
+        /* no-op */
+      },
+      // Unused by tests but keep the surface intact for completeness.
+      acquireSandboxLock: async () => true,
+      releaseSandboxLock: async () => {
+        /* no-op */
+      },
+      getSandboxIdFromRegistry: async (conversationId: string) =>
+        registeredSandboxes.has(conversationId)
+          ? `mock-${conversationId}`
+          : null,
+      setSandboxIdInRegistry: async () => {
+        /* no-op */
+      },
+      clearSandboxFromRegistry: async () => {
+        /* no-op */
+      },
+      // Lazy-attachment generation counter (Redis-backed in prod). Tests
+      // never restore from S3, so a stable 0 keeps `reconcileAttachments`
+      // a no-op (currentGen <= restoredGen). Without these two stubs the
+      // real ioredis client runs and hangs the test against the unreachable
+      // stub REDIS_URL — see the `connect ECONNREFUSED 127.0.0.1:1` flood.
+      getAttachmentGeneration: async () => 0,
+      bumpAttachmentGeneration: async () => 1,
+    }),
+  );
 
   // Team-uploaded skills + active external-app providers are resolved
   // from Postgres in prod (`select team_id from ai_conversations`).
@@ -238,15 +280,21 @@ export const installSandboxMocks = (): void => {
   // early-return instead of issuing (failing) queries.
   void mock.module(
     "@fretik/shared/services/skills/list-enabled-team-uploaded-with-body",
-    () => ({
-      listEnabledTeamUploadedSkillsWithBodyForConversation: async () => [],
-    }),
+    () =>
+      strictOverrides("skills/list-enabled-team-uploaded", realTeamSkills, {
+        listEnabledTeamUploadedSkillsWithBodyForConversation: async () => [],
+      }),
   );
   void mock.module(
     "@fretik/shared/services/external-apps/connections/list-active-providers-for-conversation",
-    () => ({
-      listActiveProviderKeysForConversation: async () => [],
-    }),
+    () =>
+      strictOverrides(
+        "connections/list-active-providers",
+        realActiveProviders,
+        {
+          listActiveProviderKeysForConversation: async () => [],
+        },
+      ),
   );
 
   // S3 session storage — back the helpers by the in-memory `s3Store`.
@@ -270,7 +318,7 @@ export const installSandboxMocks = (): void => {
     const buildSessionPrefix = (conversationId: string): string =>
       `chatbot-sessions/${sanitizeSessionSegment(conversationId)}/`;
 
-    return {
+    return strictOverrides("lib/chatbot-session-storage", realSessionStorage, {
       sanitizeSessionSegment,
       sanitizeSessionPath,
       buildSessionKey,
@@ -326,6 +374,6 @@ export const installSandboxMocks = (): void => {
         pathOrBasename: string,
       ): Promise<string> =>
         `https://mock.s3/${buildSessionKey(conversationId, pathOrBasename)}`,
-    };
+    });
   });
 };

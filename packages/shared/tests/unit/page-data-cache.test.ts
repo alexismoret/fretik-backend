@@ -1,20 +1,19 @@
-import { describe, expect, mock, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import type { PageDataResponse } from "../../src/schemas/pages";
+import { mockModule } from "./mock-module";
 
 /**
  * An in-memory stand-in for Redis.
  *
- * `redis.ts` opens its connection at module load, so it is replaced WHOLE —
- * which means every export must be present here, not only the two under test.
- * Another suite in this directory replaces the same module; both fakes are
- * complete, so whichever import wins, nothing downstream breaks.
+ * Only the client is replaced — see `mockModule` for why the rest of the
+ * module keeps its real exports.
  *
  * TTL is not simulated: expiry is Redis' own behaviour, not this module's, and
  * a test that slept for it would only be testing `EX`.
  */
 const store = new Map<string, string>();
 
-void mock.module("../../src/lib/redis", () => ({
+await mockModule("../../src/lib/redis", {
   redis: {
     get: (key: string) => Promise.resolve(store.get(key) ?? null),
     set: (key: string, value: string) => {
@@ -28,7 +27,7 @@ void mock.module("../../src/lib/redis", () => ({
   },
   selectOrCache: <T>(fn: () => Promise<T>) => fn(),
   deleteKeysByPrefix: () => Promise.resolve(),
-}));
+});
 
 const { cachedPageData, pageDataCacheKey } =
   await import("../../src/services/pages/data-cache");

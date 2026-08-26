@@ -1,14 +1,12 @@
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
 import { HTTPException } from "hono/http-exception";
 // `schemas/ontology` reaches `common/params`, which calls `.openapi()` — the
 // method only exists once `@hono/zod-openapi` has patched Zod. In a service
 // that happens at boot; here it has to be imported for the side effect.
 import "@hono/zod-openapi";
-import type {
-  PageCompiled,
-  PageDefinition,
-  PageRuntimeError,
-} from "../../src/schemas/pages";
+import type { Page } from "../../src/db/schema";
+import type { PageCompiled, PageDefinition } from "../../src/schemas/pages";
+import { mockModule } from "./mock-module";
 
 /**
  * Publishing, public access, and the dry run.
@@ -23,29 +21,17 @@ import type {
  * assertions exist to make the next refactor's diff readable, so they record
  * what it does today, including that it sanitizes the definition itself.
  *
- * The db and redis are mocked at module level; the dynamic imports resolve
- * after, and `updates` reads back exactly what was written.
+ * The db, redis and AI service are mocked at module level; the dynamic
+ * imports resolve after, and `updates` reads back exactly what was written.
+ *
+ * The fixture is typed as the REAL `Page` row, not a hand-rolled lookalike.
+ * It used to be its own interface, which quietly drifted from the schema:
+ * it declared `description: string | null` and defaulted it to `null`, while
+ * the column is `notNull().default("")`. Nothing caught it until the publish
+ * path grew a vector card that reads `description.trim()` — a crash on a row
+ * shape the database cannot produce. Typing the fake against `$inferSelect`
+ * turns that whole class of drift into a typecheck error.
  */
-
-interface FakePage {
-  id: string;
-  teamId: string;
-  name: string;
-  description: string | null;
-  icon: string | null;
-  color: string | null;
-  userId: string | null;
-  definition: PageDefinition;
-  publishedDefinition: PageDefinition | null;
-  runtimeErrors: PageRuntimeError[];
-  publicToken: string | null;
-  publishedAt: Date | null;
-  publishedByUserId: string | null;
-  sourceConversationId: string | null;
-  createdByUserId: string | null;
-  createdAt: Date;
-  updatedAt: Date;
-}
 
 const compiled = (): PageCompiled => ({
   js: 'import { mountPage } from "#fretik/sdk";',
@@ -67,11 +53,12 @@ const readyDefinition = (text = "Hello"): PageDefinition => ({
   },
 });
 
-const fakePage = (overrides: Partial<FakePage> = {}): FakePage => ({
+const fakePage = (overrides: Partial<Page> = {}): Page => ({
   id: "page-1",
+  organizationId: "org-1",
   teamId: "team-1",
   name: "Sales",
-  description: null,
+  description: "",
   icon: null,
   color: null,
   userId: null,
@@ -89,13 +76,13 @@ const fakePage = (overrides: Partial<FakePage> = {}): FakePage => ({
 });
 
 /** The single row the mocked db holds; undefined means "no such page". */
-let storedPage: FakePage | undefined;
+let storedPage: Page | undefined;
 /** Every `set()` payload that reached the update builder. */
 const updates: Record<string, unknown>[] = [];
 /** Cache prefixes dropped through `deleteKeysByPrefix`. */
 const cacheDrops: string[] = [];
 
-void mock.module("../../src/db", () => ({
+await mockModule("../../src/db", {
   default: {
     query: {
       pages: {
@@ -133,19 +120,38 @@ void mock.module("../../src/db", () => ({
       },
     }),
   },
-}));
+});
 
-// `redis.ts` opens its connection at module load, so it is replaced whole —
-// which means every export it has must be present here, not just the one under
-// test. `selectOrCache` degrades to a straight call: no cache, no staleness.
-void mock.module("../../src/lib/redis", () => ({
+// `selectOrCache` degrades to a straight call: no cache, no staleness.
+await mockModule("../../src/lib/redis", {
   redis: {},
   selectOrCache: <T>(fn: () => Promise<T>) => fn(),
   deleteKeysByPrefix: (prefix: string) => {
     cacheDrops.push(prefix);
     return Promise.resolve();
   },
-}));
+});
+
+// Publishing re-indexes the page's search card, fire-and-forget. Left
+// unmocked, that `void` reaches a real socket: the promise outlives the test
+// that started it, so its rejection surfaces inside whichever file happens to
+// be running when the connection gives up — a failure that moves with machine
+// speed and reproduces on CI but not locally. Recording the calls instead
+// makes the side effect assertable rather than merely silent.
+const vectorizeCalls: { sourceId: string; content: string }[] = [];
+
+await mockModule("../../src/lib/ai-service", {
+  callAiService: (path: string, body: unknown) => {
+    const payload = body as { sourceId: string; content: string };
+    if (path === "/internal/vectorize") {
+      vectorizeCalls.push({
+        sourceId: payload.sourceId,
+        content: payload.content,
+      });
+    }
+    return Promise.resolve({ success: true });
+  },
+});
 
 const { publishPage, unpublishPage } =
   await import("../../src/services/pages/publish");
@@ -158,9 +164,18 @@ const { pageOwnerWriteError, pageVisibilityWhere } =
 beforeEach(() => {
   updates.length = 0;
   cacheDrops.length = 0;
+  vectorizeCalls.length = 0;
   storedPage = fakePage();
   process.env.APP_URL = "https://app.example.com";
 });
+
+/**
+ * Let the fire-and-forget re-index run to completion. A macrotask, not
+ * `Promise.resolve()`: the refresh awaits several times before it reaches the
+ * AI service, and each `await` costs a tick.
+ */
+const settleBackgroundWork = (): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, 0));
 
 describe("publishPage — frozen definition, live data", () => {
   test("snapshots the current definition and mints a token", async () => {
@@ -177,6 +192,23 @@ describe("publishPage — frozen definition, live data", () => {
     expect(page.publicUrl).toBe(
       `https://app.example.com/p/${String(written?.publicToken)}`,
     );
+  });
+
+  test("re-indexes the search card, which now says the page is public", async () => {
+    // The card's `Visibility:` line is the ONLY thing publishing changes in
+    // that text, and the AI service skips the re-embed when the text is
+    // unchanged — so a dropped refresh here leaves the assistant describing a
+    // published page as internal.
+    await publishPage({
+      pageId: "page-1",
+      teamId: "team-1",
+      publishedByUserId: "user-1",
+    });
+    await settleBackgroundWork();
+
+    expect(vectorizeCalls).toHaveLength(1);
+    expect(vectorizeCalls[0]?.sourceId).toBe("page-1");
+    expect(vectorizeCalls[0]?.content).toContain("published at a public link");
   });
 
   test("re-publishing keeps the token so a shared link never breaks", async () => {
@@ -333,6 +365,15 @@ describe("unpublishPage — a revoked link is indistinguishable from none", () =
     await unpublishPage({ pageId: "page-1", teamId: "team-1" });
     expect(updates[0]?.publicToken).toBeNull();
     expect(cacheDrops).toEqual([]);
+  });
+
+  test("re-indexes the card back to internal — revoking must reach search too", async () => {
+    storedPage = fakePage({ publicToken: "token-abc" });
+    await unpublishPage({ pageId: "page-1", teamId: "team-1" });
+    await settleBackgroundWork();
+
+    expect(vectorizeCalls).toHaveLength(1);
+    expect(vectorizeCalls[0]?.content).toContain("internal only");
   });
 });
 

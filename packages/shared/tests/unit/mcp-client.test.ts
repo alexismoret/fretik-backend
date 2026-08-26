@@ -20,6 +20,13 @@ interface Scenario {
 
 let scenario: Scenario;
 
+// Plain `mock.module`, not the `mockModule` helper the first-party fakes in
+// this directory use: the helper imports the real module before replacing it,
+// and for a third-party package that pre-evaluation wins — the real
+// Streamable-HTTP client comes back and the tests dial `mcp.example.com` for
+// real. Safe here because `createMCPClient` is the only runtime export the
+// codebase uses from this package (`services/external-apps/mcp/client.ts` is
+// the sole importer), so nothing else can lose an export to this factory.
 void mock.module("@ai-sdk/mcp", () => ({
   createMCPClient: async () => {
     if (scenario.createError) throw scenario.createError;

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
 // `schemas/pages` reaches `schemas/ontology` → `common/params`, which calls
 // `.openapi()`; in a service that happens at boot.
 import "@hono/zod-openapi";
@@ -7,6 +7,7 @@ import {
   type PageOperation,
   type PageValue,
 } from "../../src/schemas/pages";
+import { mockModule } from "./mock-module";
 
 /**
  * A page writing the team's OWN records — the capability that did not exist
@@ -56,7 +57,7 @@ const matches = (
     where.collectionId === row.collectionId) &&
   (where.teamId === undefined || where.teamId === row.teamId);
 
-void mock.module("../../src/db", () => ({
+await mockModule("../../src/db", {
   default: {
     query: {
       collectionRecords: {
@@ -85,13 +86,13 @@ void mock.module("../../src/db", () => ({
       },
     },
   },
-}));
+});
 
-void mock.module("../../src/services/field-definitions/get-for-team", () => ({
+await mockModule("../../src/services/field-definitions/get-for-team", {
   getFieldDefinitionsForTeam: () => Promise.resolve(fields),
-}));
+});
 
-void mock.module("../../src/services/collection-records/bulk-update", () => ({
+await mockModule("../../src/services/collection-records/bulk-update", {
   bulkUpdateCollectionRecords: (input: {
     updates: { id: string; data: Record<string, unknown> }[];
   }) => {
@@ -101,35 +102,35 @@ void mock.module("../../src/services/collection-records/bulk-update", () => ({
       errors: [],
     });
   },
-}));
+});
 
-void mock.module("../../src/services/collection-records/bulk-delete", () => ({
+await mockModule("../../src/services/collection-records/bulk-delete", {
   bulkDeleteCollectionRecords: (input: { ids: string[] }) => {
     deletedIds = input.ids;
     return Promise.resolve({ deletedIds: input.ids, errors: [] });
   },
-}));
+});
 
-void mock.module("../../src/services/collection-records/create", () => ({
+await mockModule("../../src/services/collection-records/create", {
   createCollectionRecord: (input: { data: Record<string, unknown> }) => {
     createdWith = input.data;
     return Promise.resolve({ id: "new-1" });
   },
-}));
+});
 
-void mock.module("../../src/services/links/create", () => ({
+await mockModule("../../src/services/links/create", {
   createLink: (input: { fromRecordId: string; toRecordId: string }) => {
     linkedPair = { from: input.fromRecordId, to: input.toRecordId };
     return Promise.resolve({ id: "edge-new" });
   },
-}));
+});
 
-void mock.module("../../src/services/links/invalidate", () => ({
+await mockModule("../../src/services/links/invalidate", {
   invalidateLink: (input: { id: string }) => {
     invalidatedIds.push(input.id);
     return Promise.resolve({ id: input.id });
   },
-}));
+});
 
 const { runPageRecordOperation } =
   await import("../../src/services/pages/run-record-operation");

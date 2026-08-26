@@ -3,6 +3,7 @@ import { getProfileForRole } from "../../../src/lib/model-registry/resolve";
 // Real chunk planning is exercised through the tool; only the model-calling
 // entry point (`runProseTransform`) is faked below.
 import { planProseChunks } from "../../../src/lib/prose-transform";
+import { mockModule, mockModuleStrict } from "../../lib/mock-module";
 import { realDbExports } from "../../lib/real-db";
 import { installSandboxMocks, sandboxFs } from "../../lib/sandbox-fixture";
 
@@ -15,7 +16,7 @@ afterAll(() => {
 // transform's PDF/Office branch reads aiChatFiles; the text/json paths under
 // test never touch it, but the module imports `db` at load — stub it so the
 // import is cheap and offline (mirrors extract.test.ts).
-void mock.module("@fretik/shared/db", () => ({
+await mockModuleStrict("@fretik/shared/db", {
   default: {
     query: new Proxy(
       {},
@@ -28,12 +29,12 @@ void mock.module("@fretik/shared/db", () => ({
     ),
     update: () => ({ set: () => ({ where: async () => undefined }) }),
   },
-}));
+});
 
 // Engine seam: capture what the tool passed; return a deterministic result
 // whose output is the chunks joined, so the written file is assertable.
 const engineCalls: { chunks: readonly string[]; instruction: string }[] = [];
-void mock.module("../../../src/lib/prose-transform", () => ({
+await mockModule("../../../src/lib/prose-transform", {
   planProseChunks,
   runProseTransform: async (args: {
     chunks: readonly string[];
@@ -48,7 +49,7 @@ void mock.module("../../../src/lib/prose-transform", () => ({
       output: args.chunks.map((chunk) => `[t]${chunk}`).join("\n\n"),
     };
   },
-}));
+});
 
 const { createTransformTool } = await import("../../../src/tools/transform");
 const { DynamicToolManager } =

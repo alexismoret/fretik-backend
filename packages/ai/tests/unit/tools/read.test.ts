@@ -1,5 +1,6 @@
 import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
 import { getProfileForRole } from "../../../src/lib/model-registry/resolve";
+import { mockModule, mockModuleStrict } from "../../lib/mock-module";
 import { realDbExports } from "../../lib/real-db";
 import { installSandboxMocks, sandboxFs } from "../../lib/sandbox-fixture";
 
@@ -33,7 +34,7 @@ const extractionImageIds = new Map<string, string[]>();
 const rowKey = (conversationId: string, filename: string): string =>
   `${conversationId}::${filename}`;
 
-void mock.module("@fretik/shared/db", () => ({
+await mockModuleStrict("@fretik/shared/db", {
   default: {
     query: new Proxy(
       {},
@@ -55,9 +56,9 @@ void mock.module("@fretik/shared/db", () => ({
     ),
     update: () => ({ set: () => ({ where: async () => undefined }) }),
   },
-}));
+});
 
-void mock.module("@fretik/shared/services/file-extraction/extract", () => ({
+await mockModuleStrict("@fretik/shared/services/file-extraction/extract", {
   getOrCreateExtraction: async (input: { fileHash: string }) => {
     const markdown = extractions.get(input.fileHash) ?? null;
     return {
@@ -70,7 +71,7 @@ void mock.module("@fretik/shared/services/file-extraction/extract", () => ({
       imageIds: extractionImageIds.get(input.fileHash) ?? [],
     };
   },
-}));
+});
 
 // Context files are served Bun-side (no sandbox): the read tool loads
 // the accessible set, then reads extracted markdown from the `content`
@@ -87,31 +88,26 @@ const contextFiles: ContextFileRow[] = [];
 const contextOriginals = new Map<string, Uint8Array>();
 const contextSidecars = new Map<string, Uint8Array>();
 
-void mock.module("../../../src/services/chatbot-context/load-context", () => ({
+await mockModule("../../../src/services/chatbot-context/load-context", {
   loadAccessibleContext: async () => ({
     userProfile: null,
     teamProfile: null,
     files: contextFiles.map((f) => ({ ...f, scope: "team" as const })),
   }),
-}));
+});
 
-void mock.module("@fretik/shared/lib/ai-context-storage", () => ({
+// Only the two readers are backed by the in-memory maps; the writers and key
+// builders keep their real implementations. `mockModule` carries them, so the
+// hand-written mirror this used to need is gone.
+await mockModuleStrict("@fretik/shared/lib/ai-context-storage", {
   readContextOriginal: async (_profileId: string, fileId: string) =>
     contextOriginals.get(fileId) ?? null,
   readContextSidecar: async (_profileId: string, fileId: string) =>
     contextSidecars.get(fileId) ?? null,
-  // mock.module is process-global: other test files in the same run
-  // import modules that pull the remaining exports — an incomplete
-  // mock breaks THEIR import with "Export named ... not found", so
-  // mirror the module's full export surface (no-ops are fine).
-  buildContextOriginalKey: (profileId: string, fileId: string) =>
-    `mock/${profileId}/${fileId}`,
-  buildContextSidecarKey: (profileId: string, fileId: string) =>
-    `mock/${profileId}/${fileId}.md`,
   uploadContextSidecar: async () => undefined,
   deleteContextOriginal: async () => undefined,
   deleteContextSidecar: async () => undefined,
-}));
+});
 
 const { createReadTool } = await import("../../../src/tools/read");
 const { DynamicToolManager } =

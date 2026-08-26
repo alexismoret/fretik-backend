@@ -1,8 +1,9 @@
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
 // `schemas/pages` reaches `schemas/ontology` → `common/params`, which calls
 // `.openapi()`; in a service that happens at boot.
 import "@hono/zod-openapi";
 import type { PageDefinition, PageValue } from "../../src/schemas/pages";
+import { mockModule } from "./mock-module";
 
 /**
  * The WRITE path's refusals — the half of a page that reaches a third party.
@@ -43,7 +44,7 @@ const baseConnection: Connection = {
   mcpAuthKind: "none",
 };
 
-void mock.module("../../src/db", () => ({
+await mockModule("../../src/db", {
   default: {
     query: {
       externalAppConnections: {
@@ -52,13 +53,13 @@ void mock.module("../../src/db", () => ({
       },
     },
   },
-}));
+});
 
-void mock.module("../../src/services/pages/retrieve", () => ({
+await mockModule("../../src/services/pages/retrieve", {
   getPage: () => Promise.resolve({ id: "page-1", definition }),
-}));
+});
 
-void mock.module("../../src/services/external-apps/mcp/snapshot-store", () => ({
+await mockModule("../../src/services/external-apps/mcp/snapshot-store", {
   getSnapshotForConnection: () =>
     Promise.resolve({
       descriptor: {
@@ -79,9 +80,9 @@ void mock.module("../../src/services/external-apps/mcp/snapshot-store", () => ({
         ],
       },
     }),
-}));
+});
 
-void mock.module("../../src/services/external-apps/mcp/transport", () => ({
+await mockModule("../../src/services/external-apps/mcp/transport", {
   mcpCallTool: (
     _connection: unknown,
     _name: string,
@@ -92,7 +93,7 @@ void mock.module("../../src/services/external-apps/mcp/transport", () => ({
       content: [{ type: "text", text: '{"id":"o-1"}' }],
     });
   },
-}));
+});
 
 const { runPageOperation } =
   await import("../../src/services/pages/run-operation");

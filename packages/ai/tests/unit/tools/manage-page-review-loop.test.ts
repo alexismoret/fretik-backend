@@ -2,6 +2,7 @@ import { badRequest } from "@fretik/shared/lib/errors";
 import "@hono/zod-openapi";
 import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
 import { HTTPException } from "hono/http-exception";
+import { mockModule } from "../../lib/mock-module";
 
 /**
  * The review loop's ECONOMICS, which prose alone failed to enforce.
@@ -73,25 +74,24 @@ const cleanRender = {
 };
 
 const renderCalls: unknown[] = [];
-void mock.module("@fretik/shared/services/pages/render/render-page", () => ({
+await mockModule("@fretik/shared/services/pages/render/render-page", {
   renderPage: async (args: unknown) => {
     renderCalls.push(args);
     return cleanRender;
   },
-}));
+});
 
 // Only the model call is faked; SHIP_SCORE and the rest of the module stay
 // real, so restoring it after this file leaves nothing behind.
 const realEvaluate = await import("../../../src/services/page-review/evaluate");
 let critiqueResult: Record<string, unknown> = { ok: false, reason: "unset" };
-void mock.module("../../../src/services/page-review/evaluate", () => ({
-  ...realEvaluate,
+await mockModule("../../../src/services/page-review/evaluate", {
   evaluatePageDesign: async () => critiqueResult,
-}));
+});
 
 const updateCalls: { input: Record<string, unknown> }[] = [];
 let updateThrows: HTTPException | null = null;
-void mock.module("@fretik/shared/services/pages/update", () => ({
+await mockModule("@fretik/shared/services/pages/update", {
   updatePage: async (args: { input: Record<string, unknown> }) => {
     updateCalls.push(args);
     if (updateThrows) throw updateThrows;
@@ -110,12 +110,12 @@ void mock.module("@fretik/shared/services/pages/update", () => ({
       warnings: [],
     };
   },
-}));
+});
 
 const createCalls: { input: { definition: { code: { source: string } } } }[] =
   [];
 let createThrows: HTTPException | null = null;
-void mock.module("@fretik/shared/services/pages/create", () => ({
+await mockModule("@fretik/shared/services/pages/create", {
   createPage: async (args: {
     input: { definition: { code: { source: string } } };
   }) => {
@@ -126,9 +126,9 @@ void mock.module("@fretik/shared/services/pages/create", () => ({
       warnings: [],
     };
   },
-}));
+});
 
-void mock.module("@fretik/shared/services/pages/retrieve", () => ({
+await mockModule("@fretik/shared/services/pages/retrieve", {
   getPage: async () => ({
     id: pageId,
     name: "Board",
@@ -141,24 +141,24 @@ void mock.module("@fretik/shared/services/pages/retrieve", () => ({
     },
   }),
   listPages: async () => [],
-}));
+});
 
-void mock.module("@fretik/shared/services/pages/versions", () => ({
+await mockModule("@fretik/shared/services/pages/versions", {
   writePageVersion: async () => ({ versionNumber: 1 }),
   trimPageVersions: async () => undefined,
-}));
+});
 
-void mock.module("@fretik/shared/services/pages/restore", () => ({
+await mockModule("@fretik/shared/services/pages/restore", {
   restorePageVersion: async () => undefined,
-}));
+});
 
-void mock.module("@fretik/shared/services/pages/dry-run", () => ({
+await mockModule("@fretik/shared/services/pages/dry-run", {
   dryRunPage: async () => ({ samples: {}, warnings: [] }),
-}));
+});
 
-void mock.module("@fretik/shared/services/organization/member-role", () => ({
+await mockModule("@fretik/shared/services/organization/member-role", {
   isOrgAdmin: async () => false,
-}));
+});
 
 // `mock.module` is process-wide and `mock.restore()` does not undo it: every
 // module faked above is put back so the files that run after this one see the

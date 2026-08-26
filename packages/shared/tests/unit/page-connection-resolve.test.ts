@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
+import { mockModule } from "./mock-module";
 
 /**
  * `resolvePageConnection` — the page-side connection resolver. Its whole
@@ -24,7 +25,7 @@ let pinned: Row | undefined;
 let candidates: Row[] = [];
 const findManyWheres: Record<string, unknown>[] = [];
 
-void mock.module("../../src/db", () => ({
+await mockModule("../../src/db", {
   default: {
     query: {
       externalAppConnections: {
@@ -36,7 +37,7 @@ void mock.module("../../src/db", () => ({
       },
     },
   },
-}));
+});
 
 const { resolvePageConnection } =
   await import("../../src/services/external-apps/connections/resolve-for-page");

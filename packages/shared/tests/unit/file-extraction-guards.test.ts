@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
+import { mockModule } from "./mock-module";
 
 // ---------------------------------------------------------------- //
 // Guards around the Mistral OCR boundary: the pre-flight file-size  //
@@ -21,8 +22,7 @@ let ocrBehavior: (call: OcrProcessCall) => {
   }[];
 } = () => ({ pages: [] });
 
-void mock.module("../../src/lib/mistral", () => ({
-  MISTRAL_OCR_MODEL: "mistral-ocr-4-0",
+await mockModule("../../src/lib/mistral", {
   mistralClient: {
     ocr: {
       process: async (call: OcrProcessCall) => {
@@ -31,7 +31,7 @@ void mock.module("../../src/lib/mistral", () => ({
       },
     },
   },
-}));
+});
 
 // Writes are FORBIDDEN by default — the size guard's contract is that it
 // returns before claiming a cache row. The blob-route tests below opt in.
@@ -52,7 +52,7 @@ const updateChain = {
   },
 };
 
-void mock.module("../../src/db", () => ({
+await mockModule("../../src/db", {
   default: {
     query: new Proxy(
       {},
@@ -76,13 +76,14 @@ void mock.module("../../src/db", () => ({
       return updateChain;
     },
   },
-}));
+});
 
-// `lib/s3` throws at import when S3 env vars are absent (CI). The guarded
-// paths under test never touch S3 — mirror the full export surface with
-// no-ops (mock.module is process-global; an incomplete mock breaks other
-// files' imports with "Export named ... not found").
-void mock.module("../../src/lib/s3", () => ({
+// The guarded paths under test never touch S3, and every reader is neutered
+// so a stray call fails as "nothing there" rather than reaching the network.
+// The list is exhaustive on purpose — not to mirror the module (`mockModule`
+// carries the exports nobody overrides), but because a real S3 call escaping
+// through an unlisted one would fail as a timeout, not as an assertion.
+await mockModule("../../src/lib/s3", {
   putObject: async () => undefined,
   publicUrl: (key: string) => `https://s3.test/${key}`,
   getObject: async () => null,
@@ -95,7 +96,7 @@ void mock.module("../../src/lib/s3", () => ({
   uploadToS3: async () => "unused",
   getFileFromS3: async () => null,
   deleteFilesFromS3: async () => undefined,
-}));
+});
 
 const {
   runMistralOcr,

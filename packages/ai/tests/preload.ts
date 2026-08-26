@@ -18,6 +18,7 @@
  */
 
 import { mock } from "bun:test";
+import { mockModule } from "./lib/mock-module";
 import { redisDouble } from "./lib/redis-double";
 import { getTeamAiSettings } from "./lib/team-ai-settings-double";
 
@@ -71,6 +72,32 @@ process.env.DATABASE_URL ??= "postgres://test:test@127.0.0.1:1/test";
 // only satisfies the presence check; no connection happens in unit tests.
 process.env.AI_DB_READONLY_URL ??= "postgres://test:test@127.0.0.1:1/test";
 
+// Redis — the singleton is imported by dozens of modules, so the first file
+// to load it wins the module cache and a per-file mock loses the race. With a
+// dead-port URL ioredis does not fail, it RETRIES: the page-review budget
+// tests died on the 5 s timeout instead of asserting. The double is in-memory
+// and throws by name on any command it does not implement.
+//
+// This is the ONE mock here that is hand-listed rather than spread over the
+// real module (`tests/lib/mock-module.ts`): spreading would have to IMPORT
+// `lib/redis`, and constructing the real ioredis client is precisely what the
+// double exists to prevent. The price is that this list must be kept in step
+// with the module's exports by hand — `mock.module` replaces a module WHOLE,
+// so a name missing here stops existing for every other file in the run and
+// kills it at LINK time. `isCacheableValue` is exactly how that bit
+// `@fretik/shared` in CI; it is re-declared below rather than imported.
+void mock.module("@fretik/shared/lib/redis", () => ({
+  redis: redisDouble,
+  // Same argument order as the real helper (`fn` FIRST, then key, then ttl).
+  // The previous stub took them as `(key, ttl, fetcher)`, so any caller using
+  // the real signature would have invoked a number as the fetcher. Nothing in
+  // the unit suite reaches it today, which is why it went unnoticed.
+  selectOrCache: async <T>(fn: () => Promise<T>): Promise<T> => fn(),
+  isCacheableValue: (value: unknown): boolean =>
+    value !== null && value !== undefined,
+  deleteKeysByPrefix: (): Promise<void> => Promise.resolve(),
+}));
+
 // `resolveModelForTeam` / `cheapModelIdForTeam` (src/lib/model-registry/
 // team-model.ts) are reachable from many unrelated unit tests (memory
 // services, compaction, search, pre-extract, the full chatbot agent set).
@@ -81,25 +108,13 @@ process.env.AI_DB_READONLY_URL ??= "postgres://test:test@127.0.0.1:1/test";
 // dependent (confirmed to differ between local runs and CI). Preloading
 // this stub here, before any test file runs, makes it order-independent:
 // see tests/lib/team-ai-settings-double.ts for the mutable per-test state.
-void mock.module(
-  "@fretik/shared/services/team-ai-settings/get-for-team",
-  () => ({ getTeamAiSettings }),
-);
-
-// Redis — the singleton is imported by dozens of modules, so the first file
-// to load it wins the module cache and a per-file mock loses the race. With a
-// dead-port URL ioredis does not fail, it RETRIES: the page-review budget
-// tests died on the 5 s timeout instead of asserting. The double is in-memory
-// and throws by name on any command it does not implement.
-void mock.module("@fretik/shared/lib/redis", () => ({
-  redis: redisDouble,
-  selectOrCache: async <T>(
-    _key: string,
-    _ttl: number,
-    fetcher: () => Promise<T>,
-  ): Promise<T> => fetcher(),
-  deleteKeysByPrefix: (): Promise<void> => Promise.resolve(),
-}));
+//
+// Registered AFTER the redis mock on purpose: `mockModule` imports the real
+// module to carry its other exports, and this one reaches `lib/redis` — which
+// must already be the double by then.
+await mockModule("@fretik/shared/services/team-ai-settings/get-for-team", {
+  getTeamAiSettings,
+});
 
 // Capture the REAL `@fretik/shared/db` export values before any test
 // file loads (and before any per-file db mock registers), so tests that

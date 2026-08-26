@@ -8,6 +8,7 @@ import {
   type ExtractSource,
   type RunStructuredExtractArgs,
 } from "../../../src/lib/structured-extract";
+import { mockModule } from "../../lib/mock-module";
 import { realDbExports } from "../../lib/real-db";
 import { installSandboxMocks, sandboxFs } from "../../lib/sandbox-fixture";
 
@@ -21,7 +22,7 @@ afterAll(() => {
 // `buildExtractionSchema` stays REAL so field→schema building is exercised
 // end-to-end through the tool.
 const engineCalls: RunStructuredExtractArgs[] = [];
-void mock.module("../../../src/lib/structured-extract", () => ({
+await mockModule("../../../src/lib/structured-extract", {
   buildExtractionSchema,
   runStructuredExtract: async (args: RunStructuredExtractArgs) => {
     engineCalls.push(args);
@@ -35,7 +36,7 @@ void mock.module("../../../src/lib/structured-extract", () => ({
       data: { records: [{ value: 42 }] },
     };
   },
-}));
+});
 
 const { createExtractTool } = await import("../../../src/tools/extract");
 const { DynamicToolManager } =

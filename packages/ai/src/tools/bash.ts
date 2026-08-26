@@ -16,7 +16,7 @@ import { mapE2BError } from "./_e2b-errors";
  * namespace as `tools/python.ts` so every sandbox-touching call
  * across `bash` + `python` on the SAME `conversationId` serialises
  * through one shared lock. Bash itself is a fresh subprocess (no
- * kernel state) but it still shares the sandbox's 1 vCPU / 1 GB AND
+ * kernel state) but it still shares the sandbox's 1 vCPU / 1.5 GB AND
  * the `/workspace` filesystem with `python`. Without this mutex,
  * `bash rm file` racing against `python pd.read_csv(file)` would
  * corrupt the workspace, and concurrent heavy commands (find,
@@ -96,7 +96,7 @@ export const createBashTool = () =>
       "- For HTTP fetches → use `searchWeb` / `webFetch` (sandbox egress is restricted to PyPI / GitHub / Fretik / common B2B service APIs).",
       "- Each call is a fresh `bash -c` subprocess. Env vars, shell variables, `cd`, aliases, `source`d files do NOT persist between calls. Chain with `&&` / `;` / `|` / heredocs in one call when needed.",
       "- Files under `/workspace` DO persist across calls. Files you create under `attachments/` or `outputs/` are auto-mirrored to durable storage — call `presentFiles` to surface generated files to the user.",
-      "- Sandbox: 1 vCPU, 1 GB memory, 5 min wall-clock, non-root user.",
+      "- Sandbox: 1 vCPU, 1.5 GB memory, 5 min wall-clock, non-root user.",
       "- `restart: true` KILLS AND RECREATES the entire sandbox (wipes `/workspace`!). Escape hatch for filesystem corruption only — for kernel-only reset use `python` with `restart: true` instead.",
       "",
       "Output: `{ stdout, stderr, artifacts: [{path, mime, size}] }`. Large outputs are swapped for a `<persisted-output>` envelope — pre-filter with `| head -N` or `| wc -l` when possible.",
@@ -119,6 +119,12 @@ export const createBashTool = () =>
         return { error: "Stopped.", code: TOOL_ERROR_CODES.ABORTED };
       }
 
+      // Bootstrap (skills push, `tar -xzf`, S3 restore, context + memory
+      // hydration) runs on the sandbox and is BILLED, but it sits outside the
+      // traced call below, so its 6-8 s on a cold conversation were attributed
+      // to nothing. Carry the elapsed time into the cost of the run it
+      // enabled — the closest owner there is.
+      const prepareStartedAt = Date.now();
       try {
         await prepareSandboxForCode({
           conversationId,
@@ -130,6 +136,7 @@ export const createBashTool = () =>
       } catch (err) {
         return mapE2BError(err, "while preparing sandbox workspace");
       }
+      const prepareMs = Date.now() - prepareStartedAt;
 
       // Serialise sandbox execution per conversation — see the
       // `e2bExecMutexKey` docblock at the top of this file.
@@ -154,8 +161,9 @@ export const createBashTool = () =>
                 output: {
                   error: r.error ? `${r.error.name}: ${r.error.value}` : null,
                 },
-                costUsd: (durationMs / 1000) * E2B_PRICE_PER_SECOND,
-                metadata: { durationMs },
+                costUsd:
+                  ((durationMs + prepareMs) / 1000) * E2B_PRICE_PER_SECOND,
+                metadata: { durationMs, prepareMs },
               }),
             ),
         );

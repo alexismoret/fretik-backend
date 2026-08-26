@@ -11,11 +11,11 @@ import { acquireSandbox } from "@fretik/shared/services/e2b/acquire-sandbox";
 import {
   execSandboxCommand,
   listSandboxFiles,
-  makeSandboxDir,
   readSandboxFile,
   removeSandboxFile,
   sandboxFileExists,
   writeSandboxFile,
+  writeSandboxFiles,
 } from "@fretik/shared/services/e2b/files";
 import {
   acquireSandboxBootstrapLock,
@@ -532,28 +532,39 @@ const runFullBootstrap = async (conversationId: string): Promise<void> => {
   await touchFretikInitMarker(conversationId);
 };
 
+/**
+ * One `mkdir -p` instead of eight `files.makeDir` calls. The directory names
+ * are compile-time constants from `WORKSPACE_DIRS`, so there is nothing to
+ * quote and nothing a caller can inject. `mkdir -p` is idempotent, which is
+ * what the per-call "ignore already-exists" handling was working around.
+ */
 const createWorkspaceDirs = async (conversationId: string): Promise<void> => {
-  await Promise.all(
-    [
-      WORKSPACE_DIRS.attachments,
-      WORKSPACE_DIRS.outputs,
-      WORKSPACE_DIRS.outputsPersisted,
-      WORKSPACE_DIRS.runs,
-      WORKSPACE_DIRS.drive,
-      WORKSPACE_DIRS.skills,
-      WORKSPACE_DIRS.context,
-      WORKSPACE_DIRS.memories,
-    ].map(async (dir) => {
-      try {
-        await makeSandboxDir(conversationId, dir);
-      } catch (err) {
-        console.warn(
-          `[conversation-storage] makeDir failed for ${dir}:`,
-          err instanceof Error ? err.message : err,
-        );
-      }
-    }),
-  );
+  const dirs = [
+    WORKSPACE_DIRS.attachments,
+    WORKSPACE_DIRS.outputs,
+    WORKSPACE_DIRS.outputsPersisted,
+    WORKSPACE_DIRS.runs,
+    WORKSPACE_DIRS.drive,
+    WORKSPACE_DIRS.skills,
+    WORKSPACE_DIRS.context,
+    WORKSPACE_DIRS.memories,
+  ].map((dir) => `${WORKSPACE_ROOT}/${dir}`);
+  try {
+    const result = await execSandboxCommand(
+      conversationId,
+      `mkdir -p ${dirs.join(" ")}`,
+    );
+    if (result.exitCode !== 0) {
+      console.warn(
+        `[conversation-storage] workspace mkdir exited ${result.exitCode.toString()}: ${result.stderr.trim()}`,
+      );
+    }
+  } catch (err) {
+    console.warn(
+      "[conversation-storage] workspace mkdir failed:",
+      err instanceof Error ? err.message : err,
+    );
+  }
 };
 
 /**
@@ -675,31 +686,43 @@ const pushTeamSkills = async (conversationId: string): Promise<void> => {
   const skillsDir = `${WORKSPACE_ROOT}/${WORKSPACE_DIRS.skills}`;
   const encoder = new TextEncoder();
 
-  // Writes are parallel-safe: distinct paths, no shared lock, E2B's
-  // `files.write` handles `mkdir -p` per call. Promise.allSettled so
-  // a single bad skill doesn't poison the rest.
-  const results = await Promise.allSettled(
-    entries.map((entry) => {
-      const skillMd = materializeTeamSkillMd(entry);
-      const path = `${skillsDir}/${entry.name}/SKILL.md`;
-      return writeSandboxFile(conversationId, path, encoder.encode(skillMd));
-    }),
-  );
+  // `files.write` creates the parent directories it needs, so a batched write
+  // is enough — one request for the whole set. The per-file `allSettled` path
+  // is kept as the fallback: a batch is all-or-nothing, and one malformed
+  // skill should not cost the team every other one.
+  const files = entries.map((entry) => ({
+    path: `${skillsDir}/${entry.name}/SKILL.md`,
+    bytes: encoder.encode(materializeTeamSkillMd(entry)),
+  }));
 
-  const written = results.filter((r) => r.status === "fulfilled").length;
-  for (const [i, r] of results.entries()) {
-    if (r.status === "rejected") {
-      const entry = entries[i];
-      console.warn(
-        `[conversation-storage] failed to write team skill "${entry?.name ?? "?"}":`,
-        r.reason instanceof Error ? r.reason.message : r.reason,
-      );
+  let written = files.length;
+  try {
+    await writeSandboxFiles(conversationId, files);
+  } catch (err) {
+    console.warn(
+      "[conversation-storage] team skills batch write failed, retrying one by one:",
+      err instanceof Error ? err.message : err,
+    );
+    const results = await Promise.allSettled(
+      files.map((file) =>
+        writeSandboxFile(conversationId, file.path, file.bytes),
+      ),
+    );
+    written = results.filter((r) => r.status === "fulfilled").length;
+    for (const [i, r] of results.entries()) {
+      if (r.status === "rejected") {
+        const entry = entries[i];
+        console.warn(
+          `[conversation-storage] failed to write team skill "${entry?.name ?? "?"}":`,
+          r.reason instanceof Error ? r.reason.message : r.reason,
+        );
+      }
     }
   }
 
   const duration = Date.now() - startedAt;
   console.log(
-    `[conversation-storage] pushed ${written.toString()}/${entries.length.toString()} team skills in parallel, ${duration.toString()}ms`,
+    `[conversation-storage] pushed ${written.toString()}/${entries.length.toString()} team skills, ${duration.toString()}ms`,
   );
 };
 
@@ -719,8 +742,7 @@ const EXTERNAL_APPS_SDK_TARBALL_SANDBOX_PATH =
 const EXTERNAL_APPS_SKILL_TARBALL_SANDBOX_PATH = (
   providerKey: string,
 ): string => `/tmp/fretik-external-apps-skill-${providerKey}.tar.gz`;
-const EXTERNAL_APPS_AUTH_DIR = ".fretik";
-const EXTERNAL_APPS_AUTH_FILE = `${WORKSPACE_ROOT}/${EXTERNAL_APPS_AUTH_DIR}/auth.json`;
+const EXTERNAL_APPS_AUTH_FILE = `${WORKSPACE_ROOT}/.fretik/auth.json`;
 
 /**
  * Bundle every `.py` under `sandbox-assets/fretik_apps/` into a gzipped
@@ -1012,30 +1034,39 @@ const pushMcpConnectionOverlay = async (
   const skillsDir = `${WORKSPACE_ROOT}/${WORKSPACE_DIRS.skills}`;
   const encoder = new TextEncoder();
 
-  // Distinct paths per overlay (unique provider key) → parallel-safe.
-  // allSettled so one bad connection doesn't poison the rest.
-  const results = await Promise.allSettled(
-    overlays.flatMap((overlay) => [
-      writeSandboxFile(
-        conversationId,
-        `${sdkDir}/${overlay.moduleName}.py`,
-        encoder.encode(overlay.sdkPy),
+  // One batched write for the 2N files. Falls back to per-file writes so a
+  // single bad connection still cannot poison the rest — which is what the
+  // `allSettled` loop this replaces was buying, at one round-trip per file.
+  const files = overlays.flatMap((overlay) => [
+    {
+      path: `${sdkDir}/${overlay.moduleName}.py`,
+      bytes: encoder.encode(overlay.sdkPy),
+    },
+    {
+      path: `${skillsDir}/${overlay.providerKey}/SKILL.md`,
+      bytes: encoder.encode(overlay.skillMd),
+    },
+  ]);
+  try {
+    await writeSandboxFiles(conversationId, files);
+  } catch (err) {
+    console.warn(
+      "[conversation-storage] MCP overlay batch write failed, retrying one by one:",
+      err instanceof Error ? err.message : err,
+    );
+    const results = await Promise.allSettled(
+      files.map((file) =>
+        writeSandboxFile(conversationId, file.path, file.bytes),
       ),
-      writeSandboxFile(
-        conversationId,
-        `${skillsDir}/${overlay.providerKey}/SKILL.md`,
-        encoder.encode(overlay.skillMd),
-      ),
-    ]),
-  );
-
-  for (const [i, r] of results.entries()) {
-    if (r.status === "rejected") {
-      const overlay = overlays[Math.floor(i / 2)];
-      console.warn(
-        `[conversation-storage] failed to write MCP overlay for "${overlay?.providerKey ?? "?"}":`,
-        r.reason instanceof Error ? r.reason.message : r.reason,
-      );
+    );
+    for (const [i, r] of results.entries()) {
+      if (r.status === "rejected") {
+        const overlay = overlays[Math.floor(i / 2)];
+        console.warn(
+          `[conversation-storage] failed to write MCP overlay for "${overlay?.providerKey ?? "?"}":`,
+          r.reason instanceof Error ? r.reason.message : r.reason,
+        );
+      }
     }
   }
 
@@ -1061,16 +1092,11 @@ export const writeSandboxAuthFile = async (
   conversationId: string,
   payload: { jwt: string; backendUrl: string; turnId: string },
 ): Promise<void> => {
-  try {
-    await makeSandboxDir(conversationId, EXTERNAL_APPS_AUTH_DIR);
-  } catch (err) {
-    // Defensive — `writeSandboxFile` below will fail loudly if the dir
-    // truly cannot be created; mkdir races typically resolve safely.
-    console.warn(
-      "[conversation-storage] makeDir failed for .fretik:",
-      err instanceof Error ? err.message : err,
-    );
-  }
+  // No `makeSandboxDir` first: `files.write` creates the parent directories
+  // it needs ("Writing to a file at path that doesn't exist creates the
+  // necessary directories" — E2B SDK). This runs on EVERY turn, including
+  // turns that never touch the sandbox otherwise, so the extra round-trip was
+  // pure overhead on the request path.
   const body = JSON.stringify({
     jwt: payload.jwt,
     backend_url: payload.backendUrl,
@@ -1098,35 +1124,61 @@ const touchFretikInitMarker = async (conversationId: string): Promise<void> => {
   }
 };
 
+/**
+ * Pull the conversation's backup-eligible files back into the sandbox.
+ *
+ * Two phases: decide + fetch in parallel (S3 GETs, independent), then ONE
+ * batched sandbox write. The per-file write loop this replaces paid a
+ * round-trip per attachment on the cold-start path, where the file count is
+ * exactly the user's attachment count. Falls back to per-file writes if the
+ * batch is rejected, so one oversized entry cannot cost us the whole restore.
+ */
 const restoreFromS3 = async (conversationId: string): Promise<void> => {
   const paths = await listSessionPaths(conversationId);
   if (paths.length === 0) return;
 
-  await Promise.all(
+  const candidates = await Promise.all(
     paths.map(async (relativePath) => {
       // Backup-eligible only — we never restore bookkeeping dirs.
-      if (!isUnderBackupEligibleDir(relativePath)) return;
+      if (!isUnderBackupEligibleDir(relativePath)) return null;
 
       // Idempotent: skip if the sandbox already has the file.
-      if (await sandboxFileExists(conversationId, relativePath)) return;
+      if (await sandboxFileExists(conversationId, relativePath)) return null;
 
       const bytes = await readSessionFile(conversationId, relativePath);
       if (!bytes) {
         console.warn(
           `[conversation-storage] restoreFromS3: missing GET for ${conversationId}/${relativePath}`,
         );
-        return;
+        return null;
       }
-      try {
-        await writeSandboxFile(conversationId, relativePath, bytes);
-      } catch (err) {
-        console.warn(
-          `[conversation-storage] restoreFromS3: write failed for ${relativePath}:`,
-          err instanceof Error ? err.message : err,
-        );
-      }
+      return { path: relativePath, bytes };
     }),
   );
+
+  const files = candidates.filter((f) => f !== null);
+  if (files.length === 0) return;
+
+  try {
+    await writeSandboxFiles(conversationId, files);
+  } catch (err) {
+    console.warn(
+      `[conversation-storage] restoreFromS3: batch write failed (${files.length.toString()} files), retrying one by one:`,
+      err instanceof Error ? err.message : err,
+    );
+    await Promise.all(
+      files.map(async (file) => {
+        try {
+          await writeSandboxFile(conversationId, file.path, file.bytes);
+        } catch (writeErr) {
+          console.warn(
+            `[conversation-storage] restoreFromS3: write failed for ${file.path}:`,
+            writeErr instanceof Error ? writeErr.message : writeErr,
+          );
+        }
+      }),
+    );
+  }
 };
 
 // ============================================================ //

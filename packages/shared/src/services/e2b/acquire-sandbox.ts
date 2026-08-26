@@ -1,6 +1,7 @@
 import { Sandbox } from "@e2b/code-interpreter";
 import { randomUUID } from "node:crypto";
 import {
+  E2B_ENVIRONMENT,
   E2B_TEMPLATE,
   SANDBOX_TIMEOUT_MS,
   assertE2BConfigured,
@@ -10,6 +11,7 @@ import {
   type NetworkPolicyOverrides,
 } from "./network-policy";
 import {
+  SANDBOX_LOCK_TTL_S,
   acquireSandboxLock,
   clearSandboxFromRegistry,
   getSandboxIdFromRegistry,
@@ -28,25 +30,35 @@ export interface AcquireSandboxOptions {
 }
 
 /**
- * Polling parameters for the case where another instance is creating
- * the sandbox concurrently and we have to wait. 200ms × 75 = 15s
- * ceiling — `Sandbox.create` cold takes ~2-5s in practice, so the
- * waiter wins comfortably.
+ * Polling parameters for the case where another instance is creating the
+ * sandbox concurrently and we have to wait. `Sandbox.create` cold takes ~2-5 s
+ * in practice, so the waiter normally wins on the first few ticks; the ceiling
+ * matches `SANDBOX_LOCK_TTL_S` so a waiter never gives up while the holder
+ * still legitimately owns the lock.
  */
-const LOCK_POLL_INTERVAL_MS = 200;
-const LOCK_POLL_MAX_ITERATIONS = 75;
+const LOCK_POLL_INTERVAL_MS = 250;
+const LOCK_POLL_MAX_ITERATIONS = (SANDBOX_LOCK_TTL_S * 1000) / 250;
 
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * `Sandbox.connect` resumes a paused sandbox AND sets its lease in the same
+ * request (the connect body carries `timeout`, defaulting to the SDK's own
+ * 5 min). Passing ours explicitly pins the value instead of inheriting a
+ * default that could drift, and retires the separate `setTimeout` call this
+ * used to make — a second HTTP round-trip that set what connect had just set.
+ */
+const connectWithLease = (sandboxId: string): Promise<Sandbox> =>
+  Sandbox.connect(sandboxId, { timeoutMs: SANDBOX_TIMEOUT_MS });
 
 const reconnectExisting = async (
   sandboxId: string,
   conversationId: string,
 ): Promise<SandboxLease> => {
-  const sbx = await Sandbox.connect(sandboxId);
-  await sbx.setTimeout(SANDBOX_TIMEOUT_MS);
+  const sandbox = await connectWithLease(sandboxId);
   await setSandboxIdInRegistry(conversationId, sandboxId);
-  return { sandboxId, conversationId };
+  return { sandboxId, conversationId, sandbox };
 };
 
 /**
@@ -73,9 +85,8 @@ export const acquireSandbox = async (
   const cachedId = await getSandboxIdFromRegistry(conversationId);
   if (cachedId) {
     try {
-      const sbx = await Sandbox.connect(cachedId);
-      await sbx.setTimeout(SANDBOX_TIMEOUT_MS);
-      return { sandboxId: cachedId, conversationId };
+      const sandbox = await connectWithLease(cachedId);
+      return { sandboxId: cachedId, conversationId, sandbox };
     } catch {
       // Sandbox cleaned up by E2B. Drop the stale Redis entry and fall
       // through to the metadata lookup.
@@ -87,7 +98,7 @@ export const acquireSandbox = async (
   // desync recovery, e.g. after AI server restart with TTL still live
   // on E2B side).
   const existing = Sandbox.list({
-    query: { metadata: { conversationId } },
+    query: { metadata: { conversationId, environment: E2B_ENVIRONMENT } },
   });
   if (existing.hasNext) {
     const sandboxes = await existing.nextItems();
@@ -124,7 +135,7 @@ export const acquireSandbox = async (
       return reconnectExisting(reCachedId, conversationId);
     }
     const reExisting = Sandbox.list({
-      query: { metadata: { conversationId } },
+      query: { metadata: { conversationId, environment: E2B_ENVIRONMENT } },
     });
     if (reExisting.hasNext) {
       const sandboxes = await reExisting.nextItems();
@@ -136,7 +147,8 @@ export const acquireSandbox = async (
 
     const policy = buildSandboxNetworkPolicy(options?.network);
     const sbx = await Sandbox.create(E2B_TEMPLATE, {
-      metadata: { conversationId },
+      // `environment` gates the orphan sweep — see `E2B_ENVIRONMENT`.
+      metadata: { conversationId, environment: E2B_ENVIRONMENT },
       timeoutMs: SANDBOX_TIMEOUT_MS,
       lifecycle: { onTimeout: "pause", autoResume: true },
       allowInternetAccess: true,
@@ -152,7 +164,7 @@ export const acquireSandbox = async (
       },
     });
     await setSandboxIdInRegistry(conversationId, sbx.sandboxId);
-    return { sandboxId: sbx.sandboxId, conversationId };
+    return { sandboxId: sbx.sandboxId, conversationId, sandbox: sbx };
   } finally {
     await releaseSandboxLock(conversationId, lockToken);
   }

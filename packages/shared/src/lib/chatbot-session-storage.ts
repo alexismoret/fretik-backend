@@ -18,9 +18,8 @@ import {
  * hydration into /tmp) and @fretik/api (conversation DELETE handler)
  * consume this layer directly — no internal HTTP hop.
  *
- * `@fretik/ai/lib/chatbot-session-storage.ts` re-exports these
- * helpers and adds the `/tmp/fretik-ai/{convId}/` hot-cache
- * management (`hydrateConversationCache`, `writeSessionFileToCache`).
+ * There is no local hot cache: S3 and the sandbox's `/workspace` are
+ * the only two places these bytes live.
  */
 
 const S3_SESSION_PREFIX = "chatbot-sessions";
@@ -122,11 +121,10 @@ export const readSessionFile = async (
  *
  * **Legacy semantics**: returns ONLY top-level basenames, hiding
  * anything nested under a subdirectory (`attachments/...`,
- * `outputs/...`). Kept as-is for the legacy chatbot-session-storage
- * (`@fretik/ai/lib/chatbot-session-storage.ts`) which mirrors a flat
- * `/tmp/fretik-ai/{convId}/` layout. New callers using the
- * sandbox-first conversation-storage façade should use
- * `listSessionPaths` to get the full nested tree.
+ * `outputs/...`). Kept as-is for the legacy callers that assume a flat
+ * per-conversation layout. New callers using the sandbox-first
+ * conversation-storage façade should use `listSessionPaths` to get the
+ * full nested tree.
  */
 export const listSessionFiles = async (
   conversationId: string,

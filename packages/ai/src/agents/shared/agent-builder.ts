@@ -277,6 +277,20 @@ const defaultOnStepEnd = <TTools extends ToolSet>(
         `[agent:${agentId}]${tracePrefix} reasoning-only zombie step detected — finish=${event.finishReason} reasoningTokens=${reasoningTokens?.toString() ?? "?"}`,
       );
     }
+    /**
+     * The OTHER shape, and the one that cost a night in production: the step
+     * DID call a tool and still finished on nobody's decision. Measured
+     * 2026-08-26 — the provider buffers tool-call arguments, so a long write
+     * leaves the socket silent until an upstream watchdog cuts it, and what
+     * comes back is a truncated call. Logged beside the Langfuse flag
+     * (`lib/langfuse-cost.ts` writes `suspectUpstreamCut`) so the container
+     * log tells the same story as the trace.
+     */
+    if (isBudgetExhausted && !hasNoToolCalls) {
+      console.error(
+        `[agent:${agentId}]${tracePrefix} step finished mid-tool-call — finish=${event.finishReason} tools=[${toolNames}]. Arguments may be truncated; suspect an upstream cut.`,
+      );
+    }
   };
 };
 

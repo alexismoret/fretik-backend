@@ -74,6 +74,10 @@ import {
   listContractHeavy,
   readComponentDocs,
 } from "./page-component-docs";
+import {
+  EMITTED_SOURCE_SENTINEL,
+  resolveEmittedSource,
+} from "./page-emitted-source";
 import { PAGE_ENVIRONMENT_GUIDE } from "./page-environment-guide";
 
 /**
@@ -213,9 +217,31 @@ const definitionSectionsSchema = z.object({
       source: z.string().max(PAGE_LIMITS.maxSourceChars),
     })
     .optional()
-    .describe("The COMPLETE Vue SFC — never a fragment."),
+    .describe(
+      `The COMPLETE Vue SFC — never a fragment. Page-scale source does not travel here: write it as a \`\`\`vue fenced block in your message, then send exactly "${EMITTED_SOURCE_SENTINEL}" as this value and it is read back from that fence. Code inside a tool call is cut mid-write by provider timeouts; code as text is not.`,
+    ),
 });
 type DefinitionSections = z.infer<typeof definitionSectionsSchema>;
+
+/**
+ * Past this, an inline source is long enough to be killed mid-generation on a
+ * slow upstream (see `page-emitted-source.ts`). Warned, never refused: a
+ * refusal lands AFTER the emission was paid for, and one that arrived intact
+ * survived — the point is to move the NEXT write onto the fence, not to bill
+ * this one twice.
+ */
+const INLINE_SOURCE_WARNING_CHARS = 8_000;
+
+const inlineSourceWarnings = (
+  sections: DefinitionSections | undefined,
+  wasEmitted: boolean,
+): string[] =>
+  !wasEmitted &&
+  (sections?.code?.source.length ?? 0) > INLINE_SOURCE_WARNING_CHARS
+    ? [
+        `Source this size sent as a tool argument is cut mid-write when the provider is slow, and a cut write saves nothing. Next time emit it as a \`\`\`vue fenced block in your message and send "${EMITTED_SOURCE_SENTINEL}" as definition.code.source.`,
+      ]
+    : [];
 
 /** Assemble a stored definition from sections + a base (the stored page on
  * update, the empty page on create). */
@@ -249,7 +275,7 @@ const assembleDefinition = (
  * result that only said so is what let a blank page be reported as finished.
  */
 const DRAFT_NEXT_STEP = (pageId: string): string =>
-  `The page is open and its datasets resolve, but it has no code yet — nothing renders. Send the complete SFC with update { pageId: "${pageId}", definition: { code: { source } } }, then hand back the url.`;
+  `The page is open and its datasets resolve, but it has no code yet — nothing renders. Emit the complete SFC as a \`\`\`vue block, then save it with update { pageId: "${pageId}", definition: { code: { source: "${EMITTED_SOURCE_SENTINEL}" } } }, and hand back the url.`;
 
 /**
  * Translate a thrown `HTTPException` from the page services into the envelope
@@ -324,6 +350,120 @@ const compileRefusalMessage = (err: unknown): string | null => {
     message.startsWith("Page code failed to compile")
     ? message
     : null;
+};
+
+/**
+ * The outcome of saving a source nobody asked to save — see `savePageSource`.
+ * `reason` is written for the AGENT: it ends up in the build marker, and the
+ * parent decides what to tell the user from it.
+ */
+export type SalvageOutcome =
+  | { saved: true; pageId: string; url: string }
+  | { saved: false; reason: string };
+
+/**
+ * Save a page source OUTSIDE a tool call — the recovery path for a run that
+ * wrote its SFC and died before saving it.
+ *
+ * This exists because of what the fence protocol makes possible. The source
+ * now streams as text, so a build cut mid-flight leaves the complete file in
+ * its own transcript: the worst failure in the product (a whole page written,
+ * paid for, and lost — measured ten times on 2026-08-26) becomes a page on
+ * disk. `build-page.ts` calls this when it finds such a fence unclaimed.
+ *
+ * Best-effort by construction: every failure comes back as a sentence rather
+ * than a throw, because the alternative to an imperfect save here is nothing
+ * at all.
+ */
+export const savePageSource = async (params: {
+  source: string;
+  pageId?: string;
+  name?: string;
+  teamId: string;
+  organizationId: string;
+  userId: string | null;
+  conversationId?: string;
+}): Promise<SalvageOutcome> => {
+  const sections: DefinitionSections = { code: { source: params.source } };
+  const actor = {
+    actor: "agent" as const,
+    userId: params.userId ?? null,
+    conversationId: params.conversationId ?? null,
+  };
+  try {
+    if (params.pageId !== undefined) {
+      const requester: PageRequester | undefined = params.userId
+        ? {
+            userId: params.userId,
+            isAdmin: await isOrgAdmin(params.organizationId, params.userId),
+          }
+        : undefined;
+      const existing = await getPage({
+        pageId: params.pageId,
+        teamId: params.teamId,
+        requester,
+      });
+      // The same guard the tool applies, for the same reason: an unclaimed
+      // fence can be a SECTION the builder was about to splice in, and
+      // overwriting a whole page with it is destruction under a rescue's name.
+      if (
+        isDestructiveRewrite(existing.definition.code.source, params.source)
+      ) {
+        return {
+          saved: false,
+          reason:
+            "the source it wrote is far shorter than the stored page, so it was left alone",
+        };
+      }
+      const updated = await updatePage({
+        pageId: params.pageId,
+        teamId: params.teamId,
+        actingUserId: params.userId ?? "",
+        requester,
+        input: {
+          definition: assembleDefinition(existing.definition, sections),
+        },
+        actor,
+      });
+      return {
+        saved: true,
+        pageId: updated.page.id,
+        url: `/pages/${updated.page.id}`,
+      };
+    }
+    const name = params.name ?? derivePageName(sections);
+    if (name === null) {
+      return { saved: false, reason: "it carries no heading to name it from" };
+    }
+    const created = await createPage({
+      organizationId: params.organizationId,
+      teamId: params.teamId,
+      createdByUserId: params.userId ?? "",
+      input: {
+        name,
+        description: "",
+        userId: null,
+        definition: assembleDefinition(EMPTY_PAGE_DEFINITION, sections),
+        ...(params.conversationId
+          ? { sourceConversationId: params.conversationId }
+          : {}),
+      },
+      actor,
+    });
+    return {
+      saved: true,
+      pageId: created.page.id,
+      url: `/pages/${created.page.id}`,
+    };
+  } catch (error) {
+    const compileMessage = compileRefusalMessage(error);
+    return {
+      saved: false,
+      reason:
+        compileMessage ??
+        (error instanceof Error ? error.message : "it could not be saved"),
+    };
+  }
 };
 
 const sanitizeIcon = (
@@ -435,8 +575,17 @@ const AUTHORING_ACTIONS = [
   "components",
   "dry_run",
   "create",
+  "stage",
   ...PAGE_ACTIONS,
 ] as const;
+
+/**
+ * What `stage` answers. It cannot read the fence it accompanies — a tool sees
+ * the messages that PROMPTED its step, not the assistant message it was called
+ * from — so its whole job is to keep the loop alive while the source streams as
+ * text, and to name the call that claims it.
+ */
+const STAGE_NEXT_STEP = `The source is in your message. Now save it: create — or update { pageId } for a page that exists — with definition.code.source set to exactly "${EMITTED_SOURCE_SENTINEL}", plus name and the definition sections that go with it. Do not write the code again.`;
 
 const authoringDescription = [
   "Read, write and publish pages — live dashboards, directories and mini-apps the team opens in the app, written as real Vue code over the team's data. A page stores CODE plus a data contract, not a snapshot: datasets re-query on every view, so the numbers are never stale.",
@@ -444,8 +593,9 @@ const authoringDescription = [
   "- get_guide: the runtime contract (allowed imports, the fretik bridge API, sandbox rules, styling tokens) + the dataset/variable/operation grammar. Read it before your FIRST page in a conversation.",
   "- components: the real Nuxt UI API — every prop, slot and emit — for up to 6 components at a time, generated from the library's own docs. Add `full: true` for usage notes and worked examples when the API alone leaves you guessing. Ask for the ones your page will actually use, before writing the template: guessed props are silently dropped, and content put in the wrong named slot renders somewhere else with no error. What you read here is remembered for the conversation, and a write that places a named-slot component you never read says so in `warnings`. The skill says WHICH component fits; this says what it accepts.",
   "- dry_run: execute a definition WITHOUT saving — runs the datasets, compiles the code. Returns per-dataset samples (row count, real field names, one real row, distinct groups): every question you would otherwise pay a querySql round trip for. A definition without `code` is a pure DATA probe. Never dry_run a page you are about to save or just saved: create and update already compile and return the same samples and warnings, so a dry_run there re-sends the whole source to learn nothing.",
-  "- create: name + definition { brief?, variables?, datasets?, operations?, theme?, code? } (+ icon, color, description, scope team|private). The tool stamps the version and fills defaults. Omit `code` to open a data-first draft, then write it via update. When a create fails to compile the source you sent is KEPT for 15 minutes: repeat create with `name` + `edits` — one per named line, against that kept source — rather than writing the page a second time.",
-  '- update: pageId + any field. Code changes go through `edits` — [{ oldString, newString, after?, replaceAll? }], exact-match-once against the stored source, then recompiled — however many sites they touch; that is the normal path, not a small-change path. `get` first when unsure of the current source. The non-code `definition` sections REPLACE whole and omitted ones keep their stored value, so datasets, operations and the brief change here too, in the same call as the edits that use them. A whole-file `definition.code` much SMALLER than the stored source is refused without `rewrite: true` — that shape is how a "targeted repair" once destroyed a page. When a write fails to compile, the source you sent is KEPT for 15 minutes: fix the named lines with `edits` (they apply to that kept source) instead of resending the file.',
+  `- stage: call it in the SAME message as the \`\`\`vue block holding your source. Writing a page as text is what keeps the connection alive while it streams — source sent as a tool argument is cut mid-write whenever the provider is slow, and a cut write saves nothing. \`stage\` returns the call that saves what you just wrote.`,
+  `- create: name + definition { brief?, variables?, datasets?, operations?, theme?, code? } (+ icon, color, description, scope team|private). The tool stamps the version and fills defaults. \`definition.code.source\` takes "${EMITTED_SOURCE_SENTINEL}", which reads back the \`\`\`vue block from your previous message — that is how a page is saved. Omit \`code\` to open a data-first draft, then write it via update. When a create fails to compile the source is KEPT for 15 minutes: repeat create with \`name\` + \`edits\` — one per named line, against that kept source — rather than writing the page a second time.`,
+  `- update: pageId + any field. Code changes go through \`edits\` — [{ oldString, newString, after?, replaceAll? }], exact-match-once against the stored source, then recompiled — however many sites they touch; that is the normal path, not a small-change path. \`get\` first when unsure of the current source. Replacing the whole file instead goes through the same route as create: emit it as a \`\`\`vue block, then send definition.code.source "${EMITTED_SOURCE_SENTINEL}". The non-code \`definition\` sections REPLACE whole and omitted ones keep their stored value, so datasets, operations and the brief change here too, in the same call as the edits that use them. A whole-file replacement much SMALLER than the stored source is refused without \`rewrite: true\` — that shape is how a "targeted repair" once destroyed a page. When a write fails to compile, the source is KEPT for 15 minutes: fix the named lines with \`edits\` (they apply to that kept source) instead of writing the file again.`,
   '- review: pageId — RENDER the saved page in a browser and report what using it is like. Captures at desktop, tablet and mobile widths, plus below the fold when the page is taller than the screen and the same page with every dataset emptied, a scripted click pass — which also serialises the overlays it opens, so what is behind a click is judged too — then a design critique. `blocking` is MEASURED, not judged — an overlay that opens empty or prints a raw object, id or timestamp, a target that does nothing when clicked, sideways scroll, a blank empty state — and it fails a page the critique liked. Fix those first, apply `findings` with `edits`, review again. `verdict: "ship"` ENDS the loop: hand back the url and pass `elevations` (what would make the page better, not what is broken) on as next steps — an unchanged page returns its standing verdict rather than a re-score, and the budget is three scored reviews per turn, shared with whoever else reviews this page. Every scored round is SAVED, and if an earlier one scored clearly higher the page is restored to it and `restoredFromRound` says so — when that happens the stored source is no longer the one you sent, so `get` before editing again.',
   "- get / list: one page's full source + data contract (+ its recent runtime errors — fix those when present) / the team's pages.",
   "- delete: pageId — remove a page for good, and its public URL with it. Yours to call when a page you just made is the wrong answer, or when the user asks; ask first otherwise. There is no undo.",
@@ -548,8 +698,39 @@ export const createManagePageTool = (config: { authoring: boolean }) =>
        */
       const turnScope = ctx.traceId?.split(".")[0] ?? ctx.conversationId;
 
+      /**
+       * Resolve `"@emitted"` before any action reads the definition, so every
+       * branch below works on real source and none of them knows about the
+       * protocol. See `page-emitted-source.ts` for why the source travels as
+       * text at all.
+       */
+      const claimsEmitted =
+        input.definition?.code?.source === EMITTED_SOURCE_SENTINEL;
+      let definitionInput: DefinitionSections | undefined = input.definition;
+      if (claimsEmitted) {
+        const emitted = resolveEmittedSource(options.messages);
+        if (emitted === null) {
+          // Cheap to retry BY DESIGN — the arguments are a few dozen tokens,
+          // and the fence the model just wrote is already paid for. The one
+          // thing this must never do is send it back to writing the file.
+          return toolError(
+            TOOL_ERROR_CODES.INVALID_ARGS,
+            "No ```vue block found in your previous messages, so there is no source to save.",
+            "If you emitted the source in the SAME message as this call, repeat this call unchanged — a fence becomes readable one step after it is written. Otherwise emit the complete SFC as a ```vue block first, then repeat.",
+          );
+        }
+        definitionInput = {
+          ...input.definition,
+          code: { source: emitted },
+        };
+      }
+
       try {
         switch (input.action) {
+          case "stage": {
+            return { staged: true, next: STAGE_NEXT_STEP };
+          }
+
           case "get_guide": {
             return {
               guide: PAGE_ENVIRONMENT_GUIDE,
@@ -602,7 +783,7 @@ export const createManagePageTool = (config: { authoring: boolean }) =>
           }
 
           case "dry_run": {
-            if (!input.definition) {
+            if (!definitionInput) {
               return toolError(
                 TOOL_ERROR_CODES.INVALID_ARGS,
                 "dry_run needs a definition.",
@@ -611,7 +792,7 @@ export const createManagePageTool = (config: { authoring: boolean }) =>
             }
             const definition = assembleDefinition(
               EMPTY_PAGE_DEFINITION,
-              input.definition,
+              definitionInput,
             );
             const run = await dryRunPage({
               definition,
@@ -634,9 +815,9 @@ export const createManagePageTool = (config: { authoring: boolean }) =>
             // again. `edits` on `create` are how that retry gets paid once —
             // they anchor on the kept source, exactly like the update path.
             const pendingDraft = await readPageDraft(turnScope, NEW_PAGE_DRAFT);
-            let createSections = input.definition;
+            let createSections = definitionInput;
             let createEditFailures: string[] = [];
-            if (input.edits && !input.definition?.code) {
+            if (input.edits && !definitionInput?.code) {
               if (pendingDraft === null) {
                 return toolError(
                   TOOL_ERROR_CODES.INVALID_ARGS,
@@ -739,6 +920,7 @@ export const createManagePageTool = (config: { authoring: boolean }) =>
                 : {}),
               warnings: distinctWarnings([
                 ...createEditFailures,
+                ...inlineSourceWarnings(input.definition, claimsEmitted),
                 ...icon.warnings,
                 ...color.warnings,
                 ...created.warnings,
@@ -825,7 +1007,7 @@ export const createManagePageTool = (config: { authoring: boolean }) =>
             // targeted patch against the stored source is the cheap change the
             // parent SHOULD make rather than paying for a delegate to retitle
             // a card.
-            if (!config.authoring && input.definition) {
+            if (!config.authoring && definitionInput) {
               return toolError(
                 TOOL_ERROR_CODES.PAGE_REQUIRES_BUILDER,
                 "Rewriting a page's definition is `buildPage`'s work, not this tool's.",
@@ -853,25 +1035,25 @@ export const createManagePageTool = (config: { authoring: boolean }) =>
             // post-payment toll booth's.
             if (
               config.authoring &&
-              input.definition?.code &&
+              definitionInput?.code &&
               input.rewrite !== true &&
-              isDestructiveRewrite(storedSource, input.definition.code.source)
+              isDestructiveRewrite(storedSource, definitionInput.code.source)
             ) {
               return toolError(
                 TOOL_ERROR_CODES.INVALID_ARGS,
-                `The sent code is ${input.definition.code.source.length.toString()} chars against ${storedSource.length.toString()} stored — replacing the page with a much smaller one destroys work nobody asked to lose.`,
+                `The sent code is ${definitionInput.code.source.length.toString()} chars against ${storedSource.length.toString()} stored — replacing the page with a much smaller one destroys work nobody asked to lose.`,
                 "If the user asked for a different, smaller page, repeat with `rewrite: true`. Otherwise change only what needs changing, with `edits`.",
               );
             }
 
-            let sections = input.definition;
+            let sections = definitionInput;
             let editFailures: string[] = [];
             let draftConsumed = false;
             // `edits` compose with the OTHER sections, and only `definition.code`
             // displaces them. Declaring an operation and wiring the button that
             // runs it is one change; making the tool take it as two calls is
             // what pushed a whole-file `definition` back into the normal path.
-            if (input.edits && !input.definition?.code) {
+            if (input.edits && !definitionInput?.code) {
               const edits = input.edits;
               // A refused write leaves its source behind (see the compile
               // catch below); edits sent right after a refusal mean "fix MY
@@ -1002,6 +1184,7 @@ export const createManagePageTool = (config: { authoring: boolean }) =>
                 : {}),
               warnings: distinctWarnings([
                 ...editFailures,
+                ...inlineSourceWarnings(input.definition, claimsEmitted),
                 ...icon.warnings,
                 ...color.warnings,
                 ...updated.warnings,
@@ -1037,7 +1220,7 @@ export const createManagePageTool = (config: { authoring: boolean }) =>
               return toolError(
                 TOOL_ERROR_CODES.INVALID_ARGS,
                 "This page has no compiled code — there is nothing to render.",
-                `Send the SFC with update { pageId: "${page.id}", definition: { code: { source } } }, then review.`,
+                `Emit the SFC as a \`\`\`vue block, save it with update { pageId: "${page.id}", definition: { code: { source: "${EMITTED_SOURCE_SENTINEL}" } } }, then review.`,
               );
             }
 

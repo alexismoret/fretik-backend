@@ -7,8 +7,8 @@ import { deleteObject, getObjectBytes, putObject } from "./s3";
  * has an **original** key (raw bytes the user uploaded) and an
  * optional **sidecar** key (`.md` carrying the OCR / spreadsheet /
  * markdown extraction) so the conversation-turn hydrator can
- * download both straight to `/tmp/fretik-ai/{convId}/context/` and
- * the regular `read` tool serves them just like any other file.
+ * write both into the sandbox's `/workspace/context/` and the
+ * regular `read` tool serves them just like any other file.
  *
  * Pattern reference: `lib/chatbot-session-storage.ts` — same
  * primitives (putObject / getObjectBytes / deleteObject), same

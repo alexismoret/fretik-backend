@@ -1,4 +1,3 @@
-import { Sandbox } from "@e2b/code-interpreter";
 import { acquireSandbox } from "./acquire-sandbox";
 import {
   clearPythonContextFromRegistry,
@@ -49,7 +48,7 @@ export const restartPythonKernel = async (
   // sandbox. Nothing to ask the kernel to restart.
   if (cached.sandboxId !== lease.sandboxId) return;
 
-  const sbx = await Sandbox.connect(lease.sandboxId);
+  const sbx = lease.sandbox;
   try {
     await sbx.restartCodeContext(cached.contextId);
   } catch (err) {

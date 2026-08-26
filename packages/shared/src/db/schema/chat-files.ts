@@ -22,7 +22,7 @@ import { documents } from "./documents";
  * `uploading` while the S3 session put is in flight; `ocr` while
  * Mistral OCR is running for PDF / DOCX / PPTX / images; `ready` once
  * the file (and its optional markdown sidecar) are reachable from the
- * conversation's `/tmp/fretik-ai/{convId}/` sandbox; `error` if any
+ * conversation's sandbox; `error` if any
  * step failed with `errorMessage` populated.
  */
 export const aiChatFileStatusEnum = pgEnum("ai_chat_file_status", [
@@ -37,8 +37,8 @@ export const aiChatFileStatusEnum = pgEnum("ai_chat_file_status", [
  * Per-conversation user-uploaded chat file. Distinct from the
  * `documents` table (Drive) and from persisted-output files (tool
  * results, path-only). Metadata lives here; the bytes live in the
- * Phase 3.1 session folder `chatbot-sessions/{conversationId}/` on S3
- * plus the `/tmp/fretik-ai/{convId}/` hot cache.
+ * session folder `chatbot-sessions/{conversationId}/` on S3, hydrated
+ * into the sandbox's `/workspace/attachments/` on demand.
  *
  * `documentId` is populated when the user toggles "Save to Drive" at
  * upload time — the parallel `documentService.upload` returns a

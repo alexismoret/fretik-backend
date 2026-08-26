@@ -1,5 +1,8 @@
-# Sandbox worker image — Python deps pre-installed so code_interpreter-style
-# execution works offline (network_mode=none blocks pip at runtime).
+# Sandbox worker image — Python deps baked in so the first cell runs without a
+# download. Runtime `pip install` DOES work: egress is an allowlist that
+# permits PyPI (`services/e2b/network-policy.ts`), and both the `python` and
+# `bash` tool descriptions tell the model so. Pre-installing is about latency
+# and reproducibility, not reachability.
 # This file is the ONLY source of truth: `e2b/template/build.ts` reads it and
 # nothing else does. Changing it requires a `bun run e2b:build` to take effect.
 

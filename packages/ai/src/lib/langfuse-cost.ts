@@ -24,6 +24,7 @@
  */
 import type {
   EmbeddingModelV4Middleware,
+  LanguageModelV4FinishReason,
   LanguageModelV4Middleware,
   LanguageModelV4StreamPart,
   SharedV4ProviderMetadata,
@@ -74,6 +75,39 @@ const extractOpenRouterProvider = (
 };
 
 /**
+ * A generation that looks like it was CUT by the upstream rather than
+ * finished by the model.
+ *
+ * Measured 2026-08-26: every killed page write came back after ~120s of
+ * silence carrying no finish reason at all — OpenRouter sent `null`, which
+ * lands here as `other` — because the provider buffers tool-call arguments and
+ * an idle watchdog closed the socket (`tools/page-emitted-source.ts` carries
+ * the full account). Nothing in the trace said so: the calls read as ordinary
+ * slow ones, and finding them meant replaying OpenRouter's generation log by
+ * hand. Flagged here, on the seam that already knows the serving upstream,
+ * "which provider cuts us, and how often" becomes a filter in the UI.
+ *
+ * Narrow on purpose. A long call is not suspicious by itself, so the flag
+ * needs BOTH duration and a finish nobody chose: `stop` and `tool-calls` are
+ * the model deciding, `length` is a budget doing its job, and everything left
+ * is the call ending without either.
+ */
+const SUSPECT_CUT_AFTER_MS = 60_000;
+
+const suspectCut = (
+  finishReason: LanguageModelV4FinishReason | undefined,
+  startedAt: number,
+): { generationMs: number } | undefined => {
+  const generationMs = Date.now() - startedAt;
+  if (generationMs < SUSPECT_CUT_AFTER_MS) return undefined;
+  const unified = finishReason?.unified;
+  if (unified === "stop" || unified === "tool-calls" || unified === "length") {
+    return undefined;
+  }
+  return { generationMs };
+};
+
+/**
  * Write the cost + serving upstream + reasoning share onto the currently
  * active Langfuse generation. Soft-fail: telemetry must never break a model
  * call.
@@ -97,6 +131,7 @@ const extractOpenRouterProvider = (
 const writeCost = (
   providerMetadata: SharedV4ProviderMetadata | undefined,
   outputTokens?: { text: number | undefined; reasoning: number | undefined },
+  cut?: { generationMs: number },
 ): void => {
   const cost = extractOpenRouterCost(providerMetadata);
   const provider = extractOpenRouterProvider(providerMetadata);
@@ -108,7 +143,8 @@ const writeCost = (
     cost === undefined &&
     provider === undefined &&
     reasoning === undefined &&
-    text === undefined
+    text === undefined &&
+    cut === undefined
   ) {
     return;
   }
@@ -134,7 +170,8 @@ const writeCost = (
           : {}),
         ...(provider !== undefined ||
         reasoning !== undefined ||
-        text !== undefined
+        text !== undefined ||
+        cut !== undefined
           ? {
               metadata: {
                 ...(provider !== undefined
@@ -144,6 +181,12 @@ const writeCost = (
                   ? { reasoningTokens: reasoning }
                   : {}),
                 ...(text !== undefined ? { answerTokens: text } : {}),
+                ...(cut !== undefined
+                  ? {
+                      suspectUpstreamCut: true,
+                      generationMs: cut.generationMs,
+                    }
+                  : {}),
               },
             }
           : {}),
@@ -198,11 +241,17 @@ const writeEmbeddingCost = (
 export const costCaptureMiddleware: LanguageModelV4Middleware = {
   specificationVersion: "v4",
   wrapGenerate: async ({ doGenerate }) => {
+    const startedAt = Date.now();
     const result = await doGenerate();
-    writeCost(result.providerMetadata, result.usage.outputTokens);
+    writeCost(
+      result.providerMetadata,
+      result.usage.outputTokens,
+      suspectCut(result.finishReason, startedAt),
+    );
     return result;
   },
   wrapStream: async ({ doStream }) => {
+    const startedAt = Date.now();
     const { stream, ...rest } = await doStream();
     const tapped = stream.pipeThrough(
       new TransformStream<LanguageModelV4StreamPart, LanguageModelV4StreamPart>(
@@ -212,7 +261,11 @@ export const costCaptureMiddleware: LanguageModelV4Middleware = {
             // OpenRouter cost. Tapping it here runs inside the generation
             // span's context, so `updateActiveObservation` targets it.
             if (part.type === "finish") {
-              writeCost(part.providerMetadata, part.usage.outputTokens);
+              writeCost(
+                part.providerMetadata,
+                part.usage.outputTokens,
+                suspectCut(part.finishReason, startedAt),
+              );
             }
             controller.enqueue(part);
           },

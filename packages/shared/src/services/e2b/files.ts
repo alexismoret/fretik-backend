@@ -1,6 +1,7 @@
-import { Sandbox } from "@e2b/code-interpreter";
-import { FileType } from "e2b";
+import type { CommandResult } from "e2b";
+import { CommandExitError, FileType } from "e2b";
 import { acquireSandbox } from "./acquire-sandbox";
+import { SANDBOX_TIMEOUT_MS } from "./client";
 import type { SandboxFileEntry } from "./types";
 
 /**
@@ -47,20 +48,42 @@ export const writeSandboxFile = async (
   path: string,
   bytes: Uint8Array,
 ): Promise<void> => {
-  const lease = await acquireSandbox(conversationId);
-  const sbx = await Sandbox.connect(lease.sandboxId);
+  const { sandbox: sbx } = await acquireSandbox(conversationId);
   // SDK accepts `string | ArrayBuffer | Blob | ReadableStream`. Wrap
   // the view in a Blob so we hand the SDK a stable byte container
   // regardless of the underlying buffer layout.
   await sbx.files.write(toAbsolutePath(path), new Blob([bytes]));
 };
 
+/**
+ * Write several files in ONE request (`files.write`'s multi-entry overload).
+ *
+ * All-or-nothing by design: the SDK sends a single multipart request, so a
+ * rejection means nothing landed. Callers that need per-file resilience keep
+ * a `writeSandboxFile` fallback — this is the fast path, not a replacement.
+ * Use it whenever the file set is known up front; the per-file loop it
+ * replaces cost one round-trip each.
+ */
+export const writeSandboxFiles = async (
+  conversationId: string,
+  files: readonly { path: string; bytes: Uint8Array }[],
+): Promise<void> => {
+  if (files.length === 0) return;
+  const { sandbox: sbx } = await acquireSandbox(conversationId);
+  await sbx.files.write(
+    files.map((f) => ({
+      path: toAbsolutePath(f.path),
+      // Same reason as `writeSandboxFile`: a Blob is a no-cast byte container.
+      data: new Blob([f.bytes]),
+    })),
+  );
+};
+
 export const readSandboxFile = async (
   conversationId: string,
   path: string,
 ): Promise<Uint8Array> => {
-  const lease = await acquireSandbox(conversationId);
-  const sbx = await Sandbox.connect(lease.sandboxId);
+  const { sandbox: sbx } = await acquireSandbox(conversationId);
   const content = await sbx.files.read(toAbsolutePath(path), {
     format: "bytes",
   });
@@ -71,8 +94,7 @@ export const listSandboxFiles = async (
   conversationId: string,
   prefix?: string,
 ): Promise<SandboxFileEntry[]> => {
-  const lease = await acquireSandbox(conversationId);
-  const sbx = await Sandbox.connect(lease.sandboxId);
+  const { sandbox: sbx } = await acquireSandbox(conversationId);
   const root = prefix ? toAbsolutePath(prefix) : SANDBOX_WORKSPACE;
   const entries = await sbx.files.list(root, {
     depth: SANDBOX_LIST_DEPTH,
@@ -90,8 +112,7 @@ export const removeSandboxFile = async (
   conversationId: string,
   path: string,
 ): Promise<void> => {
-  const lease = await acquireSandbox(conversationId);
-  const sbx = await Sandbox.connect(lease.sandboxId);
+  const { sandbox: sbx } = await acquireSandbox(conversationId);
   await sbx.files.remove(toAbsolutePath(path));
 };
 
@@ -105,8 +126,7 @@ export const makeSandboxDir = async (
   conversationId: string,
   path: string,
 ): Promise<void> => {
-  const lease = await acquireSandbox(conversationId);
-  const sbx = await Sandbox.connect(lease.sandboxId);
+  const { sandbox: sbx } = await acquireSandbox(conversationId);
   try {
     await sbx.files.makeDir(toAbsolutePath(path));
   } catch (err) {
@@ -118,20 +138,22 @@ export const makeSandboxDir = async (
 };
 
 /**
- * Cheap "does this file exist?" probe. Returns `true` when the SDK
- * can read a single byte at `path`, `false` on any error (missing,
- * permission, transient). Callers typically use this before deciding
- * whether to skip a redundant write.
+ * "Does this file exist?" probe, `false` on any error (missing, permission,
+ * transient). Callers use it before deciding whether to skip a redundant
+ * write.
+ *
+ * Uses `files.exists`, a metadata call. It used to `files.read(…, "bytes")`
+ * — i.e. DOWNLOAD THE WHOLE FILE to answer a boolean — on a path that runs
+ * per restored S3 file, per context file per turn, per presented file, and
+ * every 200 ms while polling for the bootstrap marker.
  */
 export const sandboxFileExists = async (
   conversationId: string,
   path: string,
 ): Promise<boolean> => {
-  const lease = await acquireSandbox(conversationId);
-  const sbx = await Sandbox.connect(lease.sandboxId);
+  const { sandbox: sbx } = await acquireSandbox(conversationId);
   try {
-    await sbx.files.read(toAbsolutePath(path), { format: "bytes" });
-    return true;
+    return await sbx.files.exists(toAbsolutePath(path));
   } catch {
     return false;
   }
@@ -155,17 +177,31 @@ export interface SandboxCommandResult {
  *
  * `cwd` defaults to `/workspace` to match the template's `setWorkdir`
  * contract.
+ *
+ * A non-zero exit is a RESULT, not a failure: `commands.run` throws
+ * `CommandExitError` for it, and that error implements `CommandResult`, so we
+ * unwrap it back into the shape callers expect. Letting it propagate lost
+ * stdout/stderr and turned "the tarball failed to extract" into an opaque
+ * sandbox error.
  */
 export const execSandboxCommand = async (
   conversationId: string,
   command: string,
   options: { cwd?: string } = {},
 ): Promise<SandboxCommandResult> => {
-  const lease = await acquireSandbox(conversationId);
-  const sbx = await Sandbox.connect(lease.sandboxId);
-  const result = await sbx.commands.run(command, {
-    cwd: options.cwd ?? SANDBOX_WORKSPACE,
-  });
+  const { sandbox: sbx } = await acquireSandbox(conversationId);
+  let result: CommandResult;
+  try {
+    result = await sbx.commands.run(command, {
+      cwd: options.cwd ?? SANDBOX_WORKSPACE,
+      // The SDK default is 60 s. Callers here extract multi-MB tarballs
+      // (bundled skills, the memory tree), which can outrun it.
+      timeoutMs: SANDBOX_TIMEOUT_MS,
+    });
+  } catch (err) {
+    if (!(err instanceof CommandExitError)) throw err;
+    result = err;
+  }
   return {
     exitCode: result.exitCode,
     stdout: result.stdout,

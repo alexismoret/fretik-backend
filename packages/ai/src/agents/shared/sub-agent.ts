@@ -80,6 +80,7 @@ export interface CreateSubAgentExecuteConfig<
   INPUT,
   OUTPUT,
   PROGRESS = never,
+  SALVAGE = never,
 > {
   /**
    * The sub-agent to run, RESOLVED PER CALL from the live runtime context.
@@ -135,12 +136,29 @@ export interface CreateSubAgentExecuteConfig<
    */
   buildCallOptions: (input: INPUT, ctx: AgentRuntimeContext) => CALL_OPTIONS;
   /**
+   * Rescue whatever a finished run produced but failed to commit, BEFORE the
+   * empty-run retry decides to start over.
+   *
+   * The ordering is the whole point. A run cut mid-flight can hold a complete
+   * deliverable in its own transcript — `buildPage` streams page source as text
+   * precisely so that it does (`tools/page-emitted-source.ts`) — and rebuilding
+   * from zero is both the most expensive recovery in the product and a fresh
+   * roll of the same dice that just came up short.
+   *
+   * Returns null when there is nothing to rescue, which is the normal case.
+   */
+  salvage?: (
+    result: GenerateTextResult<TOOLS, Record<string, unknown>, never>,
+    ctx: AgentRuntimeContext,
+  ) => Promise<SALVAGE | null>;
+  /**
    * Map the sub-agent's `GenerateTextResult` to the serializable
    * payload returned to the parent. Keep it tight — the parent will
    * see this verbatim in its own context window.
    */
   formatResult: (
     result: GenerateTextResult<TOOLS, Record<string, unknown>, never>,
+    salvaged?: SALVAGE,
   ) => OUTPUT;
   /**
    * Hard wall-clock cap on one dispatch, REQUIRED. A sub-agent runs an
@@ -197,6 +215,14 @@ export interface CreateSubAgentExecuteConfig<
  * stricter test still applies, so a caller that has not thought about it keeps
  * exactly the behaviour it had.
  */
+/**
+ * The floor under a fallback attempt's wall clock. A retry is only worth
+ * launching if it can finish: below this it burns a full prompt to be cut
+ * mid-answer, which reads in the trace as a second model failing rather than
+ * as a budget that was already gone.
+ */
+const FALLBACK_MIN_MS = 5 * 60 * 1000;
+
 const changedNothing = (
   result: {
     finishReason: string;
@@ -227,13 +253,15 @@ export const createSubAgentExecute = <
   INPUT,
   OUTPUT,
   PROGRESS = never,
+  SALVAGE = never,
 >(
   config: CreateSubAgentExecuteConfig<
     CALL_OPTIONS,
     TOOLS,
     INPUT,
     OUTPUT,
-    PROGRESS
+    PROGRESS,
+    SALVAGE
   >,
 ) => {
   /** One run, shared by both modes. Resolves to the tool-shaped result. */
@@ -245,18 +273,22 @@ export const createSubAgentExecute = <
     const ctx = getRuntimeContext(options);
     const messages = await config.buildMessages(input, ctx);
     const callOptions = config.buildCallOptions(input, ctx);
-    const deadline = AbortSignal.timeout(config.deadlineMs);
-    const signal = options.abortSignal
-      ? AbortSignal.any([options.abortSignal, deadline])
-      : deadline;
+    const startedAt = Date.now();
+    const primaryDeadline = AbortSignal.timeout(config.deadlineMs);
+    const deadlines: AbortSignal[] = [primaryDeadline];
+    const signalFor = (deadline: AbortSignal): AbortSignal =>
+      options.abortSignal
+        ? AbortSignal.any([options.abortSignal, deadline])
+        : deadline;
     try {
       const generate = async (
         agent: Agent<CALL_OPTIONS, TOOLS>,
+        deadline: AbortSignal,
       ): Promise<GenerateTextResult<TOOLS, Record<string, unknown>, never>> =>
         agent.generate({
           messages,
           options: callOptions,
-          abortSignal: signal,
+          abortSignal: signalFor(deadline),
           // Always passed: a conditional spread here collapses the SDK's
           // `[CALL_OPTIONS] extends [never]` branch and the whole call stops
           // typechecking. A no-op callback costs nothing.
@@ -265,22 +297,41 @@ export const createSubAgentExecute = <
           },
         });
 
-      let result = await generate(config.subAgent(ctx));
+      let result = await generate(config.subAgent(ctx), primaryDeadline);
+      let salvaged = (await config.salvage?.(result, ctx)) ?? undefined;
       if (
         config.fallbackSubAgent &&
+        salvaged === undefined &&
         changedNothing(result, config.hasSideEffect)
       ) {
         console.error(
           `[sub-agent] empty run (finish=${result.finishReason}) — retrying once on the fallback model`,
         );
-        result = await generate(config.fallbackSubAgent(ctx));
+        /**
+         * The fallback gets a floor, not the leftovers. Sharing the primary's
+         * signal meant a first attempt that burned the budget handed the
+         * second one a signal already aborting — a retry born dead, paid for,
+         * and indistinguishable in the trace from a model that failed.
+         */
+        const fallbackDeadline = AbortSignal.timeout(
+          Math.max(
+            config.deadlineMs - (Date.now() - startedAt),
+            FALLBACK_MIN_MS,
+          ),
+        );
+        deadlines.push(fallbackDeadline);
+        result = await generate(config.fallbackSubAgent(ctx), fallbackDeadline);
+        salvaged = (await config.salvage?.(result, ctx)) ?? undefined;
       }
-      return config.formatResult(result);
+      return config.formatResult(result, salvaged);
     } catch (err) {
-      // Only the DEADLINE is absorbed into a tool-shaped result. A parent
+      // Only a DEADLINE is absorbed into a tool-shaped result. A parent
       // abort must keep propagating (the turn is being torn down), and any
       // other throw is a real bug the caller's error path should see.
-      if (deadline.aborted && !options.abortSignal?.aborted) {
+      if (
+        deadlines.some((deadline) => deadline.aborted) &&
+        !options.abortSignal?.aborted
+      ) {
         return config.onDeadline(input);
       }
       throw err;

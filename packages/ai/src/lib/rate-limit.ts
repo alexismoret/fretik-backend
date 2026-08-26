@@ -128,8 +128,18 @@ export const withSlot = async <T>(
   maxConcurrent: number,
   holdTimeoutMs: number,
   fn: () => Promise<T>,
+  opts: Partial<Omit<AcquireOptions, "maxConcurrent" | "holdTimeoutMs">> = {},
 ): Promise<T> => {
-  const release = await acquireSlot(key, maxConcurrent, holdTimeoutMs);
+  // A waiter must be allowed to wait at least as long as a holder is
+  // allowed to hold, or a legitimately slow holder makes its neighbour
+  // THROW instead of queueing — which is what the 120 s default did to the
+  // E2B mutex, whose hold cap is 5.5 min. Raise the floor for long holds;
+  // never lower it for the short ones (the cheap-model and embedding
+  // queues hold for 15-30 s but are worth waiting the full 120 s for).
+  const release = await acquireSlot(key, maxConcurrent, holdTimeoutMs, {
+    maxWaitMs: Math.max(holdTimeoutMs, DEFAULT_MAX_WAIT_MS),
+    ...opts,
+  });
   try {
     return await fn();
   } finally {

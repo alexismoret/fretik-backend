@@ -134,74 +134,102 @@ export const createPresentFilesTool = () =>
       const files: PresentedFile[] = [];
       const errors: NonNullable<PresentFilesOutput["errors"]> = [];
 
-      for (const requested of paths) {
+      // One entry per requested path, resolved in parallel and re-assembled in
+      // request order. Sequential awaits made a 10-file present N times slower
+      // than it needed to be for no ordering benefit — each path's existence
+      // check, read and S3 upload are independent of every other path's.
+      type Outcome =
+        | { ok: true; file: PresentedFile }
+        | {
+            ok: false;
+            error: NonNullable<PresentFilesOutput["errors"]>[number];
+          };
+
+      const present = async (requested: string): Promise<Outcome> => {
         const resolved = resolveWorkspacePath(requested);
         if (!resolved) {
-          errors.push({
-            path: requested,
-            code: TOOL_ERROR_CODES.PATH_OUT_OF_SANDBOX,
-            message: `Path is outside the conversation's sandbox (/workspace/).`,
-          });
-          continue;
+          return {
+            ok: false,
+            error: {
+              path: requested,
+              code: TOOL_ERROR_CODES.PATH_OUT_OF_SANDBOX,
+              message: `Path is outside the conversation's sandbox (/workspace/).`,
+            },
+          };
         }
 
         const head = resolved.relative.split("/")[0];
         if (head !== undefined && READ_ONLY_PRESENT_BLOCKLIST.has(head)) {
-          errors.push({
-            path: requested,
-            code: TOOL_ERROR_CODES.READ_ONLY_PATH,
-            message: `${head}/ is a read-only tree — only files you generated yourself in attachments/ or outputs/ can be presented.`,
-          });
-          continue;
+          return {
+            ok: false,
+            error: {
+              path: requested,
+              code: TOOL_ERROR_CODES.READ_ONLY_PATH,
+              message: `${head}/ is a read-only tree — only files you generated yourself in attachments/ or outputs/ can be presented.`,
+            },
+          };
         }
 
-        // eslint-disable-next-line no-await-in-loop
+        // Kept ahead of the read so a missing file reports FILE_NOT_FOUND
+        // rather than an opaque read failure. It is a metadata call.
         if (!(await fileExists(conversationId, resolved.relative))) {
-          errors.push({
-            path: requested,
-            code: TOOL_ERROR_CODES.FILE_NOT_FOUND,
-            message: `File not found in the conversation sandbox: ${requested}.`,
-          });
-          continue;
+          return {
+            ok: false,
+            error: {
+              path: requested,
+              code: TOOL_ERROR_CODES.FILE_NOT_FOUND,
+              message: `File not found in the conversation sandbox: ${requested}.`,
+            },
+          };
         }
 
         let bytes: Uint8Array;
         try {
-          // eslint-disable-next-line no-await-in-loop
           bytes = await readFile(conversationId, resolved.relative);
         } catch (err) {
-          errors.push({
-            path: requested,
-            code: TOOL_ERROR_CODES.READ_FAILED,
-            message: `Failed to read ${requested} from the sandbox: ${
-              err instanceof Error ? err.message : String(err)
-            }`,
-          });
-          continue;
+          return {
+            ok: false,
+            error: {
+              path: requested,
+              code: TOOL_ERROR_CODES.READ_FAILED,
+              message: `Failed to read ${requested} from the sandbox: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            },
+          };
         }
 
         const filename = basenameOf(resolved.relative);
 
         try {
-          // eslint-disable-next-line no-await-in-loop
           await uploadSessionFile(conversationId, resolved.relative, bytes);
         } catch (err) {
-          errors.push({
-            path: requested,
-            code: TOOL_ERROR_CODES.S3_UPLOAD_FAILED,
-            message: `Failed to mirror ${filename} to the session store: ${
-              err instanceof Error ? err.message : String(err)
-            }`,
-          });
-          continue;
+          return {
+            ok: false,
+            error: {
+              path: requested,
+              code: TOOL_ERROR_CODES.S3_UPLOAD_FAILED,
+              message: `Failed to mirror ${filename} to the session store: ${
+                err instanceof Error ? err.message : String(err)
+              }`,
+            },
+          };
         }
 
-        files.push({
-          path: resolved.relative,
-          filename,
-          mimeType: resolveMimeType(filename),
-          size: bytes.byteLength,
-        });
+        return {
+          ok: true,
+          file: {
+            path: resolved.relative,
+            filename,
+            mimeType: resolveMimeType(filename),
+            size: bytes.byteLength,
+          },
+        };
+      };
+
+      for (const outcome of await Promise.all(paths.map(present))) {
+        if (outcome.ok) files.push(outcome.file);
+        else errors.push(outcome.error);
       }
 
       const output: PresentFilesOutput = { files };

@@ -11,6 +11,7 @@ import {
 import { areWebToolsAvailable, WEB_TOOL_NAMES } from "../../lib/web-egress";
 import { createBuildPageTool } from "../../tools/build-page";
 import { createDispatchAgentTool } from "../../tools/dispatch-agent";
+import { savePageSource } from "../../tools/manage-page";
 import {
   buildAgentSet,
   buildToolsContext,
@@ -579,6 +580,8 @@ export const buildPageTool = createBuildPageTool({
   // parent turn has had since C4.
   resolvePageBuilderFallback: (profileKey) =>
     getPageBuilderSet(profileKey).fallback,
+  // The rescue write for a build cut between writing its page and saving it.
+  savePageSource,
 });
 
 /**

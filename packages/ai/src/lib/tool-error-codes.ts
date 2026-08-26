@@ -51,6 +51,9 @@ export const TOOL_ERROR_CODES = {
   SANDBOX_RATE_LIMIT: "SANDBOX_RATE_LIMIT",
   SANDBOX_UNAVAILABLE: "SANDBOX_UNAVAILABLE",
   SANDBOX_WRITE_FAILED: "SANDBOX_WRITE_FAILED",
+  // Sandbox disk is full. Distinct from SANDBOX_UNAVAILABLE because the model
+  // can act on it: delete what it wrote under /workspace and re-run.
+  SANDBOX_DISK_FULL: "SANDBOX_DISK_FULL",
 
   // Code execution
   NON_ZERO_EXIT: "NON_ZERO_EXIT",

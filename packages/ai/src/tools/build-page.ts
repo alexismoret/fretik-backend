@@ -3,7 +3,10 @@ import type { Agent, ToolSet } from "ai";
 import { z } from "zod";
 import type { ChatbotCallOptions } from "../agents/chatbot";
 import { buildChatbotTool } from "../agents/shared/chatbot-tool";
+import type { AgentRuntimeContext } from "../agents/shared/runtime-context";
 import { createSubAgentExecute } from "../agents/shared/sub-agent";
+import type { SalvageOutcome } from "./manage-page";
+import { lastVueFence } from "./page-emitted-source";
 
 /**
  * `buildPage` — hand a whole page to the specialist that builds it.
@@ -66,6 +69,7 @@ const PAGE_BUILDER_READ_ACTIONS = new Set([
   "dry_run",
   "get",
   "list",
+  "stage",
 ]);
 
 const reviewRefSchema = z.object({
@@ -101,6 +105,8 @@ export const lastReviewRef = (
 };
 
 export type BuildSteps = readonly {
+  /** What the model WROTE that step — where a ```vue fence lives. */
+  readonly text: string;
   readonly toolCalls: readonly {
     toolCallId: string;
     toolName: string;
@@ -112,6 +118,54 @@ export type BuildSteps = readonly {
     output: unknown;
   }[];
 }[];
+
+/**
+ * A page source the builder wrote and never saved.
+ *
+ * The fence protocol (`page-emitted-source.ts`) makes this recoverable: the
+ * SFC streams as ordinary text, so it is sitting in the trajectory of any run
+ * that died between writing the file and claiming it — an upstream cut, the
+ * step budget, the hard deadline. Before the protocol that source existed only
+ * as tool-call arguments the transport had already thrown away, and the build
+ * came back with nothing to show for its most expensive generation.
+ *
+ * Claimed is claimed: a successful `create`/`update` carrying code or edits at
+ * or after the fence's step means the write landed, and re-saving over it would
+ * undo whatever the review loop did next.
+ */
+export const findOrphanFence = (
+  steps: BuildSteps,
+): { source: string; stepIndex: number } | null => {
+  let fence: { source: string; stepIndex: number } | null = null;
+  for (const [index, step] of steps.entries()) {
+    const source = lastVueFence(step.text);
+    if (source !== null) fence = { source, stepIndex: index };
+  }
+  if (fence === null) return null;
+  for (const [index, step] of steps.entries()) {
+    if (index < fence.stepIndex) continue;
+    const writes = new Set<string>();
+    for (const call of step.toolCalls) {
+      if (call.toolName !== "managePage") continue;
+      if (typeof call.input !== "object" || call.input === null) continue;
+      const action = Reflect.get(call.input, "action");
+      if (action !== "create" && action !== "update") continue;
+      const definition = Reflect.get(call.input, "definition");
+      const wroteCode =
+        typeof definition === "object" &&
+        definition !== null &&
+        Reflect.get(definition, "code") !== undefined;
+      if (wroteCode || Reflect.get(call.input, "edits") !== undefined) {
+        writes.add(call.toolCallId);
+      }
+    }
+    for (const result of step.toolResults) {
+      if (!writes.has(result.toolCallId)) continue;
+      if (pageRefSchema.safeParse(result.output).success) return null;
+    }
+  }
+  return fence;
+};
 
 /**
  * What `formatBuildResult` actually reads of a finished run. Declared
@@ -213,6 +267,7 @@ export const lastPageRef = (
  */
 export const formatBuildResult = (
   result: BuildTrajectory,
+  salvaged?: SalvageOutcome,
 ): {
   summary: string;
   pageId?: string;
@@ -222,6 +277,21 @@ export const formatBuildResult = (
   reviewed?: false;
 } => {
   const text = result.text.trim();
+  /**
+   * A rescued page is reported BEFORE anything else the run said about itself,
+   * because nothing the run said knows about it: the builder died mid-write, so
+   * its own trajectory names no page and every marker below would send the
+   * parent off to rebuild one that now exists.
+   */
+  if (salvaged?.saved === true) {
+    return {
+      summary: `[recovered: the builder was cut off after writing the page but before saving it, so the source was saved for it. The page EXISTS and nobody has looked at it. Do NOT call buildPage again: run managePage { action: "review" } on it, apply what comes back with update { edits }, and hand back the url.]`,
+      pageId: salvaged.pageId,
+      url: salvaged.url,
+      reviewed: false,
+      incomplete: true,
+    };
+  }
   const ref = lastPageRef(result.steps);
   const review = lastReviewRef(result.steps);
   // Stated as a FIELD, not left to the summary: a build that reviewed nothing
@@ -274,7 +344,9 @@ export const formatBuildResult = (
    */
   const marker =
     ref?.pageId === undefined
-      ? `[incomplete: the builder stopped at finishReason="${result.finishReason}" and saved NO page — there is nothing to open, review or link. Call buildPage once more with the same task. If it comes back empty again, tell the user the build failed; never name a page this tool did not return.]`
+      ? salvaged?.saved === false
+        ? `[incomplete: the builder stopped at finishReason="${result.finishReason}" having written a page it never saved, and saving it here failed too — ${salvaged.reason}. There is nothing to open, review or link. Call buildPage once more with the same task.]`
+        : `[incomplete: the builder stopped at finishReason="${result.finishReason}" and saved NO page — there is nothing to open, review or link. Call buildPage once more with the same task. If it comes back empty again, tell the user the build failed; never name a page this tool did not return.]`
       : review === undefined
         ? `[incomplete: the builder stopped at finishReason="${result.finishReason}" — the page exists but was never reviewed. Call managePage { action: "review" } on it before telling the user it is ready.]`
         : review.gate === "fail"
@@ -307,9 +379,50 @@ export const createBuildPageTool = <TTools extends ToolSet>(deps: {
   resolvePageBuilderFallback: (
     profileKey?: string,
   ) => Agent<ChatbotCallOptions, TTools>;
+  /**
+   * Save a page source outside a tool call — `savePageSource` in
+   * `manage-page.ts`. Injected rather than imported so this module keeps no
+   * runtime edge to the page services (and through them the database): every
+   * branch above is decided from a trajectory, and that is what makes them
+   * assertable from plain objects.
+   */
+  savePageSource: (params: {
+    source: string;
+    pageId?: string;
+    teamId: string;
+    organizationId: string;
+    userId: string | null;
+    conversationId?: string;
+  }) => Promise<SalvageOutcome>;
 }) => {
   const inputSchema = buildPageInputSchema;
   const formatResult = formatBuildResult;
+
+  /**
+   * Save what the run wrote but never claimed. Runs before the empty-run
+   * retry, so a build that produced a whole page is finished rather than
+   * started over — a rebuild from zero costs ~250s and reproduces the same
+   * upstream risk on the same slow provider.
+   */
+  const salvage = async (
+    result: BuildTrajectory,
+    ctx: AgentRuntimeContext,
+  ): Promise<SalvageOutcome | null> => {
+    const orphan = findOrphanFence(result.steps);
+    if (orphan === null) return null;
+    const ref = lastPageRef(result.steps);
+    console.error(
+      `[build-page] unclaimed page source (${orphan.source.length.toString()} chars) — saving it`,
+    );
+    return await deps.savePageSource({
+      source: orphan.source,
+      ...(ref ? { pageId: ref.pageId } : {}),
+      teamId: ctx.teamId,
+      organizationId: ctx.organizationId,
+      userId: ctx.userId ?? null,
+      ...(ctx.conversationId ? { conversationId: ctx.conversationId } : {}),
+    });
+  };
 
   /**
    * What the parent's card draws while the build runs.
@@ -347,8 +460,10 @@ export const createBuildPageTool = <TTools extends ToolSet>(deps: {
     TTools,
     z.infer<typeof inputSchema>,
     ReturnType<typeof formatResult>,
-    ReturnType<typeof progress>
+    ReturnType<typeof progress>,
+    SalvageOutcome
   >({
+    salvage,
     subAgent: (ctx) => deps.resolvePageBuilder(ctx.pageBuildProfileKey),
     fallbackSubAgent: (ctx) =>
       deps.resolvePageBuilderFallback(ctx.pageBuildProfileKey),
@@ -414,7 +529,7 @@ export const createBuildPageTool = <TTools extends ToolSet>(deps: {
     deadlineMs: 15 * 60 * 1000,
     onDeadline: () => ({
       summary:
-        '[incomplete: the build was cut after 15 minutes — a step hung. The page may exist in an unreviewed state: call managePage { action: "list" } to check, and { action: "review" } before telling the user it is ready.]',
+        '[incomplete: the build ran out of time — a step hung. The page may exist in an unreviewed state: call managePage { action: "list" } to check, and { action: "review" } before telling the user it is ready.]',
       incomplete: true,
     }),
   });

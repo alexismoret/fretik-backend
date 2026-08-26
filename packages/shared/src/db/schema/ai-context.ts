@@ -122,7 +122,7 @@ export const aiContextProfiles = pgTable(
  * XLSX/XLS/CSV, raw bytes for text/markdown/JSON). The same markdown
  * is also written to S3 as a `.md` sidecar (when `hasMarkdown` is
  * true) so the conversation-turn hydrator can drop it under
- * `/tmp/fretik-ai/{convId}/context/` for the standard `read` tool.
+ * `/workspace/context/` for the standard `read` tool.
  * The `content` column itself is kept for the settings-UI preview
  * endpoint and as the lazy-backfill source for pre-refonte rows
  * uploaded before the sidecar pipeline existed.

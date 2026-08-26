@@ -8,9 +8,32 @@
 
 export const assertE2BConfigured = (): void => {
   if (!process.env.E2B_API_KEY && process.env.NODE_ENV === "production") {
-    throw "Missing env var E2B_API_KEY";
+    // An `Error`, not a bare string: every `err instanceof Error` guard on the
+    // way out (tool error mapping, the Hono error handler) misses a string and
+    // reports "Unknown error" with no stack.
+    throw new Error("Missing env var E2B_API_KEY");
   }
 };
+
+/**
+ * Which deployment a sandbox belongs to, stamped into `Sandbox.create`
+ * metadata and required to match before `reclaimOrphanSandboxes` kills
+ * anything.
+ *
+ * Without it the only ownership signal was "this sandbox carries a
+ * conversationId", and the orphan sweep kills every such sandbox whose id is
+ * absent from the LOCAL Redis — so a dev boot sharing one `E2B_API_KEY` with
+ * production would kill production's sandboxes mid-turn.
+ *
+ * `NODE_ENV` is deliberately not in the chain: dev `.env` files here set it to
+ * `production`, which is exactly the collision this guards against. When both
+ * deployments resolve to the same tag the behaviour is simply what it was
+ * before — never worse.
+ */
+export const E2B_ENVIRONMENT =
+  process.env.FRETIK_ENV ??
+  process.env.LANGFUSE_TRACING_ENVIRONMENT ??
+  "unknown";
 
 export const E2B_TEMPLATE = process.env.E2B_TEMPLATE ?? "fretik-sandbox";
 
@@ -29,11 +52,6 @@ export const SANDBOX_TIMEOUT_MS = 5 * 60 * 1000;
  */
 export const SANDBOX_REGISTRY_TTL_S = 60 * 60;
 
-/**
- * Sandbox.create options that never change between conversations:
- * deny-all egress baseline, the conversation metadata key, the
- * timeoutMs default. Per-call options (network overrides, env injection)
- * layer on top of this in `acquire-sandbox.ts`.
- */
+/** Redis key holding the conversation's current sandbox id. */
 export const sandboxRegistryKey = (conversationId: string): string =>
   `e2b:sandbox:${conversationId}`;

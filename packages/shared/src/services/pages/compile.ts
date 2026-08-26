@@ -374,9 +374,8 @@ const releaseTailwindSlot = (): void => {
 };
 
 /**
- * Scratch root for the Tailwind subprocess — `/tmp`, the host-scratch
- * convention of this codebase (see `/tmp/fretik-ai/{convId}/`), and NOT the
- * source tree.
+ * Scratch root for the Tailwind subprocess — `/tmp`, and NOT the source
+ * tree.
  *
  * It used to be `${packageRoot}node_modules/.cache/`, which works on a dev
  * machine and fails on EVERY production write: the images install as root and

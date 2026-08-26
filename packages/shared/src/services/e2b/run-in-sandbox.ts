@@ -1,6 +1,6 @@
-import type { Context, Result } from "@e2b/code-interpreter";
-import { Sandbox } from "@e2b/code-interpreter";
-import { FileType } from "e2b";
+import type { Context, Result, Sandbox } from "@e2b/code-interpreter";
+import type { CommandResult } from "e2b";
+import { CommandExitError, FileType } from "e2b";
 import { mimeFromFilename } from "../../file-types";
 import { acquireSandbox } from "./acquire-sandbox";
 import { SANDBOX_TIMEOUT_MS } from "./client";
@@ -45,8 +45,8 @@ const WORKSPACE_PREFIX = `${WORKSPACE_ROOT}/`;
  * the surrounding try/catch), `before`/`after` came back empty, the
  * before/after diff produced zero artifacts, and
  * `mirrorSandboxArtifactsToStorage` was never called. Net effect:
- * Python-generated files stayed in `/workspace` and never reached the
- * `/tmp/fretik-ai/{conv}/` hot cache, breaking `presentFiles`/`read`.
+ * Python-generated files stayed in `/workspace` and were never mirrored
+ * to S3, breaking `presentFiles`/`read`.
  *
  * 32 is plenty for the agent's deepest expected path (e.g.
  * `/workspace/skills/finops/templates/q1/file.xlsx` is depth 5).
@@ -127,9 +127,14 @@ interface FileSnapshot {
   mtimeMs: number;
 }
 
-const snapshotWorkspace = async (
-  sbx: Sandbox,
-): Promise<Map<string, FileSnapshot>> => {
+interface WorkspaceSnapshot {
+  files: Map<string, FileSnapshot>;
+  /** The listing threw. `files` is empty because it FAILED, not because the
+   *  workspace is empty — the two are indistinguishable to the diff below. */
+  failed: boolean;
+}
+
+const snapshotWorkspace = async (sbx: Sandbox): Promise<WorkspaceSnapshot> => {
   const result = new Map<string, FileSnapshot>();
   try {
     const entries = await sbx.files.list(WORKSPACE_ROOT, {
@@ -149,12 +154,28 @@ const snapshotWorkspace = async (
       });
     }
   } catch (err) {
-    console.warn(
+    console.error(
       "[e2b:run] workspace snapshot failed:",
       err instanceof Error ? err.message : err,
     );
+    return { files: result, failed: true };
   }
-  return result;
+  return { files: result, failed: false };
+};
+
+/**
+ * `snapshotWorkspace` with one retry — a plain HTTP call on the critical path
+ * of every run whose failure mode is expensive enough to be worth one more
+ * round-trip: an empty BEFORE snapshot makes every file in /workspace look
+ * new, so the whole tree is reported to the model as this run's artifacts and
+ * re-uploaded to S3.
+ */
+const snapshotWorkspaceWithRetry = async (
+  sbx: Sandbox,
+): Promise<WorkspaceSnapshot> => {
+  const first = await snapshotWorkspace(sbx);
+  if (!first.failed) return first;
+  return snapshotWorkspace(sbx);
 };
 
 interface ExecLogs {
@@ -388,13 +409,17 @@ export interface RunInSandboxOptions extends RunOptions {
   restart?: boolean;
   /**
    * The turn's server-owned abort signal (a user Stop, see the chatbot
-   * handler's abort channel). E2B's `runCode` / `commands.run` expose no
-   * AbortSignal, so the only in-band cancellation lever is to KILL the
-   * sandbox — `runInSandbox` races the exec against this signal and, on
-   * abort, kills the sandbox (dropping the running cell/command
-   * immediately) and returns an `Aborted` result. The sandbox is
-   * recreated lazily on the next turn. Without this, a Stop during a
-   * long python/bash run does nothing until the run finishes on its own.
+   * handler's abort channel). `runInSandbox` races the exec against it and
+   * returns an `Aborted` result. How the exec itself is cancelled differs
+   * per language:
+   *  - **bash**: `commands.run` accepts the signal, so the request is
+   *    cancelled in band and `/workspace` survives.
+   *  - **python**: `runCode` exposes no AbortSignal, so the only lever is
+   *    KILLING the sandbox. That drops the running cell at once but wipes
+   *    `/workspace`; the sandbox is recreated (and re-bootstrapped) lazily
+   *    on the next turn.
+   * Without this, a Stop during a long run does nothing until the run
+   * finishes on its own.
    */
   abortSignal?: AbortSignal;
 }
@@ -417,28 +442,35 @@ const abortedRunResult = (): RunResult => ({
 });
 
 /**
- * Race an in-flight sandbox exec against the turn's abort signal. When
- * the user Stops mid-run, E2B can't cancel the exec in-band, so we kill
- * the whole sandbox — that terminates the running cell/command at once —
- * and resolve to {@link ABORTED_SENTINEL}. The orphaned exec promise is
- * swallowed (it rejects once the sandbox dies). When no signal is
- * provided, or it never fires, the exec resolves normally.
+ * Race an in-flight sandbox exec against the turn's abort signal and
+ * resolve to {@link ABORTED_SENTINEL} when the user Stops. The orphaned
+ * exec promise is swallowed. When no signal is provided, or it never
+ * fires, the exec resolves normally.
+ *
+ * `killOnAbort` is the cancellation lever for execs the SDK cannot cancel:
+ * `runCode` takes no AbortSignal, so the only way to drop a running cell is
+ * to kill the whole sandbox — which also wipes `/workspace` and forces a
+ * cold bootstrap next turn. `commands.run` DOES take a signal, so the bash
+ * branch passes `killOnAbort: false` and keeps its workspace.
  */
 const raceSandboxAbort = async <T>(
   conversationId: string,
   signal: AbortSignal | undefined,
   exec: Promise<T>,
+  killOnAbort: boolean,
 ): Promise<T | typeof ABORTED_SENTINEL> => {
+  const cancel = (): void => {
+    if (killOnAbort) void killSandbox(conversationId).catch(() => undefined);
+    void exec.catch(() => undefined);
+  };
   if (!signal) return exec;
   if (signal.aborted) {
-    void killSandbox(conversationId).catch(() => undefined);
-    void exec.catch(() => undefined);
+    cancel();
     return ABORTED_SENTINEL;
   }
   return await new Promise<T | typeof ABORTED_SENTINEL>((resolve, reject) => {
     const onAbort = (): void => {
-      void killSandbox(conversationId).catch(() => undefined);
-      void exec.catch(() => undefined);
+      cancel();
       resolve(ABORTED_SENTINEL);
     };
     signal.addEventListener("abort", onAbort, { once: true });
@@ -471,13 +503,16 @@ export const runInSandbox = async (
     await killSandbox(conversationId);
   }
   const lease = await acquireSandbox(conversationId);
-  const sbx = await Sandbox.connect(lease.sandboxId);
+  const sbx = lease.sandbox;
 
-  const before = await snapshotWorkspace(sbx);
+  const before = await snapshotWorkspaceWithRetry(sbx);
 
   let stdoutBuf = "";
   let stderrBuf = "";
   let kernelError: RunResult["error"] | undefined;
+  // Bash's real exit status. `runCode` has no equivalent (a kernel exception
+  // is not a process exit), so python keeps the 0/1 convention below.
+  let bashExitCode: number | undefined;
   const richResults: RichResult[] = [];
 
   if (options.language === "python") {
@@ -511,6 +546,9 @@ export const runInSandbox = async (
           options.onError?.(err);
         },
       }),
+      // `runCode` takes no AbortSignal — killing the sandbox is the only
+      // way to drop a running cell.
+      true,
     );
     if (exec === ABORTED_SENTINEL) return abortedRunResult();
 
@@ -531,90 +569,138 @@ export const runInSandbox = async (
     // representations (PNG / JPEG / SVG / PDF) and oversize HTML are
     // written under `outputs/results/` BEFORE the post-run snapshot so
     // they naturally appear in `artifacts` and get S3-mirrored by the
-    // tool layer's `mirrorSandboxChanges`. Sequential await on each
-    // write is intentional — E2B's filesystem isn't a bottleneck and
-    // the loop is bounded by the cell's display_data count (typically
-    // 0–3 entries per cell).
-    /* oxlint-disable no-await-in-loop -- bounded by exec.results.length and per-write E2B file IO */
+    // tool layer's `mirrorSandboxChanges`.
+    //
+    // One batched `files.write` for all of them: the SDK's multi-entry
+    // overload is a single request, where the previous per-entry loop paid a
+    // round-trip per chart on the critical path of every plotting cell.
+    const captures: CapturedRichResult[] = [];
     for (let i = 0; i < exec.results.length; i++) {
       const result = exec.results[i];
       if (!result) continue;
       const captured = captureRichResult(result, options.toolCallId, i);
-      if (!captured) continue;
-      if (captured.artifactWrite) {
-        try {
-          // The E2B SDK's `files.write` accepts string | ArrayBuffer |
-          // Blob | ReadableStream. `Uint8Array` is a *view* over an
-          // ArrayBuffer, not the buffer itself, so we wrap it in a
-          // Blob — Blob is a clean, no-cast value type the SDK accepts
-          // without forcing us to break the no-unsafe-type-assertion
-          // rule with an `as ArrayBuffer` cast.
-          await sbx.files.write(
-            captured.artifactWrite.absPath,
-            new Blob([captured.artifactWrite.bytes]),
-          );
-        } catch (err) {
-          console.warn(
-            `[e2b:run] failed to write rich result ${captured.artifactWrite.absPath}:`,
-            err instanceof Error ? err.message : err,
-          );
-          // Drop the artifactPath ref so the model isn't told a file
-          // exists when the write failed.
-          delete captured.rich.artifactPath;
-        }
-      }
-      richResults.push(captured.rich);
+      if (captured) captures.push(captured);
     }
-    /* oxlint-enable no-await-in-loop */
+    const writes = captures.filter((c) => c.artifactWrite !== undefined);
+    if (writes.length > 0) {
+      try {
+        await sbx.files.write(
+          writes.map((c) => ({
+            path: c.artifactWrite?.absPath ?? "",
+            // The SDK accepts string | ArrayBuffer | Blob | ReadableStream.
+            // `Uint8Array` is a VIEW over an ArrayBuffer, not the buffer
+            // itself, so wrap it in a Blob — a no-cast value type, which the
+            // no-unsafe-type-assertion rule would otherwise force us to break.
+            data: new Blob([c.artifactWrite?.bytes ?? new Uint8Array()]),
+          })),
+        );
+      } catch (err) {
+        console.warn(
+          "[e2b:run] failed to write rich results:",
+          err instanceof Error ? err.message : err,
+        );
+        // The batch is all-or-nothing, so drop every artifactPath ref rather
+        // than tell the model about files that may not exist.
+        for (const c of writes) delete c.rich.artifactPath;
+      }
+    }
+    for (const c of captures) richResults.push(c.rich);
   } else {
     // The template's `setWorkdir("/workspace")` already makes
     // `commands.run` default to /workspace, but we pin it here as
     // defense-in-depth — a future template change wouldn't silently
     // regress the cwd contract.
-    const result = await raceSandboxAbort(
-      conversationId,
-      options.abortSignal,
-      sbx.commands.run(options.code, {
-        cwd: WORKSPACE_ROOT,
-        // Same reason as the `runCode` call above: the SDK default is 60 s.
-        timeoutMs: SANDBOX_TIMEOUT_MS,
-        onStdout: (chunk: string) => {
-          stdoutBuf += chunk;
-          options.onStdout?.(chunk);
-        },
-        onStderr: (chunk: string) => {
-          stderrBuf += chunk;
-          options.onStderr?.(chunk);
-        },
-      }),
-    );
-    if (result === ABORTED_SENTINEL) return abortedRunResult();
+    let result: CommandResult;
+    try {
+      const raced = await raceSandboxAbort(
+        conversationId,
+        options.abortSignal,
+        sbx.commands.run(options.code, {
+          cwd: WORKSPACE_ROOT,
+          // Same reason as the `runCode` call above: the SDK default is 60 s.
+          timeoutMs: SANDBOX_TIMEOUT_MS,
+          // `commands.run` DOES take an AbortSignal (unlike `runCode`), so a
+          // user Stop cancels the request in band. `raceSandboxAbort` still
+          // wraps it as the belt: on abort it resolves to the sentinel
+          // immediately instead of waiting for the cancelled request to
+          // settle. The signal is what spares `/workspace` — without it the
+          // race's only lever was killing the whole sandbox.
+          signal: options.abortSignal,
+          onStdout: (chunk: string) => {
+            stdoutBuf += chunk;
+            options.onStdout?.(chunk);
+          },
+          onStderr: (chunk: string) => {
+            stderrBuf += chunk;
+            options.onStderr?.(chunk);
+          },
+        }),
+        // The signal above already cancels the request — keep `/workspace`.
+        false,
+      );
+      if (raced === ABORTED_SENTINEL) return abortedRunResult();
+      result = raced;
+    } catch (err) {
+      // `commands.run` THROWS on a non-zero exit — the branch below only ever
+      // ran for exit code 0. `CommandExitError` extends `SandboxError` AND
+      // implements `CommandResult`, so letting it propagate sent it to the
+      // tool's catch-all, which mapped it to `SANDBOX_UNAVAILABLE` and dropped
+      // stdout/stderr entirely: the model was told the sandbox was down and
+      // went diagnosing the infrastructure instead of reading its own compile
+      // error. It also skipped the artifact diff, so files written by a
+      // command that ended non-zero never reached S3.
+      // A Stop can also surface here: if the signal's rejection wins the race
+      // against `onAbort`, we get the abort error rather than the sentinel.
+      // Same outcome either way.
+      if (options.abortSignal?.aborted) return abortedRunResult();
+      if (!(err instanceof CommandExitError)) throw err;
+      result = err;
+    }
+    // The streaming callbacks above already filled the buffers; fall back to
+    // the result's own accumulators if the stream returned nothing (the throw
+    // path in particular can settle before a chunk arrives).
+    if (!stdoutBuf) stdoutBuf = result.stdout;
+    if (!stderrBuf) stderrBuf = result.stderr;
+    bashExitCode = result.exitCode;
     if (result.exitCode !== 0) {
       kernelError = {
         name: "NonZeroExit",
-        value: `exit code ${result.exitCode}`,
+        value: result.error
+          ? `exit code ${result.exitCode.toString()}: ${result.error}`
+          : `exit code ${result.exitCode.toString()}`,
       };
     }
   }
 
-  const after = await snapshotWorkspace(sbx);
+  const after = await snapshotWorkspaceWithRetry(sbx);
 
-  const artifacts: SandboxArtifact[] = [];
-  for (const [path, snap] of after.entries()) {
-    const prev = before.get(path);
-    if (!prev || prev.mtimeMs !== snap.mtimeMs || prev.size !== snap.size) {
-      artifacts.push({ path, mime: inferMime(path), size: snap.size });
-    }
+  // A degraded diff is worse than no diff: with an unusable BEFORE we would
+  // hand the model the entire workspace as "files this run produced" and
+  // re-upload all of it. Report nothing and say so, rather than lie.
+  const diffUsable = !before.failed && !after.failed;
+  if (!diffUsable) {
+    console.error(
+      `[e2b:run] skipping artifact diff for ${conversationId} — workspace listing failed`,
+    );
   }
+  const artifacts: SandboxArtifact[] = [];
   const deletedPaths: string[] = [];
-  for (const path of before.keys()) {
-    if (!after.has(path)) deletedPaths.push(path);
+  if (diffUsable) {
+    for (const [path, snap] of after.files.entries()) {
+      const prev = before.files.get(path);
+      if (!prev || prev.mtimeMs !== snap.mtimeMs || prev.size !== snap.size) {
+        artifacts.push({ path, mime: inferMime(path), size: snap.size });
+      }
+    }
+    for (const path of before.files.keys()) {
+      if (!after.files.has(path)) deletedPaths.push(path);
+    }
   }
 
   return {
     stdout: stdoutBuf,
     stderr: stderrBuf,
-    exitCode: kernelError ? 1 : 0,
+    exitCode: bashExitCode ?? (kernelError ? 1 : 0),
     error: kernelError,
     artifacts,
     deletedPaths,

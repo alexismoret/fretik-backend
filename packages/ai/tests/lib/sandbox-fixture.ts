@@ -176,6 +176,15 @@ export const installSandboxMocks = (): void => {
         sandboxStore.set(buildKey(conversationId, path), bytes);
         registeredSandboxes.add(conversationId);
       },
+      writeSandboxFiles: async (
+        conversationId: string,
+        files: readonly { path: string; bytes: Uint8Array }[],
+      ): Promise<void> => {
+        for (const file of files) {
+          sandboxStore.set(buildKey(conversationId, file.path), file.bytes);
+        }
+        registeredSandboxes.add(conversationId);
+      },
       readSandboxFile: async (
         conversationId: string,
         path: string,

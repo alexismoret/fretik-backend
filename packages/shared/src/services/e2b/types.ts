@@ -1,3 +1,5 @@
+import type { Sandbox } from "@e2b/code-interpreter";
+
 /**
  * Shared types for the E2B sandbox layer. Kept tiny on purpose — every
  * surface beyond these primitives lives behind a function in a sibling
@@ -7,6 +9,17 @@
 export interface SandboxLease {
   sandboxId: string;
   conversationId: string;
+  /**
+   * The live, already-connected handle `acquireSandbox` just obtained. Use it
+   * instead of a second `Sandbox.connect(lease.sandboxId)`: every helper used
+   * to reconnect, paying an extra HTTP round-trip per file operation on a
+   * sandbox that was connected microseconds earlier.
+   *
+   * Do NOT hold it past the current operation — `connect` is also what resumes
+   * a paused sandbox and refreshes its lease, so a handle kept across turns
+   * points at a sandbox that may have paused since.
+   */
+  sandbox: Sandbox;
 }
 
 export interface SandboxArtifact {
@@ -65,7 +78,10 @@ export interface RichResult {
 export interface RunResult {
   stdout: string;
   stderr: string;
-  /** Always 0 on success; 1 when E2B surfaces an exception. */
+  /**
+   * Bash: the command's real exit status. Python: 0 on success, 1 when the
+   * kernel surfaced an exception (a cell has no process exit code).
+   */
   exitCode: number;
   /** Last cell return value when running Python (e.g. an expression result). */
   returnValue?: unknown;

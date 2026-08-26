@@ -20,7 +20,7 @@ import { mapE2BError } from "./_e2b-errors";
  * `e2b:sandbox:{conversationId}`) and is therefore SHARED between
  * the parent agent and every sub-agent it spawns via `dispatchAgent`.
  * The Jupyter kernel inside that sandbox is NOT thread-safe, and the
- * sandbox itself only has 1 vCPU / 2 GB. When several sub-agents
+ * sandbox itself only has 1 vCPU / 1.5 GB. When several sub-agents
  * (or parent + sub-agent) issue concurrent `python` / `bash` calls
  * on the same conversation, the kernel serialises them under load
  * and we have observed timeouts on `workspace snapshot` and
@@ -125,7 +125,7 @@ export const createPythonTool = () =>
       "",
       "Restart semantics: pass `restart: true` to wipe the kernel (variables, imports) before running this code; the filesystem is preserved. The `bash` tool has its own heavier `restart` that nukes the whole sandbox including `/workspace` — use that only for filesystem corruption.",
       "",
-      "Sandbox: 1 vCPU, 1 GB memory, 5 min wall-clock timeout, non-root user, /workspace as cwd. Outbound internet is restricted to a curated allowlist (PyPI, GitHub, Fretik, common B2B service APIs) — `pip install` works for those. Note: a `pip install` from `bash` is invisible to a kernel that already imported the package; restart the Python kernel (`restart: true`) to pick it up.",
+      "Sandbox: 1 vCPU, 1.5 GB memory, 5 min wall-clock timeout, non-root user, /workspace as cwd. Outbound internet is restricted to a curated allowlist (PyPI, GitHub, Fretik, common B2B service APIs) — `pip install` works for those. Note: a `pip install` from `bash` is invisible to a kernel that already imported the package; restart the Python kernel (`restart: true`) to pick it up.",
       "",
       "Pre-installed libraries:",
       "- Data: pandas, numpy, pyarrow",
@@ -162,6 +162,12 @@ export const createPythonTool = () =>
         return { error: "Stopped.", code: TOOL_ERROR_CODES.ABORTED };
       }
 
+      // Bootstrap (skills push, `tar -xzf`, S3 restore, context + memory
+      // hydration) runs on the sandbox and is BILLED, but it sits outside the
+      // traced call below, so its 6-8 s on a cold conversation were attributed
+      // to nothing. Carry the elapsed time into the cost of the run it
+      // enabled — the closest owner there is.
+      const prepareStartedAt = Date.now();
       try {
         await prepareSandboxForCode({
           conversationId,
@@ -173,6 +179,7 @@ export const createPythonTool = () =>
       } catch (err) {
         return mapE2BError(err, "while preparing sandbox workspace");
       }
+      const prepareMs = Date.now() - prepareStartedAt;
 
       // Serialise restart + run on the per-conversation E2B sandbox.
       // Parent + sub-agents share the same sandbox; the Jupyter
@@ -209,8 +216,9 @@ export const createPythonTool = () =>
                 output: {
                   error: r.error ? `${r.error.name}: ${r.error.value}` : null,
                 },
-                costUsd: (durationMs / 1000) * E2B_PRICE_PER_SECOND,
-                metadata: { durationMs },
+                costUsd:
+                  ((durationMs + prepareMs) / 1000) * E2B_PRICE_PER_SECOND,
+                metadata: { durationMs, prepareMs },
               }),
             );
           },

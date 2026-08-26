@@ -19,6 +19,18 @@ export const getSandboxIdFromRegistry = async (
   conversationId: string,
 ): Promise<string | null> => redis.get(sandboxRegistryKey(conversationId));
 
+/**
+ * Batch read for the orphan sweep: one MGET instead of one GET per sandbox.
+ * Returns entries positionally, `null` where the conversation has no live
+ * mapping.
+ */
+export const getSandboxIdsFromRegistry = async (
+  conversationIds: readonly string[],
+): Promise<(string | null)[]> => {
+  if (conversationIds.length === 0) return [];
+  return redis.mget(conversationIds.map(sandboxRegistryKey));
+};
+
 export const setSandboxIdInRegistry = async (
   conversationId: string,
   sandboxId: string,
@@ -70,7 +82,16 @@ export const getAttachmentGeneration = async (
   return raw ? Number.parseInt(raw, 10) : 0;
 };
 
-const SANDBOX_LOCK_TTL_S = 30;
+/**
+ * Create-lock TTL. Must be >= the window a waiter is willing to poll for
+ * (`LOCK_POLL_*` in `acquire-sandbox.ts`), or the holder's lock expires while
+ * it is still creating and a second caller spawns a duplicate sandbox — which
+ * `acquireSandbox` then silently orphans, since it only ever reads
+ * `sandboxes[0]`. A cold `Sandbox.create` is 2-5 s in practice; 60 s is the
+ * headroom, and it is also the longest a crashed holder can block a single
+ * conversation's first code call.
+ */
+export const SANDBOX_LOCK_TTL_S = 60;
 const sandboxLockKey = (conversationId: string): string =>
   `${sandboxRegistryKey(conversationId)}:lock`;
 
@@ -82,8 +103,8 @@ else
 end`;
 
 /**
- * Try to take the per-conversation create-lock. Returns `true` if we
- * own it for the next 30s, `false` if another caller holds it.
+ * Try to take the per-conversation create-lock. Returns `true` if we own it
+ * for the next `SANDBOX_LOCK_TTL_S`, `false` if another caller holds it.
  */
 export const acquireSandboxLock = async (
   conversationId: string,

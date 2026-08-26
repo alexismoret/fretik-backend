@@ -1,14 +1,26 @@
 bun run --filter '*' check
 
-# The render contract's generated copy lives in the frontend repo, which deploys
-# on its own. Pushing the backend without it means the live agent authors pages
-# against a catalog the live frontend does not have yet.
+# `generated/file-types/` in the frontend repo is a copy of
+# `packages/shared/src/file-types/`, and that repo deploys on its own. Pushing a
+# registry change without carrying it over means the API starts validating
+# uploads against types the live picker does not offer — or worse, offers types
+# it will reject.
 #
 # A REMINDER, not a failure: backend-then-frontend is the normal order, so the
-# copy being uncommitted here is expected — the mistake is stopping there.
-if [ -d ../app/.git ] && [ -n "$(git -C ../app status --porcelain -- app/utils/render-contract)" ]; then
-  echo ""
-  echo "⚠️  The render contract changed in ../app and is not committed there yet."
-  echo "   Until fretik-app is pushed, the deployed frontend renders with the old catalog."
-  echo ""
+# copy being uncommitted there is expected — the mistake is stopping there.
+if [ -d ../app/.git ]; then
+  # Two distinct states, and the old hook only saw the second one: the sync was
+  # never RUN (frontend still holds the previous registry, working tree clean),
+  # or it ran and was never COMMITTED.
+  if ! bun run --filter '@fretik/shared' file-types:sync --check >/dev/null 2>&1; then
+    echo ""
+    echo "⚠️  The file-type registry changed and ../app has not been re-synced."
+    echo "   Run: bun run --filter '@fretik/shared' file-types:sync"
+    echo ""
+  elif [ -n "$(git -C ../app status --porcelain -- generated/file-types)" ]; then
+    echo ""
+    echo "⚠️  The file-type registry copy in ../app is not committed there yet."
+    echo "   Until fretik-app is pushed, its uploads use the old registry."
+    echo ""
+  fi
 fi

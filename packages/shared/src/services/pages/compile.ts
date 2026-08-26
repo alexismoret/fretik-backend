@@ -374,14 +374,44 @@ const releaseTailwindSlot = (): void => {
 };
 
 /**
+ * Scratch root for the Tailwind subprocess — `/tmp`, the host-scratch
+ * convention of this codebase (see `/tmp/fretik-ai/{convId}/`), and NOT the
+ * source tree.
+ *
+ * It used to be `${packageRoot}node_modules/.cache/`, which works on a dev
+ * machine and fails on EVERY production write: the images install as root and
+ * then drop to the unprivileged `bun` user, so nothing under `/app` is
+ * creatable at runtime. The symptom hides the cause — `Bun.write` opens first,
+ * gets ENOENT, retries after an mkdir that is denied, and reports the ORIGINAL
+ * `ENOENT: … open '…/page.vue'`, which reads like a missing file rather than a
+ * refused directory.
+ */
+const SCRATCH_ROOT = "/tmp/fretik-page-css";
+
+let tailwindEntries: { theme: string; utilities: string } | null = null;
+/** Resolved lazily: a missing Tailwind must fail the page write, not the
+ * service boot. Resolution is what frees the scratch dir from the package —
+ * see `compileTailwind`. */
+const resolveTailwindEntries = (): { theme: string; utilities: string } => {
+  tailwindEntries ??= {
+    theme: Bun.resolveSync("tailwindcss/theme.css", packageRoot),
+    utilities: Bun.resolveSync("tailwindcss/utilities.css", packageRoot),
+  };
+  return tailwindEntries;
+};
+
+/**
  * Generate the page's utility CSS: Tailwind v4 scans the SFC source and emits
  * ONLY the used utilities, as `var(--…)` references the runtime.css resolves
  * in the iframe.
  *
  * Two hard-won specifics (each broke every page write when wrong):
- * - the scratch dir must live UNDER this package: Tailwind resolves
- *   `@import "tailwindcss"` by walking up from the INPUT FILE's directory
- *   (subprocess cwd is irrelevant), and an OS temp dir has no node_modules;
+ * - the two Tailwind entry points are imported by ABSOLUTE path. Tailwind
+ *   resolves a bare `@import "tailwindcss/…"` by walking up from the INPUT
+ *   FILE's directory (the subprocess cwd is irrelevant), so a scratch dir
+ *   outside the package would find no node_modules. Resolving the paths here
+ *   instead of pinning the scratch dir under `node_modules/` is what lets it
+ *   live in a writable `/tmp` — see SCRATCH_ROOT;
  * - `theme.css` is imported `reference` (token NAMES only — runtime.css owns
  *   the values) while `utilities.css` is NOT: `reference` on the utilities
  *   layer suppresses the scanned output itself, yielding an empty stylesheet.
@@ -392,10 +422,11 @@ const compileTailwind = async (
   { ok: true; css: string } | { ok: false; error: PageCompileError }
 > => {
   const theme = await themeAssets();
-  const dir = `${packageRoot}node_modules/.cache/fretik-page-css/${Bun.randomUUIDv7()}`;
+  const entries = resolveTailwindEntries();
+  const dir = `${SCRATCH_ROOT}/${Bun.randomUUIDv7()}`;
   const inputCss = [
-    '@import "tailwindcss/theme.css" layer(theme) reference;',
-    '@import "tailwindcss/utilities.css" layer(utilities) source(none);',
+    `@import "${entries.theme}" layer(theme) reference;`,
+    `@import "${entries.utilities}" layer(utilities) source(none);`,
     '@source "./page.vue";',
     theme.css,
   ].join("\n");

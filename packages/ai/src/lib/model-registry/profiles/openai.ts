@@ -271,7 +271,7 @@ export const OPENAI_PROFILES: Record<string, ModelProfile> = {
     catalog: {
       id: "openai/gpt-oss-120b",
       contextLength: 131_072,
-      maxCompletionTokens: 131_072,
+      maxCompletionTokens: 117_964,
       inputModalities: ["text"],
       outputModalities: ["text"],
       supportedParameters: [
@@ -325,7 +325,7 @@ export const OPENAI_PROFILES: Record<string, ModelProfile> = {
     catalog: {
       id: "openai/gpt-oss-20b",
       contextLength: 131_072,
-      maxCompletionTokens: 131_072,
+      maxCompletionTokens: 117_964,
       inputModalities: ["text"],
       outputModalities: ["text"],
       supportedParameters: [

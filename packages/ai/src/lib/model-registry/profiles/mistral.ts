@@ -25,6 +25,7 @@ export const MISTRAL_PROFILES: Record<string, ModelProfile> = {
     catalog: {
       id: "mistralai/mistral-medium-3-5",
       contextLength: 262_144,
+      maxCompletionTokens: 209_715,
       inputModalities: ["text", "image", "file"],
       outputModalities: ["text"],
       supportedParameters: [
@@ -84,6 +85,7 @@ export const MISTRAL_PROFILES: Record<string, ModelProfile> = {
     catalog: {
       id: "mistralai/mistral-small-2603",
       contextLength: 262_144,
+      maxCompletionTokens: 209_715,
       inputModalities: ["text", "image"],
       outputModalities: ["text"],
       supportedParameters: [
@@ -132,6 +134,7 @@ export const MISTRAL_PROFILES: Record<string, ModelProfile> = {
     catalog: {
       id: "mistralai/ministral-8b-2512",
       contextLength: 262_144,
+      maxCompletionTokens: 209_715,
       inputModalities: ["text", "image"],
       outputModalities: ["text"],
       supportedParameters: [

@@ -25,6 +25,7 @@ export const THINKING_MACHINES_PROFILES: Record<string, ModelProfile> = {
     catalog: {
       id: "thinkingmachines/inkling",
       contextLength: 1_048_576,
+      maxCompletionTokens: 262_144,
       inputModalities: ["text", "image", "audio"],
       outputModalities: ["text"],
       supportedParameters: [

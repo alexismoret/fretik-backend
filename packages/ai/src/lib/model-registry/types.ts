@@ -49,7 +49,7 @@ export type SupportedParameter =
  * Facts mirrored from the OpenRouter models API (GET /api/v1/models).
  * Field names track theirs 1:1 (camelCased) — keep it that way so
  * `scripts/check-model-catalog.ts` can diff mechanically. Last full
- * sync: 2026-07-26.
+ * sync: 2026-08-26.
  */
 export interface ModelCatalogFacts {
   /** OpenRouter model id, e.g. `minimax/minimax-m3`. */

@@ -123,10 +123,17 @@ export const DEEPSEEK_PROFILES: Record<string, ModelProfile> = {
       // Pinned, never the `~deepseek/deepseek-v4-flash-latest` alias: an alias
       // would swap the model under us and void the eval-gate contract.
       id: "deepseek/deepseek-v4-flash-0731",
-      contextLength: 1_048_576,
-      // 65 536, down from the April model's 393 216 — this is DeepInfra's cap,
-      // and DeepInfra is both the cheapest endpoint and the one pinned below.
-      maxCompletionTokens: 65_536,
+      // 1 310 720 since 2026-08-26, up from 1 048 576. The product READS this
+      // one: `getCompactionThresholdTokens` is `contextLength` minus the
+      // summariser reserve and the autocompact buffer, so the turn that
+      // triggers compaction on this model now sits ~262K later.
+      contextLength: 1_310_720,
+      // Tracks `top_provider`, i.e. whichever endpoint currently LEADS the
+      // routing — not a floor. The previous 65 536 was DeepInfra's cap back
+      // when this profile pinned DeepInfra alone; since 2026-08-05 it routes
+      // across a three-endpoint pool (see `assessment.pricing`), so that
+      // number described a provider the profile no longer always reaches.
+      maxCompletionTokens: 943_718,
       inputModalities: ["text"],
       outputModalities: ["text"],
       supportedParameters: [

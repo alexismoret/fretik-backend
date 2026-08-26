@@ -25,6 +25,7 @@ export const XAI_PROFILES: Record<string, ModelProfile> = {
     catalog: {
       id: "x-ai/grok-4.5",
       contextLength: 500_000,
+      maxCompletionTokens: 450_000,
       inputModalities: ["text", "image", "file"],
       outputModalities: ["text"],
       supportedParameters: [

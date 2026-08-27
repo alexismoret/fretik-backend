@@ -1,5 +1,6 @@
 import { z } from "@hono/zod-openapi";
 import {
+  externalAppConcurrencyModeEnum,
   externalAppConnectionStatusEnum,
   externalAppMcpAuthKindEnum,
 } from "../db/schema/external-apps";
@@ -241,6 +242,13 @@ export type ExternalAppConnectionStatusValue = z.infer<
   typeof externalAppConnectionStatusSchema
 >;
 
+export const externalAppConcurrencyModeSchema = z.enum(
+  externalAppConcurrencyModeEnum.enumValues,
+);
+export type ExternalAppConcurrencyModeValue = z.infer<
+  typeof externalAppConcurrencyModeSchema
+>;
+
 /**
  * One tool of a connection, surfaced so Settings → Tool permissions can render
  * a per-tool policy row. For MCP connections these come from the connection's
@@ -284,6 +292,8 @@ export const externalAppConnectionResponseSchema = z.object({
   options: z.record(z.string(), z.unknown()).nullable(),
   /** Per-action permission overrides on this connection (absent = defaults). */
   actionPolicies: z.record(z.string(), toolPolicyLevelSchema).nullable(),
+  /** `null` = follows the provider's manifest (`parallel` unless declared). */
+  concurrencyMode: externalAppConcurrencyModeSchema.nullable(),
   /**
    * MCP connections only — the introspected tools of this connection's current
    * snapshot, so the tool-permissions UI can render a per-tool policy row.
@@ -396,16 +406,24 @@ export const updateConnectionRequestSchema = z
     actionPolicies: z
       .record(z.string(), toolPolicyLevelSchema.nullable())
       .optional(),
+    /**
+     * Override how many calls this ACCOUNT tolerates at once; `null` follows the
+     * provider's manifest again. The lever for a third party whose limit is not
+     * a property of the app but of the plan the customer bought — and the only
+     * one an MCP connection has, since it carries no manifest.
+     */
+    concurrencyMode: externalAppConcurrencyModeSchema.nullable().optional(),
   })
   .refine(
     (val) =>
       val.displayName !== undefined ||
       val.status !== undefined ||
       val.options !== undefined ||
-      val.actionPolicies !== undefined,
+      val.actionPolicies !== undefined ||
+      val.concurrencyMode !== undefined,
     {
       message:
-        "At least one of displayName, status, options or actionPolicies must be provided",
+        "At least one of displayName, status, options, actionPolicies or concurrencyMode must be provided",
     },
   );
 export type UpdateConnectionRequest = z.infer<

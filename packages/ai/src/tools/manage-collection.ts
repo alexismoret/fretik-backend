@@ -15,6 +15,7 @@ import { updateCollection } from "@fretik/shared/services/collections/update";
 import { FIELD_DEFINITION_LIMITS } from "@fretik/shared/services/field-definitions/constants";
 import { tool } from "ai";
 import { z } from "zod";
+import { gateBuiltinWriteTool } from "../agents/shared/policy-tool-gate";
 import {
   agentEventActor,
   getRuntimeContext,
@@ -214,6 +215,18 @@ export const createManageCollectionTool = () =>
         });
 
         if (input.action === "delete") {
+          const gate = await gateBuiltinWriteTool(ctx, {
+            toolName: "manageCollection",
+            args: {
+              action: "delete",
+              collectionId,
+              collectionKey: input.collectionKey,
+            },
+            summaryFields: [
+              { labelKey: "collection", value: input.collectionKey },
+            ],
+          });
+          if (gate !== null) return gate;
           const result = await deleteCollection({
             id: collectionId,
             actor: agentEventActor(ctx),

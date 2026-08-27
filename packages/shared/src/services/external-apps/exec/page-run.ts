@@ -9,6 +9,7 @@ import { getSnapshotForConnection } from "../mcp/snapshot-store";
 import { mcpCallTool } from "../mcp/transport";
 import { buildRequest } from "./build-request";
 import { callCustomHandler } from "./call-custom-handler";
+import { withConnectionSlot } from "./connection-slot";
 import { callHttpDirect } from "./http-direct";
 import { callNangoProxy } from "./nango-proxy";
 import { validateActionArgs } from "./validate-args";
@@ -58,6 +59,28 @@ const withTimeout = async <T>(work: Promise<T>): Promise<T> => {
     if (timer !== undefined) clearTimeout(timer);
   }
 };
+
+/**
+ * Comfortably past this file's own 20 s timeout — see `read-executor.ts` for
+ * why a lease must outlive the call it guards.
+ */
+const WRITE_LEASE_MS = 25_000;
+
+/**
+ * Hold the connection's slot for the upstream call, and START the clock only
+ * once it is held: time spent queueing behind another request is not the app
+ * being slow, and charging it to the timeout would fail calls that never left.
+ *
+ * MCP is absent on purpose — `mcpCallTool` takes the slot itself, and the lock
+ * is not reentrant.
+ */
+const upstream = async <T>(
+  connection: ExternalAppConnection,
+  work: () => Promise<T>,
+): Promise<T> =>
+  await withConnectionSlot(connection, () => withTimeout(work()), {
+    leaseMs: WRITE_LEASE_MS,
+  });
 
 const blockedMessage = (
   actionName: string,
@@ -194,12 +217,13 @@ export const runPageAction = async (params: {
           message: `action "${actionName}" has no handler registered`,
         };
       }
-      const raw = await withTimeout(
+      const handler = resolved.handler;
+      const raw = await upstream(connection, () =>
         callCustomHandler({
           manifest: resolved.manifest,
           providerConfigKey: nangoProviderConfigKey,
           connectionId: nangoConnectionId,
-          handler: resolved.handler,
+          handler,
           args: validated,
         }),
       );
@@ -207,12 +231,13 @@ export const runPageAction = async (params: {
     }
 
     const request = buildRequest(resolved, validated);
+    const transport = resolved.transport;
     const raw =
-      resolved.transport.kind === "http-direct"
-        ? await withTimeout(
+      transport.kind === "http-direct"
+        ? await upstream(connection, () =>
             callHttpDirect({
               manifest: resolved.manifest,
-              transport: resolved.transport,
+              transport,
               providerConfigKey: nangoProviderConfigKey,
               connectionId: nangoConnectionId,
               method: request.method,
@@ -221,7 +246,7 @@ export const runPageAction = async (params: {
               body: request.body,
             }),
           )
-        : await withTimeout(
+        : await upstream(connection, () =>
             callNangoProxy({
               providerConfigKey: nangoProviderConfigKey,
               connectionId: nangoConnectionId,

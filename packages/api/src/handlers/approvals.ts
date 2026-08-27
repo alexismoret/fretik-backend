@@ -18,8 +18,10 @@ import {
   approvalResponseSchema,
   grantApprovalRequestSchema,
   modifyAndGrantRequestSchema,
+  operationSchemasResponseSchema,
   rejectApprovalRequestSchema,
   type ApprovalResponse,
+  type OperationSchemasResponse,
 } from "@fretik/shared/schemas/approvals";
 import { paramsIdSchema } from "@fretik/shared/schemas/common/params";
 import {
@@ -315,6 +317,27 @@ const rejectRoute = createRoute({
   },
 });
 
+const operationSchemasRoute = createRoute({
+  method: "get",
+  path: "/{id}/operation-schemas",
+  summary: "Param schemas of the actions this plan's operations call",
+  description:
+    "Feeds the Modify form: with a schema it renders real fields — labels, enums as selects, numeric bounds, nested objects and repeatable arrays of objects — instead of a raw JSON textarea. Fetched only when the form opens (a spec is per-action and unbounded, so it does not ride on the approval itself). Non-plan kinds and unresolvable actions return no entry; the form then infers inputs from each value's runtime type.",
+  tags: ["Approvals"],
+  request: { params: paramsIdSchema },
+  responses: {
+    200: {
+      content: {
+        "application/json": { schema: operationSchemasResponseSchema },
+      },
+      description: "Schemas keyed by qualified action name",
+    },
+    ...responseForbiddenSchema,
+    ...responseNotFoundSchema,
+    ...responseInternalErrorSchema,
+  },
+});
+
 // Workflow-run resume hook: when the decided approval belongs to a workflow
 // run parked on a wait token, complete the token so the orchestrator loop
 // continues. No-op for chat conversations. Soft-fail: a Trigger hiccup must
@@ -346,6 +369,42 @@ approvalsRoutes.openapi(getRoute, async (c) => {
   const { id } = c.req.valid("param");
   const row = await getApprovalForCaller(id, team.id);
   return c.json(await toDto(row, team.id), 200);
+});
+
+approvalsRoutes.openapi(operationSchemasRoute, async (c) => {
+  const team = c.get("team");
+  if (!team) return c.json(teamRequired(), 403);
+  const user = c.get("user");
+  if (!user) return c.json(forbidden("Authentication required"), 403);
+
+  const { id } = c.req.valid("param");
+  const row = await getApprovalForCaller(id, team.id);
+
+  // Best-effort by design, unlike `validateModifiedPlan`: this feeds a form,
+  // and a spec we cannot resolve costs the reviewer a nicer widget, never the
+  // ability to review. An action resolved here is simply absent from the map.
+  const schemas: OperationSchemasResponse["schemas"] = {};
+  for (const op of row.operations ?? []) {
+    if (schemas[op.action] !== undefined) continue;
+    const resolved = getAction(op.action);
+    if (resolved !== undefined) {
+      schemas[op.action] = resolved.action.params;
+      continue;
+    }
+    try {
+      // eslint-disable-next-line no-await-in-loop -- sequential per-op resolve
+      const mcp = await resolveMcpWriteOp({
+        op,
+        teamId: team.id,
+        userId: user.id,
+        autonomy: null,
+      });
+      schemas[op.action] = mcp.params;
+    } catch {
+      // Unknown action, connection gone, snapshot stale — no schema, no field.
+    }
+  }
+  return c.json({ schemas }, 200);
 });
 
 approvalsRoutes.openapi(grantRoute, async (c) => {

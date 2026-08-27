@@ -27,6 +27,10 @@ export type McpConnectionTarget = Pick<
   | "id"
   | "providerKey"
   | "displayName"
+  // Not read by the resolver: `mcpCallTool` needs it to decide whether this
+  // server tolerates two calls at once. An MCP connection has no manifest, so
+  // the column is the only place that answer can come from.
+  | "concurrencyMode"
   | "mcpAuthKind"
   | "mcpServerUrl"
   | "mcpApiKeyHeader"

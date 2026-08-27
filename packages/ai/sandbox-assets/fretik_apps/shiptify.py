@@ -4,13 +4,13 @@
 
 All calls go through fretik-backend, which dispatches them to the
 provider (Nango Proxy or a custom handler). Write actions return an
-Operation when called as `.op(...)` (use with run_plan(...));
-when called directly they are sugar for run_plan([op]).
+Operation via `.op(...)`; submit them with run_plan([...]).
+Calling a write action directly raises — it never executes.
 """
 
 from typing import Any, Literal, Optional
 from pydantic import BaseModel
-from ._runtime import FretikActionError, Operation, _call_read, run_plan
+from ._runtime import FretikActionError, Operation, _call_read
 
 
 # ── Types ─────────────────────────────────────────────────────────
@@ -1026,38 +1026,19 @@ def create_shipment_request(
 ) -> dict[str, Any]:
     """Create a new shipment request (booking)
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `create_shipment_request.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     name: Free-text booking name shown in lists
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _create_shipment_request_op(
-        name=name,
-        shipment_mode_id=shipment_mode_id,
-        reply_before=reply_before,
-        from_addresses=from_addresses,
-        dest_addresses=dest_addresses,
-        accounting_entity_id=accounting_entity_id,
-        carrier_id=carrier_id,
-        carrier_ids=carrier_ids,
-        comment=comment,
-        internal_note=internal_note,
-        internal_ref=internal_ref,
-        internal_name=internal_name,
-        total_volume=total_volume,
-        total_weight=total_weight,
-        total_linear_meters=total_linear_meters,
-        measurement_system=measurement_system,
-        contents=contents,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "create_shipment_request is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([shiptify.create_shipment_request.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "create_shipment_request failed"))
-    return result[0].get("data", {})
 
 create_shipment_request.op = _create_shipment_request_op
 
@@ -1099,32 +1080,19 @@ def create_shipment_request_draft(
 ) -> dict[str, Any]:
     """Create a draft shipment request (status: draft)
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `create_shipment_request_draft.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     reply_before: Format YYYY-MM-DDTHH:MM:SS (NO timezone suffix). Example: '2026-06-10T18:00:00'.
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _create_shipment_request_draft_op(
-        name=name,
-        shipment_mode_id=shipment_mode_id,
-        reply_before=reply_before,
-        from_addresses=from_addresses,
-        dest_addresses=dest_addresses,
-        comment=comment,
-        internal_ref=internal_ref,
-        internal_name=internal_name,
-        total_volume=total_volume,
-        total_weight=total_weight,
-        contents=contents,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "create_shipment_request_draft is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([shiptify.create_shipment_request_draft.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "create_shipment_request_draft failed"))
-    return result[0].get("data", {})
 
 create_shipment_request_draft.op = _create_shipment_request_draft_op
 
@@ -1166,30 +1134,17 @@ def update_shipment_request(
 ) -> dict[str, Any]:
     """Update fields of a shipment request
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `update_shipment_request.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _update_shipment_request_op(
-        id=id,
-        name=name,
-        accounting_entity_id=accounting_entity_id,
-        comment=comment,
-        internal_note=internal_note,
-        internal_ref=internal_ref,
-        internal_name=internal_name,
-        total_volume=total_volume,
-        total_weight=total_weight,
-        total_linear_meters=total_linear_meters,
-        measurement_system=measurement_system,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "update_shipment_request is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([shiptify.update_shipment_request.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "update_shipment_request failed"))
-    return result[0].get("data", {})
 
 update_shipment_request.op = _update_shipment_request_op
 
@@ -1211,20 +1166,17 @@ def cancel_shipment_request(
 ) -> dict[str, Any]:
     """Cancel a shipment request
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `cancel_shipment_request.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _cancel_shipment_request_op(
-        id=id,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "cancel_shipment_request is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([shiptify.cancel_shipment_request.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "cancel_shipment_request failed"))
-    return result[0].get("data", {})
 
 cancel_shipment_request.op = _cancel_shipment_request_op
 
@@ -1250,24 +1202,19 @@ def upload_shipment_request_attachment(
 ) -> dict[str, Any]:
     """Upload one or several files onto a shipment request
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `upload_shipment_request_attachment.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     attachments: Files to upload — each item `{ fileName, documentType, base64Data | url, accessType?, save? }`. `documentType` is one of: invoice, order, customs, packing_list, bill_of_lading, cmr, cmr_at_departure, signed_cmr_at_arrival, proof_of_delivery, awb, msds, claim, other (full list in Shiptify docs).
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _upload_shipment_request_attachment_op(
-        id=id,
-        attachments=attachments,
-        carrier_id=carrier_id,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "upload_shipment_request_attachment is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([shiptify.upload_shipment_request_attachment.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "upload_shipment_request_attachment failed"))
-    return result[0].get("data", {})
 
 upload_shipment_request_attachment.op = _upload_shipment_request_attachment_op
 
@@ -1297,26 +1244,19 @@ def send_shipment_request_message(
 ) -> dict[str, Any]:
     """Post a message in the booking chat of a shipment request
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `send_shipment_request_message.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     message: Plain-text message body
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _send_shipment_request_message_op(
-        id=id,
-        message=message,
-        carrier_id=carrier_id,
-        sender_name=sender_name,
-        sender_email=sender_email,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "send_shipment_request_message is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([shiptify.send_shipment_request_message.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "send_shipment_request_message failed"))
-    return result[0].get("data", {})
 
 send_shipment_request_message.op = _send_shipment_request_message_op
 
@@ -1348,27 +1288,19 @@ def confirm_shipment_pickup(
 ) -> dict[str, Any]:
     """Confirm pickup of a shipment (creates the actual pickup point)
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `confirm_shipment_pickup.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     date: Pickup date — YYYY-MM-DD
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _confirm_shipment_pickup_op(
-        id=id,
-        date=date,
-        time=time,
-        comment=comment,
-        incident=incident,
-        cause_id=cause_id,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "confirm_shipment_pickup is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([shiptify.confirm_shipment_pickup.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "confirm_shipment_pickup failed"))
-    return result[0].get("data", {})
 
 confirm_shipment_pickup.op = _confirm_shipment_pickup_op
 
@@ -1400,27 +1332,19 @@ def confirm_shipment_delivery(
 ) -> dict[str, Any]:
     """Confirm delivery of a shipment
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `confirm_shipment_delivery.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     date: Delivery date — YYYY-MM-DD
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _confirm_shipment_delivery_op(
-        id=id,
-        date=date,
-        time=time,
-        comment=comment,
-        incident=incident,
-        cause_id=cause_id,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "confirm_shipment_delivery is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([shiptify.confirm_shipment_delivery.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "confirm_shipment_delivery failed"))
-    return result[0].get("data", {})
 
 confirm_shipment_delivery.op = _confirm_shipment_delivery_op
 
@@ -1450,26 +1374,19 @@ def replan_shipment_pickup(
 ) -> dict[str, Any]:
     """Replan pickup of a shipment (new date / time)
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `replan_shipment_pickup.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     date: New pickup date — YYYY-MM-DD
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _replan_shipment_pickup_op(
-        id=id,
-        date=date,
-        time=time,
-        comment=comment,
-        reason=reason,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "replan_shipment_pickup is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([shiptify.replan_shipment_pickup.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "replan_shipment_pickup failed"))
-    return result[0].get("data", {})
 
 replan_shipment_pickup.op = _replan_shipment_pickup_op
 
@@ -1499,26 +1416,19 @@ def replan_shipment_delivery(
 ) -> dict[str, Any]:
     """Replan delivery of a shipment
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `replan_shipment_delivery.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     date: YYYY-MM-DD
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _replan_shipment_delivery_op(
-        id=id,
-        date=date,
-        time=time,
-        comment=comment,
-        reason=reason,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "replan_shipment_delivery is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([shiptify.replan_shipment_delivery.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "replan_shipment_delivery failed"))
-    return result[0].get("data", {})
 
 replan_shipment_delivery.op = _replan_shipment_delivery_op
 
@@ -1542,23 +1452,19 @@ def upload_shipment_attachment(
 ) -> dict[str, Any]:
     """Upload one or several files onto a shipment
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `upload_shipment_attachment.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     attachments: Files — each `{ fileName, documentType, base64Data | url, accessType?, save? }`. `documentType` examples: proof_of_delivery, cmr, signed_cmr_at_arrival, invoice, awb, customs, claim, other.
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _upload_shipment_attachment_op(
-        id=id,
-        attachments=attachments,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "upload_shipment_attachment is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([shiptify.upload_shipment_attachment.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "upload_shipment_attachment failed"))
-    return result[0].get("data", {})
 
 upload_shipment_attachment.op = _upload_shipment_attachment_op
 
@@ -1586,25 +1492,19 @@ def send_shipment_message(
 ) -> dict[str, Any]:
     """Post a message in the tracking chat of a shipment
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `send_shipment_message.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     message: Plain-text message body
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _send_shipment_message_op(
-        id=id,
-        message=message,
-        sender_name=sender_name,
-        sender_email=sender_email,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "send_shipment_message is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([shiptify.send_shipment_message.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "send_shipment_message failed"))
-    return result[0].get("data", {})
 
 send_shipment_message.op = _send_shipment_message_op
 
@@ -1656,37 +1556,19 @@ def create_location(
 ) -> dict[str, Any]:
     """Create a new address-book location — use ONLY when list_locations returned no match
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `create_location.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     name: Short label shown in the Shiptify address book
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _create_location_op(
-        name=name,
-        address_1=address_1,
-        city=city,
-        zipcode=zipcode,
-        country=country,
-        type=type,
-        address_2=address_2,
-        state=state,
-        recipient_name=recipient_name,
-        company_name=company_name,
-        email=email,
-        phone_number=phone_number,
-        instructions=instructions,
-        internal_ref=internal_ref,
-        locode=locode,
-        contact=contact,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "create_location is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([shiptify.create_location.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "create_location failed"))
-    return result[0].get("data", {})
 
 create_location.op = _create_location_op
 
@@ -1742,39 +1624,19 @@ def galaxy_create_carrier_shipment_request(
 ) -> dict[str, Any]:
     """Create a carrier-initiated shipment request (spot booking)
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `galaxy_create_carrier_shipment_request.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     shipment_mode_id: Mode id from list_shipment_modes()
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _galaxy_create_carrier_shipment_request_op(
-        name=name,
-        shipment_mode_id=shipment_mode_id,
-        reply_before=reply_before,
-        from_addresses=from_addresses,
-        dest_addresses=dest_addresses,
-        shipper_id=shipper_id,
-        shipper_internal_ref=shipper_internal_ref,
-        other_reference=other_reference,
-        accounting_entity_id=accounting_entity_id,
-        comment=comment,
-        internal_ref=internal_ref,
-        carrier_ids=carrier_ids,
-        pre_awarded=pre_awarded,
-        total_weight=total_weight,
-        total_volume=total_volume,
-        total_linear_meters=total_linear_meters,
-        measurement_system=measurement_system,
-        contents=contents,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "galaxy_create_carrier_shipment_request is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([shiptify.galaxy_create_carrier_shipment_request.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "galaxy_create_carrier_shipment_request failed"))
-    return result[0].get("data", {})
 
 galaxy_create_carrier_shipment_request.op = _galaxy_create_carrier_shipment_request_op
 
@@ -1818,33 +1680,19 @@ def galaxy_create_carrier_shipment_request_draft(
 ) -> dict[str, Any]:
     """Create a draft carrier-side shipment request
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `galaxy_create_carrier_shipment_request_draft.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     reply_before: Format YYYY-MM-DDTHH:MM:SS (NO timezone suffix). Example: '2026-06-10T18:00:00'.
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _galaxy_create_carrier_shipment_request_draft_op(
-        name=name,
-        shipment_mode_id=shipment_mode_id,
-        reply_before=reply_before,
-        shipper_id=shipper_id,
-        from_addresses=from_addresses,
-        dest_addresses=dest_addresses,
-        comment=comment,
-        internal_ref=internal_ref,
-        other_reference=other_reference,
-        total_weight=total_weight,
-        total_volume=total_volume,
-        contents=contents,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "galaxy_create_carrier_shipment_request_draft is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([shiptify.galaxy_create_carrier_shipment_request_draft.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "galaxy_create_carrier_shipment_request_draft failed"))
-    return result[0].get("data", {})
 
 galaxy_create_carrier_shipment_request_draft.op = _galaxy_create_carrier_shipment_request_draft_op
 
@@ -1868,23 +1716,19 @@ def galaxy_upload_shipment_request_attachment(
 ) -> dict[str, Any]:
     """Upload one or several files onto a carrier-side shipment request
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `galaxy_upload_shipment_request_attachment.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     attachments: Files — each `{ fileName, documentType, base64Data | url, accessType?, save? }`. Same documentType enum as the shipper version.
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _galaxy_upload_shipment_request_attachment_op(
-        id=id,
-        attachments=attachments,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "galaxy_upload_shipment_request_attachment is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([shiptify.galaxy_upload_shipment_request_attachment.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "galaxy_upload_shipment_request_attachment failed"))
-    return result[0].get("data", {})
 
 galaxy_upload_shipment_request_attachment.op = _galaxy_upload_shipment_request_attachment_op
 
@@ -1912,25 +1756,19 @@ def galaxy_send_shipment_request_message(
 ) -> dict[str, Any]:
     """Post a message in the booking chat of a carrier-side shipment request
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `galaxy_send_shipment_request_message.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     message: Plain-text message body
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _galaxy_send_shipment_request_message_op(
-        id=id,
-        message=message,
-        sender_name=sender_name,
-        sender_email=sender_email,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "galaxy_send_shipment_request_message is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([shiptify.galaxy_send_shipment_request_message.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "galaxy_send_shipment_request_message failed"))
-    return result[0].get("data", {})
 
 galaxy_send_shipment_request_message.op = _galaxy_send_shipment_request_message_op
 
@@ -1952,20 +1790,17 @@ def galaxy_cancel_quote_request(
 ) -> dict[str, Any]:
     """Cancel a quote request the carrier received
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `galaxy_cancel_quote_request.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _galaxy_cancel_quote_request_op(
-        id=id,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "galaxy_cancel_quote_request is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([shiptify.galaxy_cancel_quote_request.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "galaxy_cancel_quote_request failed"))
-    return result[0].get("data", {})
 
 galaxy_cancel_quote_request.op = _galaxy_cancel_quote_request_op
 
@@ -1995,26 +1830,19 @@ def galaxy_confirm_shipment_pickup(
 ) -> dict[str, Any]:
     """Confirm pickup of a carrier-side shipment (creates the actual pickup point)
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `galaxy_confirm_shipment_pickup.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     date: Pickup date — YYYY-MM-DD
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _galaxy_confirm_shipment_pickup_op(
-        id=id,
-        date=date,
-        time=time,
-        comment=comment,
-        incident=incident,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "galaxy_confirm_shipment_pickup is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([shiptify.galaxy_confirm_shipment_pickup.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "galaxy_confirm_shipment_pickup failed"))
-    return result[0].get("data", {})
 
 galaxy_confirm_shipment_pickup.op = _galaxy_confirm_shipment_pickup_op
 
@@ -2044,26 +1872,19 @@ def galaxy_confirm_shipment_delivery(
 ) -> dict[str, Any]:
     """Confirm delivery of a carrier-side shipment
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `galaxy_confirm_shipment_delivery.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     date: Delivery date — YYYY-MM-DD
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _galaxy_confirm_shipment_delivery_op(
-        id=id,
-        date=date,
-        time=time,
-        comment=comment,
-        incident=incident,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "galaxy_confirm_shipment_delivery is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([shiptify.galaxy_confirm_shipment_delivery.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "galaxy_confirm_shipment_delivery failed"))
-    return result[0].get("data", {})
 
 galaxy_confirm_shipment_delivery.op = _galaxy_confirm_shipment_delivery_op
 
@@ -2093,26 +1914,19 @@ def galaxy_replan_shipment_pickup(
 ) -> dict[str, Any]:
     """Replan pickup of a carrier-side shipment
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `galaxy_replan_shipment_pickup.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     date: YYYY-MM-DD
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _galaxy_replan_shipment_pickup_op(
-        id=id,
-        date=date,
-        time=time,
-        comment=comment,
-        reason=reason,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "galaxy_replan_shipment_pickup is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([shiptify.galaxy_replan_shipment_pickup.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "galaxy_replan_shipment_pickup failed"))
-    return result[0].get("data", {})
 
 galaxy_replan_shipment_pickup.op = _galaxy_replan_shipment_pickup_op
 
@@ -2142,24 +1956,17 @@ def galaxy_replan_shipment_delivery(
 ) -> dict[str, Any]:
     """Replan delivery of a carrier-side shipment
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `galaxy_replan_shipment_delivery.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _galaxy_replan_shipment_delivery_op(
-        id=id,
-        date=date,
-        time=time,
-        comment=comment,
-        reason=reason,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "galaxy_replan_shipment_delivery is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([shiptify.galaxy_replan_shipment_delivery.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "galaxy_replan_shipment_delivery failed"))
-    return result[0].get("data", {})
 
 galaxy_replan_shipment_delivery.op = _galaxy_replan_shipment_delivery_op
 
@@ -2185,24 +1992,19 @@ def galaxy_confirm_shipment(
 ) -> dict[str, Any]:
     """Confirm the whole shipment (distinct from per-leg pickup / delivery)
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `galaxy_confirm_shipment.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     date: YYYY-MM-DD
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _galaxy_confirm_shipment_op(
-        id=id,
-        date=date,
-        time=time,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "galaxy_confirm_shipment is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([shiptify.galaxy_confirm_shipment.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "galaxy_confirm_shipment failed"))
-    return result[0].get("data", {})
 
 galaxy_confirm_shipment.op = _galaxy_confirm_shipment_op
 
@@ -2226,21 +2028,17 @@ def galaxy_cancel_shipment(
 ) -> dict[str, Any]:
     """Cancel a carrier-side shipment
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `galaxy_cancel_shipment.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _galaxy_cancel_shipment_op(
-        id=id,
-        comment=comment,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "galaxy_cancel_shipment is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([shiptify.galaxy_cancel_shipment.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "galaxy_cancel_shipment failed"))
-    return result[0].get("data", {})
 
 galaxy_cancel_shipment.op = _galaxy_cancel_shipment_op
 
@@ -2264,23 +2062,19 @@ def galaxy_upload_shipment_attachment(
 ) -> dict[str, Any]:
     """Upload one or several files onto a carrier-side shipment
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `galaxy_upload_shipment_attachment.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     attachments: Files — each `{ fileName, documentType, base64Data | url, accessType?, save? }`
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _galaxy_upload_shipment_attachment_op(
-        id=id,
-        attachments=attachments,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "galaxy_upload_shipment_attachment is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([shiptify.galaxy_upload_shipment_attachment.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "galaxy_upload_shipment_attachment failed"))
-    return result[0].get("data", {})
 
 galaxy_upload_shipment_attachment.op = _galaxy_upload_shipment_attachment_op
 
@@ -2308,25 +2102,19 @@ def galaxy_send_shipment_message(
 ) -> dict[str, Any]:
     """Post a message in the tracking chat of a carrier-side shipment
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `galaxy_send_shipment_message.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     message: Plain-text message body
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _galaxy_send_shipment_message_op(
-        id=id,
-        message=message,
-        sender_name=sender_name,
-        sender_email=sender_email,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "galaxy_send_shipment_message is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([shiptify.galaxy_send_shipment_message.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "galaxy_send_shipment_message failed"))
-    return result[0].get("data", {})
 
 galaxy_send_shipment_message.op = _galaxy_send_shipment_message_op
 
@@ -2356,26 +2144,19 @@ def galaxy_confirm_tracking_point(
 ) -> dict[str, Any]:
     """Confirm a single tracking point (transit stop, customs, …) of a carrier-side shipment
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `galaxy_confirm_tracking_point.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     date: YYYY-MM-DD
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _galaxy_confirm_tracking_point_op(
-        id=id,
-        date=date,
-        time=time,
-        comment=comment,
-        incident=incident,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "galaxy_confirm_tracking_point is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([shiptify.galaxy_confirm_tracking_point.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "galaxy_confirm_tracking_point failed"))
-    return result[0].get("data", {})
 
 galaxy_confirm_tracking_point.op = _galaxy_confirm_tracking_point_op
 
@@ -2405,26 +2186,19 @@ def galaxy_replan_tracking_point(
 ) -> dict[str, Any]:
     """Replan a single tracking point of a carrier-side shipment
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `galaxy_replan_tracking_point.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     date: YYYY-MM-DD
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _galaxy_replan_tracking_point_op(
-        id=id,
-        date=date,
-        time=time,
-        comment=comment,
-        reason=reason,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "galaxy_replan_tracking_point is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([shiptify.galaxy_replan_tracking_point.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "galaxy_replan_tracking_point failed"))
-    return result[0].get("data", {})
 
 galaxy_replan_tracking_point.op = _galaxy_replan_tracking_point_op
 
@@ -2448,21 +2222,17 @@ def galaxy_cancel_tracking_point(
 ) -> dict[str, Any]:
     """Cancel a single tracking point of a carrier-side shipment
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `galaxy_cancel_tracking_point.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _galaxy_cancel_tracking_point_op(
-        id=id,
-        comment=comment,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "galaxy_cancel_tracking_point is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([shiptify.galaxy_cancel_tracking_point.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "galaxy_cancel_tracking_point failed"))
-    return result[0].get("data", {})
 
 galaxy_cancel_tracking_point.op = _galaxy_cancel_tracking_point_op
 
@@ -2488,23 +2258,18 @@ def galaxy_update_tracking_point_location(
 ) -> dict[str, Any]:
     """Move a tracking point of a carrier-side shipment to a different address
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `galaxy_update_tracking_point_location.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     address_id: Target address id from list_locations()
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _galaxy_update_tracking_point_location_op(
-        id=id,
-        address_id=address_id,
-        tracking_point_id=tracking_point_id,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "galaxy_update_tracking_point_location is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([shiptify.galaxy_update_tracking_point_location.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "galaxy_update_tracking_point_location failed"))
-    return result[0].get("data", {})
 
 galaxy_update_tracking_point_location.op = _galaxy_update_tracking_point_location_op

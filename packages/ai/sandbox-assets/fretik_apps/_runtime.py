@@ -380,6 +380,13 @@ def run_plan(operations: list[Operation]) -> list[dict[str, Any]]:
     Raises ApprovalPending until the user grants the plan, then returns
     normally on the next re-run of the same code.
     """
+    for i, op in enumerate(operations):
+        if not isinstance(op, Operation):
+            raise FretikActionError(
+                f"run_plan() element {i} is a {type(op).__name__}, not an Operation. "
+                "Build every element with `<action>.op(...)` — a bare write call "
+                "does not build an operation."
+            )
     payload = {
         "kind": "plan",
         "operations": [{"action": op.action, "args": op.args} for op in operations],

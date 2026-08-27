@@ -3,6 +3,7 @@ import type {
   ToolApprovalOperation,
   ToolApprovalOperationSummary,
 } from "../../../db/schema";
+import type { ParamSpec } from "../../../external-apps/manifest-schema";
 import type { ExternalAppDescriptorAction } from "../../../schemas/external-app-descriptor";
 import type { ToolPolicyLevel } from "../../../schemas/tool-policies";
 import type { WorkflowAutonomy } from "../../../schemas/workflows";
@@ -104,6 +105,10 @@ export interface McpWriteResolution {
   level: ToolPolicyLevel;
   storedArgs: Record<string, unknown>;
   summaryOp: ToolApprovalOperationSummary;
+  /** The action's param specs — what the approval edit form renders from.
+   * Comes from the connection's introspected snapshot, so an MCP action is as
+   * describable as a manifest one. */
+  params: Record<string, ParamSpec>;
 }
 
 /**
@@ -127,10 +132,13 @@ export const resolveMcpWriteOp = async (params: {
     autonomy: params.autonomy,
   });
 
-  const storedArgs: Record<string, unknown> = { ...resolved.cleanArgs };
-  if (resolved.frameworkConnectionId !== undefined) {
-    storedArgs.connection_id = resolved.frameworkConnectionId;
-  }
+  // Pin the RESOLVED connection, not just an explicitly-passed one: the
+  // executor re-resolves at grant time, and an implicit resolution can land on
+  // a different connection than the one whose policy was just checked.
+  const storedArgs: Record<string, unknown> = {
+    ...resolved.cleanArgs,
+    connection_id: resolved.connection.id,
+  };
 
   const summaryOp = buildGenericOperationSummary({
     providerKey: resolved.providerKey,
@@ -138,7 +146,13 @@ export const resolveMcpWriteOp = async (params: {
     args: resolved.cleanArgs,
   });
 
-  return { connection: resolved.connection, level, storedArgs, summaryOp };
+  return {
+    connection: resolved.connection,
+    level,
+    storedArgs,
+    summaryOp,
+    params: resolved.action.params,
+  };
 };
 
 /**

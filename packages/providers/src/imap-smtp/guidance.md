@@ -58,8 +58,8 @@ import base64
 with open("/workspace/outputs/report.pdf", "rb") as f:
     content = base64.b64encode(f.read()).decode()
 
-from fretik_apps import imap_smtp
-imap_smtp.send_email(
+from fretik_apps import imap_smtp, run_plan
+run_plan([imap_smtp.send_email.op(
     to=["client@example.com"],
     subject="Monthly report",
     body_html="<p>Please find the report attached.</p>",
@@ -68,7 +68,7 @@ imap_smtp.send_email(
         "content_type": "application/pdf",
         "content_base64": content,
     }],
-)
+)])
 ```
 
 ### Bulk writes — prefer `*_messages` over `run_plan([*_message] * N)`
@@ -131,12 +131,12 @@ via the implicit `connection_id="<uuid>"` arg, accepted by every action in
 the SDK:
 
 ```python
-imap_smtp.send_email(
+run_plan([imap_smtp.send_email.op(
     connection_id="3f1a…-work",
     to=["client@example.com"],
     subject="…",
     body_html="…",
-)
+)])
 ```
 
 If you call a write without `connection_id` and several mailboxes are

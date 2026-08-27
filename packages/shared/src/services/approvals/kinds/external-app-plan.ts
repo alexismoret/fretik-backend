@@ -1,3 +1,4 @@
+import { APPROVAL_GRANTED_NOTE } from "../../ai/approval-pending";
 import { executePlan } from "../../external-apps/exec/plan-executor";
 import type { ApprovalKindHandler } from "./types";
 
@@ -17,10 +18,17 @@ export const externalAppPlanHandler: ApprovalKindHandler = {
       userId: approval.userId,
     }),
   toSandboxData: (_approval, result) => result,
+  // `covers` + `note` exist because this output is substituted into a tool
+  // result whose cell may have ABORTED at the raising call: everything after
+  // it never ran. Without them the agent reads a bare success and reports work
+  // it never submitted (observed: a 2-preparation plan shipped 1, summarised
+  // as 2). Naming the operations makes the shortfall checkable.
   toToolOutput: (approval) => ({
     status: "approval_granted",
     approvalId: approval.id,
     result: approval.result ?? [],
     grantedAt: iso(approval.decisionAt),
+    covers: approval.operations?.map((op) => op.action) ?? [],
+    note: APPROVAL_GRANTED_NOTE,
   }),
 };

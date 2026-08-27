@@ -1,5 +1,6 @@
 import type { ExternalAppConnection } from "../../../db/schema";
-import { getAction } from "../../../external-apps/registry";
+import { canonicalProviderKey } from "../../../external-apps/canonical-provider-key";
+import { getAction, getProvider } from "../../../external-apps/registry";
 import { redis } from "../../../lib/redis";
 import { PAGE_LIMITS, type PageValue } from "../../../schemas/pages";
 import { canonicalHash } from "../../approvals/hash";
@@ -314,10 +315,26 @@ const runQuery = async (
 };
 
 export const externalPageQueryExecutor: ExternalPageQueryExecutor = {
+  /**
+   * The scheduling hint, answered from the manifest alone (see the interface).
+   * A pinned connection is keyed by its id and an unpinned one by provider +
+   * viewer-resolved connection — but the viewer is not known here, so the
+   * provider key stands in: two datasets over the same serial provider run in
+   * sequence even in the rare case they would have resolved to different
+   * accounts. That costs a little parallelism and never costs correctness.
+   */
+  serialKey: (dataset) => {
+    if (dataset.providerKey === undefined) return undefined;
+    const providerKey = canonicalProviderKey(dataset.providerKey);
+    const declared = getProvider(providerKey)?.manifest.concurrency;
+    if (declared?.mode !== "serial") return undefined;
+    return dataset.connectionId ?? providerKey;
+  },
   execute: async (input) => {
     const resolution = await resolvePageConnection({
       teamId: input.teamId,
       userId: input.userId,
+      ...(input.pageId !== undefined ? { pageId: input.pageId } : {}),
       ...(input.connectionId !== undefined
         ? { connectionId: input.connectionId }
         : {}),

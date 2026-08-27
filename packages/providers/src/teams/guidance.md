@@ -95,11 +95,11 @@ When several Teams connections exist — or other communication connections
 handles disambiguation. Pass the chosen `connection_id` explicitly:
 
 ```python
-teams.send_chat_message(
+run_plan([teams.send_chat_message.op(
     connection_id="3f1a…-contoso",
     chat_id="19:…",
     body_html="<p>Hi.</p>",
-)
+)])
 ```
 
 Calling a write without `connection_id` while several Teams tenants are

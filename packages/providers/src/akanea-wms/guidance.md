@@ -5,7 +5,9 @@ Akanea WMS (Xtent) runs a physical warehouse on behalf of one or more **warehous
 - **Receptions** — goods coming IN: a header plus lines, then received, put away, validated.
 - **Preparations** — picking orders going OUT to a **consignee** (`consignee_code_id`).
 
-Around them sit **items** (the article catalogue) and **parties** (suppliers, consignees, carriers, warehouse customers). Quantities are counted in sale units (UVC), parcels and full pallets. Session tokens are leased and released server-side — never look for a login action.
+Around them sit **items** (the article catalogue) and **parties** (suppliers, consignees, carriers, warehouse customers). Quantities are counted in sale units (UVC), parcels and full pallets.
+
+Two things about calling it. Its **provider key is `akanea-wms`** — that spelling, wherever a tool asks for an app by key; `akanea_wms` is only the Python module's name. And each call **leases a licence seat** (the token is acquired and released server-side, so never look for a login action): calls on one connection are queued for you rather than run at once, so a burst is slower than a single call, never a pile of failures.
 
 **Parties have no read action, and none can be added — Xtent publishes none.** A party reaches you only as a side-car on the record that references it: `client_code_id` + `client_name` on items, stock quantities and movements, `supplier_name` on receptions, `consignee_name` and `carrier_name` on preparations. To turn a name on a document into a `client_code_id`, look up one of its item codes with `list_items` and read the pair off the item. Do not go looking for a `list_parties`, and do not introspect the Python module for one.
 

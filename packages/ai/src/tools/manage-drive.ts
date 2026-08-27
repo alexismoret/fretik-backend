@@ -1,11 +1,15 @@
 import db from "@fretik/shared/db";
+import type { ToolApprovalSummaryField } from "@fretik/shared/db/schema";
 import { updateDocument } from "@fretik/shared/services/documents/update";
 import { createFolder } from "@fretik/shared/services/folders/create";
 import { deleteFolders } from "@fretik/shared/services/folders/delete";
 import { updateFolder } from "@fretik/shared/services/folders/update";
 import { tool } from "ai";
 import { z } from "zod";
-import { gateBuiltinWriteTool } from "../agents/shared/policy-tool-gate";
+import {
+  gateBuiltinWriteTool,
+  resolveBuiltinPolicy,
+} from "../agents/shared/policy-tool-gate";
 import {
   agentEventActor,
   getRuntimeContext,
@@ -73,6 +77,42 @@ const resolveFolder = async (
 };
 
 /**
+ * Names for the approval card. The raw args are ids, and nobody can approve
+ * "delete folder 3f2a…" — so the tool resolves them here, at proposal time,
+ * the way `record_write` attaches its labels. Only called when the policy
+ * actually gates this action, so the auto path pays for no lookup.
+ */
+const driveSummaryFields = async (
+  input: z.infer<typeof manageDriveInputSchema>,
+  teamId: string,
+): Promise<ToolApprovalSummaryField[]> => {
+  const fields: ToolApprovalSummaryField[] = [];
+
+  if (input.folderId) {
+    const folder = await resolveFolder(input.folderId, teamId);
+    if (folder) fields.push({ labelKey: "folder", value: folder.name });
+  }
+  if (input.documentId) {
+    const document = await db.query.documents.findFirst({
+      columns: { originalFilename: true },
+      where: { id: input.documentId, teamId },
+    });
+    if (document) {
+      fields.push({ labelKey: "document", value: document.originalFilename });
+    }
+  }
+  if (input.name) fields.push({ labelKey: "name", value: input.name });
+  // Root has no name to show, and `value` is displayed verbatim — a literal
+  // "Drive root" here would be English in a French UI. The card's own preview
+  // already words the root case.
+  const destination = await resolveFolder(input.parentFolderId, teamId);
+  if (destination) {
+    fields.push({ labelKey: "destination", value: destination.name });
+  }
+  return fields;
+};
+
+/**
  * Domain tool (deferred) — organise the Drive tree through the validated
  * shared folder/document services, so path recomputation, subtree counts, and
  * the `domain_events` journal stay consistent. Reads go through `listFolders` /
@@ -99,22 +139,46 @@ export const createManageDriveTool = () =>
       if (backstop !== null) return backstop;
       const actor = agentEventActor(ctx);
 
-      // Tool-permission gate: `blocked` → error, `approval` → pause with the
-      // normalized args (the apply map reads only the keys each action needs),
-      // `auto` → proceed. Ids are already model-supplied, so no resolution step.
-      const gate = await gateBuiltinWriteTool(ctx, {
-        toolName: "manageDrive",
-        args: {
-          action: input.action,
-          name: input.name,
-          folderId: input.folderId,
-          documentId: input.documentId,
-          parentFolderId: input.parentFolderId ?? null,
-        },
-      });
-      if (gate !== null) return gate;
-
       try {
+        // Destination check BEFORE the gate: an approval must never be opened
+        // for a write that cannot run. `updateDocument` does not validate the
+        // destination, so a bad id would ride into the approval payload, get
+        // approved by a human, and then silently point the document at nothing.
+        // (`updateFolder` validates its own new parent, so moveFolder/
+        // createFolder need nothing here.)
+        if (input.action === "moveDocument" && input.parentFolderId) {
+          const dest = await resolveFolder(input.parentFolderId, ctx.teamId);
+          if (!dest) {
+            return toolError(
+              TOOL_ERROR_CODES.NOT_FOUND,
+              `Folder ${input.parentFolderId} not found for this team.`,
+              "List folders with `listFolders` to get a valid id.",
+            );
+          }
+        }
+
+        // Tool-permission gate: `blocked` → error, `approval` → pause with the
+        // normalized args (the apply map reads only the keys each action needs),
+        // `auto` → proceed. Ids are already model-supplied, so no resolution
+        // step — except the card's names, resolved only when a card will
+        // actually open (this resolve is in-memory; the gate repeats it free).
+        const summaryFields =
+          resolveBuiltinPolicy(ctx, "manageDrive", input.action) === "approval"
+            ? await driveSummaryFields(input, ctx.teamId)
+            : undefined;
+        const gate = await gateBuiltinWriteTool(ctx, {
+          toolName: "manageDrive",
+          args: {
+            action: input.action,
+            name: input.name,
+            folderId: input.folderId,
+            documentId: input.documentId,
+            parentFolderId: input.parentFolderId ?? null,
+          },
+          ...(summaryFields === undefined ? {} : { summaryFields }),
+        });
+        if (gate !== null) return gate;
+
         if (input.action === "createFolder") {
           if (!input.name) {
             return toolError(
@@ -251,19 +315,7 @@ export const createManageDriveTool = () =>
             "moveDocument requires documentId.",
           );
         }
-        // updateDocument does not validate the destination folder — check it
-        // belongs to the team so a bad id fails loudly instead of silently
-        // pointing the document at nothing.
-        if (input.parentFolderId) {
-          const dest = await resolveFolder(input.parentFolderId, ctx.teamId);
-          if (!dest) {
-            return toolError(
-              TOOL_ERROR_CODES.NOT_FOUND,
-              `Folder ${input.parentFolderId} not found for this team.`,
-              "List folders with `listFolders` to get a valid id.",
-            );
-          }
-        }
+        // Destination already validated above, before the gate.
         const doc = await updateDocument({
           id: input.documentId,
           teamId: ctx.teamId,

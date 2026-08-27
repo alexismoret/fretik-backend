@@ -147,10 +147,15 @@ export const dispatchPlan = async (
     }
     if (level !== "auto") allAuto = false;
 
-    const storedArgs: Record<string, unknown> = { ...validated };
-    if (framework.connection_id !== undefined) {
-      storedArgs.connection_id = framework.connection_id;
-    }
+    // Pin the RESOLVED connection on the op, exactly as a gated read does.
+    // The executor re-resolves at grant time; with nothing pinned, an implicit
+    // resolution can land on a different connection than the one whose policy
+    // was just checked — a connection added between proposal and approval is
+    // enough. It also tells the reviewer which account the write lands on.
+    const storedArgs: Record<string, unknown> = {
+      ...validated,
+      connection_id: connection.id,
+    };
     validatedOps.push({ action: op.action, args: storedArgs });
 
     const part = resolved.summary(validated);

@@ -9,6 +9,7 @@ import { throwHttpError } from "../../../lib/errors";
 import { extractNangoErrorDetails } from "../../../lib/external-apps/extract-nango-error";
 import { getNangoClient } from "../../../lib/external-apps/nango-client";
 import { ERROR_CODES } from "../../../schemas/errors";
+import { invalidateConnectionCaches } from "./epoch";
 import { getConnectionForCaller } from "./get-by-id";
 import { requireNangoRef } from "./nango-ref";
 
@@ -88,5 +89,8 @@ export const confirmReconnect = async (params: {
       message: "Failed to update connection after reconnect",
     });
   }
+  // The id survived but the credentials behind it did not: anything cached
+  // against this connection may have come from the account it just replaced.
+  await invalidateConnectionCaches({ connection: row, purgeAnswers: true });
   return row;
 };

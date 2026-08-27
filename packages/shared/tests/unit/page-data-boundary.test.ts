@@ -76,6 +76,8 @@ const { buildPageFieldDescriptors } =
   await import("../../src/services/pages/field-descriptors");
 const { collectionsSource } =
   await import("../../src/services/pages/sources/collections");
+const { registerExternalPageQueryExecutor, resetExternalPageQueryExecutor } =
+  await import("../../src/services/pages/sources/external");
 
 const page = (
   variables: PageVariable[],
@@ -237,6 +239,62 @@ describe("runPageData — orchestration and degradation", () => {
         return Promise.resolve(listResult);
       },
     });
+  });
+
+  test("datasets a source calls serial queue behind each other, and only those", async () => {
+    // The one exception to running everything at once, and it is not a
+    // dependency: an app that leases a licence seat per call cannot be asked
+    // two questions at a time. `withConnectionSlot` makes that correct anyway —
+    // this keeps the page from spending its render fighting over that lock.
+    let inFlight = 0;
+    let peak = 0;
+    registerExternalPageQueryExecutor({
+      serialKey: (dataset) =>
+        dataset.providerKey === "seat-bound" ? "seat-bound" : undefined,
+      execute: async () => {
+        inFlight += 1;
+        peak = Math.max(peak, inFlight);
+        await Bun.sleep(30);
+        inFlight -= 1;
+        return { status: "ok", rows: [], truncated: false };
+      },
+    });
+
+    const external = (id: string, providerKey: string): PageDataset => ({
+      id,
+      kind: "external",
+      providerKey,
+      operation: "list_things",
+    });
+
+    try {
+      const { datasets } = await runPageData({
+        definition: page(
+          [],
+          [
+            external("seat-a", "seat-bound"),
+            external("seat-b", "seat-bound"),
+            external("free-a", "roomy"),
+            external("free-b", "roomy"),
+          ],
+        ),
+        teamId: "team-1",
+        userId: null,
+        variables: {},
+      });
+
+      // Two ungrouped datasets overlap; the two seat-bound ones never do, so
+      // the peak is the free pair plus at most ONE of the constrained pair.
+      expect(peak).toBe(3);
+      expect(Object.keys(datasets).sort()).toEqual([
+        "free-a",
+        "free-b",
+        "seat-a",
+        "seat-b",
+      ]);
+    } finally {
+      resetExternalPageQueryExecutor();
+    }
   });
 });
 

@@ -24,28 +24,28 @@ You can interact with the user's Microsoft Exchange account via the `fretik_apps
 
 ## Write actions (require user approval — build with `.op()`)
 
-- `exchange.send_email(to, subject, body_html, cc=None, bcc=None, attachments=None)` — Send a new email immediately (with optional attachments)
-- `exchange.reply_email(message_id, body_html)` — Reply to the sender of a message
-- `exchange.reply_all_email(message_id, body_html)` — Reply to all recipients of a message
-- `exchange.forward_email(message_id, to, comment=None)` — Forward a message to new recipients (with optional comment)
-- `exchange.create_draft(to, subject, body_html, cc=None, attachments=None)` — Create a draft email (not sent)
-- `exchange.update_draft(message_id, subject=None, body_html=None)` — Update the subject or body of an existing draft
-- `exchange.delete_message(message_id)` — Delete a message (moves it to Deleted Items)
-- `exchange.move_message(message_id, destination_folder_id)` — Move a message to another folder
-- `exchange.copy_message(message_id, destination_folder_id)` — Copy a message into another folder
-- `exchange.delete_messages(message_ids)` — Delete multiple messages in one batch (move to Deleted Items)
-- `exchange.move_messages(message_ids, destination_folder_id)` — Move multiple messages to another folder in one batch
-- `exchange.mark_messages_read(message_ids)` — Mark multiple messages as read
-- `exchange.mark_messages_unread(message_ids)` — Mark multiple messages as unread
-- `exchange.mark_read(message_id)` — Mark a message as read
-- `exchange.mark_unread(message_id)` — Mark a message as unread
-- `exchange.flag_message(message_id, status="flagged", due_date=None)` — Set the follow-up flag on a message (flag / mark complete / clear)
-- `exchange.create_folder(display_name, parent_folder_id=None)` — Create a new mail folder
-- `exchange.create_calendar_event(subject, start, end, location=None, attendees=None, body_html=None, is_online_meeting=None)` — Create a calendar event
-- `exchange.update_calendar_event(event_id, subject=None, start=None, end=None, location=None, body_html=None)` — Update fields of an existing calendar event
-- `exchange.delete_calendar_event(event_id)` — Delete a calendar event (cancels for attendees)
-- `exchange.respond_to_event(event_id, response, comment=None)` — Accept, decline or tentatively accept a meeting invite
-- `exchange.create_contact(given_name, surname=None, email=None, company_name=None, job_title=None, mobile_phone=None)` — Create a new contact
+- `exchange.send_email.op(to, subject, body_html, cc=None, bcc=None, attachments=None)` — Send a new email immediately (with optional attachments)
+- `exchange.reply_email.op(message_id, body_html)` — Reply to the sender of a message
+- `exchange.reply_all_email.op(message_id, body_html)` — Reply to all recipients of a message
+- `exchange.forward_email.op(message_id, to, comment=None)` — Forward a message to new recipients (with optional comment)
+- `exchange.create_draft.op(to, subject, body_html, cc=None, attachments=None)` — Create a draft email (not sent)
+- `exchange.update_draft.op(message_id, subject=None, body_html=None)` — Update the subject or body of an existing draft
+- `exchange.delete_message.op(message_id)` — Delete a message (moves it to Deleted Items)
+- `exchange.move_message.op(message_id, destination_folder_id)` — Move a message to another folder
+- `exchange.copy_message.op(message_id, destination_folder_id)` — Copy a message into another folder
+- `exchange.delete_messages.op(message_ids)` — Delete multiple messages in one batch (move to Deleted Items)
+- `exchange.move_messages.op(message_ids, destination_folder_id)` — Move multiple messages to another folder in one batch
+- `exchange.mark_messages_read.op(message_ids)` — Mark multiple messages as read
+- `exchange.mark_messages_unread.op(message_ids)` — Mark multiple messages as unread
+- `exchange.mark_read.op(message_id)` — Mark a message as read
+- `exchange.mark_unread.op(message_id)` — Mark a message as unread
+- `exchange.flag_message.op(message_id, status="flagged", due_date=None)` — Set the follow-up flag on a message (flag / mark complete / clear)
+- `exchange.create_folder.op(display_name, parent_folder_id=None)` — Create a new mail folder
+- `exchange.create_calendar_event.op(subject, start, end, location=None, attendees=None, body_html=None, is_online_meeting=None)` — Create a calendar event
+- `exchange.update_calendar_event.op(event_id, subject=None, start=None, end=None, location=None, body_html=None)` — Update fields of an existing calendar event
+- `exchange.delete_calendar_event.op(event_id)` — Delete a calendar event (cancels for attendees)
+- `exchange.respond_to_event.op(event_id, response, comment=None)` — Accept, decline or tentatively accept a meeting invite
+- `exchange.create_contact.op(given_name, surname=None, email=None, company_name=None, job_title=None, mobile_phone=None)` — Create a new contact
 
 ## Data models
 
@@ -147,12 +147,12 @@ Pass the chosen connection via the implicit `connection_id="<uuid>"` arg, accept
 every action:
 
 ```python
-exchange.send_email(
+run_plan([exchange.send_email.op(
     connection_id="3f1a…-ops",
     to=["client@example.com"],
     subject="…",
     body_html="…",
-)
+)])
 ```
 
 ## Voice & persona — write according to the connection's persona
@@ -206,19 +206,22 @@ applies: structured if helpful, clear, professional.
 
 ## Write actions & approval
 
-Write actions NEVER execute on their own. Build them with `.op()` and
-submit them together via `run_plan([...])` — the user approves the whole
-plan ONCE.
+Write actions NEVER execute on their own: `.op(...)` builds an operation,
+`run_plan([...])` submits them, and calling a write action directly raises.
+The user approves the whole plan at once.
 
-- One write: `exchange.send_email(to=["name@example.com"], subject="…", body_html="…")`
+- One write: `run_plan([ exchange.send_email.op(to=["name@example.com"], subject="…", body_html="…") ])`
 - Many writes: `run_plan([ exchange.<action>.op(...), ... ])`
 
-When you call `run_plan` (or a direct write), it raises
-`fretik_apps.ApprovalPending`. This is EXPECTED — not an error. STOP.
-The user reviews the plan in the UI; you will be prompted to continue.
-When prompted, RE-RUN THE EXACT SAME CODE — the approved plan then
-executes; reads re-run harmlessly. If the user rejects, you receive
-their feedback as a message — adapt and write new code.
+`run_plan` raises `fretik_apps.ApprovalPending`. This is EXPECTED — not an
+error. Stop there. Never wrap it in `try/except` (that hides the approval
+card), and never `print` the ops as a preview instead of calling it — no
+call, no plan.
+
+Once the user decides, the outcome replaces that same tool result. It covers
+only the operations it lists: if any code sat AFTER the `run_plan` call,
+re-run the identical cell — approved plans replay from cache and never execute
+twice. On rejection you get their feedback — adapt and write new code.
 
 ### STRONG RULE — read→write flows
 
@@ -235,10 +238,11 @@ change the plan's lookupHash and force a needless re-approval.
 
 ### Plan rules
 
+- Every write of the turn goes in ONE `run_plan`. A second call in the
+  same cell is lost: the first raises and the rest of the cell never runs.
 - Operations in one plan must be INDEPENDENT (no op uses another op's
   result). Dependent steps (create_folder, then move into it) → use
   TWO turns.
-- For several writes, ALWAYS use a single `run_plan` — never chain
-  bare writes.
+- A plan may mix actions from several apps — one approval for all of them.
 - Partial failures come back per-op; re-submit a `run_plan` with only
   the failed ops.

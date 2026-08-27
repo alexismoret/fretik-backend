@@ -13,6 +13,7 @@ import {
 } from "@fretik/shared/schemas/common/responses";
 import {
   CreatePageSchema,
+  PageConnectionsResponseSchema,
   PageDataRequestSchema,
   PageDataResponseSchema,
   PageResponseSchema,
@@ -20,8 +21,16 @@ import {
   PageRunResponseSchema,
   PageSummarySchema,
   ReportPageErrorRequestSchema,
+  SetPageConnectionRequestSchema,
   UpdatePageSchema,
 } from "@fretik/shared/schemas/pages";
+import {
+  bumpExternalConnectionsEpoch,
+  externalConnectionsEpoch,
+} from "@fretik/shared/services/external-apps/connections/epoch";
+import { getConnectionForCaller } from "@fretik/shared/services/external-apps/connections/get-by-id";
+import { buildPageConnectionReport } from "@fretik/shared/services/external-apps/connections/page-report";
+import { setConnectionPreference } from "@fretik/shared/services/external-apps/connections/preference";
 import { isOrgAdmin } from "@fretik/shared/services/organization/member-role";
 import { createPage } from "@fretik/shared/services/pages/create";
 import {
@@ -358,6 +367,66 @@ const dataRoute = createRoute({
   },
 });
 
+/** `/{id}/connections/{providerKey}` — the app, spelled as the catalogue does. */
+const paramsIdProviderKeySchema = paramsIdSchema.extend({
+  providerKey: z
+    .string()
+    .min(1)
+    .max(80)
+    .openapi({ example: "akanea-wms", description: "Connected app key" }),
+});
+
+const connectionsRoute = createRoute({
+  method: "get",
+  path: "/{id}/connections",
+  summary: "How this page's connected apps stand for the caller",
+  description:
+    "One entry per connected app the page reads or writes: which account the CALLER's view resolves to, why that one, every account they could switch to, and — when none resolves — whether nobody on the team has connected the app, whether the connection exists but is unusable, or whether the page pins a colleague's personal account. Runs no dataset.",
+  tags: ["Pages"],
+  request: { params: paramsIdSchema },
+  responses: {
+    200: {
+      content: {
+        "application/json": { schema: PageConnectionsResponseSchema },
+      },
+      description: "One state per connected app the page uses",
+    },
+    ...responseForbiddenSchema,
+    ...responseNotFoundSchema,
+    ...responseInternalErrorSchema,
+  },
+});
+
+const setConnectionRoute = createRoute({
+  method: "patch",
+  path: "/{id}/connections/{providerKey}",
+  summary: "Choose which account this page reads through, for the caller only",
+  description:
+    "Stores the caller's own choice among the accounts they may use for one app on one page — it never changes what a colleague sees, and a connection the page PINS still wins. `connectionId: null` clears the choice and hands the page back to the automatic pick (the caller's own account, else the team's).",
+  tags: ["Pages"],
+  request: {
+    params: paramsIdProviderKeySchema,
+    body: {
+      content: {
+        "application/json": { schema: SetPageConnectionRequestSchema },
+      },
+      required: true,
+    },
+  },
+  responses: {
+    200: {
+      content: {
+        "application/json": { schema: PageConnectionsResponseSchema },
+      },
+      description: "The page's connection states after the change",
+    },
+    ...responseBadRequestSchema,
+    ...responseForbiddenSchema,
+    ...responseNotFoundSchema,
+    ...responseInternalErrorSchema,
+  },
+});
+
 const runRoute = createRoute({
   method: "post",
   path: "/{id}/run",
@@ -543,6 +612,10 @@ pageRoutes.openapi(dataRoute, async (c) => {
   // Cached for 20 s per team + definition version + request, with concurrent
   // misses collapsed into one execution — a dashboard left open re-asks the
   // same aggregates on every glance. `fresh` is the refresh button's bypass.
+  const connectionsEpoch = await externalConnectionsEpoch({
+    teamId: team.id,
+    userId: user.id,
+  });
   const result = await cachedPageData({
     key: pageDataCacheKey({
       pageId: id,
@@ -554,23 +627,90 @@ pageRoutes.openapi(dataRoute, async (c) => {
       // personal connection makes the answer viewer-specific.
       userId: user.id,
       definitionFingerprint: page.updatedAt.toISOString(),
+      connectionsEpoch,
       request: { variables, datasetIds, queries },
     }),
     ...(fresh !== undefined ? { fresh } : {}),
-    run: () =>
+    run: async () => {
       // The VIEWER's team scopes the queries — never the page owner's. Only the
       // anonymous published route deliberately runs under the owner's scope.
-      runPageData({
+      const data = await runPageData({
         definition: page.definition,
         teamId: team.id,
         userId: user.id,
+        pageId: id,
         variables,
         ...(datasetIds !== undefined ? { datasetIds } : {}),
         ...(queries !== undefined ? { queries } : {}),
         ...(fresh !== undefined ? { fresh } : {}),
-      }),
+      });
+      // Rides along with the data it explains, so the banner and the datasets
+      // can never disagree about what happened. Cached with it too — the key
+      // carries the connections epoch, so connecting an app retires both.
+      const connections = await buildPageConnectionReport({
+        definition: page.definition,
+        teamId: team.id,
+        userId: user.id,
+        pageId: id,
+      });
+      return connections.length > 0 ? { ...data, connections } : data;
+    },
   });
   return c.json(result, 200);
+});
+
+pageRoutes.openapi(connectionsRoute, async (c) => {
+  const team = c.get("team");
+  if (!team) return c.json(teamRequired(), 403);
+  const user = c.get("user");
+  const { id } = c.req.valid("param");
+  const requester = await resolveRequester(user, team);
+
+  const page = await getPage({ pageId: id, teamId: team.id, requester });
+  const connections = await buildPageConnectionReport({
+    definition: page.definition,
+    teamId: team.id,
+    userId: user.id,
+    pageId: id,
+  });
+  return c.json({ connections }, 200);
+});
+
+pageRoutes.openapi(setConnectionRoute, async (c) => {
+  const team = c.get("team");
+  if (!team) return c.json(teamRequired(), 403);
+  const user = c.get("user");
+  const { id, providerKey } = c.req.valid("param");
+  const { connectionId } = c.req.valid("json");
+  const requester = await resolveRequester(user, team);
+
+  // Seeing the page is the right to choose how YOU read it — the choice is
+  // per-user and changes nothing for anyone else.
+  const page = await getPage({ pageId: id, teamId: team.id, requester });
+  if (connectionId !== null) {
+    // Throws 404 when the connection is not one this caller may use, which is
+    // the whole authorisation check: `setConnectionPreference` writes, it does
+    // not authorise.
+    await getConnectionForCaller(connectionId, team.id, user.id);
+  }
+  await setConnectionPreference({
+    organizationId: team.organizationId,
+    teamId: team.id,
+    userId: user.id,
+    providerKey,
+    pageId: id,
+    connectionId,
+  });
+  // The viewer's cached page data resolved through the OLD account.
+  await bumpExternalConnectionsEpoch({ teamId: team.id, userId: user.id });
+
+  const connections = await buildPageConnectionReport({
+    definition: page.definition,
+    teamId: team.id,
+    userId: user.id,
+    pageId: id,
+  });
+  return c.json({ connections }, 200);
 });
 
 pageRoutes.openapi(runRoute, async (c) => {

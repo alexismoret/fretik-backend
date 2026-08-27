@@ -45,11 +45,27 @@ import { toPageValue } from "./values";
  * without a page in hand.
  */
 export interface ExternalPageQueryExecutor {
+  /**
+   * Whether this app must be asked one question at a time, from the connection
+   * pin or the provider key alone — no DB, no connection resolution, because
+   * this is called to SCHEDULE the datasets, before any of them has run.
+   *
+   * `undefined` means "no constraint we know of here". A per-connection
+   * override that only the row carries is therefore invisible to this and falls
+   * through to the lock, which is correct but slower — the fast path only knows
+   * what the provider declares.
+   */
+  serialKey?: (dataset: {
+    connectionId?: string;
+    providerKey?: string;
+  }) => string | undefined;
   execute: (input: {
     teamId: string;
     /** The viewer; null on the anonymous route (unreachable behind the
      * publish gate, guarded anyway). */
     userId: string | null;
+    /** The page, so a viewer's stored choice of account can be honoured. */
+    pageId?: string;
     /** Pinned connection, when the dataset names one. */
     connectionId?: string;
     /** Provider to resolve per viewer (their own connection, else the team's). */
@@ -230,7 +246,18 @@ export const inferExternalFields = (
 
 export const externalSource: PageDataSource = {
   kind: "external",
-  resolve: async (dataset, { teamId, userId, state, fresh }) => {
+  serialKey: (dataset) =>
+    dataset.kind === "external"
+      ? executor?.serialKey?.({
+          ...(dataset.connectionId !== undefined
+            ? { connectionId: dataset.connectionId }
+            : {}),
+          ...(dataset.providerKey !== undefined
+            ? { providerKey: dataset.providerKey }
+            : {}),
+        })
+      : undefined,
+  resolve: async (dataset, { teamId, userId, pageId, state, fresh }) => {
     if (!executor) return { status: "error", message: NOT_ENABLED };
     if (!dataset.operation || (!dataset.connectionId && !dataset.providerKey)) {
       return {
@@ -246,6 +273,7 @@ export const externalSource: PageDataSource = {
     const result = await executor.execute({
       teamId,
       userId,
+      ...(pageId !== undefined ? { pageId } : {}),
       operation: dataset.operation,
       args: resolvedArgs.args,
       ...(dataset.connectionId !== undefined

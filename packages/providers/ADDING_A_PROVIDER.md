@@ -473,9 +473,10 @@ provider-specific way:
 - Every action accepts an implicit `connection_id="<uuid>"` arg
   (injected by the generated SDK). Custom mappers/handlers must look
   for it in `args` and select the right connection.
-- Every write action ends up in `run_plan([...])`. Direct write calls
-  are sugar that wraps a one-op plan — never bypass the plan path in a
-  handler.
+- Every write action ends up in `run_plan([...])`, built with `.op(...)`.
+  Calling the generated write function directly raises — one spelling only,
+  so an agent cannot submit a one-op plan by accident mid-expression. Never
+  bypass the plan path in a handler.
 - The system prompt's `<external_apps>` block handles disambiguation
   ACROSS providers. Per-provider `guidance.md` only handles SAME-provider
   disambiguation (multiple Outlook mailboxes), and even then by

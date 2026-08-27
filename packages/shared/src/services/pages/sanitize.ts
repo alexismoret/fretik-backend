@@ -1,4 +1,5 @@
 import { babelParse, parse as parseSfc } from "vue/compiler-sfc";
+import { canonicalProviderKey } from "../../external-apps/canonical-provider-key";
 import type { PageDefinition } from "../../schemas/pages";
 import {
   PAGE_ACCENT_TOKENS,
@@ -30,6 +31,14 @@ const WARNING_CAP = 60;
 export interface SanitizedPage {
   definition: PageDefinition;
   warnings: string[];
+  /**
+   * The subset that is not advice. A write REFUSES on these, exactly as it does
+   * on a compile error, because they name a runtime failure that is certain and
+   * silent: the call reaches the bridge, the bridge has nothing to route it to,
+   * and the page renders as if it worked. Everything the agent could reasonably
+   * disagree with stays a warning.
+   */
+  errors: string[];
 }
 
 export const pushPageWarning = (warnings: string[], message: string): void => {
@@ -332,10 +341,52 @@ const suspectHueProperties = (source: string): Map<string, string> => {
   return found;
 };
 
-export const sanitizePageDefinition = (
+/**
+ * Fold every `providerKey` onto the spelling a connection row can carry, and
+ * say so. The only repair this pass performs — everything else here reports.
+ *
+ * It earns the exception because the defect is silent, permanent and was
+ * measured: a page built over Akanea WMS (2026-08-26) stored `akanea_wms`, the
+ * Python module's name, where the connection says `akanea-wms`. Nothing failed;
+ * `resolvePageConnection` simply matched no row, so every viewer saw "connect
+ * your account" no matter what the team connected, and the page fell back to
+ * rows it invented. `canonicalProviderKey` can only ever change a string that
+ * was already unmatchable (see its header), so the fold is safe to apply blind
+ * and needs no registry lookup — a key still unknown afterwards is refused by
+ * `validatePageDefinitionConnections`, not repaired here.
+ */
+const repairProviderKeys = (
   definition: PageDefinition,
+  warnings: string[],
+): PageDefinition => {
+  const repaired: string[] = [];
+  const fold = <T extends { providerKey?: string }>(entry: T): T => {
+    if (entry.providerKey === undefined) return entry;
+    const folded = canonicalProviderKey(entry.providerKey);
+    if (folded === entry.providerKey) return entry;
+    repaired.push(`"${entry.providerKey}" → "${folded}"`);
+    return { ...entry, providerKey: folded };
+  };
+
+  const datasets = definition.datasets.map(fold);
+  const operations = definition.operations.map((operation) =>
+    operation.kind === "app" ? fold(operation) : operation,
+  );
+  if (repaired.length === 0) return definition;
+
+  pushPageWarning(
+    warnings,
+    `providerKey rewritten: ${[...new Set(repaired)].join(", ")}. The key is the one the connections list prints (kebab-case), NOT the Python module name — \`fretik_apps.akanea_wms\` is the module, \`akanea-wms\` is the key. Written the other way, the page resolves no connection and prompts every viewer to connect an app the team already has.`,
+  );
+  return { ...definition, datasets, operations };
+};
+
+export const sanitizePageDefinition = (
+  input: PageDefinition,
 ): SanitizedPage => {
   const warnings: string[] = [];
+  const errors: string[] = [];
+  const definition = repairProviderKeys(input, warnings);
   const datasetIds = new Set(definition.datasets.map((dataset) => dataset.id));
   const variableKeys = new Set(
     definition.variables.map((variable) => variable.key),
@@ -464,19 +515,25 @@ export const sanitizePageDefinition = (
   // datasets and declared none — three separate judges, vision and text, read
   // it as a well-behaved page with no data yet, because on a screenshot that is
   // exactly what it is. Structural, so checked structurally.
+  //
+  // These two REFUSE the write rather than warning. The scans are deliberately
+  // literal-only (see `idsRequestedByCode`), so a hit is not a guess: the id is
+  // written in the source, the definition does not carry it, and the call is
+  // certain to reach a bridge with nothing to route it to — the same category
+  // as a compile error, which already refuses.
   const requested = idsRequestedByCode(definition.code.source);
   const operationIds = new Set(definition.operations.map((o) => o.id));
   for (const id of requested.datasets) {
     if (datasetIds.has(id)) continue;
     pushPageWarning(
-      warnings,
+      errors,
       `the code asks the bridge for dataset "${id}", which the page does not declare — it resolves to nothing and renders as an empty state. Declare it, or drop the request.`,
     );
   }
   for (const id of requested.operations) {
     if (operationIds.has(id)) continue;
     pushPageWarning(
-      warnings,
+      errors,
       `the code runs operation "${id}", which the page does not declare — the call fails at the bridge. Declare it, or drop the call.`,
     );
   }
@@ -519,13 +576,18 @@ export const sanitizePageDefinition = (
   }
   // Same joint, the other side: the ids line up but the VARIABLE KEYS do not.
   const declaredList = [...variableKeys].join(", ");
+  // An ERROR too, on the same terms: the key is in the source, the definition
+  // does not declare it, and the server drops it — so the control the viewer
+  // moves changes nothing while the page looks like it responded. It is the
+  // softest of the three (the call still succeeds), so it is the first to
+  // demote if it proves noisy on the existing corpus.
   for (const key of variableKeysSentByCode(definition.code.source)) {
     if (variableKeys.has(key)) continue;
     pushPageWarning(
-      warnings,
+      errors,
       `the code sends variable "${key}", which the page does not declare — undeclared keys are dropped, so the variable it should fill keeps its initial and the control does nothing. Declared: ${declaredList || "none"}.`,
     );
   }
 
-  return { definition, warnings };
+  return { definition, warnings, errors };
 };

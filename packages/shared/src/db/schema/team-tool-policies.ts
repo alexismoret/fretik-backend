@@ -10,8 +10,10 @@ import { team } from "./auth-schema";
  * absence means "use the code defaults".
  *
  * `policies` is a SPARSE map keyed by tool registry name → level
- * (`auto | approval | blocked`). An absent key falls back to the catalog
- * default (read → `auto`, write → `approval`). Keys are validated against the
+ * (`auto | approval | blocked`), or by `"<tool>.<action>"` to override a single
+ * action of a multi-action tool (`auto | approval` only — `blocked` hides the
+ * whole tool, so it stays tool-level). An absent key falls back to the catalog
+ * default, per action where one is declared. Keys are validated against the
  * catalog at write time and re-resolved at runtime, where an unknown key is
  * simply ignored — never an error.
  *

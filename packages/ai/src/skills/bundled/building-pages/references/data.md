@@ -10,6 +10,7 @@ The data half of a page is declarative, and it is the security boundary: the cod
 - **A paginated list gets its own `records` dataset.** The server is the paginator, however many millions sit behind it.
 - **Ratios, joins and derived columns are the PAGE's work, in a `computed()`** — over rows it already has, in the browser it is already running in. There is no server-side transform dataset; anything that has to be true over every row is an `aggregate`, in SQL.
 - **`external` is for small, fresh reads** through the viewer's own connection — an inbox, today's events. Volume and history belong in a collection synced by a workflow: a third party cannot be filtered, grouped or indexed. `dry_run` shows the real answer shape first.
+- **`providerKey` is the app's key as the connections list prints it, character for character.** NEVER the Python module name: `some_app` is the module, `some-app` is the key. A page written the other way resolves no connection and tells every viewer to connect an app the team already has — it does not fail, it just never loads.
 - **An `external` dataset pages through its own `args`, or not at all.** `queries` is the `collections` paginator and is ignored here. Where the action takes an offset, a cursor or a page token, bind a variable to it and raise it to load more; where it takes none, one call is the whole answer, and the list must not look like one that scrolls to an end it never reaches.
 - **Probe before you design.** `dry_run` with datasets and no `code` returns real field names, a real row and real distinct values. Never design against imagined fields.
 
@@ -20,6 +21,8 @@ const result = await fretik.data.query({ variables, datasetIds, queries });
 ```
 
 Every dataset comes back as one of `{ status: "ok", rows, fields, totalCount?, page?, pageSize? }`, `{ status: "error", message }`, `{ status: "forbidden" }`, or `{ status: "needs_connection", providerKey }`. **Render all four.** A page that only handles `ok` shows a blank region when a query fails, and the user cannot tell it apart from "no data".
+
+**NEVER substitute rows of your own for a dataset that came back empty, `error` or `needs_connection`.** A fallback to invented rows — a `demoData` array, a `catch` that fills the page with plausible figures — makes a broken page look like a working one, and an operations reader acts on numbers that describe nothing. The empty state IS the answer: say which dataset is empty and what would fill it. Literal rows that are genuinely part of the design (a reference table, a legend) belong in an `inline` dataset, where they are declared rather than improvised.
 
 Load everything once on mount, then refetch narrowly with `datasetIds`.
 
@@ -132,6 +135,8 @@ if (verdict.status === "ok") {
   toast.add({ title: verdict.message ?? "The action failed", color: "error" });
 }
 ```
+
+**Only `ok` is a success.** `needs_connection` on a write means the click did nothing — say so; a page that toasts success on it reports work that never left the browser. `cancelled` is the viewer declining the confirmation, so it is neither success nor failure.
 
 Declare `confirm: { title, description? }` on every destructive operation. **The app renders that confirmation itself**, outside the page, from the stored definition — so never build your own confirm dialog for a destructive op, and never treat `cancelled` as a failure. Show pending state on the control that started it, not over the whole page.
 

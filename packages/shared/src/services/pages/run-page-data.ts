@@ -164,6 +164,13 @@ export const runPageData = async (params: {
   /** The viewer, when the route knows one; null on the anonymous public
    * route. External datasets resolve "their own connection" from it. */
   userId: string | null;
+  /**
+   * The page being viewed. Carried for ONE purpose: a source that resolves a
+   * per-viewer choice (which connected account this page reads through) needs
+   * to know which page the choice is about. Absent on a dry run and on the
+   * anonymous route, where there is no choice to honour.
+   */
+  pageId?: string;
   variables: Record<string, PageValue>;
   /** Restrict execution to these dataset ids (a targeted refetch). */
   datasetIds?: string[];
@@ -198,6 +205,7 @@ export const runPageData = async (params: {
       return await source.resolve(dataset, {
         teamId: params.teamId,
         userId: params.userId,
+        ...(params.pageId !== undefined ? { pageId: params.pageId } : {}),
         state,
         ...(params.queries?.[id] !== undefined
           ? { query: params.queries[id] }
@@ -226,11 +234,47 @@ export const runPageData = async (params: {
   // that ever read another dataset. Nothing left has inputs, so there is
   // nothing to order and no cycle to detect.
   //
+  // The ONE exception is not a dependency, it is a third party's tolerance: a
+  // source may declare that two of its datasets cannot be in flight together
+  // (`PageDataSource.serialKey` — an app that leases a licence seat per call).
+  // Those queue behind each other inside their own group; every group, and
+  // everything ungrouped, still runs together. Without this the datasets would
+  // still be CORRECT — `withConnectionSlot` serialises them anyway — but they
+  // would spend the render fighting over a lock they could simply have taken
+  // in turn.
+  //
   // `runOne` never rejects: a source that throws degrades to its own error
   // block, so one broken dataset costs its widget and not the page.
-  const settled = await Promise.all(
-    toRun.map(async (dataset) => [dataset.id, await runOne(dataset)] as const),
-  );
+  const groups = new Map<string, PageDataset[]>();
+  const independent: PageDataset[] = [];
+  for (const dataset of toRun) {
+    const key = pageDataSource(dataset.kind)?.serialKey?.(dataset);
+    if (key === undefined) {
+      independent.push(dataset);
+      continue;
+    }
+    groups.set(key, [...(groups.get(key) ?? []), dataset]);
+  }
+
+  const runGroup = async (
+    datasets: PageDataset[],
+  ): Promise<(readonly [string, PageDatasetResult])[]> => {
+    const settled: (readonly [string, PageDatasetResult])[] = [];
+    for (const dataset of datasets) {
+      // eslint-disable-next-line no-await-in-loop -- the point: one at a time
+      settled.push([dataset.id, await runOne(dataset)] as const);
+    }
+    return settled;
+  };
+
+  const settled = (
+    await Promise.all([
+      ...independent.map(async (dataset) => [
+        [dataset.id, await runOne(dataset)] as const,
+      ]),
+      ...[...groups.values()].map(runGroup),
+    ])
+  ).flat();
   for (const [id, result] of settled) results[id] = capDatasetBytes(result);
 
   return { datasets: results };

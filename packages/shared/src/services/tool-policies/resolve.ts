@@ -46,18 +46,37 @@ export const resolveToolPolicy = (params: {
  * Effective level for one builtin tool given the team's policy map + the run's
  * autonomy. Tools NOT in the catalog are infrastructure/core (python, bash,
  * memory, …) — always `auto`, never blockable.
+ *
+ * Pass `action` for a multi-action tool: the default then comes from that
+ * action's catalog entry (a rename is not a delete), and a `"<tool>.<action>"`
+ * override beats the tool-wide one. A tool-wide `blocked` still wins over
+ * everything — an admin's ban is not softened by an action's default.
  */
 export const resolveBuiltinToolPolicy = (params: {
   toolName: string;
+  action?: string;
   teamPolicies: Record<string, ToolPolicyLevel>;
   autonomy: WorkflowAutonomy | null;
 }): ToolPolicyLevel => {
   const descriptor = BUILTIN_TOOL_POLICY_CATALOG[params.toolName];
   if (descriptor === undefined) return "auto";
+
+  const toolOverride = params.teamPolicies[params.toolName];
+  if (toolOverride === "blocked") return "blocked";
+
+  const actionDescriptor =
+    params.action === undefined
+      ? undefined
+      : descriptor.actions?.[params.action];
+  const actionOverride =
+    params.action === undefined
+      ? undefined
+      : params.teamPolicies[`${params.toolName}.${params.action}`];
+
   return resolveToolPolicy({
     kind: descriptor.kind,
-    defaultLevel: descriptor.defaultLevel,
-    override: params.teamPolicies[params.toolName],
+    defaultLevel: actionDescriptor?.defaultLevel ?? descriptor.defaultLevel,
+    override: actionOverride ?? toolOverride,
     autonomy: params.autonomy,
   });
 };

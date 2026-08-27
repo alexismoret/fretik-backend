@@ -15,6 +15,7 @@ import {
 } from "@fretik/shared/schemas/common/responses";
 import {
   BUILTIN_TOOL_POLICY_CATALOG,
+  parseToolPolicyKey,
   teamToolPoliciesPatchSchema,
   toolPoliciesCatalogResponseSchema,
   type ToolPolicyLevel,
@@ -55,7 +56,7 @@ const patchRoute = createRoute({
   path: "/",
   summary: "Set the team's builtin-tool permission overrides (admin only)",
   description:
-    "Sparse patch keyed by tool name: a level sets the override, `null` resets to the code default. Names are validated against the catalog and levels against each tool's selectable set.",
+    "Sparse patch keyed by tool name, or by `tool.action` for a single action of a multi-action tool: a level sets the override, `null` resets to the default. Names are validated against the catalog and levels against the relevant selectable set (`blocked` is tool-level only).",
   tags: ["ToolPolicies"],
   request: {
     body: {
@@ -81,14 +82,37 @@ const patchRoute = createRoute({
 const buildCatalog = (overrides: Record<string, ToolPolicyLevel>) => ({
   tools: Object.values(BUILTIN_TOOL_POLICY_CATALOG).map((d) => {
     const override = overrides[d.name];
+    // An action follows the tool's override when it has no override of its
+    // own — except a tool-wide `blocked`, which the per-action select cannot
+    // represent (actions stop at `approval`) and which hides the tool anyway.
+    const toolBaseline =
+      override === undefined || override === "blocked" ? undefined : override;
+    const actions =
+      d.actions === undefined
+        ? undefined
+        : Object.entries(d.actions).map(([name, a]) => {
+            const actionOverride = overrides[`${d.name}.${name}`];
+            const baselineLevel = toolBaseline ?? a.defaultLevel;
+            return {
+              name,
+              defaultLevel: a.defaultLevel,
+              selectableLevels: [...a.selectableLevels],
+              labelKey: a.labelKey,
+              override: actionOverride ?? null,
+              baselineLevel,
+              effectiveLevel: actionOverride ?? baselineLevel,
+            };
+          });
     return {
       name: d.name,
+      group: d.group,
       kind: d.kind,
       defaultLevel: d.defaultLevel,
       selectableLevels: [...d.selectableLevels],
       labelKey: d.labelKey,
       override: override ?? null,
       effectiveLevel: override ?? d.defaultLevel,
+      ...(actions === undefined ? {} : { actions }),
     };
   }),
 });
@@ -110,18 +134,30 @@ toolPoliciesRoutes.openapi(patchRoute, async (c) => {
   });
 
   const patch = c.req.valid("json");
-  // Validate names against the catalog and levels against each tool's
+  // Validate names against the catalog and levels against the relevant
   // selectable set — reject anything outside (e.g. `approval` on a read tool,
-  // or a tool not in the catalog such as python/bash).
-  for (const [name, level] of Object.entries(patch)) {
-    const descriptor = BUILTIN_TOOL_POLICY_CATALOG[name];
+  // `blocked` on a single action, or a tool not in the catalog such as
+  // python/bash).
+  for (const [key, level] of Object.entries(patch)) {
+    const { toolName, action } = parseToolPolicyKey(key);
+    const descriptor = BUILTIN_TOOL_POLICY_CATALOG[toolName];
     if (descriptor === undefined) {
-      return throwHttpError(400, badRequest(`Unknown tool "${name}"`));
+      return throwHttpError(400, badRequest(`Unknown tool "${toolName}"`));
     }
-    if (level !== null && !descriptor.selectableLevels.includes(level)) {
+    const actionDescriptor =
+      action === undefined ? undefined : descriptor.actions?.[action];
+    if (action !== undefined && actionDescriptor === undefined) {
       return throwHttpError(
         400,
-        badRequest(`"${level}" is not selectable for "${name}"`),
+        badRequest(`Unknown action "${action}" for "${toolName}"`),
+      );
+    }
+    const selectable =
+      actionDescriptor?.selectableLevels ?? descriptor.selectableLevels;
+    if (level !== null && !selectable.includes(level)) {
+      return throwHttpError(
+        400,
+        badRequest(`"${level}" is not selectable for "${key}"`),
       );
     }
   }

@@ -51,6 +51,8 @@ await mockModule("../../src/db", {
         findFirst: () => Promise.resolve(connection),
         findMany: () => Promise.resolve(connection ? [connection] : []),
       },
+      // No viewer has chosen an account here — the automatic pick applies.
+      externalAppConnectionPreferences: { findMany: () => Promise.resolve([]) },
     },
   },
 });

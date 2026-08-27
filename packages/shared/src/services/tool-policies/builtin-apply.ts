@@ -1,4 +1,8 @@
 import { recordSharingSchema } from "../../schemas/collection-sharing";
+import {
+  fieldConfigSchema,
+  fieldDefinitionTypeSchema,
+} from "../../schemas/field-definitions";
 import { recordRelationInputSchema } from "../../schemas/ontology";
 import { promoteSandboxFileToDrive } from "../chat-files/promote-sandbox-file-to-drive";
 import { promoteChatFilesToDrive } from "../chat-files/promote-to-drive";
@@ -6,11 +10,15 @@ import { createCollectionRecord } from "../collection-records/create";
 import { deleteCollectionRecord } from "../collection-records/delete";
 import { setRecordStatus } from "../collection-records/set-status";
 import { setRecordData } from "../collection-records/update";
+import { assertCanWriteType } from "../collection-sharing/write-access";
+import { deleteCollection } from "../collections/delete";
 import { saveAuthoredContent } from "../documents/authored/content";
 import { createAuthoredDocument } from "../documents/authored/create";
 import { updateDocument } from "../documents/update";
 import { restoreDocumentVersion } from "../documents/versions/restore";
 import type { EventActor } from "../domain-events/emit";
+import { deleteFieldDefinition } from "../field-definitions/delete";
+import { updateFieldDefinition } from "../field-definitions/update";
 import { createFolder } from "../folders/create";
 import { deleteFolders } from "../folders/delete";
 import { updateFolder } from "../folders/update";
@@ -27,9 +35,11 @@ import { installSkillFromCatalog } from "../skills/install-from-catalog";
  * them. Keep this in sync with each tool's proposal payload (the
  * `withToolCallGate` call sites in `@fretik/ai`).
  *
- * Only the data/drive write tools are here. Schema/automation config tools
- * (`manageCollection`, `manageField`, `manageWorkflow`) are blockable-only (no
- * approval level) so they never reach this map.
+ * The config tools are here only for their DESTRUCTIVE actions
+ * (`manageCollection.delete`, `manageField.delete` / `changeType`) — the ones
+ * that drop a table or a column and take the data with them. Their harmless
+ * actions stay `auto` and never reach this map; `manageWorkflow` and
+ * `managePage` have no entry at all and remain blockable-only.
  */
 
 /** Tenant context an apply fn needs — sourced from the approval row. */
@@ -381,6 +391,68 @@ const applyInstallSkill: ToolCallApplyFn = async (ctx, args) => {
   return { ok: true, name: skill.name };
 };
 
+// ---- manageCollection / manageField ---------------------------------------
+//
+// Only the destructive actions are gated, so only those apply here — anything
+// else reaching this map is a proposal/apply mismatch and throws rather than
+// guessing. Both re-assert the write grant: a proposal can sit pending for a
+// while, and a share revoked in between must not be honoured at grant time.
+
+const applyManageCollection: ToolCallApplyFn = async (ctx, args) => {
+  const action = str(args, "action");
+  if (action !== "delete") {
+    throw new Error(`manageCollection "${action}" is not approval-gated`);
+  }
+  const collectionId = str(args, "collectionId");
+  await assertCanWriteType({
+    collectionId,
+    teamId: ctx.teamId,
+    organizationId: ctx.organizationId,
+  });
+  const result = await deleteCollection({
+    id: collectionId,
+    actor: agentActor(ctx),
+  });
+  return { ok: true, ...result };
+};
+
+const applyManageField: ToolCallApplyFn = async (ctx, args) => {
+  const action = str(args, "action");
+  const collectionId = str(args, "collectionId");
+  const fieldId = str(args, "fieldId");
+  await assertCanWriteType({
+    collectionId,
+    teamId: ctx.teamId,
+    organizationId: ctx.organizationId,
+  });
+  const actor = agentActor(ctx);
+
+  if (action === "delete") {
+    const result = await deleteFieldDefinition({
+      id: fieldId,
+      cascade: args.cascade === true,
+      actor,
+    });
+    return { ok: true, ...result };
+  }
+  if (action === "changeType") {
+    const updated = await updateFieldDefinition({
+      id: fieldId,
+      cascade: true,
+      patch: {
+        type: fieldDefinitionTypeSchema.parse(args.type),
+        config:
+          args.config === undefined
+            ? undefined
+            : fieldConfigSchema.parse(args.config),
+      },
+      actor,
+    });
+    return { ok: true, field: { id: updated.id, key: updated.key } };
+  }
+  throw new Error(`manageField "${action}" is not approval-gated`);
+};
+
 /** The apply registry. A `tool_call` payload's `toolName` MUST have an entry. */
 export const TOOL_CALL_APPLY: Record<string, ToolCallApplyFn> = {
   manageLink: applyManageLink,
@@ -389,4 +461,6 @@ export const TOOL_CALL_APPLY: Record<string, ToolCallApplyFn> = {
   manageDocument: applyManageDocument,
   manageRecord: applyManageRecord,
   installSkill: applyInstallSkill,
+  manageCollection: applyManageCollection,
+  manageField: applyManageField,
 };

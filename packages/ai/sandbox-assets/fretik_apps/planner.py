@@ -4,13 +4,13 @@
 
 All calls go through fretik-backend, which dispatches them to the
 provider (Nango Proxy or a custom handler). Write actions return an
-Operation when called as `.op(...)` (use with run_plan(...));
-when called directly they are sugar for run_plan([op]).
+Operation via `.op(...)`; submit them with run_plan([...]).
+Calling a write action directly raises — it never executes.
 """
 
 from typing import Any, Literal, Optional
 from pydantic import BaseModel
-from ._runtime import FretikActionError, Operation, _call_read, run_plan
+from ._runtime import FretikActionError, Operation, _call_read
 
 
 # ── Types ─────────────────────────────────────────────────────────
@@ -309,29 +309,19 @@ def create_task(
 ) -> dict[str, Any]:
     """Create a task in a plan (optionally in a bucket, with assignees)
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `create_task.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     plan_id: Plan the task belongs to
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _create_task_op(
-        plan_id=plan_id,
-        title=title,
-        bucket_id=bucket_id,
-        assignee_ids=assignee_ids,
-        due_date=due_date,
-        start_date=start_date,
-        percent_complete=percent_complete,
-        priority=priority,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "create_task is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([planner.create_task.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "create_task failed"))
-    return result[0].get("data", {})
 
 create_task.op = _create_task_op
 
@@ -369,30 +359,19 @@ def update_task(
 ) -> dict[str, Any]:
     """Update a task — title, bucket, dates, %complete, assignees
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `update_task.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     etag: The task's current etag (from a read). Sent as If-Match; a stale etag fails with 412 — re-read and retry.
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _update_task_op(
-        task_id=task_id,
-        etag=etag,
-        title=title,
-        bucket_id=bucket_id,
-        due_date=due_date,
-        start_date=start_date,
-        percent_complete=percent_complete,
-        priority=priority,
-        assignee_ids=assignee_ids,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "update_task is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([planner.update_task.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "update_task failed"))
-    return result[0].get("data", {})
 
 update_task.op = _update_task_op
 
@@ -420,25 +399,19 @@ def update_task_details(
 ) -> dict[str, Any]:
     """Set a task's description and/or replace its checklist
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `update_task_details.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     etag: The details object's etag (from get_task_details). Sent as If-Match.
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _update_task_details_op(
-        task_id=task_id,
-        etag=etag,
-        description=description,
-        checklist=checklist,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "update_task_details is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([planner.update_task_details.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "update_task_details failed"))
-    return result[0].get("data", {})
 
 update_task_details.op = _update_task_details_op
 
@@ -462,23 +435,19 @@ def delete_task(
 ) -> dict[str, Any]:
     """Delete a task
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `delete_task.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     etag: The task's current etag (from a read). Sent as If-Match.
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _delete_task_op(
-        task_id=task_id,
-        etag=etag,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "delete_task is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([planner.delete_task.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "delete_task failed"))
-    return result[0].get("data", {})
 
 delete_task.op = _delete_task_op
 
@@ -502,21 +471,17 @@ def create_bucket(
 ) -> dict[str, Any]:
     """Create a bucket (column) in a plan
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `create_bucket.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _create_bucket_op(
-        plan_id=plan_id,
-        name=name,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "create_bucket is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([planner.create_bucket.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "create_bucket failed"))
-    return result[0].get("data", {})
 
 create_bucket.op = _create_bucket_op
 
@@ -540,22 +505,18 @@ def create_plan(
 ) -> dict[str, Any]:
     """Create a plan owned by a Microsoft 365 group
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `create_plan.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     group_id: Microsoft 365 group that will own the plan. The signed-in user MUST be a member of it.
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _create_plan_op(
-        group_id=group_id,
-        title=title,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "create_plan is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([planner.create_plan.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "create_plan failed"))
-    return result[0].get("data", {})
 
 create_plan.op = _create_plan_op

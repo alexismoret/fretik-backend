@@ -26,31 +26,31 @@ You can interact with the user's Microsoft Outlook account via the `fretik_apps.
 
 ## Write actions (require user approval — build with `.op()`)
 
-- `outlook.send_email(to, subject, body_html, cc=None, bcc=None, attachments=None)` — Send a new email immediately (with optional inline attachments < 3MB)
-- `outlook.reply_email(message_id, body_html, attachments=None)` — Reply to the sender of a message (with optional attachments)
-- `outlook.reply_all_email(message_id, body_html, attachments=None)` — Reply to all recipients of a message (with optional attachments)
-- `outlook.forward_email(message_id, to, comment=None, attachments=None)` — Forward a message to new recipients (with optional attachments)
-- `outlook.create_draft(to, subject, body_html, cc=None, attachments=None)` — Create a draft email (not sent), with optional attachments
-- `outlook.update_draft(message_id, subject=None, body_html=None)` — Update the subject or body of an existing draft
-- `outlook.delete_message(message_id)` — Delete a message (moves it to Deleted Items)
-- `outlook.move_message(message_id, destination_folder_id)` — Move a message to another mail folder
-- `outlook.copy_message(message_id, destination_folder_id)` — Copy a message into another mail folder
-- `outlook.delete_messages(message_ids)` — Delete up to 20 messages in a single Graph $batch request
-- `outlook.move_messages(message_ids, destination_folder_id)` — Move up to 20 messages to a folder in a single Graph $batch request
-- `outlook.mark_messages_read(message_ids)` — Mark up to 20 messages as read in a single Graph $batch request
-- `outlook.mark_messages_unread(message_ids)` — Mark up to 20 messages as unread in a single Graph $batch request
-- `outlook.mark_read(message_id)` — Mark a message as read
-- `outlook.mark_unread(message_id)` — Mark a message as unread
-- `outlook.flag_message(message_id, status="flagged", due_date=None, time_zone="UTC")` — Set the follow-up flag on a message (flag / mark complete / clear)
-- `outlook.create_folder(display_name, parent_folder_id=None)` — Create a new mail folder
-- `outlook.create_calendar_event(subject, start, end, time_zone="UTC", location=None, attendees=None, body_html=None, is_online_meeting=None, calendar_id=None)` — Create a calendar event
-- `outlook.update_calendar_event(event_id, subject=None, start=None, end=None, time_zone="UTC", location=None, body_html=None, calendar_id=None)` — Update fields of an existing calendar event
-- `outlook.delete_calendar_event(event_id, calendar_id=None)` — Delete a calendar event
-- `outlook.respond_to_event(event_id, response, comment=None, calendar_id=None)` — Accept, decline or tentatively accept a meeting invite
-- `outlook.create_contact(given_name, surname=None, email=None, company_name=None, job_title=None, mobile_phone=None)` — Create a new contact
-- `outlook.create_inbox_rule(display_name, sequence=1, is_enabled=True, from_addresses=None, subject_contains=None, body_contains=None, has_attachments=None, move_to_folder_id=None, mark_as_read=None, auto_delete=None)` — Create an inbox rule (e.g. move incoming mail from a sender to a folder)
-- `outlook.update_inbox_rule(rule_id, display_name=None, sequence=None, is_enabled=None, from_addresses=None, subject_contains=None, body_contains=None, has_attachments=None, move_to_folder_id=None, mark_as_read=None, auto_delete=None)` — Update an existing inbox rule (PATCH semantics, all fields optional)
-- `outlook.delete_inbox_rule(rule_id)` — Delete an inbox rule
+- `outlook.send_email.op(to, subject, body_html, cc=None, bcc=None, attachments=None)` — Send a new email immediately (with optional inline attachments < 3MB)
+- `outlook.reply_email.op(message_id, body_html, attachments=None)` — Reply to the sender of a message (with optional attachments)
+- `outlook.reply_all_email.op(message_id, body_html, attachments=None)` — Reply to all recipients of a message (with optional attachments)
+- `outlook.forward_email.op(message_id, to, comment=None, attachments=None)` — Forward a message to new recipients (with optional attachments)
+- `outlook.create_draft.op(to, subject, body_html, cc=None, attachments=None)` — Create a draft email (not sent), with optional attachments
+- `outlook.update_draft.op(message_id, subject=None, body_html=None)` — Update the subject or body of an existing draft
+- `outlook.delete_message.op(message_id)` — Delete a message (moves it to Deleted Items)
+- `outlook.move_message.op(message_id, destination_folder_id)` — Move a message to another mail folder
+- `outlook.copy_message.op(message_id, destination_folder_id)` — Copy a message into another mail folder
+- `outlook.delete_messages.op(message_ids)` — Delete up to 20 messages in a single Graph $batch request
+- `outlook.move_messages.op(message_ids, destination_folder_id)` — Move up to 20 messages to a folder in a single Graph $batch request
+- `outlook.mark_messages_read.op(message_ids)` — Mark up to 20 messages as read in a single Graph $batch request
+- `outlook.mark_messages_unread.op(message_ids)` — Mark up to 20 messages as unread in a single Graph $batch request
+- `outlook.mark_read.op(message_id)` — Mark a message as read
+- `outlook.mark_unread.op(message_id)` — Mark a message as unread
+- `outlook.flag_message.op(message_id, status="flagged", due_date=None, time_zone="UTC")` — Set the follow-up flag on a message (flag / mark complete / clear)
+- `outlook.create_folder.op(display_name, parent_folder_id=None)` — Create a new mail folder
+- `outlook.create_calendar_event.op(subject, start, end, time_zone="UTC", location=None, attendees=None, body_html=None, is_online_meeting=None, calendar_id=None)` — Create a calendar event
+- `outlook.update_calendar_event.op(event_id, subject=None, start=None, end=None, time_zone="UTC", location=None, body_html=None, calendar_id=None)` — Update fields of an existing calendar event
+- `outlook.delete_calendar_event.op(event_id, calendar_id=None)` — Delete a calendar event
+- `outlook.respond_to_event.op(event_id, response, comment=None, calendar_id=None)` — Accept, decline or tentatively accept a meeting invite
+- `outlook.create_contact.op(given_name, surname=None, email=None, company_name=None, job_title=None, mobile_phone=None)` — Create a new contact
+- `outlook.create_inbox_rule.op(display_name, sequence=1, is_enabled=True, from_addresses=None, subject_contains=None, body_contains=None, has_attachments=None, move_to_folder_id=None, mark_as_read=None, auto_delete=None)` — Create an inbox rule (e.g. move incoming mail from a sender to a folder)
+- `outlook.update_inbox_rule.op(rule_id, display_name=None, sequence=None, is_enabled=None, from_addresses=None, subject_contains=None, body_contains=None, has_attachments=None, move_to_folder_id=None, mark_as_read=None, auto_delete=None)` — Update an existing inbox rule (PATCH semantics, all fields optional)
+- `outlook.delete_inbox_rule.op(rule_id)` — Delete an inbox rule
 
 ## Data models
 
@@ -135,8 +135,8 @@ import base64
 with open("/workspace/outputs/report.pdf", "rb") as f:
     content = base64.b64encode(f.read()).decode()
 
-from fretik_apps import outlook
-outlook.send_email(
+from fretik_apps import outlook, run_plan
+run_plan([outlook.send_email.op(
     to=["client@example.com"],
     subject="Monthly report",
     body_html="<p>Please find the report attached.</p>",
@@ -145,7 +145,7 @@ outlook.send_email(
         "content_type": "application/pdf",
         "content_base64": content,
     }],
-)
+)])
 ```
 
 ### Multiple connected mailboxes
@@ -158,12 +158,12 @@ via the implicit `connection_id="<uuid>"` arg, accepted by every action in
 the SDK:
 
 ```python
-outlook.send_email(
+run_plan([outlook.send_email.op(
     connection_id="3f1a…-pro",
     to=["client@example.com"],
     subject="…",
     body_html="…",
-)
+)])
 ```
 
 If you call a write without `connection_id` and several Outlook mailboxes
@@ -287,19 +287,22 @@ applies: structured if helpful, clear, professional.
 
 ## Write actions & approval
 
-Write actions NEVER execute on their own. Build them with `.op()` and
-submit them together via `run_plan([...])` — the user approves the whole
-plan ONCE.
+Write actions NEVER execute on their own: `.op(...)` builds an operation,
+`run_plan([...])` submits them, and calling a write action directly raises.
+The user approves the whole plan at once.
 
-- One write: `outlook.send_email(to=["name@example.com"], subject="…", body_html="…")`
+- One write: `run_plan([ outlook.send_email.op(to=["name@example.com"], subject="…", body_html="…") ])`
 - Many writes: `run_plan([ outlook.<action>.op(...), ... ])`
 
-When you call `run_plan` (or a direct write), it raises
-`fretik_apps.ApprovalPending`. This is EXPECTED — not an error. STOP.
-The user reviews the plan in the UI; you will be prompted to continue.
-When prompted, RE-RUN THE EXACT SAME CODE — the approved plan then
-executes; reads re-run harmlessly. If the user rejects, you receive
-their feedback as a message — adapt and write new code.
+`run_plan` raises `fretik_apps.ApprovalPending`. This is EXPECTED — not an
+error. Stop there. Never wrap it in `try/except` (that hides the approval
+card), and never `print` the ops as a preview instead of calling it — no
+call, no plan.
+
+Once the user decides, the outcome replaces that same tool result. It covers
+only the operations it lists: if any code sat AFTER the `run_plan` call,
+re-run the identical cell — approved plans replay from cache and never execute
+twice. On rejection you get their feedback — adapt and write new code.
 
 ### STRONG RULE — read→write flows
 
@@ -316,10 +319,11 @@ change the plan's lookupHash and force a needless re-approval.
 
 ### Plan rules
 
+- Every write of the turn goes in ONE `run_plan`. A second call in the
+  same cell is lost: the first raises and the rest of the cell never runs.
 - Operations in one plan must be INDEPENDENT (no op uses another op's
   result). Dependent steps (create_folder, then move into it) → use
   TWO turns.
-- For several writes, ALWAYS use a single `run_plan` — never chain
-  bare writes.
+- A plan may mix actions from several apps — one approval for all of them.
 - Partial failures come back per-op; re-submit a `run_plan` with only
   the failed ops.

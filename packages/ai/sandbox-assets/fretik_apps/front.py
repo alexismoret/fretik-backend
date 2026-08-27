@@ -4,13 +4,13 @@
 
 All calls go through fretik-backend, which dispatches them to the
 provider (Nango Proxy or a custom handler). Write actions return an
-Operation when called as `.op(...)` (use with run_plan(...));
-when called directly they are sugar for run_plan([op]).
+Operation via `.op(...)`; submit them with run_plan([...]).
+Calling a write action directly raises — it never executes.
 """
 
 from typing import Any, Literal, Optional
 from pydantic import BaseModel
-from ._runtime import FretikActionError, Operation, _call_read, run_plan
+from ._runtime import FretikActionError, Operation, _call_read
 
 
 # ── Types ─────────────────────────────────────────────────────────
@@ -632,31 +632,19 @@ def reply_to_conversation(
 ) -> dict[str, Any]:
     """Reply to a conversation thread
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `reply_to_conversation.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     text: Plain-text alternative (Front falls back to a stripped body when omitted)
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _reply_to_conversation_op(
-        conversation_id=conversation_id,
-        body_html=body_html,
-        text=text,
-        channel_id=channel_id,
-        to=to,
-        cc=cc,
-        bcc=bcc,
-        archive_after=archive_after,
-        tag_ids_after=tag_ids_after,
-        attachments=attachments,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "reply_to_conversation is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([front.reply_to_conversation.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "reply_to_conversation failed"))
-    return result[0].get("data", {})
 
 reply_to_conversation.op = _reply_to_conversation_op
 
@@ -696,31 +684,19 @@ def send_new_message(
 ) -> dict[str, Any]:
     """Send a new outbound message (starts a new conversation)
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `send_new_message.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     channel_id: ID of the channel to send from
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _send_new_message_op(
-        channel_id=channel_id,
-        to=to,
-        body_html=body_html,
-        cc=cc,
-        bcc=bcc,
-        subject=subject,
-        text=text,
-        sender_name=sender_name,
-        tag_ids=tag_ids,
-        attachments=attachments,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "send_new_message is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([front.send_new_message.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "send_new_message failed"))
-    return result[0].get("data", {})
 
 send_new_message.op = _send_new_message_op
 
@@ -748,25 +724,19 @@ def update_conversation(
 ) -> dict[str, Any]:
     """Update conversation status, assignee, or inbox (archive / reopen / move / assign)
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `update_conversation.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     assignee_id: Teammate ID to assign. Pass an empty string to unassign
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _update_conversation_op(
-        conversation_id=conversation_id,
-        status=status,
-        assignee_id=assignee_id,
-        inbox_id=inbox_id,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "update_conversation is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([front.update_conversation.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "update_conversation failed"))
-    return result[0].get("data", {})
 
 update_conversation.op = _update_conversation_op
 
@@ -788,20 +758,17 @@ def delete_conversation(
 ) -> dict[str, Any]:
     """Permanently delete a conversation
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `delete_conversation.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _delete_conversation_op(
-        conversation_id=conversation_id,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "delete_conversation is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([front.delete_conversation.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "delete_conversation failed"))
-    return result[0].get("data", {})
 
 delete_conversation.op = _delete_conversation_op
 
@@ -825,21 +792,17 @@ def add_conversation_tags(
 ) -> dict[str, Any]:
     """Add tags to a conversation (additive)
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `add_conversation_tags.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _add_conversation_tags_op(
-        conversation_id=conversation_id,
-        tag_ids=tag_ids,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "add_conversation_tags is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([front.add_conversation_tags.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "add_conversation_tags failed"))
-    return result[0].get("data", {})
 
 add_conversation_tags.op = _add_conversation_tags_op
 
@@ -863,21 +826,17 @@ def remove_conversation_tags(
 ) -> dict[str, Any]:
     """Remove tags from a conversation
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `remove_conversation_tags.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _remove_conversation_tags_op(
-        conversation_id=conversation_id,
-        tag_ids=tag_ids,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "remove_conversation_tags is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([front.remove_conversation_tags.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "remove_conversation_tags failed"))
-    return result[0].get("data", {})
 
 remove_conversation_tags.op = _remove_conversation_tags_op
 
@@ -903,24 +862,19 @@ def add_conversation_comment(
 ) -> dict[str, Any]:
     """Add an internal comment (note) to a conversation
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `add_conversation_comment.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     body: Comment body — markdown, supports `@username` mentions resolved by Front
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _add_conversation_comment_op(
-        conversation_id=conversation_id,
-        body=body,
-        attachments=attachments,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "add_conversation_comment is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([front.add_conversation_comment.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "add_conversation_comment failed"))
-    return result[0].get("data", {})
 
 add_conversation_comment.op = _add_conversation_comment_op
 
@@ -946,24 +900,19 @@ def snooze_conversation(
 ) -> dict[str, Any]:
     """Snooze a conversation until a future timestamp
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `snooze_conversation.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     scheduled_at: Unix epoch (seconds) when the snooze should end
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _snooze_conversation_op(
-        conversation_id=conversation_id,
-        scheduled_at=scheduled_at,
-        teammate_id=teammate_id,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "snooze_conversation is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([front.snooze_conversation.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "snooze_conversation failed"))
-    return result[0].get("data", {})
 
 snooze_conversation.op = _snooze_conversation_op
 
@@ -987,23 +936,19 @@ def unsnooze_conversation(
 ) -> dict[str, Any]:
     """Cancel an active snooze on a conversation
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `unsnooze_conversation.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     teammate_id: Teammate whose snooze should be cleared (defaults to the bot teammate)
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _unsnooze_conversation_op(
-        conversation_id=conversation_id,
-        teammate_id=teammate_id,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "unsnooze_conversation is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([front.unsnooze_conversation.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "unsnooze_conversation failed"))
-    return result[0].get("data", {})
 
 unsnooze_conversation.op = _unsnooze_conversation_op
 
@@ -1027,21 +972,17 @@ def add_conversation_followers(
 ) -> dict[str, Any]:
     """Add teammates as followers of a conversation
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `add_conversation_followers.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _add_conversation_followers_op(
-        conversation_id=conversation_id,
-        teammate_ids=teammate_ids,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "add_conversation_followers is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([front.add_conversation_followers.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "add_conversation_followers failed"))
-    return result[0].get("data", {})
 
 add_conversation_followers.op = _add_conversation_followers_op
 
@@ -1065,21 +1006,17 @@ def remove_conversation_followers(
 ) -> dict[str, Any]:
     """Remove teammates from the followers of a conversation
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `remove_conversation_followers.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _remove_conversation_followers_op(
-        conversation_id=conversation_id,
-        teammate_ids=teammate_ids,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "remove_conversation_followers is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([front.remove_conversation_followers.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "remove_conversation_followers failed"))
-    return result[0].get("data", {})
 
 remove_conversation_followers.op = _remove_conversation_followers_op
 
@@ -1109,26 +1046,19 @@ def create_contact(
 ) -> dict[str, Any]:
     """Create a new contact
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `create_contact.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     handles: At least one handle is required
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _create_contact_op(
-        handles=handles,
-        name=name,
-        description=description,
-        links=links,
-        is_spammer=is_spammer,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "create_contact is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([front.create_contact.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "create_contact failed"))
-    return result[0].get("data", {})
 
 create_contact.op = _create_contact_op
 
@@ -1158,24 +1088,17 @@ def update_contact(
 ) -> dict[str, Any]:
     """Update an existing contact (PATCH semantics)
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `update_contact.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _update_contact_op(
-        contact_id=contact_id,
-        name=name,
-        description=description,
-        is_spammer=is_spammer,
-        links=links,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "update_contact is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([front.update_contact.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "update_contact failed"))
-    return result[0].get("data", {})
 
 update_contact.op = _update_contact_op
 
@@ -1203,23 +1126,17 @@ def create_tag(
 ) -> dict[str, Any]:
     """Create a new company tag
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `create_tag.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _create_tag_op(
-        name=name,
-        highlight=highlight,
-        is_visible_in_conversation_lists=is_visible_in_conversation_lists,
-        parent_tag_id=parent_tag_id,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "create_tag is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([front.create_tag.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "create_tag failed"))
-    return result[0].get("data", {})
 
 create_tag.op = _create_tag_op
 
@@ -1247,23 +1164,17 @@ def update_tag(
 ) -> dict[str, Any]:
     """Update a tag (rename / recolor / re-parent)
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `update_tag.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _update_tag_op(
-        tag_id=tag_id,
-        name=name,
-        highlight=highlight,
-        parent_tag_id=parent_tag_id,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "update_tag is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([front.update_tag.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "update_tag failed"))
-    return result[0].get("data", {})
 
 update_tag.op = _update_tag_op
 
@@ -1285,19 +1196,16 @@ def delete_tag(
 ) -> dict[str, Any]:
     """Delete a tag (removes it from every conversation it was on)
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `delete_tag.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _delete_tag_op(
-        tag_id=tag_id,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "delete_tag is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([front.delete_tag.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "delete_tag failed"))
-    return result[0].get("data", {})
 
 delete_tag.op = _delete_tag_op

@@ -27,22 +27,22 @@ You can interact with the user's Front account via the `fretik_apps.front` Pytho
 
 ## Write actions (require user approval — build with `.op()`)
 
-- `front.reply_to_conversation(conversation_id, body_html, text=None, channel_id=None, to=None, cc=None, bcc=None, archive_after=None, tag_ids_after=None, attachments=None)` — Reply to a conversation thread
-- `front.send_new_message(channel_id, to, body_html, cc=None, bcc=None, subject=None, text=None, sender_name=None, tag_ids=None, attachments=None)` — Send a new outbound message (starts a new conversation)
-- `front.update_conversation(conversation_id, status=None, assignee_id=None, inbox_id=None)` — Update conversation status, assignee, or inbox (archive / reopen / move / assign)
-- `front.delete_conversation(conversation_id)` — Permanently delete a conversation
-- `front.add_conversation_tags(conversation_id, tag_ids)` — Add tags to a conversation (additive)
-- `front.remove_conversation_tags(conversation_id, tag_ids)` — Remove tags from a conversation
-- `front.add_conversation_comment(conversation_id, body, attachments=None)` — Add an internal comment (note) to a conversation
-- `front.snooze_conversation(conversation_id, scheduled_at, teammate_id=None)` — Snooze a conversation until a future timestamp
-- `front.unsnooze_conversation(conversation_id, teammate_id=None)` — Cancel an active snooze on a conversation
-- `front.add_conversation_followers(conversation_id, teammate_ids)` — Add teammates as followers of a conversation
-- `front.remove_conversation_followers(conversation_id, teammate_ids)` — Remove teammates from the followers of a conversation
-- `front.create_contact(handles, name=None, description=None, links=None, is_spammer=None)` — Create a new contact
-- `front.update_contact(contact_id, name=None, description=None, is_spammer=None, links=None)` — Update an existing contact (PATCH semantics)
-- `front.create_tag(name, highlight=None, is_visible_in_conversation_lists=True, parent_tag_id=None)` — Create a new company tag
-- `front.update_tag(tag_id, name=None, highlight=None, parent_tag_id=None)` — Update a tag (rename / recolor / re-parent)
-- `front.delete_tag(tag_id)` — Delete a tag (removes it from every conversation it was on)
+- `front.reply_to_conversation.op(conversation_id, body_html, text=None, channel_id=None, to=None, cc=None, bcc=None, archive_after=None, tag_ids_after=None, attachments=None)` — Reply to a conversation thread
+- `front.send_new_message.op(channel_id, to, body_html, cc=None, bcc=None, subject=None, text=None, sender_name=None, tag_ids=None, attachments=None)` — Send a new outbound message (starts a new conversation)
+- `front.update_conversation.op(conversation_id, status=None, assignee_id=None, inbox_id=None)` — Update conversation status, assignee, or inbox (archive / reopen / move / assign)
+- `front.delete_conversation.op(conversation_id)` — Permanently delete a conversation
+- `front.add_conversation_tags.op(conversation_id, tag_ids)` — Add tags to a conversation (additive)
+- `front.remove_conversation_tags.op(conversation_id, tag_ids)` — Remove tags from a conversation
+- `front.add_conversation_comment.op(conversation_id, body, attachments=None)` — Add an internal comment (note) to a conversation
+- `front.snooze_conversation.op(conversation_id, scheduled_at, teammate_id=None)` — Snooze a conversation until a future timestamp
+- `front.unsnooze_conversation.op(conversation_id, teammate_id=None)` — Cancel an active snooze on a conversation
+- `front.add_conversation_followers.op(conversation_id, teammate_ids)` — Add teammates as followers of a conversation
+- `front.remove_conversation_followers.op(conversation_id, teammate_ids)` — Remove teammates from the followers of a conversation
+- `front.create_contact.op(handles, name=None, description=None, links=None, is_spammer=None)` — Create a new contact
+- `front.update_contact.op(contact_id, name=None, description=None, is_spammer=None, links=None)` — Update an existing contact (PATCH semantics)
+- `front.create_tag.op(name, highlight=None, is_visible_in_conversation_lists=True, parent_tag_id=None)` — Create a new company tag
+- `front.update_tag.op(tag_id, name=None, highlight=None, parent_tag_id=None)` — Update a tag (rename / recolor / re-parent)
+- `front.delete_tag.op(tag_id)` — Delete a tag (removes it from every conversation it was on)
 
 ## Data models
 
@@ -300,19 +300,22 @@ applies: structured if helpful, clear, professional.
 
 ## Write actions & approval
 
-Write actions NEVER execute on their own. Build them with `.op()` and
-submit them together via `run_plan([...])` — the user approves the whole
-plan ONCE.
+Write actions NEVER execute on their own: `.op(...)` builds an operation,
+`run_plan([...])` submits them, and calling a write action directly raises.
+The user approves the whole plan at once.
 
-- One write: `front.reply_to_conversation(conversation_id="…", body_html="…")`
+- One write: `run_plan([ front.reply_to_conversation.op(conversation_id="…", body_html="…") ])`
 - Many writes: `run_plan([ front.<action>.op(...), ... ])`
 
-When you call `run_plan` (or a direct write), it raises
-`fretik_apps.ApprovalPending`. This is EXPECTED — not an error. STOP.
-The user reviews the plan in the UI; you will be prompted to continue.
-When prompted, RE-RUN THE EXACT SAME CODE — the approved plan then
-executes; reads re-run harmlessly. If the user rejects, you receive
-their feedback as a message — adapt and write new code.
+`run_plan` raises `fretik_apps.ApprovalPending`. This is EXPECTED — not an
+error. Stop there. Never wrap it in `try/except` (that hides the approval
+card), and never `print` the ops as a preview instead of calling it — no
+call, no plan.
+
+Once the user decides, the outcome replaces that same tool result. It covers
+only the operations it lists: if any code sat AFTER the `run_plan` call,
+re-run the identical cell — approved plans replay from cache and never execute
+twice. On rejection you get their feedback — adapt and write new code.
 
 ### STRONG RULE — read→write flows
 
@@ -329,10 +332,11 @@ change the plan's lookupHash and force a needless re-approval.
 
 ### Plan rules
 
+- Every write of the turn goes in ONE `run_plan`. A second call in the
+  same cell is lost: the first raises and the rest of the cell never runs.
 - Operations in one plan must be INDEPENDENT (no op uses another op's
   result). Dependent steps (create_folder, then move into it) → use
   TWO turns.
-- For several writes, ALWAYS use a single `run_plan` — never chain
-  bare writes.
+- A plan may mix actions from several apps — one approval for all of them.
 - Partial failures come back per-op; re-submit a `run_plan` with only
   the failed ops.

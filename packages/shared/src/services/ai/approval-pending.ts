@@ -35,6 +35,19 @@ export const approvalDeferred = (output: unknown): string | null => {
   return typeof id === "string" ? id : null;
 };
 
+/**
+ * The single canonical note carried by every `approval_granted` tool output.
+ *
+ * The grant is substituted into the tool result of a sandbox cell that RAISED
+ * at the gated call — so every statement after it was skipped. A bare success
+ * payload reads as "the whole cell ran", and the model reports work it never
+ * submitted. The second half is what makes recovery possible: the gate resolves
+ * a `consumed` row by `lookupHash` and replays its cached result, so re-running
+ * the identical cell is free of double writes.
+ */
+export const APPROVAL_GRANTED_NOTE =
+  "This outcome covers ONLY the operations listed here. Code that sat after the call that raised did NOT run — re-run the identical cell to finish it; already-approved work replays from cache and never executes twice.";
+
 /** The single canonical tool output for a deferred write — one message so no
  * caller re-derives it. Stops the turn (via the stop condition) and tells the
  * model to wait for the pending review, then re-issue. */

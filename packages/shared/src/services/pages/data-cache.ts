@@ -30,6 +30,12 @@ import { hashPageDataRequest } from "./public-cache";
  * because two teams reading the same shared page see their own records — a key
  * without it would serve one team's rows to another. The fingerprint because an
  * edited page must not read its predecessor's answer.
+ *
+ * ONE EXCEPTION to the no-invalidation rule, and it is about meaning rather
+ * than freshness: `connectionsEpoch` (`external-apps/connections/epoch.ts`).
+ * A stale figure is a figure; a stale `needs_connection` is a wall — the viewer
+ * connects the app, comes back, and the page still says to connect it, which
+ * reads as "connecting did not work".
  */
 
 /**
@@ -55,13 +61,18 @@ export const pageDataCacheKey = (input: {
   userId: string | null;
   /** The definition's `updatedAt` — editing a page retires its entries. */
   definitionFingerprint: string;
+  /**
+   * `externalConnectionsEpoch(...)` — connecting, reconnecting or removing an
+   * app retires this viewer's entries at once instead of after the TTL.
+   */
+  connectionsEpoch: string;
   request: {
     variables: Record<string, unknown>;
     datasetIds?: string[];
     queries?: Record<string, unknown>;
   };
 }): string =>
-  `page:data:${input.pageId}:${input.teamId}:u:${input.userId ?? "public"}:${input.definitionFingerprint}:${hashPageDataRequest(input.request)}`;
+  `page:data:${input.pageId}:${input.teamId}:u:${input.userId ?? "public"}:${input.definitionFingerprint}:c:${input.connectionsEpoch}:${hashPageDataRequest(input.request)}`;
 
 /**
  * Serve a page's datasets from cache, or run them once and share that run.

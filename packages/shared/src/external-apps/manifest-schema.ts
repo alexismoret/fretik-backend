@@ -219,6 +219,31 @@ export const providerTransportSchema = z.discriminatedUnion("kind", [
 ]);
 export type ProviderTransport = z.infer<typeof providerTransportSchema>;
 
+/**
+ * How many of this provider's calls may be in flight AT ONCE on ONE connection.
+ *
+ * `parallel` is the default and costs nothing — the slot is not taken, no Redis
+ * is touched. `serial` exists for an API where a call is not self-contained:
+ * Akanea WMS leases a LICENCE SEAT per action (`GetToken` … `ReleaseToken`), so
+ * six page widgets loading together ask for six seats and the ones past the
+ * pool's size come back with no token — indistinguishable, on the wire, from
+ * wrong credentials.
+ *
+ * Named for what is bounded rather than for the symptom. `async: false` would
+ * read as "this API is synchronous", which is not the property: the calls are
+ * perfectly asynchronous, they just cannot OVERLAP on one account.
+ */
+export const providerConcurrencySchema = z.object({
+  mode: z.enum(["parallel", "serial"]).default("parallel"),
+  /**
+   * How long a call waits for the connection to free up before giving up. Long
+   * enough to absorb a page's fan-out, short enough that a stuck holder costs
+   * one widget a message rather than the whole render.
+   */
+  maxWaitMs: z.number().int().min(0).max(60_000).default(8_000),
+});
+export type ProviderConcurrency = z.infer<typeof providerConcurrencySchema>;
+
 export const actionSchema = z.object({
   /** Snake-case action name, unique within the provider, e.g. `send_email`. */
   name: z
@@ -586,6 +611,8 @@ export const providerManifestSchema = z
     scopes: z.array(z.string()),
     /** How the dispatcher executes this provider's actions. */
     transport: providerTransportSchema,
+    /** Omit for `parallel` — the default, and the one that costs nothing. */
+    concurrency: providerConcurrencySchema.optional(),
     /**
      * Frontend credentials form descriptor — required when the provider
      * uses a `custom-handler` transport (since the frontend cannot rely

@@ -26,13 +26,16 @@ import type { AgentRuntimeContext } from "./runtime-context";
  * `resolveBuiltinToolPolicy` returns `auto` for them — they are never hidden.
  */
 
-/** Effective policy level for one builtin tool given the turn's context. */
+/** Effective policy level for one builtin tool given the turn's context. Pass
+ * the tool's `action` where it has one — levels resolve per action. */
 export const resolveBuiltinPolicy = (
   ctx: AgentRuntimeContext,
   toolName: string,
+  action?: string,
 ): ToolPolicyLevel =>
   resolveBuiltinToolPolicy({
     toolName,
+    ...(action === undefined ? {} : { action }),
     teamPolicies: ctx.toolPolicies ?? {},
     autonomy: ctx.workflowAutonomy ?? null,
   });
@@ -64,7 +67,10 @@ interface ApprovalPendingOutput {
  * Per-tool policy gate for a `tool_call`-kind write tool (manageRecord /
  * manageLink / manageDrive / uploadToDrive). Call it in the tool's `execute`
  * AFTER validating + resolving the write's args (so the stored payload is
- * ready-to-apply). Returns:
+ * ready-to-apply). The level resolves per ACTION, read from `args.action` —
+ * the same value the grant later dispatches on, so a tool cannot be gated on
+ * one action and applied as another. Tools without an `action` arg resolve
+ * tool-wide. Returns:
  *  - a `toolError` when the team `blocked` the tool (backstop for a guessed
  *    name the menu-prune didn't catch),
  *  - an `approval_pending` marker when the level is `approval` — the caller
@@ -89,7 +95,9 @@ export const gateBuiltinWriteTool = async (
   | ReturnType<typeof toolError>
   | null
 > => {
-  const level = resolveBuiltinPolicy(ctx, params.toolName);
+  const action =
+    typeof params.args.action === "string" ? params.args.action : undefined;
+  const level = resolveBuiltinPolicy(ctx, params.toolName, action);
   if (level === "blocked") {
     return toolError(
       TOOL_ERROR_CODES.TOOL_DISABLED_BY_POLICY,

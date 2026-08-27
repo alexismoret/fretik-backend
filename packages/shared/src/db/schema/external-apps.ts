@@ -13,6 +13,7 @@ import {
 import type { ExternalAppDescriptor } from "../../schemas/external-app-descriptor";
 import type { ToolPolicyLevel } from "../../schemas/tool-policies";
 import { organization, team, user } from "./auth-schema";
+import { pages } from "./pages";
 
 /**
  * External apps — connections to third-party SaaS (Outlook, Gmail, …) via
@@ -37,6 +38,18 @@ import { organization, team, user } from "./auth-schema";
 export const externalAppConnectionStatusEnum = pgEnum(
   "external_app_connection_status",
   ["active", "disabled", "error"],
+);
+
+/**
+ * How many calls this ACCOUNT tolerates in flight at once.
+ *  - `parallel` : no limit of ours (the default, and free — no lock is taken).
+ *  - `serial`   : one at a time, because a call leases something exclusive on
+ *                 the far side (a licence seat, a session, a cursor).
+ * Mirrors `providerConcurrencySchema` in the manifest; the column overrides it.
+ */
+export const externalAppConcurrencyModeEnum = pgEnum(
+  "external_app_concurrency_mode",
+  ["parallel", "serial"],
 );
 
 /**
@@ -212,6 +225,17 @@ export const externalAppConnections = pgTable(
     actionPolicies:
       jsonb("action_policies").$type<Record<string, ToolPolicyLevel>>(),
 
+    /**
+     * Override the provider's declared concurrency for THIS account.
+     * NULL = follow the manifest (`concurrency.mode`, default `parallel`).
+     *
+     * Two things need it. An MCP connection has no manifest at all, so this is
+     * the only way to tame a server that cannot take two calls at once. And the
+     * same provider is not the same everywhere — one customer's Xtent has five
+     * licence seats where another has one, and only the operator knows which.
+     */
+    concurrencyMode: externalAppConcurrencyModeEnum("concurrency_mode"),
+
     /** Last Nango/provider error surfaced to the user (set with `error`). */
     lastErrorMessage: text("last_error_message"),
 
@@ -244,6 +268,9 @@ export type ExternalAppConnection = typeof externalAppConnections.$inferSelect;
 export type NewExternalAppConnection =
   typeof externalAppConnections.$inferInsert;
 export type ExternalAppConnectionStatus = ExternalAppConnection["status"];
+export type ExternalAppConcurrencyMode = NonNullable<
+  ExternalAppConnection["concurrencyMode"]
+>;
 
 /**
  * Compiled tool surface of an MCP server, produced at connection time by
@@ -315,3 +342,72 @@ export type ExternalAppToolSnapshot =
   typeof externalAppToolSnapshots.$inferSelect;
 export type NewExternalAppToolSnapshot =
   typeof externalAppToolSnapshots.$inferInsert;
+
+/**
+ * Which connection ONE viewer wants ONE page to read through.
+ *
+ * A page names a provider and the server picks — the viewer's own connection
+ * first, the team's second (`resolvePageConnection`). That covers the common
+ * case and nothing else: with two accounts on the same app, the pick was a coin
+ * toss the viewer could not overrule, and the "pin one with connectionId"
+ * advice it used to print is addressed to the page's author, not to the person
+ * reading it.
+ *
+ * PER USER by construction — `user_id` is NOT NULL. Choosing a connection is a
+ * statement about whose data you want to see, so it must never leak onto a
+ * colleague's screen. The page author's `connectionId` pin still wins over it:
+ * a pin means "everybody uses this exact account", which is a different, and
+ * deliberate, decision.
+ *
+ * `page_id` NULL is the viewer's DEFAULT for that provider, used by any page
+ * with no row of its own. Nothing writes it yet; the shape is here so adding
+ * that endpoint later needs no migration.
+ */
+export const externalAppConnectionPreferences = pgTable(
+  "external_app_connection_preferences",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organization.id, { onDelete: "cascade" }),
+    teamId: uuid("team_id")
+      .notNull()
+      .references(() => team.id, { onDelete: "cascade" }),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => user.id, { onDelete: "cascade" }),
+    providerKey: varchar("provider_key", { length: 64 }).notNull(),
+    /** NULL = this viewer's default for the provider, on every page. */
+    pageId: uuid("page_id").references(() => pages.id, { onDelete: "cascade" }),
+    /** Cascades: a removed connection can never leave a preference pointing at
+     *  an account that is gone. */
+    connectionId: uuid("connection_id")
+      .notNull()
+      .references(() => externalAppConnections.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at", { mode: "date", withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", { mode: "date", withTimezone: true })
+      .defaultNow()
+      .$onUpdate(() => new Date())
+      .notNull(),
+  },
+  (t) => [
+    // Two partial indexes rather than one over a nullable column: Postgres
+    // NULLS DISTINCT (the default) would let a viewer accumulate any number of
+    // "default" rows, since every NULL `page_id` differs from every other. Same
+    // shape as `uniq_eats_curated` / `uniq_eats_custom` above.
+    uniqueIndex("uniq_eacp_page")
+      .on(t.userId, t.teamId, t.providerKey, t.pageId)
+      .where(sql`${t.pageId} IS NOT NULL`),
+    uniqueIndex("uniq_eacp_default")
+      .on(t.userId, t.teamId, t.providerKey)
+      .where(sql`${t.pageId} IS NULL`),
+    index("idx_eacp_lookup").on(t.userId, t.teamId, t.providerKey),
+  ],
+);
+
+export type ExternalAppConnectionPreference =
+  typeof externalAppConnectionPreferences.$inferSelect;
+export type NewExternalAppConnectionPreference =
+  typeof externalAppConnectionPreferences.$inferInsert;

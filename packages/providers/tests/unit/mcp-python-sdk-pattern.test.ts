@@ -58,7 +58,7 @@ describe("compileMcpModule — regex patterns", () => {
   test("imports _safe_pattern from the runtime", () => {
     const py = compileWithProp({ type: "string", pattern: "^x$" });
     expect(py).toContain(
-      "from ._runtime import FretikActionError, Operation, _call_read, _safe_pattern, run_plan",
+      "from ._runtime import FretikActionError, Operation, _call_read, _safe_pattern",
     );
   });
 

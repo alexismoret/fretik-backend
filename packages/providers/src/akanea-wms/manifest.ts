@@ -75,6 +75,14 @@ export const akaneaWmsManifest: ProviderManifest = {
   scopes: [],
   transport: { kind: "custom-handler" },
 
+  // Xtent leases a LICENCE SEAT per action: every call is GetToken … work …
+  // ReleaseToken (`client.ts`), and a saturated pool answers HTTP 200 with no
+  // token — the same shape as wrong credentials, so the failure reads as "check
+  // your password". A page loading six widgets over one connection asks for six
+  // seats at once; serialising is what makes that a queue instead of a pile of
+  // misleading auth errors.
+  concurrency: { mode: "serial", maxWaitMs: 8_000 },
+
   credentialsForm: {
     fields: [
       {

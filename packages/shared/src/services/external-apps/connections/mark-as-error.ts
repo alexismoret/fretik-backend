@@ -1,6 +1,7 @@
 import { and, eq, ne } from "drizzle-orm";
 import db from "../../../db";
 import { externalAppConnections } from "../../../db/schema";
+import { invalidateConnectionCaches } from "./epoch";
 
 /**
  * Flip a connection's `status` to `error` and persist the cause in
@@ -30,7 +31,7 @@ export const markConnectionAsError = async (params: {
   nangoProviderConfigKey: string;
   reason: string;
 }): Promise<void> => {
-  await db
+  const [row] = await db
     .update(externalAppConnections)
     .set({
       status: "error",
@@ -46,5 +47,12 @@ export const markConnectionAsError = async (params: {
         ),
         ne(externalAppConnections.status, "disabled"),
       ),
-    );
+    )
+    .returning();
+
+  // The connection stops resolving the moment it turns `error`, so a page
+  // holding a cached answer would keep showing data from an integration the
+  // settings screen is already telling the team to reconnect. No-op when the
+  // predicate matched nothing.
+  if (row !== undefined) await invalidateConnectionCaches({ connection: row });
 };

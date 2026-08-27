@@ -1281,7 +1281,10 @@ export const createManagePageTool = (config: { authoring: boolean }) =>
               };
             }
 
-            const gate = gatePageRender(render);
+            const gate = gatePageRender(
+              render,
+              page.definition.datasets.length,
+            );
             // A page that never mounted was not judged, so the attempt
             // consumes no round: this is a crash-fix loop, not a review.
             if (!render.mounted) {

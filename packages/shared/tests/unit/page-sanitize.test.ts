@@ -320,21 +320,24 @@ describe("ids the code asks for", () => {
   const withSource = (source: string, extra: Partial<PageDefinition> = {}) =>
     sanitizePageDefinition(definition({ code: { source }, ...extra }));
 
-  test("a requested dataset that is not declared is named", () => {
-    const { warnings } = withSource(
+  // These REFUSE the write rather than warning: the id is written in the
+  // source, the definition does not carry it, and the bridge has nothing to
+  // route the call to — certain, silent, and the page renders as if it worked.
+  test("a requested dataset that is not declared is named, and refuses", () => {
+    const { errors } = withSource(
       `<script setup>await fretik.data.query({ datasetIds: ['items', 'by_status'] })</script>`,
     );
-    expect(warnings).toHaveLength(2);
-    expect(warnings.join(" ")).toContain('dataset "items"');
-    expect(warnings.join(" ")).toContain('dataset "by_status"');
+    expect(errors).toHaveLength(2);
+    expect(errors.join(" ")).toContain('dataset "items"');
+    expect(errors.join(" ")).toContain('dataset "by_status"');
   });
 
   test("reading a result off the bridge counts as asking for it", () => {
-    const { warnings } = withSource(
+    const { errors } = withSource(
       `<script setup>const rows = res.datasets.total_budget?.rows</script>`,
     );
-    expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toContain('dataset "total_budget"');
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain('dataset "total_budget"');
   });
 
   test("a declared dataset draws nothing", () => {
@@ -349,12 +352,12 @@ describe("ids the code asks for", () => {
     expect(warnings).toEqual([]);
   });
 
-  test("an operation the page never declared is named too", () => {
-    const { warnings } = withSource(
+  test("an operation the page never declared refuses too", () => {
+    const { errors } = withSource(
       `<script setup>await fretik.ops.run('archive_item', { variables: {} })</script>`,
     );
-    expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toContain('operation "archive_item"');
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain('operation "archive_item"');
   });
 
   // Chart.js takes a `datasets` key of its own, and its children are object
@@ -383,8 +386,11 @@ describe("ids the code asks for", () => {
  * working pages is worse than no channel at all.
  */
 describe("ids the code asks for — what is NOT a request", () => {
-  const warnFor = (source: string) =>
-    sanitizePageDefinition(definition({ code: { source } })).warnings;
+  // Both channels: these must not warn AND must not refuse.
+  const warnFor = (source: string) => {
+    const result = sanitizePageDefinition(definition({ code: { source } }));
+    return [...result.errors, ...result.warnings];
+  };
 
   test("a spread is not a property access", () => {
     // `{ ...datasets.value }` puts a dot immediately before `datasets`; the
@@ -425,7 +431,7 @@ describe("variable keys the code sends", () => {
         variables: keys.map((key) => ({ key, type: "string" })),
         code: { source },
       }),
-    ).warnings.filter((warning) => warning.startsWith("the code sends"));
+    ).errors.filter((message) => message.startsWith("the code sends"));
 
   test("a key that is not declared is named, with the declared ones", () => {
     const warnings = warnFor(
@@ -642,5 +648,56 @@ describe("a colour no component knows", () => {
          const dot = \`var(--color-\${c.dotColor}-500)\`</script>`,
       ),
     ).toEqual([]);
+  });
+});
+
+/**
+ * The ONE repair this pass makes. Measured: a page over Akanea WMS stored
+ * `akanea_wms` — the Python module's name — where the connection row says
+ * `akanea-wms`, so it prompted every viewer to connect an app the team already
+ * had, forever, and nothing failed loudly enough to notice.
+ */
+describe("providerKey is repaired, and the repair is reported", () => {
+  const external = (providerKey: string): PageDataset => ({
+    id: "stock",
+    kind: "external",
+    providerKey,
+    operation: "list_items",
+  });
+
+  test("the module's spelling is rewritten in the STORED definition", () => {
+    const { definition: out, warnings } = sanitizePageDefinition(
+      definition({ datasets: [external("acme_mail")] }),
+    );
+    expect(out.datasets[0]?.providerKey).toBe("acme-mail");
+    expect(warnings.some((w) => w.includes("providerKey rewritten"))).toBe(
+      true,
+    );
+  });
+
+  test("an app operation is repaired on the same terms", () => {
+    const { definition: out } = sanitizePageDefinition(
+      definition({
+        operations: [
+          {
+            kind: "app",
+            id: "send",
+            providerKey: "acmeMail",
+            action: "send_message",
+          },
+        ],
+      }),
+    );
+    const operation = out.operations[0];
+    expect(operation?.kind === "app" && operation.providerKey).toBe(
+      "acme-mail",
+    );
+  });
+
+  test("a key already in the registry's spelling is left alone, and silent", () => {
+    const input = definition({ datasets: [external("acme-mail")] });
+    const { definition: out, warnings } = sanitizePageDefinition(input);
+    expect(out).toBe(input);
+    expect(warnings.some((w) => w.includes("providerKey"))).toBe(false);
   });
 });

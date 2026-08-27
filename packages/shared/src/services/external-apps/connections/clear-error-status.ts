@@ -1,6 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import db from "../../../db";
 import { externalAppConnections } from "../../../db/schema";
+import { invalidateConnectionCaches } from "./epoch";
 
 /**
  * Flip a connection's `status` from `error` back to `active` and clear
@@ -23,7 +24,7 @@ export const clearConnectionErrorStatus = async (params: {
   nangoConnectionId: string;
   nangoProviderConfigKey: string;
 }): Promise<void> => {
-  await db
+  const [row] = await db
     .update(externalAppConnections)
     .set({
       status: "active",
@@ -39,5 +40,10 @@ export const clearConnectionErrorStatus = async (params: {
         ),
         eq(externalAppConnections.status, "error"),
       ),
-    );
+    )
+    .returning();
+
+  // A connection that just came back to life must reach the pages that were
+  // showing a connect prompt for it, not wait out their TTL first.
+  if (row !== undefined) await invalidateConnectionCaches({ connection: row });
 };

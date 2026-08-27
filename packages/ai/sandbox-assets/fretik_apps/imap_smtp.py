@@ -4,13 +4,13 @@
 
 All calls go through fretik-backend, which dispatches them to the
 provider (Nango Proxy or a custom handler). Write actions return an
-Operation when called as `.op(...)` (use with run_plan(...));
-when called directly they are sugar for run_plan([op]).
+Operation via `.op(...)`; submit them with run_plan([...]).
+Calling a write action directly raises — it never executes.
 """
 
 from typing import Any, Literal, Optional
 from pydantic import BaseModel
-from ._runtime import FretikActionError, Operation, _call_read, run_plan
+from ._runtime import FretikActionError, Operation, _call_read
 
 
 # ── Types ─────────────────────────────────────────────────────────
@@ -324,27 +324,19 @@ def send_email(
 ) -> dict[str, Any]:
     """Send a new email immediately (with optional attachments)
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `send_email.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     body_html: HTML body
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _send_email_op(
-        to=to,
-        subject=subject,
-        body_html=body_html,
-        cc=cc,
-        bcc=bcc,
-        attachments=attachments,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "send_email is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([imap_smtp.send_email.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "send_email failed"))
-    return result[0].get("data", {})
 
 send_email.op = _send_email_op
 
@@ -370,22 +362,17 @@ def reply_email(
 ) -> dict[str, Any]:
     """Reply to the sender of a message (preserves In-Reply-To threading)
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `reply_email.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _reply_email_op(
-        message_id=message_id,
-        body_html=body_html,
-        attachments=attachments,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "reply_email is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([imap_smtp.reply_email.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "reply_email failed"))
-    return result[0].get("data", {})
 
 reply_email.op = _reply_email_op
 
@@ -413,23 +400,17 @@ def forward_email(
 ) -> dict[str, Any]:
     """Forward a message to new recipients (with optional comment)
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `forward_email.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _forward_email_op(
-        message_id=message_id,
-        to=to,
-        comment=comment,
-        attachments=attachments,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "forward_email is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([imap_smtp.forward_email.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "forward_email failed"))
-    return result[0].get("data", {})
 
 forward_email.op = _forward_email_op
 
@@ -451,20 +432,17 @@ def mark_read(
 ) -> dict[str, Any]:
     """Mark a message as read (sets the \\Seen flag)
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `mark_read.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _mark_read_op(
-        message_id=message_id,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "mark_read is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([imap_smtp.mark_read.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "mark_read failed"))
-    return result[0].get("data", {})
 
 mark_read.op = _mark_read_op
 
@@ -486,20 +464,17 @@ def mark_unread(
 ) -> dict[str, Any]:
     """Mark a message as unread (clears the \\Seen flag)
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `mark_unread.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _mark_unread_op(
-        message_id=message_id,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "mark_unread is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([imap_smtp.mark_unread.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "mark_unread failed"))
-    return result[0].get("data", {})
 
 mark_unread.op = _mark_unread_op
 
@@ -521,20 +496,17 @@ def delete_message(
 ) -> dict[str, Any]:
     """Move a message to Trash (or expunge if no Trash folder exists)
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `delete_message.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _delete_message_op(
-        message_id=message_id,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "delete_message is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([imap_smtp.delete_message.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "delete_message failed"))
-    return result[0].get("data", {})
 
 delete_message.op = _delete_message_op
 
@@ -558,23 +530,19 @@ def move_message(
 ) -> dict[str, Any]:
     """Move a message to another folder
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `move_message.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     destination_folder_id: Destination folder ID from list_folders (or a folder path)
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _move_message_op(
-        message_id=message_id,
-        destination_folder_id=destination_folder_id,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "move_message is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([imap_smtp.move_message.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "move_message failed"))
-    return result[0].get("data", {})
 
 move_message.op = _move_message_op
 
@@ -596,22 +564,19 @@ def delete_messages(
 ) -> dict[str, Any]:
     """Delete multiple messages in a single IMAP batch (move to Trash, or expunge if no Trash exists)
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `delete_messages.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     message_ids: Opaque message IDs from list_messages / search_messages. Mixed-folder IDs are grouped server-side — one IMAP command per source folder.
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _delete_messages_op(
-        message_ids=message_ids,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "delete_messages is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([imap_smtp.delete_messages.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "delete_messages failed"))
-    return result[0].get("data", {})
 
 delete_messages.op = _delete_messages_op
 
@@ -635,23 +600,19 @@ def move_messages(
 ) -> dict[str, Any]:
     """Move multiple messages to another folder in a single IMAP batch
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `move_messages.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     destination_folder_id: Destination folder ID from list_folders
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _move_messages_op(
-        message_ids=message_ids,
-        destination_folder_id=destination_folder_id,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "move_messages is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([imap_smtp.move_messages.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "move_messages failed"))
-    return result[0].get("data", {})
 
 move_messages.op = _move_messages_op
 
@@ -673,20 +634,17 @@ def mark_messages_read(
 ) -> dict[str, Any]:
     """Mark multiple messages as read (single IMAP STORE per source folder)
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `mark_messages_read.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _mark_messages_read_op(
-        message_ids=message_ids,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "mark_messages_read is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([imap_smtp.mark_messages_read.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "mark_messages_read failed"))
-    return result[0].get("data", {})
 
 mark_messages_read.op = _mark_messages_read_op
 
@@ -708,20 +666,17 @@ def mark_messages_unread(
 ) -> dict[str, Any]:
     """Mark multiple messages as unread (single IMAP STORE per source folder)
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `mark_messages_unread.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _mark_messages_unread_op(
-        message_ids=message_ids,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "mark_messages_unread is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([imap_smtp.mark_messages_unread.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "mark_messages_unread failed"))
-    return result[0].get("data", {})
 
 mark_messages_unread.op = _mark_messages_unread_op
 
@@ -745,22 +700,18 @@ def create_folder(
 ) -> dict[str, Any]:
     """Create a new mail folder
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `create_folder.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     display_name: Folder name to create
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _create_folder_op(
-        display_name=display_name,
-        parent_folder_id=parent_folder_id,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "create_folder is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([imap_smtp.create_folder.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "create_folder failed"))
-    return result[0].get("data", {})
 
 create_folder.op = _create_folder_op

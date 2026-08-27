@@ -28,6 +28,7 @@ export const listActiveMcpConnections = async (): Promise<
       id: true,
       providerKey: true,
       displayName: true,
+      concurrencyMode: true,
       mcpAuthKind: true,
       mcpServerUrl: true,
       mcpApiKeyHeader: true,

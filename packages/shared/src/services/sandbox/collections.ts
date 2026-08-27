@@ -102,22 +102,36 @@ export const dispatchCollections = async (
         "SCHEMA_LOCKED_IN_WORKFLOW: a run never changes the team's collection schema. Do schema migrations from chat.",
     };
   }
-  // In chat, a team may have blocked schema edits via the config-tool policy.
+  // In chat, the config-tool policy governs schema edits — blocked outright, or
+  // approval-gated for the destructive actions. Resolve with the action this op
+  // carries, so this SDK cannot do what the domain tool would have to ask for.
   if (op.startsWith("schema.")) {
     const schemaTool =
       op === "schema.add_field" || op === "schema.change_field"
         ? "manageField"
         : "manageCollection";
-    if (
-      resolveBuiltinToolPolicy({
-        toolName: schemaTool,
-        teamPolicies,
-        autonomy,
-      }) === "blocked"
-    ) {
+    const schemaAction =
+      op === "schema.delete_collection"
+        ? "delete"
+        : op === "schema.change_field" && typeof rawArgs.action === "string"
+          ? rawArgs.action
+          : undefined;
+    const level = resolveBuiltinToolPolicy({
+      toolName: schemaTool,
+      ...(schemaAction === undefined ? {} : { action: schemaAction }),
+      teamPolicies,
+      autonomy,
+    });
+    if (level === "blocked") {
       return {
         status: "error",
         message: `SCHEMA_DISABLED: the team disabled ${schemaTool}. ${TOOL_PERMISSIONS_REMEDIATION}`,
+      };
+    }
+    if (level === "approval") {
+      return {
+        status: "error",
+        message: `SCHEMA_CHANGE_NEEDS_APPROVAL: this destroys stored data and needs the user's approval, which this SDK cannot open. Call the ${schemaTool} tool instead.`,
       };
     }
   }

@@ -32,6 +32,12 @@ export interface PageDataSourceContext {
    * queries ignore it, their scope is the team.
    */
   userId: string | null;
+  /**
+   * The page being viewed, when there is one. Only a source that resolves a
+   * per-viewer choice needs it (which connected account this page reads
+   * through); everything else ignores it, as it ignores `userId`.
+   */
+  pageId?: string;
   /** Declared variables, already coerced. The only viewer input that gets in. */
   state: Record<string, PageValue>;
   /**
@@ -60,4 +66,22 @@ export interface PageDataSource {
     dataset: PageDataset,
     context: PageDataSourceContext,
   ) => Promise<PageDatasetResult>;
+  /**
+   * A key two datasets share when they MUST NOT run at the same time, or
+   * `undefined` when they may — which is the answer for every source but one.
+   *
+   * It exists because a page's fan-out and a third party's tolerance are two
+   * different facts, and only the source knows the second: Akanea WMS leases a
+   * licence seat per call, so five widgets over one account is five seats
+   * requested at once and the ones past the pool come back looking like bad
+   * credentials. `withConnectionSlot` already makes that CORRECT — this makes
+   * it cheap, by never creating the contention in the first place. Same-key
+   * datasets run one after another; different keys, and everything without one,
+   * still run together.
+   *
+   * Deliberately synchronous and derived from the DECLARATION alone: this runs
+   * before any dataset does, and resolving each one's connection first would
+   * cost a query per widget to schedule work that has not started.
+   */
+  serialKey?: (dataset: PageDataset) => string | undefined;
 }

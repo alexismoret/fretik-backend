@@ -113,8 +113,8 @@ const emitDocstring = (action: CodegenAction, indentSpaces = 4): string => {
   const lines: string[] = [`"""${escapeForPyDocstring(action.summary)}`];
   if (action.kind === "write") {
     lines.push("");
-    lines.push("(WRITE — requires user approval. Raises ApprovalPending");
-    lines.push("until the user grants the plan.)");
+    lines.push(`(WRITE — build it with \`${action.name}.op(...)\` and submit`);
+    lines.push("it with `run_plan([...])`. Calling this directly raises.)");
   }
   for (const [field, spec] of sortedParamEntries(action.params)) {
     if (spec.description === undefined) continue;
@@ -217,7 +217,12 @@ const emitWriteFunctions = (
   ].join("\n");
   const opFn = [opSig, opDoc, opBody].join("\n");
 
-  // Direct call — sugar for run_plan([op(...)])
+  // Direct call — refuses. A write action that both BUILDS and SUBMITS is a
+  // trap: `ops = [act(a), act(b)]` submits a one-op plan on the first element,
+  // raises ApprovalPending there, and the rest of the cell never runs — the
+  // second write is lost silently and the approval card shows one operation.
+  // One spelling only: `.op(...)` builds, `run_plan([...])` submits.
+  const moduleName = pyModuleName(providerKey);
   const sig = emitFunctionSignature(
     action.name,
     action.params,
@@ -225,14 +230,11 @@ const emitWriteFunctions = (
   );
   const doc = emitDocstring(action);
   const body = [
-    `    op = ${opFnName}(`,
-    ...sortedParamEntries(action.params).map(([k]) => `        ${k}=${k},`),
-    `        connection_id=connection_id,`,
+    `    raise FretikActionError(`,
+    `        "${action.name} is a WRITE action and does not execute on its own. "`,
+    `        "Build it with .op(...) and submit it with run_plan([...]): "`,
+    `        "run_plan([${moduleName}.${action.name}.op(...)])"`,
     `    )`,
-    `    result = run_plan([op])`,
-    `    if not result or not result[0].get("ok"):`,
-    `        raise FretikActionError(result[0].get("error", "${action.name} failed"))`,
-    `    return result[0].get("data", {})`,
   ].join("\n");
 
   return [opFn, "", sig, doc, body, "", `${action.name}.op = ${opFnName}`].join(
@@ -258,15 +260,13 @@ export const emitProviderModule = (manifest: CodegenProvider): string => {
   parts.push(
     `provider (Nango Proxy or a custom handler). Write actions return an`,
   );
-  parts.push(`Operation when called as \`.op(...)\` (use with run_plan(...));`);
-  parts.push(`when called directly they are sugar for run_plan([op]).`);
+  parts.push(`Operation via \`.op(...)\`; submit them with run_plan([...]).`);
+  parts.push(`Calling a write action directly raises — it never executes.`);
   parts.push(`"""`);
   parts.push("");
   parts.push("from typing import Any, Literal, Optional");
   parts.push("from pydantic import BaseModel");
-  parts.push(
-    "from ._runtime import FretikActionError, Operation, _call_read, run_plan",
-  );
+  parts.push("from ._runtime import FretikActionError, Operation, _call_read");
   parts.push("");
   parts.push("");
 

@@ -85,10 +85,10 @@ Pass the chosen connection via the implicit `connection_id="<uuid>"` arg, accept
 every action:
 
 ```python
-exchange.send_email(
+run_plan([exchange.send_email.op(
     connection_id="3f1a…-ops",
     to=["client@example.com"],
     subject="…",
     body_html="…",
-)
+)])
 ```

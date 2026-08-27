@@ -13,6 +13,7 @@ import { derivePageDescription } from "./derive-description";
 import { ensurePageDatasetIndexes } from "./ensure-dataset-indexes";
 import { sanitizePageDefinition } from "./sanitize";
 import { serializePage } from "./serialize";
+import { validatePageDefinitionConnections } from "./validate-connections";
 import { refreshPageVectors } from "./vector-refresh";
 import type {
   PageVersionActor,
@@ -86,6 +87,15 @@ export const updatePage = async (params: {
   let definition = sanitized?.definition;
   const autofixes: string[] = [];
   if (definition) {
+    // Refuses alongside the compiler — see `createPage`.
+    const connections = await validatePageDefinitionConnections({
+      definition,
+      teamId: params.teamId,
+    });
+    const refusals = [...(sanitized?.errors ?? []), ...connections.errors];
+    if (refusals.length > 0) {
+      return throwHttpError(400, badRequest(refusals.join(" ")));
+    }
     const compiled = await ensurePageCompiled(definition, {
       previous: existing.definition.code.compiled,
     });

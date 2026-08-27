@@ -20,18 +20,18 @@ You can interact with the user's Email (IMAP/SMTP) account via the `fretik_apps.
 
 ## Write actions (require user approval — build with `.op()`)
 
-- `imap_smtp.send_email(to, subject, body_html, cc=None, bcc=None, attachments=None)` — Send a new email immediately (with optional attachments)
-- `imap_smtp.reply_email(message_id, body_html, attachments=None)` — Reply to the sender of a message (preserves In-Reply-To threading)
-- `imap_smtp.forward_email(message_id, to, comment=None, attachments=None)` — Forward a message to new recipients (with optional comment)
-- `imap_smtp.mark_read(message_id)` — Mark a message as read (sets the \Seen flag)
-- `imap_smtp.mark_unread(message_id)` — Mark a message as unread (clears the \Seen flag)
-- `imap_smtp.delete_message(message_id)` — Move a message to Trash (or expunge if no Trash folder exists)
-- `imap_smtp.move_message(message_id, destination_folder_id)` — Move a message to another folder
-- `imap_smtp.delete_messages(message_ids)` — Delete multiple messages in a single IMAP batch (move to Trash, or expunge if no Trash exists)
-- `imap_smtp.move_messages(message_ids, destination_folder_id)` — Move multiple messages to another folder in a single IMAP batch
-- `imap_smtp.mark_messages_read(message_ids)` — Mark multiple messages as read (single IMAP STORE per source folder)
-- `imap_smtp.mark_messages_unread(message_ids)` — Mark multiple messages as unread (single IMAP STORE per source folder)
-- `imap_smtp.create_folder(display_name, parent_folder_id=None)` — Create a new mail folder
+- `imap_smtp.send_email.op(to, subject, body_html, cc=None, bcc=None, attachments=None)` — Send a new email immediately (with optional attachments)
+- `imap_smtp.reply_email.op(message_id, body_html, attachments=None)` — Reply to the sender of a message (preserves In-Reply-To threading)
+- `imap_smtp.forward_email.op(message_id, to, comment=None, attachments=None)` — Forward a message to new recipients (with optional comment)
+- `imap_smtp.mark_read.op(message_id)` — Mark a message as read (sets the \Seen flag)
+- `imap_smtp.mark_unread.op(message_id)` — Mark a message as unread (clears the \Seen flag)
+- `imap_smtp.delete_message.op(message_id)` — Move a message to Trash (or expunge if no Trash folder exists)
+- `imap_smtp.move_message.op(message_id, destination_folder_id)` — Move a message to another folder
+- `imap_smtp.delete_messages.op(message_ids)` — Delete multiple messages in a single IMAP batch (move to Trash, or expunge if no Trash exists)
+- `imap_smtp.move_messages.op(message_ids, destination_folder_id)` — Move multiple messages to another folder in a single IMAP batch
+- `imap_smtp.mark_messages_read.op(message_ids)` — Mark multiple messages as read (single IMAP STORE per source folder)
+- `imap_smtp.mark_messages_unread.op(message_ids)` — Mark multiple messages as unread (single IMAP STORE per source folder)
+- `imap_smtp.create_folder.op(display_name, parent_folder_id=None)` — Create a new mail folder
 
 ## Data models
 
@@ -103,8 +103,8 @@ import base64
 with open("/workspace/outputs/report.pdf", "rb") as f:
     content = base64.b64encode(f.read()).decode()
 
-from fretik_apps import imap_smtp
-imap_smtp.send_email(
+from fretik_apps import imap_smtp, run_plan
+run_plan([imap_smtp.send_email.op(
     to=["client@example.com"],
     subject="Monthly report",
     body_html="<p>Please find the report attached.</p>",
@@ -113,7 +113,7 @@ imap_smtp.send_email(
         "content_type": "application/pdf",
         "content_base64": content,
     }],
-)
+)])
 ```
 
 ### Bulk writes — prefer `*_messages` over `run_plan([*_message] * N)`
@@ -176,12 +176,12 @@ via the implicit `connection_id="<uuid>"` arg, accepted by every action in
 the SDK:
 
 ```python
-imap_smtp.send_email(
+run_plan([imap_smtp.send_email.op(
     connection_id="3f1a…-work",
     to=["client@example.com"],
     subject="…",
     body_html="…",
-)
+)])
 ```
 
 If you call a write without `connection_id` and several mailboxes are
@@ -239,19 +239,22 @@ applies: structured if helpful, clear, professional.
 
 ## Write actions & approval
 
-Write actions NEVER execute on their own. Build them with `.op()` and
-submit them together via `run_plan([...])` — the user approves the whole
-plan ONCE.
+Write actions NEVER execute on their own: `.op(...)` builds an operation,
+`run_plan([...])` submits them, and calling a write action directly raises.
+The user approves the whole plan at once.
 
-- One write: `imap_smtp.send_email(to=["name@example.com"], subject="…", body_html="…")`
+- One write: `run_plan([ imap_smtp.send_email.op(to=["name@example.com"], subject="…", body_html="…") ])`
 - Many writes: `run_plan([ imap_smtp.<action>.op(...), ... ])`
 
-When you call `run_plan` (or a direct write), it raises
-`fretik_apps.ApprovalPending`. This is EXPECTED — not an error. STOP.
-The user reviews the plan in the UI; you will be prompted to continue.
-When prompted, RE-RUN THE EXACT SAME CODE — the approved plan then
-executes; reads re-run harmlessly. If the user rejects, you receive
-their feedback as a message — adapt and write new code.
+`run_plan` raises `fretik_apps.ApprovalPending`. This is EXPECTED — not an
+error. Stop there. Never wrap it in `try/except` (that hides the approval
+card), and never `print` the ops as a preview instead of calling it — no
+call, no plan.
+
+Once the user decides, the outcome replaces that same tool result. It covers
+only the operations it lists: if any code sat AFTER the `run_plan` call,
+re-run the identical cell — approved plans replay from cache and never execute
+twice. On rejection you get their feedback — adapt and write new code.
 
 ### STRONG RULE — read→write flows
 
@@ -268,10 +271,11 @@ change the plan's lookupHash and force a needless re-approval.
 
 ### Plan rules
 
+- Every write of the turn goes in ONE `run_plan`. A second call in the
+  same cell is lost: the first raises and the rest of the cell never runs.
 - Operations in one plan must be INDEPENDENT (no op uses another op's
   result). Dependent steps (create_folder, then move into it) → use
   TWO turns.
-- For several writes, ALWAYS use a single `run_plan` — never chain
-  bare writes.
+- A plan may mix actions from several apps — one approval for all of them.
 - Partial failures come back per-op; re-submit a `run_plan` with only
   the failed ops.

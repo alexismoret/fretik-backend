@@ -99,6 +99,7 @@ const toDto = (row: ExternalAppConnection): ExternalAppConnectionResponse => ({
   description: row.description,
   options: row.options,
   actionPolicies: row.actionPolicies ?? null,
+  concurrencyMode: row.concurrencyMode,
   // Filled in by `toConnectionDto` for MCP connections (snapshot-backed);
   // manifest providers keep `null` — their tools come from the catalogue.
   actions: null,
@@ -563,7 +564,7 @@ connectionsRoutes.openapi(updateRoute, async (c) => {
   // Editing a team connection's per-action policies requires admin; the service
   // enforces it (personal connections stay owner-only via caller visibility).
   const admin =
-    patch.actionPolicies !== undefined
+    patch.actionPolicies !== undefined || patch.concurrencyMode !== undefined
       ? await isOrgAdmin(team.organizationId, user.id)
       : undefined;
   const row = await updateConnection({
@@ -574,6 +575,7 @@ connectionsRoutes.openapi(updateRoute, async (c) => {
     status: patch.status,
     options: patch.options,
     actionPolicies: patch.actionPolicies,
+    concurrencyMode: patch.concurrencyMode,
     isOrgAdmin: admin,
   });
   return c.json(await toConnectionDto(row), 200);

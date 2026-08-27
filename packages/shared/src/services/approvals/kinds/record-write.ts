@@ -1,3 +1,4 @@
+import { APPROVAL_GRANTED_NOTE } from "../../ai/approval-pending";
 import { cancelBulkOperation } from "../../bulk-operations/cancel";
 import { findOperationForApproval } from "../../bulk-operations/find";
 import { startBulkOperation } from "../../bulk-operations/start";
@@ -69,6 +70,7 @@ export const recordWriteHandler: ApprovalKindHandler = {
       approvalId: approval.id,
       createdRecords: approval.result ?? [],
       grantedAt: iso(approval.decisionAt),
+      note: APPROVAL_GRANTED_NOTE,
     };
   },
 };

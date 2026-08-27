@@ -4,13 +4,13 @@
 
 All calls go through fretik-backend, which dispatches them to the
 provider (Nango Proxy or a custom handler). Write actions return an
-Operation when called as `.op(...)` (use with run_plan(...));
-when called directly they are sugar for run_plan([op]).
+Operation via `.op(...)`; submit them with run_plan([...]).
+Calling a write action directly raises — it never executes.
 """
 
 from typing import Any, Literal, Optional
 from pydantic import BaseModel
-from ._runtime import FretikActionError, Operation, _call_read, run_plan
+from ._runtime import FretikActionError, Operation, _call_read
 
 
 # ── Types ─────────────────────────────────────────────────────────
@@ -470,22 +470,19 @@ def upsert_receptions(
 ) -> dict[str, Any]:
     """Create or update inbound receptions
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `upsert_receptions.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     receptions: Receptions to send. Each needs `client_code_id`, `movement_code_id` and at least one line (`line_number`, `item_code`, `expected_sale_units`). Set `id` to update an existing one. Only documented fields are transmitted — see the reception payload in the guidance below.
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _upsert_receptions_op(
-        receptions=receptions,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "upsert_receptions is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([akanea_wms.upsert_receptions.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "upsert_receptions failed"))
-    return result[0].get("data", {})
 
 upsert_receptions.op = _upsert_receptions_op
 
@@ -507,22 +504,19 @@ def upsert_preparations(
 ) -> dict[str, Any]:
     """Create or update outbound preparation orders
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `upsert_preparations.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     preparations: Preparations to send. Each needs `client_code_id`, `consignee_code_id` and at least one line (`line_number`, `item_code`, `ordered_sale_units`). Set `id` to update an existing one. Only documented fields are transmitted — see the preparation payload in the guidance below.
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _upsert_preparations_op(
-        preparations=preparations,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "upsert_preparations is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([akanea_wms.upsert_preparations.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "upsert_preparations failed"))
-    return result[0].get("data", {})
 
 upsert_preparations.op = _upsert_preparations_op
 
@@ -544,22 +538,19 @@ def upsert_items(
 ) -> dict[str, Any]:
     """Create or update item master records
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `upsert_items.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     items: Items to send. Each needs `client_code_id`, `item_code`, `description` and at least one `priority_racks` entry (`warehouse_id`, `movement_type`). Only documented fields are transmitted — see the item payload in the guidance below.
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _upsert_items_op(
-        items=items,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "upsert_items is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([akanea_wms.upsert_items.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "upsert_items failed"))
-    return result[0].get("data", {})
 
 upsert_items.op = _upsert_items_op
 
@@ -581,22 +572,19 @@ def upsert_parties(
 ) -> dict[str, Any]:
     """Create or update third parties
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `upsert_parties.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     parties: Parties to send. Each needs `id` (the party code); `party_category` picks F supplier, D consignee, S warehouse customer, T carrier. Only documented fields are transmitted — see the party payload in the guidance below.
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _upsert_parties_op(
-        parties=parties,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "upsert_parties is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([akanea_wms.upsert_parties.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "upsert_parties failed"))
-    return result[0].get("data", {})
 
 upsert_parties.op = _upsert_parties_op
 
@@ -618,21 +606,18 @@ def change_stock(
 ) -> dict[str, Any]:
     """Correct stock objects (status, location, batch, dates)
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `change_stock.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     stock_changes: Stock objects to modify, identified by `client_code_id` plus `pallet_number` and/or `item_code`. The reception holding the stock must already be validated. Only documented fields are transmitted — see the stock payload in the guidance below.
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _change_stock_op(
-        stock_changes=stock_changes,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "change_stock is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([akanea_wms.change_stock.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "change_stock failed"))
-    return result[0].get("data", {})
 
 change_stock.op = _change_stock_op

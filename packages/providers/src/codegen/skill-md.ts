@@ -60,7 +60,7 @@ const buildOneWriteExample = (manifest: CodegenProvider): string => {
   const writes = manifest.actions.filter((a) => a.kind === "write");
   const action = writes[0] ?? manifest.actions[0];
   if (action === undefined) {
-    return `\`${moduleName}.<action>(...)\``;
+    return `\`run_plan([ ${moduleName}.<action>.op(...) ])\``;
   }
   const requiredEntries = sortedParamEntries(action.params).filter(
     ([, spec]) => !isOptional(spec),
@@ -72,7 +72,7 @@ const buildOneWriteExample = (manifest: CodegenProvider): string => {
     .map(([name, spec]) => `${name}=${examplePlaceholder(spec)}`)
     .join(", ");
   const ellipsis = requiredEntries.length > shown.length ? ", …" : "";
-  return `\`${moduleName}.${action.name}(${args}${ellipsis})\``;
+  return `\`run_plan([ ${moduleName}.${action.name}.op(${args}${ellipsis}) ])\``;
 };
 
 const buildSkillBoilerplate = (manifest: CodegenProvider): string => {
@@ -80,19 +80,22 @@ const buildSkillBoilerplate = (manifest: CodegenProvider): string => {
   const moduleName = pyModuleName(manifest.key);
   return `## Write actions & approval
 
-Write actions NEVER execute on their own. Build them with \`.op()\` and
-submit them together via \`run_plan([...])\` — the user approves the whole
-plan ONCE.
+Write actions NEVER execute on their own: \`.op(...)\` builds an operation,
+\`run_plan([...])\` submits them, and calling a write action directly raises.
+The user approves the whole plan at once.
 
 - One write:   ${oneWriteExample}
 - Many writes: \`run_plan([ ${moduleName}.<action>.op(...), ... ])\`
 
-When you call \`run_plan\` (or a direct write), it raises
-\`fretik_apps.ApprovalPending\`. This is EXPECTED — not an error. STOP.
-The user reviews the plan in the UI; you will be prompted to continue.
-When prompted, RE-RUN THE EXACT SAME CODE — the approved plan then
-executes; reads re-run harmlessly. If the user rejects, you receive
-their feedback as a message — adapt and write new code.
+\`run_plan\` raises \`fretik_apps.ApprovalPending\`. This is EXPECTED — not an
+error. Stop there. Never wrap it in \`try/except\` (that hides the approval
+card), and never \`print\` the ops as a preview instead of calling it — no
+call, no plan.
+
+Once the user decides, the outcome replaces that same tool result. It covers
+only the operations it lists: if any code sat AFTER the \`run_plan\` call,
+re-run the identical cell — approved plans replay from cache and never execute
+twice. On rejection you get their feedback — adapt and write new code.
 
 ### STRONG RULE — read→write flows
 When a plan depends on data you just read, you MUST inline the read
@@ -107,11 +110,12 @@ Why: on re-run after approval, a volatile read (inbox changed) would
 change the plan's lookupHash and force a needless re-approval.
 
 ### Plan rules
+- Every write of the turn goes in ONE \`run_plan\`. A second call in the
+  same cell is lost: the first raises and the rest of the cell never runs.
 - Operations in one plan must be INDEPENDENT (no op uses another op's
   result). Dependent steps (create_folder, then move into it) → use
   TWO turns.
-- For several writes, ALWAYS use a single \`run_plan\` — never chain
-  bare writes.
+- A plan may mix actions from several apps — one approval for all of them.
 - Partial failures come back per-op; re-submit a \`run_plan\` with only
   the failed ops.
 `;
@@ -134,7 +138,9 @@ const emitSkillReference = (manifest: CodegenProvider): string => {
     const args = entries
       .map(([k, s]) => (isOptional(s) ? `${k}=${renderDefault(s.default)}` : k))
       .join(", ");
-    return `${moduleName}.${a.name}(${args})`;
+    // Writes are listed in the form that actually works — the bare call raises.
+    const suffix = a.kind === "write" ? ".op" : "";
+    return `${moduleName}.${a.name}${suffix}(${args})`;
   };
 
   const lines: string[] = [];

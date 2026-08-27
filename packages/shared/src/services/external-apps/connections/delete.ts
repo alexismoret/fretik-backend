@@ -3,6 +3,7 @@ import db from "../../../db";
 import { externalAppConnections } from "../../../db/schema";
 import { getNangoClient } from "../../../lib/external-apps/nango-client";
 import { emitDomainEvent } from "../../domain-events/emit";
+import { invalidateConnectionCaches } from "./epoch";
 import { getConnectionForCaller } from "./get-by-id";
 
 /**
@@ -60,4 +61,8 @@ export const deleteConnection = async (params: {
       .delete(externalAppConnections)
       .where(eq(externalAppConnections.id, params.id));
   });
+
+  // The row is gone, but its cached answers are not: `page:ext:v1:<id>:…`
+  // would keep serving a removed account's data for the rest of its TTL.
+  await invalidateConnectionCaches({ connection: conn, purgeAnswers: true });
 };

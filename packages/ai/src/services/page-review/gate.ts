@@ -27,6 +27,14 @@ const MAX_BLOCKING = 12;
  * — the header and a blank region. Two words of "No results" clears it.
  */
 const MIN_EMPTY_STATE_CHARS = 25;
+/**
+ * How close the emptied render may come to the populated one before it stops
+ * being an empty state. Deliberately high: a real empty state keeps the
+ * chrome — header, tabs, filters, the message itself — so 0.7 would fail an
+ * honest page. What it catches is the page that changes almost nothing, which
+ * is what a fallback to invented rows looks like from the outside.
+ */
+const EMPTY_STATE_SAME_RATIO = 0.9;
 
 /**
  * One element hanging past the edge can be a transform or a measurement race;
@@ -108,7 +116,12 @@ const inspectOverlaySnapshot = (interaction: {
   return defects;
 };
 
-export const gatePageRender = (render: PageRenderResult): PageGateResult => {
+export const gatePageRender = (
+  render: PageRenderResult,
+  /** How many datasets the page declares — the `/empty` capture only means
+   *  something for a page that has data to lose. */
+  declaredDatasets = 0,
+): PageGateResult => {
   const blocking: string[] = [];
   const observations: string[] = [];
 
@@ -202,6 +215,24 @@ export const gatePageRender = (render: PageRenderResult): PageGateResult => {
   if (emptyState && emptyState.textLength < MIN_EMPTY_STATE_CHARS) {
     blocking.push(
       "With every dataset returning zero rows the page is blank — no empty state. That is the state it is in on its first day and on any day a filter matches nothing.",
+    );
+  }
+  // The mirror of the rule above, and the sharper one. A page that renders the
+  // SAME content with no data as with data is not reading its datasets — the
+  // measured shape is a fallback to invented rows, and it ships looking
+  // finished: a reviewer sees a populated dashboard in both captures and reads
+  // it as working. Observed on a real page that answered an empty connection
+  // with a `populateMockData()` array of plausible figures.
+  const populated = widest.get("desktop");
+  if (
+    declaredDatasets > 0 &&
+    emptyState !== undefined &&
+    populated !== undefined &&
+    populated.textLength > MIN_EMPTY_STATE_CHARS &&
+    emptyState.textLength >= populated.textLength * EMPTY_STATE_SAME_RATIO
+  ) {
+    blocking.push(
+      "With every dataset returning zero rows the page renders essentially the same content as with data — same figures, same rows. It is not reading its datasets, or it falls back to rows of its own when they come back empty. A page must NEVER show data it invented: drive every figure from the dataset, and say plainly which one is empty.",
     );
   }
 

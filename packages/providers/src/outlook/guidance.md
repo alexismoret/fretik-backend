@@ -65,8 +65,8 @@ import base64
 with open("/workspace/outputs/report.pdf", "rb") as f:
     content = base64.b64encode(f.read()).decode()
 
-from fretik_apps import outlook
-outlook.send_email(
+from fretik_apps import outlook, run_plan
+run_plan([outlook.send_email.op(
     to=["client@example.com"],
     subject="Monthly report",
     body_html="<p>Please find the report attached.</p>",
@@ -75,7 +75,7 @@ outlook.send_email(
         "content_type": "application/pdf",
         "content_base64": content,
     }],
-)
+)])
 ```
 
 ### Multiple connected mailboxes
@@ -88,12 +88,12 @@ via the implicit `connection_id="<uuid>"` arg, accepted by every action in
 the SDK:
 
 ```python
-outlook.send_email(
+run_plan([outlook.send_email.op(
     connection_id="3f1a…-pro",
     to=["client@example.com"],
     subject="…",
     body_html="…",
-)
+)])
 ```
 
 If you call a write without `connection_id` and several Outlook mailboxes

@@ -4,13 +4,13 @@
 
 All calls go through fretik-backend, which dispatches them to the
 provider (Nango Proxy or a custom handler). Write actions return an
-Operation when called as `.op(...)` (use with run_plan(...));
-when called directly they are sugar for run_plan([op]).
+Operation via `.op(...)`; submit them with run_plan([...]).
+Calling a write action directly raises — it never executes.
 """
 
 from typing import Any, Literal, Optional
 from pydantic import BaseModel
-from ._runtime import FretikActionError, Operation, _call_read, run_plan
+from ._runtime import FretikActionError, Operation, _call_read
 
 
 # ── Types ─────────────────────────────────────────────────────────
@@ -519,24 +519,19 @@ def send_chat_message(
 ) -> dict[str, Any]:
     """Post a message to a 1:1, group, or meeting chat
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `send_chat_message.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     body_html: Message body — HTML or plain text
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _send_chat_message_op(
-        chat_id=chat_id,
-        body_html=body_html,
-        inline_images=inline_images,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "send_chat_message is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([teams.send_chat_message.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "send_chat_message failed"))
-    return result[0].get("data", {})
 
 send_chat_message.op = _send_chat_message_op
 
@@ -560,23 +555,19 @@ def create_chat(
 ) -> dict[str, Any]:
     """Create a 1:1 or group chat with one or more users
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `create_chat.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     member_user_ids: Azure AD user IDs to add (NOT emails — use `find_user` first). The signed-in user is included implicitly.
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _create_chat_op(
-        member_user_ids=member_user_ids,
-        topic=topic,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "create_chat is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([teams.create_chat.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "create_chat failed"))
-    return result[0].get("data", {})
 
 create_chat.op = _create_chat_op
 
@@ -606,26 +597,19 @@ def send_channel_message(
 ) -> dict[str, Any]:
     """Post a new top-level message in a channel
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `send_channel_message.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     subject: Optional thread title — shown in bold above the message body
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _send_channel_message_op(
-        team_id=team_id,
-        channel_id=channel_id,
-        body_html=body_html,
-        subject=subject,
-        inline_images=inline_images,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "send_channel_message is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([teams.send_channel_message.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "send_channel_message failed"))
-    return result[0].get("data", {})
 
 send_channel_message.op = _send_channel_message_op
 
@@ -655,25 +639,18 @@ def reply_to_channel_message(
 ) -> dict[str, Any]:
     """Reply inside an existing channel thread (preserves the thread)
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `reply_to_channel_message.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     inline_images: Inline images (image/png, image/jpeg, image/gif, max ~4MB each) embedded as base64. Appended after body_html as <img> tags. Non-image files cannot be sent.
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _reply_to_channel_message_op(
-        team_id=team_id,
-        channel_id=channel_id,
-        message_id=message_id,
-        body_html=body_html,
-        inline_images=inline_images,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "reply_to_channel_message is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([teams.reply_to_channel_message.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "reply_to_channel_message failed"))
-    return result[0].get("data", {})
 
 reply_to_channel_message.op = _reply_to_channel_message_op

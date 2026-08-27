@@ -37,36 +37,36 @@ You can interact with the user's Shiptify account via the `fretik_apps.shiptify`
 
 ## Write actions (require user approval — build with `.op()`)
 
-- `shiptify.create_shipment_request(name, shipment_mode_id, reply_before, from_addresses, dest_addresses, accounting_entity_id=None, carrier_id=None, carrier_ids=None, comment=None, internal_note=None, internal_ref=None, internal_name=None, total_volume=None, total_weight=None, total_linear_meters=None, measurement_system=None, contents=None)` — Create a new shipment request (booking)
-- `shiptify.create_shipment_request_draft(name, shipment_mode_id=None, reply_before=None, from_addresses=None, dest_addresses=None, comment=None, internal_ref=None, internal_name=None, total_volume=None, total_weight=None, contents=None)` — Create a draft shipment request (status: draft)
-- `shiptify.update_shipment_request(id, name=None, accounting_entity_id=None, comment=None, internal_note=None, internal_ref=None, internal_name=None, total_volume=None, total_weight=None, total_linear_meters=None, measurement_system=None)` — Update fields of a shipment request
-- `shiptify.cancel_shipment_request(id)` — Cancel a shipment request
-- `shiptify.upload_shipment_request_attachment(id, attachments, carrier_id=None)` — Upload one or several files onto a shipment request
-- `shiptify.send_shipment_request_message(id, message, carrier_id=None, sender_name=None, sender_email=None)` — Post a message in the booking chat of a shipment request
-- `shiptify.confirm_shipment_pickup(id, date, time=None, comment=None, incident=None, cause_id=None)` — Confirm pickup of a shipment (creates the actual pickup point)
-- `shiptify.confirm_shipment_delivery(id, date, time=None, comment=None, incident=None, cause_id=None)` — Confirm delivery of a shipment
-- `shiptify.replan_shipment_pickup(id, date=None, time=None, comment=None, reason=None)` — Replan pickup of a shipment (new date / time)
-- `shiptify.replan_shipment_delivery(id, date=None, time=None, comment=None, reason=None)` — Replan delivery of a shipment
-- `shiptify.upload_shipment_attachment(id, attachments)` — Upload one or several files onto a shipment
-- `shiptify.send_shipment_message(id, message, sender_name=None, sender_email=None)` — Post a message in the tracking chat of a shipment
-- `shiptify.create_location(name, address_1, city, zipcode, country, type=None, address_2=None, state=None, recipient_name=None, company_name=None, email=None, phone_number=None, instructions=None, internal_ref=None, locode=None, contact=None)` — Create a new address-book location — use ONLY when list_locations returned no match
-- `shiptify.galaxy_create_carrier_shipment_request(name, shipment_mode_id, reply_before, from_addresses, dest_addresses, shipper_id=None, shipper_internal_ref=None, other_reference=None, accounting_entity_id=None, comment=None, internal_ref=None, carrier_ids=None, pre_awarded=None, total_weight=None, total_volume=None, total_linear_meters=None, measurement_system=None, contents=None)` — Create a carrier-initiated shipment request (spot booking)
-- `shiptify.galaxy_create_carrier_shipment_request_draft(name, shipment_mode_id=None, reply_before=None, shipper_id=None, from_addresses=None, dest_addresses=None, comment=None, internal_ref=None, other_reference=None, total_weight=None, total_volume=None, contents=None)` — Create a draft carrier-side shipment request
-- `shiptify.galaxy_upload_shipment_request_attachment(id, attachments)` — Upload one or several files onto a carrier-side shipment request
-- `shiptify.galaxy_send_shipment_request_message(id, message, sender_name=None, sender_email=None)` — Post a message in the booking chat of a carrier-side shipment request
-- `shiptify.galaxy_cancel_quote_request(id)` — Cancel a quote request the carrier received
-- `shiptify.galaxy_confirm_shipment_pickup(id, date, time=None, comment=None, incident=None)` — Confirm pickup of a carrier-side shipment (creates the actual pickup point)
-- `shiptify.galaxy_confirm_shipment_delivery(id, date, time=None, comment=None, incident=None)` — Confirm delivery of a carrier-side shipment
-- `shiptify.galaxy_replan_shipment_pickup(id, date=None, time=None, comment=None, reason=None)` — Replan pickup of a carrier-side shipment
-- `shiptify.galaxy_replan_shipment_delivery(id, date=None, time=None, comment=None, reason=None)` — Replan delivery of a carrier-side shipment
-- `shiptify.galaxy_confirm_shipment(id, date=None, time=None)` — Confirm the whole shipment (distinct from per-leg pickup / delivery)
-- `shiptify.galaxy_cancel_shipment(id, comment=None)` — Cancel a carrier-side shipment
-- `shiptify.galaxy_upload_shipment_attachment(id, attachments)` — Upload one or several files onto a carrier-side shipment
-- `shiptify.galaxy_send_shipment_message(id, message, sender_name=None, sender_email=None)` — Post a message in the tracking chat of a carrier-side shipment
-- `shiptify.galaxy_confirm_tracking_point(id, date=None, time=None, comment=None, incident=None)` — Confirm a single tracking point (transit stop, customs, …) of a carrier-side shipment
-- `shiptify.galaxy_replan_tracking_point(id, date=None, time=None, comment=None, reason=None)` — Replan a single tracking point of a carrier-side shipment
-- `shiptify.galaxy_cancel_tracking_point(id, comment=None)` — Cancel a single tracking point of a carrier-side shipment
-- `shiptify.galaxy_update_tracking_point_location(id, address_id, tracking_point_id=None)` — Move a tracking point of a carrier-side shipment to a different address
+- `shiptify.create_shipment_request.op(name, shipment_mode_id, reply_before, from_addresses, dest_addresses, accounting_entity_id=None, carrier_id=None, carrier_ids=None, comment=None, internal_note=None, internal_ref=None, internal_name=None, total_volume=None, total_weight=None, total_linear_meters=None, measurement_system=None, contents=None)` — Create a new shipment request (booking)
+- `shiptify.create_shipment_request_draft.op(name, shipment_mode_id=None, reply_before=None, from_addresses=None, dest_addresses=None, comment=None, internal_ref=None, internal_name=None, total_volume=None, total_weight=None, contents=None)` — Create a draft shipment request (status: draft)
+- `shiptify.update_shipment_request.op(id, name=None, accounting_entity_id=None, comment=None, internal_note=None, internal_ref=None, internal_name=None, total_volume=None, total_weight=None, total_linear_meters=None, measurement_system=None)` — Update fields of a shipment request
+- `shiptify.cancel_shipment_request.op(id)` — Cancel a shipment request
+- `shiptify.upload_shipment_request_attachment.op(id, attachments, carrier_id=None)` — Upload one or several files onto a shipment request
+- `shiptify.send_shipment_request_message.op(id, message, carrier_id=None, sender_name=None, sender_email=None)` — Post a message in the booking chat of a shipment request
+- `shiptify.confirm_shipment_pickup.op(id, date, time=None, comment=None, incident=None, cause_id=None)` — Confirm pickup of a shipment (creates the actual pickup point)
+- `shiptify.confirm_shipment_delivery.op(id, date, time=None, comment=None, incident=None, cause_id=None)` — Confirm delivery of a shipment
+- `shiptify.replan_shipment_pickup.op(id, date=None, time=None, comment=None, reason=None)` — Replan pickup of a shipment (new date / time)
+- `shiptify.replan_shipment_delivery.op(id, date=None, time=None, comment=None, reason=None)` — Replan delivery of a shipment
+- `shiptify.upload_shipment_attachment.op(id, attachments)` — Upload one or several files onto a shipment
+- `shiptify.send_shipment_message.op(id, message, sender_name=None, sender_email=None)` — Post a message in the tracking chat of a shipment
+- `shiptify.create_location.op(name, address_1, city, zipcode, country, type=None, address_2=None, state=None, recipient_name=None, company_name=None, email=None, phone_number=None, instructions=None, internal_ref=None, locode=None, contact=None)` — Create a new address-book location — use ONLY when list_locations returned no match
+- `shiptify.galaxy_create_carrier_shipment_request.op(name, shipment_mode_id, reply_before, from_addresses, dest_addresses, shipper_id=None, shipper_internal_ref=None, other_reference=None, accounting_entity_id=None, comment=None, internal_ref=None, carrier_ids=None, pre_awarded=None, total_weight=None, total_volume=None, total_linear_meters=None, measurement_system=None, contents=None)` — Create a carrier-initiated shipment request (spot booking)
+- `shiptify.galaxy_create_carrier_shipment_request_draft.op(name, shipment_mode_id=None, reply_before=None, shipper_id=None, from_addresses=None, dest_addresses=None, comment=None, internal_ref=None, other_reference=None, total_weight=None, total_volume=None, contents=None)` — Create a draft carrier-side shipment request
+- `shiptify.galaxy_upload_shipment_request_attachment.op(id, attachments)` — Upload one or several files onto a carrier-side shipment request
+- `shiptify.galaxy_send_shipment_request_message.op(id, message, sender_name=None, sender_email=None)` — Post a message in the booking chat of a carrier-side shipment request
+- `shiptify.galaxy_cancel_quote_request.op(id)` — Cancel a quote request the carrier received
+- `shiptify.galaxy_confirm_shipment_pickup.op(id, date, time=None, comment=None, incident=None)` — Confirm pickup of a carrier-side shipment (creates the actual pickup point)
+- `shiptify.galaxy_confirm_shipment_delivery.op(id, date, time=None, comment=None, incident=None)` — Confirm delivery of a carrier-side shipment
+- `shiptify.galaxy_replan_shipment_pickup.op(id, date=None, time=None, comment=None, reason=None)` — Replan pickup of a carrier-side shipment
+- `shiptify.galaxy_replan_shipment_delivery.op(id, date=None, time=None, comment=None, reason=None)` — Replan delivery of a carrier-side shipment
+- `shiptify.galaxy_confirm_shipment.op(id, date=None, time=None)` — Confirm the whole shipment (distinct from per-leg pickup / delivery)
+- `shiptify.galaxy_cancel_shipment.op(id, comment=None)` — Cancel a carrier-side shipment
+- `shiptify.galaxy_upload_shipment_attachment.op(id, attachments)` — Upload one or several files onto a carrier-side shipment
+- `shiptify.galaxy_send_shipment_message.op(id, message, sender_name=None, sender_email=None)` — Post a message in the tracking chat of a carrier-side shipment
+- `shiptify.galaxy_confirm_tracking_point.op(id, date=None, time=None, comment=None, incident=None)` — Confirm a single tracking point (transit stop, customs, …) of a carrier-side shipment
+- `shiptify.galaxy_replan_tracking_point.op(id, date=None, time=None, comment=None, reason=None)` — Replan a single tracking point of a carrier-side shipment
+- `shiptify.galaxy_cancel_tracking_point.op(id, comment=None)` — Cancel a single tracking point of a carrier-side shipment
+- `shiptify.galaxy_update_tracking_point_location.op(id, address_id, tracking_point_id=None)` — Move a tracking point of a carrier-side shipment to a different address
 
 ## Data models
 
@@ -309,19 +309,22 @@ When the user has connected several Shiptify accounts (e.g. one carrier-side, on
 
 ## Write actions & approval
 
-Write actions NEVER execute on their own. Build them with `.op()` and
-submit them together via `run_plan([...])` — the user approves the whole
-plan ONCE.
+Write actions NEVER execute on their own: `.op(...)` builds an operation,
+`run_plan([...])` submits them, and calling a write action directly raises.
+The user approves the whole plan at once.
 
-- One write: `shiptify.create_shipment_request(name="…", shipment_mode_id=1, reply_before="…", …)`
+- One write: `run_plan([ shiptify.create_shipment_request.op(name="…", shipment_mode_id=1, reply_before="…", …) ])`
 - Many writes: `run_plan([ shiptify.<action>.op(...), ... ])`
 
-When you call `run_plan` (or a direct write), it raises
-`fretik_apps.ApprovalPending`. This is EXPECTED — not an error. STOP.
-The user reviews the plan in the UI; you will be prompted to continue.
-When prompted, RE-RUN THE EXACT SAME CODE — the approved plan then
-executes; reads re-run harmlessly. If the user rejects, you receive
-their feedback as a message — adapt and write new code.
+`run_plan` raises `fretik_apps.ApprovalPending`. This is EXPECTED — not an
+error. Stop there. Never wrap it in `try/except` (that hides the approval
+card), and never `print` the ops as a preview instead of calling it — no
+call, no plan.
+
+Once the user decides, the outcome replaces that same tool result. It covers
+only the operations it lists: if any code sat AFTER the `run_plan` call,
+re-run the identical cell — approved plans replay from cache and never execute
+twice. On rejection you get their feedback — adapt and write new code.
 
 ### STRONG RULE — read→write flows
 
@@ -338,10 +341,11 @@ change the plan's lookupHash and force a needless re-approval.
 
 ### Plan rules
 
+- Every write of the turn goes in ONE `run_plan`. A second call in the
+  same cell is lost: the first raises and the rest of the cell never runs.
 - Operations in one plan must be INDEPENDENT (no op uses another op's
   result). Dependent steps (create_folder, then move into it) → use
   TWO turns.
-- For several writes, ALWAYS use a single `run_plan` — never chain
-  bare writes.
+- A plan may mix actions from several apps — one approval for all of them.
 - Partial failures come back per-op; re-submit a `run_plan` with only
   the failed ops.

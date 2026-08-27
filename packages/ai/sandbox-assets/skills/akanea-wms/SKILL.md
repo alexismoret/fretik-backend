@@ -1,7 +1,7 @@
 ---
 name: akanea-wms
 description: Akanea WMS (Xtent) — the warehouse-management system a logistics team runs on the floor. Check stock levels and movements, follow inbound receptions and outbound preparation orders, and push receptions, preparations, items, parties and stock corrections into the warehouse.
-version: eb80acf0e7b3
+version: 2a19e9ff8f10
 ---
 
 # Akanea WMS — 15 actions
@@ -23,11 +23,11 @@ You can interact with the user's Akanea WMS account via the `fretik_apps.akanea_
 
 ## Write actions (require user approval — build with `.op()`)
 
-- `akanea_wms.upsert_receptions(receptions)` — Create or update inbound receptions
-- `akanea_wms.upsert_preparations(preparations)` — Create or update outbound preparation orders
-- `akanea_wms.upsert_items(items)` — Create or update item master records
-- `akanea_wms.upsert_parties(parties)` — Create or update third parties
-- `akanea_wms.change_stock(stock_changes)` — Correct stock objects (status, location, batch, dates)
+- `akanea_wms.upsert_receptions.op(receptions)` — Create or update inbound receptions
+- `akanea_wms.upsert_preparations.op(preparations)` — Create or update outbound preparation orders
+- `akanea_wms.upsert_items.op(items)` — Create or update item master records
+- `akanea_wms.upsert_parties.op(parties)` — Create or update third parties
+- `akanea_wms.change_stock.op(stock_changes)` — Correct stock objects (status, location, batch, dates)
 
 ## Data models
 
@@ -51,7 +51,9 @@ Akanea WMS (Xtent) runs a physical warehouse on behalf of one or more **warehous
 - **Receptions** — goods coming IN: a header plus lines, then received, put away, validated.
 - **Preparations** — picking orders going OUT to a **consignee** (`consignee_code_id`).
 
-Around them sit **items** (the article catalogue) and **parties** (suppliers, consignees, carriers, warehouse customers). Quantities are counted in sale units (UVC), parcels and full pallets. Session tokens are leased and released server-side — never look for a login action.
+Around them sit **items** (the article catalogue) and **parties** (suppliers, consignees, carriers, warehouse customers). Quantities are counted in sale units (UVC), parcels and full pallets.
+
+Two things about calling it. Its **provider key is `akanea-wms`** — that spelling, wherever a tool asks for an app by key; `akanea_wms` is only the Python module's name. And each call **leases a licence seat** (the token is acquired and released server-side, so never look for a login action): calls on one connection are queued for you rather than run at once, so a burst is slower than a single call, never a pile of failures.
 
 **Parties have no read action, and none can be added — Xtent publishes none.** A party reaches you only as a side-car on the record that references it: `client_code_id` + `client_name` on items, stock quantities and movements, `supplier_name` on receptions, `consignee_name` and `carrier_name` on preparations. To turn a name on a document into a `client_code_id`, look up one of its item codes with `list_items` and read the pair off the item. Do not go looking for a `list_parties`, and do not introspect the Python module for one.
 
@@ -153,19 +155,22 @@ When several Akanea WMS connections exist, the `<external_apps>` block lists eac
 
 ## Write actions & approval
 
-Write actions NEVER execute on their own. Build them with `.op()` and
-submit them together via `run_plan([...])` — the user approves the whole
-plan ONCE.
+Write actions NEVER execute on their own: `.op(...)` builds an operation,
+`run_plan([...])` submits them, and calling a write action directly raises.
+The user approves the whole plan at once.
 
-- One write: `akanea_wms.upsert_receptions(receptions=[{…}])`
+- One write: `run_plan([ akanea_wms.upsert_receptions.op(receptions=[{…}]) ])`
 - Many writes: `run_plan([ akanea_wms.<action>.op(...), ... ])`
 
-When you call `run_plan` (or a direct write), it raises
-`fretik_apps.ApprovalPending`. This is EXPECTED — not an error. STOP.
-The user reviews the plan in the UI; you will be prompted to continue.
-When prompted, RE-RUN THE EXACT SAME CODE — the approved plan then
-executes; reads re-run harmlessly. If the user rejects, you receive
-their feedback as a message — adapt and write new code.
+`run_plan` raises `fretik_apps.ApprovalPending`. This is EXPECTED — not an
+error. Stop there. Never wrap it in `try/except` (that hides the approval
+card), and never `print` the ops as a preview instead of calling it — no
+call, no plan.
+
+Once the user decides, the outcome replaces that same tool result. It covers
+only the operations it lists: if any code sat AFTER the `run_plan` call,
+re-run the identical cell — approved plans replay from cache and never execute
+twice. On rejection you get their feedback — adapt and write new code.
 
 ### STRONG RULE — read→write flows
 
@@ -182,10 +187,11 @@ change the plan's lookupHash and force a needless re-approval.
 
 ### Plan rules
 
+- Every write of the turn goes in ONE `run_plan`. A second call in the
+  same cell is lost: the first raises and the rest of the cell never runs.
 - Operations in one plan must be INDEPENDENT (no op uses another op's
   result). Dependent steps (create_folder, then move into it) → use
   TWO turns.
-- For several writes, ALWAYS use a single `run_plan` — never chain
-  bare writes.
+- A plan may mix actions from several apps — one approval for all of them.
 - Partial failures come back per-op; re-submit a `run_plan` with only
   the failed ops.

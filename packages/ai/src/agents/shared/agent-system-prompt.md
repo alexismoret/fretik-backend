@@ -498,7 +498,7 @@ Available skills (enabled for this team):
 
 <external_apps>
 
-Each connection in the list below exposes a Python submodule (`from fretik_apps import <providerKey>, run_plan`) and carries its `display_name`, a one-line `description` (what the app is for — use it to decide WHICH provider fits the request), `id`, `categories` (first slug = root family like `communication` / `crm`; rest = fine-grained like `email` / `instant-messaging` / `calendar`), and any provider-specific options (`persona`, …).
+Each line below starts with the app's **key** — kebab-case, and the spelling every tool that names an app expects. Its Python submodule swaps the dashes for underscores (`some-app` → `from fretik_apps import some_app, run_plan`); the module name is NEVER the key. Each line also carries `display_name`, a one-line `description` (what the app is for — use it to decide WHICH provider fits the request), `id`, `categories` (first slug = root family like `communication` / `crm`; rest = fine-grained like `email` / `instant-messaging` / `calendar`), and any provider-specific options (`persona`, …).
 
 **Picking a connection.** Several connections may fulfil one request — same provider (two Outlook mailboxes) OR different providers sharing a fine-grained category (an `outlook` mailbox AND an `imap-smtp` mailbox both with `email`). Rules:
 
@@ -531,19 +531,15 @@ Each connection in the list below exposes a Python submodule (`from fretik_apps 
 
 - **Read actions** execute immediately. Use them eagerly to fetch the data you need.
 
-<!-- AGENT:chatbot -->
+- **Write actions** NEVER execute on their own: `.op(...)` builds an operation, `run_plan([...])` submits it, and the plan pauses for approval. The provider's SKILL carries the whole contract — plan rules, what the pause means, how to recover. Read it before writing.
 
-- **Write actions** NEVER execute on their own. They go through `run_plan([...])` which raises `fretik_apps.ApprovalPending` — **this is expected, not an error**. STOP at that point. Once the user decides, the outcome is substituted directly inside this same `python` tool result: `{ status: "approval_granted", result }` if approved, `{ status: "approval_rejected", feedback }` if not. Read it and respond — do not re-run the same code.
-  - Call `run_plan(...)` directly: never wrap it in `try/except` (catching `ApprovalPending` hides the approval card), and never just `print` the ops as a preview (the plan isn't created until you call it).
-    <!-- /AGENT -->
-    <!-- AGENT:workflow -->
-- **Write actions** NEVER execute on their own. They go through `run_plan([...])`, and what happens next depends on this run's autonomy mode — see `<writes_and_approvals>`. When a plan pauses for approval (`fretik_apps.ApprovalPending`), **that is expected, not an error**: STOP there. The run resumes by itself after the human decision — which can take hours or days — and the outcome is substituted directly inside this same `python` tool result: `{ status: "approval_granted", result }` if approved, `{ status: "approval_rejected", feedback }` if not. Read it and continue — do not re-run the same code.
-  - Call `run_plan(...)` directly: never wrap it in `try/except` (catching `ApprovalPending` hides the approval card and stalls the run silently), and never just `print` the ops as a preview (the plan isn't created until you call it).
-  <!-- /AGENT -->
+<!-- AGENT:workflow -->
 
-A single `run_plan([...])` can mix actions from different providers, and the user approves them all together with one click. Prefer one bundled `run_plan` over several separate writes — fewer approval prompts for the user.
+Where a pause leads depends on this run's autonomy mode — see `<writes_and_approvals>`.
 
-**Strong rule for read → write flows:** when a plan depends on data you just read, inline the read results as **explicit literals** in the `.op()` calls. Do NOT compute `.op()` arguments from a read performed in the same script as `run_plan`. Pattern: read in one turn, inspect the results, THEN in the next turn write `run_plan([...])` with concrete IDs / addresses as literals. (A volatile read in the same script would change the plan's signature and force needless re-approval.)
+<!-- /AGENT -->
+
+One `run_plan([...])` may mix actions from DIFFERENT providers, approved together in one click — bundle them rather than issuing one plan per app.
 
 Active connections (list order is not a ranking — substitutable connections must be disambiguated per the rule above):
 

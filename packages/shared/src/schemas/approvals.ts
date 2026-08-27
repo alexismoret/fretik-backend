@@ -1,4 +1,5 @@
 import { z } from "@hono/zod-openapi";
+import type { ParamSpec } from "../external-apps/manifest-schema";
 import { recordRelationInputSchema } from "./ontology";
 
 /**
@@ -215,6 +216,30 @@ export const modifyAndGrantRequestSchema = z.object({
   operations: z.array(toolApprovalOperationSchema).min(1),
 });
 export type ModifyAndGrantRequest = z.infer<typeof modifyAndGrantRequestSchema>;
+
+/**
+ * Param schemas of the actions a plan's operations call, keyed by qualified
+ * action name (`akanea-wms.upsert_preparations`) → `{ paramName: ParamSpec }`.
+ *
+ * Its own route rather than a field on `approvalResponseSchema`: a spec is
+ * per-ACTION and unbounded (a nested object tree per param), so carrying it on
+ * the approval would duplicate it per operation and cost every card render —
+ * while only the edit form needs it, and only when opened.
+ *
+ * The value is `unknown` for the OpenAPI document because `ParamSpec` is
+ * recursive and the emitter cannot express that; `OperationSchemasResponse`
+ * below carries the real type, and the registry that produced the spec is what
+ * guarantees its shape.
+ */
+export const operationSchemasResponseSchema = z.object({
+  schemas: z.record(z.string(), z.record(z.string(), z.unknown())).openapi({
+    description:
+      "Qualified action name → { paramName: ParamSpec }. An action whose schema cannot be resolved is absent; the form then infers its inputs from each value's runtime type.",
+  }),
+});
+export interface OperationSchemasResponse {
+  schemas: Record<string, Record<string, ParamSpec>>;
+}
 
 /**
  * Optional body on `POST /approvals/:id/grant`, interpreted per kind:

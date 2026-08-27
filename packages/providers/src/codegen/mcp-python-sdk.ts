@@ -524,8 +524,10 @@ const emitDocstring = (a: CompiledAction, isWrite: boolean): string => {
   const lines = [`"""${escapeForPyDocstring(oneLine(a.action.summary, 300))}`];
   if (isWrite) {
     lines.push("");
-    lines.push("(WRITE — requires user approval. Raises ApprovalPending");
-    lines.push("until the user grants the plan.)");
+    lines.push(
+      `(WRITE — build it with \`${a.action.name}.op(...)\` and submit`,
+    );
+    lines.push("it with `run_plan([...])`. Calling this directly raises.)");
   }
   if (a.fields.length > 0) {
     lines.push("");
@@ -578,17 +580,20 @@ const emitWriteFns = (a: CompiledAction, key: string): string => {
     `    return Operation(action=${pyStr(`${key}.${a.action.name}`)}, args=_args)`,
   ].join("\n");
 
+  // Direct call — refuses. A write action that both BUILDS and SUBMITS is a
+  // trap: `ops = [tool(a), tool(b)]` submits a one-op plan on the first
+  // element, raises ApprovalPending there, and the rest of the cell never runs
+  // — the second write is lost silently and the approval card shows one
+  // operation. One spelling only: `.op(...)` builds, `run_plan([...])` submits.
+  const moduleName = pyModuleName(key);
   const callFn = [
     emitSignature(a.action.name, a),
     emitDocstring(a, true),
-    `    op = ${opName}(`,
-    ...a.fields.map((f) => `        ${f.kwarg},`),
-    `        connection_id=connection_id,`,
+    `    raise FretikActionError(`,
+    `        ${pyStr(`${a.action.name} is a WRITE action and does not execute on its own. `)}`,
+    `        ${pyStr("Build it with .op(...) and submit it with run_plan([...]): ")}`,
+    `        ${pyStr(`run_plan([${moduleName}.${a.action.name}.op(...)])`)}`,
     `    )`,
-    `    result = run_plan([op])`,
-    `    if not result or not result[0].get("ok"):`,
-    `        raise FretikActionError(result[0].get("error", "${a.action.name} failed"))`,
-    `    return result[0].get("data", {})`,
   ].join("\n");
 
   return [opFn, "", callFn, "", `${a.action.name}.op = ${opName}`].join("\n");
@@ -647,7 +652,7 @@ export const compileMcpModule = (
   parts.push("from typing import Any, Literal");
   parts.push("from pydantic import BaseModel, ConfigDict, Field");
   parts.push(
-    "from ._runtime import FretikActionError, Operation, _call_read, _safe_pattern, run_plan",
+    "from ._runtime import FretikActionError, Operation, _call_read, _safe_pattern",
   );
   parts.push("");
   parts.push("");
@@ -700,7 +705,9 @@ export const compileMcpModule = (
   const sigNames = (a: CompiledAction): string =>
     a.fields.map((f) => f.pyName).join(", ");
   const actionBlock = (a: CompiledAction): string => {
-    const head = `- \`${moduleName}.${a.action.name}(${sigNames(a)})\` — ${oneLine(a.action.summary, 160)}`;
+    // Writes are listed in the form that actually works — the bare call raises.
+    const suffix = a.action.kind === "write" ? ".op" : "";
+    const head = `- \`${moduleName}.${a.action.name}${suffix}(${sigNames(a)})\` — ${oneLine(a.action.summary, 160)}`;
     const params = a.fields.map((f) => f.skillLine);
     return [head, ...params].join("\n");
   };

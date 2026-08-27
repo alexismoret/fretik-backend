@@ -4,13 +4,13 @@
 
 All calls go through fretik-backend, which dispatches them to the
 provider (Nango Proxy or a custom handler). Write actions return an
-Operation when called as `.op(...)` (use with run_plan(...));
-when called directly they are sugar for run_plan([op]).
+Operation via `.op(...)`; submit them with run_plan([...]).
+Calling a write action directly raises — it never executes.
 """
 
 from typing import Any, Literal, Optional
 from pydantic import BaseModel
-from ._runtime import FretikActionError, Operation, _call_read, run_plan
+from ._runtime import FretikActionError, Operation, _call_read
 
 
 # ── Types ─────────────────────────────────────────────────────────
@@ -631,27 +631,19 @@ def send_email(
 ) -> dict[str, Any]:
     """Send a new email immediately (with optional inline attachments < 3MB)
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `send_email.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     body_html: HTML body
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _send_email_op(
-        to=to,
-        subject=subject,
-        body_html=body_html,
-        cc=cc,
-        bcc=bcc,
-        attachments=attachments,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "send_email is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([outlook.send_email.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "send_email failed"))
-    return result[0].get("data", {})
 
 send_email.op = _send_email_op
 
@@ -677,22 +669,17 @@ def reply_email(
 ) -> dict[str, Any]:
     """Reply to the sender of a message (with optional attachments)
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `reply_email.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _reply_email_op(
-        message_id=message_id,
-        body_html=body_html,
-        attachments=attachments,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "reply_email is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([outlook.reply_email.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "reply_email failed"))
-    return result[0].get("data", {})
 
 reply_email.op = _reply_email_op
 
@@ -718,22 +705,17 @@ def reply_all_email(
 ) -> dict[str, Any]:
     """Reply to all recipients of a message (with optional attachments)
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `reply_all_email.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _reply_all_email_op(
-        message_id=message_id,
-        body_html=body_html,
-        attachments=attachments,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "reply_all_email is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([outlook.reply_all_email.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "reply_all_email failed"))
-    return result[0].get("data", {})
 
 reply_all_email.op = _reply_all_email_op
 
@@ -761,23 +743,17 @@ def forward_email(
 ) -> dict[str, Any]:
     """Forward a message to new recipients (with optional attachments)
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `forward_email.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _forward_email_op(
-        message_id=message_id,
-        to=to,
-        comment=comment,
-        attachments=attachments,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "forward_email is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([outlook.forward_email.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "forward_email failed"))
-    return result[0].get("data", {})
 
 forward_email.op = _forward_email_op
 
@@ -807,24 +783,17 @@ def create_draft(
 ) -> dict[str, Any]:
     """Create a draft email (not sent), with optional attachments
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `create_draft.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _create_draft_op(
-        to=to,
-        subject=subject,
-        body_html=body_html,
-        cc=cc,
-        attachments=attachments,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "create_draft is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([outlook.create_draft.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "create_draft failed"))
-    return result[0].get("data", {})
 
 create_draft.op = _create_draft_op
 
@@ -850,22 +819,17 @@ def update_draft(
 ) -> dict[str, Any]:
     """Update the subject or body of an existing draft
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `update_draft.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _update_draft_op(
-        message_id=message_id,
-        subject=subject,
-        body_html=body_html,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "update_draft is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([outlook.update_draft.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "update_draft failed"))
-    return result[0].get("data", {})
 
 update_draft.op = _update_draft_op
 
@@ -887,20 +851,17 @@ def delete_message(
 ) -> dict[str, Any]:
     """Delete a message (moves it to Deleted Items)
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `delete_message.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _delete_message_op(
-        message_id=message_id,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "delete_message is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([outlook.delete_message.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "delete_message failed"))
-    return result[0].get("data", {})
 
 delete_message.op = _delete_message_op
 
@@ -924,21 +885,17 @@ def move_message(
 ) -> dict[str, Any]:
     """Move a message to another mail folder
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `move_message.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _move_message_op(
-        message_id=message_id,
-        destination_folder_id=destination_folder_id,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "move_message is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([outlook.move_message.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "move_message failed"))
-    return result[0].get("data", {})
 
 move_message.op = _move_message_op
 
@@ -962,21 +919,17 @@ def copy_message(
 ) -> dict[str, Any]:
     """Copy a message into another mail folder
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `copy_message.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _copy_message_op(
-        message_id=message_id,
-        destination_folder_id=destination_folder_id,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "copy_message is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([outlook.copy_message.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "copy_message failed"))
-    return result[0].get("data", {})
 
 copy_message.op = _copy_message_op
 
@@ -998,22 +951,19 @@ def delete_messages(
 ) -> dict[str, Any]:
     """Delete up to 20 messages in a single Graph $batch request
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `delete_messages.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     message_ids: 1–20 message IDs. For larger sets, call this action multiple times.
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _delete_messages_op(
-        message_ids=message_ids,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "delete_messages is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([outlook.delete_messages.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "delete_messages failed"))
-    return result[0].get("data", {})
 
 delete_messages.op = _delete_messages_op
 
@@ -1037,21 +987,17 @@ def move_messages(
 ) -> dict[str, Any]:
     """Move up to 20 messages to a folder in a single Graph $batch request
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `move_messages.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _move_messages_op(
-        message_ids=message_ids,
-        destination_folder_id=destination_folder_id,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "move_messages is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([outlook.move_messages.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "move_messages failed"))
-    return result[0].get("data", {})
 
 move_messages.op = _move_messages_op
 
@@ -1073,20 +1019,17 @@ def mark_messages_read(
 ) -> dict[str, Any]:
     """Mark up to 20 messages as read in a single Graph $batch request
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `mark_messages_read.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _mark_messages_read_op(
-        message_ids=message_ids,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "mark_messages_read is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([outlook.mark_messages_read.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "mark_messages_read failed"))
-    return result[0].get("data", {})
 
 mark_messages_read.op = _mark_messages_read_op
 
@@ -1108,20 +1051,17 @@ def mark_messages_unread(
 ) -> dict[str, Any]:
     """Mark up to 20 messages as unread in a single Graph $batch request
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `mark_messages_unread.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _mark_messages_unread_op(
-        message_ids=message_ids,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "mark_messages_unread is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([outlook.mark_messages_unread.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "mark_messages_unread failed"))
-    return result[0].get("data", {})
 
 mark_messages_unread.op = _mark_messages_unread_op
 
@@ -1143,20 +1083,17 @@ def mark_read(
 ) -> dict[str, Any]:
     """Mark a message as read
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `mark_read.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _mark_read_op(
-        message_id=message_id,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "mark_read is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([outlook.mark_read.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "mark_read failed"))
-    return result[0].get("data", {})
 
 mark_read.op = _mark_read_op
 
@@ -1178,20 +1115,17 @@ def mark_unread(
 ) -> dict[str, Any]:
     """Mark a message as unread
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `mark_unread.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _mark_unread_op(
-        message_id=message_id,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "mark_unread is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([outlook.mark_unread.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "mark_unread failed"))
-    return result[0].get("data", {})
 
 mark_unread.op = _mark_unread_op
 
@@ -1219,25 +1153,19 @@ def flag_message(
 ) -> dict[str, Any]:
     """Set the follow-up flag on a message (flag / mark complete / clear)
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `flag_message.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     status: Flag state: `flagged`=mark for follow-up, `complete`=mark done (checked), `notFlagged`=clear the flag
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _flag_message_op(
-        message_id=message_id,
-        status=status,
-        due_date=due_date,
-        time_zone=time_zone,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "flag_message is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([outlook.flag_message.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "flag_message failed"))
-    return result[0].get("data", {})
 
 flag_message.op = _flag_message_op
 
@@ -1261,23 +1189,19 @@ def create_folder(
 ) -> dict[str, Any]:
     """Create a new mail folder
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `create_folder.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     parent_folder_id: Parent folder ID (top-level if omitted)
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _create_folder_op(
-        display_name=display_name,
-        parent_folder_id=parent_folder_id,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "create_folder is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([outlook.create_folder.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "create_folder failed"))
-    return result[0].get("data", {})
 
 create_folder.op = _create_folder_op
 
@@ -1315,30 +1239,19 @@ def create_calendar_event(
 ) -> dict[str, Any]:
     """Create a calendar event
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `create_calendar_event.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     calendar_id: Calendar ID from list_calendars(). Defaults to the primary calendar.
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _create_calendar_event_op(
-        subject=subject,
-        start=start,
-        end=end,
-        time_zone=time_zone,
-        location=location,
-        attendees=attendees,
-        body_html=body_html,
-        is_online_meeting=is_online_meeting,
-        calendar_id=calendar_id,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "create_calendar_event is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([outlook.create_calendar_event.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "create_calendar_event failed"))
-    return result[0].get("data", {})
 
 create_calendar_event.op = _create_calendar_event_op
 
@@ -1374,29 +1287,19 @@ def update_calendar_event(
 ) -> dict[str, Any]:
     """Update fields of an existing calendar event
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `update_calendar_event.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     calendar_id: Calendar ID from list_calendars(). Defaults to the primary calendar.
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _update_calendar_event_op(
-        event_id=event_id,
-        subject=subject,
-        start=start,
-        end=end,
-        time_zone=time_zone,
-        location=location,
-        body_html=body_html,
-        calendar_id=calendar_id,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "update_calendar_event is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([outlook.update_calendar_event.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "update_calendar_event failed"))
-    return result[0].get("data", {})
 
 update_calendar_event.op = _update_calendar_event_op
 
@@ -1420,23 +1323,19 @@ def delete_calendar_event(
 ) -> dict[str, Any]:
     """Delete a calendar event
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `delete_calendar_event.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     calendar_id: Calendar ID from list_calendars(). Defaults to the primary calendar.
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _delete_calendar_event_op(
-        event_id=event_id,
-        calendar_id=calendar_id,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "delete_calendar_event is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([outlook.delete_calendar_event.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "delete_calendar_event failed"))
-    return result[0].get("data", {})
 
 delete_calendar_event.op = _delete_calendar_event_op
 
@@ -1464,25 +1363,19 @@ def respond_to_event(
 ) -> dict[str, Any]:
     """Accept, decline or tentatively accept a meeting invite
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `respond_to_event.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     calendar_id: Calendar ID from list_calendars(). Defaults to the primary calendar.
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _respond_to_event_op(
-        event_id=event_id,
-        response=response,
-        comment=comment,
-        calendar_id=calendar_id,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "respond_to_event is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([outlook.respond_to_event.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "respond_to_event failed"))
-    return result[0].get("data", {})
 
 respond_to_event.op = _respond_to_event_op
 
@@ -1514,25 +1407,17 @@ def create_contact(
 ) -> dict[str, Any]:
     """Create a new contact
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `create_contact.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _create_contact_op(
-        given_name=given_name,
-        surname=surname,
-        email=email,
-        company_name=company_name,
-        job_title=job_title,
-        mobile_phone=mobile_phone,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "create_contact is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([outlook.create_contact.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "create_contact failed"))
-    return result[0].get("data", {})
 
 create_contact.op = _create_contact_op
 
@@ -1572,31 +1457,19 @@ def create_inbox_rule(
 ) -> dict[str, Any]:
     """Create an inbox rule (e.g. move incoming mail from a sender to a folder)
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `create_inbox_rule.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     sequence: Priority order — lower runs first
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _create_inbox_rule_op(
-        display_name=display_name,
-        sequence=sequence,
-        is_enabled=is_enabled,
-        from_addresses=from_addresses,
-        subject_contains=subject_contains,
-        body_contains=body_contains,
-        has_attachments=has_attachments,
-        move_to_folder_id=move_to_folder_id,
-        mark_as_read=mark_as_read,
-        auto_delete=auto_delete,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "create_inbox_rule is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([outlook.create_inbox_rule.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "create_inbox_rule failed"))
-    return result[0].get("data", {})
 
 create_inbox_rule.op = _create_inbox_rule_op
 
@@ -1638,30 +1511,17 @@ def update_inbox_rule(
 ) -> dict[str, Any]:
     """Update an existing inbox rule (PATCH semantics, all fields optional)
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `update_inbox_rule.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _update_inbox_rule_op(
-        rule_id=rule_id,
-        display_name=display_name,
-        sequence=sequence,
-        is_enabled=is_enabled,
-        from_addresses=from_addresses,
-        subject_contains=subject_contains,
-        body_contains=body_contains,
-        has_attachments=has_attachments,
-        move_to_folder_id=move_to_folder_id,
-        mark_as_read=mark_as_read,
-        auto_delete=auto_delete,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "update_inbox_rule is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([outlook.update_inbox_rule.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "update_inbox_rule failed"))
-    return result[0].get("data", {})
 
 update_inbox_rule.op = _update_inbox_rule_op
 
@@ -1683,19 +1543,16 @@ def delete_inbox_rule(
 ) -> dict[str, Any]:
     """Delete an inbox rule
 
-    (WRITE — requires user approval. Raises ApprovalPending
-    until the user grants the plan.)
+    (WRITE — build it with `delete_inbox_rule.op(...)` and submit
+    it with `run_plan([...])`. Calling this directly raises.)
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    op = _delete_inbox_rule_op(
-        rule_id=rule_id,
-        connection_id=connection_id,
+    raise FretikActionError(
+        "delete_inbox_rule is a WRITE action and does not execute on its own. "
+        "Build it with .op(...) and submit it with run_plan([...]): "
+        "run_plan([outlook.delete_inbox_rule.op(...)])"
     )
-    result = run_plan([op])
-    if not result or not result[0].get("ok"):
-        raise FretikActionError(result[0].get("error", "delete_inbox_rule failed"))
-    return result[0].get("data", {})
 
 delete_inbox_rule.op = _delete_inbox_rule_op

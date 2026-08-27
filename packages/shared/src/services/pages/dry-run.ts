@@ -2,6 +2,10 @@ import type { PageDefinition, PageValue } from "../../schemas/pages";
 import { compilePageCode } from "./compile";
 import { resolvePageState, runPageData } from "./run-page-data";
 import { pushPageWarning, sanitizePageDefinition } from "./sanitize";
+import {
+  teamConnectedProviderKeys,
+  validatePageDefinitionConnections,
+} from "./validate-connections";
 
 /**
  * Dry-run a page against REAL data before it is handed to anyone: run every
@@ -69,9 +73,22 @@ export const dryRunPage = async (params: {
   assumeCompiled?: boolean;
 }): Promise<PageDryRun> => {
   const sanitized = params.assumeSanitized
-    ? { definition: params.definition, warnings: [] }
+    ? { definition: params.definition, warnings: [], errors: [] }
     : sanitizePageDefinition(params.definition);
-  const { definition, warnings } = sanitized;
+  const { definition } = sanitized;
+  // A dry run persists nothing, so it reports rather than throws — but the
+  // refusals go in FIRST and in the same channel: what would make the write
+  // fail must be the first thing the agent reads, not the last.
+  const warnings = [...sanitized.errors, ...sanitized.warnings];
+
+  // The same refusal `create`/`update` will raise, said here as a warning: a
+  // dry run persists nothing, so it reports rather than throws — but it must
+  // report it as a DEFECT, or the agent writes the page and hits the 400.
+  const connections = await validatePageDefinitionConnections({
+    definition,
+    teamId: params.teamId,
+  });
+  for (const error of connections.errors) pushPageWarning(warnings, error);
 
   const samples: PageDryRun["samples"] = {};
   // Run against the page's own defaults — the state a first visitor sees.
@@ -85,6 +102,8 @@ export const dryRunPage = async (params: {
   });
 
   const datasetById = new Map(definition.datasets.map((d) => [d.id, d]));
+  /** Fetched at most once, and only if a dataset actually came back unconnected. */
+  let teamConnected: Set<string> | undefined;
 
   for (const [id, result] of Object.entries(datasets)) {
     if (result.status === "ok") {
@@ -130,12 +149,16 @@ export const dryRunPage = async (params: {
           `dataset "${id}": this team cannot read that collection.`,
         );
       } else if (result.status === "needs_connection") {
-        // Not a defect — the page renders a connect prompt for viewers in this
-        // position. Said as a fact so the agent can decide whether to pin a
-        // team connection instead.
+        // Two very different states, and saying them the same way is what let a
+        // permanently-broken page ship (2026-08-26): the agent read "no usable
+        // connection for the acting user" as a fact about itself and moved on,
+        // when in fact NOBODY on the team could ever have loaded that dataset.
+        teamConnected ??= await teamConnectedProviderKeys(params.teamId);
         pushPageWarning(
           warnings,
-          `dataset "${id}": no usable ${result.providerKey} connection for the acting user — such viewers will see a "connect your account" prompt instead of data.`,
+          teamConnected.has(result.providerKey)
+            ? `dataset "${id}": the team is connected to ${result.providerKey} but the acting user is not — such viewers see a "connect your account" prompt instead of data.`
+            : `dataset "${id}": NO active ${result.providerKey} connection exists on this team — EVERY viewer gets a connect prompt instead of data, so this dataset can never load. Either the team connects the app first, or the page should not read from it.`,
         );
       } else {
         pushPageWarning(warnings, `dataset "${id}" failed: ${result.message}`);

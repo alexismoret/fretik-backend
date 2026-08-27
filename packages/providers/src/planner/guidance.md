@@ -124,10 +124,10 @@ When several Planner connections exist, the system prompt's `<external_apps>`
 block handles disambiguation. Pass the chosen `connection_id` explicitly:
 
 ```python
-planner.create_task(
+run_plan([planner.create_task.op(
     connection_id="3f1a…-contoso",
     plan_id="xqQg…", title="Draft Q3 report",
-)
+)])
 ```
 
 Calling a write without `connection_id` while several Planner accounts are

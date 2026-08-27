@@ -15,6 +15,7 @@ import type { ConfirmMcpParams } from "../../../schemas/external-apps";
 import { emitDomainEvent } from "../../domain-events/emit";
 import { isMcpConnectKey } from "../mcp/catalog";
 import { confirmMcpConnection } from "./confirm-mcp";
+import { invalidateConnectionCaches } from "./epoch";
 
 /**
  * Confirm a connection created via Connect UI (for `nango-proxy` OAuth
@@ -55,7 +56,7 @@ export const confirmConnection = async (params: {
   // Their whole confirm flow (auth-kind derivation, server-URL sourcing, SSRF
   // check, insert) lives in `confirm-mcp` — the api handler then introspects.
   if (provider === undefined && isMcpConnectKey(params.providerKey)) {
-    return confirmMcpConnection({
+    const mcpRow = await confirmMcpConnection({
       organizationId: params.organizationId,
       teamId: params.teamId,
       userId: params.userId,
@@ -65,6 +66,8 @@ export const confirmConnection = async (params: {
       nangoConnectionId: params.nangoConnectionId,
       mcp: params.mcp,
     });
+    await invalidateConnectionCaches({ connection: mcpRow });
+    return mcpRow;
   }
 
   if (provider === undefined) {
@@ -168,7 +171,7 @@ export const confirmConnection = async (params: {
   }
 
   // Wrap the insert so the journal entry is co-transactional with it.
-  return db.transaction(async (tx) => {
+  const row = await db.transaction(async (tx) => {
     const [row] = await tx
       .insert(externalAppConnections)
       .values({
@@ -205,4 +208,11 @@ export const confirmConnection = async (params: {
     });
     return row;
   });
+
+  // Outside the transaction, and after it: a page that was showing "connect
+  // your account" must stop the moment this returns, not 20 s later. Cache
+  // bookkeeping never belongs INSIDE the write it follows — a Redis failure
+  // must not roll back a connection the user successfully made.
+  await invalidateConnectionCaches({ connection: row });
+  return row;
 };

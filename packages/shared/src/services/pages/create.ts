@@ -11,6 +11,7 @@ import { derivePageDescription } from "./derive-description";
 import { ensurePageDatasetIndexes } from "./ensure-dataset-indexes";
 import { sanitizePageDefinition } from "./sanitize";
 import { serializePage } from "./serialize";
+import { validatePageDefinitionConnections } from "./validate-connections";
 import { refreshPageVectors } from "./vector-refresh";
 import type { PageVersionActor } from "./versions";
 import { trimPageVersions, writePageVersion } from "./versions";
@@ -45,6 +46,18 @@ export const createPage = async (params: {
   if (ownerError) return throwHttpError(400, badRequest(ownerError));
 
   const sanitized = sanitizePageDefinition(input.definition);
+  // Refuses alongside the compiler, and for the same reason: these name a
+  // runtime failure that is certain and silent — a call the bridge has nothing
+  // to route to, a dataset over an app that does not exist. The page would
+  // render as if it worked.
+  const connections = await validatePageDefinitionConnections({
+    definition: sanitized.definition,
+    teamId: params.teamId,
+  });
+  const refusals = [...sanitized.errors, ...connections.errors];
+  if (refusals.length > 0) {
+    return throwHttpError(400, badRequest(refusals.join(" ")));
+  }
   // Compile at save. A failing compile REFUSES the create (400 with the
   // compiler's errors) — code is binary, see `services/pages/compile.ts`.
   const compiled = await ensurePageCompiled(sanitized.definition);

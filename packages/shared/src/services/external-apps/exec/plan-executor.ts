@@ -9,6 +9,7 @@ import { requireNangoRef } from "../connections/nango-ref";
 import { resolveConnection } from "../connections/resolve";
 import { buildRequest } from "./build-request";
 import { callCustomHandler } from "./call-custom-handler";
+import { withConnectionSlot } from "./connection-slot";
 import { extractFrameworkArgs } from "./framework-args";
 import { callHttpDirect } from "./http-direct";
 import { executeMcpWriteOp } from "./mcp-plan";
@@ -30,6 +31,15 @@ import { callNangoProxy } from "./nango-proxy";
  */
 
 const CONCURRENCY = 3;
+
+/**
+ * Generous, because a plan op has no timeout of its own and a paginating proxy
+ * call can run long — and because the failure a short lease buys is the one
+ * thing the slot exists to prevent (two calls overlapping on one account after
+ * the lease expired under a live holder). It only ever costs something when a
+ * process dies mid-write.
+ */
+const PLAN_LEASE_MS = 60_000;
 
 export const executePlan = async (params: {
   approval: ToolApprovalRequest;
@@ -74,54 +84,68 @@ export const executePlan = async (params: {
       const { nangoProviderConfigKey, nangoConnectionId } =
         requireNangoRef(connection);
 
+      // The worker pool above runs three ops at once, which on a SERIAL
+      // connection is three requests to an account that tolerates one. The slot
+      // turns that into a queue; on every other provider it costs nothing.
+      const slot = <T>(work: () => Promise<T>): Promise<T> =>
+        withConnectionSlot(connection, work, { leaseMs: PLAN_LEASE_MS });
+
       let data: unknown;
-      if (resolved.transport.kind === "nango-proxy") {
+      const transport = resolved.transport;
+      if (transport.kind === "nango-proxy") {
         const req = buildRequest(resolved, cleanArgs);
-        const raw = await callNangoProxy({
-          providerConfigKey: nangoProviderConfigKey,
-          connectionId: nangoConnectionId,
-          method: req.method,
-          endpoint: req.endpoint,
-          query: req.query,
-          body: req.body,
-          headers: req.headers,
-          paginate: req.paginate,
-        });
+        const raw = await slot(() =>
+          callNangoProxy({
+            providerConfigKey: nangoProviderConfigKey,
+            connectionId: nangoConnectionId,
+            method: req.method,
+            endpoint: req.endpoint,
+            query: req.query,
+            body: req.body,
+            headers: req.headers,
+            paginate: req.paginate,
+          }),
+        );
         data =
           resolved.responseMapper !== undefined
             ? resolved.responseMapper(raw)
             : raw;
-      } else if (resolved.transport.kind === "http-direct") {
+      } else if (transport.kind === "http-direct") {
         const req = buildRequest(resolved, cleanArgs);
-        const raw = await callHttpDirect({
-          manifest: resolved.manifest,
-          transport: resolved.transport,
-          providerConfigKey: nangoProviderConfigKey,
-          connectionId: nangoConnectionId,
-          method: req.method,
-          endpoint: req.endpoint,
-          query: req.query,
-          body: req.body,
-        });
+        const raw = await slot(() =>
+          callHttpDirect({
+            manifest: resolved.manifest,
+            transport,
+            providerConfigKey: nangoProviderConfigKey,
+            connectionId: nangoConnectionId,
+            method: req.method,
+            endpoint: req.endpoint,
+            query: req.query,
+            body: req.body,
+          }),
+        );
         data =
           resolved.responseMapper !== undefined
             ? resolved.responseMapper(raw)
             : raw;
       } else {
-        if (resolved.handler === undefined) {
+        const handler = resolved.handler;
+        if (handler === undefined) {
           results[index] = {
             ok: false,
             error: `Action ${op.action} has no handler registered`,
           };
           return;
         }
-        data = await callCustomHandler({
-          manifest: resolved.manifest,
-          providerConfigKey: nangoProviderConfigKey,
-          connectionId: nangoConnectionId,
-          handler: resolved.handler,
-          args: cleanArgs,
-        });
+        data = await slot(() =>
+          callCustomHandler({
+            manifest: resolved.manifest,
+            providerConfigKey: nangoProviderConfigKey,
+            connectionId: nangoConnectionId,
+            handler,
+            args: cleanArgs,
+          }),
+        );
       }
       const safeData: Record<string, unknown> = isRecord(data)
         ? data

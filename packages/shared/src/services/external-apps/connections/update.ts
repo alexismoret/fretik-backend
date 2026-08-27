@@ -2,6 +2,7 @@ import { eq } from "drizzle-orm";
 import { z } from "zod";
 import db from "../../../db";
 import {
+  type ExternalAppConcurrencyMode,
   type ExternalAppConnection,
   type ExternalAppConnectionStatus,
   externalAppConnections,
@@ -14,6 +15,7 @@ import {
   type ToolPolicyLevel,
   toolPolicyLevelSchema,
 } from "../../../schemas/tool-policies";
+import { invalidateConnectionCaches } from "./epoch";
 import { getConnectionForCaller } from "./get-by-id";
 
 /**
@@ -42,6 +44,8 @@ export const updateConnection = async (params: {
   options?: Record<string, unknown>;
   /** Sparse per-action policy patch (level sets, `null` resets to default). */
   actionPolicies?: Record<string, ToolPolicyLevel | null>;
+  /** How many calls this account tolerates at once; `null` follows the manifest. */
+  concurrencyMode?: ExternalAppConcurrencyMode | null;
   /** Whether the caller is an org admin — required to edit `actionPolicies` on
    * a TEAM-scoped connection (any member can see it, only admins may change its
    * permissions). Personal connections are owner-only via `getConnectionForCaller`. */
@@ -58,6 +62,18 @@ export const updateConnection = async (params: {
   if (params.status !== undefined) {
     patch.status = params.status;
     if (params.status !== "error") patch.lastErrorMessage = null;
+  }
+
+  if (params.concurrencyMode !== undefined) {
+    // Same gate as the policies below: on a shared connection this decides how
+    // hard the WHOLE team may push one account, so it is not a per-member knob.
+    if (current.userId === null && params.isOrgAdmin !== true) {
+      return throwHttpError(403, {
+        code: ERROR_CODES.FORBIDDEN,
+        message: "Only an admin can change a team connection's concurrency.",
+      });
+    }
+    patch.concurrencyMode = params.concurrencyMode;
   }
 
   if (params.actionPolicies !== undefined) {
@@ -146,5 +162,10 @@ export const updateConnection = async (params: {
       message: "Failed to update connection",
     });
   }
+  // Every field this patches changes what a page gets: `status` decides whether
+  // the connection resolves at all, `actionPolicies` whether an operation may
+  // run, `options` what the call carries. The answers cached under the old
+  // settings go with them.
+  await invalidateConnectionCaches({ connection: row, purgeAnswers: true });
   return row;
 };

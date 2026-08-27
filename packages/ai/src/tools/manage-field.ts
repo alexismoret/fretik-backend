@@ -12,6 +12,7 @@ import { getFieldDefinitionsForTeam } from "@fretik/shared/services/field-defini
 import { updateFieldDefinition } from "@fretik/shared/services/field-definitions/update";
 import { tool } from "ai";
 import { z } from "zod";
+import { gateBuiltinWriteTool } from "../agents/shared/policy-tool-gate";
 import {
   agentEventActor,
   getRuntimeContext,
@@ -136,6 +137,23 @@ export const createManageFieldTool = () =>
         }
 
         if (input.action === "delete") {
+          const gate = await gateBuiltinWriteTool(ctx, {
+            toolName: "manageField",
+            args: {
+              action: "delete",
+              collectionId,
+              collectionKey: input.collectionKey,
+              fieldId: field.id,
+              fieldKey: field.key,
+              cascade: input.cascade ?? false,
+            },
+            summaryFields: [
+              { labelKey: "collection", value: input.collectionKey },
+              { labelKey: "field", value: field.label },
+              { labelKey: "currentType", value: field.type },
+            ],
+          });
+          if (gate !== null) return gate;
           const result = await deleteFieldDefinition({
             id: field.id,
             cascade: input.cascade ?? false,
@@ -151,6 +169,25 @@ export const createManageFieldTool = () =>
               "changeType requires type.",
             );
           }
+          const gate = await gateBuiltinWriteTool(ctx, {
+            toolName: "manageField",
+            args: {
+              action: "changeType",
+              collectionId,
+              collectionKey: input.collectionKey,
+              fieldId: field.id,
+              fieldKey: field.key,
+              type: input.type,
+              ...(input.config === undefined ? {} : { config: input.config }),
+            },
+            summaryFields: [
+              { labelKey: "collection", value: input.collectionKey },
+              { labelKey: "field", value: field.label },
+              { labelKey: "currentType", value: field.type },
+              { labelKey: "newType", value: input.type },
+            ],
+          });
+          if (gate !== null) return gate;
           const updated = await updateFieldDefinition({
             id: field.id,
             cascade: true,

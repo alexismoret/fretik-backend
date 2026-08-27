@@ -943,8 +943,11 @@ export const describePageDataContract = (): string =>
     "`totalCount` is the real total however many millions sit behind it. A column total",
     "over one page would lie — add an aggregate dataset for figures that must hold.",
     "kind=external  → providerKey + operation (+ args, resultPath?, cacheTtlSeconds?).",
-    "                 A live read from a connected app. Name the PROVIDER: each viewer",
-    "                 then reads through their own connection, the team's otherwise.",
+    "                 A live read from a connected app. providerKey is the app's key as",
+    "                 the connections list prints it, character for character — NEVER the",
+    "                 Python module name (`some_app` is the module, `some-app` the key).",
+    "                 Name the PROVIDER: each viewer then reads through their own",
+    "                 connection, the team's otherwise.",
     "                 `connectionId` pins one account for everyone — only when they all",
     "                 must see that same account.",
     '                 args are literals or { "var": "<variableKey>" } references.',
@@ -1223,10 +1226,82 @@ export const PageDatasetResultSchema = z.discriminatedUnion("status", [
 ]);
 export type PageDatasetResult = z.infer<typeof PageDatasetResultSchema>;
 
+/**
+ * One connected app, as it stands FOR THE VIEWER asking.
+ *
+ * The datasets already say, per widget, that they could not load. This says
+ * why, once per app, in terms a person can act on: whether the team is
+ * connected and only they are not, whether a connection exists but is broken,
+ * and which of their accounts is being used when they have more than one.
+ *
+ * Read by the host chrome — the connect banner and the page's sources panel —
+ * NOT by the generated page, which sees only its datasets' four statuses.
+ */
+export const pageConnectionCandidateSchema = z.object({
+  id: z.uuid(),
+  displayName: z.string(),
+  scope: z.enum(["team", "user"]),
+  status: z.enum(["active", "disabled", "error"]),
+});
+export type PageConnectionCandidateDto = z.infer<
+  typeof pageConnectionCandidateSchema
+>;
+
+export const pageConnectionStateSchema = z.object({
+  providerKey: z.string(),
+  /** The app's own name, from the provider catalogue. */
+  appName: z.string(),
+  /**
+   * `ok` — reading through an account.
+   * `ambiguous` — reading through one of SEVERAL; the viewer may switch.
+   * `needs_connection` — no usable account; `reason` says which kind of no.
+   * `error` — the page pins something that is gone or unusable.
+   */
+  status: z.enum(["ok", "ambiguous", "needs_connection", "error"]),
+  using: z
+    .object({
+      id: z.uuid(),
+      displayName: z.string(),
+      scope: z.enum(["team", "user"]),
+    })
+    .optional(),
+  chosenBy: z
+    .enum(["author_pin", "viewer_preference", "personal", "team"])
+    .optional(),
+  candidates: z.array(pageConnectionCandidateSchema),
+  /** `none` | `unusable` | `pinned_to_another_user`, or a message on `error`. */
+  reason: z.string().optional(),
+  /** The page names one exact account — no viewer choice applies. */
+  pinned: z.boolean(),
+  datasetIds: z.array(z.string()),
+  operationIds: z.array(z.string()),
+});
+export type PageConnectionState = z.infer<typeof pageConnectionStateSchema>;
+
 export const PageDataResponseSchema = z.object({
   datasets: z.record(z.string(), PageDatasetResultSchema),
+  /**
+   * Optional so the public route and any older client are unaffected: it rides
+   * along on the authenticated route only, where a viewer can act on it.
+   */
+  connections: z.array(pageConnectionStateSchema).optional(),
 });
 export type PageDataResponse = z.infer<typeof PageDataResponseSchema>;
+
+export const PageConnectionsResponseSchema = z.object({
+  connections: z.array(pageConnectionStateSchema),
+});
+export type PageConnectionsResponse = z.infer<
+  typeof PageConnectionsResponseSchema
+>;
+
+export const SetPageConnectionRequestSchema = z.object({
+  /** `null` clears the choice and hands the page back to the automatic pick. */
+  connectionId: z.uuid().nullable(),
+});
+export type SetPageConnectionRequest = z.infer<
+  typeof SetPageConnectionRequestSchema
+>;
 
 /**
  * Running ONE declared operation. The same asymmetry as the data request, and

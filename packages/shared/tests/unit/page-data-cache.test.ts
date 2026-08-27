@@ -137,6 +137,7 @@ describe("pageDataCacheKey — what must never share an entry", () => {
     teamId: "team-1",
     userId: null,
     definitionFingerprint: "2026-08-11T00:00:00.000Z",
+    connectionsEpoch: "0.0",
     request: { variables: { month: "2026-08" } },
   };
 
@@ -164,6 +165,14 @@ describe("pageDataCacheKey — what must never share an entry", () => {
         ...base,
         definitionFingerprint: "2026-08-11T00:00:01.000Z",
       }),
+    );
+  });
+
+  test("connecting an app retires them too — the wall a TTL cannot be allowed to hold", () => {
+    // A stale figure is a figure. A stale `needs_connection` tells the viewer
+    // that connecting the app did not work, which is what a user got stuck on.
+    expect(pageDataCacheKey(base)).not.toBe(
+      pageDataCacheKey({ ...base, connectionsEpoch: "0.1" }),
     );
   });
 

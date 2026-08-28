@@ -1,6 +1,23 @@
 import { Poppler } from "node-poppler";
 
-const poppler = new Poppler();
+/**
+ * Built on first PDF thumbnail, not at import.
+ *
+ * `new Poppler()` probes the filesystem for the binaries and THROWS when it
+ * finds none. At module scope that turns a missing system package into an
+ * import-time crash for every module that transitively reaches this file —
+ * which, through the documents services, is most of the package. A unit test
+ * that only wanted the tool-policy apply map died on it in CI.
+ *
+ * Lazily, the same missing binary surfaces where it is actually a problem:
+ * inside the one function that needs it, on the one code path that renders a
+ * PDF page.
+ */
+let poppler: Poppler | undefined;
+const getPoppler = (): Poppler => {
+  poppler ??= new Poppler();
+  return poppler;
+};
 
 /** Longest edge of the stored thumbnail, in px. */
 const THUMBNAIL_SIZE = 400;
@@ -41,13 +58,17 @@ const toWebpThumbnail = (input: Uint8Array): Promise<Uint8Array> =>
 export const generatePdfThumbnail = async (
   pdfBuffer: Uint8Array,
 ): Promise<Uint8Array> => {
-  const result = await poppler.pdfToCairo(Buffer.from(pdfBuffer), undefined, {
-    pngFile: true,
-    singleFile: true,
-    resolutionXYAxis: 50,
-    firstPageToConvert: 1,
-    lastPageToConvert: 1,
-  });
+  const result = await getPoppler().pdfToCairo(
+    Buffer.from(pdfBuffer),
+    undefined,
+    {
+      pngFile: true,
+      singleFile: true,
+      resolutionXYAxis: 50,
+      firstPageToConvert: 1,
+      lastPageToConvert: 1,
+    },
+  );
 
   const pngBytes = new Uint8Array(Buffer.from(result, "binary"));
   return toWebpThumbnail(pngBytes);

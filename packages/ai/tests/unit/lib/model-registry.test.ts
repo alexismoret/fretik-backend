@@ -48,12 +48,17 @@ import { shouldInjectCacheControl } from "../../../src/lib/openrouter-cache";
  * Together was REMOVED on 2026-08-13 for truncating answers mid-sentence at the
  * tool-call boundary; Fireworks and CoreWeave replaced it once their own
  * exclusions (HTTP 429, no cache) re-benched clean.
+ *
+ * CoreWeave was REMOVED on 2026-08-28 for corrupting emitted text: U+200B and
+ * fullwidth punctuation inserted next to NUMBERS, reproduced 2/3 runs against
+ * 0/3 on DeepInfra and 0/2 on Fireworks. Both defects that cost a pool member
+ * so far were answer-integrity, not speed or price — which is why membership
+ * is pinned here rather than left to `sort`.
  */
 const VETTED_DEEPSEEK_UPSTREAMS = [
   "baseten",
   "fireworks",
   "venice",
-  "coreweave",
   "deepinfra",
 ];
 

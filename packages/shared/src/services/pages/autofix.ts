@@ -31,6 +31,57 @@ export interface PageAutofix {
   message: string;
 }
 
+/**
+ * Characters that break the compiler and that NOTHING renders.
+ *
+ * A combining mark draws itself onto whatever precedes it, so ` ́0` reads as
+ * `0` with a stray accent floating on the space before it, and zero-width and
+ * bidi controls draw nothing at all. On 2026-08-28 a model emitting a long
+ * page sprayed U+0301 through its own code; every compile refused with
+ * `Unexpected character` and the agent, unable to see the character in any
+ * text it could read, spent seven calls trying to edit a line that looked
+ * correct. There is exactly one right answer for these — remove them — so
+ * they belong here rather than in a round trip.
+ *
+ * ORPHANS ONLY, for combining marks: a mark after a letter is how `é` is
+ * legitimately written in decomposed form, and stripping it would silently
+ * rewrite a page's French labels. A mark after a space, digit, quote or
+ * operator is never text — it is noise the model dropped into code.
+ *
+ * PURELY SUBTRACTIVE. An earlier version normalised to NFC first, which reads
+ * as the obvious way to tell a decomposed accent from noise — but the `[^\p{L}]`
+ * prefix already decides that, and normalising would have rewritten every
+ * decomposed accent in the page as a side effect of removing one stray mark.
+ * That is bytes the agent did not write and cannot see changing, under a
+ * message that claims only to have deleted noise, and its next `edits` anchors
+ * would miss on exactly those labels. The only bytes this touches are the ones
+ * it names.
+ */
+const ORPHAN_COMBINING_MARK = /(^|[^\p{L}])\p{M}+/gu;
+/** Zero-width space/non-joiner/joiner, bidi marks, overrides, isolates, BOM. */
+const ZERO_WIDTH_AND_BIDI = /[\u200B-\u200F\u202A-\u202E\u2060-\u2064\uFEFF]/gu;
+
+const stripInvisibleCharacters = (
+  source: string,
+): { source: string; count: number; names: string[] } => {
+  const names = new Set<string>();
+  let count = 0;
+  const note = (mark: string): void => {
+    count += 1;
+    const code = mark.codePointAt(0) ?? 0;
+    names.add(`U+${code.toString(16).toUpperCase().padStart(4, "0")}`);
+  };
+  let out = source.replace(ORPHAN_COMBINING_MARK, (match, prefix: string) => {
+    for (const mark of match.slice(prefix.length)) note(mark);
+    return prefix;
+  });
+  out = out.replace(ZERO_WIDTH_AND_BIDI, (mark) => {
+    note(mark);
+    return "";
+  });
+  return { source: out, count, names: [...names] };
+};
+
 export interface PageAutofixResult {
   source: string;
   autofixes: PageAutofix[];
@@ -163,6 +214,14 @@ const addImports = (
 export const autofixPageSource = (source: string): PageAutofixResult => {
   const autofixes: PageAutofix[] = [];
   let fixed = source;
+
+  const stripped = stripInvisibleCharacters(fixed);
+  if (stripped.count > 0) {
+    fixed = stripped.source;
+    autofixes.push({
+      message: `Removed ${stripped.count.toString()} invisible character(s) (${stripped.names.join(", ")}) the source carried — they are not valid code and nothing renders them, so they cannot be found by reading the line.`,
+    });
+  }
 
   const block = scriptSetupBlock(fixed);
   if (block) {

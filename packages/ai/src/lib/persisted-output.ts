@@ -110,6 +110,30 @@ export const persistToolResult = async (
 };
 
 /**
+ * Write ONE field of a persisted result to its own file, verbatim.
+ *
+ * A persisted object is stored as `JSON.stringify(…, null, 2)`, so a long
+ * string field inside it arrives as a single line of `\n` and `\"` escapes.
+ * That is readable enough to skim and useless to copy an exact anchor out of
+ * — and anchors are how the page and document tools take edits. Watching a
+ * real session (2026-08-28), the agent spent most of its failed `bash` and
+ * `python` calls building nested `python3 -c "…"` one-liners to un-escape a
+ * persisted SFC, while every `read` it made succeeded.
+ *
+ * Returns the workspace-relative path.
+ */
+export const persistSidecar = async (
+  content: string,
+  conversationId: string,
+  toolCallId: string,
+  extension: string,
+): Promise<string> => {
+  const relativePath = `${WORKSPACE_DIRS.outputsPersisted}/${sanitizeToolCallId(toolCallId)}.${extension}`;
+  await writeFile(conversationId, relativePath, content);
+  return relativePath;
+};
+
+/**
  * Build the `<persisted-output>` envelope the model sees in place of
  * the full tool result. Same shape as Claude Code's
  * `buildLargeToolResultMessage`: size + path + preview. The path is

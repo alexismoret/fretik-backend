@@ -85,3 +85,58 @@ describe("icon names are left alone", () => {
     expect(result.autofixes).toHaveLength(0);
   });
 });
+
+/**
+ * Measured on 2026-08-28: a model writing a long page sprayed U+0301 through
+ * its own code. Every compile refused with `Unexpected character`, and because
+ * a combining mark draws itself onto the character BEFORE it, the agent could
+ * not see it in any text it was able to read — it spent seven calls editing a
+ * line that looked correct. There is one right answer for these, so they never
+ * reach the compiler.
+ *
+ * Every invisible character below is written as an escape on purpose: pasted
+ * literally they are unreviewable, which is the whole point of the defect.
+ */
+describe("invisible characters", () => {
+  const COMBINING_ACUTE = "́";
+  const ZERO_WIDTH_SPACE = "​";
+  const BIDI_OVERRIDE = "\u202E";
+
+  test("strips a combining mark the model dropped into code", () => {
+    const source = sfc(`const n = (a * ${COMBINING_ACUTE}31) + 0;`);
+    const result = autofixPageSource(source);
+    expect(result.source).not.toContain(COMBINING_ACUTE);
+    expect(result.source).toContain("const n = (a * 31) + 0;");
+    expect(result.autofixes).toHaveLength(1);
+    expect(result.autofixes[0]?.message).toContain("U+0301");
+  });
+
+  test("strips zero-width and bidi controls", () => {
+    const result = autofixPageSource(
+      sfc(`const a${ZERO_WIDTH_SPACE} = 1;${BIDI_OVERRIDE}const b = 2;`),
+    );
+    expect(result.source).toContain("const a = 1;const b = 2;");
+    expect(result.autofixes[0]?.message).toContain("U+200B");
+    expect(result.autofixes[0]?.message).toContain("U+202E");
+  });
+
+  test("leaves real accented text alone, composed or decomposed", () => {
+    // The sweep is for ORPHAN marks — one following a letter is how `é` is
+    // legitimately written in decomposed form. Stripping those would silently
+    // rewrite a page's French labels into `Recu` and `Expedition`.
+    const composed = sfc(``, `<p>Reçu · Expédition · Créé</p>`);
+    expect(autofixPageSource(composed).source).toBe(composed);
+
+    // Byte-identical, deliberately: the sweep only removes what it names. It
+    // does NOT normalise, or removing one stray mark elsewhere in the file
+    // would silently recompose every accent in the page and break the anchors
+    // of the agent's next edit.
+    const decomposed = sfc(
+      ``,
+      `<p>Cre${COMBINING_ACUTE}e${COMBINING_ACUTE}</p>`,
+    );
+    const result = autofixPageSource(decomposed);
+    expect(result.source).toBe(decomposed);
+    expect(result.autofixes).toHaveLength(0);
+  });
+});

@@ -140,4 +140,29 @@ describe("compilePageCode — refusals, precise enough to fix in one turn", () =
     expect(structural).toBeDefined();
     expect(structural?.message).toContain("<template>");
   });
+
+  test("a script error keeps its code frame down to the caret", async () => {
+    // The message used to be cut at four lines, which for a thrown babel
+    // error inside `[vue/compiler-sfc]` kept the message, a blank line,
+    // `page.vue`, and ONE frame row — the line two ABOVE the error. The
+    // offending line and the caret under it were always lost, so on
+    // 2026-08-28 an agent retried seven times against a character it was
+    // never shown. An error frame that omits what it points at is not one.
+    const lines = [
+      "<template><div>x</div></template>",
+      '<script setup lang="ts">',
+      "const a = 1",
+      "const b = 2",
+      "const c = 3",
+      "const oops = (",
+      "const d = 4",
+      "const e = 5",
+      "</script>",
+    ].join("\n");
+    const result = await compilePageCode({ source: lines });
+    expect(result.ok).toBe(false);
+    const script = errorsOf(result).find((e) => e.block === "script");
+    expect(script).toBeDefined();
+    expect(script?.message).toContain("^");
+  });
 });

@@ -152,14 +152,63 @@ interface LocatedError {
   loc?: { start?: { line?: number; column?: number } };
 }
 
+/**
+ * A `generateCodeFrame` caret row — `   |        ^`. Vue prints its frame with
+ * `range = 2`, so the caret sits ~3 rows below the frame's first line.
+ */
+const CARET_ROW = /^\s*\|\s*\^+\s*$/;
+const MAX_MESSAGE_LINES = 14;
+const MAX_MESSAGE_CHARS = 2_000;
+
+/**
+ * Keep the compiler's message AND the whole code frame down to its caret.
+ *
+ * This used to be `slice(0, 4)`, which — for a thrown babel error inside
+ * `[vue/compiler-sfc]` — kept the message, a blank line, `page.vue`, and
+ * exactly ONE frame row: the line two ABOVE the error. The offending line and
+ * the caret under it were always cut off. On 2026-08-28 that cost an agent
+ * seven identical retries against an invisible combining accent it was never
+ * shown. An error frame that omits the thing it points at is not an error
+ * message.
+ */
+const trimCompilerMessage = (message: string): string => {
+  const lines = message.split("\n");
+  const caretAt = lines.findIndex((line) => CARET_ROW.test(line));
+  // Two rows past the caret keeps the frame's trailing context; with no caret
+  // (a plain message, no frame) the old four-line budget is already generous.
+  const keep = caretAt === -1 ? 4 : Math.min(caretAt + 3, MAX_MESSAGE_LINES);
+  return lines.slice(0, keep).join("\n").slice(0, MAX_MESSAGE_CHARS);
+};
+
+/**
+ * Name the codepoint a lexer choked on. `Unexpected character '́'` prints the
+ * character itself, and the characters that actually reach this path are the
+ * ones nothing renders: a combining mark shows as an accent on whatever
+ * precedes it, a zero-width joiner shows as nothing at all. Told `U+0301`, an
+ * agent can find and delete it; shown the glyph, it cannot.
+ */
+const UNEXPECTED_CHAR = /Unexpected character '(.)'/u;
+const describeUnexpectedChar = (message: string): string => {
+  const match = UNEXPECTED_CHAR.exec(message);
+  const whole = match?.[0];
+  const char = match?.[1];
+  if (whole === undefined || char === undefined) return message;
+  const code = char.codePointAt(0);
+  if (code === undefined) return message;
+  const hex = code.toString(16).toUpperCase().padStart(4, "0");
+  return message.replace(
+    whole,
+    `Unexpected character U+${hex} (invisible in most editors — delete it, do not retype the line around it)`,
+  );
+};
+
 const toError = (block: string, error: unknown): PageCompileError => {
   const located = error as LocatedError;
   const message =
     error instanceof Error ? error.message : String(located.message ?? error);
   return {
     block,
-    // Compiler messages can embed whole code frames — keep the first lines.
-    message: message.split("\n").slice(0, 4).join("\n").slice(0, 1_000),
+    message: trimCompilerMessage(describeUnexpectedChar(message)),
     line: located.loc?.start?.line,
     column: located.loc?.start?.column,
   };

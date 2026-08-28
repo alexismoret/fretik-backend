@@ -127,11 +127,21 @@ const suspectCut = (
  * aggregatable — it is not a metrics dimension — but it always lands, and it
  * is readable per observation in the UI. Writing both costs nothing and leaves
  * no version of this instrument that reports silence.
+ *
+ * The INPUT side rides along for a reason that only showed up in the data:
+ * this block does not merge with the SDK's, it REPLACES it. Writing only the
+ * output split left every chat generation reporting `output_reasoning`,
+ * `output_answer` and nothing else — a turn measured at 124 670 input tokens,
+ * 123 392 of them cache reads, published no input figure at all, so the one
+ * question a cache-read-dominated product most needs to ask ("what is the hit
+ * rate, and what is the miss costing") could not be asked of `usageDetails`
+ * at all. A partial write of a replacing field is a deletion.
  */
 const writeCost = (
   providerMetadata: SharedV4ProviderMetadata | undefined,
   outputTokens?: { text: number | undefined; reasoning: number | undefined },
   cut?: { generationMs: number },
+  inputTokens?: { total: number | undefined; cacheRead: number | undefined },
 ): void => {
   const cost = extractOpenRouterCost(providerMetadata);
   const provider = extractOpenRouterProvider(providerMetadata);
@@ -139,11 +149,15 @@ const writeCost = (
     typeof value === "number" && Number.isFinite(value) ? value : undefined;
   const reasoning = finite(outputTokens?.reasoning);
   const text = finite(outputTokens?.text);
+  const input = finite(inputTokens?.total);
+  const cacheRead = finite(inputTokens?.cacheRead);
   if (
     cost === undefined &&
     provider === undefined &&
     reasoning === undefined &&
     text === undefined &&
+    input === undefined &&
+    cacheRead === undefined &&
     cut === undefined
   ) {
     return;
@@ -158,13 +172,20 @@ const writeCost = (
     updateActiveObservation(
       {
         ...(cost !== undefined ? { costDetails: { total: cost } } : {}),
-        ...(reasoning !== undefined || text !== undefined
+        ...(reasoning !== undefined ||
+        text !== undefined ||
+        input !== undefined ||
+        cacheRead !== undefined
           ? {
               usageDetails: {
                 ...(reasoning !== undefined
                   ? { output_reasoning: reasoning }
                   : {}),
                 ...(text !== undefined ? { output_answer: text } : {}),
+                ...(input !== undefined ? { input: input } : {}),
+                ...(cacheRead !== undefined
+                  ? { input_cache_read: cacheRead }
+                  : {}),
               },
             }
           : {}),
@@ -247,6 +268,7 @@ export const costCaptureMiddleware: LanguageModelV4Middleware = {
       result.providerMetadata,
       result.usage.outputTokens,
       suspectCut(result.finishReason, startedAt),
+      result.usage.inputTokens,
     );
     return result;
   },
@@ -265,6 +287,7 @@ export const costCaptureMiddleware: LanguageModelV4Middleware = {
                 part.providerMetadata,
                 part.usage.outputTokens,
                 suspectCut(part.finishReason, startedAt),
+                part.usage.inputTokens,
               );
             }
             controller.enqueue(part);

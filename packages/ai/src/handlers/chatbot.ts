@@ -34,6 +34,7 @@ import { getConversation } from "@fretik/shared/services/ai/get";
 import { markConversationRead } from "@fretik/shared/services/ai/members/mark-read";
 import { applyMentions } from "@fretik/shared/services/ai/members/mention";
 import {
+  deleteStalePartialMessages,
   loadConversationForAgent,
   saveMessage,
   saveMessages,
@@ -373,6 +374,19 @@ const persistAssistantMessages = async (
     })),
     tx,
   );
+  // The recorder writes under the WIRE id, and that id changes whenever the
+  // turn merges a second `toUIMessageStream` (failover, dead-step
+  // continuation). Its pre-rename row is never overwritten by the write above
+  // and would surface as a duplicate assistant message holding a prefix of
+  // these same parts. Scoped to this turn and to rows still marked partial.
+  if (turnId !== null) {
+    await deleteStalePartialMessages({
+      conversationId,
+      turnId,
+      keepIds: assistantMessages.map((m) => m.id).filter(isUuid),
+      tx,
+    });
+  }
   return assistantMessages;
 };
 

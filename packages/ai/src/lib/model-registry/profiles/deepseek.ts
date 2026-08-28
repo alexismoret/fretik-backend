@@ -332,6 +332,36 @@ export const DEEPSEEK_PROFILES: Record<string, ModelProfile> = {
         // Parasail's old "19.5s TTFT" exclusion was a bad sample: OpenRouter
         // puts its latency p50 at 779 ms, second best of all 22.
         //
+        // WAFER (`wafer/fast`) and MAKORA, both evaluated 2026-08-28 as
+        // replacements for CoreWeave, both REFUSED. Neither corrupts text
+        // (0/4 runs on the numeric probe below), and both are ZDR-reachable:
+        //
+        //   upstream   intact  tok/s   best   warm $    cache behaviour
+        //   wafer         0/3  202.8  222.5  0.00368    warms after 1 call
+        //   makora        3/3   94.5  126.5  0.00105    2 hits in 8 calls
+        //   deepinfra     3/3   29.7   39.9  0.00086    99% from call 1
+        //
+        // Wafer is the fastest endpoint this model has ever been benched on —
+        // 6.8× DeepInfra — and it MUTILATES: 0/3 on the integrity gate, the
+        // answer cut mid-sentence at the tool-call boundary, the exact defect
+        // that removed Together on 2026-08-13. Every agent turn ends in a tool
+        // call, so this is the one column that cannot be traded.
+        //
+        // Makora passes integrity but its cache FLAPS: 2 hits in 8 calls on a
+        // byte-identical 75k prefix (0,0,0,99%,0,0,99%,0), i.e. ~$0.0038 a turn
+        // in expectation against DeepInfra's $0.00086. Same class as
+        // SiliconFlow above — unpredictable, not merely dear. Note the bench's
+        // 2-warm-call cache probe reported a flat "0%" for it; the flapping is
+        // only visible at n=8, so re-measure this one with the standalone cost
+        // probe rather than the bench column.
+        //
+        // Neither could be admitted as a harmless "availability option" under
+        // the pool doctrine above, and this is worth keeping straight: that
+        // argument only holds for a member `sort: "throughput"` will NOT
+        // promote. Both of these are FASTER than the incumbent, so the sort
+        // would promote them on day one — Wafer into truncated turns, Makora
+        // into a 4.4× bill.
+        //
         // TWO of those exclusions expired and were reversed on 2026-08-13
         // (CoreWeave's "never caches", Fireworks' "HTTP 429"). An upstream is a
         // moving target: re-bench before quoting a note, never act on its age.
@@ -340,7 +370,41 @@ export const DEEPSEEK_PROFILES: Record<string, ModelProfile> = {
         // HTTP 429): a 429 inside `only` fails over silently (0 errors reached
         // the caller over 10 turns), so the option costs nothing, and its p99 is
         // 412 tok/s — four times anything else here — when it does serve.
-        only: ["baseten", "fireworks", "venice", "coreweave", "deepinfra"],
+        //
+        // COREWEAVE IS OUT since 2026-08-28: it CORRUPTS EMITTED TEXT. It
+        // inserts U+200B (zero-width space) — and fullwidth punctuation
+        // U+FF09 `）` / U+FF1F `？`, plus the odd Han character — adjacent to
+        // NUMERIC tokens. The insertion is positional, not random noise:
+        //
+        //   Net 1.200, T.Net  <U+200B>4.800, Total <U+200B>314.88
+        //
+        // taken from the recorded output of gen 639dd333c9873d44 (prod session
+        // 01a04855, 12:30:41). The character is in the RAW response body, so it
+        // is generation-side, not a framing bug on our side.
+        //
+        // Reproduced on demand, n=3 per upstream, ~35k context, numeric
+        // transcription task, identical request:
+        //
+        //   upstream    runs corrupted   hits   codepoints
+        //   coreweave        2/3          237   U+200B ×220, U+FF1F ×17
+        //   deepinfra        0/3            0   —
+        //   fireworks        0/2            0   —
+        //
+        // Why it is a HARD exclusion rather than a preference: the agent writes
+        // CODE, and every one of these characters is a syntax error the
+        // compiler and the Python kernel refuse (`SyntaxError: invalid
+        // non-printable character U+200B`). Worse, the corruption is
+        // SELF-PROPAGATING — the model reads its own poisoned output back from
+        // the history and keeps copying the bad values, so one hit costs a
+        // whole turn: prod session 01a04855 spent 27 tool calls and never
+        // produced the file, and 01a03e9b before it burned 7 identical compile
+        // refusals on the same defect wearing U+0301 instead.
+        //
+        // The task matters when re-benching this: two earlier probes asked for
+        // a Vue component and found NOTHING at 120k. The defect lands on
+        // numbers, so a probe without figures in it cannot see it — and depth
+        // is not the trigger either (prod corruption started at 37k input).
+        only: ["baseten", "fireworks", "venice", "deepinfra"],
       },
       enabled: true,
       // Promoted to the `chat` + `workflow` default 2026-08-02, full curated

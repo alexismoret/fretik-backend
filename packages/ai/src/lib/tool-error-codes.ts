@@ -29,6 +29,15 @@ export const TOOL_ERROR_CODES = {
   // and publishes. Same family reasoning as above: no argument fixes it — the
   // work belongs to `buildPage`, so the loop guard must not steer a retry.
   PAGE_REQUIRES_BUILDER: "PAGE_REQUIRES_BUILDER",
+  // The page's SFC did not compile, so nothing was written. Deliberately NOT
+  // an input-shape code: the CALL was well formed and the tool is not "right"
+  // — the SOURCE is broken. Under `INVALID_ARGS` the loop guard told the agent
+  // "the call is malformed, the tool is right, retry the same shape, do not
+  // switch tools", which is precisely the advice that turned one bad write
+  // into seven identical refusals (2026-08-28). The generic branch — fix the
+  // input, take a different route, or report the blocker — is the correct
+  // steer here.
+  COMPILE_FAILED: "COMPILE_FAILED",
 
   // Workflow (headless workflow-agent tools)
   NO_WORKFLOW_RUN: "NO_WORKFLOW_RUN",

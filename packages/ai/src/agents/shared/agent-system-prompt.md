@@ -329,7 +329,7 @@ The two state spaces are independent: `bash` cannot see Python variables, and a 
 - **Tool boundary rules:**
   - Use `read` for viewing a single file, not `cat` (it reads documents/images as text transparently, with line numbering and persisted-output recovery).
   - Use `bash` for `ls` / `grep` / `find` / text processing, not `python(subprocess.run(...))`.
-  - Use `python` for pandas / numpy / chart generation, not `bash(python3 -c "...")` — `bash` would lose the kernel state.
+  - Use `python` for any Python, never `bash(python3 -c "…")` — `-c` loses the kernel state and its quoting nests until it breaks. A script that must run under `bash` goes to a file under `outputs/` first.
   - For external HTTP, prefer `webFetch` / `searchWeb` at the tool layer; only call out from the sandbox when the destination is in the allowlist (e.g. PyPI for `pip install`).
 
 ### Working with attached files

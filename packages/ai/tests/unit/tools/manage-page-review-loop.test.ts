@@ -139,6 +139,7 @@ await mockModule("@fretik/shared/services/pages/retrieve", {
       datasets: [],
       code: { source: SOURCE, compiled: { js: "x", css: "" } },
     },
+    runtimeErrors: [],
   }),
   listPages: async () => [],
 });
@@ -207,7 +208,10 @@ const {
 } = await import("../../../src/services/page-review/page-session-store");
 
 const execManagePage = async (
-  input: { action: "review" | "update" | "create" } & Record<string, unknown>,
+  input: { action: "review" | "update" | "create" | "get" } & Record<
+    string,
+    unknown
+  >,
   overrides: { traceId?: string } = {},
 ): Promise<Record<string, unknown>> => {
   const tool = createManagePageTool({ authoring: true });
@@ -323,9 +327,72 @@ describe("update — no page-scale write is ever paid twice", () => {
       definition: { code: { source: submitted } },
       rewrite: true,
     });
-    expect(result["code"]).toBe("INVALID_ARGS");
-    expect(String(result["hint"])).toContain("WAS KEPT");
+    // NOT an input-shape code: the call was well formed, the SOURCE was not.
+    // Under INVALID_ARGS the loop guard tells the model "the call is
+    // malformed, the tool is right, retry the same shape" — the advice that
+    // produced seven identical refusals on 2026-08-28.
+    expect(result["code"]).toBe("COMPILE_FAILED");
+    expect(String(result["hint"])).toContain("kept for 15 minutes");
     expect(await readPageDraft(scope, pageId)).toBe(submitted);
+  });
+
+  test("get returns the kept draft, so reading and editing see one document", async () => {
+    updateThrows = compileRefusal();
+    const submitted = `${SOURCE}\nbroken((`;
+    await execManagePage({
+      action: "update",
+      definition: { code: { source: submitted } },
+      rewrite: true,
+    });
+    const view = await execManagePage({ action: "get" });
+    const definition = view["definition"] as { code: { source: string } };
+    expect(definition.code.source).toBe(submitted);
+    expect(view["sourceIs"]).toBe("kept-draft");
+  });
+
+  test("the draft only wins when EVERY edit lands on it", async () => {
+    updateThrows = compileRefusal();
+    const submitted = `${SOURCE}\nbroken((`;
+    await execManagePage({
+      action: "update",
+      definition: { code: { source: submitted } },
+      rewrite: true,
+    });
+    updateThrows = null;
+    // One anchor matches the draft, the other matches neither document. A
+    // single match used to pin the whole batch to the draft and drop the
+    // miss in silence, so the repair never landed and the same broken text
+    // recompiled forever.
+    const result = await execManagePage({
+      action: "update",
+      edits: [
+        { oldString: "broken((", newString: "// fixed" },
+        { oldString: "text that is in neither document", newString: "x" },
+      ],
+    });
+    expect(result["code"]).toBe("INVALID_ARGS");
+    expect(String(result["error"])).toContain("kept draft");
+    // The draft is untouched: a batch that did not fully apply never became
+    // the new draft, so the next attempt still starts from a known text.
+    expect(await readPageDraft(scope, pageId)).toBe(submitted);
+  });
+
+  test("a compile refusal names the edits that did NOT land", async () => {
+    // Partial application against the saved page: one anchor lands, one has
+    // drifted, and the result does not compile. The miss used to be computed
+    // and then dropped on this path — reported only when the write SUCCEEDED
+    // — so an agent whose repair edit had silently missed read the same error
+    // again and concluded the tool was ignoring it.
+    updateThrows = compileRefusal();
+    const result = await execManagePage({
+      action: "update",
+      edits: [
+        { oldString: "const lanes = [];", newString: "const lanes = [1];" },
+        { oldString: "text that this page does not contain", newString: "x" },
+      ],
+    });
+    expect(result["code"]).toBe("COMPILE_FAILED");
+    expect(String(result["hint"])).toContain("did NOT apply");
   });
 
   test("the next edits anchor on the kept draft, and success clears it", async () => {

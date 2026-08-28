@@ -41,6 +41,7 @@ import { getRuntimeContext } from "../agents/shared/runtime-context";
 import {
   DOMAIN_TOOL_THRESHOLD_CHARS,
   maybePersistLargeOutput,
+  persistSidecar,
 } from "../lib/persisted-output";
 import {
   TOOL_ERROR_CODES,
@@ -497,8 +498,15 @@ const scopeOf = (userId: string | null): PageScope =>
   userId ? "private" : "team";
 
 /** What the agent reads back of a page — `compiled` is stripped (build output
- * is noise; `source` is the document), the error feed's tail is attached. */
-const agentPageView = (page: PageResponse) => ({
+ * is noise; `source` is the document), the error feed's tail is attached.
+ *
+ * `draftSource`, when a refused write left one behind, REPLACES `code.source`.
+ * Returning the saved page while `update { edits }` patches the kept draft is
+ * two different documents behind one name: it is what let an agent spend seven
+ * calls "fixing" a line that only existed in a text it was never shown
+ * (2026-08-28). What `get` prints must be what the next edit anchors on, and
+ * what the compile errors count lines against. */
+const agentPageView = (page: PageResponse, draftSource?: string) => ({
   pageId: page.id,
   name: page.name,
   description: page.description,
@@ -514,8 +522,15 @@ const agentPageView = (page: PageResponse) => ({
     datasets: page.definition.datasets,
     operations: page.definition.operations,
     ...(page.definition.theme ? { theme: page.definition.theme } : {}),
-    code: { source: page.definition.code.source },
+    code: { source: draftSource ?? page.definition.code.source },
   },
+  ...(draftSource !== undefined
+    ? {
+        sourceIs: "kept-draft",
+        keptDraftNote:
+          "This is the source your last refused write left behind, NOT what is saved. It is what update { edits } anchors on and what the compile errors number lines against. Fix it here, or send a whole corrected file as definition.code.source to replace it.",
+      }
+    : {}),
   ...(page.runtimeErrors.length > 0
     ? {
         runtimeErrors: page.runtimeErrors
@@ -947,14 +962,31 @@ export const createManagePageTool = (config: { authoring: boolean }) =>
               teamId,
               requester,
             });
+            // Show the kept draft when there is one — `update { edits }` would
+            // anchor on it, so printing the saved page instead hands the agent
+            // a document its own next call does not patch.
+            const keptDraft = await readPageDraft(turnScope, input.pageId);
             // A page's source can reach 240k chars. Persisting beats
             // truncating: the agent anchors its edits on exact text, and a
             // half-streamed SFC is text it cannot anchor on.
-            return await maybePersistLargeOutput(
-              agentPageView(page),
+            const view = agentPageView(page, keptDraft ?? undefined);
+            const persisted = await maybePersistLargeOutput(
+              view,
               ctx.conversationId,
               options.toolCallId,
             );
+            if (typeof persisted !== "string" || !ctx.conversationId) {
+              return persisted;
+            }
+            // The persisted JSON escapes the whole SFC onto one line. Anchors
+            // are copied from this text, so hand it over unescaped as well.
+            const sourcePath = await persistSidecar(
+              view.definition.code.source,
+              ctx.conversationId,
+              options.toolCallId,
+              "source.vue",
+            );
+            return `${persisted}\nThe SFC source on its own, unescaped: ${sourcePath} — read it with \`read\`, and copy edit anchors from there rather than from the JSON above.`;
           }
 
           case "delete": {
@@ -1049,6 +1081,10 @@ export const createManagePageTool = (config: { authoring: boolean }) =>
             let sections = definitionInput;
             let editFailures: string[] = [];
             let draftConsumed = false;
+            // Which document the edits were applied to. Reported on every
+            // outcome: an agent that cannot tell the kept draft from the saved
+            // page cannot reason about why its anchors missed.
+            let editedBase: "kept-draft" | "saved-page" | null = null;
             // `edits` compose with the OTHER sections, and only `definition.code`
             // displaces them. Declaring an operation and wiring the button that
             // runs it is one change; making the tool take it as two calls is
@@ -1058,19 +1094,33 @@ export const createManagePageTool = (config: { authoring: boolean }) =>
               // A refused write leaves its source behind (see the compile
               // catch below); edits sent right after a refusal mean "fix MY
               // version", so they anchor on the draft first and fall back to
-              // the stored source only when none of them match it.
+              // the stored source.
+              //
+              // The draft only wins when EVERY anchor lands on it. Preferring
+              // it on a single match is what turned one bad write into a loop
+              // (2026-08-28, 7 identical compile refusals): the batch carried
+              // both edits that still matched the draft and the repair edit
+              // for the character that broke it. One match pinned the whole
+              // batch to the draft, the repair silently missed, the same
+              // broken text recompiled, and the refusal below re-saved it and
+              // refreshed its TTL. A missed anchor means the agent is not
+              // describing THIS text, so the draft is not the document it
+              // means — partial application within one document is fine, but
+              // choosing BETWEEN two documents is not a place to guess.
               const draft = await readPageDraft(turnScope, input.pageId);
               const onDraft =
                 draft !== null ? applyPageCodeEdits(draft, edits) : null;
-              const edited =
-                onDraft?.ok === true
-                  ? onDraft
-                  : applyPageCodeEdits(storedSource, edits);
-              draftConsumed = onDraft?.ok === true;
+              const draftTakesAll =
+                onDraft?.ok === true && onDraft.failures.length === 0;
+              const edited = draftTakesAll
+                ? onDraft
+                : applyPageCodeEdits(storedSource, edits);
+              draftConsumed = draftTakesAll;
+              editedBase = draftTakesAll ? "kept-draft" : "saved-page";
               if (!edited.ok) {
                 return toolError(
                   TOOL_ERROR_CODES.INVALID_ARGS,
-                  edited.error,
+                  `${edited.error} (anchored against the saved page${draft !== null ? ", after none of the edits matched the kept draft either" : ""}.)`,
                   "Call { action: 'get' } to read the current source, then re-anchor the edit.",
                 );
               }
@@ -1148,10 +1198,23 @@ export const createManagePageTool = (config: { authoring: boolean }) =>
                   input.pageId,
                   sections.code.source,
                 );
+                // Naming what did NOT land is the difference between one more
+                // edit and a loop. These misses used to be dropped on this
+                // path (they were only reported on success), so an agent whose
+                // repair edit had silently missed saw the same error twice and
+                // concluded the tool was ignoring it.
+                const missed =
+                  editFailures.length > 0
+                    ? ` ${editFailures.length.toString()} of your edits did NOT apply and are not in the kept source: ${editFailures.join(" ")}`
+                    : "";
+                const base =
+                  editedBase === "kept-draft"
+                    ? "the previously kept source"
+                    : "the saved page";
                 return toolError(
-                  TOOL_ERROR_CODES.INVALID_ARGS,
+                  TOOL_ERROR_CODES.COMPILE_FAILED,
                   compileMessage,
-                  "Nothing was saved, but the source you sent WAS KEPT for 15 minutes. Do not resend it: fix the named lines with update { edits } — they apply to the kept source, which then compiles and saves.",
+                  `Nothing was saved. Your edits were applied to ${base}, and the RESULT is kept for 15 minutes — { action: 'get' } now returns THAT text, which is what the line numbers above refer to. Read it, then fix the named lines with update { edits }.${missed} If two attempts have not cleared it, stop editing and send the whole corrected file as definition.code.source — that replaces the kept source outright.`,
                 );
               }
               throw error;
@@ -1181,6 +1244,11 @@ export const createManagePageTool = (config: { authoring: boolean }) =>
               // page. Re-send only these — the rest is already stored.
               ...(editFailures.length > 0
                 ? { editsNotApplied: editFailures }
+                : {}),
+              // Which document the edits patched. Silent on the normal path
+              // (there was no draft, so there was nothing to disambiguate).
+              ...(editedBase === "kept-draft"
+                ? { editedBase: "kept-draft" }
                 : {}),
               warnings: distinctWarnings([
                 ...editFailures,

@@ -28,6 +28,34 @@ const rowToUiMessage = (row: typeof aiMessages.$inferSelect): UIMessage => {
 };
 
 /**
+ * Drop `partial: true` rows belonging to a turn that also has a FINISHED row.
+ * Reading net for the same mid-turn id rename `deleteStalePartialMessages`
+ * cleans up on write: the invariant is that a turn only gets non-partial rows
+ * once it reached `onFinish`, so any partial row still sitting beside one is a
+ * dead prefix of the same turn — rendered as a duplicate assistant message.
+ *
+ * Rows whose turn has no finished row are left alone: that is a genuinely
+ * interrupted turn, and history is supposed to show it (with its "interrupted"
+ * badge). Best-effort on a windowed read — a partial whose finished sibling
+ * falls outside the `limit` survives, which is the safe direction.
+ */
+const dropStalePartialRows = (
+  rows: (typeof aiMessages.$inferSelect)[],
+): (typeof aiMessages.$inferSelect)[] => {
+  const isPartial = (row: typeof aiMessages.$inferSelect): boolean =>
+    row.metadata?.partial === true;
+  const finishedTurns = new Set(
+    rows
+      .filter((row) => row.turnId !== null && !isPartial(row))
+      .map((row) => row.turnId),
+  );
+  if (finishedTurns.size === 0) return rows;
+  return rows.filter(
+    (row) => !(isPartial(row) && finishedTurns.has(row.turnId)),
+  );
+};
+
+/**
  * Bump a conversation's `updatedAt` so it counts as the last-activity marker
  * that drives list ordering and per-member unread detection. Inserting a
  * message doesn't touch the parent row on its own.
@@ -63,7 +91,7 @@ export const getConversationMessages = async (
       .where(eq(aiMessages.conversationId, conversationId))
       .orderBy(desc(aiMessages.seq))
       .limit(limit);
-    return rows.reverse().map(rowToUiMessage);
+    return dropStalePartialRows(rows.reverse()).map(rowToUiMessage);
   }
   const rows = await db
     .select()
@@ -71,7 +99,7 @@ export const getConversationMessages = async (
     .where(eq(aiMessages.conversationId, conversationId))
     .orderBy(asc(aiMessages.seq));
 
-  return rows.map(rowToUiMessage);
+  return dropStalePartialRows(rows).map(rowToUiMessage);
 };
 
 /**
@@ -96,7 +124,7 @@ export const loadConversationForAgent = async (
     .orderBy(desc(aiMessages.seq))
     .limit(limit);
 
-  return rows.reverse().map(rowToUiMessage);
+  return dropStalePartialRows(rows.reverse()).map(rowToUiMessage);
 };
 
 /**
@@ -269,4 +297,45 @@ export const saveMessages = async (
   await touchConversation(conversationId, tx);
 
   return rows;
+};
+
+/**
+ * Delete a turn's leftover `partial: true` rows once its final rows have
+ * landed. `keepIds` are the ids the final write persisted; anything else
+ * still marked partial under the same `turnId` is a dead prefix.
+ *
+ * Such a prefix exists whenever the wire message id CHANGES mid-turn. Every
+ * merged `toUIMessageStream` emits its own `start` chunk with a fresh id, so
+ * a turn that fails over to the fallback model (or continues after a dead
+ * step) renames the message the recorder has been writing under. The recorder
+ * keys its upserts by wire id, so the pre-rename row is never overwritten by
+ * `onFinish` — it survives as a second assistant message holding a PREFIX of
+ * the same parts. On reload the thread then shows that prefix immediately
+ * followed by the complete message: duplicated steps, and two step-group
+ * pills back to back with nothing between them.
+ *
+ * Gated on `partial` so a finished message can never be deleted, and on
+ * `turnId` so only this turn's rows are in scope.
+ */
+export const deleteStalePartialMessages = async (params: {
+  conversationId: string;
+  turnId: string;
+  keepIds: string[];
+  tx?: Transaction;
+}): Promise<number> => {
+  const { conversationId, turnId, keepIds, tx } = params;
+  const deleted = await (tx ?? db)
+    .delete(aiMessages)
+    .where(
+      and(
+        eq(aiMessages.conversationId, conversationId),
+        eq(aiMessages.turnId, turnId),
+        sql`${aiMessages.metadata} ->> 'partial' = 'true'`,
+        keepIds.length > 0
+          ? sql`${aiMessages.id} <> ALL(${keepIds}::uuid[])`
+          : sql`true`,
+      ),
+    )
+    .returning({ id: aiMessages.id });
+  return deleted.length;
 };

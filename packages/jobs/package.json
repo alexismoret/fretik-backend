@@ -10,6 +10,8 @@
     "dreaming:run": "bun run src/scripts/run-dreaming.ts",
     "memory:audit": "bun run src/scripts/memory-audit.ts",
     "gc:run": "bun run src/scripts/run-gc.ts",
+    "models:sync": "bun run src/scripts/run-model-sync.ts",
+    "test": "NODE_ENV=test bun test tests/unit",
     "typecheck": "tsc --noEmit",
     "lint": "oxlint --type-aware",
     "lint:fix": "oxlint --type-aware --fix",

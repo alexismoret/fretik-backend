@@ -30,7 +30,13 @@ export const DEEPSEEK_PROFILES: Record<string, ModelProfile> = {
     family: "deepseek",
     tiers: ["flagship"],
     catalog: {
-      id: "deepseek/deepseek-v4-pro",
+      // Pinned to the DATED snapshot (2026-08-29), like `deepseek-v4-flash`
+      // below and for the same reason: an undated alias moves under us, so the
+      // model a team benched is not necessarily the one it runs a month later.
+      // Both catalogues carry this id — 16 OpenRouter endpoints, and the
+      // Gateway lists it alongside the April snapshot at identical context and
+      // price.
+      id: "deepseek/deepseek-v4-pro-0813",
       contextLength: 1_048_576,
       maxCompletionTokens: 384_000,
       inputModalities: ["text"],

@@ -7,6 +7,7 @@ import {
   MEMORY_DREAMING_QUEUE,
   MEMORY_MAINTENANCE_QUEUE,
   MEMORY_RESOLVE_QUEUE,
+  MODEL_SYNC_QUEUE,
   RECORD_CARD_QUEUE,
   VECTOR_RECONCILE_QUEUE,
   WORKFLOW_TRIGGER_QUEUE,
@@ -103,4 +104,13 @@ export const getVectorReconcileQueue = (): Queue => {
     connection: getProducerConnection(),
   });
   return vectorReconcileQueue;
+};
+
+let modelSyncQueue: Queue | null = null;
+
+export const getModelSyncQueue = (): Queue => {
+  modelSyncQueue ??= new Queue(MODEL_SYNC_QUEUE, {
+    connection: getProducerConnection(),
+  });
+  return modelSyncQueue;
 };

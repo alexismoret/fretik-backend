@@ -10,6 +10,7 @@ import {
   validationError,
 } from "@fretik/shared/lib/errors";
 import { reasoningLevelSchema } from "@fretik/shared/schemas/reasoning";
+import { getLiveStateSync } from "@fretik/shared/services/model-registry/live";
 import { getTeamAiSettings } from "@fretik/shared/services/team-ai-settings/get-for-team";
 import { upsertTeamAiSettings } from "@fretik/shared/services/team-ai-settings/upsert";
 import { OpenAPIHono } from "@hono/zod-openapi";
@@ -50,6 +51,10 @@ const buildCard = (
   const branding = getFamilyBranding(profile.family);
   const metric = metrics.metrics[profile.key];
   const { assessment, catalog } = profile;
+  // Live state when the snapshot is warm; the curated facts otherwise. A picker
+  // that empties because a metadata table is unreachable would be a worse
+  // failure than a slightly optimistic context figure.
+  const live = getLiveStateSync(profile.key);
   return {
     key: profile.key,
     displayName: getModelDisplayName(profile.key),
@@ -71,9 +76,25 @@ const buildCard = (
       ...(assessment.nativeInput.fileMimeTypes.length > 0 ? ["file"] : []),
       ...(assessment.nativeInput.audio ? ["audio"] : []),
     ],
-    contextLength: catalog.contextLength,
+    /**
+     * The window a request can actually use: the SMALLEST any reachable
+     * endpoint offers, less a safety margin, as measured by the nightly sync.
+     * The catalogue headline is the fallback and is optimistic — endpoints for
+     * one model span 262 144 to 1 048 576 tokens, and routing picks one per
+     * request, so quoting the largest tells a team it has room it does not.
+     */
+    contextLength: live?.effectiveContextLength ?? catalog.contextLength,
     /** Zero-data-retention routing. `false` for the Mistral family only. */
     zeroDataRetention: assessment.provider.zdr === true,
+    /**
+     * How the engine currently grades the model's serving, from live uptime,
+     * throughput and this week's incidents. `null` before the first sync.
+     *
+     * Shown so a team can tell "this model is slow today" from "I chose badly".
+     * A model the engine had to disable outright never reaches this field — it
+     * is already unselectable, with `disabledReason` saying why.
+     */
+    health: live?.health === "unknown" ? null : (live?.health ?? null),
     /**
      * Whether the team may pick this card. Disabled models are STILL RETURNED
      * so the picker can show them greyed out with `disabledReason`; the client

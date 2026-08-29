@@ -40,6 +40,14 @@ export const COLLECTION_INDEX_QUEUE = "collection-index";
 // calls the AI service per repair would serialise behind it. Not on
 // `memory-maintenance` either — concurrency 1, behind the 15s sweeps.
 export const VECTOR_RECONCILE_QUEUE = "vector-reconcile";
+// Dedicated queue for the nightly model sync. One pass walks four public APIs
+// — the gateway catalogue, gateway and OpenRouter endpoints, Artificial
+// Analysis — plus a ZDR probe, model by model, and is network-bound from end to
+// end: its duration is upstream latency, not ours. On the concurrency-1
+// maintenance queue that is head-of-line blocking, so the 15s journal and
+// workflow-trigger sweeps would not run for as long as the crawl lasts. Same
+// reasoning `mcp-refresh` and `vector-reconcile` already carry.
+export const MODEL_SYNC_QUEUE = "model-sync";
 
 /** One journal event to resolve against the collection graph (P3). */
 export interface MemoryResolveJobData {
@@ -108,6 +116,12 @@ export const WORKFLOW_STALL_SWEEP_JOB = "workflow-stall-sweep";
 /** 5min — reconciles the conversation wait registry and re-signals owed
  * resumes (backstop for a completion or resume signal lost to a restart). */
 export const CONVERSATION_TASK_SWEEP_JOB = "conversation-task-sweep";
+/** 5min — mails ONE digest of every model alert nothing has delivered yet.
+ * Cheap (one indexed read, usually empty), so it rides the maintenance queue
+ * with the other 5-minute sweeps. Delivery is deliberately not done at the
+ * raise site: alerts are raised from inside streaming turns, and an SMTP round
+ * trip has no business on a token stream. */
+export const MODEL_ALERT_SWEEP_JOB = "model-alert-sweep";
 /** 02:00 UTC cron — builds the field indexes big collection tables are missing and
  * retires the ones Postgres never reads. The catch-all trigger, for tables that
  * crossed the size threshold by growing row by row rather than through an
@@ -117,6 +131,10 @@ export const COLLECTION_INDEX_SWEEP_JOB = "collection-index-sweep";
 /** Job name on MCP_REFRESH_QUEUE — 05:00 UTC cron, re-introspects every active
  * MCP connection and adopts any tool-surface change. */
 export const MCP_SNAPSHOT_REFRESH_JOB = "mcp-snapshot-refresh";
+
+/** Job name on MODEL_SYNC_QUEUE — 00:30 UTC cron, re-reads every upstream
+ * catalogue and rewrites what the fleet routes on. */
+export const MODEL_SYNC_JOB = "model-sync-nightly";
 
 /** Job names on MEMORY_DREAMING_QUEUE. */
 export const DREAMING_TEAM_JOB = "dreaming-team";

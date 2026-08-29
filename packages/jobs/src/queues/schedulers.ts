@@ -5,6 +5,8 @@ import {
   GC_DEMOTE_JOB,
   JOURNAL_SWEEP_JOB,
   MCP_SNAPSHOT_REFRESH_JOB,
+  MODEL_ALERT_SWEEP_JOB,
+  MODEL_SYNC_JOB,
   VECTOR_RECONCILE_SWEEP_JOB,
   WORKFLOW_STALL_SWEEP_JOB,
   WORKFLOW_TRIGGER_SWEEP_JOB,
@@ -13,6 +15,7 @@ import {
   getCollectionIndexQueue,
   getMcpRefreshQueue,
   getMemoryMaintenanceQueue,
+  getModelSyncQueue,
   getVectorReconcileQueue,
 } from "./queues";
 
@@ -41,12 +44,42 @@ const MCP_REFRESH_CRON = "0 5 * * *";
  * `CREATE INDEX CONCURRENTLY`, which is IO-heavy and best kept away from the
  * dreaming and GC passes. */
 const COLLECTION_INDEX_CRON = "0 2 * * *";
-/** 01:00 UTC — opens the nightly chain, before the index sweep at 02:00. */
+/** 01:00 UTC — after the model sync at 00:30, before the index sweep at 02:00. */
 const VECTOR_RECONCILE_CRON = "0 1 * * *";
+/**
+ * 00:30 UTC — opens the nightly chain, half an hour AHEAD of vector-reconcile.
+ * Both passes are network-bound (upstream catalogues here, the AI service
+ * there) and neither has a duration we control, so overlapping them would put
+ * two long crawls on the same egress and the same connection pool on the one
+ * night nobody is watching. The gap is a separation, not a guarantee: a sync
+ * that overruns 01:00 simply runs alongside, on its own queue.
+ */
+const MODEL_SYNC_CRON = "30 0 * * *";
+/** 5min — collapses whatever the engine decided since the last pass into one
+ * email. See MODEL_ALERT_SWEEP_JOB for why delivery is not done at the raise
+ * site. */
+const MODEL_ALERT_SWEEP_INTERVAL_MS = 5 * 60_000;
 
 const CRON_OPTS = {
   removeOnComplete: { count: 30 },
   removeOnFail: { count: 100 },
+};
+
+/**
+ * Retries cover a REJECTION only. Everything `runModelSync` can attribute — a
+ * catalogue that will not answer, one model that blows up — it reports as a
+ * status plus `stats.errors` and returns normally, which BullMQ correctly reads
+ * as a completed job. What is left is the unexpected throw, and replaying the
+ * pass is safe for it: every row is recomputed from the upstream catalogues
+ * rather than incremented, so a second attempt rewrites the same values.
+ *
+ * Two attempts, not more. Beyond that the failure is ours or the upstream is
+ * down for the night, and the `model_sync_runs` row is where that gets read.
+ */
+const MODEL_SYNC_OPTS = {
+  ...CRON_OPTS,
+  attempts: 2,
+  backoff: { type: "exponential" as const, delay: 60_000 },
 };
 
 export const registerSchedulers = async (): Promise<void> => {
@@ -93,6 +126,13 @@ export const registerSchedulers = async (): Promise<void> => {
     { every: STALL_SWEEP_INTERVAL_MS },
     { name: CONVERSATION_TASK_SWEEP_JOB, opts: CRON_OPTS },
   );
+  // Stays on the maintenance queue: one indexed read that is empty on almost
+  // every pass, and at most one email. Nothing here can hold the worker.
+  await maintenance.upsertJobScheduler(
+    MODEL_ALERT_SWEEP_JOB,
+    { every: MODEL_ALERT_SWEEP_INTERVAL_MS },
+    { name: MODEL_ALERT_SWEEP_JOB, opts: CRON_OPTS },
+  );
   // Dedicated queue — one pass can hold a `CREATE INDEX CONCURRENTLY` for
   // minutes, which on the concurrency-1 maintenance queue would stop the 15s
   // sweeps outright for the duration.
@@ -110,7 +150,17 @@ export const registerSchedulers = async (): Promise<void> => {
     { name: MCP_SNAPSHOT_REFRESH_JOB, opts: CRON_OPTS },
   );
 
-  // First of the nightly chain, and on its own queue: the pass calls the AI
+  // Opens the nightly chain, on its own queue: nothing else may be running
+  // when the fleet's routing table is rewritten, and a crawl of four public
+  // APIs must not sit in front of a 15s sweep. `attempts: 2` is the whole
+  // retry policy — see MODEL_SYNC_OPTS.
+  await getModelSyncQueue().upsertJobScheduler(
+    MODEL_SYNC_JOB,
+    { pattern: MODEL_SYNC_CRON, tz: "UTC" },
+    { name: MODEL_SYNC_JOB, opts: MODEL_SYNC_OPTS },
+  );
+
+  // Second of the nightly chain, and on its own queue: the pass calls the AI
   // service once per repair, so it must not queue behind the index sweep's
   // minutes-long `CREATE INDEX CONCURRENTLY`.
   await getVectorReconcileQueue().upsertJobScheduler(

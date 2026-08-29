@@ -47,14 +47,19 @@ export const CHEAP_MODEL = getProfileForRole("cheap-tasks").catalog.id;
 export const cheapProviderFor = (
   modelId: string,
 ): NonNullable<OpenRouterChatSettings["provider"]> => {
-  const profile = Object.values(MODEL_PROFILES).find(
-    (p) => p.catalog.id === modelId,
-  );
+  const served =
+    Object.values(MODEL_PROFILES).find((p) => p.catalog.id === modelId) ??
+    getProfileForRole("cheap-tasks");
+  const { zdr, ignore } = served.assessment.provider;
   return {
-    zdr: (profile ?? getProfileForRole("cheap-tasks")).assessment.provider.zdr,
+    zdr,
     // Same floor as the memory judges: a quantized 20b loses output discipline.
     quantizations: ["bf16", "fp16", "unknown"],
-    ignore: ["fireworks"],
+    // Read from the profile, never hardcoded — the Fireworks exclusion is a
+    // fact about gpt-oss (see `profiles/openai.ts`), and these call sites
+    // resolve the model PER TEAM. Hardcoding it removed the endpoint from
+    // models the measurement never covered.
+    ...(ignore ? { ignore: [...ignore] } : {}),
     // Without this the block expressed no speed preference at all, so these
     // calls ran on OpenRouter's DEFAULT price ordering — which is how the
     // 5.8 s median above happened. Nothing here needs the cache stickiness that

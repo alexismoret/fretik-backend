@@ -8,12 +8,14 @@ import {
   GC_DEMOTE_JOB,
   JOURNAL_SWEEP_JOB,
   MEMORY_MAINTENANCE_QUEUE,
+  MODEL_ALERT_SWEEP_JOB,
   WORKFLOW_STALL_SWEEP_JOB,
   WORKFLOW_TRIGGER_SWEEP_JOB,
 } from "../queues/names";
 import { runDreamingSweep } from "./dreaming";
 import { runGcDemote } from "./gc-demote";
 import { runJournalSweep } from "./journal-sweep";
+import { runModelAlertSweep } from "./model-alert-sweep";
 import { runWorkflowTriggerSweep } from "./workflow-trigger-sweep";
 
 /**
@@ -73,6 +75,15 @@ export const startMaintenanceWorker = (): Worker => {
           if (reconciled > 0 || signaled > 0 || slotsCleared > 0) {
             console.info(
               `[conversation-task-sweep] reconciled ${reconciled.toString()} tasks, signaled ${signaled.toString()} conversations, cleared ${slotsCleared.toString()} stuck slots`,
+            );
+          }
+          return;
+        }
+        case MODEL_ALERT_SWEEP_JOB: {
+          const { delivered } = await runModelAlertSweep();
+          if (delivered > 0) {
+            console.info(
+              `[model-alert-sweep] delivered ${delivered.toString()} alerts in one digest`,
             );
           }
           return;

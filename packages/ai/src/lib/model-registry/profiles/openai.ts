@@ -312,7 +312,20 @@ export const OPENAI_PROFILES: Record<string, ModelProfile> = {
       // role envelope, which overrides `defaultLevel` — this value only applies
       // when a team picks it directly for a tier.
       reasoning: { style: "effort", defaultLevel: "low" },
-      provider: { requireParameters: true, zdr: true, sort: "throughput" },
+      // Fireworks is excluded on THIS family, not fleet-wide: the P5 recall
+      // bench (2026-07) had gpt-oss flip correct↔broken across upstreams, and
+      // Fireworks injected blocks on noise 6/6 while quant-listing as
+      // "unknown". The exclusion used to be hardcoded in the memory-utility and
+      // cheap-task provider builders, where it also applied to every OTHER
+      // model those roles can serve — including `deepseek-v4-flash`, whose
+      // vetted pool has listed Fireworks as its best endpoint since
+      // 2026-08-13. A model-specific measurement belongs on the model.
+      provider: {
+        requireParameters: true,
+        zdr: true,
+        sort: "throughput",
+        ignore: ["fireworks"],
+      },
       enabled: true,
       aaSlug: "gpt-oss-120b",
       evalGate: { status: "passed" },
@@ -359,7 +372,9 @@ export const OPENAI_PROFILES: Record<string, ModelProfile> = {
       },
       cache: { strategy: "none" },
       reasoning: { style: "effort", defaultLevel: "low" },
-      provider: { requireParameters: true, zdr: true },
+      // Fireworks excluded — see the note on `gpt-oss-120b` above. This is the
+      // model the 6/6 noise-injection was measured on.
+      provider: { requireParameters: true, zdr: true, ignore: ["fireworks"] },
       enabled: true,
       aaSlug: "gpt-oss-20b",
       evalGate: { status: "passed" },

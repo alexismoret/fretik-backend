@@ -46,6 +46,20 @@
  * `require_parameters` empties the pool). Runs the probe and exits;
  * without the flag, the catalog drift check runs as before.
  *
+ * Gateway readiness:
+ *
+ *     bun run models:check --gateway-probe   # needs AI_GATEWAY_API_KEY
+ *
+ * Answers "could the fleet move to the gateway today?" WITHOUT moving it:
+ * every role is built on the gateway with its real pool and reasoning
+ * envelope, then asked to call a tool. Tool calling is probed on every role
+ * because it is the one capability the previous transport protected with
+ * `require_parameters`, which this dialect cannot express — the pool filter is
+ * what replaces it, and this is where a hole in it shows. The account gates
+ * are reported separately from the roles, because a card, purchased credits
+ * and a Pro plan are three different walls with three different fixes, and
+ * twenty identical role failures name none of them.
+ *
  * Price drift:
  *
  *     bun run models:check --prices      # needs OPENROUTER_API_KEY
@@ -129,6 +143,138 @@ if (process.argv.includes("--probe")) {
     process.exit(1);
   }
   console.log(`\nOK — all ${bindings.length} roles route a minimal request.`);
+  process.exit(0);
+}
+
+if (process.argv.includes("--gateway-probe")) {
+  const { resolveModelOnTransport } =
+    await import("../src/lib/model-registry/resolve");
+  const { ROLE_BINDINGS } = await import("../src/lib/model-registry/profiles");
+  const { extractGatewayReport, gatewayConfigured } =
+    await import("../src/lib/model-registry/transports/gateway");
+  const { generateText, tool } = await import("ai");
+  const { z } = await import("zod");
+
+  if (!gatewayConfigured()) {
+    console.error("AI_GATEWAY_API_KEY is not set — nothing to probe.");
+    process.exit(2);
+  }
+
+  // The account gates come BEFORE the roles, because they explain every role
+  // failure at once and each one has a different fix. Measured 2026-08-29:
+  // servicing needs a card, the full catalogue needs purchased credits, and
+  // zero-retention needs a Pro plan — three separate walls, each with its own
+  // error string, and a run that reported 20 identical role failures instead of
+  // naming the wall would send someone reading routing code for an hour.
+  const ACCOUNT_GATES: { re: RegExp; verdict: string }[] = [
+    {
+      re: /valid credit card/i,
+      verdict:
+        "the team has no card on file, so the gateway refuses every request. Add one in the Vercel dashboard.",
+    },
+    {
+      re: /Free tier users do not have access/i,
+      verdict:
+        "free-tier credits cover only part of the catalogue. Top up AI Gateway Credits to reach this model.",
+    },
+    {
+      re: /rate-limited/i,
+      verdict:
+        "free-tier rate limit. Top up AI Gateway Credits; the paid tier raises it.",
+    },
+    {
+      re: /Zero Data Retention .* Pro and Enterprise/i,
+      verdict:
+        "ZERO-RETENTION IS UNAVAILABLE ON THIS PLAN. Every profile that requires it cannot move to the gateway until the team is on Vercel Pro.",
+    },
+  ];
+  const gateFor = (message: string): string | undefined =>
+    ACCOUNT_GATES.find((gate) => gate.re.test(message))?.verdict;
+
+  const weather = tool({
+    description: "Current weather for a city.",
+    inputSchema: z.object({ city: z.string() }),
+    execute: ({ city }: { city: string }) =>
+      Promise.resolve({ city, celsius: 21 }),
+  });
+
+  const bindings = Object.values(ROLE_BINDINGS);
+  const gates = new Set<string>();
+  let failures = 0;
+  let skipped = 0;
+
+  // Sequential, not `Promise.all` like --probe: the free tier rate-limits per
+  // model, and a parallel burst would report throttling as if it were the
+  // models failing.
+  for (const binding of bindings.sort((a, b) => a.role.localeCompare(b.role))) {
+    let resolvedOnGateway;
+    try {
+      resolvedOnGateway = resolveModelOnTransport(binding.role, "gateway");
+    } catch (err) {
+      // No gateway id is a fact about the catalogue, not a failure to route:
+      // two Mistral profiles have no equivalent there at the version we run.
+      skipped += 1;
+      console.log(
+        `SKIP ${binding.role.padEnd(22)} ${err instanceof Error ? err.message : String(err)}`,
+      );
+      continue;
+    }
+
+    // Tool calling on every role, not just the tool-using ones: it is the
+    // capability the previous transport protected with `require_parameters`,
+    // which this dialect has no equivalent for. If a pool member silently
+    // dropped the parameter, this is where it shows.
+    try {
+      const result = await generateText({
+        model: resolvedOnGateway.model,
+        prompt: "What is the weather in Lyon? Call the tool, then answer.",
+        maxOutputTokens: 2000,
+        tools: { weather },
+      });
+      // Per STEP, not the deprecated top-level field: a tool round-trip is two
+      // calls, and the last one is the one that answered.
+      const report = extractGatewayReport(
+        result.steps.at(-1)?.providerMetadata,
+      );
+      const calls = result.steps.flatMap((step) => step.toolCalls);
+      const cost =
+        report.costUsd === undefined
+          ? "cost n/a"
+          : `$${report.costUsd.toFixed(6)}`;
+      if (calls.length === 0) {
+        failures += 1;
+        console.error(
+          `FAIL ${binding.role.padEnd(22)} ${resolvedOnGateway.profile.key} — routed to ${report.servingProvider ?? "?"} but emitted NO tool call`,
+        );
+        continue;
+      }
+      console.log(
+        `OK   ${binding.role.padEnd(22)} ${resolvedOnGateway.profile.key.padEnd(22)} ${(report.servingProvider ?? "?").padEnd(14)} ${cost}`,
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const gate = gateFor(message);
+      if (gate !== undefined) gates.add(gate);
+      failures += 1;
+      console.error(
+        `FAIL ${binding.role.padEnd(22)} ${resolvedOnGateway.profile.key} — ${message.slice(0, 140)}`,
+      );
+    }
+  }
+
+  console.log(
+    `\n${(bindings.length - failures - skipped).toString()} routed, ${failures.toString()} failed, ${skipped.toString()} not on this transport.`,
+  );
+  for (const gate of gates) console.error(`\nACCOUNT: ${gate}`);
+  if (failures > 0) {
+    console.error(
+      "\nThe fleet is unaffected — this probe builds models on the gateway without moving any of them.",
+    );
+    process.exit(1);
+  }
+  console.log(
+    "\nEvery role routes, calls a tool and reports a cost on the gateway.",
+  );
   process.exit(0);
 }
 

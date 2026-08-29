@@ -61,6 +61,9 @@ const PRE_OUTPUT_TRANSIENT_REASONS: ReadonlySet<string> = new Set([
   "request_timeout",
   "server_error",
   "provider_retryable",
+  // The routing layer refused the request; nothing was generated, so a
+  // transparent re-stream cannot duplicate anything.
+  "gateway_error",
 ]);
 
 /**
@@ -92,8 +95,32 @@ export const isRecoverableToolCallError = (err: unknown): boolean =>
   NoSuchToolError.isInstance(err) ||
   TOOL_CALL_ERROR_RE.test(errorString(err));
 
+/**
+ * "Routing found nobody to send this to."
+ *
+ * One condition, four spellings, because two transports each phrase it their
+ * own way and each has more than one path to it. OpenRouter answers a 404 body
+ * ("No endpoints found matching your data policy") when a filter — a
+ * quantization floor, `require_parameters`, a ZDR restriction — empties the
+ * pool; the Gateway answers `no_providers_available` with a `type`
+ * discriminator, most often when a model has no zero-retention host for a
+ * request that asked for one.
+ *
+ * It is classified TRANSIENT deliberately. The pool is a moving target: a host
+ * that was rate-limited a minute ago is back, and the turn's own retry-then-
+ * fallback rail is a better answer than a hard error the user has to read.
+ */
 const EMPTY_POOL_RE =
-  /No endpoints found|no allowed providers|no available providers/i;
+  /No endpoints found|no allowed providers|no available providers|no_providers_available|No ZDR .*providers available/i;
+
+/**
+ * The gateway's own 5xx envelope. Its errors carry a `type` discriminator, and
+ * the retryable ones are worth separating from a plain upstream 500: they mean
+ * the routing layer failed, not the model, so the same model on the same
+ * transport is very likely to work on the next attempt.
+ */
+const GATEWAY_RETRYABLE_RE =
+  /gateway_internal_error|gateway_upstream_error|gateway_timeout|GatewayError/i;
 const NETWORK_RESET_RE =
   /ECONNRESET|ETIMEDOUT|EPIPE|ECONNREFUSED|socket hang up|fetch failed|terminated|network error/i;
 const SCHEMA_RE =
@@ -260,6 +287,13 @@ export const classifyStreamError = (
   // status branches so it never falls through to `client_error`.
   if (EMPTY_POOL_RE.test(text))
     return make("transient", "empty_provider_pool", status);
+
+  // A failure of the ROUTING layer rather than of the model. Checked before the
+  // status branches for the same reason as the pool: the gateway reports these
+  // through several statuses, and the retry rail is the right answer to all of
+  // them — the next attempt is very likely to land somewhere healthy.
+  if (GATEWAY_RETRYABLE_RE.test(text))
+    return make("transient", "gateway_error", status);
 
   if (APICallError.isInstance(err)) {
     if (status === 429) return make("transient", "rate_limited", 429);

@@ -97,25 +97,27 @@ export const MINIMAX_PROFILES: Record<string, ModelProfile> = {
       // than correctness — but a pin means paying that latency every turn with
       // no way for a faster member to win.
       //
-      // CoreWeave leads the pool on price and decode. It is admitted on
-      // OpenRouter's live figures and on its behaviour under
-      // `deepseek-v4-flash`, where it serves 3/3 intact — NOT on a local
-      // `models:bench` of THIS model, which has not been run. Two consequences,
-      // stated rather than implied: the ordering is `sort`'s to decide from
-      // live p50, not ours, and this block is due a bench before anyone quotes
-      // it as measured. `bun run models:bench` is the instrument, and its
-      // `intact` column is the admission criterion that matters most on a
-      // family with a known boundary bug.
+      // CoreWeave WAS the pool leader here, admitted on OpenRouter's live
+      // figures and on its 3/3 intact under `deepseek-v4-flash` — never on a
+      // bench of THIS model. It is OUT since 2026-08-28: under
+      // `deepseek-v4-flash` it was measured inserting U+200B next to NUMERIC
+      // tokens (2/3 runs, 237 hits) and the corruption self-propagates through
+      // history. The defect is a property of the serving stack, not of the
+      // model, so the exclusion travels with the provider name across every
+      // profile that lists it. Re-admission is a bench with a numeric probe,
+      // not the age of this note.
       //
-      // Novita and DeepInfra stay as members. Under the pool doctrine a member
-      // the sort never promotes costs nothing, and they are the two upstreams
-      // known to be reachable on ZDR — dropping them to make a point about
-      // CoreWeave would trade a slow turn for an empty pool.
+      // Novita and DeepInfra carry the pool. Novita ignores
+      // `reasoning.max_tokens` outright and SPLITS the `</think>` boundary
+      // mid-stream — contained downstream by `stripOrphanThinkTags`
+      // (`../resolve.ts`), so it costs latency rather than correctness. They
+      // are the two upstreams known reachable on ZDR: dropping either to make
+      // a point would trade a slow turn for an empty pool.
       provider: {
         requireParameters: true,
         zdr: true,
         sort: "throughput",
-        only: ["CoreWeave", "Novita", "DeepInfra"],
+        only: ["Novita", "DeepInfra"],
       },
       enabled: true,
       // Promoted via the C3 gate, 2026-06-12. All capabilities at or

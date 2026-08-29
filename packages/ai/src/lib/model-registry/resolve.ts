@@ -5,6 +5,16 @@ import type {
   LanguageModelV4StreamPart,
 } from "@ai-sdk/provider";
 import {
+  isTransportId,
+  type LiveModelState,
+  type TransportId,
+} from "@fretik/shared/model-registry/types";
+import {
+  getLiveRegistry,
+  getLiveStateSync,
+  onLiveRegistryChange,
+} from "@fretik/shared/services/model-registry/live";
+import {
   createOpenRouter,
   type OpenRouterChatSettings,
 } from "@openrouter/ai-sdk-provider";
@@ -16,7 +26,10 @@ import { extractReasoningMiddleware, wrapLanguageModel } from "ai";
 import { TransformStream } from "node:stream/web";
 import { instrumentModel } from "../model-instrumentation";
 import { wrapModelWithCache } from "../openrouter-cache";
+import { modelIdsForProfile } from "./gateway-ids";
 import { MODEL_PROFILES, ROLE_BINDINGS } from "./profiles";
+import { createTransportRegistry } from "./transports";
+import type { ReasoningRequest } from "./transports/types";
 import type {
   ModelProfile,
   ModelRole,
@@ -78,10 +91,15 @@ export const openrouter = createOpenRouter({
  * Speed-first routing with a QUALITY floor for the memory-utility judges
  * (P5 recall bench, 2026-07): the same gpt-oss-20b flipped correct↔broken
  * across OpenRouter upstreams. fp4/fp8 quantized servings are excluded (a
- * quantized 20b loses the judge's format discipline) and Fireworks is
- * ignored (empirically broken there — injected blocks on noise 6/6 —
- * while quant-listed as "unknown"). `sort: "throughput"` then picks the
- * fastest of what remains (Groq p50 ~0.5s); fallbacks stay enabled.
+ * quantized 20b loses the judge's format discipline). `sort: "throughput"`
+ * then picks the fastest of what remains (Groq p50 ~0.5s); fallbacks stay
+ * enabled.
+ *
+ * The Fireworks exclusion that used to be hardcoded HERE now lives on the
+ * gpt-oss profiles, where it was measured. Hardcoded, it also applied to every
+ * other model these roles can serve: three of them run `deepseek-v4-flash`,
+ * whose vetted pool has listed Fireworks as its best endpoint since
+ * 2026-08-13, so the profile named an upstream this builder then removed.
  *
  * These filters bound the pool; they do NOT make it a vetted shortlist.
  * Measured 2026-08 on gpt-oss-120b (19 endpoints): `"unknown"` alone admits
@@ -116,7 +134,7 @@ const memoryUtilityProvider = (
     require_parameters: true,
     zdr,
     sort: "throughput",
-    ignore: ignore ? ["fireworks", ...ignore] : ["fireworks"],
+    ...(ignore ? { ignore: [...ignore] } : {}),
     ...(order ? { order: [...order] } : {}),
     ...(selfGoverned ? {} : { quantizations: [...QUANTIZATION_FLOOR] }),
     // The call-site shortlist (the recall judge's latency guard) wins over the
@@ -419,10 +437,38 @@ export const reasoningParamForProfile = (
   return { enabled: true, effort: wireEffort(resolved) };
 };
 
+/**
+ * Reduce the role's reasoning envelope to the transport-neutral request.
+ *
+ * Derived FROM the OpenRouter envelope rather than recomputed beside it. That
+ * envelope is where every reasoning decision was measured and recorded — the
+ * 1 500-token chat budget, the 256-token memory budget, the 8 000-token page
+ * allowance, MiniMax's 5 000 cap — and 59 tests pin its output. Deriving means
+ * a model that crosses transports carries the identical allowance; a second
+ * implementation would mean two tables to keep in step, and the one that drifts
+ * would drift silently.
+ */
+const reasoningRequestForRole = (
+  binding: RoleBinding,
+  profile: ModelProfile,
+): ReasoningRequest | undefined => {
+  const reasoning = settingsForRole(binding, profile)?.reasoning;
+  if (!reasoning) return undefined;
+  if (reasoning.enabled === false) return { kind: "off" };
+  if ("max_tokens" in reasoning)
+    return { kind: "budget", maxTokens: reasoning.max_tokens };
+  if (reasoning.effort === "none") return { kind: "off" };
+  return { kind: "effort", effort: reasoning.effort };
+};
+
 export interface ResolvedModel {
   model: LanguageModelV4;
   profile: ModelProfile;
   binding: RoleBinding;
+  /** The transport that will serve it — recorded on traces and incidents. */
+  transport: TransportId;
+  /** Live row at construction time, `undefined` when the snapshot was cold. */
+  live?: LiveModelState;
 }
 
 export const getProfile = (key: string): ModelProfile => {
@@ -580,12 +626,98 @@ const orphanTagMiddleware: LanguageModelV4Middleware = {
   },
 };
 
-const buildResolved = (binding: RoleBinding): ResolvedModel => {
+/**
+ * Escape hatch of last resort: force every model onto one transport, whatever
+ * the database says. For the case where live state itself is the problem and
+ * nobody can reach a database to fix it — a restart with one variable set beats
+ * a deploy.
+ */
+const FORCED_TRANSPORT = ((): TransportId | undefined => {
+  const raw = process.env.MODEL_TRANSPORT_FORCE;
+  return raw !== undefined && isTransportId(raw) ? raw : undefined;
+})();
+
+const TRANSPORTS = createTransportRegistry(settingsForRole);
+
+/**
+ * The transport that will actually serve a profile, and the model id it uses
+ * there.
+ *
+ * Order: the forced override, then live state, then whatever the profile has an
+ * id for. The last step matters on a cold boot and on a model the seed has
+ * never run for — resolution must produce a working model before the database
+ * has an opinion, because a metadata table being unreachable is not a reason
+ * for the chatbot to stop answering.
+ */
+const transportFor = (
+  profileKey: string,
+  live: LiveModelState | undefined,
+): { transport: TransportId; modelId: string } => {
+  const ids = modelIdsForProfile(profileKey);
+  const candidates: (TransportId | undefined)[] = [
+    FORCED_TRANSPORT,
+    live?.transport,
+    "openrouter",
+    "gateway",
+  ];
+  for (const candidate of candidates) {
+    if (candidate === undefined) continue;
+    const modelId = live?.modelIds[candidate] ?? ids[candidate];
+    if (modelId !== undefined && TRANSPORTS.has(candidate))
+      return { transport: candidate, modelId };
+  }
+  throw new Error(
+    `No usable transport for profile "${profileKey}" — no model id on any implemented transport`,
+  );
+};
+
+/**
+ * The same resolution pinned to ONE transport, with no fallback to another.
+ *
+ * This is what makes "could we switch today?" answerable without switching:
+ * the probe builds every role on the target transport and makes a real call,
+ * while the fleet keeps routing where it routes. Falling back here would defeat
+ * the purpose — a probe that quietly answers from the transport already in use
+ * reports success for a migration nobody tested.
+ */
+const forcedTransportFor = (
+  profileKey: string,
+  live: LiveModelState | undefined,
+  transport: TransportId,
+): { transport: TransportId; modelId: string } => {
+  const modelId =
+    live?.modelIds[transport] ?? modelIdsForProfile(profileKey)[transport];
+  if (modelId === undefined)
+    throw new Error(
+      `profile "${profileKey}" has no ${transport} model id — it cannot be reached there`,
+    );
+  if (!TRANSPORTS.has(transport))
+    throw new Error(`Transport "${transport}" has no adapter registered`);
+  return { transport, modelId };
+};
+
+const buildResolved = (
+  binding: RoleBinding,
+  forceTransport?: TransportId,
+): ResolvedModel => {
   const profile = getProfile(binding.profileKey);
-  const settings = settingsForRole(binding, profile);
-  const raw = settings
-    ? openrouter.chat(profile.catalog.id, settings)
-    : openrouter.chat(profile.catalog.id);
+  const live = getLiveStateSync(binding.profileKey);
+  const { transport, modelId } =
+    forceTransport === undefined
+      ? transportFor(binding.profileKey, live)
+      : forcedTransportFor(binding.profileKey, live, forceTransport);
+  const adapter = TRANSPORTS.get(transport);
+  if (!adapter)
+    throw new Error(`Transport "${transport}" has no adapter registered`);
+
+  const raw = adapter.buildModel({
+    modelId,
+    binding,
+    profile,
+    live,
+    endpoints: live?.endpointStats ?? [],
+    reasoning: reasoningRequestForRole(binding, profile),
+  });
   const cleaned =
     binding.settingsKind === "chat" || binding.settingsKind === "page-build"
       ? wrapLanguageModel({
@@ -596,31 +728,90 @@ const buildResolved = (binding: RoleBinding): ResolvedModel => {
           middleware: [orphanTagMiddleware, reasoningTagMiddleware],
         })
       : raw;
-  const model = instrumentModel(
-    binding.wrapCache ? wrapModelWithCache(cleaned, profile) : cleaned,
-  );
-  return { model, profile, binding };
+  // The manual breakpoint wrapper is an OpenRouter-era mechanism. On the
+  // gateway the same job is done upstream by `caching: "auto"`, and doing both
+  // would place two competing sets of markers on one prompt.
+  const cachedForTransport =
+    binding.wrapCache && transport === "openrouter"
+      ? wrapModelWithCache(cleaned, profile)
+      : cleaned;
+  const model = instrumentModel(cachedForTransport, {
+    profileKey: binding.profileKey,
+    transport,
+  });
+  return { model, profile, binding, transport, live };
 };
 
-// Per-replica memoization of STATELESS constructs (model client
-// wrappers). Deterministic from code, so every replica builds
-// identical instances — no cross-replica coordination needed, same
-// multi-replica model as the historical module-level singletons.
+// Per-replica memoization of model client wrappers. Deterministic from code AND
+// from live state, so every replica builds identical instances — but live state
+// CHANGES, and a quarantine that only takes effect on the next deploy is the
+// exact failure this engine exists to remove. `onLiveRegistryChange` below
+// clears every map the moment any replica writes.
 const resolved = new Map<ModelRole, ResolvedModel>();
 
 /**
- * Resolve a role to its instrumented model instance. Memoized — one
- * instance per role for the lifetime of the process, mirroring the
- * historical module-level singletons. Per-team / per-conversation
- * profile overrides (C8) will layer on top of these code defaults.
+ * Roles that have a designated fallback MODEL — a different family on a
+ * different upstream, chosen so the two cannot fail the same way.
+ *
+ * Read when a model reaches `lastResort`: every upstream it has, on every
+ * transport, is quarantined, so it is still answering only because an empty
+ * pool would be a hard outage. At that point the fallback is strictly better
+ * than the model it replaces, and using it needs no new machinery — these pairs
+ * already exist for mid-turn failover.
+ */
+const ROLE_FALLBACK: Partial<Record<ModelRole, ModelRole>> = {
+  chat: "chat-fallback",
+  workflow: "chat-fallback",
+  "dispatch-cheap": "chat-fallback",
+  "pre-extract": "pre-extract-fallback",
+  vision: "vision-fallback",
+  transform: "transform-fallback",
+};
+
+/**
+ * Resolve a role to its instrumented model instance. Memoized per role, and the
+ * memo is dropped whenever live state changes anywhere in the fleet.
+ *
+ * A role whose model is in `lastResort` resolves to its FALLBACK role instead.
+ * One hop only: if the fallback is in the same state there is nothing better to
+ * reach for, and bouncing between two exhausted models would just add latency
+ * to the same answer.
  */
 export const resolveModel = (role: ModelRole): ResolvedModel => {
   const cached = resolved.get(role);
   if (cached) return cached;
-  const entry = buildResolved(ROLE_BINDINGS[role]);
+  const fallbackRole = ROLE_FALLBACK[role];
+  const binding = ROLE_BINDINGS[role];
+  const degraded =
+    fallbackRole !== undefined &&
+    getLiveStateSync(binding.profileKey)?.lastResort === true;
+  if (degraded) {
+    console.warn(
+      `[model-registry] ${binding.profileKey} is last-resort (every upstream quarantined) — serving role "${role}" from "${fallbackRole}" instead`,
+    );
+  }
+  const entry = buildResolved(
+    degraded && fallbackRole !== undefined
+      ? { ...ROLE_BINDINGS[fallbackRole], role }
+      : binding,
+  );
   resolved.set(role, entry);
   return entry;
 };
+
+/**
+ * Resolve a role on a NAMED transport, bypassing both the live row's choice and
+ * the memo. For probes and the admin scorecard: it answers "what would this
+ * role do over there", and it must not leave that instance behind in a cache
+ * the fleet reads.
+ *
+ * Throws when the profile has no id on that transport — which is itself the
+ * answer, and a better one than silently probing somewhere else.
+ */
+export const resolveModelOnTransport = (
+  role: ModelRole,
+  transport: TransportId,
+): ResolvedModel => buildResolved(ROLE_BINDINGS[role], transport);
 
 // Bounded: getProfile throws on unknown keys, so at most one entry per
 // registry profile.
@@ -775,7 +966,30 @@ const TIER_DEFAULT_ROLE: Record<ModelTier, ModelRole> = {
 export const isSelectableForTier = (
   profile: ModelProfile,
   tier: ModelTier,
-): boolean => profile.assessment.enabled && profile.tiers.includes(tier);
+): boolean =>
+  profile.assessment.enabled &&
+  profile.tiers.includes(tier) &&
+  liveAllowsSelection(profile.key);
+
+/**
+ * The live half of the selection rule.
+ *
+ * Curation and the runtime engine each hold a veto, and neither can overrule
+ * the other into enabling something. A profile marked `enabled: false` in
+ * TypeScript disappears on deploy without a database write; a model the engine
+ * disabled — or drove to `lastResort`, meaning every upstream it has is
+ * quarantined — disappears without one either, and a redeploy does not bring it
+ * back. `retired` and `candidate` are likewise not offerable: a candidate has
+ * been discovered, not chosen.
+ *
+ * A cold or unreachable snapshot answers `true`: an unreachable metadata table
+ * must never empty the model picker.
+ */
+const liveAllowsSelection = (profileKey: string): boolean => {
+  const live = getLiveStateSync(profileKey);
+  if (!live) return true;
+  return live.enabled && live.status === "published" && !live.lastResort;
+};
 
 /**
  * The thinking depths a USER may request for a profile — what a reasoning
@@ -931,3 +1145,46 @@ export const resolveModelForRoleProfile = (
   roleProfileResolved.set(cacheKey, entry);
   return entry;
 };
+
+/**
+ * Drop every memoized model instance.
+ *
+ * A memo keyed only by role or profile is correct while its inputs are
+ * compile-time constants. They no longer are: transport, provider pool,
+ * quarantines and the last-resort flag all come from live state, so an instance
+ * built before a quarantine keeps routing to the host that was just removed.
+ * That is precisely the delay this engine exists to eliminate, and it would be
+ * the more embarrassing version of it — the decision taken, recorded, and then
+ * ignored by the process that took it.
+ */
+export const clearResolvedModelCache = (): void => {
+  resolved.clear();
+  chatResolvedByProfile.clear();
+  pageBuildResolvedByProfile.clear();
+  roleProfileResolved.clear();
+};
+
+/**
+ * Warm live state and re-arm resolution against it. Called once at service
+ * boot: without it the first turn of a fresh replica resolves against an empty
+ * snapshot and memoizes that, so a quarantine written yesterday would not apply
+ * until the first invalidation of the day.
+ *
+ * Never throws. A replica that cannot reach the database still serves, on the
+ * curated defaults — which is the same thing it did before this table existed.
+ */
+export const warmModelRegistry = async (): Promise<void> => {
+  try {
+    await getLiveRegistry();
+    clearResolvedModelCache();
+  } catch (err: unknown) {
+    console.warn(
+      "[model-registry] live state unavailable at boot — serving code defaults:",
+      err instanceof Error ? err.message : err,
+    );
+  }
+};
+
+// Any write, on any replica, invalidates every instance built from the old
+// state. Registered at module load so no caller has to remember to.
+onLiveRegistryChange(clearResolvedModelCache);

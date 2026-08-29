@@ -1,6 +1,10 @@
 import { reasoningLevelSchema } from "@fretik/shared/schemas/reasoning";
 import { describe, expect, test } from "bun:test";
 import {
+  modelIdsForProfile,
+  PROFILES_WITHOUT_GATEWAY_ID,
+} from "../../../src/lib/model-registry/gateway-ids";
+import {
   MODEL_PROFILES,
   ROLE_BINDINGS,
 } from "../../../src/lib/model-registry/profiles";
@@ -75,6 +79,11 @@ describe("settingsForRole — parity with historical settings objects", () => {
     // `order` disables `sort`, so nothing faster could ever win. What this test
     // now pins is that the fallback routes through a POOL: `sort` present,
     // `order` absent.
+    //
+    // CoreWeave left this pool on 2026-08-29, for the reason it left
+    // deepseek-v4-flash's the day before: it inserts U+200B next to numbers.
+    // The defect belongs to the serving stack, so the exclusion is asserted on
+    // every profile that listed it, not only on the one it was measured under.
     expect(
       settingsForRole(
         ROLE_BINDINGS["chat-fallback"],
@@ -84,7 +93,7 @@ describe("settingsForRole — parity with historical settings objects", () => {
       provider: {
         require_parameters: true,
         zdr: true,
-        only: ["CoreWeave", "Novita", "DeepInfra"],
+        only: ["Novita", "DeepInfra"],
         sort: "throughput",
       },
       reasoning: { enabled: true, max_tokens: 5_000 },
@@ -130,8 +139,12 @@ describe("settingsForRole — parity with historical settings objects", () => {
         sort: "throughput",
       },
     });
-    // gpt-oss-120b declares no pool, so its envelope is unchanged — a profile
-    // without filters must not gain any.
+    // gpt-oss-120b declares no POOL, so it gains no `only` — a profile without
+    // one must not inherit another's. It does carry its own `ignore`: the
+    // Fireworks exclusion moved onto the gpt-oss profiles on 2026-08-29 (it was
+    // hardcoded in the memory-utility builder, where it also hit models the
+    // measurement never covered). On the model, it now travels to every role
+    // gpt-oss serves — which is what a defect in a serving stack warrants.
     expect(
       settingsForRole(
         ROLE_BINDINGS["pre-extract-fallback"],
@@ -139,7 +152,12 @@ describe("settingsForRole — parity with historical settings objects", () => {
       ),
     ).toEqual({
       reasoning: { effort: "minimal" },
-      provider: { require_parameters: true, zdr: true, sort: "throughput" },
+      provider: {
+        require_parameters: true,
+        zdr: true,
+        sort: "throughput",
+        ignore: ["fireworks"],
+      },
     });
   });
 
@@ -180,12 +198,15 @@ describe("settingsForRole — parity with historical settings objects", () => {
     // flag would exclude a pinned model's only ZDR endpoint when it omits a
     // sent parameter (Gemini's Vertex route doesn't advertise `temperature`).
     const bareNoSort = { provider: { zdr: true } };
+    // cheap-tasks is bound to gpt-oss-20b, the model the Fireworks
+    // noise-injection was measured on (6/6). Its `ignore` is part of the
+    // profile since 2026-08-29, so even a bare role carries it.
     expect(
       settingsForRole(
         ROLE_BINDINGS["cheap-tasks"],
         getProfileForRole("cheap-tasks"),
       ),
-    ).toEqual(bareNoSort);
+    ).toEqual({ provider: { zdr: true, ignore: ["fireworks"] } });
     expect(
       settingsForRole(ROLE_BINDINGS.vision, getProfileForRole("vision")),
     ).toEqual(bareNoSort);
@@ -646,6 +667,41 @@ describe("thinking depth — what a user may actually request", () => {
       expect(glm && effectiveReasoningLevel(glm, null)).toBeUndefined();
       expect(glm && effectiveReasoningLevel(glm, undefined)).toBeUndefined();
     });
+  });
+});
+
+describe("transport model ids", () => {
+  // Every pair in `gateway-ids.ts` was checked against both live catalogues by
+  // hand, because the two disagree in every direction and a plausible-looking
+  // transformation is how a team gets served a different model. These tests
+  // guard the two ways that audit rots: a profile added without an entry, and
+  // an entry left behind when a profile is removed.
+  test("every profile is either mapped to the gateway or listed as unmapped", () => {
+    for (const key of Object.keys(MODEL_PROFILES)) {
+      const ids = modelIdsForProfile(key);
+      const mapped = ids.gateway !== undefined;
+      const declaredUnmapped = PROFILES_WITHOUT_GATEWAY_ID.includes(key);
+      // Exactly one must hold. Both would mean the list contradicts the map;
+      // neither means a profile was added and nobody checked the catalogue.
+      expect([key, mapped !== declaredUnmapped]).toEqual([key, true]);
+    }
+  });
+
+  test("the unmapped list names no profile that has since gained an id", () => {
+    for (const key of PROFILES_WITHOUT_GATEWAY_ID) {
+      expect([key, MODEL_PROFILES[key] !== undefined]).toEqual([key, true]);
+    }
+  });
+
+  test("every profile keeps an OpenRouter id — the rollback depends on it", () => {
+    // Moving a model back is one database write, and it only works because the
+    // row still carries an id for the transport it is going back to.
+    for (const key of Object.keys(MODEL_PROFILES)) {
+      expect([key, modelIdsForProfile(key).openrouter]).toEqual([
+        key,
+        MODEL_PROFILES[key]?.catalog.id,
+      ]);
+    }
   });
 });
 

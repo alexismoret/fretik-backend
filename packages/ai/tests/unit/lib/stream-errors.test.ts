@@ -11,6 +11,7 @@ import {
   classifyStreamError,
   delay,
   describeStreamError,
+  isTransparentlyRecoverable,
   retryAfterMs,
   toStructuredError,
   withSoftTimeout,
@@ -84,6 +85,37 @@ describe("classifyStreamError", () => {
       reason: "empty_provider_pool",
       statusCode: 404,
     });
+  });
+
+  // The gateway phrases the same condition its own way. Its wording is asserted
+  // here rather than trusted, because a spelling this regex does not know falls
+  // through to `client_error` — fatal, no retry, and the user reads it.
+  test("gateway reports an empty pool as no_providers_available → transient", () => {
+    const err = apiError({
+      statusCode: 400,
+      message:
+        'No ZDR (Zero Data Retention) providers available for model: example/model-name. Providers considered: provider-a, provider-b {"type":"no_providers_available"}',
+    });
+    expect(classifyStreamError(err)).toEqual({
+      kind: "transient",
+      reason: "empty_provider_pool",
+      statusCode: 400,
+    });
+  });
+
+  test("gateway routing failure → transient/gateway_error, recoverable on the fallback", () => {
+    const err = apiError({
+      statusCode: 502,
+      message: "GatewayError: gateway_upstream_error",
+    });
+    const classification = classifyStreamError(err);
+    expect(classification).toEqual({
+      kind: "transient",
+      reason: "gateway_error",
+      statusCode: 502,
+    });
+    // Nothing was generated, so re-streaming cannot duplicate on-screen text.
+    expect(isTransparentlyRecoverable(classification)).toBe(true);
   });
 
   test("network reset → transient/network_reset", () => {

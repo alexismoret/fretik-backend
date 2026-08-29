@@ -35,44 +35,42 @@ import {
   updateActiveObservation,
 } from "@langfuse/tracing";
 import { TransformStream } from "node:stream/web";
+import { extractGatewayReport } from "./model-registry/transports/gateway";
+import { extractOpenRouterReport } from "./model-registry/transports/openrouter";
 
 /**
- * Pull OpenRouter's real cost (USD) out of a result's provider metadata
- * (`providerMetadata.openrouter.usage.cost`). Returns undefined when
- * absent / non-numeric (e.g. usage accounting disabled).
- */
-const extractOpenRouterCost = (
-  providerMetadata: SharedV4ProviderMetadata | undefined,
-): number | undefined => {
-  const usage = providerMetadata?.openrouter?.usage;
-  if (usage === null || typeof usage !== "object" || Array.isArray(usage)) {
-    return undefined;
-  }
-  const cost = usage.cost;
-  return typeof cost === "number" && Number.isFinite(cost) ? cost : undefined;
-};
-
-/**
- * The UPSTREAM that actually served the call ("Groq", "Cerebras", "Amazon
- * Bedrock", …), from `providerMetadata.openrouter.provider`.
+ * The real cost (USD) of a call, from whichever transport served it.
  *
- * OTel records `gen_ai.provider.name` as the literal `"openrouter"`, so
- * without this the serving upstream is nowhere in the trace — and OpenRouter
- * routes the same model id to a different one call to call. Recovering it
- * afterwards means replaying `gen_ai.response.id` against OpenRouter's
- * `/api/v1/generation` endpoint one call at a time (done by hand once, 2026-08:
- * the recall judge was silently split across three upstreams). Recorded on
- * every instrumented generation so provider-correlated behaviour is a filter in
- * the UI, not an investigation.
+ * Both are read on every call because one process serves both at once: during a
+ * migration the same trace list holds generations from either, and telemetry
+ * that understands only one silently reports no cost for half the fleet — which
+ * reads as "this model is free" on a cost dashboard. The gateway reports its
+ * figure as a DECIMAL STRING, the aggregator as a number; the adapters own that
+ * difference.
  */
-const extractOpenRouterProvider = (
+const extractUpstreamCost = (
   providerMetadata: SharedV4ProviderMetadata | undefined,
-): string | undefined => {
-  const provider = providerMetadata?.openrouter?.provider;
-  return typeof provider === "string" && provider.length > 0
-    ? provider
-    : undefined;
-};
+): number | undefined =>
+  extractGatewayReport(providerMetadata).costUsd ??
+  extractOpenRouterReport(providerMetadata).costUsd;
+
+/**
+ * The UPSTREAM that actually served the call ("groq", "cerebras", "bedrock",
+ * …), normalised to the spelling pools and quarantines use.
+ *
+ * OTel records `gen_ai.provider.name` as the transport's own name, so without
+ * this the serving upstream is nowhere in the trace — and both transports route
+ * the same model id to a different company call to call. Recovering it
+ * afterwards means replaying `gen_ai.response.id` against a generation endpoint
+ * one call at a time (done by hand once, 2026-08: the recall judge was silently
+ * split across three upstreams). Recorded on every instrumented generation so
+ * provider-correlated behaviour is a filter in the UI, not an investigation.
+ */
+const extractUpstreamProvider = (
+  providerMetadata: SharedV4ProviderMetadata | undefined,
+): string | undefined =>
+  extractGatewayReport(providerMetadata).servingProvider ??
+  extractOpenRouterReport(providerMetadata).servingProvider;
 
 /**
  * A generation that looks like it was CUT by the upstream rather than
@@ -143,8 +141,8 @@ const writeCost = (
   cut?: { generationMs: number },
   inputTokens?: { total: number | undefined; cacheRead: number | undefined },
 ): void => {
-  const cost = extractOpenRouterCost(providerMetadata);
-  const provider = extractOpenRouterProvider(providerMetadata);
+  const cost = extractUpstreamCost(providerMetadata);
+  const provider = extractUpstreamProvider(providerMetadata);
   const finite = (value: number | undefined) =>
     typeof value === "number" && Number.isFinite(value) ? value : undefined;
   const reasoning = finite(outputTokens?.reasoning);
@@ -195,8 +193,13 @@ const writeCost = (
         cut !== undefined
           ? {
               metadata: {
+                // Both keys carry the same value for one release. `servingProvider`
+                // is the name that survives — the field stopped being about one
+                // transport — but existing Langfuse views and saved filters key
+                // on the old one, and a dashboard that silently stops matching
+                // is how a provider incident goes unnoticed for a week.
                 ...(provider !== undefined
-                  ? { openrouterProvider: provider }
+                  ? { servingProvider: provider, openrouterProvider: provider }
                   : {}),
                 ...(reasoning !== undefined
                   ? { reasoningTokens: reasoning }
@@ -239,7 +242,7 @@ const writeEmbeddingCost = (
   providerMetadata: SharedV4ProviderMetadata | undefined,
   modelId: string,
 ): void => {
-  const cost = extractOpenRouterCost(providerMetadata);
+  const cost = extractUpstreamCost(providerMetadata);
   if (cost === undefined) return;
   // Untraced embed call → creating an observation here would open an orphan
   // root trace per batch. Same rationale as `writeCost`.

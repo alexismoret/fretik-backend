@@ -13,6 +13,11 @@ export * from "./organization-extensions";
 // Per-team AI model selection (chantier C8)
 export * from "./team-ai-settings";
 
+// Model engine — live state, provider incidents, quarantines, alerts, bench
+// history. The runtime-mutable half of model configuration; the curated half
+// stays in the TypeScript registry under @fretik/ai.
+export * from "./model-registry";
+
 // Per-team tool permission policy (auto | approval | blocked per builtin tool)
 export * from "./team-tool-policies";
 

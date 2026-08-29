@@ -114,12 +114,16 @@ export interface EnrichedChunk {
  * `Reasoning is mandatory for this endpoint and cannot be disabled.`,
  * so "low" is the floor that every route accepts.
  */
-const cheapModel = instrumentModel(
-  openrouter.chat(CHEAP_MODEL, {
-    reasoning: { effort: "low" },
-    provider: CHEAP_PROVIDER,
-  }),
-);
+let cheapModelInstance: ReturnType<typeof instrumentModel> | undefined;
+const cheapModel = (): ReturnType<typeof instrumentModel> => {
+  cheapModelInstance ??= instrumentModel(
+    openrouter().chat(CHEAP_MODEL, {
+      reasoning: { effort: "low" },
+      provider: CHEAP_PROVIDER,
+    }),
+  );
+  return cheapModelInstance;
+};
 
 /**
  * Builds the bounded `{doc_content}` context passed to the enrichment
@@ -173,7 +177,7 @@ const enrichOne = async (
       CHEAP_MODEL_HOLD_TIMEOUT_MS,
       () =>
         generateText({
-          model: cheapModel,
+          model: cheapModel(),
           instructions: ENRICHMENT_SYSTEM_PROMPT,
           prompt: buildPrompt(docContent, chunk),
           temperature: ENRICHMENT_TEMPERATURE,

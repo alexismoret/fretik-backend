@@ -6,6 +6,7 @@ import {
   getMemoryDreamingQueue,
   getMemoryMaintenanceQueue,
   getMemoryResolveQueue,
+  getModelSyncQueue,
   getRecordCardQueue,
   getVectorReconcileQueue,
 } from "./queues/queues";
@@ -27,6 +28,7 @@ healthApp.get("/health", async (c) => {
     maintenance,
     docVectors,
     vectorReconcile,
+    modelSync,
     cursors,
   ] = await Promise.all([
     getMemoryResolveQueue().getJobCounts("wait", "active", "failed"),
@@ -43,6 +45,10 @@ healthApp.get("/health", async (c) => {
       "failed",
     ),
     getVectorReconcileQueue().getJobCounts("wait", "active", "failed"),
+    // One job a night: `active` here outside the 00:30 window means a pass is
+    // still crawling hours later, and a non-zero `failed` means both attempts
+    // lost — the fleet is routing on yesterday's catalogue either way.
+    getModelSyncQueue().getJobCounts("wait", "active", "delayed", "failed"),
     listWorkerCursors(),
   ]);
   return c.json({
@@ -55,6 +61,7 @@ healthApp.get("/health", async (c) => {
       "memory-maintenance": maintenance,
       "document-vector-refresh": docVectors,
       "vector-reconcile": vectorReconcile,
+      "model-sync": modelSync,
     },
     cursors: cursors.map((cur) => ({
       name: cur.name,

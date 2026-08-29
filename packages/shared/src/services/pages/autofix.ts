@@ -26,6 +26,8 @@
  * "clear the filter" into "filter". There is no icon defect to repair.
  */
 
+import { ZERO_WIDTH_AND_BIDI } from "../../lib/text-integrity";
+
 export interface PageAutofix {
   /** Agent-facing, one line: what was changed and why. */
   message: string;
@@ -58,8 +60,6 @@ export interface PageAutofix {
  * it names.
  */
 const ORPHAN_COMBINING_MARK = /(^|[^\p{L}])\p{M}+/gu;
-/** Zero-width space/non-joiner/joiner, bidi marks, overrides, isolates, BOM. */
-const ZERO_WIDTH_AND_BIDI = /[\u200B-\u200F\u202A-\u202E\u2060-\u2064\uFEFF]/gu;
 
 const stripInvisibleCharacters = (
   source: string,

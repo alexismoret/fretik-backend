@@ -51,7 +51,7 @@ const titleModelFor = (modelId: string): ReturnType<typeof instrumentModel> => {
   const cached = titleModelById.get(modelId);
   if (cached) return cached;
   const model = instrumentModel(
-    openrouter.chat(modelId, {
+    openrouter().chat(modelId, {
       reasoning: { effort: "low" },
       provider: cheapProviderFor(modelId),
     }),

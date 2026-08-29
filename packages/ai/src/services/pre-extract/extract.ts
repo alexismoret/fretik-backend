@@ -6,8 +6,8 @@ import { describeLlmError } from "../../lib/describe-llm-error";
 import { telemetryFor } from "../../lib/langfuse";
 import { resolveModelForTeam } from "../../lib/model-registry/team-model";
 import {
-  PREEXTRACT_MODEL_IDS,
   preextractFallbackModel,
+  preextractModelIds,
 } from "../../lib/openrouter";
 import {
   SCHEMA_BLOCK_TRAILER,
@@ -114,26 +114,27 @@ export const runPreextractLlm = async (
     };
   } catch (primaryError) {
     const primaryMs = Date.now() - primaryStart;
+    const fallbackId = preextractModelIds().fallback;
     console.warn(
-      `[pre-extract] primary model (${primaryModelId}) failed after ${primaryMs}ms, retrying with fallback (${PREEXTRACT_MODEL_IDS.fallback}) — ${describeLlmError(primaryError)}`,
+      `[pre-extract] primary model (${primaryModelId}) failed after ${primaryMs}ms, retrying with fallback (${fallbackId}) — ${describeLlmError(primaryError)}`,
     );
     const fallbackStart = Date.now();
     try {
       const output = await callLlm(
         args.prompt,
         schema,
-        preextractFallbackModel,
+        preextractFallbackModel(),
       );
       return {
         output,
         tier: "fallback",
-        modelId: PREEXTRACT_MODEL_IDS.fallback,
+        modelId: fallbackId,
         durationMs: Date.now() - fallbackStart,
       };
     } catch (fallbackError) {
       const fallbackMs = Date.now() - fallbackStart;
       console.error(
-        `[pre-extract] fallback model (${PREEXTRACT_MODEL_IDS.fallback}) also failed after ${fallbackMs}ms — ${describeLlmError(fallbackError)}`,
+        `[pre-extract] fallback model (${fallbackId}) also failed after ${fallbackMs}ms — ${describeLlmError(fallbackError)}`,
       );
       throw fallbackError;
     }

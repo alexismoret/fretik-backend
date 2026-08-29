@@ -38,6 +38,8 @@ import { preExtractRoutes } from "./handlers/pre-extract";
 import { vectorizeRoutes } from "./handlers/vectorize";
 import { workflowTriggerRoutes } from "./handlers/workflow";
 import { workflowTranscriptRoutes } from "./handlers/workflow-transcript";
+import { warmModelRegistry } from "./lib/model-registry/resolve";
+import { seedModelRegistry } from "./lib/model-registry/seed-rows";
 import { registerOrphanCleanupCron } from "./services/chat-files/orphan-cron";
 import { subscribeConversationTaskResumes } from "./services/conversation-tasks/subscribe-resume";
 import { backfillPageVectors } from "./services/vectorize/pages";
@@ -202,6 +204,30 @@ void reclaimOrphanSandboxes().catch((err) => {
     err instanceof Error ? err.message : err,
   );
 });
+
+// Seed live model state from the curated registry, then warm it so the first
+// turn resolves against the database rather than against code defaults it would
+// then memoize. AWAITED, unlike the backfills above: a quarantine written last
+// night has to apply to the first request of the day, not to the first request
+// after something else happens to invalidate the cache.
+//
+// Both halves degrade rather than fail. A replica that cannot reach the
+// database serves the curated defaults, which is exactly what it did before
+// this table existed.
+await seedModelRegistry()
+  .then(({ inserted, refreshed }) => {
+    if (inserted > 0)
+      console.log(
+        `[boot] model registry seeded — ${inserted.toString()} new, ${refreshed.toString()} refreshed`,
+      );
+  })
+  .catch((err: unknown) => {
+    console.warn(
+      "[boot] model registry seed failed:",
+      err instanceof Error ? err.message : err,
+    );
+  });
+await warmModelRegistry();
 
 // Init banner
 const text = await figlet.text("fretik AI");

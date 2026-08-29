@@ -1,3 +1,4 @@
+import { getLiveStateSync } from "@fretik/shared/services/model-registry/live";
 import type { UIMessage } from "ai";
 import type { ModelProfile } from "../../lib/model-registry/types";
 import { microcompactMessages } from "./microcompact";
@@ -95,9 +96,28 @@ const SUMMARISER_MAX_TOKENS = parseSummariserMaxTokens(
  * threshold always follows the profile passed by the caller.
  */
 export const getCompactionThresholdTokens = (profile: ModelProfile): number =>
-  profile.catalog.contextLength -
+  effectiveContextLength(profile) -
   SUMMARISER_MAX_TOKENS -
   AUTOCOMPACT_BUFFER_TOKENS;
+
+/**
+ * The context window a request can actually use, which is NOT the catalogue
+ * headline.
+ *
+ * A model is served by several hosts and routing picks one per request, so the
+ * usable window is the SMALLEST any reachable host offers. Measured 2026-08-29:
+ * the same model spans 262 144 to 1 048 576 tokens across its endpoints, and
+ * budgeting against the largest silently overflows whenever the request lands on
+ * the smallest — which is a mid-turn failure, not a degradation. The nightly
+ * sync computes the pool minimum (less a safety margin) and writes it here.
+ *
+ * The catalogue figure remains the answer while the snapshot is cold or the
+ * model has no row: it is what this code used before the pool was measured, and
+ * an unreachable metadata table must not change how a turn is budgeted.
+ */
+const effectiveContextLength = (profile: ModelProfile): number =>
+  getLiveStateSync(profile.key)?.effectiveContextLength ??
+  profile.catalog.contextLength;
 
 export interface CompactionSummaryMetadata {
   type: "compaction_summary";

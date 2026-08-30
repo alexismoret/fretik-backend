@@ -18,7 +18,7 @@
     "@fretik/shared": "workspace:*",
     "@hono/zod-openapi": "^1.6.1",
     "ai": "^7.0.85",
-    "chromiumly": "^5.2.1",
+    "chromiumly": "^6.0.0",
     "exceljs": "^4.4.0",
     "figlet": "^1.11.4",
     "file-type": "^22.0.2",

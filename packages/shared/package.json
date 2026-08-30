@@ -54,7 +54,7 @@
     "ai": "^7.0.85",
     "better-auth": "^1.6.23",
     "bullmq": "^5.81.4",
-    "chromiumly": "^5.2.1",
+    "chromiumly": "^6.0.0",
     "drizzle-orm": "^1.0.0-rc.4-5d5b77c",
     "e2b": "^2.46.1",
     "exceljs": "^4.4.0",

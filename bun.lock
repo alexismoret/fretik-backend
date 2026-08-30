@@ -68,7 +68,7 @@
         "@fretik/shared": "workspace:*",
         "@hono/zod-openapi": "^1.6.1",
         "ai": "^7.0.85",
-        "chromiumly": "^5.2.1",
+        "chromiumly": "^6.0.0",
         "exceljs": "^4.4.0",
         "figlet": "^1.11.4",
         "file-type": "^22.0.2",
@@ -151,7 +151,7 @@
         "ai": "^7.0.85",
         "better-auth": "^1.6.23",
         "bullmq": "^5.81.4",
-        "chromiumly": "^5.2.1",
+        "chromiumly": "^6.0.0",
         "drizzle-orm": "^1.0.0-rc.4-5d5b77c",
         "e2b": "^2.46.1",
         "exceljs": "^4.4.0",
@@ -922,7 +922,7 @@
 
     "chownr": ["chownr@3.0.0", "", {}, "sha512-+IxzY9BZOQd/XuYPRmrvEVjF/nqj5kgT4kEq7VofrDoM1MxoRjEWkrCC3EtLi59TVawxTAn+orJwFQcrqEN1+g=="],
 
-    "chromiumly": ["chromiumly@5.2.1", "", { "optionalDependencies": { "config": "4.x", "dotenv": "17.x" } }, "sha512-heuP0akhR0zDAzxc7PdWYb71c38dN7edR4gq3k/XzPAlF0kApRBYFNEPYU2LV/2xFH/NfPjBaNIIq7OsZzQoVQ=="],
+    "chromiumly": ["chromiumly@6.0.0", "", { "optionalDependencies": { "config": "4.x", "dotenv": "17.x" } }, "sha512-G7R2FlD1czonORMIdIFock8JLidzN5dvQ+yrnvrb4guvwtM4Rf1pJEQRDe0gmJ4pkCrAy5UdAurA2vV5h1C4Zw=="],
 
     "citty": ["citty@0.1.6", "", { "dependencies": { "consola": "^3.2.3" } }, "sha512-tskPPKEs8D2KPafUypv2gxwJP8h/OaJmC82QQGGDQcHvXX43xF2VDACcJVmZ0EuSxkpO9Kc4MlrA3q0+FG58AQ=="],
 

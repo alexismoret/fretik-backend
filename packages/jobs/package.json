@@ -22,7 +22,7 @@
   "dependencies": {
     "@fretik/providers": "workspace:*",
     "@fretik/shared": "workspace:*",
-    "bullmq": "^5.81.4",
+    "bullmq": "^6.3.2",
     "hono": "^4.13.5",
     "zod": "^4.5.4"
   },

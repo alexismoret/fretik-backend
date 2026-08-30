@@ -1,3 +1,9 @@
+// Compiles every Zod schema on first use (zod 4.5). Side-effect import, ahead
+// of the tracer so no schema is parsed before the compiler is installed. Valid
+// input takes the compiled path, invalid input falls back to the normal
+// parser — error reporting, including tool-arg repair, is unchanged.
+import "zod/compile";
+
 // OpenTelemetry tracing bootstrap (Langfuse). Side-effect import — MUST be
 // first so the global tracer provider is registered before any model call
 // creates a telemetry span. No-op when LANGFUSE_* env vars are absent.

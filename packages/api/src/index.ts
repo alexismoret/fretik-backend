@@ -1,3 +1,10 @@
+// Compiles every Zod schema on first use (zod 4.5). Side-effect import, first
+// so nothing parses ahead of it. Every HTTP request on this service is
+// validated by @hono/zod-openapi, which is exactly the repeated-parse workload
+// compilation is for; valid input takes the compiled path and invalid input
+// falls back to the normal parser, so error reporting is unchanged.
+import "zod/compile";
+
 // Patches Zod with `.openapi()`. Side-effect import, and it MUST precede every
 // `@fretik/*` import: the formatter sorts `@fretik` before `@hono`, so any
 // shared module reaching `schemas/common/params` (which calls `.openapi()` at

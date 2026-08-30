@@ -20,10 +20,10 @@ import { runOrphanCleanup } from "./orphan-cleanup";
  *  - Built-in retry / backoff / observability via the Redis queue
  *    which the rest of the stack already runs on.
  *
- * The Queue adds (or idempotently refreshes) a single repeatable
- * job at @fretik/ai boot. The Worker in the same process consumes
- * it and calls `runOrphanCleanup()`. Connections come from the shared
- * BullMQ factory: the producer (fail-fast) for the Queue, a dedicated
+ * The Queue upserts a single Job Scheduler at @fretik/ai boot. The
+ * Worker in the same process consumes it and calls
+ * `runOrphanCleanup()`. Connections come from the shared BullMQ
+ * factory: the producer (fail-fast) for the Queue, a dedicated
  * patient connection for the Worker — never the main `redis` client.
  */
 
@@ -35,18 +35,26 @@ let worker: Worker | null = null;
 
 /**
  * Idempotent — safe to call from the @fretik/ai entrypoint on every
- * boot. Adding the same repeatable key twice is a no-op per BullMQ.
+ * boot. `upsertJobScheduler` replaces the scheduler in place when the
+ * pattern is unchanged.
  */
 export const registerOrphanCleanupCron = async (): Promise<void> => {
   const queue = new Queue(QUEUE_NAME, { connection: getProducerConnection() });
 
-  await queue.add(
+  // Job Scheduler, not `add(..., { repeat })`: BullMQ 6 removed the legacy
+  // repeatable API outright and throws on encountering its leftover metadata,
+  // so the old key must be dropped from Redis before this deploys — see
+  // scripts/drop-legacy-orphan-repeatable.ts.
+  await queue.upsertJobScheduler(
     JOB_NAME,
-    {},
+    { pattern: REPEAT_PATTERN },
     {
-      repeat: { pattern: REPEAT_PATTERN },
-      removeOnComplete: { count: 10 },
-      removeOnFail: { count: 50 },
+      name: JOB_NAME,
+      data: {},
+      opts: {
+        removeOnComplete: { count: 10 },
+        removeOnFail: { count: 50 },
+      },
     },
   );
 

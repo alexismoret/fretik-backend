@@ -11,8 +11,33 @@
  * participate in `team_member` so existing team-scoped queries keep working.
  */
 
+import { eq, sql } from "drizzle-orm";
 import db from "../../db";
-import { member, teamMember, teamSettings, user } from "../../db/schema";
+import { member, team, teamMember, teamSettings, user } from "../../db/schema";
+
+/**
+ * Better Auth 1.7's `team_member.membership_key`:
+ * base64url(sha256(JSON.stringify([teamId, userId]))), unpadded.
+ *
+ * Recomputed here because the bot user is inserted directly rather than
+ * through Better Auth's `addTeamMember` — see the call site. A NULL key would
+ * work (lookups fall back to the (teamId, userId) pair) but would leave the
+ * single-column uniqueness boundary unenforced for exactly the row we control.
+ */
+const teamMembershipKey = async (
+  teamId: string,
+  userId: string,
+): Promise<string> => {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(JSON.stringify([teamId, userId])),
+  );
+  return Buffer.from(digest)
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+};
 
 /**
  * Deterministic email used for a team's bot user. Non-routable domain so the
@@ -82,14 +107,31 @@ export const bootstrapTeamWithBotUser = async (params: {
       .onConflictDoNothing();
 
     // 3. Team-level membership.
-    await tx
+    //
+    //    Written directly rather than through Better Auth's addTeamMember,
+    //    which means the two columns 1.7 maintains for itself are ours to
+    //    keep honest: the membership key, and the cached seat count that
+    //    `teams.maximumMembersPerTeam` is enforced against. Leaving the count
+    //    alone would let every team hold one extra human for each bot.
+    const [insertedTeamMember] = await tx
       .insert(teamMember)
       .values({
         teamId,
         userId: botUser.id,
+        membershipKey: await teamMembershipKey(teamId, botUser.id),
         createdAt: new Date(),
       })
-      .onConflictDoNothing();
+      .onConflictDoNothing()
+      .returning({ id: teamMember.id });
+
+    // Only on a real insert — this function is idempotent and re-runs on
+    // retries, where the row already exists and the seat is already counted.
+    if (insertedTeamMember) {
+      await tx
+        .update(team)
+        .set({ memberCount: sql`${team.memberCount} + 1` })
+        .where(eq(team.id, teamId));
+    }
 
     // 4. Insert the team settings row with the bot user already referenced.
     //    If the row already exists (re-run / race), keep it and just refresh

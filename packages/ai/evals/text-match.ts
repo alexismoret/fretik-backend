@@ -1,3 +1,9 @@
+// oxlint-disable no-irregular-whitespace -- this file's whole subject IS
+// irregular whitespace: the doc block below names each offending codepoint by
+// example, and the fold tables are character classes built from them. Stripping
+// them to satisfy the rule would delete the thing being documented and the
+// thing being matched.
+
 /**
  * Text matching for eval assertions, immune to typographic Unicode.
  *

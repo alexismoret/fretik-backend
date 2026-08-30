@@ -1,3 +1,8 @@
+// Compiles every Zod schema on first use (zod 4.5). Side-effect import, first
+// so nothing parses ahead of it. Valid input takes the compiled path, invalid
+// input falls back to the normal parser, so error reporting is unchanged.
+import "zod/compile";
+
 // Importing the db module runs `runMigrationsWithLock()` at load — behind a
 // Postgres advisory lock, so booting jobs + api + ai in parallel is safe.
 import "@fretik/shared/db";

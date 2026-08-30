@@ -15,17 +15,17 @@
   },
   "dependencies": {
     "@fretik/shared": "workspace:*",
-    "@trigger.dev/sdk": "4.5.0",
-    "zod": "^4.4.3"
+    "@trigger.dev/sdk": "4.5.14",
+    "zod": "^4.5.4"
   },
   "devDependencies": {
-    "@trigger.dev/build": "4.5.0",
-    "trigger.dev": "4.5.0",
+    "@trigger.dev/build": "4.5.14",
+    "trigger.dev": "4.5.14",
     "@types/bun": "latest",
     "@typescript/native": "npm:typescript@^7.0.2",
-    "oxlint": "^1.74.0",
+    "oxlint": "^1.80.0",
     "oxlint-tsgolint": "^0.24.0",
-    "prettier": "3.9.5",
+    "prettier": "3.9.6",
     "prettier-plugin-organize-imports": "^4.3.0",
     "typescript": "^6.0.3"
   }

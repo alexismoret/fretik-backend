@@ -161,7 +161,9 @@ export const findOrphanFence = (
     }
     for (const result of step.toolResults) {
       if (!writes.has(result.toolCallId)) continue;
-      if (pageRefSchema.safeParse(result.output).success) return null;
+      // Shape probe, not validation — the issues are discarded, so skip
+      // building them (z.validate, zod 4.5).
+      if (z.validate(pageRefSchema, result.output)) return null;
     }
   }
   return fence;
@@ -208,7 +210,8 @@ export const editedAfterLastReview = (steps: BuildSteps): boolean => {
   for (const step of [...steps].reverse()) {
     for (const toolResult of [...step.toolResults].reverse()) {
       if (toolResult.toolName !== "managePage") continue;
-      if (reviewRefSchema.safeParse(toolResult.output).success) return false;
+      // Shape probe, not validation — see above.
+      if (z.validate(reviewRefSchema, toolResult.output)) return false;
       const action = actionByCall.get(toolResult.toolCallId);
       if (
         action !== undefined &&

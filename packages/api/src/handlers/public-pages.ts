@@ -53,10 +53,17 @@ const NOT_FOUND: PublicPageResponse = { access: "not_found" };
 
 const tokenParamSchema = z.object({ token: z.string().min(1) });
 
+const uuidTokenSchema = z.uuid();
+
 /** The token column is a uuid: a malformed token can never match a row, and
- * must answer `not_found` rather than reach Postgres (or 400 the caller). */
+ * must answer `not_found` rather than reach Postgres (or 400 the caller).
+ *
+ * `z.validate` rather than `safeParse().success`: the answer is a boolean and
+ * the issues are dropped, so there is no reason to pay for building an error
+ * object on every malformed token — which, on a public endpoint, is the case
+ * an abuser controls the rate of. */
 const isUuidToken = (token: string): boolean =>
-  z.uuid().safeParse(token).success;
+  z.validate(uuidTokenSchema, token);
 
 // Anti-abuse on top of the app-wide limiter: a per-IP burst cap + a per-token
 // global cap. Distinct `requestPropertyName`s + store prefixes so the two

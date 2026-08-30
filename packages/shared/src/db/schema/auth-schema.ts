@@ -49,6 +49,13 @@ export const account = pgTable(
       .default(sql`uuid_generate_v7()`)
       .primaryKey(),
     accountId: text("account_id").notNull(),
+    /**
+     * Account identity namespace, required since Better Auth 1.7. Local
+     * credentials get `local:credential`; an OAuth provider would get
+     * `local:oauth:<providerId>`. Paired with `accountId` it is the unique
+     * identity of an account — see the compound index below.
+     */
+    issuer: text("issuer").notNull(),
     providerId: text("provider_id").notNull(),
     userId: uuid("user_id")
       .notNull()
@@ -73,7 +80,13 @@ export const account = pgTable(
       .$onUpdate(() => /* @__PURE__ */ new Date())
       .notNull(),
   },
-  (table) => [index("account_userId_idx").on(table.userId)],
+  (table) => [
+    index("account_userId_idx").on(table.userId),
+    uniqueIndex("account_issuer_accountId_uidx").on(
+      table.issuer,
+      table.accountId,
+    ),
+  ],
 );
 
 export const organization = pgTable(
@@ -104,6 +117,12 @@ export const team = pgTable(
     organizationId: uuid("organization_id")
       .notNull()
       .references(() => organization.id, { onDelete: "cascade" }),
+    /**
+     * Cached team size, maintained by Better Auth 1.7 so the seat limit
+     * (`teams.maximumMembersPerTeam`) can be enforced without counting rows on
+     * every add. Never written by application code.
+     */
+    memberCount: integer("member_count").default(0).notNull(),
     createdAt: timestamp("created_at", {
       mode: "date",
       withTimezone: true,
@@ -128,6 +147,13 @@ export const teamMember = pgTable(
     userId: uuid("user_id")
       .notNull()
       .references(() => user.id, { onDelete: "cascade" }),
+    /**
+     * Better Auth 1.7's single-column uniqueness boundary for a user within a
+     * team: base64url(sha256(JSON.stringify([teamId, userId]))). Nullable
+     * because rows created before 1.7 have none, and the lookup falls back to
+     * the (teamId, userId) pair when the key misses.
+     */
+    membershipKey: text("membership_key").unique(),
     createdAt: timestamp("created_at", { mode: "date", withTimezone: true }),
   },
   (table) => [

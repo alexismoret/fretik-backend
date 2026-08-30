@@ -1,15 +1,4 @@
-import {
-  CopyObjectCommand,
-  DeleteObjectCommand,
-  DeleteObjectsCommand,
-  GetObjectCommand,
-  ListObjectsV2Command,
-  type ObjectCannedACL,
-  PutObjectCommand,
-  S3Client,
-  waitUntilObjectNotExists,
-} from "@aws-sdk/client-s3";
-import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import { AwsClient } from "aws4fetch";
 
 const s3Bucket = process.env.S3_BUCKET;
 const s3Url = process.env.S3_URL;
@@ -21,25 +10,91 @@ if (!s3Bucket || !s3Url || !s3Region || !s3AccessKeyId || !s3SecretAccessKey) {
   throw "Missing S3 en vars";
 }
 
-const client = new S3Client({
-  endpoint: s3Url,
+const endpoint = s3Url.replace(/\/$/, "");
+
+/**
+ * Bun's native S3 client. Serves every operation it supports — GET, DELETE,
+ * LIST, HEAD and presigning — with no dependency and no JS-side request
+ * marshalling.
+ *
+ * Path-style addressing (`{endpoint}/{bucket}/{key}`) is what an explicit
+ * `endpoint` gives you by default, which is what the bucket is configured for
+ * and what `publicUrl` below hard-codes.
+ */
+const s3 = new Bun.S3Client({
+  accessKeyId: s3AccessKeyId,
+  secretAccessKey: s3SecretAccessKey,
+  bucket: s3Bucket,
   region: s3Region,
-  credentials: {
-    accessKeyId: s3AccessKeyId,
-    secretAccessKey: s3SecretAccessKey,
-  },
-  forcePathStyle: true,
+  endpoint,
 });
+
+/**
+ * SigV4 signer for the three operations Bun's client cannot express:
+ * user-metadata on PUT (`x-amz-meta-*`), server-side CopyObject, and batch
+ * DeleteObjects. aws4fetch is ~2 KB with no dependencies — it signs a `Request`
+ * and hands it to `fetch`, nothing more.
+ */
+const signer = new AwsClient({
+  accessKeyId: s3AccessKeyId,
+  secretAccessKey: s3SecretAccessKey,
+  region: s3Region,
+  service: "s3",
+});
+
+/**
+ * Percent-encode a key for use in a URL path. Segment by segment: `/` is the
+ * path separator S3 uses to fake directories and must survive, everything else
+ * (spaces, accents, `+`, `?`) must not.
+ */
+const encodeKey = (key: string): string =>
+  key.split("/").map(encodeURIComponent).join("/");
+
+const objectUrl = (key: string): string =>
+  `${endpoint}/${s3Bucket}/${encodeKey(key)}`;
+
+/** `x-amz-meta-*` headers for a metadata map. */
+const metadataHeaders = (
+  metadata: Record<string, string>,
+): Record<string, string> =>
+  Object.fromEntries(
+    Object.entries(metadata).map(([k, v]) => [`x-amz-meta-${k}`, v]),
+  );
+
+/** Throw with the response body, which is where S3 puts the actual reason. */
+const assertOk = async (response: Response, what: string): Promise<void> => {
+  if (response.ok) return;
+  throw new Error(
+    `[s3] ${what} failed (${response.status.toString()}): ${await response.text()}`,
+  );
+};
 
 // ============================================================ //
 // GENERIC S3 PRIMITIVES                                          //
 // ============================================================ //
 
 /**
+ * Canned ACLs S3 accepts. Previously imported from `@aws-sdk/client-s3`;
+ * inlined so the type does not drag a 15 MB SDK back in for one string union.
+ */
+export type ObjectCannedACL =
+  | "private"
+  | "public-read"
+  | "public-read-write"
+  | "authenticated-read"
+  | "aws-exec-read"
+  | "bucket-owner-read"
+  | "bucket-owner-full-control";
+
+/**
  * Raw PUT of an object. Lets callers pass optional `contentType` and
  * S3 user-metadata. `uploadToS3` (documents pipeline) and
  * `uploadSessionFile` (chatbot sessions) both delegate here so there
  * is a single S3 code path across the monorepo.
+ *
+ * Signed by hand rather than through `Bun.S3Client.write`: Bun has no way to
+ * set `x-amz-meta-*` (oven-sh/bun#19301), and the documents pipeline stamps
+ * every object with its document/org/team ids.
  */
 export const putObject = async (args: {
   key: string;
@@ -53,58 +108,49 @@ export const putObject = async (args: {
    */
   acl?: ObjectCannedACL;
 }): Promise<void> => {
-  await client.send(
-    new PutObjectCommand({
-      Bucket: s3Bucket,
-      Key: args.key,
-      Body: args.body,
-      ContentType: args.contentType,
-      Metadata: args.metadata,
-      ACL: args.acl,
-    }),
-  );
+  const response = await signer.fetch(objectUrl(args.key), {
+    method: "PUT",
+    body: args.body,
+    headers: {
+      ...(args.contentType ? { "content-type": args.contentType } : {}),
+      ...(args.acl ? { "x-amz-acl": args.acl } : {}),
+      ...(args.metadata ? metadataHeaders(args.metadata) : {}),
+    },
+  });
+  await assertOk(response, `putObject ${args.key}`);
 };
 
 /**
  * Permanent, public URL for an object stored under the `public/` prefix.
- * Mirrors the path-style addressing the bucket is configured for
- * (`forcePathStyle`), e.g. `https://s3.<region>.scw.cloud/<bucket>/<key>`.
+ * Mirrors the path-style addressing the bucket is configured for,
+ * e.g. `https://s3.<region>.scw.cloud/<bucket>/<key>`.
  * Only meaningful for objects uploaded with `acl: "public-read"`.
  */
 export const publicUrl = (key: string): string => `${s3Url}/${s3Bucket}/${key}`;
 
 /**
- * Raw GET of an object. Returns the S3 `Body` stream (or `null` when
- * the SDK omitted it). The documents pipeline uses this directly;
- * wrappers that need bytes in-memory should call `getObjectBytes`.
+ * Raw GET of an object, into memory. THROWS on a missing key or any S3 fault —
+ * that distinction is the whole reason this exists alongside `getObjectBytes`,
+ * which flattens both into `null`.
  */
-export const getObject = async (key: string) => {
-  const response = await client.send(
-    new GetObjectCommand({
-      Bucket: s3Bucket,
-      Key: key,
-    }),
-  );
-  return response.Body;
-};
+export const getObject = async (key: string): Promise<Uint8Array> =>
+  s3.file(key).bytes();
 
 /**
  * Read a full object into memory as a `Uint8Array`. Returns `null`
  * on any error (missing object, transient network failure); callers
- * that need to distinguish the two should catch at the raw `getObject`
- * layer instead. Suitable for small-to-medium payloads that fit
+ * that need to distinguish the two should call `getObject` and catch
+ * instead. Suitable for small-to-medium payloads that fit
  * comfortably in RAM (chatbot session files are capped at 15 MB).
  */
 export const getObjectBytes = async (
   key: string,
 ): Promise<Uint8Array | null> => {
   try {
-    const body = await getObject(key);
-    if (!body) return null;
-    return new Uint8Array(await body.transformToByteArray());
+    return await getObject(key);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    if (!/NoSuchKey|NotFound/i.test(message)) {
+    if (!/NoSuchKey|NotFound|does not exist|404/i.test(message)) {
       console.warn(`[s3] getObjectBytes failed for ${key}:`, message);
     }
     return null;
@@ -124,17 +170,31 @@ export const copyObject = async (args: {
   contentType?: string;
   metadata?: Record<string, string>;
 }): Promise<void> => {
-  await client.send(
-    new CopyObjectCommand({
-      Bucket: s3Bucket,
-      Key: args.destinationKey,
-      CopySource: encodeURIComponent(`${s3Bucket}/${args.sourceKey}`),
-      ...(args.contentType ? { ContentType: args.contentType } : {}),
+  const response = await signer.fetch(objectUrl(args.destinationKey), {
+    method: "PUT",
+    headers: {
+      "x-amz-copy-source": `/${s3Bucket}/${encodeKey(args.sourceKey)}`,
+      ...(args.contentType ? { "content-type": args.contentType } : {}),
       ...(args.metadata
-        ? { Metadata: args.metadata, MetadataDirective: "REPLACE" }
+        ? {
+            "x-amz-metadata-directive": "REPLACE",
+            ...metadataHeaders(args.metadata),
+          }
         : {}),
-    }),
-  );
+    },
+  });
+  await assertOk(response, `copyObject ${args.sourceKey}`);
+
+  // CopyObject is the one S3 call that can fail INSIDE a 200: the connection
+  // is held open while the copy runs, so a mid-copy error arrives as an
+  // <Error> document under a success status. Treating 200 as done would
+  // silently lose the object.
+  const body = await response.text();
+  if (body.includes("<Error>")) {
+    throw new Error(
+      `[s3] copyObject ${args.sourceKey} failed mid-copy: ${body}`,
+    );
+  }
 };
 
 export interface S3ObjectEntry {
@@ -145,7 +205,7 @@ export interface S3ObjectEntry {
 
 /**
  * List every object under a prefix WITH its size and mtime. Handles paginated
- * continuation via `NextContinuationToken`. Returns `[]` on error so callers
+ * continuation via `nextContinuationToken`. Returns `[]` on error so callers
  * can treat the result as "nothing to do".
  *
  * The listing already carries size and mtime — `listObjects` below throws them
@@ -160,27 +220,22 @@ export const listObjectsDetailed = async (
   let continuationToken: string | undefined;
   try {
     do {
-      // Sequential by design: `NextContinuationToken` is only known
+      // Sequential by design: `nextContinuationToken` is only known
       // after the previous response, so the loop iterations can't be
       // parallelised.
       // eslint-disable-next-line no-await-in-loop
-      const response = await client.send(
-        new ListObjectsV2Command({
-          Bucket: s3Bucket,
-          Prefix: prefix,
-          ContinuationToken: continuationToken,
-        }),
-      );
-      for (const entry of response.Contents ?? []) {
-        if (typeof entry.Key !== "string") continue;
+      const response = await s3.list({ prefix, continuationToken });
+      for (const entry of response.contents ?? []) {
         entries.push({
-          key: entry.Key,
-          size: entry.Size ?? 0,
-          lastModified: entry.LastModified ?? null,
+          key: entry.key,
+          size: entry.size ?? 0,
+          lastModified: entry.lastModified
+            ? new Date(entry.lastModified)
+            : null,
         });
       }
-      continuationToken = response.IsTruncated
-        ? response.NextContinuationToken
+      continuationToken = response.isTruncated
+        ? response.nextContinuationToken
         : undefined;
     } while (continuationToken);
   } catch (err) {
@@ -204,12 +259,7 @@ export const listObjects = async (prefix: string): Promise<string[]> =>
  */
 export const deleteObject = async (key: string): Promise<void> => {
   try {
-    await client.send(
-      new DeleteObjectCommand({
-        Bucket: s3Bucket,
-        Key: key,
-      }),
-    );
+    await s3.delete(key);
   } catch (err) {
     console.warn(
       `[s3] deleteObject failed for ${key}:`,
@@ -218,23 +268,46 @@ export const deleteObject = async (key: string): Promise<void> => {
   }
 };
 
+/** Minimal XML text escape for keys inside the DeleteObjects document. */
+const escapeXml = (value: string): string =>
+  value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+
 /**
- * Bulk delete for a batch of keys. AWS limits a `DeleteObjects`
+ * Bulk delete for a batch of keys. S3 limits a `DeleteObjects`
  * request to 1000 keys; callers that might exceed that are expected
  * to batch. No waiters — this runs in hot cleanup paths where we
  * accept eventual consistency.
+ *
+ * Hand-signed because Bun's client only deletes one key at a time, and a
+ * folder teardown would otherwise be one request per object instead of one
+ * per thousand. `Content-MD5` is not optional here: S3 rejects a
+ * `POST ?delete` without it, and aws4fetch signs but does not compute it.
  */
 export const deleteObjects = async (keys: string[]): Promise<void> => {
   if (keys.length === 0) return;
   try {
-    await client.send(
-      new DeleteObjectsCommand({
-        Bucket: s3Bucket,
-        Delete: {
-          Objects: keys.map((Key) => ({ Key })),
-        },
-      }),
-    );
+    const xml = `<?xml version="1.0" encoding="UTF-8"?><Delete>${keys
+      .map((key) => `<Object><Key>${escapeXml(key)}</Key></Object>`)
+      .join("")}<Quiet>true</Quiet></Delete>`;
+    const body = new TextEncoder().encode(xml);
+    const contentMd5 = new Bun.CryptoHasher("md5")
+      .update(body)
+      .digest("base64");
+
+    const response = await signer.fetch(`${endpoint}/${s3Bucket}?delete=`, {
+      method: "POST",
+      body,
+      headers: {
+        "content-type": "application/xml",
+        "content-md5": contentMd5,
+      },
+    });
+    await assertOk(response, `deleteObjects (${keys.length.toString()} keys)`);
   } catch (err) {
     console.warn(
       `[s3] deleteObjects failed (${keys.length.toString()} keys):`,
@@ -281,21 +354,16 @@ export const getPresignedUrl = async (
   key: string,
   expiresIn = 3600,
   options: PresignedUrlOptions = {},
-): Promise<string> => {
-  const command = new GetObjectCommand({
-    Bucket: s3Bucket,
-    Key: key,
+): Promise<string> =>
+  s3.presign(key, {
+    method: "GET",
+    expiresIn,
     ...(options.downloadFilename !== undefined
       ? {
-          ResponseContentDisposition: contentDispositionFor(
-            options.downloadFilename,
-          ),
+          contentDisposition: contentDispositionFor(options.downloadFilename),
         }
       : {}),
   });
-
-  return getSignedUrl(client, command, { expiresIn });
-};
 
 // ============================================================ //
 // DOCUMENTS-PIPELINE HELPERS                                      //
@@ -341,19 +409,15 @@ export const uploadToS3 = async (data: UploadToS3Data): Promise<string> => {
 export const getFileFromS3 = (key: string) => getObject(key);
 
 /**
- * Delete a list of document keys from the documents pipeline and
- * wait for the propagation (documents have user-visible caches that
- * need the deletion to be consistent before the handler returns).
+ * Delete a list of document keys from the documents pipeline.
+ *
+ * No propagation wait: S3 DELETE has been strongly consistent since December
+ * 2020 (Scaleway's implementation included), so the object is gone the moment
+ * the call returns. The previous `waitUntilObjectNotExists` fan-out — one
+ * polling loop per key — was paying for a guarantee the protocol already
+ * gives, and it left with the AWS SDK.
  */
 export const deleteFilesFromS3 = async (keys: string[]): Promise<void> => {
   if (keys.length === 0) return;
   await deleteObjects(keys);
-  await Promise.all(
-    keys.map((Key) =>
-      waitUntilObjectNotExists(
-        { client: client, maxWaitTime: 10 },
-        { Bucket: s3Bucket, Key },
-      ),
-    ),
-  );
 };

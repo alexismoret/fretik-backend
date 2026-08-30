@@ -68,7 +68,7 @@
     "marked": "^18.0.11",
     "mdream": "^1.7.0",
     "mjml": "^5.4.0",
-    "node-poppler": "^9.1.2",
+    "node-poppler": "^10.0.1",
     "pg": "^8.23.0",
     "postal-mime": "^3.0.0",
     "tailwindcss": "^4.3.3",

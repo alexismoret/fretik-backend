@@ -24,7 +24,7 @@
     "file-type": "^22.0.2",
     "hono": "^4.13.5",
     "hono-rate-limiter": "^0.5.3",
-    "node-poppler": "^9.1.2",
+    "node-poppler": "^10.0.1",
     "zod": "^4.4.3"
   },
   "devDependencies": {

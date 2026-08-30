@@ -74,7 +74,7 @@
         "file-type": "^22.0.2",
         "hono": "^4.13.5",
         "hono-rate-limiter": "^0.5.3",
-        "node-poppler": "^9.1.2",
+        "node-poppler": "^10.0.1",
         "zod": "^4.4.3",
       },
       "devDependencies": {
@@ -165,7 +165,7 @@
         "marked": "^18.0.11",
         "mdream": "^1.7.0",
         "mjml": "^5.4.0",
-        "node-poppler": "^9.1.2",
+        "node-poppler": "^10.0.1",
         "pg": "^8.23.0",
         "postal-mime": "^3.0.0",
         "tailwindcss": "^4.3.3",
@@ -1564,7 +1564,7 @@
 
     "node-gyp-build-optional-packages": ["node-gyp-build-optional-packages@5.2.2", "", { "dependencies": { "detect-libc": "^2.0.1" }, "bin": { "node-gyp-build-optional-packages": "bin.js", "node-gyp-build-optional-packages-optional": "optional.js", "node-gyp-build-optional-packages-test": "build-test.js" } }, "sha512-s+w+rBWnpTMwSFbaE0UXsRlg7hU4FjekKU4eyAih5T8nJuNZT1nNsskXpxmeqSK9UzkBl6UgRlnKc8hz8IEqOw=="],
 
-    "node-poppler": ["node-poppler@9.1.2", "", { "dependencies": { "camelcase": "^6.3.0", "ice-barrage": "^1.0.0", "semver": "^7.7.2" }, "optionalDependencies": { "node-poppler-win32": "^1.0.1" } }, "sha512-uemPh+oquKVHRJyY9sLeU7vcU/X4Z8PsWCSQzy69jid8gIwggApRjREhZYgqYSwOzRoiE9RRaBDand31pwdFNw=="],
+    "node-poppler": ["node-poppler@10.0.1", "", { "dependencies": { "camelcase": "^6.3.0", "ice-barrage": "^1.0.0", "semver": "^7.7.2" }, "optionalDependencies": { "node-poppler-win32": "^1.0.1" } }, "sha512-yCKikzV6WmW+kHb0CzAzGShdiejGqGdPBmPZCzjf+CqLzkkt8HCXkKh79/ivMh1nOblChlABsVjhzmr6ONKxRQ=="],
 
     "node-poppler-win32": ["node-poppler-win32@1.0.2", "", { "os": "win32", "cpu": "x64" }, "sha512-U2YVdM7EEXNE21TD4ajJxfd1pKx7yEF2tcuHc4eCa7uxmw+mfSNPB+yHRtNrdxJqV6dKoz4Rvhuyy5rn6mg3ZA=="],
 

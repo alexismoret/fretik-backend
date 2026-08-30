@@ -1,6 +1,6 @@
+import { drizzleAdapter } from "@better-auth/drizzle-adapter/relations-v2";
 import { electron } from "@better-auth/electron";
 import { redisStorage } from "@better-auth/redis-storage";
-import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { APIError } from "better-auth/api";
 import { betterAuth, type BetterAuthOptions } from "better-auth/minimal";
 import { emailOTP, organization, twoFactor } from "better-auth/plugins";
@@ -109,6 +109,19 @@ const options = {
   advanced: {
     database: {
       generateId: () => Bun.randomUUIDv7(),
+      /**
+       * Fetch related rows in one query instead of N. `/get-session` and
+       * `/get-full-organization` are the big winners (2-3x per the upstream
+       * docs), and both are on every page load.
+       *
+       * This was unusable until 1.7: the old `better-auth/adapters/drizzle`
+       * fed raw SQL expressions from convertWhereClause() into Drizzle v2's
+       * relational query API, which wants a filter MAP — so v2 walked the SQL
+       * object and threw on its internal "decoder" property. The dedicated
+       * `@better-auth/drizzle-adapter/relations-v2` entry point above speaks
+       * v2 natively and is what makes this safe to turn on.
+       */
+      joins: true,
     },
     cookiePrefix: "fretik-",
     ...(cookieDomain && {
@@ -121,15 +134,6 @@ const options = {
 
   basePath: "/auth",
   trustedOrigins: [appUrl, ...electronOrigins],
-
-  // NOTE: experimental.joins is intentionally disabled.
-  // Better-Auth's drizzle adapter passes the output of convertWhereClause()
-  // (raw Drizzle SQL expressions from eq()/and()/or()) into the relational
-  // query API db.query.X.findFirst({ where: ... }). That API expects a
-  // filter MAP ({ col: value, AND: [...] }), not a SQL object — so Drizzle
-  // v2 Object.entries() the SQL and throws on its internal "decoder"
-  // property: `Unknown relational filter field: "decoder"`. Re-enable only
-  // once upstream patches the adapter or we move off the Drizzle v2 RC.
 
   emailAndPassword: {
     enabled: true,

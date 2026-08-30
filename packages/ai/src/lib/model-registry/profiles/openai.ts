@@ -24,7 +24,6 @@ export const OPENAI_PROFILES: Record<string, ModelProfile> = {
   "gpt-5.6-sol": {
     key: "gpt-5.6-sol",
     family: "openai",
-    tiers: ["flagship"],
     catalog: {
       id: "openai/gpt-5.6-sol",
       contextLength: 1_050_000,
@@ -76,7 +75,6 @@ export const OPENAI_PROFILES: Record<string, ModelProfile> = {
   "gpt-5.6-terra": {
     key: "gpt-5.6-terra",
     family: "openai",
-    tiers: ["flagship"],
     catalog: {
       id: "openai/gpt-5.6-terra",
       contextLength: 1_050_000,
@@ -128,7 +126,6 @@ export const OPENAI_PROFILES: Record<string, ModelProfile> = {
   "gpt-5.6-luna": {
     key: "gpt-5.6-luna",
     family: "openai",
-    tiers: ["flagship", "workhorse"],
     catalog: {
       id: "openai/gpt-5.6-luna",
       contextLength: 1_050_000,
@@ -213,7 +210,6 @@ export const OPENAI_PROFILES: Record<string, ModelProfile> = {
   "gpt-5.4-nano": {
     key: "gpt-5.4-nano",
     family: "openai",
-    tiers: ["workhorse", "utility"],
     catalog: {
       id: "openai/gpt-5.4-nano",
       contextLength: 400_000,
@@ -267,7 +263,6 @@ export const OPENAI_PROFILES: Record<string, ModelProfile> = {
   "gpt-oss-120b": {
     key: "gpt-oss-120b",
     family: "openai",
-    tiers: ["workhorse"],
     catalog: {
       id: "openai/gpt-oss-120b",
       contextLength: 131_072,
@@ -334,7 +329,6 @@ export const OPENAI_PROFILES: Record<string, ModelProfile> = {
   "gpt-oss-20b": {
     key: "gpt-oss-20b",
     family: "openai",
-    tiers: ["utility"],
     catalog: {
       id: "openai/gpt-oss-20b",
       contextLength: 131_072,

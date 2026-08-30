@@ -1,6 +1,10 @@
 import { reasoningLevelSchema } from "@fretik/shared/schemas/reasoning";
 import { describe, expect, test } from "bun:test";
 import {
+  MODEL_FUNCTION_KEYS,
+  selectableForFunction,
+} from "../../../src/lib/model-registry/functions";
+import {
   modelIdsForProfile,
   PROFILES_WITHOUT_GATEWAY_ID,
 } from "../../../src/lib/model-registry/gateway-ids";
@@ -12,7 +16,6 @@ import {
   createOrphanThinkStreamStripper,
   effectiveReasoningLevel,
   getProfileForRole,
-  isSelectableForTier,
   reasoningParamForProfile,
   selectableReasoningLevels,
   settingsForRole,
@@ -22,7 +25,6 @@ import {
   REASONING_LEVELS,
   supportsParameter,
   type ModelRole,
-  type ModelTier,
 } from "../../../src/lib/model-registry/types";
 import { shouldInjectCacheControl } from "../../../src/lib/openrouter-cache";
 
@@ -369,17 +371,16 @@ describe("registry integrity", () => {
     }
   });
 
-  test("every tier is covered by at least one profile", () => {
-    // The registry is pruned for profitability — a family need NOT cover all
-    // three tiers (e.g. MiniMax ships only its flagship M3). The picker-
-    // relevant invariant is that each tier has at least one option overall.
-    // A profile may list MORE THAN ONE tier (multi-tier), so flatMap.
-    const tiers: ModelTier[] = ["flagship", "workhorse", "utility"];
-    const covered = new Set<ModelTier>(
-      Object.values(MODEL_PROFILES).flatMap((p) => p.tiers),
-    );
-    for (const tier of tiers) {
-      expect(`${tier}:${covered.has(tier)}`).toBe(`${tier}:true`);
+  test("every function has at least one model a team can pick", () => {
+    // The picker-relevant invariant: no function may render an empty menu.
+    // Selection is `enabled` plus a MEASURED eligibility verdict, so a curated
+    // profile with no live row passes on `unknown` — which is what keeps this
+    // true on a cold registry.
+    for (const fn of MODEL_FUNCTION_KEYS) {
+      const options = Object.values(MODEL_PROFILES).filter((p) =>
+        selectableForFunction(p, fn),
+      );
+      expect(`${fn}:${options.length > 0}`).toBe(`${fn}:true`);
     }
   });
 
@@ -591,16 +592,16 @@ describe("thinking depth — what a user may actually request", () => {
     }
   });
 
-  test("every flagship a team can pick either steers or explains itself", () => {
+  test("every assistant model a team can pick either steers or explains itself", () => {
     // Not an assertion that all of them steer — the applied default (M3) does
     // not. This pins that the menu is not ENTIRELY inert, so the control is
     // reachable by switching model, and documents which side each model is on.
-    const flagship = Object.values(MODEL_PROFILES).filter((p) =>
-      isSelectableForTier(p, "flagship"),
+    const assistant = Object.values(MODEL_PROFILES).filter((p) =>
+      selectableForFunction(p, "assistant"),
     );
-    expect(flagship.length).toBeGreaterThan(1);
+    expect(assistant.length).toBeGreaterThan(1);
     expect(
-      flagship.filter((p) => selectableReasoningLevels(p).length > 0).length,
+      assistant.filter((p) => selectableReasoningLevels(p).length > 0).length,
     ).toBeGreaterThan(0);
   });
 

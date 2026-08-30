@@ -19,7 +19,7 @@ import { invalidateLiveRegistry } from "./live";
  *
  * Refreshed on every seed — curation owns them, so a merged pull request takes
  * effect on the next deploy:
- *   `modelIds`, `providerPool`, `boundRoles`.
+ *   `modelIds`, `providerPool`, `boundRoles`, `aaSlug`.
  *
  * Written once, on INSERT only — the runtime owns them afterwards:
  *   `transport` (a rollback must survive a restart), `enabled`, `pricing`,
@@ -48,6 +48,8 @@ export interface LiveStateSeed {
   pricing: PricingSnapshot;
   /** Internal roles bound to this profile — non-empty means the fleet needs it. */
   boundRoles: string[];
+  /** Which AA record grades this model, when curation has settled one. */
+  aaSlug?: string;
 }
 
 export const seedLiveState = async (
@@ -75,6 +77,7 @@ export const seedLiveState = async (
         effectiveMaxOutput: seed.effectiveMaxOutput ?? null,
         pricing: seed.pricing,
         boundRoles: seed.boundRoles,
+        aaSlug: seed.aaSlug ?? null,
         source: "seed" as const,
       })),
     )
@@ -84,6 +87,7 @@ export const seedLiveState = async (
         modelIds: sql`excluded.model_ids`,
         providerPool: sql`excluded.provider_pool`,
         boundRoles: sql`excluded.bound_roles`,
+        aaSlug: sql`excluded.aa_slug`,
       },
     });
 

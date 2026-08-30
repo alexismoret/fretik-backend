@@ -15,7 +15,6 @@ const profileWith = (
 ): ModelProfile => ({
   key: "test",
   family: "other",
-  tiers: ["flagship"],
   catalog: {
     id: "test/test",
     contextLength: 100_000,

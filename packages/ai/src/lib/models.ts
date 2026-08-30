@@ -1,6 +1,5 @@
 import type { OpenRouterChatSettings } from "@openrouter/ai-sdk-provider";
-import { MODEL_PROFILES } from "./model-registry/profiles";
-import { getProfileForRole } from "./model-registry/resolve";
+import { getProfileForRole, listProfiles } from "./model-registry/resolve";
 
 /**
  * OpenRouter model id for "cheap, short extraction" one-shots — the
@@ -47,8 +46,11 @@ export const CHEAP_MODEL = getProfileForRole("cheap-tasks").catalog.id;
 export const cheapProviderFor = (
   modelId: string,
 ): NonNullable<OpenRouterChatSettings["provider"]> => {
+  // The EFFECTIVE list: a team's cheap model can be one promoted by a write,
+  // and reading its provider policy off the curated fallback instead would
+  // apply a different model's routing decisions to it.
   const served =
-    Object.values(MODEL_PROFILES).find((p) => p.catalog.id === modelId) ??
+    listProfiles().find((p) => p.catalog.id === modelId) ??
     getProfileForRole("cheap-tasks");
   const { zdr, ignore } = served.assessment.provider;
   return {

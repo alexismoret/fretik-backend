@@ -5,13 +5,23 @@ import {
   modelLiveState,
   modelSyncRuns,
 } from "../../../db/schema/model-registry";
+import type {
+  CatalogueSource,
+  MergedCatalogueEntry,
+} from "../../../model-registry/catalogue";
+import {
+  catalogueMatchKey,
+  mergeCatalogues,
+} from "../../../model-registry/catalogue";
 import {
   DEFAULT_CANDIDATE_POLICY,
   type ModelPolicy,
+  PROMOTION_PRICE_CAPS,
   PUBLISHED_POLICY,
   computeHealthScore,
   evaluatePolicy,
   healthFromScore,
+  promotionEnablement,
 } from "../../../model-registry/policy";
 import { normalizeProviderList } from "../../../model-registry/provider-names";
 import type {
@@ -22,6 +32,7 @@ import type {
   QuarantineEntry,
   TransportId,
 } from "../../../model-registry/types";
+import { isTransportId } from "../../../model-registry/types";
 import { type RaiseAlertInput, raiseModelAlert } from "../alerts";
 import { activeQuarantines, releaseProvider } from "../breaker";
 import { countIncidentsForModel } from "../incidents";
@@ -35,17 +46,11 @@ import {
   detectPriceJump,
   mergeEndpointStats,
 } from "./compute";
+import { createCatalogueSources, sourceForTransport } from "./sources";
 import {
   fetchArtificialAnalysis,
-  normalizeAaKey,
+  matchAaRecord,
 } from "./sources/artificial-analysis";
-import {
-  type GatewayCatalogEntry,
-  fetchGatewayCatalog,
-} from "./sources/gateway-catalog";
-import { fetchGatewayEndpoints } from "./sources/gateway-endpoints";
-import { fetchOpenRouterEndpoints } from "./sources/openrouter-endpoints";
-import { fetchOpenRouterZdrRoutes } from "./sources/openrouter-zdr";
 import {
   probeProviderReachable,
   probeZeroDataRetention,
@@ -125,14 +130,28 @@ interface SyncContext {
   dryRun: boolean;
   skipZdrProbe: boolean;
   stats: ModelSyncStats;
-  catalog: Map<string, GatewayCatalogEntry>;
-  aa: ReadonlyMap<string, AaMetrics>;
+  /** This pass's sources, holding their own per-pass state. */
+  sources: CatalogueSource[];
   /**
-   * OpenRouter's zero-retention routes for the WHOLE catalogue, fetched once
-   * per pass. `undefined` means the source could not be read, which leaves
-   * every stance unset rather than claiming nothing is zero-retention.
+   * Every model any transport serves, merged, keyed by `catalogueMatchKey`.
+   *
+   * Keyed on the FOLDED name rather than on an id, because an id belongs to one
+   * transport and a model does not: `zai/glm-5.2`, `zai/glm-5.2` and `glm-5.2`
+   * are three spellings the three catalogues use for one thing, and a map keyed
+   * by id would hold it three times and answer "is this still listed" three
+   * different ways.
    */
-  zdrRoutes: Set<string> | undefined;
+  catalog: Map<string, MergedCatalogueEntry>;
+  /**
+   * The transports whose catalogue actually answered this pass.
+   *
+   * Delisting is only detectable against a catalogue we READ. Without this,
+   * one source outage would mark every row on that transport as removed and
+   * raise a critical alert per model — the exact false alarm that makes an
+   * alert channel worth ignoring.
+   */
+  catalogued: Set<TransportId>;
+  aa: ReadonlyMap<string, AaMetrics>;
   /** Previous streaks, keyed by profile key — not carried by `LiveModelState`. */
   streaks: Map<string, number>;
   alert: (input: RaiseAlertInput) => Promise<void>;
@@ -151,33 +170,54 @@ const emptyStats = (): ModelSyncStats => ({
 const message = (err: unknown): string =>
   err instanceof Error ? err.message : String(err);
 
-/** Endpoints for one model on one transport, from that transport's own API. */
+/**
+ * Endpoints for one model on one transport, from that transport's own source.
+ *
+ * A transport with no source is an ERROR rather than an empty list: it means a
+ * row names a transport this build cannot describe, and returning `[]` would
+ * present that as a model nobody serves — which the caller would then write
+ * back as a collapsed pool.
+ */
 const fetchEndpoints = async (
+  ctx: SyncContext,
   transport: TransportId,
   modelId: string,
-  zdrRoutes: Set<string> | undefined,
 ): Promise<EndpointStat[]> => {
-  if (transport === "gateway") return fetchGatewayEndpoints(modelId);
-  if (transport === "openrouter")
-    return fetchOpenRouterEndpoints(modelId, zdrRoutes);
-  throw new Error(`no endpoint source for transport ${transport}`);
+  const source = sourceForTransport(ctx.sources, transport);
+  if (source === undefined) {
+    throw new Error(`no catalogue source for transport ${transport}`);
+  }
+  return source.fetchEndpoints(modelId);
 };
 
-/** The AA entry for a model, matched on the profile key then on each model id. */
-const lookupAa = (
-  aa: ReadonlyMap<string, AaMetrics>,
-  profileKey: string,
-  modelIds: string[],
-): AaMetrics | null => {
-  const keys = [
-    profileKey,
-    ...modelIds.flatMap((id) => [id, id.split("/").at(-1) ?? id]),
-  ];
-  for (const key of keys) {
-    const hit = aa.get(normalizeAaKey(key));
-    if (hit !== undefined) return hit;
+/** The merged catalogue entry for a model, found by any id the row carries. */
+const catalogueEntryFor = (
+  ctx: SyncContext,
+  modelIds: Partial<Record<TransportId, string>>,
+): MergedCatalogueEntry | undefined => {
+  for (const id of Object.values(modelIds)) {
+    const entry = ctx.catalog.get(catalogueMatchKey(id));
+    if (entry !== undefined) return entry;
   }
-  return null;
+  return undefined;
+};
+
+/**
+ * When the model came out, from whichever source knows.
+ *
+ * The catalogues are preferred because they date almost everything they list
+ * (239 of 239 gateway models on 2026-08-30) and they list exactly what we can
+ * route to. Artificial Analysis covers the rest. `undefined` when neither
+ * answered — which leaves the stored value untouched rather than blanking it.
+ */
+const releaseDateFor = (
+  entry: MergedCatalogueEntry | undefined,
+  aa: AaMetrics | null,
+): Date | undefined => {
+  if (entry?.releasedAt !== undefined) return entry.releasedAt;
+  if (aa?.releaseDate === undefined) return undefined;
+  const parsed = new Date(aa.releaseDate);
+  return Number.isNaN(parsed.getTime()) ? undefined : parsed;
 };
 
 /**
@@ -267,20 +307,28 @@ const syncOneModel = async (
 
   let primary: EndpointStat[];
   try {
-    primary = await fetchEndpoints(transport, modelId, ctx.zdrRoutes);
+    primary = await fetchEndpoints(ctx, transport, modelId);
   } catch (err: unknown) {
     ctx.stats.errors.push(`${row.profileKey}: ${message(err)}`);
     return;
   }
 
-  // The other transport is ENRICHMENT — its failure costs a `quantization`
-  // column, not the model's refresh, so it never aborts the pass.
-  const other: TransportId = transport === "gateway" ? "openrouter" : "gateway";
-  const otherId = row.modelIds[other];
+  // Every OTHER transport that serves this model is ENRICHMENT — it costs a
+  // `quantization` column or a wire name, not the model's refresh, so a failure
+  // is recorded and the pass continues.
+  //
+  // Enumerated from the row rather than from a pair, because there is no pair
+  // any more: a model can be served by an aggregator and by a direct host at
+  // once, and the previous `transport === "gateway" ? "openrouter" : "gateway"`
+  // silently ignored any third id the row carried.
   let enrichment: EndpointStat[] = [];
-  if (otherId !== undefined) {
+  for (const [other, otherId] of Object.entries(row.modelIds)) {
+    if (other === transport || !isTransportId(other)) continue;
     try {
-      enrichment = await fetchEndpoints(other, otherId, ctx.zdrRoutes);
+      enrichment = mergeEndpointStats(
+        enrichment,
+        await fetchEndpoints(ctx, other, otherId),
+      );
     } catch (err: unknown) {
       ctx.stats.errors.push(
         `${row.profileKey}: enrichment from ${other} failed: ${message(err)}`,
@@ -342,7 +390,11 @@ const syncOneModel = async (
     }
   }
 
-  const aa = lookupAa(ctx.aa, row.profileKey, Object.values(row.modelIds));
+  const aa = matchAaRecord(ctx.aa, {
+    aaSlug: row.aaSlug,
+    profileKey: row.profileKey,
+    modelIds: Object.values(row.modelIds),
+  });
   const report = evaluatePolicy(
     policy,
     {
@@ -417,18 +469,23 @@ const syncOneModel = async (
     });
   }
 
-  const gatewayId = row.modelIds.gateway;
+  // Delisting is asked of the transport the model actually runs on, and only
+  // when that transport's catalogue answered this pass. It used to be asked of
+  // the gateway for every row, which was wrong in both directions: a row served
+  // by another transport was judged against a catalogue it has no reason to
+  // appear in, and a model withdrawn from its own transport went unnoticed.
+  const catalogEntry = catalogueEntryFor(ctx, row.modelIds);
   const removedFromCatalog =
     row.status === "published" &&
-    gatewayId !== undefined &&
-    !ctx.catalog.has(gatewayId);
+    ctx.catalogued.has(transport) &&
+    catalogEntry?.idsByTransport[transport] === undefined;
   if (removedFromCatalog) {
     await ctx.alert({
       kind: "catalog-removed",
       severity: "critical",
       modelKey: row.profileKey,
-      message: `${row.profileKey} names a gateway model the catalogue no longer lists. It is marked failing but stays enabled — pick its replacement before turning it off.`,
-      context: { gatewayId },
+      message: `${row.profileKey} names a model the ${transport} catalogue no longer lists. It is marked failing but stays enabled — pick its replacement before turning it off.`,
+      context: { transport, modelId },
     });
   }
 
@@ -470,7 +527,34 @@ const syncOneModel = async (
         }
       : undefined;
 
+  // Ids for transports this model is now known to be served by.
+  //
+  // PURELY ADDITIVE, and that is the whole design: an id already on the row is
+  // what routing uses today and what a transport switch would move to, so it is
+  // never overwritten by a catalogue's spelling — the folded-name match is good
+  // enough to discover a model and not good enough to re-point a working one.
+  // Removal is not done here either; a model leaving a catalogue is delisting,
+  // which alerts above and deliberately changes nothing.
+  //
+  // Without this, transports could only ever be gained at DISCOVERY. A model
+  // already tracked when a new transport appeared stayed unreachable there
+  // forever: on 2026-08-30, `glm-5.2` and `gpt-oss-120b` were published on
+  // OpenRouter and served by Scaleway, and moving either to EU hosting meant
+  // someone typing the id by hand — the same defect as unpromotable candidates,
+  // seen from the other end.
+  const gainedIds: Partial<Record<TransportId, string>> = {};
+  for (const [transportId, id] of Object.entries(
+    catalogEntry?.idsByTransport ?? {},
+  )) {
+    if (!isTransportId(transportId) || row.modelIds[transportId] !== undefined)
+      continue;
+    gainedIds[transportId] = id;
+  }
+
   const update: Partial<NewModelLiveStateRow> = {
+    ...(Object.keys(gainedIds).length === 0
+      ? {}
+      : { modelIds: { ...row.modelIds, ...gainedIds } }),
     endpointStats: emptyPublishedPool ? row.endpointStats : pool.endpoints,
     // An empty computed pool never overwrites a working one — same guard as
     // `endpointStats` above, for the same reason: a source outage must not
@@ -499,10 +583,73 @@ const syncOneModel = async (
   // it would erase yesterday's grades fleet-wide. Absent stays absent; the
   // stored `fetchedAt` is what says how old a kept figure is.
   if (aa !== null) update.aaMetrics = aa;
+  // The catalogues own the release date — between them they list every model we
+  // can route to and date almost all of them — with AA covering the rest. Same
+  // rule as the grades above: a date we could not read this pass leaves the
+  // stored one alone rather than blanking a column the picker sorts on.
+  const released = releaseDateFor(catalogEntry, aa);
+  if (released !== undefined) update.releasedAt = released;
   if (quarantines !== undefined) update.quarantinedProviders = quarantines;
   if (zdrProbe !== undefined) {
     update.zdrProbeOk = zdrProbe.ok;
     update.zdrProbeAt = ctx.now;
+  }
+
+  // Price moves — upstreams reprice, run promotions, change tiers — so the
+  // budget question is asked every night rather than once at promotion. Without
+  // it, a model promoted at $1.90 that later rose to $3 would stay enabled
+  // forever while an identical model discovered the next day arrived disabled:
+  // one fleet, two answers, decided by nothing but arrival order.
+  //
+  // DELIBERATELY ONE-WAY. Disabling protects the bill and any operator undoes
+  // it with one command; ENABLING spends money, and here it would overturn a
+  // judgement this rule cannot see. `disabledReason: "cost"` is written by two
+  // different authorities — curation, from a profile's `assessment`, and this
+  // budget check — and the row does not record which. Four of the ten
+  // cost-disabled models on 2026-08-30 price UNDER these caps
+  // (claude-haiku-4.5 at $1.10/$5.50, gemini-3.7-flash, inkling,
+  // mistral-medium-3.5), because curation judged them on estimated cost per
+  // TURN rather than on a per-MTok ceiling. Auto-enabling would have silently
+  // reversed all four. So a price falling back under budget raises an alert and
+  // waits for a person.
+  if (row.status === "published") {
+    const budget = promotionEnablement(pricingToWrite);
+    const priced = `$${pricingToWrite.inputPerMTok.toString()}/$${pricingToWrite.outputPerMTok.toString()} per MTok against a budget of $${PROMOTION_PRICE_CAPS.inputPerMTok.toString()}/$${PROMOTION_PRICE_CAPS.outputPerMTok.toString()}`;
+    if (row.enabled && !budget.enabled) {
+      if (row.boundRoles.length > 0) {
+        // Same rule as every other automatic disable: never take the fleet down
+        // to save money — ask a person.
+        await ctx.alert({
+          kind: "policy-fail",
+          severity: "critical",
+          modelKey: row.profileKey,
+          message: `${row.profileKey} now costs ${priced}, and the fleet runs on it (${row.boundRoles.join(", ")}). It stays enabled — rebind the role or accept the price.`,
+          context: { pricing: pricingToWrite, boundRoles: row.boundRoles },
+        });
+      } else {
+        update.enabled = false;
+        update.disabledReason = "cost";
+        await ctx.alert({
+          kind: "model-disabled",
+          severity: "warning",
+          modelKey: row.profileKey,
+          message: `${row.profileKey} disabled on cost: ${priced}. Re-enable it by hand to keep paying for it.`,
+          context: { pricing: pricingToWrite },
+        });
+      }
+    } else if (
+      !row.enabled &&
+      row.disabledReason === "cost" &&
+      budget.enabled
+    ) {
+      await ctx.alert({
+        kind: "price-jump",
+        severity: "info",
+        modelKey: row.profileKey,
+        message: `${row.profileKey} is disabled on cost but now prices at ${priced}. Left disabled on purpose — enable it by hand if it was the price that ruled it out.`,
+        context: { pricing: pricingToWrite },
+      });
+    }
   }
 
   if (streak >= DISABLE_STREAK) {
@@ -557,8 +704,60 @@ const candidateKey = (modelId: string): string =>
     .slice(0, 64);
 
 /**
- * Look for models worth a human's attention: language models in the catalogue
- * that no row already names, graded against the strict discovery policy.
+ * The transport the fleet actually runs on: the one most PUBLISHED rows use.
+ *
+ * Measured rather than configured, so it follows the fleet instead of having to
+ * be kept in step with it. Candidates are excluded from the count on purpose —
+ * they are exactly the rows whose transport is being decided here, and letting
+ * them vote would make a bad first choice self-reinforcing.
+ *
+ * `undefined` on an empty fleet, which is a first boot, and there the source
+ * order decides.
+ */
+const fleetTransport = (
+  rows: readonly LiveModelState[],
+): TransportId | undefined => {
+  const counts = new Map<TransportId, number>();
+  for (const row of rows) {
+    if (row.status !== "published") continue;
+    counts.set(row.transport, (counts.get(row.transport) ?? 0) + 1);
+  }
+  let best: { transport: TransportId; count: number } | undefined;
+  for (const [transport, count] of counts) {
+    if (best === undefined || count > best.count) best = { transport, count };
+  }
+  return best?.transport;
+};
+
+/**
+ * Where a newly discovered model should START.
+ *
+ * The fleet's OWN transport, whenever that transport serves the model. This is
+ * the whole promotion fix: discovery used to read one catalogue and record one
+ * id, so on 2026-08-30 all 110 candidates carried a gateway id and nothing
+ * else, against 22 published models routing entirely through OpenRouter.
+ * Promoting any of them moved a model onto a transport the fleet does not use,
+ * and stripped it of everything only the other catalogue publishes.
+ *
+ * Falling back to source ORDER rather than to a hardcoded name keeps the rule
+ * honest for a model the fleet's transport does not serve — `pixtral-12b-2409`
+ * exists on Scaleway alone — and keeps this function free of any opinion about
+ * which transports exist.
+ */
+const startingTransport = (
+  entry: MergedCatalogueEntry,
+  fleet: TransportId | undefined,
+  sources: readonly CatalogueSource[],
+): TransportId | undefined => {
+  if (fleet !== undefined && entry.idsByTransport[fleet] !== undefined)
+    return fleet;
+  return sources.find((source) => entry.idsByTransport[source.id] !== undefined)
+    ?.id;
+};
+
+/**
+ * Look for models worth a human's attention: language models some catalogue
+ * lists that no row already names, graded against the strict discovery policy.
  *
  * Nothing is ever published. `candidate` rows are invisible to teams until
  * someone promotes them, because tool-calling accuracy for one model spans
@@ -568,16 +767,28 @@ const candidateKey = (modelId: string): string =>
 const discoverCandidates = async (
   ctx: SyncContext,
   known: Set<string>,
+  fleet: TransportId | undefined,
 ): Promise<void> => {
   const unknown = [...ctx.catalog.values()]
-    .filter((entry) => entry.type === "language" && !known.has(entry.id))
-    // The catalogue's own `none` is a fact we can act on without spending a
+    .filter(
+      (entry) =>
+        // `undefined` is UNKNOWN, not "not a language model": only the gateway
+        // and Scaleway classify, so rejecting the unclassified would make every
+        // OpenRouter-only model undiscoverable. An embedding model that slips
+        // through is caught by the policy — it advertises no `tools`.
+        entry.isLanguageModel !== false &&
+        entry.deprecated !== true &&
+        ![...Object.values(entry.idsByTransport)].some((id) => known.has(id)),
+    )
+    // A catalogue's own `none` is a fact we can act on without spending a
     // request: the discovery policy requires zero retention, so a model with no
     // ZDR route anywhere cannot become a candidate.
     .filter((entry) => entry.zdr !== "none")
     // Newest first: with a bounded budget, the models worth discovering are the
     // ones that did not exist at the last sync.
-    .sort((a, b) => (b.released ?? 0) - (a.released ?? 0));
+    .sort(
+      (a, b) => (b.releasedAt?.getTime() ?? 0) - (a.releasedAt?.getTime() ?? 0),
+    );
 
   let fetches = 0;
   for (const entry of unknown) {
@@ -587,12 +798,16 @@ const discoverCandidates = async (
     ) {
       break;
     }
+    const transport = startingTransport(entry, fleet, ctx.sources);
+    const modelId =
+      transport === undefined ? undefined : entry.idsByTransport[transport];
+    if (transport === undefined || modelId === undefined) continue;
     fetches += 1;
     let endpoints: EndpointStat[];
     try {
-      endpoints = await fetchGatewayEndpoints(entry.id);
+      endpoints = await fetchEndpoints(ctx, transport, modelId);
     } catch (err: unknown) {
-      ctx.stats.errors.push(`discovery ${entry.id}: ${message(err)}`);
+      ctx.stats.errors.push(`discovery ${modelId}: ${message(err)}`);
       continue;
     }
 
@@ -604,7 +819,13 @@ const discoverCandidates = async (
       requireZdr: DEFAULT_CANDIDATE_POLICY.zdrRequired,
       quantizationFloor: DEFAULT_CANDIDATE_POLICY.quantizationFloor,
     });
-    const aa = lookupAa(ctx.aa, entry.id, [entry.id]);
+    // A candidate has no curated slug yet — nobody has looked at it. Every id
+    // it is known by is offered, because the transports spell the same model
+    // differently and Artificial Analysis matches only one of the spellings.
+    const aa = matchAaRecord(ctx.aa, {
+      profileKey: entry.id,
+      modelIds: Object.values(entry.idsByTransport),
+    });
     const report = evaluatePolicy(
       DEFAULT_CANDIDATE_POLICY,
       {
@@ -632,9 +853,12 @@ const discoverCandidates = async (
         .values({
           profileKey,
           status: "candidate",
-          transport: "gateway",
+          transport,
           enabled: false,
-          modelIds: { gateway: entry.id },
+          // EVERY id, not just the one discovery happened to fetch through, so
+          // a promoted model can be moved between transports by a single write
+          // instead of needing someone to look its other spellings up.
+          modelIds: entry.idsByTransport,
           providerPool: {},
           quarantinedProviders: [],
           effectiveContextLength: context.contextLength,
@@ -646,6 +870,7 @@ const discoverCandidates = async (
           policyReport: report,
           endpointStats: pool.endpoints,
           aaMetrics: aa,
+          releasedAt: releaseDateFor(entry, aa) ?? null,
           dynamicProfile: deriveDynamicProfile(entry, ctx.now),
           boundRoles: [],
           source: "sync",
@@ -660,8 +885,8 @@ const discoverCandidates = async (
       kind: "new-candidate",
       severity: "info",
       modelKey: profileKey,
-      message: `${entry.id} passes the discovery policy: ${pool.endpoints.length.toString()} endpoint(s), ${context.contextLength.toString()} usable context, $${pricing.inputPerMTok.toString()}/$${pricing.outputPerMTok.toString()} per MTok${aa?.intelligenceIndex === undefined ? "" : `, intelligence ${aa.intelligenceIndex.toFixed(1)}`}. Added as a candidate — publish it by hand after a bench run.`,
-      context: { gatewayId: entry.id },
+      message: `${modelId} passes the discovery policy on ${transport}: ${pool.endpoints.length.toString()} endpoint(s), ${context.contextLength.toString()} usable context, $${pricing.inputPerMTok.toString()}/$${pricing.outputPerMTok.toString()} per MTok${aa?.intelligenceIndex === undefined ? "" : `, intelligence ${aa.intelligenceIndex.toFixed(1)}`}. Added as a candidate — publish it by hand after a bench run.`,
+      context: { transport, modelIds: entry.idsByTransport },
     });
   }
 };
@@ -713,17 +938,35 @@ export const runModelSync = async (
     return { status, stats };
   };
 
-  let entries: GatewayCatalogEntry[];
-  try {
-    entries = await fetchGatewayCatalog();
-  } catch (err: unknown) {
-    // Every row keeps yesterday's values. A sync that cannot see the catalogue
-    // has no business rewriting what the fleet routes on.
-    stats.errors.push(`gateway catalogue: ${message(err)}`);
+  // Every catalogue, in parallel, each failing on its own.
+  //
+  // ONE source failing is survivable and must be: its models keep yesterday's
+  // values, its transport is excluded from delisting detection, and the other
+  // transports refresh normally. ALL of them failing is the case the run must
+  // refuse — a sync that can see no catalogue at all has no business rewriting
+  // what the fleet routes on.
+  const sources = createCatalogueSources();
+  const catalogued = new Set<TransportId>();
+  const listings = (
+    await Promise.all(
+      sources.map(async (source) => {
+        try {
+          const entries = await source.listModels();
+          catalogued.add(source.id);
+          return { source, entries };
+        } catch (err: unknown) {
+          stats.errors.push(`${source.id} catalogue: ${message(err)}`);
+          return undefined;
+        }
+      }),
+    )
+  ).filter((listing) => listing !== undefined);
+
+  if (listings.length === 0) {
     await alert({
       kind: "sync-failed",
       severity: "critical",
-      message: `Model sync aborted before writing anything: ${message(err)}`,
+      message: `Model sync aborted before writing anything: no catalogue could be read (${stats.errors.join("; ")})`,
     });
     return finish("failed");
   }
@@ -733,13 +976,15 @@ export const runModelSync = async (
     dryRun,
     skipZdrProbe: options?.skipZdrProbe ?? false,
     stats,
-    catalog: new Map(entries.map((entry) => [entry.id, entry])),
+    sources,
+    catalog: new Map(
+      mergeCatalogues(listings).map((entry) => [
+        catalogueMatchKey(entry.id),
+        entry,
+      ]),
+    ),
+    catalogued,
     aa: await fetchArtificialAnalysis(),
-    // One fetch for the whole pass — the list covers the entire catalogue, so
-    // per-model cost is zero. Unlike the gateway catalogue above, a failure
-    // here does NOT abort: it costs a column, and the pool keeps the stance it
-    // already had.
-    zdrRoutes: await fetchOpenRouterZdrRoutes(),
     streaks: new Map(),
     alert,
   };
@@ -779,7 +1024,7 @@ export const runModelSync = async (
   if (onlyKeys === undefined) {
     const known = new Set(rows.flatMap((row) => Object.values(row.modelIds)));
     try {
-      await discoverCandidates(ctx, known);
+      await discoverCandidates(ctx, known, fleetTransport(rows));
     } catch (err: unknown) {
       stats.errors.push(`discovery: ${message(err)}`);
     }

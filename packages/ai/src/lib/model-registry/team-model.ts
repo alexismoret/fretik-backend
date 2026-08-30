@@ -1,30 +1,32 @@
 /**
- * C8b — per-team workhorse / utility model resolution. The DB-backed layer on
- * top of the pure registry in `resolve.ts`: read a team's stored tier picks
- * (C8a), degrade unknown / unselectable keys to the code default, and return
- * the model instance under the requested ROLE's envelope.
+ * Per-team model resolution. The DB-backed layer on top of the pure registry in
+ * `resolve.ts`: read a team's stored per-FUNCTION picks, degrade unknown or
+ * unusable keys to the code default, and return the model instance under the
+ * requested ROLE's envelope.
  *
  * Kept separate from `resolve.ts` (which stays pure, no DB import) so the
  * registry logic remains unit-testable without Redis / Postgres.
  */
 
+import { functionProfileKey } from "@fretik/shared/model-registry/functions";
 import { getTeamAiSettings } from "@fretik/shared/services/team-ai-settings/get-for-team";
 import { withSoftTimeout } from "../stream-errors";
+import { ROLE_FUNCTION } from "./functions";
 import {
-  ROLE_TIER,
+  resolveFunctionProfileKey,
   resolveModel,
   resolveModelForRoleProfile,
-  resolveTierProfileKey,
   type ResolvedModel,
 } from "./resolve";
 import type { ModelRole } from "./types";
 
 /**
- * Resolve a role to the model instance a team should use, honouring its
- * stored workhorse / utility pick. Falls back to the role's code default when:
- * the role is `"fixed"` (never overridable), no `teamId` is in scope (a
- * context-less background path), the team has no override, the override is
- * unknown / gate-failed / wrong-tier, OR the settings read errors.
+ * Resolve a role to the model instance a team should use, honouring its stored
+ * pick for that role's FUNCTION. Falls back to the role's code default when:
+ * the role is `"auto"` (a fallback or the page critic, never overridable), no
+ * `teamId` is in scope (a context-less background path), the team has no
+ * override, the override is unknown or measurably unusable for the function,
+ * OR the settings read errors.
  *
  * The settings read is wrapped defensively: a Redis/DB hiccup on this
  * personalization read must never break a chat turn or a background pipeline,
@@ -36,8 +38,8 @@ export const resolveModelForTeam = async (
   role: ModelRole,
   teamId: string | undefined,
 ): Promise<ResolvedModel> => {
-  const tier = ROLE_TIER[role];
-  if (tier === "fixed" || teamId === undefined) return resolveModel(role);
+  const fn = ROLE_FUNCTION[role];
+  if (fn === "auto" || teamId === undefined) return resolveModel(role);
   try {
     const settings = await withSoftTimeout(
       getTeamAiSettings(teamId),
@@ -45,13 +47,10 @@ export const resolveModelForTeam = async (
       null,
       "team-ai-settings",
     );
-    const storedKey =
-      tier === "flagship"
-        ? settings?.flagshipProfileKey
-        : tier === "workhorse"
-          ? settings?.workhorseProfileKey
-          : settings?.utilityProfileKey;
-    const { profileKey } = resolveTierProfileKey(tier, storedKey);
+    const { profileKey } = resolveFunctionProfileKey(
+      fn,
+      functionProfileKey(settings, fn),
+    );
     return resolveModelForRoleProfile(role, profileKey);
   } catch (err) {
     console.error(
@@ -63,17 +62,17 @@ export const resolveModelForTeam = async (
 };
 
 /**
- * The flagship model + thinking depth a chat turn or workflow run should use.
+ * The assistant model + thinking depth a chat turn or workflow run should use.
  *
  * Resolution order for the MODEL: an explicit pin (a workflow's
- * `modelProfileKey`) → the team's stored flagship pick → the code default.
+ * `modelProfileKey`) → the team's stored `assistant` pick → the code default.
  * Before 2026-07-27 the chat path skipped the middle step, because the prompt
  * bar stamped the team's pick onto every new conversation. That picker is gone —
  * teams choose a model once, in settings — so unpinned conversations must read
  * the team's choice here or it would be silently ignored.
  *
  * `storedReasoningLevel` is only returned when the resolved model IS the team's
- * effective flagship: the level was chosen against that specific model (see the
+ * effective assistant model: the level was chosen against that specific model (see the
  * reset rule in `upsertTeamAiSettings`), so it must not leak onto a workflow
  * pinned to something else — whose own `reasoningLevel` column applies instead.
  * Raw here, validated by `effectiveReasoningLevel` at the call site.
@@ -110,13 +109,13 @@ export const resolveTeamFlagship = async (
     }
   }
 
-  const teamFlagship = resolveTierProfileKey(
-    "flagship",
-    settings?.flagshipProfileKey,
+  const teamFlagship = resolveFunctionProfileKey(
+    "assistant",
+    functionProfileKey(settings, "assistant"),
   ).profileKey;
 
   const resolved = pinnedKey
-    ? resolveTierProfileKey("flagship", pinnedKey)
+    ? resolveFunctionProfileKey("assistant", pinnedKey)
     : { profileKey: teamFlagship, fellBack: false };
 
   return {
@@ -124,7 +123,7 @@ export const resolveTeamFlagship = async (
     fellBack: resolved.fellBack,
     storedReasoningLevel:
       resolved.profileKey === teamFlagship
-        ? (settings?.flagshipReasoningLevel ?? null)
+        ? (settings?.assistantReasoningLevel ?? null)
         : null,
   };
 };
@@ -146,7 +145,7 @@ export const resolveMemoryModel = async (
     : resolveModelForTeam(role, teamId);
 
 /**
- * The utility-tier model ID a team should use for `bare` one-shot call sites
+ * The quick-tasks model ID a team should use for `bare` one-shot call sites
  * (titles, catch-up, multi-query) that build their own
  * `openrouter.chat(id, settings)` and need the catalog ID string, not a
  * wrapped instance. Falls back to the `cheap-tasks` code default.

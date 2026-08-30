@@ -1,4 +1,4 @@
-import { and, count, eq, gt, sql } from "drizzle-orm";
+import { and, count, eq, gt, inArray, sql } from "drizzle-orm";
 import db from "../../db";
 import { modelProviderIncidents } from "../../db/schema/model-registry";
 import { normalizeProviderName } from "../../model-registry/provider-names";
@@ -127,6 +127,35 @@ export const countIncidentsForModel = async (
       ),
     );
   return row?.total ?? 0;
+};
+
+/**
+ * Incident counts for MANY models in ONE grouped query.
+ *
+ * The hub renders every model on the page, so the per-model reader above would
+ * be one round trip per card — 139 of them on the current fleet, on a request a
+ * team makes every time it opens its settings. Models with no incidents are
+ * absent from the result rather than present with a zero; the caller reads a
+ * missing key as none, which is what it means.
+ */
+export const countIncidentsForModels = async (
+  modelKeys: readonly string[],
+  windowHours: number,
+  now: Date,
+): Promise<Map<string, number>> => {
+  if (modelKeys.length === 0) return new Map();
+  const cutoff = new Date(now.getTime() - windowHours * 60 * 60_000);
+  const rows = await db
+    .select({ modelKey: modelProviderIncidents.modelKey, total: count() })
+    .from(modelProviderIncidents)
+    .where(
+      and(
+        inArray(modelProviderIncidents.modelKey, [...modelKeys]),
+        gt(modelProviderIncidents.createdAt, cutoff),
+      ),
+    )
+    .groupBy(modelProviderIncidents.modelKey);
+  return new Map(rows.map((row) => [row.modelKey, row.total]));
 };
 
 /** Per-(provider, kind) incident counts on one model, for the admin scorecard. */

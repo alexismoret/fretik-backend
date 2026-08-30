@@ -23,7 +23,6 @@ export const GOOGLE_PROFILES: Record<string, ModelProfile> = {
   "gemini-3.1-pro": {
     key: "gemini-3.1-pro",
     family: "google",
-    tiers: ["flagship"],
     catalog: {
       id: "google/gemini-3.1-pro-preview",
       contextLength: 1_048_576,
@@ -74,7 +73,6 @@ export const GOOGLE_PROFILES: Record<string, ModelProfile> = {
   "gemini-3.7-flash": {
     key: "gemini-3.7-flash",
     family: "google",
-    tiers: ["flagship", "workhorse"],
     catalog: {
       id: "google/gemini-3.7-flash",
       contextLength: 1_048_576,
@@ -170,7 +168,6 @@ export const GOOGLE_PROFILES: Record<string, ModelProfile> = {
     // which is a legitimate trade for a team whose work is document triage
     // rather than reasoning. Under the open-registry doctrine that call belongs
     // to the team, not to us; the eval gate still guards the applied default.
-    tiers: ["flagship", "workhorse", "utility"],
     catalog: {
       id: "google/gemini-3.5-flash-lite",
       contextLength: 1_048_576,
@@ -225,7 +222,6 @@ export const GOOGLE_PROFILES: Record<string, ModelProfile> = {
   "gemini-3.1-flash-lite": {
     key: "gemini-3.1-flash-lite",
     family: "google",
-    tiers: ["utility"],
     catalog: {
       // Its ZDR endpoint (Vertex) advertises `temperature` — unlike the
       // 3.5-flash-lite route it briefly replaced — so it routes cleanly under

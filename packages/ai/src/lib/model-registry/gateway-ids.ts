@@ -27,7 +27,30 @@ import { MODEL_PROFILES } from "./profiles";
  * generations. They stay on OpenRouter until the Gateway carries the dated
  * variants.
  */
-const GATEWAY_MODEL_IDS: Readonly<Record<string, string>> = {
+/**
+ * A BOOTSTRAP SEED, not a registry of models — and it does not grow when the
+ * market does.
+ *
+ * A model the sync discovers never appears here: `mergeCatalogues` pairs the
+ * catalogues by folded name and writes every spelling it found onto the row's
+ * `modelIds`, `promote` publishes it, and `effective.ts` synthesises its
+ * profile. No TypeScript is edited for any of that.
+ *
+ * This map answers one narrower question: what is the gateway spelling of a
+ * model someone hand-wrote a curated profile for, BEFORE the first sync pass
+ * has run for it. Both readers prefer the row — `live?.modelIds[t] ?? ids[t]` —
+ * so a line here is overtaken by measurement the first night and never consulted
+ * again. Since 2026-08-30 the row also GAINS ids on its own (`glm-5.2` picked up
+ * its Scaleway spelling with nobody typing it), so the map cannot fall behind
+ * either.
+ *
+ * It is hand-written rather than derived for one reason: seeding runs at boot,
+ * and a boot that needs two catalogue fetches to know its own model ids is a
+ * boot that fails when a vendor's API is down.
+ *
+ * Exported so `models:admin audit` can name entries that outlived their profile.
+ */
+export const GATEWAY_MODEL_IDS: Readonly<Record<string, string>> = {
   // Identical id on both catalogues.
   "gemini-3.1-pro": "google/gemini-3.1-pro-preview",
   "gemini-3.7-flash": "google/gemini-3.7-flash",

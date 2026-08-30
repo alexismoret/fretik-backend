@@ -1,26 +1,33 @@
 /**
- * Live, user-facing model metrics (chantier C8). Intelligence + speed come
- * from Artificial Analysis. Cost is a deliberate ABSTRACTION: the raw
- * OpenRouter dollar price stays backend-only and NEVER leaves this service —
- * the client only ever sees `costLevel`, a relative 0-100 cost indicator (a
- * future credit system will build on the same backend price). The level is a
- * log-scaled transform of the price (which spans orders of magnitude), so two
- * models with different prices always get different, comparable values — they
- * never collapse into one bucket. Everything here is DISPLAY only — it never
- * feeds resolution or the eval gate. Cached in Redis (stale-while-revalidate),
- * with a committed fallback so the picker always renders.
+ * Live, user-facing model metrics (chantier C8).
+ *
+ * Every figure is read from `model_live_state`, which the nightly sync
+ * maintains: grades from Artificial Analysis, speed and latency from the
+ * endpoint stats of the pool the model actually routes to, price from the pool
+ * median. This service performs no upstream calls of its own (2026-08-30).
+ *
+ * Cost is a deliberate ABSTRACTION: the raw dollar price stays backend-only and
+ * NEVER leaves this service — the client only ever sees `costLevel`, a relative
+ * 0-100 cost indicator (a future credit system will build on the same backend
+ * price). The level is a log-scaled transform of the price (which spans orders
+ * of magnitude), so two models with different prices always get different,
+ * comparable values — they never collapse into one bucket. Everything here is
+ * DISPLAY only — it never feeds resolution or the eval gate. Cached in Redis
+ * (stale-while-revalidate), with a committed fallback so the picker always
+ * renders.
  */
 
 export interface ModelMetrics {
   /** Artificial Analysis Intelligence Index (raw, ~0-70). Null if unmatched. */
   intelligence: number | null;
   /**
-   * Median output tokens/second. Prefers OpenRouter's p50 for the upstream this
-   * profile actually routes to (`fetch-openrouter-routing.ts`), falling back to
-   * Artificial Analysis. OpenRouter wins because AA measures whichever route it
-   * picked, which for a pinned profile is usually not ours — DeepSeek V4 Flash
-   * runs on DeepInfra here, and AA never measured that endpoint at all. Null
-   * when neither source has it.
+   * Median output tokens/second on the endpoint a turn is most likely to land
+   * on — the fastest in the vetted pool, since every pool routes by throughput.
+   *
+   * Artificial Analysis is NOT a fallback for this: it times whichever route it
+   * chose, which for a pinned pool is usually not one of ours — DeepSeek V4
+   * Flash runs on DeepInfra here, and AA never measured that endpoint at all.
+   * Falls back to the captured `FALLBACK_METRICS` figure, then null.
    */
   speed: number | null;
   /**
@@ -39,21 +46,24 @@ export interface ModelMetrics {
    * Luna @medium, 252s for Kimi K3. Null if unmatched.
    */
   timeToFirstAnswer: number | null;
-  /** AA Coding Index (raw). A second capability axis. Null if unmatched. */
+  /** AA Coding Index (raw, ~0-100). A second capability axis. Null if unmatched. */
   coding: number | null;
   /**
-   * AA `tau_banking` (0-1) — multi-turn TOOL-USE reliability. The axis our
-   * agent lives or dies on, and the one with the widest real spread between
-   * otherwise similar models. Null if unmatched.
+   * AA AGENTIC index (raw, ~0-100) — the axis our agent lives or dies on, and
+   * the one with the widest real spread between otherwise similar models.
+   *
+   * Was AA's `tau_banking` (0-1) until 2026-08-30. That benchmark, along with
+   * every other individual one, is Pro-only on the migrated API ($417/month,
+   * declined); the composite agentic index replaced it and is measured across
+   * a broader suite. The field name is unchanged deliberately — a rename would
+   * ripple through the card contract and both locales for no gain — but the
+   * SCALE did change, so anything comparing against a stored 0-1 threshold is
+   * wrong. Null if unmatched.
    */
   toolUse: number | null;
-  /** AA `ifbench` (0-1) — instruction following. Null if unmatched. */
-  instructionFollowing: number | null;
-  /** AA `lcr` (0-1) — long-context reasoning. Null if unmatched. */
-  longContext: number | null;
   /**
-   * p50 seconds to the first token on the upstream we route to, measured by
-   * OpenRouter over the last 30 minutes of live traffic.
+   * p50 seconds to the first token on the endpoint a turn is most likely to
+   * land on, measured over the last window the sync recorded.
    *
    * NOT interchangeable with `timeToFirstAnswer`: this fires on the first token
    * of ANY kind, so a model that reasons for a minute still scores ~1s here.
@@ -61,7 +71,7 @@ export interface ModelMetrics {
    * time-to-first-ANSWER from it (`ttft + reasoningTokens / throughput`) was
    * tried on 2026-08-03 and rejected: it ranked MiniMax M3 faster than DeepSeek
    * V4 Flash, while the eval gate measured the reverse by 1.8× end-to-end.
-   * Null when OpenRouter has no sample for that endpoint.
+   * Null when no endpoint in the pool reports a latency.
    */
   ttftSeconds: number | null;
 }

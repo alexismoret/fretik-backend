@@ -9,7 +9,6 @@ export const MINIMAX_PROFILES: Record<string, ModelProfile> = {
   "minimax-m3": {
     key: "minimax-m3",
     family: "minimax",
-    tiers: ["flagship"],
     catalog: {
       id: "minimax/minimax-m3",
       contextLength: 1_048_576,

@@ -28,7 +28,6 @@ export const DEEPSEEK_PROFILES: Record<string, ModelProfile> = {
   "deepseek-v4-pro": {
     key: "deepseek-v4-pro",
     family: "deepseek",
-    tiers: ["flagship"],
     catalog: {
       // Pinned to the DATED snapshot (2026-08-29), like `deepseek-v4-flash`
       // below and for the same reason: an undated alias moves under us, so the
@@ -75,9 +74,9 @@ export const DEEPSEEK_PROFILES: Record<string, ModelProfile> = {
       // order of magnitude below the fleet, and since a Fretik turn is
       // cache-read dominated it made this model rank CHEAPER than MiniMax M3
       // when it is ~3× dearer. costLevel 27 → 51, `low` → `moderate`.
-      // Superseded at runtime by the live routed price
-      // (`services/model-metrics/fetch-openrouter-routing.ts`); this is the
-      // reviewed baseline and the offline fallback.
+      // Superseded at runtime by the pool median the nightly sync writes to
+      // `model_live_state`; this is the reviewed baseline and the offline
+      // fallback.
       pricing: {
         inputPerMTok: 1.521,
         outputPerMTok: 3.043,
@@ -124,7 +123,6 @@ export const DEEPSEEK_PROFILES: Record<string, ModelProfile> = {
   "deepseek-v4-flash": {
     key: "deepseek-v4-flash",
     family: "deepseek",
-    tiers: ["flagship", "workhorse"],
     catalog: {
       // Pinned, never the `~deepseek/deepseek-v4-flash-latest` alias: an alias
       // would swap the model under us and void the eval-gate contract.
@@ -176,8 +174,7 @@ export const DEEPSEEK_PROFILES: Record<string, ModelProfile> = {
       // and a Fretik turn is cache-read dominated, so `costLevel` rises with it.
       // What it buys is a measured 4× on completion time whenever the sort lands
       // on BaseTen or Venice (14.9-15.5s vs DeepInfra's 62.0s for 4 096 tokens).
-      // Superseded at runtime by the live routed price
-      // (`services/model-metrics/fetch-openrouter-routing.ts`).
+      // Superseded at runtime by the pool median the nightly sync writes.
       pricing: {
         inputPerMTok: 0.13,
         outputPerMTok: 0.26,

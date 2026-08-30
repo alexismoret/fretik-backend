@@ -4,7 +4,7 @@
  * Two layers own model configuration, and the split is the whole point:
  *
  * - **Curation (TypeScript, `@fretik/ai` `lib/model-registry/profiles`).** What
- *   a model IS and how we decided to run it: tiers, native modalities, the
+ *   a model IS and how we decided to run it: native modalities, the
  *   reasoning envelope, the vetted upstream pool, the incident log. Changing it
  *   is a reviewed PR.
  * - **Live state (this package, `model_live_state`).** What is TRUE about it
@@ -32,8 +32,10 @@
  * - `gateway` — Vercel AI Gateway (`@ai-sdk/gateway`). The default.
  * - `openrouter` — OpenRouter (`@openrouter/ai-sdk-provider`). Kept live and
  *   tested as the escape hatch: one write flips a model back to it.
- * - `scaleway` — Scaleway Generative APIs (OpenAI-compatible), for the day we
- *   offer EU-hosted inference.
+ * - `scaleway` — Scaleway Generative APIs (OpenAI-compatible). EU-hosted, zero
+ *   data retention by default, and a DIRECT provider rather than an aggregator:
+ *   it serves each model itself, so its pool is one host and its catalogue
+ *   takes three fetches to assemble.
  * - `custom` — a base URL + token supplied by the team, for self-hosted or
  *   on-premise endpoints.
  */
@@ -49,6 +51,7 @@ export type TransportId = (typeof TRANSPORT_IDS)[number];
 export const IMPLEMENTED_TRANSPORTS: readonly TransportId[] = [
   "gateway",
   "openrouter",
+  "scaleway",
 ];
 
 export const isTransportId = (value: string): value is TransportId =>
@@ -175,6 +178,18 @@ export interface EndpointStat {
   hasZdr?: boolean;
   /** Only OpenRouter publishes this. `unknown` is a value, not an absence. */
   quantization?: string;
+  /**
+   * The `tool_choice` modes this endpoint accepts, when a source reports them.
+   *
+   * Not the same question as `supportedParameters` containing `tools`: a host
+   * can accept tool DEFINITIONS while refusing to be FORCED to call one. Two of
+   * ours depend on forcing — the schema-guided extract engine and the tool-call
+   * repair one-shot — and a host missing `required` does not fail there, it
+   * quietly answers in prose instead. Absent means the source said nothing,
+   * which must never be read as a refusal.
+   */
+  supportsToolChoice?: string[];
+  uptime5m?: number;
   uptime15m?: number;
   uptime1h?: number;
   uptime1d?: number;
@@ -252,18 +267,36 @@ export interface PolicyReport {
   excludedProviders: { provider: string; reason: string }[];
 }
 
-/** Artificial Analysis figures, all optional — the key is optional too. */
+/**
+ * Artificial Analysis figures, all optional — the key is optional too.
+ *
+ * NO PRICE AND NO THROUGHPUT live here, and adding either back would be a
+ * regression rather than an enrichment: AA aggregates over hosts our pool never
+ * routes to AND publishes one record per effort level, so both would describe a
+ * model we do not run. Prices come from `PricingSnapshot` (the pool median) and
+ * speeds from `EndpointStat` — both measured on our own routes.
+ *
+ * What belongs here is what AA alone can answer: the composite grades, and two
+ * facts with no equivalent anywhere else. Time to the first ANSWER token,
+ * because every endpoint API times the first token of any kind and cannot see
+ * where reasoning ends. And the release date, for the models the gateway
+ * catalogue does not list.
+ */
 export interface AaMetrics {
   slug?: string;
   intelligenceIndex?: number;
   codingIndex?: number;
   agenticIndex?: number;
-  mathIndex?: number;
-  outputTokensPerSecond?: number;
-  timeToFirstTokenSeconds?: number;
   timeToFirstAnswerTokenSeconds?: number;
-  priceInputPerMTok?: number;
-  priceOutputPerMTok?: number;
+  /** `YYYY-MM-DD`. A fallback for `releasedAt`, which the catalogue owns. */
+  releaseDate?: string;
+  /**
+   * Which AA index version graded this row (`"4.1"` on 2026-08-29). A floor
+   * such as `intelligence >= 45` only means something within one version — AA
+   * renumbers the fleet on a major bump, and without this the same constant
+   * would quietly start selecting a different set of models.
+   */
+  indexVersion?: string;
   fetchedAt?: string;
 }
 
@@ -276,7 +309,6 @@ export interface AaMetrics {
 export interface DynamicProfile {
   displayName: string;
   family: string;
-  tiers: ("flagship" | "workhorse" | "utility")[];
   contextLength: number;
   maxCompletionTokens?: number;
   inputModalities: string[];
@@ -318,6 +350,17 @@ export interface LiveModelState {
   policyReport: PolicyReport | null;
   endpointStats: EndpointStat[];
   aaMetrics: AaMetrics | null;
+  /**
+   * Upstream release date. Sortable, so the picker can answer "what is new"
+   * without reading a jsonb column.
+   */
+  releasedAt: Date | null;
+  /**
+   * Which AA record grades this model, from curation. The sync matches on it
+   * FIRST because AA publishes one record per effort level, so a name match
+   * returns a rung we may not run.
+   */
+  aaSlug: string | null;
   dynamicProfile: DynamicProfile | null;
   /**
    * Internal roles this model is bound to, written by the seed from

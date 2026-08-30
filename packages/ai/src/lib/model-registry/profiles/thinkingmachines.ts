@@ -21,7 +21,6 @@ export const THINKING_MACHINES_PROFILES: Record<string, ModelProfile> = {
   inkling: {
     key: "inkling",
     family: "thinkingmachines",
-    tiers: ["flagship", "workhorse"],
     catalog: {
       id: "thinkingmachines/inkling",
       contextLength: 1_048_576,

@@ -152,7 +152,31 @@ export const modelLiveState = pgTable("model_live_state", {
   /** Per-provider figures merged from every catalogue source. */
   endpointStats: jsonb("endpoint_stats").$type<EndpointStat[]>(),
 
+  /**
+   * When the model was released upstream.
+   *
+   * A stable identity fact rather than a measurement, and a column rather than
+   * a jsonb field because the picker sorts and filters on it: "what is new"
+   * is one of the two questions a team actually asks of a catalogue, and it
+   * cannot be answered from an index or a price.
+   *
+   * From the gateway catalogue (`released`, Unix seconds — every one of its 239
+   * language models carries it), falling back to Artificial Analysis for the
+   * few models the catalogue does not list.
+   */
+  releasedAt: timestamp("released_at", { withTimezone: true }),
+
   aaMetrics: jsonb("aa_metrics").$type<AaMetrics>(),
+
+  /**
+   * Which Artificial Analysis record grades this model, written by the seed
+   * from `assessment.aaSlug`. Curation owns it because only a human can settle
+   * it: AA publishes ONE RECORD PER EFFORT LEVEL, so a model matched by name or
+   * by id tail returns whichever rung happens to share our spelling rather than
+   * the one we run (GPT-5.6 Luna spans 33.9 to 51.2 across its ladder). Without
+   * it the sync grades a variant and the number looks entirely plausible.
+   */
+  aaSlug: varchar("aa_slug", { length: 96 }),
 
   /**
    * Catalogue-derived profile for models added by command rather than by pull

@@ -32,8 +32,6 @@ const snapshotSchema = z.object({
       timeToFirstAnswer: z.number().nullish().default(null),
       coding: z.number().nullish().default(null),
       toolUse: z.number().nullish().default(null),
-      instructionFollowing: z.number().nullish().default(null),
-      longContext: z.number().nullish().default(null),
       ttftSeconds: z.number().nullish().default(null),
     }),
   ),
@@ -53,5 +51,5 @@ export const getModelMetrics = async (): Promise<ModelMetricsSnapshot> => {
   }
   // Cold or corrupt cache: serve fallback immediately, refresh in background.
   void triggerBackgroundRefresh();
-  return buildModelMetricsSnapshot(null);
+  return buildModelMetricsSnapshot([]);
 };

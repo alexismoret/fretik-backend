@@ -2,6 +2,7 @@ import { type LanguageModelV4 } from "@ai-sdk/provider";
 import { generateText } from "ai";
 import { telemetryFor } from "./langfuse";
 import { resolveModel } from "./model-registry/resolve";
+import { resolveModelForTeam } from "./model-registry/team-model";
 
 /**
  * Vision sub-model for the `vision` tool — the registry's `vision`
@@ -40,11 +41,29 @@ import { resolveModel } from "./model-registry/resolve";
  * fail — otherwise the agent never sees the transient failure.
  */
 
-const visionPrimary = resolveModel("vision");
-const visionFallback = resolveModel("vision-fallback");
-
-const VISION_MODEL_ID = visionPrimary.profile.catalog.id;
-const VISION_FALLBACK_MODEL_ID = visionFallback.profile.catalog.id;
+/**
+ * The team's vision model, resolved PER CALL.
+ *
+ * It used to be two module-level constants, which was wrong twice over. A team
+ * that picked a vision model got the code default anyway — the `vision` role
+ * was pinned "fixed", so there was nothing to pick — and, less visibly, the
+ * resolved instances were captured at import and never refreshed, so a
+ * quarantine written at 03:00 did not reach this path until the process
+ * restarted. Both are the defect the engine exists to remove.
+ *
+ * The FALLBACK stays on the code default on purpose: it is the redundancy, and
+ * a fallback a team can repoint onto its own primary is not one.
+ */
+const visionModelsFor = async (teamId: string | undefined) => {
+  const primary = await resolveModelForTeam("vision", teamId);
+  const fallback = resolveModel("vision-fallback");
+  return {
+    primary: primary.model,
+    primaryId: primary.profile.catalog.id,
+    fallback: fallback.model,
+    fallbackId: fallback.profile.catalog.id,
+  };
+};
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 /** Video decoding/inference runs longer than a still image. */
@@ -74,9 +93,6 @@ const VISION_PDF_PROVIDER_OPTIONS = {
   },
 };
 
-const visionModel = visionPrimary.model;
-const visionFallbackModel = visionFallback.model;
-
 /**
  * Run a primary→fallback chain and return the result of whichever
  * succeeds first. The primary error is logged (the model id matters
@@ -86,16 +102,18 @@ const visionFallbackModel = visionFallback.model;
  * so the agent can see which one actually answered.
  */
 const runWithVisionFallback = async <T>(
+  teamId: string | undefined,
   builder: (model: LanguageModelV4, modelId: string) => Promise<T>,
 ): Promise<T> => {
+  const models = await visionModelsFor(teamId);
   try {
-    return await builder(visionModel, VISION_MODEL_ID);
+    return await builder(models.primary, models.primaryId);
   } catch (primaryErr) {
     console.warn(
-      `[vision] primary model ${VISION_MODEL_ID} failed, falling back to ${VISION_FALLBACK_MODEL_ID}:`,
+      `[vision] primary model ${models.primaryId} failed, falling back to ${models.fallbackId}:`,
       primaryErr instanceof Error ? primaryErr.message : primaryErr,
     );
-    return builder(visionFallbackModel, VISION_FALLBACK_MODEL_ID);
+    return builder(models.fallback, models.fallbackId);
   }
 };
 
@@ -108,6 +126,8 @@ export interface DescribeFileResult {
 }
 
 export interface DescribeImageArgs {
+  /** Whose vision model to use. Absent on paths with no team in scope. */
+  teamId?: string;
   /** Raw image bytes. */
   bytes: Uint8Array;
   /** Original MIME type, used on the `image` content part. */
@@ -119,7 +139,7 @@ export interface DescribeImageArgs {
 export const describeImage = async (
   args: DescribeImageArgs,
 ): Promise<DescribeFileResult> => {
-  return runWithVisionFallback(async (model, modelId) => {
+  return runWithVisionFallback(args.teamId, async (model, modelId) => {
     const { text, finishReason } = await generateText({
       model,
       maxOutputTokens: MAX_OUTPUT_TOKENS,
@@ -160,6 +180,8 @@ export const describeImage = async (
 };
 
 export interface DescribePdfArgs {
+  /** Whose vision model to use. Absent on paths with no team in scope. */
+  teamId?: string;
   /** Raw PDF bytes. */
   bytes: Uint8Array;
   /** Optional original filename — forwarded to OpenRouter on the file content part. */
@@ -185,7 +207,7 @@ export interface DescribePdfArgs {
 export const describePdf = async (
   args: DescribePdfArgs,
 ): Promise<DescribeFileResult> => {
-  return runWithVisionFallback(async (model, modelId) => {
+  return runWithVisionFallback(args.teamId, async (model, modelId) => {
     const { text, finishReason } = await generateText({
       model,
       maxOutputTokens: MAX_OUTPUT_TOKENS,
@@ -222,6 +244,8 @@ export const describePdf = async (
 };
 
 export interface DescribeVideoArgs {
+  /** Whose vision model to use. Absent on paths with no team in scope. */
+  teamId?: string;
   /** Raw video bytes. */
   bytes: Uint8Array;
   /** Original MIME type (e.g. `video/mp4`), used on the `file` content part. */
@@ -244,8 +268,9 @@ export interface DescribeVideoArgs {
 export const describeVideo = async (
   args: DescribeVideoArgs,
 ): Promise<DescribeFileResult> => {
+  const models = await visionModelsFor(args.teamId);
   const { text, finishReason } = await generateText({
-    model: visionModel,
+    model: models.primary,
     maxOutputTokens: MAX_OUTPUT_TOKENS,
     abortSignal: AbortSignal.timeout(VIDEO_TIMEOUT_MS),
     // Nests under the `vision` tool call → under `chatbot-turn`.
@@ -272,13 +297,15 @@ export const describeVideo = async (
 
   return {
     description: text.trim(),
-    model: VISION_MODEL_ID,
+    model: models.primaryId,
     question: args.question,
     truncated: finishReason === "length",
   };
 };
 
 export interface DescribeVisionFileArgs {
+  /** Whose vision model to use. Absent on paths with no team in scope. */
+  teamId?: string;
   bytes: Uint8Array;
   mimeType: string;
   question: string;
@@ -295,6 +322,7 @@ export const describeVisionFile = async (
 ): Promise<DescribeFileResult> => {
   if (args.mimeType === "application/pdf") {
     return describePdf({
+      teamId: args.teamId,
       bytes: args.bytes,
       filename: args.filename,
       question: args.question,
@@ -302,6 +330,7 @@ export const describeVisionFile = async (
   }
   if (args.mimeType.startsWith("video/")) {
     return describeVideo({
+      teamId: args.teamId,
       bytes: args.bytes,
       mimeType: args.mimeType,
       filename: args.filename,
@@ -309,6 +338,7 @@ export const describeVisionFile = async (
     });
   }
   return describeImage({
+    teamId: args.teamId,
     bytes: args.bytes,
     mimeType: args.mimeType,
     question: args.question,

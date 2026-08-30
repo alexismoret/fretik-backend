@@ -4,6 +4,7 @@ import { mapBounded } from "./bounded-map";
 import { describeLlmError } from "./describe-llm-error";
 import { telemetryFor } from "./langfuse";
 import { resolveModel } from "./model-registry/resolve";
+import { resolveModelForTeam } from "./model-registry/team-model";
 
 /**
  * Prose-transform engine — the `transform` tool's core. Applies one prose
@@ -27,10 +28,29 @@ import { resolveModel } from "./model-registry/resolve";
  * the agent's context; the result lands in a `/workspace` file.
  */
 
-const transformPrimary = resolveModel("transform");
-const transformFallback = resolveModel("transform-fallback");
-const TRANSFORM_MODEL_ID = transformPrimary.profile.catalog.id;
-const TRANSFORM_FALLBACK_MODEL_ID = transformFallback.profile.catalog.id;
+/**
+ * The team's transform model, resolved PER CALL.
+ *
+ * It used to be two module-level constants. The `transform` role was already
+ * meant to track a team's choice, and the constant defeated that: the instance
+ * was captured at import, so both the team's pick and any live-state change —
+ * a quarantine, a transport switch — reached this path only after a restart.
+ *
+ * The FALLBACK stays on the code default: it is what catches a weak pick's
+ * truncations and refusals, so it must not be the same model.
+ */
+const transformModelsFor = async (teamId: string | undefined) => {
+  const primary = await resolveModelForTeam("transform", teamId);
+  const fallback = resolveModel("transform-fallback");
+  return {
+    primary: primary.model,
+    primaryId: primary.profile.catalog.id,
+    fallback: fallback.model,
+    fallbackId: fallback.profile.catalog.id,
+  };
+};
+
+type TransformModels = Awaited<ReturnType<typeof transformModelsFor>>;
 
 /**
  * Chars per chunk — deliberately SMALLER than extract's 60K budget.
@@ -177,13 +197,10 @@ export interface ChunkOutcome {
 const transformChunk = async (
   chunk: string,
   instruction: string,
+  models: TransformModels,
 ): Promise<ChunkOutcome> => {
   try {
-    const primary = await callTransformLlm(
-      transformPrimary.model,
-      chunk,
-      instruction,
-    );
+    const primary = await callTransformLlm(models.primary, chunk, instruction);
     if (!primary.truncated) {
       return {
         output: primary.text,
@@ -193,7 +210,7 @@ const transformChunk = async (
       };
     }
     const parts = splitChunk(chunk);
-    if (parts.length >= 2) return transformParts(parts, instruction);
+    if (parts.length >= 2) return transformParts(parts, instruction, models);
     // Unsplittable and truncated — keep the capped output, flag it.
     return {
       output: primary.text,
@@ -203,13 +220,13 @@ const transformChunk = async (
     };
   } catch (primaryError) {
     console.warn(
-      `[transform] primary failed on ${TRANSFORM_MODEL_ID} — ${describeLlmError(primaryError)}`,
+      `[transform] primary failed on ${models.primaryId} — ${describeLlmError(primaryError)}`,
     );
     const parts = splitChunk(chunk);
-    if (parts.length >= 2) return transformParts(parts, instruction);
+    if (parts.length >= 2) return transformParts(parts, instruction, models);
     try {
       const fallback = await callTransformLlm(
-        transformFallback.model,
+        models.fallback,
         chunk,
         instruction,
       );
@@ -237,11 +254,12 @@ const transformChunk = async (
 const transformParts = async (
   parts: readonly string[],
   instruction: string,
+  models: TransformModels,
 ): Promise<ChunkOutcome> => {
   const outcomes = await mapBounded(
     parts,
     TRANSFORM_CHUNK_CONCURRENCY,
-    (part) => transformChunk(part, instruction),
+    (part) => transformChunk(part, instruction, models),
   );
   return {
     output: outcomes.map((outcome) => outcome.output).join("\n\n"),
@@ -269,6 +287,7 @@ export interface ProseTransformResult {
  */
 export const assembleTransformResult = (
   outcomes: readonly ChunkOutcome[],
+  models: Pick<TransformModels, "primaryId" | "fallbackId">,
 ): ProseTransformResult => {
   const notices: string[] = [];
   outcomes.forEach((outcome, index) => {
@@ -286,8 +305,8 @@ export const assembleTransformResult = (
   const usedFallback = outcomes.some((outcome) => outcome.usedFallback);
   return {
     model: usedFallback
-      ? `${TRANSFORM_MODEL_ID}+${TRANSFORM_FALLBACK_MODEL_ID}`
-      : TRANSFORM_MODEL_ID,
+      ? `${models.primaryId}+${models.fallbackId}`
+      : models.primaryId,
     chunks: outcomes.length,
     complete: notices.length === 0,
     notices,
@@ -303,11 +322,14 @@ export const assembleTransformResult = (
 export const runProseTransform = async (args: {
   chunks: readonly string[];
   instruction: string;
+  /** Whose transform model to use. Absent on paths with no team in scope. */
+  teamId?: string;
 }): Promise<ProseTransformResult> => {
+  const models = await transformModelsFor(args.teamId);
   const outcomes = await mapBounded(
     args.chunks,
     TRANSFORM_CHUNK_CONCURRENCY,
-    (chunk) => transformChunk(chunk, args.instruction),
+    (chunk) => transformChunk(chunk, args.instruction, models),
   );
-  return assembleTransformResult(outcomes);
+  return assembleTransformResult(outcomes, models);
 };

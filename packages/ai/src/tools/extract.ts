@@ -283,7 +283,14 @@ export const createExtractTool = () =>
         const result = await withTraceSession(
           conversationId,
           { tags: ["process:extract-tool"] },
-          () => runStructuredExtract({ source, prepared, shape, instructions }),
+          () =>
+            runStructuredExtract({
+              teamId: ctx.teamId,
+              source,
+              prepared,
+              shape,
+              instructions,
+            }),
         );
         // The data is ALWAYS written out, whatever its size — that path is the
         // only thing standing between the model and re-typing every value into

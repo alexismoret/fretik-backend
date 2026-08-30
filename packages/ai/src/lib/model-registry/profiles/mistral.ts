@@ -21,7 +21,6 @@ export const MISTRAL_PROFILES: Record<string, ModelProfile> = {
   "mistral-medium-3.5": {
     key: "mistral-medium-3.5",
     family: "mistral",
-    tiers: ["flagship"],
     catalog: {
       id: "mistralai/mistral-medium-3-5",
       contextLength: 262_144,
@@ -81,7 +80,6 @@ export const MISTRAL_PROFILES: Record<string, ModelProfile> = {
   "mistral-small-2603": {
     key: "mistral-small-2603",
     family: "mistral",
-    tiers: ["workhorse"],
     catalog: {
       id: "mistralai/mistral-small-2603",
       contextLength: 262_144,
@@ -130,7 +128,6 @@ export const MISTRAL_PROFILES: Record<string, ModelProfile> = {
   "ministral-8b-2512": {
     key: "ministral-8b-2512",
     family: "mistral",
-    tiers: ["utility"],
     catalog: {
       id: "mistralai/ministral-8b-2512",
       contextLength: 262_144,

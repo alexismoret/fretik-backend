@@ -1,19 +1,12 @@
 import { redis } from "@fretik/shared/lib/redis";
-import { getModelDisplayName } from "../../lib/model-registry/display";
-import { MODEL_PROFILES } from "../../lib/model-registry/profiles";
-import type { ModelProfile } from "../../lib/model-registry/types";
+import type {
+  EndpointStat,
+  LiveModelState,
+} from "@fretik/shared/model-registry/types";
+import { readAllLiveStateRows } from "@fretik/shared/services/model-registry/live";
+import { listEffectiveProfiles } from "../../lib/model-registry/effective";
 import { costLevelFromProfile } from "./cost-level";
 import { FALLBACK_METRICS } from "./fallback";
-import {
-  type AaLookup,
-  type AaMetric,
-  fetchArtificialAnalysisMetrics,
-  normalizeModelName,
-} from "./fetch-artificial-analysis";
-import {
-  fetchOpenRouterRouting,
-  type RoutingLookup,
-} from "./fetch-openrouter-routing";
 import type { ModelMetrics, ModelMetricsSnapshot } from "./types";
 
 /**
@@ -26,101 +19,119 @@ import type { ModelMetrics, ModelMetricsSnapshot } from "./types";
  * renamed or added model resolved to no metrics at all and the whole hub read
  * "Not measured". Changing the key makes the deploy invalidate its own cache —
  * the alternative is remembering to flush Redis by hand on every rollout.
+ *
+ * v5 (2026-08-30): this service stopped calling Artificial Analysis and
+ * OpenRouter itself and now reads `model_live_state`, which the nightly sync
+ * maintains. Two axes left with it (see `types.ts`).
  */
-export const MODEL_METRICS_CACHE_KEY = "model-metrics:v4";
+export const MODEL_METRICS_CACHE_KEY = "model-metrics:v5";
 const REFRESH_LOCK_KEY = "model-metrics:refreshing";
 /**
- * Must comfortably EXCEED the worst-case refresh. It was 120s when the refresh
- * was a single Artificial Analysis call; adding the OpenRouter routing probes
- * (up to 8 sequential per profile, 22 profiles) pushed a full run past two
- * minutes, so the lock would expire mid-flight and let a second refresh
- * stampede the very APIs it exists to protect. 10 minutes leaves headroom for a
- * slow upstream without stranding the lock for long if a process dies.
+ * Must comfortably EXCEED the worst-case refresh. It was 600 s when a refresh
+ * meant an Artificial Analysis call plus up to 8 sequential OpenRouter probes
+ * per profile; a refresh is now one indexed read of ~90 rows, so a minute is
+ * already generous. Kept as a lock rather than dropped: replicas still race,
+ * and a shorter TTL simply strands the lock for less time if a process dies.
  */
-const REFRESH_LOCK_TTL_SECONDS = 600;
+const REFRESH_LOCK_TTL_SECONDS = 60;
 
 /**
- * Match a profile to its Artificial Analysis record.
+ * The endpoint a turn is most likely to land on.
  *
- * `assessment.aaSlug` is the authoritative path and should be set on every
- * profile AA covers. Display-name matching survives only as a fallback for
- * profiles without a slug — it is genuinely unreliable for two reasons:
- * a profile absent from `MODEL_DISPLAY_NAME` silently matched nothing (which is
- * what happened to `gemini-3.5-flash-lite`), and AA publishes ONE RECORD PER
- * EFFORT LEVEL, so a name match returns whichever variant happens to share our
- * label rather than the level we actually run. GPT-5.6 Luna alone spans 33.3 to
- * 51.2 intelligence across its five levels.
+ * Routing is throughput-ordered (`sort: "throughput"` on every pool), so the
+ * fastest reachable endpoint serves unless it is down — which makes the best
+ * endpoint the honest one to describe, not the median. The policy's own
+ * throughput floor grades on the same `best` aggregate, so the picker and the
+ * publication rules cannot disagree about how fast a model is.
+ *
+ * Both figures come from the SAME endpoint rather than best-of-each: a speed
+ * taken from one host and a latency from another describes a route that does
+ * not exist.
  */
-const matchAa = (profile: ModelProfile, aa: AaLookup): AaMetric | undefined => {
-  const slug = profile.assessment.aaSlug;
-  if (slug !== undefined) {
-    const exact = aa.get(slug) ?? aa.get(normalizeModelName(slug));
-    if (exact) return exact;
-    console.warn(
-      `[model-metrics] aaSlug "${slug}" (profile ${profile.key}) not found in the Artificial Analysis response — check for a rename`,
-    );
+const servingEndpoint = (
+  endpoints: readonly EndpointStat[],
+): EndpointStat | undefined => {
+  let best: EndpointStat | undefined;
+  for (const endpoint of endpoints) {
+    if (endpoint.throughputP50 === undefined) continue;
+    if (
+      best?.throughputP50 === undefined ||
+      endpoint.throughputP50 > best.throughputP50
+    )
+      best = endpoint;
   }
-  for (const candidate of [getModelDisplayName(profile.key), profile.key]) {
-    const hit = aa.get(normalizeModelName(candidate));
-    if (hit) return hit;
-  }
-  return undefined;
+  return best;
 };
 
 /**
- * Assemble the metrics snapshot. Intelligence prefers live AA then the curated
- * fallback; `speed` prefers the throughput OpenRouter measured on the upstream
- * we actually route to, then AA, then the fallback; `costLevel` is derived from
- * the live routed-endpoint price when one resolved, else the curated
- * `assessment.pricing`. `partial` is true when a source was unavailable or any
- * model went unmatched.
+ * Assemble the metrics snapshot from live state.
  *
- * Pass `null` / an empty map to build the pure-fallback snapshot.
+ * Every figure now comes from one place — the row the nightly sync writes —
+ * rather than from this service's own calls to Artificial Analysis and
+ * OpenRouter. That collapse is the point:
+ *
+ *  - the AA free tier allows 100 requests/day across the whole account, and two
+ *    independent clients paginating the same catalogue is how a budget gets
+ *    spent twice for one answer;
+ *  - the OpenRouter probe made up to 8 sequential requests per profile on every
+ *    refresh to learn what `endpointStats` already records for the whole fleet;
+ *  - a model with no TypeScript profile could never be matched by either client,
+ *    so a promoted catalogue model would show a hub card with no metrics at all.
+ *
+ * Freshness is unchanged in practice: the snapshot was already served for up to
+ * 24 h and the sync runs nightly.
+ *
+ * Pass an empty list to build the pure-fallback snapshot. `partial` is true when
+ * any model resolved without live grades.
  */
 export const buildModelMetricsSnapshot = (
-  aa: AaLookup | null,
-  routing: RoutingLookup = new Map(),
+  rows: readonly LiveModelState[],
 ): ModelMetricsSnapshot => {
+  const byKey = new Map(rows.map((row) => [row.profileKey, row]));
   const metrics: Record<string, ModelMetrics> = {};
-  let partial = aa === null;
+  let partial = false;
 
-  for (const [key, profile] of Object.entries(MODEL_PROFILES)) {
-    const hit = aa ? matchAa(profile, aa) : undefined;
+  // EFFECTIVE profiles, so a model promoted by a write gets its gauges on
+  // the next refresh rather than on the next release. A promoted model has a
+  // live row by construction, which is where every figure below comes from.
+  for (const profile of listEffectiveProfiles()) {
+    const key = profile.key;
+    const live = byKey.get(key);
+    const aa = live?.aaMetrics ?? null;
     const fallback = FALLBACK_METRICS[key];
-    const routed = routing.get(key);
-    if (!hit) partial = true;
+    const serving = servingEndpoint(live?.endpointStats ?? []);
+    if (aa === null) partial = true;
+
     metrics[key] = {
-      intelligence: hit?.intelligence ?? fallback?.intelligence ?? null,
-      // OpenRouter FIRST: its figure is the p50 of the specific upstream this
-      // profile routes to, while AA measures whichever route it chose — which
-      // for a pinned profile is usually not ours. Same 0-means-absent rule as
-      // `timeToFirstAnswer` below: AA returns 0 on BOTH throughput axes for a
-      // model it has scored but not yet timed (deepseek-v4-flash 0731 on
-      // 2026-08-02), and `??` would let that 0 through as a real measurement.
-      speed:
-        routed?.throughputTps ??
-        ((hit?.speed ?? 0) > 0
-          ? (hit?.speed ?? null)
-          : (fallback?.speed ?? null)),
-      // Falls back like intelligence/speed: this drives a headline gauge, so a
-      // blank column is worse than a figure captured a few weeks ago. AA reports
-      // 0 (not null) when it has no throughput data for a model, which would
-      // read as "instant" — treat 0 as absent.
+      intelligence: aa?.intelligenceIndex ?? fallback?.intelligence ?? null,
+      // Measured on OUR routes. Artificial Analysis is no longer a fallback
+      // here: it times whichever endpoint it chose, which for a pinned pool is
+      // usually not one of ours, so it answered a different question.
+      speed: serving?.throughputP50 ?? fallback?.speed ?? null,
+      // The one axis only AA can produce: it fires on the first token of the
+      // ANSWER, while every endpoint API times the first token of any kind and
+      // cannot see where reasoning ends. Falls back to a captured figure — this
+      // drives a headline gauge, where a blank column is worse than a stale
+      // number.
       timeToFirstAnswer:
-        (hit?.timeToFirstAnswer ?? 0) > 0
-          ? (hit?.timeToFirstAnswer ?? null)
-          : (fallback?.timeToFirstAnswer ?? null),
-      // The detail-panel axes below keep no fallback rows: they are secondary
-      // evidence, where an honest blank costs the reader nothing.
-      coding: hit?.coding ?? null,
-      toolUse: hit?.toolUse ?? null,
-      instructionFollowing: hit?.instructionFollowing ?? null,
-      longContext: hit?.longContext ?? null,
-      // p50 time to first token on OUR upstream. Distinct from
+        aa?.timeToFirstAnswerTokenSeconds ??
+        fallback?.timeToFirstAnswer ??
+        null,
+      // Detail-panel axes keep no fallback: secondary evidence, where an honest
+      // blank costs the reader nothing.
+      coding: aa?.codingIndex ?? null,
+      toolUse: aa?.agenticIndex ?? null,
+      // p50 time to first token on the endpoint above. Distinct from
       // `timeToFirstAnswer`: this fires on the first token of any kind, so a
       // reasoning model looks instant here while the user still waits.
-      ttftSeconds: routed?.ttftSeconds ?? null,
-      costLevel: costLevelFromProfile(profile, routed?.pricing),
+      ttftSeconds:
+        serving?.latencyP50Ms === undefined
+          ? null
+          : serving.latencyP50Ms / 1000,
+      // The pool median the sync measured, falling back to the curated price.
+      // The curated figure is hand-maintained with no automatic feed, so it is
+      // the baseline, never the authority.
+      costLevel: costLevelFromProfile(profile, live?.pricing),
     };
   }
 
@@ -167,22 +178,19 @@ const sweepSupersededSnapshots = async (): Promise<void> => {
   }
 };
 
-/** Fetch live metrics and persist the snapshot to Redis. */
+/** Read live state and persist the snapshot to Redis. */
 export const refreshModelMetrics = async (): Promise<ModelMetricsSnapshot> => {
-  const [aa, routing] = await Promise.all([
-    fetchArtificialAnalysisMetrics(),
-    fetchOpenRouterRouting(),
-  ]);
-  const snapshot = buildModelMetricsSnapshot(aa, routing);
+  const rows = await readAllLiveStateRows();
+  const snapshot = buildModelMetricsSnapshot(rows);
   await redis.set(MODEL_METRICS_CACHE_KEY, JSON.stringify(snapshot));
   await sweepSupersededSnapshots();
   return snapshot;
 };
 
 /**
- * Fire-and-forget refresh, guarded by a Redis lock so concurrent requests /
- * replicas don't stampede the AA + OpenRouter APIs. Intentionally not awaited
- * by callers — the AI service is long-lived, so the detached promise completes.
+ * Fire-and-forget refresh, guarded by a Redis lock so concurrent requests and
+ * replicas don't stampede the database. Intentionally not awaited by callers —
+ * the AI service is long-lived, so the detached promise completes.
  */
 export const triggerBackgroundRefresh = async (): Promise<void> => {
   const acquired = await redis.set(

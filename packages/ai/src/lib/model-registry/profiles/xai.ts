@@ -21,7 +21,6 @@ export const XAI_PROFILES: Record<string, ModelProfile> = {
   "grok-4.5": {
     key: "grok-4.5",
     family: "xai",
-    tiers: ["flagship"],
     catalog: {
       id: "x-ai/grok-4.5",
       contextLength: 500_000,

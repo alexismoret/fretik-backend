@@ -35,7 +35,6 @@ export const ZAI_PROFILES: Record<string, ModelProfile> = {
   "glm-5.2": {
     key: "glm-5.2",
     family: "zai",
-    tiers: ["flagship"],
     catalog: {
       id: "z-ai/glm-5.2",
       contextLength: 1_048_576,

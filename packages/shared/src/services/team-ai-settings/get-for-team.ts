@@ -4,10 +4,10 @@ import { selectOrCache } from "../../lib/redis";
 import { teamAiSettingsCacheKey } from "./cache";
 
 /**
- * Read a team's AI model selection (chantier C8), Redis-cached for 30 min.
- * Returns `null` when the team has never customised its models — callers
- * treat that as "use the code defaults". Profile keys are returned raw;
- * registry validation happens at resolution time in `@fretik/ai`.
+ * Read a team's AI model selection, Redis-cached for 30 min. Returns `null`
+ * when the team has never customised its models — callers treat that as "use
+ * the code defaults". Profile keys are returned raw; registry validation
+ * happens at resolution time in `@fretik/ai`.
  */
 export const getTeamAiSettings = async (
   teamId: string,

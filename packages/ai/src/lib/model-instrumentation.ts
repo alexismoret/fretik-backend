@@ -26,6 +26,7 @@ import { type EmbeddingModelV4, type LanguageModelV4 } from "@ai-sdk/provider";
 import { wrapEmbeddingModel, wrapLanguageModel } from "ai";
 import { langfuseEnabled } from "./langfuse";
 import {
+  type CostEstimator,
   costCaptureMiddleware,
   embeddingCostCaptureMiddleware,
 } from "./langfuse-cost";
@@ -40,15 +41,22 @@ import { type DetectorContext, detectorMiddleware } from "./model-detectors";
  * without guessing. The four hand-built call sites pass nothing and fall back
  * to the model's own id, which is enough to record the finding even though it
  * has no live-state row to quarantine against.
+ *
+ * `estimateCost` prices a call for a transport that publishes no cost of its
+ * own. Only the registry supplies it — it is the only caller that knows which
+ * transport this model resolved to and what rate is stored for it — and the
+ * hand-built sites, which all build against transports that report their own
+ * cost, pass nothing.
  */
 export const instrumentModel = (
   model: LanguageModelV4,
   ctx: DetectorContext = {},
+  estimateCost?: CostEstimator,
 ): LanguageModelV4 =>
   wrapLanguageModel({
     model,
     middleware: langfuseEnabled
-      ? [costCaptureMiddleware, detectorMiddleware(ctx)]
+      ? [costCaptureMiddleware(estimateCost), detectorMiddleware(ctx)]
       : [detectorMiddleware(ctx)],
   });
 

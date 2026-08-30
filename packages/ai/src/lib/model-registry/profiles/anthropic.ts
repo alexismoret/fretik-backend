@@ -24,7 +24,6 @@ export const ANTHROPIC_PROFILES: Record<string, ModelProfile> = {
   "claude-opus-5": {
     key: "claude-opus-5",
     family: "anthropic",
-    tiers: ["flagship"],
     catalog: {
       id: "anthropic/claude-opus-5",
       contextLength: 1_000_000,
@@ -76,7 +75,6 @@ export const ANTHROPIC_PROFILES: Record<string, ModelProfile> = {
   "claude-sonnet-5": {
     key: "claude-sonnet-5",
     family: "anthropic",
-    tiers: ["flagship"],
     catalog: {
       id: "anthropic/claude-sonnet-5",
       contextLength: 1_000_000,
@@ -132,7 +130,6 @@ export const ANTHROPIC_PROFILES: Record<string, ModelProfile> = {
   "claude-haiku-4.5": {
     key: "claude-haiku-4.5",
     family: "anthropic",
-    tiers: ["workhorse", "utility"],
     catalog: {
       id: "anthropic/claude-haiku-4.5",
       contextLength: 200_000,

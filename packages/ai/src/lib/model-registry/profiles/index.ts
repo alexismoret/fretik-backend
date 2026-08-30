@@ -20,7 +20,7 @@ import { ZAI_PROFILES } from "./zai";
  *    profile is REMOVED, not kept alongside. Removals so far:
  *    `claude-opus-4.8` / `claude-sonnet-4.6` → Claude Opus 5 / Sonnet 5,
  *    `gpt-5.5` → the GPT-5.6 trio, `glm-5.1` + `glm-4.7` → GLM-5.2,
- *    `gpt-4o-mini` (orphaned, `tiers: []`).
+ *    `gpt-4o-mini` (orphaned, no function could use it).
  * 2. **Selection is gated by `assessment.enabled` and nothing else.** The old
  *    rule — flagship models had to carry `evalGate.status === "passed"` — was
  *    removed on 2026-07-26: it had frozen the flagship menu at two models

@@ -1,8 +1,8 @@
 import { electron } from "@better-auth/electron";
 import { redisStorage } from "@better-auth/redis-storage";
-import { betterAuth, type BetterAuthOptions } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { APIError } from "better-auth/api";
+import { betterAuth, type BetterAuthOptions } from "better-auth/minimal";
 import { emailOTP, organization, twoFactor } from "better-auth/plugins";
 import db from "../db";
 import * as schema from "../db/schema";

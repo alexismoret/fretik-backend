@@ -2,6 +2,10 @@ import { eq } from "drizzle-orm";
 import db from "../../db";
 import { modelAlerts, modelLiveState } from "../../db/schema/model-registry";
 import {
+  PROMOTION_PRICE_CAPS,
+  promotionEnablement,
+} from "../../model-registry/policy";
+import {
   IMPLEMENTED_TRANSPORTS,
   type DisabledReason,
   type DynamicProfile,
@@ -86,17 +90,29 @@ export const setEnabled = async (
  * endpoints are measurably unstable — the same model's tool-calling accuracy
  * spans 22 % to 37 % depending on the host — so a person looks at the scorecard
  * before a team can pick the model.
+ *
+ * Publishing and PAYING are separate decisions since 2026-08-30. Discovery no
+ * longer filters on price, so a promoted model may well be dearer than the
+ * budget allows: it becomes visible either way, but arrives disabled on cost
+ * unless its measured pool price fits. That keeps an expensive model a choice
+ * an operator makes on purpose rather than one the catalogue hides.
  */
-export const promoteCandidate = async (profileKey: string): Promise<void> => {
+export const promoteCandidate = async (
+  profileKey: string,
+): Promise<{ enabled: boolean; disabledReason: "cost" | null }> => {
   const state = await readLiveStateRow(profileKey);
   if (!state) throw new Error(`Unknown model "${profileKey}"`);
-  if (state.status === "published") return;
+  const budget = promotionEnablement(state.pricing);
+  const verdict = {
+    enabled: budget.enabled,
+    disabledReason: budget.disabledReason ?? null,
+  };
+  if (state.status === "published") return verdict;
   await db
     .update(modelLiveState)
     .set({
       status: "published",
-      enabled: true,
-      disabledReason: null,
+      ...verdict,
       source: "admin",
     })
     .where(eq(modelLiveState.profileKey, profileKey));
@@ -105,8 +121,13 @@ export const promoteCandidate = async (profileKey: string): Promise<void> => {
     kind: "new-candidate",
     severity: "info",
     modelKey: profileKey,
-    message: `${profileKey} promoted to published${state.dynamicProfile ? " (catalogue-derived profile — no TypeScript profile yet)" : ""}.`,
+    message: `${profileKey} promoted to published${
+      budget.enabled
+        ? ""
+        : ` but left DISABLED on cost: $${state.pricing.inputPerMTok.toString()}/$${state.pricing.outputPerMTok.toString()} per MTok against a budget of $${PROMOTION_PRICE_CAPS.inputPerMTok.toString()}/$${PROMOTION_PRICE_CAPS.outputPerMTok.toString()}`
+    }${state.dynamicProfile ? " (catalogue-derived profile — no TypeScript profile yet)" : ""}.`,
   });
+  return verdict;
 };
 
 /** Take a model out of every picker without deleting its history. */

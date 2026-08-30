@@ -1,4 +1,8 @@
 import { z } from "zod";
+import type {
+  CatalogueCapabilities,
+  CatalogueEntry,
+} from "../../../../model-registry/catalogue";
 import { fetchJson, perMTok, priceSchema } from "./wire";
 
 /**
@@ -43,49 +47,46 @@ const entrySchema = z.object({
 
 const responseSchema = z.object({ data: z.array(z.unknown()) });
 
-/** Catalogue prices, converted. Every field is optional: a video model has none. */
-export interface CatalogPricing {
-  inputPerMTok?: number;
-  outputPerMTok?: number;
-  cacheReadPerMTok?: number;
-  cacheWritePerMTok?: number;
-}
+/**
+ * What this catalogue can answer. It is the richer of the two on identity —
+ * it classifies model types, names the author and dates every release — and
+ * the poorer on modalities, which it only implies through tags.
+ */
+export const GATEWAY_CATALOGUE_CAPABILITIES: CatalogueCapabilities = {
+  identifiesModelType: true,
+  // `vision` and `file-input` are TAGS, so image and file are all this can ever
+  // express; audio and video inputs are invisible to it. A source that reads
+  // modalities from the response outranks this one on the merge.
+  publishesModalities: false,
+  publishesOwner: true,
+  publishesReleaseDate: true,
+  publishesZdrHint: true,
+};
 
-export interface GatewayCatalogEntry {
-  id: string;
-  name: string;
-  description: string;
-  /** Absent outside `language` — a speech model has no context window. */
-  contextWindow?: number;
-  maxTokens?: number;
-  /** `language`, `embedding`, `image`, … Only `language` can be a candidate. */
-  type: string;
-  tags: string[];
-  supportedParameters: string[];
-  pricing: CatalogPricing;
-  /**
-   * The catalogue's own zero-retention claim: `all` (every endpoint), `some`
-   * (at least one), `none`. It is a useful PRE-FILTER — discovery does not
-   * spend an endpoint fetch on a `none` — but it is not a verdict: `some` says
-   * nothing about the endpoints our pool actually routes to, which is why the
-   * live probe in `zdr-probe.ts` remains the authority.
-   */
-  zdr?: "all" | "some" | "none";
-  /** Upstream author (`anthropic`, `google`), the `family` a profile carries. */
-  owner: string;
-  /** Unix seconds, as the catalogue reports them. */
-  released?: number;
-  created?: number;
-}
+/**
+ * Tags → modalities. The mapping is small because the vocabulary is: measured
+ * across 239 language models on 2026-08-30, the only input-bearing tags are
+ * `vision` (156), `file-input` (113) and `video-input` (11).
+ */
+const modalitiesFromTags = (tags: readonly string[]): string[] => {
+  const modalities = ["text"];
+  if (tags.includes("vision")) modalities.push("image");
+  if (tags.includes("file-input")) modalities.push("file");
+  if (tags.includes("video-input")) modalities.push("video");
+  return modalities;
+};
 
-const toEntry = (raw: z.infer<typeof entrySchema>): GatewayCatalogEntry => ({
+const toEntry = (raw: z.infer<typeof entrySchema>): CatalogueEntry => ({
   id: raw.id,
   name: raw.name ?? raw.id,
   description: raw.description ?? "",
   contextWindow: raw.context_window ?? undefined,
   maxTokens: raw.max_tokens ?? undefined,
-  type: raw.type,
-  tags: raw.tags ?? [],
+  isLanguageModel: raw.type === "language",
+  inputModalities: modalitiesFromTags(raw.tags ?? []),
+  // No tag distinguishes an image or audio GENERATOR here, and a language
+  // model's output is text. A source that publishes the real list wins on merge.
+  outputModalities: ["text"],
   supportedParameters: raw.supported_parameters ?? [],
   pricing: {
     inputPerMTok: perMTok(raw.pricing?.input),
@@ -95,8 +96,12 @@ const toEntry = (raw: z.infer<typeof entrySchema>): GatewayCatalogEntry => ({
   },
   zdr: raw.zdr ?? undefined,
   owner: raw.owned_by ?? raw.id.split("/")[0] ?? "unknown",
-  released: raw.released ?? undefined,
-  created: raw.created ?? undefined,
+  // Unix SECONDS. Zero is the epoch, which no model was released on, so it
+  // reads as unset rather than as 1970.
+  releasedAt:
+    raw.released !== null && raw.released !== undefined && raw.released > 0
+      ? new Date(raw.released * 1000)
+      : undefined,
 });
 
 /**
@@ -107,7 +112,7 @@ const toEntry = (raw: z.infer<typeof entrySchema>): GatewayCatalogEntry => ({
  * One malformed ENTRY is skipped rather than fatal — but a body whose entries
  * ALL fail to parse is a shape change, and that is fatal for the same reason.
  */
-export const fetchGatewayCatalog = async (): Promise<GatewayCatalogEntry[]> => {
+export const fetchGatewayCatalog = async (): Promise<CatalogueEntry[]> => {
   const result = await fetchJson(CATALOG_URL);
   if (!result.ok) {
     throw new Error(
@@ -118,7 +123,7 @@ export const fetchGatewayCatalog = async (): Promise<GatewayCatalogEntry[]> => {
   if (!parsed.success) {
     throw new Error("gateway catalogue response is not { data: [...] }");
   }
-  const entries: GatewayCatalogEntry[] = [];
+  const entries: CatalogueEntry[] = [];
   for (const raw of parsed.data.data) {
     const entry = entrySchema.safeParse(raw);
     if (entry.success) entries.push(toEntry(entry.data));

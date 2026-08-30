@@ -201,6 +201,7 @@ export const createVisionTool = () =>
         const figureMime = extractedImageContentType(figure.imageId);
         try {
           const result = await describeVisionFile({
+            teamId: ctx.teamId,
             bytes: imageBytes,
             mimeType: figureMime,
             question,
@@ -278,6 +279,7 @@ export const createVisionTool = () =>
 
       try {
         const result = await describeVisionFile({
+          teamId: ctx.teamId,
           bytes,
           mimeType,
           question,

@@ -113,14 +113,13 @@ const outputTokensForTurn = (profile: ModelProfile): number => {
 };
 
 /**
- * Price actually used for a profile: the LIVE routed-endpoint price when the
- * metrics refresh resolved one, else the curated `assessment.pricing`.
+ * Price actually used for a profile: the pool median the nightly sync measured
+ * when a live row carries one, else the curated `assessment.pricing`.
  *
  * The curated value is the reviewed baseline and the offline fallback — same
- * relationship `FALLBACK_METRICS` has with live Artificial Analysis data. It is
- * NOT authoritative on its own: it is hand-maintained with no automatic feed,
- * and an audit found three of 22 profiles wrong (see
- * `fetch-openrouter-routing.ts`).
+ * relationship `FALLBACK_METRICS` has with live grades. It is NOT authoritative
+ * on its own: it is hand-maintained with no automatic feed, and an audit found
+ * three of 22 profiles wrong. `models:check --prices` is what catches that.
  */
 export type PricingOverride = ModelProfile["assessment"]["pricing"];
 

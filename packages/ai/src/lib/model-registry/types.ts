@@ -26,9 +26,26 @@
  *   them.
  */
 
-/** Native modality vocabulary — identical to OpenRouter's `architecture` arrays. */
-export type InputModality = "text" | "image" | "file" | "audio" | "video";
-export type OutputModality = "text" | "image" | "audio";
+/**
+ * Native modality vocabulary — identical to OpenRouter's `architecture` arrays.
+ *
+ * Runtime tuples rather than bare unions, for the same reason `REASONING_LEVELS`
+ * is one: a modality now arrives as a plain `string` from a catalogue, and the
+ * only way to narrow it without a cast is to filter against the members. A
+ * value we do not model yet is DROPPED there — it would otherwise describe a
+ * content part nothing knows how to build.
+ */
+export const INPUT_MODALITIES = [
+  "text",
+  "image",
+  "file",
+  "audio",
+  "video",
+] as const;
+export type InputModality = (typeof INPUT_MODALITIES)[number];
+
+export const OUTPUT_MODALITIES = ["text", "image", "audio"] as const;
+export type OutputModality = (typeof OUTPUT_MODALITIES)[number];
 
 /**
  * OpenRouter `supported_parameters` values the product actually reads.
@@ -148,7 +165,11 @@ export type ReasoningLevel = (typeof REASONING_LEVELS)[number];
  * data policy", Alibaba being the sole host). Keeping the family member
  * costs nothing and lets a Qwen profile land the day a ZDR host appears.
  */
-export type ModelFamily =
+/**
+ * Families we have curated branding for. Not a closed world — see
+ * `ModelFamily`.
+ */
+export type KnownModelFamily =
   | "anthropic"
   | "openai"
   | "google"
@@ -159,19 +180,31 @@ export type ModelFamily =
   | "zai"
   | "xai"
   | "thinkingmachines"
+  | "moonshotai"
+  | "nvidia"
+  | "meta"
+  | "amazon"
+  | "tencent"
+  | "xiaomi"
+  | "stepfun"
   | "other";
 
-export type CostClass = "premium" | "standard" | "budget";
-
 /**
- * Product tiers a team customises (C8). `flagship` = main chat loop,
- * `workhorse` = tool-capable cheap sub-work (pre-extract, sub-agents,
- * compaction), `utility` = judgment-on-context one-shots (memory
- * recall, titles, reformulation). A profile may belong to MORE THAN ONE
- * tier — e.g. Sonnet 4.6 / Gemini 3.6 Flash serve as both flagship and
- * workhorse — see `ModelProfile.tiers`.
+ * A model's family. OPEN by design: a closed union would mean a model
+ * discovered from the catalogue could not name its own maker until someone
+ * shipped a release, which is exactly the coupling the two-layer registry
+ * exists to remove. `KnownModelFamily` still gets branding and a translated
+ * label; anything else renders through the `other` fallback, with a deterministic
+ * accent so two unfamiliar makers never look like the same one.
+ *
+ * The `string & {}` half keeps editor completion on the known members while
+ * accepting the rest — the alternative is a cast, and this codebase does not
+ * take casts.
  */
-export type ModelTier = "flagship" | "workhorse" | "utility";
+// oxlint-disable-next-line ban-types
+export type ModelFamily = KnownModelFamily | (string & {});
+
+export type CostClass = "premium" | "standard" | "budget";
 
 /**
  * Native multimodal-input policy (chantier C5) — which attachment
@@ -460,13 +493,6 @@ export interface ModelProfile {
   /** Stable internal key — what DB rows (C8) and evals reference. */
   key: string;
   family: ModelFamily;
-  /**
-   * Tiers this profile may be selected for (C8 picker grouping). Usually
-   * one; multi-tier models (e.g. Sonnet 4.6, Gemini 3.6 Flash) list
-   * `["flagship", "workhorse"]`. The profile surfaces in every tier menu
-   * it lists, gate permitting — see `isSelectableForTier`.
-   */
-  tiers: readonly ModelTier[];
   catalog: ModelCatalogFacts;
   assessment: ModelAssessment;
 }

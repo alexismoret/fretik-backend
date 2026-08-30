@@ -5,6 +5,7 @@ import { Ajv, type ValidateFunction } from "ajv";
 import { describeLlmError } from "./describe-llm-error";
 import { telemetryFor } from "./langfuse";
 import { resolveModel } from "./model-registry/resolve";
+import { resolveModelForTeam } from "./model-registry/team-model";
 import { formatPageRanges, slicePdfPages } from "./pdf-pages";
 import { SCHEMA_BLOCK_TRAILER } from "./schema-prompt";
 
@@ -49,11 +50,28 @@ import { SCHEMA_BLOCK_TRAILER } from "./schema-prompt";
  * agent-directive notice whenever a gap, a drop, or an empty result remains.
  */
 
-const extractPrimary = resolveModel("vision");
-const extractFallback = resolveModel("vision-fallback");
+/**
+ * The team's extraction model, resolved PER CALL.
+ *
+ * It shares the `vision` function with the `vision` tool — one file-capable
+ * model backs both — and it used to share the same defect: two module-level
+ * constants captured at import, so a team's pick never applied and neither did
+ * a quarantine written overnight.
+ *
+ * The FALLBACK stays on the code default, as everywhere: it is the redundancy.
+ */
+const extractModelsFor = async (teamId: string | undefined) => {
+  const primary = await resolveModelForTeam("vision", teamId);
+  const fallback = resolveModel("vision-fallback");
+  return {
+    primary: primary.model,
+    primaryId: primary.profile.catalog.id,
+    fallback: fallback.model,
+    fallbackId: fallback.profile.catalog.id,
+  };
+};
 
-const EXTRACT_MODEL_ID = extractPrimary.profile.catalog.id;
-const EXTRACT_FALLBACK_MODEL_ID = extractFallback.profile.catalog.id;
+type ExtractModels = Awaited<ReturnType<typeof extractModelsFor>>;
 
 /** Whole-document single call up to this many pages; larger docs split into
  * `EXTRACT_SECTION_PAGES`-page sections (rare — most business docs are smaller). */
@@ -130,6 +148,8 @@ export type ExtractSource =
   | { kind: "image"; bytes: Uint8Array; mimeType: string; filename: string };
 
 export interface RunStructuredExtractArgs {
+  /** Whose extraction model to use. Absent on paths with no team in scope. */
+  teamId?: string;
   source: ExtractSource;
   /** Prepared via `buildExtractionSchema` (the tool builds it from `fields`). */
   prepared: PreparedExtractionSchema;
@@ -474,6 +494,8 @@ interface CallContext {
   shape: ExtractShape;
   instructions?: string;
   pagesTotal: number | null;
+  /** Resolved once per extract run and carried, not re-resolved per page. */
+  models: ExtractModels;
 }
 
 interface CallFile {
@@ -537,7 +559,7 @@ ${SCHEMA_BLOCK_TRAILER}`;
  * NO temperature (all load-bearing). The schema constrains via the system
  * prompt; the response text is parsed with the shared LLM-JSON parser. */
 const callExtractLlm = async (
-  model: (typeof extractPrimary)["model"],
+  model: ExtractModels["primary"],
   ctx: CallContext,
   pages: readonly number[],
   file: CallFile,
@@ -681,19 +703,13 @@ const runNativeCall = async (
 
   let result: LlmCallResult;
   try {
-    result = await callExtractLlm(extractPrimary.model, ctx, pages, file, []);
+    result = await callExtractLlm(ctx.models.primary, ctx, pages, file, []);
   } catch (primaryError) {
     console.warn(
-      `[extract] ${describeRange(pages)} failed on ${EXTRACT_MODEL_ID}, retrying on ${EXTRACT_FALLBACK_MODEL_ID} — ${describeLlmError(primaryError)}`,
+      `[extract] ${describeRange(pages)} failed on ${ctx.models.primaryId}, retrying on ${ctx.models.fallbackId} — ${describeLlmError(primaryError)}`,
     );
     try {
-      result = await callExtractLlm(
-        extractFallback.model,
-        ctx,
-        pages,
-        file,
-        [],
-      );
+      result = await callExtractLlm(ctx.models.fallback, ctx, pages, file, []);
       usedFallback = true;
     } catch (fallbackError) {
       console.error(
@@ -745,7 +761,7 @@ const runNativeCall = async (
     const before = collected.length;
     try {
       const cont = await callExtractLlm(
-        extractPrimary.model,
+        ctx.models.primary,
         ctx,
         pages,
         file,
@@ -776,7 +792,7 @@ const runNativeCall = async (
     let sample: LlmCallResult;
     try {
       sample = await callExtractLlm(
-        extractPrimary.model,
+        ctx.models.primary,
         ctx,
         pages,
         file,
@@ -863,6 +879,7 @@ export const assembleExtractResult = (
   shape: ExtractShape,
   pagesTotal: number | null,
   coveredLabel: string,
+  models: Pick<ExtractModels, "primaryId" | "fallbackId">,
 ): StructuredExtractResult => {
   const notices: string[] = [];
   for (const outcome of outcomes) {
@@ -944,8 +961,8 @@ export const assembleExtractResult = (
   const returned = "records" in data ? data.records.length : empty ? 0 : 1;
   return {
     model: usedFallback
-      ? `${EXTRACT_MODEL_ID}+${EXTRACT_FALLBACK_MODEL_ID}`
-      : EXTRACT_MODEL_ID,
+      ? `${models.primaryId}+${models.fallbackId}`
+      : models.primaryId,
     pagesTotal,
     pagesCovered: coveredLabel,
     chunks: outcomes.length,
@@ -965,6 +982,7 @@ export const runStructuredExtract = async (
     shape: args.shape,
     instructions: args.instructions,
     pagesTotal: args.source.kind === "image" ? 1 : args.source.pagesTotal,
+    models: await extractModelsFor(args.teamId),
   };
 
   if (args.source.kind === "image") {
@@ -974,7 +992,7 @@ export const runStructuredExtract = async (
       mediaType: mimeType,
       filename,
     });
-    return assembleExtractResult([outcome], args.shape, 1, "all");
+    return assembleExtractResult([outcome], args.shape, 1, "all", ctx.models);
   }
 
   const source = args.source;
@@ -992,6 +1010,7 @@ export const runStructuredExtract = async (
       args.shape,
       source.pagesTotal,
       source.splittable ? "all" : "all (unsplittable)",
+      ctx.models,
     );
   }
 
@@ -1010,6 +1029,7 @@ export const runStructuredExtract = async (
       args.shape,
       source.pagesTotal,
       isWholeDoc ? "all" : formatPageRanges(selected),
+      ctx.models,
     );
   }
 
@@ -1031,5 +1051,6 @@ export const runStructuredExtract = async (
     args.shape,
     source.pagesTotal,
     formatPageRanges(selected),
+    ctx.models,
   );
 };

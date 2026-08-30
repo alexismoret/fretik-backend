@@ -17,7 +17,7 @@
  * a new profile in `profiles.ts` never breaks rendering.
  */
 
-import type { ModelFamily } from "./types";
+import type { KnownModelFamily, ModelFamily } from "./types";
 
 export interface FamilyBranding {
   /** Iconify name — simple-icons brand mark (verified) or a lucide fallback. */
@@ -28,7 +28,8 @@ export interface FamilyBranding {
   brandGradient?: { from: string; to: string };
 }
 
-const MODEL_DISPLAY_NAME: Record<string, string> = {
+/** Exported so `models:admin audit` can name entries that outlived their model. */
+export const MODEL_DISPLAY_NAME: Record<string, string> = {
   // Anthropic
   "claude-opus-5": "Claude Opus 5",
   "claude-sonnet-5": "Claude Sonnet 5",
@@ -62,7 +63,36 @@ const MODEL_DISPLAY_NAME: Record<string, string> = {
   inkling: "Inkling",
 };
 
-const FAMILY_BRANDING: Record<ModelFamily, FamilyBranding> = {
+/**
+ * Catalogue owner → our family name.
+ *
+ * The upstream catalogue names the LEGAL entity; we brand the MODEL LINE, and
+ * the two diverge exactly where the line is better known than its owner. Only
+ * the divergences are listed — anything absent already agrees with itself.
+ */
+const FAMILY_BY_CATALOGUE_OWNER: Record<string, KnownModelFamily> = {
+  // Qwen is the model line; Alibaba is the company that ships it.
+  alibaba: "qwen",
+  // The catalogue's own spelling for xAI.
+  spacexai: "xai",
+  moonshot: "moonshotai",
+  "z-ai": "zai",
+  zhipu: "zai",
+  "thinking-machines": "thinkingmachines",
+};
+
+/**
+ * The family a catalogue owner belongs to, folded so `Moonshot AI`,
+ * `moonshot-ai` and `moonshotai` all land together. Never throws and never
+ * guesses: an owner we have no branding for keeps its own name and renders
+ * through the `other` fallback.
+ */
+export const normalizeFamily = (owner: string): ModelFamily => {
+  const folded = owner.toLowerCase().replace(/[^a-z0-9]/g, "");
+  return FAMILY_BY_CATALOGUE_OWNER[folded] ?? folded;
+};
+
+const FAMILY_BRANDING: Record<string, FamilyBranding> = {
   anthropic: { icon: "i-simple-icons-anthropic", brandColor: "#D97757" },
   openai: { icon: "i-simple-icons-openai", brandColor: "#412991" },
   google: {
@@ -75,23 +105,51 @@ const FAMILY_BRANDING: Record<ModelFamily, FamilyBranding> = {
     brandColor: "#FA520F",
     brandGradient: { from: "#FFD800", to: "#FA520F" },
   },
-  // MiniMax has no simple-icons mark — generic fallback + brand-ish colour.
   minimax: { icon: "i-simple-icons-minimax", brandColor: "#E8484B" },
-  deepseek: { icon: "i-hugeicons-deepseek", brandColor: "#4D6BFE" },
-  // Kept for completeness — no Qwen profile ships (no ZDR endpoint upstream).
-  qwen: { icon: "i-hugeicons-qwen", brandColor: "#615CED" },
-  // Z.ai / Zhipu (GLM) has no simple-icons mark — generic fallback.
-  zai: { icon: "i-lucide-hexagon", brandColor: "#3859FF" },
-  xai: { icon: "i-simple-icons-x", brandColor: "#111111" },
-  // Thinking Machines has no brand mark in either icon set — generic fallback.
+  // Moved off `hugeicons` on 2026-08-30: `simple-icons` carries both marks and
+  // is the collection the frontend actually installs, so these now resolve from
+  // our own server bundle instead of a runtime Iconify lookup.
+  deepseek: { icon: "i-simple-icons-deepseek", brandColor: "#4D6BFE" },
+  qwen: { icon: "i-simple-icons-qwen", brandColor: "#615CED" },
+  // Makers the catalogue surfaces beyond the curated profiles. Every mark below
+  // was checked against the live Iconify API before being written down — a name
+  // that does not resolve renders as nothing at all, which is worse than the
+  // neutral fallback it was meant to improve on.
+  moonshotai: { icon: "i-simple-icons-moonshotai", brandColor: "#16141F" },
+  nvidia: { icon: "i-simple-icons-nvidia", brandColor: "#76B900" },
+  meta: { icon: "i-simple-icons-meta", brandColor: "#0081FB" },
+  amazon: { icon: "i-simple-icons-amazon", brandColor: "#FF9900" },
+  xiaomi: { icon: "i-simple-icons-xiaomi", brandColor: "#FF6900" },
+  // Hunyuan is Tencent's model line, and this is the line's own mark.
+  tencent: { icon: "i-simple-icons-tencenthy", brandColor: "#1E6FFF" },
+  // The three no shipped collection carries, vendored under `app/assets/icons`
+  // and served through the frontend's `brand` custom collection. Real marks,
+  // monochrome so the colour above tints them.
+  xai: { icon: "i-brand-xai", brandColor: "#111111" },
+  zai: { icon: "i-brand-zai", brandColor: "#3859FF" },
+  stepfun: { icon: "i-brand-stepfun", brandColor: "#005CFF" },
+  // Thinking Machines publishes no mark any icon set has picked up, and
+  // inventing one would be worse than a neutral shape.
   thinkingmachines: { icon: "i-lucide-brain-circuit", brandColor: "#0F9D8C" },
   other: { icon: "i-lucide-bot", brandColor: "#6B7280" },
+};
+
+/** The neutral mark, when even the `other` row is somehow missing. */
+const OTHER_BRANDING: FamilyBranding = {
+  icon: "i-lucide-bot",
+  brandColor: "#6B7280",
 };
 
 /** Brand display name for a profile key (falls back to the key itself). */
 export const getModelDisplayName = (key: string): string =>
   MODEL_DISPLAY_NAME[key] ?? key;
 
-/** Branding (icon + colour/gradient) for a model family. */
+/**
+ * Branding for a model family, falling back to the neutral mark.
+ *
+ * The fallback is load-bearing rather than defensive: families come from the
+ * catalogue now, so a maker nobody has branded yet is an ordinary Tuesday
+ * rather than a bug, and the card still has to render.
+ */
 export const getFamilyBranding = (family: ModelFamily): FamilyBranding =>
-  FAMILY_BRANDING[family];
+  FAMILY_BRANDING[family] ?? OTHER_BRANDING;

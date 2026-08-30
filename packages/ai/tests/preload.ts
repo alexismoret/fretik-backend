@@ -18,6 +18,7 @@
  */
 
 import { mock } from "bun:test";
+import { getLiveSnapshotSync, getLiveStateSync } from "./lib/live-state-double";
 import { mockModule } from "./lib/mock-module";
 import { redisDouble } from "./lib/redis-double";
 import { getTeamAiSettings } from "./lib/team-ai-settings-double";
@@ -114,6 +115,16 @@ void mock.module("@fretik/shared/lib/redis", () => ({
 // must already be the double by then.
 await mockModule("@fretik/shared/services/team-ai-settings/get-for-team", {
   getTeamAiSettings,
+});
+
+// Same reasoning, same shape: `model-registry/resolve.ts` reads the live
+// snapshot and half the suite imports it transitively, so the readers are
+// stubbed here rather than per file. The default is an EMPTY snapshot, which
+// is exactly what the real module answers on a cold process — every test that
+// does not call `setLiveStateDouble` sees no change at all.
+await mockModule("@fretik/shared/services/model-registry/live", {
+  getLiveStateSync,
+  getLiveSnapshotSync,
 });
 
 // Capture the REAL `@fretik/shared/db` export values before any test

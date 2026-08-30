@@ -64,6 +64,8 @@ const toLiveState = (row: ModelLiveStateRow): LiveModelState => ({
   policyReport: row.policyReport,
   endpointStats: row.endpointStats ?? [],
   aaMetrics: row.aaMetrics,
+  releasedAt: row.releasedAt ?? null,
+  aaSlug: row.aaSlug ?? null,
   dynamicProfile: row.dynamicProfile,
   boundRoles: row.boundRoles,
   source: row.source,

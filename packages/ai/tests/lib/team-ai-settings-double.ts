@@ -22,20 +22,33 @@ import type { TeamAiSettings } from "@fretik/shared/db/schema";
 // Only the columns some call site in `team-model.ts` reads — the double omits
 // teamId/createdAt/updatedAt so test literals stay minimal. Optional so a
 // literal can keep listing just the tier keys it cares about.
-type ProfileKeys = Pick<
-  TeamAiSettings,
-  "flagshipProfileKey" | "workhorseProfileKey" | "utilityProfileKey"
-> &
-  Partial<Pick<TeamAiSettings, "flagshipReasoningLevel">>;
+type ProfileKeys = Partial<Pick<TeamAiSettings, "assistantReasoningLevel">> & {
+  /**
+   * Optional in the literal, always present on the way OUT: every reader
+   * goes through `functionProfileKey`, which reads this first and only then
+   * falls back to the legacy tier columns. A double that omitted it would
+   * make the fallback path the only one any test ever exercises.
+   */
+  functionProfileKeys?: TeamAiSettings["functionProfileKeys"];
+};
 
 let settings: ProfileKeys | null = null;
 let shouldThrow = false;
 
 export const getTeamAiSettings = (
   _teamId: string,
-): Promise<ProfileKeys | null> => {
+): Promise<
+  | (ProfileKeys & {
+      functionProfileKeys: TeamAiSettings["functionProfileKeys"];
+    })
+  | null
+> => {
   if (shouldThrow) throw new Error("settings store down");
-  return Promise.resolve(settings);
+  if (settings === null) return Promise.resolve(null);
+  return Promise.resolve({
+    ...settings,
+    functionProfileKeys: settings.functionProfileKeys ?? {},
+  });
 };
 
 export const setTeamAiSettingsDouble = (

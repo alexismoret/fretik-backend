@@ -1,3 +1,10 @@
+import type { MergedCatalogueEntry } from "../../../model-registry/catalogue";
+import {
+  blendedPricePerMTok,
+  isFiniteNumber,
+  MARKET_BLENDED_QUARTILES,
+  median,
+} from "../../../model-registry/measures";
 import {
   normalizeProviderList,
   normalizeProviderName,
@@ -8,7 +15,6 @@ import type {
   PricingSnapshot,
   ProviderPool,
 } from "../../../model-registry/types";
-import type { GatewayCatalogEntry } from "./sources/gateway-catalog";
 
 /**
  * Everything the sync DECIDES, as pure functions.
@@ -31,24 +37,19 @@ import type { GatewayCatalogEntry } from "./sources/gateway-catalog";
 export const CONTEXT_SAFETY_MARGIN_TOKENS = 2048;
 
 /**
- * A turn is mostly prompt: system prompt, tool schemas, conversation history
- * and tool results dwarf the answer. 0.75/0.25 is an ASSUMPTION, not a
- * measurement — revisit it against real usage once the credit system bills
- * enough turns to compute the fleet's true ratio.
- */
-export const BLENDED_INPUT_WEIGHT = 0.75;
-
-/**
  * The cost a credit multiplier of 1.0 means: USD per 1M tokens, blended.
  *
- * Anchored on the measured median, not invented: across the 236 language models
- * the gateway catalogue priced on 2026-08-29, the median blended cost was
- * $1.002/MTok (p25 $0.385, p75 $3.375). So 1× is "the median model", a
- * $0.30/$1.20 workhorse lands near 0.5×, and a $15/$75 flagship near 20×.
+ * The market MEDIAN, so 1× is "the median model" — re-measured 2026-08-30 at
+ * $0.343 across the 449 priced language models the three catalogues list
+ * between them. It was `1` while the blend priced every prompt token at list
+ * and weighted the split 0.75/0.25; both of those turned out to be wrong
+ * (`measures.ts` carries the traffic that says so), and a reference left behind
+ * would have quietly redefined 1× as "1.8× the median model".
+ *
  * Changing this renumbers every model at once, which is the point — it is a
  * single dial, not a per-model table.
  */
-export const REFERENCE_BLENDED_COST_PER_MTOK = 1;
+export const REFERENCE_BLENDED_COST_PER_MTOK = MARKET_BLENDED_QUARTILES.median;
 
 /** Nothing bills at zero. A free model still costs us the request. */
 export const MIN_CREDIT_MULTIPLIER = 0.1;
@@ -59,35 +60,6 @@ export const MIN_CREDIT_MULTIPLIER = 0.1;
  * change, or a parse bug, and all three want a human.
  */
 export const PRICE_JUMP_THRESHOLD = 0.5;
-
-/**
- * Blended price band → product tier, from the same 2026-08-29 distribution:
- * the boundaries ARE the catalogue's quartiles, so the bands stay meaningful as
- * a description of the market rather than of one vendor's line-up.
- * p25 = $0.385, p75 = $3.375 — rounded outward to $0.5 and $3.
- */
-export const TIER_PRICE_BANDS = { utilityBelow: 0.5, flagshipAtOrAbove: 3 };
-
-const isFiniteNumber = (value: number | undefined): value is number =>
-  typeof value === "number" && Number.isFinite(value);
-
-const median = (values: number[]): number | undefined => {
-  if (values.length === 0) return undefined;
-  const sorted = [...values].sort((a, b) => a - b);
-  const mid = Math.floor(sorted.length / 2);
-  const upper = sorted[mid];
-  if (upper === undefined) return undefined;
-  const lower = sorted[mid - 1];
-  if (sorted.length % 2 === 1 || lower === undefined) return upper;
-  // Round the even-count average: (0.12 + 0.13) / 2 must not be 0.125000000001
-  // in a column the price-jump detector compares against tomorrow.
-  return Math.round(((lower + upper) / 2) * 1e6) / 1e6;
-};
-
-/** What one million tokens of an average turn costs. See the weight above. */
-export const blendedPricePerMTok = (pricing: PricingSnapshot): number =>
-  pricing.inputPerMTok * BLENDED_INPUT_WEIGHT +
-  pricing.outputPerMTok * (1 - BLENDED_INPUT_WEIGHT);
 
 /**
  * Fold two sources' views of the same pool into one.
@@ -139,6 +111,8 @@ export const mergeEndpointStats = (
       // whole reason the enrichment fetch is worth its round trip.
       hasZdr: stat.hasZdr ?? extra.hasZdr,
       quantization: stat.quantization ?? extra.quantization,
+      supportsToolChoice: stat.supportsToolChoice ?? extra.supportsToolChoice,
+      uptime5m: stat.uptime5m ?? extra.uptime5m,
       uptime15m: stat.uptime15m ?? extra.uptime15m,
       uptime1h: stat.uptime1h ?? extra.uptime1h,
       uptime1d: stat.uptime1d ?? extra.uptime1d,
@@ -322,44 +296,37 @@ export const computeCreditMultiplier = (
 
 /**
  * A profile for a model nobody wrote a profile for, built from catalogue FACTS
- * only. Capabilities come from the `tags` array and never from the name: `-mini`
- * and `-flash` are marketing, `tool-use` and `vision` are declarations the
- * gateway will be held to. A hand-written TypeScript profile, when one exists,
- * wins over this field by field.
+ * only. Capabilities are read from what the catalogues DECLARE and never from
+ * the name: `-mini` and `-flash` are marketing, `tools` and an `image` input
+ * modality are claims a transport can be held to. A hand-written TypeScript
+ * profile, when one exists, wins over this field by field.
+ *
+ * It takes the MERGED entry rather than one transport's row, which is what lets
+ * a model be described by whichever of its catalogues knows a given fact — the
+ * `audio` input modality exists on exactly one of the three, and a profile
+ * built from either of the others would have said text-only.
  */
 export const deriveDynamicProfile = (
-  entry: GatewayCatalogEntry,
+  entry: MergedCatalogueEntry,
   now: Date,
 ): DynamicProfile => {
-  const tags = new Set(entry.tags);
-  const inputModalities = ["text"];
-  if (tags.has("vision")) inputModalities.push("image");
-  if (tags.has("file-input")) inputModalities.push("file");
-
-  const blended = blendedPricePerMTok({
-    inputPerMTok: entry.pricing.inputPerMTok ?? 0,
-    outputPerMTok: entry.pricing.outputPerMTok ?? 0,
-  });
-  const tier =
-    blended >= TIER_PRICE_BANDS.flagshipAtOrAbove
-      ? "flagship"
-      : blended < TIER_PRICE_BANDS.utilityBelow
-        ? "utility"
-        : "workhorse";
+  const parameters = new Set(entry.supportedParameters);
 
   return {
     displayName: entry.name,
     family: entry.owner,
-    tiers: [tier],
     contextLength: entry.contextWindow ?? 0,
     maxCompletionTokens: entry.maxTokens,
-    inputModalities,
-    outputModalities: ["text"],
+    inputModalities: entry.inputModalities,
+    outputModalities: entry.outputModalities,
     supportedParameters: entry.supportedParameters,
-    supportsReasoning: tags.has("reasoning"),
-    supportsTools: tags.has("tool-use"),
+    supportsReasoning: parameters.has("reasoning"),
+    supportsTools: parameters.has("tools"),
     derivedFrom: {
-      source: "vercel-ai-gateway:/v1/models",
+      // The transports that described it, so an operator reading a promoted
+      // model's provenance can tell a single-catalogue guess from a fact two
+      // independent sources agreed on.
+      source: Object.keys(entry.idsByTransport).sort().join("+"),
       at: now.toISOString(),
     },
   };

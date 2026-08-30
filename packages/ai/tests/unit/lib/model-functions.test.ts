@@ -1,17 +1,21 @@
+import { functionEligibility } from "@fretik/shared/model-registry/eligibility";
 import { describe, expect, test } from "bun:test";
 import { getModelDisplayName } from "../../../src/lib/model-registry/display";
+import {
+  FUNCTION_REPRESENTATIVE,
+  MODEL_FUNCTION_KEYS,
+  ROLE_FUNCTION,
+  selectableForFunction,
+  signalsForProfile,
+} from "../../../src/lib/model-registry/functions";
 import {
   MODEL_PROFILES,
   ROLE_BINDINGS,
 } from "../../../src/lib/model-registry/profiles";
 import {
-  isSelectableForTier,
-  listSelectableProfilesForTier,
-  recommendedProfileKeyForTier,
+  recommendedProfileKeyForFunction,
   resolveFlagshipProfileKey,
-  ROLE_TIER,
 } from "../../../src/lib/model-registry/resolve";
-import type { ModelTier } from "../../../src/lib/model-registry/types";
 import { costLevelFromProfile } from "../../../src/services/model-metrics/cost-level";
 import { FALLBACK_METRICS } from "../../../src/services/model-metrics/fallback";
 
@@ -21,123 +25,69 @@ import { FALLBACK_METRICS } from "../../../src/services/model-metrics/fallback";
  * resolution rely on. No Redis / DB / network here.
  */
 
-const TIERS: readonly ModelTier[] = ["flagship", "workhorse", "utility"];
-
-describe("ROLE_TIER", () => {
-  test("covers every role binding", () => {
+describe("ROLE_FUNCTION", () => {
+  test("covers every role binding — a gap serves the default in silence", () => {
     for (const role of Object.keys(ROLE_BINDINGS)) {
-      expect(ROLE_TIER[role as keyof typeof ROLE_TIER]).toBeDefined();
+      expect(ROLE_FUNCTION[role as keyof typeof ROLE_FUNCTION]).toBeDefined();
     }
   });
 
-  test("fallbacks and vision are fixed (never user-selectable)", () => {
-    expect(ROLE_TIER["chat-fallback"]).toBe("fixed");
-    expect(ROLE_TIER.vision).toBe("fixed");
-    expect(ROLE_TIER["vision-fallback"]).toBe("fixed");
-    expect(ROLE_TIER.chat).toBe("flagship");
-  });
-});
-
-describe("isSelectableForTier", () => {
-  test("selectability is the tier plus `enabled` — nothing else", () => {
-    const m3 = MODEL_PROFILES["minimax-m3"];
-    expect(m3).toBeDefined();
-    expect(isSelectableForTier(m3, "flagship")).toBe(true);
-    // Right model, wrong tier.
-    expect(isSelectableForTier(m3, "utility")).toBe(false);
+  test("fallbacks and the page critic are automatic, never offered", () => {
+    // A fallback a team could repoint onto its own primary is not redundancy,
+    // and a cheaper critic would praise rather than fail loudly.
+    expect(ROLE_FUNCTION["chat-fallback"]).toBe("auto");
+    expect(ROLE_FUNCTION["vision-fallback"]).toBe("auto");
+    expect(ROLE_FUNCTION["pre-extract-fallback"]).toBe("auto");
+    expect(ROLE_FUNCTION["transform-fallback"]).toBe("auto");
+    expect(ROLE_FUNCTION["page-review"]).toBe("auto");
   });
 
-  test("the eval gate NO LONGER blocks selection, in any tier", () => {
-    // The 2026-07-26 change: a profile with no gate evidence at all is still
-    // offered to teams. This used to be false for `flagship`, which had frozen
-    // the flagship menu at two models. Guards against the clause creeping back.
-    const ungated = Object.values(MODEL_PROFILES).filter(
-      (p) =>
-        p.assessment.evalGate?.status !== "passed" &&
-        p.assessment.enabled &&
-        p.tiers.includes("flagship"),
-    );
-    expect(ungated.length).toBeGreaterThan(0);
-    for (const profile of ungated) {
-      expect(`${profile.key}:${isSelectableForTier(profile, "flagship")}`).toBe(
-        `${profile.key}:true`,
-      );
-    }
+  test("the six roles that used to be pinned `fixed` are now team choices", () => {
+    // Each was a constant standing in for a quality floor. The floor is now a
+    // rule in `eligibility.ts`, so the choice can be offered without the risk.
+    expect(ROLE_FUNCTION.vision).toBe("vision");
+    expect(ROLE_FUNCTION["active-memory"]).toBe("recall");
+    expect(ROLE_FUNCTION["memory-consolidate"]).toBe("memory");
+    expect(ROLE_FUNCTION["memory-promote"]).toBe("memory");
+    expect(ROLE_FUNCTION["tool-repair"]).toBe("quick-tasks");
+    expect(ROLE_FUNCTION["page-build"]).toBe("pages");
   });
 
-  test("`enabled: false` blocks every tier the profile lists", () => {
-    const disabled = Object.values(MODEL_PROFILES).filter(
-      (p) => !p.assessment.enabled,
-    );
-    expect(disabled.length).toBeGreaterThan(0);
-    for (const profile of disabled) {
-      for (const tier of profile.tiers) {
-        expect(
-          `${profile.key}:${tier}:${isSelectableForTier(profile, tier)}`,
-        ).toBe(`${profile.key}:${tier}:false`);
-      }
-    }
-  });
-
-  test("every disabled profile explains itself", () => {
-    // The picker renders disabled models with a tooltip keyed off this field —
-    // a blank reason would render an unexplained dead card.
-    for (const profile of Object.values(MODEL_PROFILES)) {
-      if (profile.assessment.enabled) continue;
-      expect(
-        `${profile.key}:${profile.assessment.disabledReason ?? "MISSING"}`,
-      ).not.toBe(`${profile.key}:MISSING`);
+  test("every function has a representative whose role belongs to it", () => {
+    for (const [fn, role] of Object.entries(FUNCTION_REPRESENTATIVE)) {
+      expect(`${fn}:${ROLE_FUNCTION[role]}`).toBe(`${fn}:${fn}`);
     }
   });
 });
 
-describe("listSelectableProfilesForTier", () => {
-  test("every listed profile is of that tier and enabled", () => {
-    for (const tier of TIERS) {
-      for (const profile of listSelectableProfilesForTier(tier)) {
-        expect(profile.tiers).toContain(tier);
-        expect(profile.assessment.enabled).toBe(true);
-      }
-    }
-  });
-
-  test("flagship menu includes the chat default (minimax-m3)", () => {
-    const keys = listSelectableProfilesForTier("flagship").map((p) => p.key);
-    expect(keys).toContain("minimax-m3");
-  });
-
-  test("flagship menu offers real choice across families", () => {
-    // The whole point of dropping the gate: breadth. Two options from one or
-    // two vendors (the pre-2026-07-26 state) is a regression, not a menu.
-    const profiles = listSelectableProfilesForTier("flagship");
-    expect(profiles.length).toBeGreaterThanOrEqual(3);
-    expect(new Set(profiles.map((p) => p.family)).size).toBeGreaterThanOrEqual(
-      3,
-    );
-  });
-
-  test("every tier has at least one selectable option", () => {
-    for (const tier of TIERS) {
-      expect(`${tier}:${listSelectableProfilesForTier(tier).length > 0}`).toBe(
-        `${tier}:true`,
-      );
-    }
-  });
-});
-
-describe("recommendedProfileKeyForTier", () => {
-  test("flagship recommendation is the chat code default", () => {
-    expect(recommendedProfileKeyForTier("flagship")).toBe(
-      ROLE_BINDINGS.chat.profileKey,
-    );
-  });
-
-  test("every recommendation is itself selectable for its tier", () => {
-    for (const tier of TIERS) {
-      const key = recommendedProfileKeyForTier(tier);
+describe("recommendedProfileKeyForFunction", () => {
+  test("every function's default is CAPABLE of the function it serves", () => {
+    // The invariant that keeps a threshold honest: a floor that excludes the
+    // default it was written around is a floor that is wrong.
+    //
+    // Capability only, deliberately. `assessment.enabled` is a separate and
+    // older decision — `gemini-3.7-flash` is cost-disabled for teams and still
+    // serves `page-build`, because a binding resolves its profile directly.
+    // Asserting selectability here would fail on a product choice rather than
+    // on a threshold.
+    for (const fn of MODEL_FUNCTION_KEYS) {
+      const key = recommendedProfileKeyForFunction(fn);
       const profile = MODEL_PROFILES[key];
-      expect(profile).toBeDefined();
-      expect(isSelectableForTier(profile, tier)).toBe(true);
+      expect(`${fn}:${profile !== undefined}`).toBe(`${fn}:true`);
+      if (profile) {
+        expect(
+          `${fn}:${functionEligibility(fn, signalsForProfile(profile, undefined)).verdict}`,
+        ).not.toBe(`${fn}:ineligible`);
+      }
+    }
+  });
+
+  test("a function whose default a team CAN pick offers it", () => {
+    // The other half: when the default is selectable, the menu must contain it.
+    for (const fn of MODEL_FUNCTION_KEYS) {
+      const profile = MODEL_PROFILES[recommendedProfileKeyForFunction(fn)];
+      if (!profile?.assessment.enabled) continue;
+      expect(`${fn}:${selectableForFunction(profile, fn)}`).toBe(`${fn}:true`);
     }
   });
 });
@@ -181,7 +131,7 @@ describe("resolveFlagshipProfileKey", () => {
     // `enabled: false` is now the ONLY thing that can reject a pin, so it has
     // to actually reject one.
     const disabled = Object.values(MODEL_PROFILES).find(
-      (p) => !p.assessment.enabled && p.tiers.includes("flagship"),
+      (p) => !p.assessment.enabled,
     );
     expect(disabled).toBeDefined();
     const result = resolveFlagshipProfileKey(disabled!.key);

@@ -279,12 +279,22 @@ if (process.argv.includes("--gateway-probe")) {
 }
 
 if (process.argv.includes("--prices")) {
-  // Dynamic import for the same reason as --probe: this path needs the key.
-  const { fetchOpenRouterRouting } =
-    await import("../src/services/model-metrics/fetch-openrouter-routing");
-  const routing = await fetchOpenRouterRouting();
+  // Dynamic import for the same reason as --probe: only this path needs a
+  // connection, and the catalogue diff below must keep running without one.
+  //
+  // Reads the pool median the nightly sync wrote rather than probing OpenRouter
+  // live (2026-08-30). Same question, better answer: the sync prices the pool
+  // this profile is ALLOWED to use — after the ZDR filter, the quarantines and
+  // the tool-calling requirement — while a fresh probe re-enumerates endpoints
+  // that routing may never be permitted to reach.
+  const { readAllLiveStateRows } =
+    await import("@fretik/shared/services/model-registry/live");
+  const rows = await readAllLiveStateRows();
+  const routing = new Map(rows.map((row) => [row.profileKey, row]));
   if (routing.size === 0) {
-    console.error("No routing resolved — is OPENROUTER_API_KEY set?");
+    console.error(
+      "No live rows — run the model sync first (packages/jobs: run-model-sync.ts).",
+    );
     process.exit(2);
   }
 
@@ -300,7 +310,7 @@ if (process.argv.includes("--prices")) {
   for (const [key, profile] of Object.entries(MODEL_PROFILES)) {
     const routed = routing.get(key);
     if (!routed) {
-      console.warn(`SKIP  ${key}: no endpoint resolved`);
+      console.warn(`SKIP  ${key}: no live row`);
       continue;
     }
     const ours = profile.assessment.pricing;
@@ -320,7 +330,9 @@ if (process.argv.includes("--prices")) {
       const detail = bad
         .map(([name, c, l]) => `${name} ${c ?? "none"} → live ${l ?? "none"}`)
         .join(", ");
-      console.error(`DRIFT ${key} (served by ${routed.provider}): ${detail}`);
+      console.error(
+        `DRIFT ${key} (pool of ${routed.endpointStats.length.toString()}): ${detail}`,
+      );
     }
   }
   if (priceDrift > 0) {
@@ -330,7 +342,7 @@ if (process.argv.includes("--prices")) {
     process.exit(1);
   }
   console.log(
-    `OK — ${routing.size} profiles priced at the endpoint they actually route to.`,
+    `OK — ${routing.size.toString()} profiles priced in line with the pool they route to.`,
   );
   process.exit(0);
 }

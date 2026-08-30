@@ -285,7 +285,11 @@ export const createTransformTool = () =>
 
       try {
         const chunks = planProseChunks(sourceText);
-        const result = await runProseTransform({ chunks, instruction });
+        const result = await runProseTransform({
+          chunks,
+          instruction,
+          teamId: ctx.teamId,
+        });
         await writeFile(conversationId, outRelative, result.output);
         return {
           outputPath: `${WORKSPACE_ROOT}/${outRelative}`,

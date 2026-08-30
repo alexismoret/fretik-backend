@@ -228,6 +228,12 @@ describe("isSparseResult — the re-sample trigger is structural", () => {
 // rows IS a problem, in both directions — but it says nothing about WHICH of
 // the two is wrong: the same 5-page invoice was counted 26, then 31, then 1,
 // for 21 real lines (prod 2026-07-29). So it is reported, never acted on.
+/** The resolved pair the assembler now takes — a run resolves it once. */
+const EXTRACT_MODELS = {
+  primaryId: "primary-model",
+  fallbackId: "fallback-model",
+};
+
 describe("assembleExtractResult — the count must agree with the rows", () => {
   const outcome = (rows: number, reportedTotal: number | null) => ({
     pages: [1, 2, 3],
@@ -247,6 +253,7 @@ describe("assembleExtractResult — the count must agree with the rows", () => {
       "records",
       5,
       "all",
+      EXTRACT_MODELS,
     ).notices.join(" ");
     // Run 2 on 2026-07-29 returned 21 rows for a self-reported count of 1,
     // with no re-sample in the call at all — the notice must not invent one.
@@ -261,6 +268,7 @@ describe("assembleExtractResult — the count must agree with the rows", () => {
       "records",
       5,
       "all",
+      EXTRACT_MODELS,
     );
     expect(result.recordsReturned).toBe(32);
     expect(result.modelCountedTotal).toBe(26);
@@ -275,6 +283,7 @@ describe("assembleExtractResult — the count must agree with the rows", () => {
       "records",
       5,
       "all",
+      EXTRACT_MODELS,
     );
     expect(result.complete).toBe(false);
     expect(result.notices).toHaveLength(1);
@@ -286,6 +295,7 @@ describe("assembleExtractResult — the count must agree with the rows", () => {
       "records",
       29,
       "all",
+      EXTRACT_MODELS,
     );
     expect(result.complete).toBe(true);
     expect(result.notices).toEqual([]);
@@ -297,6 +307,7 @@ describe("assembleExtractResult — the count must agree with the rows", () => {
       "records",
       29,
       "all",
+      EXTRACT_MODELS,
     );
     expect(result.modelCountedTotal).toBeNull();
     expect(result.complete).toBe(true);

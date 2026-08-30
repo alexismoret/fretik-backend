@@ -1,6 +1,7 @@
 import type { TransportId } from "@fretik/shared/model-registry/types";
 import { gatewayAdapter } from "./gateway";
 import { createOpenRouterAdapter, type EnvelopeForRole } from "./openrouter";
+import { scalewayAdapter } from "./scaleway";
 import type { GenerationReport, TransportAdapter } from "./types";
 
 /**
@@ -8,14 +9,13 @@ import type { GenerationReport, TransportAdapter } from "./types";
  *
  * Adding a transport is a file implementing `TransportAdapter` plus an entry
  * here — nothing in the resolver, the model registry or the picker changes.
- * Two are declared in the shared vocabulary and not yet built:
+ * `scaleway` was the proof: it is a direct provider rather than an aggregator,
+ * and it landed without touching any of the three.
  *
- * - `scaleway` — Generative APIs, OpenAI-compatible, so
- *   `@ai-sdk/openai-compatible` with a Scaleway base URL. EU-hosted inference
- *   for teams that need it.
- * - `custom` — a base URL and token a team supplies, for self-hosted or
- *   on-premise models. Its credentials belong in a per-team table rather than
- *   in the environment, which is the one piece of design it still needs.
+ * One remains declared in the shared vocabulary and not built: `custom`, a base
+ * URL and token a team supplies for self-hosted or on-premise models. Its
+ * credentials belong in a per-team table rather than in the environment, which
+ * is the one piece of design it still needs.
  */
 export const createTransportRegistry = (
   envelopeForRole: EnvelopeForRole,
@@ -23,6 +23,7 @@ export const createTransportRegistry = (
   new Map<TransportId, TransportAdapter>([
     ["gateway", gatewayAdapter],
     ["openrouter", createOpenRouterAdapter(envelopeForRole)],
+    ["scaleway", scalewayAdapter],
   ]);
 
 /**

@@ -93,6 +93,19 @@ export interface GenerationReport {
   generationId?: string;
 }
 
+/**
+ * What one finished call consumed, as the AI SDK normalises it.
+ *
+ * `cachedInputTokens` is separate because it bills at its own rate wherever a
+ * transport reports it — and `undefined` means the transport did not say, which
+ * is not the same as none.
+ */
+export interface CallUsage {
+  inputTokens?: number;
+  cachedInputTokens?: number;
+  outputTokens?: number;
+}
+
 export interface TransportAdapter {
   readonly id: TransportId;
 
@@ -114,4 +127,28 @@ export interface TransportAdapter {
 
   /** Pull cost, serving provider and generation id out of `providerMetadata`. */
   extractReport(metadata: unknown): GenerationReport;
+
+  /**
+   * What a call COST, for a transport that does not put a price on the wire.
+   *
+   * Optional, and implemented by exactly the transports whose `extractReport`
+   * cannot answer: an aggregator bills per call and reports the figure, while a
+   * direct provider bills on the account and reports nothing at all — measured
+   * 2026-08-30, a Scaleway generation returns `providerMetadata: {scaleway: {}}`
+   * with no cost field and no cost header, and its raw `usage` carries token
+   * counts alone.
+   *
+   * Without this the alternative is not "no number", it is a WRONG one:
+   * Langfuse falls back to its own model-price table, which knows nothing about
+   * who served the call, so a direct provider's traffic lands on a dashboard
+   * either at zero — reading as free — or at some other host's rate.
+   *
+   * A figure from here is DERIVED, never measured, and the caller labels it as
+   * such. It never competes with a reported cost: it is consulted only when
+   * `extractReport` returned none.
+   */
+  estimateCostUsd?(
+    request: TransportRequest,
+    usage: CallUsage,
+  ): number | undefined;
 }

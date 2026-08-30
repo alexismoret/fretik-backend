@@ -55,6 +55,27 @@ const extractUpstreamCost = (
   extractOpenRouterReport(providerMetadata).costUsd;
 
 /**
+ * A cost for a call whose transport does not put one on the wire, supplied by
+ * that transport at model-construction time (`TransportAdapter.estimateCostUsd`).
+ *
+ * Only DIRECT providers need it, and they need it badly: measured 2026-08-30,
+ * a Scaleway generation returns no cost field and no cost header. Left alone,
+ * Langfuse falls back to its own price table — which does not know who served
+ * the call — and the traffic lands on the dashboard at zero or at another
+ * host's rate. Both read as measurements.
+ *
+ * So the figure is computed from the rate the vendor published and the tokens
+ * the vendor counted, and it is written with `estimatedCost: true` beside it.
+ * It is consulted ONLY when nothing was reported, so a transport that prices
+ * its own calls can never be overridden by an estimate.
+ */
+export type CostEstimator = (usage: {
+  inputTokens?: number;
+  cachedInputTokens?: number;
+  outputTokens?: number;
+}) => number | undefined;
+
+/**
  * The UPSTREAM that actually served the call ("groq", "cerebras", "bedrock",
  * …), normalised to the spelling pools and quarantines use.
  *
@@ -140,15 +161,29 @@ const writeCost = (
   outputTokens?: { text: number | undefined; reasoning: number | undefined },
   cut?: { generationMs: number },
   inputTokens?: { total: number | undefined; cacheRead: number | undefined },
+  estimate?: CostEstimator,
 ): void => {
-  const cost = extractUpstreamCost(providerMetadata);
-  const provider = extractUpstreamProvider(providerMetadata);
   const finite = (value: number | undefined) =>
     typeof value === "number" && Number.isFinite(value) ? value : undefined;
   const reasoning = finite(outputTokens?.reasoning);
   const text = finite(outputTokens?.text);
   const input = finite(inputTokens?.total);
   const cacheRead = finite(inputTokens?.cacheRead);
+  const reported = extractUpstreamCost(providerMetadata);
+  // A reported figure always wins; the estimate exists for transports that
+  // report none, and is marked so nobody reads it as a measurement.
+  const derived =
+    reported !== undefined
+      ? undefined
+      : finite(
+          estimate?.({
+            inputTokens: input,
+            cachedInputTokens: cacheRead,
+            outputTokens: (reasoning ?? 0) + (text ?? 0) || undefined,
+          }),
+        );
+  const cost = reported ?? derived;
+  const provider = extractUpstreamProvider(providerMetadata);
   if (
     cost === undefined &&
     provider === undefined &&
@@ -190,9 +225,13 @@ const writeCost = (
         ...(provider !== undefined ||
         reasoning !== undefined ||
         text !== undefined ||
-        cut !== undefined
+        cut !== undefined ||
+        derived !== undefined
           ? {
               metadata: {
+                // The one thing that separates a measured cost from a computed
+                // one on a dashboard where both are just `costDetails.total`.
+                ...(derived !== undefined ? { estimatedCost: true } : {}),
                 // Both keys carry the same value for one release. `servingProvider`
                 // is the name that survives — the field stopped being about one
                 // transport — but existing Langfuse views and saved filters key
@@ -259,10 +298,17 @@ const writeEmbeddingCost = (
 };
 
 /**
- * AI SDK middleware that ingests OpenRouter's exact per-call cost onto the
- * Langfuse generation span. Attach only when Langfuse is configured.
+ * AI SDK middleware that ingests the exact per-call cost onto the Langfuse
+ * generation span. Attach only when Langfuse is configured.
+ *
+ * A factory rather than a constant because the fallback price depends on WHICH
+ * model this is: a transport that publishes no cost can only be priced from the
+ * rate stored for that model, which is known at construction and not at import.
+ * Called with no argument it behaves exactly as before.
  */
-export const costCaptureMiddleware: LanguageModelV4Middleware = {
+export const costCaptureMiddleware = (
+  estimate?: CostEstimator,
+): LanguageModelV4Middleware => ({
   specificationVersion: "v4",
   wrapGenerate: async ({ doGenerate }) => {
     const startedAt = Date.now();
@@ -272,6 +318,7 @@ export const costCaptureMiddleware: LanguageModelV4Middleware = {
       result.usage.outputTokens,
       suspectCut(result.finishReason, startedAt),
       result.usage.inputTokens,
+      estimate,
     );
     return result;
   },
@@ -282,8 +329,8 @@ export const costCaptureMiddleware: LanguageModelV4Middleware = {
       new TransformStream<LanguageModelV4StreamPart, LanguageModelV4StreamPart>(
         {
           transform: (part, controller) => {
-            // The terminal `finish` part carries the aggregated usage +
-            // OpenRouter cost. Tapping it here runs inside the generation
+            // The terminal `finish` part carries the aggregated usage + the
+            // transport's cost. Tapping it here runs inside the generation
             // span's context, so `updateActiveObservation` targets it.
             if (part.type === "finish") {
               writeCost(
@@ -291,6 +338,7 @@ export const costCaptureMiddleware: LanguageModelV4Middleware = {
                 part.usage.outputTokens,
                 suspectCut(part.finishReason, startedAt),
                 part.usage.inputTokens,
+                estimate,
               );
             }
             controller.enqueue(part);
@@ -300,7 +348,7 @@ export const costCaptureMiddleware: LanguageModelV4Middleware = {
     );
     return { stream: tapped, ...rest };
   },
-};
+});
 
 /**
  * Embedding-model counterpart of `costCaptureMiddleware`: ingests OpenRouter's

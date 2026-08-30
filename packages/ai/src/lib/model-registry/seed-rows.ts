@@ -120,6 +120,11 @@ export const buildLiveStateSeeds = (): LiveStateSeed[] => {
           : {}),
       },
       boundRoles: roles.get(profile.key) ?? [],
+      // Carries curation's answer to "which effort level does AA grade here?"
+      // into the sync, which cannot import profiles.
+      ...(profile.assessment.aaSlug === undefined
+        ? {}
+        : { aaSlug: profile.assessment.aaSlug }),
     });
   }
   return seeds;

@@ -26,14 +26,24 @@ import { extractReasoningMiddleware, wrapLanguageModel } from "ai";
 import { TransformStream } from "node:stream/web";
 import { instrumentModel } from "../model-instrumentation";
 import { wrapModelWithCache } from "../openrouter-cache";
+import {
+  clearSynthesisedProfileCache,
+  getEffectiveProfile,
+  getEffectiveProfileOrThrow,
+  listEffectiveProfiles,
+} from "./effective";
+import {
+  FUNCTION_REPRESENTATIVE,
+  type ModelFunctionKey,
+  selectableForFunction,
+} from "./functions";
 import { modelIdsForProfile } from "./gateway-ids";
-import { MODEL_PROFILES, ROLE_BINDINGS } from "./profiles";
+import { ROLE_BINDINGS } from "./profiles";
 import { createTransportRegistry } from "./transports";
 import type { ReasoningRequest } from "./transports/types";
 import type {
   ModelProfile,
   ModelRole,
-  ModelTier,
   ReasoningLevel,
   RoleBinding,
 } from "./types";
@@ -471,19 +481,22 @@ export interface ResolvedModel {
   live?: LiveModelState;
 }
 
-export const getProfile = (key: string): ModelProfile => {
-  const profile = MODEL_PROFILES[key];
-  if (!profile) {
-    throw new Error(`Unknown model profile key: "${key}"`);
-  }
-  return profile;
-};
+/**
+ * A profile by key — curated, or synthesised from its live row.
+ *
+ * Both layers, because a model promoted by a WRITE has no TypeScript profile
+ * and must still resolve. `effective.ts` owns the precedence (curated wins en
+ * bloc) and the synthesis defaults; this stays the one door every call site
+ * goes through.
+ */
+export const getProfile = (key: string): ModelProfile =>
+  getEffectiveProfileOrThrow(key);
 
 export const getProfileForRole = (role: ModelRole): ModelProfile =>
   getProfile(ROLE_BINDINGS[role].profileKey);
 
 export const listProfiles = (): readonly ModelProfile[] =>
-  Object.values(MODEL_PROFILES);
+  listEffectiveProfiles();
 
 /**
  * Pulls a `<think>…</think>` block out of the CONTENT channel back into
@@ -710,14 +723,15 @@ const buildResolved = (
   if (!adapter)
     throw new Error(`Transport "${transport}" has no adapter registered`);
 
-  const raw = adapter.buildModel({
+  const request = {
     modelId,
     binding,
     profile,
     live,
     endpoints: live?.endpointStats ?? [],
     reasoning: reasoningRequestForRole(binding, profile),
-  });
+  };
+  const raw = adapter.buildModel(request);
   const cleaned =
     binding.settingsKind === "chat" || binding.settingsKind === "page-build"
       ? wrapLanguageModel({
@@ -735,10 +749,17 @@ const buildResolved = (
     binding.wrapCache && transport === "openrouter"
       ? wrapModelWithCache(cleaned, profile)
       : cleaned;
-  const model = instrumentModel(cachedForTransport, {
-    profileKey: binding.profileKey,
-    transport,
-  });
+  const model = instrumentModel(
+    cachedForTransport,
+    { profileKey: binding.profileKey, transport },
+    // Only a transport that publishes no cost of its own supplies one, and
+    // only this call site knows which transport a model resolved to and what
+    // rate is stored for it. The closure captures the request so the middleware
+    // — which sees token counts and nothing else — can price the call.
+    adapter.estimateCostUsd === undefined
+      ? undefined
+      : (usage) => adapter.estimateCostUsd?.(request, usage),
+  );
   return { model, profile, binding, transport, live };
 };
 
@@ -759,7 +780,8 @@ const resolved = new Map<ModelRole, ResolvedModel>();
  * than the model it replaces, and using it needs no new machinery — these pairs
  * already exist for mid-turn failover.
  */
-const ROLE_FALLBACK: Partial<Record<ModelRole, ModelRole>> = {
+/** Exported so `models:admin audit` can check a fallback still differs from its primary. */
+export const ROLE_FALLBACK: Partial<Record<ModelRole, ModelRole>> = {
   chat: "chat-fallback",
   workflow: "chat-fallback",
   "dispatch-cheap": "chat-fallback",
@@ -879,117 +901,13 @@ export const resolvePageBuildModelForProfile = (
 // ============================================================================
 
 /**
- * The user-selectable tier each role belongs to (chantier C8). The three
- * tiers map the ~10 internal roles onto the three knobs a team customises;
- * `"fixed"` roles (fallbacks, capability-routed vision) are never
- * user-overridable in v1. This map + `isSelectableForTier` are the
- * foundation C8b reuses to make workhorse/utility resolution team-aware.
+ * Roles are mapped to FUNCTIONS now (`functions.ts` `ROLE_FUNCTION`), not to
+ * price tiers. The map that lived here said `"fixed"` for six roles — vision,
+ * the recall judge, consolidation, promotion, repair and the page builder —
+ * and every one of those is a team choice today, behind a capability floor
+ * rather than behind a constant. Keeping it would have left a table that
+ * describes behaviour the code no longer has.
  */
-export const ROLE_TIER: Record<ModelRole, ModelTier | "fixed"> = {
-  chat: "flagship",
-  "chat-fallback": "fixed",
-  // Tracks the team's flagship pick by default (same as chat), overridable
-  // per-workflow via `modelProfileKey`.
-  workflow: "flagship",
-  "dispatch-cheap": "workhorse",
-  "pre-extract": "workhorse",
-  "pre-extract-fallback": "fixed",
-  // FIXED since P5-bis (2026-07): the recall judge is a SYSTEM quality
-  // component — the eval suite showed gpt-oss-20b unstable on it at every
-  // effort level, so a team's utility pick must not silently degrade the
-  // memory of every turn. Code default only (gpt-oss-120b).
-  "active-memory": "fixed",
-  "memory-extract": "utility",
-  "memory-distill": "utility",
-  // FIXED (P8.2): the consolidation judge is a system quality component (like
-  // the recall judge) — a team's utility pick must not degrade it below the
-  // 120b that makes temporal re-anchoring reliable.
-  "memory-consolidate": "fixed",
-  // Same tier as consolidation: an autonomous write to team-shared memory is
-  // a SYSTEM quality component, not a team preference.
-  "memory-promote": "fixed",
-  "compaction-summarizer": "workhorse",
-  "cheap-tasks": "utility",
-  // FIXED: repair is a SYSTEM reliability component on the hot path of every
-  // malformed tool call — a team's pick must not slow it below the 120b.
-  "tool-repair": "fixed",
-  // ONE file-capable model (gemini-3.5-flash-lite) backs both the `vision` tool and
-  // the `extract` engine — no separate extraction role. FIXED: a team's tier
-  // pick must not silently degrade document extraction quality.
-  vision: "fixed",
-  "vision-fallback": "fixed",
-  // FIXED: the page critic is the gate on what a team ships to itself. A
-  // cheaper pick would not fail loudly — it would praise, which is the one
-  // outcome the review exists to prevent.
-  "page-review": "fixed",
-  // FIXED, and for the SAME reason as the critic above — which is exactly the
-  // asymmetry that went unnoticed until 2026-08-18. The critic was pinned so a
-  // cheap pick could not quietly praise; the BUILDER was left on
-  // `resolveModel("chat")` at module load, so every page a team ever generated
-  // was written by the code default no matter which flagship they picked. A
-  // page is the one artefact a team keeps and reopens: what writes it is a
-  // system quality component, not a per-team cost preference.
-  "page-build": "fixed",
-  // Tracks the team's workhorse pick: bulk prose transformation is a
-  // cost/quality preference a team may legitimately tune, and the fixed
-  // fallback catches a weak pick's truncations/refusals.
-  transform: "workhorse",
-  "transform-fallback": "fixed",
-};
-
-/** Representative role whose code-default profile is the tier's recommendation. */
-const TIER_DEFAULT_ROLE: Record<ModelTier, ModelRole> = {
-  flagship: "chat",
-  workhorse: "pre-extract",
-  utility: "cheap-tasks",
-};
-
-/**
- * A profile a team may pick for a tier: it is `enabled` and LISTS that tier.
- * That is the whole rule.
- *
- * `enabled: false` blocks a model everywhere (today: cost, until billing
- * exists) and removing a tier from `tiers` is the per-tier off-switch. A
- * multi-tier profile (e.g. GPT-5.6 Luna — flagship + workhorse) is selectable
- * in each tier it lists.
- *
- * **The eval-gate clause was removed on 2026-07-26.** It used to require
- * `evalGate.status === "passed"` for the flagship tier, which had frozen the
- * flagship menu at two models while twelve profiles sat `pending`: gate runs
- * are slow and costly, the suite is not a fair enough judge to be a
- * gatekeeper, and one profile already carried a hand-written override
- * explaining the gate's verdict had been overruled. The product bet is
- * breadth — a team that finds a model weak on our tools switches model.
- * Evals now gate only the APPLIED DEFAULT (`ROLE_BINDINGS` for `chat` /
- * `workflow`), enforced in `model-registry.test.ts` rather than at runtime.
- */
-export const isSelectableForTier = (
-  profile: ModelProfile,
-  tier: ModelTier,
-): boolean =>
-  profile.assessment.enabled &&
-  profile.tiers.includes(tier) &&
-  liveAllowsSelection(profile.key);
-
-/**
- * The live half of the selection rule.
- *
- * Curation and the runtime engine each hold a veto, and neither can overrule
- * the other into enabling something. A profile marked `enabled: false` in
- * TypeScript disappears on deploy without a database write; a model the engine
- * disabled — or drove to `lastResort`, meaning every upstream it has is
- * quarantined — disappears without one either, and a redeploy does not bring it
- * back. `retired` and `candidate` are likewise not offerable: a candidate has
- * been discovered, not chosen.
- *
- * A cold or unreachable snapshot answers `true`: an unreachable metadata table
- * must never empty the model picker.
- */
-const liveAllowsSelection = (profileKey: string): boolean => {
-  const live = getLiveStateSync(profileKey);
-  if (!live) return true;
-  return live.enabled && live.status === "published" && !live.lastResort;
-};
 
 /**
  * The thinking depths a USER may request for a profile — what a reasoning
@@ -1054,51 +972,42 @@ export const effectiveReasoningLevel = (
     : match;
 };
 
-/** Every selectable profile for a tier — what a team may actually choose. */
-export const listSelectableProfilesForTier = (
-  tier: ModelTier,
-): readonly ModelProfile[] =>
-  listProfiles().filter((profile) => isSelectableForTier(profile, tier));
+// ============================================================================
+// Functions — what tiers are becoming
+// ============================================================================
+
+/** The code-default profile key for a function — badged "recommended". */
+export const recommendedProfileKeyForFunction = (
+  fn: ModelFunctionKey,
+): string => ROLE_BINDINGS[FUNCTION_REPRESENTATIVE[fn]].profileKey;
 
 /**
- * Every profile that LISTS a tier, selectable or not — what the picker
- * DISPLAYS. Disabled models stay visible with an explanation
- * (`assessment.disabledReason`) rather than vanishing: a team that cannot yet
- * pick Claude Opus 5 is better served by seeing it greyed out with a reason
- * than by wondering whether Fretik supports Anthropic at all.
+ * Every profile the hub DISPLAYS for a function — all of them.
  *
- * Callers MUST still run `isSelectableForTier` before honouring a choice —
- * this is a display list, never an authorisation list.
+ * Deliberately not filtered by eligibility, unlike the tier menus it replaces.
+ * A team choosing a model wants to see the fleet and why each card is or is not
+ * offerable; hiding the ineligible ones answers "why is this model missing"
+ * with silence. Which of them a function ACCEPTS is answered beside the list,
+ * by the function's own menu — a fact about the pair, not about the model.
  */
-export const listProfilesForTierDisplay = (
-  tier: ModelTier,
-): readonly ModelProfile[] =>
-  listProfiles().filter((profile) => profile.tiers.includes(tier));
-
-/** The code-default profile key for a tier — badged "recommended" in the UI. */
-export const recommendedProfileKeyForTier = (tier: ModelTier): string =>
-  ROLE_BINDINGS[TIER_DEFAULT_ROLE[tier]].profileKey;
+export const listProfilesForFunctionDisplay = (): readonly ModelProfile[] =>
+  listProfiles();
 
 /**
- * Resolve a STORED per-tier pick to an effective profile key, with graceful
- * degradation: an unset, unknown, or no-longer-selectable (removed /
- * gate-failed / wrong-tier) key falls back to the tier's code default.
- * Returns the effective key plus whether a fallback occurred, so a caller can
- * surface a one-line UI notice. Used by both the conversation flagship pin and
- * the C8b per-team workhorse / utility resolution.
- *
- * Distinct from `resolveChatModelForProfile`, which deliberately skips the
- * gate check (the eval harness must run `pending` candidates). User-facing
- * tier picks MUST be gate-passed — hence the `isSelectableForTier` check.
+ * Resolve a STORED per-function pick to an effective profile key, degrading to
+ * the function's code default when the key is unset, unknown, or no longer
+ * usable — never erroring. A model can be retired, disabled or quarantined
+ * between the moment a team picked it and the moment a turn resolves it, and
+ * none of those is a reason to fail the turn.
  */
-export const resolveTierProfileKey = (
-  tier: ModelTier,
+export const resolveFunctionProfileKey = (
+  fn: ModelFunctionKey,
   storedKey: string | null | undefined,
 ): { profileKey: string; fellBack: boolean } => {
-  const fallback = recommendedProfileKeyForTier(tier);
+  const fallback = recommendedProfileKeyForFunction(fn);
   if (!storedKey) return { profileKey: fallback, fellBack: false };
-  const profile = MODEL_PROFILES[storedKey];
-  if (profile && isSelectableForTier(profile, tier)) {
+  const profile = getEffectiveProfile(storedKey);
+  if (profile && selectableForFunction(profile, fn)) {
     return { profileKey: storedKey, fellBack: false };
   }
   return { profileKey: fallback, fellBack: true };
@@ -1111,7 +1020,7 @@ export const resolveTierProfileKey = (
 export const resolveFlagshipProfileKey = (
   pinnedKey: string | null | undefined,
 ): { profileKey: string; fellBack: boolean } =>
-  resolveTierProfileKey("flagship", pinnedKey);
+  resolveFunctionProfileKey("assistant", pinnedKey);
 
 // Per-replica memo of role-profile model instances (C8b). Keyed
 // `${role}:${profileKey}` — bounded by roles × registry profiles. Like
@@ -1162,6 +1071,12 @@ export const clearResolvedModelCache = (): void => {
   chatResolvedByProfile.clear();
   pageBuildResolvedByProfile.clear();
   roleProfileResolved.clear();
+  // Synthesised profiles are built FROM live state, so they go stale on
+  // exactly the same events. Cleared here rather than through a second
+  // `onLiveRegistryChange` subscription: one invalidation path is one thing to
+  // keep correct, and a profile surviving the instance built from it is the
+  // subtlest version of this bug.
+  clearSynthesisedProfileCache();
 };
 
 /**

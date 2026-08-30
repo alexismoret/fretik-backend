@@ -24,6 +24,7 @@ import type {
   EndpointStat,
   PolicyReport,
   PolicyRuleResult,
+  PricingSnapshot,
 } from "./types";
 
 export interface ModelPolicy {
@@ -54,16 +55,29 @@ export interface ModelPolicy {
 }
 
 /**
- * Discovery policy — deliberately strict. It decides which of the several
- * hundred models in a gateway catalogue are worth a human's attention, so a
- * false positive costs an operator a look and a false negative costs nothing
- * (the model can still be added by name with `model-admin add`).
+ * Discovery policy — strict on CAPABILITY, silent on price. It decides which of
+ * the several hundred models in a gateway catalogue are worth a human's
+ * attention, so a false positive costs an operator a look and a false negative
+ * costs nothing (the model can still be added by name with `model-admin add`).
+ *
+ * NO PRICE CEILING, deliberately (2026-08-30). Price is not a property of a
+ * model's fitness, it is a property of who pays: once teams spend their own
+ * credits, an expensive model is a choice they are entitled to make, and a
+ * catalogue that never surfaced it would be hiding the option rather than
+ * offering it. Until then the money is still ours, so price decides `enabled`
+ * at promotion time and every night after — see `PROMOTION_PRICE_CAPS` — which
+ * keeps the bill bounded without pretending an expensive model is a bad one.
+ *
+ * The throughput floor is an ADOPTION bar, at 50 rather than 60 since
+ * 2026-08-30: a model whose best host cannot decode at 50 tps today is not one
+ * to build on, but the band from 50 to 60 held real candidates (four on
+ * 2026-08-29, best-endpoint p50 between 50.5 and 59.0) that no other rule
+ * objected to.
  */
 export const DEFAULT_CANDIDATE_POLICY: ModelPolicy = {
   zdrRequired: true,
-  minTpsP50: 60,
+  minTpsP50: 50,
   maxTtftP95Ms: 8_000,
-  maxPricePerMTok: { input: 2, output: 8 },
   minContextLength: 128_000,
   minMaxOutput: 8_000,
   toolCallingRequired: true,
@@ -104,6 +118,46 @@ export const PUBLISHED_POLICY: ModelPolicy = {
   toolCallingRequired: true,
   minUptime1d: 90,
 };
+
+/**
+ * What we are willing to PAY FOR, as opposed to what we are willing to offer.
+ *
+ * USD per 1,000,000 tokens, compared against the pool median. These are the
+ * ceilings discovery used to enforce; moving them here separates two questions
+ * that were tangled: "is this model any good" (capability, decided by
+ * `DEFAULT_CANDIDATE_POLICY`) and "are we paying for it today" (this). A model
+ * above the caps is still discovered, still promoted, still visible — it simply
+ * arrives `enabled: false, disabledReason: "cost"` and an operator can turn it
+ * on deliberately. When teams spend their own credits, this whole gate is what
+ * gets replaced by a balance check.
+ */
+export const PROMOTION_PRICE_CAPS = {
+  inputPerMTok: 2,
+  outputPerMTok: 8,
+} as const;
+
+/**
+ * Whether a model's measured price lets it run on our budget. Pure, so the
+ * promote path and the nightly re-check cannot drift apart.
+ *
+ * BOTH caps must hold: a cheap prompt does not pay for an expensive completion,
+ * and our turns are heavy on both. Equality passes — a cap is a limit, not an
+ * exclusive bound.
+ *
+ * Re-evaluated on EVERY sync, not only at promotion (2026-08-30). Prices move:
+ * upstreams reprice, run promotions, and change tiers. Checking once at
+ * promotion would mean a model promoted at $1.90 that later rose to $3 stayed
+ * enabled forever, while an identical model discovered the next day would be
+ * promoted disabled — the same fleet, two different answers, decided by nothing
+ * but arrival order.
+ */
+export const promotionEnablement = (
+  pricing: PricingSnapshot,
+): { enabled: boolean; disabledReason?: "cost" } =>
+  pricing.inputPerMTok <= PROMOTION_PRICE_CAPS.inputPerMTok &&
+  pricing.outputPerMTok <= PROMOTION_PRICE_CAPS.outputPerMTok
+    ? { enabled: true }
+    : { enabled: false, disabledReason: "cost" };
 
 export interface PolicySignals {
   /** Endpoints left after pool filtering and quarantine — what a call can hit. */
@@ -292,6 +346,32 @@ export const evaluatePolicy = (
           : `endpoints without \`tools\`: ${without.map((e) => e.provider).join(", ")}`,
       ),
     );
+
+    // A separate, SOFTER question: accepting tool definitions is not the same
+    // as accepting to be forced onto one. Two paths depend on forcing — the
+    // schema-guided extract engine and the tool-call repair one-shot — and a
+    // host missing `required` does not error there, it answers in prose, which
+    // surfaces as a parse failure blamed on the model. Soft because most turns
+    // never force, and because only one source reports the field at all: graded
+    // only where at least one endpoint answered, so silence is never a verdict.
+    const answering = endpoints.filter(
+      (e) => e.supportsToolChoice !== undefined,
+    );
+    if (answering.length > 0) {
+      const forcing = answering.filter((e) =>
+        e.supportsToolChoice?.includes("required"),
+      );
+      rules.push(
+        rule(
+          "tool-choice",
+          "soft",
+          forcing.length > 0,
+          forcing.length > 0
+            ? `${forcing.length.toString()} of ${answering.length.toString()} reporting endpoint(s) accept a forced tool call`
+            : `no reporting endpoint accepts \`tool_choice: required\` — forced extraction would answer in prose instead`,
+        ),
+      );
+    }
   }
 
   if (policy.minTpsP50 !== undefined) {

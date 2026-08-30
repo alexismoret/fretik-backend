@@ -23,12 +23,17 @@ import {
  * column is `quantization`: it is the only API that reports serving precision,
  * and `fp4` versus `bf16` is a quality difference no other field exposes.
  *
+ * It is also the only source for `supports_tool_choice`, which answers a
+ * question `supported_parameters` does not: a host can accept tool DEFINITIONS
+ * while refusing to be FORCED to call one (AkashML advertises `auto` alone).
+ *
  * Two of its columns deliberately go nowhere:
  *
- * - `uptime_last_30m` / `uptime_last_5m` — there is no 1 h or 15 m figure to map
- *   them onto, and writing a 30-minute number into `uptime1h` would make a
- *   fabricated value indistinguishable from a measured one after the merge.
- *   `uptime_last_1d`, which the policy's floor actually reads, maps directly.
+ * - `uptime_last_30m` — there is no 15 m or 1 h figure to map it onto, and
+ *   writing a 30-minute number into `uptime1h` would make a fabricated value
+ *   indistinguishable from a measured one after the merge. `uptime_last_1d`,
+ *   which the policy's floor reads, maps directly, and `uptime_last_5m` now has
+ *   a field of its own rather than being rounded into a neighbour.
  * - `p90` / `p99` — the percentile objects carry no p95, and the nearest
  *   neighbour is not the value the field promises.
  */
@@ -57,7 +62,10 @@ const endpointSchema = z.object({
   supported_parameters: z.array(z.string()).nullish(),
   supports_implicit_caching: z.boolean().nullish(),
   quantization: z.string().nullish(),
+  /** A record of mode → accepted, e.g. `{none, auto, required, function}`. */
+  supports_tool_choice: z.record(z.string(), z.boolean()).nullish(),
   status: z.number().nullish(),
+  uptime_last_5m: z.number().nullish(),
   uptime_last_1d: z.number().nullish(),
   latency_last_30m: percentileSchema,
   throughput_last_30m: percentileSchema,
@@ -111,6 +119,16 @@ const toStat = (
     supportedParameters: raw.supported_parameters ?? [],
     supportsImplicitCaching: raw.supports_implicit_caching ?? undefined,
     quantization: raw.quantization ?? undefined,
+    // Only the modes the host ACCEPTS. An empty record means it answered and
+    // accepts none; a missing one means it did not answer, which stays absent.
+    ...(raw.supports_tool_choice == null
+      ? {}
+      : {
+          supportsToolChoice: Object.entries(raw.supports_tool_choice)
+            .filter(([, accepted]) => accepted)
+            .map(([mode]) => mode),
+        }),
+    uptime5m: raw.uptime_last_5m ?? undefined,
     uptime1d: raw.uptime_last_1d ?? undefined,
     throughputP50: raw.throughput_last_30m?.p50 ?? undefined,
     latencyP50Ms: raw.latency_last_30m?.p50 ?? undefined,

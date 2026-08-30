@@ -9,7 +9,14 @@ import {
   throwHttpError,
   validationError,
 } from "@fretik/shared/lib/errors";
+import type { ModelFunctionKey } from "@fretik/shared/model-registry/functions";
+import {
+  functionProfileKey,
+  isModelFunctionKey,
+  MODEL_FUNCTION_KEYS,
+} from "@fretik/shared/model-registry/functions";
 import { reasoningLevelSchema } from "@fretik/shared/schemas/reasoning";
+import { countIncidentsForModels } from "@fretik/shared/services/model-registry/incidents";
 import { getLiveStateSync } from "@fretik/shared/services/model-registry/live";
 import { getTeamAiSettings } from "@fretik/shared/services/team-ai-settings/get-for-team";
 import { upsertTeamAiSettings } from "@fretik/shared/services/team-ai-settings/upsert";
@@ -19,14 +26,17 @@ import {
   getFamilyBranding,
   getModelDisplayName,
 } from "../lib/model-registry/display";
-import { MODEL_PROFILES } from "../lib/model-registry/profiles";
+import { getEffectiveProfile } from "../lib/model-registry/effective";
 import {
-  isSelectableForTier,
-  listProfilesForTierDisplay,
-  recommendedProfileKeyForTier,
+  functionsForProfile,
+  selectableForFunction,
+} from "../lib/model-registry/functions";
+import {
+  listProfilesForFunctionDisplay,
+  recommendedProfileKeyForFunction,
   selectableReasoningLevels,
 } from "../lib/model-registry/resolve";
-import type { ModelProfile, ModelTier } from "../lib/model-registry/types";
+import type { ModelProfile } from "../lib/model-registry/types";
 import { getModelMetrics } from "../services/model-metrics/get";
 import {
   ARTIFICIAL_ANALYSIS_URL,
@@ -40,14 +50,30 @@ import {
  * cannot import. The frontend already talks to this service directly.
  */
 
-const TIERS: readonly ModelTier[] = ["flagship", "workhorse", "utility"];
+/**
+ * How much incident history a card reports. A week, not a day: these are rare
+ * events by design — the breaker quarantines a host after three in an hour —
+ * so a 24 h window reads as zero on a model that had a bad Tuesday.
+ */
+const INCIDENT_WINDOW_HOURS = 24 * 7;
 
-const buildCard = (
+/**
+ * One model, described for display.
+ *
+ * Everything here is a property of the MODEL — never of the (model, function)
+ * pair. That is what lets the response carry the fleet once instead of once per
+ * function: whether a team may pick a model for `documents`, and which model
+ * `documents` recommends, live in the function's own entry.
+ */
+export const buildCard = (
   profile: ModelProfile,
-  tier: ModelTier,
-  recommendedKey: string,
-  metrics: ModelMetricsSnapshot,
+  context: {
+    metrics: ModelMetricsSnapshot;
+    /** Incidents per model key over `INCIDENT_WINDOW_HOURS`; absent = none. */
+    incidents: Map<string, number>;
+  },
 ) => {
+  const { metrics } = context;
   const branding = getFamilyBranding(profile.family);
   const metric = metrics.metrics[profile.key];
   const { assessment, catalog } = profile;
@@ -60,7 +86,6 @@ const buildCard = (
     displayName: getModelDisplayName(profile.key),
     family: profile.family,
     costClass: assessment.costClass,
-    recommended: profile.key === recommendedKey,
     icon: branding.icon,
     brandColor: branding.brandColor,
     brandGradient: branding.brandGradient ?? null,
@@ -84,6 +109,16 @@ const buildCard = (
      * request, so quoting the largest tells a team it has room it does not.
      */
     contextLength: live?.effectiveContextLength ?? catalog.contextLength,
+    /**
+     * When the model came out, ISO date, from the upstream catalogue. `null`
+     * before the first sync, or for a model no source dates.
+     *
+     * A sort and filter axis, not a quality signal: newer is not better, and a
+     * default ordering on it would put an untested release above a model the
+     * fleet has run for months. It answers the other question a team asks of a
+     * catalogue — "what is new since I last looked".
+     */
+    releasedAt: live?.releasedAt?.toISOString() ?? null,
     /** Zero-data-retention routing. `false` for the Mistral family only. */
     zeroDataRetention: assessment.provider.zdr === true,
     /**
@@ -96,30 +131,79 @@ const buildCard = (
      */
     health: live?.health === "unknown" ? null : (live?.health ?? null),
     /**
-     * Whether the team may pick this card. Disabled models are STILL RETURNED
-     * so the picker can show them greyed out with `disabledReason`; the client
-     * must not treat presence in `options` as permission.
+     * How the engine grades this model's SERVING, and what it graded from.
+     *
+     * A SaaS built on models someone else runs depends on how well they are
+     * being run, and until now the only thing a team could see was a
+     * three-value badge that appeared solely when the news was bad. These four
+     * numbers are what the badge is computed from, so "healthy" stops being an
+     * assertion the product makes about itself.
+     *
+     * AGNOSTIC BY CONSTRUCTION: aggregates and counts, never a host's name. The
+     * engine routes one model across several companies and moves between them
+     * without asking, so naming one would be both a leak and a lie — and a test
+     * builds a card from a fixture with named endpoints and asserts no name
+     * survives into the JSON.
      */
-    selectable: isSelectableForTier(profile, tier),
-    disabledReason: assessment.disabledReason ?? null,
+    serving: {
+      /** 0-100 composite, dominated by uptime. `null` before the first sync. */
+      score: live?.healthScore ?? null,
+      /** Best 1-day uptime across the reachable pool, as a percentage. */
+      uptime1d:
+        live === undefined
+          ? null
+          : (live.endpointStats
+              .map((endpoint) => endpoint.uptime1d)
+              .filter((value): value is number => value !== undefined)
+              .sort((a, b) => b - a)[0] ?? null),
+      /**
+       * How many upstreams can serve it. One is not a failure and is worth
+       * seeing: it means an outage there is an outage here, with nothing to
+       * route around it.
+       */
+      poolSize: live?.endpointStats.length ?? null,
+      /** Our OWN traffic's incidents this week — corruption, cuts, stalls. */
+      incidents7d: context.incidents.get(profile.key) ?? 0,
+      /** When the engine last measured any of this. */
+      checkedAt: live?.syncedAt?.toISOString() ?? null,
+    },
+    /**
+     * The functions this model MEASURES UP TO — a positive badge, and a
+     * stricter question than `selectable`: this grants only on a measured pass,
+     * so a model nobody has graded is offerable without being advertised.
+     * Empty means "not enough data", never "good for nothing".
+     */
+    eligibleFunctions: functionsForProfile(profile, live ?? undefined),
+    /**
+     * Curation first, then the live row.
+     *
+     * A TypeScript profile that says `disabled: cost` is a reviewed decision
+     * and outranks a measurement. But the engine can now disable a model on its
+     * own — a price that rose past the budget, a policy streak — and reading
+     * only the profile left those cards greyed out with NO explanation, which
+     * reads as a bug rather than as a decision.
+     */
+    disabledReason: assessment.disabledReason ?? live?.disabledReason ?? null,
     intelligence: metric?.intelligence ?? null,
     speed: metric?.speed ?? null,
     costLevel: metric?.costLevel ?? null,
     timeToFirstAnswer: metric?.timeToFirstAnswer ?? null,
     /**
-     * p50 time to the FIRST token on the upstream this profile actually routes
-     * to, measured by OpenRouter over the last 30 minutes of live traffic.
-     * Distinct from `timeToFirstAnswer`, which counts the wait until the first
-     * ANSWER token and so includes a reasoning model's silent thinking. Both
-     * this and `speed` were computed and cached but never sent, which left the
-     * panel describing whichever route Artificial Analysis happened to sample
-     * rather than ours.
+     * p50 time to the FIRST token on the endpoint this profile is most likely
+     * to land on. Distinct from `timeToFirstAnswer`, which counts the wait
+     * until the first ANSWER token and so includes a reasoning model's silent
+     * thinking. Both this and `speed` were computed and cached but never sent,
+     * which left the panel describing whichever route Artificial Analysis
+     * happened to sample rather than ours.
      */
     ttftSeconds: metric?.ttftSeconds ?? null,
     coding: metric?.coding ?? null,
+    /**
+     * Agentic capability. Sourced from Artificial Analysis' composite agentic
+     * index since 2026-08-30 — the per-benchmark `tau_banking` it used to carry
+     * is Pro-only on the migrated API. Scale changed from 0-1 to ~0-100.
+     */
     toolUse: metric?.toolUse ?? null,
-    instructionFollowing: metric?.instructionFollowing ?? null,
-    longContext: metric?.longContext ?? null,
     /**
      * The depths a user may actually request — the SINGLE signal driving the
      * reasoning picker, in the prompt bar and on a workflow. Not the raw
@@ -140,66 +224,104 @@ const modelProfilesRoutes = new OpenAPIHono<HonoLoggedAppType>();
 modelProfilesRoutes.use("*", authMiddleware);
 
 /**
- * GET /model-profiles — the picker menu. For each tier: EVERY profile listing
- * that tier (with display + live metrics), the team's current selection, the
- * recommended (code-default) key, and the effective key. Serves the prompt-bar
- * flagship picker AND the model hub settings page.
+ * GET /model-profiles — the picker menu, in two halves: `models`, the fleet
+ * described once with display + live metrics, and `functions`, what the team
+ * controls (which models each function accepts, what it chose, what the code
+ * recommends). Serves the model hub settings page AND the workflow model modal.
  *
- * `options` includes models the team cannot currently pick — each card carries
- * `selectable` + `disabledReason` so the hub renders them greyed out with an
- * explanation. Authorisation lives on the PATCH below, never in this list.
+ * `models` includes models the team cannot currently pick — absent from a
+ * function's `selectable`, and carrying `disabledReason` when the engine took
+ * them out entirely — so the hub renders them greyed out with an explanation.
+ * Authorisation lives on the PATCH below, never in this list.
  */
 modelProfilesRoutes.get("/", async (c) => {
   const team = c.get("team");
   if (!team) return throwHttpError(403, teamRequired());
 
-  const [metrics, settings] = await Promise.all([
+  const profiles = listProfilesForFunctionDisplay();
+  const profileKeys = profiles.map((profile) => profile.key);
+  const [metrics, settings, incidents] = await Promise.all([
     getModelMetrics(),
     getTeamAiSettings(team.id),
+    // ONE grouped count for the whole page. Never fatal: a hub that fails to
+    // render because an infra table is slow is worse than one showing no
+    // incident history.
+    countIncidentsForModels(
+      profileKeys,
+      INCIDENT_WINDOW_HOURS,
+      new Date(),
+    ).catch((err: unknown) => {
+      console.warn("[model-profiles] incident counts unavailable:", err);
+      return new Map<string, number>();
+    }),
   ]);
 
-  const selectedByTier: Record<ModelTier, string | null> = {
-    flagship: settings?.flagshipProfileKey ?? null,
-    workhorse: settings?.workhorseProfileKey ?? null,
-    utility: settings?.utilityProfileKey ?? null,
-  };
+  /**
+   * The fleet, described ONCE.
+   *
+   * Every function offers the WHOLE fleet rather than pre-filtering the way the
+   * tier menus it replaces did: hiding the models a function cannot use answers
+   * "why is this one missing" with silence, where a greyed card with a reason
+   * answers it. Serialising that fleet inside each of the seven menus would then
+   * have sent the same 139 cards seven times — a ~700 kB response describing
+   * 139 models. The cards are model facts, so they belong beside the menus, not
+   * inside them.
+   */
+  const models = profiles.map((profile) =>
+    buildCard(profile, { metrics, incidents }),
+  );
 
-  const tiers = Object.fromEntries(
-    TIERS.map((tier) => {
-      const recommended = recommendedProfileKeyForTier(tier);
-      const options = listProfilesForTierDisplay(tier).map((profile) =>
-        buildCard(profile, tier, recommended, metrics),
-      );
-      const selected = selectedByTier[tier];
+  /**
+   * The menu a team controls, one entry per function: which of those models the
+   * function accepts, what the team chose, and what the code recommends.
+   *
+   * `selectable` is a list of KEYS into `models` because selectability is a
+   * property of the (model, function) pair — the same model is offerable for
+   * `documents` and refused for `recall`.
+   */
+  const functions = Object.fromEntries(
+    MODEL_FUNCTION_KEYS.map((fn) => {
+      const recommended = recommendedProfileKeyForFunction(fn);
+      const selectable = profiles
+        .filter((profile) => selectableForFunction(profile, fn))
+        .map((profile) => profile.key);
+      const selected = functionProfileKey(settings, fn) ?? null;
       return [
-        tier,
-        { options, selected, recommended, effective: selected ?? recommended },
+        fn,
+        {
+          selectable,
+          selected,
+          recommended,
+          effective: selected ?? recommended,
+        },
       ];
     }),
   );
 
   /**
-   * The team's thinking-depth default for its flagship model. Flagship-only by
-   * design (the other tiers' effort is a calibrated part of their role
-   * envelope, not a preference), so it sits beside `tiers` rather than inside
-   * each one. `stored` is what the team chose — `null` means "whatever the
+   * The team's thinking-depth default for its ASSISTANT model. Assistant-only
+   * by design (every other function's effort is a calibrated part of its role
+   * envelope, not a preference), so it sits beside `functions` rather than
+   * inside each one. `stored` is what the team chose — `null` means "whatever the
    * model does by default", which the client reads off the card's
    * `defaultReasoningLevel`.
    */
-  const flagshipEffectiveKey =
-    selectedByTier.flagship ?? recommendedProfileKeyForTier("flagship");
-  const flagshipProfile = MODEL_PROFILES[flagshipEffectiveKey];
-  const storedLevel = settings?.flagshipReasoningLevel ?? null;
+  const assistantEffectiveKey =
+    functionProfileKey(settings, "assistant") ??
+    recommendedProfileKeyForFunction("assistant");
+  const assistantProfile = getEffectiveProfile(assistantEffectiveKey);
+  const storedLevel = settings?.assistantReasoningLevel ?? null;
 
   return c.json({
-    tiers,
+    models,
+    functions,
     reasoning: {
       // Echoed back only if the effective model still accepts it: a stored
       // level can outlive a model swap, and showing a depth we would silently
       // ignore is worse than showing the model's own default.
       stored:
-        flagshipProfile &&
-        selectableReasoningLevels(flagshipProfile).some(
+        assistantProfile &&
+        selectableReasoningLevels(assistantProfile).some(
           (level) => level === storedLevel,
         )
           ? storedLevel
@@ -214,38 +336,43 @@ modelProfilesRoutes.get("/", async (c) => {
 });
 
 const teamDefaultsSchema = z.object({
-  flagship: z.string().nullish(),
-  workhorse: z.string().nullish(),
-  utility: z.string().nullish(),
   /**
-   * Thinking depth for the team's flagship model. `null` resets it to the
-   * model's own default. Omitted leaves it alone — EXCEPT when `flagship`
-   * changes, which clears it (see `upsertTeamAiSettings`).
+   * The team's model per function, sparse: a key absent here is left alone, a
+   * key set to `null` is reset to the code default. Unknown function names and
+   * models the function cannot use are rejected below rather than stored.
    */
-  flagshipReasoningLevel: reasoningLevelSchema.nullish(),
+  functions: z.record(z.string(), z.string().nullish()).optional(),
+  /**
+   * Thinking depth for the team's ASSISTANT model. `null` resets it to the
+   * model's own default. Omitted leaves it alone — EXCEPT when the assistant
+   * model changes, which clears it (see `upsertTeamAiSettings`).
+   */
+  assistantReasoningLevel: reasoningLevelSchema.nullish(),
 });
 
 /**
- * Reject a tier override the team may not pick — the authorisation counterpart
- * to the display list above, which deliberately returns disabled models too.
- * Unknown key, wrong tier, or `enabled: false` all 400 here.
+ * Reject an override the team may not pick — the authorisation counterpart to
+ * the display list above, which deliberately returns disabled models too.
+ * Unknown key, or one this function measurably cannot use, 400 here.
  */
-const assertSelectable = (
+const assertSelectableForFunction = (
   key: string | null | undefined,
-  tier: ModelTier,
+  fn: ModelFunctionKey,
 ): void => {
   if (key === undefined || key === null) return;
-  const profile = MODEL_PROFILES[key];
+  // The EFFECTIVE registry: the display list offers promoted models, so the
+  // authorisation check has to recognise the same set the picker showed.
+  const profile = getEffectiveProfile(key);
   if (!profile) {
     throwHttpError(400, badRequest(`"${key}" is not a known model`));
     return;
   }
-  if (!isSelectableForTier(profile, tier)) {
+  if (!selectableForFunction(profile, fn)) {
     throwHttpError(
       400,
       badRequest(
         profile.assessment.enabled
-          ? `"${key}" is not available as a ${tier} model`
+          ? `"${key}" cannot serve ${fn}`
           : `"${key}" is not available on your plan yet`,
       ),
     );
@@ -277,30 +404,39 @@ modelProfilesRoutes.patch("/team-defaults", async (c) => {
     );
   }
 
-  const { flagship, workhorse, utility, flagshipReasoningLevel } = parsed.data;
-  assertSelectable(flagship, "flagship");
-  assertSelectable(workhorse, "workhorse");
-  assertSelectable(utility, "utility");
+  const { assistantReasoningLevel } = parsed.data;
+
+  const requested: Partial<Record<ModelFunctionKey, string | null>> = {};
+  for (const [fn, key] of Object.entries(parsed.data.functions ?? {})) {
+    if (!isModelFunctionKey(fn)) {
+      return throwHttpError(400, badRequest(`"${fn}" is not a model function`));
+    }
+    requested[fn] = key ?? null;
+  }
+  for (const [fn, key] of Object.entries(requested)) {
+    if (isModelFunctionKey(fn)) assertSelectableForFunction(key, fn);
+  }
+
   // A depth is only meaningful against a model. Validate it against the model
   // this request LEAVES in effect — the one being set here, or the one already
   // stored — so "high" can never be pinned onto a model whose ladder lacks it.
-  if (flagshipReasoningLevel) {
+  if (assistantReasoningLevel) {
     const stored = await getTeamAiSettings(team.id);
     const targetKey =
-      flagship ??
-      stored?.flagshipProfileKey ??
-      recommendedProfileKeyForTier("flagship");
-    const target = MODEL_PROFILES[targetKey];
+      requested.assistant ??
+      functionProfileKey(stored, "assistant") ??
+      recommendedProfileKeyForFunction("assistant");
+    const target = getEffectiveProfile(targetKey);
     if (
       !target ||
       !selectableReasoningLevels(target).some(
-        (level) => level === flagshipReasoningLevel,
+        (level) => level === assistantReasoningLevel,
       )
     ) {
       return throwHttpError(
         400,
         badRequest(
-          `"${flagshipReasoningLevel}" is not a thinking depth "${targetKey}" supports`,
+          `"${assistantReasoningLevel}" is not a thinking depth "${targetKey}" supports`,
         ),
       );
     }
@@ -308,18 +444,14 @@ modelProfilesRoutes.patch("/team-defaults", async (c) => {
 
   const settings = await upsertTeamAiSettings({
     teamId: team.id,
-    flagshipProfileKey: flagship,
-    workhorseProfileKey: workhorse,
-    utilityProfileKey: utility,
-    flagshipReasoningLevel,
+    functionProfileKeys: requested,
+    assistantReasoningLevel,
   });
 
   return c.json({
-    flagship: settings.flagshipProfileKey,
-    workhorse: settings.workhorseProfileKey,
-    utility: settings.utilityProfileKey,
+    functions: settings.functionProfileKeys,
     // Returned because the caller cannot predict it: switching model clears it.
-    flagshipReasoningLevel: settings.flagshipReasoningLevel,
+    assistantReasoningLevel: settings.assistantReasoningLevel,
   });
 });
 

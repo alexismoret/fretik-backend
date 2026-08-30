@@ -70,9 +70,15 @@ describe("planProseChunks", () => {
   });
 });
 
+/** The resolved pair the assembler now takes — a run resolves it once. */
+const MODELS = { primaryId: "primary-model", fallbackId: "fallback-model" };
+
 describe("assembleTransformResult", () => {
   test("concatenates outputs in order with blank-line separators", () => {
-    const result = assembleTransformResult([ok("un"), ok("deux"), ok("trois")]);
+    const result = assembleTransformResult(
+      [ok("un"), ok("deux"), ok("trois")],
+      MODELS,
+    );
     expect(result.output).toBe("un\n\ndeux\n\ntrois");
     expect(result.chunks).toBe(3);
     expect(result.complete).toBe(true);
@@ -80,15 +86,18 @@ describe("assembleTransformResult", () => {
   });
 
   test("a failed chunk keeps its original text and adds a notice", () => {
-    const result = assembleTransformResult([
-      ok("translated"),
-      {
-        output: "ORIGINAL",
-        failed: true,
-        truncated: false,
-        usedFallback: true,
-      },
-    ]);
+    const result = assembleTransformResult(
+      [
+        ok("translated"),
+        {
+          output: "ORIGINAL",
+          failed: true,
+          truncated: false,
+          usedFallback: true,
+        },
+      ],
+      MODELS,
+    );
     expect(result.complete).toBe(false);
     expect(result.output).toContain("ORIGINAL");
     expect(result.notices).toHaveLength(1);
@@ -97,19 +106,21 @@ describe("assembleTransformResult", () => {
   });
 
   test("a truncated chunk is flagged incomplete", () => {
-    const result = assembleTransformResult([
-      { output: "half", failed: false, truncated: true, usedFallback: false },
-    ]);
+    const result = assembleTransformResult(
+      [{ output: "half", failed: false, truncated: true, usedFallback: false }],
+      MODELS,
+    );
     expect(result.complete).toBe(false);
     expect(result.notices[0]).toContain("output cap");
   });
 
   test("model id reflects whether the fallback was spent", () => {
-    const primaryOnly = assembleTransformResult([ok("a")]);
+    const primaryOnly = assembleTransformResult([ok("a")], MODELS);
     expect(primaryOnly.model).not.toContain("+");
-    const withFallback = assembleTransformResult([
-      { output: "a", failed: false, truncated: false, usedFallback: true },
-    ]);
+    const withFallback = assembleTransformResult(
+      [{ output: "a", failed: false, truncated: false, usedFallback: true }],
+      MODELS,
+    );
     expect(withFallback.model).toContain("+");
   });
 });

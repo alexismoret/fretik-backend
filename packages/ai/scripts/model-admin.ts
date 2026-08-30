@@ -63,9 +63,12 @@
  * three in the morning.
  */
 import type { ModelAlertRow, ModelBenchRunRow } from "@fretik/shared/db/schema";
+import { isModelFunctionKey } from "@fretik/shared/model-registry/functions";
 import {
   DEFAULT_CANDIDATE_POLICY,
+  PROMOTION_PRICE_CAPS,
   evaluatePolicy,
+  promotionEnablement,
 } from "@fretik/shared/model-registry/policy";
 import {
   INCIDENT_KINDS,
@@ -123,6 +126,7 @@ const COMMANDS = [
   "quarantine",
   "release",
   "alerts",
+  "audit",
 ] as const;
 
 const USAGE = `model-admin — operator surface for the model engine (model_live_state).
@@ -141,6 +145,14 @@ Read
                                      verdict against DEFAULT_CANDIDATE_POLICY, and the
                                      last ${(SCORECARD_INCIDENT_WINDOW_HOURS / 24).toString()} days of incidents.
   alerts [--limit N]                 What the engine decided, newest first.
+  audit                              Every way the engine can contradict itself,
+                                     checked offline: rows with no id for their
+                                     transport, teams pointing a function at a model
+                                     it cannot serve, curation and the row disagreeing
+                                     on enabled, pools naming upstreams no endpoint
+                                     answers to, orphan display/gateway entries, a
+                                     fallback pointing at its own primary. Exit 1 on
+                                     any finding — safe in CI, changes nothing.
 
 Write — every one of these takes effect on the next model construction
 fleet-wide, with no deploy and no restart.
@@ -569,7 +581,7 @@ const runShow = async (): Promise<void> => {
   if (state.dynamicProfile !== null) {
     const dynamic = state.dynamicProfile;
     console.log(
-      `  profile        catalogue-derived: ${dynamic.displayName} (${dynamic.family}), tiers ${dynamic.tiers.join("/")}, tools ${dynamic.supportsTools ? "yes" : "no"}, reasoning ${dynamic.supportsReasoning ? "yes" : "no"}, from ${dynamic.derivedFrom.source} at ${isoStamp(dynamic.derivedFrom.at)}`,
+      `  profile        catalogue-derived: ${dynamic.displayName} (${dynamic.family}), tools ${dynamic.supportsTools ? "yes" : "no"}, reasoning ${dynamic.supportsReasoning ? "yes" : "no"}, from ${dynamic.derivedFrom.source} at ${isoStamp(dynamic.derivedFrom.at)}`,
     );
   }
 
@@ -651,16 +663,13 @@ const printScorecard = (input: {
     );
   } else {
     console.log(
-      `  intelligence ${num(aa.intelligenceIndex, 1)}   coding ${num(aa.codingIndex, 1)}   agentic ${num(aa.agenticIndex, 1)}   math ${num(aa.mathIndex, 1)}`,
+      `  intelligence ${num(aa.intelligenceIndex, 1)}   coding ${num(aa.codingIndex, 1)}   agentic ${num(aa.agenticIndex, 1)}   index v${aa.indexVersion ?? "?"}`,
     );
     console.log(
-      `  output ${num(aa.outputTokensPerSecond, 0)} tok/s   TTFT ${num(aa.timeToFirstTokenSeconds, 2)} s   first answer token ${num(aa.timeToFirstAnswerTokenSeconds, 2)} s`,
+      `  first answer token ${num(aa.timeToFirstAnswerTokenSeconds, 2)} s${aa.slug === undefined ? "" : `   slug ${aa.slug}`}   fetched ${aa.fetchedAt === undefined ? "unknown" : isoStamp(aa.fetchedAt)}`,
     );
     console.log(
-      `  AA price ${money(aa.priceInputPerMTok)} in / ${money(aa.priceOutputPerMTok)} out per MTok${aa.slug === undefined ? "" : `   slug ${aa.slug}`}   fetched ${aa.fetchedAt === undefined ? "unknown" : isoStamp(aa.fetchedAt)}`,
-    );
-    console.log(
-      "  AA figures are per EFFORT LEVEL — the same model scores materially differently across its ladder, so read them against the level this profile actually runs.",
+      "  AA figures are per EFFORT LEVEL — the same model scores materially differently across its ladder, so read them against the level this profile actually runs. Prices and throughput are deliberately absent: read those off the pool pricing and the endpoint table above, which measure the routes we reach.",
     );
   }
 
@@ -814,9 +823,13 @@ const runAdd = async (): Promise<void> => {
       }\nThe catalogue is public — check the exact id at https://ai-gateway.vercel.sh/v1/models. Model ids differ between transports (\`x-ai/grok-4.5\` vs \`spacexai/grok-4.5\`); this command takes the GATEWAY spelling.`,
     );
   }
-  if (entry.type !== "language") {
+  // Only a DECLARED `false` refuses. `undefined` means the catalogue does not
+  // classify — two of the three do not — and rejecting the unclassified would
+  // make most of the market unaddable by hand. An embedding model that slips
+  // through is caught by the policy below: it advertises no `tools`.
+  if (entry.isLanguageModel === false) {
     return fail(
-      `"${modelId}" is a \`${entry.type}\` model, not \`language\`. Only language models route through the profile registry — embeddings and rerankers are env-selected single-purpose models with their own dimension rules.`,
+      `"${modelId}" is not a language model in the gateway catalogue. Only language models route through the profile registry — embeddings and rerankers are env-selected single-purpose models with their own dimension rules.`,
     );
   }
 
@@ -852,7 +865,10 @@ const runAdd = async (): Promise<void> => {
 
   const context = computeEffectiveContext(pool.endpoints);
   const pricing = computePoolPricing(pool.endpoints);
-  const dynamicProfile = deriveDynamicProfile(entry, now);
+  const dynamicProfile = deriveDynamicProfile(
+    { ...entry, idsByTransport: { gateway: entry.id } },
+    now,
+  );
 
   await addCatalogueModel({
     profileKey,
@@ -904,8 +920,15 @@ const runPromote = async (): Promise<void> => {
     );
     return;
   }
-  await promoteCandidate(state.profileKey);
-  console.log(`${state.profileKey}: ${state.status} -> published, enabled.`);
+  const verdict = await promoteCandidate(state.profileKey);
+  console.log(
+    `${state.profileKey}: ${state.status} -> published, ${verdict.enabled ? "enabled" : `DISABLED (${verdict.disabledReason ?? "unknown"})`}.`,
+  );
+  if (!verdict.enabled) {
+    console.log(
+      `Its pool costs ${money(state.pricing.inputPerMTok)} in / ${money(state.pricing.outputPerMTok)} out per MTok, past the ${money(PROMOTION_PRICE_CAPS.inputPerMTok)}/${money(PROMOTION_PRICE_CAPS.outputPerMTok)} budget. Discovery no longer filters on price — the model is published and visible, it is simply not being paid for. \`enable ${state.profileKey}\` overrides that deliberately; the nightly sync will re-disable it only if the price rises again, and re-enable it on its own if the price falls back under budget.`,
+    );
+  }
   console.log(
     "Teams can select it from the next model construction onward, fleet-wide, with no deploy. Curation still holds a veto: a profile marked `enabled: false` in TypeScript stays hidden whatever this row says.",
   );
@@ -1176,6 +1199,199 @@ const runAlerts = async (): Promise<void> => {
 // Dispatch
 // ---------------------------------------------------------------------------
 
+/**
+ * `audit` — everything the engine can contradict itself about, checked without
+ * touching the network or a model.
+ *
+ * It exists because every one of these had already happened once. A tier that
+ * disagrees with the model's own measurements, a row naming a transport it has
+ * no id for, a TypeScript profile saying `enabled` while the row says disabled,
+ * a display name outliving the model it named: each was found by hand, months
+ * apart, by someone who happened to look. Reading a database and a few
+ * TypeScript tables is cheap enough to do on every deploy.
+ *
+ * Deliberately offline. An audit that needs a catalogue fetch is an audit that
+ * gets skipped in CI and fails on a bad afternoon for the wrong reason.
+ */
+const runAudit = async (): Promise<void> => {
+  const [
+    { MODEL_PROFILES, ROLE_BINDINGS },
+    { MODEL_DISPLAY_NAME },
+    { ROLE_FALLBACK },
+    gatewayIds,
+    { getEffectiveProfile },
+    { selectableForFunction },
+    { teamAiSettings },
+  ] = await Promise.all([
+    import("../src/lib/model-registry/profiles"),
+    import("../src/lib/model-registry/display"),
+    import("../src/lib/model-registry/resolve"),
+    import("../src/lib/model-registry/gateway-ids"),
+    import("../src/lib/model-registry/effective"),
+    import("../src/lib/model-registry/functions"),
+    import("@fretik/shared/db/schema"),
+  ]);
+  const rows = await readAllLiveStateRows();
+  const byKey = new Map(rows.map((row) => [row.profileKey, row]));
+
+  const findings: { check: string; detail: string }[] = [];
+  const note = (check: string, detail: string): void => {
+    findings.push({ check, detail });
+  };
+
+  for (const row of rows) {
+    if (row.modelIds[row.transport] === undefined) {
+      note(
+        "no id for its own transport",
+        `${row.profileKey} routes through ${row.transport} and carries ids for ${Object.keys(row.modelIds).join(", ") || "nothing"}. Every call fails.`,
+      );
+    }
+
+    if (row.aaSlug !== null && row.aaMetrics === null) {
+      note(
+        "aaSlug set but never matched",
+        `${row.profileKey} pins Artificial Analysis slug "${row.aaSlug}" and carries no grades — the slug is wrong, or AA dropped the record.`,
+      );
+    }
+
+    const declared = row.providerPool[row.transport]?.only ?? [];
+    const answering = new Set(row.endpointStats.map((stat) => stat.provider));
+    const absent = declared.filter((provider) => !answering.has(provider));
+    if (absent.length > 0) {
+      note(
+        "pool names upstreams no endpoint answers to",
+        `${row.profileKey} (${row.transport}) pins [${absent.join(", ")}]; routing still works, on a set nobody vetted.`,
+      );
+    }
+
+    if (row.status === "published" && row.pricing.inputPerMTok > 0) {
+      const budget = promotionEnablement(row.pricing);
+      if (row.enabled && !budget.enabled && row.boundRoles.length === 0) {
+        note(
+          "enabled above the promotion caps",
+          `${row.profileKey} costs $${row.pricing.inputPerMTok.toString()}/$${row.pricing.outputPerMTok.toString()} against caps $${PROMOTION_PRICE_CAPS.inputPerMTok.toString()}/$${PROMOTION_PRICE_CAPS.outputPerMTok.toString()} and no role needs it.`,
+        );
+      }
+    }
+  }
+
+  // Curation and the row each hold a veto; they are allowed to differ, but a
+  // difference nobody decided is how a model silently leaves the picker.
+  for (const [key, profile] of Object.entries(MODEL_PROFILES)) {
+    const row = byKey.get(key);
+    if (row === undefined) {
+      note(
+        "curated profile with no live row",
+        `${key} is in TypeScript and absent from model_live_state — it resolves on curated defaults only, with no pool, no quarantine and no price.`,
+      );
+      continue;
+    }
+    if (profile.assessment.enabled && !row.enabled && row.disabledReason) {
+      note(
+        "curation says enabled, the row disagrees",
+        `${key}: TypeScript enables it, the engine disabled it (${row.disabledReason}). Expected after an automatic disable; unexplained otherwise.`,
+      );
+    }
+  }
+
+  const known = new Set([...Object.keys(MODEL_PROFILES), ...byKey.keys()]);
+  for (const key of Object.keys(MODEL_DISPLAY_NAME)) {
+    if (!known.has(key)) {
+      note(
+        "display name for a model that no longer exists",
+        `MODEL_DISPLAY_NAME["${key}"] names nothing — the card would fall back to the key if the model came back under it.`,
+      );
+    }
+  }
+  // `GATEWAY_MODEL_IDS` only — `GATEWAY_AUX_MODEL_IDS` is keyed by OpenRouter id
+  // and holds the embedding and rerank models, which have no profile BY DESIGN.
+  for (const key of Object.keys(gatewayIds.GATEWAY_MODEL_IDS)) {
+    if (!known.has(key)) {
+      note("orphan gateway id", `GATEWAY_MODEL_IDS["${key}"] names nothing.`);
+    }
+  }
+  for (const key of gatewayIds.PROFILES_WITHOUT_GATEWAY_ID) {
+    if (!known.has(key)) {
+      note(
+        "orphan gateway exclusion",
+        `PROFILES_WITHOUT_GATEWAY_ID lists "${key}", which names nothing.`,
+      );
+    }
+  }
+
+  // A fallback that resolves to its own primary is not redundancy, and it fails
+  // exactly when redundancy was the point.
+  for (const binding of Object.values(ROLE_BINDINGS)) {
+    const fallback = ROLE_FALLBACK[binding.role];
+    if (fallback === undefined) continue;
+    const fallbackKey = ROLE_BINDINGS[fallback].profileKey;
+    if (binding.profileKey === fallbackKey) {
+      note(
+        "a fallback pointing at its own primary",
+        `${binding.role} falls back to ${fallback}, and both resolve to "${binding.profileKey}".`,
+      );
+    }
+  }
+
+  // What teams actually stored. The one check that reads a row a PERSON wrote
+  // rather than one the engine did: a model can be retired, cost-disabled or
+  // driven to last-resort long after a team picked it, and the resolver
+  // degrades in silence — correctly, since a turn must not fail — which is
+  // exactly why nothing else would ever surface it.
+  const teamRows = await db
+    .select({
+      teamId: teamAiSettings.teamId,
+      keys: teamAiSettings.functionProfileKeys,
+    })
+    .from(teamAiSettings);
+  for (const team of teamRows) {
+    for (const [fn, key] of Object.entries(team.keys)) {
+      if (!isModelFunctionKey(fn)) {
+        note(
+          "a stored key under an unknown function",
+          `team ${team.teamId} stores "${key}" under "${fn}", which is not a model function — it can never be read.`,
+        );
+        continue;
+      }
+      const profile = getEffectiveProfile(key);
+      if (!profile) {
+        note(
+          "a team points a function at a model that no longer exists",
+          `team ${team.teamId}: ${fn} → "${key}". Every turn silently serves the default instead.`,
+        );
+      } else if (!selectableForFunction(profile, fn)) {
+        note(
+          "a team points a function at a model it can no longer use",
+          `team ${team.teamId}: ${fn} → "${key}". Still stored, never served.`,
+        );
+      }
+    }
+  }
+
+  section(
+    `audit — ${rows.length.toString()} live rows, ${Object.keys(MODEL_PROFILES).length.toString()} curated profiles, ${teamRows.length.toString()} team settings rows`,
+  );
+  if (findings.length === 0) {
+    console.log("Nothing to report.");
+    return;
+  }
+  const grouped = new Map<string, string[]>();
+  for (const finding of findings) {
+    grouped.set(finding.check, [
+      ...(grouped.get(finding.check) ?? []),
+      finding.detail,
+    ]);
+  }
+  for (const [check, details] of grouped) {
+    console.log(`\n${check} (${details.length.toString()})`);
+    for (const detail of details) console.log(`  ${detail}`);
+  }
+  console.log(
+    `\n${findings.length.toString()} finding(s). Nothing was changed — this command only reads.`,
+  );
+  process.exit(1);
+};
+
 const RUNNERS: Record<(typeof COMMANDS)[number], () => Promise<void>> = {
   list: runList,
   show: runShow,
@@ -1189,6 +1405,7 @@ const RUNNERS: Record<(typeof COMMANDS)[number], () => Promise<void>> = {
   quarantine: runQuarantine,
   release: runRelease,
   alerts: runAlerts,
+  audit: runAudit,
 };
 
 const runner = COMMANDS.find((known) => known === command);

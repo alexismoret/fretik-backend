@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import type { MergedCatalogueEntry } from "../../src/model-registry/catalogue";
+import { blendedPricePerMTok } from "../../src/model-registry/measures";
 import type {
   EndpointStat,
   PricingSnapshot,
@@ -8,7 +10,6 @@ import {
   MIN_CREDIT_MULTIPLIER,
   PRICE_JUMP_THRESHOLD,
   REFERENCE_BLENDED_COST_PER_MTOK,
-  blendedPricePerMTok,
   buildAllowedPool,
   computeCreditMultiplier,
   computeEffectiveContext,
@@ -17,7 +18,6 @@ import {
   detectPriceJump,
   mergeEndpointStats,
 } from "../../src/services/model-registry/sync/compute";
-import type { GatewayCatalogEntry } from "../../src/services/model-registry/sync/sources/gateway-catalog";
 
 /**
  * The sync's decisions, with no clock, database or network in sight.
@@ -475,14 +475,14 @@ describe("computeCreditMultiplier", () => {
     ).toBe(1);
   });
 
-  test("input dominates the blend, 3 to 1", () => {
-    // 0.75 * 2 + 0.25 * 10 = 4
-    expect(blendedPricePerMTok(price(2, 10))).toBe(4);
-    expect(computeCreditMultiplier(price(2, 10))).toBe(4);
+  test("the prompt column all but IS the blend", () => {
+    // 0.97 * 2 + 0.03 * 10 = 2.24, with no cache rate to apply.
+    expect(blendedPricePerMTok(price(2, 10))).toBeCloseTo(2.24, 10);
+    expect(computeCreditMultiplier(price(2, 10))).toBeCloseTo(2.24 / 0.35, 2);
   });
 
   test("two decimals, so a daily repricing does not renumber the fleet", () => {
-    expect(computeCreditMultiplier(price(0.123_456, 0.789))).toBe(0.29);
+    expect(computeCreditMultiplier(price(0.123_456, 0.789))).toBe(0.41);
   });
 
   test("floored — nothing bills at zero", () => {
@@ -498,22 +498,27 @@ describe("computeCreditMultiplier", () => {
 });
 
 describe("deriveDynamicProfile", () => {
-  const entry = (over: Partial<GatewayCatalogEntry>): GatewayCatalogEntry => ({
+  const entry = (
+    over: Partial<MergedCatalogueEntry>,
+  ): MergedCatalogueEntry => ({
     id: "acme/model-1",
     name: "Model 1",
     description: "",
-    type: "language",
-    tags: [],
+    owner: "acme",
+    inputModalities: ["text"],
+    outputModalities: ["text"],
     supportedParameters: ["max_tokens", "tools"],
     pricing: { inputPerMTok: 1, outputPerMTok: 1 },
-    owner: "acme",
+    idsByTransport: { gateway: "acme/model-1" },
     ...over,
   });
   const at = new Date("2026-08-29T03:00:00.000Z");
-
-  test("capabilities come from tags", () => {
+  test("capabilities come from what the catalogues declare", () => {
     const profile = deriveDynamicProfile(
-      entry({ tags: ["tool-use", "reasoning", "vision", "file-input"] }),
+      entry({
+        supportedParameters: ["tools", "reasoning"],
+        inputModalities: ["text", "image", "file"],
+      }),
       at,
     );
     expect(profile.supportsTools).toBe(true);
@@ -522,12 +527,12 @@ describe("deriveDynamicProfile", () => {
     expect(profile.outputModalities).toEqual(["text"]);
   });
 
-  test("a name that promises capabilities the tags do not is not believed", () => {
+  test("a name that promises capabilities the declarations do not is not believed", () => {
     const profile = deriveDynamicProfile(
       entry({
         id: "acme/model-1-vision-reasoning-tool-use",
         name: "Model 1 Vision Reasoning Tool Use",
-        tags: [],
+        supportedParameters: [],
       }),
       at,
     );
@@ -536,33 +541,25 @@ describe("deriveDynamicProfile", () => {
     expect(profile.inputModalities).toEqual(["text"]);
   });
 
-  test("tiers come from the price band", () => {
-    // Blended: 0.75 * 15 + 0.25 * 75 = 30 → flagship.
+  test("a modality only one catalogue can express survives the merge", () => {
+    // Audio input exists on exactly one of the three sources. Deriving it from
+    // the gateway's two tags — the rule this replaced — could not express it at
+    // all, so a model that accepts speech was recorded as text-only.
     expect(
-      deriveDynamicProfile(
-        entry({ pricing: { inputPerMTok: 15, outputPerMTok: 75 } }),
-        at,
-      ).tiers,
-    ).toEqual(["flagship"]);
-    // 0.75 * 0.3 + 0.25 * 1.2 = 0.525 → workhorse.
-    expect(
-      deriveDynamicProfile(
-        entry({ pricing: { inputPerMTok: 0.3, outputPerMTok: 1.2 } }),
-        at,
-      ).tiers,
-    ).toEqual(["workhorse"]);
-    // 0.75 * 0.09 + 0.25 * 0.4 = 0.1675 → utility.
-    expect(
-      deriveDynamicProfile(
-        entry({ pricing: { inputPerMTok: 0.09, outputPerMTok: 0.4 } }),
-        at,
-      ).tiers,
-    ).toEqual(["utility"]);
+      deriveDynamicProfile(entry({ inputModalities: ["text", "audio"] }), at)
+        .inputModalities,
+    ).toEqual(["text", "audio"]);
   });
 
-  test("an unpriced entry lands in the cheapest band rather than throwing", () => {
-    const profile = deriveDynamicProfile(entry({ pricing: {} }), at);
-    expect(profile.tiers).toEqual(["utility"]);
+  test("provenance names every transport that described the model", () => {
+    expect(
+      deriveDynamicProfile(
+        entry({
+          idsByTransport: { openrouter: "acme/m1", scaleway: "m1" },
+        }),
+        at,
+      ).derivedFrom.source,
+    ).toBe("openrouter+scaleway");
   });
 
   test("the catalogue facts are copied verbatim and stamped", () => {
@@ -624,8 +621,17 @@ describe("detectPriceJump", () => {
   });
 
   test("the blend is what moves, not either price alone", () => {
-    // Input doubles, output halves: 0.75*2 + 0.25*2 = 2 → 0.75*4 + 0.25*1 = 3.25.
+    // Input doubles, output halves: 0.97*2 + 0.03*2 = 2 → 0.97*4 + 0.03*1 = 3.91.
     const change = detectPriceJump(price(2, 2), price(4, 1));
-    expect(change).toBeCloseTo(0.625, 10);
+    expect(change).toBeCloseTo(0.955, 10);
+  });
+
+  test("a cache rate is part of the price, so a cache repricing is a jump", () => {
+    // Same list prices; the upstream triples what it charges for a cache read.
+    // At a 75 % hit rate on a 97 % prompt mix that is a real repricing, and the
+    // list-price blend this replaced could not see it at all.
+    const before = { inputPerMTok: 1, outputPerMTok: 4, cacheReadPerMTok: 0.1 };
+    const after = { inputPerMTok: 1, outputPerMTok: 4, cacheReadPerMTok: 0.9 };
+    expect(detectPriceJump(before, after)).not.toBeNull();
   });
 });

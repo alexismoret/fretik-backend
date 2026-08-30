@@ -86,7 +86,11 @@ await mockModule("../../src/db", {
 await mockModule("../../src/lib/s3", {
   putObject: async () => undefined,
   publicUrl: (key: string) => `https://s3.test/${key}`,
-  getObject: async () => null,
+  // getObject/getFileFromS3 throw on a missing key; only getObjectBytes
+  // flattens "missing" and "faulted" into null.
+  getObject: async () => {
+    throw new Error("NoSuchKey");
+  },
   getObjectBytes: async () => null,
   copyObject: async () => undefined,
   listObjects: async () => [],
@@ -94,7 +98,9 @@ await mockModule("../../src/lib/s3", {
   deleteObjects: async () => undefined,
   getPresignedUrl: async () => "https://s3.test/presigned",
   uploadToS3: async () => "unused",
-  getFileFromS3: async () => null,
+  getFileFromS3: async () => {
+    throw new Error("NoSuchKey");
+  },
   deleteFilesFromS3: async () => undefined,
 });
 

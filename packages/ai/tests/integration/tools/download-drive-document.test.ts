@@ -54,7 +54,10 @@ await mockModuleStrict("@fretik/shared/lib/s3", {
   },
   getPresignedUrl: async (key: string) => `https://mock.s3/${key}`,
   uploadToS3: async () => "",
-  getFileFromS3: async () => null,
+  // Throws on a missing key now — only getObjectBytes returns null.
+  getFileFromS3: async () => {
+    throw new Error("NoSuchKey");
+  },
   deleteFilesFromS3: async () => {
     /* no-op */
   },

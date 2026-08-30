@@ -91,11 +91,7 @@ export interface PreExtractArgs {
  * a single synthetic OCR page. No Mistral call.
  */
 const readTextFile = async (s3Key: string): Promise<OcrPage[]> => {
-  const body = await getFileFromS3(s3Key);
-  if (!body) {
-    throw new Error(`File not found in storage at key ${s3Key}`);
-  }
-  const bytes = await body.transformToByteArray();
+  const bytes = await getFileFromS3(s3Key);
   const fullText = new TextDecoder("utf-8").decode(bytes);
   const truncated = fullText.slice(0, TEXT_PLAIN_CHAR_CAP);
   return [{ index: 0, markdown: truncated }];
@@ -239,11 +235,7 @@ const runPreExtractImpl = async (
       fileHash: args.fileHash,
       mimeType: args.mimeType,
       filename: args.originalFilename,
-      getBytes: async () => {
-        const body = await getFileFromS3(s3Key);
-        if (!body) throw new Error(`File not found in storage at key ${s3Key}`);
-        return new Uint8Array(await body.transformToByteArray());
-      },
+      getBytes: () => getFileFromS3(s3Key),
       getPresignedUrl: () => getPresignedUrl(s3Key, PRESIGNED_URL_TTL_SECONDS),
       onOcr: runMistralOcr,
     });

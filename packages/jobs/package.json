@@ -22,16 +22,16 @@
   "dependencies": {
     "@fretik/providers": "workspace:*",
     "@fretik/shared": "workspace:*",
-    "bullmq": "^5.79.0",
-    "hono": "^4.12.26",
+    "bullmq": "^5.81.4",
+    "hono": "^4.13.5",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/bun": "latest",
     "@typescript/native": "npm:typescript@^7.0.2",
-    "oxlint": "^1.74.0",
+    "oxlint": "^1.80.0",
     "oxlint-tsgolint": "^0.24.0",
-    "prettier": "3.9.5",
+    "prettier": "3.9.6",
     "prettier-plugin-organize-imports": "^4.3.0",
     "typescript": "^6.0.3"
   }

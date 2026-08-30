@@ -25,8 +25,12 @@ const isEmpty = (v: unknown): boolean =>
   v === "" ||
   (Array.isArray(v) && v.length === 0);
 
-/** Match a detected MIME against an `accept` allowlist of MIME types or
- * wildcards (`application/pdf`, `image/*`, `*` / `*​/*`). */
+// Match a detected MIME against an `accept` allowlist of MIME types or
+// wildcards (`application/pdf`, `image/*`, `*` / `*/*`).
+//
+// Line comments, not a JSDoc block: `*/*` closes a block comment, and the
+// workaround was a ZERO WIDTH SPACE wedged between the star and the slash —
+// invisible in every editor, and flagged by oxlint's no-irregular-whitespace.
 const mimeMatchesAccept = (mime: string, accept: string[]): boolean => {
   const m = mime.toLowerCase();
   return accept.some((entry) => {

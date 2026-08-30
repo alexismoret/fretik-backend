@@ -24,7 +24,7 @@
     "@fretik/shared": "workspace:*",
     "bullmq": "^5.81.4",
     "hono": "^4.13.5",
-    "zod": "^4.4.3"
+    "zod": "^4.5.4"
   },
   "devDependencies": {
     "@types/bun": "latest",

@@ -16,7 +16,7 @@
   "dependencies": {
     "@fretik/shared": "workspace:*",
     "@trigger.dev/sdk": "4.5.14",
-    "zod": "^4.4.3"
+    "zod": "^4.5.4"
   },
   "devDependencies": {
     "@trigger.dev/build": "4.5.14",

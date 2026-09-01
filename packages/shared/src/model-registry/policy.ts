@@ -190,6 +190,22 @@ export interface PolicySignals {
     toolChoice?: boolean;
     uptime?: boolean;
   };
+  /**
+   * What OUR OWN traffic measured for each upstream, keyed by normalised
+   * provider name. Preferred over the catalogue's figures wherever it has an
+   * entry — the caller is responsible for only passing upstreams with enough
+   * observations to mean something.
+   *
+   * This is the point of collecting it. A catalogue publishes a throughput
+   * aggregated over everybody's traffic on routes we may not use, measured
+   * from somewhere else, and it goes blank the moment a credential lapses. A
+   * figure from our own calls describes the service WE get, and it cannot be
+   * turned off by an API key.
+   */
+  measured?: ReadonlyMap<
+    string,
+    { throughputP50?: number; latencyP50Ms?: number }
+  >;
 }
 
 const median = (values: number[]): number | undefined => {
@@ -242,6 +258,37 @@ const skippedRule = (
  */
 const skipReasonFor = (publishes: boolean | undefined): PolicyRuleSkipReason =>
   publishes === false ? "not-published-by-source" : "not-measured";
+
+/** What our own traffic said about this endpoint's host, if anything. */
+const measuredFor = (
+  signals: PolicySignals,
+  endpoint: EndpointStat,
+): { throughputP50?: number; latencyP50Ms?: number } =>
+  signals.measured?.get(endpoint.provider) ?? {};
+
+/**
+ * A short suffix naming where the graded figures came from, appended to the
+ * rule's detail.
+ *
+ * Worth the characters because the two sources can disagree by a lot and the
+ * reader's next move depends on which one spoke: a slow figure we measured is
+ * a host to reconsider, the same figure from a catalogue may be describing
+ * routes we never touch. Silent when nothing was measured — the catalogue is
+ * the assumed source and saying so on every line would be noise.
+ */
+const provenance = (
+  signals: PolicySignals,
+  endpoints: EndpointStat[],
+  field: "throughputP50" | "latencyP50Ms",
+): string => {
+  const ours = endpoints.filter(
+    (endpoint) => measuredFor(signals, endpoint)[field] !== undefined,
+  ).length;
+  if (ours === 0) return "";
+  return ours === endpoints.length
+    ? " (measured on our own traffic)"
+    : ` (${ours.toString()} of ${endpoints.length.toString()} measured on our own traffic, the rest as published)`;
+};
 
 /**
  * Grade one model against one policy. The report lists every rule the policy
@@ -444,7 +491,15 @@ export const evaluatePolicy = (
   if (policy.minTpsP50 !== undefined) {
     // The pool ceiling, not its average: routing sorts by throughput, so the
     // fastest member is the one a turn lands on.
-    const speeds = definedNumbers(endpoints, (e) => e.throughputP50);
+    //
+    // MEASURED BEATS DECLARED, per endpoint. A host we have called thousands
+    // of times is described better by those calls than by a figure its vendor
+    // aggregated over everybody's traffic — and unlike that figure, ours
+    // cannot vanish because a key lapsed.
+    const speeds = definedNumbers(
+      endpoints,
+      (e) => measuredFor(signals, e).throughputP50 ?? e.throughputP50,
+    );
     if (speeds.length > 0) {
       const best = Math.max(...speeds);
       rules.push(
@@ -452,7 +507,7 @@ export const evaluatePolicy = (
           "throughput-floor",
           "soft",
           best >= policy.minTpsP50,
-          `fastest endpoint ${best.toFixed(0)} tok/s vs floor ${policy.minTpsP50.toString()}`,
+          `fastest endpoint ${best.toFixed(0)} tok/s vs floor ${policy.minTpsP50.toString()}${provenance(signals, endpoints, "throughputP50")}`,
         ),
       );
     } else {
@@ -473,18 +528,36 @@ export const evaluatePolicy = (
     // For a ceiling it is the slightly lenient neighbour — a p90 under the bar
     // says less than a p95 under it — which the detail names so a reader can
     // weigh the evidence rather than trust a number wearing the wrong label.
+    //
+    // Our own measurement outranks both, and this is the rule where that
+    // matters most: a catalogue times the first token of ANY kind, from its
+    // own vantage point, so for a reasoning model it is timing the start of
+    // thinking on somebody else's network. Ours is the wait a user of ours
+    // actually sat through.
+    const ourTtft = definedNumbers(
+      endpoints,
+      (e) => measuredFor(signals, e).latencyP50Ms,
+    );
     const p95s = definedNumbers(endpoints, (e) => e.latencyP95Ms);
     const p90s = definedNumbers(endpoints, (e) => e.latencyP90Ms);
-    const latencies = p95s.length > 0 ? p95s : p90s;
+    const latencies =
+      ourTtft.length > 0 ? ourTtft : p95s.length > 0 ? p95s : p90s;
     if (latencies.length > 0) {
       const best = Math.min(...latencies);
-      const percentile = p95s.length > 0 ? "p95" : "p90";
+      const percentile =
+        ourTtft.length > 0 ? "p50" : p95s.length > 0 ? "p95" : "p90";
+      const note =
+        ourTtft.length > 0
+          ? provenance(signals, endpoints, "latencyP50Ms")
+          : percentile === "p90"
+            ? " (source publishes no p95)"
+            : "";
       rules.push(
         rule(
           "ttft-ceiling",
           "soft",
           best <= policy.maxTtftP95Ms,
-          `best endpoint ${percentile} TTFT ${best.toFixed(0)} ms vs ceiling ${policy.maxTtftP95Ms.toString()} ms${percentile === "p90" ? " (source publishes no p95)" : ""}`,
+          `best endpoint ${percentile} TTFT ${best.toFixed(0)} ms vs ceiling ${policy.maxTtftP95Ms.toString()} ms${note}`,
         ),
       );
     } else {

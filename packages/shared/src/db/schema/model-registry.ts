@@ -369,6 +369,77 @@ export const modelBenchRuns = pgTable(
 );
 
 /**
+ * What our OWN traffic measured, one row per (model, upstream, transport, hour).
+ *
+ * Every figure the registry grades on today is a vendor's claim about its own
+ * service, refreshed nightly from a catalogue. That is the right default — it
+ * covers models nobody has called yet — but it is second-hand, aggregated over
+ * everyone's traffic rather than ours, and it goes blank the moment a
+ * credential lapses. Meanwhile 100 % of real calls already pass through one
+ * middleware that can see the upstream that served, the tokens it produced,
+ * how long it took and what it cost. Nothing was written down.
+ *
+ * ROLLED UP, not per call. A row per LLM request would be 10^4-10^6 inserts a
+ * day on the hot path to answer questions that are all aggregate. Per-call
+ * counters live in Redis for 48 h (cheap, fire-and-forget, lost without
+ * consequence if it blinks); an hourly job folds them here, where they are
+ * durable, queryable and cheap to keep.
+ *
+ * The percentiles are computed from a BOUNDED reservoir of samples, so
+ * `sampleCount` is how many observations stand behind them and not how many
+ * calls happened — `calls` is that. A percentile over four samples is not a
+ * percentile, which is why the policy has a minimum before it will prefer
+ * these figures over the catalogue's.
+ */
+export const modelTelemetryRollups = pgTable(
+  "model_telemetry_rollups",
+  {
+    id: uuid("id")
+      .default(sql`uuid_generate_v7()`)
+      .primaryKey(),
+    profileKey: varchar("profile_key", { length: 64 }).notNull(),
+    /** Normalised upstream name — the same key a quarantine and a pool use. */
+    provider: varchar("provider", { length: 128 }).notNull(),
+    transport: varchar("transport", { length: 16 })
+      .$type<TransportId>()
+      .notNull(),
+    /** Start of the hour this bucket covers, UTC. */
+    bucketStart: timestamp("bucket_start", { withTimezone: true }).notNull(),
+    calls: integer("calls").notNull(),
+    errors: integer("errors").notNull(),
+    /** Decode rate, tokens per second, over the sampled calls. */
+    tpsP50: real("tps_p50"),
+    tpsP95: real("tps_p95"),
+    /** Time to first token, milliseconds — the one figure no catalogue publishes about OUR routes. */
+    ttftP50Ms: real("ttft_p50_ms"),
+    ttftP95Ms: real("ttft_p95_ms"),
+    /**
+     * Micro-USD, integer: summing floats over millions of calls drifts, and a
+     * cost is money — the unit is small enough that a single call rounds to a
+     * whole number and large enough that a year of traffic fits comfortably.
+     */
+    costMicroUsd: integer("cost_micro_usd").notNull(),
+    /** Cached input tokens over total input tokens, when the transport reports both. */
+    cacheReadRatio: real("cache_read_ratio"),
+    /** Observations behind the percentiles — NOT the call count. */
+    sampleCount: integer("sample_count").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (t) => [
+    index("model_telemetry_lookup_idx").on(
+      t.profileKey,
+      t.provider,
+      t.transport,
+      t.bucketStart,
+    ),
+    // Retention sweeps and the freshness window both scan by time alone.
+    index("model_telemetry_bucket_idx").on(t.bucketStart),
+  ],
+);
+
+/**
  * Who did what to the registry, append-only.
  *
  * A `last_changed_by` column on `model_live_state` would answer only "who
@@ -422,3 +493,4 @@ export type ModelAlertKind = ModelAlertRow["kind"];
 export type ModelSyncRunRow = typeof modelSyncRuns.$inferSelect;
 export type ModelBenchRunRow = typeof modelBenchRuns.$inferSelect;
 export type ModelAdminActionRow = typeof modelAdminActions.$inferSelect;
+export type ModelTelemetryRollupRow = typeof modelTelemetryRollups.$inferSelect;

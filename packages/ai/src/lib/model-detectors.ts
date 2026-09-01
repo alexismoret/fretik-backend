@@ -39,6 +39,7 @@ import type { RecordIncidentInput } from "@fretik/shared/services/model-registry
 import { TransformStream } from "node:stream/web";
 import { extractGatewayReport } from "./model-registry/transports/gateway";
 import { extractOpenRouterReport } from "./model-registry/transports/openrouter";
+import { extractScalewayReport } from "./model-registry/transports/scaleway";
 
 type IncidentKind = RecordIncidentInput["kind"];
 
@@ -92,7 +93,13 @@ const servingProvider = (
   metadata: SharedV4ProviderMetadata | undefined,
 ): string | undefined =>
   extractGatewayReport(metadata).servingProvider ??
-  extractOpenRouterReport(metadata).servingProvider;
+  extractOpenRouterReport(metadata).servingProvider ??
+  // Scaleway reports no provider — one host, nothing to disambiguate — so its
+  // adapter names the constant when the response is its own. Missing from this
+  // chain until 2026-09-01, which meant every Scaleway finding was dropped as
+  // unattributable: the breaker quarantines a PROVIDER, so the one transport
+  // whose corruption could never be caught was the direct one.
+  extractScalewayReport(metadata).servingProvider;
 
 /** The upstream's own id for the call, so an incident stays replayable. */
 const generationIdOf = (

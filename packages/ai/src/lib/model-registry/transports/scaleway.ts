@@ -216,7 +216,7 @@ const optionsMiddleware = (
 });
 
 /**
- * Nothing to extract, verified rather than assumed.
+ * No cost on the wire, but the serving host is never in doubt.
  *
  * Measured 2026-08-30 over the SDK and over a raw HTTP call: the response body
  * carries `{choices, created, id, model, object, service_tier,
@@ -225,12 +225,34 @@ const optionsMiddleware = (
  * quantitative headers are the four `x-ratelimit-*`. No cost anywhere, so
  * `providerMetadata` comes back as a bare `{scaleway: {}}`.
  *
- * Returning `{}` is what keeps the reader moving on to the adapter that does
- * know. The price is supplied instead by `estimateCostUsd` below, which is
- * labelled as derived — inventing a figure HERE would be worse than none,
- * because everything downstream reads `costUsd` as measured.
+ * `costUsd` therefore stays absent — the price is supplied by
+ * `estimateCostUsd` below and labelled as derived, because everything
+ * downstream reads `costUsd` as measured and inventing a figure here would be
+ * worse than none.
+ *
+ * `servingProvider` is a different question with a definite answer. This is a
+ * DIRECT provider: one host, no routing, so naming it is reading the transport
+ * rather than guessing at a measurement. Leaving it absent — as this did until
+ * 2026-09-01 — made every Scaleway call unattributable, which is not a gap in
+ * a dashboard but a hole in the safety net: the breaker quarantines a
+ * PROVIDER, so a finding it cannot attribute is dropped, and Scaleway was the
+ * one transport whose corruption could never be caught.
  */
-const extractReport = (): GenerationReport => ({});
+/**
+ * GATED on the `scaleway` namespace being present, exactly as its two siblings
+ * gate on theirs. The readers try the extractors in turn and take the first
+ * answer, so an unconditional one would catch every call the other transports
+ * failed to attribute and file it against a host that never saw it —
+ * misattribution being strictly worse than no attribution, since a quarantine
+ * acts on the name.
+ */
+export const extractScalewayReport = (metadata: unknown): GenerationReport =>
+  typeof metadata === "object" && metadata !== null && "scaleway" in metadata
+    ? { servingProvider: SCALEWAY_PROVIDER }
+    : {};
+
+const extractReport = (metadata: unknown): GenerationReport =>
+  extractScalewayReport(metadata);
 
 /**
  * The published rate for this model, per million tokens.

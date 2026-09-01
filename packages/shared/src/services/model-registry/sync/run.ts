@@ -38,6 +38,7 @@ import { type RaiseAlertInput, raiseModelAlert } from "../alerts";
 import { activeQuarantines, releaseProvider } from "../breaker";
 import { countIncidentsForModel } from "../incidents";
 import { invalidateLiveRegistry, readAllLiveStateRows } from "../live";
+import { readMeasuredEndpointStats } from "../telemetry";
 import {
   buildAllowedPool,
   carryForwardMeasurements,
@@ -546,6 +547,21 @@ const syncOneModel = async (
     modelIds: Object.values(row.modelIds),
   });
   const sourcePublishes = sourcePublishesFor(ctx, row.modelIds);
+  // What our own traffic measured about these hosts, which outranks what their
+  // vendors publish about themselves wherever we have enough of it. A failure
+  // here costs the pass a better grade, never the grade itself: the catalogue
+  // figures are still there, and they are what the fleet ran on until now.
+  let measured: Awaited<ReturnType<typeof readMeasuredEndpointStats>> =
+    new Map();
+  try {
+    measured = await readMeasuredEndpointStats(row.profileKey, {
+      now: ctx.now,
+    });
+  } catch (err: unknown) {
+    ctx.stats.errors.push(
+      `${row.profileKey}: telemetry read failed: ${message(err)}`,
+    );
+  }
   const report = evaluatePolicy(
     policy,
     {
@@ -555,6 +571,7 @@ const syncOneModel = async (
       zdrProbe,
       requiresTools: true,
       sourcePublishes,
+      measured,
     },
     ctx.now,
   );

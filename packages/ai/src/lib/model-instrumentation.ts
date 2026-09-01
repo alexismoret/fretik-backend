@@ -18,6 +18,15 @@
  *   incident of this kind ran for hours, self-propagating through conversation
  *   history, and was found by a person reading an answer.
  *
+ * - **Passive telemetry** (`lib/model-telemetry.ts`) — UNCONDITIONAL, for the
+ *   same reason. It records what our own traffic measured about each upstream
+ *   (decode rate, time to first token, cost, failures) so the registry can
+ *   grade hosts on evidence instead of only on what their vendors publish
+ *   about themselves. That grading is part of how the fleet stays correct, so
+ *   it may not depend on an observability vendor being wired up — and the
+ *   fragility of vendor figures is not hypothetical: on 2026-09-01 a lapsed
+ *   credential blanked every published percentile at once.
+ *
  * This function wraps all five model construction sites — the registry plus the
  * four services that build a client by hand — which is why it, and not the
  * registry, is where anything needing total coverage belongs.
@@ -31,6 +40,7 @@ import {
   embeddingCostCaptureMiddleware,
 } from "./langfuse-cost";
 import { type DetectorContext, detectorMiddleware } from "./model-detectors";
+import { telemetryMiddleware } from "./model-telemetry";
 
 /**
  * Instrument a model. For cached chat models, compose OUTSIDE the cache
@@ -55,9 +65,18 @@ export const instrumentModel = (
 ): LanguageModelV4 =>
   wrapLanguageModel({
     model,
-    middleware: langfuseEnabled
-      ? [costCaptureMiddleware(estimateCost), detectorMiddleware(ctx)]
-      : [detectorMiddleware(ctx)],
+    middleware: [
+      ...(langfuseEnabled ? [costCaptureMiddleware(estimateCost)] : []),
+      detectorMiddleware(ctx),
+      // Last, so it wraps closest to the model and its timings measure the
+      // upstream rather than the middleware above it.
+      telemetryMiddleware({
+        ...ctx,
+        ...(estimateCost === undefined
+          ? {}
+          : { estimateCostUsd: estimateCost }),
+      }),
+    ],
   });
 
 /**

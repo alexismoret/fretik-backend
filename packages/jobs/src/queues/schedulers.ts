@@ -7,6 +7,7 @@ import {
   MCP_SNAPSHOT_REFRESH_JOB,
   MODEL_ALERT_SWEEP_JOB,
   MODEL_SYNC_JOB,
+  MODEL_TELEMETRY_ROLLUP_JOB,
   VECTOR_RECONCILE_SWEEP_JOB,
   WORKFLOW_STALL_SWEEP_JOB,
   WORKFLOW_TRIGGER_SWEEP_JOB,
@@ -59,6 +60,12 @@ const MODEL_SYNC_CRON = "30 0 * * *";
  * email. See MODEL_ALERT_SWEEP_JOB for why delivery is not done at the raise
  * site. */
 const MODEL_ALERT_SWEEP_INTERVAL_MS = 5 * 60_000;
+/**
+ * Ten past the hour — the bucket that just closed is the one being folded, and
+ * a few minutes of slack keeps a call that started at 59:59 from landing in
+ * Redis after its own bucket has been drained and deleted.
+ */
+const MODEL_TELEMETRY_ROLLUP_CRON = "10 * * * *";
 
 const CRON_OPTS = {
   removeOnComplete: { count: 30 },
@@ -132,6 +139,15 @@ export const registerSchedulers = async (): Promise<void> => {
     MODEL_ALERT_SWEEP_JOB,
     { every: MODEL_ALERT_SWEEP_INTERVAL_MS },
     { name: MODEL_ALERT_SWEEP_JOB, opts: CRON_OPTS },
+  );
+  // Also on the maintenance queue: a `SCAN` of a small keyspace and one insert
+  // per closed bucket, no network call. Hourly rather than nightly because the
+  // Redis counters it drains expire after 48 h — a missed hour is recoverable,
+  // a missed day is measurements gone for good.
+  await maintenance.upsertJobScheduler(
+    MODEL_TELEMETRY_ROLLUP_JOB,
+    { pattern: MODEL_TELEMETRY_ROLLUP_CRON, tz: "UTC" },
+    { name: MODEL_TELEMETRY_ROLLUP_JOB, opts: CRON_OPTS },
   );
   // Dedicated queue — one pass can hold a `CREATE INDEX CONCURRENTLY` for
   // minutes, which on the concurrency-1 maintenance queue would stop the 15s

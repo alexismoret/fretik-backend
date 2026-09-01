@@ -1,5 +1,6 @@
 import { createWorkerConnection } from "@fretik/shared/lib/queue/connection";
 import { sweepConversationTasks } from "@fretik/shared/services/conversation-tasks/sweep";
+import { runTelemetryRollup } from "@fretik/shared/services/model-registry/telemetry-rollup";
 import { markStalledRuns } from "@fretik/shared/services/workflows/mark-stalled-runs";
 import { type Job, Worker } from "bullmq";
 import {
@@ -9,6 +10,7 @@ import {
   JOURNAL_SWEEP_JOB,
   MEMORY_MAINTENANCE_QUEUE,
   MODEL_ALERT_SWEEP_JOB,
+  MODEL_TELEMETRY_ROLLUP_JOB,
   WORKFLOW_STALL_SWEEP_JOB,
   WORKFLOW_TRIGGER_SWEEP_JOB,
 } from "../queues/names";
@@ -85,6 +87,21 @@ export const startMaintenanceWorker = (): Worker => {
             console.info(
               `[model-alert-sweep] delivered ${delivered.toString()} alerts in one digest`,
             );
+          }
+          return;
+        }
+        case MODEL_TELEMETRY_ROLLUP_JOB: {
+          const stats = await runTelemetryRollup();
+          // Silent on an idle hour, like its neighbours. The errors are not
+          // silent: an unparseable key or a failed insert means measurements
+          // are being dropped, and the counters they came from expire in 48 h.
+          if (stats.rowsWritten > 0 || stats.rowsPurged > 0) {
+            console.info(
+              `[model-telemetry-rollup] folded ${stats.rowsWritten.toString()} bucket(s), purged ${stats.rowsPurged.toString()} expired row(s)`,
+            );
+          }
+          for (const error of stats.errors) {
+            console.error(`[model-telemetry-rollup] ${error}`);
           }
           return;
         }

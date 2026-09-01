@@ -155,6 +155,92 @@ describe("a rule the policy sets is never absent", () => {
   });
 });
 
+describe("what we measured outranks what we were told", () => {
+  const gradeThroughput = (
+    endpoints: EndpointStat[],
+    measured?: Map<string, { throughputP50?: number; latencyP50Ms?: number }>,
+  ) =>
+    evaluatePolicy(
+      PUBLISHED_POLICY,
+      {
+        endpoints,
+        excludedProviders: [],
+        requiresTools: true,
+        ...(measured === undefined ? {} : { measured }),
+      },
+      new Date(),
+    ).rules.find((rule) => rule.rule === "throughput-floor");
+
+  test("our own figure replaces the catalogue's", () => {
+    // The catalogue says this host is fast; our calls say it is not. Ours
+    // describes the service WE get, on the routes we actually use — and
+    // unlike the catalogue's, it cannot vanish because a key lapsed.
+    const rule = gradeThroughput(
+      [endpoint({ provider: "a", throughputP50: 200 })],
+      new Map([["a", { throughputP50: 8 }]]),
+    );
+    expect(rule?.passed).toBe(false);
+    expect(rule?.detail).toContain("8 tok/s");
+    expect(rule?.detail).toContain("measured on our own traffic");
+  });
+
+  test("an unmeasured host keeps its published figure", () => {
+    // Partial evidence must not blank the hosts it does not cover.
+    const rule = gradeThroughput(
+      [
+        endpoint({ provider: "a", throughputP50: 200 }),
+        endpoint({ provider: "b", throughputP50: 150 }),
+      ],
+      new Map([["a", { throughputP50: 8 }]]),
+    );
+    expect(rule?.passed).toBe(true);
+    // The pool ceiling is now b's published 150, and the detail says the
+    // evidence is mixed rather than implying it all came from one place.
+    expect(rule?.detail).toContain("150 tok/s");
+    expect(rule?.detail).toContain("1 of 2 measured");
+  });
+
+  test("no telemetry at all changes nothing", () => {
+    const rule = gradeThroughput([
+      endpoint({ provider: "a", throughputP50: 200 }),
+    ]);
+    expect(rule?.passed).toBe(true);
+    // No provenance suffix: the catalogue is the assumed source, and saying so
+    // on every line would be noise.
+    expect(rule?.detail).not.toContain("our own traffic");
+  });
+
+  test("telemetry answers a rule the catalogue could not", () => {
+    // The case that matters most on a degraded night: the published
+    // percentiles are gone, and the rule still evaluates instead of skipping,
+    // because we measured the host ourselves.
+    const rule = gradeThroughput(
+      [endpoint({ provider: "a" })],
+      new Map([["a", { throughputP50: 95 }]]),
+    );
+    expect(rule?.skipped).toBeUndefined();
+    expect(rule?.passed).toBe(true);
+  });
+
+  test("our TTFT is preferred over any published percentile", () => {
+    // A catalogue times the first token of ANY kind from its own vantage
+    // point — for a reasoning model that is the start of thinking, on
+    // somebody else's network. Ours is the wait a user of ours sat through.
+    const rule = evaluatePolicy(
+      DEFAULT_CANDIDATE_POLICY,
+      {
+        endpoints: [endpoint({ provider: "a", latencyP95Ms: 500 })],
+        excludedProviders: [],
+        requiresTools: true,
+        measured: new Map([["a", { latencyP50Ms: 12_000 }]]),
+      },
+      new Date(),
+    ).rules.find((r) => r.rule === "ttft-ceiling");
+    expect(rule?.passed).toBe(false);
+    expect(rule?.detail).toContain("12000");
+  });
+});
+
 describe("losing a measurement never improves the score", () => {
   const graded = (endpoints: EndpointStat[]): number =>
     computeHealthScore({

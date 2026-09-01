@@ -71,10 +71,33 @@ describe("what the transports report", () => {
     expect(report.servingProvider).toBe("akashml");
   });
 
-  test("Scaleway reports NOTHING, and says so rather than guessing", () => {
+  test("Scaleway quotes NO cost, and still names the host that served", () => {
     // The whole payload, measured over both the SDK and a raw HTTP call: no
-    // cost field, no cost header, `prompt_tokens_details: null`.
-    expect(scalewayAdapter.extractReport({ scaleway: {} })).toEqual({});
+    // cost field, no cost header, `prompt_tokens_details: null`. So `costUsd`
+    // stays absent — `estimateCostUsd` supplies a DERIVED figure instead, and
+    // inventing one here would be read downstream as measured.
+    //
+    // The serving host is a different question with a definite answer: this is
+    // a direct provider with exactly one host, so naming it reads the
+    // transport rather than guessing at a measurement. It was absent until
+    // 2026-09-01, and the cost was a hole in the safety net rather than a gap
+    // in a dashboard — the breaker quarantines a PROVIDER, so every Scaleway
+    // finding was dropped as unattributable.
+    const report = scalewayAdapter.extractReport({ scaleway: {} });
+    expect(report.costUsd).toBeUndefined();
+    expect(report.generationId).toBeUndefined();
+    expect(report.servingProvider).toBe("scaleway");
+  });
+
+  test("Scaleway claims NOTHING about another transport's call", () => {
+    // The readers try each extractor in turn and take the first answer, so an
+    // unconditional one would catch every call the others failed to attribute
+    // and file it against a host that never saw it. Misattribution is strictly
+    // worse than no attribution: a quarantine acts on the name.
+    expect(scalewayAdapter.extractReport({ gateway: { cost: "0.1" } })).toEqual(
+      {},
+    );
+    expect(scalewayAdapter.extractReport(undefined)).toEqual({});
   });
 });
 

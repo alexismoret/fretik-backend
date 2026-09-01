@@ -122,6 +122,12 @@ export const CONVERSATION_TASK_SWEEP_JOB = "conversation-task-sweep";
  * raise site: alerts are raised from inside streaming turns, and an SMTP round
  * trip has no business on a token stream. */
 export const MODEL_ALERT_SWEEP_JOB = "model-alert-sweep";
+/** Hourly — folds the closed Redis telemetry buckets into `model_telemetry_rollups`.
+ * Rides the maintenance queue: a handful of `SCAN`ed keys and one insert each,
+ * with no network call. The counters it drains are written fire-and-forget on
+ * every model call and expire after 48 h, so a missed hour is recoverable and a
+ * missed day is not — which is why this is hourly rather than nightly. */
+export const MODEL_TELEMETRY_ROLLUP_JOB = "model-telemetry-rollup";
 /** 02:00 UTC cron — builds the field indexes big collection tables are missing and
  * retires the ones Postgres never reads. The catch-all trigger, for tables that
  * crossed the size threshold by growing row by row rather than through an

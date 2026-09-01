@@ -39,6 +39,21 @@ import { mock } from "bun:test";
  * also smaller there: a dependency has one importer in `src/`, so a factory
  * that covers what that importer uses cannot starve anyone else.
  */
+/**
+ * SPREADING IS NOT ENOUGH WHEN TWO SUITES FAKE THE SAME MODULE.
+ *
+ * The hazard above is about a factory that DELETES exports. This one survives
+ * it: mocks are installed while a file LOADS, and tests run afterwards, so of
+ * the eleven suites here that fake `../../src/db` the one bun loads last
+ * dictates the fake every test in the process sees. Order is `readdir` order —
+ * alphabetical on APFS, hash order on ext4 — which is why
+ * `model-registry-admin` and `model-registry-breaker` passed on every developer
+ * machine and failed all 37 of their tests on CI.
+ *
+ * A suite that fakes a module another suite also fakes must therefore call its
+ * own `installMocks()` from `beforeEach`, not once at load. See those two files
+ * for the shape. Suites that fake a module nobody else touches are unaffected.
+ */
 export const mockModule = async (
   specifier: string,
   overrides: Record<string, unknown>,

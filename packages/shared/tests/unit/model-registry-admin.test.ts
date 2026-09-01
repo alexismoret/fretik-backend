@@ -116,62 +116,81 @@ const tableName = (table: unknown): string =>
       ? "model_alerts"
       : "unknown";
 
-await mockModule("../../src/db", {
-  default: {
-    // Only `acknowledgeAlert` reads through the builder; everything else in
-    // this module reads via `readLiveStateRow`, which is mocked separately.
-    select: () => ({
-      from: () => ({
-        where: () => ({
-          limit: () =>
-            Promise.resolve(storedAlert === undefined ? [] : [storedAlert]),
+/**
+ * Re-installed before EVERY test, not just once at load.
+ *
+ * `mock.module` is process-wide and lands when a file is LOADED, while tests
+ * run afterwards — so of the eleven suites that fake `../../src/db`, the one
+ * bun happens to load last dictates the fake every test in the process sees.
+ * That order is `readdir` order: alphabetical on APFS, hash order on ext4. This
+ * suite passed locally and failed all 25 of its tests on CI for exactly that
+ * reason, and so did `model-registry-breaker`.
+ *
+ * Re-asserting our own overrides in `beforeEach` makes the load order
+ * irrelevant: whatever another file installed, these are on top when our tests
+ * run. Safe to repeat — every fake below closes over the mutable fixtures that
+ * `beforeEach` resets anyway.
+ */
+const installMocks = async (): Promise<void> => {
+  await mockModule("../../src/db", {
+    default: {
+      // Only `acknowledgeAlert` reads through the builder; everything else in
+      // this module reads via `readLiveStateRow`, which is mocked separately.
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            limit: () =>
+              Promise.resolve(storedAlert === undefined ? [] : [storedAlert]),
+          }),
         }),
       }),
-    }),
-    update: (table: unknown) => ({
-      set: (values: Record<string, unknown>) => {
-        updates.push({ table: tableName(table), values });
-        return { where: () => Promise.resolve(undefined) };
-      },
-    }),
-    insert: () => ({
-      values: (values: Record<string, unknown>) => {
-        inserts.push(values);
-        return {
-          onConflictDoNothing: (target: unknown) => {
-            conflicts.push(target);
-            return Promise.resolve(undefined);
-          },
-        };
-      },
-    }),
-  },
-});
+      update: (table: unknown) => ({
+        set: (values: Record<string, unknown>) => {
+          updates.push({ table: tableName(table), values });
+          return { where: () => Promise.resolve(undefined) };
+        },
+      }),
+      insert: () => ({
+        values: (values: Record<string, unknown>) => {
+          inserts.push(values);
+          return {
+            onConflictDoNothing: (target: unknown) => {
+              conflicts.push(target);
+              return Promise.resolve(undefined);
+            },
+          };
+        },
+      }),
+    },
+  });
 
-await mockModule("../../src/services/model-registry/live", {
-  readLiveStateRow: (profileKey: string) => {
-    if (profileKey === throwOnKey) {
-      return Promise.reject(new Error("connection reset"));
-    }
-    if (storedState?.profileKey === profileKey) {
-      return Promise.resolve(storedState);
-    }
-    return Promise.resolve(
-      extraStates.find((state) => state.profileKey === profileKey),
-    );
-  },
-  invalidateLiveRegistry: () => {
-    invalidations += 1;
-    return Promise.resolve();
-  },
-});
+  await mockModule("../../src/services/model-registry/live", {
+    readLiveStateRow: (profileKey: string) => {
+      if (profileKey === throwOnKey) {
+        return Promise.reject(new Error("connection reset"));
+      }
+      if (storedState?.profileKey === profileKey) {
+        return Promise.resolve(storedState);
+      }
+      return Promise.resolve(
+        extraStates.find((state) => state.profileKey === profileKey),
+      );
+    },
+    invalidateLiveRegistry: () => {
+      invalidations += 1;
+      return Promise.resolve();
+    },
+  });
 
-await mockModule("../../src/services/model-registry/alerts", {
-  raiseModelAlert: (input: { kind: string; message: string }) => {
-    alerts.push({ kind: input.kind, message: input.message });
-    return Promise.resolve();
-  },
-});
+  await mockModule("../../src/services/model-registry/alerts", {
+    raiseModelAlert: (input: { kind: string; message: string }) => {
+      alerts.push({ kind: input.kind, message: input.message });
+      return Promise.resolve();
+    },
+  });
+};
+
+await installMocks();
 
 const {
   acknowledgeAlert,
@@ -187,7 +206,7 @@ const {
 const liveWrites = () =>
   updates.filter((entry) => entry.table === "model_live_state");
 
-beforeEach(() => {
+beforeEach(async () => {
   updates.length = 0;
   inserts.length = 0;
   conflicts.length = 0;
@@ -197,6 +216,7 @@ beforeEach(() => {
   extraStates = [];
   throwOnKey = undefined;
   storedAlert = { kind: "quarantine", modelKey: "acme-m1" };
+  await installMocks();
 });
 
 describe("setTransport", () => {

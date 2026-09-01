@@ -111,42 +111,56 @@ const builder = {
   }),
 };
 
-await mockModule("../../src/db", {
-  default: {
-    ...builder,
-    transaction: <T>(fn: (tx: typeof builder) => Promise<T>) => fn(builder),
-  },
-});
+/**
+ * Re-installed before EVERY test — see the same helper in
+ * `model-registry-admin.test.ts` for why.
+ *
+ * Short version: `mock.module` is process-wide and lands at LOAD time while
+ * tests run afterwards, so the last of the eleven suites faking `../../src/db`
+ * to be loaded wins for the whole process. That is `readdir` order — stable and
+ * benign on APFS, different on ext4 — and it failed all 12 tests here on CI
+ * while passing locally every time.
+ */
+const installMocks = async (): Promise<void> => {
+  await mockModule("../../src/db", {
+    default: {
+      ...builder,
+      transaction: <T>(fn: (tx: typeof builder) => Promise<T>) => fn(builder),
+    },
+  });
 
-await mockModule("../../src/services/model-registry/live", {
-  readLiveStateRow: (profileKey: string) =>
-    Promise.resolve(
-      storedState?.profileKey === profileKey ? storedState : undefined,
-    ),
-  readLiveStateRowForUpdate: (_tx: unknown, profileKey: string) =>
-    Promise.resolve(
-      storedState?.profileKey === profileKey ? storedState : undefined,
-    ),
-  invalidateLiveRegistry: () => {
-    invalidations += 1;
-    return Promise.resolve();
-  },
-});
+  await mockModule("../../src/services/model-registry/live", {
+    readLiveStateRow: (profileKey: string) =>
+      Promise.resolve(
+        storedState?.profileKey === profileKey ? storedState : undefined,
+      ),
+    readLiveStateRowForUpdate: (_tx: unknown, profileKey: string) =>
+      Promise.resolve(
+        storedState?.profileKey === profileKey ? storedState : undefined,
+      ),
+    invalidateLiveRegistry: () => {
+      invalidations += 1;
+      return Promise.resolve();
+    },
+  });
 
-await mockModule("../../src/services/model-registry/alerts", {
-  raiseModelAlert: (input: {
-    kind: string;
-    severity: string;
-    message: string;
-  }) => {
-    alerts.push({
-      kind: input.kind,
-      severity: input.severity,
-      message: input.message,
-    });
-    return Promise.resolve();
-  },
-});
+  await mockModule("../../src/services/model-registry/alerts", {
+    raiseModelAlert: (input: {
+      kind: string;
+      severity: string;
+      message: string;
+    }) => {
+      alerts.push({
+        kind: input.kind,
+        severity: input.severity,
+        message: input.message,
+      });
+      return Promise.resolve();
+    },
+  });
+};
+
+await installMocks();
 
 const {
   activeQuarantines,
@@ -183,12 +197,13 @@ const expectedEntry: QuarantineEntry = {
   reason: "test",
 };
 
-beforeEach(() => {
+beforeEach(async () => {
   updates.length = 0;
   alerts.length = 0;
   invalidations = 0;
   failWrite = false;
   storedState = fakeState();
+  await installMocks();
 });
 
 describe("quarantineProvider — the ladder", () => {

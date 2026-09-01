@@ -62,6 +62,23 @@ only created if absent.
 > Web egress is **open by default**; always-on hygiene (scheme, private-IP/metadata, length,
 > punycode) applies regardless. The four `AI_WEB_*` vars are opt-in tightening levers.
 
+### Jobs service — **REQUIRED** (the nightly model sync runs there, not on the AI service)
+
+The model sync cron (`model-sync-nightly`, 00:30 UTC) executes in the **jobs** container, so the
+jobs service needs its own copies of three keys the AI service already has. Without them the sync
+still reports `ok` while writing degraded data — this exact failure shipped once (2026-09-01:
+OpenRouter returns `throughput_last_30m: null` on unauthenticated calls, HTTP 200, so every
+openrouter endpoint lost its percentiles and the throughput/TTFT policy rules silently never ran):
+
+| Var                           | Why the jobs service needs it                                                                     |
+| ----------------------------- | ------------------------------------------------------------------------------------------------- |
+| `OPENROUTER_API_KEY`          | OpenRouter `/endpoints` percentiles (`throughput_last_30m`, `latency_last_30m`) are auth-gated.   |
+| `ARTIFICIAL_ANALYSIS_API_KEY` | AA intelligence/coding/agentic indices; unset = empty map = `intelligence-floor` never evaluates. |
+| `AI_GATEWAY_API_KEY`          | ZDR probe + quarantine re-probe; unset = expired quarantines are never re-checked.                |
+
+Mirror any future secret read under `packages/shared/src/services/model-registry/sync/` onto the
+jobs service — that code runs wherever the sync runs.
+
 ### Pre-existing — must already be set (not new, but required to boot)
 
 `OPENROUTER_API_KEY`, `DATABASE_URL`, `REDIS_URL`, `E2B_API_KEY` (+ template), `MISTRAL_API_KEY`,

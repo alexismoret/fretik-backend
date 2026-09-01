@@ -5,6 +5,7 @@
  *
  *     bun run models:bench -- --profile deepseek-v4-flash
  *     bun run models:bench -- --profile deepseek-v4-flash --providers baseten,siliconflow,novita --runs 5
+ *     bun run models:bench -- --profile deepseek-v4-flash --save   # keep the numbers
  *
  * Needs `OPENROUTER_API_KEY`. Without `--providers` it benches the profile's
  * own `only` list; pass the flag to evaluate a candidate for admission.
@@ -58,8 +59,15 @@
  * pool instead of the single upstream under test.
  *
  * Prints a table and exits 0. It never edits a profile: widening a pool stays a
- * reviewed change, and the numbers belong in the profile's comment block
- * alongside the date they were taken.
+ * reviewed change.
+ *
+ * `--save` writes one `model_bench_runs` row per upstream, which is what
+ * `models:admin scorecard` reads. Without it the measurement lives only in this
+ * terminal — the state this script shipped in, and the reason every scorecard's
+ * bench section has been empty since the table was created. Opt-in rather than
+ * automatic because a run against a hand-picked `--providers` list is an
+ * experiment, and an experiment recorded beside a full pass is indistinguishable
+ * from one.
  */
 import { OPENROUTER_API_BASE_URL } from "@fretik/shared/lib/openrouter";
 import { z } from "zod";
@@ -313,6 +321,8 @@ const parseFlag = (name: string): string | undefined => {
   if (index === -1) return undefined;
   return process.argv[index + 1];
 };
+
+const save = process.argv.includes("--save");
 
 const apiKey = process.env.OPENROUTER_API_KEY;
 if (!apiKey) {
@@ -597,3 +607,41 @@ console.log(
 console.log(
   "`best` is the ceiling. Read it against `tok/s`: a flat upstream is one the throughput sort can never usefully promote.",
 );
+
+if (save) {
+  // Deferred, and NOT for style: `@fretik/shared/db` runs
+  // `runMigrationsWithLock()` at module load, so a static import would make
+  // every bench — including a read-only one against production — apply pending
+  // migrations as a side effect of measuring throughput. Loading it only when
+  // a row is actually going to be written keeps that blast radius on the flag
+  // that asked for it. Same reasoning as `model-admin.ts`, which defers its own
+  // schema import so `--help` works without `DATABASE_URL`.
+  const { recordBenchRuns } =
+    await import("@fretik/shared/services/model-registry/bench-runs");
+  const written = await recordBenchRuns({
+    profileKey,
+    // Hardcoded, honestly: every request above went to the OpenRouter REST API,
+    // so this is the transport the numbers describe — not whatever the row's
+    // `transport` column happens to say today.
+    transport: "openrouter",
+    ranAt: new Date(),
+    measurements: rows.map((row) => ({
+      provider: row.provider,
+      ...(row.tps === null ? {} : { tokensPerSecondMedian: row.tps }),
+      ...(row.tpsMax === null ? {} : { tokensPerSecondBest: row.tpsMax }),
+      intactPassed: row.intact,
+      intactTotal: row.intactRuns,
+      ...(row.coldCost === null ? {} : { coldCostUsd: row.coldCost }),
+      ...(row.warmCost === null ? {} : { warmCostUsd: row.warmCost }),
+      ...(row.reasoningTokens === null
+        ? {}
+        : { reasoningTokens: row.reasoningTokens }),
+      http429Count: row.rateLimited,
+      failures: row.failures,
+      ...(row.firstError === null ? {} : { note: row.firstError }),
+    })),
+  });
+  console.log(
+    `\nSaved ${written.toString()} row(s) to model_bench_runs — \`models:admin -- scorecard ${profileKey}\` will show them.`,
+  );
+}

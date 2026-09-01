@@ -33,6 +33,7 @@ import {
   responseNotFoundSchema,
 } from "@fretik/shared/schemas/common/responses";
 import { listRecentAlerts } from "@fretik/shared/services/model-registry/alerts";
+import { readRecentBenchRuns } from "@fretik/shared/services/model-registry/bench-runs";
 import {
   activeQuarantines,
   effectivePoolFor,
@@ -602,12 +603,36 @@ const scorecardRoute = createRoute({
             ),
             aaMetrics: aaMetricsSchema.nullable(),
             policyReport: policyReportSchema,
+            /**
+             * What our own probes measured per upstream — above all the
+             * integrity gate, which decides pool membership and which no
+             * catalogue publishes: a host that truncates an answer ending in a
+             * tool call is unusable at any speed, because every agent turn
+             * ends that way.
+             *
+             * Empty means never measured, which for a published model is
+             * normal (real traffic watches it continuously through the
+             * detectors) and for a candidate means the nightly sweep has not
+             * reached it yet.
+             */
+            benchRuns: z.array(
+              z.object({
+                provider: z.string(),
+                transport: z.string(),
+                ranAt: z.date(),
+                intactPassed: z.number().optional(),
+                intactTotal: z.number().optional(),
+                tokensPerSecondMedian: z.number().optional(),
+                failures: z.number().optional(),
+                note: z.string().optional(),
+              }),
+            ),
             incidents: incidentSummarySchema,
             incidentWindowHours: z.number(),
           }),
         },
       },
-      description: "Endpoints, grades and the discovery-policy verdict",
+      description: "Endpoints, grades, measurements and the policy verdict",
     },
     ...responseForbiddenSchema,
     ...responseNotFoundSchema,
@@ -644,6 +669,17 @@ modelAdminRoutes.openapi(scorecardRoute, async (c) => {
           excluded: pool.excluded,
           aa: state.aaMetrics,
           now,
+        }),
+      ),
+      // `readRecentBenchRuns` had zero callers and the web scorecard had no
+      // bench section at all, so the surface an operator promotes from could
+      // not show the one measurement that decides pool membership.
+      benchRuns: (await readRecentBenchRuns(profileKey, { limit: 24 })).map(
+        (run) => ({
+          provider: run.provider,
+          transport: run.transport,
+          ranAt: run.ranAt,
+          ...run.metrics,
         }),
       ),
       incidents: await summarizeIncidents({

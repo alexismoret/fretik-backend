@@ -1,10 +1,15 @@
 import { createWorkerConnection } from "@fretik/shared/lib/queue/connection";
+import { runCandidateBenchSweep } from "@fretik/shared/services/model-registry/bench/candidate-sweep";
 import {
   runModelSync,
   type ModelSyncResult,
 } from "@fretik/shared/services/model-registry/sync/run";
 import { Worker, type Job } from "bullmq";
-import { MODEL_SYNC_JOB, MODEL_SYNC_QUEUE } from "../queues/names";
+import {
+  MODEL_CANDIDATE_BENCH_JOB,
+  MODEL_SYNC_JOB,
+  MODEL_SYNC_QUEUE,
+} from "../queues/names";
 
 /**
  * Nightly model sync — 00:30 UTC, ahead of the vector-reconcile chain.
@@ -56,13 +61,42 @@ export const runModelSyncSweep = async (): Promise<ModelSyncResult> => {
   return { status, stats };
 };
 
+/**
+ * Measure each multi-upstream CANDIDATE's integrity gate — does this host
+ * truncate an answer that ends in a tool call? — so the promotion decision has
+ * evidence waiting for it instead of an errand.
+ *
+ * Candidates only: a published model's integrity is already watched
+ * continuously, and for free, by the runtime detectors on real traffic. A
+ * candidate is never called, so nothing watches it, and promotion is exactly
+ * when somebody needs to know.
+ */
+export const runCandidateBench = async (): Promise<void> => {
+  const stats = await runCandidateBenchSweep();
+  // Silent on a pass that found nothing to measure — most nights.
+  if (stats.candidatesProbed > 0) {
+    console.info(
+      `[model-candidate-bench] measured ${stats.candidatesProbed.toString()} candidate(s) over ${stats.upstreamsProbed.toString()} upstream(s); ${stats.upstreamsFailing.toString()} mutilate an answer ending in a tool call`,
+    );
+  }
+  for (const error of stats.errors) {
+    console.error(`[model-candidate-bench] ${error}`);
+  }
+};
+
 export const startModelSyncWorker = (): Worker => {
   // Concurrency 1: the pass reads and rewrites every `model_live_state` row, so
   // two of them at once would race on the same rows for no gain — the queue
   // exists to keep the crawl off the maintenance worker, not to parallelise it.
+  // The candidate bench shares the queue for the same reason: it measures the
+  // rows the sync rewrites, and the two must never overlap.
   const worker = new Worker(
     MODEL_SYNC_QUEUE,
     async (job: Job) => {
+      if (job.name === MODEL_CANDIDATE_BENCH_JOB) {
+        await runCandidateBench();
+        return;
+      }
       if (job.name !== MODEL_SYNC_JOB) {
         console.warn(`[model-sync] unknown job "${job.name}"`);
         return;

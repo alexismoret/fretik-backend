@@ -299,6 +299,8 @@ export const modelAlerts = pgTable(
         | "model-disabled"
         | "policy-fail"
         | "new-candidate"
+        /** A candidate's integrity gate was measured — what a promotion needs. */
+        | "bench-verdict"
         | "catalog-removed"
         | "price-jump"
         | "critical-role-model"

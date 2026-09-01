@@ -142,6 +142,13 @@ export const MCP_SNAPSHOT_REFRESH_JOB = "mcp-snapshot-refresh";
  * catalogue and rewrites what the fleet routes on. */
 export const MODEL_SYNC_JOB = "model-sync-nightly";
 
+/** Job name on MODEL_SYNC_QUEUE — 01:15 UTC, after the sync has refreshed the
+ * candidates it measures. Probes each multi-upstream candidate's integrity gate
+ * (does this host truncate an answer that ends in a tool call?), which is the
+ * evidence a promotion needs and the one thing no catalogue publishes. Shares
+ * the sync's queue so the two never run at once against the same rows. */
+export const MODEL_CANDIDATE_BENCH_JOB = "model-candidate-bench";
+
 /** Job names on MEMORY_DREAMING_QUEUE. */
 export const DREAMING_TEAM_JOB = "dreaming-team";
 export const EAGER_CONSOLIDATE_JOB = "eager-consolidate";

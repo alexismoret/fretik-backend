@@ -70,6 +70,7 @@
  * from one.
  */
 import { OPENROUTER_API_BASE_URL } from "@fretik/shared/lib/openrouter";
+import { recordBenchRuns } from "@fretik/shared/services/model-registry/bench-runs";
 import { z } from "zod";
 import { getEffectiveProfile } from "../src/lib/model-registry/effective";
 import {
@@ -609,15 +610,6 @@ console.log(
 );
 
 if (save) {
-  // Deferred, and NOT for style: `@fretik/shared/db` runs
-  // `runMigrationsWithLock()` at module load, so a static import would make
-  // every bench — including a read-only one against production — apply pending
-  // migrations as a side effect of measuring throughput. Loading it only when
-  // a row is actually going to be written keeps that blast radius on the flag
-  // that asked for it. Same reasoning as `model-admin.ts`, which defers its own
-  // schema import so `--help` works without `DATABASE_URL`.
-  const { recordBenchRuns } =
-    await import("@fretik/shared/services/model-registry/bench-runs");
   const written = await recordBenchRuns({
     profileKey,
     // Hardcoded, honestly: every request above went to the OpenRouter REST API,

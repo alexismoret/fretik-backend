@@ -1143,7 +1143,7 @@ const discoverCandidates = async (
       kind: "new-candidate",
       severity: "info",
       modelKey: profileKey,
-      message: `${modelId} passes the discovery policy on ${transport}: ${pool.endpoints.length.toString()} endpoint(s), ${context.contextLength.toString()} usable context, $${pricing.inputPerMTok.toString()}/$${pricing.outputPerMTok.toString()} per MTok${aa?.intelligenceIndex === undefined ? "" : `, intelligence ${aa.intelligenceIndex.toFixed(1)}`}. Added as a candidate — publish it by hand after a bench run.`,
+      message: `${modelId} passes the discovery policy on ${transport}: ${pool.endpoints.length.toString()} endpoint(s), ${context.contextLength.toString()} usable context, $${pricing.inputPerMTok.toString()}/$${pricing.outputPerMTok.toString()} per MTok${aa?.intelligenceIndex === undefined ? "" : `, intelligence ${aa.intelligenceIndex.toFixed(1)}`}. Added as a candidate. Its integrity gate is measured automatically before anyone needs it; promoting is the deliberate step, and the scorecard carries the verdict.`,
       context: { transport, modelIds: entry.idsByTransport },
     });
   }

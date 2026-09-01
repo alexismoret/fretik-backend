@@ -6,6 +6,7 @@ import {
   JOURNAL_SWEEP_JOB,
   MCP_SNAPSHOT_REFRESH_JOB,
   MODEL_ALERT_SWEEP_JOB,
+  MODEL_CANDIDATE_BENCH_JOB,
   MODEL_SYNC_JOB,
   MODEL_TELEMETRY_ROLLUP_JOB,
   VECTOR_RECONCILE_SWEEP_JOB,
@@ -56,6 +57,8 @@ const VECTOR_RECONCILE_CRON = "0 1 * * *";
  * that overruns 01:00 simply runs alongside, on its own queue.
  */
 const MODEL_SYNC_CRON = "30 0 * * *";
+/** 01:15 UTC — after the sync, on the same queue. See MODEL_CANDIDATE_BENCH_JOB. */
+const MODEL_CANDIDATE_BENCH_CRON = "15 1 * * *";
 /** 5min — collapses whatever the engine decided since the last pass into one
  * email. See MODEL_ALERT_SWEEP_JOB for why delivery is not done at the raise
  * site. */
@@ -174,6 +177,16 @@ export const registerSchedulers = async (): Promise<void> => {
     MODEL_SYNC_JOB,
     { pattern: MODEL_SYNC_CRON, tz: "UTC" },
     { name: MODEL_SYNC_JOB, opts: MODEL_SYNC_OPTS },
+  );
+
+  // After the sync, on the SAME queue (concurrency 1), so the pass that
+  // rewrites candidate rows and the pass that measures them can never run at
+  // once against the same rows. 45 minutes is slack, not a guarantee: if the
+  // sync overruns, this simply queues behind it, which is the right order.
+  await getModelSyncQueue().upsertJobScheduler(
+    MODEL_CANDIDATE_BENCH_JOB,
+    { pattern: MODEL_CANDIDATE_BENCH_CRON, tz: "UTC" },
+    { name: MODEL_CANDIDATE_BENCH_JOB, opts: CRON_OPTS },
   );
 
   // Second of the nightly chain, and on its own queue: the pass calls the AI

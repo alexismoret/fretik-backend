@@ -12,7 +12,6 @@ boot (`db/index.ts` → `runMigrationsWithLock`, advisory-locked).
 | `reseed-system-ontology.ts`                    | **keep**                | Seed system + starter collections for every org, propagate org-scope field defs to every team. Idempotent. The dev **re-seed** primitive.                                                                                      |
 | `sync-collection-tables.ts`                    | **keep**                | Reconcile every team's `data.coll_*` extension tables to their field defs + (re)arm RLS. The existing-tenant **provisioning / backfill / repair** primitive (was `sync-typed-views.ts` — renamed; there are no views anymore). |
 | `check-collections-rls.ts`                     | **keep**                | Deterministic RLS/grant verification (see below). Run after migrate + seed.                                                                                                                                                    |
-| `drop-empty-starter-person-type.ts`            | **keep (one-off)**      | Drop the org-scope `person` starter type (removed from `STARTER_COLLECTION_TEMPLATE`) for every existing org, but only where it holds zero records — orgs with data are skipped and logged for a manual call. Idempotent.      |
 | `build-icon-catalog.ts` + `icon-essentials.ts` | **keep**                | Regenerate the curated Lucide icon catalog (backend `lib/icons/catalog.ts` **and** the frontend mirror `app/.../collectionIconCatalog.json`).                                                                                  |
 | `grant-super-admin.ts`                         | **keep**                | Admin utility — unrelated to objects.                                                                                                                                                                                          |
 | `smoke-phase2-fold.ts`                         | **keep (manual smoke)** | Drives the document→graph fold + domain-events outbox + attribute history against the dev DB and asserts invariants, then cleans up. Still exercises live services (the fold survived the refonte); run it as a manual smoke.  |
@@ -26,6 +25,20 @@ fresh `CREATE TABLE` already produces the target schema):
   (`label`→`_label`, …); the DDL engine now creates them underscore-prefixed.
 - `backfill-record-timestamps.ts` — added + backfilled `created_at`/`updated_at`
   on pre-existing typed tables; they are now in the `CREATE TABLE`.
+
+Removed on **2026-09-01** after verifying against the production database that each
+had already done its work. A one-off whose effect is confirmed is dead code, and a
+dead script is worse than no script: it invites a re-run nobody can reason about.
+The evidence is recorded because "it was verified" is not a fact anyone can check
+later — the query is.
+
+- `drop-empty-starter-person-type.ts` — `select count(*) from collections where
+key = 'person' and team_id is null` → **0**.
+- `migrate-vector-metadata-keys.ts` (was in this folder) — `ai_vectors` carries
+  **0** rows with `object_type_id` / `object_type_key` and **690** with
+  `collection_id`.
+- `drop-legacy-object-index-queue.ts` (was in `@fretik/jobs`) — `bull:*:repeat` in
+  production Redis lists `collection-index` and **no** `object-index`.
 
 ## The objects data-migration / provisioning model
 
@@ -127,16 +140,9 @@ backfills a field newly added to an EXISTING starter type — e.g. `company`'s
 new `address` (`location`) field — onto every org that already has that type;
 re-run `sync-collection-tables.ts` after so the physical column gets created.
 
-If this deploy also removes the `person` starter type (dropped from
-`STARTER_COLLECTION_TEMPLATE` — a generic workspace shouldn't force it), run
-once, after the two steps above:
-
-```
-bun --env-file=<env> run src/scripts/drop-empty-starter-person-type.ts        # drop the org-scope `person` type where it has zero records
-```
-
-Orgs where a team actually put data in `person` are left untouched and logged
-— decide manually (keep it, or delete after confirming with that org).
+> The `person` starter type was also dropped from `STARTER_COLLECTION_TEMPLATE` in
+> this era, and a third script removed it from existing orgs. It has run
+> everywhere and was deleted on 2026-09-01 — see the removed list above.
 
 #### 4. Verify
 

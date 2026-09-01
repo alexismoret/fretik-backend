@@ -53,8 +53,6 @@ import { getEffectiveProfile } from "./lib/model-registry/effective";
 import { warmModelRegistry } from "./lib/model-registry/resolve";
 import { registerOrphanCleanupCron } from "./services/chat-files/orphan-cron";
 import { subscribeConversationTaskResumes } from "./services/conversation-tasks/subscribe-resume";
-import { backfillPageVectors } from "./services/vectorize/pages";
-import { backfillWorkflowVectors } from "./services/vectorize/workflows";
 import {
   loadSkillCatalog,
   vectorizeAllBundledSkills,
@@ -179,37 +177,11 @@ await registerOrphanCleanupCron();
 // during boot is picked up by the 5-min maintenance sweep.
 subscribeConversationTaskResumes();
 
-// Index workflows that predate the discovery feature, so the assistant can
-// find them from a plain request. Selects only un-indexed ones, so this is a
-// no-op from the second boot on. Fire-and-forget — never blocks boot.
-void backfillWorkflowVectors()
-  .then(({ indexed }) => {
-    if (indexed > 0) {
-      console.log(
-        `[boot] indexed ${indexed.toString()} workflow(s) for discovery`,
-      );
-    }
-  })
-  .catch((err: unknown) => {
-    console.error(
-      "[boot] workflow vectorize backfill failed:",
-      err instanceof Error ? err.message : err,
-    );
-  });
-
-// Same for pages that predate the discovery feature — see above.
-void backfillPageVectors()
-  .then(({ indexed }) => {
-    if (indexed > 0) {
-      console.log(`[boot] indexed ${indexed.toString()} page(s) for discovery`);
-    }
-  })
-  .catch((err: unknown) => {
-    console.error(
-      "[boot] page vectorize backfill failed:",
-      err instanceof Error ? err.message : err,
-    );
-  });
+// The workflow / page discovery backfills used to run here, fire-and-forget,
+// on every boot. They are migrations for rows that predate the feature — the
+// live write path (`handlers/vectorize.ts`) indexes everything since — and a
+// row that can never be embedded was retried, and paid for, at every deploy.
+// Moved to `bun run backfill:discovery-vectors`, which says why.
 
 // One-shot reclaim of E2B sandboxes orphaned by previous runs (typical
 // case: dev hot-reload, server crash, deployment rollover). Steady-

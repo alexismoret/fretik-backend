@@ -123,6 +123,7 @@ describe("buildCard serving", () => {
     // Before the first sync there is no measurement, and "0 incidents, 0
     // routes, 0% uptime" would read as a catastrophic model instead of an
     // unmeasured one.
+    setLiveStateDouble();
     const serving = card().serving;
     expect(serving.score).toBeNull();
     expect(serving.uptime1d).toBeNull();

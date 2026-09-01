@@ -17,11 +17,14 @@
  * separate `test:integration` script.
  */
 
-import { mock } from "bun:test";
+import { beforeEach, mock } from "bun:test";
 import { getLiveSnapshotSync, getLiveStateSync } from "./lib/live-state-double";
 import { mockModule } from "./lib/mock-module";
 import { redisDouble } from "./lib/redis-double";
-import { getTeamAiSettings } from "./lib/team-ai-settings-double";
+import {
+  getTeamAiSettings,
+  setTeamAiSettingsDouble,
+} from "./lib/team-ai-settings-double";
 
 // OpenRouter — src/lib/openrouter.ts, src/lib/embeddings.ts,
 // src/services/search/reranker.ts
@@ -138,8 +141,24 @@ await mockModule("@fretik/shared/services/model-registry/live", {
 //
 // A test that wants the cold case asks for it — `setLiveStateDouble()` with no
 // argument — and several do.
+//
+// RESTORED BEFORE EVERY TEST, not just installed once. Several suites drive
+// `setLiveStateDouble` and leave the snapshot as their LAST test set it, and
+// bun runs files in `readdir` order — which is a per-filesystem hash order
+// (bun also IGNORES the order of CLI file arguments, so no local run can
+// imitate another machine's order). On this Mac the consuming suites happen
+// to run first and always passed; on CI's ext4 the mutating suites ran first
+// and 116 tests died on `No model profile for key "deepseek-v4-flash"`. A
+// global beforeEach makes the baseline a per-test invariant instead of a
+// per-machine accident: every test starts from the bound fleet and default
+// team settings, and a test that wants anything else sets it INSIDE the test
+// (or its own beforeEach, which runs after this one).
 await import("./lib/live-fleet").then((fleet) => {
   fleet.installBoundFleet();
+  beforeEach(() => {
+    fleet.installBoundFleet();
+    setTeamAiSettingsDouble(null);
+  });
 });
 
 // Capture the REAL `@fretik/shared/db` export values before any test

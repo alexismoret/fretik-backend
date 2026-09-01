@@ -45,14 +45,19 @@ import { mock } from "bun:test";
  * The hazard above is about a factory that DELETES exports. This one survives
  * it: mocks land while a file LOADS and tests run afterwards, so among the
  * suites here that fake `../../src/db` — there are ten — which fake a given
- * test sees depends on bun's load order. That is `readdir` order: alphabetical
- * on APFS, hash order on ext4.
+ * test sees depends on bun's load order. That is `readdir` order — a
+ * per-filesystem hash order on APFS AND ext4, stable on one machine and
+ * different on another. And `bun test` IGNORES the order of file arguments on
+ * the CLI (verified: two files always load in the same order whichever way
+ * they are passed), so another machine's order cannot be imitated locally by
+ * shuffling arguments; to reproduce an ordering bug, inject the poisoned
+ * state directly (from the preload, or a file that provably loads first).
  *
  * `model-registry-admin` and `model-registry-breaker` failed all 37 of their
- * tests on CI while passing locally in every order we could construct, so the
- * trigger was never reproduced — only its class. They now run in their own
- * process (`tests/isolated`, wired into the `test` script), which removes the
- * variable rather than betting on it.
+ * tests on CI while passing locally — every "reordered" local run was in fact
+ * the same run, which is why the trigger was never reproduced, only its
+ * class. They now run in their own process (`tests/isolated`, wired into the
+ * `test` script), which removes the variable rather than betting on it.
  *
  * Two things learned the hard way, worth not repeating:
  *

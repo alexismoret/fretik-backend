@@ -132,7 +132,11 @@ describe("resolveFlagshipProfileKey", () => {
   });
 
   test("a non-flagship pin → default + fallback flag", () => {
-    // gpt-oss-20b is a utility model — not a selectable flagship.
+    // gpt-oss-20b is a utility model — not a selectable flagship. On a cold
+    // snapshot (the state this test has always actually run under): the
+    // synthetic fleet's fixture rows carry no utility marking, so with rows
+    // present the pin would be honoured.
+    setLiveStateDouble();
     const result = resolveFlagshipProfileKey("gpt-oss-20b");
     expect(result.profileKey).toBe(def);
     expect(result.fellBack).toBe(true);

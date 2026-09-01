@@ -1,85 +1,151 @@
 /**
- * Bring an empty registry to the fleet a working environment already serves.
+ * Bring a registry to the fleet described by a manifest.
  *
- *     bun run models:apply-manifest            # dry run — says what it WOULD do
- *     bun run models:apply-manifest -- --apply # writes
+ *     bun run models:apply -- fleet.json             # dry run — says what it WOULD do
+ *     bun run models:apply -- fleet.json --apply     # writes
  *
- * `models:sync` discovers models and publishes NOTHING: every row it writes is
- * a `candidate`, invisible to teams. That is the right default for a running
- * fleet and the wrong one for a fresh one — on an environment whose
- * `model_live_state` was just created, the sync leaves teams with no model to
- * pick, and the gap lasts until somebody promotes by hand.
+ * Produced by `models:export` on an environment that already works. The two
+ * together are how a fresh environment gets a fleet:
  *
- * So the manifest below is the dev fleet, captured on 2026-09-01: every
- * published key with the exact `enabled` state it carries there. Promotion
- * alone would ALMOST reproduce it — `promoteCandidates` applies the price cap
- * and would disable the same expensive ten on its own — but "almost" is not a
- * property to rely on when the difference is which models a team can pick: a
- * price that moved between two syncs would silently change the split. The
- * manifest states the intended end state and this script converges on it.
+ *     (working env) bun run models:export > fleet.json
+ *     (new env)     bun run models:sync                 # in the jobs package
+ *     (new env)     bun run models:apply -- fleet.json --apply
  *
- * ORDER MATTERS: run `models:sync` FIRST. This script promotes rows; it does
- * not create them. It reports what is missing rather than inventing it, since a
- * key the sync did not discover is a fact about the catalogues, not something a
- * script should paper over.
+ * This replaces a 22-key list that was PASTED INTO THIS FILE and dated in a
+ * comment. That list could only describe the fleet on the day somebody typed
+ * it — promoting a model, enabling one, or retiring one left it quietly wrong
+ * — and worse, the script could only PROMOTE. A key the sync had not
+ * discovered was reported as absent and skipped, which is precisely the case a
+ * fresh environment is made of: `models:sync` derives its own keys from
+ * catalogue ids, so a bound key like `deepseek-v4-flash` (whose catalogue id
+ * yields `deepseek-deepseek-v4-flash-0731`) can never be discovered. The only
+ * bootstrap left was copying rows between databases in SQL.
  *
- * Idempotent: promoting a published row is a no-op, and the enabled pass only
- * writes rows whose state differs.
+ * So this now CREATES what is missing, from the ids the manifest carries,
+ * under the key the manifest names. Everything else about the row — prices,
+ * pool, endpoints, health — is re-derived here from the catalogues, because
+ * those are measurements and belong to this environment rather than to the one
+ * that exported.
+ *
+ * Idempotent: creating an existing key is a no-op, promoting a published row
+ * is a no-op, and the enabled pass only writes rows whose state differs.
  */
+import { isTransportId } from "@fretik/shared/model-registry/types";
+import { addFromCatalogue } from "@fretik/shared/services/model-registry/add-from-catalogue";
 import { readLiveStateRow } from "@fretik/shared/services/model-registry/live";
 import {
   promoteModels,
   setModelsEnabled,
 } from "@fretik/shared/services/model-registry/operations";
 import process from "node:process";
+import { z } from "zod";
 import { boundProfileKeys } from "../src/lib/model-registry/bound-roles";
 
-/**
- * The dev fleet on 2026-09-01 — 22 published rows, 12 of them enabled.
- *
- * The ten disabled ones are disabled ON COST, which is a deliberate state and
- * not an oversight: they are published so an operator can see and enable them,
- * and left off so nobody's team picks a model at ten times the budget by
- * accident.
- */
-const MANIFEST: readonly { profileKey: string; enabled: boolean }[] = [
-  { profileKey: "claude-haiku-4.5", enabled: false },
-  { profileKey: "claude-opus-5", enabled: false },
-  { profileKey: "claude-sonnet-5", enabled: false },
-  { profileKey: "deepseek-v4-flash", enabled: true },
-  { profileKey: "deepseek-v4-pro", enabled: true },
-  { profileKey: "gemini-3.1-flash-lite", enabled: true },
-  { profileKey: "gemini-3.1-pro", enabled: false },
-  { profileKey: "gemini-3.5-flash-lite", enabled: true },
-  { profileKey: "gemini-3.7-flash", enabled: false },
-  { profileKey: "glm-5.2", enabled: true },
-  { profileKey: "gpt-5.4-nano", enabled: true },
-  { profileKey: "gpt-5.6-luna", enabled: true },
-  { profileKey: "gpt-5.6-sol", enabled: false },
-  { profileKey: "gpt-5.6-terra", enabled: false },
-  { profileKey: "gpt-oss-120b", enabled: true },
-  { profileKey: "gpt-oss-20b", enabled: true },
-  { profileKey: "grok-4.5", enabled: false },
-  { profileKey: "inkling", enabled: false },
-  { profileKey: "minimax-m3", enabled: true },
-  { profileKey: "ministral-8b-2512", enabled: true },
-  { profileKey: "mistral-medium-3.5", enabled: false },
-  { profileKey: "mistral-small-2603", enabled: true },
-];
+const args = process.argv.slice(2);
+const apply = args.includes("--apply");
+const path = args.find((arg) => !arg.startsWith("--"));
 
-const apply = process.argv.includes("--apply");
+if (path === undefined) {
+  console.error(
+    "usage: bun run models:apply -- <manifest.json> [--apply]\n" +
+      "produce one with `bun run models:export > fleet.json` on a working environment",
+  );
+  process.exit(2);
+}
+
+// Validated rather than trusted: this file comes off a disk and its entries
+// decide which models a team can pick. A malformed one must say so here, not
+// three passes later as an undefined key in a promote call.
+const manifestSchema = z.object({
+  exportedAt: z.string(),
+  entries: z.array(
+    z.object({
+      profileKey: z.string().min(1),
+      enabled: z.boolean(),
+      modelIds: z.record(z.string(), z.string()),
+      transport: z.string(),
+    }),
+  ),
+});
+
+const parsed = manifestSchema.safeParse(await Bun.file(path).json());
+if (!parsed.success) {
+  console.error(`${path} is not a fleet manifest: ${parsed.error.message}`);
+  process.exit(2);
+}
+const manifest = parsed.data;
+console.info(
+  `manifest ${path}: ${manifest.entries.length.toString()} published model(s), exported ${manifest.exportedAt}`,
+);
 
 // ---------------------------------------------------------------------------
-// 1. The roles the fleet cannot run without
+// 1. Create what is missing
 // ---------------------------------------------------------------------------
 //
-// Checked FIRST and reported even in a dry run. A bound role resolves from any
-// row whatever its status, so what breaks a turn is an ABSENT row, not an
-// unpublished one — and that is exactly what an un-synced environment has.
+// Before anything else, because promotion cannot act on a row that is not
+// there — and a bound key is exactly the row no sync will ever produce.
 
-const bound = boundProfileKeys();
+const created: string[] = [];
+const uncreatable: { profileKey: string; reason: string }[] = [];
+
+for (const entry of manifest.entries) {
+  const existing = await readLiveStateRow(entry.profileKey);
+  if (existing !== undefined) continue;
+
+  // Any spelling will do — `addFromCatalogue` consults every catalogue and
+  // matches on the id as any transport spells it.
+  const modelId = Object.values(entry.modelIds).find(
+    (id): id is string => typeof id === "string",
+  );
+  if (modelId === undefined) {
+    uncreatable.push({
+      profileKey: entry.profileKey,
+      reason: "the manifest carries no model id for it",
+    });
+    continue;
+  }
+  if (!apply) {
+    created.push(entry.profileKey);
+    continue;
+  }
+
+  const outcome = await addFromCatalogue({
+    modelId,
+    profileKey: entry.profileKey,
+    ...(isTransportId(entry.transport) ? { transport: entry.transport } : {}),
+    now: new Date(),
+  });
+  if (outcome.kind === "added" || outcome.kind === "key-exists") {
+    created.push(entry.profileKey);
+  } else {
+    uncreatable.push({ profileKey: entry.profileKey, reason: outcome.kind });
+  }
+}
+
+if (created.length > 0) {
+  console.info(
+    `\n${apply ? "created" : "would create"} ${created.length.toString()} row(s): ${created.join(", ")}`,
+  );
+}
+if (uncreatable.length > 0) {
+  console.warn(
+    `\n${uncreatable.length.toString()} row(s) could NOT be created:`,
+  );
+  for (const entry of uncreatable) {
+    console.warn(`  - ${entry.profileKey}: ${entry.reason}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 2. The roles the fleet cannot run without
+// ---------------------------------------------------------------------------
+//
+// A bound role resolves from any row whatever its status, so what breaks a
+// turn is an ABSENT row rather than an unpublished one. Checked after the
+// creation pass, since that pass exists to fix exactly this.
+
 const missingBound: string[] = [];
-for (const key of bound) {
+for (const key of boundProfileKeys()) {
   const row = await readLiveStateRow(key);
   if (row === null || row === undefined) missingBound.push(key);
 }
@@ -90,17 +156,15 @@ if (missingBound.length > 0) {
   );
   for (const key of missingBound) console.error(`  - ${key}`);
   console.error(
-    "\nTurns using those roles will fail. Run `bun run models:sync` in the jobs\n" +
-      "package first; if a key is still missing after a sync, add it explicitly\n" +
-      "with `models:admin add <catalogue-model-id>` — the catalogues do not\n" +
-      "carry it under the name the bindings expect.",
+    "\nTurns using those roles will fail. If the manifest lists them, the\n" +
+      "creation pass above says why it could not add them; if it does not, the\n" +
+      "manifest was exported from an environment missing them too.",
   );
-  process.exit(1);
+  if (apply) process.exit(1);
 }
-console.info(`✓ all ${bound.length.toString()} bound-role models have a row`);
 
 // ---------------------------------------------------------------------------
-// 2. What the manifest would change
+// 3. What the manifest would change
 // ---------------------------------------------------------------------------
 
 const toPromote: string[] = [];
@@ -108,25 +172,27 @@ const toEnable: string[] = [];
 const toDisable: string[] = [];
 const absent: string[] = [];
 
-for (const entry of MANIFEST) {
+const diff = async (
+  entry: z.infer<typeof manifestSchema>["entries"][number],
+): Promise<void> => {
   const row = await readLiveStateRow(entry.profileKey);
   if (row === null || row === undefined) {
     absent.push(entry.profileKey);
-    continue;
+    return;
   }
   if (row.status !== "published") toPromote.push(entry.profileKey);
   if (row.enabled !== entry.enabled) {
     (entry.enabled ? toEnable : toDisable).push(entry.profileKey);
   }
-}
+};
+for (const entry of manifest.entries) await diff(entry);
 
-console.info(`\nmanifest: ${MANIFEST.length.toString()} model(s)`);
-console.info(`  to promote: ${toPromote.length.toString()}`);
+console.info(`\n  to promote: ${toPromote.length.toString()}`);
 console.info(`  to enable:  ${toEnable.length.toString()}`);
 console.info(`  to disable: ${toDisable.length.toString()}`);
 if (absent.length > 0) {
   console.warn(
-    `  NOT DISCOVERED by the sync (skipped): ${absent.length.toString()} — ${absent.join(", ")}`,
+    `  still absent (skipped): ${absent.length.toString()} — ${absent.join(", ")}`,
   );
 }
 
@@ -141,17 +207,16 @@ if (!apply) {
 }
 
 // ---------------------------------------------------------------------------
-// 3. Write
+// 4. Write
 // ---------------------------------------------------------------------------
 //
-// `actor: cli` — this is an operator action and belongs in `model_admin_actions`
-// like any other, with no user id because no session made it.
+// `actor: cli` — an operator action, journalled in `model_admin_actions` like
+// any other, with no user id because no session made it.
 
 const actor = { kind: "cli" } as const;
 
 if (toPromote.length > 0) {
-  const entries = await promoteModels({ actor, profileKeys: toPromote });
-  for (const entry of entries) {
+  for (const entry of await promoteModels({ actor, profileKeys: toPromote })) {
     console.info(`  promote ${entry.profileKey}: ${entry.outcome.kind}`);
   }
 }
@@ -160,24 +225,22 @@ if (toPromote.length > 0) {
 // from the price cap. Where the manifest and the cap disagree, the manifest is
 // the environment we are reproducing, and it wins.
 if (toEnable.length > 0) {
-  const entries = await setModelsEnabled({
+  for (const entry of await setModelsEnabled({
     actor,
     profileKeys: toEnable,
     enabled: true,
-  });
-  for (const entry of entries) {
+  })) {
     console.info(`  enable ${entry.profileKey}: ${entry.outcome.kind}`);
   }
 }
 
 if (toDisable.length > 0) {
-  const entries = await setModelsEnabled({
+  for (const entry of await setModelsEnabled({
     actor,
     profileKeys: toDisable,
     enabled: false,
     reason: "cost",
-  });
-  for (const entry of entries) {
+  })) {
     console.info(`  disable ${entry.profileKey}: ${entry.outcome.kind}`);
   }
 }

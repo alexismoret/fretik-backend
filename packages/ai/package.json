@@ -31,7 +31,8 @@
     "models:admin": "bun run scripts/model-admin.ts",
     "backfill:orphan-think": "bun run scripts/backfill-orphan-think-tags.ts",
     "backfill:discovery-vectors": "bun run scripts/backfill-discovery-vectors.ts",
-    "models:apply-manifest": "bun run scripts/apply-fleet-manifest.ts"
+    "models:export": "bun run scripts/export-fleet.ts",
+    "models:apply": "bun run scripts/apply-fleet-manifest.ts"
   },
   "dependencies": {
     "@ai-sdk/gateway": "4.0.69",

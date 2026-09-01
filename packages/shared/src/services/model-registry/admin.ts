@@ -14,7 +14,6 @@ import {
   type DynamicProfile,
   type PricingSnapshot,
   type PromoteOutcome,
-  type ProviderPoolByTransport,
   type RetireOutcome,
   type SetEnabledOutcome,
   type SetTransportOutcome,
@@ -311,26 +310,19 @@ export const retireModel = async (
   return { kind: "retired", previousStatus: state.status };
 };
 
-/** Replace a model's vetted pool for one transport. */
-export const setProviderPool = async (
-  profileKey: string,
-  transport: TransportId,
-  pool: ProviderPoolByTransport[TransportId],
-): Promise<void> => {
-  const state = await readLiveStateRow(profileKey);
-  if (!state) throw new Error(`Unknown model "${profileKey}"`);
-  await db
-    .update(modelLiveState)
-    .set({
-      providerPool: { ...state.providerPool, [transport]: pool },
-      // A pool the operator just widened by hand is no longer "widened by the
-      // breaker because the vetted list ran out".
-      poolWidened: false,
-      source: "admin",
-    })
-    .where(eq(modelLiveState.profileKey, profileKey));
-  await invalidateLiveRegistry();
-};
+/*
+ * `setProviderPool` was here and is deleted (2026-09-01). It had no caller
+ * anywhere — not the CLI, not the HTTP handler, not the front end — and it was
+ * not a harmless spare: it set `poolWidened: false` alongside the write, so
+ * wiring it up would have silently cancelled a breaker widening and re-applied
+ * an `only` list the breaker had just been forced to abandon.
+ *
+ * Nothing is lost. The vetted pool is DERIVED and rewritten every night by the
+ * sync from the endpoints that pass policy, ordered by throughput, carrying
+ * `ignore` forward. That is the automatic half working as intended; the manual
+ * half an operator actually needs is quarantine and release, which go through
+ * the breaker and keep their audit trail.
+ */
 
 /**
  * Add a model straight from the catalogue, with a profile derived from its

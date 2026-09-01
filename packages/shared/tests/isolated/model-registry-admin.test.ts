@@ -8,7 +8,7 @@ import type {
   LiveModelState,
   PricingSnapshot,
 } from "../../src/model-registry/types";
-import { mockModule } from "./mock-module";
+import { mockModule } from "../unit/mock-module";
 
 /**
  * The operator writes on `model_live_state`.
@@ -117,19 +117,24 @@ const tableName = (table: unknown): string =>
       : "unknown";
 
 /**
- * Re-installed before EVERY test, not just once at load.
+ * WHY THIS SUITE LIVES IN `tests/isolated/` AND NOT `tests/unit/`.
  *
- * `mock.module` is process-wide and lands when a file is LOADED, while tests
- * run afterwards — so of the eleven suites that fake `../../src/db`, the one
- * bun happens to load last dictates the fake every test in the process sees.
- * That order is `readdir` order: alphabetical on APFS, hash order on ext4. This
- * suite passed locally and failed all 25 of its tests on CI for exactly that
- * reason, and so did `model-registry-breaker`.
+ * It fakes `../../src/db`, `…/live` and `…/alerts`, and so do ten other suites
+ * under `tests/unit`. `mock.module` is process-wide, so which fake a test
+ * actually sees is decided by the order bun loaded the files in — `readdir`
+ * order, which is alphabetical on APFS and hash order on ext4. This suite and
+ * `model-registry-breaker` passed on every developer machine and failed all 37
+ * of their tests on CI, and no local ordering we could construct reproduced it.
  *
- * Re-asserting our own overrides in `beforeEach` makes the load order
- * irrelevant: whatever another file installed, these are on top when our tests
- * run. Safe to repeat — every fake below closes over the mutable fixtures that
- * `beforeEach` resets anyway.
+ * `bun test tests/isolated` runs them in their OWN process, where no other file
+ * installs a competing mock. That removes the variable instead of betting on
+ * it, which is the only honest option for a failure whose trigger we could not
+ * reproduce.
+ *
+ * Do NOT re-install these mocks per test: `mock.module` does not take effect
+ * synchronously, so calling it from `beforeEach` makes each test read the
+ * PREVIOUS test's fixtures. That was tried, and it produced a clean
+ * off-by-one — `no-live-row` answering `last-resort`, and so on.
  */
 const installMocks = async (): Promise<void> => {
   await mockModule("../../src/db", {
@@ -206,7 +211,7 @@ const {
 const liveWrites = () =>
   updates.filter((entry) => entry.table === "model_live_state");
 
-beforeEach(async () => {
+beforeEach(() => {
   updates.length = 0;
   inserts.length = 0;
   conflicts.length = 0;
@@ -216,7 +221,6 @@ beforeEach(async () => {
   extraStates = [];
   throwOnKey = undefined;
   storedAlert = { kind: "quarantine", modelKey: "acme-m1" };
-  await installMocks();
 });
 
 describe("setTransport", () => {

@@ -43,16 +43,25 @@ import { mock } from "bun:test";
  * SPREADING IS NOT ENOUGH WHEN TWO SUITES FAKE THE SAME MODULE.
  *
  * The hazard above is about a factory that DELETES exports. This one survives
- * it: mocks are installed while a file LOADS, and tests run afterwards, so of
- * the eleven suites here that fake `../../src/db` the one bun loads last
- * dictates the fake every test in the process sees. Order is `readdir` order —
- * alphabetical on APFS, hash order on ext4 — which is why
- * `model-registry-admin` and `model-registry-breaker` passed on every developer
- * machine and failed all 37 of their tests on CI.
+ * it: mocks land while a file LOADS and tests run afterwards, so among the
+ * suites here that fake `../../src/db` — there are ten — which fake a given
+ * test sees depends on bun's load order. That is `readdir` order: alphabetical
+ * on APFS, hash order on ext4.
  *
- * A suite that fakes a module another suite also fakes must therefore call its
- * own `installMocks()` from `beforeEach`, not once at load. See those two files
- * for the shape. Suites that fake a module nobody else touches are unaffected.
+ * `model-registry-admin` and `model-registry-breaker` failed all 37 of their
+ * tests on CI while passing locally in every order we could construct, so the
+ * trigger was never reproduced — only its class. They now run in their own
+ * process (`tests/isolated`, wired into the `test` script), which removes the
+ * variable rather than betting on it.
+ *
+ * Two things learned the hard way, worth not repeating:
+ *
+ *  - **Do not re-install mocks from `beforeEach`.** `mock.module` does not take
+ *    effect synchronously, so every test then reads the PREVIOUS test's
+ *    fixtures — a clean off-by-one that looks like a logic bug.
+ *  - A suite whose subject ANOTHER suite mocks cannot be fixed from inside
+ *    itself: it captures its subject once, at its top-level `await import`,
+ *    and whatever was installed at that instant is what it keeps.
  */
 export const mockModule = async (
   specifier: string,

@@ -9,7 +9,7 @@
     "lint:fix": "oxlint --type-aware --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "test": "bun test tests/unit",
+    "test": "bun test tests/unit && bun test tests/isolated",
     "check": "bun run typecheck && bun run lint && bun run format:check",
     "db:generate": "bun --env-file=../../.env drizzle-kit generate",
     "db:migrate": "bun --env-file=../../.env drizzle-kit migrate",

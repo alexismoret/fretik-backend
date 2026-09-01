@@ -294,6 +294,8 @@ export const modelAlerts = pgTable(
         | "quarantine-skipped"
         | "release"
         | "release-failed"
+        /** Freed at its release date on a transport nothing can probe. */
+        | "quarantine-released-unprobed"
         | "model-disabled"
         | "policy-fail"
         | "new-candidate"

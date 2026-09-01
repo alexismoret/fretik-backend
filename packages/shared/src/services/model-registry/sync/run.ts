@@ -55,10 +55,8 @@ import {
   fetchArtificialAnalysis,
   matchAaRecord,
 } from "./sources/artificial-analysis";
-import {
-  probeProviderReachable,
-  probeZeroDataRetention,
-} from "./sources/zdr-probe";
+import { probeForTransport, wireNameFor } from "./sources/provider-probe";
+import { type ProbeVerdict, probeZeroDataRetention } from "./sources/zdr-probe";
 
 /**
  * The nightly sync: gather what is true about every model right now, grade it,
@@ -349,37 +347,87 @@ const releaseDateFor = (
 };
 
 /**
- * Re-probe every quarantine whose release date has passed, pinning the call to
- * the one provider. A clean probe releases it through the breaker's own
- * `releaseProvider` (which also re-narrows the pool and lifts `lastResort`); a
- * refusal extends the quarantine in place, because the release date is a review
- * trigger and not an amnesty.
+ * Re-probe every quarantine whose release date has passed, on the transport
+ * the quarantine was recorded against, pinned to the one provider. A clean
+ * probe releases it through the breaker's own `releaseProvider` (which also
+ * re-narrows the pool and lifts `lastResort`); a refusal extends the
+ * quarantine in place, because the release date is a review trigger and not an
+ * amnesty.
  *
- * With no gateway key, NOTHING is released: a quarantine we cannot verify stays.
- * Returns the quarantine list to persist, or `undefined` when nothing changed.
+ * This used to be gateway-only in three separate ways — it read
+ * `row.modelIds.gateway`, gave up when there was none, and posted to the
+ * gateway whatever transport the quarantine came from — on a fleet routing
+ * almost entirely through OpenRouter. So almost nothing was ever re-probed:
+ * past its release date the entry simply stopped filtering (every reader
+ * compares `releaseAt` to now) and stayed on the row forever, a record of a
+ * decision nobody revisited.
+ *
+ * A transport with NO probe — Scaleway serves each model from one host, so
+ * there is nothing to pin — releases OPTIMISTICALLY once the date passes, with
+ * an alert saying so. That is the deliberate direction: the alternative is a
+ * quarantine that can never end, and the safety net is the breaker itself,
+ * which will re-quarantine within a handful of corroborating incidents if the
+ * host is still misbehaving. Keeping an unverifiable exclusion forever costs a
+ * host permanently on evidence nobody can refresh.
+ *
+ * `undefined` when nothing changed; otherwise the quarantine list to persist.
  */
 const reprobeExpiredQuarantines = async (
   ctx: SyncContext,
   row: LiveModelState,
 ): Promise<QuarantineEntry[] | undefined> => {
-  const gatewayId = row.modelIds.gateway;
   const expired = row.quarantinedProviders.filter(
     (entry) => new Date(entry.releaseAt).getTime() <= ctx.now.getTime(),
   );
-  if (expired.length === 0 || gatewayId === undefined) return undefined;
+  if (expired.length === 0) return undefined;
 
   const kept: QuarantineEntry[] = [...row.quarantinedProviders];
   let changed = false;
 
   for (const entry of expired) {
-    let verdict: Awaited<ReturnType<typeof probeProviderReachable>>;
-    try {
-      verdict = await probeProviderReachable(gatewayId, entry.provider);
-    } catch (err: unknown) {
+    const prober = probeForTransport(entry.transport);
+    const modelId = row.modelIds[entry.transport];
+    const wireName = wireNameFor(
+      row.endpointStats,
+      entry.provider,
+      entry.transport,
+    );
+
+    let verdict: ProbeVerdict | undefined;
+    // Whether anything actually asked. The journal and the alert must not
+    // describe an unverified release as a successful probe.
+    let probed = true;
+    if (prober === undefined || modelId === undefined) {
+      probed = false;
+      // Nothing can ask the question on this transport. Release and say so.
+      await ctx.alert({
+        kind: "quarantine-released-unprobed",
+        severity: "warning",
+        modelKey: row.profileKey,
+        provider: entry.provider,
+        message: `${entry.provider} reached its release date on ${entry.transport}, which cannot be probed${prober === undefined ? " (one host serves every model there, so there is nothing to pin against)" : " (the row carries no model id for it)"}. Released without verification — the breaker will re-quarantine it if the behaviour returns.`,
+        context: { transport: entry.transport, kind: entry.kind },
+      });
+      verdict = { ok: true, detail: "released without a probe" };
+    } else if (wireName === undefined) {
+      // A probe we cannot address correctly must not run: an unknown name is
+      // rejected by the gateway and silently ignored by OpenRouter, so its
+      // refusal would be indistinguishable from the host's own — which is how
+      // a quarantine on a differently-spelled host got extended every week
+      // forever. Leave it and say what is missing.
       ctx.stats.errors.push(
-        `${row.profileKey}: re-probe of ${entry.provider} failed: ${message(err)}`,
+        `${row.profileKey}: no ${entry.transport} wire name recorded for ${entry.provider} — re-probe skipped rather than sent under the wrong name`,
       );
       continue;
+    } else {
+      try {
+        verdict = await prober.probe(modelId, wireName);
+      } catch (err: unknown) {
+        ctx.stats.errors.push(
+          `${row.profileKey}: re-probe of ${entry.provider} failed: ${message(err)}`,
+        );
+        continue;
+      }
     }
     // No key, or a failure that says nothing about the provider: leave the
     // quarantine exactly as it is rather than releasing or extending blindly.
@@ -391,7 +439,14 @@ const reprobeExpiredQuarantines = async (
           modelKey: row.profileKey,
           provider: entry.provider,
           transport: entry.transport,
-          reason: `Release re-probe pinned to ${entry.provider} succeeded ${ctx.now.toISOString().slice(0, 10)}.`,
+          // The two paths reach here for different reasons and the journal has
+          // to say which: one host proved itself, the other was let out
+          // because nothing could ask. Reading "re-probe succeeded" on a
+          // release nobody verified is exactly the kind of confident-sounding
+          // record that stops an investigation early.
+          reason: probed
+            ? `Release re-probe pinned to ${entry.provider} succeeded ${ctx.now.toISOString().slice(0, 10)}.`
+            : `Release date reached on ${entry.transport}, which cannot be probed — released unverified ${ctx.now.toISOString().slice(0, 10)}.`,
           actor: { kind: "sync" },
         });
         // The entry was on the row when this pass read it, so anything but a

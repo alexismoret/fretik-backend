@@ -81,14 +81,21 @@ export const probeZeroDataRetention = async (
   probe(gatewayModelId, { zeroDataRetention: true });
 
 /**
- * Is one specific upstream serving this model again? The re-probe a quarantine
- * gets when its release date arrives — same minimal completion, pinned to the
- * one host with `only`, so a success means THAT provider answered rather than
- * the pool having quietly routed around it. `undefined` is unverified here too:
- * a quarantine is never lifted on a probe that did not run.
+ * Is one specific upstream serving this model again ON THE GATEWAY? The
+ * gateway's half of the release re-probe — same minimal completion, pinned to
+ * the one host with `only`, so a success means THAT provider answered rather
+ * than the pool having quietly routed around it. `undefined` is unverified
+ * here too: a quarantine is never lifted on a probe that did not run.
+ *
+ * `wireName` is what the GATEWAY's filter expects, not our identity name. The
+ * two diverge on every host the catalogues spell differently, and the gateway
+ * rejects an unknown name outright — a refusal indistinguishable from the
+ * host's own, which is how this call used to extend a quarantine every week
+ * forever. `sources/provider-probe.ts` resolves the name and picks the
+ * transport; this function no longer decides either.
  */
-export const probeProviderReachable = async (
+export const probeGatewayProviderReachable = async (
   gatewayModelId: string,
-  provider: string,
+  wireName: string,
 ): Promise<ProbeVerdict | undefined> =>
-  probe(gatewayModelId, { only: [provider] });
+  probe(gatewayModelId, { only: [wireName] });

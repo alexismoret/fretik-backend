@@ -197,9 +197,20 @@ export interface EndpointStat {
   throughputP50?: number;
   throughputP95?: number;
   latencyP50Ms?: number;
+  /** OpenRouter's percentile objects carry p90, not p95 — kept apart so a p90 is never presented as the value p95 promises. */
+  latencyP90Ms?: number;
   latencyP95Ms?: number;
   /** Source-reported status; `0` is healthy on the Gateway. */
   status?: number;
+  /**
+   * When the MEASUREMENT fields above (uptime*, throughput*, latency*) were
+   * observed, ISO. Absent = never measured. Same contract as
+   * `AaMetrics.fetchedAt`: a pass that could not measure keeps the previous
+   * figures and this stamp says how old a kept figure is — without it, missing
+   * and never-measured are indistinguishable, which is how the fleet ran for
+   * days on percentiles nobody had ever fetched.
+   */
+  measuredAt?: string;
 }
 
 /** The incident kinds the runtime detectors can raise. */
@@ -571,12 +582,33 @@ export type DisabledReason = (typeof DISABLED_REASONS)[number];
 
 export type PolicySeverity = "hard" | "soft";
 
+/**
+ * Why a rule the policy sets could not be evaluated.
+ *
+ * - `not-measured` — the data should exist and did not arrive this pass: a
+ *   missing credential, a host with no recent traffic, an AA record we could
+ *   not match. Repairable, so it costs health the way a soft failure does.
+ * - `not-published-by-source` — no catalogue consulted for this row can ever
+ *   publish the figure (Scaleway publishes no percentiles at all). Structural:
+ *   visible in the report, free in the score, because nothing an operator does
+ *   tonight can change it.
+ */
+export type PolicyRuleSkipReason = "not-measured" | "not-published-by-source";
+
 export interface PolicyRuleResult {
   rule: string;
   passed: boolean;
   severity: PolicySeverity;
   /** Human-readable, with the measured value in it — this is what alerts quote. */
   detail: string;
+  /**
+   * Present when the rule could not be evaluated. `passed` is false, but a
+   * skipped rule counts in NEITHER failure tally: absence of data is not
+   * evidence of failure, and it must never read as success either — for months
+   * these rules simply vanished from the report, so "we did not check" rendered
+   * exactly like "everything passed".
+   */
+  skipped?: PolicyRuleSkipReason;
 }
 
 export interface PolicyReport {
@@ -585,6 +617,8 @@ export interface PolicyReport {
   hardFailures: number;
   softFailures: number;
   rules: PolicyRuleResult[];
+  /** Rules that could not be evaluated. Optional: reports graded before 2026-09-01 predate it. */
+  skippedRules?: number;
   evaluatedAt: string;
   /** Providers dropped while building the allowed pool, with the reason. */
   excludedProviders: { provider: string; reason: string }[];

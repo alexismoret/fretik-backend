@@ -261,8 +261,16 @@ export const modelSyncRuns = pgTable("model_sync_runs", {
   id: uuid("id")
     .default(sql`uuid_generate_v7()`)
     .primaryKey(),
+  /**
+   * `degraded` is the status this table lacked, and its absence cost the fleet
+   * a week of silently unmeasured percentiles: a pass that reaches every
+   * catalogue and writes every row is not `ok` if it graded them without a
+   * credential it needed. `partial` stays what it always was — some models
+   * failed — while `degraded` means all of them succeeded on less evidence
+   * than the run was supposed to have.
+   */
   status: varchar("status", { length: 16 })
-    .$type<"running" | "ok" | "partial" | "failed">()
+    .$type<"running" | "ok" | "degraded" | "partial" | "failed">()
     .notNull(),
   stats: jsonb("stats").$type<Record<string, number | string[] | string>>(),
   startedAt: timestamp("started_at", { withTimezone: true }).notNull(),
@@ -293,6 +301,7 @@ export const modelAlerts = pgTable(
         | "price-jump"
         | "critical-role-model"
         | "sync-failed"
+        | "sync-degraded"
         | "unknown-provider"
       >()
       .notNull(),

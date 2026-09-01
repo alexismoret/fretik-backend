@@ -81,6 +81,12 @@ export const SCALEWAY_CATALOGUE_CAPABILITIES: CatalogueCapabilities = {
   // rather than advertised here as a per-model hint.
   publishesZdrHint: false,
   publishesReasoningContract: false,
+  // No throughput, no latency, no uptime, ever — see the header. Declaring it
+  // is what lets a skipped percentile rule say "structural" instead of blaming
+  // a credential nobody forgot.
+  publishesPercentiles: false,
+  publishesToolChoice: false,
+  publishesUptime: false,
 };
 
 const listSchema = z.object({

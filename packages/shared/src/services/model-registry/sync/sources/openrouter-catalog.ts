@@ -86,6 +86,12 @@ export const OPENROUTER_CATALOGUE_CAPABILITIES: CatalogueCapabilities = {
   // The only source that does. It is why a promoted model can offer a depth
   // menu at all.
   publishesReasoningContract: true,
+  // `throughput_last_30m` / `latency_last_30m` — but AUTH-GATED: without
+  // `OPENROUTER_API_KEY` they come back null on a 200 for every endpoint,
+  // which is why a missing key must degrade the run rather than pass silently.
+  publishesPercentiles: true,
+  publishesToolChoice: true,
+  publishesUptime: true,
 };
 
 const toEntry = (raw: z.infer<typeof entrySchema>): CatalogueEntry => ({

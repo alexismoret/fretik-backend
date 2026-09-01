@@ -34,8 +34,15 @@ import {
  *   indistinguishable from a measured one after the merge. `uptime_last_1d`,
  *   which the policy's floor reads, maps directly, and `uptime_last_5m` now has
  *   a field of its own rather than being rounded into a neighbour.
- * - `p90` / `p99` — the percentile objects carry no p95, and the nearest
- *   neighbour is not the value the field promises.
+ * - `p99` — no field promises it, and rounding it into `latencyP95Ms` would
+ *   make a fabricated value indistinguishable from a measured one.
+ *
+ * `p90` DOES land, in `latencyP90Ms` — its own field, never `latencyP95Ms`.
+ * The TTFT rule reads p95 and falls back to p90 while naming which it used:
+ * this source publishes no p95 at all, so the previous "map nothing" left the
+ * rule permanently unevaluable for every OpenRouter row — a ceiling nobody
+ * could ever fail. A near neighbour under its own name is evidence; the same
+ * number wearing `p95` would be a fake.
  */
 
 const percentileSchema = z
@@ -79,6 +86,7 @@ const toStat = (
   raw: z.infer<typeof endpointSchema>,
   modelId: string,
   zdrRoutes: Set<string> | undefined,
+  measuredAt: string,
 ): EndpointStat | undefined => {
   const pricing = toPricingSnapshot(raw.pricing);
   if (pricing === undefined || raw.context_length == null) return undefined;
@@ -132,7 +140,18 @@ const toStat = (
     uptime1d: raw.uptime_last_1d ?? undefined,
     throughputP50: raw.throughput_last_30m?.p50 ?? undefined,
     latencyP50Ms: raw.latency_last_30m?.p50 ?? undefined,
+    latencyP90Ms: raw.latency_last_30m?.p90 ?? undefined,
     status: raw.status ?? undefined,
+    // Stamped only when the response actually carried a measurement. A stamp
+    // on an endpoint whose percentiles came back null would claim we measured
+    // it — which is precisely the confusion that let an unauthenticated pass
+    // pass for a healthy one.
+    ...(raw.throughput_last_30m?.p50 == null &&
+    raw.latency_last_30m?.p50 == null &&
+    raw.uptime_last_1d == null &&
+    raw.uptime_last_5m == null
+      ? {}
+      : { measuredAt }),
   };
 };
 
@@ -164,10 +183,11 @@ export const fetchOpenRouterEndpoints = async (
     );
   }
   const stats: EndpointStat[] = [];
+  const measuredAt = new Date().toISOString();
   for (const raw of parsed.data.data.endpoints ?? []) {
     const endpoint = endpointSchema.safeParse(raw);
     if (!endpoint.success) continue;
-    const stat = toStat(endpoint.data, modelId, zdrRoutes);
+    const stat = toStat(endpoint.data, modelId, zdrRoutes, measuredAt);
     if (stat !== undefined) stats.push(stat);
   }
   return stats;

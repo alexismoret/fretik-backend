@@ -58,6 +58,7 @@ const responseSchema = z.object({
 
 const toStat = (
   raw: z.infer<typeof endpointSchema>,
+  measuredAt: string,
 ): EndpointStat | undefined => {
   const pricing = toPricingSnapshot(raw.pricing);
   // An endpoint the source neither sizes nor prices cannot be budgeted against
@@ -90,13 +91,33 @@ const toStat = (
     latencyP50Ms: raw.latency_last_1h?.p50 ?? undefined,
     latencyP95Ms: raw.latency_last_1h?.p95 ?? undefined,
     status: raw.status ?? undefined,
+    // Only when something was actually measured — an idle host reports null
+    // percentiles here, and stamping it would age out a real figure the
+    // carry-forward could otherwise have kept.
+    ...(raw.throughput_last_1h?.p50 == null &&
+    raw.latency_last_1h?.p50 == null &&
+    raw.uptime_last_1d == null &&
+    raw.uptime_last_1h == null
+      ? {}
+      : { measuredAt }),
   };
 };
 
 /**
- * Endpoints for one gateway model id. Throws on any non-2xx, INCLUDING 404: a
- * row that names a gateway id the gateway no longer serves is a fact the run
- * has to surface, not absorb.
+ * Endpoints for one gateway model id, or `[]` on 404 — the same answer
+ * OpenRouter's reader gives, and for the same reason: the catalogues do not
+ * overlap, so "this transport does not serve this model" is normal traffic.
+ *
+ * This USED to throw on 404, deliberately, to surface a row naming an id the
+ * gateway had dropped. Two things make that wrong now. The asymmetry was
+ * load-bearing in the worst way: every row carries ids for every transport
+ * that ever matched it, and the sync enriches from all of them, so one
+ * withdrawn gateway id turned every pass `partial` for a model OpenRouter was
+ * serving perfectly. And the fact it existed to surface is now detected
+ * properly elsewhere and more sharply — `catalog-removed` compares the row
+ * against the transport's own catalogue LISTING (a 404 on one endpoint fetch
+ * cannot tell a delisting from a hiccup), and a published row left with an
+ * empty pool still trips the write guard and its critical alert.
  *
  * `timeoutMs` exists for callers who are somebody's open request rather than a
  * nightly job: the default 20 s is right for a sync that would rather wait than
@@ -111,6 +132,7 @@ export const fetchGatewayEndpoints = async (
     options?.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs },
   );
   if (!result.ok) {
+    if (result.status === 404) return [];
     throw new Error(
       `gateway endpoints GET ${modelId} failed (${result.status.toString()}): ${result.detail}`,
     );
@@ -120,10 +142,11 @@ export const fetchGatewayEndpoints = async (
     throw new Error(`gateway endpoints ${modelId}: unexpected response shape`);
   }
   const stats: EndpointStat[] = [];
+  const measuredAt = new Date().toISOString();
   for (const raw of parsed.data.data.endpoints ?? []) {
     const endpoint = endpointSchema.safeParse(raw);
     if (!endpoint.success) continue;
-    const stat = toStat(endpoint.data);
+    const stat = toStat(endpoint.data, measuredAt);
     if (stat !== undefined) stats.push(stat);
   }
   return stats;

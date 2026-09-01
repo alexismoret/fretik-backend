@@ -122,13 +122,32 @@ describe("the tool-choice rule", () => {
       new Date(),
     ).rules.find((r) => r.rule === "tool-choice");
 
-  test("is absent when NO endpoint reports the field", () => {
-    // Silence is not a verdict. Only one source publishes this, so grading a
-    // pool that never answered would fail every gateway-only model for a
-    // question nobody asked it.
-    expect(
-      graded([endpoint({ provider: "quiet", hasZdr: true })]),
-    ).toBeUndefined();
+  test("is reported as SKIPPED, not omitted, when no endpoint reports the field", () => {
+    // Silence is still not a verdict — the rule must not FAIL a pool that was
+    // never asked. But it used to vanish from the report entirely, which read
+    // exactly like a pass to every reader downstream. It now says which of the
+    // two happened, and counts as neither a pass nor a failure.
+    const result = graded([endpoint({ provider: "quiet", hasZdr: true })]);
+    expect(result).toBeDefined();
+    expect(result?.skipped).toBe("not-measured");
+    expect(result?.passed).toBe(false);
+  });
+
+  test("names a structural gap as such when no source could ever answer", () => {
+    // The difference that decides whether anyone should act: a Scaleway row is
+    // not missing a credential, it is on a catalogue that publishes no
+    // `supports_tool_choice` at all. Only `not-measured` is somebody's problem.
+    const result = evaluatePolicy(
+      PUBLISHED_POLICY,
+      {
+        endpoints: [endpoint({ provider: "quiet", hasZdr: true })],
+        excludedProviders: [],
+        requiresTools: true,
+        sourcePublishes: { toolChoice: false },
+      },
+      new Date(),
+    ).rules.find((r) => r.rule === "tool-choice");
+    expect(result?.skipped).toBe("not-published-by-source");
   });
 
   test("fails SOFTLY when a reporting pool cannot be forced", () => {

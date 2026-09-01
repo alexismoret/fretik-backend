@@ -30,6 +30,9 @@ const capabilities = (
   publishesReleaseDate: false,
   publishesZdrHint: false,
   publishesReasoningContract: false,
+  publishesPercentiles: false,
+  publishesToolChoice: false,
+  publishesUptime: false,
   ...over,
 });
 

@@ -231,20 +231,38 @@ const endpointStatSchema = z.object({
   throughputP50: z.number().optional(),
   throughputP95: z.number().optional(),
   latencyP50Ms: z.number().optional(),
+  /** OpenRouter publishes p90 and no p95; kept apart so neither wears the other's name. */
+  latencyP90Ms: z.number().optional(),
   latencyP95Ms: z.number().optional(),
   status: z.number().optional(),
+  /**
+   * When the measurement fields above were observed. Absent = never measured,
+   * which a reader must be able to tell from a figure taken tonight — the UI
+   * shows a kept figure's age rather than presenting it as current.
+   */
+  measuredAt: z.date().optional(),
 });
 
 const policyReportSchema = z.object({
   passed: z.boolean(),
   hardFailures: z.number(),
   softFailures: z.number(),
+  /** Rules the policy sets that had no data to grade. Absent on reports predating 2026-09-01. */
+  skippedRules: z.number().optional(),
   rules: z.array(
     z.object({
       rule: z.string(),
       passed: z.boolean(),
       severity: z.enum(["hard", "soft"]),
       detail: z.string(),
+      /**
+       * Present when the rule could not be evaluated, and `passed` is then
+       * false without being a failure. `not-measured` is repairable (a
+       * credential, an idle host); `not-published-by-source` is structural.
+       * A client that renders `passed` alone would show every skip as a
+       * failure — which is the opposite of the old bug and just as wrong.
+       */
+      skipped: z.enum(["not-measured", "not-published-by-source"]).optional(),
     }),
   ),
   evaluatedAt: z.date(),
@@ -340,7 +358,16 @@ const toWireEndpoint = (
   for (const [transport, id] of Object.entries(stat.wireNames)) {
     if (id !== undefined) wireNames[transport] = id;
   }
-  return { ...stat, wireNames };
+  // `measuredAt` is an ISO string in the jsonb and a real `Date` on the wire,
+  // like `aaMetrics.fetchedAt` above. The client rehydrates every ISO string
+  // into a `Date` anyway, so a schema saying `string` would be a type that
+  // lies — the defect that once killed a sort silently.
+  const { measuredAt, ...rest } = stat;
+  return {
+    ...rest,
+    wireNames,
+    ...(measuredAt === undefined ? {} : { measuredAt: new Date(measuredAt) }),
+  };
 };
 
 const toWireAa = (

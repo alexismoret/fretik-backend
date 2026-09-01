@@ -35,10 +35,23 @@ import { MODEL_SYNC_JOB, MODEL_SYNC_QUEUE } from "../queues/names";
 export const runModelSyncSweep = async (): Promise<ModelSyncResult> => {
   const { status, stats } = await runModelSync();
   console.info(
-    `[model-sync] ${status} — seen ${stats.modelsSeen.toString()} · updated ${stats.modelsUpdated.toString()} · candidates ${stats.candidatesAdded.toString()} · policy failures ${stats.policyFailures.toString()} · quarantines released ${stats.quarantinesReleased.toString()} · alerts ${stats.alerts.toString()}`,
+    `[model-sync] ${status} — seen ${stats.modelsSeen.toString()} · updated ${stats.modelsUpdated.toString()} · candidates ${stats.candidatesAdded.toString()} · policy failures ${stats.policyFailures.toString()} · quarantines released ${stats.quarantinesReleased.toString()} · alerts ${stats.alerts.toString()} · measured ${stats.endpointsWithThroughput.toString()}/${stats.endpointsExpectingPercentiles.toString()} endpoint(s)`,
   );
   for (const error of stats.errors) {
     console.error(`[model-sync] ${error}`);
+  }
+  // A degraded pass writes everything and grades it on missing evidence, so
+  // the counts above look healthy. This line is the only thing in the log that
+  // says otherwise — the alert row is the durable channel, but a log an
+  // operator is already reading beats one they have to go and query.
+  if (status === "degraded") {
+    console.error(
+      `[model-sync] DEGRADED — ${
+        stats.missingCapabilities.length > 0
+          ? `graded without ${stats.missingCapabilities.join(", ")}`
+          : "credentials present but almost nothing was measured"
+      }; ${stats.rulesSkippedNotMeasured.toString()} policy rule(s) could not be evaluated`,
+    );
   }
   return { status, stats };
 };

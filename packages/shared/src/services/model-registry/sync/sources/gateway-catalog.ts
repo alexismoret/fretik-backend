@@ -64,6 +64,11 @@ export const GATEWAY_CATALOGUE_CAPABILITIES: CatalogueCapabilities = {
   // Advertises the `reasoning` PARAMETER on every endpoint but names no ladder,
   // so it can say a model thinks and not which depths it accepts.
   publishesReasoningContract: false,
+  // `throughput_last_1h` / `latency_last_1h` per endpoint, public — null only
+  // for a host with no recent traffic.
+  publishesPercentiles: true,
+  publishesToolChoice: false,
+  publishesUptime: true,
 };
 
 /**

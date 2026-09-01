@@ -119,10 +119,131 @@ export const mergeEndpointStats = (
       throughputP50: stat.throughputP50 ?? extra.throughputP50,
       throughputP95: stat.throughputP95 ?? extra.throughputP95,
       latencyP50Ms: stat.latencyP50Ms ?? extra.latencyP50Ms,
+      latencyP90Ms: stat.latencyP90Ms ?? extra.latencyP90Ms,
       latencyP95Ms: stat.latencyP95Ms ?? extra.latencyP95Ms,
       status: stat.status ?? extra.status,
+      // The NEWER stamp: both halves were observed this pass, and the merged
+      // row is as fresh as its freshest evidence.
+      measuredAt:
+        stat.measuredAt !== undefined && extra.measuredAt !== undefined
+          ? stat.measuredAt >= extra.measuredAt
+            ? stat.measuredAt
+            : extra.measuredAt
+          : (stat.measuredAt ?? extra.measuredAt),
     };
   });
+};
+
+/**
+ * Fold two endpoint lists into their UNION, field-merged on collision with `a`
+ * winning. This is what an ACCUMULATOR needs and `mergeEndpointStats` is not:
+ * that one maps over its primary alone, so seeding an empty accumulator and
+ * merging each fetch into it yields `[]` forever — the exact bug that left the
+ * cross-transport enrichment loop dead from the day it was written, silently,
+ * because an empty enrichment merges into an unchanged primary.
+ */
+export const unionEndpointStats = (
+  a: EndpointStat[],
+  b: EndpointStat[],
+): EndpointStat[] => {
+  const have = new Set(a.map((stat) => normalizeProviderName(stat.provider)));
+  return [
+    ...mergeEndpointStats(a, b),
+    ...b.filter((stat) => !have.has(normalizeProviderName(stat.provider))),
+  ];
+};
+
+/**
+ * Days a measurement survives without being re-observed. Within the window a
+ * pass that could not measure keeps the previous figure (stamped with its
+ * original `measuredAt`, so its age stays legible); past it the value falls,
+ * because a fossil presented next to fresh numbers is a lie with a good seat.
+ * 14 days = two weekly repricing/requantisation cycles — long enough to ride
+ * out an idle host or a source incident, short enough that a dead credential
+ * cannot coast on stale figures for a month.
+ */
+export const STAT_CARRY_MAX_DAYS = 14;
+
+const MEASUREMENT_FIELDS = [
+  "uptime5m",
+  "uptime15m",
+  "uptime1h",
+  "uptime1d",
+  "throughputP50",
+  "throughputP95",
+  "latencyP50Ms",
+  "latencyP90Ms",
+  "latencyP95Ms",
+] as const;
+
+export interface CarriedMeasurements {
+  endpoints: EndpointStat[];
+  /** Endpoints whose fresh fetch carried at least one measurement of its own. */
+  freshlyMeasured: number;
+  /** Endpoints keeping at least one previous figure this pass could not re-observe. */
+  carriedForward: number;
+}
+
+/**
+ * Keep yesterday's measurements where today's fetch has none — per FIELD, the
+ * same contract `aaMetrics` has had all along ("absent stays absent; the
+ * stored `fetchedAt` is what says how old a kept figure is"). `endpointStats`
+ * had no such protection: one pass with a dead OpenRouter key overwrote every
+ * measured percentile on the published fleet with `undefined`, reported `ok`,
+ * and the throughput rules quietly stopped existing.
+ *
+ * An endpoint that measured anything itself keeps ITS stamp even when it also
+ * carries old fields — the stamp answers "when did a source last see this
+ * host", and mixing in the older date would age fresh evidence. Only an
+ * endpoint with nothing fresh keeps the stored stamp, which is what lets the
+ * expiry above retire it. Stored stats with no stamp (graded before the field
+ * existed) are never carried: their age is unknowable, and a figure of
+ * unknowable age is exactly what this function exists to stop writing.
+ */
+export const carryForwardMeasurements = (
+  fresh: EndpointStat[],
+  stored: readonly EndpointStat[] | null,
+  now: Date,
+): CarriedMeasurements => {
+  const previous = new Map<string, EndpointStat>();
+  const horizon = now.getTime() - STAT_CARRY_MAX_DAYS * 24 * 60 * 60_000;
+  for (const stat of stored ?? []) {
+    if (stat.measuredAt === undefined) continue;
+    const at = new Date(stat.measuredAt).getTime();
+    if (Number.isNaN(at) || at < horizon) continue;
+    previous.set(normalizeProviderName(stat.provider), stat);
+  }
+
+  let freshlyMeasured = 0;
+  let carriedForward = 0;
+  const endpoints = fresh.map((stat) => {
+    const hasOwn = MEASUREMENT_FIELDS.some(
+      (field) => stat[field] !== undefined,
+    );
+    if (hasOwn) freshlyMeasured += 1;
+    const old = previous.get(normalizeProviderName(stat.provider));
+    if (old === undefined) return stat;
+
+    const carried: Partial<
+      Pick<EndpointStat, (typeof MEASUREMENT_FIELDS)[number]>
+    > = {};
+    let carriedAny = false;
+    for (const field of MEASUREMENT_FIELDS) {
+      if (stat[field] === undefined && old[field] !== undefined) {
+        carried[field] = old[field];
+        carriedAny = true;
+      }
+    }
+    if (!carriedAny) return stat;
+    carriedForward += 1;
+    return {
+      ...stat,
+      ...carried,
+      measuredAt: hasOwn ? stat.measuredAt : old.measuredAt,
+    };
+  });
+
+  return { endpoints, freshlyMeasured, carriedForward };
 };
 
 export interface AllowedPoolInput {

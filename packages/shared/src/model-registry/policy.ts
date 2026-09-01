@@ -24,6 +24,7 @@ import type {
   EndpointStat,
   PolicyReport,
   PolicyRuleResult,
+  PolicyRuleSkipReason,
   PricingSnapshot,
 } from "./types";
 
@@ -176,6 +177,19 @@ export interface PolicySignals {
   requiresTools: boolean;
   /** Explicit cache markers are placed by us; implicit caching is not required. */
   usesExplicitCaching?: boolean;
+  /**
+   * What the catalogues consulted for this pool can EVER publish (ORed across
+   * the transports actually fetched). Decides the reason on a skipped rule:
+   * a family the sources publish but did not return is `not-measured`; one no
+   * consulted source can return is `not-published-by-source`. Absent = unknown,
+   * which reads as `not-measured` — the repairable reading, so a wiring gap is
+   * investigated rather than shrugged off as structural.
+   */
+  sourcePublishes?: {
+    percentiles?: boolean;
+    toolChoice?: boolean;
+    uptime?: boolean;
+  };
 }
 
 const median = (values: number[]): number | undefined => {
@@ -209,11 +223,33 @@ const rule = (
   detail: string,
 ): PolicyRuleResult => ({ rule: name, severity, passed, detail });
 
+const skippedRule = (
+  name: string,
+  severity: "hard" | "soft",
+  skipped: PolicyRuleSkipReason,
+  detail: string,
+): PolicyRuleResult => ({
+  rule: name,
+  severity,
+  passed: false,
+  skipped,
+  detail,
+});
+
 /**
- * Grade one model against one policy. The report lists every rule that was
- * EVALUATED — a rule the policy does not set, or that no source could answer,
- * is absent rather than silently passing, so "we did not check" never reads as
- * "it is fine".
+ * The skip reason for a measurement family, given what the consulted sources
+ * declare. Unknown reads as `not-measured` — the repairable reading.
+ */
+const skipReasonFor = (publishes: boolean | undefined): PolicyRuleSkipReason =>
+  publishes === false ? "not-published-by-source" : "not-measured";
+
+/**
+ * Grade one model against one policy. The report lists every rule the policy
+ * SETS — evaluated when the data arrived, `skipped` when it did not. A rule
+ * the policy does not set is absent; a rule it sets is never absent, because
+ * for months the unanswerable rules simply vanished and "we did not check"
+ * rendered exactly like "everything passed" — the throughput floor whose
+ * docstring argues hardest for its number had never run once on the fleet.
  */
 export const evaluatePolicy = (
   policy: ModelPolicy,
@@ -304,20 +340,31 @@ export const evaluatePolicy = (
     }
   }
 
-  if (policy.minContextLength !== undefined && endpoints.length > 0) {
-    const contexts = definedNumbers(endpoints, (e) => e.contextLength);
-    const worst = contexts.length > 0 ? Math.min(...contexts) : 0;
-    rules.push(
-      rule(
-        "context-floor",
-        "hard",
-        worst >= policy.minContextLength,
-        `smallest endpoint context ${worst.toString()} vs floor ${policy.minContextLength.toString()}`,
-      ),
-    );
+  if (policy.minContextLength !== undefined) {
+    if (endpoints.length > 0) {
+      const contexts = definedNumbers(endpoints, (e) => e.contextLength);
+      const worst = contexts.length > 0 ? Math.min(...contexts) : 0;
+      rules.push(
+        rule(
+          "context-floor",
+          "hard",
+          worst >= policy.minContextLength,
+          `smallest endpoint context ${worst.toString()} vs floor ${policy.minContextLength.toString()}`,
+        ),
+      );
+    } else {
+      rules.push(
+        skippedRule(
+          "context-floor",
+          "hard",
+          "not-measured",
+          "no endpoint to grade",
+        ),
+      );
+    }
   }
 
-  if (policy.minMaxOutput !== undefined && endpoints.length > 0) {
+  if (policy.minMaxOutput !== undefined) {
     const caps = definedNumbers(endpoints, (e) => e.maxCompletionTokens);
     const worst = caps.length > 0 ? Math.min(...caps) : undefined;
     if (worst !== undefined) {
@@ -327,6 +374,17 @@ export const evaluatePolicy = (
           "soft",
           worst >= policy.minMaxOutput,
           `smallest endpoint output cap ${worst.toString()} vs floor ${policy.minMaxOutput.toString()}`,
+        ),
+      );
+    } else {
+      rules.push(
+        skippedRule(
+          "max-output-floor",
+          "soft",
+          "not-measured",
+          endpoints.length > 0
+            ? "no endpoint reports an output cap"
+            : "no endpoint to grade",
         ),
       );
     }
@@ -371,6 +429,15 @@ export const evaluatePolicy = (
             : `no reporting endpoint accepts \`tool_choice: required\` — forced extraction would answer in prose instead`,
         ),
       );
+    } else {
+      rules.push(
+        skippedRule(
+          "tool-choice",
+          "soft",
+          skipReasonFor(signals.sourcePublishes?.toolChoice),
+          "no endpoint reports its accepted `tool_choice` modes",
+        ),
+      );
     }
   }
 
@@ -388,25 +455,51 @@ export const evaluatePolicy = (
           `fastest endpoint ${best.toFixed(0)} tok/s vs floor ${policy.minTpsP50.toString()}`,
         ),
       );
-    }
-  }
-
-  if (policy.maxTtftP95Ms !== undefined) {
-    const latencies = definedNumbers(endpoints, (e) => e.latencyP95Ms);
-    if (latencies.length > 0) {
-      const best = Math.min(...latencies);
+    } else {
       rules.push(
-        rule(
-          "ttft-ceiling",
+        skippedRule(
+          "throughput-floor",
           "soft",
-          best <= policy.maxTtftP95Ms,
-          `best endpoint p95 TTFT ${best.toFixed(0)} ms vs ceiling ${policy.maxTtftP95Ms.toString()} ms`,
+          skipReasonFor(signals.sourcePublishes?.percentiles),
+          "no endpoint carries a throughput figure",
         ),
       );
     }
   }
 
-  if (policy.maxPricePerMTok !== undefined && endpoints.length > 0) {
+  if (policy.maxTtftP95Ms !== undefined) {
+    // p95 where a source reports one; OpenRouter's percentile objects carry
+    // p90 instead, kept in its own field so it is never PRESENTED as a p95.
+    // For a ceiling it is the slightly lenient neighbour — a p90 under the bar
+    // says less than a p95 under it — which the detail names so a reader can
+    // weigh the evidence rather than trust a number wearing the wrong label.
+    const p95s = definedNumbers(endpoints, (e) => e.latencyP95Ms);
+    const p90s = definedNumbers(endpoints, (e) => e.latencyP90Ms);
+    const latencies = p95s.length > 0 ? p95s : p90s;
+    if (latencies.length > 0) {
+      const best = Math.min(...latencies);
+      const percentile = p95s.length > 0 ? "p95" : "p90";
+      rules.push(
+        rule(
+          "ttft-ceiling",
+          "soft",
+          best <= policy.maxTtftP95Ms,
+          `best endpoint ${percentile} TTFT ${best.toFixed(0)} ms vs ceiling ${policy.maxTtftP95Ms.toString()} ms${percentile === "p90" ? " (source publishes no p95)" : ""}`,
+        ),
+      );
+    } else {
+      rules.push(
+        skippedRule(
+          "ttft-ceiling",
+          "soft",
+          skipReasonFor(signals.sourcePublishes?.percentiles),
+          "no endpoint carries a latency figure",
+        ),
+      );
+    }
+  }
+
+  if (policy.maxPricePerMTok !== undefined) {
     const inputMedian = median(
       definedNumbers(endpoints, (e) => e.pricing.inputPerMTok),
     );
@@ -414,24 +507,38 @@ export const evaluatePolicy = (
       definedNumbers(endpoints, (e) => e.pricing.outputPerMTok),
     );
     const { input, output } = policy.maxPricePerMTok;
-    if (input !== undefined && inputMedian !== undefined) {
+    if (input !== undefined) {
       rules.push(
-        rule(
-          "price-input-ceiling",
-          "hard",
-          inputMedian <= input,
-          `pool median input $${inputMedian.toFixed(3)}/MTok vs ceiling $${input.toString()}`,
-        ),
+        inputMedian !== undefined
+          ? rule(
+              "price-input-ceiling",
+              "hard",
+              inputMedian <= input,
+              `pool median input $${inputMedian.toFixed(3)}/MTok vs ceiling $${input.toString()}`,
+            )
+          : skippedRule(
+              "price-input-ceiling",
+              "hard",
+              "not-measured",
+              "no endpoint carries an input price",
+            ),
       );
     }
-    if (output !== undefined && outputMedian !== undefined) {
+    if (output !== undefined) {
       rules.push(
-        rule(
-          "price-output-ceiling",
-          "hard",
-          outputMedian <= output,
-          `pool median output $${outputMedian.toFixed(3)}/MTok vs ceiling $${output.toString()}`,
-        ),
+        outputMedian !== undefined
+          ? rule(
+              "price-output-ceiling",
+              "hard",
+              outputMedian <= output,
+              `pool median output $${outputMedian.toFixed(3)}/MTok vs ceiling $${output.toString()}`,
+            )
+          : skippedRule(
+              "price-output-ceiling",
+              "hard",
+              "not-measured",
+              "no endpoint carries an output price",
+            ),
       );
     }
   }
@@ -446,6 +553,15 @@ export const evaluatePolicy = (
           "soft",
           best >= policy.minUptime1d,
           `best endpoint 1d uptime ${best.toFixed(2)}% vs floor ${policy.minUptime1d.toString()}%`,
+        ),
+      );
+    } else {
+      rules.push(
+        skippedRule(
+          "uptime-floor",
+          "soft",
+          skipReasonFor(signals.sourcePublishes?.uptime),
+          "no endpoint carries a 1d uptime figure",
         ),
       );
     }
@@ -476,21 +592,35 @@ export const evaluatePolicy = (
           `Artificial Analysis intelligence ${index.toFixed(1)} vs floor ${policy.minIntelligenceIndex.toString()}`,
         ),
       );
+    } else {
+      rules.push(
+        skippedRule(
+          "intelligence-floor",
+          "soft",
+          "not-measured",
+          "no Artificial Analysis record matched — key unset, or the model is not graded there",
+        ),
+      );
     }
   }
 
+  // Skipped rules count in NEITHER tally: absence of data is not evidence of
+  // failure, and letting a skipped hard rule fail the report would let one
+  // missing credential unpublish the fleet.
   const hardFailures = rules.filter(
-    (r) => r.severity === "hard" && !r.passed,
+    (r) => r.severity === "hard" && !r.passed && r.skipped === undefined,
   ).length;
   const softFailures = rules.filter(
-    (r) => r.severity === "soft" && !r.passed,
+    (r) => r.severity === "soft" && !r.passed && r.skipped === undefined,
   ).length;
+  const skippedRules = rules.filter((r) => r.skipped !== undefined).length;
 
   return {
     passed: hardFailures === 0,
     hardFailures,
     softFailures,
     rules,
+    skippedRules,
     evaluatedAt: now.toISOString(),
     excludedProviders: signals.excludedProviders,
   };
@@ -501,6 +631,16 @@ export const evaluatePolicy = (
  * endpoint that answers slowly still answers; the policy term captures
  * everything else the rules measured, and recent incidents are the only input
  * that comes from our own traffic rather than a vendor's dashboard.
+ *
+ * A rule skipped for `not-measured` costs exactly what a soft FAILURE costs,
+ * and shares its cap. That is the conservative reading on purpose: before
+ * skips existed, a measurement disappearing made the score RISE (the rule
+ * vanished, its penalty with it), so a fleet losing its percentiles graded
+ * healthier than one keeping them. "We cannot show it is fine" must never be
+ * worth more than "it is fine", and pricing it as a failure guarantees the
+ * score never improves when data goes missing. `not-published-by-source`
+ * skips are free — a structural gap is a property of the transport, not a
+ * regression to punish every night.
  */
 export const computeHealthScore = (input: {
   endpoints: EndpointStat[];
@@ -515,7 +655,12 @@ export const computeHealthScore = (input: {
   // than perfect, so an idle endpoint cannot carry a pool's score.
   const uptimeTerm = uptimes.length > 0 ? Math.max(...uptimes) : 95;
 
-  const softPenalty = report ? Math.min(report.softFailures, 4) * 5 : 0;
+  const skippedNotMeasured = report
+    ? report.rules.filter((r) => r.skipped === "not-measured").length
+    : 0;
+  const softPenalty = report
+    ? Math.min(report.softFailures + skippedNotMeasured, 4) * 5
+    : 0;
   const hardPenalty = report ? Math.min(report.hardFailures, 3) * 20 : 0;
   const incidentPenalty = Math.min(incidents24h, 10) * 3;
 

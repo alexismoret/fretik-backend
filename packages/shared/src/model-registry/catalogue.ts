@@ -140,6 +140,17 @@ export interface CatalogueCapabilities {
    * said, and silence here is not "this model has no ladder".
    */
   publishesReasoningContract: boolean;
+  /**
+   * The measurement families this catalogue can EVER publish per endpoint.
+   * They decide how an unanswered policy rule is reported: data a source
+   * publishes but did not return is `not-measured` (repairable — a credential,
+   * an idle host), data it structurally cannot return is
+   * `not-published-by-source` (nothing an operator can fix tonight).
+   */
+  publishesPercentiles: boolean;
+  /** `supports_tool_choice` — OpenRouter is the only source that reports it. */
+  publishesToolChoice: boolean;
+  publishesUptime: boolean;
 }
 
 /**

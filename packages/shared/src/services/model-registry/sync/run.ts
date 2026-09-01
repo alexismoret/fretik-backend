@@ -40,12 +40,14 @@ import { countIncidentsForModel } from "../incidents";
 import { invalidateLiveRegistry, readAllLiveStateRows } from "../live";
 import {
   buildAllowedPool,
+  carryForwardMeasurements,
   computeCreditMultiplier,
   computeEffectiveContext,
   computePoolPricing,
   deriveDynamicProfile,
   detectPriceJump,
   mergeEndpointStats,
+  unionEndpointStats,
 } from "./compute";
 import { createCatalogueSources, sourceForTransport } from "./sources";
 import {
@@ -101,6 +103,88 @@ const QUARANTINE_EXTENSION_DAYS = 7;
 const MAX_DISCOVERY_ENDPOINT_FETCHES = 40;
 const MAX_NEW_CANDIDATES = 20;
 
+/**
+ * Share of endpoints that must carry a throughput figure, among those served
+ * by a source that publishes percentiles at all, before a pass counts as fully
+ * measured. Below it the run reports `degraded` even with every credential
+ * present — which is the case a presence check cannot see: a key that exists
+ * but is rejected, revoked or rate-limited returns exactly what no key returns.
+ *
+ * Half is deliberately lenient. Idle hosts legitimately report nothing, and
+ * this is a smoke alarm for a fleet-wide blackout (the observed failure was
+ * 0 of 145), not a quality bar on any single model.
+ */
+const MIN_MEASURED_RATIO = 0.5;
+
+/**
+ * A credential-gated source of truth the grading needs.
+ *
+ * These are the reason the sync can succeed at everything it does and still be
+ * wrong. On 2026-09-01 the nightly pass ran in the jobs container, which had
+ * none of the three keys: OpenRouter answered 200 with every percentile null,
+ * Artificial Analysis returned an empty map, the ZDR probe no-opped — and the
+ * run reported `ok`, 47 of 47 rows updated, zero errors, while the throughput
+ * and TTFT rules quietly evaluated on nothing for the entire published fleet.
+ *
+ * Detected by PRESENCE, once per pass, before anything is written. A missing
+ * key is not an error — the sync still refreshes everything it can read — but
+ * it is never `ok`.
+ */
+export const SYNC_CAPABILITIES = [
+  "openrouter-percentiles",
+  "artificial-analysis",
+  "zdr-probe",
+] as const;
+export type SyncCapability = (typeof SYNC_CAPABILITIES)[number];
+
+const CAPABILITY_ENV: Record<SyncCapability, string> = {
+  "openrouter-percentiles": "OPENROUTER_API_KEY",
+  "artificial-analysis": "ARTIFICIAL_ANALYSIS_API_KEY",
+  "zdr-probe": "AI_GATEWAY_API_KEY",
+};
+
+/** What this pass will be grading WITHOUT, named so the alert can say it. */
+const detectMissingCapabilities = (): SyncCapability[] =>
+  SYNC_CAPABILITIES.filter(
+    (capability) => !Bun.env[CAPABILITY_ENV[capability]],
+  );
+
+/** The env var behind a capability, for operator-facing messages. */
+export const envVarForCapability = (capability: SyncCapability): string =>
+  CAPABILITY_ENV[capability];
+
+/**
+ * The verdict on a finished pass, worst first.
+ *
+ * `failed` and `partial` mean something went wrong. `degraded` means nothing
+ * did, and the run still graded the fleet on less evidence than it was
+ * supposed to have — which used to be indistinguishable from a clean run and
+ * is the whole reason a fleet-wide measurement blackout lasted days.
+ *
+ * Two independent triggers, because they catch different failures. A missing
+ * credential is deterministic and knowable before the first fetch. A ratio far
+ * under the floor catches the case a presence check CANNOT see: a key that
+ * exists but is rejected, revoked or rate-limited returns byte-for-byte what
+ * no key returns.
+ *
+ * Pure, so the decision can be asserted without a database — it is the one
+ * piece of this file whose correctness a person has to be able to check.
+ */
+export const syncVerdict = (
+  stats: ModelSyncStats,
+): "ok" | "degraded" | "partial" => {
+  if (stats.errors.length > 0) return "partial";
+  if (stats.missingCapabilities.length > 0) return "degraded";
+  const expected = stats.endpointsExpectingPercentiles;
+  if (
+    expected > 0 &&
+    stats.endpointsWithThroughput / expected < MIN_MEASURED_RATIO
+  ) {
+    return "degraded";
+  }
+  return "ok";
+};
+
 export interface ModelSyncOptions {
   now?: Date;
   /** Restrict the pass to these profile keys — for `model-admin`, and for tests. */
@@ -119,10 +203,22 @@ export interface ModelSyncStats {
   quarantinesReleased: number;
   alerts: number;
   errors: string[];
+  /** Credentials this pass graded WITHOUT. Non-empty ⇒ the run is not `ok`. */
+  missingCapabilities: SyncCapability[];
+  /** Endpoints written across every row — the denominator the counts below need. */
+  endpointsWritten: number;
+  /** Of those, from a source that CAN publish percentiles: the honest denominator. */
+  endpointsExpectingPercentiles: number;
+  /** Of those, actually carrying a throughput figure this pass. */
+  endpointsWithThroughput: number;
+  /** Endpoints keeping a measurement this pass could not re-observe. */
+  endpointsCarriedForward: number;
+  /** Policy rules that could not be evaluated for want of data. */
+  rulesSkippedNotMeasured: number;
 }
 
 export interface ModelSyncResult {
-  status: "ok" | "partial" | "failed";
+  status: "ok" | "degraded" | "partial" | "failed";
   stats: ModelSyncStats;
 }
 
@@ -166,6 +262,12 @@ const emptyStats = (): ModelSyncStats => ({
   quarantinesReleased: 0,
   alerts: 0,
   errors: [],
+  missingCapabilities: [],
+  endpointsWritten: 0,
+  endpointsExpectingPercentiles: 0,
+  endpointsWithThroughput: 0,
+  endpointsCarriedForward: 0,
+  rulesSkippedNotMeasured: 0,
 });
 
 const message = (err: unknown): string =>
@@ -189,6 +291,30 @@ const fetchEndpoints = async (
     throw new Error(`no catalogue source for transport ${transport}`);
   }
   return source.fetchEndpoints(modelId);
+};
+
+/**
+ * What the sources consulted for this row can EVER publish, ORed together.
+ *
+ * It is what turns an unanswered rule from a shrug into a diagnosis: a
+ * throughput floor unevaluated on a Scaleway row is structural (that catalogue
+ * publishes no percentiles, and never will), the same silence on an OpenRouter
+ * row means a key is missing or a host has gone quiet. Only the second one is
+ * somebody's problem tonight.
+ */
+const sourcePublishesFor = (
+  ctx: SyncContext,
+  modelIds: Partial<Record<TransportId, string>>,
+): { percentiles: boolean; toolChoice: boolean; uptime: boolean } => {
+  const consulted = Object.keys(modelIds)
+    .filter(isTransportId)
+    .map((transport) => sourceForTransport(ctx.sources, transport))
+    .filter((source) => source !== undefined);
+  return {
+    percentiles: consulted.some((s) => s.capabilities.publishesPercentiles),
+    toolChoice: consulted.some((s) => s.capabilities.publishesToolChoice),
+    uptime: consulted.some((s) => s.capabilities.publishesUptime),
+  };
 };
 
 /** The merged catalogue entry for a model, found by any id the row carries. */
@@ -332,11 +458,17 @@ const syncOneModel = async (
   // any more: a model can be served by an aggregator and by a direct host at
   // once, and the previous `transport === "gateway" ? "openrouter" : "gateway"`
   // silently ignored any third id the row carried.
+  //
+  // Accumulated with `unionEndpointStats`, NOT `mergeEndpointStats`: the latter
+  // maps over its primary, so folding each fetch into an empty accumulator
+  // returned `[]` every time and the whole loop had been dead since it was
+  // written — invisibly, because an empty enrichment merges into an unchanged
+  // primary and nothing downstream looks different.
   let enrichment: EndpointStat[] = [];
   for (const [other, otherId] of Object.entries(row.modelIds)) {
     if (other === transport || !isTransportId(other)) continue;
     try {
-      enrichment = mergeEndpointStats(
+      enrichment = unionEndpointStats(
         enrichment,
         await fetchEndpoints(ctx, other, otherId),
       );
@@ -346,7 +478,14 @@ const syncOneModel = async (
       );
     }
   }
-  const merged = mergeEndpointStats(primary, enrichment);
+  const fetched = mergeEndpointStats(primary, enrichment);
+  // Yesterday's measurements survive a pass that could not take its own, per
+  // field and only within the carry window. Without this, one unauthenticated
+  // pass blanks every percentile on the fleet and the rules that read them go
+  // quiet — which is exactly what happened, twice, reporting `ok` both times.
+  const carried = carryForwardMeasurements(fetched, row.endpointStats, ctx.now);
+  const merged = carried.endpoints;
+  ctx.stats.endpointsCarriedForward += carried.carriedForward;
 
   const quarantines = await reprobeExpiredQuarantines(ctx, row);
   const quarantinedNames = activeQuarantines(
@@ -406,6 +545,7 @@ const syncOneModel = async (
     profileKey: row.profileKey,
     modelIds: Object.values(row.modelIds),
   });
+  const sourcePublishes = sourcePublishesFor(ctx, row.modelIds);
   const report = evaluatePolicy(
     policy,
     {
@@ -414,9 +554,20 @@ const syncOneModel = async (
       aa,
       zdrProbe,
       requiresTools: true,
+      sourcePublishes,
     },
     ctx.now,
   );
+  ctx.stats.rulesSkippedNotMeasured += report.rules.filter(
+    (rule) => rule.skipped === "not-measured",
+  ).length;
+  ctx.stats.endpointsWritten += pool.endpoints.length;
+  if (sourcePublishes.percentiles) {
+    ctx.stats.endpointsExpectingPercentiles += pool.endpoints.length;
+    ctx.stats.endpointsWithThroughput += pool.endpoints.filter(
+      (endpoint) => endpoint.throughputP50 !== undefined,
+    ).length;
+  }
 
   let incidents24h = 0;
   try {
@@ -867,6 +1018,7 @@ const discoverCandidates = async (
         excludedProviders: pool.excluded,
         aa,
         requiresTools: true,
+        sourcePublishes: sourcePublishesFor(ctx, entry.idsByTransport),
       },
       ctx.now,
     );
@@ -931,6 +1083,9 @@ export const runModelSync = async (
   const now = options?.now ?? new Date();
   const dryRun = options?.dryRun ?? false;
   const stats = emptyStats();
+  // Read BEFORE anything is fetched, so the verdict is decided by what this
+  // pass had rather than by what it managed to guess afterwards.
+  stats.missingCapabilities = detectMissingCapabilities();
 
   const alert = async (input: RaiseAlertInput): Promise<void> => {
     stats.alerts += 1;
@@ -949,7 +1104,7 @@ export const runModelSync = async (
     .returning({ id: modelSyncRuns.id });
 
   const finish = async (
-    status: "ok" | "partial" | "failed",
+    status: "ok" | "degraded" | "partial" | "failed",
   ): Promise<ModelSyncResult> => {
     if (run !== undefined) {
       await db
@@ -965,6 +1120,12 @@ export const runModelSync = async (
             quarantinesReleased: stats.quarantinesReleased,
             alerts: stats.alerts,
             errors: stats.errors,
+            missingCapabilities: stats.missingCapabilities,
+            endpointsWritten: stats.endpointsWritten,
+            endpointsExpectingPercentiles: stats.endpointsExpectingPercentiles,
+            endpointsWithThroughput: stats.endpointsWithThroughput,
+            endpointsCarriedForward: stats.endpointsCarriedForward,
+            rulesSkippedNotMeasured: stats.rulesSkippedNotMeasured,
           },
         })
         .where(eq(modelSyncRuns.id, run.id));
@@ -1065,5 +1226,28 @@ export const runModelSync = async (
   }
 
   if (!dryRun) await invalidateLiveRegistry();
-  return finish(stats.errors.length > 0 ? "partial" : "ok");
+
+  const status = syncVerdict(stats);
+  if (status === "degraded") {
+    const missing = stats.missingCapabilities;
+    const measured =
+      stats.endpointsExpectingPercentiles > 0
+        ? `${stats.endpointsWithThroughput.toString()} of ${stats.endpointsExpectingPercentiles.toString()} endpoint(s) whose source publishes percentiles carry a throughput figure`
+        : "no endpoint expected percentiles";
+    await alert({
+      kind: "sync-degraded",
+      severity: "critical",
+      message:
+        missing.length > 0
+          ? `Model sync graded the fleet without ${missing.map((capability) => `${capability} (${envVarForCapability(capability)})`).join(", ")}. Every row was refreshed and the affected policy rules were recorded as not measured rather than passing — ${measured}. Set the variable(s) on the service running the sync.`
+          : `Model sync holds every credential yet only ${measured}. A key that is present but rejected, revoked or rate-limited returns exactly what a missing one returns — check the account before trusting tonight's grades.`,
+      context: {
+        missingCapabilities: missing,
+        endpointsWithThroughput: stats.endpointsWithThroughput,
+        endpointsExpectingPercentiles: stats.endpointsExpectingPercentiles,
+        rulesSkippedNotMeasured: stats.rulesSkippedNotMeasured,
+      },
+    });
+  }
+  return finish(status);
 };

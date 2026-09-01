@@ -299,24 +299,47 @@ const endpointTable = (endpoints: readonly EndpointStat[]): void => {
 
 /**
  * A policy report, rule by rule. Hard failures are the ones that gate; soft
- * failures inform health and never disable anything on their own. A rule the
- * policy did not set, or that no source could answer, is ABSENT rather than
- * passing — so "we did not check" never reads here as "it is fine".
+ * failures inform health and never disable anything on their own.
+ *
+ * A rule the policy SETS is never absent: it reads `pass`, `FAIL`, or one of
+ * the two skip verdicts. `no-data` is a rule whose figures should have arrived
+ * and did not — a missing credential, a host gone quiet — and it is somebody's
+ * problem tonight. `n/a` is a rule no consulted catalogue can ever answer. The
+ * distinction is the point: these rules used to vanish from the report
+ * entirely, so "we did not check" printed exactly like "everything passed",
+ * and the throughput floor went months without evaluating once.
  */
 const policyTable = (report: PolicyReport | null): void => {
   if (report === null) {
     console.log("  (never evaluated — no sync has graded this model yet)");
     return;
   }
+  const skipped = report.rules.filter((rule) => rule.skipped !== undefined);
   console.log(
-    `  evaluated ${isoStamp(report.evaluatedAt)} — ${report.passed ? "PASSED" : "FAILED"} (${report.hardFailures.toString()} hard, ${report.softFailures.toString()} soft)`,
+    `  evaluated ${isoStamp(report.evaluatedAt)} — ${report.passed ? "PASSED" : "FAILED"} (${report.hardFailures.toString()} hard, ${report.softFailures.toString()} soft${skipped.length > 0 ? `, ${skipped.length.toString()} not evaluated` : ""})`,
   );
   console.log(
     `  ${"rule".padEnd(24)}${"sev".padEnd(6)}${"verdict".padEnd(9)}detail`,
   );
   for (const rule of report.rules) {
+    const verdict =
+      rule.skipped === "not-measured"
+        ? "no-data"
+        : rule.skipped === "not-published-by-source"
+          ? "n/a"
+          : rule.passed
+            ? "pass"
+            : "FAIL";
     console.log(
-      `  ${rule.rule.padEnd(24)}${rule.severity.padEnd(6)}${(rule.passed ? "pass" : "FAIL").padEnd(9)}${rule.detail}`,
+      `  ${rule.rule.padEnd(24)}${rule.severity.padEnd(6)}${verdict.padEnd(9)}${rule.detail}`,
+    );
+  }
+  const unmeasured = skipped.filter(
+    (rule) => rule.skipped === "not-measured",
+  ).length;
+  if (unmeasured > 0) {
+    console.log(
+      `  ${unmeasured.toString()} rule(s) had no data to grade — check the sync's last status for a missing credential.`,
     );
   }
   if (report.excludedProviders.length > 0) {

@@ -7,6 +7,7 @@ import {
 } from "@fretik/shared/lib/auth-middleware";
 import { notFound, throwHttpError } from "@fretik/shared/lib/errors";
 import { selectOrCache } from "@fretik/shared/lib/redis";
+import { mergeCatalogues } from "@fretik/shared/model-registry/catalogue";
 import { modelKeyForId } from "@fretik/shared/model-registry/keys";
 import { PROMOTION_PRICE_CAPS } from "@fretik/shared/model-registry/policy";
 import {
@@ -26,6 +27,7 @@ import {
   type QuarantineEntry,
   type QuarantineOutcome,
   type ReleaseOutcome,
+  type TransportId,
 } from "@fretik/shared/model-registry/types";
 import {
   responseForbiddenSchema,
@@ -62,7 +64,7 @@ import {
   scorecardEndpoints,
   scorecardPool,
 } from "@fretik/shared/services/model-registry/scorecard";
-import { fetchGatewayCatalog } from "@fretik/shared/services/model-registry/sync/sources/gateway-catalog";
+import { createCatalogueSources } from "@fretik/shared/services/model-registry/sync/sources/index";
 import { createRoute, OpenAPIHono } from "@hono/zod-openapi";
 import { desc, eq } from "drizzle-orm";
 import { z } from "zod";
@@ -126,7 +128,7 @@ const SCORECARD_FETCH_TIMEOUT_MS = 8_000;
  * moves on the order of days. Ten minutes in Redis turns a debounced search box
  * from one 20-second fetch PER KEYSTROKE into an instant filter.
  */
-const CATALOGUE_CACHE_KEY = "model-admin:gateway-catalogue:v1";
+const CATALOGUE_CACHE_KEY = "model-admin:catalogue:v2";
 const CATALOGUE_CACHE_TTL_S = 600;
 const CATALOGUE_SEARCH_LIMIT = 25;
 
@@ -821,6 +823,8 @@ interface CachedCatalogueEntry {
   id: string;
   name: string;
   owner: string;
+  /** Every transport that serves it — what the row would be born knowing. */
+  transports: TransportId[];
   contextWindow?: number;
   isLanguageModel?: boolean;
   deprecated?: boolean;
@@ -828,6 +832,56 @@ interface CachedCatalogueEntry {
   inputPerMTok?: number;
   outputPerMTok?: number;
 }
+
+/**
+ * Every catalogue, merged, as `add` reads them.
+ *
+ * Gateway-only until 2026-09-02, which made the search blind to the majority of
+ * the fleet: most rows are served on OpenRouter, and `addFromCatalogue` has
+ * consulted every source since the bootstrap fix — so a model this refused to
+ * SHOW could be added by typing its id. A search that cannot find what the
+ * write accepts is worse than no search.
+ *
+ * One unreadable catalogue never empties the list; the count the refusals quote
+ * says how much could be seen.
+ */
+const fetchMergedCatalogue = async (): Promise<CachedCatalogueEntry[]> => {
+  const sources = createCatalogueSources();
+  const listings = (
+    await Promise.all(
+      sources.map(async (source) => {
+        try {
+          return { source, entries: await source.listModels() };
+        } catch {
+          return undefined;
+        }
+      }),
+    )
+  ).filter((listing) => listing !== undefined);
+
+  return mergeCatalogues(listings).map((entry) => ({
+    id: entry.id,
+    name: entry.name,
+    owner: entry.owner,
+    transports: Object.keys(entry.idsByTransport).filter(isTransportId),
+    ...(entry.contextWindow === undefined
+      ? {}
+      : { contextWindow: entry.contextWindow }),
+    ...(entry.isLanguageModel === undefined
+      ? {}
+      : { isLanguageModel: entry.isLanguageModel }),
+    ...(entry.deprecated === undefined ? {} : { deprecated: entry.deprecated }),
+    ...(entry.releasedAt === undefined
+      ? {}
+      : { releasedAt: entry.releasedAt.toISOString() }),
+    ...(entry.pricing.inputPerMTok === undefined
+      ? {}
+      : { inputPerMTok: entry.pricing.inputPerMTok }),
+    ...(entry.pricing.outputPerMTok === undefined
+      ? {}
+      : { outputPerMTok: entry.pricing.outputPerMTok }),
+  }));
+};
 
 const catalogueSearchRoute = createRoute({
   method: "get",
@@ -846,6 +900,8 @@ const catalogueSearchRoute = createRoute({
                 id: z.string(),
                 name: z.string(),
                 owner: z.string(),
+                /** Every transport that serves it, not just the one searched. */
+                transports: z.array(z.enum(TRANSPORT_IDS)),
                 contextWindow: z.number().optional(),
                 isLanguageModel: z.boolean().optional(),
                 deprecated: z.boolean().optional(),
@@ -870,30 +926,7 @@ const catalogueSearchRoute = createRoute({
 modelAdminRoutes.openapi(catalogueSearchRoute, async (c) => {
   const { q } = c.req.valid("query");
   const entries = await selectOrCache<CachedCatalogueEntry[]>(
-    async () =>
-      (await fetchGatewayCatalog()).map((entry) => ({
-        id: entry.id,
-        name: entry.name,
-        owner: entry.owner,
-        ...(entry.contextWindow === undefined
-          ? {}
-          : { contextWindow: entry.contextWindow }),
-        ...(entry.isLanguageModel === undefined
-          ? {}
-          : { isLanguageModel: entry.isLanguageModel }),
-        ...(entry.deprecated === undefined
-          ? {}
-          : { deprecated: entry.deprecated }),
-        ...(entry.releasedAt === undefined
-          ? {}
-          : { releasedAt: entry.releasedAt.toISOString() }),
-        ...(entry.pricing.inputPerMTok === undefined
-          ? {}
-          : { inputPerMTok: entry.pricing.inputPerMTok }),
-        ...(entry.pricing.outputPerMTok === undefined
-          ? {}
-          : { outputPerMTok: entry.pricing.outputPerMTok }),
-      })),
+    fetchMergedCatalogue,
     CATALOGUE_CACHE_KEY,
     CATALOGUE_CACHE_TTL_S,
   );

@@ -32,13 +32,11 @@ env:
 jobs:
   check:
     name: typecheck + lint + test
+    # No provider key here, deliberately. The only step that used one was the
+    # catalogue-drift check, and it is gone (see below). `tests/preload.ts`
+    # defaults every provider variable to a dummy, so a unit test that reached
+    # a real API would now fail instead of quietly spending money.
     runs-on: ubuntu-latest
-    env:
-      # Job-scoped so the catalog-drift step below can gate on its presence:
-      # a step-level `env:` is not visible to that step's own `if:`.
-      # Absent on forks / Dependabot PRs, which is why the step skips rather
-      # than fails when it is empty.
-      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
     steps:
       - uses: actions/checkout@v6
 
@@ -80,15 +78,24 @@ jobs:
       - name: Test @fretik/ai (unit only — integration tests gated separately)
         run: bun run --filter '@fretik/ai' test
 
-      # The model registry mirrors OpenRouter's catalog by hand across 22
-      # profiles and 9 brands, and upstreams change context windows, prices and
-      # supported parameters without notice — MiniMax M3's context doubled
-      # between two syncs. Drift is silent until a request fails in prod, so
-      # diff it on every PR. Skipped (not failed) without a key, since forks and
-      # Dependabot PRs don't get repository secrets.
-      - name: Check model catalog against the live OpenRouter API
-        if: env.OPENROUTER_API_KEY != ''
-        run: bun run --filter '@fretik/ai' models:check
+      # There is no catalogue-drift step any more, and the reason belongs here
+      # rather than in a commit nobody will read.
+      #
+      # It diffed 22 hand-written `catalog` blocks against the live OpenRouter
+      # models API. Those blocks were deleted on 2026-08-30: the nightly sync
+      # writes the catalogue onto `model_live_state` and `effective.ts` derives
+      # the profile from it, so the two sides it compared can no longer
+      # disagree. `models:check` kept only two LIVE probes, both of which need
+      # a populated database — which CI has no access to, by design.
+      #
+      # What replaced it is stricter, not weaker:
+      #   - the DERIVATION rules are asserted over a synthetic fleet
+      #     (`tests/lib/live-fleet.ts`), so they fail when the rule is wrong for
+      #     every model the sync will ever discover, not when someone mistypes
+      #     a list — that runs in the test step above;
+      #   - drift between what the sync wrote and what the product serves is
+      #     `models:admin audit`, which needs the real registry and therefore
+      #     belongs to the deploy (see DEPLOY-model-engine.md), not to CI.
 
   build-and-push:
     name: build + push to GHCR

@@ -1,18 +1,48 @@
 import type { AiMemoryScope } from "../../db/schema/ai-memory";
 import { OPENROUTER_API_BASE_URL } from "../../lib/openrouter";
+import { getLiveSnapshotSync } from "../model-registry/live";
 import { findMemoryByPath } from "./lookup";
 import type { MemoryScopeKey } from "./types";
 
 /**
- * Open-weight model used to suggest a semantic path from raw content.
- * Cheap + fast (sub-second on OpenRouter) so the user does not have
- * to wait noticeably when they hit "Save" in the settings UI.
+ * The model that suggests a semantic path from raw content: whichever one the
+ * registry currently binds to `cheap-tasks`.
  *
- * Override via `OPENROUTER_MEMORY_SUGGEST_MODEL` if you want to A/B
- * a different small model without redeploying.
+ * It used to be `process.env.OPENROUTER_MEMORY_SUGGEST_MODEL ?? "openai/…"` —
+ * a model id typed into a file, resolved once at import, reaching the wire
+ * without passing the registry at all. Which meant this one call site ignored
+ * everything the engine knows: a quarantined upstream, a retired model, a
+ * price that moved, a team's own pick. Reading the live row instead costs one
+ * map lookup and puts it back under the same rules as every other call.
+ *
+ * Resolved PER CALL rather than at module load, for the reason the vision and
+ * transform paths were fixed for: a constant captured at import never sees the
+ * engine change its mind.
+ *
+ * `@fretik/shared` cannot import the role bindings (they live in `@fretik/ai`),
+ * so the row is found by the `boundRoles` the seed writes onto it — the same
+ * list the sync reads to know what depends on a model.
  */
-const MODEL_ID =
-  process.env.OPENROUTER_MEMORY_SUGGEST_MODEL ?? "openai/gpt-oss-20b";
+const CHEAP_TASKS_ROLE = "cheap-tasks";
+
+/**
+ * Used only when no live row answers: an empty database, or a replica that has
+ * not loaded the snapshot yet. Deliberately the model the registry binds today,
+ * so the fallback and the resolved answer agree in the normal case.
+ */
+const FALLBACK_MODEL_ID = "openai/gpt-oss-20b";
+
+const suggestModelId = (): string => {
+  for (const row of getLiveSnapshotSync()?.values() ?? []) {
+    if (!row.enabled || row.status !== "published") continue;
+    if (!row.boundRoles.includes(CHEAP_TASKS_ROLE)) continue;
+    // This call speaks the OpenRouter dialect directly, so it needs that
+    // transport's spelling specifically — never another transport's id.
+    const id = row.modelIds.openrouter;
+    if (id !== undefined) return id;
+  }
+  return FALLBACK_MODEL_ID;
+};
 
 /**
  * Hard timeout for the LLM call. Anything longer is a UX-killer when
@@ -199,7 +229,7 @@ const callOpenRouter = async (args: {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: MODEL_ID,
+        model: suggestModelId(),
         temperature: 0.2,
         max_tokens: 60,
         messages: [
@@ -233,8 +263,8 @@ const callOpenRouter = async (args: {
  * for a new memory note.
  *
  * Strategy:
- *  1. Ask `OPENROUTER_MEMORY_SUGGEST_MODEL` (default: `openai/gpt-oss-20b`)
- *     to produce a path, anchored on a sample of existing paths so it
+ *  1. Ask the registry's `cheap-tasks` model (see `suggestModelId`) to
+ *     produce a path, anchored on a sample of existing paths so it
  *     re-uses the team's folder conventions.
  *  2. Sanitise the response (strip prefix/quotes, force `.md` suffix,
  *     refuse traversal segments).

@@ -1,27 +1,28 @@
 /**
  * Model engine — the transport-agnostic vocabulary.
  *
- * Two layers own model configuration, and the split is the whole point:
+ * ONE layer owns model configuration: `model_live_state`, this package's table.
+ * A row says which transport serves a model, what its pool actually resolves
+ * to, the real context ceiling, today's price, whether a provider is
+ * quarantined — and, since the sync began refreshing it every pass, what the
+ * catalogues say the model IS. `@fretik/ai` derives a profile from the row and
+ * nothing else.
  *
- * - **Curation (TypeScript, `@fretik/ai` `lib/model-registry/profiles`).** What
- *   a model IS and how we decided to run it: native modalities, the
- *   reasoning envelope, the vetted upstream pool, the incident log. Changing it
- *   is a reviewed PR.
- * - **Live state (this package, `model_live_state`).** What is TRUE about it
- *   right now: which transport serves it, what the pool actually resolves to,
- *   the real context ceiling, today's price, whether a provider is quarantined.
- *   Changing it is a write — no deploy.
+ * It used to be two, with a hand-written TypeScript half that won outright for
+ * the 22 models it named. The asymmetry was the bug this engine exists to fix:
+ * that half could not be edited from a running process, so removing a provider
+ * that had started corrupting output meant a pull request and a redeploy — and
+ * two exclusions written that way silently expired and had to be re-learned
+ * from a production incident. It was also, when finally measured, STALER than
+ * the rows it overrode. Deleted 2026-08-30.
  *
- * Everything the nightly sync and the runtime breaker touch lives in the second
- * layer, because the first one cannot be edited from a running process. That
- * asymmetry is the bug this engine exists to fix: every provider exclusion used
- * to be a compile-time constant, so removing a provider that started corrupting
- * output meant a pull request and a redeploy — and two exclusions written that
- * way silently expired and had to be re-learned from a production incident.
+ * Changing what a model IS is now a write, never a deploy. The one thing left
+ * in code is which model serves which internal ROLE (`@fretik/ai`
+ * `lib/model-registry/role-bindings.ts`), because no API publishes it.
  *
- * `@fretik/jobs` can import this package but NOT `@fretik/ai`, which is why the
- * sync reads models from the database rather than from the TypeScript registry.
- * The registry seeds the rows; it is never the job's source of truth.
+ * `@fretik/jobs` can import this package but NOT `@fretik/ai`, and that is no
+ * longer a constraint worth working around: the database is the source of truth
+ * for both.
  */
 
 /**
@@ -217,6 +218,18 @@ export const INCIDENT_KINDS = [
 export type IncidentKind = (typeof INCIDENT_KINDS)[number];
 
 /**
+ * The kind a HAND quarantine files under when the operator names none.
+ *
+ * The column is typed to the five detector kinds, so someone acting on what
+ * they saw still has to choose one. `upstream-cut` is the least specific claim
+ * of the five — a generation that ended badly for a reason upstream — and the
+ * reason text is where what actually happened is recorded. A sharper kind is
+ * better when one fits: the kind is what the release re-probe and the alert
+ * digest read back.
+ */
+export const DEFAULT_QUARANTINE_KIND: IncidentKind = "upstream-cut";
+
+/**
  * A provider removed from one model's pool. Quarantine is per (model,
  * provider): the same host can serve one model correctly and mangle another,
  * and the reverse claim would have cost us the whole pool more than once.
@@ -241,10 +254,320 @@ export type ModelHealth = "healthy" | "degraded" | "failing" | "unknown";
  * to teams until someone promotes it. Day-zero endpoints are measurably
  * unstable — tool-calling accuracy for one model spans 22 % to 37 % depending
  * on the host — so discovery is automatic and publication is not.
+ *
+ * A runtime tuple for the same reason `DISABLED_REASONS` is one: an operator
+ * surface has to OFFER these, and a type alone cannot fill a filter or validate
+ * a query parameter.
  */
-export type ModelStatus = "published" | "candidate" | "retired";
+export const MODEL_STATUSES = ["published", "candidate", "retired"] as const;
+export type ModelStatus = (typeof MODEL_STATUSES)[number];
 
-export type DisabledReason = "cost" | "no-zdr" | "unavailable" | "policy";
+/** Who last wrote a `model_live_state` row — see `LiveModelState.source`. */
+export type ModelStateSource = "seed" | "sync" | "admin" | "breaker";
+
+/**
+ * Who is performing a write, passed in rather than inferred.
+ *
+ * The breaker is the reason this exists: `quarantineProvider` serves both a
+ * runtime detector and a person typing a command, so the function cannot know
+ * from the inside which one called it. It used to stamp `admin` either way,
+ * which was invisible while the only reader was a terminal and becomes a
+ * falsehood the moment a screen puts a name beside the word.
+ *
+ * `operator` carries the id because an HTTP caller is one of several people
+ * sharing this state; `cli` deliberately carries none, since a shell is
+ * attributable by other means and inventing an id there would be worse than
+ * admitting the gap.
+ */
+export type ModelWriteActor =
+  | { kind: "breaker" }
+  | { kind: "sync" }
+  | { kind: "cli" }
+  | { kind: "operator"; userId: string };
+
+/**
+ * The `source` column value for an actor.
+ *
+ * A person is a person whichever door they came through, so `cli` and
+ * `operator` both record `admin`: the column answers "was this automatic",
+ * and WHO exactly belongs in the action log, which holds the user id.
+ */
+export const sourceForActor = (actor: ModelWriteActor): ModelStateSource =>
+  actor.kind === "cli" || actor.kind === "operator" ? "admin" : actor.kind;
+
+/**
+ * What quarantining an upstream actually did.
+ *
+ * Replaces a `boolean` that collapsed six outcomes into two values — and got
+ * one of them wrong: the `last-resort` rung WRITES the row (`lastResort`,
+ * `health`) and used to return `false`, so "returns whether anything changed"
+ * was false for the single most serious branch. Callers read the difference
+ * either by trusting a lie or, in the CLI's case, by re-reading the row and
+ * fuzzy-matching the provider name.
+ *
+ * The variants are named after the rungs of the escalation ladder in
+ * `services/model-registry/breaker.ts`, so the code and the comment that
+ * explains it cannot drift apart.
+ */
+export type QuarantineOutcome =
+  /** No `model_live_state` row: a raw model id from a bypass call site. */
+  | { kind: "no-live-row" }
+  | { kind: "already-quarantined"; entry: QuarantineEntry }
+  /** Rung 1 — members left in the pool, so the host simply goes. */
+  | {
+      kind: "quarantined";
+      entry: QuarantineEntry;
+      remaining: number;
+      /** Whether `remaining` counts the vetted list or every live endpoint. */
+      remainingSource: "vetted" | "endpoints";
+    }
+  /** Rung 2 — vetted list exhausted, routing opened to the rest of the transport. */
+  | { kind: "pool-widened"; entry: QuarantineEntry; remaining: number }
+  /** Rung 3 — nothing clean here, the same model served from other hosts. */
+  | {
+      kind: "transport-switched";
+      entry: QuarantineEntry;
+      from: TransportId;
+      to: TransportId;
+    }
+  /** Rung 4 — nothing anywhere: the host keeps serving, the MODEL steps down. */
+  | { kind: "last-resort" };
+
+/** What releasing an upstream actually did. Was `void`, which said nothing. */
+export type ReleaseOutcome =
+  | { kind: "no-live-row" }
+  /**
+   * Nothing to release here — and quarantine is recorded PER TRANSPORT, so
+   * `elsewhere` carries the entries on the other ones. The caller used to have
+   * to reconstruct that by diffing array lengths across a re-read.
+   */
+  | { kind: "not-quarantined"; elsewhere: readonly QuarantineEntry[] }
+  | {
+      kind: "released";
+      entry: QuarantineEntry;
+      /** Routing went back from open to the vetted list. */
+      poolRenarrowed: boolean;
+      lastResortLifted: boolean;
+    };
+
+/**
+ * What a deliberate operator write did.
+ *
+ * These are RETURN types rather than thrown errors on purpose: two surfaces
+ * consume them and only one prints English. A `throw new Error("…serves
+ * internal role(s): chat…")` forces an HTTP layer to parse prose back into a
+ * decision, and forces both surfaces to share one language.
+ *
+ * `throw` is kept for one thing only — a caller passing a value outside the
+ * type, which is a programming error rather than a state the operator is in.
+ */
+export type SetTransportOutcome =
+  | { kind: "unknown-model" }
+  | { kind: "no-model-id"; transport: TransportId; available: TransportId[] }
+  | { kind: "already-on-transport"; transport: TransportId }
+  | { kind: "switched"; from: TransportId; to: TransportId };
+
+export type SetEnabledOutcome =
+  | { kind: "unknown-model" }
+  | {
+      kind: "updated";
+      enabled: boolean;
+      disabledReason: DisabledReason | null;
+      /**
+       * Carried so the caller can say what disabling does NOT do: `enabled`
+       * gates team selection only, and a bound role resolves its model
+       * directly, bypassing the check.
+       */
+      boundRoles: string[];
+    };
+
+export type PromoteOutcome =
+  | { kind: "unknown-model" }
+  | {
+      kind: "already-published";
+      enabled: boolean;
+      disabledReason: "cost" | null;
+    }
+  | {
+      kind: "promoted";
+      enabled: boolean;
+      /** `cost` means published but not PAID for — the two are separate decisions. */
+      disabledReason: "cost" | null;
+      pricing: PricingSnapshot;
+      /** Running on catalogue facts alone: no reasoning envelope, no cache strategy. */
+      catalogueDerivedOnly: boolean;
+    };
+
+export type RetireOutcome =
+  | { kind: "unknown-model" }
+  /**
+   * Retiring a model an internal role runs on does not degrade one team's
+   * choice, it takes those roles down. Rebinding is a reviewed pull request,
+   * so this is a refusal rather than a warning.
+   */
+  | { kind: "refused-bound-roles"; roles: string[] }
+  | { kind: "retired"; previousStatus: ModelStatus };
+
+/**
+ * Adding a model straight from a catalogue.
+ *
+ * The only operator action whose refusals are catalogue LOGIC rather than row
+ * state, which is why it is a composed operation rather than a bare service
+ * call: `addCatalogueModel` has no catalogue to consult and structurally
+ * cannot express three of these four.
+ */
+export type AddFromCatalogueOutcome =
+  /** `near` is a did-you-mean list the caller can render as suggestions. */
+  | { kind: "not-in-catalogue"; catalogueSize: number; near: string[] }
+  | { kind: "not-a-language-model" }
+  | {
+      kind: "key-exists";
+      profileKey: string;
+      status: ModelStatus;
+      modelIds: string[];
+    }
+  /**
+   * Endpoints exist but none survives the discovery policy, so there is
+   * nothing to derive an honest context or price from. Refusing beats
+   * inserting zeros: those two numbers are what compaction budgets against
+   * and what credits bill off.
+   */
+  | {
+      kind: "no-eligible-endpoint";
+      endpointCount: number;
+      excluded: { provider: string; reason: string }[];
+    }
+  /** `onConflictDoNothing` swallowed a concurrent insert of the same key. */
+  | { kind: "insert-lost-race"; profileKey: string }
+  | {
+      kind: "added";
+      profileKey: string;
+      state: LiveModelState;
+      endpoints: EndpointStat[];
+      excluded: { provider: string; reason: string }[];
+    };
+
+export type AcknowledgeAlertOutcome =
+  | { kind: "unknown-alert" }
+  | { kind: "acknowledged"; alertKind: string; modelKey: string | null };
+
+/**
+ * One key of a batch threw, and the rest of the batch still ran.
+ *
+ * Deliberately NOT a variant of the operation outcomes: those describe
+ * decisions the engine took, and "the database refused this UPDATE" is not one.
+ * Keeping it separate means a caller reading `PromoteOutcome` still sees only
+ * the states promotion can be in, while a batch envelope carries the failures
+ * the batch itself has to survive.
+ *
+ * It exists because a batch that aborts on the seventh of twenty keys leaves
+ * the operator not knowing where the boundary fell — strictly worse than either
+ * extreme, since neither "all of them" nor "none of them" is true and nothing
+ * on screen says which.
+ */
+export interface BulkFailure {
+  kind: "failed";
+  message: string;
+}
+
+/**
+ * Something true after a write that the caller did not ask to change.
+ *
+ * The operator CLI's real value is not its verbs, it is the paragraph it
+ * prints afterwards — "quarantines are KEPT, they are recorded per transport",
+ * "`enabled` gates TEAM SELECTION only". A `POST` answering 204 throws all of
+ * that away, so every write reports these instead.
+ *
+ * Structured and PARAMETERISED, never a bare string: a client handed only a
+ * code would have to recompute the numbers from `before`/`after`, and several
+ * of them are not derivable at all without duplicating a backend policy
+ * constant (`PROMOTION_PRICE_CAPS`, `BREAKER_THRESHOLDS`, `QUARANTINE_DAYS`).
+ * Same split the eligibility engine already makes between `unmet` (structure,
+ * for the API) and `failed` (English, for logs and the CLI).
+ *
+ * Three admission rules keep this list from rotting into a dumping ground:
+ *
+ *  1. It states something about state the caller did not ask to change.
+ *     "candidate → published" is not a consequence, it is `after`. "published
+ *     but arrived DISABLED" is one.
+ *  2. A client cannot derive it without a backend constant.
+ *  3. An INVARIANT is page copy, not payload. "Takes effect on the next model
+ *     construction, fleet-wide, with no deploy" is true of all eight writes;
+ *     attaching it to every response makes it noise an operator learns to
+ *     skip, which is exactly how a list like this stops being read.
+ *
+ * Consequently every variant below corresponds to a BRANCH the code actually
+ * took. A code no branch produces cannot exist.
+ */
+export type Consequence =
+  /** Published, but not paid for: the two are separate decisions. */
+  | {
+      code: "published-disabled-on-cost";
+      inputPerMTok: number;
+      outputPerMTok: number;
+      capInputPerMTok: number;
+      capOutputPerMTok: number;
+    }
+  /** No hand-written profile: no reasoning envelope, no cache strategy. */
+  | { code: "catalogue-derived-profile-only" }
+  | { code: "was-already-enabled" }
+  /** Enabled, but teams still cannot select it — publication is a second step. */
+  | { code: "still-unpublished"; status: ModelStatus }
+  /** `enabled` gates team selection; a bound role resolves directly past it. */
+  | { code: "roles-bypass-enabled"; roles: readonly string[] }
+  /** A transport switch keeps them: quarantine is recorded per transport. */
+  | { code: "quarantines-kept-per-transport"; kept: number }
+  | { code: "pool-widened"; remaining: number }
+  | { code: "transport-switched"; from: TransportId; to: TransportId }
+  | { code: "now-last-resort" }
+  /** What the breaker would have needed to file this by itself. */
+  | {
+      code: "breaker-would-need";
+      kind: IncidentKind;
+      generations: number;
+      windowMinutes: number;
+    }
+  /** The date is a review trigger, not an amnesty: the sync re-probes on it. */
+  | { code: "release-is-review-trigger"; releaseAt: string }
+  | { code: "pool-renarrowed" }
+  | { code: "last-resort-lifted" };
+
+/**
+ * A model row at the size an operator surface needs it.
+ *
+ * `LiveModelState` carries `endpointStats` (twenty objects on a busy model)
+ * and a full `policyReport`; a write that answers with `before` and `after`
+ * would ship both twice for no reader. These are the fields that actually
+ * change, or that decide whether a change was safe.
+ */
+export interface ModelStateSummary {
+  profileKey: string;
+  status: ModelStatus;
+  transport: TransportId;
+  enabled: boolean;
+  disabledReason: DisabledReason | null;
+  health: ModelHealth;
+  poolWidened: boolean;
+  lastResort: boolean;
+  activeQuarantineCount: number;
+  boundRoles: string[];
+}
+
+/**
+ * Why a model is not selectable, as the `disabled_reason` column spells it.
+ *
+ * The runtime tuple exists because an operator surface has to OFFER these — a
+ * type alone cannot fill a dropdown or validate a request body. It lived in the
+ * `model-admin` script for exactly that reason and had to be duplicated the
+ * moment a second surface needed it.
+ */
+export const DISABLED_REASONS = [
+  "cost",
+  "no-zdr",
+  "unavailable",
+  "policy",
+] as const;
+export type DisabledReason = (typeof DISABLED_REASONS)[number];
 
 export type PolicySeverity = "hard" | "soft";
 
@@ -306,6 +629,26 @@ export interface AaMetrics {
  * and the picker to treat the model like any other; a hand-written TypeScript
  * profile, when one exists, wins over it field by field.
  */
+/**
+ * What a catalogue says about a model's thinking knob.
+ *
+ * Deliberately the upstream's own vocabulary, unfiltered: effort names arrive as
+ * plain strings and are narrowed against the product's ladder where they are
+ * consumed. A rung nobody models yet must reach the row rather than be dropped
+ * at the boundary, or a catalogue growing a new level would look like a model
+ * losing one.
+ */
+export interface CatalogueReasoning {
+  /** Reasoning cannot be turned off — never send `none` to these. */
+  mandatory: boolean;
+  /** The exact ladder, upstream spelling. Absent ⇒ a budget, not a ladder. */
+  supportedEfforts?: string[];
+  /** Upstream's own default rung. */
+  defaultEffort?: string;
+  /** The model honours an explicit token budget for its thinking. */
+  supportsMaxTokens?: boolean;
+}
+
 export interface DynamicProfile {
   displayName: string;
   family: string;
@@ -316,6 +659,15 @@ export interface DynamicProfile {
   supportedParameters: string[];
   supportsReasoning: boolean;
   supportsTools: boolean;
+  /**
+   * The published reasoning contract — which depths this model accepts.
+   *
+   * Distinct from `supportsReasoning`, which only says the knob exists. This is
+   * what a synthesised profile turns into a depth menu, so a model discovered
+   * before this field existed offers no depth control until the next sync pass
+   * refreshes its row.
+   */
+  reasoning?: CatalogueReasoning;
   /** Derived from the catalogue tags, never guessed from the name. */
   derivedFrom: { source: string; at: string };
 }
@@ -369,6 +721,18 @@ export interface LiveModelState {
    * the chatbot down rather than degrade one team's choice.
    */
   boundRoles: string[];
-  source: "seed" | "sync" | "admin";
+  /**
+   * What last wrote this row.
+   *
+   * `breaker` exists because the column could not previously tell an operator
+   * apart from a machine: `quarantineProvider` writes on every rung of its
+   * escalation ladder and stamped `admin` whether a person ran `model-admin` or
+   * a runtime detector tripped the circuit. Nobody noticed while the only
+   * reader was a terminal; a screen that puts a name next to the word makes the
+   * confusion visible. The writers are corrected where the caller's identity is
+   * actually known — the breaker takes it from its caller, since the same
+   * function serves both.
+   */
+  source: ModelStateSource;
   syncedAt: Date | null;
 }

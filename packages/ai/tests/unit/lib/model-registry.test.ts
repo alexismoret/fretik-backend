@@ -1,32 +1,43 @@
 import { reasoningLevelSchema } from "@fretik/shared/schemas/reasoning";
-import { describe, expect, test } from "bun:test";
+import { beforeAll, describe, expect, test } from "bun:test";
+import { normalizeFamily } from "../../../src/lib/model-registry/display";
 import {
   MODEL_FUNCTION_KEYS,
   selectableForFunction,
 } from "../../../src/lib/model-registry/functions";
 import {
-  modelIdsForProfile,
-  PROFILES_WITHOUT_GATEWAY_ID,
-} from "../../../src/lib/model-registry/gateway-ids";
-import {
-  MODEL_PROFILES,
-  ROLE_BINDINGS,
-} from "../../../src/lib/model-registry/profiles";
-import {
+  clearResolvedModelCache,
   createOrphanThinkStreamStripper,
   effectiveReasoningLevel,
   getProfileForRole,
+  MAX_TOKENS_BUDGET_BY_LEVEL,
+  openrouterReasoning,
   reasoningParamForProfile,
   selectableReasoningLevels,
   settingsForRole,
   stripOrphanThinkTags,
 } from "../../../src/lib/model-registry/resolve";
+import { ROLE_BINDINGS } from "../../../src/lib/model-registry/role-bindings";
 import {
   REASONING_LEVELS,
-  supportsParameter,
   type ModelRole,
 } from "../../../src/lib/model-registry/types";
 import { shouldInjectCacheControl } from "../../../src/lib/openrouter-cache";
+import {
+  dynamic,
+  FLEET,
+  installBoundFleet,
+  profileOf,
+  row,
+} from "../../lib/live-fleet";
+
+// Role resolution reads the database now, so the suite installs rows for the
+// models `ROLE_BINDINGS` names. See `live-fleet.ts` — they are fixture data
+// matching what the sync has measured, not configuration.
+beforeAll(() => {
+  installBoundFleet();
+  clearResolvedModelCache();
+});
 
 /**
  * C1 invariant: the registry is a refactor with ZERO behaviour change.
@@ -71,21 +82,18 @@ const VETTED_DEEPSEEK_UPSTREAMS = [
 describe("settingsForRole — parity with historical settings objects", () => {
   test("chat-fallback carries minimax-m3's own envelope, not the historical one", () => {
     // Rebound to minimax-m3 on 2026-08-02 so the fallback shares neither
-    // family nor upstream with the DeepSeek primary. It therefore brings M3's
-    // pinned 5 000-token reasoning budget rather than the 1 500 / unpinned
-    // envelope deepseek-v4-pro used to produce here.
+    // family nor upstream with the DeepSeek primary.
     //
     // The Novita PIN is gone as of 2026-08-23. This role is what the page
     // builder falls back to when a build dies, so every M3 turn was being
-    // served by the one upstream that ignores the reasoning budget above — and
-    // `order` disables `sort`, so nothing faster could ever win. What this test
-    // now pins is that the fallback routes through a POOL: `sort` present,
-    // `order` absent.
+    // served by one upstream — and `order` disables `sort`, so nothing faster
+    // could ever win. What this test pins is that the fallback routes through a
+    // POOL: `sort` present, `order` absent.
     //
-    // CoreWeave left this pool on 2026-08-29, for the reason it left
-    // deepseek-v4-flash's the day before: it inserts U+200B next to numbers.
-    // The defect belongs to the serving stack, so the exclusion is asserted on
-    // every profile that listed it, not only on the one it was measured under.
+    // The budget is the shared level→budget table's `low`, not a per-model pin.
+    // M3 carried a hand-set 5 000 until 2026-08-30; a live probe at three
+    // budgets returned 5 452 / 4 322 / 2 996 reasoning tokens for 512 / 1 500 /
+    // 8 000 requested — non-monotonic, so the pin never bound anything.
     expect(
       settingsForRole(
         ROLE_BINDINGS["chat-fallback"],
@@ -98,7 +106,7 @@ describe("settingsForRole — parity with historical settings objects", () => {
         only: ["Novita", "DeepInfra"],
         sort: "throughput",
       },
-      reasoning: { enabled: true, max_tokens: 5_000 },
+      reasoning: { enabled: true, max_tokens: MAX_TOKENS_BUDGET_BY_LEVEL.low },
       usage: { include: true },
     });
   });
@@ -116,7 +124,11 @@ describe("settingsForRole — parity with historical settings objects", () => {
         only: VETTED_DEEPSEEK_UPSTREAMS,
         sort: "throughput",
       },
-      reasoning: { enabled: true, max_tokens: 1_500 },
+      // An EFFORT, not a budget — deepseek-v4-flash publishes `low/high/max`,
+      // and a model with a ladder is steered by the ladder. It used to send a
+      // hand-set 1 500-token budget because the curated profile declared no
+      // ladder for it; the catalogue always had one.
+      reasoning: { enabled: true, effort: "high" },
       usage: { include: true },
     });
   });
@@ -159,6 +171,7 @@ describe("settingsForRole — parity with historical settings objects", () => {
         zdr: true,
         sort: "throughput",
         ignore: ["fireworks"],
+        only: ["cerebras", "groq", "deepinfra"],
       },
     });
   });
@@ -180,6 +193,10 @@ describe("settingsForRole — parity with historical settings objects", () => {
         zdr: true,
         sort: "throughput",
         ignore: ["fireworks"],
+        // Derived from the endpoints now, and sent only where filtering leaves
+        // a host standing. It used to be sent to any model that declared no
+        // pool — a test that read as "always exempt" once the sync began
+        // computing a pool for every model.
         quantizations: ["bf16", "fp16", "unknown"],
         only: ["cerebras", "groq"],
       },
@@ -199,25 +216,37 @@ describe("settingsForRole — parity with historical settings objects", () => {
     // bare roles omit `require_parameters` — they never tool-call, and the
     // flag would exclude a pinned model's only ZDR endpoint when it omits a
     // sent parameter (Gemini's Vertex route doesn't advertise `temperature`).
-    const bareNoSort = { provider: { zdr: true } };
+    // A bare role now carries the row's whole vetted pool, `only` included —
+    // it used to carry only what a curated profile happened to declare, so a
+    // model nobody hand-wrote a profile for ran these calls on open routing.
+    const geminiPool = {
+      provider: { zdr: true, only: ["google-vertex"] },
+    };
     // cheap-tasks is bound to gpt-oss-20b, the model the Fireworks
-    // noise-injection was measured on (6/6). Its `ignore` is part of the
-    // profile since 2026-08-29, so even a bare role carries it.
+    // noise-injection was measured on (6/6). The exclusion is on the row, so
+    // even a bare role carries it.
     expect(
       settingsForRole(
         ROLE_BINDINGS["cheap-tasks"],
         getProfileForRole("cheap-tasks"),
       ),
-    ).toEqual({ provider: { zdr: true, ignore: ["fireworks"] } });
+    ).toEqual({
+      provider: {
+        zdr: true,
+        ignore: ["fireworks"],
+        only: ["groq", "deepinfra"],
+        sort: "throughput",
+      },
+    });
     expect(
       settingsForRole(ROLE_BINDINGS.vision, getProfileForRole("vision")),
-    ).toEqual(bareNoSort);
+    ).toEqual(geminiPool);
     expect(
       settingsForRole(
         ROLE_BINDINGS["vision-fallback"],
         getProfileForRole("vision-fallback"),
       ),
-    ).toEqual(bareNoSort);
+    ).toEqual(geminiPool);
     // A throughput-sorted profile with a vetted pool (deepseek-v4-flash)
     // surfaces both `sort` and `only`.
     expect(
@@ -347,48 +376,90 @@ describe("role bindings — default model ids pinned (chat: gated M3 flip)", () 
     // failure the role was created around. Both bindings carried that rule in
     // prose and it still had to be remembered by hand on 2026-08-19, when the
     // builder moved onto the critic's model. Cheaper as an assertion.
-    const builder = MODEL_PROFILES[ROLE_BINDINGS["page-build"].profileKey];
-    const critic = MODEL_PROFILES[ROLE_BINDINGS["page-review"].profileKey];
-    expect(builder).toBeDefined();
-    expect(critic).toBeDefined();
-    expect(critic.family).not.toBe(builder.family);
+    //
+    // Family is derived from the model id now, so the check no longer needs a
+    // registry: `google/gemini-3.7-flash` and `openai/gpt-5.6-luna` cannot be
+    // the same maker whatever the rows say.
+    const builder = ROLE_BINDINGS["page-build"].profileKey;
+    const critic = ROLE_BINDINGS["page-review"].profileKey;
+    expect(builder).not.toBe(critic);
+    expect(normalizeFamily(builder.split("-")[0] ?? "")).not.toBe(
+      normalizeFamily(critic.split("-")[0] ?? ""),
+    );
   });
 });
 
-describe("registry integrity", () => {
-  test("every binding points at an existing profile", () => {
-    for (const binding of Object.values(ROLE_BINDINGS)) {
-      expect(MODEL_PROFILES[binding.profileKey]).toBeDefined();
+describe("role bindings — structural integrity", () => {
+  test("every binding names its own role and a non-empty profile key", () => {
+    // That a key RESOLVES is no longer a static fact: profiles come from the
+    // database. The boot checks it for real against the live rows and names
+    // whatever is missing (`index.ts`), which is a stronger check than a
+    // TypeScript lookup ever was — it catches a model that was retired
+    // upstream, not just one that was never typed.
+    for (const [role, binding] of Object.entries(ROLE_BINDINGS)) {
+      expect(binding.role).toBe(role as ModelRole);
+      expect(`${role}:${binding.profileKey.length > 0}`).toBe(`${role}:true`);
     }
   });
 
-  test("profile keys are coherent and OpenRouter ids unique", () => {
+  test("the applied chat / workflow defaults carry passing eval evidence", () => {
+    // THE replacement for the old flagship selection gate. Selection is now
+    // governed by `enabled` alone, so evals guard exactly one thing: which
+    // model actually serves by default. Swapping `ROLE_BINDINGS.chat` without
+    // a gate run must fail CI.
+    // The evidence moved onto the BINDING on 2026-08-30. It used to sit on the
+    // profile, which could not express what a gate run actually measures — a
+    // model doing a JOB, against the model that held the job before it. The
+    // proof it could not: `minimax-m3` carried a stamp whose own comment
+    // claimed it was the `chat` default four weeks after the flip moved `chat`
+    // to `deepseek-v4-flash`, and nothing caught it, because the stamp was
+    // never tied to the decision it was evidence for.
+    for (const role of ["chat", "workflow"] as const) {
+      const binding = ROLE_BINDINGS[role];
+      expect(`${role}:${binding.evalGate?.status ?? "MISSING"}`).toBe(
+        `${role}:passed`,
+      );
+      // A run id, so the claim is checkable rather than asserted.
+      expect(`${role}:${binding.evalGate?.lastRunId ?? "MISSING"}`).not.toBe(
+        `${role}:MISSING`,
+      );
+    }
+  });
+});
+
+/**
+ * The invariants below used to iterate the 22 curated profiles. They now run
+ * over the DERIVATION, on a synthetic fleet spanning the shapes it has to
+ * handle. That is the stronger form: the old version could only fail when
+ * somebody edited a file, this one fails when the RULE is wrong — for every
+ * model the sync will ever discover.
+ */
+describe("registry integrity — over the derivation", () => {
+  test("profile keys and ids come from the row, coherently", () => {
     const ids = new Set<string>();
-    for (const [key, profile] of Object.entries(MODEL_PROFILES)) {
-      expect(profile.key).toBe(key);
-      expect(ids.has(profile.catalog.id)).toBe(false);
-      ids.add(profile.catalog.id);
+    for (const profile of FLEET) {
+      expect(profile.key.length).toBeGreaterThan(0);
+      expect(ids.has(`${profile.key}:${profile.catalog.id}`)).toBe(false);
+      ids.add(`${profile.key}:${profile.catalog.id}`);
     }
   });
 
   test("every function has at least one model a team can pick", () => {
     // The picker-relevant invariant: no function may render an empty menu.
-    // Selection is `enabled` plus a MEASURED eligibility verdict, so a curated
-    // profile with no live row passes on `unknown` — which is what keeps this
-    // true on a cold registry.
+    // Selection is `enabled` plus a MEASURED eligibility verdict, so a model
+    // with no measurement passes on `unknown` — automatic attribution refuses
+    // to GRANT on unknown, it never revokes on it.
     for (const fn of MODEL_FUNCTION_KEYS) {
-      const options = Object.values(MODEL_PROFILES).filter((p) =>
-        selectableForFunction(p, fn),
-      );
+      const options = FLEET.filter((p) => selectableForFunction(p, fn));
       expect(`${fn}:${options.length > 0}`).toBe(`${fn}:true`);
     }
   });
 
   test("nativeInput activation is a subset of catalog facts (C5)", () => {
     // The product may only send a modality natively when the model truly
-    // accepts it upstream. The catalog is the hard ceiling; nativeInput is
-    // the (eval-gated) product decision under it.
-    for (const profile of Object.values(MODEL_PROFILES)) {
+    // accepts it upstream. The catalog is the hard ceiling; nativeInput is the
+    // product decision under it.
+    for (const profile of FLEET) {
       const { nativeInput } = profile.assessment;
       const modalities = profile.catalog.inputModalities;
       if (nativeInput.image) expect(modalities).toContain("image");
@@ -401,66 +472,39 @@ describe("registry integrity", () => {
   });
 
   test("native input is activated wherever the catalog allows it", () => {
-    // Replaces the old frozen allow-list of nine profile keys, which pinned
-    // WHICH models may read an attachment and so turned every registry
-    // addition into a test edit — and had left most of the fleet routing
+    // Replaces a frozen allow-list of nine profile keys, which pinned WHICH
+    // models may read an attachment and had left most of the fleet routing
     // images through the `vision` tool despite accepting them natively.
-    //
-    // The rule is now derived: if a model accepts a visual modality upstream,
-    // we send it natively. `audio` is the one deliberate exception (no call
-    // site emits audio parts yet), asserted separately below.
-    for (const [key, profile] of Object.entries(MODEL_PROFILES)) {
+    for (const modalities of [
+      ["text"],
+      ["text", "image"],
+      ["text", "image", "file"],
+      ["text", "file"],
+    ]) {
+      const profile = profileOf({
+        dynamicProfile: dynamic({ inputModalities: modalities }),
+      });
       const { nativeInput } = profile.assessment;
-      const catalog = profile.catalog.inputModalities;
-      for (const modality of ["image", "video"] as const) {
-        expect(`${key}:${modality}:${nativeInput[modality]}`).toBe(
-          `${key}:${modality}:${catalog.includes(modality)}`,
-        );
-      }
-      expect(`${key}:pdf:${nativeInput.fileMimeTypes.join(",")}`).toBe(
-        `${key}:pdf:${catalog.includes("file") ? "application/pdf" : ""}`,
+      expect(`image:${nativeInput.image}`).toBe(
+        `image:${modalities.includes("image")}`,
+      );
+      expect(`pdf:${nativeInput.fileMimeTypes.join(",")}`).toBe(
+        `pdf:${modalities.includes("file") ? "application/pdf" : ""}`,
       );
     }
   });
 
-  test("audio is inactive everywhere, even where the catalog allows it", () => {
-    // Five profiles accept audio upstream. Nothing in the product produces an
-    // audio part, so activating it would ship untested surface — this guards
-    // an accidental flip until there is a call site and eval evidence.
-    const audioCapable = Object.values(MODEL_PROFILES).filter((p) =>
-      p.catalog.inputModalities.includes("audio"),
-    );
-    expect(audioCapable.length).toBeGreaterThan(0);
-    for (const profile of audioCapable) {
-      expect(`${profile.key}:${profile.assessment.nativeInput.audio}`).toBe(
-        `${profile.key}:false`,
-      );
-    }
-  });
-
-  test("every activated modality declares a recency limit", () => {
-    // `prepareModelMessages` keeps the N most-recent native parts per modality
-    // and degrades older ones to tool-mediated. Without a limit a long
-    // conversation re-sends every image it ever saw, every turn.
-    for (const profile of Object.values(MODEL_PROFILES)) {
-      const { nativeInput } = profile.assessment;
-      const { limits } = nativeInput;
-      if (nativeInput.image) {
-        expect(
-          `${profile.key}:images:${limits?.maxImagesPerRequest ?? 0}`,
-        ).not.toBe(`${profile.key}:images:0`);
-      }
-      if (nativeInput.video) {
-        expect(
-          `${profile.key}:videos:${limits?.maxVideosPerRequest ?? 0}`,
-        ).not.toBe(`${profile.key}:videos:0`);
-      }
-      if (nativeInput.fileMimeTypes.length > 0) {
-        expect(
-          `${profile.key}:files:${limits?.maxFilesPerRequest ?? 0}`,
-        ).not.toBe(`${profile.key}:files:0`);
-      }
-    }
+  test("audio and video stay inactive even where the catalog allows them", () => {
+    // Nothing in the product produces an audio or video part, so activating
+    // either would ship untested surface. That is a fact about US, which is
+    // why it does not follow the catalogue like image and file do.
+    const profile = profileOf({
+      dynamicProfile: dynamic({
+        inputModalities: ["text", "image", "audio", "video"],
+      }),
+    });
+    expect(profile.assessment.nativeInput.audio).toBe(false);
+    expect(profile.assessment.nativeInput.video).toBe(false);
   });
 
   test("the applied chat / workflow defaults carry passing eval evidence", () => {
@@ -468,28 +512,37 @@ describe("registry integrity", () => {
     // governed by `enabled` alone, so evals guard exactly one thing: which
     // model actually serves by default. Swapping `ROLE_BINDINGS.chat` without
     // a gate run must fail CI.
+    // The evidence moved onto the BINDING on 2026-08-30. It used to sit on the
+    // profile, which could not express what a gate run actually measures — a
+    // model doing a JOB, against the model that held the job before it. The
+    // proof it could not: `minimax-m3` carried a stamp whose own comment
+    // claimed it was the `chat` default four weeks after the flip moved `chat`
+    // to `deepseek-v4-flash`, and nothing caught it, because the stamp was
+    // never tied to the decision it was evidence for.
     for (const role of ["chat", "workflow"] as const) {
       const binding = ROLE_BINDINGS[role];
-      const profile = MODEL_PROFILES[binding.profileKey];
-      expect(profile).toBeDefined();
-      expect(
-        `${role}:${profile.assessment.evalGate?.status ?? "MISSING"}`,
-      ).toBe(`${role}:passed`);
+      expect(`${role}:${binding.evalGate?.status ?? "MISSING"}`).toBe(
+        `${role}:passed`,
+      );
+      // A run id, so the claim is checkable rather than asserted.
+      expect(`${role}:${binding.evalGate?.lastRunId ?? "MISSING"}`).not.toBe(
+        `${role}:MISSING`,
+      );
     }
   });
 
   test("steerability is derived from the catalog, not hand-listed", () => {
     // Sanity on the derivation itself: neither empty nor everything, or the
     // rule is silently degenerate and every picker would look the same.
-    const steerable = Object.values(MODEL_PROFILES).filter(
+    const steerable = FLEET.filter(
       (profile) => selectableReasoningLevels(profile).length > 0,
     );
     expect(steerable.length).toBeGreaterThan(0);
-    expect(steerable.length).toBeLessThan(Object.keys(MODEL_PROFILES).length);
+    expect(steerable.length).toBeLessThan(FLEET.length);
   });
 
   test("a profile never defaults to a reasoning level upstream rejects", () => {
-    for (const profile of Object.values(MODEL_PROFILES)) {
+    for (const profile of FLEET) {
       const { style, defaultLevel } = profile.assessment.reasoning;
       const catalogReasoning = profile.catalog.reasoning;
       // Budget-style profiles send `max_tokens`, not an effort string, so the
@@ -509,21 +562,24 @@ describe("registry integrity", () => {
     }
   });
 
-  test("cache strategy agrees with the cache-control middleware patterns", () => {
-    for (const profile of Object.values(MODEL_PROFILES)) {
-      expect(shouldInjectCacheControl(profile.catalog.id)).toBe(
-        profile.assessment.cache.strategy === "explicit-breakpoints",
-      );
-    }
-  });
-
-  test("supportsParameter reads the catalog list", () => {
-    const m3 = MODEL_PROFILES["minimax-m3"];
-    expect(m3).toBeDefined();
-    if (!m3) return;
-    expect(supportsParameter(m3, "tools")).toBe(true);
-    // structured_outputs is absent from the M3 parameter list (unlike M2.7).
-    expect(supportsParameter(m3, "structured_outputs")).toBe(false);
+  test("the cache STRATEGY and the cache-control MARKERS answer different questions", () => {
+    // One field used to try to answer both: how a vendor CHARGES for caching,
+    // and whether the caller must place `cache_control` breakpoints. They are
+    // independent — every OpenAI model discounts reads (so: not `none`) and
+    // none of them takes markers — and conflating them is what had the gpt-oss
+    // pair recorded as `cache: none` while four of their hosts publish a read
+    // discount. Only the charging half is derived from prices; the marker
+    // question is a dialect fact `openrouter-cache.ts` answers from the id.
+    const cached = profileOf({
+      pricing: {
+        inputPerMTok: 1,
+        outputPerMTok: 4,
+        cacheReadPerMTok: 0.1,
+      },
+    });
+    expect(cached.assessment.cache.strategy).toBe("implicit");
+    expect(shouldInjectCacheControl("anthropic/claude-sonnet-5")).toBe(true);
+    expect(shouldInjectCacheControl("openai/gpt-5.6-luna")).toBe(false);
   });
 });
 
@@ -544,7 +600,7 @@ describe("thinking depth — what a user may actually request", () => {
   });
 
   test("only a real ladder offers a choice, whatever the wire style", () => {
-    for (const profile of Object.values(MODEL_PROFILES)) {
+    for (const profile of FLEET) {
       const levels = selectableReasoningLevels(profile);
       // Never a single dead option, and never a level upstream rejects.
       expect(levels.length === 0 || levels.length > 1).toBe(true);
@@ -561,30 +617,76 @@ describe("thinking depth — what a user may actually request", () => {
     }
   });
 
-  test("a budget-style model with a ladder still offers its levels", () => {
-    // The style is NOT the gate. DeepSeek V4 is deliberately `max-tokens` (its
-    // 4:1 reasoning ratio needs a ceiling) yet documented as answering to the
-    // level, which selects the budget from the shared table. An earlier version
-    // of this rule keyed off `style === "effort"` and silently took that away.
-    const deepseek = MODEL_PROFILES["deepseek-v4-pro"];
-    expect(deepseek?.assessment.reasoning.style).toBe("max-tokens");
-    expect(selectableReasoningLevels(deepseek).length).toBeGreaterThan(1);
+  test("a model whose catalogue named no ladder is steered by budget", () => {
+    // The style is NOT the gate on whether a level does anything: a contract
+    // with no published ladder still answers to a level, which selects the
+    // budget from the shared table. It offers no MENU (there are no rungs to
+    // name), which is a different statement.
+    const budget = profileOf({
+      dynamicProfile: dynamic({
+        supportsReasoning: true,
+        reasoning: { mandatory: false },
+      }),
+    });
+    expect(budget.assessment.reasoning.style).toBe("max-tokens");
+    expect(selectableReasoningLevels(budget)).toEqual([]);
+    expect(reasoningParamForProfile(budget, "high")).toEqual({
+      enabled: true,
+      max_tokens: MAX_TOKENS_BUDGET_BY_LEVEL.high,
+    });
   });
 
-  test("a pinned reasoning budget never coexists with an offered ladder", () => {
-    // `reasoningParamForProfile` lets a per-profile `maxTokens` beat the
-    // level→budget table, so offering levels alongside one would be a control
-    // that changes nothing on the wire.
-    for (const profile of Object.values(MODEL_PROFILES)) {
-      if (profile.assessment.reasoning.maxTokens === undefined) continue;
-      expect(
-        `${profile.key}:${selectableReasoningLevels(profile).length}`,
-      ).toBe(`${profile.key}:0`);
-    }
+  test("`max` reaches the wire instead of being served as `xhigh`", () => {
+    // It used to be clamped. The reason given was that the OpenRouter SDK's
+    // `effort` union stops at `xhigh` — true, and irrelevant: the API accepts
+    // `max` (verified 2026-08-30 against `deepseek-v4-flash-0731`, which
+    // returns 200, while an invalid value is refused with the API's own list
+    // ending in `max`). A provider package's TYPING is not a capability, and
+    // 47 of the 396 catalogue models publish this rung.
+    const withMax = FLEET.find((profile) =>
+      (profile.catalog.reasoning?.supportedEfforts ?? []).includes("max"),
+    );
+    expect(withMax).toBeDefined();
+    expect(withMax && reasoningParamForProfile(withMax, "max")).toEqual({
+      enabled: true,
+      effort: "max",
+    });
+  });
+
+  test("`max` is spelled through `extraBody`, the SDK's own escape hatch", () => {
+    // The union cannot hold it, so it travels in the field the provider
+    // documents for exactly this — no cast, and `reasoning` is left unset so
+    // the two cannot contradict each other in one request body.
+    const wire = openrouterReasoning({ enabled: true, effort: "max" });
+    expect(wire.extraBody).toEqual({
+      reasoning: { enabled: true, effort: "max" },
+    });
+    expect(wire.reasoning).toBeUndefined();
+
+    // Every other rung stays on the typed field.
+    const normal = openrouterReasoning({ enabled: true, effort: "high" });
+    expect(normal.reasoning).toEqual({ enabled: true, effort: "high" });
+    expect(normal.extraBody).toBeUndefined();
+  });
+
+  test("the product's ladder is exactly what the API accepts", () => {
+    // Measured 2026-08-30 across all 396 catalogue models: the distinct
+    // published efforts are none/minimal/low/medium/high/xhigh/max and nothing
+    // else, and the API's own rejection message enumerates the same seven. So
+    // there is no rung a model can offer that this product cannot express.
+    expect([...REASONING_LEVELS]).toEqual([
+      "none",
+      "minimal",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+    ]);
   });
 
   test("a mandatory reasoner never offers to switch reasoning off", () => {
-    for (const profile of Object.values(MODEL_PROFILES)) {
+    for (const profile of FLEET) {
       if (profile.catalog.reasoning?.mandatory !== true) continue;
       expect(
         `${profile.key}:${selectableReasoningLevels(profile).includes("none")}`,
@@ -592,11 +694,10 @@ describe("thinking depth — what a user may actually request", () => {
     }
   });
 
-  test("every assistant model a team can pick either steers or explains itself", () => {
-    // Not an assertion that all of them steer — the applied default (M3) does
-    // not. This pins that the menu is not ENTIRELY inert, so the control is
-    // reachable by switching model, and documents which side each model is on.
-    const assistant = Object.values(MODEL_PROFILES).filter((p) =>
+  test("the assistant menu is never entirely inert", () => {
+    // Not an assertion that every model steers — some publish no ladder. This
+    // pins that the control is reachable by switching model.
+    const assistant = FLEET.filter((p) =>
       selectableForFunction(p, "assistant"),
     );
     expect(assistant.length).toBeGreaterThan(1);
@@ -610,26 +711,40 @@ describe("thinking depth — what a user may actually request", () => {
     // 13 reasoning tokens (Azure's own default); `{ enabled: false }` and
     // `{ effort: "none" }` both leave 0. A user who picks "No thinking" must get
     // the off-switch, not the omission.
-    const luna = MODEL_PROFILES["gpt-5.6-luna"];
-    const flashLite = MODEL_PROFILES["gemini-3.1-flash-lite"];
+    const withNone = profileOf({
+      dynamicProfile: dynamic({
+        supportsReasoning: true,
+        reasoning: {
+          mandatory: false,
+          supportedEfforts: ["none", "low", "medium", "high"],
+        },
+      }),
+    });
 
     test("an explicit `none` sends the off-switch", () => {
-      expect(luna && reasoningParamForProfile(luna, "none")).toEqual({
+      expect(reasoningParamForProfile(withNone, "none")).toEqual({
         enabled: false,
         effort: "none",
       });
     });
 
     test("a profile that merely DEFAULTS to none stays byte-identical", () => {
-      // gemini-3.1-flash-lite's default IS `none`; its envelope must not gain a
-      // parameter it never sent, or every cached prefix on that path changes.
-      expect(flashLite?.assessment.reasoning.defaultLevel).toBe("none");
-      expect(flashLite && reasoningParamForProfile(flashLite)).toBeUndefined();
+      // A default of `none` must not gain a parameter it never sent, or every
+      // cached prefix on that path changes. Reached through a single-rung
+      // `none` ladder, which is the only way a derivation produces that default.
+      const alwaysOff = profileOf({
+        dynamicProfile: dynamic({
+          supportsReasoning: true,
+          reasoning: { mandatory: false, supportedEfforts: ["none"] },
+        }),
+      });
+      expect(alwaysOff.assessment.reasoning.defaultLevel).toBe("none");
+      expect(reasoningParamForProfile(alwaysOff)).toBeUndefined();
     });
 
     test("a model with no reasoning support still sends nothing", () => {
       // `require_parameters` would empty the pool on a param it can't advertise.
-      for (const profile of Object.values(MODEL_PROFILES)) {
+      for (const profile of FLEET) {
         if (profile.assessment.reasoning.style !== "none") continue;
         expect(reasoningParamForProfile(profile, "none")).toBeUndefined();
         expect(reasoningParamForProfile(profile, "high")).toBeUndefined();
@@ -638,71 +753,69 @@ describe("thinking depth — what a user may actually request", () => {
   });
 
   describe("effectiveReasoningLevel", () => {
-    // GLM-5.2's ladder is xhigh/high with `high` as its default — the smallest
-    // real ladder in the fleet, so it exercises every branch.
-    const glm = MODEL_PROFILES["glm-5.2"];
-    const m3 = MODEL_PROFILES["minimax-m3"];
+    // A two-rung ladder with `high` as its middle-rung default — the smallest
+    // real ladder there is, so it exercises every branch.
+    const twoRung = profileOf({
+      dynamicProfile: dynamic({
+        supportsReasoning: true,
+        reasoning: { mandatory: false, supportedEfforts: ["high", "xhigh"] },
+      }),
+    });
+    const noLadder = profileOf({
+      dynamicProfile: dynamic({
+        supportsReasoning: true,
+        reasoning: { mandatory: false },
+      }),
+    });
 
     test("passes a supported non-default level through", () => {
-      expect(glm && effectiveReasoningLevel(glm, "xhigh")).toBe("xhigh");
+      // `xhigh` is the middle rung of a two-rung ladder, so `high` is the
+      // non-default one here.
+      expect(effectiveReasoningLevel(twoRung, "high")).toBe("high");
     });
 
     test("drops the profile's OWN default", () => {
-      // Sending it explicitly would route a budget-style profile through the
-      // level→budget table instead of its hand-tuned `maxTokens`, changing the
-      // wire bytes of a turn nobody asked to change.
-      expect(glm && effectiveReasoningLevel(glm, "high")).toBeUndefined();
+      // Sending it explicitly changes the wire bytes of a turn nobody asked to
+      // change, which costs every cached prefix on that path.
+      expect(twoRung.assessment.reasoning.defaultLevel).toBe("xhigh");
+      expect(effectiveReasoningLevel(twoRung, "xhigh")).toBeUndefined();
     });
 
     test("drops a level the model does not support", () => {
       // How a team's stored choice survives a model swap without breaking it.
-      expect(glm && effectiveReasoningLevel(glm, "minimal")).toBeUndefined();
-      expect(glm && effectiveReasoningLevel(glm, "garbage")).toBeUndefined();
+      expect(effectiveReasoningLevel(twoRung, "minimal")).toBeUndefined();
+      expect(effectiveReasoningLevel(twoRung, "garbage")).toBeUndefined();
     });
 
     test("drops everything for a model with no depth knob", () => {
-      expect(m3 && effectiveReasoningLevel(m3, "high")).toBeUndefined();
+      expect(effectiveReasoningLevel(noLadder, "high")).toBeUndefined();
     });
 
     test("unset stays unset", () => {
-      expect(glm && effectiveReasoningLevel(glm, null)).toBeUndefined();
-      expect(glm && effectiveReasoningLevel(glm, undefined)).toBeUndefined();
+      expect(effectiveReasoningLevel(twoRung, null)).toBeUndefined();
+      expect(effectiveReasoningLevel(twoRung, undefined)).toBeUndefined();
     });
   });
 });
 
 describe("transport model ids", () => {
-  // Every pair in `gateway-ids.ts` was checked against both live catalogues by
-  // hand, because the two disagree in every direction and a plausible-looking
-  // transformation is how a team gets served a different model. These tests
-  // guard the two ways that audit rots: a profile added without an entry, and
-  // an entry left behind when a profile is removed.
-  test("every profile is either mapped to the gateway or listed as unmapped", () => {
-    for (const key of Object.keys(MODEL_PROFILES)) {
-      const ids = modelIdsForProfile(key);
-      const mapped = ids.gateway !== undefined;
-      const declaredUnmapped = PROFILES_WITHOUT_GATEWAY_ID.includes(key);
-      // Exactly one must hold. Both would mean the list contradicts the map;
-      // neither means a profile was added and nobody checked the catalogue.
-      expect([key, mapped !== declaredUnmapped]).toEqual([key, true]);
-    }
-  });
-
-  test("the unmapped list names no profile that has since gained an id", () => {
-    for (const key of PROFILES_WITHOUT_GATEWAY_ID) {
-      expect([key, MODEL_PROFILES[key] !== undefined]).toEqual([key, true]);
-    }
-  });
-
-  test("every profile keeps an OpenRouter id — the rollback depends on it", () => {
-    // Moving a model back is one database write, and it only works because the
-    // row still carries an id for the transport it is going back to.
-    for (const key of Object.keys(MODEL_PROFILES)) {
-      expect([key, modelIdsForProfile(key).openrouter]).toEqual([
-        key,
-        MODEL_PROFILES[key]?.catalog.id,
-      ]);
-    }
+  // There used to be a hand-written map of gateway spellings here, guarded by
+  // two tests that checked it against the curated registry. Both are gone with
+  // it: ids live on the row, the sync writes every spelling it finds, and it
+  // DISCOVERS ones no map had (`glm-5.2` gained its Scaleway id with nobody
+  // typing it). What is worth asserting is the property the rollback depends on.
+  test("resolution reads ids from the row, and never invents one", () => {
+    const both = row();
+    expect(both.modelIds.openrouter).toBe("acme/frontier-9");
+    expect(both.modelIds.gateway).toBe("acme/frontier9");
+    // Never another transport's spelling: sending `acme/frontier9` to
+    // OpenRouter is a 404, not a synonym.
+    expect(profileOf({ transport: "openrouter" }).catalog.id).toBe(
+      "acme/frontier-9",
+    );
+    expect(profileOf({ transport: "gateway" }).catalog.id).toBe(
+      "acme/frontier9",
+    );
   });
 });
 

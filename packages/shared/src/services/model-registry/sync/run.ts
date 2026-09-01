@@ -13,6 +13,7 @@ import {
   catalogueMatchKey,
   mergeCatalogues,
 } from "../../../model-registry/catalogue";
+import { modelKeyForId } from "../../../model-registry/keys";
 import {
   DEFAULT_CANDIDATE_POLICY,
   type ModelPolicy,
@@ -259,12 +260,22 @@ const reprobeExpiredQuarantines = async (
 
     if (verdict.ok) {
       if (!ctx.dryRun) {
-        await releaseProvider({
+        const outcome = await releaseProvider({
           modelKey: row.profileKey,
           provider: entry.provider,
           transport: entry.transport,
           reason: `Release re-probe pinned to ${entry.provider} succeeded ${ctx.now.toISOString().slice(0, 10)}.`,
+          actor: { kind: "sync" },
         });
+        // The entry was on the row when this pass read it, so anything but a
+        // release means somebody else got there first between the two reads.
+        // Benign — and not an `errors` entry, which would downgrade the whole
+        // run to `partial` over a race that resolved the way we wanted.
+        if (outcome.kind !== "released") {
+          console.info(
+            `[model-sync] release ${row.profileKey}/${entry.provider}: ${outcome.kind} — already handled elsewhere`,
+          );
+        }
       }
       ctx.stats.quarantinesReleased += 1;
       const index = kept.indexOf(entry);
@@ -517,6 +528,15 @@ const syncOneModel = async (
   //
   // `order` is deliberately not set alongside it: OpenRouter treats an explicit
   // order as the whole preference and silently ignores `sort`.
+  //
+  // `ignore` is CARRIED FORWARD rather than recomputed, because it is a
+  // judgment and `only` is a measurement. Dropping it each pass — which this
+  // did until 2026-08-30 — left the exclusion standing only as an accident of
+  // the computed list: the host was absent from `only` because the `ignore`
+  // had been applied on the pass that then erased it. Self-perpetuating while
+  // nothing moves, and gone the moment `poolWidened` fires, since a widened
+  // pool skips `only` and there would be no `ignore` left to catch the host
+  // the exclusion existed for.
   const vettedPool: ProviderPool | undefined =
     pool.endpoints.length > 0
       ? {
@@ -524,6 +544,10 @@ const syncOneModel = async (
             ...new Set(pool.endpoints.map((endpoint) => endpoint.provider)),
           ],
           sort: "throughput",
+          ...(declaredPool?.ignore !== undefined &&
+          declaredPool.ignore.length > 0
+            ? { ignore: declaredPool.ignore }
+            : {}),
         }
       : undefined;
 
@@ -589,6 +613,24 @@ const syncOneModel = async (
   // stored one alone rather than blanking a column the picker sorts on.
   const released = releaseDateFor(catalogEntry, aa);
   if (released !== undefined) update.releasedAt = released;
+  // The catalogue's DESCRIPTION of the model, refreshed every pass rather than
+  // written once at discovery.
+  //
+  // It used to be written on the insert alone, which left every row frozen at
+  // the shape of the catalogue on the day it was found: a model discovered
+  // before the reasoning contract was parsed could never gain a depth menu, and
+  // a seeded row — never discovered — carried no description at all, so its
+  // card displayed a raw key. Refreshing is safe because this is a DESCRIPTION,
+  // not a decision: everything a person or a detector decided (the transport,
+  // the quarantines, the pool's `ignore`) is written elsewhere on the row and
+  // carried forward, never recomputed from a catalogue.
+  //
+  // Since 2026-08-30 it is also load-bearing rather than cosmetic: with the
+  // curated TypeScript profiles deleted, a row with no `dynamicProfile` is not
+  // a model with a missing display name — it is not a servable model at all.
+  if (catalogEntry !== undefined) {
+    update.dynamicProfile = deriveDynamicProfile(catalogEntry, ctx.now);
+  }
   if (quarantines !== undefined) update.quarantinedProviders = quarantines;
   if (zdrProbe !== undefined) {
     update.zdrProbeOk = zdrProbe.ok;
@@ -694,14 +736,6 @@ const syncOneModel = async (
     .set(update)
     .where(eq(modelLiveState.profileKey, row.profileKey));
 };
-
-/** `alibaba/qwen-3-235b` → `alibaba-qwen-3-235b`, inside the 64-char key column. */
-const candidateKey = (modelId: string): string =>
-  modelId
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-|-$/g, "")
-    .slice(0, 64);
 
 /**
  * The transport the fleet actually runs on: the one most PUBLISHED rows use.
@@ -845,7 +879,7 @@ const discoverCandidates = async (
       report,
       incidents24h: 0,
     });
-    const profileKey = candidateKey(entry.id);
+    const profileKey = modelKeyForId(entry.id);
 
     if (!ctx.dryRun) {
       await db

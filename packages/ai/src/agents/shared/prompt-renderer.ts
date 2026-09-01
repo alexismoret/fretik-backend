@@ -315,53 +315,6 @@ const formatDeferredToolList = (
  */
 
 /**
- * Per-family system-prompt overlays (`agents/chatbot/overlays/<key>.md`).
- * Loaded once per replica, keyed by `profile.assessment.promptOverlayKey`;
- * a missing file renders as the empty string so profiles without an
- * overlay produce a byte-identical prompt. Cache-safe by construction:
- * prompt caches are namespaced per upstream model, the overlay is
- * deterministic per profile, and it is spliced ABOVE the dynamic-suffix
- * marker so the static prefix stays byte-stable per model.
- *
- * Overlays start EMPTY for every family — write one only when a C3
- * eval failure demonstrates a family-specific need
- * (`.agent/agent-context-framework.md`: growth without sharpening is a
- * regression).
- */
-const overlayCache = new Map<string, Promise<string>>();
-
-const loadPromptOverlay = (key: string | undefined): Promise<string> => {
-  if (!key) return Promise.resolve("");
-  const cached = overlayCache.get(key);
-  if (cached) return cached;
-  const loading = (async () => {
-    const file = Bun.file(
-      new URL(`../chatbot/overlays/${key}.md`, import.meta.url),
-    );
-    if (!(await file.exists())) return "";
-    return (await file.text()).trim();
-  })();
-  overlayCache.set(key, loading);
-  return loading;
-};
-
-/**
- * Splice an overlay at the END of the static prefix — immediately above
- * the DYNAMIC SUFFIX marker comment, so per-turn placeholders stay
- * below it. Falls back to appending when the marker is absent (foreign
- * prompt text); a comment-only marker means the overlay survives the
- * per-turn comment strip while the marker itself does not. Exported
- * for tests.
- */
-export const insertPromptOverlay = (text: string, overlay: string): string => {
-  if (overlay.length === 0) return text;
-  const suffixAt = text.indexOf("DYNAMIC SUFFIX — every");
-  const markerAt = suffixAt === -1 ? -1 : text.lastIndexOf("<!--", suffixAt);
-  if (markerAt === -1) return `${text}\n\n${overlay}\n`;
-  return `${text.slice(0, markerAt)}${overlay}\n\n${text.slice(markerAt)}`;
-};
-
-/**
  * Build the chatbot system prompt for a given runtime context.
  *
  * `deferredTools` defaults to an empty set so callers can build the
@@ -378,75 +331,69 @@ export const buildChatbotSystemPrompt = async (
     SYSTEM_PROMPT_FALLBACK,
   );
   ctx.langfusePrompt = promptRef;
-  const overlay = await loadPromptOverlay(
-    ctx.modelProfile.assessment.promptOverlayKey,
-  );
   // `.trim()` to match the seed script and the sub-agent path: the stored
   // (trimmed) text and the embedded fallback must be byte-identical so the
   // static prefix — and the OpenRouter prompt cache — survives every
   // Langfuse↔fallback transition.
-  return renderPrompt(
-    insertPromptOverlay(text, overlay).replace(HTML_COMMENT_RE, "").trim(),
-    {
-      currentDate: formatCurrentDate(new Date(), ctx.timeZone),
-      userName: ctx.userName ?? "Unknown user",
-      userId: ctx.userId ?? "unknown",
-      teamId: ctx.teamId,
-      organizationId: ctx.organizationId,
-      conversationId: ctx.conversationId ?? "unknown",
-      deferredToolList: formatDeferredToolList(deferredTools),
-      blockedToolsNote: buildBlockedToolsNote(ctx),
-      skillsCatalog:
-        ctx.enabledSkillsBlock && ctx.enabledSkillsBlock.length > 0
-          ? ctx.enabledSkillsBlock
-          : "_No skills enabled for this team._",
-      attachedFilesBlock:
-        ctx.attachedFilesBlock && ctx.attachedFilesBlock.length > 0
-          ? ctx.attachedFilesBlock
-          : "_No files attached to this conversation._",
-      nativeMediaNote: buildNativeMediaNote(ctx.nativeIngestion),
-      chatbotContextManifest:
-        ctx.chatbotContextManifest && ctx.chatbotContextManifest.length > 0
-          ? ctx.chatbotContextManifest
-          : "_No persistent context configured._",
-      sessionStateBlock: (() => {
-        const block = buildSessionStateBlock({
-          dynamicToolManager: ctx.dynamicToolManager,
-        });
-        return block.length > 0 ? block : "_No active session state._";
-      })(),
-      activeMemoryBlock:
-        ctx.activeMemoryBlock && ctx.activeMemoryBlock.length > 0
-          ? ctx.activeMemoryBlock
-          : "_No relevant memory recalled for this turn._",
-      availableCapabilities:
-        ctx.availableCapabilitiesBlock &&
-        ctx.availableCapabilitiesBlock.length > 0
-          ? ctx.availableCapabilitiesBlock
-          : "_None._",
-      teamCollections:
-        ctx.teamCollectionsBlock && ctx.teamCollectionsBlock.length > 0
-          ? ctx.teamCollectionsBlock
-          : "_No collections configured for this team._",
-      externalAppsBlock:
-        ctx.externalAppsBlock && ctx.externalAppsBlock.length > 0
-          ? ctx.externalAppsBlock
-          : "_No external apps connected._",
-      // Collaborative-conversation block. Empty for solo conversations so the
-      // prompt is byte-identical to the single-user case; populated (roster +
-      // speaker-label instruction) once a second participant joins.
-      collaborationBlock:
-        ctx.participantsBlock && ctx.participantsBlock.length > 0
-          ? `This conversation is shared by several teammates:\n${ctx.participantsBlock}\n\nEach user message is prefixed with its sender in brackets — \`[Name]: …\`. Address people by name when it helps, and suggest @mentioning a teammate when their input is needed.`
-          : "",
-    },
-  );
+  return renderPrompt(text.replace(HTML_COMMENT_RE, "").trim(), {
+    currentDate: formatCurrentDate(new Date(), ctx.timeZone),
+    userName: ctx.userName ?? "Unknown user",
+    userId: ctx.userId ?? "unknown",
+    teamId: ctx.teamId,
+    organizationId: ctx.organizationId,
+    conversationId: ctx.conversationId ?? "unknown",
+    deferredToolList: formatDeferredToolList(deferredTools),
+    blockedToolsNote: buildBlockedToolsNote(ctx),
+    skillsCatalog:
+      ctx.enabledSkillsBlock && ctx.enabledSkillsBlock.length > 0
+        ? ctx.enabledSkillsBlock
+        : "_No skills enabled for this team._",
+    attachedFilesBlock:
+      ctx.attachedFilesBlock && ctx.attachedFilesBlock.length > 0
+        ? ctx.attachedFilesBlock
+        : "_No files attached to this conversation._",
+    nativeMediaNote: buildNativeMediaNote(ctx.nativeIngestion),
+    chatbotContextManifest:
+      ctx.chatbotContextManifest && ctx.chatbotContextManifest.length > 0
+        ? ctx.chatbotContextManifest
+        : "_No persistent context configured._",
+    sessionStateBlock: (() => {
+      const block = buildSessionStateBlock({
+        dynamicToolManager: ctx.dynamicToolManager,
+      });
+      return block.length > 0 ? block : "_No active session state._";
+    })(),
+    activeMemoryBlock:
+      ctx.activeMemoryBlock && ctx.activeMemoryBlock.length > 0
+        ? ctx.activeMemoryBlock
+        : "_No relevant memory recalled for this turn._",
+    availableCapabilities:
+      ctx.availableCapabilitiesBlock &&
+      ctx.availableCapabilitiesBlock.length > 0
+        ? ctx.availableCapabilitiesBlock
+        : "_None._",
+    teamCollections:
+      ctx.teamCollectionsBlock && ctx.teamCollectionsBlock.length > 0
+        ? ctx.teamCollectionsBlock
+        : "_No collections configured for this team._",
+    externalAppsBlock:
+      ctx.externalAppsBlock && ctx.externalAppsBlock.length > 0
+        ? ctx.externalAppsBlock
+        : "_No external apps connected._",
+    // Collaborative-conversation block. Empty for solo conversations so the
+    // prompt is byte-identical to the single-user case; populated (roster +
+    // speaker-label instruction) once a second participant joins.
+    collaborationBlock:
+      ctx.participantsBlock && ctx.participantsBlock.length > 0
+        ? `This conversation is shared by several teammates:\n${ctx.participantsBlock}\n\nEach user message is prefixed with its sender in brackets — \`[Name]: …\`. Address people by name when it helps, and suggest @mentioning a teammate when their input is needed.`
+        : "",
+  });
 };
 
 /**
  * Build the workflow executor's system prompt — the `workflow` variant of
  * the unified template. Same render pipeline as the chatbot (managed prompt
- * → overlay → comment strip → variables); the variable map only covers the
+ * → comment strip → variables); the variable map only covers the
  * placeholders present in the workflow variant (no userName / userId /
  * collaborationBlock — those live in chatbot-only blocks).
  */
@@ -459,48 +406,42 @@ export const buildWorkflowSystemPrompt = async (
     WORKFLOW_PROMPT_FALLBACK,
   );
   ctx.langfusePrompt = promptRef;
-  const overlay = await loadPromptOverlay(
-    ctx.modelProfile.assessment.promptOverlayKey,
-  );
   // The workflow variant is byte-stable per run: everything that mutates
   // between turns (current date, task statuses, turn-1 recall) rides in the
   // steering message, NOT here. So `currentDate`, `sessionStateBlock`, and
   // `activeMemoryBlock` are intentionally absent from this map — their
   // placeholders were removed from the `workflow` blocks of the template.
-  return renderPrompt(
-    insertPromptOverlay(text, overlay).replace(HTML_COMMENT_RE, "").trim(),
-    {
-      teamId: ctx.teamId,
-      organizationId: ctx.organizationId,
-      conversationId: ctx.conversationId ?? "unknown",
-      workflowRunId: ctx.workflowRunId ?? "unknown",
-      playbookBlock:
-        ctx.playbookBlock && ctx.playbookBlock.length > 0
-          ? ctx.playbookBlock
-          : "_No playbook provided — mark the current task failed._",
-      deferredToolList: formatDeferredToolList(deferredTools),
-      skillsCatalog:
-        ctx.enabledSkillsBlock && ctx.enabledSkillsBlock.length > 0
-          ? ctx.enabledSkillsBlock
-          : "_No skills enabled for this team._",
-      attachedFilesBlock:
-        ctx.attachedFilesBlock && ctx.attachedFilesBlock.length > 0
-          ? ctx.attachedFilesBlock
-          : "_No files handed to this run._",
-      nativeMediaNote: buildNativeMediaNote(ctx.nativeIngestion),
-      blockedToolsNote: buildBlockedToolsNote(ctx),
-      chatbotContextManifest:
-        ctx.chatbotContextManifest && ctx.chatbotContextManifest.length > 0
-          ? ctx.chatbotContextManifest
-          : "_No persistent context configured._",
-      teamCollections:
-        ctx.teamCollectionsBlock && ctx.teamCollectionsBlock.length > 0
-          ? ctx.teamCollectionsBlock
-          : "_No collections configured for this team._",
-      externalAppsBlock:
-        ctx.externalAppsBlock && ctx.externalAppsBlock.length > 0
-          ? ctx.externalAppsBlock
-          : "_No external apps connected._",
-    },
-  );
+  return renderPrompt(text.replace(HTML_COMMENT_RE, "").trim(), {
+    teamId: ctx.teamId,
+    organizationId: ctx.organizationId,
+    conversationId: ctx.conversationId ?? "unknown",
+    workflowRunId: ctx.workflowRunId ?? "unknown",
+    playbookBlock:
+      ctx.playbookBlock && ctx.playbookBlock.length > 0
+        ? ctx.playbookBlock
+        : "_No playbook provided — mark the current task failed._",
+    deferredToolList: formatDeferredToolList(deferredTools),
+    skillsCatalog:
+      ctx.enabledSkillsBlock && ctx.enabledSkillsBlock.length > 0
+        ? ctx.enabledSkillsBlock
+        : "_No skills enabled for this team._",
+    attachedFilesBlock:
+      ctx.attachedFilesBlock && ctx.attachedFilesBlock.length > 0
+        ? ctx.attachedFilesBlock
+        : "_No files handed to this run._",
+    nativeMediaNote: buildNativeMediaNote(ctx.nativeIngestion),
+    blockedToolsNote: buildBlockedToolsNote(ctx),
+    chatbotContextManifest:
+      ctx.chatbotContextManifest && ctx.chatbotContextManifest.length > 0
+        ? ctx.chatbotContextManifest
+        : "_No persistent context configured._",
+    teamCollections:
+      ctx.teamCollectionsBlock && ctx.teamCollectionsBlock.length > 0
+        ? ctx.teamCollectionsBlock
+        : "_No collections configured for this team._",
+    externalAppsBlock:
+      ctx.externalAppsBlock && ctx.externalAppsBlock.length > 0
+        ? ctx.externalAppsBlock
+        : "_No external apps connected._",
+  });
 };

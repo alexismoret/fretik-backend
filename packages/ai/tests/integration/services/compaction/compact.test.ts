@@ -1,6 +1,5 @@
 import type { UIMessage } from "ai";
 import { describe, expect, test } from "bun:test";
-import { MODEL_PROFILES } from "../../../../src/lib/model-registry/profiles";
 import type { ModelProfile } from "../../../../src/lib/model-registry/types";
 import {
   compactConversation,
@@ -8,6 +7,7 @@ import {
   type CompactionProgressEvent,
 } from "../../../../src/services/compaction/compact";
 import { parseSummariserMaxTokens } from "../../../../src/services/compaction/summarizer";
+import { boundProfile } from "../../../lib/live-fleet";
 
 /**
  * Compact-pipeline tests.
@@ -23,12 +23,20 @@ import { parseSummariserMaxTokens } from "../../../../src/services/compaction/su
  * `evals/cases/compaction.ts`.
  */
 
-const baseProfile = MODEL_PROFILES["minimax-m3"];
-if (!baseProfile) throw new Error("minimax-m3 profile missing from registry");
+const baseProfile = boundProfile("minimax-m3");
 
-/** Same profile, different context window — the only threshold input that varies per model. */
+/**
+ * Same profile, different context window — the only threshold input that varies
+ * per model.
+ *
+ * Under a KEY WITH NO LIVE ROW, deliberately: `effectiveContextLength` prefers
+ * the row's measured pool minimum and falls back to the catalogue figure only
+ * when the snapshot has nothing. Both branches are exercised — this one for the
+ * arithmetic, the row's own value in the case below.
+ */
 const withContext = (contextLength: number): ModelProfile => ({
   ...baseProfile,
+  key: "compaction-arithmetic-fixture",
   catalog: { ...baseProfile.catalog, contextLength },
 });
 
@@ -82,13 +90,22 @@ describe("getCompactionThresholdTokens — CC effective-window arithmetic", () =
     );
   });
 
-  test("default chat profile (MiniMax M3, 1,048K) lands at 1,015,576 with the 20K reserve", () => {
-    // Pins the real serving threshold — update deliberately on model swap
-    // (last: catalog contextLength 524,000 → 1,048,576, OpenRouter catalog
-    // re-sync, 2026-07).
-    if (SUMMARY_RESERVE === 20_000) {
-      expect(getCompactionThresholdTokens(baseProfile)).toBe(1_015_576);
-    }
+  test("the MEASURED pool minimum wins over the catalogue headline", () => {
+    // The property that matters in production, and the reason the threshold
+    // reads the row at all: a model is served by several hosts and routing
+    // picks one per request, so the usable window is the smallest any reachable
+    // host offers. Measured 2026-08-29, the same model spans 262 144 to
+    // 1 048 576 tokens across its endpoints — budgeting against the largest
+    // overflows mid-turn whenever a request lands on the smallest.
+    const rowWindow = 260_096;
+    expect(baseProfile.catalog.contextLength).toBe(rowWindow);
+    expect(getCompactionThresholdTokens(baseProfile)).toBe(
+      rowWindow - SUMMARY_RESERVE - AUTOCOMPACT_BUFFER,
+    );
+    // …and the catalogue figure is what answers when no row describes it.
+    expect(getCompactionThresholdTokens(withContext(1_048_576))).toBe(
+      1_048_576 - SUMMARY_RESERVE - AUTOCOMPACT_BUFFER,
+    );
   });
 });
 

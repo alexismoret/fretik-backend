@@ -97,12 +97,18 @@ const toStat = (
  * Endpoints for one gateway model id. Throws on any non-2xx, INCLUDING 404: a
  * row that names a gateway id the gateway no longer serves is a fact the run
  * has to surface, not absorb.
+ *
+ * `timeoutMs` exists for callers who are somebody's open request rather than a
+ * nightly job: the default 20 s is right for a sync that would rather wait than
+ * lose a model, and far too long for a page waiting on a scorecard.
  */
 export const fetchGatewayEndpoints = async (
   modelId: string,
+  options?: { timeoutMs?: number },
 ): Promise<EndpointStat[]> => {
   const result = await fetchJson(
     `https://ai-gateway.vercel.sh/v1/models/${encodeModelPath(modelId)}/endpoints`,
+    options?.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs },
   );
   if (!result.ok) {
     throw new Error(

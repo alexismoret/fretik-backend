@@ -58,6 +58,49 @@ export const BLENDED_INPUT_WEIGHT = 0.97;
 export const CACHE_HIT_RATE = 0.75;
 
 /**
+ * How a vendor charges for its prompt cache — read off the PRICES, which is the
+ * only place any catalogue states it.
+ *
+ * Four shapes, all measured from the OpenRouter catalogue on 2026-08-30 and
+ * separated unambiguously by the write-to-input ratio:
+ *
+ *  - **`write-premium`** (Anthropic, OpenAI, Qwen) — the write costs MORE than
+ *    an uncached token, clustered tightly at 1.25-1.33×. The first pass is
+ *    dearer than no cache at all, so a 0.1× read rate is worth far less than it
+ *    looks: those models correct to ×0.47, not ×0.15.
+ *  - **`storage-rate`** (Google) — a write quoted BELOW the input price is a
+ *    per-hour charge for HOLDING the cache, not a per-token write.
+ *    `gemini-3.7-flash` quotes $0.042 against $0.750; billing it as a write
+ *    would make Gemini look 18× cheaper than it is. Storage rates sit at
+ *    0.05-0.3×, nowhere near the premium cluster.
+ *  - **`free-writes`** (DeepSeek, GLM, MiniMax, Kimi) — a read discount and no
+ *    write charge at all. Caching is pure saving.
+ *  - **`none`** — no read discount published, or one quoted at full price.
+ *    CoreWeave prices `gpt-oss-120b` cache reads at exactly the input rate; a
+ *    "discount" of 1.0× is not a discount.
+ *
+ * This replaced a hand-written `cache.strategy` on each curated profile, which
+ * was wrong on 5 of 22 models when the two were compared: `gpt-oss-120b` and
+ * `gpt-oss-20b` were recorded as having no cache while Groq, Fireworks,
+ * DigitalOcean and Parasail all publish a read discount, and the three GPT-5.6
+ * profiles said `implicit` where the prices say a write premium. The old field
+ * also conflated two independent questions — how the vendor CHARGES, and
+ * whether the caller must place `cache_control` markers. Only the first is a
+ * pricing fact; the second is a dialect fact and lives with the dialect.
+ */
+export type CacheShape =
+  "write-premium" | "storage-rate" | "free-writes" | "none";
+
+export const cacheShape = (pricing: PricingSnapshot): CacheShape => {
+  const { inputPerMTok, cacheReadPerMTok, cacheWritePerMTok } = pricing;
+  if (cacheWritePerMTok !== undefined && cacheWritePerMTok >= inputPerMTok)
+    return "write-premium";
+  if (cacheReadPerMTok === undefined || cacheReadPerMTok >= inputPerMTok)
+    return "none";
+  return cacheWritePerMTok === undefined ? "free-writes" : "storage-rate";
+};
+
+/**
  * What one million tokens of an average turn costs, cache included.
  *
  * Every prompt token is one of two things: a HIT, billed at the cache-read rate,
@@ -66,28 +109,16 @@ export const CACHE_HIT_RATE = 0.75;
  * has published is not one we may assume, and 160 of the 449 priced language
  * models publish none.
  *
- * The write side is where the vendors genuinely differ, and it is why this is
- * not simply "input × 0.2". Three shapes, all measured from the OpenRouter
- * catalogue on 2026-08-30:
- *
- *  - **No write charge** (DeepSeek, GLM, MiniMax, Kimi): caching is pure saving.
- *  - **A write PREMIUM of ~1.25×** (Anthropic, OpenAI, Qwen — `qwen3.8-flash`
- *    reads at 0.107× but writes at 1.33×). The first pass costs more than an
- *    uncached one, so a 0.1× read rate is worth far less than it looks: those
- *    models correct to ×0.47, not to ×0.15.
- *  - **A STORAGE rate** (Google): `gemini-3.7-flash` quotes $0.042 against a
- *    $0.750 input — a per-hour price for holding the cache, not a per-token
- *    write. Reading it as a write price would make Gemini look 18× cheaper than
- *    it is, so a quoted write BELOW the input price is treated as storage and
- *    ignored. The separation in the data is unambiguous: premiums cluster at
- *    1.25-1.33×, storage rates at 0.05-0.3×.
+ * The write side is where the vendors genuinely differ, and `cacheShape` above
+ * is the single reading of that difference: only a real premium is billed, and
+ * a storage rate is ignored rather than mistaken for one.
  */
 export const blendedPricePerMTok = (pricing: PricingSnapshot): number => {
   const { inputPerMTok, outputPerMTok, cacheReadPerMTok, cacheWritePerMTok } =
     pricing;
   const readPrice = cacheReadPerMTok ?? inputPerMTok;
   const missPrice =
-    cacheWritePerMTok !== undefined && cacheWritePerMTok >= inputPerMTok
+    cacheShape(pricing) === "write-premium" && cacheWritePerMTok !== undefined
       ? cacheWritePerMTok
       : inputPerMTok;
   const effectiveInput =

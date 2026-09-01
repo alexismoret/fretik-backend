@@ -9,6 +9,7 @@ import {
   throwHttpError,
   validationError,
 } from "@fretik/shared/lib/errors";
+import type { UnmetRequirement } from "@fretik/shared/model-registry/eligibility";
 import type { ModelFunctionKey } from "@fretik/shared/model-registry/functions";
 import {
   functionProfileKey,
@@ -30,6 +31,7 @@ import { getEffectiveProfile } from "../lib/model-registry/effective";
 import {
   functionsForProfile,
   selectableForFunction,
+  unmetForFunction,
 } from "../lib/model-registry/functions";
 import {
   listProfilesForFunctionDisplay,
@@ -40,6 +42,7 @@ import type { ModelProfile } from "../lib/model-registry/types";
 import { getModelMetrics } from "../services/model-metrics/get";
 import {
   ARTIFICIAL_ANALYSIS_URL,
+  artificialAnalysisModelUrl,
   type ModelMetricsSnapshot,
 } from "../services/model-metrics/types";
 
@@ -187,6 +190,15 @@ export const buildCard = (
     intelligence: metric?.intelligence ?? null,
     speed: metric?.speed ?? null,
     costLevel: metric?.costLevel ?? null,
+    /**
+     * How many times this model costs the fleet's cheapest, per turn. A
+     * MULTIPLE, never a price — the dollar figure stays in `model-metrics`.
+     *
+     * `costLevel` alone cannot answer "how much more does this one cost me":
+     * it is log-scaled on purpose, so the same three-point gap means 10 % at
+     * one end of the fleet and 2× at the other.
+     */
+    costRatio: metric?.costRatio ?? null,
     timeToFirstAnswer: metric?.timeToFirstAnswer ?? null,
     /**
      * p50 time to the FIRST token on the endpoint this profile is most likely
@@ -198,6 +210,13 @@ export const buildCard = (
      */
     ttftSeconds: metric?.ttftSeconds ?? null,
     coding: metric?.coding ?? null,
+    /**
+     * Where Artificial Analysis publishes THIS model's benchmarks. Their
+     * licence requires the credit; sending the model's own page rather than the
+     * site root makes the credit useful as well as compliant. Falls back to the
+     * root for a model AA does not cover.
+     */
+    attributionUrl: artificialAnalysisModelUrl(assessment.aaSlug),
     /**
      * Agentic capability. Sourced from Artificial Analysis' composite agentic
      * index since 2026-08-30 — the per-benchmark `tau_banking` it used to carry
@@ -278,18 +297,43 @@ modelProfilesRoutes.get("/", async (c) => {
    * `selectable` is a list of KEYS into `models` because selectability is a
    * property of the (model, function) pair — the same model is offerable for
    * `documents` and refused for `recall`.
+   *
+   * `unmet` is the other half of that pair: WHY the ones missing from
+   * `selectable` are missing. Without it a greyed row can only say "not
+   * compatible", which reads as an arbitrary product decision rather than as
+   * "its window is 131k and this job needs 256k". Populated only where a
+   * MEASUREMENT refused — a model the engine took out entirely already carries
+   * `disabledReason` on its card, and repeating that in seven menus would say
+   * the same thing seven times.
    */
   const functions = Object.fromEntries(
     MODEL_FUNCTION_KEYS.map((fn) => {
       const recommended = recommendedProfileKeyForFunction(fn);
-      const selectable = profiles
-        .filter((profile) => selectableForFunction(profile, fn))
-        .map((profile) => profile.key);
+      const selectable: string[] = [];
+      const unmet: Record<string, UnmetRequirement[]> = {};
+      for (const profile of profiles) {
+        if (selectableForFunction(profile, fn)) {
+          selectable.push(profile.key);
+          continue;
+        }
+        // The card's OWN reading of "out of service", so the two can never
+        // disagree about which explanation a row already carries.
+        const live = getLiveStateSync(profile.key);
+        if (
+          (profile.assessment.disabledReason ??
+            live?.disabledReason ??
+            null) !== null
+        )
+          continue;
+        const requirements = unmetForFunction(profile, fn, live);
+        if (requirements.length > 0) unmet[profile.key] = requirements;
+      }
       const selected = functionProfileKey(settings, fn) ?? null;
       return [
         fn,
         {
           selectable,
+          unmet,
           selected,
           recommended,
           effective: selected ?? recommended,

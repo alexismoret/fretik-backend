@@ -29,6 +29,7 @@ const capabilities = (
   publishesOwner: false,
   publishesReleaseDate: false,
   publishesZdrHint: false,
+  publishesReasoningContract: false,
   ...over,
 });
 

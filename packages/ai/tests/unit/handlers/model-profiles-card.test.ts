@@ -5,7 +5,8 @@ import type {
 import { afterEach, describe, expect, test } from "bun:test";
 import { buildCard } from "../../../src/handlers/model-profiles";
 import { clearSynthesisedProfileCache } from "../../../src/lib/model-registry/effective";
-import { MODEL_PROFILES } from "../../../src/lib/model-registry/profiles";
+import type { ModelMetricsSnapshot } from "../../../src/services/model-metrics/types";
+import { boundProfile } from "../../lib/live-fleet";
 import { setLiveStateDouble } from "../../lib/live-state-double";
 
 /**
@@ -70,9 +71,9 @@ const row = (over: Partial<LiveModelState> = {}): LiveModelState => ({
   ...over,
 });
 
-const card = () =>
-  buildCard(MODEL_PROFILES["deepseek-v4-flash"], {
-    metrics: { metrics: {}, fetchedAt: "2026-08-30T03:00:00.000Z" },
+const card = (metrics: ModelMetricsSnapshot["metrics"] = {}) =>
+  buildCard(boundProfile("deepseek-v4-flash"), {
+    metrics: { metrics, fetchedAt: "2026-08-30T03:00:00.000Z" },
     incidents: new Map([["deepseek-v4-flash", 3]]),
   });
 
@@ -127,6 +128,32 @@ describe("buildCard serving", () => {
     expect(serving.uptime1d).toBeNull();
     expect(serving.poolSize).toBeNull();
     expect(serving.checkedAt).toBeNull();
+  });
+
+  test("carries the cost RATIO beside the log-scaled level", () => {
+    // `costLevel` is log-scaled so a hundredfold price range fits one gauge —
+    // which also makes "how much more does this cost me" unanswerable from it.
+    // The ratio answers that, and is still not a price.
+    setLiveStateDouble([row()]);
+    const built = card({
+      "deepseek-v4-flash": {
+        intelligence: 51.8,
+        speed: 50,
+        costLevel: 34,
+        costRatio: 2.3,
+        timeToFirstAnswer: 4.1,
+        coding: null,
+        toolUse: null,
+        ttftSeconds: null,
+      },
+    });
+    expect(built.costLevel).toBe(34);
+    expect(built.costRatio).toBe(2.3);
+  });
+
+  test("an unpriced model reports no ratio rather than 0×", () => {
+    setLiveStateDouble([row()]);
+    expect(card().costRatio).toBeNull();
   });
 
   test("carries no per-function verdict — those live on the menu", () => {

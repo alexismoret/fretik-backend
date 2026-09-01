@@ -7,10 +7,17 @@ import {
 } from "../../model-registry/policy";
 import {
   IMPLEMENTED_TRANSPORTS,
+  isTransportId,
+  type AcknowledgeAlertOutcome,
+  type BulkFailure,
   type DisabledReason,
   type DynamicProfile,
   type PricingSnapshot,
+  type PromoteOutcome,
   type ProviderPoolByTransport,
+  type RetireOutcome,
+  type SetEnabledOutcome,
+  type SetTransportOutcome,
   type TransportId,
 } from "../../model-registry/types";
 import { raiseModelAlert } from "./alerts";
@@ -22,7 +29,15 @@ import { invalidateLiveRegistry, readLiveStateRow } from "./live";
  * which is the property that makes the whole engine worth building.
  *
  * The automatic paths (sync, breaker) live in their own modules. This one is
- * only ever driven by a person through `model-admin`.
+ * only ever driven by a person, and that is why the GUARDS BELONG HERE rather
+ * than in a caller: there is no automated path to break by refusing, and a
+ * guard living in one surface's presentation layer protects only that surface.
+ * `retireModel` was the proof — the CLI refused to retire a model an internal
+ * role runs on, the service happily did it, and anything else calling the
+ * service could have taken the chatbot down.
+ *
+ * Every function reports an OUTCOME instead of throwing prose. Two surfaces
+ * consume these and only one prints English.
  */
 
 /**
@@ -33,18 +48,26 @@ import { invalidateLiveRegistry, readLiveStateRow } from "./live";
 export const setTransport = async (
   profileKey: string,
   transport: TransportId,
-): Promise<void> => {
+): Promise<SetTransportOutcome> => {
+  // The one throw kept in this file: `custom` is a declared `TransportId` with
+  // no adapter, so reaching this means a caller offered a transport the build
+  // cannot serve. That is a bug, not an operator's situation.
   if (!IMPLEMENTED_TRANSPORTS.includes(transport)) {
     throw new Error(
       `Transport "${transport}" has no adapter — implemented: ${IMPLEMENTED_TRANSPORTS.join(", ")}`,
     );
   }
   const state = await readLiveStateRow(profileKey);
-  if (!state) throw new Error(`Unknown model "${profileKey}"`);
+  if (!state) return { kind: "unknown-model" };
   if (state.modelIds[transport] === undefined) {
-    throw new Error(
-      `"${profileKey}" has no model id for transport "${transport}" — add one to its profile first`,
-    );
+    return {
+      kind: "no-model-id",
+      transport,
+      available: Object.keys(state.modelIds).filter(isTransportId),
+    };
+  }
+  if (state.transport === transport) {
+    return { kind: "already-on-transport", transport };
   }
   await db
     .update(modelLiveState)
@@ -59,6 +82,7 @@ export const setTransport = async (
     })
     .where(eq(modelLiveState.profileKey, profileKey));
   await invalidateLiveRegistry();
+  return { kind: "switched", from: state.transport, to: transport };
 };
 
 /**
@@ -70,19 +94,66 @@ export const setEnabled = async (
   profileKey: string,
   enabled: boolean,
   disabledReason?: DisabledReason,
-): Promise<void> => {
+): Promise<SetEnabledOutcome> => {
+  const outcome = await setEnabledOne(profileKey, enabled, disabledReason);
+  if (outcome.kind === "updated") await invalidateLiveRegistry();
+  return outcome;
+};
+
+/**
+ * Enable or disable several models with ONE cache drop.
+ *
+ * Same economy as `promoteCandidates`, and the same reason: the drop makes
+ * every replica rebuild its memoised models, so twenty clicks in three seconds
+ * would be twenty fleet-wide rebuilds during live traffic.
+ */
+export const setEnabledMany = async (
+  profileKeys: string[],
+  enabled: boolean,
+  disabledReason?: DisabledReason,
+): Promise<
+  { profileKey: string; outcome: SetEnabledOutcome | BulkFailure }[]
+> => {
+  const results = await runBatch(profileKeys, (profileKey) =>
+    setEnabledOne(profileKey, enabled, disabledReason),
+  );
+  if (results.some((result) => result.outcome.kind === "updated")) {
+    await invalidateLiveRegistry();
+  }
+  return results;
+};
+
+/**
+ * One enable/disable, WITHOUT the cache drop.
+ *
+ * @internal — see `promoteOne` for why the invalidation belongs to the
+ * operation rather than to the row write.
+ */
+const setEnabledOne = async (
+  profileKey: string,
+  enabled: boolean,
+  disabledReason?: DisabledReason,
+): Promise<SetEnabledOutcome> => {
+  const state = await readLiveStateRow(profileKey);
+  if (!state) return { kind: "unknown-model" };
+  const reason = enabled ? null : (disabledReason ?? "unavailable");
   await db
     .update(modelLiveState)
     .set({
       enabled,
-      disabledReason: enabled ? null : (disabledReason ?? "unavailable"),
+      disabledReason: reason,
       // A deliberate re-enable clears the streak, so an operator who fixed the
       // underlying problem is not disabled again by yesterday's count.
       policyFailStreak: enabled ? 0 : undefined,
       source: "admin",
     })
     .where(eq(modelLiveState.profileKey, profileKey));
-  await invalidateLiveRegistry();
+  return {
+    kind: "updated",
+    enabled,
+    disabledReason: reason,
+    boundRoles: state.boundRoles,
+  };
 };
 
 /**
@@ -99,15 +170,92 @@ export const setEnabled = async (
  */
 export const promoteCandidate = async (
   profileKey: string,
-): Promise<{ enabled: boolean; disabledReason: "cost" | null }> => {
+): Promise<PromoteOutcome> => {
+  const outcome = await promoteOne(profileKey);
+  if (outcome.kind === "promoted") await invalidateLiveRegistry();
+  return outcome;
+};
+
+/**
+ * Promote several candidates with ONE cache drop.
+ *
+ * `invalidateLiveRegistry` publishes on Redis and makes every replica rebuild
+ * the models memoised from the old snapshot. Twenty promotions clicked in
+ * three seconds would be twenty rebuilds during live traffic — the largest
+ * operational risk a clickable surface adds to this engine — so the batch
+ * writes each row and drops the snapshot once at the end.
+ *
+ * Sequential, not `Promise.all`: each promotion is a read-then-write with no
+ * lock, and parallelism buys nothing measurable on single-row updates while
+ * making the alert order nondeterministic.
+ *
+ * NOT transactional, and it must not pretend to be — see `promoteModels` in
+ * `operations.ts` for why per-key verdicts beat all-or-nothing here.
+ */
+export const promoteCandidates = async (
+  profileKeys: string[],
+): Promise<{ profileKey: string; outcome: PromoteOutcome | BulkFailure }[]> => {
+  const results = await runBatch(profileKeys, promoteOne);
+  if (results.some((result) => result.outcome.kind === "promoted")) {
+    await invalidateLiveRegistry();
+  }
+  return results;
+};
+
+/**
+ * Run one write per key, in order, surviving a key that throws.
+ *
+ * SEQUENTIAL, not `Promise.all`: each write is a read-then-write with no lock,
+ * and parallelism buys nothing measurable on single-row updates while making
+ * the order of the alerts they raise nondeterministic.
+ *
+ * A key that throws becomes a `failed` entry and the batch continues. Letting
+ * the exception out would abandon the keys already written — including their
+ * cache invalidation — and tell the operator nothing about where the batch
+ * stopped, which is worse than either extreme.
+ */
+const runBatch = async <TOutcome>(
+  profileKeys: string[],
+  write: (profileKey: string) => Promise<TOutcome>,
+): Promise<{ profileKey: string; outcome: TOutcome | BulkFailure }[]> => {
+  const results: { profileKey: string; outcome: TOutcome | BulkFailure }[] = [];
+  for (const profileKey of profileKeys) {
+    try {
+      results.push({ profileKey, outcome: await write(profileKey) });
+    } catch (err: unknown) {
+      console.error(
+        `[model-admin] batch write failed on "${profileKey}":`,
+        err instanceof Error ? err.message : err,
+      );
+      results.push({
+        profileKey,
+        outcome: {
+          kind: "failed",
+          message: err instanceof Error ? err.message : String(err),
+        },
+      });
+    }
+  }
+  return results;
+};
+
+/**
+ * One promotion, WITHOUT the cache drop.
+ *
+ * @internal — the invalidation is a property of the operation, not of the row
+ * write, so only the two exported wrappers above decide when it happens.
+ */
+const promoteOne = async (profileKey: string): Promise<PromoteOutcome> => {
   const state = await readLiveStateRow(profileKey);
-  if (!state) throw new Error(`Unknown model "${profileKey}"`);
+  if (!state) return { kind: "unknown-model" };
   const budget = promotionEnablement(state.pricing);
   const verdict = {
     enabled: budget.enabled,
     disabledReason: budget.disabledReason ?? null,
   };
-  if (state.status === "published") return verdict;
+  if (state.status === "published") {
+    return { kind: "already-published", ...verdict };
+  }
   await db
     .update(modelLiveState)
     .set({
@@ -116,7 +264,6 @@ export const promoteCandidate = async (
       source: "admin",
     })
     .where(eq(modelLiveState.profileKey, profileKey));
-  await invalidateLiveRegistry();
   await raiseModelAlert({
     kind: "new-candidate",
     severity: "info",
@@ -127,11 +274,30 @@ export const promoteCandidate = async (
         : ` but left DISABLED on cost: $${state.pricing.inputPerMTok.toString()}/$${state.pricing.outputPerMTok.toString()} per MTok against a budget of $${PROMOTION_PRICE_CAPS.inputPerMTok.toString()}/$${PROMOTION_PRICE_CAPS.outputPerMTok.toString()}`
     }${state.dynamicProfile ? " (catalogue-derived profile — no TypeScript profile yet)" : ""}.`,
   });
-  return verdict;
+  return {
+    kind: "promoted",
+    ...verdict,
+    pricing: state.pricing,
+    catalogueDerivedOnly: state.dynamicProfile !== null,
+  };
 };
 
-/** Take a model out of every picker without deleting its history. */
-export const retireModel = async (profileKey: string): Promise<void> => {
+/**
+ * Take a model out of every picker without deleting its history.
+ *
+ * REFUSES on a model an internal role runs on. That guard used to live in the
+ * CLI while this function updated unconditionally, so the protection covered
+ * one surface and nothing else — and what it protects against is the chatbot
+ * losing its model, not a team losing a preference.
+ */
+export const retireModel = async (
+  profileKey: string,
+): Promise<RetireOutcome> => {
+  const state = await readLiveStateRow(profileKey);
+  if (!state) return { kind: "unknown-model" };
+  if (state.boundRoles.length > 0) {
+    return { kind: "refused-bound-roles", roles: state.boundRoles };
+  }
   await db
     .update(modelLiveState)
     .set({
@@ -142,6 +308,7 @@ export const retireModel = async (profileKey: string): Promise<void> => {
     })
     .where(eq(modelLiveState.profileKey, profileKey));
   await invalidateLiveRegistry();
+  return { kind: "retired", previousStatus: state.status };
 };
 
 /** Replace a model's vetted pool for one transport. */
@@ -199,10 +366,29 @@ export const addCatalogueModel = async (input: {
   await invalidateLiveRegistry();
 };
 
-/** Acknowledge an alert so the digest stops carrying it. */
-export const acknowledgeAlert = async (id: string): Promise<void> => {
+/**
+ * Acknowledge an alert so the digest stops carrying it.
+ *
+ * Checks the alert exists. The bare `UPDATE` it replaced matched no row on a
+ * bogus id and still reported success, so a mistyped id was indistinguishable
+ * from a real acknowledgement.
+ */
+export const acknowledgeAlert = async (
+  id: string,
+): Promise<AcknowledgeAlertOutcome> => {
+  const [existing] = await db
+    .select({ kind: modelAlerts.kind, modelKey: modelAlerts.modelKey })
+    .from(modelAlerts)
+    .where(eq(modelAlerts.id, id))
+    .limit(1);
+  if (existing === undefined) return { kind: "unknown-alert" };
   await db
     .update(modelAlerts)
     .set({ acknowledgedAt: new Date() })
     .where(eq(modelAlerts.id, id));
+  return {
+    kind: "acknowledged",
+    alertKind: existing.kind,
+    modelKey: existing.modelKey,
+  };
 };

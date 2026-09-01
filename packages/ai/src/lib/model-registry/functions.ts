@@ -1,4 +1,7 @@
-import type { CapabilitySignals } from "@fretik/shared/model-registry/eligibility";
+import type {
+  CapabilitySignals,
+  UnmetRequirement,
+} from "@fretik/shared/model-registry/eligibility";
 import {
   eligibleFunctions,
   functionEligibility,
@@ -91,13 +94,6 @@ export const FUNCTION_REPRESENTATIVE: Record<ModelFunctionKey, ModelRole> = {
   pages: "page-build",
 };
 
-/** Every role a function covers, derived so the two maps cannot drift apart. */
-export const rolesForFunction = (fn: ModelFunctionKey): ModelRole[] =>
-  Object.entries(ROLE_FUNCTION)
-    .filter(([, value]) => value === fn)
-    .map(([role]) => role)
-    .filter((role): role is ModelRole => role in ROLE_FUNCTION);
-
 /**
  * A profile's capability signals, with curation filling what the row cannot say.
  *
@@ -141,6 +137,27 @@ export const selectableForFunction = (
     "ineligible"
   );
 };
+
+/**
+ * What this function asked of the model and did not get — the actionable half
+ * of a refusal, structured so the client can word it in its own language.
+ *
+ * `selectableForFunction` DECIDES; this only EXPLAINS. Nothing may re-derive
+ * the decision from a card's own figures: the card reports the throughput of
+ * the endpoint a turn is most likely to land on, while eligibility grades the
+ * pool MEDIAN, so a client evaluating the same rule against the number it was
+ * shown would contradict the verdict it was given.
+ *
+ * Empty is a legitimate answer, and means the refusal came from one of the two
+ * vetoes (curation's `enabled`, or an unusable live row) rather than from a
+ * measurement. The caller says "not available here" in that case.
+ */
+export const unmetForFunction = (
+  profile: ModelProfile,
+  fn: ModelFunctionKey,
+  live: LiveModelState | undefined = getLiveStateSync(profile.key),
+): UnmetRequirement[] =>
+  functionEligibility(fn, signalsForProfile(profile, live)).unmet;
 
 /**
  * The functions a profile MEASURES UP TO — the positive badge the hub shows,

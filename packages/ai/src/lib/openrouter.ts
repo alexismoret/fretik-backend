@@ -6,7 +6,8 @@
  * the transport, the pool and the quarantines.
  *
  * Model env vars are GONE: changing a default model is a reviewed edit to
- * `model-registry/profiles/`, and per-team selection comes from the database.
+ * `model-registry/role-bindings.ts`, and per-team selection comes from the
+ * database.
  *
  * **Everything here is a FUNCTION, not a constant.** These used to be
  * module-level values, resolved once at import. That was correct while their

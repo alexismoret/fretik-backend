@@ -38,6 +38,30 @@ export interface ModelMetrics {
    */
   costLevel: number;
   /**
+   * This model's estimated per-turn cost as a multiple of the fleet's MEDIAN —
+   * a multiple, never a price. `1` is a typical model, `0.3` is a third of
+   * typical, `4` is four times it.
+   *
+   * Exists because `costLevel` is LOG-scaled and a ratio cannot be recovered
+   * from it: two models three points apart may differ by 10 % or by 2×, and the
+   * scale deliberately refuses to say which. A team comparing two candidates
+   * asks exactly that question ("how much more does this one cost me"), and the
+   * band label alone cannot answer it.
+   *
+   * ANCHORED ON THE MEDIAN, NOT THE CHEAPEST, because the cheapest is an
+   * outlier and the anchor is what every figure in the fleet is divided by.
+   * Measured 2026-08-31 over the 138 priced rows: the floor is a near-free
+   * model, so against it the MEDIAN model reads "29.6× the cheapest" and the
+   * dearest reads "2771×" — true, unusable, and indistinguishable from a bug.
+   * Against the median the same fleet runs 0.03× to 94×, and the number carries
+   * its own meaning: above one is dearer than usual, below one is cheaper.
+   *
+   * The dollar figure it derives from stays in this service — same invariant as
+   * `costLevel`, and the same currency a future credit system would bill in.
+   * `null` only when the fleet has no priced model at all.
+   */
+  costRatio: number | null;
+  /**
    * Seconds to the first ANSWER token (AA `median_time_to_first_answer_token`).
    * The honest latency metric for a reasoning model: `speed` measures how fast
    * tokens flow once they start, and `median_time_to_first_token` fires on the
@@ -93,3 +117,17 @@ export const METRICS_ATTRIBUTION = {
 
 export const ARTIFICIAL_ANALYSIS_URL =
   "https://artificialanalysis.ai/" as const;
+
+/**
+ * The page Artificial Analysis publishes for ONE model.
+ *
+ * The licence requires a link back wherever their figures are shown, and the
+ * site root satisfies it — but a reader who clicks a credit under a specific
+ * model's benchmarks is asking about THAT model, and landing on a homepage of
+ * 400 others answers a question they did not ask. `slug` comes from AA's own
+ * record, so it is their id for the model, not ours.
+ */
+export const artificialAnalysisModelUrl = (slug: string | undefined): string =>
+  slug === undefined
+    ? ARTIFICIAL_ANALYSIS_URL
+    : `${ARTIFICIAL_ANALYSIS_URL}models/${slug}`;

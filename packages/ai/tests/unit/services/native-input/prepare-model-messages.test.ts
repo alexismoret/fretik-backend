@@ -1,10 +1,10 @@
 import type { UIMessage } from "ai";
 import { describe, expect, test } from "bun:test";
-import { MODEL_PROFILES } from "../../../../src/lib/model-registry/profiles";
-import type {
-  InputModality,
-  ModelProfile,
-  NativeInputPolicy,
+import {
+  NATIVE_FILE_MAX_BYTES,
+  type InputModality,
+  type ModelProfile,
+  type NativeInputPolicy,
 } from "../../../../src/lib/model-registry/types";
 import {
   hasNativeFileParts,
@@ -14,6 +14,7 @@ import {
   stripReasoningPartsForModel,
   type PrepareModelMessagesDeps,
 } from "../../../../src/services/native-input/prepare-model-messages";
+import { dynamic, profileOf } from "../../../lib/live-fleet";
 
 const profileWith = (
   inputModalities: readonly InputModality[],
@@ -40,7 +41,7 @@ const profileWith = (
     },
     cache: { strategy: "none" },
     reasoning: { style: "none", defaultLevel: "none" },
-    provider: { requireParameters: true },
+    provider: {},
     enabled: true,
   },
 });
@@ -90,37 +91,44 @@ describe("prepareModelMessages — inert byte-identity (the central guard)", () 
     expect(deps.calls.presign).toHaveLength(0);
   });
 
-  test("every INERT registry profile is byte-identical end-to-end (no I/O)", async () => {
-    // M3 has native input activated (C5 step 12); every other profile is
-    // still inert and must be a pure pass-through.
+  test("a TEXT-ONLY model is byte-identical end-to-end (no I/O)", async () => {
+    // The derivation activates a modality exactly where the catalogue lists
+    // it, so a text-only model ingests nothing and must be a pure
+    // pass-through — no read, no presign.
     const history = [
       mediaMsg("1", "image/png", "a.png"),
       mediaMsg("2", "video/mp4", "b.mp4"),
     ];
-    const inert = Object.values(MODEL_PROFILES).filter((p) => {
-      const n = p.assessment.nativeInput;
-      return !n.image && !n.video && !n.audio && n.fileMimeTypes.length === 0;
+    const textOnly = profileOf({
+      dynamicProfile: dynamic({ inputModalities: ["text"] }),
     });
-    expect(inert.length).toBeGreaterThan(0);
-    for (const profile of inert) {
-      const deps = makeDeps();
-      const result = await prepareModelMessages(history, profile, deps);
-      expect(result).toEqual(stripFilePartsForModel(history));
-      expect(deps.calls.read).toHaveLength(0);
-      expect(deps.calls.presign).toHaveLength(0);
-    }
+    const n = textOnly.assessment.nativeInput;
+    expect([n.image, n.video, n.audio, n.fileMimeTypes.length]).toEqual([
+      false,
+      false,
+      false,
+      0,
+    ]);
+    const deps = makeDeps();
+    const result = await prepareModelMessages(history, textOnly, deps);
+    expect(result).toEqual(stripFilePartsForModel(history));
+    expect(deps.calls.read).toHaveLength(0);
+    expect(deps.calls.presign).toHaveLength(0);
   });
 
-  test("the activated flagship (M3) ingests image + video natively", async () => {
-    const m3 = MODEL_PROFILES["minimax-m3"];
-    expect(m3).toBeDefined();
-    if (!m3) return;
+  test("an image-capable model ingests images natively", async () => {
+    // `video` stays off even where the catalogue lists it — no call site
+    // produces video parts, which is a fact about us rather than the model.
+    const visual = profileWith(["text", "image", "video"], {
+      image: true,
+      video: true,
+    });
     const history = [
       mediaMsg("1", "image/png", "a.png"),
       mediaMsg("2", "video/mp4", "b.mp4"),
     ];
     const deps = makeDeps();
-    const result = await prepareModelMessages(history, m3, deps);
+    const result = await prepareModelMessages(history, visual, deps);
     // image → base64 data URL, video → presigned URL
     expect(result[0]?.parts[1]).toMatchObject({
       type: "file",
@@ -174,27 +182,37 @@ describe("prepareModelMessages — native transport", () => {
 });
 
 describe("prepareModelMessages — recency cap + failure handling", () => {
-  test("maxVideosPerRequest:1 keeps the most-recent video, strips the older one", async () => {
+  test("the video cap keeps the most-recent videos, strips older ones", async () => {
+    // The cap is 2 — enough for "compare these two", which is the commonest
+    // reason a person attaches more than one — so a THIRD video is what falls
+    // back to tool-mediated. It is a policy about us, so it is one constant in
+    // `prepare-model-messages.ts` rather than a per-model field: every curated
+    // profile that ever declared these limits declared the same numbers.
     const history = [
-      mediaMsg("1", "video/mp4", "old.mp4"),
-      mediaMsg("2", "video/mp4", "new.mp4"),
+      mediaMsg("1", "video/mp4", "oldest.mp4"),
+      mediaMsg("2", "video/mp4", "middle.mp4"),
+      mediaMsg("3", "video/mp4", "newest.mp4"),
     ];
-    const profile = profileWith(["text", "video"], {
-      video: true,
-      limits: { maxVideosPerRequest: 1 },
-    });
+    const profile = profileWith(["text", "video"], { video: true });
     const deps = makeDeps();
     const result = await prepareModelMessages(history, profile, deps);
 
-    // older message keeps only its text part (video demoted to tool-mediated)
+    // oldest message keeps only its text part (video demoted to tool-mediated)
     expect(result[0]?.parts).toHaveLength(1);
     expect(result[0]?.parts[0]).toMatchObject({ type: "text" });
-    // newer message keeps the native video
+    // the two newest keep their native video
     expect(result[1]?.parts[1]).toMatchObject({
       type: "file",
-      url: "https://s3/fresh/attachments/new.mp4",
+      url: "https://s3/fresh/attachments/middle.mp4",
     });
-    expect(deps.calls.presign).toEqual([["conv-1", "attachments/new.mp4"]]);
+    expect(result[2]?.parts[1]).toMatchObject({
+      type: "file",
+      url: "https://s3/fresh/attachments/newest.mp4",
+    });
+    expect(deps.calls.presign).toEqual([
+      ["conv-1", "attachments/middle.mp4"],
+      ["conv-1", "attachments/newest.mp4"],
+    ]);
   });
 
   test("a read failure drops that part to tool-mediated, never throws", async () => {
@@ -221,10 +239,9 @@ describe("prepareModelMessages — recency cap + failure handling", () => {
 });
 
 describe("prepareModelMessages — native file (C5v2, PDF)", () => {
-  const pdfProfile = (limits?: NativeInputPolicy["limits"]): ModelProfile =>
+  const pdfProfile = (): ModelProfile =>
     profileWith(["text", "file"], {
       fileMimeTypes: ["application/pdf"],
-      ...(limits ? { limits } : {}),
     });
 
   test("PDF native → base64 data URL with filename preserved", async () => {
@@ -251,7 +268,7 @@ describe("prepareModelMessages — native file (C5v2, PDF)", () => {
     ];
     const result = await prepareModelMessages(
       history,
-      pdfProfile({ maxFilesPerRequest: 2 }),
+      pdfProfile(),
       makeDeps(),
     );
     expect(result[0]?.parts).toHaveLength(1);
@@ -277,7 +294,7 @@ describe("prepareModelMessages — native file (C5v2, PDF)", () => {
     ];
     const result = await prepareModelMessages(
       history,
-      pdfProfile({ maxFilesPerRequest: 2 }),
+      pdfProfile(),
       makeDeps(),
     );
     expect(
@@ -288,13 +305,9 @@ describe("prepareModelMessages — native file (C5v2, PDF)", () => {
   test("an oversized PDF demotes to tool-mediated, never errors", async () => {
     const history = [mediaMsg("1", "application/pdf", "big.pdf")];
     const deps = makeDeps({
-      readSessionFile: async () => new Uint8Array(10),
+      readSessionFile: async () => new Uint8Array(NATIVE_FILE_MAX_BYTES + 1),
     });
-    const result = await prepareModelMessages(
-      history,
-      pdfProfile({ maxFileBytes: 5 }),
-      deps,
-    );
+    const result = await prepareModelMessages(history, pdfProfile(), deps);
     expect(result[0]?.parts).toHaveLength(1);
     expect(result[0]?.parts[0]).toMatchObject({ type: "text" });
   });
@@ -308,25 +321,33 @@ describe("prepareModelMessages — native file (C5v2, PDF)", () => {
     expect(deps.calls.read).toHaveLength(0);
   });
 
-  test("a file-capable registry profile ingests a PDF natively; minimax-m3 does not", async () => {
+  test("native PDF follows the CATALOGUE's `file` modality, nothing else", async () => {
+    // The activation used to be hand-written per profile, on the belief that
+    // which MIME types an upstream really accepts is family knowledge no
+    // catalogue publishes. Measured 2026-08-30 across the 22 curated profiles:
+    // the `file` modality and the hand-written activation agreed on all 22, so
+    // it was a published fact the whole time.
     const history = [mediaMsg("1", "application/pdf", "doc.pdf")];
-    const sonnet = MODEL_PROFILES["claude-sonnet-5"];
-    const m3 = MODEL_PROFILES["minimax-m3"];
-    expect(sonnet).toBeDefined();
-    expect(m3).toBeDefined();
-    if (!sonnet || !m3) return;
-    const sonnetOut = await prepareModelMessages(history, sonnet, makeDeps());
-    expect(sonnetOut[0]?.parts[1]).toMatchObject({
+
+    const fileCapable = profileOf({
+      dynamicProfile: dynamic({ inputModalities: ["text", "image", "file"] }),
+    });
+    const out = await prepareModelMessages(history, fileCapable, makeDeps());
+    expect(out[0]?.parts[1]).toMatchObject({
       mediaType: "application/pdf",
       url: "data:application/pdf;base64,AQID",
     });
-    // M3's catalog has no "file" → byte-identical strip. This is the honest
-    // remaining case for the inert path: not a product choice, a real upstream
-    // limitation.
-    const m3Deps = makeDeps();
-    const m3Out = await prepareModelMessages(history, m3, m3Deps);
-    expect(m3Out).toEqual(stripFilePartsForModel(history));
-    expect(m3Deps.calls.read).toHaveLength(0);
+
+    // A model whose catalogue lists no `file` → byte-identical strip, with no
+    // I/O attempted. Not a product choice: a real upstream limitation.
+    const noFile = profileOf({
+      dynamicProfile: dynamic({ inputModalities: ["text", "image"] }),
+    });
+    const deps = makeDeps();
+    expect(await prepareModelMessages(history, noFile, deps)).toEqual(
+      stripFilePartsForModel(history),
+    );
+    expect(deps.calls.read).toHaveLength(0);
   });
 
   test("hasNativeFileParts: true only when a PDF rides natively", () => {
@@ -406,7 +427,6 @@ describe("prepareModelMessages — reasoning stripping (#423)", () => {
 describe("planNativeIngestion", () => {
   const pdfProfile = profileWith(["text", "file"], {
     fileMimeTypes: ["application/pdf"],
-    limits: { maxFilesPerRequest: 2 },
   });
 
   test("names what rides native and what needs a tool", () => {

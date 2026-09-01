@@ -37,8 +37,7 @@ import {
   type ModelFunctionKey,
   selectableForFunction,
 } from "./functions";
-import { modelIdsForProfile } from "./gateway-ids";
-import { ROLE_BINDINGS } from "./profiles";
+import { ROLE_BINDINGS } from "./role-bindings";
 import { createTransportRegistry } from "./transports";
 import type { ReasoningRequest } from "./transports/types";
 import type {
@@ -118,35 +117,26 @@ export const openrouter = createOpenRouter({
  * fastest upstream, not the unvetted ones. `only` is the instrument for a
  * shortlist, per call site (see `RECALL_JUDGE_UPSTREAMS`).
  */
-/** Quantization floor for OPEN routing — see the note inside the builder. */
-const QUANTIZATION_FLOOR = ["bf16", "fp16", "unknown"] as const;
-
 const memoryUtilityProvider = (
   profile: ModelProfile,
   shortlist?: readonly string[],
 ): NonNullable<OpenRouterChatSettings["provider"]> => {
-  const { zdr, order, ignore, only } = profile.assessment.provider;
-  // A profile that governs its own serving — by pinning `order` OR by declaring
-  // a vetted `only` pool — is exempt from the quantization floor; one with open
-  // routing takes it. Applying the floor to everything made every other model
-  // untestable here: deepseek-v4-flash is served fp4 on DeepInfra, an endpoint
-  // its profile vets and prices, so the list emptied its pool outright (160/160
-  // calls, "No endpoints found for the request with quantization", measured
-  // 2026-08-03). Quantization was never the real criterion anyway — it stood in
-  // for "this small model loses its format discipline", which is a fact about
-  // gpt-oss-20b, not about fp4.
-  //
-  // `only` has to count here alongside `order`, or moving deepseek-v4-flash off
-  // its pin and onto a vetted pool (2026-08-05) would have silently re-imposed
-  // the floor and reproduced that same empty pool on all three memory roles.
-  const selfGoverned = order !== undefined || only !== undefined;
+  const { zdr, order, ignore, only, quantizations } =
+    profile.assessment.provider;
   return {
     require_parameters: true,
     zdr,
     sort: "throughput",
     ...(ignore ? { ignore: [...ignore] } : {}),
     ...(order ? { order: [...order] } : {}),
-    ...(selfGoverned ? {} : { quantizations: [...QUANTIZATION_FLOOR] }),
+    // The floor comes from the endpoints (`quantizationsFor`), which is what
+    // makes it safe to send: it is present only for models where filtering
+    // leaves a host standing. The old test — exempt anything declaring `order`
+    // or `only` — read as "always exempt" the moment the sync started computing
+    // a pool for every model, and would have dropped the guard on the very
+    // model it protects (six of gpt-oss-120b's fourteen hosts serve it at
+    // fp4/fp8).
+    ...(quantizations ? { quantizations: [...quantizations] } : {}),
     // The call-site shortlist (the recall judge's latency guard) wins over the
     // profile's own pool: it is a HARD filter chosen for a role with a 15 s
     // ceiling, and intersecting the two could empty the pool.
@@ -208,7 +198,7 @@ const PAGE_BUILD_REASONING_MAX_TOKENS = 8_000;
 const memoryReasoning = (
   profile: ModelProfile,
   level: ReasoningLevel,
-): OpenRouterChatSettings["reasoning"] =>
+): ReasoningWire | undefined =>
   profile.assessment.reasoning.style === "max-tokens"
     ? { enabled: true, max_tokens: MEMORY_REASONING_MAX_TOKENS }
     : reasoningParamForProfile(profile, level);
@@ -254,7 +244,7 @@ export const settingsForRole = (
           ...(only ? { only: [...only] } : {}),
           ...(sort ? { sort } : {}),
         },
-        reasoning: reasoningParamForProfile(profile),
+        ...openrouterReasoning(reasoningParamForProfile(profile)),
         usage: { include: true },
       };
     // The chat envelope with the ROLE's own thinking budget — same doctrine
@@ -334,12 +324,12 @@ export const settingsForRole = (
     case "active-memory":
       return {
         provider: memoryUtilityProvider(profile),
-        reasoning: memoryReasoning(profile, "low"),
+        ...openrouterReasoning(memoryReasoning(profile, "low")),
       };
     case "recall":
       return {
         provider: memoryUtilityProvider(profile, RECALL_JUDGE_UPSTREAMS),
-        reasoning: memoryReasoning(profile, "medium"),
+        ...openrouterReasoning(memoryReasoning(profile, "medium")),
       };
     case "bare":
       // Bare roles leave the reasoning/usage envelope to the call site, but
@@ -377,7 +367,7 @@ export const settingsForRole = (
  * placeholders to be calibrated by C3 eval runs before anything
  * non-default requests them (the « deep thinking » toggle lands in C8).
  */
-const MAX_TOKENS_BUDGET_BY_LEVEL: Record<
+export const MAX_TOKENS_BUDGET_BY_LEVEL: Record<
   Exclude<ReasoningLevel, "none">,
   number
 > = {
@@ -395,31 +385,63 @@ const MAX_TOKENS_BUDGET_BY_LEVEL: Record<
 };
 
 /**
- * `max` exists in OUR vocabulary (OpenRouter's HTTP API accepts it, and
- * `catalog.reasoning.supportedEfforts` records it so drift checks and the
- * picker show a model's true ladder) but the provider SDK's `effort` union
- * stops at `xhigh` as of @openrouter/ai-sdk-provider@3.0.0. Rather than cast
- * around the type, clamp: `max` requests are served at `xhigh`, the highest
- * rung the SDK can express. Costs little — Artificial Analysis measures GPT-5.6
- * Luna at 51.2 on `max` vs 49.1 on `xhigh` — and stays type-honest. Drop the
- * clamp when the provider widens its union.
+ * The reasoning envelope in OUR vocabulary, before any transport dialect.
+ *
+ * It exists because `max` does not fit the provider SDK's `effort` union, which
+ * stops at `xhigh` as of @openrouter/ai-sdk-provider@3.0.0 — and the response to
+ * that used to be a silent clamp, `max` requests served at `xhigh`.
+ *
+ * That clamp was wrong twice over, both measured 2026-08-30:
+ *
+ *  - **The API accepts `max`.** Sent to `deepseek-v4-flash-0731`, `effort:
+ *    "max"` returns 200; an invalid value is refused with the API's own list —
+ *    `"max"|"xhigh"|"high"|"medium"|"low"|"minimal"|"none"`, which is exactly
+ *    this product's ladder. Only the SDK's TYPING was narrow, and a typing is
+ *    not a capability.
+ *  - **It was applied in the wrong place.** The clamp sat in the shared envelope
+ *    that every transport derives from, so one SDK's union quietly removed the
+ *    top rung on the gateway and on Scaleway too — neither of which has that
+ *    constraint. 47 of the 396 catalogue models publish `max`, the applied
+ *    `chat` default among them.
+ *
+ * So the level travels unclamped and `openrouterReasoning` below decides how to
+ * spell it for the one transport that cannot type it.
  */
-const wireEffort = (
-  level: Exclude<ReasoningLevel, "none">,
-): "xhigh" | "high" | "medium" | "low" | "minimal" =>
-  level === "max" ? "xhigh" : level;
+export type ReasoningWire =
+  | { enabled: false; effort: "none" }
+  | { enabled: true; max_tokens: number }
+  | { enabled: true; effort: Exclude<ReasoningLevel, "none"> };
 
 /**
- * Map the product's effort-first `ReasoningLevel` to the wire param the
- * model family honours: effort-style families get OpenRouter's `effort`
- * (clamped by `wireEffort`); `max-tokens` families get a budget from the
- * table above.
+ * Spell a reasoning envelope for the OpenRouter SDK.
+ *
+ * Everything the SDK's union can hold goes on `reasoning`. `max` cannot, so it
+ * rides `extraBody` — the provider's own typed escape hatch (`Record<string,
+ * unknown>`), merged into the request body verbatim. No cast, no lost rung.
+ * Fold this back into `reasoning` when the provider widens its union.
+ */
+export const openrouterReasoning = (
+  wire: ReasoningWire | undefined,
+): Pick<OpenRouterChatSettings, "reasoning" | "extraBody"> => {
+  if (wire === undefined) return { reasoning: undefined };
+  if (!("effort" in wire)) return { reasoning: wire };
+  const { effort } = wire;
+  if (effort === "max") return { extraBody: { reasoning: wire } };
+  return { reasoning: { enabled: wire.enabled, effort } };
+};
+
+/**
+ * Map the product's effort-first `ReasoningLevel` to the wire param the model
+ * family honours: effort-style families get an `effort` string, `max-tokens`
+ * families get a budget from the table above. The level travels UNCLAMPED —
+ * `openrouterReasoning` decides how to spell `max` for the one transport whose
+ * SDK cannot type it.
  */
 export const reasoningParamForProfile = (
   profile: ModelProfile,
   level?: ReasoningLevel,
-): OpenRouterChatSettings["reasoning"] => {
-  const { style, defaultLevel, maxTokens } = profile.assessment.reasoning;
+): ReasoningWire | undefined => {
+  const { style, defaultLevel } = profile.assessment.reasoning;
   // A model with no reasoning support takes no reasoning param at all: sending
   // one narrows the pool to nothing under `require_parameters`.
   if (style === "none") return undefined;
@@ -437,14 +459,16 @@ export const reasoningParamForProfile = (
     return level === undefined ? undefined : { enabled: false, effort: "none" };
   }
   if (style === "max-tokens") {
-    // A per-profile `maxTokens` override (adaptive models that over-think,
-    // e.g. MiniMax M3) wins over the shared level→budget table.
-    return {
-      enabled: true,
-      max_tokens: maxTokens ?? MAX_TOKENS_BUDGET_BY_LEVEL[resolved],
-    };
+    // No ladder published, so the level travels as a budget from the shared
+    // table. There used to be a per-profile override on top of it, pinned by
+    // hand for models that "over-think"; it was removed with the curated
+    // registry because the measurement never supported it — a live probe of
+    // MiniMax M3 at three budgets returned 5 452 / 4 322 / 2 996 reasoning
+    // tokens for 512 / 1 500 / 8 000 requested, i.e. no monotonicity and no
+    // ceiling. The knob was never binding on the one model it was written for.
+    return { enabled: true, max_tokens: MAX_TOKENS_BUDGET_BY_LEVEL[resolved] };
   }
-  return { enabled: true, effort: wireEffort(resolved) };
+  return { enabled: true, effort: resolved };
 };
 
 /**
@@ -656,17 +680,19 @@ const TRANSPORTS = createTransportRegistry(settingsForRole);
  * The transport that will actually serve a profile, and the model id it uses
  * there.
  *
- * Order: the forced override, then live state, then whatever the profile has an
- * id for. The last step matters on a cold boot and on a model the seed has
- * never run for — resolution must produce a working model before the database
- * has an opinion, because a metadata table being unreachable is not a reason
- * for the chatbot to stop answering.
+ * Order: the forced override, then the transport the row routes through, then
+ * any other transport the row carries an id for — a model whose usual transport
+ * has no adapter registered is still reachable on one that does.
+ *
+ * Every id comes from the ROW. There used to be a hand-written fallback map for
+ * the case where the database had no opinion yet; it could not be reached (a
+ * profile only exists because a row described it) and it was worse than the row
+ * anyway, since the sync DISCOVERS spellings the map never had.
  */
 const transportFor = (
   profileKey: string,
   live: LiveModelState | undefined,
 ): { transport: TransportId; modelId: string } => {
-  const ids = modelIdsForProfile(profileKey);
   const candidates: (TransportId | undefined)[] = [
     FORCED_TRANSPORT,
     live?.transport,
@@ -675,7 +701,7 @@ const transportFor = (
   ];
   for (const candidate of candidates) {
     if (candidate === undefined) continue;
-    const modelId = live?.modelIds[candidate] ?? ids[candidate];
+    const modelId = live?.modelIds[candidate];
     if (modelId !== undefined && TRANSPORTS.has(candidate))
       return { transport: candidate, modelId };
   }
@@ -698,8 +724,7 @@ const forcedTransportFor = (
   live: LiveModelState | undefined,
   transport: TransportId,
 ): { transport: TransportId; modelId: string } => {
-  const modelId =
-    live?.modelIds[transport] ?? modelIdsForProfile(profileKey)[transport];
+  const modelId = live?.modelIds[transport];
   if (modelId === undefined)
     throw new Error(
       `profile "${profileKey}" has no ${transport} model id — it cannot be reached there`,
@@ -747,7 +772,7 @@ const buildResolved = (
   // would place two competing sets of markers on one prompt.
   const cachedForTransport =
     binding.wrapCache && transport === "openrouter"
-      ? wrapModelWithCache(cleaned, profile)
+      ? wrapModelWithCache(cleaned)
       : cleaned;
   const model = instrumentModel(
     cachedForTransport,
@@ -915,35 +940,26 @@ export const resolvePageBuildModelForProfile = (
  *
  * The gate is the CATALOG LADDER, not the wire style: a `max-tokens` profile is
  * steered just as well by the level→budget table as an `effort` profile is by
- * the effort string (DeepSeek V4 is deliberately budget-driven precisely so its
- * 4:1 reasoning ratio stays bounded, and still answers to the level). Two
- * narrowings on top:
- *
- *  - a single-rung ladder is not a choice, so it yields `[]` and the picker
- *    hides rather than showing one inert option. A model with NO ladder at all
- *    (MiniMax M3, Claude Haiku 4.5) lands here too — which is right for M3 for
- *    an independent measured reason: the C7 probe found its `reasoning_tokens`
- *    flat at ~3-5k across every effort value, and one upstream ignored
- *    `reasoning.max_tokens` outright.
- *  - a profile that PINS `maxTokens` yields `[]`, because that override beats
- *    the level→budget table in `reasoningParamForProfile` — the levels would be
- *    decorative. A unit test keeps a pinned budget and a real ladder from ever
- *    coexisting silently.
+ * the effort string. One narrowing on top: a single-rung ladder is not a choice,
+ * so it yields `[]` and the picker hides rather than showing one inert option. A
+ * model with NO ladder at all (MiniMax M3, Claude Haiku 4.5) lands here too —
+ * which is right for M3 for an independent measured reason: the C7 probe found
+ * its `reasoning_tokens` flat at ~3-5k across every effort value, and one
+ * upstream ignored a token budget outright.
  *
  * Sending a rung outside the ladder is a wire error waiting to happen, and for a
  * `mandatory` reasoner (every Gemini but 3.1 Flash-Lite, plus Grok) the ladder
  * correctly omits `none` — reasoning there cannot be switched off.
  *
- * Consequence worth knowing: on the current applied default (M3) the chat
- * reasoning picker renders disabled with an explanation. Every other selectable
- * flagship steers, so the control comes alive as soon as a team picks one.
+ * The ladder is now READ from the catalogue rather than hand-listed, which
+ * turned the picker on for models it had been dead for: `deepseek-v4-flash`, the
+ * applied `chat` default, was curated with no ladder at all and publishes three
+ * rungs (`low`, `high`, `max`).
  */
 export const selectableReasoningLevels = (
   profile: ModelProfile,
 ): readonly ReasoningLevel[] => {
-  const { style, maxTokens } = profile.assessment.reasoning;
-  if (style === "none") return [];
-  if (style === "max-tokens" && maxTokens !== undefined) return [];
+  if (profile.assessment.reasoning.style === "none") return [];
   const efforts = profile.catalog.reasoning?.supportedEfforts ?? [];
   return efforts.length > 1 ? efforts : [];
 };

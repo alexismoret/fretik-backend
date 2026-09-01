@@ -1,96 +1,94 @@
-import type { ModelProfile, ModelRole, RoleBinding } from "../types";
-import { ANTHROPIC_PROFILES } from "./anthropic";
-import { DEEPSEEK_PROFILES } from "./deepseek";
-import { GOOGLE_PROFILES } from "./google";
-import { MINIMAX_PROFILES } from "./minimax";
-import { MISTRAL_PROFILES } from "./mistral";
-import { OPENAI_PROFILES } from "./openai";
-import { THINKING_MACHINES_PROFILES } from "./thinkingmachines";
-import { XAI_PROFILES } from "./xai";
-import { ZAI_PROFILES } from "./zai";
+import type { ModelRole, RoleBinding } from "./types";
 
 /**
- * The model registry — one file per brand, assembled here.
+ * Which model serves each internal role — the registry's DECISION layer, and
+ * since 2026-08-30 the only hand-written thing left in it.
  *
- * **Breadth is the product.** 23 profiles across 9 families, and the intent is
- * that this list keeps growing: a team should be able to plug in whichever
- * current model suits it. Two rules keep that from turning into sprawl:
+ * Everything a model IS is now read: the reasoning ladder, the cache contract,
+ * native PDF, the ZDR stance, the price, the context, the pool — all of it comes
+ * from `model_live_state`, written by the nightly sync and synthesised into a
+ * profile by `effective.ts`. There is no per-model TypeScript any more, because
+ * every fact a profile used to assert is published by a catalogue and every
+ * measurement we take ourselves is written to a row by whatever measured it.
  *
- * 1. **Latest version only.** When a family ships a new generation the old
- *    profile is REMOVED, not kept alongside. Removals so far:
- *    `claude-opus-4.8` / `claude-sonnet-4.6` → Claude Opus 5 / Sonnet 5,
- *    `gpt-5.5` → the GPT-5.6 trio, `glm-5.1` + `glm-4.7` → GLM-5.2,
- *    `gpt-4o-mini` (orphaned, no function could use it).
- * 2. **Selection is gated by `assessment.enabled` and nothing else.** The old
- *    rule — flagship models had to carry `evalGate.status === "passed"` — was
- *    removed on 2026-07-26: it had frozen the flagship menu at two models
- *    while twelve sat `pending`, and it made a slow, expensive suite the
- *    gatekeeper of product breadth. Evals now gate exactly one thing, the
- *    APPLIED DEFAULT below.
+ * What survives here is not a fact about a model. It is a choice about a JOB:
+ * which model does the chatting, which one judges recall on a turn's hot path,
+ * which one is trusted with a memory merge that is hard to undo. No API can
+ * publish that, and the comments below are the measurements that decided each
+ * one — they are the reason this file is long, and they are the point of it.
  *
- * Catalog blocks were read from the OpenRouter models API on 2026-07-26; run
- * `bun run models:check` after any provider announcement to re-verify them,
- * and `--probe` to catch a profile whose routing pool has gone empty.
+ * Two rules:
  *
- * Which brands ship: Anthropic, OpenAI, Google, Mistral, MiniMax, DeepSeek,
- * Z.ai, xAI, Thinking Machines. Qwen is intentionally absent — it has no
- * zero-data-retention endpoint on OpenRouter (see `ModelFamily`).
+ * 1. **Changing a default is a reviewed pull request**, never an env edit. Model
+ *    env vars are gone; per-team and per-conversation overrides come from the
+ *    database.
+ * 2. **This is the eval-gated surface.** `model-registry.test.ts` requires the
+ *    `chat` and `workflow` bindings to carry `evalGate.status === "passed"` with
+ *    a run id, so promoting a new default fails CI without a gate run:
+ *    `bun run evals:gate -- --candidate <key>`. Merely OFFERING a model to teams
+ *    requires no eval evidence at all — selection is governed by the row's
+ *    `enabled` and nothing else, because the product is breadth and a model that
+ *    underperforms on our tools is the team's call to swap, not a gate's call to
+ *    hide.
  *
- * The eval judge (`evals/judge.ts`) intentionally stays OUTSIDE the registry:
- * it must remain a different family from the serving models.
- */
-export const MODEL_PROFILES: Record<string, ModelProfile> = {
-  ...ANTHROPIC_PROFILES,
-  ...OPENAI_PROFILES,
-  ...GOOGLE_PROFILES,
-  ...MISTRAL_PROFILES,
-  ...MINIMAX_PROFILES,
-  ...DEEPSEEK_PROFILES,
-  ...ZAI_PROFILES,
-  ...XAI_PROFILES,
-  ...THINKING_MACHINES_PROFILES,
-};
-
-/**
- * Default role → profile bindings. Pure code — model env vars are
- * GONE: changing a default is a reviewed PR, per-team / per-conversation
- * overrides come from the DB (C8).
+ * The gate stamp used to sit on the profile, which was the wrong object: a gate
+ * run measures a model DOING A JOB against the model that held the job before
+ * it, and a profile cannot express a pairing. The cost of that was visible —
+ * `minimax-m3` carried a stamp whose comment called it the `chat` default four
+ * weeks after the flip moved `chat` elsewhere, and nothing could catch it.
  *
- * **This is the eval-gated surface.** `model-registry.test.ts` requires the
- * profile bound to `chat` and `workflow` to carry `evalGate.status ===
- * "passed"`, so promoting a new default (e.g. `minimax-m3` → `gpt-5.6-luna`)
- * fails CI without a gate run: `bun run evals:gate -- --candidate <key>`.
- * Merely OFFERING a model to teams requires no eval evidence at all.
- *
- * A binding resolves its profile directly and bypasses `isSelectableForTier`,
- * so a role may legitimately point at an `enabled: false` profile — see
+ * A binding resolves its profile directly and bypasses `isSelectableForTier`, so
+ * a role may legitimately point at a model no team can pick — see
  * `transform-fallback` → `gemini-3.7-flash`.
+ *
+ * The eval judge (`evals/judge.ts`) intentionally stays OUTSIDE the registry: it
+ * must remain a different family from the serving models.
  */
 export const ROLE_BINDINGS: Record<ModelRole, RoleBinding> = {
   // Gated flip 2026-08-02 (run 8e3ea13a8b4b3968): minimax-m3 → deepseek-v4-flash.
   // Faster (56.3s → 30.8s avg), ~2.9× cheaper per turn, ahead on reasoning and
-  // tool-use, and it needs none of M3's mitigations (no `replayInHistory`
-  // strip, no orphan-`</think>` stripper). The displaced M3 becomes
-  // `chat-fallback` below, which keeps primary and fallback on different
-  // families and different upstreams.
+  // tool-use. The displaced M3 becomes `chat-fallback` below, which keeps
+  // primary and fallback on different families and different upstreams.
+  // KNOWN REGRESSION in that run, accepted with eyes open: EXTRACTION. The gate
+  // read 0.964 → 0.821; two dedicated `--capability extraction` runs then
+  // measured 0.869 twice, byte-identical (pass-rate 0.714, 0 fallbacks). So it
+  // is NOT judge noise on this subset — it is a real, reproducible ~0.1 gap
+  // against M3, worth ~0.67 case-equivalents, inside the ≤1 threshold but on a
+  // capability central to this product. It is the price of the switch, not a
+  // measurement artefact: revisit it if extraction complaints appear, and
+  // re-check it first when this binding is next gated. generation 1.000→0.933
+  // and instruction-following 1.000→0.944 are the other two, both in threshold.
   chat: {
     role: "chat",
     profileKey: "deepseek-v4-flash",
     settingsKind: "chat",
     wrapCache: true,
+    evalGate: {
+      status: "passed",
+      lastRunId: "8e3ea13a8b4b3968",
+      gatedAt: "2026-08-02",
+    },
   },
   // Deliberately a DIFFERENT family and a different upstream from `chat`:
   // this binding exists for the turns where the primary died, so sharing
   // DeepSeek's weights or DeepInfra's capacity with it would let one incident
-  // take out both. minimax-m3 was the gate-passing default until 2026-08-02,
-  // routes via Novita, and carries its own mitigations (`replayInHistory:
-  // false`, the orphan-`</think>` stripper) — they apply here too, since the
-  // escalation swaps the PROFILE, not just the agent.
+  // take out both. minimax-m3 was the gate-passing default until 2026-08-02 and
+  // routes via Novita.
   "chat-fallback": {
     role: "chat-fallback",
     profileKey: "minimax-m3",
     settingsKind: "chat",
     wrapCache: true,
+    // Its own C3 run, from when it held `chat`: all capabilities at or above
+    // the M2.7 baseline, $0.0134/turn. The avg-latency criterion passed only
+    // after the 1.5× recalibration (the 1.3× cap was below measured same-model
+    // variance); the earlier ccf1822e attempt failed on an empty ZDR pool, not
+    // on the model. Kept because a fallback still serves real turns.
+    evalGate: {
+      status: "passed",
+      lastRunId: "3aeec9d1-583f-4ac2-b35a-6cc1381665f3",
+      gatedAt: "2026-06-12",
+    },
   },
   // Autonomous workflow executor. Defaults to the SAME profile as `chat`
   // (reliability first — the priority order is precision > cost) and follows
@@ -103,6 +101,11 @@ export const ROLE_BINDINGS: Record<ModelRole, RoleBinding> = {
     profileKey: "deepseek-v4-flash",
     settingsKind: "chat",
     wrapCache: true,
+    evalGate: {
+      status: "passed",
+      lastRunId: "8e3ea13a8b4b3968",
+      gatedAt: "2026-08-02",
+    },
   },
   "dispatch-cheap": {
     role: "dispatch-cheap",
@@ -151,9 +154,7 @@ export const ROLE_BINDINGS: Record<ModelRole, RoleBinding> = {
   // Cost, measured per call on OpenRouter rather than derived from list prices:
   // $0.000087 against gpt-oss-20b's $0.000021, i.e. ~4x — about $0.66 per
   // 10 000 memory calls. The gap is reasoning tokens (236 against 6), which is
-  // exactly what was bought. Note the tail: `reasoning.max_tokens` is a request
-  // this route may ignore outright, and a runaway costs ~25x the median (the
-  // consolidation binding documents one at 13 700 tokens against a 256 budget).
+  // exactly what was bought.
   //
   // Latency triples (~10 s against ~3 s) and does not matter: these run in
   // background workers and nightly crons, and the timeouts in
@@ -183,17 +184,16 @@ export const ROLE_BINDINGS: Record<ModelRole, RoleBinding> = {
     // `mem-consolidate-revise` 10/10 on gpt-oss-120b at ~7.7 s against 9/10 on
     // deepseek-v4-flash at ~31.6 s, and the chain suite's contradiction case
     // 8/10 — where BOTH failures were deepseek emitting ~13 700 reasoning
-    // tokens against a requested 256, hitting the output cap and returning
-    // truncated JSON, which the judge's defensive parse turns into a silent
-    // NOOP. The contradiction it was asked to resolve then survives.
+    // tokens, hitting the output cap and returning truncated JSON, which the
+    // judge's defensive parse turns into a silent NOOP. The contradiction it
+    // was asked to resolve then survives.
     //
-    // No budget knob restrains it: `reasoning.max_tokens` is a request this
-    // route ignores (a factor of 53 here), raising the output cap only made
-    // each runaway cost 25x the median without fixing it, and the calls were
-    // served by the PINNED upstream, so it is not a fallback landing somewhere
-    // worse. Consolidation is also where a wrong result is least recoverable —
-    // a bad MERGE takes episodes out of the active set — so it keeps the model
-    // that does not gamble.
+    // No budget knob restrains it — a request this route ignores (a factor of
+    // 53 here), and raising the output cap only made each runaway cost 25x the
+    // median without fixing it. The calls were served by the PINNED upstream,
+    // so it is not a fallback landing somewhere worse. Consolidation is also
+    // where a wrong result is least recoverable — a bad MERGE takes episodes
+    // out of the active set — so it keeps the model that does not gamble.
     profileKey: "gpt-oss-120b",
     settingsKind: "active-memory",
     wrapCache: false,
@@ -388,12 +388,11 @@ export const ROLE_BINDINGS: Record<ModelRole, RoleBinding> = {
   // prose — the observed failure class is a truncated or refused chunk, and a
   // family swap is the most effective second attempt.
   //
-  // Points at an `enabled: false` profile ON PURPOSE: gemini-3.7-flash is too
+  // Points at a model no team can pick ON PURPOSE: gemini-3.7-flash is too
   // expensive to OFFER as a team pick (~2× an M3 turn at the settled price
-  // corrected 2026-08-18; it was argued at 4.06× against the old estimate) but
-  // is the right
-  // second attempt on a low-volume fallback path. Role bindings bypass
-  // `isSelectableForTier`, so this is legal and intended.
+  // corrected 2026-08-18) but is the right second attempt on a low-volume
+  // fallback path. Role bindings bypass `isSelectableForTier`, so this is legal
+  // and intended.
   "transform-fallback": {
     role: "transform-fallback",
     profileKey: "gemini-3.7-flash",

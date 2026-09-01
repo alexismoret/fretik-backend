@@ -80,6 +80,7 @@ export const SCALEWAY_CATALOGUE_CAPABILITIES: CatalogueCapabilities = {
   // Stated for the platform, not per model, so it is applied to the endpoint
   // rather than advertised here as a per-model hint.
   publishesZdrHint: false,
+  publishesReasoningContract: false,
 };
 
 const listSchema = z.object({

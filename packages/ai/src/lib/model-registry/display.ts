@@ -1,22 +1,23 @@
 /**
- * STATIC user-facing branding for model profiles (chantier C8).
+ * How a model PRESENTS: its name, its maker's mark, its colour.
  *
- * Kept OUT of `profiles.ts` on purpose: `profiles.ts` is the agent-/
- * engineering registry (gate facts, catalog mirror), this file is pure
- * presentation. It holds ONLY branding that never changes from an API:
+ * Kept out of the profile registry on purpose — that one holds engineering
+ * decisions, this one holds nothing a request depends on. What is hand-written
+ * here is exactly what no API publishes:
  *
- * - `MODEL_DISPLAY` — per profile key: the brand `displayName` (e.g.
- *   "MiniMax M3"). Quantitative metrics (intelligence, speed, price) are
- *   NOT here — they come live from `services/model-metrics` (Artificial
- *   Analysis + OpenRouter).
- * - `FAMILY_BRANDING` — per family: simple-icons mark + brand colour /
- *   optional gradient (the icons are monochrome, so the colour lives here).
- *   Brand colour, not model colour — every model of a family shares it.
+ * - `FAMILY_BRANDING` — per family: the vendor's mark and brand colour (the
+ *   marks are monochrome, so the colour has to live beside them), plus an
+ *   optional logo-faithful gradient. Per family, never per model.
+ * - `FAMILY_BY_CATALOGUE_OWNER` — the handful of places where the catalogue
+ *   names the company and we brand the model line.
  *
- * Defensive: `getModelDisplay` falls back for any key absent here, so gating
- * a new profile in `profiles.ts` never breaks rendering.
+ * Everything else is READ rather than declared. A model's name comes from the
+ * catalogue serving it (`getModelDisplayName`), and its quantitative metrics
+ * from `services/model-metrics`. That is what lets a model discovered at three
+ * in the morning render like any other.
  */
 
+import { getLiveStateSync } from "@fretik/shared/services/model-registry/live";
 import type { KnownModelFamily, ModelFamily } from "./types";
 
 export interface FamilyBranding {
@@ -28,40 +29,51 @@ export interface FamilyBranding {
   brandGradient?: { from: string; to: string };
 }
 
-/** Exported so `models:admin audit` can name entries that outlived their model. */
-export const MODEL_DISPLAY_NAME: Record<string, string> = {
-  // Anthropic
-  "claude-opus-5": "Claude Opus 5",
-  "claude-sonnet-5": "Claude Sonnet 5",
-  "claude-haiku-4.5": "Claude Haiku 4.5",
-  // OpenAI
-  "gpt-5.6-sol": "GPT-5.6 Sol",
-  "gpt-5.6-terra": "GPT-5.6 Terra",
-  "gpt-5.6-luna": "GPT-5.6 Luna",
-  "gpt-5.4-nano": "GPT-5.4 nano",
-  "gpt-oss-120b": "GPT-OSS 120B",
-  "gpt-oss-20b": "GPT-OSS 20B",
-  // Google
-  "gemini-3.1-pro": "Gemini 3.1 Pro",
-  "gemini-3.7-flash": "Gemini 3.7 Flash",
-  "gemini-3.5-flash-lite": "Gemini 3.5 Flash Lite",
-  "gemini-3.1-flash-lite": "Gemini 3.1 Flash Lite",
-  // Mistral
-  "mistral-medium-3.5": "Mistral Medium 3.5",
-  "mistral-small-2603": "Mistral Small",
-  "ministral-8b-2512": "Ministral 8B",
-  // MiniMax
-  "minimax-m3": "MiniMax M3",
-  // DeepSeek
-  "deepseek-v4-pro": "DeepSeek V4 Pro",
-  "deepseek-v4-flash": "DeepSeek V4 Flash",
-  // Z.ai (GLM)
-  "glm-5.2": "GLM-5.2",
-  // xAI
-  "grok-4.5": "Grok 4.5",
-  // Thinking Machines
-  inkling: "Inkling",
+/**
+ * Strip the maker's name where a catalogue prefixed it: `"OpenAI: GPT-5.6 Luna
+ * Pro"` → `"GPT-5.6 Luna Pro"`.
+ *
+ * Worth doing for two reasons: the card already carries the vendor's own mark
+ * and colour, so the prefix says the same thing twice; and the catalogues
+ * disagree on whether to add one at all — `"Claude Sonnet 4.5"` bare beside
+ * `"OpenAI: GPT-5.6 Luna Pro"` prefixed, on the same fetch — which would make
+ * two siblings on one grid look inconsistent for no reason.
+ *
+ * The prefix is matched against the model's OWN maker rather than by shape.
+ * Shape alone is not enough and a test pins why: `"Nemotron 3: The Reckoning"`
+ * has a leading colon-terminated segment too, and a rule that only looked at
+ * the punctuation renamed that model "The Reckoning". Both sides are folded
+ * through `normalizeFamily`, so the catalogue's `"Z.ai"` matches the owner
+ * `z-ai` and `"SpaceXAI"` matches `spacexai`.
+ */
+const stripMakerPrefix = (name: string, family: string): string => {
+  const colon = name.indexOf(":");
+  if (colon <= 0) return name;
+  const rest = name.slice(colon + 1).trimStart();
+  if (rest.length === 0) return name;
+  return normalizeFamily(name.slice(0, colon)) === normalizeFamily(family)
+    ? rest
+    : name;
 };
+
+/**
+ * Last resort when nothing has described the model yet: the key, spaced and
+ * capitalised.
+ *
+ * Deliberately the FALLBACK and not the rule, because the key is a slug that
+ * has already lost information the name needs. Measured over the 139 live rows:
+ * version dots are gone (`alibaba-qwen3-5-flash` reads "Qwen3 5 Flash" where
+ * the catalogue says "Qwen 3.5 Flash"), the owner is often duplicated
+ * (`deepseek-deepseek-v4-flash`), and casing is unrecoverable ("Glm" for GLM,
+ * "Gpt" for GPT). It beats showing a raw slug and nothing more.
+ */
+const nameFromKey = (key: string): string =>
+  key
+    .split("-")
+    .map((word) =>
+      word === "" ? word : word[0]?.toUpperCase() + word.slice(1),
+    )
+    .join(" ");
 
 /**
  * Catalogue owner → our family name.
@@ -79,6 +91,11 @@ const FAMILY_BY_CATALOGUE_OWNER: Record<string, KnownModelFamily> = {
   "z-ai": "zai",
   zhipu: "zai",
   "thinking-machines": "thinkingmachines",
+  // The catalogues spell the company `mistralai`; we brand the line `mistral`.
+  // Found by comparing all 22 curated profiles against their synthesised twins
+  // on 2026-08-30: the three Mistral models were the only ones whose derived
+  // family missed its branding and fell through to the neutral `other` icon.
+  mistralai: "mistral",
 };
 
 /**
@@ -94,7 +111,10 @@ export const normalizeFamily = (owner: string): ModelFamily => {
 
 const FAMILY_BRANDING: Record<string, FamilyBranding> = {
   anthropic: { icon: "i-simple-icons-anthropic", brandColor: "#D97757" },
-  openai: { icon: "i-simple-icons-openai", brandColor: "#412991" },
+  // OpenAI's mark is monochrome black; `#412991` was the retired purple, which
+  // no longer matches anything they publish. Near-black brands are inverted per
+  // theme by the client (see `ModelsBrandMark`), so this stays the brand truth.
+  openai: { icon: "i-simple-icons-openai", brandColor: "#000000" },
   google: {
     icon: "i-simple-icons-googlegemini",
     brandColor: "#1A73E8",
@@ -140,9 +160,21 @@ const OTHER_BRANDING: FamilyBranding = {
   brandColor: "#6B7280",
 };
 
-/** Brand display name for a profile key (falls back to the key itself). */
-export const getModelDisplayName = (key: string): string =>
-  MODEL_DISPLAY_NAME[key] ?? key;
+/**
+ * What a model is CALLED, from the catalogue that serves it.
+ *
+ * This was a hand-written table of 22 lines, which meant a model nobody had
+ * typed a line for displayed its raw key — 117 of 139 live models rendered as
+ * `zai-glm-5-3-flash` in the hub on 2026-08-30. The catalogues publish a name
+ * for every model they serve, including every one the sync discovers, so the
+ * table is gone and the name is read where it already exists.
+ */
+export const getModelDisplayName = (key: string): string => {
+  const dynamic = getLiveStateSync(key)?.dynamicProfile;
+  if (dynamic === null || dynamic === undefined) return nameFromKey(key);
+  const named = stripMakerPrefix(dynamic.displayName, dynamic.family).trim();
+  return named.length > 0 ? named : nameFromKey(key);
+};
 
 /**
  * Branding for a model family, falling back to the neutral mark.

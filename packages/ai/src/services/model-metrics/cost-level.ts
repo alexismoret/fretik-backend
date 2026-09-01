@@ -1,3 +1,4 @@
+import { cacheShape } from "@fretik/shared/model-registry/measures";
 import type { ModelProfile } from "../../lib/model-registry/types";
 
 /**
@@ -75,19 +76,23 @@ const STEPS_PER_TURN = 3;
 const CACHE_HIT_RATE = 0.9;
 
 /**
- * Output tokens a representative turn emits for a model of MEDIAN verbosity. A
- * chat turn is far shorter than an Artificial Analysis benchmark task, so a
- * profile's `verbosity.outputTokensPerTask` is applied as a RATIO against the
- * fleet median rather than used directly.
+ * Output tokens a representative turn emits.
+ *
+ * ONE NUMBER FOR THE WHOLE FLEET, which is a known approximation rather than a
+ * belief that models are equally verbose — they are not, they differ by ~20×,
+ * and that is the reason headline $/MTok mis-ranks a fleet by up to 8 positions.
+ * It used to be scaled per model by a hand-curated `verbosity` figure, which
+ * covered 22 of 139 models and left the other 117 on this constant anyway. No
+ * API publishes the figure (AA's v2 and legacy endpoints carry no token counts),
+ * so the choice was between a measurement for a sixth of the fleet and the same
+ * treatment for all of it.
+ *
+ * Measured impact of dropping the scaling: at most 4 points of 100 on
+ * `costLevel`, because output is under-weighted by ~4× anyway — see the note at
+ * the top of this file. The scaling returns when Langfuse supplies per-model
+ * output volume from our OWN turns, written to the live row.
  */
 const MEDIAN_TURN_OUTPUT_TOKENS = 700;
-
-/**
- * Fleet-median `verbosity.outputTokensPerTask`, the denominator of that ratio.
- * A constant rather than a computed median so a model's `costLevel` does not
- * shift when an unrelated profile is added or removed.
- */
-const MEDIAN_OUTPUT_TOKENS_PER_TASK = 19_692;
 
 /** Cache-write premium for `explicit-breakpoints` families (Anthropic). */
 const EXPLICIT_CACHE_WRITE_MULTIPLIER = 1.25;
@@ -102,26 +107,18 @@ const LOG_MIN = Math.log10(COST_MIN_PER_TURN);
 const LOG_MAX = Math.log10(COST_MAX_PER_TURN);
 
 /**
- * Estimated output tokens for one turn, scaled by the profile's measured
- * verbosity. Profiles with no AA verbosity data fall back to the median — the
- * neutral assumption, never a penalty.
+ * Price used for a profile. `assessment.pricing` is already the pool median the
+ * sync measured; the override exists for callers holding a fresher row than the
+ * warmed snapshot, and for the cache-WRITE rate.
  */
-const outputTokensForTurn = (profile: ModelProfile): number => {
-  const perTask = profile.assessment.verbosity?.outputTokensPerTask;
-  if (perTask === undefined || perTask <= 0) return MEDIAN_TURN_OUTPUT_TOKENS;
-  return MEDIAN_TURN_OUTPUT_TOKENS * (perTask / MEDIAN_OUTPUT_TOKENS_PER_TASK);
+export type PricingOverride = ModelProfile["assessment"]["pricing"] & {
+  /**
+   * The quoted cache-WRITE rate. It separates a vendor whose cache is pure
+   * saving from one that charges a premium to fill it, and without it the
+   * premium had to be guessed from a family label.
+   */
+  cacheWritePerMTok?: number;
 };
-
-/**
- * Price actually used for a profile: the pool median the nightly sync measured
- * when a live row carries one, else the curated `assessment.pricing`.
- *
- * The curated value is the reviewed baseline and the offline fallback — same
- * relationship `FALLBACK_METRICS` has with live grades. It is NOT authoritative
- * on its own: it is hand-maintained with no automatic feed, and an audit found
- * three of 22 profiles wrong. `models:check --prices` is what catches that.
- */
-export type PricingOverride = ModelProfile["assessment"]["pricing"];
 
 const pricingFor = (
   profile: ModelProfile,
@@ -133,8 +130,8 @@ const inputCostPerTurn = (
   profile: ModelProfile,
   override?: PricingOverride,
 ): number => {
-  const { inputPerMTok, cacheReadPerMTok } = pricingFor(profile, override);
-  const strategy = profile.assessment.cache.strategy;
+  const pricing = pricingFor(profile, override);
+  const { inputPerMTok, cacheReadPerMTok, cacheWritePerMTok } = pricing;
   // A KNOWN cached rate is the evidence that caching applies — the upstream
   // publishes one only where it discounts cache reads. `strategy` no longer
   // gates this: it used to stand in for "no cached rate known", which the rate
@@ -147,18 +144,25 @@ const inputCostPerTurn = (
   const freshTokens =
     STATIC_CONTEXT_TOKENS * (1 - CACHE_HIT_RATE) + HISTORY_TOKENS;
 
-  // Anthropic-style explicit caching also PAYS to write breakpoints (~1.25×
-  // input); implicit caches write for free. Applied on top of the fresh share.
-  const writeTokens =
-    strategy === "explicit-breakpoints"
-      ? STATIC_CONTEXT_TOKENS * EXPLICIT_CACHE_WRITE_SHARE
-      : 0;
+  // Filling a cache is not always free, and this used to bill it only for
+  // `explicit-breakpoints` — which is to say only for Anthropic. Measured
+  // 2026-08-30, OpenAI quotes exactly the same 1.25× write premium on every
+  // hosted route, so every GPT-5.6 profile was under-costed on the term that
+  // dominates a turn. The shape is read off the prices now, and the premium
+  // itself comes from the quoted write rate rather than a family constant —
+  // falling back to the measured 1.25× only when no rate is quoted.
+  const premium = cacheShape(pricing) === "write-premium";
+  const writeTokens = premium
+    ? STATIC_CONTEXT_TOKENS * EXPLICIT_CACHE_WRITE_SHARE
+    : 0;
+  const writeRate =
+    cacheWritePerMTok ?? inputPerMTok * EXPLICIT_CACHE_WRITE_MULTIPLIER;
 
   return (
     (STEPS_PER_TURN *
       (cachedTokens * cachedRate +
         freshTokens * inputPerMTok +
-        writeTokens * EXPLICIT_CACHE_WRITE_MULTIPLIER * inputPerMTok)) /
+        writeTokens * writeRate)) /
     1_000_000
   );
 };
@@ -172,7 +176,7 @@ export const estimatedCostPerTurn = (
   override?: PricingOverride,
 ): number =>
   inputCostPerTurn(profile, override) +
-  (outputTokensForTurn(profile) * pricingFor(profile, override).outputPerMTok) /
+  (MEDIAN_TURN_OUTPUT_TOKENS * pricingFor(profile, override).outputPerMTok) /
     1_000_000;
 
 export const costLevelFromProfile = (

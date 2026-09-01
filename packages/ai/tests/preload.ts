@@ -119,12 +119,27 @@ await mockModule("@fretik/shared/services/team-ai-settings/get-for-team", {
 
 // Same reasoning, same shape: `model-registry/resolve.ts` reads the live
 // snapshot and half the suite imports it transitively, so the readers are
-// stubbed here rather than per file. The default is an EMPTY snapshot, which
-// is exactly what the real module answers on a cold process — every test that
-// does not call `setLiveStateDouble` sees no change at all.
+// stubbed here rather than per file.
 await mockModule("@fretik/shared/services/model-registry/live", {
   getLiveStateSync,
   getLiveSnapshotSync,
+});
+
+// The snapshot starts POPULATED, with rows for the models `ROLE_BINDINGS`
+// names.
+//
+// It used to start empty, which was exactly what the real module answered on a
+// cold process — and harmless, because a curated TypeScript registry could
+// resolve a role without a database. That registry is gone: the rows ARE the
+// registry, so an empty snapshot now means "this process knows of no models at
+// all", and every test whose fixture resolves a model (`modelProfile:
+// getProfileForRole("chat")` in a runtime context, say) would fail on a
+// condition it is not testing.
+//
+// A test that wants the cold case asks for it — `setLiveStateDouble()` with no
+// argument — and several do.
+await import("./lib/live-fleet").then((fleet) => {
+  fleet.installBoundFleet();
 });
 
 // Capture the REAL `@fretik/shared/db` export values before any test

@@ -1,11 +1,12 @@
 import { redis } from "@fretik/shared/lib/redis";
+import { median } from "@fretik/shared/model-registry/measures";
 import type {
   EndpointStat,
   LiveModelState,
 } from "@fretik/shared/model-registry/types";
 import { readAllLiveStateRows } from "@fretik/shared/services/model-registry/live";
 import { listEffectiveProfiles } from "../../lib/model-registry/effective";
-import { costLevelFromProfile } from "./cost-level";
+import { costLevelFromProfile, estimatedCostPerTurn } from "./cost-level";
 import { FALLBACK_METRICS } from "./fallback";
 import type { ModelMetrics, ModelMetricsSnapshot } from "./types";
 
@@ -23,8 +24,10 @@ import type { ModelMetrics, ModelMetricsSnapshot } from "./types";
  * v5 (2026-08-30): this service stopped calling Artificial Analysis and
  * OpenRouter itself and now reads `model_live_state`, which the nightly sync
  * maintains. Two axes left with it (see `types.ts`).
+ *
+ * v6 (2026-08-31): `costRatio` added — cost as a multiple of the fleet median.
  */
-export const MODEL_METRICS_CACHE_KEY = "model-metrics:v5";
+export const MODEL_METRICS_CACHE_KEY = "model-metrics:v6";
 const REFRESH_LOCK_KEY = "model-metrics:refreshing";
 /**
  * Must comfortably EXCEED the worst-case refresh. It was 600 s when a refresh
@@ -34,6 +37,15 @@ const REFRESH_LOCK_KEY = "model-metrics:refreshing";
  * and a shorter TTL simply strands the lock for less time if a process dies.
  */
 const REFRESH_LOCK_TTL_SECONDS = 60;
+
+/**
+ * Precision that survives the whole spread. The fleet runs from about a
+ * thirtieth of typical to ninety times it, so a fixed number of decimals is
+ * wrong at one end or the other: `0.0` erases a very cheap model entirely,
+ * while `94.3` implies a precision an estimate does not have.
+ */
+const roundRatio = (ratio: number): number =>
+  ratio < 1 ? Math.round(ratio * 100) / 100 : Math.round(ratio * 10) / 10;
 
 /**
  * The endpoint a turn is most likely to land on.
@@ -94,9 +106,29 @@ export const buildModelMetricsSnapshot = (
   // EFFECTIVE profiles, so a model promoted by a write gets its gauges on
   // the next refresh rather than on the next release. A promoted model has a
   // live row by construction, which is where every figure below comes from.
-  for (const profile of listEffectiveProfiles()) {
+  const profiles = listEffectiveProfiles();
+
+  /**
+   * Every model's per-turn estimate, priced BEFORE the loop: `costRatio` is a
+   * model's cost relative to its FLEET, so no model can be given one until every
+   * sibling has been priced. A model with no price at all is left out of the
+   * anchor rather than folded in as zero.
+   *
+   * The anchor is the MEDIAN and deliberately not the cheapest — see
+   * `ModelMetrics.costRatio` for the measurement that settled it.
+   */
+  const perTurn = new Map(
+    profiles.map((profile) => [
+      profile.key,
+      estimatedCostPerTurn(profile, byKey.get(profile.key)?.pricing),
+    ]),
+  );
+  const typical = median([...perTurn.values()].filter((cost) => cost > 0));
+
+  for (const profile of profiles) {
     const key = profile.key;
     const live = byKey.get(key);
+    const turnCost = perTurn.get(key);
     const aa = live?.aaMetrics ?? null;
     const fallback = FALLBACK_METRICS[key];
     const serving = servingEndpoint(live?.endpointStats ?? []);
@@ -132,6 +164,10 @@ export const buildModelMetricsSnapshot = (
       // The curated figure is hand-maintained with no automatic feed, so it is
       // the baseline, never the authority.
       costLevel: costLevelFromProfile(profile, live?.pricing),
+      costRatio:
+        typical === undefined || turnCost === undefined || turnCost <= 0
+          ? null
+          : roundRatio(turnCost / typical),
     };
   }
 

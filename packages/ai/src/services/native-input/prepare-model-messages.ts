@@ -118,20 +118,35 @@ export const stripRetiredToolPartsForModel = (
 
 const ATTACHMENTS_DIR = "attachments";
 
-const capForModality = (
-  modality: NativeModality,
-  limits: ModelProfile["assessment"]["nativeInput"]["limits"],
-): number | undefined => {
-  if (!limits) return undefined;
-  if (modality === "image") return limits.maxImagesPerRequest;
-  if (modality === "video") return limits.maxVideosPerRequest;
-  if (modality === "file") return limits.maxFilesPerRequest;
-  return undefined;
+/**
+ * How many native parts of each modality ride ONE request, newest first; older
+ * ones fall back to tool-mediated. Without a cap a long conversation re-sends
+ * every image it ever saw, every turn.
+ *
+ * A policy about US, not a fact about any model — which is why it is one
+ * constant rather than a per-profile field. It used to be the latter: 35
+ * identical declarations across the curated profiles, and the models nobody
+ * hand-wrote a profile for got no cap at all.
+ *
+ * Every cap is at least 2, so "compare these two" — the commonest reason a
+ * person attaches more than one file — works for every modality. Beyond that
+ * they diverge on what a part actually COSTS in the request: a file is inlined
+ * as a base64 data URL and re-sent on every step of the tool loop, so it is the
+ * expensive one and stays lowest; video travels as a presigned URL the provider
+ * fetches, so a second one costs the request almost nothing; images are inlined
+ * but small.
+ */
+const NATIVE_PARTS_PER_REQUEST: Readonly<Record<NativeModality, number>> = {
+  image: 6,
+  video: 2,
+  file: 2,
+  // Unreachable today — no call site produces audio parts. Bounded rather than
+  // absent so an accidental activation is capped like everything else.
+  audio: 2,
 };
 
 const toNativeFilePart = async (
   part: FileUIPart,
-  profile: ModelProfile,
   deps: PrepareModelMessagesDeps,
 ): Promise<FileUIPart | null> => {
   const { conversationId } = deps;
@@ -152,10 +167,7 @@ const toNativeFilePart = async (
     // request. `filename` is preserved by the spread (providers need it
     // on file parts).
     if (mediaModality(mediaType) === "file") {
-      const maxBytes =
-        profile.assessment.nativeInput.limits?.maxFileBytes ??
-        NATIVE_FILE_MAX_BYTES;
-      if (bytes.byteLength > maxBytes) return null;
+      if (bytes.byteLength > NATIVE_FILE_MAX_BYTES) return null;
     }
     const base64 = Buffer.from(bytes).toString("base64");
     return { ...part, url: `data:${mediaType};base64,${base64}` };
@@ -245,10 +257,9 @@ const planNativeParts = (
   // excluded the primary document. Files past the cap demote to tool-mediated
   // (the agent can still `read` / `vision` them, and the prompt names them).
   const keepNative = new Set<FileUIPart>();
-  const { limits } = profile.assessment.nativeInput;
   for (const [modality, entries] of nativeByModality) {
-    const cap = capForModality(modality, limits);
-    if (cap === undefined || cap >= entries.length) {
+    const cap = NATIVE_PARTS_PER_REQUEST[modality];
+    if (cap >= entries.length) {
       for (const { part } of entries) keepNative.add(part);
       continue;
     }
@@ -330,7 +341,7 @@ export const prepareModelMessages = async (
         message.parts.map(async (part): Promise<Part | null> => {
           if (!isFileUIPart(part)) return part;
           if (!keepNative.has(part)) return null;
-          return toNativeFilePart(part, profile, deps);
+          return toNativeFilePart(part, deps);
         }),
       );
       return {

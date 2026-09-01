@@ -52,6 +52,16 @@ const entrySchema = z.object({
     .object({ max_completion_tokens: z.number().nullish() })
     .nullish(),
   supported_parameters: z.array(z.string()).nullish(),
+  // The reasoning contract, published per model since 2026 and read by nothing
+  // until 2026-08-30 — 271 of 396 entries carry one, 130 with the exact ladder.
+  reasoning: z
+    .object({
+      mandatory: z.boolean().nullish(),
+      supported_efforts: z.array(z.string()).nullish(),
+      default_effort: z.string().nullish(),
+      supports_max_tokens: z.boolean().nullish(),
+    })
+    .nullish(),
   pricing: z
     .object({
       prompt: priceSchema,
@@ -73,6 +83,9 @@ export const OPENROUTER_CATALOGUE_CAPABILITIES: CatalogueCapabilities = {
   publishesReleaseDate: true,
   // Zero retention is per ROUTE here, fetched separately by `openrouter-zdr`.
   publishesZdrHint: false,
+  // The only source that does. It is why a promoted model can offer a depth
+  // menu at all.
+  publishesReasoningContract: true,
 };
 
 const toEntry = (raw: z.infer<typeof entrySchema>): CatalogueEntry => ({
@@ -86,6 +99,28 @@ const toEntry = (raw: z.infer<typeof entrySchema>): CatalogueEntry => ({
   inputModalities: raw.architecture?.input_modalities ?? ["text"],
   outputModalities: raw.architecture?.output_modalities ?? ["text"],
   supportedParameters: raw.supported_parameters ?? [],
+  // `mandatory` is the one field every contract carries, so its absence marks
+  // the whole block as absent rather than defaulting to `false` — "the
+  // catalogue did not say" and "reasoning can be turned off" are different
+  // facts, and only the second may reach the depth menu.
+  ...(raw.reasoning?.mandatory === null ||
+  raw.reasoning?.mandatory === undefined
+    ? {}
+    : {
+        reasoning: {
+          mandatory: raw.reasoning.mandatory,
+          ...(raw.reasoning.supported_efforts
+            ? { supportedEfforts: raw.reasoning.supported_efforts }
+            : {}),
+          ...(raw.reasoning.default_effort
+            ? { defaultEffort: raw.reasoning.default_effort }
+            : {}),
+          ...(raw.reasoning.supports_max_tokens === null ||
+          raw.reasoning.supports_max_tokens === undefined
+            ? {}
+            : { supportsMaxTokens: raw.reasoning.supports_max_tokens }),
+        },
+      }),
   pricing: {
     inputPerMTok: perMTok(raw.pricing?.prompt),
     outputPerMTok: perMTok(raw.pricing?.completion),

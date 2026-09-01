@@ -1,23 +1,28 @@
 import { eq } from "drizzle-orm";
-import db from "../../db";
+import db, { type Transaction } from "../../db";
 import { modelLiveState } from "../../db/schema/model-registry";
 import { normalizeProviderName } from "../../model-registry/provider-names";
 import {
   IMPLEMENTED_TRANSPORTS,
+  sourceForActor,
   type IncidentKind,
   type LiveModelState,
+  type ModelStateSource,
+  type ModelWriteActor,
   type ProviderPool,
   type QuarantineEntry,
+  type QuarantineOutcome,
+  type ReleaseOutcome,
   type TransportId,
 } from "../../model-registry/types";
-import { raiseModelAlert } from "./alerts";
+import { raiseModelAlert, type RaiseAlertInput } from "./alerts";
 import {
   countRecentIncidents,
   recentIncidentIds,
   recordProviderIncident,
   type RecordIncidentInput,
 } from "./incidents";
-import { invalidateLiveRegistry, readLiveStateRow } from "./live";
+import { invalidateLiveRegistry, readLiveStateRowForUpdate } from "./live";
 
 /**
  * The circuit breaker: it pulls a misbehaving upstream out of a model's pool by
@@ -167,12 +172,23 @@ const vettedRemaining = (
   return only.filter((p) => !excluded.has(p)).length;
 };
 
-const isAlreadyQuarantined = (
+/**
+ * The live quarantine for this pair, if there is one.
+ *
+ * Returns the ENTRY rather than a boolean because the caller's next question
+ * is always "until when" — the CLI used to recover that by searching the
+ * re-read row with `provider.startsWith(provider.slice(0, 4))`, a match loose
+ * enough to answer for the wrong host.
+ */
+const activeQuarantineFor = (
   state: LiveModelState,
   transport: TransportId,
   provider: string,
   now: Date,
-): boolean => quarantinedNames(state, transport, now).has(provider);
+): QuarantineEntry | undefined =>
+  activeQuarantines(state, now).find(
+    (entry) => entry.transport === transport && entry.provider === provider,
+  );
 
 /** The transport to try when this one has nothing clean left. */
 const alternateTransport = (
@@ -203,7 +219,10 @@ const alternateTransport = (
  *      `lastResort` so roles fall back to their fallback MODEL and teams
  *      degrade to the default. Loud, critical alert.
  *
- * Returns whether anything changed.
+ * Returns which rung it landed on. NOT a boolean: rung 4 writes the row and
+ * would have to report "nothing changed", and the two no-op exits — no row at
+ * all, and already quarantined — mean entirely different things to whoever
+ * asked.
  */
 export const quarantineProvider = async (input: {
   modelKey: string;
@@ -211,26 +230,84 @@ export const quarantineProvider = async (input: {
   transport: TransportId;
   kind: IncidentKind;
   reason: string;
+  /** Who is asking. Decides the `source` stamp; see `ModelWriteActor`. */
+  actor: ModelWriteActor;
   incidentIds?: string[];
   now?: Date;
-}): Promise<boolean> => {
+}): Promise<QuarantineOutcome> => {
   const now = input.now ?? new Date();
   const provider = normalizeProviderName(input.provider);
-  const state = await readLiveStateRow(input.modelKey);
-  if (!state) {
-    // No live row means a raw model id from a bypass call site — there is no
-    // pool to edit. Record the finding and stop.
-    await raiseModelAlert({
-      kind: "quarantine-skipped",
-      severity: "warning",
-      modelKey: input.modelKey,
-      provider,
-      message: `${provider} ${HUMAN_KIND[input.kind]} on ${input.modelKey}, which has no live-state row — nothing to quarantine. ${input.reason}`,
-    });
-    return false;
-  }
-  if (isAlreadyQuarantined(state, input.transport, provider, now)) return false;
+  const source = sourceForActor(input.actor);
 
+  /**
+   * Decide and write under a row lock; alert and invalidate AFTER the commit.
+   *
+   * `quarantined_providers` is a jsonb array rewritten wholesale, so two
+   * writers that both read the old one each write their own entry over the
+   * other's and the loser's quarantine disappears with no error anywhere. The
+   * alert and the cache drop stay outside because an alert about a write that
+   * rolled back is a lie, and invalidating before the commit lets a replica
+   * reload exactly the row that is about to change.
+   */
+  const written = await db.transaction(async (tx): Promise<QuarantineWrite> => {
+    const state = await readLiveStateRowForUpdate(tx, input.modelKey);
+    if (!state) {
+      // No live row means a raw model id from a bypass call site — there is
+      // no pool to edit. Record the finding and stop.
+      return {
+        outcome: { kind: "no-live-row" },
+        alert: {
+          kind: "quarantine-skipped",
+          severity: "warning",
+          modelKey: input.modelKey,
+          provider,
+          message: `${provider} ${HUMAN_KIND[input.kind]} on ${input.modelKey}, which has no live-state row — nothing to quarantine. ${input.reason}`,
+        },
+        wrote: false,
+      };
+    }
+    const existing = activeQuarantineFor(state, input.transport, provider, now);
+    if (existing !== undefined) {
+      return {
+        outcome: { kind: "already-quarantined", entry: existing },
+        wrote: false,
+      };
+    }
+    return decideQuarantine({ ...input, tx, state, provider, source, now });
+  });
+
+  if (written.alert !== undefined) await raiseModelAlert(written.alert);
+  if (written.wrote) await invalidateLiveRegistry();
+  return written.outcome;
+};
+
+/** What one pass of the ladder decided, before anything leaves the transaction. */
+interface QuarantineWrite {
+  outcome: QuarantineOutcome;
+  alert?: RaiseAlertInput;
+  /** Whether the row changed, and therefore whether the fleet must reload. */
+  wrote: boolean;
+}
+
+/**
+ * The escalation ladder itself, inside the caller's transaction.
+ *
+ * Split out only so `quarantineProvider` reads as lock → decide → commit →
+ * announce; the rungs and their order are documented on that function.
+ */
+const decideQuarantine = async (input: {
+  tx: Transaction;
+  state: LiveModelState;
+  modelKey: string;
+  provider: string;
+  transport: TransportId;
+  kind: IncidentKind;
+  reason: string;
+  source: ModelStateSource;
+  now: Date;
+  incidentIds?: string[];
+}): Promise<QuarantineWrite> => {
+  const { modelKey, provider, source, state, now, tx } = input;
   const entry: QuarantineEntry = {
     provider,
     transport: input.transport,
@@ -264,128 +341,196 @@ export const quarantineProvider = async (input: {
     incidentIds: entry.incidentIds,
   };
 
+  const row = eq(modelLiveState.profileKey, modelKey);
+
   // 1 — the ordinary case.
   if (vetted === undefined ? clean > 0 : vetted > 0) {
-    await db
+    await tx
       .update(modelLiveState)
-      .set({ quarantinedProviders: quarantines, source: "admin" })
-      .where(eq(modelLiveState.profileKey, input.modelKey));
-    await invalidateLiveRegistry();
-    await raiseModelAlert({
-      kind: "quarantine",
-      severity: "critical",
-      modelKey: input.modelKey,
-      provider,
-      message: `${headline} ${(vetted ?? clean).toString()} upstream(s) left; re-probe due ${entry.releaseAt.slice(0, 10)}.`,
-      context,
-    });
-    return true;
+      .set({ quarantinedProviders: quarantines, source })
+      .where(row);
+    return {
+      outcome: {
+        kind: "quarantined",
+        entry,
+        remaining: vetted ?? clean,
+        remainingSource: vetted === undefined ? "endpoints" : "vetted",
+      },
+      alert: {
+        kind: "quarantine",
+        severity: "critical",
+        modelKey,
+        provider,
+        message: `${headline} ${(vetted ?? clean).toString()} upstream(s) left; re-probe due ${entry.releaseAt.slice(0, 10)}.`,
+        context,
+      },
+      wrote: true,
+    };
   }
 
   // 2 — the vetted pool is exhausted but the transport has other hosts.
   if (vetted !== undefined && clean > 0) {
-    await db
+    await tx
       .update(modelLiveState)
-      .set({
-        quarantinedProviders: quarantines,
-        poolWidened: true,
-        source: "admin",
-      })
-      .where(eq(modelLiveState.profileKey, input.modelKey));
-    await invalidateLiveRegistry();
-    await raiseModelAlert({
-      kind: "quarantine",
-      severity: "critical",
-      modelKey: input.modelKey,
-      provider,
-      message: `${headline} That was the last VETTED upstream, so routing is now OPEN to the ${clean.toString()} remaining endpoint(s) minus the quarantined ones — an unmeasured host beats a known-bad one. The vetted pool is restored automatically once quarantines expire and re-probe clean.`,
-      context: { ...context, poolWidened: true, remaining: clean },
-    });
-    return true;
+      .set({ quarantinedProviders: quarantines, poolWidened: true, source })
+      .where(row);
+    return {
+      outcome: { kind: "pool-widened", entry, remaining: clean },
+      alert: {
+        kind: "quarantine",
+        severity: "critical",
+        modelKey,
+        provider,
+        message: `${headline} That was the last VETTED upstream, so routing is now OPEN to the ${clean.toString()} remaining endpoint(s) minus the quarantined ones — an unmeasured host beats a known-bad one. The vetted pool is restored automatically once quarantines expire and re-probe clean.`,
+        context: { ...context, poolWidened: true, remaining: clean },
+      },
+      wrote: true,
+    };
   }
 
   // 3 — nothing clean here; the same model exists on the other transport.
   const alternate = alternateTransport(state, input.transport);
   if (alternate !== undefined) {
-    await db
+    await tx
       .update(modelLiveState)
       .set({
         quarantinedProviders: quarantines,
         transport: alternate,
         poolWidened: false,
-        source: "admin",
+        source,
       })
-      .where(eq(modelLiveState.profileKey, input.modelKey));
-    await invalidateLiveRegistry();
-    await raiseModelAlert({
-      kind: "quarantine",
-      severity: "critical",
-      modelKey: input.modelKey,
-      provider,
-      message: `${headline} No clean endpoint left on ${input.transport}, so ${input.modelKey} was SWITCHED to ${alternate}, which serves it from a different set of hosts. Verify cost and caching on the new transport.`,
-      context: { ...context, switchedTo: alternate },
-    });
-    return true;
+      .where(row);
+    return {
+      outcome: {
+        kind: "transport-switched",
+        entry,
+        from: input.transport,
+        to: alternate,
+      },
+      alert: {
+        kind: "quarantine",
+        severity: "critical",
+        modelKey,
+        provider,
+        message: `${headline} No clean endpoint left on ${input.transport}, so ${modelKey} was SWITCHED to ${alternate}, which serves it from a different set of hosts. Verify cost and caching on the new transport.`,
+        context: { ...context, switchedTo: alternate },
+      },
+      wrote: true,
+    };
   }
 
   // 4 — nothing anywhere. Keep serving (an outage is worse), but stop being
-  // anyone's first choice.
-  await db
+  // anyone's first choice. Note what this rung does NOT write: the quarantine
+  // entry is discarded, so the host stays in the pool. The MODEL steps down.
+  await tx
     .update(modelLiveState)
-    .set({ lastResort: true, health: "failing", source: "admin" })
-    .where(eq(modelLiveState.profileKey, input.modelKey));
-  await invalidateLiveRegistry();
-  await raiseModelAlert({
-    kind: "quarantine-skipped",
-    severity: "critical",
-    modelKey: input.modelKey,
-    provider,
-    message: `${provider} ${HUMAN_KIND[input.kind]} on ${input.modelKey} and it is the LAST usable upstream on every transport. It stays in service — an empty pool is a hard outage — but ${input.modelKey} is now last-resort: roles bound to it fall back to their fallback model, and teams that selected it fall back to the default. Widen the pool, add a transport, or replace the model.`,
-    context: { ...context, lastResort: true },
-  });
-  return false;
+    .set({ lastResort: true, health: "failing", source })
+    .where(row);
+  return {
+    outcome: { kind: "last-resort" },
+    alert: {
+      kind: "quarantine-skipped",
+      severity: "critical",
+      modelKey,
+      provider,
+      message: `${provider} ${HUMAN_KIND[input.kind]} on ${modelKey} and it is the LAST usable upstream on every transport. It stays in service — an empty pool is a hard outage — but ${modelKey} is now last-resort: roles bound to it fall back to their fallback model, and teams that selected it fall back to the default. Widen the pool, add a transport, or replace the model.`,
+      context: { ...context, lastResort: true },
+    },
+    wrote: true,
+  };
 };
 
-/** Put an upstream back in a model's pool. Used by the sync after a clean re-probe. */
+/**
+ * Whether an outcome removed the upstream from the pool.
+ *
+ * Exists for callers that genuinely only need the old boolean — and it is
+ * deliberately NOT true for `last-resort`, which changed the row without
+ * changing the pool. That distinction is the one the boolean used to hide.
+ */
+export const quarantineChanged = (outcome: QuarantineOutcome): boolean =>
+  outcome.kind === "quarantined" ||
+  outcome.kind === "pool-widened" ||
+  outcome.kind === "transport-switched";
+
+/**
+ * Put an upstream back in a model's pool. Used by the sync after a clean
+ * re-probe, and by a person undoing a quarantine by hand.
+ *
+ * Reports what it did. It used to return `void` and simply stop when the pair
+ * was not quarantined, so the only way to tell a release from a no-op was to
+ * re-read the row and compare array lengths — and the one fact that explains
+ * the no-op, that the host is quarantined on a DIFFERENT transport, was
+ * computed here and thrown away.
+ */
 export const releaseProvider = async (input: {
   modelKey: string;
   provider: string;
   transport: TransportId;
   reason: string;
-}): Promise<void> => {
+  /** Who is asking. Decides the `source` stamp; see `ModelWriteActor`. */
+  actor: ModelWriteActor;
+}): Promise<ReleaseOutcome> => {
   const provider = normalizeProviderName(input.provider);
-  const state = await readLiveStateRow(input.modelKey);
-  if (!state) return;
-  const kept = state.quarantinedProviders.filter(
-    (entry) =>
-      !(entry.provider === provider && entry.transport === input.transport),
-  );
-  if (kept.length === state.quarantinedProviders.length) return;
 
-  // Restoring a member re-narrows routing to the vetted pool and lifts the
-  // last-resort flag, provided that pool has someone left in it.
-  const stillQuarantined = new Set(
-    kept
-      .filter(
-        (entry) =>
-          entry.transport === input.transport &&
-          new Date(entry.releaseAt).getTime() > Date.now(),
-      )
-      .map((entry) => entry.provider),
-  );
-  const vetted = state.providerPool[input.transport]?.only;
-  const vettedLeft = vetted
-    ? vetted.filter((p) => !stillQuarantined.has(p)).length
-    : 1;
+  // Same lock as the quarantine path, and for the same column: this rewrites
+  // `quarantined_providers` from a value it just read, so an unlocked pass
+  // racing the breaker can silently resurrect the entry it is removing.
+  const outcome = await db.transaction(async (tx): Promise<ReleaseOutcome> => {
+    const state = await readLiveStateRowForUpdate(tx, input.modelKey);
+    if (!state) return { kind: "no-live-row" };
+    const released = state.quarantinedProviders.find(
+      (entry) =>
+        entry.provider === provider && entry.transport === input.transport,
+    );
+    if (released === undefined) {
+      return {
+        kind: "not-quarantined",
+        elsewhere: state.quarantinedProviders.filter(
+          (entry) => entry.transport !== input.transport,
+        ),
+      };
+    }
+    const kept = state.quarantinedProviders.filter(
+      (entry) => entry !== released,
+    );
 
-  await db
-    .update(modelLiveState)
-    .set({
-      quarantinedProviders: kept,
-      poolWidened: vettedLeft > 0 ? false : state.poolWidened,
-      lastResort: false,
-    })
-    .where(eq(modelLiveState.profileKey, input.modelKey));
+    // Restoring a member re-narrows routing to the vetted pool and lifts the
+    // last-resort flag, provided that pool has someone left in it.
+    const stillQuarantined = new Set(
+      kept
+        .filter(
+          (entry) =>
+            entry.transport === input.transport &&
+            new Date(entry.releaseAt).getTime() > Date.now(),
+        )
+        .map((entry) => entry.provider),
+    );
+    const vetted = state.providerPool[input.transport]?.only;
+    const vettedLeft = vetted
+      ? vetted.filter((p) => !stillQuarantined.has(p)).length
+      : 1;
+
+    await tx
+      .update(modelLiveState)
+      .set({
+        quarantinedProviders: kept,
+        poolWidened: vettedLeft > 0 ? false : state.poolWidened,
+        lastResort: false,
+        // This write recorded no provenance at all until 2026-08-31, alone
+        // among its siblings: a released row kept whatever `source` it had.
+        source: sourceForActor(input.actor),
+      })
+      .where(eq(modelLiveState.profileKey, input.modelKey));
+
+    return {
+      kind: "released",
+      entry: released,
+      poolRenarrowed: state.poolWidened && vettedLeft > 0,
+      lastResortLifted: state.lastResort,
+    };
+  });
+
+  if (outcome.kind !== "released") return outcome;
   await invalidateLiveRegistry();
   await raiseModelAlert({
     kind: "release",
@@ -394,6 +539,7 @@ export const releaseProvider = async (input: {
     provider,
     message: `${provider} restored to ${input.modelKey}. ${input.reason}`,
   });
+  return outcome;
 };
 
 /**
@@ -426,15 +572,23 @@ export const reportIncident = async (
       windowMinutes: threshold.windowMinutes,
       now,
     });
-    await quarantineProvider({
+    const outcome = await quarantineProvider({
       modelKey: input.modelKey,
       provider: input.provider,
       transport: input.transport,
       kind: input.kind,
       reason: `${generations.toString()} distinct generations in ${threshold.windowMinutes.toString()} min.`,
+      // Nobody typed a command to get here: a detector tripped inside a turn.
+      actor: { kind: "breaker" },
       incidentIds,
       now,
     });
+    // Logged rather than returned: the detectors call this fire-and-forget, so
+    // the rung would have nowhere to go. It is worth a line either way — the
+    // alert says what happened to the POOL, this says which branch produced it.
+    console.info(
+      `[model-breaker] ${input.provider} on ${input.modelKey}: ${outcome.kind}`,
+    );
   } catch (err: unknown) {
     console.error(
       "[model-breaker] incident handling failed:",

@@ -61,6 +61,9 @@ export const GATEWAY_CATALOGUE_CAPABILITIES: CatalogueCapabilities = {
   publishesOwner: true,
   publishesReleaseDate: true,
   publishesZdrHint: true,
+  // Advertises the `reasoning` PARAMETER on every endpoint but names no ladder,
+  // so it can say a model thinks and not which depths it accepts.
+  publishesReasoningContract: false,
 };
 
 /**

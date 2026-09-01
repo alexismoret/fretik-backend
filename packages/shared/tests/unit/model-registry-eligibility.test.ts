@@ -157,6 +157,63 @@ describe("threshold edges", () => {
   });
 });
 
+describe("`unmet` — the failures, structured for a client to re-word", () => {
+  test("mirrors `failed` one for one on plain `all` rules", () => {
+    const result = functionEligibility(
+      "assistant",
+      signals({ intelligence: 20, contextTokens: 100_000 }),
+    );
+    expect(result.verdict).toBe("ineligible");
+    expect(result.unmet).toHaveLength(result.failed.length);
+    expect(result.unmet.map((requirement) => requirement.rules)).toEqual([
+      [{ kind: "atLeast", signal: "intelligence", value: 45 }],
+      [{ kind: "atLeast", signal: "contextTokens", value: 256_000 }],
+    ]);
+  });
+
+  test("a failed `any` group is ONE requirement holding every alternative", () => {
+    // "fast OR cheap", satisfied neither way. Reported as two requirements it
+    // would tell a reader they must fix both, when either one would do.
+    const result = functionEligibility(
+      "quick-tasks",
+      signals({ tokensPerSecond: 10, blendedPricePerMTok: 5 }),
+    );
+    expect(result.verdict).toBe("ineligible");
+    expect(result.unmet).toHaveLength(1);
+    expect(result.unmet[0]?.rules).toHaveLength(2);
+  });
+
+  test("carries a hard capability gate as itself, not as a number", () => {
+    const result = functionEligibility(
+      "vision",
+      signals({ inputModalities: [] }),
+    );
+    expect(result.unmet).toEqual([
+      { rules: [{ kind: "modality", modality: "image" }] },
+    ]);
+  });
+
+  test("stays empty on `unknown` — a gap is not a failure", () => {
+    // The asymmetry the whole engine turns on: nobody graded this model, so
+    // there is nothing to tell the reader to fix.
+    const result = functionEligibility("assistant", {
+      contextTokens: 300_000,
+      tools: true,
+    });
+    expect(result.verdict).toBe("unknown");
+    expect(result.unmet).toEqual([]);
+  });
+
+  test("stays empty when the model passes", () => {
+    // `documents`, not `assistant`: the shared fixture sits at intelligence 40,
+    // under the flagship floor of 45 and over the workhorse floor of 30.
+    expect(functionEligibility("documents", signals()).verdict).toBe(
+      "eligible",
+    );
+    expect(functionEligibility("documents", signals()).unmet).toEqual([]);
+  });
+});
+
 describe("every model the fleet is bound to is eligible for its own function", () => {
   /**
    * The invariant that keeps a rule honest: a threshold that excludes the

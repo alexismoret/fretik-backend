@@ -63,7 +63,11 @@
  */
 import { OPENROUTER_API_BASE_URL } from "@fretik/shared/lib/openrouter";
 import { z } from "zod";
-import { MODEL_PROFILES } from "../src/lib/model-registry/profiles";
+import { getEffectiveProfile } from "../src/lib/model-registry/effective";
+import {
+  listProfiles,
+  warmModelRegistry,
+} from "../src/lib/model-registry/resolve";
 
 /**
  * Output cap for the decode runs. Below ~4k the measurement is dominated by
@@ -316,18 +320,25 @@ if (!apiKey) {
   process.exit(2);
 }
 
+// The registry lives in the database, so a script has to warm it before it can
+// name a model.
+await warmModelRegistry();
+const known = (): string =>
+  listProfiles()
+    .map((p) => p.key)
+    .sort()
+    .join("\n  ");
+
 const profileKey = parseFlag("profile");
 if (!profileKey) {
-  console.error(
-    `--profile is required. Known profiles:\n  ${Object.keys(MODEL_PROFILES).join("\n  ")}`,
-  );
+  console.error(`--profile is required. Known profiles:\n  ${known()}`);
   process.exit(2);
 }
 
-const profile = MODEL_PROFILES[profileKey];
+const profile = getEffectiveProfile(profileKey);
 if (!profile) {
   console.error(
-    `Unknown profile "${profileKey}". Known profiles:\n  ${Object.keys(MODEL_PROFILES).join("\n  ")}`,
+    `Unknown profile "${profileKey}". Known profiles:\n  ${known()}`,
   );
   process.exit(2);
 }

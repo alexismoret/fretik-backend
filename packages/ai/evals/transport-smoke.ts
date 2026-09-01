@@ -139,7 +139,7 @@ for (const role of SAMPLED_ROLES) {
 // being tested is that live state reaches the request, and the provider block
 // is where that becomes observable.
 {
-  const { quarantineProvider, releaseProvider } =
+  const { quarantineChanged, quarantineProvider, releaseProvider } =
     await import("@fretik/shared/services/model-registry/breaker");
   const { invalidateLiveRegistry } =
     await import("@fretik/shared/services/model-registry/live");
@@ -163,13 +163,15 @@ for (const role of SAMPLED_ROLES) {
       provider: victim,
       transport,
       reason: "transport smoke test — clearing prior state",
+      actor: { kind: "cli" },
     });
-    const applied = await quarantineProvider({
+    const outcome = await quarantineProvider({
       modelKey: profileKey,
       provider: victim,
       transport,
       kind: "upstream-cut",
       reason: "transport smoke test",
+      actor: { kind: "cli" },
       incidentIds: [],
     });
     await invalidateLiveRegistry();
@@ -199,12 +201,15 @@ for (const role of SAMPLED_ROLES) {
       getLiveStateSync(profileKey)?.quarantinedProviders.some(
         (q) => q.provider === victim,
       ) ?? false;
-    if (!applied) {
+    if (!quarantineChanged(outcome)) {
       // From a clean start the only remaining refusal is the pool guard, and a
       // one-host pool is a real configuration — but it leaves propagation
-      // untested, so it is reported as a SKIP rather than a pass.
+      // untested, so it is reported as a SKIP rather than a pass. The rung is
+      // named now: this used to be a bare `false` that also covered "already
+      // quarantined" and "no row", which is what the clean start above exists
+      // to rule out — and the message asserted the pool guard regardless.
       console.log(
-        `SKIP quarantine of ${victim} refused — the ladder protected the pool, so propagation was not exercised`,
+        `SKIP quarantine of ${victim} did not move the pool (${outcome.kind}), so propagation was not exercised`,
       );
     } else if (!held) {
       fail(
@@ -219,6 +224,7 @@ for (const role of SAMPLED_ROLES) {
       provider: victim,
       transport,
       reason: "transport smoke test cleanup",
+      actor: { kind: "cli" },
     });
     // Awaited for the same reason as above: the release converges within one
     // reload, and reading synchronously right after would be timing the

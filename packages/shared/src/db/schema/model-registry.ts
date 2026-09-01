@@ -18,6 +18,7 @@ import type {
   EndpointStat,
   IncidentKind,
   ModelHealth,
+  ModelStateSource,
   ModelStatus,
   PolicyReport,
   PricingSnapshot,
@@ -25,6 +26,7 @@ import type {
   QuarantineEntry,
   TransportId,
 } from "../../model-registry/types";
+import { user } from "./auth-schema";
 
 /**
  * Live model state — the half of model configuration a running process may
@@ -198,7 +200,7 @@ export const modelLiveState = pgTable("model_live_state", {
   zdrProbeAt: timestamp("zdr_probe_at", { withTimezone: true }),
 
   source: varchar("source", { length: 16 })
-    .$type<"seed" | "sync" | "admin">()
+    .$type<ModelStateSource>()
     .default("seed")
     .notNull(),
   syncedAt: timestamp("synced_at", { withTimezone: true }),
@@ -357,6 +359,51 @@ export const modelBenchRuns = pgTable(
   (t) => [index("model_bench_lookup_idx").on(t.profileKey, t.ranAt)],
 );
 
+/**
+ * Who did what to the registry, append-only.
+ *
+ * A `last_changed_by` column on `model_live_state` would answer only "who
+ * touched it most recently", which is strictly weaker than a log and creates
+ * an FK from a global infra table to `user`. And `source` cannot serve: it
+ * says whether a write was automatic, not which person made it.
+ *
+ * Named `actions`, deliberately NOT `audit` — `models:admin audit` already
+ * means "consistency checks", and one word for two things inside one feature
+ * is a trap that outlives everyone who understood it.
+ *
+ * Written by the surface that has an actor, never by the services: the sync
+ * and the breaker have nobody to name and must not start inventing one.
+ * REFUSALS are recorded too — a retire refused on a role-bound model is
+ * exactly the event someone goes looking for three weeks later.
+ *
+ * Global infra state: no org/team scoping, like the rest of this file.
+ */
+export const modelAdminActions = pgTable(
+  "model_admin_actions",
+  {
+    id: uuid("id")
+      .default(sql`uuid_generate_v7()`)
+      .primaryKey(),
+    /** Nullable + SET NULL so the trail survives the operator's account. */
+    userId: uuid("user_id").references(() => user.id, { onDelete: "set null" }),
+    /** `promote`, `retire`, `quarantine`, … — the operation, not the outcome. */
+    action: varchar("action", { length: 32 }).notNull(),
+    profileKey: varchar("profile_key", { length: 64 }),
+    /** The discriminant the operation returned, refusals included. */
+    outcome: varchar("outcome", { length: 32 }).notNull(),
+    /** Input, plus the before/after summaries and the consequences. */
+    payload: jsonb("payload").$type<Record<string, unknown>>(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (t) => [
+    index("model_admin_actions_recent_idx").on(t.createdAt),
+    index("model_admin_actions_model_idx").on(t.profileKey, t.createdAt),
+    index("model_admin_actions_user_idx").on(t.userId),
+  ],
+);
+
 export type ModelLiveStateRow = typeof modelLiveState.$inferSelect;
 export type NewModelLiveStateRow = typeof modelLiveState.$inferInsert;
 export type ModelProviderIncidentRow =
@@ -365,3 +412,4 @@ export type ModelAlertRow = typeof modelAlerts.$inferSelect;
 export type ModelAlertKind = ModelAlertRow["kind"];
 export type ModelSyncRunRow = typeof modelSyncRuns.$inferSelect;
 export type ModelBenchRunRow = typeof modelBenchRuns.$inferSelect;
+export type ModelAdminActionRow = typeof modelAdminActions.$inferSelect;

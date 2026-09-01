@@ -48,7 +48,7 @@
  * ==================================================================
  */
 
-import { ROLE_BINDINGS } from "../src/lib/model-registry/profiles";
+import { ROLE_BINDINGS } from "../src/lib/model-registry/role-bindings";
 import { runChatbotExperiment } from "./langfuse/experiment";
 import type { Capability } from "./types";
 import { CAPABILITIES } from "./types";

@@ -93,18 +93,70 @@ const quarantinedNow = (request: TransportRequest, now: Date): Set<string> =>
  * route on its own health signals", which is the right answer on a first boot
  * and the wrong one whenever a quarantine is in force; `capabilities()` reports
  * that gap rather than letting it pass unnoticed.
+ *
+ * Three things narrow the list, and until 2026-08-30 only the first did:
+ *
+ * 1. **Quarantines** — a host this engine measured as broken, per transport.
+ * 2. **The profile's own `ignore`** — a host measured as broken by HAND, which
+ *    is the same claim arrived at the same way and had no effect here at all.
+ *    `openai.ts` excludes `fireworks` from `gpt-oss-20b`; on this transport
+ *    Fireworks was free to serve it, and `capabilities()` reported the model as
+ *    clean because it grades quarantines alone. The OpenRouter path has read
+ *    this field since the pool existed (`resolve.ts`, `settingsForRole`), so the
+ *    two transports disagreed about which hosts were allowed to serve a model.
+ * 3. **`require_parameters`** — this dialect has no such flag, and the note on
+ *    `RoutingPolicy` says the intent is satisfied "by pool composition instead".
+ *    That holds once a sync has written a vetted pool, and not before: on a cold
+ *    row `base` is every endpoint, tool-less hosts included, which is the exact
+ *    failure `require_parameters` exists to prevent (a host that drops the
+ *    parameter answers in XML-looking prose through SSE).
  */
 const allowList = (
   request: TransportRequest,
   now: Date,
-): { only: string[] | undefined; unresolved: string[] } => {
+): {
+  only: string[] | undefined;
+  unresolved: string[];
+  /** Identities left after every filter — what `capabilities` must grade. */
+  allowed: string[];
+  /** Hosts dropped for not advertising `tools`, for the scorecard. */
+  toolless: string[];
+  /** Hosts dropped by the profile's hand-measured exclusions. */
+  excluded: string[];
+} => {
   const quarantined = quarantinedNow(request, now);
   const vetted =
     request.live?.poolWidened === true
       ? undefined
       : request.live?.providerPool.gateway?.only;
+  // Both sources, unioned: an exclusion recorded on the row and one written by
+  // hand on the profile are the same claim reached the same way, and either
+  // alone is enough. The row's is the one that survives — the sync carries it
+  // forward every pass — which is what will let the profile's disappear.
+  const curatedIgnore = new Set([
+    ...(request.profile.assessment.provider.ignore ?? []),
+    ...(request.live?.providerPool.gateway?.ignore ?? []),
+  ]);
+  // Only meaningful when we fell back to the raw endpoint list: a vetted pool
+  // was already composed under the policy, while the raw list was composed by
+  // nobody.
+  const toolless =
+    vetted === undefined
+      ? new Set(
+          request.endpoints
+            .filter(
+              (endpoint) => !endpoint.supportedParameters.includes("tools"),
+            )
+            .map((endpoint) => endpoint.provider),
+        )
+      : new Set<string>();
   const base = vetted ?? request.endpoints.map((endpoint) => endpoint.provider);
-  const allowed = base.filter((provider) => !quarantined.has(provider));
+  const allowed = base.filter(
+    (provider) =>
+      !quarantined.has(provider) &&
+      !curatedIgnore.has(provider) &&
+      !toolless.has(provider),
+  );
   // The pool stores IDENTITIES; this API accepts its own slugs, and a name it
   // does not know fails the whole request rather than being ignored — measured
   // 2026-08-29: `only: ["fretik-not-a-provider"]` came back "No available
@@ -117,7 +169,13 @@ const allowList = (
   );
   // An empty array is a 400. The breaker guarantees it never empties a pool, so
   // reaching zero here means we simply have no endpoint data yet.
-  return { only: names.length > 0 ? names : undefined, unresolved };
+  return {
+    only: names.length > 0 ? names : undefined,
+    unresolved,
+    allowed,
+    toolless: base.filter((provider) => toolless.has(provider)),
+    excluded: base.filter((provider) => curatedIgnore.has(provider)),
+  };
 };
 
 /**
@@ -147,17 +205,30 @@ const reasoningWire = (
 const capabilities = (request: TransportRequest): TransportCapabilities => {
   const now = new Date();
   const quarantined = quarantinedNow(request, now);
+  const { only, unresolved, allowed, toolless, excluded } = allowList(
+    request,
+    now,
+  );
+  // What we will ACTUALLY route to. When the allow-list is sent, that is the
+  // allowed set; when it is not, the gateway routes on its own signals and
+  // everything reachable is in play. Grading the first set while sending the
+  // second would be the same class of lie this file is being corrected for.
+  const allowedSet = new Set(allowed);
   const reachable = request.endpoints.filter(
     (endpoint) => !quarantined.has(endpoint.provider),
   );
+  const served =
+    only === undefined
+      ? reachable
+      : reachable.filter((endpoint) => allowedSet.has(endpoint.provider));
   const gaps: string[] = [];
 
   const routable = reachable.length > 0;
   if (!routable) gaps.push("no endpoint data for this model on the gateway");
 
-  const tools = advertisedByAll(reachable, "tools");
+  const tools = advertisedByAll(served, "tools");
   if (routable && !tools) {
-    const without = reachable
+    const without = served
       .filter((endpoint) => !endpoint.supportedParameters.includes("tools"))
       .map((endpoint) => endpoint.provider);
     gaps.push(`endpoints without tool calling: ${without.join(", ")}`);
@@ -165,7 +236,7 @@ const capabilities = (request: TransportRequest): TransportCapabilities => {
 
   const needsReasoning =
     request.reasoning !== undefined && request.reasoning.kind !== "off";
-  const reasoning = !needsReasoning || advertisedByAll(reachable, "reasoning");
+  const reasoning = !needsReasoning || advertisedByAll(served, "reasoning");
   if (!reasoning)
     gaps.push("reasoning is steered here but not advertised by every endpoint");
 
@@ -173,18 +244,34 @@ const capabilities = (request: TransportRequest): TransportCapabilities => {
   // "name" means in this API's own spelling, which only its endpoint data
   // supplies. A pool member with no spelling is silently absent from the
   // allow-list, so it is reported here rather than quietly narrowing routing.
-  const { unresolved } = allowList(request, now);
+  //
+  // Both KINDS of exclusion are graded, not just quarantines: a hand-measured
+  // `ignore` that cannot be expressed is exactly as lost as a quarantine that
+  // cannot be, and it used to pass this check unmentioned.
+  // Counted from the INTENT, not from what a filter managed to remove: with no
+  // endpoint list nothing gets subtracted, so counting the applied exclusions
+  // would report "nothing to express" exactly when we can express nothing.
+  const toExclude =
+    quarantined.size +
+    (request.profile.assessment.provider.ignore?.length ?? 0) +
+    (request.live?.providerPool.gateway?.ignore?.length ?? 0);
   const exclusions =
-    (quarantined.size === 0 || request.endpoints.length > 0) &&
+    (toExclude === 0 || request.endpoints.length > 0) &&
     unresolved.length === 0;
-  if (quarantined.size > 0 && request.endpoints.length === 0)
+  if (toExclude > 0 && request.endpoints.length === 0)
     gaps.push(
-      "a quarantine is in force but no endpoint list is known, so it cannot be expressed as an allow-list",
+      "an exclusion is in force but no endpoint list is known, so it cannot be expressed as an allow-list",
     );
   if (unresolved.length > 0)
     gaps.push(
       `pool members with no gateway spelling, dropped from the allow-list: ${unresolved.join(", ")}`,
     );
+  if (toolless.length > 0)
+    gaps.push(
+      `hosts excluded for not advertising tool calling: ${toolless.join(", ")}`,
+    );
+  if (excluded.length > 0)
+    gaps.push(`hosts excluded by the profile: ${excluded.join(", ")}`);
 
   return { routable, tools, reasoning, exclusions, gaps };
 };

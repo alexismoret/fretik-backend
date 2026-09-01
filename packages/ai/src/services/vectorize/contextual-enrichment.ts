@@ -1,7 +1,7 @@
 import { generateText } from "ai";
 import { telemetryFor } from "../../lib/langfuse";
 import { instrumentModel } from "../../lib/model-instrumentation";
-import { CHEAP_MODEL, CHEAP_PROVIDER } from "../../lib/models";
+import { cheapModelId, cheapProvider } from "../../lib/models";
 import { openrouter } from "../../lib/openrouter";
 import { withSlot } from "../../lib/rate-limit";
 import type { Chunk } from "./chunker";
@@ -117,9 +117,9 @@ export interface EnrichedChunk {
 let cheapModelInstance: ReturnType<typeof instrumentModel> | undefined;
 const cheapModel = (): ReturnType<typeof instrumentModel> => {
   cheapModelInstance ??= instrumentModel(
-    openrouter().chat(CHEAP_MODEL, {
+    openrouter().chat(cheapModelId(), {
       reasoning: { effort: "low" },
-      provider: CHEAP_PROVIDER,
+      provider: cheapProvider(),
     }),
   );
   return cheapModelInstance;

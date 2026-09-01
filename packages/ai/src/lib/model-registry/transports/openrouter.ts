@@ -126,10 +126,19 @@ export const applyLiveState = (
       ? (livePool?.sort ?? provider.sort)
       : undefined;
 
+  // Three sources, unioned rather than ranked, because each is a different
+  // claim about the same host and any one of them is enough to exclude it: a
+  // hand-written exclusion on the profile, a durable one recorded on the row,
+  // and a live quarantine. The row's was not read until 2026-08-30, which meant
+  // an exclusion could be stored in the database and still reach the wire — the
+  // mirror of the gateway's own gap, on the other transport.
   const ignore = [
     ...new Set([
       ...toWireNames(
-        normalizeProviderList(provider.ignore ?? []),
+        normalizeProviderList([
+          ...(provider.ignore ?? []),
+          ...(livePool?.ignore ?? []),
+        ]),
         index,
         "keep",
       ).names,

@@ -37,7 +37,14 @@ export type ReasoningRequest =
   | { kind: "off" }
   | {
       kind: "effort";
-      effort: "xhigh" | "high" | "medium" | "low" | "minimal";
+      // `max` included since 2026-08-30. It was missing because the OpenRouter
+      // SDK's union stops at `xhigh`, and that clamp had been applied to the
+      // SHARED envelope every transport derives from — so one provider
+      // package's typing removed the top rung from the gateway and Scaleway
+      // too, neither of which has the constraint. The API itself accepts it:
+      // sent to `deepseek-v4-flash-0731`, `effort: "max"` returns 200, and an
+      // invalid value is refused with the API's own list, which ends in `max`.
+      effort: "max" | "xhigh" | "high" | "medium" | "low" | "minimal";
     }
   | { kind: "budget"; maxTokens: number };
 

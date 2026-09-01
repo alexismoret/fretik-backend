@@ -15,10 +15,7 @@ import {
   reasoningParamForProfile,
   type ResolvedModel,
 } from "../../lib/model-registry/resolve";
-import type {
-  ModelProfile,
-  ReasoningLevel,
-} from "../../lib/model-registry/types";
+import type { ReasoningLevel } from "../../lib/model-registry/types";
 import { stopOnRepeatedToolErrors, trailingToolErrorRun } from "./agent-set";
 import {
   DynamicToolManager,
@@ -375,44 +372,29 @@ const withLoopGuard = <TTools extends ToolSet>(
   };
 };
 
-/**
- * Wrap an agent's `prepareStep` with the reasoning-replay policy: when the
- * serving profile declares `reasoning.replayInHistory: false`, drop every
- * `reasoning` part from assistant messages before the step is sent. Text and
- * tool-call parts are untouched; an assistant message left empty by the strip
- * (reasoning-only, so it never carries tool calls whose responses could
- * desync) is dropped whole. Composed OUTSIDE the loop guard so it has the
- * final say on the outgoing messages.
+/*
+ * IN-TURN REASONING REPLAY, and why there is no longer a switch for it.
  *
- * What this actually removes is the loop's OWN reasoning from earlier steps of
- * the SAME turn. Prior-turn reasoning never reaches here: it is stripped for
- * every profile, unconditionally, by `stripReasoningPartsForModel` inside
- * `prepareModelMessages`. See the flag's doc in `model-registry/types.ts`,
- * including why it should not be copied onto a new profile without measuring.
+ * One profile (MiniMax M3) used to carry `reasoning.replayInHistory: false`,
+ * which dropped the loop's OWN reasoning from earlier steps of the same turn
+ * before each step was sent. It was set from an n=5 replay of a prod zombie
+ * (replayed 4/5 tool calls against stripped 5/5) — and a controlled n=20 A/B on
+ * 2026-08-02 did NOT reproduce it: 20/20 tool calls in BOTH arms, for M3 and
+ * DeepSeek, on a short and a long multi-step loop. The correctness case was
+ * measured away; what remained was a context saving on one model, expressed as a
+ * hand-written per-model exception, on the one path where the model is a
+ * fallback.
+ *
+ * Replaying is also the only SAFE default: Anthropic and Google thinking blocks
+ * carry signatures that are valid within a turn and their APIs require the
+ * blocks be echoed back alongside tool results, so a strip generalised to
+ * "models with unsigned reasoning" would change 17 models' wire format on no
+ * measurement at all. Every profile now replays.
+ *
+ * Cross-turn reasoning is unaffected and was never governed here: it is stripped
+ * for every model, unconditionally, by `stripReasoningPartsForModel` inside
+ * `prepareModelMessages`.
  */
-export const withReasoningReplayStrip = <TTools extends ToolSet>(
-  base: PrepareStepFunction<TTools>,
-  profile: ModelProfile,
-): PrepareStepFunction<TTools> => {
-  if (profile.assessment.reasoning.replayInHistory !== false) return base;
-  return async (options) => {
-    const result = (await base(options)) ?? {};
-    const messages = result.messages ?? options.messages;
-    let changed = false;
-    const stripped = messages.flatMap((message) => {
-      if (message.role !== "assistant" || !Array.isArray(message.content)) {
-        return [message];
-      }
-      const parts = message.content.filter((part) => part.type !== "reasoning");
-      if (parts.length === message.content.length) return [message];
-      changed = true;
-      if (parts.length === 0) return [];
-      return [{ ...message, content: parts }];
-    });
-    if (!changed) return result;
-    return { ...result, messages: stripped };
-  };
-};
 
 /**
  * Wrap an agent's `prepareStep` with a WALL-CLOCK steer: past `afterMs` of run
@@ -471,10 +453,7 @@ const buildToolLoopAgent = <CALL_OPTIONS, TTools extends ToolSet>(
   const model: LanguageModel = resolved.model;
   const tools = config.buildTools();
   const prepareStep = withSoftDeadline(
-    withReasoningReplayStrip(
-      withLoopGuard(config.prepareStep?.(tools)),
-      resolved.profile,
-    ),
+    withLoopGuard(config.prepareStep?.(tools)),
     config.softDeadline,
   );
   const configuredStop = config.stopWhen ?? isStepCount(12);

@@ -1,29 +1,30 @@
+import type { RoutingSort } from "@fretik/shared/model-registry/types";
+
 /**
- * Model registry — typed catalogue of every model the AI service can
- * serve, with their engineering-grade capabilities.
+ * The shape a resolved model has — every field of it DERIVED, none written by
+ * hand.
  *
- * Design rules (plan « Audit chatbot → Roadmap », chantier C1):
+ * There is no file of profiles behind this type any more. `effective.ts` builds
+ * one `ModelProfile` per `model_live_state` row: `catalog` from what the
+ * catalogues publish about the model, `assessment` from what its prices and its
+ * endpoints imply. The two halves are kept apart because they answer different
+ * questions — `catalog` is "what does the model accept upstream", `assessment`
+ * is "what does that mean for us" — and mixing them is how a policy ends up
+ * looking like a fact.
  *
- * - **Two layers per profile.** `catalog` mirrors the OpenRouter models
- *   API verbatim (same field semantics, camelCased) so a script can
- *   diff our facts against the live API and flag drift —
- *   `scripts/check-model-catalog.ts`. `assessment` holds OUR product
- *   decisions (gate status, cache strategy, reasoning envelope); it
- *   never syncs from anywhere.
- * - **No model env vars.** Role bindings below are the code defaults;
- *   per-team / per-conversation selection comes from the DB (C8).
- *   Changing a default model = a reviewed PR, not an env edit.
- * - **Selection is open; only the DEFAULT is eval-gated.** Any profile a
- *   team may reach is governed by `assessment.enabled` alone. Evals gate
- *   exactly one thing: binding a profile as an APPLIED DEFAULT in
- *   `ROLE_BINDINGS` for `chat` / `workflow` — enforced by
- *   `model-registry.test.ts`, not by a runtime filter. Rationale: the
- *   product is breadth (plug in any model); a model that underperforms on
- *   our tools is the team's call to swap, not a gate's call to hide.
- * - **Catalog facts are exact.** Modalities and the reasoning contract
- *   list what the model truly accepts upstream — product policy (e.g.
- *   which attachments go native, C5) reads these facts, it does not edit
- *   them.
+ * Design rules that survive:
+ *
+ * - **No model env vars.** `ROLE_BINDINGS` (`role-bindings.ts`) holds the code
+ *   defaults; per-team and per-conversation selection comes from the database.
+ *   Changing a default model is a reviewed pull request, not an env edit.
+ * - **Selection is open; only the DEFAULT is eval-gated.** Which models a team
+ *   may reach is governed by `assessment.enabled` alone — a value the row owns.
+ *   Evals gate exactly one thing: binding a model as an APPLIED DEFAULT for
+ *   `chat` / `workflow`, enforced by `model-registry.test.ts` and not by a
+ *   runtime filter. The product is breadth; a model that underperforms on our
+ *   tools is the team's call to swap, not a gate's call to hide.
+ * - **A missing signal answers `unknown`, never `false`.** An optional field
+ *   left absent means nothing measured it. Nothing may read that as a denial.
  */
 
 /**
@@ -48,9 +49,8 @@ export const OUTPUT_MODALITIES = ["text", "image", "audio"] as const;
 export type OutputModality = (typeof OUTPUT_MODALITIES)[number];
 
 /**
- * OpenRouter `supported_parameters` values the product actually reads.
- * The catalog stores the raw list (so drift checks are exact); use
- * `supportsParameter()` instead of `.includes()` at call sites.
+ * OpenRouter `supported_parameters` values the product actually reads. The
+ * catalog stores the raw list verbatim, so a drift check is exact.
  */
 export type SupportedParameter =
   | "tools"
@@ -90,17 +90,20 @@ export interface ModelCatalogFacts {
    *   the effort knob entirely and only honours a `max_tokens` budget
    *   (MiniMax M3, Claude Haiku 4.5) ⇒ `assessment.reasoning.style` must be
    *   `"max-tokens"`.
-   * - `defaultEffort`: upstream's own default, for reference.
    *
    * Being catalog (not assessment) makes steerability DERIVABLE — see
    * `selectableReasoningLevels` (resolve.ts) — instead of a hand-kept key
    * list that rots.
    * Omitted entirely when the model has no reasoning support at all.
+   *
+   * The upstream's OWN default effort is deliberately not copied here. It is
+   * recorded where it is read from (`dynamicProfile.reasoning.defaultEffort` on
+   * the row) and nothing in the product consults it: which rung a model starts
+   * on is decided by rule, not inherited — see `reasoningFromContract`.
    */
   reasoning?: {
     mandatory: boolean;
     supportedEfforts?: readonly ReasoningLevel[];
-    defaultEffort?: ReasoningLevel;
   };
 }
 
@@ -236,29 +239,17 @@ export interface NativeInputPolicy {
    */
   fileMimeTypes: readonly string[];
   audio: boolean;
-  /**
-   * HARD provider limits (facts, not heuristics) — used to bound how many
-   * media parts ride a single request. `prepareModelMessages` keeps the N
-   * most-recent native parts per modality and falls the older ones back to
-   * tool-mediated. `maxVideosPerRequest` defaults to 1 at activation: video
-   * is heavy.
-   */
-  limits?: {
-    maxImagesPerRequest?: number;
-    maxVideosPerRequest?: number;
-    /** Files are heavy (inlined as data URLs) — default 2 at activation. */
-    maxFilesPerRequest?: number;
-    maxFileBytes?: number;
-    maxPdfPages?: number;
-  };
 }
 
 /**
- * Single source for the native-file byte ceiling: the value profiles set
- * as `limits.maxFileBytes` at C5v2 activation AND the fallback
- * `prepareModelMessages` applies when a profile omits it. A native file
- * is inlined as a base64 data URL and re-sent every turn — beyond this,
- * the tool-mediated path (read/vision) is objectively better.
+ * The native-file byte ceiling. A native file is inlined as a base64 data URL
+ * and re-sent every turn — beyond this, the tool-mediated path (read/vision) is
+ * objectively better.
+ *
+ * How MANY parts ride one request is the sibling policy, and it lives with the
+ * code that applies it (`NATIVE_PARTS_PER_REQUEST` in
+ * `services/native-input/prepare-model-messages.ts`). Neither is a per-model
+ * fact: both used to be declared on each curated profile, identically, 35 times.
  */
 export const NATIVE_FILE_MAX_BYTES = 10_000_000;
 
@@ -280,36 +271,28 @@ export interface ModelAssessment {
    */
   aaSlug?: string;
   /**
-   * VERBOSITY — how many output tokens this model spends to finish a task, and
-   * how that splits between reasoning and answer. Hand-curated from Artificial
-   * Analysis (`intelligenceIndexOutputTokensPerTask`) when a model is added.
+   * The pool MEDIAN price for the transport this model routes through, USD per
+   * 1 000 000 tokens, copied from the row the sync writes. Read by
+   * `services/model-metrics/cost-level.ts`, which folds in the cache discount
+   * and turns it into the relative `costLevel`; the raw dollar value never
+   * leaves the backend.
    *
-   * Load-bearing for cost, and the reason headline pricing lies: models differ
-   * by ~20× in output volume, so $/MTok alone mis-ranks the fleet by up to 8
-   * positions. GLM-5.2 emits 42.8k tokens per AA task at a 6.0 reasoning:answer
-   * ratio; GPT-5.6 Luna @xhigh emits 12.5k at 2.1. Read by
-   * `services/model-metrics/cost-level.ts`.
+   * `cacheReadPerMTok` is the cached-input rate, absent when no endpoint quotes
+   * a cheaper one.
    *
-   * NOT fetched live: AA's v2 API has no verbosity field (it exists only in the
-   * website payload), so scraping it at runtime would put a layout change on
-   * the request path. Refresh by hand alongside the profile.
-   */
-  verbosity?: {
-    outputTokensPerTask: number;
-    reasoningToAnswerRatio: number;
-  };
-  /**
-   * HAND-CURATED price, USD per 1,000,000 tokens. Lives here (not in
-   * `catalog`) because it is a product-maintained value, NOT the mechanical
-   * OpenRouter mirror — fix it by hand, no automatic price feed. The only
-   * reader is `services/model-metrics/cost-level.ts`, which folds in the cache
-   * discount (weighted by `cache.strategy`) and turns it into the relative
-   * `costLevel`; the raw dollar value never leaves the backend.
-   *
-   * `cacheReadPerMTok` is the cached-input price — omit when the model has no
-   * cache discount (`cache.strategy === "none"` or no cheaper cached rate).
-   * Cache WRITE has no field: OpenRouter doesn't expose it and the cost model
-   * absorbs it approximately via the per-strategy cache-hit ratio.
+   * VERBOSITY USED TO SIT BESIDE THIS, and its removal is the one place the
+   * derived registry knows less than curation did. How many output tokens a
+   * model spends to finish a task is load-bearing for cost — the fleet differs
+   * by ~20×, so $/MTok alone mis-ranks it by up to 8 positions — but no API
+   * publishes it: AA's v2 and legacy endpoints carry no token counts (checked
+   * field by field), its timing data resolves to a fixed-length probe, and the
+   * per-model website figures cover a tenth of the fleet at 1.40× off with a
+   * 17 % spread across hosts. Hand-curating it meant 22 models were ranked on a
+   * measurement and 117 on the fleet median. Measured impact of dropping it
+   * entirely: at most 4 points of 100 on `costLevel`, because the cost model
+   * under-weights output by ~4× anyway (see `cost-level.ts`). It comes back
+   * from Langfuse — our own turns, on the models we actually run — written to
+   * the row, not typed into a file.
    */
   pricing: {
     inputPerMTok: number;
@@ -322,82 +305,38 @@ export interface ModelAssessment {
    * `NativeInputPolicy`.
    */
   nativeInput: NativeInputPolicy;
-  cache: {
-    strategy: CacheStrategy;
-    /** Max `cache_control` breakpoints (explicit-breakpoints only). */
-    maxBreakpoints?: number;
-  };
+  cache: { strategy: CacheStrategy };
   reasoning: {
     style: ReasoningStyle;
     /** Default effort level when the product runs in `auto` mode. */
     defaultLevel: ReasoningLevel;
-    /**
-     * Per-profile hard `max_tokens` reasoning budget, overriding the
-     * shared level→budget table. Only meaningful for `style:
-     * "max-tokens"`. Use for ADAPTIVE models (MiniMax / DeepSeek) that
-     * ignore the effort knob and over-think — pin an explicit ceiling
-     * here instead of inheriting the shared per-level budget. Omit to
-     * use the table value for `defaultLevel`.
-     */
-    maxTokens?: number;
-    /**
-     * `false` = strip this model's own reasoning parts from the messages
-     * sent at every step of the IN-TURN tool loop
-     * (`withReasoningReplayStrip`, agent-builder.ts).
-     *
-     * SCOPE — read this before reasoning about the flag. Cross-turn
-     * reasoning is ALREADY stripped for every profile, unconditionally,
-     * one layer up: `stripReasoningPartsForModel` runs on the persisted
-     * history inside `prepareModelMessages` (the mandatory path). So this
-     * flag governs exactly one thing — whether the loop replays the
-     * reasoning IT generated earlier in the SAME turn. The name is a
-     * historical misnomer; it is not about "history".
-     *
-     * Anthropic and Google must keep the in-turn replay: their thinking
-     * blocks carry signatures that are fresh and valid within a turn, and
-     * their APIs require the blocks be echoed back alongside tool results.
-     *
-     * Set to `false` only on measured evidence. The one profile carrying
-     * it (MiniMax M3) was set from a n=5 replay of prod zombie
-     * gen-1784805816 (replayed 4/5 tool calls vs stripped 5/5) — a
-     * one-case delta that a controlled n=20 A/B on 2026-08-02 did NOT
-     * reproduce (20/20 tool calls in BOTH arms, for M3 and DeepSeek, on
-     * both a short and a long multi-step loop). It is kept on M3 for its
-     * second, independent benefit: stripping removes the ×2+ per-turn
-     * context inflation. Do not copy it onto a new profile as a
-     * precaution — measure, or leave it absent.
-     */
-    replayInHistory?: false;
   };
   /**
-   * OpenRouter routing envelope. `requireParameters` is non-negotiable
-   * (silent `tools` drops break SSE parsing) — typed as literal `true`
-   * so a profile cannot opt out. `zdr` is the DEFAULT policy but a
-   * per-profile fact: a model served only by its first-party,
-   * non-ZDR-flagged provider (e.g. MiniMax M3 pre-open-weights, gate
-   * 2026-06-12: empty ZDR pool → 100% errors) may set `false` —
-   * a deliberate product decision recorded next to the profile, to be
-   * revisited when ZDR endpoints appear.
+   * Routing envelope. `zdr` is READ from the endpoints rather than declared:
+   * `true` only when every reachable route says so, `false` when one says it
+   * does not, and absent when nothing said — "we could not check" and "checked,
+   * retains nothing" are different claims and only the second may light a badge.
    */
   provider: {
-    requireParameters: true;
     zdr?: boolean;
     /**
-     * How OpenRouter picks WITHIN the remaining pool (`provider.sort`),
+     * How the upstream picks WITHIN the remaining pool (`provider.sort`),
      * re-evaluated on every request from its own live measurements.
      *
      * This is the knob that makes routing ADAPTIVE, and it is the opposite of
      * `order`: a pin reroutes only when an upstream FAILS, so one that merely
      * gets slow keeps the traffic. Note the two cannot be combined — `order` is
-     * consulted first, so a profile carrying both silently runs unsorted.
+     * consulted first, so a pool carrying both silently runs unsorted.
      *
-     * `"throughput"` (tokens/second) rather than latency is deliberate for an
-     * agent: a turn emits reasoning, tool calls and an answer, so decode time
-     * dominates. Measured 2026-08-05 on a 4 096-token generation, the spread on
-     * time-to-first-token across the pool was ~0.6 s while the spread on
-     * completion was 14.9 s to 62.0 s.
+     * The sync writes `"throughput"` (tokens/second) rather than latency, and
+     * that is deliberate for an agent: a turn emits reasoning, tool calls and an
+     * answer, so decode time dominates. Measured 2026-08-05 on a 4 096-token
+     * generation, the spread on time-to-first-token across the pool was ~0.6 s
+     * while the spread on completion was 14.9 s to 62.0 s. The TYPE stays as
+     * wide as the row's, so a pool that someday carries another ordering is
+     * served rather than dropped at this boundary.
      */
-    sort?: "throughput";
+    sort?: RoutingSort;
     /**
      * HARD allow-list of upstream slugs (OpenRouter `provider.only`) — the
      * vetted pool `sort` is allowed to choose from.
@@ -437,6 +376,16 @@ export interface ModelAssessment {
      */
     ignore?: readonly string[];
     /**
+     * Serving precisions the pool is filtered to, when filtering leaves anything
+     * behind.
+     *
+     * Derived from the endpoints, not declared, and PRESENT ONLY WHEN SAFE: a
+     * floor applied to a model whose every host is quantized empties the pool
+     * (a 404, not a slower answer) rather than protecting it. Absent means "not
+     * applicable here", never "no opinion" — see `quantizationsFor`.
+     */
+    quantizations?: readonly string[];
+    /**
      * Omit `max_tokens` from requests for this profile. Needed when the
      * model's only ZDR-eligible upstream does not advertise the parameter:
      * `requireParameters` is literal `true`, so sending an unsupported param
@@ -451,8 +400,6 @@ export interface ModelAssessment {
      */
     omitMaxTokens?: true;
   };
-  /** Per-family system-prompt overlay key (C2). Unset = no overlay. */
-  promptOverlayKey?: string;
   /**
    * THE selection switch — the only thing standing between a team and a
    * model. `false` hides it from every picker and rejects it as a team
@@ -472,21 +419,33 @@ export interface ModelAssessment {
   enabled: boolean;
   /** Why `enabled: false` — drives the picker tooltip. Omit when enabled. */
   disabledReason?: "cost" | "no-zdr" | "unavailable";
-  /**
-   * Eval evidence that this profile is fit to be an APPLIED DEFAULT — i.e. to
-   * appear in `ROLE_BINDINGS` for `chat` / `workflow`. Enforced by
-   * `model-registry.test.ts`, so swapping the default without a gate run
-   * fails CI, while merely offering a model needs nothing here.
-   *
-   * Deliberately NOT read at runtime (that was the old flagship whitelist,
-   * removed 2026-07-26) and optional: most profiles are simply `untested`,
-   * which is a fine state for a selectable model.
-   */
-  evalGate?: {
-    status: "passed" | "failed" | "pending" | "untested";
-    lastRunId?: string;
-    gatedAt?: string;
-  };
+}
+
+/**
+ * Eval evidence for a BINDING — that this role's default was measured before it
+ * was applied.
+ *
+ * It sat on the profile until 2026-08-30, which put it on the wrong object. A
+ * gate run does not measure a model in the abstract; it measures a model DOING
+ * A JOB, against the model that held the job before it. That is a fact about
+ * the pairing, and the profile could not express it: `minimax-m3` still carried
+ * a stamp whose comment claimed it was the `chat` default four weeks after the
+ * flip moved `chat` to `deepseek-v4-flash`, because nothing tied the evidence
+ * to the decision it was evidence FOR.
+ *
+ * The move is also what lets the profile half of the registry become fully
+ * derivable: every other `ModelAssessment` field is now read from a catalogue
+ * or a price, and this one never could be — nobody publishes our eval results.
+ *
+ * Deliberately NOT read at runtime (that was the old flagship whitelist,
+ * removed 2026-07-26): the harness has to be able to run an ungated candidate.
+ * `model-registry.test.ts` is the only enforcement, and it covers exactly the
+ * bindings a user's turn actually lands on.
+ */
+export interface EvalGate {
+  status: "passed" | "failed" | "pending" | "untested";
+  lastRunId?: string;
+  gatedAt?: string;
 }
 
 export interface ModelProfile {
@@ -542,10 +501,9 @@ export interface RoleBinding {
   settingsKind: RoleSettingsKind;
   /** Wrap with the cache-control middleware (`wrapModelWithCache`). */
   wrapCache: boolean;
+  /**
+   * Proof this role's default was gated before it was applied. Present only on
+   * bindings a real run covered; absent is honest for the rest.
+   */
+  evalGate?: EvalGate;
 }
-
-/** Type-safe lookup over `catalog.supportedParameters`. */
-export const supportsParameter = (
-  profile: ModelProfile,
-  parameter: SupportedParameter,
-): boolean => profile.catalog.supportedParameters.includes(parameter);

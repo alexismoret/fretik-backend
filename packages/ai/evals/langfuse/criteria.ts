@@ -6,7 +6,7 @@
  * import chain.
  */
 
-import { MODEL_PROFILES } from "../../src/lib/model-registry/profiles";
+import { getEffectiveProfile } from "../../src/lib/model-registry/effective";
 import { CAPABILITIES, type Capability } from "../types";
 import { GATE_CONFIG, type GateConfig } from "./gate-config";
 
@@ -100,8 +100,8 @@ export const evaluateCriteria = (
     });
   }
 
-  const profile = MODEL_PROFILES[candidateKey];
-  if (profile && cand.costPerTurnUsd !== undefined) {
+  const profile = getEffectiveProfile(candidateKey);
+  if (profile !== undefined && cand.costPerTurnUsd !== undefined) {
     const envelope = cfg.costEnvelopeUsdPerTurn[profile.assessment.costClass];
     const within = cand.costPerTurnUsd <= envelope;
     out.push({

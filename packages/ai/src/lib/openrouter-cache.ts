@@ -6,7 +6,6 @@ import {
   type SharedV4ProviderOptions,
 } from "@ai-sdk/provider";
 import { wrapLanguageModel } from "ai";
-import type { ModelProfile } from "./model-registry/types";
 
 /**
  * Manual prompt-caching middleware for OpenRouter chat models.
@@ -17,7 +16,7 @@ import type { ModelProfile } from "./model-registry/types";
  * content blocks (Anthropic Claude, Alibaba Qwen).
  *
  * This middleware injects breakpoints for the explicit-caching family
- * only — letting the chat role binding (`model-registry/profiles.ts`)
+ * only — letting the chat role binding (`model-registry/role-bindings.ts`)
  * swap between auto and explicit upstreams without touching agent or
  * handler code.
  *
@@ -279,37 +278,26 @@ const buildCacheMiddleware = (
   },
 });
 
-/** Always-inject variant — the decision was already made from the profile. */
-const profileCacheMiddleware = buildCacheMiddleware(() => true);
-
-/** Legacy regex-driven variant — for callers with no profile in hand. */
-const patternCacheMiddleware = buildCacheMiddleware(shouldInjectCacheControl);
+const cacheMiddleware = buildCacheMiddleware(shouldInjectCacheControl);
 
 // Cache only — Langfuse cost capture is applied separately and uniformly
 // via `instrumentModel` (`lib/model-instrumentation.ts`) so it covers every
 // model, not just the cached chat ones.
 //
-// When a `ModelProfile` is provided (every registry-resolved model), the
-// caching decision comes from `assessment.cache.strategy` — the profile is
-// the source of truth, the id-pattern table above is only a fallback for
-// profile-less callers. The breakpoint algorithm emits at most 4 markers;
-// a profile declaring fewer is not supported yet (warned at wrap time).
-export const wrapModelWithCache = (
-  model: LanguageModelV4,
-  profile?: ModelProfile,
-): LanguageModelV4 => {
-  if (!MANUAL_PROMPT_CACHE_ENABLED) return model;
-  if (profile) {
-    if (profile.assessment.cache.strategy !== "explicit-breakpoints") {
-      return model;
-    }
-    const max = profile.assessment.cache.maxBreakpoints;
-    if (max !== undefined && max < 4) {
-      console.warn(
-        `[openrouter-cache] profile ${profile.key} declares maxBreakpoints=${max} < 4 — the 4-breakpoint algorithm may exceed it`,
-      );
-    }
-    return wrapLanguageModel({ model, middleware: [profileCacheMiddleware] });
-  }
-  return wrapLanguageModel({ model, middleware: [patternCacheMiddleware] });
-};
+// ONE decision path, from the model id. There used to be two: a profile-driven
+// branch reading `assessment.cache.strategy` and this id-pattern table as the
+// fallback for profile-less callers. They agreed on every model that ever
+// reached them — the only profiles declaring `explicit-breakpoints` are the
+// three Anthropic ones, whose ids all match `^anthropic/` — so the branch
+// bought nothing and cost a field.
+//
+// The field it cost was worth losing. `cache.strategy` was answering two
+// unrelated questions at once: how the vendor CHARGES (a pricing fact, now read
+// off the prices by `cacheShape`) and whether the caller must place
+// `cache_control` markers (a DIALECT fact, answered here). Splitting them is
+// what let the charging half be derived rather than hand-written — and the
+// hand-written half was wrong on 5 of 22 profiles.
+export const wrapModelWithCache = (model: LanguageModelV4): LanguageModelV4 =>
+  MANUAL_PROMPT_CACHE_ENABLED
+    ? wrapLanguageModel({ model, middleware: [cacheMiddleware] })
+    : model;

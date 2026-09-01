@@ -100,10 +100,28 @@ export interface EligibilityCriteria {
 
 export type EligibilityVerdict = "eligible" | "ineligible" | "unknown";
 
+/**
+ * One requirement that was not met, as STRUCTURE rather than as prose.
+ *
+ * A conjunct, not a rule, because an `any` group fails as a unit: "fast OR
+ * cheap" that holds neither way is ONE unmet requirement with two alternatives,
+ * and reporting it as two would tell a reader they must fix both. A plain `all`
+ * rule carries a single member.
+ *
+ * Exists so a client can render the requirement in its own words and its own
+ * language. `failed` (below) is the same information already flattened to
+ * English for logs and the audit CLI; this is what crosses an API boundary.
+ */
+export interface UnmetRequirement {
+  rules: readonly EligibilityRule[];
+}
+
 export interface EligibilityResult {
   verdict: EligibilityVerdict;
   /** Rules that failed on a MEASURED value — the actionable half. */
   failed: string[];
+  /** The same failures, structured for a caller that must re-word them. */
+  unmet: UnmetRequirement[];
   /** Rules no signal could answer. */
   unknown: string[];
 }
@@ -147,11 +165,14 @@ export const evaluateEligibility = (
   signals: CapabilitySignals,
 ): EligibilityResult => {
   const failed: string[] = [];
+  const unmet: UnmetRequirement[] = [];
   const unknown: string[] = [];
   for (const rule of criteria.all) {
     const verdict = evaluateRule(rule, signals);
-    if (verdict === "fail") failed.push(describeRule(rule));
-    else if (verdict === "unknown") unknown.push(describeRule(rule));
+    if (verdict === "fail") {
+      failed.push(describeRule(rule));
+      unmet.push({ rules: [rule] });
+    } else if (verdict === "unknown") unknown.push(describeRule(rule));
   }
   const alternatives = criteria.any ?? [];
   if (alternatives.length > 0) {
@@ -159,7 +180,11 @@ export const evaluateEligibility = (
     if (!verdicts.includes("pass")) {
       const text = alternatives.map(describeRule).join(" or ");
       if (verdicts.includes("unknown")) unknown.push(text);
-      else failed.push(text);
+      else {
+        failed.push(text);
+        // ONE requirement holding every alternative — see `UnmetRequirement`.
+        unmet.push({ rules: alternatives });
+      }
     }
   }
   return {
@@ -170,6 +195,7 @@ export const evaluateEligibility = (
           ? "unknown"
           : "eligible",
     failed,
+    unmet,
     unknown,
   };
 };

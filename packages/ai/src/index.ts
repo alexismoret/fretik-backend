@@ -39,13 +39,18 @@ import packagejson from "../package.json";
 import { chatFilesRoutes } from "./handlers/chat-files";
 import { chatbotInternalRoutes, chatbotRoutes } from "./handlers/chatbot";
 import { memoryRoutes } from "./handlers/memory";
+import { modelAdminRoutes } from "./handlers/model-admin";
 import { modelProfilesRoutes } from "./handlers/model-profiles";
 import { preExtractRoutes } from "./handlers/pre-extract";
 import { vectorizeRoutes } from "./handlers/vectorize";
 import { workflowTriggerRoutes } from "./handlers/workflow";
 import { workflowTranscriptRoutes } from "./handlers/workflow-transcript";
+import {
+  boundProfileKeys,
+  publishBoundRoles,
+} from "./lib/model-registry/bound-roles";
+import { getEffectiveProfile } from "./lib/model-registry/effective";
 import { warmModelRegistry } from "./lib/model-registry/resolve";
-import { seedModelRegistry } from "./lib/model-registry/seed-rows";
 import { registerOrphanCleanupCron } from "./services/chat-files/orphan-cron";
 import { subscribeConversationTaskResumes } from "./services/conversation-tasks/subscribe-resume";
 import { backfillPageVectors } from "./services/vectorize/pages";
@@ -91,6 +96,12 @@ app.route("/chatbot-files", chatFilesRoutes);
 
 // User-facing model selection (C8) — picker menu + team defaults (cookie auth).
 app.route("/model-profiles", modelProfilesRoutes);
+
+// Operator surface for the model engine — SUPER-ADMIN only (cookie auth, then
+// the platform-operator flag). Lives here rather than in @fretik/api because
+// the fleet view, the audit and the scorecard all read this package's registry,
+// which @fretik/api cannot import.
+app.route("/model-admin", modelAdminRoutes);
 
 // User-facing live workflow-run transcript (cookie auth, team-scoped).
 app.route("/workflow-runs", workflowTranscriptRoutes);
@@ -211,29 +222,39 @@ void reclaimOrphanSandboxes().catch((err) => {
   );
 });
 
-// Seed live model state from the curated registry, then warm it so the first
-// turn resolves against the database rather than against code defaults it would
-// then memoize. AWAITED, unlike the backfills above: a quarantine written last
-// night has to apply to the first request of the day, not to the first request
-// after something else happens to invalidate the cache.
+// Publish which models the internal roles depend on, then warm the registry so
+// the first turn resolves against the database. AWAITED, unlike the backfills
+// above: a quarantine written last night has to apply to the first request of
+// the day, not to the first request after something else invalidates the cache.
 //
-// Both halves degrade rather than fail. A replica that cannot reach the
-// database serves the curated defaults, which is exactly what it did before
-// this table existed.
-await seedModelRegistry()
-  .then(({ inserted, refreshed }) => {
-    if (inserted > 0)
+// The registry is now database-only — there is no TypeScript fallback behind it,
+// because the fallback WAS a second registry with its own staler answers. So a
+// database with no rows serves no models, and the check below says which ones
+// are missing rather than letting the first request discover it.
+await publishBoundRoles()
+  .then(({ bound, cleared }) => {
+    if (bound > 0 || cleared > 0)
       console.log(
-        `[boot] model registry seeded — ${inserted.toString()} new, ${refreshed.toString()} refreshed`,
+        `[boot] role bindings published — ${bound.toString()} bound, ${cleared.toString()} cleared`,
       );
   })
   .catch((err: unknown) => {
     console.warn(
-      "[boot] model registry seed failed:",
+      "[boot] publishing role bindings failed:",
       err instanceof Error ? err.message : err,
     );
   });
 await warmModelRegistry();
+
+const undescribed = boundProfileKeys().filter(
+  (key) => getEffectiveProfile(key) === undefined,
+);
+if (undescribed.length > 0) {
+  console.error(
+    `[boot] ${undescribed.length.toString()} model(s) an internal role depends on have no live row: ${undescribed.join(", ")}. ` +
+      `Turns using those roles will fail. Run \`bun run models:sync\` in the jobs package.`,
+  );
+}
 
 // Init banner
 const text = await figlet.text("fretik AI");

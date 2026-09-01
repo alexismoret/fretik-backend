@@ -68,6 +68,12 @@ jobs:
       - name: Test @fretik/shared
         run: bun run --filter '@fretik/shared' test
 
+      # This package owns the model sync — the cron that writes the whole
+      # registry every night, and the only thing that populates it at all. Its
+      # own suite was never run here.
+      - name: Test @fretik/jobs
+        run: bun run --filter '@fretik/jobs' test
+
   build-and-push:
     name: build + push to GHCR
     needs: check

@@ -2,20 +2,26 @@ import type { OpenRouterChatSettings } from "@openrouter/ai-sdk-provider";
 import { getProfileForRole, listProfiles } from "./model-registry/resolve";
 
 /**
- * OpenRouter model id for "cheap, short extraction" one-shots — the
- * registry's `cheap-tasks` role (default `openai/gpt-oss-20b`).
+ * Model id for "cheap, short extraction" one-shots — the registry's
+ * `cheap-tasks` role (default `openai/gpt-oss-20b`).
  * Shared by:
  *   - Phase 7b contextual enrichment (services/vectorize/contextual-enrichment.ts)
  *   - Phase 7c multi-query reformulation  (services/search/multi-query.ts)
  *   - catch-up summaries                  (services/catch-up-summary.ts)
  *   - conversation titles                 (services/conversation-title/generate.ts)
  *
- * Call sites pass their own per-call settings (`reasoning`, etc.) to
- * `openrouter.chat(CHEAP_MODEL, …)` — the registry only owns WHICH
- * model serves the role. Changing it is a reviewed edit to
- * `model-registry/profiles.ts`.
+ * Call sites pass their own per-call settings (`reasoning`, etc.) — the registry
+ * only owns WHICH model serves the role. Changing it is a reviewed edit to
+ * `model-registry/role-bindings.ts`.
+ *
+ * A FUNCTION, not a constant, and that is load-bearing since the registry became
+ * database-backed: a module-level constant captures whatever the registry held
+ * at import time — which, at boot, is nothing at all, because the live snapshot
+ * has not been warmed yet. It would also never see a quarantine written
+ * overnight.
  */
-export const CHEAP_MODEL = getProfileForRole("cheap-tasks").catalog.id;
+export const cheapModelId = (): string =>
+  getProfileForRole("cheap-tasks").catalog.id;
 
 /**
  * Provider policy for those same one-shots. The registry owns WHICH model; it
@@ -57,10 +63,10 @@ export const cheapProviderFor = (
     zdr,
     // Same floor as the memory judges: a quantized 20b loses output discipline.
     quantizations: ["bf16", "fp16", "unknown"],
-    // Read from the profile, never hardcoded — the Fireworks exclusion is a
-    // fact about gpt-oss (see `profiles/openai.ts`), and these call sites
-    // resolve the model PER TEAM. Hardcoding it removed the endpoint from
-    // models the measurement never covered.
+    // Read from the row's vetted pool, never hardcoded — the Fireworks
+    // exclusion is a fact about gpt-oss, and these call sites resolve the model
+    // PER TEAM. Hardcoding it removed the endpoint from models the measurement
+    // never covered.
     ...(ignore ? { ignore: [...ignore] } : {}),
     // Without this the block expressed no speed preference at all, so these
     // calls ran on OpenRouter's DEFAULT price ordering — which is how the
@@ -73,5 +79,7 @@ export const cheapProviderFor = (
   };
 };
 
-/** The policy for the static `CHEAP_MODEL` (the non-team-aware call sites). */
-export const CHEAP_PROVIDER = cheapProviderFor(CHEAP_MODEL);
+/** The policy for the role default (the non-team-aware call sites). */
+export const cheapProvider = (): NonNullable<
+  OpenRouterChatSettings["provider"]
+> => cheapProviderFor(cheapModelId());

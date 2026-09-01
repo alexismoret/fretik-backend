@@ -1,4 +1,4 @@
-import type { EndpointStat, TransportId } from "./types";
+import type { CatalogueReasoning, EndpointStat, TransportId } from "./types";
 
 /**
  * What a transport's catalogue says about a model, in ONE shape.
@@ -67,6 +67,26 @@ export interface CatalogueEntry {
   inputModalities: string[];
   outputModalities: string[];
   supportedParameters: string[];
+  /**
+   * The model's REASONING CONTRACT, where the catalogue publishes one.
+   *
+   * `supportedParameters` answers "can this model reason at all"; this answers
+   * the question the product actually asks — WHICH depths may be requested.
+   * Measured 2026-08-30 on the 396-model OpenRouter catalogue: 271 entries
+   * carry a contract and 130 of those name the exact ladder, spanning eleven
+   * distinct shapes (`high/medium/low`, `max/xhigh/high/medium/low`,
+   * `high/medium/low/minimal`, …). Nothing derives one shape from another.
+   *
+   * Load-bearing rather than descriptive: `selectableReasoningLevels` builds the
+   * depth menu from this list, so a model discovered without it offers NO depth
+   * control at all — which is what every promoted model got until this field
+   * existed.
+   *
+   * `undefined` means the catalogue said nothing, never that the model cannot
+   * reason. An empty `supportedEfforts` with `mandatory` present means it
+   * reasons on a budget rather than a ladder (Claude Haiku 4.5, MiniMax M3).
+   */
+  reasoning?: CatalogueReasoning;
   pricing: CataloguePricing;
   /**
    * The catalogue's own zero-retention claim, where it makes one. A useful
@@ -113,6 +133,13 @@ export interface CatalogueCapabilities {
   publishesReleaseDate: boolean;
   /** Carries a per-model zero-retention hint usable as a cheap pre-filter. */
   publishesZdrHint: boolean;
+  /**
+   * Publishes the reasoning CONTRACT (which depths exist), not merely the
+   * `reasoning` parameter. Declared for the same reason the others are: a
+   * source that cannot say must never erase what a source that can already
+   * said, and silence here is not "this model has no ladder".
+   */
+  publishesReasoningContract: boolean;
 }
 
 /**
@@ -305,6 +332,14 @@ export const mergeCatalogues = (
             ...entry.supportedParameters,
           ]),
         ],
+        // Taken from a source that publishes contracts, kept otherwise. NOT
+        // unioned like the parameter list: a ladder is a closed set the upstream
+        // accepts, so merging two would offer rungs one of them rejects — and
+        // `require_parameters` turns a rejected rung into an empty pool rather
+        // than a dropped field.
+        reasoning: can.publishesReasoningContract
+          ? (entry.reasoning ?? current.reasoning)
+          : current.reasoning,
         // Price is per-transport too, and deliberately NOT reconciled: the
         // first catalogue that quotes one wins, and nothing downstream spends
         // money on it. A row's real price is `computePoolPricing` over the

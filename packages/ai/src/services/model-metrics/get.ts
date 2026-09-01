@@ -33,6 +33,7 @@ const snapshotSchema = z.object({
       coding: z.number().nullish().default(null),
       toolUse: z.number().nullish().default(null),
       ttftSeconds: z.number().nullish().default(null),
+      costRatio: z.number().nullish().default(null),
     }),
   ),
   fetchedAt: z.string(),

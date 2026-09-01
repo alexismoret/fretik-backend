@@ -98,7 +98,7 @@ import { isAnnouncedActionStop } from "../services/turn-continuation/judge";
 import { TransformStream } from "node:stream/web";
 import { z } from "zod";
 import {
-  chatbotAgentSet,
+  defaultChatbotAgentSet,
   getChatbotAgentSet,
   type ChatbotCallOptions,
 } from "../agents/chatbot";
@@ -1030,7 +1030,7 @@ export const runChatbotTurn = async (
   // Serving set + profile for this turn (see RunChatbotTurnParams).
   // Resolved ONCE here so every consumer below — compaction threshold,
   // primary stream, zombie-recovery fallback — uses the same pair.
-  let agentSet = params.agentSet ?? chatbotAgentSet;
+  let agentSet = params.agentSet ?? defaultChatbotAgentSet();
   let modelProfile = params.modelProfile ?? getProfileForRole("chat");
 
   // C4 — escalate to the fallback model when the PREVIOUS attempt on this

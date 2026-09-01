@@ -1,97 +1,91 @@
 import { sql } from "drizzle-orm";
 import db from "../../db";
 import { modelLiveState } from "../../db/schema/model-registry";
-import type {
-  DisabledReason,
-  PricingSnapshot,
-  ProviderPoolByTransport,
-  TransportId,
-} from "../../model-registry/types";
 import { invalidateLiveRegistry } from "./live";
 
 /**
- * Seeding live state from the curated TypeScript registry.
+ * Writing the one thing about a model that only CODE knows: which internal roles
+ * depend on it.
  *
- * The caller lives in `@fretik/ai` (this package cannot see the profiles) and
- * hands over one seed per profile at boot. What matters here is WHICH FIELDS a
- * re-seed is allowed to touch, because the two layers own different things and
- * a boot must not undo a decision the engine took at 3 a.m.
+ * This used to be a whole curated registry being poured into the table at every
+ * boot — model ids, prices, contexts, pools, AA slugs, all of it hand-written in
+ * TypeScript and re-asserted over rows the nightly sync had already measured
+ * better. That was the double source of truth the model engine exists to remove,
+ * and it was not merely redundant: `model_ids` was overwritten wholesale on
+ * every restart, so a spelling the sync had DISCOVERED on its own (`glm-5.2`
+ * picked up its Scaleway id with nobody typing it) was erased at each deploy and
+ * only came back the next night.
  *
- * Refreshed on every seed — curation owns them, so a merged pull request takes
- * effect on the next deploy:
- *   `modelIds`, `providerPool`, `boundRoles`, `aaSlug`.
+ * What is left is genuinely irreducible. `ROLE_BINDINGS` is a set of decisions —
+ * which model does the chatting, which one judges recall on a turn's hot path —
+ * and no catalogue publishes it. The sync needs it because a model the fleet
+ * depends on is ALERTED on rather than disabled: turning it off would take the
+ * chatbot down instead of degrading one team's choice.
  *
- * Written once, on INSERT only — the runtime owns them afterwards:
- *   `transport` (a rollback must survive a restart), `enabled`, `pricing`,
- *   `effectiveContextLength`, `effectiveMaxOutput`.
- *
- * Never touched here at all: quarantines, `poolWidened`, `lastResort`, health,
- * policy reports, streaks.
- *
- * Curation can still disable a model instantly without a write: the resolver
- * ANDs the profile's own `enabled` with this row's, so `enabled: false` in
- * TypeScript wins on deploy while an automatic disable persists in the row.
- * Neither layer can force the other to enable.
+ * Everything else about a model is now read from the row and synthesised by
+ * `@fretik/ai` `model-registry/effective.ts`. A row is created by the sync or by
+ * `models:admin add`, never here — which also means a database with no rows
+ * serves no models until a sync has run, and that is the honest state rather
+ * than a hidden one: a row nobody has measured has no price, no context and no
+ * ladder, so serving from it would be inventing all three.
  */
 
-export interface LiveStateSeed {
-  profileKey: string;
-  transport: TransportId;
-  enabled: boolean;
-  disabledReason?: DisabledReason;
-  modelIds: Partial<Record<TransportId, string>>;
-  providerPool: ProviderPoolByTransport;
-  /** Catalogue context minus a margin, until the first sync measures the pool. */
-  effectiveContextLength: number;
-  effectiveMaxOutput?: number;
-  /** Hand-curated price, replaced by the pool median on the first sync. */
-  pricing: PricingSnapshot;
-  /** Internal roles bound to this profile — non-empty means the fleet needs it. */
-  boundRoles: string[];
-  /** Which AA record grades this model, when curation has settled one. */
-  aaSlug?: string;
-}
+/** Roles bound to each profile key, from `ROLE_BINDINGS`. */
+export type BoundRolesByProfile = ReadonlyMap<string, readonly string[]>;
 
-export const seedLiveState = async (
-  seeds: readonly LiveStateSeed[],
-): Promise<{ inserted: number; refreshed: number }> => {
-  if (seeds.length === 0) return { inserted: 0, refreshed: 0 };
+export const writeBoundRoles = async (
+  rolesByProfile: BoundRolesByProfile,
+): Promise<{ bound: number; cleared: number }> => {
+  const entries = [...rolesByProfile.entries()].filter(
+    ([, roles]) => roles.length > 0,
+  );
+  const keys = entries.map(([key]) => key);
 
-  const before = await db
-    .select({ profileKey: modelLiveState.profileKey })
-    .from(modelLiveState);
-  const existing = new Set(before.map((row) => row.profileKey));
-
-  await db
-    .insert(modelLiveState)
-    .values(
-      seeds.map((seed) => ({
-        profileKey: seed.profileKey,
-        status: "published" as const,
-        transport: seed.transport,
-        enabled: seed.enabled,
-        disabledReason: seed.disabledReason ?? null,
-        modelIds: seed.modelIds,
-        providerPool: seed.providerPool,
-        effectiveContextLength: seed.effectiveContextLength,
-        effectiveMaxOutput: seed.effectiveMaxOutput ?? null,
-        pricing: seed.pricing,
-        boundRoles: seed.boundRoles,
-        aaSlug: seed.aaSlug ?? null,
-        source: "seed" as const,
-      })),
+  // Rows that used to serve a role and no longer do. Without this a rebinding
+  // leaves the old model looking load-bearing, and the sync then refuses to
+  // disable it for a policy failure it should have been disabled for.
+  const cleared = await db
+    .update(modelLiveState)
+    .set({ boundRoles: [] })
+    .where(
+      keys.length === 0
+        ? sql`cardinality(${modelLiveState.boundRoles}) > 0`
+        : sql`cardinality(${modelLiveState.boundRoles}) > 0 and ${modelLiveState.profileKey} not in ${keys}`,
     )
-    .onConflictDoUpdate({
-      target: modelLiveState.profileKey,
-      set: {
-        modelIds: sql`excluded.model_ids`,
-        providerPool: sql`excluded.provider_pool`,
-        boundRoles: sql`excluded.bound_roles`,
-        aaSlug: sql`excluded.aa_slug`,
-      },
-    });
+    .returning({ key: modelLiveState.profileKey });
 
-  await invalidateLiveRegistry();
-  const inserted = seeds.filter((s) => !existing.has(s.profileKey)).length;
-  return { inserted, refreshed: seeds.length - inserted };
+  // One set-based statement rather than a loop: the role list differs per key,
+  // so the pairs travel as a VALUES join. Both halves of each pair are BOUND
+  // PARAMETERS — the role names come from a compile-time union today, and
+  // building the statement by string concatenation would be a habit that
+  // survives longer than that guarantee.
+  const bound =
+    entries.length === 0
+      ? []
+      : await db
+          .update(modelLiveState)
+          .set({ boundRoles: sql`v.roles` })
+          .from(
+            sql`(values ${sql.join(
+              entries.map(
+                ([key, roles]) =>
+                  // `array[$1, $2, …]` rather than binding the array itself:
+                  // the driver expands a JS array into one parameter PER
+                  // ELEMENT, so `${roles}::text[]` casts a record and Postgres
+                  // refuses it ("cannot cast type record to text[]").
+                  sql`(${key}, array[${sql.join(
+                    roles.map((role) => sql`${role}`),
+                    sql`, `,
+                  )}]::text[])`,
+              ),
+              sql`, `,
+            )}) as v(profile_key, roles)`,
+          )
+          .where(
+            sql`${modelLiveState.profileKey} = v.profile_key and ${modelLiveState.boundRoles} is distinct from v.roles`,
+          )
+          .returning({ key: modelLiveState.profileKey });
+
+  if (bound.length > 0 || cleared.length > 0) await invalidateLiveRegistry();
+  return { bound: bound.length, cleared: cleared.length };
 };

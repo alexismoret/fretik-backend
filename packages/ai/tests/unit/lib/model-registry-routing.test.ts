@@ -3,12 +3,10 @@ import type {
   LiveModelState,
 } from "@fretik/shared/model-registry/types";
 import { describe, expect, test } from "bun:test";
-import {
-  MODEL_PROFILES,
-  ROLE_BINDINGS,
-} from "../../../src/lib/model-registry/profiles";
+import { ROLE_BINDINGS } from "../../../src/lib/model-registry/role-bindings";
 import { applyLiveState } from "../../../src/lib/model-registry/transports/openrouter";
 import type { TransportRequest } from "../../../src/lib/model-registry/transports/types";
+import { boundProfile } from "../../lib/live-fleet";
 
 /**
  * What actually leaves the process for OpenRouter.
@@ -74,7 +72,7 @@ const live = (over: Partial<LiveModelState> = {}): LiveModelState =>
 const request = (state: LiveModelState): TransportRequest => ({
   modelId: "vendor/test-model",
   binding: ROLE_BINDINGS.chat,
-  profile: MODEL_PROFILES[ROLE_BINDINGS.chat.profileKey],
+  profile: boundProfile(ROLE_BINDINGS.chat.profileKey),
   live: state,
   endpoints: ENDPOINTS,
 });
@@ -233,5 +231,49 @@ describe("quarantine still governs", () => {
     );
     expect(result?.provider?.only).toBeUndefined();
     expect(result?.provider?.ignore).toEqual(["fireworks"]);
+  });
+});
+
+describe("an exclusion stored on the row", () => {
+  test("reaches the wire without any profile carrying it", () => {
+    // Until 2026-08-30 this read the profile's `ignore` alone, so an exclusion
+    // could be recorded in the database and still be served by the host it
+    // named. It is the same gap the gateway had, on the other transport, and it
+    // is what has to close before the curated field can go.
+    const result = applyLiveState(
+      undefined,
+      request(
+        live({
+          providerPool: {
+            openrouter: {
+              only: ["fireworks", "together"],
+              ignore: ["together"],
+            },
+          },
+        }),
+      ),
+      NOW,
+    );
+    expect(result?.provider?.ignore).toEqual(["together"]);
+  });
+
+  test("survives a widened pool, which is the case it exists for", () => {
+    // A widened pool skips `only` entirely. If the exclusion lived only as an
+    // absence from that list — which is what erasing `ignore` each sync left it
+    // as — widening would hand the turn straight back to the discredited host.
+    const result = applyLiveState(
+      undefined,
+      request(
+        live({
+          providerPool: {
+            openrouter: { only: ["fireworks"], ignore: ["together"] },
+          },
+          poolWidened: true,
+        }),
+      ),
+      NOW,
+    );
+    expect(result?.provider?.only).toBeUndefined();
+    expect(result?.provider?.ignore).toEqual(["together"]);
   });
 });

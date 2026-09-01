@@ -25,18 +25,24 @@
  * and two such exclusions quietly expired and had to be relearned from a second
  * production incident.
  *
- * # The two layers, and which one each subcommand touches
+ * # One layer, and every subcommand writes it
  *
- * Curation (TypeScript, `src/lib/model-registry/profiles/`) says what a model IS
- * and how we decided to run it. Live state (this table) says what is TRUE about
- * it right now. Nothing here edits curation — `set-transport`, `enable`,
- * `disable`, `promote`, `retire`, `quarantine` and `release` all write the
- * second layer only, which is what makes them instant and what makes them
- * survivable: a bad call is undone by the opposite call, not by a revert.
+ * `model_live_state` is the registry. What a model IS comes from the
+ * catalogues, what it COSTS from its endpoints' prices, and what we have
+ * measured about it — a quarantine, a vetted pool, a transport — is written
+ * here by whatever measured it. There is no TypeScript half any more: 22
+ * hand-written profiles were deleted on 2026-08-30 after measurement showed
+ * them staler than the rows they overrode.
  *
- * The two layers each hold a VETO and neither can force the other to enable. A
- * profile marked `enabled: false` in TypeScript disappears on deploy whatever
- * this CLI says; a model disabled here disappears whatever the profile says.
+ * That is what makes these commands instant and survivable: `set-transport`,
+ * `enable`, `disable`, `promote`, `retire`, `quarantine` and `release` are all
+ * one write, and a bad call is undone by the opposite call rather than by a
+ * revert and a deploy.
+ *
+ * The one thing still decided in code is which model serves which internal ROLE
+ * (`src/lib/model-registry/role-bindings.ts`), because no API publishes that.
+ * `enable`/`disable` gate TEAM SELECTION only — a role resolves its model
+ * directly and bypasses the check.
  *
  * # Reading the output
  *
@@ -62,47 +68,22 @@
  * quarantine that waits for a keystroke is a quarantine that does not happen at
  * three in the morning.
  */
-import type { ModelAlertRow, ModelBenchRunRow } from "@fretik/shared/db/schema";
-import { isModelFunctionKey } from "@fretik/shared/model-registry/functions";
+import type { ModelBenchRunRow } from "@fretik/shared/db/schema";
+import { describeConsequence } from "@fretik/shared/model-registry/consequence-text";
 import {
-  DEFAULT_CANDIDATE_POLICY,
-  PROMOTION_PRICE_CAPS,
-  evaluatePolicy,
-  promotionEnablement,
-} from "@fretik/shared/model-registry/policy";
-import {
+  DEFAULT_QUARANTINE_KIND,
+  DISABLED_REASONS,
   INCIDENT_KINDS,
   isTransportId,
+  type Consequence,
   type EndpointStat,
   type IncidentKind,
   type LiveModelState,
   type PolicyReport,
   type TransportId,
 } from "@fretik/shared/model-registry/types";
-import {
-  buildAllowedPool,
-  computeEffectiveContext,
-  computePoolPricing,
-  deriveDynamicProfile,
-} from "@fretik/shared/services/model-registry/sync/compute";
-import { fetchGatewayCatalog } from "@fretik/shared/services/model-registry/sync/sources/gateway-catalog";
-import { fetchGatewayEndpoints } from "@fretik/shared/services/model-registry/sync/sources/gateway-endpoints";
+import type { EndpointSource } from "@fretik/shared/services/model-registry/scorecard";
 import { desc, eq } from "drizzle-orm";
-
-/** `disabled_reason` is a typed column with no exported runtime tuple. */
-const DISABLED_REASONS = ["cost", "no-zdr", "unavailable", "policy"] as const;
-
-/**
- * The default `--kind` for a HAND quarantine.
- *
- * The column is typed to the five detector kinds, so an operator acting on
- * something they saw still has to file under one of them. `upstream-cut` is the
- * least specific claim of the five — a generation that ended badly for a reason
- * upstream — and `--reason` is where what actually happened is recorded. Pick a
- * sharper kind when one fits: the kind is what the release re-probe and the
- * alert digest read back.
- */
-const DEFAULT_QUARANTINE_KIND: IncidentKind = "upstream-cut";
 
 /** How much incident history a promotion decision looks at, versus `show`. */
 const SHOW_INCIDENT_WINDOW_HOURS = 24;
@@ -110,6 +91,10 @@ const SCORECARD_INCIDENT_WINDOW_HOURS = 24 * 7;
 
 /** Recent bench rows shown on a scorecard. Enough to see a trend, not a log. */
 const BENCH_RUN_LIMIT = 12;
+
+/** Alert ids are `uuid_generate_v7()` values; anything else is a typo. */
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 const VALUE_FLAGS = new Set(["key", "reason", "kind", "limit", "ack"]);
 
@@ -392,21 +377,6 @@ const incidentTable = (
   }
 };
 
-/**
- * `alibaba/qwen-3-235b` -> `alibaba-qwen-3-235b`, inside the 64-char key column.
- *
- * Deliberately IDENTICAL to `candidateKey` in the sync's `run.ts`: a model added
- * by hand and the same model found later by discovery have to collide on one
- * row rather than end up as two, and the collision is what makes the second
- * insert a no-op instead of a duplicate.
- */
-const slugForModelId = (modelId: string): string =>
-  modelId
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-|-$/g, "")
-    .slice(0, 64);
-
 // ---------------------------------------------------------------------------
 // Services
 // ---------------------------------------------------------------------------
@@ -420,24 +390,27 @@ const slugForModelId = (modelId: string): string =>
  * `check-model-catalog.ts` applies to its own key-bearing imports.
  */
 const { default: db } = await import("@fretik/shared/db");
-const { modelAlerts, modelBenchRuns } =
-  await import("@fretik/shared/db/schema");
+const { modelBenchRuns } = await import("@fretik/shared/db/schema");
+// Every WRITE goes through `operations`, not through the services directly:
+// that is what keeps this terminal and the web surface agreeing on what a
+// change means, and what puts a line in the action log for each one.
 const {
-  acknowledgeAlert,
-  addCatalogueModel,
-  promoteCandidate,
-  retireModel,
-  setEnabled,
-  setTransport,
-} = await import("@fretik/shared/services/model-registry/admin");
-const {
-  BREAKER_QUARANTINE_DAYS,
-  BREAKER_THRESHOLDS,
-  activeQuarantines,
-  effectivePoolFor,
-  quarantineProvider,
-  releaseProvider,
-} = await import("@fretik/shared/services/model-registry/breaker");
+  acknowledgeModelAlert,
+  addModelFromCatalogue,
+  promoteModel,
+  quarantineUpstream,
+  releaseUpstream,
+  retireModelOperation,
+  setModelEnabled,
+  switchModelTransport,
+} = await import("@fretik/shared/services/model-registry/operations");
+const { BREAKER_QUARANTINE_DAYS, activeQuarantines, effectivePoolFor } =
+  await import("@fretik/shared/services/model-registry/breaker");
+// The scorecard's two decisions — which policy grades it, and what to do when
+// the sync has never measured the row — are shared with the web surface rather
+// than restated here.
+const { evaluateScorecardPolicy, scorecardEndpoints, scorecardPool } =
+  await import("@fretik/shared/services/model-registry/scorecard");
 const { listRecentAlerts } =
   await import("@fretik/shared/services/model-registry/alerts");
 const { summarizeIncidents } =
@@ -692,16 +665,7 @@ const printScorecard = (input: {
     "  `intact` is the gate: an upstream that truncates the answer whenever a response ends in tool calls is unusable whatever its speed, and every agent turn ends exactly like that.",
   );
 
-  const report = evaluatePolicy(
-    DEFAULT_CANDIDATE_POLICY,
-    {
-      endpoints: [...endpoints],
-      excludedProviders: [...excluded],
-      aa,
-      requiresTools: true,
-    },
-    now,
-  );
+  const report = evaluateScorecardPolicy({ endpoints, excluded, aa, now });
   section("policy — DEFAULT_CANDIDATE_POLICY, evaluated now");
   policyTable(report);
 
@@ -735,65 +699,30 @@ const printScorecard = (input: {
   return report;
 };
 
-/**
- * Endpoints for a scorecard, preferring what the sync stored. The stored list is
- * MERGED across both catalogue sources (it is the only place `quantization` ever
- * appears), so a live re-fetch is a fallback for a row the sync has not reached
- * yet — a freshly added candidate above all — and not an improvement on it.
- */
-const scorecardEndpoints = async (
+/** The discriminant `scorecardEndpoints` returns, spelled out for a reader. */
+const endpointSourceLine = (
   state: LiveModelState,
-): Promise<{ endpoints: EndpointStat[]; source: string }> => {
-  if (state.endpointStats.length > 0) {
-    return {
-      endpoints: state.endpointStats,
-      source: `the last sync, ${stamp(state.syncedAt)}`,
-    };
-  }
-  const gatewayId = state.modelIds.gateway;
-  if (gatewayId === undefined) {
-    return {
-      endpoints: [],
-      source: "nothing — no stored stats, no gateway id",
-    };
-  }
-  try {
-    return {
-      endpoints: await fetchGatewayEndpoints(gatewayId),
-      source: "a live gateway fetch (the sync has not measured this row yet)",
-    };
-  } catch (err: unknown) {
-    console.warn(
-      `  (live endpoint fetch failed: ${err instanceof Error ? err.message : String(err)})`,
-    );
-    return { endpoints: [], source: "nothing — the live fetch failed" };
-  }
+  source: EndpointSource,
+): string => {
+  if (source === "stored") return `the last sync, ${stamp(state.syncedAt)}`;
+  if (source === "live")
+    return "a live gateway fetch (the sync has not measured this row yet)";
+  if (source === "no-gateway-id")
+    return "nothing — no stored stats, no gateway id";
+  return "nothing — the live fetch failed";
 };
 
 const runScorecard = async (): Promise<void> => {
   const state = await mustRead(requiredKey());
-  const { endpoints, source } = await scorecardEndpoints(state);
-  // Graded against the DISCOVERY policy's own filters, so the endpoint list on
-  // screen is the one the verdict was computed from rather than a wider set.
-  const pool = buildAllowedPool({
-    ...(state.providerPool[state.transport] === undefined
-      ? {}
-      : { declaredPool: state.providerPool[state.transport] }),
-    poolWidened: state.poolWidened,
-    quarantined: activeQuarantines(state, now)
-      .filter((entry) => entry.transport === state.transport)
-      .map((entry) => entry.provider),
-    endpoints,
-    requireTools: DEFAULT_CANDIDATE_POLICY.toolCallingRequired,
-    requireZdr: DEFAULT_CANDIDATE_POLICY.zdrRequired,
-    ...(DEFAULT_CANDIDATE_POLICY.quantizationFloor === undefined
-      ? {}
-      : { quantizationFloor: DEFAULT_CANDIDATE_POLICY.quantizationFloor }),
-  });
+  const { endpoints, source, error } = await scorecardEndpoints(state);
+  if (error !== undefined) {
+    console.warn(`  (live endpoint fetch failed: ${error})`);
+  }
+  const pool = scorecardPool(state, endpoints, now);
   printScorecard({
     state,
     endpoints: pool.endpoints,
-    endpointSource: source,
+    endpointSource: endpointSourceLine(state, source),
     excluded: pool.excluded,
     benchRuns: await loadBenchRuns(state.profileKey),
     incidents: await summarizeIncidents({
@@ -807,90 +736,53 @@ const runScorecard = async (): Promise<void> => {
 const runAdd = async (): Promise<void> => {
   const modelId =
     positional[1] ?? usageError("add needs a <creator/model> gateway id.");
+  const key = flags.get("key");
 
-  const catalog = await fetchGatewayCatalog();
-  const entry = catalog.find((candidate) => candidate.id === modelId);
-  if (entry === undefined) {
-    const near = catalog
-      .filter((candidate) =>
-        candidate.id.includes(modelId.split("/").at(-1) ?? modelId),
-      )
-      .slice(0, 8)
-      .map((candidate) => candidate.id);
+  // The catalogue lookup, the language-model check, the key collision and the
+  // empty-pool refusal all live in the service now. They were catalogue LOGIC
+  // sitting in a terminal script, so a second surface would have had to
+  // reimplement four refusals — or ship without them.
+  const outcome = await addModelFromCatalogue({
+    modelId,
+    ...(key === undefined ? {} : { profileKey: key }),
+    actor: { kind: "cli" },
+    now,
+  });
+
+  if (outcome.kind === "not-in-catalogue") {
     return fail(
-      `"${modelId}" is not in the Vercel AI Gateway catalogue (${catalog.length.toString()} entries read from /v1/models).${
-        near.length > 0 ? `\nDid you mean:\n  ${near.join("\n  ")}` : ""
+      `"${modelId}" is not in the Vercel AI Gateway catalogue (${outcome.catalogueSize.toString()} entries read from /v1/models).${
+        outcome.near.length > 0
+          ? `\nDid you mean:\n  ${outcome.near.join("\n  ")}`
+          : ""
       }\nThe catalogue is public — check the exact id at https://ai-gateway.vercel.sh/v1/models. Model ids differ between transports (\`x-ai/grok-4.5\` vs \`spacexai/grok-4.5\`); this command takes the GATEWAY spelling.`,
     );
   }
-  // Only a DECLARED `false` refuses. `undefined` means the catalogue does not
-  // classify — two of the three do not — and rejecting the unclassified would
-  // make most of the market unaddable by hand. An embedding model that slips
-  // through is caught by the policy below: it advertises no `tools`.
-  if (entry.isLanguageModel === false) {
+  if (outcome.kind === "not-a-language-model") {
     return fail(
       `"${modelId}" is not a language model in the gateway catalogue. Only language models route through the profile registry — embeddings and rerankers are env-selected single-purpose models with their own dimension rules.`,
     );
   }
-
-  const profileKey = flags.get("key") ?? slugForModelId(entry.id);
-  const existing = await readLiveStateRow(profileKey);
-  if (existing !== undefined) {
+  if (outcome.kind === "key-exists") {
     return fail(
-      `A row already exists for key "${profileKey}" (${existing.status}, ids ${Object.values(existing.modelIds).join(", ")}). Inspect it with \`models:admin -- show ${profileKey}\`, or pass --key <otherKey> to add this model under a different key.`,
+      `A row already exists for key "${outcome.profileKey}" (${outcome.status}, ids ${outcome.modelIds.join(", ")}). Inspect it with \`models:admin -- show ${outcome.profileKey}\`, or pass --key <otherKey> to add this model under a different key.`,
     );
   }
-
-  const endpoints = await fetchGatewayEndpoints(entry.id);
-  const pool = buildAllowedPool({
-    poolWidened: false,
-    quarantined: [],
-    endpoints,
-    requireTools: DEFAULT_CANDIDATE_POLICY.toolCallingRequired,
-    requireZdr: DEFAULT_CANDIDATE_POLICY.zdrRequired,
-    ...(DEFAULT_CANDIDATE_POLICY.quantizationFloor === undefined
-      ? {}
-      : { quantizationFloor: DEFAULT_CANDIDATE_POLICY.quantizationFloor }),
-  });
-  // Refusing here rather than inserting zeros: `effectiveContextLength` and
-  // `pricing` are what compaction budgets against and what credits bill off, and
-  // a row carrying 0 for either is worse than no row at all.
-  if (pool.endpoints.length === 0) {
+  if (outcome.kind === "no-eligible-endpoint") {
     return fail(
-      `${entry.id} has ${endpoints.length.toString()} endpoint(s) but none survives the discovery policy, so there is nothing to derive an honest context or price from:\n${pool.excluded
+      `${modelId} has ${outcome.endpointCount.toString()} endpoint(s) but none survives the discovery policy, so there is nothing to derive an honest context or price from:\n${outcome.excluded
         .map((excluded) => `  ${excluded.provider}: ${excluded.reason}`)
         .join("\n")}\nNothing was written.`,
     );
   }
-
-  const context = computeEffectiveContext(pool.endpoints);
-  const pricing = computePoolPricing(pool.endpoints);
-  const dynamicProfile = deriveDynamicProfile(
-    { ...entry, idsByTransport: { gateway: entry.id } },
-    now,
-  );
-
-  await addCatalogueModel({
-    profileKey,
-    transport: "gateway",
-    modelIds: { gateway: entry.id },
-    dynamicProfile,
-    effectiveContextLength: context.contextLength,
-    ...(context.maxOutput === null
-      ? {}
-      : { effectiveMaxOutput: context.maxOutput }),
-    pricing,
-  });
-
-  const state = await readLiveStateRow(profileKey);
-  if (state === undefined) {
+  if (outcome.kind === "insert-lost-race") {
     return fail(
-      `The insert for "${profileKey}" did not land — another process wrote the same key concurrently. Re-run \`models:admin -- show ${profileKey}\` to see what is there.`,
+      `Another process added "${outcome.profileKey}" at the same moment, so this call wrote nothing. Run \`models:admin -- show ${outcome.profileKey}\` to see what is there.`,
     );
   }
 
   console.log(
-    `Added ${entry.id} as "${profileKey}" — status CANDIDATE, transport gateway, disabled.`,
+    `Added ${modelId} as "${outcome.profileKey}" — status CANDIDATE, transport gateway, disabled.`,
   );
   console.log(
     "A candidate is invisible to teams. Nothing routes to it and no picker offers it until `models:admin -- promote` says so, which is the point: day-zero endpoints are measurably unstable and a catalogue entry says nothing about which host a call lands on.",
@@ -900,54 +792,77 @@ const runAdd = async (): Promise<void> => {
   );
 
   const report = printScorecard({
-    state,
-    endpoints: pool.endpoints,
+    state: outcome.state,
+    endpoints: outcome.endpoints,
     endpointSource: "a live gateway fetch, just now",
-    excluded: pool.excluded,
+    excluded: outcome.excluded,
     benchRuns: [],
     incidents: [],
   });
   console.log(
-    `\nNext: \`bun run models:bench -- --profile ${profileKey} --transport gateway --save\`, then \`models:admin -- promote ${profileKey}\`${report.passed ? "" : " once the hard failures above are understood"}.`,
+    `\nNext: \`bun run models:bench -- --profile ${outcome.profileKey} --transport gateway --save\`, then \`models:admin -- promote ${outcome.profileKey}\`${report.passed ? "" : " once the hard failures above are understood"}.`,
   );
+};
+
+/**
+ * Print what a write MEANT, from the codes the operation reported.
+ *
+ * The conditional paragraphs this replaces used to be re-derived here from the
+ * row: whether the price was over budget, whether a profile was
+ * catalogue-derived, which roles a model is bound to. Deciding that twice is
+ * how two surfaces come to disagree about the same write.
+ */
+const printConsequences = (consequences: readonly Consequence[]): void => {
+  for (const consequence of consequences) {
+    console.log(describeConsequence(consequence));
+  }
 };
 
 const runPromote = async (): Promise<void> => {
   const state = await mustRead(requiredKey());
-  if (state.status === "published") {
+  const { outcome, consequences } = await promoteModel({
+    profileKey: state.profileKey,
+    actor: { kind: "cli" },
+    now,
+  });
+  if (outcome.kind === "unknown-model") {
+    return fail(`Unknown model "${state.profileKey}".`);
+  }
+  if (outcome.kind === "already-published") {
     console.log(
       `${state.profileKey} is already published — nothing changed. It is ${state.enabled ? "enabled" : `disabled (${state.disabledReason ?? "no reason recorded"})`}; use \`enable\` for that.`,
     );
     return;
   }
-  const verdict = await promoteCandidate(state.profileKey);
   console.log(
-    `${state.profileKey}: ${state.status} -> published, ${verdict.enabled ? "enabled" : `DISABLED (${verdict.disabledReason ?? "unknown"})`}.`,
+    `${state.profileKey}: ${state.status} -> published, ${outcome.enabled ? "enabled" : `DISABLED (${outcome.disabledReason ?? "unknown"})`}.`,
   );
-  if (!verdict.enabled) {
-    console.log(
-      `Its pool costs ${money(state.pricing.inputPerMTok)} in / ${money(state.pricing.outputPerMTok)} out per MTok, past the ${money(PROMOTION_PRICE_CAPS.inputPerMTok)}/${money(PROMOTION_PRICE_CAPS.outputPerMTok)} budget. Discovery no longer filters on price — the model is published and visible, it is simply not being paid for. \`enable ${state.profileKey}\` overrides that deliberately; the nightly sync will re-disable it only if the price rises again, and re-enable it on its own if the price falls back under budget.`,
-    );
-  }
+  printConsequences(consequences);
   console.log(
     "Teams can select it from the next model construction onward, fleet-wide, with no deploy. Curation still holds a veto: a profile marked `enabled: false` in TypeScript stays hidden whatever this row says.",
   );
-  if (state.dynamicProfile !== null) {
-    console.log(
-      "It has NO hand-written TypeScript profile — it runs on catalogue-derived facts. That is supported, and it means nobody has recorded a reasoning envelope, a cache strategy or a native-input policy for it.",
-    );
-  }
 };
 
 const runRetire = async (): Promise<void> => {
   const state = await mustRead(requiredKey());
-  if (state.boundRoles.length > 0) {
+  const { outcome } = await retireModelOperation({
+    profileKey: state.profileKey,
+    actor: { kind: "cli" },
+    now,
+  });
+  if (outcome.kind === "unknown-model") {
+    return fail(`Unknown model "${state.profileKey}".`);
+  }
+  // The refusal now comes from the service, so it protects every caller rather
+  // than only this one.
+  if (outcome.kind === "refused-bound-roles") {
     return fail(
-      `${state.profileKey} serves internal role(s): ${state.boundRoles.join(", ")}. Retiring it would take those roles down rather than degrade one team's choice — rebind them in ROLE_BINDINGS first (that is a reviewed pull request).`,
+      `${state.profileKey} serves internal role(s): ${outcome.roles.join(", ")}. Retiring it would take those roles down rather than degrade one team's choice — rebind them in ROLE_BINDINGS first (that is a reviewed pull request).`,
     );
   }
-  await retireModel(state.profileKey);
-  console.log(`${state.profileKey}: ${state.status} -> retired, disabled.`);
+  console.log(
+    `${state.profileKey}: ${outcome.previousStatus} -> retired, disabled.`,
+  );
   console.log(
     "It leaves every picker on the next model construction. Nothing is deleted: incidents, alerts and bench runs keep pointing at this key, so its history stays readable.",
   );
@@ -955,18 +870,19 @@ const runRetire = async (): Promise<void> => {
 
 const runEnable = async (): Promise<void> => {
   const state = await mustRead(requiredKey());
-  await setEnabled(state.profileKey, true);
-  console.log(
-    `${state.profileKey}: enabled${state.enabled ? " (it already was)" : ""}, disabledReason cleared, policy-fail streak reset to 0.`,
-  );
-  console.log(
-    "The streak reset matters: without it, yesterday's consecutive hard-policy failures would disable the model again on the next sync even though the underlying problem is fixed.",
-  );
-  if (state.status !== "published") {
-    console.log(
-      `Status is still ${state.status}, so teams still cannot select it. Run \`promote ${state.profileKey}\` for that.`,
-    );
+  const { outcome, consequences } = await setModelEnabled({
+    profileKey: state.profileKey,
+    enabled: true,
+    actor: { kind: "cli" },
+    now,
+  });
+  if (outcome.kind === "unknown-model") {
+    return fail(`Unknown model "${state.profileKey}".`);
   }
+  console.log(
+    `${state.profileKey}: enabled, disabledReason cleared, policy-fail streak reset to 0.`,
+  );
+  printConsequences(consequences);
 };
 
 const runDisable = async (): Promise<void> => {
@@ -978,18 +894,23 @@ const runDisable = async (): Promise<void> => {
       `--reason "${rawReason}" is not one of: ${DISABLED_REASONS.join(", ")}.`,
     );
   }
-  await setEnabled(state.profileKey, false, reason);
+  const { outcome, consequences } = await setModelEnabled({
+    profileKey: state.profileKey,
+    enabled: false,
+    ...(reason === undefined ? {} : { reason }),
+    actor: { kind: "cli" },
+    now,
+  });
+  if (outcome.kind === "unknown-model") {
+    return fail(`Unknown model "${state.profileKey}".`);
+  }
   console.log(
-    `${state.profileKey}: disabled, reason "${reason ?? "unavailable"}".`,
+    `${state.profileKey}: disabled, reason "${outcome.disabledReason ?? "unavailable"}".`,
   );
   console.log(
     "No running turn breaks. A team whose stored selection just became unselectable degrades to the code default at resolution time — a path that already exists for unknown keys.",
   );
-  if (state.boundRoles.length > 0) {
-    console.log(
-      `WARNING: ${state.profileKey} is bound to internal role(s) ${state.boundRoles.join(", ")}. \`enabled\` gates TEAM SELECTION only — ROLE_BINDINGS resolves profiles directly and bypasses it, so those roles keep running on this model.`,
-    );
-  }
+  printConsequences(consequences);
 };
 
 const runSetTransport = async (): Promise<void> => {
@@ -1005,22 +926,32 @@ const runSetTransport = async (): Promise<void> => {
   }
   const transport: TransportId = rawTransport;
   const state = await mustRead(profileKey);
-  if (state.transport === transport) {
+  const { outcome, consequences } = await switchModelTransport({
+    profileKey,
+    transport,
+    actor: { kind: "cli" },
+    now,
+  });
+  if (outcome.kind === "unknown-model") {
+    return fail(`Unknown model "${profileKey}".`);
+  }
+  if (outcome.kind === "no-model-id") {
+    return fail(
+      `"${profileKey}" has no model id for transport "${transport}" — it is known as ${outcome.available.join(", ")}. Model ids differ between transports; add one to its row first.`,
+    );
+  }
+  if (outcome.kind === "already-on-transport") {
     console.log(`${profileKey} is already on ${transport} — nothing changed.`);
     return;
   }
-  try {
-    await setTransport(profileKey, transport);
-  } catch (err: unknown) {
-    return fail(err instanceof Error ? err.message : String(err));
-  }
-  console.log(`${profileKey}: ${state.transport} -> ${transport}.`);
+  console.log(`${profileKey}: ${outcome.from} -> ${outcome.to}.`);
   console.log(
     "This takes effect on the NEXT MODEL CONSTRUCTION, fleet-wide, with no deploy and no restart: the write invalidates every replica's live-state snapshot over Redis and drops every memoized model instance built from the old one.",
   );
   console.log(
-    "Routing starts from a clean slate — `poolWidened` and `lastResort` are cleared, because the previous transport's widening described a different set of hosts entirely. Quarantines are KEPT: they are recorded per transport.",
+    "Routing starts from a clean slate — `poolWidened` and `lastResort` are cleared, because the previous transport's widening described a different set of hosts entirely.",
   );
+  printConsequences(consequences);
   const wire = effectivePoolFor(
     { ...state, transport, poolWidened: false },
     transport,
@@ -1030,7 +961,7 @@ const runSetTransport = async (): Promise<void> => {
     `Pool on ${transport}: only=[${(wire.only ?? []).join(", ")}]${wire.only === undefined ? " (open routing)" : ""} ignore=[${(wire.ignore ?? []).join(", ")}]`,
   );
   console.log(
-    `Verify cost and caching on the new transport, then roll back with: models:admin -- set-transport ${profileKey} ${state.transport}`,
+    `Verify cost and caching on the new transport, then roll back with: models:admin -- set-transport ${profileKey} ${outcome.from}`,
   );
 };
 
@@ -1054,56 +985,48 @@ const runQuarantine = async (): Promise<void> => {
     flags.get("reason") ??
     `Quarantined by hand through model-admin on ${now.toISOString().slice(0, 10)}.`;
 
-  const changed = await quarantineProvider({
-    modelKey: profileKey,
+  const { outcome, consequences } = await quarantineUpstream({
+    profileKey,
     provider,
     transport: before.transport,
     kind,
     reason,
+    actor: { kind: "cli" },
     now,
   });
 
-  const after = await mustRead(profileKey);
-  const quarantines = activeQuarantines(after, now);
-
-  if (!changed) {
-    const already = quarantines.find(
-      (entry) =>
-        entry.transport === before.transport &&
-        entry.provider.includes(
-          provider.toLowerCase().replace(/[^a-z0-9]/g, ""),
-        ),
-    );
-    if (already !== undefined) {
-      console.log(
-        `${provider} is already quarantined on ${profileKey}/${before.transport} until ${already.releaseAt.slice(0, 10)} (${already.kind}) — nothing changed.`,
-      );
-      return;
-    }
+  // The rung comes back named, so none of what follows has to be inferred from
+  // a re-read. This used to search the after-state for a provider whose name
+  // merely CONTAINED the argument, and read the release date off one whose
+  // first four characters matched — two guesses that could answer for the
+  // wrong host.
+  if (outcome.kind === "already-quarantined") {
     console.log(
-      `${profileKey} was NOT changed: ${provider} is the last usable upstream on every transport, so it stays in service (an empty pool is a hard outage) and the model was marked LAST RESORT instead.`,
-    );
-    console.log(
-      "Roles bound to it now serve from their fallback MODEL and teams that selected it degrade to the default. Widen the pool, add a transport, or replace the model.",
+      `${provider} is already quarantined on ${profileKey}/${before.transport} until ${outcome.entry.releaseAt.slice(0, 10)} (${outcome.entry.kind}) — nothing changed.`,
     );
     return;
   }
-
-  const threshold = BREAKER_THRESHOLDS[kind];
-  console.log(
-    `${provider} removed from ${profileKey} on ${after.transport} — kind "${kind}", release due ${quarantines.find((entry) => entry.provider.startsWith(provider.slice(0, 4).toLowerCase()))?.releaseAt.slice(0, 10) ?? `in ${BREAKER_QUARANTINE_DAYS.toString()} days`}.`,
-  );
-  console.log(
-    `The breaker files this kind by itself after ${threshold.generations.toString()} distinct generations inside ${threshold.windowMinutes.toString()} min — one pathological answer can never trip it, and neither can this command be undone by one.`,
-  );
-  for (const line of routingLines(after)) console.log(line);
-  if (after.transport !== before.transport) {
-    console.log(
-      `Nothing clean was left on ${before.transport}, so ${profileKey} was SWITCHED to ${after.transport}, which serves it from a different set of hosts. Verify cost and caching there.`,
+  if (outcome.kind === "no-live-row") {
+    return fail(
+      `${profileKey} has no live-state row, so there is no pool to edit. The finding was recorded as an alert.`,
     );
   }
+  if (outcome.kind === "last-resort") {
+    console.log(
+      `${profileKey}'s pool was NOT changed: ${provider} is the last usable upstream on every transport.`,
+    );
+    printConsequences(consequences);
+    return;
+  }
+
+  const after = await mustRead(profileKey);
   console.log(
-    `The release date is a review trigger: the sync re-probes on it, releases the host only if the probe is clean, and extends the quarantine otherwise. Undo now with: models:admin -- release ${profileKey} ${provider}`,
+    `${provider} removed from ${profileKey} on ${after.transport} — kind "${kind}", release due ${outcome.entry.releaseAt.slice(0, 10)} (${BREAKER_QUARANTINE_DAYS.toString()} days).`,
+  );
+  for (const line of routingLines(after)) console.log(line);
+  printConsequences(consequences);
+  console.log(
+    `Undo now with: models:admin -- release ${profileKey} ${provider}`,
   );
 };
 
@@ -1112,59 +1035,62 @@ const runRelease = async (): Promise<void> => {
   const provider =
     positional[2] ?? usageError("release needs a <provider> to restore.");
   const before = await mustRead(profileKey);
-  await releaseProvider({
-    modelKey: profileKey,
+  const { outcome, consequences } = await releaseUpstream({
+    profileKey,
     provider,
     transport: before.transport,
     reason: `Released by hand through model-admin on ${now.toISOString().slice(0, 10)}.`,
+    actor: { kind: "cli" },
+    now,
   });
-  const after = await mustRead(profileKey);
 
-  if (
-    after.quarantinedProviders.length === before.quarantinedProviders.length
-  ) {
-    const elsewhere = before.quarantinedProviders.filter(
-      (entry) => entry.transport !== before.transport,
-    );
+  if (outcome.kind === "no-live-row") {
+    return fail(`${profileKey} has no live-state row — nothing to release.`);
+  }
+  // `elsewhere` arrives with the outcome. It used to be reconstructed here by
+  // comparing `quarantinedProviders.length` across a re-read, which also read
+  // an expired entry as a successful release.
+  if (outcome.kind === "not-quarantined") {
     return fail(
       `Nothing to release: ${provider} is not quarantined on ${profileKey}/${before.transport}.${
-        elsewhere.length > 0
-          ? `\nQuarantines DO exist on another transport: ${elsewhere.map((entry) => `${entry.provider} on ${entry.transport}`).join(", ")}. Quarantine is recorded per transport — move the model there first with \`set-transport\` if that is the one you meant.`
+        outcome.elsewhere.length > 0
+          ? `\nQuarantines DO exist on another transport: ${outcome.elsewhere.map((entry) => `${entry.provider} on ${entry.transport}`).join(", ")}. Quarantine is recorded per transport — move the model there first with \`set-transport\` if that is the one you meant.`
           : ""
       }`,
     );
   }
 
-  console.log(`${provider} restored to ${profileKey} on ${before.transport}.`);
+  const after = await mustRead(profileKey);
   console.log(
-    "Routing re-narrows to the vetted pool and the last-resort flag is lifted, provided the vetted pool still has a member. Effective on the next model construction, fleet-wide.",
+    `${provider} restored to ${profileKey} on ${before.transport}. Effective on the next model construction, fleet-wide.`,
   );
+  printConsequences(consequences);
   for (const line of routingLines(after)) console.log(line);
 };
 
 const runAlerts = async (): Promise<void> => {
   const ackId = flags.get("ack");
   if (ackId !== undefined) {
-    let existing: ModelAlertRow | undefined;
-    try {
-      [existing] = await db
-        .select()
-        .from(modelAlerts)
-        .where(eq(modelAlerts.id, ackId))
-        .limit(1);
-    } catch {
+    // The uuid shape is checked here rather than by letting Postgres reject
+    // the cast: the service reads the row, and a malformed id would surface
+    // as a driver error instead of "that is not an id".
+    if (!UUID_PATTERN.test(ackId)) {
       return fail(
         `"${ackId}" is not a valid alert id. Ids are UUIDs — copy one from \`models:admin -- alerts\`.`,
       );
     }
-    if (existing === undefined) {
+    const { outcome } = await acknowledgeModelAlert({
+      alertId: ackId,
+      actor: { kind: "cli" },
+      now,
+    });
+    if (outcome.kind === "unknown-alert") {
       return fail(
         `No alert with id "${ackId}". List them with \`models:admin -- alerts\`.`,
       );
     }
-    await acknowledgeAlert(ackId);
     console.log(
-      `Acknowledged: ${existing.kind}${existing.modelKey === null ? "" : ` on ${existing.modelKey}`}.`,
+      `Acknowledged: ${outcome.alertKind}${outcome.modelKey === null ? "" : ` on ${outcome.modelKey}`}.`,
     );
     console.log(
       "The digest sweep stops carrying it. Acknowledging changes nothing about the DECISION the alert reports — a quarantine stays in force until its re-probe releases it.",
@@ -1203,173 +1129,22 @@ const runAlerts = async (): Promise<void> => {
  * `audit` — everything the engine can contradict itself about, checked without
  * touching the network or a model.
  *
- * It exists because every one of these had already happened once. A tier that
- * disagrees with the model's own measurements, a row naming a transport it has
- * no id for, a TypeScript profile saying `enabled` while the row says disabled,
- * a display name outliving the model it named: each was found by hand, months
- * apart, by someone who happened to look. Reading a database and a few
- * TypeScript tables is cheap enough to do on every deploy.
+ * The checks themselves live in `src/services/model-audit/run.ts`, because the
+ * web surface asks the same question and two implementations of "is the engine
+ * consistent" would disagree on the afternoon it mattered. Each finding carries
+ * its parameters AND the English sentence printed below, so this output is
+ * unchanged while a screen can translate the code.
  *
- * Deliberately offline. An audit that needs a catalogue fetch is an audit that
- * gets skipped in CI and fails on a bad afternoon for the wrong reason.
+ * The exit code stays HERE: `runModelAudit` never calls `process.exit`, since
+ * an audit that finds problems is a successful audit everywhere except in CI.
  */
 const runAudit = async (): Promise<void> => {
-  const [
-    { MODEL_PROFILES, ROLE_BINDINGS },
-    { MODEL_DISPLAY_NAME },
-    { ROLE_FALLBACK },
-    gatewayIds,
-    { getEffectiveProfile },
-    { selectableForFunction },
-    { teamAiSettings },
-  ] = await Promise.all([
-    import("../src/lib/model-registry/profiles"),
-    import("../src/lib/model-registry/display"),
-    import("../src/lib/model-registry/resolve"),
-    import("../src/lib/model-registry/gateway-ids"),
-    import("../src/lib/model-registry/effective"),
-    import("../src/lib/model-registry/functions"),
-    import("@fretik/shared/db/schema"),
-  ]);
-  const rows = await readAllLiveStateRows();
-  const byKey = new Map(rows.map((row) => [row.profileKey, row]));
-
-  const findings: { check: string; detail: string }[] = [];
-  const note = (check: string, detail: string): void => {
-    findings.push({ check, detail });
-  };
-
-  for (const row of rows) {
-    if (row.modelIds[row.transport] === undefined) {
-      note(
-        "no id for its own transport",
-        `${row.profileKey} routes through ${row.transport} and carries ids for ${Object.keys(row.modelIds).join(", ") || "nothing"}. Every call fails.`,
-      );
-    }
-
-    if (row.aaSlug !== null && row.aaMetrics === null) {
-      note(
-        "aaSlug set but never matched",
-        `${row.profileKey} pins Artificial Analysis slug "${row.aaSlug}" and carries no grades — the slug is wrong, or AA dropped the record.`,
-      );
-    }
-
-    const declared = row.providerPool[row.transport]?.only ?? [];
-    const answering = new Set(row.endpointStats.map((stat) => stat.provider));
-    const absent = declared.filter((provider) => !answering.has(provider));
-    if (absent.length > 0) {
-      note(
-        "pool names upstreams no endpoint answers to",
-        `${row.profileKey} (${row.transport}) pins [${absent.join(", ")}]; routing still works, on a set nobody vetted.`,
-      );
-    }
-
-    if (row.status === "published" && row.pricing.inputPerMTok > 0) {
-      const budget = promotionEnablement(row.pricing);
-      if (row.enabled && !budget.enabled && row.boundRoles.length === 0) {
-        note(
-          "enabled above the promotion caps",
-          `${row.profileKey} costs $${row.pricing.inputPerMTok.toString()}/$${row.pricing.outputPerMTok.toString()} against caps $${PROMOTION_PRICE_CAPS.inputPerMTok.toString()}/$${PROMOTION_PRICE_CAPS.outputPerMTok.toString()} and no role needs it.`,
-        );
-      }
-    }
-  }
-
-  // Curation and the row each hold a veto; they are allowed to differ, but a
-  // difference nobody decided is how a model silently leaves the picker.
-  for (const [key, profile] of Object.entries(MODEL_PROFILES)) {
-    const row = byKey.get(key);
-    if (row === undefined) {
-      note(
-        "curated profile with no live row",
-        `${key} is in TypeScript and absent from model_live_state — it resolves on curated defaults only, with no pool, no quarantine and no price.`,
-      );
-      continue;
-    }
-    if (profile.assessment.enabled && !row.enabled && row.disabledReason) {
-      note(
-        "curation says enabled, the row disagrees",
-        `${key}: TypeScript enables it, the engine disabled it (${row.disabledReason}). Expected after an automatic disable; unexplained otherwise.`,
-      );
-    }
-  }
-
-  const known = new Set([...Object.keys(MODEL_PROFILES), ...byKey.keys()]);
-  for (const key of Object.keys(MODEL_DISPLAY_NAME)) {
-    if (!known.has(key)) {
-      note(
-        "display name for a model that no longer exists",
-        `MODEL_DISPLAY_NAME["${key}"] names nothing — the card would fall back to the key if the model came back under it.`,
-      );
-    }
-  }
-  // `GATEWAY_MODEL_IDS` only — `GATEWAY_AUX_MODEL_IDS` is keyed by OpenRouter id
-  // and holds the embedding and rerank models, which have no profile BY DESIGN.
-  for (const key of Object.keys(gatewayIds.GATEWAY_MODEL_IDS)) {
-    if (!known.has(key)) {
-      note("orphan gateway id", `GATEWAY_MODEL_IDS["${key}"] names nothing.`);
-    }
-  }
-  for (const key of gatewayIds.PROFILES_WITHOUT_GATEWAY_ID) {
-    if (!known.has(key)) {
-      note(
-        "orphan gateway exclusion",
-        `PROFILES_WITHOUT_GATEWAY_ID lists "${key}", which names nothing.`,
-      );
-    }
-  }
-
-  // A fallback that resolves to its own primary is not redundancy, and it fails
-  // exactly when redundancy was the point.
-  for (const binding of Object.values(ROLE_BINDINGS)) {
-    const fallback = ROLE_FALLBACK[binding.role];
-    if (fallback === undefined) continue;
-    const fallbackKey = ROLE_BINDINGS[fallback].profileKey;
-    if (binding.profileKey === fallbackKey) {
-      note(
-        "a fallback pointing at its own primary",
-        `${binding.role} falls back to ${fallback}, and both resolve to "${binding.profileKey}".`,
-      );
-    }
-  }
-
-  // What teams actually stored. The one check that reads a row a PERSON wrote
-  // rather than one the engine did: a model can be retired, cost-disabled or
-  // driven to last-resort long after a team picked it, and the resolver
-  // degrades in silence — correctly, since a turn must not fail — which is
-  // exactly why nothing else would ever surface it.
-  const teamRows = await db
-    .select({
-      teamId: teamAiSettings.teamId,
-      keys: teamAiSettings.functionProfileKeys,
-    })
-    .from(teamAiSettings);
-  for (const team of teamRows) {
-    for (const [fn, key] of Object.entries(team.keys)) {
-      if (!isModelFunctionKey(fn)) {
-        note(
-          "a stored key under an unknown function",
-          `team ${team.teamId} stores "${key}" under "${fn}", which is not a model function — it can never be read.`,
-        );
-        continue;
-      }
-      const profile = getEffectiveProfile(key);
-      if (!profile) {
-        note(
-          "a team points a function at a model that no longer exists",
-          `team ${team.teamId}: ${fn} → "${key}". Every turn silently serves the default instead.`,
-        );
-      } else if (!selectableForFunction(profile, fn)) {
-        note(
-          "a team points a function at a model it can no longer use",
-          `team ${team.teamId}: ${fn} → "${key}". Still stored, never served.`,
-        );
-      }
-    }
-  }
+  const { AUDIT_CHECK_LABELS, runModelAudit } =
+    await import("../src/services/model-audit/run");
+  const { findings, counts } = await runModelAudit();
 
   section(
-    `audit — ${rows.length.toString()} live rows, ${Object.keys(MODEL_PROFILES).length.toString()} curated profiles, ${teamRows.length.toString()} team settings rows`,
+    `audit — ${counts.liveRows.toString()} live rows (${counts.published.toString()} published), ${counts.roleBindings.toString()} role bindings, ${counts.teamSettingsRows.toString()} team settings rows`,
   );
   if (findings.length === 0) {
     console.log("Nothing to report.");
@@ -1377,10 +1152,8 @@ const runAudit = async (): Promise<void> => {
   }
   const grouped = new Map<string, string[]>();
   for (const finding of findings) {
-    grouped.set(finding.check, [
-      ...(grouped.get(finding.check) ?? []),
-      finding.detail,
-    ]);
+    const check = AUDIT_CHECK_LABELS[finding.code];
+    grouped.set(check, [...(grouped.get(check) ?? []), finding.detail]);
   }
   for (const [check, details] of grouped) {
     console.log(`\n${check} (${details.length.toString()})`);

@@ -16,9 +16,18 @@
  * seam that broke rather than at the object the agent holds.
  */
 
-import { describe, expect, test } from "bun:test";
+import { beforeAll, describe, expect, test } from "bun:test";
 import { getPageBuilderSet } from "../../../src/agents/chatbot";
-import { ROLE_BINDINGS } from "../../../src/lib/model-registry/profiles";
+import { clearResolvedModelCache } from "../../../src/lib/model-registry/resolve";
+import { ROLE_BINDINGS } from "../../../src/lib/model-registry/role-bindings";
+import { installBoundFleet } from "../../lib/live-fleet";
+
+// Resolution reads the live registry, so the models the bindings name have to
+// exist as rows before a set can be built for them.
+beforeAll(() => {
+  installBoundFleet();
+  clearResolvedModelCache();
+});
 
 describe("the page builder's model", () => {
   test("has its own role — the builder is not the chat binding by accident", () => {

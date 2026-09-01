@@ -78,8 +78,14 @@ export const dispatchAgentInputSchema = z.object({
  * cast.
  */
 export const createDispatchAgentTool = <TTools extends ToolSet>(deps: {
-  primary: Agent<ChatbotCallOptions, TTools>;
-  cheap: Agent<ChatbotCallOptions, TTools>;
+  /**
+   * RESOLVERS, not agents. The sub-agent sets resolve their model per call
+   * (against the live registry, so a quarantine written overnight applies to
+   * the first delegation of the day); taking an instance here would capture
+   * whatever the registry held at import and never see a change again.
+   */
+  primary: () => Agent<ChatbotCallOptions, TTools>;
+  cheap: () => Agent<ChatbotCallOptions, TTools>;
 }) => {
   const inputSchema = dispatchAgentInputSchema;
 
@@ -140,7 +146,7 @@ export const createDispatchAgentTool = <TTools extends ToolSet>(deps: {
     z.infer<typeof inputSchema>,
     ReturnType<typeof formatSubAgentResult>
   >({
-    subAgent: () => deps.primary,
+    subAgent: () => deps.primary(),
     buildMessages: ({ task }) => [{ role: "user", content: task }],
     buildCallOptions: (_input, ctx) => ({
       teamId: ctx.teamId,
@@ -164,7 +170,7 @@ export const createDispatchAgentTool = <TTools extends ToolSet>(deps: {
     z.infer<typeof inputSchema>,
     ReturnType<typeof formatSubAgentResult>
   >({
-    subAgent: () => deps.cheap,
+    subAgent: () => deps.cheap(),
     buildMessages: ({ task }) => [{ role: "user", content: task }],
     buildCallOptions: (_input, ctx) => ({
       teamId: ctx.teamId,

@@ -36,10 +36,12 @@
 
 import { RegressionError, type RunnerContext } from "@langfuse/client";
 import { langfuseClient } from "../../src/lib/langfuse";
+import { getEffectiveProfile } from "../../src/lib/model-registry/effective";
 import {
-  MODEL_PROFILES,
-  ROLE_BINDINGS,
-} from "../../src/lib/model-registry/profiles";
+  listProfiles,
+  warmModelRegistry,
+} from "../../src/lib/model-registry/resolve";
+import { ROLE_BINDINGS } from "../../src/lib/model-registry/role-bindings";
 import { CURATED } from "../curation";
 import { CAPABILITIES, type Capability } from "../types";
 import {
@@ -255,19 +257,28 @@ const metricsFromStoredRun = async (runName: string): Promise<RunMetrics> => {
   };
 };
 
-/** Suggested `profiles.ts` evalGate stamp — computed, never written. */
+/**
+ * Suggested `ROLE_BINDINGS` stamp — computed, never written.
+ *
+ * It goes on the BINDING, not on the profile: a gate run measures a model doing
+ * a job against the model that held it, so the evidence belongs beside the
+ * `profileKey` it justifies. Stamping the profile instead is how `minimax-m3`
+ * kept a stamp claiming it was the `chat` default four weeks after the flip.
+ */
 const printSuggestions = (
   cand: RunMetrics,
   candidateKey: string,
   passed: boolean,
 ): void => {
   const gatedAt = new Date().toISOString().slice(0, 10);
-  console.log(`\nSuggested profiles.ts update for "${candidateKey}":`);
+  console.log(
+    `\nSuggested ROLE_BINDINGS update — set profileKey to "${candidateKey}" on the role you gated, and stamp it:`,
+  );
   console.log(
     `  evalGate: { status: "${passed ? "passed" : "failed"}", lastRunId: "${cand.datasetRunId ?? "?"}", gatedAt: "${gatedAt}" },`,
   );
   console.log(
-    "\nThe gate never writes profiles.ts — commit this in a reviewed PR (the PR IS the promotion).",
+    "\nThe gate never writes the registry — commit this in a reviewed PR (the PR IS the promotion).",
   );
 };
 
@@ -279,9 +290,15 @@ interface ModelGateOptions {
 }
 
 const runModelGate = async (opts: ModelGateOptions): Promise<void> => {
-  if (!MODEL_PROFILES[opts.candidate]) {
+  // The registry is database-backed, so a script has to warm it before it can
+  // name a model — there is no TypeScript registry to read instead.
+  await warmModelRegistry();
+  if (getEffectiveProfile(opts.candidate) === undefined) {
     throw new Error(
-      `Unknown candidate profile key "${opts.candidate}". Known keys: ${Object.keys(MODEL_PROFILES).join(", ")}`,
+      `Unknown candidate profile key "${opts.candidate}". Known keys: ${listProfiles()
+        .map((p) => p.key)
+        .sort()
+        .join(", ")}`,
     );
   }
   const baselineKey = ROLE_BINDINGS.chat.profileKey;

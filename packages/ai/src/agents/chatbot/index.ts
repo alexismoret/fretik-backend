@@ -430,21 +430,39 @@ const pageBuilderPrepareStep = (
  * sub-agent (no Progressive Disclosure inside a sub-agent run) but applies the
  * workflow write gate when the sub-agent runs inside a workflow.
  */
-const subAgentPrimarySet = buildAgentSet<ChatbotCallOptions, SubAgentTools>({
-  id: "chatbot.sub.primary",
-  buildTools: buildSubAgentTools,
-  systemPrompt: subAgentSystemPrompt,
-  model: resolveModel("chat"),
-  fallbackModel: resolveModel("chat-fallback"),
-  stopWhen: [
-    isStepCount(parseSubAgentMaxSteps()),
-    hasToolCall("askUserQuestion"),
-  ],
-  repairToolCall: llmRepairToolCall<SubAgentTools>(),
-  prepareStep: subAgentPrepareStep,
-  buildRuntimeContextBase: buildChatbotRuntimeContextBase,
-  callOptionsSchema: ChatbotCallOptionsSchema,
-});
+const makeSubAgentPrimarySet = (
+  model: ResolvedModel,
+): AgentSet<ChatbotCallOptions, SubAgentTools> =>
+  buildAgentSet<ChatbotCallOptions, SubAgentTools>({
+    id: "chatbot.sub.primary",
+    buildTools: buildSubAgentTools,
+    systemPrompt: subAgentSystemPrompt,
+    model,
+    fallbackModel: resolveModel("chat-fallback"),
+    stopWhen: [
+      isStepCount(parseSubAgentMaxSteps()),
+      hasToolCall("askUserQuestion"),
+    ],
+    repairToolCall: llmRepairToolCall<SubAgentTools>(),
+    prepareStep: subAgentPrepareStep,
+    buildRuntimeContextBase: buildChatbotRuntimeContextBase,
+    callOptionsSchema: ChatbotCallOptionsSchema,
+  });
+
+const memoSubAgentPrimarySet = memoizeAgentSets(makeSubAgentPrimarySet);
+
+/**
+ * BUILT PER CALL, not at import — the same fix `getPageBuilderSet` documents.
+ *
+ * This was a module-level const until 2026-08-30, which meant `resolveModel`
+ * ran while the module graph was still loading: before the live registry is
+ * warmed, and before a quarantine written overnight could possibly be read. It
+ * survived only because a curated TypeScript registry could answer without a
+ * database; with the registry database-backed, resolving at import is resolving
+ * against nothing. `memoizeAgentSets` keeps the per-call cost to a map lookup.
+ */
+const subAgentPrimarySet = (): AgentSet<ChatbotCallOptions, SubAgentTools> =>
+  memoSubAgentPrimarySet(resolveModel("chat"));
 
 /**
  * Sub-agent set on the CHEAP model (the registry's `dispatch-cheap` role,
@@ -458,21 +476,30 @@ const subAgentPrimarySet = buildAgentSet<ChatbotCallOptions, SubAgentTools>({
  * `dispatchAgent` execute returns the primary model's result rather
  * than a hard failure.
  */
-const subAgentCheapSet = buildAgentSet<ChatbotCallOptions, SubAgentTools>({
-  id: "chatbot.sub.cheap",
-  buildTools: buildSubAgentTools,
-  systemPrompt: subAgentSystemPrompt,
-  model: resolveModel("dispatch-cheap"),
-  fallbackModel: resolveModel("chat"),
-  stopWhen: [
-    isStepCount(parseSubAgentMaxSteps()),
-    hasToolCall("askUserQuestion"),
-  ],
-  repairToolCall: llmRepairToolCall<SubAgentTools>(),
-  prepareStep: subAgentPrepareStep,
-  buildRuntimeContextBase: buildChatbotRuntimeContextBase,
-  callOptionsSchema: ChatbotCallOptionsSchema,
-});
+const makeSubAgentCheapSet = (
+  model: ResolvedModel,
+): AgentSet<ChatbotCallOptions, SubAgentTools> =>
+  buildAgentSet<ChatbotCallOptions, SubAgentTools>({
+    id: "chatbot.sub.cheap",
+    buildTools: buildSubAgentTools,
+    systemPrompt: subAgentSystemPrompt,
+    model,
+    fallbackModel: resolveModel("chat"),
+    stopWhen: [
+      isStepCount(parseSubAgentMaxSteps()),
+      hasToolCall("askUserQuestion"),
+    ],
+    repairToolCall: llmRepairToolCall<SubAgentTools>(),
+    prepareStep: subAgentPrepareStep,
+    buildRuntimeContextBase: buildChatbotRuntimeContextBase,
+    callOptionsSchema: ChatbotCallOptionsSchema,
+  });
+
+const memoSubAgentCheapSet = memoizeAgentSets(makeSubAgentCheapSet);
+
+/** Per call, for the reason `subAgentPrimarySet` carries. */
+const subAgentCheapSet = (): AgentSet<ChatbotCallOptions, SubAgentTools> =>
+  memoSubAgentCheapSet(resolveModel("dispatch-cheap"));
 
 /**
  * Page-builder step budget. Higher than the generic sub-agent's 25 because a
@@ -560,8 +587,11 @@ export const getPageBuilderSet = (
  * without going through Progressive Disclosure.
  */
 export const dispatchAgentTool = createDispatchAgentTool({
-  primary: subAgentPrimarySet.primary,
-  cheap: subAgentCheapSet.primary,
+  // RESOLVERS, not agents: the sets resolve their model per call, so handing
+  // over an instance here would pin every delegated sub-task to whatever the
+  // registry held while this module was loading.
+  primary: () => subAgentPrimarySet().primary,
+  cheap: () => subAgentCheapSet().primary,
 });
 
 /**
@@ -648,4 +678,13 @@ export const getChatbotAgentSet = (
       : resolveChatModelForProfile(profileKey),
   );
 
-export const chatbotAgentSet = getChatbotAgentSet();
+/**
+ * The default set. A FUNCTION rather than an exported instance, because an
+ * instance is built at import — before `warmModelRegistry()` has run and before
+ * any overnight quarantine can be read. `memoizeAgentSets` makes the repeat call
+ * a map lookup, so nothing is rebuilt per turn.
+ */
+export const defaultChatbotAgentSet = (): AgentSet<
+  ChatbotCallOptions,
+  ChatbotTools
+> => getChatbotAgentSet();

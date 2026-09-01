@@ -1,5 +1,5 @@
 import { eq } from "drizzle-orm";
-import db from "../../db";
+import db, { type Transaction } from "../../db";
 import {
   type ModelLiveStateRow,
   modelLiveState,
@@ -248,6 +248,31 @@ export const readLiveStateRow = async (
     .from(modelLiveState)
     .where(eq(modelLiveState.profileKey, profileKey))
     .limit(1);
+  return row ? toLiveState(row) : undefined;
+};
+
+/**
+ * Read one row and hold a row lock on it until the transaction ends.
+ *
+ * For the read-modify-write on `quarantined_providers`, which is a jsonb array
+ * rewritten wholesale: two writers that both read the old array each write
+ * their own entry over the other's, and the loser's quarantine vanishes with
+ * no error anywhere. The window is small and the writers are rare — the
+ * breaker firing mid-stream, the 03:00 release re-probe, an operator — but
+ * "rare" is exactly how a lost quarantine gets attributed to something else.
+ *
+ * Same shape as `workflows/start-current-task.ts`, which locks `task_states`
+ * for the same reason.
+ */
+export const readLiveStateRowForUpdate = async (
+  tx: Transaction,
+  profileKey: string,
+): Promise<LiveModelState | undefined> => {
+  const [row] = await tx
+    .select()
+    .from(modelLiveState)
+    .where(eq(modelLiveState.profileKey, profileKey))
+    .for("update");
   return row ? toLiveState(row) : undefined;
 };
 

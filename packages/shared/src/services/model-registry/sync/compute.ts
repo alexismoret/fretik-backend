@@ -322,6 +322,7 @@ export const deriveDynamicProfile = (
     supportedParameters: entry.supportedParameters,
     supportsReasoning: parameters.has("reasoning"),
     supportsTools: parameters.has("tools"),
+    ...(entry.reasoning === undefined ? {} : { reasoning: entry.reasoning }),
     derivedFrom: {
       // The transports that described it, so an operator reading a promoted
       // model's provenance can tell a single-catalogue guess from a fact two

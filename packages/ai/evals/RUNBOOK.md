@@ -88,7 +88,7 @@ answers.
 
 **Model pinning.** Every `evals:langfuse` run pins the turn model via
 `X-Model-Profile-Key` — default = the CODE `chat` binding in
-`src/lib/model-registry/profiles/` (the flagship held to 1.000), overridden by
+`src/lib/model-registry/role-bindings.ts` (the flagship held to 1.000), overridden by
 `--candidate <profileKey>`. Without the pin, the EVAL team's C8 picker choice
 silently overrides the code binding (the 2026-07-17 runs measured `gpt-oss-20b`
 that way). The `evals:memory` / `evals:recall` / `evals:chain` harnesses are
@@ -211,7 +211,7 @@ case (`origin: "prod"`) — this is how the dataset grows into the real gold set
 
 ## Model promotion (C3 gate)
 
-Every change of a model-registry binding (`src/lib/model-registry/profiles/`) goes
+Every change of a model-registry binding (`src/lib/model-registry/role-bindings.ts`) goes
 through the promotion gate — never a hand swap. The gate runs the curated suite twice
 **back-to-back** (baseline = current `chat` binding, then candidate, both pinned via the
 `X-Model-Profile-Key` header on `/invoke`) and compares paired same-data/same-day runs.
@@ -238,8 +238,8 @@ AI_SERVICE_URL=http://localhost:8083 bun run evals:gate -- --candidate minimax-m
    then enable enforcement (`GATE_COST_CALIBRATED=1` or flip the default in a PR).
 3. `evals:gate -- --candidate <newProfileKey>` — read the verdict table.
 4. On PASS, the gate prints a ready-to-paste `evalGate` stamp. **The gate never
-   writes `profiles.ts`** — commit the `evalGate` stamp + the role-binding flip in ONE
-   reviewed PR. The PR is the promotion.
+   writes the registry** — commit the stamp and the `profileKey` change on the SAME
+   binding in ONE reviewed PR. The PR is the promotion.
 5. After the flip deploys: run a full `evals:langfuse` on the new default as the fresh
    baseline.
 
@@ -279,43 +279,54 @@ brand, fill in its profile, ship it. If it underperforms on our tools, the team 
 model; that is their call.
 
 **The gate governs exactly one thing: the APPLIED DEFAULT.** Changing
-`ROLE_BINDINGS.chat` / `.workflow` requires the bound profile to carry
-`evalGate.status: "passed"`, enforced by `tests/unit/lib/model-registry.test.ts` — so a PR
-that swaps the default without a gate run fails CI.
+`ROLE_BINDINGS.chat` / `.workflow` requires that BINDING to carry
+`evalGate.status: "passed"` with a run id, enforced by
+`tests/unit/lib/model-registry.test.ts` — so a PR that swaps the default without a gate run
+fails CI.
 
 ```bash
 cd backend/packages/ai           # service running in another pane
 AI_SERVICE_URL=http://localhost:8083 bun run evals:gate -- --candidate gpt-5.6-luna
 ```
 
-Then commit the printed `evalGate` stamp onto that profile **and** repoint the binding, in
-the same reviewed PR.
+Then commit the printed `evalGate` stamp **onto the binding**, next to the `profileKey` you
+changed, in the same reviewed PR.
+
+**The stamp moved off the profile on 2026-08-30.** A gate run does not measure a model in
+the abstract — it measures a model doing a JOB, against the model that held the job before
+it. A profile cannot express a pairing, and the cost was visible: `minimax-m3` carried a
+stamp whose own comment called it the `chat` default four weeks after the flip moved `chat`
+to `deepseek-v4-flash`. Nothing caught it, because the evidence was never tied to the
+decision it was evidence for. It is now the last hand-written fact in the registry that no
+API could supply — everything else a profile used to assert is read from a catalogue or a
+price.
 
 ### Adding a model to the catalog (no gate needed)
 
-1. Read its facts from OpenRouter (`architecture`, `supported_parameters`, `pricing`,
-   `reasoning`) and write them into `catalog` verbatim — `bun run models:check` diffs them.
-   For `assessment.pricing`, record the endpoint the profile ACTUALLY ROUTES TO, not the
-   headline catalog price: the top-level `/models` price is the cheapest endpoint, which
-   under ZDR is often one we cannot reach. `bun run models:check --prices` resolves the real
-   routing and diffs it. (This caught `deepseek-v4-pro` priced at DeepSeek's first-party
-   endpoint — outside the ZDR pool — understating its cached-input rate 28×.) At runtime the
-   live routed price overrides this field anyway; the committed value is the reviewed
-   baseline and the offline fallback.
-2. Set `assessment.enabled`: today's rule is `false` for anything costlier per turn than
-   GPT-5.6 Luna @xhigh, with a `disabledReason` so the hub can explain itself.
-3. Add `aaSlug` — pinned to the profile's `reasoning.defaultLevel`, since Artificial
-   Analysis publishes one record PER EFFORT LEVEL and they differ a lot (Luna spans 33.3 to
-   51.2 intelligence across five levels).
-4. Add `verbosity` from AA's `intelligenceIndexOutputTokensPerTask`. This is site-only data,
-   absent from the v2 API, so it is hand-curated — and it is load-bearing for `costLevel`,
-   because models differ ~20× in output volume and headline price alone mis-ranks the fleet
-   by up to 8 positions.
-5. Activate `nativeInput` for every visual modality the catalog allows (`audio` stays off
-   registry-wide until a call site produces audio parts).
-6. Add the brand name to `lib/model-registry/display.ts` and a `FALLBACK_METRICS` row.
-7. Verify: `bun run check && bun run test`, then `bun run models:check --probe` and
-   `bun run models:check --prices` (each flag runs its own check and exits).
+**It is a command, not a pull request.** This used to be a nine-step checklist against a
+hand-written profile — copy the catalogue facts, record the routed price, pin an `aaSlug`,
+transcribe a verbosity figure off a web page, activate `nativeInput`. Every one of those is
+now read from the row, so:
+
+```bash
+cd backend/packages/jobs && bun run models:sync      # discovers candidates
+cd ../ai && bun run models:admin -- show <key>       # read what was measured
+bun run models:admin -- promote <key>                # publish it to the hub
+```
+
+The nightly sync writes the catalogue facts, the pool median price, the endpoint stats and
+the reasoning contract; `effective.ts` derives the profile. Nothing is typed by hand, so
+nothing can be stale.
+
+Two things still deserve a look after a promotion:
+
+- **`FALLBACK_METRICS`** (`services/model-metrics/fallback.ts`) — only needed if the model is
+  about to serve an internal ROLE, since those must render gauges in an AA-less environment.
+- **`enabled`** — the sync applies the price budget itself, but check the hub shows what you
+  expect. `models:admin -- disable <key> --reason cost` if not.
+
+Verify with `bun run check && bun run test`, then `bun run models:admin -- audit`
+(offline) and `bun run models:check --probe` (live routing, needs a key).
 
 The picker's per-tier "recommended" badge tracks the code-default `ROLE_BINDINGS`, so
 adding a model changes the available choices, never the recommendation.
@@ -529,7 +540,7 @@ signal — do NOT invent a failure taxonomy or tune against synthetic targets.
 5. **Phase 8 — model strategy, data-driven**: compare agent models on the grown dataset
    (correctness/capability + cost-per-turn + latency). Mechanism: the **C3 promotion gate**
    (`evals:gate -- --candidate <profileKey>`, see "Model promotion" above) — model env vars no
-   longer exist; bindings live in `src/lib/model-registry/profiles/` and flip via a reviewed PR.
+   longer exist; bindings live in `src/lib/model-registry/role-bindings.ts` and flip via a reviewed PR.
    Adopt hybrid escalation (cheap default + escalate hard steps) only where experiments prove it pays.
 6. **Phase 6 — GEPA/DSPy auto-optimization**: once taxonomy + prod dataset are solid, pull the
    dataset + judge rationales, let a strong reflection model propose prompt / tool-description / skill

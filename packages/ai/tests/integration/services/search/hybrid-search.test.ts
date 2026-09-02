@@ -12,8 +12,10 @@
  * sourceIds come back. The actual semantic ranking is irrelevant —
  * presence/absence is the contract.
  *
- * Hits the real DB AND real OpenRouter (Qwen3-Embedding-8B) for the
- * single shared embedding batch. ~1¢ per run, ~10s end-to-end.
+ * Real Postgres; the embedder is DOUBLED (`tests/lib/embeddings-double.ts`).
+ * That double sums a deterministic vector per TOKEN precisely so the property
+ * the seeding block below relies on — shared vocabulary scores above none —
+ * survives without a network call.
  */
 import db from "@fretik/shared/db";
 import {
@@ -25,12 +27,17 @@ import {
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
-import { embedBatch } from "../../../../src/lib/embeddings";
-import { hybridSearch } from "../../../../src/services/search/hybrid-search";
+import { installEmbeddingDoubles } from "../../../lib/embeddings-double";
 import {
   createMemoryTestFixture,
   type MemoryTestFixture,
 } from "../../lib/db-fixtures";
+
+await installEmbeddingDoubles();
+
+const { embedBatch } = await import("../../../../src/lib/embeddings");
+const { hybridSearch } =
+  await import("../../../../src/services/search/hybrid-search");
 
 interface SeedRowInput {
   sourceType: AiVectorSourceType;
@@ -159,11 +166,12 @@ describe("hybridSearch scope filter (S5)", () => {
 
     const [userA, userB] = fx.userIds;
 
-    // Single batched embedding call: 1 query + 9 row contents = 10 inputs,
-    // 1 OpenRouter round-trip, ~1¢. Content texts are similar in topic to
-    // ensure each row gets a meaningful semantic score against the query
+    // One batch: 1 query + 9 row contents = 10 inputs. Content texts share
+    // vocabulary with the query so each row gets a meaningful semantic score
     // (presence/absence is what matters, not ranking — but completely
-    // off-topic seeds risk falling out of the top-150 cut entirely).
+    // off-topic seeds risk falling out of the top-150 cut entirely). The
+    // double preserves exactly that, which is why it hashes per token rather
+    // than per string.
     const seedContents = [
       QUERY, // [0] — query embedding target
       "DHL freight rates spring 2026 ANR-MRS lane", // [1] doc team A

@@ -108,6 +108,23 @@ input syntax for type uuid`, which would reach an anonymous caller as a 500
   package's preload replaces `@fretik/shared/lib/redis` with `redis-double`
   before any file runs, and a double answers `null` to everything — it would
   have refused every instance including the right one.
+- **FIXED — four integration suites called the real OpenRouter, and the first CI
+  run said so.** `memories`, `skills`, `context` and `hybrid-search` embedded
+  through the live API and made one cheap-model enrichment call per chunk. Their
+  own headers advertised it ("These tests hit the real DB AND real OpenRouter…
+  ~1¢ per run"), which is how it survived: it read as a decision. It was true in
+  one direction only — a laptop has a key in `.env`, so every local run paid;
+  CI has none, so `test-env.ts`'s placeholder went to the wire and came back
+  `401 Missing Authentication header`, 14 red the first time the integration job
+  ever ran against a database. Same shape as the Langfuse finding above: a test
+  whose verdict depends on an ambient secret. OpenRouter is a process boundary,
+  so it is doubled now (`ai/tests/lib/embeddings-double.ts`) — and the double
+  hashes per TOKEN, not per string, because `hybrid-search` seeds nine rows
+  whose contents deliberately share vocabulary with the query and says why. The
+  suite is 12.6s instead of minutes, and passes with `OPENROUTER_API_KEY`
+  unset, which is the proof. What is given up — that the embedding endpoint is
+  reachable and still returns 2560 dimensions — was never this suite's job:
+  `models:check -- --probe` and the evals talk to the live providers on purpose.
 - **KNOWN GAP, pinned — a page dataset over another team's collection reports
   `ok`, not `forbidden`.** `collectionsSource` probes `where: { id }` with no
   scope, so `forbidden` fires only for an id that exists nowhere. **No rows

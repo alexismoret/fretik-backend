@@ -94,8 +94,17 @@ jobs:
         run: bun run --filter '@fretik/providers' smoke
 
       # Offline: compares the journal against the schema, no connection.
+      #
+      # `drizzle.config.ts` still demands DATABASE_URL at import — the config is
+      # shared with `db:generate`, which does connect, and weakening it there to
+      # suit a check that doesn't would be the wrong trade. So the step gets a
+      # URL that is dead by construction: port 1, the same wall the test
+      # preloads use. If a future drizzle-kit made `check` open a connection,
+      # this fails loudly instead of quietly reaching something real.
       - name: Migration journal is consistent
         run: bun run --filter '@fretik/shared' db:check
+        env:
+          DATABASE_URL: postgres://offline:offline@127.0.0.1:1/offline_check
 
   unit:
     name: unit tests

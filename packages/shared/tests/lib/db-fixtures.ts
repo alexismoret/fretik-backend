@@ -22,6 +22,7 @@ import { eq } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import db from "../../src/db";
 import {
+  aiConversations,
   collectionRecords,
   collections,
   externalAppConnections,
@@ -38,6 +39,7 @@ import {
 import { EMPTY_PAGE_DEFINITION } from "../../src/schemas/pages";
 
 type CollectionInsert = typeof collections.$inferInsert;
+type ConversationInsert = typeof aiConversations.$inferInsert;
 type ConnectionInsert = typeof externalAppConnections.$inferInsert;
 type PageInsert = typeof pages.$inferInsert;
 type RecordInsert = typeof collectionRecords.$inferInsert;
@@ -70,6 +72,14 @@ export interface WorkspaceFixture {
   ) => Promise<{ id: string; providerKey: string }>;
   /** A page in this workspace. The definition renders nothing on purpose. */
   createPage: (overrides?: Partial<PageInsert>) => Promise<{ id: string }>;
+  /**
+   * A chat conversation in this workspace — what anything conversation-scoped
+   * (approvals, tasks, turn state) hangs off, since those tables all carry a
+   * FK to it.
+   */
+  createConversation: (
+    overrides?: Partial<ConversationInsert>,
+  ) => Promise<{ id: string }>;
   /**
    * A registry row in a collection. Only the system columns are written — the
    * per-collection `data.coll_<id>` extension table is the record SERVICES'
@@ -215,6 +225,23 @@ export const createWorkspaceFixture = async (): Promise<WorkspaceFixture> => {
     return row;
   };
 
+  const createConversation: WorkspaceFixture["createConversation"] = async (
+    overrides,
+  ) => {
+    const [row] = await db
+      .insert(aiConversations)
+      .values({
+        organizationId: org.id,
+        teamId: t.id,
+        userId: userA.id,
+        title: `Conversation ${tag()}`,
+        ...overrides,
+      })
+      .returning({ id: aiConversations.id });
+    if (!row) throw new Error("fixture: failed to insert conversation");
+    return row;
+  };
+
   const createTeam: WorkspaceFixture["createTeam"] = async () => {
     const [row] = await db
       .insert(team)
@@ -297,6 +324,7 @@ export const createWorkspaceFixture = async (): Promise<WorkspaceFixture> => {
     createCollection,
     createConnection,
     createPage,
+    createConversation,
     createRecord,
     createField,
     createLinkType,

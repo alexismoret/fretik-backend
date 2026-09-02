@@ -3,6 +3,8 @@ import {
   fieldConfigSchema,
   fieldDefinitionTypeSchema,
 } from "@fretik/shared/schemas/field-definitions";
+import { countNonNullColumnValues } from "@fretik/shared/services/collection-records/field-data";
+import { isVirtualField } from "@fretik/shared/services/collection-schema/columns";
 import { assertCanWriteType } from "@fretik/shared/services/collection-sharing/write-access";
 import { resolveCollectionId } from "@fretik/shared/services/collections/resolve";
 import { FIELD_DEFINITION_LIMITS } from "@fretik/shared/services/field-definitions/constants";
@@ -137,22 +139,37 @@ export const createManageFieldTool = () =>
         }
 
         if (input.action === "delete") {
-          const gate = await gateBuiltinWriteTool(ctx, {
-            toolName: "manageField",
-            args: {
-              action: "delete",
-              collectionId,
-              collectionKey: input.collectionKey,
-              fieldId: field.id,
-              fieldKey: field.key,
-              cascade: input.cascade ?? false,
-            },
-            summaryFields: [
-              { labelKey: "collection", value: input.collectionKey },
-              { labelKey: "field", value: field.label },
-              { labelKey: "currentType", value: field.type },
-            ],
-          });
+          // A review exists to protect stored values. A field holding none —
+          // an empty collection, an unused column, or any `formula`/`rollup`,
+          // which store nothing by construction — has none to protect, and the
+          // card would ask the user to weigh a loss that cannot happen.
+          //
+          // It is not only noise: only ONE approval may be pending per
+          // conversation, so dropping four empty computed columns cost four
+          // round-trips through the user on 2026-08-28, three of them answered
+          // `approval_deferred`.
+          const storedValues = isVirtualField(field)
+            ? 0
+            : await countNonNullColumnValues({ collectionId, field });
+          const gate =
+            storedValues === 0
+              ? null
+              : await gateBuiltinWriteTool(ctx, {
+                  toolName: "manageField",
+                  args: {
+                    action: "delete",
+                    collectionId,
+                    collectionKey: input.collectionKey,
+                    fieldId: field.id,
+                    fieldKey: field.key,
+                    cascade: input.cascade ?? false,
+                  },
+                  summaryFields: [
+                    { labelKey: "collection", value: input.collectionKey },
+                    { labelKey: "field", value: field.label },
+                    { labelKey: "currentType", value: field.type },
+                  ],
+                });
           if (gate !== null) return gate;
           const result = await deleteFieldDefinition({
             id: field.id,

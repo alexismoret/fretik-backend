@@ -82,6 +82,9 @@ export const ERROR_CODES = {
   EXTERNAL_APP_NOT_CUSTOM_HANDLER: "EXTERNAL_APP_NOT_CUSTOM_HANDLER",
   TOOL_APPROVAL_NOT_FOUND: "TOOL_APPROVAL_NOT_FOUND",
   TOOL_APPROVAL_WRONG_STATUS: "TOOL_APPROVAL_WRONG_STATUS",
+  /** Approved, then the write itself failed. The row is `failed`; re-issuing
+   * the operation opens a new request rather than replaying this one. */
+  TOOL_APPROVAL_EXECUTION_FAILED: "TOOL_APPROVAL_EXECUTION_FAILED",
 
   // Generic
   INTERNAL_ERROR: "INTERNAL_ERROR",

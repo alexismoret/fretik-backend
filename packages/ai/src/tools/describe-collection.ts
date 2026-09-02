@@ -6,8 +6,8 @@ import { tool } from "ai";
 import { z } from "zod";
 import { getRuntimeContext } from "../agents/shared/runtime-context";
 import {
-  DOMAIN_TOOL_THRESHOLD_CHARS,
   maybePersistLargeOutput,
+  SCHEMA_THRESHOLD_CHARS,
 } from "../lib/persisted-output";
 import { TOOL_ERROR_CODES, toolError } from "../lib/tool-error-codes";
 
@@ -128,7 +128,7 @@ export const createDescribeCollectionTool = () =>
         payload,
         ctx.conversationId,
         toolCallId,
-        DOMAIN_TOOL_THRESHOLD_CHARS,
+        SCHEMA_THRESHOLD_CHARS,
       );
     },
   });

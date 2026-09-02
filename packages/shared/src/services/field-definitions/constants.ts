@@ -9,8 +9,19 @@ export const FIELD_DEFINITION_LIMITS = {
    * pre-extract LLM prompt budget is calibrated around this cap — keep it tight.
    */
   MAX_ENABLED_PER_SCOPE: 15,
-  /** Max enabled fields on a regular (non-`document_record`) collection. */
-  MAX_FIELDS_PER_TYPE: 30,
+  /**
+   * Max enabled fields on a regular (non-`document_record`) collection.
+   *
+   * Raised from 30 on 2026-09-03. A spreadsheet is the ordinary way a team
+   * arrives with structured data, and 30 was below the width of a real one:
+   * asked to import a 96-column export, the agent silently kept 26 columns and
+   * dropped the rest — the cap decided the schema, and nothing said so.
+   *
+   * 100 covers that sheet with room to spare, and is deliberately not higher:
+   * the assistant reads a collection's fields through `describeCollection`, so
+   * every allowed field is context a turn may have to pay for.
+   */
+  MAX_FIELDS_PER_TYPE: 100,
   /** Max `options[]` length on a single select / multi_select field. */
   MAX_OPTIONS_PER_FIELD: 50,
   /** Max length of `description` (which doubles as the LLM `.describe()`). */

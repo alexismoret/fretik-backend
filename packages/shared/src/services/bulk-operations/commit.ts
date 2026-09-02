@@ -7,6 +7,7 @@ import type { SandboxExecResponse } from "../sandbox/types";
 import { countStagedItems } from "./begin";
 import { emptyProgress } from "./progress";
 import { BULK_OPERATION_EXECUTORS } from "./registry";
+import { resumeBulkOperation } from "./resume";
 import { finishBulkOperation } from "./runner";
 import { importToolOutput } from "./tool-output";
 
@@ -41,12 +42,27 @@ export const commitBulkOperation = async (input: {
   if (operation.status === "done") {
     return { status: "ok", data: importToolOutput(operation, null) };
   }
-  if (operation.status === "failed" || operation.status === "cancelled") {
+  // Same reading as the begin stage (`sandbox/collections.ts`), and it must
+  // stay the same one: a failed drain is resumable from its ledger, a
+  // cancelled load is a refusal. A re-run normally resumes at begin and never
+  // reaches here; this branch covers the caller that arrives with an operation
+  // id in hand.
+  if (operation.status === "failed") {
+    const resumed = await resumeBulkOperation(operation);
+    if (resumed.state === "resumed") {
+      return { status: "ok", data: importToolOutput(resumed.operation, null) };
+    }
+    if (resumed.state === "nothing_left") {
+      return { status: "ok", data: importToolOutput(operation, null) };
+    }
+    return { status: "error", message: resumed.reason };
+  }
+  if (operation.status === "cancelled") {
     return {
       status: "error",
       message:
         operation.error ??
-        `Bulk operation ${operation.id} ended as ${operation.status}.`,
+        "This load was cancelled. Ask the user before submitting it again.",
     };
   }
 

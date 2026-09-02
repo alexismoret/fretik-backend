@@ -24,6 +24,7 @@ import {
 import { commitBulkOperation } from "../bulk-operations/commit";
 import { findBulkOperation } from "../bulk-operations/find";
 import { emptyProgress, foldChunkProgress } from "../bulk-operations/progress";
+import { resumeBulkOperation } from "../bulk-operations/resume";
 import { updateBulkOperationProgress } from "../bulk-operations/runner";
 import { importToolOutput } from "../bulk-operations/tool-output";
 import {
@@ -490,12 +491,38 @@ const importBegin = async (
       data: { state: "running", ...importToolOutput(operation, null) },
     };
   }
-  if (operation.status === "failed" || operation.status === "cancelled") {
+  // A failed drain is not the end of the load: the applied chunks are stamped,
+  // so re-running the same code picks the remaining ones back up under the
+  // grant that already covered them. This is the branch the agent lands on
+  // after an import died mid-way — refusing here (as this did until
+  // 2026-09-03) left a half-imported table with no way forward.
+  if (operation.status === "failed") {
+    const resumed = await resumeBulkOperation(operation);
+    if (resumed.state === "resumed") {
+      return {
+        status: "ok",
+        data: {
+          state: "running",
+          resumedChunks: resumed.remainingChunks,
+          ...importToolOutput(resumed.operation, null),
+        },
+      };
+    }
+    if (resumed.state === "nothing_left") {
+      return {
+        status: "ok",
+        data: { state: "replay", ...importToolOutput(operation, null) },
+      };
+    }
+    return { status: "error", message: resumed.reason };
+  }
+  if (operation.status === "cancelled") {
+    // Refused by the user. Re-running is not a recovery, it is asking again.
     return {
       status: "error",
       message:
         operation.error ??
-        `A previous attempt at this exact load ended as ${operation.status}.`,
+        "This load was cancelled. Ask the user before submitting it again.",
     };
   }
 
@@ -670,6 +697,9 @@ const queryRecords = async (
 
 const fieldInputSchema = z.object({
   label: z.string().min(1),
+  // Explicit column key; defaults to a slug of the label. Set it on any field
+  // a `formula` in the same call names in its expression.
+  key: z.string().max(60).optional(),
   type: fieldDefinitionTypeSchema,
   // One line — what this field holds. Required (the agent reads it as ground truth).
   description: z
@@ -716,6 +746,7 @@ const createType = async (
       createdByUserId: ctx.userId,
       fields: args.fields.map((f) => ({
         label: f.label,
+        key: f.key,
         type: f.type,
         description: f.description ?? null,
         config: f.config,

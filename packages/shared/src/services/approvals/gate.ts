@@ -2,7 +2,8 @@ import type { ToolApprovalKind, ToolApprovalRequest } from "../../db/schema";
 import { withConversationLock } from "../../lib/redis-lock";
 import type { WorkflowAutonomy } from "../../schemas/workflows";
 import type { SandboxExecResponse } from "../sandbox/types";
-import { claimGrantedApproval } from "./claim";
+import { claimGrantedApproval, markFailedApproval } from "./claim";
+import { approvalFailureReason } from "./failure-reason";
 import { findLatestApprovalByHash, findPendingApprovals } from "./find";
 import { grantApproval } from "./grant";
 import { APPROVAL_KIND_HANDLERS } from "./kinds";
@@ -17,6 +18,28 @@ export interface ApprovalGateContext {
   conversationId: string;
   turnId: string;
 }
+
+/**
+ * How long an INLINE execution may sit in `executing` before the gate declares
+ * it interrupted, fails it, and lets the operation be proposed again.
+ *
+ * This is the crash net, NOT the normal error path: every site that can catch
+ * an execution error marks the row `failed` on the spot (here and in
+ * `execute-decision.ts`), so a Postgres error costs the user no wait at all.
+ * What lands here is a process that died mid-write — SIGKILL, OOM, a deploy
+ * during the grant — where no catch could run.
+ *
+ * Only inline kinds are swept. An inline execution lives inside the grant's own
+ * HTTP request and cannot outlive it, so ten idle minutes prove nobody is on
+ * it. A DEFERRED kind (a staged import handed to BullMQ) is exempt and must
+ * stay so: it legitimately holds `executing` for as long as the load takes —
+ * far past ten minutes on a large file — and `finishBulkOperation` owns closing
+ * its row. Sweeping it would re-open a card for a write that is still running.
+ *
+ * Erring long is deliberate: failing a row that IS still executing would let
+ * the same write be granted twice.
+ */
+const STALE_INLINE_EXECUTION_MS = 10 * 60 * 1000;
 
 /**
  * THE generic approval state machine, shared by every sandbox-driven kind
@@ -89,11 +112,14 @@ export const runApprovalGate = async (params: {
         data: handler.toSandboxData?.(claimed, result),
       };
     } catch (error) {
-      return {
-        status: "error",
-        message:
-          error instanceof Error ? error.message : "Approval execution failed",
-      };
+      // Close the claim before reporting. Leaving it `executing` would answer
+      // every later attempt at this exact write with "currently executing" and
+      // never open a card again — the operation would be dead for the rest of
+      // the conversation. `failed` is skipped by the hash lookup, so the next
+      // identical call starts a fresh request.
+      const message = approvalFailureReason(error);
+      await markFailedApproval(claimed.id, message);
+      return { status: "error", message };
     }
   };
 
@@ -112,6 +138,23 @@ export const runApprovalGate = async (params: {
     });
   }
 
+  // An inline execution that has been `executing` for longer than any HTTP
+  // request could live has no executor left (see STALE_INLINE_EXECUTION_MS).
+  // Fail it and forget it, so the block below opens a fresh request instead of
+  // answering "currently executing" forever.
+  if (
+    existing?.status === "executing" &&
+    handler.deferExecution?.(existing) !== true &&
+    Date.now() - (existing.executedAt ?? existing.createdAt).getTime() >
+      STALE_INLINE_EXECUTION_MS
+  ) {
+    await markFailedApproval(
+      existing.id,
+      "Execution was interrupted before it could report an outcome.",
+    );
+    existing = undefined;
+  }
+
   if (existing !== undefined) {
     if (existing.status === "pending") {
       // Out-of-band Redis bridge to the `python` tool: if the agent swallows
@@ -122,10 +165,13 @@ export const runApprovalGate = async (params: {
       return { status: "approval_pending", approvalId: existing.id };
     }
     if (existing.status === "executing") {
+      // Someone IS working on this exact write — a peer request, or the worker
+      // draining a staged import. Re-running the code cannot help and a second
+      // grant would write twice, so say plainly that the only move is to wait.
+      const since = (existing.executedAt ?? existing.createdAt).toISOString();
       return {
         status: "error",
-        message:
-          "Approval is currently executing or was interrupted — check state before retrying.",
+        message: `This exact operation was already approved and is executing (since ${since}). Do NOT re-run it — wait for it to finish, or ask the user to check it.`,
         data:
           existing.result !== null
             ? { partialResult: existing.result }

@@ -26,6 +26,7 @@ import {
 import { paramsIdSchema } from "@fretik/shared/schemas/common/params";
 import {
   responseBadRequestSchema,
+  responseConflictSchema,
   responseForbiddenSchema,
   responseInternalErrorSchema,
   responseNotFoundSchema,
@@ -91,6 +92,7 @@ const toDto = async (
     // record. `itemCount` above carries the true total, so the card knows it is
     // looking at a slice. Grant still executes from the stored payload.
     payload: toWirePayload(row.payload),
+    executionError: row.executionError,
     result: row.result ?? null,
     decisionFeedback: row.decisionFeedback,
     decisionAt: row.decisionAt,
@@ -247,11 +249,7 @@ const grantRoute = createRoute({
     },
     ...responseForbiddenSchema,
     ...responseNotFoundSchema,
-    409: {
-      content: { "application/json": { schema: approvalResponseSchema } },
-      description:
-        "Conflict — the approval was not in `pending` status (concurrent decision or stale UI).",
-    },
+    ...responseConflictSchema,
     ...responseInternalErrorSchema,
   },
 });

@@ -48,6 +48,34 @@ export const approvalDeferred = (output: unknown): string | null => {
 export const APPROVAL_GRANTED_NOTE =
   "This outcome covers ONLY the operations listed here. Code that sat after the call that raised did NOT run — re-run the identical cell to finish it; already-approved work replays from cache and never executes twice.";
 
+/**
+ * The tool output of an approval whose execution FAILED — the user approved,
+ * the write was attempted, and it threw.
+ *
+ * Kind-independent on purpose: a failed execution produced no per-op or
+ * per-record outcome to report, only a reason, so there is nothing for a kind
+ * handler to shape. Says the write did not land AND that retrying is allowed —
+ * the failed row is skipped by the hash lookup, so the identical call opens a
+ * fresh approval rather than replaying this failure.
+ */
+export const failedToolOutput = (
+  approvalId: string,
+  error: string,
+  failedAt: string,
+): {
+  status: "approval_failed";
+  approvalId: string;
+  error: string;
+  failedAt: string;
+  note: string;
+} => ({
+  status: "approval_failed",
+  approvalId,
+  error,
+  failedAt,
+  note: "The user approved, but the operation FAILED and nothing was written. Fix the cause first — re-issuing the identical call opens a new approval, it does not replay this failure.",
+});
+
 /** The single canonical tool output for a deferred write — one message so no
  * caller re-derives it. Stops the turn (via the stop condition) and tells the
  * model to wait for the pending review, then re-issue. */

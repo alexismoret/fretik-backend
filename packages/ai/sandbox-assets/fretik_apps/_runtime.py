@@ -293,6 +293,11 @@ def _import(collection_key: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
     exact same code after a crash, a sandbox recycle, or an approval skips
     whatever already landed — including all of it, in which case the call
     returns the earlier outcome without sending a single row.
+
+    That covers a load that FAILED partway too: re-running picks up the chunks
+    that never landed, under the approval already granted, and returns with
+    `state: "running"`. Only after the same failure repeats is it refused, and
+    the message then says so — at which point retrying is not the answer.
     """
     rows = _clean_nan(rows)
     columns = sorted({k for row in rows[:100] for k in row.keys()})

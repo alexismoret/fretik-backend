@@ -14,6 +14,7 @@ export const toolApprovalStatusSchema = z.enum([
   "executing",
   "consumed",
   "rejected",
+  "failed",
 ]);
 export type ToolApprovalStatusValue = z.infer<typeof toolApprovalStatusSchema>;
 
@@ -206,6 +207,9 @@ export const approvalResponseSchema = z.object({
     ])
     .nullable(),
   decisionFeedback: z.string().nullable(),
+  /** Why a `failed` row failed — one readable line, shown on the card. Null
+   * in every other status. */
+  executionError: z.string().nullable(),
   decisionAt: z.coerce.date().nullable(),
   executedAt: z.coerce.date().nullable(),
   createdAt: z.coerce.date(),

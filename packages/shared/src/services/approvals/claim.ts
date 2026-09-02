@@ -51,3 +51,33 @@ export const releaseClaimedApproval = async (id: string): Promise<void> => {
       ),
     );
 };
+
+/**
+ * Close a claim that will never finish: `executing` → `failed`, with the
+ * executor's reason in `executionError`.
+ *
+ * The counterpart of {@link releaseClaimedApproval}, for the case where the
+ * work DID start and threw. Reverting to `granted` would be wrong (the user's
+ * decision has been spent, and a grant re-execution would re-run a write that
+ * may have partly landed); leaving it `executing` is worse still — the status
+ * machine refuses to re-execute that row AND the hash lookup keeps finding it,
+ * so the same operation can never be proposed again. `failed` is terminal and
+ * invisible to the lookup: the agent re-issuing the identical call gets a fresh
+ * card. Whatever `result` had been written incrementally is left untouched.
+ */
+export const markFailedApproval = async (
+  id: string,
+  error: string,
+): Promise<ToolApprovalRequest | undefined> => {
+  const [row] = await db
+    .update(toolApprovalRequests)
+    .set({ status: "failed", executionError: error })
+    .where(
+      and(
+        eq(toolApprovalRequests.id, id),
+        eq(toolApprovalRequests.status, "executing"),
+      ),
+    )
+    .returning();
+  return row;
+};

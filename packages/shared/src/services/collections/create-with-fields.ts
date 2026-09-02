@@ -18,9 +18,17 @@ import { slugifyFieldKey } from "../field-definitions/slugify-key";
 import { validateFieldDefinitionShape } from "../field-definitions/validate";
 import { prepareCollectionKey } from "./create";
 import { invalidateCollectionIdCache } from "./resolve";
+import { resolveBatchFormulas } from "./resolve-batch-formulas";
 
 export type CollectionFieldInput = {
   label: string;
+  /**
+   * Explicit column key. Omitted, it is slugified from the label — which is
+   * unpredictable enough (diacritics folded, punctuation collapsed) that a
+   * `formula` in the SAME batch cannot name the field it reads. Set it on both
+   * sides when one field's expression mentions another.
+   */
+  key?: string;
   type: FieldDefinitionType;
   description?: string | null;
   config?: FieldDefinitionConfig;
@@ -84,6 +92,7 @@ export const createCollectionWithFields = async (
     }
     validateFieldDefinitionShape({
       label: f.label,
+      key: f.key,
       description: f.description ?? null,
       type: f.type,
       config: f.config,
@@ -109,9 +118,23 @@ export const createCollectionWithFields = async (
       ? explicitTitle
       : input.fields.findIndex((f) => f.type === "text");
 
-  // Unique keys within the (fresh) type — slugify the label, then `_2`, `_3`, …
+  // Unique keys within the (fresh) type — the caller's `key` when given, else
+  // slugify the label, then `_2`, `_3`, … on a collision.
   const taken = new Set<string>();
-  const resolveKey = (label: string): string => {
+  const resolveKey = (label: string, explicit?: string): string => {
+    // A CHOSEN key is never silently suffixed: the caller picked it so that
+    // something else — a formula's expression, a mapping in an import script —
+    // could name it, and `_2` would point that reference at nothing.
+    if (explicit !== undefined) {
+      if (taken.has(explicit)) {
+        return throwHttpError(
+          400,
+          badRequest(`Two fields share the key \`${explicit}\`.`),
+        );
+      }
+      taken.add(explicit);
+      return explicit;
+    }
     const root = slugifyFieldKey(label);
     if (!taken.has(root)) {
       taken.add(root);
@@ -150,7 +173,7 @@ export const createCollectionWithFields = async (
       organizationId: input.organizationId,
       teamId: input.teamId,
       collectionId: typeRow.id,
-      key: resolveKey(f.label),
+      key: resolveKey(f.label, f.key),
       label: f.label,
       description: f.description ?? null,
       type: f.type,
@@ -169,6 +192,17 @@ export const createCollectionWithFields = async (
       ? await tx.insert(fieldDefinitions).values(rows).returning()
       : [];
 
+    // Compile every formula BEFORE the DDL, against the rows just written.
+    //
+    // Two things depend on it. `resultType` decides the generated column's
+    // physical type and is inferred by the compiler alone — without this pass
+    // a text formula got the default `double precision` and Postgres refused
+    // the column with a message about types, naming neither the field nor the
+    // expression. And a bad reference stops here with the same 400 the
+    // single-field path gives (label + character offset) instead of surfacing
+    // from inside the DDL as a bare `no field called x`.
+    const resolved = await resolveBatchFormulas({ tx, fields: inserted });
+
     // Build the extension table ONCE with the full column set. A fresh type has
     // no records, so no search-vector recompute is needed.
     await reconcileCollectionTable({ tx, collectionId: typeRow.id });
@@ -184,7 +218,7 @@ export const createCollectionWithFields = async (
       });
     }
 
-    return { type: typeRow, fields: inserted };
+    return { type: typeRow, fields: resolved };
   });
 
   await invalidateFieldDefinitionsCache({

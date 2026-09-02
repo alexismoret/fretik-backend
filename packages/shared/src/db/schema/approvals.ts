@@ -36,6 +36,14 @@ import { organization, team, user } from "./auth-schema";
  *  - `consumed`  : executed; `result` holds the outcome. A re-run of the
  *                  identical hashed call returns this cached `result` — no
  *                  double-execute.
+ *  - `failed`    : execution was attempted and threw; `executionError` holds
+ *                  the reason and `result` whatever had landed. A TERMINAL
+ *                  state that does NOT block a retry: the hash lookup skips it
+ *                  (like `rejected`), so re-issuing the identical call opens a
+ *                  FRESH request. Without it an infrastructure error left the
+ *                  row `executing` for good and every retry answered "already
+ *                  executing" with no card — measured in prod on 2026-08-28,
+ *                  where a bulk import of 666 rows became unapprovable.
  *  - `rejected`  : the user refused; `decisionFeedback` carries their note.
  */
 export const toolApprovalStatusEnum = pgEnum("tool_approval_status", [
@@ -44,6 +52,7 @@ export const toolApprovalStatusEnum = pgEnum("tool_approval_status", [
   "executing",
   "consumed",
   "rejected",
+  "failed",
 ]);
 
 /**
@@ -146,6 +155,13 @@ export const toolApprovalRequests = pgTable(
      * results; `question` → the captured answers. NULL until decided.
      */
     result: jsonb("result").$type<ToolApprovalResult>(),
+
+    /**
+     * Why a `failed` row failed — the executor's message, shown on the card and
+     * handed to the agent. Kept apart from `result` so a plan that failed
+     * halfway keeps the per-op results it had already written.
+     */
+    executionError: text("execution_error"),
 
     status: toolApprovalStatusEnum("status").notNull().default("pending"),
 

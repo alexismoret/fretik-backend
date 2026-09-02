@@ -322,11 +322,7 @@ chatbotContextRoutes.openapi(toggleEnabledRoute, async (c) => {
   const { scope, fileId } = c.req.valid("param");
   const key = buildScopeKey(c, scope);
   const body = c.req.valid("json");
-  await setContextFileEnabled({
-    fileId,
-    organizationId: key.organizationId,
-    enabled: body.enabled,
-  });
+  await setContextFileEnabled({ fileId, scope: key, enabled: body.enabled });
   return c.json({ ok: true as const }, 200);
 });
 
@@ -340,10 +336,15 @@ chatbotContextRoutes.openapi(muteFileRoute, async (c) => {
   }
   const key = buildScopeKey(c, scope);
   const body = c.req.valid("json");
+  // `scope === "team"` is enforced above, so `buildScopeKey` has filled the
+  // team id in (it 403s when the session has no active team).
+  if (key.teamId === null) {
+    return throwHttpError(403, forbidden("No active team in session"));
+  }
   await setUserFileMute({
     userId: key.userId,
     fileId,
-    organizationId: key.organizationId,
+    teamId: key.teamId,
     muted: body.muted,
   });
   return c.json({ ok: true as const }, 200);
@@ -377,7 +378,7 @@ chatbotContextRoutes.openapi(getFileContentRoute, async (c) => {
   const key = buildScopeKey(c, scope);
   const { file, content } = await getContextFileContent({
     fileId,
-    organizationId: key.organizationId,
+    scope: key,
   });
   return c.json(
     {
@@ -393,10 +394,7 @@ chatbotContextRoutes.openapi(getFileContentRoute, async (c) => {
 chatbotContextRoutes.openapi(downloadFileRoute, async (c) => {
   const { scope, fileId } = c.req.valid("param");
   const key = buildScopeKey(c, scope);
-  const { file } = await getContextFileContent({
-    fileId,
-    organizationId: key.organizationId,
-  });
+  const { file } = await getContextFileContent({ fileId, scope: key });
   // Signed as an attachment: the caller's only use for this URL is to save the
   // file, and the disposition is also what identifies it as a download to the
   // Electron shell, which otherwise hands it to a system browser.
@@ -409,10 +407,7 @@ chatbotContextRoutes.openapi(downloadFileRoute, async (c) => {
 chatbotContextRoutes.openapi(deleteFileRoute, async (c) => {
   const { scope, fileId } = c.req.valid("param");
   const key = buildScopeKey(c, scope);
-  await deleteContextFile({
-    fileId,
-    organizationId: key.organizationId,
-  });
+  await deleteContextFile({ fileId, scope: key });
   return c.json({ ok: true as const }, 200);
 });
 

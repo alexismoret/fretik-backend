@@ -7,7 +7,7 @@ const s3AccessKeyId = process.env.SCW_ACCESS_KEY;
 const s3SecretAccessKey = process.env.SCW_SECRET_KEY;
 
 if (!s3Bucket || !s3Url || !s3Region || !s3AccessKeyId || !s3SecretAccessKey) {
-  throw "Missing S3 en vars";
+  throw new Error("Missing S3 env vars");
 }
 
 const endpoint = s3Url.replace(/\/$/, "");

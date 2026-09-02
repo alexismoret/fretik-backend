@@ -48,7 +48,7 @@ describe("summarizer — configuration parsing", () => {
 
 describe("summarizer — empty input contract", () => {
   test("empty message list returns null without hitting the provider", async () => {
-    const result = await summariseMessages([]);
+    const result = await summariseMessages([], undefined);
     expect(result).toBeNull();
   });
 });

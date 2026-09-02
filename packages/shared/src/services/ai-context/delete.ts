@@ -4,6 +4,7 @@ import { aiContextFiles } from "../../db/schema/ai-context";
 import { deleteContextSidecar } from "../../lib/ai-context-storage";
 import { notFound, throwHttpError } from "../../lib/errors";
 import { deleteObject } from "../../lib/s3";
+import { requireOwnedProfileId, type ScopeKey } from "./retrieve";
 import { deleteContextVectors } from "./vector-refresh";
 
 /**
@@ -16,12 +17,12 @@ import { deleteContextVectors } from "./vector-refresh";
  */
 export const deleteContextFile = async (args: {
   fileId: string;
-  organizationId: string;
+  scope: ScopeKey;
 }): Promise<void> => {
   const file = await db.query.aiContextFiles.findFirst({
     where: {
       id: args.fileId,
-      organizationId: args.organizationId,
+      profileId: await requireOwnedProfileId(args.scope),
     },
     columns: {
       id: true,

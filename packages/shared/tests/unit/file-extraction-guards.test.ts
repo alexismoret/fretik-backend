@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test } from "bun:test";
-import { mockModule } from "./mock-module";
+import { mockModule } from "../lib/mock-module";
 
 // ---------------------------------------------------------------- //
 // Guards around the Mistral OCR boundary: the pre-flight file-size  //

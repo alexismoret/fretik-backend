@@ -5,12 +5,12 @@ import { instrumentEmbeddingModel } from "./model-instrumentation";
 
 const apiKey = process.env.OPENROUTER_API_KEY;
 if (!apiKey) {
-  throw "Missing OPENROUTER_API_KEY env";
+  throw new Error("Missing OPENROUTER_API_KEY env");
 }
 
 const embeddingModelId = process.env.OPENROUTER_EMBEDDING_MODEL;
 if (!embeddingModelId) {
-  throw "Missing OPENROUTER_EMBEDDING_MODEL env";
+  throw new Error("Missing OPENROUTER_EMBEDDING_MODEL env");
 }
 
 /**

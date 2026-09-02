@@ -1,5 +1,6 @@
 import db from "../db";
 import { team } from "../db/schema";
+import { assertOperatorTarget } from "../lib/operator-guard";
 import { syncAllCollectionTablesForTeam } from "../services/collection-schema/catalog-sync";
 
 /**
@@ -17,6 +18,8 @@ import { syncAllCollectionTablesForTeam } from "../services/collection-schema/ca
  * Run: `bun --env-file=../../.env run src/scripts/sync-collection-tables.ts`
  */
 const run = async (): Promise<void> => {
+  await assertOperatorTarget(Bun.argv);
+
   const teams = await db
     .select({ id: team.id, organizationId: team.organizationId })
     .from(team);

@@ -1,5 +1,11 @@
 bun run --filter '*' check
 
+# The unit suites are hermetic (`--isolate`, a dead-port env wall, no service
+# of any kind), so they cost seconds and can gate a push the way `check` does.
+# Integration tests are NOT here: they need a disposable Postgres, and CI runs
+# them.
+bun run --filter '*' test
+
 # `generated/file-types/` in the frontend repo is a copy of
 # `packages/shared/src/file-types/`, and that repo deploys on its own. Pushing a
 # registry change without carrying it over means the API starts validating

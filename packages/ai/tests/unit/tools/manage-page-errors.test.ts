@@ -71,7 +71,11 @@ describe("liftPageError — the publish gate", () => {
       version: 3,
       variables: [],
       datasets: [],
-      operations: [{ id: "send_update", action: "send_message" }],
+      // `kind` explicit: the schema defaults a kind-less operation to "app"
+      // when PARSING, but this fixture is the parsed shape, where it is set.
+      operations: [
+        { kind: "app" as const, id: "send_update", action: "send_message" },
+      ],
       code: {
         source: "<template><div>x</div></template>",
         compiled: {
@@ -83,9 +87,15 @@ describe("liftPageError — the publish gate", () => {
         },
       },
     });
-    expect(blocker).not.toBeNull();
+    // A throw rather than `expect(...).not.toBeNull()`: the rest of the test
+    // reads `blocker` as a string, and only this form tells the compiler so.
+    if (blocker === null) {
+      throw new Error(
+        "pagePublishError returned no blocker for an anonymous send_message operation",
+      );
+    }
 
-    const lifted = liftPageError(httpError(400, badRequest(blocker ?? "")), {
+    const lifted = liftPageError(httpError(400, badRequest(blocker)), {
       action: "publish",
       pageId: "page-42",
     });

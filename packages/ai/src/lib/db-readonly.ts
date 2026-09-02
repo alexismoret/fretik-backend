@@ -14,7 +14,9 @@ import { Pool } from "pg";
  */
 const readonlyUrl = process.env.AI_DB_READONLY_URL;
 if (!readonlyUrl) {
-  throw "Missing AI_DB_READONLY_URL env — the SQL tool requires its dedicated read-only role connection (see backend/packages/shared migration harden_sql_tool)";
+  throw new Error(
+    "Missing AI_DB_READONLY_URL env — the SQL tool requires its dedicated read-only role connection (see backend/packages/shared migration harden_sql_tool)",
+  );
 }
 
 /**

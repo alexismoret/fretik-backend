@@ -68,12 +68,18 @@ const row = (over: Partial<LiveModelState> = {}): LiveModelState => ({
   releasedAt: null,
   dynamicProfile: null,
   syncedAt: new Date("2026-08-30T03:00:00.000Z"),
+  source: "sync",
+  boundRoles: [],
   ...over,
 });
 
 const card = (metrics: ModelMetricsSnapshot["metrics"] = {}) =>
   buildCard(boundProfile("deepseek-v4-flash"), {
-    metrics: { metrics, fetchedAt: "2026-08-30T03:00:00.000Z" },
+    metrics: {
+      metrics,
+      fetchedAt: "2026-08-30T03:00:00.000Z",
+      partial: false,
+    },
     incidents: new Map([["deepseek-v4-flash", 3]]),
   });
 

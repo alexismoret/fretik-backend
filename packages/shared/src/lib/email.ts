@@ -11,7 +11,7 @@ if (
   !emailFromName ||
   !emailFromAddress
 ) {
-  throw "Missing email env vars";
+  throw new Error("Missing email env vars");
 }
 
 const apiUrl = `https://api.scaleway.com/transactional-email/v1alpha1/regions/${scwEmailRegion}/emails`;

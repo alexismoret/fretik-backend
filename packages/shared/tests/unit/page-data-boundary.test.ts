@@ -10,7 +10,7 @@ import type {
   PageVariable,
 } from "../../src/schemas/pages";
 import { PAGE_LIMITS, PageDataRequestSchema } from "../../src/schemas/pages";
-import { mockModule } from "./mock-module";
+import { mockModule } from "../lib/mock-module";
 
 /**
  * The page DATA path: the security boundary, dataset orchestration, and the

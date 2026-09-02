@@ -29,13 +29,18 @@ const muteProfileInsertValues = (userId: string, profileId: string) => ({
 });
 
 /**
- * Validate that a file belongs to the caller's organisation AND to a
- * team-scope profile (muting your own user-scope file is pointless —
- * just delete it or toggle `enabled`).
+ * Validate that a file belongs to the caller's OWN TEAM and to a team-scope
+ * profile (muting your own user-scope file is pointless — just delete it or
+ * toggle `enabled`).
+ *
+ * The team clause matters even though a mute row is keyed on the caller's own
+ * user: without it, any member of the organisation could confirm that a given
+ * file id exists on some other team, which is the same leak the file-level
+ * services carried until 2026-09-02 (see `requireOwnedProfileId`).
  */
 const assertTeamFile = async (args: {
   fileId: string;
-  organizationId: string;
+  teamId: string;
 }): Promise<void> => {
   const row = await db
     .select({
@@ -49,7 +54,7 @@ const assertTeamFile = async (args: {
     .where(
       and(
         eq(aiContextFiles.id, args.fileId),
-        eq(aiContextFiles.organizationId, args.organizationId),
+        eq(aiContextProfiles.teamId, args.teamId),
       ),
     )
     .limit(1);
@@ -70,13 +75,10 @@ const assertTeamFile = async (args: {
 export const setUserFileMute = async (args: {
   userId: string;
   fileId: string;
-  organizationId: string;
+  teamId: string;
   muted: boolean;
 }): Promise<void> => {
-  await assertTeamFile({
-    fileId: args.fileId,
-    organizationId: args.organizationId,
-  });
+  await assertTeamFile({ fileId: args.fileId, teamId: args.teamId });
 
   if (args.muted) {
     await db

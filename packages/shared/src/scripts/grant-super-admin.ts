@@ -1,3 +1,4 @@
+import { assertOperatorTarget } from "../lib/operator-guard";
 import { grantSuperAdmin } from "../services/auth/super-admins";
 
 /**
@@ -14,6 +15,10 @@ if (!email) {
   console.error("Usage: bun run grant:super-admin <email>");
   process.exit(1);
 }
+
+// Granting platform-operator rights is the one script here whose whole purpose
+// is production, so it says which production before it does anything.
+await assertOperatorTarget(Bun.argv);
 
 const granted = await grantSuperAdmin(email);
 if (!granted) {

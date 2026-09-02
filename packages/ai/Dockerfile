@@ -39,6 +39,18 @@ RUN --mount=type=cache,target=/root/.bun/install/cache \
 FROM install AS release
 ENV NODE_ENV=production
 
+# The one fact a laptop cannot fake — see `lib/operator-guard.ts` and the copy
+# of this note in packages/api/Dockerfile.
+ENV FRETIK_RUNTIME=container
+
+# Which commit this image IS — the key the release-task ledger runs "once per
+# version" against. NOT `package.json.version`: `version-bump` commits after
+# the build, so the number inside an image lags by one and two different images
+# can carry the same one. Empty when built without the build-arg (a local
+# `docker build`), which the runner reports as `local-<version>`.
+ARG GIT_SHA=""
+ENV GIT_SHA=$GIT_SHA
+
 # poppler-utils for PDF parsing in shared/services/file-extraction. `sharp` ships
 # its own prebuilt libvips binaries — no extra apt deps for it.
 RUN apt-get update \

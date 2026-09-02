@@ -1,165 +1,36 @@
 #!/usr/bin/env bun
 /**
- * Seed / update the chatbot's managed prompts in Langfuse Prompt Management.
+ * Publish the repo's managed prompts to Langfuse — by hand.
  *
- * Reads the repo `.md` prompts (the git source of truth), STRIPS the HTML
- * maintainer comments (the architecture docblock + the DYNAMIC SUFFIX marker
- * — dev documentation that belongs in git, not the prompt registry), and
- * publishes each as a `production`-labelled TEXT prompt — but ONLY when the
- * content differs from the current `production` version, so re-runs never
- * stack no-op versions. Idempotent: run once to bootstrap, and again after
- * editing a `.md` you want to promote.
+ * The work itself lives in `src/lib/langfuse-prompts/seed.ts`, because the AI
+ * service now runs it automatically as a RELEASE TASK, once per deployed
+ * version (`src/release-tasks.ts`). This script is the operator's door to the
+ * same function: bootstrapping a fresh Langfuse project, or publishing a
+ * prompt edit without waiting for a deploy.
  *
- * Stripping here means the prompt STORED in Langfuse is byte-identical to what
- * the model receives at runtime (minus the dynamic `{{variables}}` injected
- * per turn) — so the Langfuse Playground, experiments, and version diffs all
- * operate on the real prompt, not on commented-out dev notes the runtime
- * strips anyway (`agents/shared/prompt-renderer.ts`).
- *
- * Names + paths mirror `MANAGED_PROMPTS` in
- * `src/agents/shared/prompt-renderer.ts`. Kept in sync by hand on purpose:
- * importing the renderer would pull the agent module graph (DB / Redis /
- * OTel bootstrap) into a plain seeding script.
+ * Idempotent: a prompt whose text matches the current `production` version is
+ * skipped, so re-runs never stack no-op versions.
  *
  * Usage: `bun run langfuse:seed-prompts` (needs LANGFUSE_* in `.env`).
  */
-import { LangfuseClient } from "@langfuse/client";
-// PURE module (zero imports) — safe here: pulls none of the agent module
-// graph (DB / Redis / OTel). It is the SINGLE resolver shared with the
-// runtime fallback path, so seed-time and fallback resolution can't drift.
 import {
-  resolveAgentBlocks,
-  type PromptAgentKind,
-} from "../src/agents/shared/prompt-blocks";
+  langfuseCredentialsPresent,
+  seedLangfusePrompts,
+} from "../src/lib/langfuse-prompts/seed";
 
-const PROJECT_ROOT = `${import.meta.dir}/..`;
+if (!langfuseCredentialsPresent()) {
+  console.error(
+    "Missing LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY / LANGFUSE_BASE_URL — nothing to publish to.",
+  );
+  process.exit(1);
+}
 
-/**
- * Strip `<!-- … -->` HTML comments — MUST match the runtime stripper in
- * `agents/shared/prompt-renderer.ts` (`HTML_COMMENT_RE`) so the stored prompt
- * equals the runtime template. Duplicated (not imported) to keep this script
- * free of the agent module graph.
- */
-const HTML_COMMENT_RE = /<!--[\s\S]*?-->\n?/g;
+const { published, unchanged } = await seedLangfusePrompts();
 
-const toStoredPrompt = (raw: string): string =>
-  raw.replace(HTML_COMMENT_RE, "").trim();
-
-/**
- * The unified agent template is resolved PER AGENT here, at seed time — the
- * stored Langfuse prompts (`fretik-chatbot-system`, `fretik-workflow-system`)
- * are the final per-agent texts, byte-identical to what the runtime renders
- * (minus per-turn `{{variables}}`): easy to debug in the Playground, and the
- * OpenRouter prefix cache stays keyed on stable per-agent prompts. The
- * runtime never resolves blocks on fetched text.
- */
-const UNIFIED_PROMPT_PATH = `${PROJECT_ROOT}/src/agents/shared/agent-system-prompt.md`;
-
-const PROMPTS: readonly {
-  name: string;
-  path: string;
-  agent?: PromptAgentKind;
-}[] = [
-  {
-    name: "fretik-chatbot-system",
-    path: UNIFIED_PROMPT_PATH,
-    agent: "chatbot",
-  },
-  {
-    name: "fretik-workflow-system",
-    path: UNIFIED_PROMPT_PATH,
-    agent: "workflow",
-  },
-  {
-    name: "fretik-chatbot-sub-agent",
-    path: `${PROJECT_ROOT}/src/agents/chatbot/sub-agent-system-prompt.md`,
-  },
-  {
-    name: "fretik-page-builder",
-    path: `${PROJECT_ROOT}/src/agents/chatbot/page-builder-system-prompt.md`,
-  },
-] as const;
-
-const client = new LangfuseClient();
-
-/**
- * Whether a `production`-labelled version of this prompt already exists.
- * Uses the list endpoint (returns an empty page for a missing name) rather
- * than `prompt.get` — the latter 404s on a fresh prompt, which the SDK logs
- * loudly at ERROR even when caught.
- */
-const hasProductionVersion = async (name: string): Promise<boolean> => {
-  const list = await client.api.prompts.list({
-    name,
-    label: "production",
-    limit: 1,
-  });
-  return list.data.some((p) => p.name === name);
-};
-
-/**
- * Cache-stability guard: the static prefix must stay byte-identical across
- * turns, so the only `{{placeholders}}` allowed ABOVE the DYNAMIC SUFFIX
- * marker are the team-stable ones (constant within a conversation). Any new
- * placeholder in the static zone silently kills the OpenRouter prefix cache —
- * fail the seed instead.
- */
-const STATIC_ZONE_ALLOWED_PLACEHOLDERS = new Set([
-  "deferredToolList",
-  "skillsCatalog",
-  "externalAppsBlock",
-]);
-const DYNAMIC_MARKER = "DYNAMIC SUFFIX — every section below";
-
-const assertStaticPrefixStable = (name: string, resolved: string): void => {
-  const markerIdx = resolved.indexOf(DYNAMIC_MARKER);
-  if (markerIdx === -1) {
-    throw new Error(`${name}: DYNAMIC SUFFIX marker not found in template`);
-  }
-  const staticZone = resolved.slice(0, markerIdx);
-  const offenders = [...staticZone.matchAll(/\{\{([a-zA-Z][a-zA-Z0-9]*)\}\}/g)]
-    .map((m) => m[1] ?? "")
-    .filter((p) => !STATIC_ZONE_ALLOWED_PLACEHOLDERS.has(p));
-  if (offenders.length > 0) {
-    throw new Error(
-      `${name}: placeholder(s) above the DYNAMIC SUFFIX marker break the cache prefix: ${offenders.join(", ")}`,
-    );
-  }
-};
-
-const seed = async (): Promise<void> => {
-  for (const { name, path, agent } of PROMPTS) {
-    const raw = await Bun.file(path).text();
-    if (agent !== undefined) {
-      assertStaticPrefixStable(name, resolveAgentBlocks(raw, agent));
-    }
-    const text = toStoredPrompt(
-      agent === undefined ? raw : resolveAgentBlocks(raw, agent),
-    );
-    const exists = await hasProductionVersion(name);
-    if (exists) {
-      const current = await client.prompt.get(name, {
-        label: "production",
-        type: "text",
-        cacheTtlSeconds: 0,
-      });
-      if (current.prompt === text) {
-        console.log(`✓ ${name} — unchanged, skipped`);
-        continue;
-      }
-    }
-    await client.prompt.create({
-      name,
-      type: "text",
-      prompt: text,
-      labels: ["production"],
-    });
-    console.log(
-      exists
-        ? `↑ ${name} — new version published (production)`
-        : `+ ${name} — created (production)`,
-    );
-  }
-};
-
-await seed();
+for (const name of unchanged) console.log(`✓ ${name} — unchanged, skipped`);
+for (const name of published) {
+  console.log(`↑ ${name} — new version published (production)`);
+}
+console.log(
+  `\n${published.length.toString()} published, ${unchanged.length.toString()} unchanged.`,
+);

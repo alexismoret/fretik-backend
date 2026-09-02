@@ -1,0 +1,7 @@
+[test]
+# A WALL over `packages/jobs/.env`, which Bun would otherwise side-load into
+# every test: see tests/preload.ts.
+preload = "./tests/preload.ts"
+
+# Test ORDER is never a contract — see the note in `packages/shared/bunfig.toml`.
+randomize = true

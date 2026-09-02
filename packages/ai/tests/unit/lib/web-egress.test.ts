@@ -238,6 +238,16 @@ describe("areWebToolsEnabled", () => {
 describe("pruneWebToolsIfUnavailable", () => {
   const registry = { searchWeb: 1, webFetch: 2, webMap: 3, querySql: 4 };
 
+  /**
+   * Asserted on the KEYS, because the helper is typed `<T>(registry: T) => T`
+   * — it promises the caller the same tool set back, which is what lets the
+   * two boot-time registries spread its result. Comparing the pruned result to
+   * a smaller literal therefore cannot typecheck, and the behaviour under test
+   * is exactly "which tool names survive".
+   */
+  const survivingTools = (tools: Record<string, unknown>): string[] =>
+    Object.keys(pruneWebToolsIfUnavailable(tools)).sort();
+
   const withEnv = (
     env: { enabled?: string; key?: string },
     run: () => void,
@@ -267,13 +277,13 @@ describe("pruneWebToolsIfUnavailable", () => {
 
   test("strips the web tools when the operator disables them", () => {
     withEnv({ enabled: "false", key: "tvly-test" }, () => {
-      expect(pruneWebToolsIfUnavailable(registry)).toEqual({ querySql: 4 });
+      expect(survivingTools(registry)).toEqual(["querySql"]);
     });
   });
 
   test("strips the web tools when no Tavily key is configured", () => {
     withEnv({}, () => {
-      expect(pruneWebToolsIfUnavailable(registry)).toEqual({ querySql: 4 });
+      expect(survivingTools(registry)).toEqual(["querySql"]);
     });
   });
 

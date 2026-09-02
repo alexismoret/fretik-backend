@@ -1,3 +1,4 @@
+import { assertOperatorTarget } from "@fretik/shared/lib/operator-guard";
 import {
   envVarForCapability,
   runModelSync,
@@ -19,6 +20,11 @@ import {
  * serving. It is loud on stderr instead, because the failure it names is one
  * an operator fixes on the service rather than by re-running the script.
  */
+
+// Rewrites the fleet's routing table for every role. The 2026-09-01 incident
+// was this pass reporting `ok` while writing degraded data; knowing WHERE it
+// wrote is the first thing anyone asks afterwards.
+await assertOperatorTarget(Bun.argv);
 
 const { status, stats } = await runModelSync();
 

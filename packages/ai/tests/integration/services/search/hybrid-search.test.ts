@@ -59,21 +59,38 @@ const insertSeedRow = async (input: SeedRowInput): Promise<void> => {
   });
 };
 
-const buildMetadata = (sourceType: AiVectorSourceType): AiVectorMetadata => {
+/**
+ * Only the four source types this suite seeds.
+ *
+ * It used to take the whole `AiVectorSourceType` union and answer for five,
+ * including an `extractions` kind the schema no longer has — and the document
+ * case still carried the transport-era fields (`document_type`,
+ * `transport_mode`, …) that left `DocumentVectorMetadata` long ago, while
+ * missing the ones it gained. None of it was caught, because these files were
+ * outside the typecheck. Narrowing the parameter makes the switch exhaustive
+ * and a new seeded kind a compile error instead of a fall-through.
+ */
+type SeededSourceType = Extract<
+  AiVectorSourceType,
+  "context" | "documents" | "memories" | "skills"
+>;
+
+const buildMetadata = (sourceType: SeededSourceType): AiVectorMetadata => {
   switch (sourceType) {
     case "documents":
       return {
         file_name: "test.pdf",
         file_type: "application/pdf",
         page_count: 1,
-        document_type: "test",
-        document_transport_type: null,
         document_language: "en",
         document_summary: null,
-        document_date: null,
-        document_number: null,
-        transport_mode: null,
         entities: [],
+        custom_fields: {},
+        scope: "team",
+        path: "test.pdf",
+        size_bytes: 0,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
       };
     case "memories":
       return {
@@ -100,18 +117,6 @@ const buildMetadata = (sourceType: AiVectorSourceType): AiVectorMetadata => {
         profile_id: randomUUID(),
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
-      };
-    case "extractions":
-      return {
-        extraction_id: randomUUID(),
-        extraction_name: null,
-        extraction_summary: null,
-        config_name: "test",
-        config_description: null,
-        json_schema: {},
-        document_ids: [],
-        document_names: [],
-        accuracy_score: null,
       };
   }
 };

@@ -70,6 +70,7 @@
  * from one.
  */
 import { OPENROUTER_API_BASE_URL } from "@fretik/shared/lib/openrouter";
+import { assertOperatorTarget } from "@fretik/shared/lib/operator-guard";
 import { recordBenchRuns } from "@fretik/shared/services/model-registry/bench-runs";
 import { z } from "zod";
 import { getEffectiveProfile } from "../src/lib/model-registry/effective";
@@ -332,7 +333,8 @@ if (!apiKey) {
 }
 
 // The registry lives in the database, so a script has to warm it before it can
-// name a model.
+// name a model — and `--save` writes bench runs back into it.
+await assertOperatorTarget(Bun.argv);
 await warmModelRegistry();
 const known = (): string =>
   listProfiles()

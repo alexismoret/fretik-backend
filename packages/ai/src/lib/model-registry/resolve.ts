@@ -49,7 +49,7 @@ import type {
 
 const apiKey = process.env.OPENROUTER_API_KEY;
 if (!apiKey) {
-  throw "Missing OPENROUTER_API_KEY env";
+  throw new Error("Missing OPENROUTER_API_KEY env");
 }
 
 /** Single OpenRouter client for the whole service. */

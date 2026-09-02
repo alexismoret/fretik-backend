@@ -25,8 +25,14 @@ afterEach(() => {
 });
 
 const stubFetch = (res: Response): void => {
-  const stub: typeof fetch = async () => res;
-  globalThis.fetch = stub;
+  // `typeof fetch` in Bun carries `preconnect`, so a bare arrow is not one.
+  // Attaching the real implementation keeps the stub a drop-in and leaves the
+  // no-op alternative — which would silently disable connection warm-up for
+  // anything else in the file — off the table.
+  const stub = async (): Promise<Response> => res;
+  globalThis.fetch = Object.assign(stub, {
+    preconnect: originalFetch.preconnect,
+  });
 };
 
 describe("invokeChatbot — SSE error frames", () => {

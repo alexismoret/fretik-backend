@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { PageDataResponse } from "../../src/schemas/pages";
-import { mockModule } from "./mock-module";
+import { mockModule } from "../lib/mock-module";
 
 /**
  * An in-memory stand-in for Redis.

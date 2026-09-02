@@ -65,6 +65,9 @@ const realTeamSkills = await loadRealModule(
 const realActiveProviders = await loadRealModule(
   "@fretik/shared/services/external-apps/connections/list-active-providers-for-conversation",
 );
+const realMcpSnapshots = await loadRealModule(
+  "@fretik/shared/services/external-apps/mcp/list-snapshots-for-conversation",
+);
 const realSessionStorage = await loadRealModule(
   "@fretik/shared/lib/chatbot-session-storage",
 );
@@ -304,6 +307,19 @@ export const installSandboxMocks = (): void => {
           listActiveProviderKeysForConversation: async () => [],
         },
       ),
+  );
+  // The THIRD list service the bootstrap calls, and the one this fixture used
+  // to miss. `pushMcpConnectionOverlay` soft-fails by design, so without this
+  // the query still ran, still failed, and was swallowed — every sandbox test
+  // printed `failed to list MCP snapshots: Failed query: select "team_id"
+  // from "ai_conversations"` and passed. Two suites had grown a whole-database
+  // fake of their own just to keep that line off the screen. Added 2026-09-02.
+  void mock.module(
+    "@fretik/shared/services/external-apps/mcp/list-snapshots-for-conversation",
+    () =>
+      strictOverrides("mcp/list-snapshots", realMcpSnapshots, {
+        listMcpSnapshotsForConversation: async () => [],
+      }),
   );
 
   // S3 session storage — back the helpers by the in-memory `s3Store`.

@@ -2,8 +2,10 @@
 
 One-off / maintenance scripts run ad-hoc with `bun --env-file=../../.env run src/scripts/<name>.ts`
 (from `backend/packages/shared`). They are **not** part of `bun run check` or the
-migration chain — schema migrations live in `drizzle/` and apply automatically at
-boot (`db/index.ts` → `runMigrationsWithLock`, advisory-locked).
+migration chain — schema migrations live in `drizzle/` and are applied by a
+service that carries `RUN_MIGRATIONS=true` at boot, or by `bun run db:migrate`.
+Importing the database no longer migrates anything: see
+`src/db/migrations.ts`.
 
 ## Script inventory
 
@@ -106,8 +108,9 @@ Run the ordered steps below **once** per environment.
 
 #### 1. Deploy
 
-Ship the image. At container start `runMigrationsWithLock` (advisory-locked,
-multi-replica-safe) applies `silent_obadiah_stane`: creates the `data` schema,
+Ship the image. At container start the service carrying `RUN_MIGRATIONS=true`
+migrates (advisory-locked, multi-replica-safe) and applies
+`silent_obadiah_stane`: creates the `data` schema,
 the `fretik_*` RLS helpers, `collection_grants` / `record_shares`, and the
 sharing-aware registry/catalog policies; drops the JSONB `data` column, the `v_*`
 views, and `fretik_text_to_date`.

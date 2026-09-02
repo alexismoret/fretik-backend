@@ -111,3 +111,6 @@ export * from "./pages";
 
 // Per-user sidebar pins (collections + pages kept one click away)
 export * from "./pins";
+
+// One-shot jobs that run once per deployed version, with their outcomes
+export * from "./release-tasks";

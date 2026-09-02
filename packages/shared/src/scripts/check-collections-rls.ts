@@ -9,6 +9,7 @@ import {
   recordShares,
   team,
 } from "../db/schema";
+import { assertOperatorTarget } from "../lib/operator-guard";
 import {
   qualifiedCollectionTable,
   SQL_TOOL_ROLE,
@@ -366,6 +367,11 @@ const functional = async (readonlyUrl: string): Promise<void> => {
 // ── Entry ───────────────────────────────────────────────────────────────────
 
 const run = async (): Promise<void> => {
+  // Read-only, but it opens a SECOND connection as `fretik_sql_tool` and its
+  // whole point is to say which database it just proved things about. The
+  // printed `[target]` line is the reason it is guarded, not the refusal.
+  await assertOperatorTarget(Bun.argv);
+
   await structural();
 
   const readonlyUrl = process.env.AI_DB_READONLY_URL;

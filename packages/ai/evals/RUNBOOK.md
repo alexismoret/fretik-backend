@@ -3,24 +3,27 @@
 The chatbot eval is **one engine** (this `evals/` harness, runs the REAL chatbot
 end-to-end) invoked from **three surfaces**, each with a distinct job.
 
-| Surface           | Who / when                           | Job                                                                                                                                       |
-| ----------------- | ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| **Scripts (dev)** | You, by hand, after a change         | "Did my change help?" — run the cases against your dev service, score, push a dataset-run. THE primary surface.                           |
-| **Manual CI**     | You, on demand (`workflow_dispatch`) | Same engine, triggered from a runner against a reachable, data-bearing service you pass in (`ai_service_url`). NOT a PR gate (see below). |
-| **Langfuse UI**   | You, to analyse                      | Compare dataset-runs, read per-capability scores, drill into a failing trace. NOT a runner for offline evals                              |
+| Surface           | Who / when                   | Job                                                                                                          |
+| ----------------- | ---------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| **Scripts (dev)** | You, by hand, after a change | "Did my change help?" — run the cases against your dev service, score, push a dataset-run. THE only surface. |
+| **Langfuse UI**   | You, to analyse              | Compare dataset-runs, read per-capability scores, drill into a failing trace. NOT a runner for offline evals |
 
 Separately: the **managed online evaluator** (configured in the Langfuse UI) runs
 continuously on **prod** traffic, sampled — quality monitoring, not the dataset loop.
 
-**Why evals are NOT a PR gate** (`langfuse-experiment.yml` is `workflow_dispatch`-only):
-the curated cases drive a LIVE `@fretik/ai` AND assume the target team's real data
-(counts, documents, entities), so they can't run against a fresh CI database; a CI
-runner can't reach your local dev; and evaluating a PR against any _external_ deployed
-service would test the deployed code, not the PR. PR quality gating (typecheck / lint /
-test + image build) lives in `ai.yml`. Run evals locally against dev before merging
-(below). The manual workflow is for triggering a run from CI against a reachable,
-data-bearing service you specify — never prod (it spends on the prod account and emits
-`env=production` traces that pollute prod analytics).
+**Why evals are NOT in CI at all.** The curated cases drive a LIVE `@fretik/ai` AND
+assume the target team's real data (counts, documents, entities), so they cannot run
+against a fresh CI database; a runner cannot reach your dev machine; and evaluating a
+PR against an _external_ deployed service would test the deployed code, not the PR.
+There is no combination of those that a runner can satisfy, which is why the manual
+`langfuse-experiment.yml` workflow was deleted on 2026-09-02 — it had never been able
+to run (every step pointed at a `backend/` directory that does not exist inside its own
+repo), and nothing was lost with it: the engine is `bun run evals:gate`, right here.
+
+PR quality gating — typecheck / lint / unit / integration / image build — lives in
+`.github/workflows/backend.yml`. Run evals locally against dev before merging (below),
+never against prod: eval turns spend on the prod account and emit `env=production`
+traces that pollute prod analytics.
 
 ## Day-to-day (scripts)
 
@@ -511,7 +514,8 @@ push doesn't accidentally deploy before the remaining steps are checked.
    (`ai_service_url`) pointing at a reachable, data-bearing, NON-prod service. NOT a deploy
    prerequisite — pre-merge evals run locally against dev.
 5. **Push + deploy.** Once 3 is done: `git push origin main` → build the single Docker image →
-   deploy via Dokploy. DB migrations run automatically on container boot (advisory-locked).
+   deploy via Dokploy. Migrations are applied at container boot by the services that
+   carry `RUN_MIGRATIONS=true`, under an advisory lock — see `docs/OPERATIONS.md`.
 
 > OpenRouter "Broadcast" is already disabled (no stray `env=default` traces) — no action needed.
 

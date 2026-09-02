@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "@hono/zod-openapi";
 import { paramsListSchema } from "./common/params";
 import { responseListSchema } from "./common/responses";
 import { documentStatusSchema } from "./documents";

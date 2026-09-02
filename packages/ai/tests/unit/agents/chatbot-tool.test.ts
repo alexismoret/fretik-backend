@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { z } from "zod";
-import { buildChatbotTool } from "../../../src/agents/shared/chatbot-tool";
+import {
+  buildChatbotTool,
+  type ChatbotTool,
+} from "../../../src/agents/shared/chatbot-tool";
 import { TOOL_ERROR_CODES } from "../../../src/lib/tool-error-codes";
 
 /**
@@ -10,18 +13,21 @@ import { TOOL_ERROR_CODES } from "../../../src/lib/tool-error-codes";
  * reads as a normal result, instead of a raw stream error.
  */
 
-const run = async (
-  tool: ReturnType<typeof buildChatbotTool>,
-  input: unknown,
-) => {
+/**
+ * Generic in the tool's own input/output: `ReturnType<typeof buildChatbotTool>`
+ * is `ChatbotTool<unknown, unknown>`, and those parameters are invariant, so a
+ * concrete tool built in a test is NOT assignable to it. Every call here was
+ * rejected the moment this file entered the typecheck.
+ */
+const run = async <TInput, TOutput>(
+  tool: ChatbotTool<TInput, TOutput>,
+  input: TInput,
+): Promise<unknown> => {
   const execute = tool.execute;
   if (!execute) throw new Error("tool has no execute fn");
-  type ExecOptions = Parameters<NonNullable<typeof tool.execute>>[1];
-  const options = {
-    toolCallId: "call-test",
-    messages: [],
-  } as unknown as ExecOptions;
-  return Promise.resolve(execute(input, options));
+  return await Promise.resolve(
+    execute(input, { toolCallId: "call-test", messages: [], context: {} }),
+  );
 };
 
 const isInternalError = (
@@ -30,7 +36,7 @@ const isInternalError = (
   typeof out === "object" &&
   out !== null &&
   "code" in out &&
-  (out as { code: unknown }).code === TOOL_ERROR_CODES.INTERNAL_ERROR;
+  out.code === TOOL_ERROR_CODES.INTERNAL_ERROR;
 
 describe("buildChatbotTool — throw guard", () => {
   test("a synchronous throw becomes INTERNAL_ERROR, not a thrown error", async () => {
@@ -39,7 +45,10 @@ describe("buildChatbotTool — throw guard", () => {
       searchHint: "boom sync",
       description: "throws synchronously",
       inputSchema: z.object({}),
-      execute: () => {
+      // Annotated because a body that only throws infers `never` as the tool's
+      // output, and the SDK's tool type maps a `never` output to `execute?:
+      // undefined` — the function then has nothing to be assignable to.
+      execute: (): { value: number } => {
         throw new Error("kaboom");
       },
     });
@@ -53,7 +62,8 @@ describe("buildChatbotTool — throw guard", () => {
       searchHint: "boom async",
       description: "rejects",
       inputSchema: z.object({}),
-      execute: async () => {
+      // Same reason as the synchronous case above.
+      execute: async (): Promise<{ value: number }> => {
         throw new Error("async kaboom");
       },
     });

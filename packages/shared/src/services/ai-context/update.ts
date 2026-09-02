@@ -6,7 +6,11 @@ import {
   type AiContextProfile,
 } from "../../db/schema/ai-context";
 import { notFound, throwHttpError } from "../../lib/errors";
-import { findContextProfile, type ScopeKey } from "./retrieve";
+import {
+  findContextProfile,
+  requireOwnedProfileId,
+  type ScopeKey,
+} from "./retrieve";
 
 /**
  * Create or update the instructions on a user / team context
@@ -69,13 +73,13 @@ export const upsertContextInstructions = async (args: {
  */
 export const setContextFileEnabled = async (args: {
   fileId: string;
-  organizationId: string;
+  scope: ScopeKey;
   enabled: boolean;
 }): Promise<void> => {
   const file = await db.query.aiContextFiles.findFirst({
     where: {
       id: args.fileId,
-      organizationId: args.organizationId,
+      profileId: await requireOwnedProfileId(args.scope),
     },
     columns: { id: true },
   });

@@ -25,6 +25,7 @@
  */
 import db from "@fretik/shared/db";
 import { aiMessages } from "@fretik/shared/db/schema";
+import { assertOperatorTarget } from "@fretik/shared/lib/operator-guard";
 import { and, eq, sql } from "drizzle-orm";
 
 /**
@@ -44,6 +45,8 @@ const stripOrphanThinkTags = (text: string): string => {
 };
 
 const apply = process.argv.includes("--apply");
+
+await assertOperatorTarget(Bun.argv);
 
 const rows = await db
   .select({ id: aiMessages.id, parts: aiMessages.parts })

@@ -1,35 +1,26 @@
-import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
 import { getProfileForRole } from "../../../src/lib/model-registry/resolve";
 // Real chunk planning is exercised through the tool; only the model-calling
 // entry point (`runProseTransform`) is faked below.
 import { planProseChunks } from "../../../src/lib/prose-transform";
-import { mockModule, mockModuleStrict } from "../../lib/mock-module";
-import { realDbExports } from "../../lib/real-db";
+import { mockModule } from "../../lib/mock-module";
 import { installSandboxMocks, sandboxFs } from "../../lib/sandbox-fixture";
+import { asToolRecord } from "../../lib/tool-result";
 
 installSandboxMocks();
 
-afterAll(() => {
-  void mock.module("@fretik/shared/db", () => realDbExports);
-});
-
-// transform's PDF/Office branch reads aiChatFiles; the text/json paths under
-// test never touch it, but the module imports `db` at load — stub it so the
-// import is cheap and offline (mirrors extract.test.ts).
-await mockModuleStrict("@fretik/shared/db", {
-  default: {
-    query: new Proxy(
-      {},
-      {
-        get: () => ({
-          findFirst: async () => undefined,
-          findMany: async () => [],
-        }),
-      },
-    ),
-    update: () => ({ set: () => ({ where: async () => undefined }) }),
-  },
-});
+/**
+ * NO `db` double, and none needed.
+ *
+ * `transform`'s PDF/Office branch reads `aiChatFiles`; the text and json paths
+ * exercised here never touch a table, so nothing below asserts on a query.
+ * What the stub that used to sit here actually silenced was the SANDBOX
+ * FIXTURE — `conversation-storage` looks `ai_conversations` up while pushing
+ * the skills tarball, and swallows the failure — which is a fixture problem
+ * and is now fixed in the fixture. A whole-database fake kept in a file to
+ * keep one log line off the screen is how the two tools next door ended up
+ * with fakes that re-implemented their predicates. Removed 2026-09-02.
+ */
 
 // Engine seam: capture what the tool passed; return a deterministic result
 // whose output is the chunks joined, so the written file is assertable.
@@ -59,7 +50,7 @@ const { wrapRuntimeContext } =
 
 const execTransform = async (
   conversationId: string | undefined,
-  input: Record<string, unknown>,
+  input: { file_path: string; instruction?: string; output_path?: string },
 ): Promise<Record<string, unknown>> => {
   const tool = createTransformTool();
   if (typeof tool.execute !== "function") {
@@ -80,10 +71,7 @@ const execTransform = async (
       context: wrapRuntimeContext(ctx),
     },
   );
-  if (typeof result !== "object" || result === null) {
-    throw new Error(`transform returned non-object: ${JSON.stringify(result)}`);
-  }
-  return result;
+  return asToolRecord("transform", result);
 };
 
 beforeEach(() => {

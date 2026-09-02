@@ -406,11 +406,17 @@ const incidentTable = (
 
 /**
  * Everything below reads or writes the database, and importing
- * `@fretik/shared/db` RUNS MIGRATIONS at module load and throws outright
- * without `DATABASE_URL`. `--help` has to work on a machine with no database
- * and no environment at all, so the registry services are pulled in HERE rather
- * than at the top of the file — the same deferral, for the same reason, that
- * `check-model-catalog.ts` applies to its own key-bearing imports.
+ * `@fretik/shared/db` throws outright without `DATABASE_URL`. `--help` has to
+ * work on a machine with no database and no environment at all, so the registry
+ * services are pulled in HERE rather than at the top of the file — the same
+ * deferral, for the same reason, that `check-model-catalog.ts` applies to its
+ * own key-bearing imports.
+ *
+ * It used to say the import also RAN MIGRATIONS. It did, and that is the whole
+ * incident: a `models:admin` run from a laptop over an SSH tunnel applied a
+ * migration to production two days before the code that needed it. Importing
+ * the handle now migrates nothing (`db/migrations.ts` owns that, and refuses
+ * without an authority) — and the guard below is the second half of the answer.
  */
 const { default: db } = await import("@fretik/shared/db");
 const { modelBenchRuns } = await import("@fretik/shared/db/schema");
@@ -440,6 +446,12 @@ const { summarizeIncidents } =
   await import("@fretik/shared/services/model-registry/incidents");
 const { readAllLiveStateRows, readLiveStateRow } =
   await import("@fretik/shared/services/model-registry/live");
+const { assertOperatorTarget } =
+  await import("@fretik/shared/lib/operator-guard");
+
+// THE script from the incident. It says which database it is about to change,
+// every time, and refuses production unless it is running inside the container.
+await assertOperatorTarget(Bun.argv);
 
 const now = new Date();
 

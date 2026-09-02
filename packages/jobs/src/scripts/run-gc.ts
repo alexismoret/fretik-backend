@@ -1,3 +1,4 @@
+import { assertOperatorTarget } from "@fretik/shared/lib/operator-guard";
 import { runGcDemote } from "../workers/gc-demote";
 
 /**
@@ -7,6 +8,9 @@ import { runGcDemote } from "../workers/gc-demote";
  *
  *   bun run gc:run
  */
+
+// Stage 2 HARD-DELETES episodes. Say which database before deleting from it.
+await assertOperatorTarget(Bun.argv);
 
 const { demoted, purged } = await runGcDemote();
 console.info(

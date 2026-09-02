@@ -18,6 +18,10 @@ import "@hono/zod-openapi";
 // run before any route handler touches the registry).
 import "@fretik/providers";
 
+import {
+  assertMigrationsCurrent,
+  runMigrationsWithLock,
+} from "@fretik/shared/db/migrations";
 import { auth } from "@fretik/shared/lib/auth";
 import { errorHandler } from "@fretik/shared/lib/error-handler";
 import { globalRateLimiter } from "@fretik/shared/lib/rate-limit";
@@ -59,6 +63,18 @@ import { toolPoliciesRoutes } from "./handlers/tool-policies";
 import { workflowRoutes } from "./handlers/workflows";
 
 const VERSION = packagejson.version;
+
+// Migrations are a deployment step, never an import side effect — see
+// `@fretik/shared/db/migrations` for the production incident that rule comes
+// from. Exactly one of two things is true of every process: the deployment
+// opted in and this container migrates under the advisory lock, or it refuses
+// to serve a schema older than its own code. Refusing is a crash loop, which
+// is loud; the previous container keeps serving behind the healthcheck.
+if (process.env.RUN_MIGRATIONS === "true") {
+  await runMigrationsWithLock({ kind: "service-boot" });
+} else {
+  await assertMigrationsCurrent("api");
+}
 
 // Page datasets may read connected apps in THIS process (the seam refuses
 // everywhere the executor is not installed — a worker, a bare test).

@@ -365,7 +365,7 @@ describe("synthesis defaults", () => {
     expect(synthesizeProfileFromLive(row())?.assessment.provider).toEqual({});
   });
 
-  test("the ZDR stance is read from the routes, and one dissenter decides it", () => {
+  test("the ZDR stance is a DEMAND read off the reachable routes", () => {
     const stat = (hasZdr: boolean | undefined) => ({
       provider: hasZdr === true ? "clean" : "leaky",
       displayName: "host",
@@ -381,12 +381,33 @@ describe("synthesis defaults", () => {
     );
     expect(all?.assessment.provider.zdr).toBe(true);
 
-    // A pool is only as private as its least private member: one route that
-    // retains is enough to make the badge a lie.
+    // One zero-retention route among several is enough to DEMAND it: the flag
+    // makes the platform narrow routing to that route. Dropping the demand
+    // because a sibling retains — which is what this asserted until
+    // 2026-09-02 — leaves routing free to land on the sibling, which is the
+    // opposite of the intent. It costs breadth, and that is the right trade
+    // under a policy that requires zero retention.
     const mixed = synthesizeProfileFromLive(
       row({ endpointStats: [stat(true), stat(false)] }),
     );
-    expect(mixed?.assessment.provider.zdr).toBe(false);
+    expect(mixed?.assessment.provider.zdr).toBe(true);
+
+    // Every reachable route KNOWN to retain: the demand is dropped, because
+    // asserting it there matches no endpoint and 404s every call.
+    const none = synthesizeProfileFromLive(
+      row({ endpointStats: [stat(false), stat(false)] }),
+    );
+    expect(none?.assessment.provider.zdr).toBe(false);
+
+    // A host the vetted pool excludes cannot serve the call, so its stance may
+    // not decide the flag for the hosts that can.
+    const excluded = synthesizeProfileFromLive(
+      row({
+        endpointStats: [stat(true), stat(false)],
+        providerPool: { openrouter: { only: ["clean"] } },
+      }),
+    );
+    expect(excluded?.assessment.provider.zdr).toBe(true);
 
     // Routes that never declared leave the stance unset, not false — the same
     // "absent is not a negative" rule the eligibility engine runs on.

@@ -17,6 +17,7 @@ import {
   deriveDynamicProfile,
   detectPriceJump,
   mergeEndpointStats,
+  poolJudgments,
 } from "../../src/services/model-registry/sync/compute";
 
 /**
@@ -60,23 +61,26 @@ describe("mergeEndpointStats", () => {
     expect(merged[0]?.quantization).toBe("fp4");
   });
 
-  test("enrichment fills the zero-retention stance, the column only the gateway reports", () => {
-    // The mirror image of the quantization case, and the two together are why
-    // the enrichment fetch earns its round trip: each source knows exactly one
-    // thing the other cannot see. Measured 2026-08-29 — a model routed through
-    // OpenRouter had no `hasZdr` on any endpoint until the gateway filled it.
+  test("a zero-retention stance NEVER crosses transports, unlike quantization", () => {
+    // The enrichment earns its round trip on `quantization`, which is a fact
+    // about the WEIGHTS and therefore portable. Retention is not: it is a
+    // contract between one transport and one route, and the two transports
+    // measurably disagree (2026-09-02, 253 host pairs across the 37 models both
+    // serve: 16 outright disagreements, and the gateway silent on 129). Filling
+    // the gap here is how a host entered a pool on the strength of a route no
+    // call would take.
     const merged = mergeEndpointStats(
       [endpoint({ provider: "baseten", quantization: "fp8" })],
       [endpoint({ provider: "baseten", hasZdr: true })],
     );
-    expect(merged[0]?.hasZdr).toBe(true);
+    expect(merged[0]?.hasZdr).toBeUndefined();
     expect(merged[0]?.quantization).toBe("fp8");
   });
 
-  test("a declared `false` stance survives an enrichment that says nothing", () => {
+  test("a declared `false` stance survives an enrichment that says otherwise", () => {
     const merged = mergeEndpointStats(
       [endpoint({ provider: "wafer", hasZdr: false })],
-      [endpoint({ provider: "wafer" })],
+      [endpoint({ provider: "wafer", hasZdr: true })],
     );
     expect(merged[0]?.hasZdr).toBe(false);
   });
@@ -179,6 +183,63 @@ describe("mergeEndpointStats", () => {
       "deepinfra",
       "novita",
     ]);
+  });
+});
+
+describe("poolJudgments", () => {
+  test("yesterday's `only` never filters today's — the pool is not a ratchet", () => {
+    // The defect: `only` was fed back into the filter that recomputes it, so a
+    // host absent from the list was excluded as "not in the declared pool" and
+    // the list could only shrink. Measured 2026-09-02, `deepseek-v4-flash`
+    // routed to 4 hosts while 22 passed its policy, and a seven-day quarantine
+    // was permanent — the host left `only` during it and could never return.
+    const judgments = poolJudgments("some-model", {
+      only: ["deepinfra", "baseten"],
+      sort: "throughput",
+    });
+    expect(judgments.only).toBeUndefined();
+    expect(judgments.sort).toBe("throughput");
+
+    const pool = buildAllowedPool({
+      declaredPool: judgments,
+      poolWidened: false,
+      quarantined: [],
+      endpoints: [
+        endpoint({ provider: "deepinfra" }),
+        endpoint({ provider: "novita" }),
+      ],
+      requireTools: false,
+    });
+    expect(pool.endpoints.map((e) => e.provider)).toEqual([
+      "deepinfra",
+      "novita",
+    ]);
+  });
+
+  test("a JUDGMENT still crosses the pass, and a measured one is re-applied", () => {
+    // `ignore` is the half that must survive: it records that somebody probed a
+    // host and watched it break. The two DeepSeek entries were surviving only
+    // as an absence from the frozen `only` above — removing the ratchet without
+    // this would have re-admitted them to the model they were measured breaking.
+    expect(
+      poolJudgments("gpt-oss-120b", { ignore: ["fireworks"] }).ignore,
+    ).toEqual(["fireworks"]);
+
+    const deepseek = poolJudgments("deepseek-v4-flash", undefined);
+    expect(deepseek.ignore).toContain("together");
+    expect(deepseek.ignore).toContain("coreweave");
+
+    const pool = buildAllowedPool({
+      declaredPool: deepseek,
+      poolWidened: false,
+      quarantined: [],
+      endpoints: [
+        endpoint({ provider: "together" }),
+        endpoint({ provider: "deepinfra" }),
+      ],
+      requireTools: false,
+    });
+    expect(pool.endpoints.map((e) => e.provider)).toEqual(["deepinfra"]);
   });
 });
 
@@ -343,6 +404,56 @@ describe("buildAllowedPool", () => {
     expect(pool.excluded).toEqual([
       { provider: "deepinfra", reason: "quarantined by the breaker" },
     ]);
+  });
+});
+
+describe("buildAllowedPool — context spread", () => {
+  test("a host far below the pool's best is dropped: it would cap every turn", () => {
+    // Measured 2026-09-02: `glm-5.2` was capped at 260 096 usable tokens by four
+    // hosts serving 262 144 while twenty served 1 048 576. The pool is a set of
+    // interchangeable routes, so its promise is its smallest member's — one
+    // quarter-size host does not add capacity, it removes everyone else's.
+    const pool = buildAllowedPool({
+      poolWidened: false,
+      quarantined: [],
+      requireTools: false,
+      endpoints: [
+        endpoint({ provider: "big", contextLength: 1_048_576 }),
+        endpoint({ provider: "also-big", contextLength: 1_000_000 }),
+        endpoint({ provider: "small", contextLength: 262_144 }),
+      ],
+    });
+    expect(pool.endpoints.map((e) => e.provider)).toEqual(["big", "also-big"]);
+    expect(pool.excluded[0]?.provider).toBe("small");
+    expect(computeEffectiveContext(pool.endpoints).contextLength).toBe(
+      1_000_000 - CONTEXT_SAFETY_MARGIN_TOKENS,
+    );
+  });
+
+  test("a host at exactly half is a member, not a straggler", () => {
+    // The ratio is calibrated on the market, which clusters at halves: at 0.75
+    // `minimax-m3` and `inkling` would lose their 524 288-token hosts, which
+    // serve exactly half of their best and are real capacity.
+    const pool = buildAllowedPool({
+      poolWidened: false,
+      quarantined: [],
+      requireTools: false,
+      endpoints: [
+        endpoint({ provider: "big", contextLength: 1_048_576 }),
+        endpoint({ provider: "half", contextLength: 524_288 }),
+      ],
+    });
+    expect(pool.endpoints.map((e) => e.provider)).toEqual(["big", "half"]);
+  });
+
+  test("a single-host pool is never emptied by a relative rule", () => {
+    const pool = buildAllowedPool({
+      poolWidened: false,
+      quarantined: [],
+      requireTools: false,
+      endpoints: [endpoint({ provider: "alone", contextLength: 8_192 })],
+    });
+    expect(pool.endpoints.map((e) => e.provider)).toEqual(["alone"]);
   });
 });
 

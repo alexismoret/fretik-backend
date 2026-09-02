@@ -1,4 +1,5 @@
 import type { MergedCatalogueEntry } from "../../../model-registry/catalogue";
+import { withMeasuredExclusions } from "../../../model-registry/measured-exclusions";
 import {
   blendedPricePerMTok,
   isFiniteNumber,
@@ -62,6 +63,29 @@ export const MIN_CREDIT_MULTIPLIER = 0.1;
 export const PRICE_JUMP_THRESHOLD = 0.5;
 
 /**
+ * How small a host may be, against the best in its own pool, and still belong
+ * to it.
+ *
+ * A pool is a set of INTERCHANGEABLE routes: a request goes to whichever is
+ * free, so what the model can promise is what its smallest member can serve.
+ * One host with a quarter of the context therefore does not add capacity, it
+ * caps everybody — and until the pool stopped being a ratchet nothing could
+ * make that happen, because pools never widened.
+ *
+ * Measured 2026-09-02 on the published fleet, where it is not hypothetical:
+ * `glm-5.2` is capped at 260 096 tokens today by four hosts serving 262 144
+ * while twenty serve 1 048 576. Dropping those four raises the model's usable
+ * context by 3.8×. On `deepseek-v4-flash`, one host of twenty-one costs the
+ * other twenty three quarters of theirs.
+ *
+ * A half is where the line sits because the market clusters at halves and the
+ * next ratio up starts costing real capacity: at 0.75, `minimax-m3` and
+ * `inkling` lose their 524 288-token hosts, which serve exactly half of their
+ * best and are genuine members. At 0.5 they keep them.
+ */
+export const POOL_CONTEXT_SPREAD_RATIO = 0.5;
+
+/**
  * Fold two sources' views of the same pool into one.
  *
  * `primary` is the transport a call actually routes through, so it WINS on
@@ -104,12 +128,19 @@ export const mergeEndpointStats = (
       },
       supportsImplicitCaching:
         stat.supportsImplicitCaching ?? extra.supportsImplicitCaching,
-      // Each source fills what the other cannot see, and the two gaps are
-      // symmetrical: only the gateway publishes a per-endpoint zero-retention
-      // stance, only OpenRouter publishes a quantization. A model routed
-      // through either transport therefore gets both answers, which is the
-      // whole reason the enrichment fetch is worth its round trip.
-      hasZdr: stat.hasZdr ?? extra.hasZdr,
+      // `hasZdr` is deliberately ABSENT from this fold: a zero-retention stance
+      // belongs to a (transport, route) pair and never transfers.
+      //
+      // It used to be filled across sources on the reading that only the
+      // gateway published one. That stopped being true when the OpenRouter ZDR
+      // route list was added, and the two are not the same claim: the gateway
+      // answers per HOST under Vercel's contracts, OpenRouter answers per ROUTE
+      // under its own. Measured over the 37 models both serve (2026-09-02, 253
+      // host pairs): they disagree outright on 16 — 11 where the gateway has an
+      // agreement and no OpenRouter route does, 5 the other way — and the
+      // gateway says nothing at all about 129, which the fold would have
+      // answered with the other transport's contract. Filling a gap that way
+      // admits a host into a pool on the strength of a route no call will take.
       quantization: stat.quantization ?? extra.quantization,
       supportsToolChoice: stat.supportsToolChoice ?? extra.supportsToolChoice,
       uptime5m: stat.uptime5m ?? extra.uptime5m,
@@ -246,6 +277,34 @@ export const carryForwardMeasurements = (
   return { endpoints, freshlyMeasured, carriedForward };
 };
 
+/**
+ * The half of a stored pool that may take part in recomputing it.
+ *
+ * `only` is deliberately dropped. Feeding yesterday's `only` back into the
+ * filter that produces today's made the pool a RATCHET: a host absent from the
+ * list was excluded as "not in the declared pool", so the list could only ever
+ * shrink. Measured 2026-09-02 — a curated list inherited from the deleted
+ * profiles had frozen four pools, the worst routing to 4 hosts while 22 passed
+ * the policy, and a seven-day quarantine was in practice permanent, since the
+ * host dropped out of `only` during it and could never be readmitted.
+ *
+ * `ignore` and `sort` come through: those are judgments, and the whole point of
+ * carrying a judgment across passes is that a measurement should not have to be
+ * repeated to keep standing. The measured exclusions recorded in code are
+ * unioned in here, because two of them were surviving only as an absence from
+ * the frozen list this change removes.
+ */
+export const poolJudgments = (
+  profileKey: string,
+  declared: ProviderPool | undefined,
+): ProviderPool => {
+  const ignore = withMeasuredExclusions(profileKey, declared?.ignore);
+  return {
+    ...(ignore.length > 0 ? { ignore } : {}),
+    ...(declared?.sort === undefined ? {} : { sort: declared.sort }),
+  };
+};
+
 export interface AllowedPoolInput {
   declaredPool?: ProviderPool;
   /** Quarantines exhausted the vetted pool, so `only` is not applied. */
@@ -278,6 +337,9 @@ export interface AllowedPool {
  * quantization. Missing data never excludes anybody: the gateway reports
  * `null` on every endpoint we have looked at, so treating absence as a failure
  * would empty the pool of every gateway-served model at once.
+ *
+ * The context floor is the one RELATIVE rule, so it runs last, over whatever
+ * the absolute ones leave — see `POOL_CONTEXT_SPREAD_RATIO`.
  */
 export const buildAllowedPool = (input: AllowedPoolInput): AllowedPool => {
   const quarantined = new Set(normalizeProviderList(input.quarantined));
@@ -339,7 +401,20 @@ export const buildAllowedPool = (input: AllowedPoolInput): AllowedPool => {
     endpoints.push(endpoint);
   }
 
-  return { endpoints, excluded };
+  // The context floor comes LAST, because it is relative: it needs the pool the
+  // other rules leave standing before it can say what "far below the best" is.
+  const best = Math.max(0, ...endpoints.map((e) => e.contextLength));
+  const cutoff = best * POOL_CONTEXT_SPREAD_RATIO;
+  const kept = endpoints.filter((endpoint) => {
+    if (endpoint.contextLength >= cutoff) return true;
+    excluded.push({
+      provider: normalizeProviderName(endpoint.provider),
+      reason: `context ${endpoint.contextLength.toString()} is under half the pool's best (${best.toString()}) — it would cap every turn`,
+    });
+    return false;
+  });
+
+  return { endpoints: kept, excluded };
 };
 
 /**

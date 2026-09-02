@@ -40,6 +40,10 @@ import {
   activeQuarantines,
   effectivePoolFor,
 } from "@fretik/shared/services/model-registry/breaker";
+import {
+  countDiscoveryProbes,
+  readRecentDiscoveryProbes,
+} from "@fretik/shared/services/model-registry/discovery-probes";
 import { summarizeIncidents } from "@fretik/shared/services/model-registry/incidents";
 import {
   getLiveRegistry,
@@ -961,6 +965,70 @@ modelAdminRoutes.openapi(catalogueSearchRoute, async (c) => {
       };
     });
   return c.json({ catalogueSize: entries.length, results }, 200);
+});
+
+// ---------------------------------------------------------------------------
+// Discovery
+// ---------------------------------------------------------------------------
+
+const discoveryRoute = createRoute({
+  method: "get",
+  path: "/discovery",
+  summary: "What the nightly sweep looked at, and why it said no (super-admin)",
+  tags: ["Model admin"],
+  request: {
+    query: z.object({
+      limit: z.coerce.number().int().min(1).max(200).default(40),
+    }),
+  },
+  responses: {
+    200: {
+      content: {
+        "application/json": {
+          schema: z.object({
+            /** Verdicts on record. Each stands for three weeks, then the model is re-examined. */
+            examined: z.number(),
+            probes: z.array(
+              z.object({
+                catalogueId: z.string(),
+                transport: z.enum(TRANSPORT_IDS),
+                verdict: z.enum(["accepted", "rejected", "unreachable"]),
+                reason: z.string(),
+                endpointCount: z.number(),
+                examinedAt: z.date(),
+              }),
+            ),
+          }),
+        },
+      },
+      description:
+        "Why a catalogue model is not in the registry — a question that had no answer at all before the sweep kept a cursor.",
+    },
+    ...responseForbiddenSchema,
+    ...responseInternalErrorSchema,
+  },
+});
+
+modelAdminRoutes.openapi(discoveryRoute, async (c) => {
+  const { limit } = c.req.valid("query");
+  const [probes, examined] = await Promise.all([
+    readRecentDiscoveryProbes({ limit }),
+    countDiscoveryProbes(),
+  ]);
+  return c.json(
+    {
+      examined,
+      probes: probes.map((probe) => ({
+        catalogueId: probe.catalogueId,
+        transport: probe.transport,
+        verdict: probe.verdict,
+        reason: probe.reason,
+        endpointCount: probe.endpointCount,
+        examinedAt: probe.examinedAt,
+      })),
+    },
+    200,
+  );
 });
 
 // ---------------------------------------------------------------------------

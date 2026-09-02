@@ -184,6 +184,37 @@ export interface MergedCatalogueEntry extends CatalogueEntry {
 }
 
 /**
+ * Which transport a NEW row should route through, read off the fleet.
+ *
+ * Registry order decided this until 2026-09-02, and it was the wrong default
+ * wearing a neutral face: that order exists to settle which catalogue's
+ * spelling of an id becomes canonical, and it puts the aggregators first for
+ * that reason alone. Every model both transports serve was therefore born on
+ * the gateway while all 22 published models routed through OpenRouter — so
+ * adding a model produced a row on the transport nobody uses, and a human had
+ * to switch it. A manual step invented by an implementation detail.
+ *
+ * Published rows only: candidates are what this is choosing for, so counting
+ * them would let one accidental default breed. A tie and an empty fleet both
+ * answer `undefined` — a first environment has no fleet to follow, and a fleet
+ * evenly split states no preference — which sends the caller back to registry
+ * order.
+ */
+export const preferredTransport = (
+  publishedTransports: readonly TransportId[],
+  idsByTransport: Partial<Record<TransportId, string>>,
+): TransportId | undefined => {
+  const counts = new Map<TransportId, number>();
+  for (const transport of publishedTransports) {
+    if (idsByTransport[transport] === undefined) continue;
+    counts.set(transport, (counts.get(transport) ?? 0) + 1);
+  }
+  const [first, second] = [...counts].sort(([, a], [, b]) => b - a);
+  if (first === undefined) return undefined;
+  return second !== undefined && second[1] === first[1] ? undefined : first[0];
+};
+
+/**
  * The comparable part of a model id.
  *
  * The CREATOR segment is deliberately discarded: the catalogues disagree on it

@@ -488,6 +488,53 @@ export const modelAdminActions = pgTable(
   ],
 );
 
+/**
+ * Which catalogue models discovery has already looked at, and what it decided.
+ *
+ * Without this the nightly sweep had no memory, and that turned a bounded
+ * budget into a stuck one: 392 unknown models against 40 endpoint fetches a
+ * night, ordered by release date — a key that does not move — so the same 40
+ * were re-examined every night and the other 350 were never reached (measured
+ * 2026-09-02). A rejection that is not written down is a rejection you pay for
+ * again tomorrow.
+ *
+ * One row per catalogue id, upserted: this is a CURSOR, not a history. It also
+ * answers the question the terminal could not — "why is this model not in the
+ * registry?" — which is why the reason is stored as the sentence a person
+ * reads rather than a code.
+ *
+ * Rows expire (`DISCOVERY_PROBE_TTL_DAYS`) so a model rejected on price or on a
+ * missing zero-retention route is reconsidered once the market moves, and the
+ * table stays small: ~40 writes a night against a catalogue of a few hundred.
+ */
+export const modelDiscoveryProbes = pgTable(
+  "model_discovery_probes",
+  {
+    id: uuid("id")
+      .default(sql`uuid_generate_v7()`)
+      .primaryKey(),
+    /** The merged entry's canonical id — the same spelling `modelIds` records. */
+    catalogueId: varchar("catalogue_id", { length: 200 }).notNull().unique(),
+    transport: varchar("transport", { length: 16 })
+      .$type<TransportId>()
+      .notNull(),
+    /** `accepted` rows exist for one pass only: the model becomes a row and is never unknown again. */
+    verdict: varchar("verdict", { length: 16 })
+      .$type<"accepted" | "rejected" | "unreachable">()
+      .notNull(),
+    /** The sentence a person reads: the rule that failed, with its figures. */
+    reason: text("reason").notNull(),
+    /** Endpoints the transport listed, before the policy filtered them. */
+    endpointCount: integer("endpoint_count").notNull().default(0),
+    examinedAt: timestamp("examined_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  // Both reads scan by time: the rotation asks what is stale, the purge asks
+  // what is ancient.
+  (t) => [index("model_discovery_examined_idx").on(t.examinedAt)],
+);
+
 export type ModelLiveStateRow = typeof modelLiveState.$inferSelect;
 export type NewModelLiveStateRow = typeof modelLiveState.$inferInsert;
 export type ModelProviderIncidentRow =
@@ -498,3 +545,4 @@ export type ModelSyncRunRow = typeof modelSyncRuns.$inferSelect;
 export type ModelBenchRunRow = typeof modelBenchRuns.$inferSelect;
 export type ModelAdminActionRow = typeof modelAdminActions.$inferSelect;
 export type ModelTelemetryRollupRow = typeof modelTelemetryRollups.$inferSelect;
+export type ModelDiscoveryProbeRow = typeof modelDiscoveryProbes.$inferSelect;

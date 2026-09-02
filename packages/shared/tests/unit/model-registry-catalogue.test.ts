@@ -7,6 +7,7 @@ import type {
 import {
   catalogueMatchKey,
   mergeCatalogues,
+  preferredTransport,
 } from "../../src/model-registry/catalogue";
 import type { TransportId } from "../../src/model-registry/types";
 
@@ -252,5 +253,43 @@ describe("mergeCatalogues", () => {
       { source: source("openrouter"), entries: [entry({ id: "x/m" })] },
     ]);
     expect(merged?.isLanguageModel).toBe(true);
+  });
+});
+
+describe("preferredTransport", () => {
+  const BOTH: Partial<Record<TransportId, string>> = {
+    gateway: "alibaba/qwen3.8-flash",
+    openrouter: "qwen/qwen3.8-flash",
+  };
+
+  test("a new row follows the fleet, not the registry's ordering", () => {
+    // The defect this exists for, with the shape prod had on 2026-09-02: every
+    // published model on OpenRouter, every dual-served candidate born on the
+    // gateway because the gateway is listed first for an unrelated reason.
+    const published: TransportId[] = Array.from(
+      { length: 22 },
+      () => "openrouter",
+    );
+    expect(preferredTransport(published, BOTH)).toBe("openrouter");
+  });
+
+  test("a transport the model is not served on cannot win", () => {
+    expect(
+      preferredTransport(["scaleway", "scaleway", "openrouter"], BOTH),
+    ).toBe("openrouter");
+  });
+
+  test("an empty fleet and a tie both decline to answer", () => {
+    // Not a fallback picked here: `undefined` sends the caller back to registry
+    // order, which is the only defensible answer when the fleet states no
+    // preference. A first environment must still be able to add its first model.
+    expect(preferredTransport([], BOTH)).toBeUndefined();
+    expect(preferredTransport(["gateway", "openrouter"], BOTH)).toBeUndefined();
+  });
+
+  test("a fleet on a transport this model has no id for declines", () => {
+    expect(
+      preferredTransport(["openrouter"], { gateway: "alibaba/only-here" }),
+    ).toBeUndefined();
   });
 });

@@ -20,12 +20,21 @@ import { canProbeIntegrity, probeIntegrity } from "./integrity-probe";
  * integrity gate measured automatically, once, and the result is on the
  * scorecard when someone opens it.
  *
- * ## Why candidates and not the whole fleet
+ * ## What is probed, and what is not
  *
- * A published model's integrity is already watched, continuously and for free,
- * by the runtime detectors on real customer traffic — a strictly better signal
- * than a synthetic prompt. A candidate is never called, so nothing watches it.
- * Probing what is already observed would spend money to learn less.
+ * An UPSTREAM nobody has measured, wherever it sits. That is every host of a
+ * new candidate, and — since 2026-09-02 — a host that has just entered a
+ * PUBLISHED model's pool.
+ *
+ * The original rule was "candidates only", on the reading that a published
+ * model's integrity is watched continuously and for free by the runtime
+ * detectors on real traffic. That still holds for a host that has been serving:
+ * traffic is a better signal than a synthetic prompt. It does not hold for a
+ * host that has just been admitted and has served nothing — and pools now
+ * widen, because `only` stopped being a ratchet the same day. Probing per
+ * upstream rather than per row is what keeps both true: an admitted host is
+ * measured once, an established one is left to the traffic that already
+ * watches it.
  *
  * ## Why only multi-upstream candidates
  *
@@ -97,7 +106,7 @@ export const runCandidateBenchSweep = async (options?: {
   for (const row of rows) {
     if (stats.candidatesProbed >= BENCH_MAX_CANDIDATES_PER_NIGHT) break;
     if (stats.upstreamsProbed >= INTEGRITY_MAX_PROBES_PER_NIGHT) break;
-    if (row.status !== "candidate") continue;
+    if (row.status === "retired") continue;
     if (!canProbeIntegrity(row.transport)) continue;
 
     const upstreams = distinctUpstreams(row);
@@ -108,18 +117,27 @@ export const runCandidateBenchSweep = async (options?: {
     const modelId = row.modelIds[row.transport];
     if (modelId === undefined) continue;
 
+    /** Hosts whose measurement still stands — nothing to learn by repeating it. */
+    let measured: Set<string>;
     try {
       const recent = await readRecentBenchRuns(row.profileKey, {
         since: staleBefore,
-        limit: 1,
       });
-      if (recent.length > 0) continue;
+      measured = new Set(
+        recent.map((entry) => normalizeProviderName(entry.provider)),
+      );
     } catch (err: unknown) {
       stats.errors.push(
         `${row.profileKey}: could not read previous bench runs: ${err instanceof Error ? err.message : String(err)}`,
       );
       continue;
     }
+
+    const unmeasured = upstreams.filter((provider) => !measured.has(provider));
+    // Every host already carries a standing measurement. On a published model
+    // that is the normal state, and re-probing it would spend tokens to
+    // reproduce what real traffic reports for free.
+    if (unmeasured.length === 0) continue;
 
     const measurements: {
       provider: string;
@@ -129,7 +147,7 @@ export const runCandidateBenchSweep = async (options?: {
       note?: string;
     }[] = [];
 
-    for (const provider of upstreams) {
+    for (const provider of unmeasured) {
       if (stats.upstreamsProbed >= INTEGRITY_MAX_PROBES_PER_NIGHT) break;
       const wireName = wireNameFor(row.endpointStats, provider, row.transport);
       // A probe we cannot address correctly must not run: an unknown name is
@@ -190,17 +208,24 @@ export const runCandidateBenchSweep = async (options?: {
         measurement.intactPassed <
         measurement.intactTotal - measurement.failures,
     );
+    const published = row.status === "published";
     await raiseModelAlert({
       kind: "bench-verdict",
-      // A truncating host is worth reading before a promotion; a clean sweep
-      // is a fact for the scorecard, not a message.
-      severity: mutilating.length > 0 ? "warning" : "info",
+      // A truncating host is worth reading before a promotion; the same finding
+      // on a PUBLISHED model is about traffic being served right now. A clean
+      // sweep is a fact for the scorecard, not a message.
+      severity:
+        mutilating.length === 0 ? "info" : published ? "critical" : "warning",
       modelKey: row.profileKey,
       message:
         mutilating.length > 0
-          ? `${row.profileKey}: ${mutilating.map((m) => `${m.provider} ${m.intactPassed.toString()}/${m.intactTotal.toString()}`).join(", ")} MUTILATED an answer ending in a tool call — every agent turn ends that way, so exclude them before promoting. ${clean.length.toString()} of ${measurements.length.toString()} upstream(s) came back intact.`
-          : `${row.profileKey}: all ${measurements.length.toString()} upstream(s) kept an answer ending in a tool call intact.`,
-      context: { transport: row.transport, measurements },
+          ? `${row.profileKey}: ${mutilating.map((m) => `${m.provider} ${m.intactPassed.toString()}/${m.intactTotal.toString()}`).join(", ")} MUTILATED an answer ending in a tool call — every agent turn ends that way. ${
+              published
+                ? "This model is PUBLISHED and the host is in its pool: quarantine it."
+                : "Exclude them before promoting."
+            } ${clean.length.toString()} of ${measurements.length.toString()} newly measured upstream(s) came back intact.`
+          : `${row.profileKey}: all ${measurements.length.toString()} newly measured upstream(s) kept an answer ending in a tool call intact.`,
+      context: { transport: row.transport, measurements, status: row.status },
     });
   }
 

@@ -375,6 +375,8 @@ describe("syncVerdict", () => {
     modelsSeen: 47,
     modelsUpdated: 47,
     candidatesAdded: 0,
+    discoveryBacklog: 0,
+    discoveryProbesPurged: 0,
     policyFailures: 0,
     quarantinesReleased: 0,
     alerts: 0,

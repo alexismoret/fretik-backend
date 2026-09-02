@@ -3,6 +3,7 @@ import {
   cacheShape,
   MARKET_BLENDED_QUARTILES,
 } from "@fretik/shared/model-registry/measures";
+import { normalizeProviderName } from "@fretik/shared/model-registry/provider-names";
 import type {
   CatalogueReasoning,
   LiveModelState,
@@ -196,18 +197,52 @@ const cacheStrategyFor = (pricing: LiveModelState["pricing"]): CacheStrategy =>
   cacheShape(pricing) === "none" ? "none" : "implicit";
 
 /**
- * Where every reachable route stands on zero retention.
+ * Whether the request should DEMAND zero retention, read off the routes it can
+ * actually reach.
  *
- * `true` only when every endpoint says so, `false` when at least one says it
- * does not, and UNDEFINED when nothing said — which is the case the old
- * hardcoded `true` erased. "We could not check" and "checked, retains nothing"
- * are different claims and only the second may light a badge.
+ * Two things this is not. It is not a badge — a model's retention story is told
+ * by `disabledReason: "no-zdr"` and by the endpoint table — and it is not a
+ * survey of every host the catalogues mention. It is one wire flag whose whole
+ * effect is to make the PLATFORM narrow routing to zero-retention routes.
+ *
+ * That reframing decides both halves of the rule:
+ *
+ * 1. **Read the vetted pool, not every endpoint.** A host the pool already
+ *    excludes cannot serve the call, so letting its stance decide the flag lets
+ *    an unreachable route disarm the protection for the reachable ones.
+ * 2. **One reachable zero-retention route is enough to demand it.** The old
+ *    `every` meant a single non-ZDR host silently dropped the demand for the
+ *    whole model — the failure mode being that routing was then free to land
+ *    anywhere, which is exactly what the flag exists to prevent. `some` costs
+ *    routing breadth (the platform narrows to the ZDR routes) and that is the
+ *    correct trade when the policy requires zero retention. `false` is kept for
+ *    the case where every reachable route is KNOWN not to be zero-retention:
+ *    demanding it there empties the pool and 404s every call.
+ *
+ * Why this is not merely defensive: the pool names HOSTS while retention is a
+ * property of ROUTES, and one host commonly serves both kinds. Measured
+ * 2026-09-02 across the fleet's dual-served models, 20 hosts are split —
+ * `claude-sonnet-5` reaches `google-vertex` by three routes of which one is
+ * zero-retention, `gemini-3.5-flash-lite` by five of which one. `only:
+ * ["vertex"]` cannot express that difference; this flag is the only thing that
+ * can, which is why it must not be dropped on a technicality.
  */
 const zdrStanceFor = (live: LiveModelState): boolean | undefined => {
-  const stances = live.endpointStats
+  const vetted = new Set(
+    (live.providerPool[live.transport]?.only ?? []).map(normalizeProviderName),
+  );
+  const inPool = live.endpointStats.filter((endpoint) =>
+    vetted.has(normalizeProviderName(endpoint.provider)),
+  );
+  // An empty intersection means the pool names hosts no endpoint answers to —
+  // a hand-written list whose spellings drifted, which the audit reports and
+  // nothing here can fix. Reading every endpoint then is the safe reading: it
+  // is what the pool would have been, not silence.
+  const reachable = inPool.length === 0 ? live.endpointStats : inPool;
+  const stances = reachable
     .map((endpoint) => endpoint.hasZdr)
     .filter((stance): stance is boolean => stance !== undefined);
-  return stances.length === 0 ? undefined : stances.every(Boolean);
+  return stances.length === 0 ? undefined : stances.some(Boolean);
 };
 
 /**

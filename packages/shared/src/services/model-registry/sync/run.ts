@@ -29,6 +29,7 @@ import type {
   AaMetrics,
   EndpointStat,
   LiveModelState,
+  PolicyReport,
   ProviderPool,
   QuarantineEntry,
   TransportId,
@@ -36,10 +37,17 @@ import type {
 import { isTransportId } from "../../../model-registry/types";
 import { type RaiseAlertInput, raiseModelAlert } from "../alerts";
 import { activeQuarantines, releaseProvider } from "../breaker";
+import {
+  isDiscoveryVariant,
+  purgeDiscoveryProbes,
+  readStandingDiscoveryVerdicts,
+  recordDiscoveryProbe,
+} from "../discovery-probes";
 import { countIncidentsForModel } from "../incidents";
 import { invalidateLiveRegistry, readAllLiveStateRows } from "../live";
 import { readMeasuredEndpointStats } from "../telemetry";
 import {
+  type AllowedPool,
   buildAllowedPool,
   carryForwardMeasurements,
   computeCreditMultiplier,
@@ -48,6 +56,7 @@ import {
   deriveDynamicProfile,
   detectPriceJump,
   mergeEndpointStats,
+  poolJudgments,
   unionEndpointStats,
 } from "./compute";
 import { createCatalogueSources, sourceForTransport } from "./sources";
@@ -198,6 +207,15 @@ export interface ModelSyncStats {
   /** Rows the pass decided to write. `dryRun` decides but does not write. */
   modelsUpdated: number;
   candidatesAdded: number;
+  /**
+   * Catalogue models still waiting to be looked at, AFTER the standing verdicts
+   * and the variant filter. It is the number that says whether the frontier is
+   * advancing: a backlog that does not fall pass after pass means the budget is
+   * being spent on the same entries.
+   */
+  discoveryBacklog: number;
+  /** Verdicts too old to stand, dropped this pass. */
+  discoveryProbesPurged: number;
   policyFailures: number;
   quarantinesReleased: number;
   alerts: number;
@@ -257,6 +275,8 @@ const emptyStats = (): ModelSyncStats => ({
   modelsSeen: 0,
   modelsUpdated: 0,
   candidatesAdded: 0,
+  discoveryBacklog: 0,
+  discoveryProbesPurged: 0,
   policyFailures: 0,
   quarantinesReleased: 0,
   alerts: 0,
@@ -554,8 +574,30 @@ const syncOneModel = async (
   const policy: ModelPolicy =
     row.status === "published" ? PUBLISHED_POLICY : DEFAULT_CANDIDATE_POLICY;
   const declaredPool = row.providerPool[transport];
+  /**
+   * The JUDGMENTS the pool carries, and nothing else.
+   *
+   * `only` is deliberately withheld. Feeding yesterday's `only` back into the
+   * filter that recomputes it made the pool a RATCHET: a host absent from the
+   * list was excluded as "not in the declared pool", so the recomputed list
+   * could only ever shrink. Three consequences, all measured 2026-09-02:
+   *
+   * - A hand-curated list from the deleted profiles froze four pools. The worst,
+   *   `deepseek-v4-flash`, routed to 4 hosts while 22 passed the policy.
+   * - A host a catalogue adds later could never be reached, whatever it offered.
+   * - **A quarantine became permanent.** Excluded for its seven days, the host
+   *   dropped out of `only`, and the ratchet kept it out for ever — a review
+   *   trigger turned into a life sentence, silently.
+   *
+   * `ignore` still comes through, because that one IS a judgment: a measured
+   * defect on a serving stack, carried across passes on purpose. What replaces
+   * the ratchet as a guard is measurement — the nightly integrity sweep probes
+   * any upstream in a pool that has never been probed, so a host entering a
+   * pool is measured rather than merely admitted.
+   */
+  const judgments = poolJudgments(row.profileKey, declaredPool);
   const pool = buildAllowedPool({
-    declaredPool,
+    declaredPool: judgments,
     poolWidened: row.poolWidened,
     quarantined: quarantinedNames,
     endpoints: merged,
@@ -760,6 +802,11 @@ const syncOneModel = async (
   // nothing moves, and gone the moment `poolWidened` fires, since a widened
   // pool skips `only` and there would be no `ignore` left to catch the host
   // the exclusion existed for.
+  //
+  // `only` is now genuinely recomputed — see `judgments` above for why feeding
+  // it back to its own filter made this list shrink-only — so the union with
+  // `measured-exclusions` matters: two DeepSeek hosts were being held out by
+  // that very bug and by nothing else.
   const vettedPool: ProviderPool | undefined =
     pool.endpoints.length > 0
       ? {
@@ -767,10 +814,9 @@ const syncOneModel = async (
             ...new Set(pool.endpoints.map((endpoint) => endpoint.provider)),
           ],
           sort: "throughput",
-          ...(declaredPool?.ignore !== undefined &&
-          declaredPool.ignore.length > 0
-            ? { ignore: declaredPool.ignore }
-            : {}),
+          ...(judgments.ignore === undefined
+            ? {}
+            : { ignore: judgments.ignore }),
         }
       : undefined;
 
@@ -1021,11 +1067,54 @@ const startingTransport = (
  * 22 % to 37 % depending on the host and a catalogue entry says nothing about
  * which host you get.
  */
+/**
+ * Why discovery said no, in one line a person can act on.
+ *
+ * The HARD failure comes first because it is the one that gated; a soft one
+ * only costs health score and would misdescribe the refusal. An empty pool is
+ * reported before any rule, because with nothing to grade every rule fails for
+ * the same single reason and quoting one of them names a symptom.
+ */
+export const rejectionReason = (
+  report: PolicyReport,
+  pool: AllowedPool,
+): string => {
+  if (pool.endpoints.length === 0) {
+    const why = pool.excluded
+      .slice(0, 3)
+      .map((entry) => `${entry.provider} (${entry.reason})`)
+      .join(", ");
+    return pool.excluded.length === 0
+      ? "no host serves it on this transport"
+      : `no eligible host: ${why}`;
+  }
+  const hard = report.rules.find(
+    (rule) =>
+      rule.severity === "hard" && !rule.passed && rule.skipped === undefined,
+  );
+  if (hard !== undefined) return `${hard.rule}: ${hard.detail}`;
+  const soft = report.rules.find(
+    (rule) => !rule.passed && rule.skipped === undefined,
+  );
+  return soft === undefined
+    ? "failed the discovery policy"
+    : `${soft.rule}: ${soft.detail}`;
+};
+
 const discoverCandidates = async (
   ctx: SyncContext,
   known: Set<string>,
   fleet: TransportId | undefined,
 ): Promise<void> => {
+  // Verdicts that still stand. Without them the sort below — a release date,
+  // which never moves — hands the budget to the same 40 entries every night
+  // and the frontier never advances: 392 models unknown, 40 looked at, the same
+  // 40 tomorrow (measured 2026-09-02, when the registry held 25 candidates
+  // against a catalogue of 628).
+  const standing = ctx.dryRun
+    ? new Set<string>()
+    : await readStandingDiscoveryVerdicts(ctx.now);
+
   const unknown = [...ctx.catalog.values()]
     .filter(
       (entry) =>
@@ -1041,11 +1130,17 @@ const discoverCandidates = async (
     // request: the discovery policy requires zero retention, so a model with no
     // ZDR route anywhere cannot become a candidate.
     .filter((entry) => entry.zdr !== "none")
+    // Routing variants of a model, not models. They cost a fetch each and they
+    // sort to the FRONT, which is how 95 of them came to occupy the head of a
+    // queue nothing else could get past.
+    .filter((entry) => !isDiscoveryVariant(entry.id))
+    .filter((entry) => !standing.has(entry.id))
     // Newest first: with a bounded budget, the models worth discovering are the
     // ones that did not exist at the last sync.
     .sort(
       (a, b) => (b.releasedAt?.getTime() ?? 0) - (a.releasedAt?.getTime() ?? 0),
     );
+  ctx.stats.discoveryBacklog = unknown.length;
 
   let fetches = 0;
   for (const entry of unknown) {
@@ -1060,11 +1155,35 @@ const discoverCandidates = async (
       transport === undefined ? undefined : entry.idsByTransport[transport];
     if (transport === undefined || modelId === undefined) continue;
     fetches += 1;
+    /** Write the verdict down, so tomorrow's budget goes somewhere new. */
+    const record = async (
+      verdict: "accepted" | "rejected" | "unreachable",
+      reason: string,
+      endpointCount: number,
+    ): Promise<void> => {
+      if (ctx.dryRun) return;
+      try {
+        await recordDiscoveryProbe({
+          catalogueId: entry.id,
+          transport,
+          verdict,
+          reason,
+          endpointCount,
+          now: ctx.now,
+        });
+      } catch (err: unknown) {
+        // A cursor that cannot be written costs a repeated fetch tomorrow, not
+        // a wrong decision — never worth failing the pass for.
+        ctx.stats.errors.push(`discovery probe ${entry.id}: ${message(err)}`);
+      }
+    };
+
     let endpoints: EndpointStat[];
     try {
       endpoints = await fetchEndpoints(ctx, transport, modelId);
     } catch (err: unknown) {
       ctx.stats.errors.push(`discovery ${modelId}: ${message(err)}`);
+      await record("unreachable", `endpoint fetch failed: ${message(err)}`, 0);
       continue;
     }
 
@@ -1094,7 +1213,10 @@ const discoverCandidates = async (
       },
       ctx.now,
     );
-    if (!report.passed) continue;
+    if (!report.passed) {
+      await record("rejected", rejectionReason(report, pool), endpoints.length);
+      continue;
+    }
 
     const context = computeEffectiveContext(pool.endpoints);
     const pricing = computePoolPricing(pool.endpoints);
@@ -1139,6 +1261,11 @@ const discoverCandidates = async (
         .onConflictDoNothing();
     }
     ctx.stats.candidatesAdded += 1;
+    await record(
+      "accepted",
+      `passes the discovery policy on ${transport} with ${pool.endpoints.length.toString()} eligible host(s)`,
+      endpoints.length,
+    );
     await ctx.alert({
       kind: "new-candidate",
       severity: "info",
@@ -1294,6 +1421,14 @@ export const runModelSync = async (
       await discoverCandidates(ctx, known, fleetTransport(rows));
     } catch (err: unknown) {
       stats.errors.push(`discovery: ${message(err)}`);
+    }
+    // After discovery, so a verdict written this pass is never the one dropped.
+    if (!dryRun) {
+      try {
+        stats.discoveryProbesPurged = await purgeDiscoveryProbes(now);
+      } catch (err: unknown) {
+        stats.errors.push(`discovery purge: ${message(err)}`);
+      }
     }
   }
 

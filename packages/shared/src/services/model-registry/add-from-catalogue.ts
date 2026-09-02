@@ -1,6 +1,7 @@
 import {
   catalogueMatchKey,
   mergeCatalogues,
+  preferredTransport,
 } from "../../model-registry/catalogue";
 import { modelKeyForId } from "../../model-registry/keys";
 import { DEFAULT_CANDIDATE_POLICY } from "../../model-registry/policy";
@@ -9,7 +10,7 @@ import type {
   TransportId,
 } from "../../model-registry/types";
 import { addCatalogueModel } from "./admin";
-import { readLiveStateRow } from "./live";
+import { readAllLiveStateRows, readLiveStateRow } from "./live";
 import {
   buildAllowedPool,
   computeEffectiveContext,
@@ -103,14 +104,25 @@ export const addFromCatalogue = async (input: {
     };
   }
 
-  // The requested transport when it serves this model, else the first source
-  // that does — registry order, the same rule discovery follows.
+  // The requested transport when it serves this model, else the one the
+  // published fleet already routes through, else the first source in registry
+  // order.
+  //
+  // Registry order alone was the rule until 2026-09-02, and it was the wrong
+  // default dressed as a neutral one: that order exists to decide which
+  // catalogue's SPELLING of an id becomes canonical, and the gateway is first
+  // for that reason alone. Every model both transports serve was therefore born
+  // on the gateway while all 22 published models routed through OpenRouter — so
+  // adding a model produced a row on the transport we do not use, and somebody
+  // had to switch it by hand. A default that contradicts the fleet is a manual
+  // step invented by an implementation detail.
   const transport =
     input.transport !== undefined &&
     entry.idsByTransport[input.transport] !== undefined
       ? input.transport
-      : sources.find((source) => entry.idsByTransport[source.id] !== undefined)
-          ?.id;
+      : ((await fleetTransport(entry.idsByTransport)) ??
+        sources.find((source) => entry.idsByTransport[source.id] !== undefined)
+          ?.id);
   const transportId =
     transport === undefined ? undefined : entry.idsByTransport[transport];
   if (transport === undefined || transportId === undefined) {
@@ -168,3 +180,13 @@ export const addFromCatalogue = async (input: {
     excluded: pool.excluded,
   };
 };
+
+const fleetTransport = async (
+  idsByTransport: Partial<Record<TransportId, string>>,
+): Promise<TransportId | undefined> =>
+  preferredTransport(
+    (await readAllLiveStateRows())
+      .filter((row) => row.status === "published")
+      .map((row) => row.transport),
+    idsByTransport,
+  );

@@ -41,6 +41,7 @@ Quick summary:
 - **Heavy deps stay in this package.** `imapflow`, `nodemailer`, future SDKs — never in `@fretik/shared`, `@fretik/api`, or `@fretik/ai`.
 - **Action signatures (`params`, `returns`) are protocol-agnostic.** They drive the generated Python SDK regardless of whether the transport is `nango-proxy` or `custom-handler`. Same agent UX across providers.
 - **`credentialsForm` descriptor** (custom-handler only) declares the fields the user fills in our own UI. The frontend renders it dynamically via `DynamicCredentialsForm.vue`. Adding a new credential field = no frontend change.
+- **Tests: unit only here, and read `backend/docs/OPERATIONS.md` §7 first.** This package touches no database, so its tests assert manifests, mappers and summaries — pure functions over declared shapes. A provider's real endpoint is never called from `bun test`: that is what `test-connection.ts` is for, at the user's request, with the user's credentials. `bun run smoke` (registered in CI) imports every manifest so Zod validates them at boot rather than in production.
 
 ## Gotchas
 

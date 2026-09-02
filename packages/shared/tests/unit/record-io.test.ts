@@ -10,8 +10,13 @@ import type { FieldDefinition, FieldDefinitionType } from "../../src/db/schema";
 // land BEFORE a dynamic `import()` of the SUT, not a static one.
 process.env.DATABASE_URL ??= "postgres://test:test@localhost:5432/test";
 
-const { buildExtensionUpdateBatch } =
-  await import("../../src/services/collection-schema/record-io");
+const {
+  buildExtensionInsert,
+  buildExtensionInsertBatch,
+  buildExtensionUpdate,
+  buildExtensionUpdateBatch,
+  extensionColumnCount,
+} = await import("../../src/services/collection-schema/record-io");
 
 /**
  * Regression: `bulkUpdateCollectionRecords` builds `UPDATE … AS e SET … FROM
@@ -76,5 +81,105 @@ describe("buildExtensionUpdateBatch", () => {
     expect(text).not.toContain('e."_label" =');
     expect(text).not.toContain('e."name" =');
     expect(text).not.toContain('e."regions" =');
+  });
+});
+
+/**
+ * Regression: a `formula` field IS a physical column, but a `GENERATED ALWAYS
+ * AS … STORED` one — Postgres refuses any value for it, `NULL` included. The
+ * `replace`-mode builders name every scalar column, so before the fix a bulk
+ * import into a type carrying one formula failed WHOLESALE with `cannot insert
+ * a non-DEFAULT value into column "…"`, while single-record writes (`patch`
+ * mode, which only names present keys) worked — the exact asymmetry seen in
+ * prod on 2026-08-28.
+ */
+describe("generated (formula) columns are never written", () => {
+  const fields = [
+    makeField("revenue", "money"),
+    makeField("cost", "number"),
+    makeField("margin", "formula"),
+  ];
+  const data = { revenue: { amount: 10, currencyCode: "EUR" }, cost: 4 };
+  const render = (
+    stmt: ReturnType<typeof buildExtensionInsertBatch>,
+  ): string => (stmt === null ? "" : new PgDialect().sqlToQuery(stmt).sql);
+
+  it("omits the formula column from the batch INSERT", () => {
+    const text = render(
+      buildExtensionInsertBatch({
+        collectionId: "019f0b8a-c6e7-7fa7-9ff6-7cc1cdba8862",
+        fields,
+        rows: [
+          {
+            recordId: "019f0b8b-25e8-7b13-acce-2f2162bd81ed",
+            teamId: "22222222-2222-2222-2222-222222222222",
+            label: "Q1",
+            status: "confirmed",
+            data,
+          },
+        ],
+      }),
+    );
+    expect(text).toContain('"revenue_amount"');
+    expect(text).toContain('"cost"');
+    expect(text).not.toContain('"margin"');
+  });
+
+  it("omits the formula column from the full-replace batch UPDATE", () => {
+    const text = render(
+      buildExtensionUpdateBatch({
+        collectionId: "019f0b8a-c6e7-7fa7-9ff6-7cc1cdba8862",
+        fields,
+        rows: [
+          {
+            recordId: "019f0b8b-25e8-7b13-acce-2f2162bd81ed",
+            label: "Q1",
+            data,
+          },
+        ],
+      }),
+    );
+    expect(text).toContain('"cost" = v."cost"');
+    expect(text).not.toContain('"margin"');
+  });
+
+  it("omits the formula column from the single-row full-replace UPDATE", () => {
+    const update = render(
+      buildExtensionUpdate({
+        collectionId: "019f0b8a-c6e7-7fa7-9ff6-7cc1cdba8862",
+        recordId: "019f0b8b-25e8-7b13-acce-2f2162bd81ed",
+        fields,
+        data,
+        mode: "replace",
+      }),
+    );
+    expect(update).toContain('"cost" =');
+    expect(update).not.toContain('"margin"');
+  });
+
+  it("kept the single-row INSERT working, which is why the fault looked like the data", () => {
+    // `patch` mode names only the keys present in `data`, and a formula key
+    // never is — so this path was correct all along. That asymmetry is what
+    // made the incident so hard to read: `manageRecord` wrote one record
+    // happily while the SDK's bulk import of the same rows failed outright,
+    // which reads as "my rows are bad" rather than "the batch builder is".
+    const insert = render(
+      buildExtensionInsert({
+        collectionId: "019f0b8a-c6e7-7fa7-9ff6-7cc1cdba8862",
+        recordId: "019f0b8b-25e8-7b13-acce-2f2162bd81ed",
+        teamId: "22222222-2222-2222-2222-222222222222",
+        label: "Q1",
+        status: "confirmed",
+        fields,
+        data,
+      }),
+    );
+    expect(insert).toContain('"cost"');
+    expect(insert).not.toContain('"margin"');
+  });
+
+  it("does not count the formula column when sizing a chunk", () => {
+    // money = 2 columns, number = 1, formula = 0.
+    expect(extensionColumnCount(fields)).toBe(3);
   });
 });

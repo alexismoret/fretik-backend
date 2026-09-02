@@ -59,9 +59,9 @@ Notes that bite:
 - **option `group`** (`'todo'|'in_progress'|'done'`) turns a `select` into kanban lanes — set it for status fields.
 - **`relation` vs `member`:** `member` is an internal teammate; `relation` links to another collection's records. A relation is added with `manageField` `type:'relation'`; changing a field to/from relation isn't supported — recreate it. To create a record already linked, pass `manageRecord create` `relations: [{relationKey, toRecordId|toDocumentId}]` (one record) or a bulk row's `relations` (many) — no separate manageLink call.
 - **`rollup`** needs an existing `relation` field on the type (`relationFieldKey`) and the aggregated field on the far side (`targetFieldKey`); `fn` is one of sum/count/avg/min/max/count_not_empty/percent_not_empty/percent_checked. `percent_checked` is task progress: % of linked records whose `boolean` target is true (subtasks + a "done" checkbox).
-- The **first field** of a type is its title automatically; pass `isTitle:true` to promote another. Keys are snake_case and auto-derived from the label when omitted.
+- The **first field** of a type is its title automatically; pass `isTitle:true` to promote another. Keys are snake_case and auto-derived from the label when omitted — so a formula in the same `create` batch cannot guess the key of a field it reads: pass `key` explicitly on both.
 - **Creation / last-edit metadata is automatic:** every record already tracks these — read `created_at` / `updated_at` (and author) directly in `querySql`. Never add a `date` field for them; to SHOW/sort/filter one in a view, add the read-only `created_time` / `last_edited_time` / `created_by` / `last_edited_by` field. Add a `date` field only for a domain date the table doesn't track (due date, signed on, …).
-- **Field cap:** at most 30 fields per type.
+- **Field cap:** at most 100 fields per type. Keeping fewer columns than the source has is a decision — say which you dropped and why before creating.
 
 ## Icons — set a good one wherever one fits
 

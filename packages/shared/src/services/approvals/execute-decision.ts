@@ -1,10 +1,48 @@
 import type { ToolApprovalRequest } from "../../db/schema";
+import { createApiError, throwHttpError } from "../../lib/errors";
 import type { GrantApprovalRequest } from "../../schemas/approvals";
+import { ERROR_CODES } from "../../schemas/errors";
+import { failedToolOutput } from "../ai/approval-pending";
 import { findToolCallIdForApproval } from "../ai/find-tool-call-by-approval";
 import { updateToolPartOutputByToolCallId } from "../ai/update-tool-part-output";
-import { claimGrantedApproval, releaseClaimedApproval } from "./claim";
+import {
+  claimGrantedApproval,
+  markFailedApproval,
+  releaseClaimedApproval,
+} from "./claim";
+import { approvalFailureReason } from "./failure-reason";
 import { getApprovalForCaller } from "./get-by-id";
 import { APPROVAL_KIND_HANDLERS } from "./kinds";
+
+/**
+ * Rewrite the persisted tool part from its `{ status: "approval_pending" }`
+ * placeholder to the row's current outcome. Idempotent: `find` returns
+ * undefined once the part was already mutated, and we no-op.
+ */
+const substituteToolOutput = async (
+  approval: ToolApprovalRequest,
+): Promise<void> => {
+  const found = await findToolCallIdForApproval({
+    conversationId: approval.conversationId,
+    approvalId: approval.id,
+  });
+  if (found === undefined) return;
+  // A failed execution has no kind-shaped outcome to report — only a reason —
+  // so it bypasses the handler and uses the one shared failure shape.
+  const newOutput =
+    approval.status === "failed"
+      ? failedToolOutput(
+          approval.id,
+          approval.executionError ?? "Execution failed",
+          (approval.decisionAt ?? new Date()).toISOString(),
+        )
+      : APPROVAL_KIND_HANDLERS[approval.kind].toToolOutput(approval);
+  await updateToolPartOutputByToolCallId({
+    conversationId: approval.conversationId,
+    toolCallId: found.toolCallId,
+    newOutput,
+  });
+};
 
 /**
  * Post-decision orchestration shared by the `/approvals/:id/*` handlers, for
@@ -67,10 +105,31 @@ export const executeAndMutateForGrant = async (params: {
         // Execute the decision (per kind). Each handler's `execute` persists
         // the result + marks the row `consumed` internally, so the re-read
         // below sees the final `consumed` row with its `result`.
-        await handler.execute({
-          approval: working,
-          decision: params.decision,
-        });
+        try {
+          await handler.execute({
+            approval: working,
+            decision: params.decision,
+          });
+        } catch (error) {
+          // The write threw — a constraint, a type coercion, a dead
+          // connection. The claim must be closed HERE: an uncaught throw used
+          // to leave the row `executing` with nobody on it, which the hash
+          // lookup then served to every retry ("currently executing") without
+          // ever opening another card. Marking it `failed` costs the user no
+          // wait — the next identical call gets a fresh approval — and keeps
+          // the reason where both the card and the agent can read it.
+          const message = approvalFailureReason(error);
+          const failed = await markFailedApproval(working.id, message);
+          await substituteToolOutput(failed ?? working);
+          // 409, not 500: the request was well-formed and the decision was
+          // recorded — it is the state that changed under it. The reason
+          // travels as the message so the card can say what went wrong instead
+          // of "Impossible d'approuver".
+          return throwHttpError(
+            409,
+            createApiError(ERROR_CODES.TOOL_APPROVAL_EXECUTION_FAILED, message),
+          );
+        }
       }
       working = await getApprovalForCaller(working.id, params.teamId);
     }
@@ -79,19 +138,7 @@ export const executeAndMutateForGrant = async (params: {
     working = await getApprovalForCaller(working.id, params.teamId);
   }
 
-  // Substitute the persisted tool output. Safe even when already mutated —
-  // `find` returns undefined in that case and we no-op.
-  const found = await findToolCallIdForApproval({
-    conversationId: working.conversationId,
-    approvalId: working.id,
-  });
-  if (found !== undefined) {
-    await updateToolPartOutputByToolCallId({
-      conversationId: working.conversationId,
-      toolCallId: found.toolCallId,
-      newOutput: APPROVAL_KIND_HANDLERS[working.kind].toToolOutput(working),
-    });
-  }
+  await substituteToolOutput(working);
   return working;
 };
 

@@ -2,14 +2,19 @@ import db from "../../db";
 import { type ToolApprovalRequest } from "../../db/schema";
 
 /**
- * Most recent non-rejected approval matching `(conversationId, lookupHash)`.
- * Rejected rows are intentionally skipped so an agent that re-emits the
- * same plan after a rejection starts a fresh `pending`.
+ * Most recent LIVE approval matching `(conversationId, lookupHash)`.
+ *
+ * `rejected` and `failed` are the two terminal states a retry is allowed to
+ * move past, so both are skipped: an agent re-emitting the same plan after a
+ * refusal — or after an execution error — starts a fresh `pending` instead of
+ * being answered by the dead row. (Skipping `failed` is what keeps an
+ * infrastructure error from making one operation permanently unapprovable.)
  *
  * Used by the dispatcher to route a plan submission to the right state:
  *  - `pending`   → return `approval_pending` (no duplicate row).
  *  - `granted`   → claim atomically to `executing`, then run.
- *  - `executing` → explicit error with the partial `result`.
+ *  - `executing` → explicit error with the partial `result` (or, past the
+ *                  staleness window on an inline kind, fail it and start over).
  *  - `consumed`  → return the cached `result` (idempotent re-run).
  *  - undefined   → INSERT a fresh `pending`.
  */
@@ -21,7 +26,7 @@ export const findLatestApprovalByHash = async (params: {
     where: {
       conversationId: params.conversationId,
       lookupHash: params.lookupHash,
-      status: { ne: "rejected" },
+      status: { notIn: ["rejected", "failed"] },
     },
     orderBy: { createdAt: "desc" },
   });

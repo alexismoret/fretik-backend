@@ -216,16 +216,20 @@ class _Schema:
         one line — what the type is for (required; you read it later as ground
         truth). Pass `fields` to build the whole schema in ONE call (each a dict
         like {"label": "Name", "type": "text", "is_title": True, "description":
-        "..."}; every field needs its own one-line `description`). Max 30 fields
-        per type. Exclude relation/rollup fields — add those with `add_field`.
-        Colors are auto-assigned; a select/multi_select option may set an
-        optional `color` (a palette token) to override.
+        "..."}; every field needs its own one-line `description`). Max 100
+        fields per type. Exclude relation/rollup fields — add those with
+        `add_field`. Colors are auto-assigned; a select/multi_select option may
+        set an optional `color` (a palette token) to override.
+
+        A field's column key is slugified from its label unless you pass
+        `"key"`. Set it explicitly on any field a `formula` in the same call
+        names in its expression — otherwise the expression is guessing.
 
         Returns {"id", "key", "fields": [{key, type}]}.
         """
-        if fields and len(fields) > 30:
+        if fields and len(fields) > 100:
             raise ValueError(
-                f"create_collection: max 30 fields per type, got {len(fields)}"
+                f"create_collection: max 100 fields per type, got {len(fields)}"
             )
         return _call_collections(
             "schema.create_collection",

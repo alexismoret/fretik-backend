@@ -221,6 +221,91 @@ re-implements a filter in JavaScript proves only that the double filtered — th
 suites here asserted exactly that until 2026-09-02, and the `teamId` predicate
 whose failure is a cross-tenant leak was never exercised by any of them.
 
+Note what the rule does NOT say: it says nothing about speed, and nothing about
+how many modules the test touches. A slow pure function is a unit test; a
+one-line service whose whole content is a `where` is an integration test.
+
+### `--isolate` — what it removed, and what must not come back
+
+`bun test --isolate` gives every FILE its own module registry, preload included.
+The mono-process workarounds it made obsolete are gone and must not return: no
+restoring a mock in `afterAll`, no reinstalling doubles in a global
+`beforeEach`, no `tests/isolated/` corner for suites that could not share a
+registry. A double you install is yours alone. What still holds inside one file
+is unchanged — a suite that mutates its own double resets it between ITS tests.
+
+### Writing one
+
+The layout is the contract: `tests/unit/**`, `tests/integration/**`, shared
+helpers in `tests/lib/**`, one `tests/preload.ts` per package. **A package with
+no `test` script is skipped in silence** by `bun run --filter '*' test`
+(`@fretik/workflows` is the one, and it is called out for that reason) — without
+knowing this, deleting a suite looks exactly like passing.
+
+Fixtures are built by the test and dropped by it. `createWorkspaceFixture()`
+(shared) and `createMemoryTestFixture()` (ai) return an organization, a team,
+two users and builders for the rows you need; `cleanup()` drops the organization
+and the rest cascades. Never hand-write an `interface FakeRow` — types come from
+`$inferSelect` / `$inferInsert`, because a fixture that lies about the schema has
+already broken a renderer here.
+
+**A crossing test needs a row that differs by exactly ONE column.** A whole
+second workspace differs in organization, team AND collection, so a refusal
+proves nothing about which predicate did the refusing. That is what
+`fixture.createTeam()` exists for: a second team in the SAME organization,
+holding a row in the FIRST team's collection — the only shape that fails when
+`teamId` leaves a WHERE. The same trap has an authorization form: **two guards
+that refuse the same row test one guard.** The org-scope case in
+`auth/middleware.test.ts` only became real once the user was a member of both
+teams; before that, the membership check refused first and neutralising the
+organization comparison left the suite green.
+
+**Prove the test can fail.** Delete the predicate, the lock, the guard — whatever
+the test claims to cover — watch it go red, put it back. A detector that catches
+a mutation 2 runs in 3 will be believed the day it passes: the breaker's
+concurrency test needed FOUR concurrent writers before removing `FOR UPDATE`
+failed 5 times out of 5.
+
+### Doubles — which helper, and when
+
+| Helper                                                                      | Use it for                                      | Why that one                                                                                                                                                                                                      |
+| --------------------------------------------------------------------------- | ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `mockModule(spec, overrides)`                                               | first-party and workspace modules — the default | Spreads over the real module, so exports you did not name stay real. A factory that hand-lists the two exports a suite needs DELETES the others, and the file that pays is a module in the same graph.            |
+| `mockModuleStrict` + `strictOverrides` (ai)                                 | a process boundary you want sealed shut         | Poisons every export it is not handed, so an unmocked call fails by name instead of reaching the wire. Never on a module that also exports pure helpers — that is how a fake ends up deciding where a file lives. |
+| bare `mock.module`                                                          | third-party packages only                       | On a `node_modules` package the pre-import wins and a spread override never takes effect; the helpers above are anchored to first-party paths.                                                                    |
+| `redis-double`, `sandbox-fixture`, `live-state-double`, `embeddings-double` | boundaries that already have one                | Reuse before writing another.                                                                                                                                                                                     |
+
+Install doubles at the TOP of the file and `await import()` the subject after
+them — a static import of the subject is hoisted above your `mock.module` call.
+
+### Three ways a test lies
+
+1. **The stand-in.** The double re-implements the `where` in JavaScript, so the
+   assertion measures the double. This is what the rule above catches. Every
+   instance found here also ignored the one predicate whose failure is a
+   cross-tenant leak.
+
+2. **The ambient secret.** The test is green because the machine running it
+   happens to hold a key. Found twice on 2026-09-02: unit runs traced to the
+   production Langfuse, and four integration suites embedded through the real
+   OpenRouter — green on a laptop, `401` in CI, and spending real money either
+   way. **A test that needs a credential to be green is not testing your code.**
+   Process boundaries get doubles; the live providers are reached deliberately,
+   by `models:check -- --probe` and the evals, where an outage reddens the thing
+   it should redden.
+
+   Corollary, learnt the same day: **a double must preserve the property the
+   test exploits.** `hybrid-search` seeds rows whose contents share vocabulary
+   with the query on purpose, so its embedding double hashes per TOKEN — one
+   random vector per string would have silently removed the only semantic
+   property that suite leans on, and it would still have been green.
+
+3. **The one that cannot fail.** `expect(promise).rejects.toThrow()` is typed
+   `void` in bun, so it is neither awaited nor caught by lint: the assertions on
+   the next line run before the promise settles. Use `rejection()`
+   (`tests/lib/expect-rejection.ts`), which hands you the `Error` to assert on. A
+   test that cannot fail is deleted, not converted.
+
 Running the integration suites:
 
 ```bash

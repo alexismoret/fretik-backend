@@ -24,10 +24,16 @@ import { WORKSPACE_DIRS, writeFile } from "./conversation-storage";
  *     tool. Tripping persistence forces a follow-up `read` call (one
  *     wasted turn). 48K keeps the typical top-20 chunk result inline
  *     while still capping pathological cases.
- *   - **Domain tools (16K)** — `listDocuments`, `listRecords`,
- *     `describeCollection`, … Tighter cap nudges the agent
- *     to paginate / refine
- *     filters instead of digesting a 100-row JSON dump inline.
+ *   - **Domain tools (16K)** — `listDocuments`, `listRecords`, … Tighter
+ *     cap nudges the agent to paginate / refine filters instead of
+ *     digesting a 100-row JSON dump inline.
+ *   - **A collection's schema (48K)** — `describeCollection` returns a
+ *     bounded thing (at most `MAX_FIELDS_PER_TYPE` field descriptions,
+ *     ~350 chars each), and it is the call the agent makes precisely so
+ *     that it can name field keys correctly. Persisting it would answer
+ *     "what are this type's fields?" with a file path and cost a `read`
+ *     to get back to where it started. The cap tracks the field cap:
+ *     it was raised with it, from 30 fields to 100.
  *
  * Everything else uses the default. New tools should NOT add custom
  * thresholds without strong justification — every magic number costs
@@ -42,6 +48,13 @@ export const DOMAIN_TOOL_THRESHOLD_CHARS = 16_000;
 
 /** RAG higher cap — see file header rationale. */
 export const RAG_THRESHOLD_CHARS = 48_000;
+
+/**
+ * A collection's schema — see file header rationale. Sized from the field cap
+ * (100 fields × ~350 chars of key/type/description/writeFormat, plus options),
+ * so the widest legal collection still arrives inline.
+ */
+export const SCHEMA_THRESHOLD_CHARS = 48_000;
 
 /** Characters of the full payload included in the preview block. */
 export const PREVIEW_SIZE_CHARS = 2_000;

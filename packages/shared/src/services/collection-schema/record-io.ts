@@ -47,6 +47,13 @@ const columnValues = (
   // `unique_id` is filled by its sequence DEFAULT on insert and is read-only —
   // never write it (omitting the column lets the DEFAULT assign the next value).
   if (def.type === "unique_id") return [];
+  // `formula` IS a physical column, but a `GENERATED ALWAYS AS … STORED` one:
+  // Postgres refuses ANY value for it, `NULL` included ("cannot insert a
+  // non-DEFAULT value into column …"). `patch` mode never named it (a formula
+  // key is absent from record data), so only the `replace` builders — the bulk
+  // INSERT and the full-replace UPDATE — ever hit that error, and they hit it
+  // for the whole batch. Skipping it here is what keeps them writable.
+  if (def.type === "formula") return [];
   assertSafeKey(def.key, "field key");
   const v = data[def.key] ?? null;
   if (def.type === "money") {

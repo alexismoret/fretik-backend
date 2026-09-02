@@ -199,7 +199,12 @@ export const bulkCreateCollectionRecords = async (input: {
   // the statements below is the extension insert (4 system columns + one per
   // scalar column), and the registry insert binds a fixed 13.
   const chunkSize = recordWriteChunkSize(fieldDefs);
-  for (const batch of chunkForBulk(prepared, chunkSize)) {
+
+  /**
+   * Write ONE batch in ONE transaction. Extracted so the failure path below can
+   * replay it row by row with the identical statements.
+   */
+  const writeBatch = async (batch: Prepared[]): Promise<void> => {
     await db.transaction(async (tx) => {
       // 2. Registry rows — system columns only. RETURNING preserves VALUES
       //    order, so `inserted[i]` pairs with `batch[i]`.
@@ -269,6 +274,41 @@ export const bulkCreateCollectionRecords = async (input: {
         ids[p.index] = inserted[i]?.id ?? null;
       });
     });
+  };
+
+  for (const batch of chunkForBulk(prepared, chunkSize)) {
+    try {
+      await writeBatch(batch);
+    } catch (error) {
+      // The chunk's transaction rolled back — a constraint, a value Postgres
+      // refused, a lost connection. Letting it throw would abandon the WHOLE
+      // load (every other chunk included) over rows that are very likely fine,
+      // and would break this service's per-row partial-success contract.
+      //
+      // Postgres names no row, so replay the chunk one row at a time with the
+      // exact same statements: the rows that can land, land; the ones that
+      // cannot get their own reason. The cost is bounded to the failing chunk,
+      // and only ever paid when something already went wrong.
+      //
+      // Logged because the two outcomes mean different things: if the replay
+      // then succeeds for every row, the fault was in the BATCH (a deadlock, a
+      // statement too wide) and no per-row error will record it.
+      console.warn(
+        `[bulk-create] chunk of ${batch.length.toString()} failed on collection ${input.collectionId}, retrying row by row:`,
+        error instanceof Error ? error.message : error,
+      );
+      for (const row of batch) {
+        try {
+          await writeBatch([row]);
+        } catch (rowError) {
+          ids[row.index] = null;
+          errors.push({
+            index: row.index,
+            error: formatBulkRowError(rowError),
+          });
+        }
+      }
+    }
   }
 
   // 7. Relations of every successfully-created row — resolved in two grouped

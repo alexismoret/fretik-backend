@@ -94,6 +94,13 @@ export const createManageCollectionTool = () =>
         .array(
           z.object({
             label: z.string(),
+            key: z
+              .string()
+              .max(60)
+              .optional()
+              .describe(
+                "snake_case column key. Defaults to a slug of the label — set it explicitly on any field a formula in this same call reads, and in that formula's expression.",
+              ),
             type: fieldDefinitionTypeSchema,
             description: z
               .string()
@@ -157,6 +164,7 @@ export const createManageCollectionTool = () =>
               createdByUserId: ctx.userId ?? null,
               fields: input.fields.map((f) => ({
                 label: f.label,
+                key: f.key,
                 type: f.type,
                 description: f.description ?? null,
                 config: dropInvalidOptionColors(f.config),

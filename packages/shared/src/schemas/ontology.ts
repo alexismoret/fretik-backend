@@ -5,7 +5,10 @@ import {
   ONTOLOGY_STATUSES,
 } from "../db/schema";
 import { COLLECTION_LIMITS } from "../services/collections/constants";
-import { FIELD_DEFINITION_LIMITS } from "../services/field-definitions/constants";
+import {
+  FIELD_DEFINITION_KEY_REGEX,
+  FIELD_DEFINITION_LIMITS,
+} from "../services/field-definitions/constants";
 import { audienceSchema, recordSharingSchema } from "./collection-sharing";
 import { cursorParamSchema, paramsListSchema } from "./common/params";
 import { nextCursorSchema } from "./common/responses";
@@ -125,6 +128,9 @@ const collectionFieldInputSchema = z
       .trim()
       .min(1)
       .max(FIELD_DEFINITION_LIMITS.MAX_LABEL_CHARS),
+    /** Explicit column key; defaults to a slug of the label. Required in
+     * practice on any field a `formula` in the same batch reads. */
+    key: z.string().regex(FIELD_DEFINITION_KEY_REGEX).optional(),
     type: fieldDefinitionTypeSchema,
     description: z
       .string()

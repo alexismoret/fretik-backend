@@ -169,6 +169,20 @@ export const bulkOperations = pgTable(
 
     progress: jsonb("progress").$type<BulkOperationProgress>(),
 
+    /**
+     * How many times a `failed` drain was resumed from its ledger.
+     *
+     * A failed load is resumable — the applied chunks are stamped, so picking
+     * it back up writes only what is missing — and that is what the agent's
+     * re-run does. The counter is what keeps "resumable" from meaning
+     * "retryable forever": an infrastructure hiccup clears on the next
+     * attempt, while a cause that is not going away (the column the rows need
+     * was dropped, a constraint now refuses them) fails identically every
+     * time, and past {@link MAX_BULK_OPERATION_RESUMES} the load is refused
+     * with its reason instead of being re-queued on a loop.
+     */
+    resumeCount: integer("resume_count").notNull().default(0),
+
     /** Why a terminal `failed` / `cancelled` ended that way. */
     error: text("error"),
 

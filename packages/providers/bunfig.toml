@@ -1,0 +1,3 @@
+[test]
+# Test ORDER is never a contract — see the note in `packages/shared/bunfig.toml`.
+randomize = true

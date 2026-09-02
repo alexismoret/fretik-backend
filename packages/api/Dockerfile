@@ -50,6 +50,19 @@ RUN --mount=type=cache,target=/root/.bun/install/cache \
 FROM install AS release
 ENV NODE_ENV=production
 
+# The one fact a laptop cannot fake, and the operator guard's second condition
+# (`lib/operator-guard.ts`): a script reaching production must be running where
+# production runs. An SSH tunnel forges the URL, the host and the port; it
+# cannot forge being inside this image.
+ENV FRETIK_RUNTIME=container
+
+# Which commit this image IS — see the copy of this note in
+# packages/ai/Dockerfile. The API registers no release tasks today; it carries
+# the SHA so the three images stay identical in this respect and so the value
+# is there the day it does.
+ARG GIT_SHA=""
+ENV GIT_SHA=$GIT_SHA
+
 # poppler-utils is required by node-poppler (PDF parsing inside
 # @fretik/shared/services/file-extraction).
 RUN apt-get update \
@@ -57,8 +70,8 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 # Source last so source-only changes don't invalidate the install
-# layer. `@fretik/shared` ships as workspace source (including
-# drizzle/ migrations loaded by runMigrationsWithLock at boot).
+# layer. `@fretik/shared` ships as workspace source (including drizzle/,
+# whose migrations this image applies at boot when RUN_MIGRATIONS=true).
 COPY packages/shared packages/shared
 COPY packages/providers packages/providers
 COPY packages/api packages/api

@@ -1,12 +1,8 @@
 /**
  * Full-pipeline integration tests for context-file vectorisation (S4).
  *
- * Mirrors the memory-test pattern: real DB, real OpenRouter (cheap
- * model for contextual enrichment + Qwen3-Embedding-8B for embeddings).
- * Slow (LLM round-trips) and requires:
- *   - Postgres reachable via DATABASE_URL
- *   - OPENROUTER_API_KEY set
- *   - Redis reachable via REDIS_URL (semaphore for cheap-model calls)
+ * Mirrors the memory-test pattern: real Postgres, real Redis, and OpenRouter
+ * DOUBLED (see `tests/lib/embeddings-double.ts`).
  *
  * Skip pattern: `bun test --test-name-pattern='context vectorize'` to
  * run these in isolation.
@@ -21,11 +17,15 @@ import {
 import { deleteContextVectors } from "@fretik/shared/services/ai-context/vector-refresh";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { and, eq } from "drizzle-orm";
-import { vectorizeSource } from "../../../../src/services/vectorize";
+import { installEmbeddingDoubles } from "../../../lib/embeddings-double";
 import {
   createMemoryTestFixture,
   type MemoryTestFixture,
 } from "../../lib/db-fixtures";
+
+await installEmbeddingDoubles();
+
+const { vectorizeSource } = await import("../../../../src/services/vectorize");
 
 const buildMetadata = (
   scope: "user" | "team",

@@ -33,7 +33,7 @@ import { redis } from "./redis";
 
 const appUrl = process.env.APP_URL;
 if (!appUrl) {
-  throw "Missing APP_URL env";
+  throw new Error("Missing APP_URL env");
 }
 
 // When the API and AI services run on distinct subdomains of the same

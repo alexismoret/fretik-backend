@@ -12,7 +12,9 @@
   ],
   "scripts": {
     "prepare": "husky",
-    "postinstall": "node .husky/verify.mjs"
+    "postinstall": "node .husky/verify.mjs",
+    "check": "bun run --filter '*' check",
+    "test": "bun run --filter '*' test"
   },
   "lint-staged": {
     "*.{ts,tsx,js,jsx}": [

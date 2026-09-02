@@ -26,9 +26,12 @@
  * Both passes select only un-indexed rows, so a re-run is a no-op and a run
  * interrupted halfway picks up where it stopped.
  */
+import { assertOperatorTarget } from "@fretik/shared/lib/operator-guard";
 import process from "node:process";
 import { backfillPageVectors } from "../src/services/vectorize/pages";
 import { backfillWorkflowVectors } from "../src/services/vectorize/workflows";
+
+await assertOperatorTarget(Bun.argv);
 
 const workflows = await backfillWorkflowVectors();
 console.info(`workflows indexed: ${workflows.indexed.toString()}`);

@@ -1,5 +1,3 @@
-import type { DomainEvent, Workflow } from "@fretik/shared/db/schema";
-import { isImportOriginated } from "@fretik/shared/services/bulk-operations/agent-key";
 import {
   advanceWorkerCursor,
   ensureWorkerCursor,
@@ -9,7 +7,11 @@ import { filterWorkflowConversationIds } from "@fretik/shared/services/workflows
 import { listActiveEventWorkflows } from "@fretik/shared/services/workflows/list-active-event-workflows";
 import { listExistingEventRuns } from "@fretik/shared/services/workflows/list-existing-event-runs";
 import { intFromEnv } from "../lib/env";
-import { WORKFLOW_RUN_CREATE_JOB } from "../queues/names";
+import {
+  buildTriggerJobs,
+  pairWorkflowsWithEvents,
+  selectTriggerCandidates,
+} from "../lib/workflow-trigger-matching";
 import { getWorkflowTriggerQueue } from "../queues/queues";
 
 /**
@@ -45,29 +47,6 @@ const CURSOR_NAME = "workflow-triggers";
 const WATERMARK_MS = intFromEnv("MEMORY_SWEEP_WATERMARK_MS", 15_000);
 const SWEEP_BATCH = intFromEnv("MEMORY_SWEEP_BATCH", 500);
 
-/** A run's own journal writes must never trigger another run. */
-const isWorkflowOriginated = (event: DomainEvent): boolean =>
-  event.actorType === "workflow" ||
-  (event.agentKey !== null && event.agentKey.startsWith("workflow:"));
-
-/**
- * A bulk import's writes must not fire triggers either — same mechanism, same
- * `agentKey` convention, different reason: see `bulk-operations/agent-key.ts`.
- * A 200 000-row load is history being entered, not 200 000 things happening.
- */
-const isImportedRecord = (event: DomainEvent): boolean =>
-  isImportOriginated(event.agentKey);
-
-/** Config match: event type equal + every filter entry equal on the payload. */
-const matchesEvent = (workflow: Workflow, event: DomainEvent): boolean => {
-  const config = workflow.triggerConfig.event;
-  if (!config || config.type !== event.type) return false;
-  if (!config.filter) return true;
-  return Object.entries(config.filter).every(
-    ([key, value]) => event.payload[key] === value,
-  );
-};
-
 export const runWorkflowTriggerSweep = async (): Promise<{
   created: number;
 }> => {
@@ -79,15 +58,13 @@ export const runWorkflowTriggerSweep = async (): Promise<{
   });
   if (events.length === 0) return { created: 0 };
 
-  const nonSelf = events.filter(
-    (e) => !isWorkflowOriginated(e) && !isImportedRecord(e),
-  );
-  // A run's SDK/sub-agent writes journal under the run's OWN conversation —
-  // `actorType`/`agentKey` miss those, so exclude any event whose conversation
-  // is a workflow run's. This is what actually closes the self-trigger loop.
+  // The conversation exclusion needs a query, so the candidate selection is
+  // split in two: gather the conversations that belong to workflow runs, then
+  // let the pure rule decide. Everything it filters on is in
+  // `lib/workflow-trigger-matching.ts`, tested without a database.
   const convIds = [
     ...new Set(
-      nonSelf
+      events
         .map((e) => e.conversationId)
         .filter((id): id is string => id !== null),
     ),
@@ -95,30 +72,11 @@ export const runWorkflowTriggerSweep = async (): Promise<{
   const workflowConvIds = await filterWorkflowConversationIds({
     conversationIds: convIds,
   });
-  const candidates = nonSelf.filter(
-    (e) => e.conversationId === null || !workflowConvIds.has(e.conversationId),
-  );
+  const candidates = selectTriggerCandidates(events, workflowConvIds);
 
   const teamIds = [...new Set(candidates.map((e) => e.teamId))];
   const workflows = await listActiveEventWorkflows({ teamIds });
-
-  const byTeam = new Map<string, Workflow[]>();
-  for (const workflow of workflows) {
-    const list = byTeam.get(workflow.teamId) ?? [];
-    list.push(workflow);
-    byTeam.set(workflow.teamId, list);
-  }
-
-  // Match pairs IN MEMORY first — the expensive part of a sweep must be a
-  // fixed handful of batch queries, never one round trip per (event ×
-  // workflow) pair (500 events × 200 workflows would be 100k SELECTs and
-  // starve the whole maintenance worker).
-  const pairs: { workflow: Workflow; event: DomainEvent }[] = [];
-  for (const event of candidates) {
-    for (const workflow of byTeam.get(event.teamId) ?? []) {
-      if (matchesEvent(workflow, event)) pairs.push({ workflow, event });
-    }
-  }
+  const pairs = pairWorkflowsWithEvents(candidates, workflows);
 
   let created = 0;
   if (pairs.length > 0) {
@@ -129,28 +87,7 @@ export const runWorkflowTriggerSweep = async (): Promise<{
       sourceEventIds: [...new Set(pairs.map((p) => p.event.id))],
     });
 
-    const jobs: Parameters<
-      ReturnType<typeof getWorkflowTriggerQueue>["addBulk"]
-    >[0] = [];
-    for (const { workflow, event } of pairs) {
-      if (existing.has(`${workflow.id}:${event.id}`)) continue;
-      jobs.push({
-        name: WORKFLOW_RUN_CREATE_JOB,
-        data: {
-          workflowId: workflow.id,
-          teamId: workflow.teamId,
-          sourceEventId: event.id,
-          triggerPayload: event.payload,
-        },
-        opts: {
-          jobId: `wfrun-${workflow.id}-${event.id}`,
-          attempts: 3,
-          backoff: { type: "exponential", delay: 5_000 },
-          removeOnComplete: { count: 500 },
-          removeOnFail: { count: 500 },
-        },
-      });
-    }
+    const jobs = buildTriggerJobs(pairs, existing);
     // No .catch: a Redis enqueue failure must throw so the sweep fails and
     // the cursor (advanced only at the end) stays put — the next sweep
     // replays the batch, and the jobId + the existence set dedup the rest.

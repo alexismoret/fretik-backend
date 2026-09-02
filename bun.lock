@@ -16,7 +16,7 @@
     },
     "packages/ai": {
       "name": "@fretik/ai",
-      "version": "0.7.7",
+      "version": "0.7.13",
       "dependencies": {
         "@ai-sdk/gateway": "4.0.69",
         "@ai-sdk/openai-compatible": "^3.0.41",
@@ -62,7 +62,7 @@
     },
     "packages/api": {
       "name": "@fretik/api",
-      "version": "0.7.7",
+      "version": "0.7.13",
       "dependencies": {
         "@fretik/providers": "workspace:*",
         "@fretik/shared": "workspace:*",
@@ -89,7 +89,7 @@
     },
     "packages/jobs": {
       "name": "@fretik/jobs",
-      "version": "0.7.7",
+      "version": "0.7.13",
       "dependencies": {
         "@fretik/providers": "workspace:*",
         "@fretik/shared": "workspace:*",
@@ -100,6 +100,7 @@
       "devDependencies": {
         "@types/bun": "latest",
         "@typescript/native": "npm:typescript@^7.0.2",
+        "drizzle-orm": "^1.0.0-rc.4-5d5b77c",
         "oxlint": "^1.80.0",
         "oxlint-tsgolint": "^0.24.0",
         "prettier": "3.9.6",
@@ -109,7 +110,7 @@
     },
     "packages/providers": {
       "name": "@fretik/providers",
-      "version": "0.7.7",
+      "version": "0.7.13",
       "dependencies": {
         "@ewsjs/xhr": "^3.1.3",
         "@fretik/shared": "workspace:*",
@@ -133,7 +134,7 @@
     },
     "packages/shared": {
       "name": "@fretik/shared",
-      "version": "0.7.7",
+      "version": "0.7.13",
       "dependencies": {
         "@ai-sdk/mcp": "^2.0.41",
         "@better-auth/drizzle-adapter": "^1.7.2",
@@ -186,7 +187,7 @@
     },
     "packages/workflows": {
       "name": "@fretik/workflows",
-      "version": "0.7.7",
+      "version": "0.7.13",
       "dependencies": {
         "@fretik/shared": "workspace:*",
         "@trigger.dev/sdk": "4.5.14",

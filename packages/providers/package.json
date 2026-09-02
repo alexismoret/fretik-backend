@@ -10,7 +10,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "check": "bun run typecheck && bun run lint && bun run format:check",
-    "test": "bun test",
+    "test": "bun test --isolate --timeout=10000 tests/unit",
     "smoke": "bun src/index.ts",
     "gen:sdk": "bun run scripts/generate-sdk.ts"
   },

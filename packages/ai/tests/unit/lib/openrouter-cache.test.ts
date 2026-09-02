@@ -17,6 +17,25 @@ import {
  * prompt shape across turns).
  */
 
+/**
+ * Read one slot of a result array.
+ *
+ * Under `noUncheckedIndexedAccess` every `xs[i]` is `T | undefined`, and the
+ * tempting fixes both weaken the test: `!` asserts what the test is trying to
+ * establish, and `?? fallback` turns a missing breakpoint into a comparison
+ * that quietly passes. Throwing names the slot instead, so a short result
+ * fails as "no element at index 2" rather than as an unrelated assertion.
+ */
+const at = <T>(values: readonly T[], index: number): T => {
+  const value = values.at(index);
+  if (value === undefined) {
+    throw new Error(
+      `no element at index ${index.toString()} of a ${values.length.toString()}-element result`,
+    );
+  }
+  return value;
+};
+
 const sys = (text = "system"): LanguageModelV4Message => ({
   role: "system",
   content: text,
@@ -118,7 +137,7 @@ describe("selectBreakpointIndices", () => {
     expect(indices[0]).toBe(0);
     expect(indices.at(-1)).toBe(prompt.length - 1);
     for (let i = 1; i < indices.length; i++) {
-      expect(indices[i]).toBeGreaterThan(indices[i - 1]);
+      expect(at(indices, i)).toBeGreaterThan(at(indices, i - 1));
     }
   });
 
@@ -130,7 +149,12 @@ describe("selectBreakpointIndices", () => {
     }
     const indices = selectBreakpointIndices(prompt);
     expect(indices.length).toBe(4);
-    const [systemIdx, midAnchor, recentAnchor, lastIdx] = indices;
+    const [systemIdx, midAnchor, recentAnchor, lastIdx] = [
+      at(indices, 0),
+      at(indices, 1),
+      at(indices, 2),
+      at(indices, 3),
+    ];
     expect(systemIdx).toBe(0);
     expect(midAnchor).toBeGreaterThan(0);
     expect(midAnchor).toBeLessThanOrEqual(4);
@@ -157,8 +181,8 @@ describe("selectBreakpointIndices", () => {
 
     expect(after[0]).toBe(before[0]);
     if (before.length === 4 && after.length === 4) {
-      const midDelta = after[1] - before[1];
-      const lastDelta = after[3] - before[3];
+      const midDelta = at(after, 1) - at(before, 1);
+      const lastDelta = at(after, 3) - at(before, 3);
       // The whole point of the "first 25 %" rule.
       expect(midDelta).toBeLessThan(lastDelta);
       expect(midDelta).toBeLessThanOrEqual(2);
@@ -181,8 +205,8 @@ describe("selectBreakpointIndices", () => {
       user("q3 — fresh"),
     ];
     const indices = selectBreakpointIndices(prompt);
-    const recentAnchor = indices.at(-2)!;
-    const recentMsg = prompt[recentAnchor];
+    const recentAnchor = at(indices, -2);
+    const recentMsg = at(prompt, recentAnchor);
     expect(recentMsg.role === "assistant" || recentMsg.role === "tool").toBe(
       true,
     );
@@ -204,10 +228,10 @@ describe("applyCacheControl", () => {
     const result = applyCacheControl(prompt, [0]);
     // System content is `string` per V3 type; cache_control therefore
     // lives on the message itself — the SDK preserves this code path.
-    expect(result[0].providerOptions?.openrouter?.cacheControl).toEqual({
+    expect(at(result, 0).providerOptions?.openrouter?.cacheControl).toEqual({
       type: "ephemeral",
     });
-    expect(result[1].providerOptions).toBeUndefined();
+    expect(at(result, 1).providerOptions).toBeUndefined();
   });
 
   test("non-system breakpoint attaches on the LAST content-part", () => {

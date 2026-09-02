@@ -2,7 +2,7 @@ import { Mistral } from "@mistralai/mistralai";
 
 const apiKey = process.env.MISTRAL_API_KEY;
 if (!apiKey) {
-  throw "Missing MISTRAL_API_KEY env";
+  throw new Error("Missing MISTRAL_API_KEY env");
 }
 
 /**

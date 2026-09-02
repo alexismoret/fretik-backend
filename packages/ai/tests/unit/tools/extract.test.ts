@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
 import { PDFDocument } from "pdf-lib";
 import { getProfileForRole } from "../../../src/lib/model-registry/resolve";
 // Real schema building is exercised through the tool; only the engine's
@@ -9,14 +9,10 @@ import {
   type RunStructuredExtractArgs,
 } from "../../../src/lib/structured-extract";
 import { mockModule } from "../../lib/mock-module";
-import { realDbExports } from "../../lib/real-db";
 import { installSandboxMocks, sandboxFs } from "../../lib/sandbox-fixture";
+import { asToolRecord } from "../../lib/tool-result";
 
 installSandboxMocks();
-
-afterAll(() => {
-  void mock.module("@fretik/shared/db", () => realDbExports);
-});
 
 // Engine seam: capture the source the tool built; return a canned envelope.
 // `buildExtractionSchema` stays REAL so field→schema building is exercised
@@ -50,7 +46,20 @@ const VALID_FIELDS = [
 
 const execExtract = async (
   conversationId: string | undefined,
-  input: Record<string, unknown>,
+  // Intersected with `Record<string, unknown>` so a test can send a key the
+  // schema does not know — one case here asserts exactly that a legacy
+  // `schema` payload is refused, and it has to be able to send one.
+  input: {
+    file_path: string;
+    fields?: {
+      name: string;
+      type?: "boolean" | "date" | "integer" | "number" | "string";
+      description?: string;
+    }[];
+    shape?: "record" | "records";
+    instructions?: string;
+    pages?: string;
+  } & Record<string, unknown>,
 ): Promise<Record<string, unknown>> => {
   const tool = createExtractTool();
   if (typeof tool.execute !== "function") {
@@ -71,10 +80,7 @@ const execExtract = async (
       context: wrapRuntimeContext(ctx),
     },
   );
-  if (typeof result !== "object" || result === null) {
-    throw new Error(`extract returned non-object: ${JSON.stringify(result)}`);
-  }
-  return result;
+  return asToolRecord("extract", result);
 };
 
 const buildPdf = async (pages: number): Promise<Uint8Array> => {

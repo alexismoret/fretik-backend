@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import type { LiveModelState } from "../../src/model-registry/types";
-import { mockModule } from "./mock-module";
+import { mockModule } from "../lib/mock-module";
 
 /**
  * The envelope around an operator write: consequences, and the action log.

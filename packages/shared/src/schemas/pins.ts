@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "@hono/zod-openapi";
 
 /**
  * Per-user sidebar pins — the contract shared by the API boundary and

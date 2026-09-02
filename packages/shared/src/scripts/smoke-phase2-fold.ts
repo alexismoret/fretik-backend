@@ -7,6 +7,7 @@ import {
   domainEvents,
   links,
 } from "../db/schema";
+import { assertOperatorTarget } from "../lib/operator-guard";
 import { createCollectionRecord } from "../services/collection-records/create";
 import { setRecordData } from "../services/collection-records/update";
 import { DOCUMENT_COLLECTION_KEY } from "../services/collections/constants";
@@ -29,6 +30,10 @@ const assert = (cond: boolean, msg: string): void => {
 };
 
 const run = async (): Promise<void> => {
+  // A smoke test WRITES — it creates a record, links it, then cleans up. That
+  // is the last thing anyone means to do to production by accident.
+  await assertOperatorTarget(Bun.argv);
+
   const team = await db.query.team.findFirst({
     columns: { id: true, organizationId: true },
   });

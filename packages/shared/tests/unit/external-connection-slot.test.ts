@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test } from "bun:test";
-import { mockModule } from "./mock-module";
+import { mockModule } from "../lib/mock-module";
 
 /**
  * `withConnectionSlot` — one call at a time on a connection whose far side

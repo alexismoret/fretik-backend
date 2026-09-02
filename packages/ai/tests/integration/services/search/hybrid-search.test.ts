@@ -12,8 +12,10 @@
  * sourceIds come back. The actual semantic ranking is irrelevant —
  * presence/absence is the contract.
  *
- * Hits the real DB AND real OpenRouter (Qwen3-Embedding-8B) for the
- * single shared embedding batch. ~1¢ per run, ~10s end-to-end.
+ * Real Postgres; the embedder is DOUBLED (`tests/lib/embeddings-double.ts`).
+ * That double sums a deterministic vector per TOKEN precisely so the property
+ * the seeding block below relies on — shared vocabulary scores above none —
+ * survives without a network call.
  */
 import db from "@fretik/shared/db";
 import {
@@ -25,12 +27,17 @@ import {
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { eq } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
-import { embedBatch } from "../../../../src/lib/embeddings";
-import { hybridSearch } from "../../../../src/services/search/hybrid-search";
+import { installEmbeddingDoubles } from "../../../lib/embeddings-double";
 import {
   createMemoryTestFixture,
   type MemoryTestFixture,
 } from "../../lib/db-fixtures";
+
+await installEmbeddingDoubles();
+
+const { embedBatch } = await import("../../../../src/lib/embeddings");
+const { hybridSearch } =
+  await import("../../../../src/services/search/hybrid-search");
 
 interface SeedRowInput {
   sourceType: AiVectorSourceType;
@@ -59,21 +66,38 @@ const insertSeedRow = async (input: SeedRowInput): Promise<void> => {
   });
 };
 
-const buildMetadata = (sourceType: AiVectorSourceType): AiVectorMetadata => {
+/**
+ * Only the four source types this suite seeds.
+ *
+ * It used to take the whole `AiVectorSourceType` union and answer for five,
+ * including an `extractions` kind the schema no longer has — and the document
+ * case still carried the transport-era fields (`document_type`,
+ * `transport_mode`, …) that left `DocumentVectorMetadata` long ago, while
+ * missing the ones it gained. None of it was caught, because these files were
+ * outside the typecheck. Narrowing the parameter makes the switch exhaustive
+ * and a new seeded kind a compile error instead of a fall-through.
+ */
+type SeededSourceType = Extract<
+  AiVectorSourceType,
+  "context" | "documents" | "memories" | "skills"
+>;
+
+const buildMetadata = (sourceType: SeededSourceType): AiVectorMetadata => {
   switch (sourceType) {
     case "documents":
       return {
         file_name: "test.pdf",
         file_type: "application/pdf",
         page_count: 1,
-        document_type: "test",
-        document_transport_type: null,
         document_language: "en",
         document_summary: null,
-        document_date: null,
-        document_number: null,
-        transport_mode: null,
         entities: [],
+        custom_fields: {},
+        scope: "team",
+        path: "test.pdf",
+        size_bytes: 0,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
       };
     case "memories":
       return {
@@ -100,18 +124,6 @@ const buildMetadata = (sourceType: AiVectorSourceType): AiVectorMetadata => {
         profile_id: randomUUID(),
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
-      };
-    case "extractions":
-      return {
-        extraction_id: randomUUID(),
-        extraction_name: null,
-        extraction_summary: null,
-        config_name: "test",
-        config_description: null,
-        json_schema: {},
-        document_ids: [],
-        document_names: [],
-        accuracy_score: null,
       };
   }
 };
@@ -154,11 +166,12 @@ describe("hybridSearch scope filter (S5)", () => {
 
     const [userA, userB] = fx.userIds;
 
-    // Single batched embedding call: 1 query + 9 row contents = 10 inputs,
-    // 1 OpenRouter round-trip, ~1¢. Content texts are similar in topic to
-    // ensure each row gets a meaningful semantic score against the query
+    // One batch: 1 query + 9 row contents = 10 inputs. Content texts share
+    // vocabulary with the query so each row gets a meaningful semantic score
     // (presence/absence is what matters, not ranking — but completely
-    // off-topic seeds risk falling out of the top-150 cut entirely).
+    // off-topic seeds risk falling out of the top-150 cut entirely). The
+    // double preserves exactly that, which is why it hashes per token rather
+    // than per string.
     const seedContents = [
       QUERY, // [0] — query embedding target
       "DHL freight rates spring 2026 ANR-MRS lane", // [1] doc team A

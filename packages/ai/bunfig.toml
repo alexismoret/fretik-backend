@@ -3,3 +3,6 @@
 # imported from unit tests (OpenRouter / S3 / Redis fail-fast checks).
 # See tests/preload.ts for the rationale.
 preload = "./tests/preload.ts"
+
+# Test ORDER is never a contract — see the note in `packages/shared/bunfig.toml`.
+randomize = true

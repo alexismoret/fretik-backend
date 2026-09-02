@@ -5,3 +5,10 @@
 # which has neither the file nor a database.
 # See tests/preload.ts for the rationale.
 preload = "./tests/preload.ts"
+
+# Test ORDER is never a contract. It lives here rather than in the `test`
+# script so a local `bun test <file>` gets the same treatment as CI: a suite
+# that only passes in one order is a bug, and it should surface on the machine
+# that wrote it. Bun prints the `--seed` it drew, which is how a failing order
+# is replayed.
+randomize = true

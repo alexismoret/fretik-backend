@@ -62,6 +62,7 @@ const row = (over: Partial<LiveModelState> = {}): LiveModelState => ({
   dynamicProfile: dynamic(),
   boundRoles: [],
   source: "sync",
+  releasedAt: null,
   syncedAt: new Date(),
   ...over,
 });

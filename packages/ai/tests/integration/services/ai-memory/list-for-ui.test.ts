@@ -23,51 +23,64 @@ describe("listMemoriesForUi", () => {
   });
 
   test("returns user-scope rows of the caller + team rows of the team", async () => {
-    const [userA, userB] = fx.userIds;
-    const scope = (userId: string) => ({
-      organizationId: fx.organizationId,
-      teamId: fx.teamId,
-      userId,
-    });
-    await createMemory({
-      rawPath: "/memories/user/a-only.md",
-      content: "private to A",
-      scopeKey: scope(userA),
-      actor: { actor: "human", userId: userA },
-    });
-    await createMemory({
-      rawPath: "/memories/user/b-only.md",
-      content: "private to B",
-      scopeKey: scope(userB),
-      actor: { actor: "human", userId: userB },
-    });
-    await createMemory({
-      rawPath: "/memories/team/shared.md",
-      content: "team",
-      scopeKey: scope(userA),
-      actor: { actor: "human", userId: userA },
-    });
+    // Its OWN scope: this is the one test here that asserts an EXACT list, and
+    // an exact list is only true of a team no other test writes to. Sharing
+    // the fixture made it a claim about ORDER — it held while it happened to
+    // run first, and `--randomize` found the run where `named.md` and the five
+    // `page-*.md` rows were already there.
+    const ownFx = await createMemoryTestFixture();
+    try {
+      const [userA, userB] = ownFx.userIds;
+      if (userA === undefined || userB === undefined) {
+        throw new Error("fixture: expected two users");
+      }
+      const scope = (userId: string) => ({
+        organizationId: ownFx.organizationId,
+        teamId: ownFx.teamId,
+        userId,
+      });
+      await createMemory({
+        rawPath: "/memories/user/a-only.md",
+        content: "private to A",
+        scopeKey: scope(userA),
+        actor: { actor: "human", userId: userA },
+      });
+      await createMemory({
+        rawPath: "/memories/user/b-only.md",
+        content: "private to B",
+        scopeKey: scope(userB),
+        actor: { actor: "human", userId: userB },
+      });
+      await createMemory({
+        rawPath: "/memories/team/shared.md",
+        content: "team",
+        scopeKey: scope(userA),
+        actor: { actor: "human", userId: userA },
+      });
 
-    const fromA = await listMemoriesForUi({
-      organizationId: fx.organizationId,
-      teamId: fx.teamId,
-      currentUserId: userA,
-      limit: 50,
-      offset: 0,
-    });
-    const aPaths = fromA.memories.map((m) => m.path).sort();
-    expect(aPaths).toEqual(["a-only.md", "shared.md"]);
+      const fromA = await listMemoriesForUi({
+        organizationId: ownFx.organizationId,
+        teamId: ownFx.teamId,
+        currentUserId: userA,
+        limit: 50,
+        offset: 0,
+      });
+      const aPaths = fromA.memories.map((m) => m.path).sort();
+      expect(aPaths).toEqual(["a-only.md", "shared.md"]);
 
-    const fromB = await listMemoriesForUi({
-      organizationId: fx.organizationId,
-      teamId: fx.teamId,
-      currentUserId: userB,
-      limit: 50,
-      offset: 0,
-    });
-    const bPaths = fromB.memories.map((m) => m.path).sort();
-    expect(bPaths).toEqual(["b-only.md", "shared.md"]);
-    expect(fromB.total).toBe(2);
+      const fromB = await listMemoriesForUi({
+        organizationId: ownFx.organizationId,
+        teamId: ownFx.teamId,
+        currentUserId: userB,
+        limit: 50,
+        offset: 0,
+      });
+      const bPaths = fromB.memories.map((m) => m.path).sort();
+      expect(bPaths).toEqual(["b-only.md", "shared.md"]);
+      expect(fromB.total).toBe(2);
+    } finally {
+      await ownFx.cleanup();
+    }
   });
 
   test("joins the user name onto createdBy / lastModifiedBy", async () => {

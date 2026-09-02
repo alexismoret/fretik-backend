@@ -22,6 +22,7 @@
  * cannot rediscover it. Carrying the ids means `models:apply` can CREATE the
  * row under the key the role bindings expect.
  */
+import { assertOperatorTarget } from "@fretik/shared/lib/operator-guard";
 import { readAllLiveStateRows } from "@fretik/shared/services/model-registry/live";
 import process from "node:process";
 
@@ -37,6 +38,10 @@ export interface FleetManifest {
   exportedAt: string;
   entries: FleetManifestEntry[];
 }
+
+// Read-only, but the manifest it prints is later APPLIED somewhere else — so
+// which environment it was taken from is the most important thing about it.
+await assertOperatorTarget(Bun.argv);
 
 const rows = await readAllLiveStateRows();
 const manifest: FleetManifest = {

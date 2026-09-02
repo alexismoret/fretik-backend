@@ -26,10 +26,18 @@ import "@hono/zod-openapi";
 // run before any chatbot tool or sandbox-exec touches the registry).
 import "@fretik/providers";
 
+import {
+  assertMigrationsCurrent,
+  runMigrationsWithLock,
+} from "@fretik/shared/db/migrations";
 import { errorHandler } from "@fretik/shared/lib/error-handler";
 import { globalRateLimiter } from "@fretik/shared/lib/rate-limit";
 import { reclaimOrphanSandboxes } from "@fretik/shared/services/e2b/reclaim-orphans";
 import { installExternalPageQueryExecutor } from "@fretik/shared/services/external-apps/exec/page-query";
+import {
+  deployedVersion,
+  runReleaseTasks,
+} from "@fretik/shared/services/release-tasks/runner";
 import { syncBundledSkillsCatalogue } from "@fretik/shared/services/skills/sync-bundled-catalogue";
 import { OpenAPIHono } from "@hono/zod-openapi";
 import figlet from "figlet";
@@ -51,6 +59,7 @@ import {
 } from "./lib/model-registry/bound-roles";
 import { getEffectiveProfile } from "./lib/model-registry/effective";
 import { warmModelRegistry } from "./lib/model-registry/resolve";
+import { aiReleaseTasks } from "./release-tasks";
 import { registerOrphanCleanupCron } from "./services/chat-files/orphan-cron";
 import { subscribeConversationTaskResumes } from "./services/conversation-tasks/subscribe-resume";
 import {
@@ -59,6 +68,18 @@ import {
 } from "./skills/materialize";
 
 const VERSION = packagejson.version;
+
+// Migrations are a deployment step, never an import side effect — see
+// `@fretik/shared/db/migrations` for the production incident that rule comes
+// from. Exactly one of two things is true of every process: the deployment
+// opted in and this container migrates under the advisory lock, or it refuses
+// to serve a schema older than its own code. Refusing is a crash loop, which
+// is loud; the previous container keeps serving behind the healthcheck.
+if (process.env.RUN_MIGRATIONS === "true") {
+  await runMigrationsWithLock({ kind: "service-boot" });
+} else {
+  await assertMigrationsCurrent("ai");
+}
 
 // managePage's dry_run executes page datasets, including external ones — the
 // seam refuses in any process that skips this install.
@@ -236,6 +257,20 @@ ${text}
 v${VERSION}
 ---------------------------
 `);
+
+/**
+ * One-shot jobs for this deployed version — fire-and-forget, on purpose.
+ *
+ * AFTER migrations (a task may read a column this deploy added) and LAST in
+ * the file, so nothing here can delay the export below: publishing prompts is
+ * not part of being ready to serve, and a service that waited for it would
+ * hold its healthcheck open on a third party's latency. `runReleaseTasks`
+ * never throws — see its own docblock for why that is load-bearing here.
+ */
+void runReleaseTasks(aiReleaseTasks(), {
+  service: "ai",
+  version: deployedVersion(VERSION),
+});
 
 export default {
   port: process.env.PORT,

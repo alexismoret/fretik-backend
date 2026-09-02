@@ -1,4 +1,5 @@
 import db from "@fretik/shared/db";
+import { assertOperatorTarget } from "@fretik/shared/lib/operator-guard";
 import { getMemoryDistillQueue } from "../queues/queues";
 
 /**
@@ -23,6 +24,8 @@ const limitRaw =
     : Number.parseInt(argv[limitFlagIndex + 1] ?? "", 10);
 const limit =
   Number.isFinite(limitRaw) && limitRaw > 0 ? limitRaw : DEFAULT_LIMIT;
+
+await assertOperatorTarget(Bun.argv);
 
 const rows = await db.query.aiConversations.findMany({
   columns: { id: true, teamId: true, organizationId: true, title: true },

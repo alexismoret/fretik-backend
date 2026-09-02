@@ -1,6 +1,7 @@
 import { eq, sql } from "drizzle-orm";
 import db from "../db";
 import { collections, organization, team } from "../db/schema";
+import { assertOperatorTarget } from "../lib/operator-guard";
 import {
   collectionTableName,
   qualifiedCollectionTable,
@@ -57,6 +58,8 @@ const backfillDocumentNames = async (): Promise<void> => {
 };
 
 const run = async (): Promise<void> => {
+  await assertOperatorTarget(Bun.argv);
+
   const orgs = await db.select({ id: organization.id }).from(organization);
   for (const org of orgs) {
     await seedSystemOntology(org.id);

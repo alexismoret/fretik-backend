@@ -32,14 +32,23 @@ describe("buildMemoryIndexManifest", () => {
   });
 
   test("returns the empty-state hint when no memories exist", async () => {
-    const [userA] = fx.userIds;
-    const out = await buildMemoryIndexManifest({
-      organizationId: fx.organizationId,
-      teamId: fx.teamId,
-      userId: userA,
-    });
-    expect(out).toContain("(no memories yet");
-    expect(out).toContain("<memory_index>");
+    // Its OWN scope, like the cap test below. "Empty" is a property of a team
+    // nobody has written to, so borrowing the shared fixture made this test a
+    // claim about ORDER — it passed only while it happened to run before the
+    // one that seeds three memories into that same team. `--randomize` put it
+    // second and it read back `preferences.md` and `carriers/dhl.md`.
+    const emptyFx = await createMemoryTestFixture();
+    try {
+      const out = await buildMemoryIndexManifest({
+        organizationId: emptyFx.organizationId,
+        teamId: emptyFx.teamId,
+        userId: emptyFx.userIds[0],
+      });
+      expect(out).toContain("(no memories yet");
+      expect(out).toContain("<memory_index>");
+    } finally {
+      await emptyFx.cleanup();
+    }
   });
 
   test("renders user + team namespaces with depth-2 grouping", async () => {

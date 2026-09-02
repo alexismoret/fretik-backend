@@ -1,3 +1,4 @@
+import { assertOperatorTarget } from "@fretik/shared/lib/operator-guard";
 import { listDreamingTeams } from "@fretik/shared/services/episodes/dreaming-candidates";
 import { runDreamingTeam } from "../workers/dreaming";
 
@@ -19,6 +20,9 @@ const opt = (name: string): string | undefined => {
 
 const teamId = opt("--team");
 const organizationId = opt("--org");
+
+// Dozens of sequential LLM calls per team, and it writes episodes.
+await assertOperatorTarget(Bun.argv);
 
 const targets =
   teamId && organizationId

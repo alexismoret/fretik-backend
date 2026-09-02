@@ -1,6 +1,6 @@
 import type { ModelMessage } from "ai";
 import { describe, expect, test } from "bun:test";
-import { chatbotAgentSet } from "../../../src/agents/chatbot/index";
+import { defaultChatbotAgentSet } from "../../../src/agents/chatbot/index";
 import { type ChatbotTools } from "../../../src/agents/chatbot/tools";
 import {
   DynamicToolManager,
@@ -60,8 +60,10 @@ const EXPECTED_DOMAIN_TOOL_NAMES: readonly string[] = [
   "manageLink",
   "manageCollection",
   "manageField",
+  "manageDocument",
   "searchIcons",
   "webFetch",
+  "webMap",
   "downloadDriveDocument",
   "uploadToDrive",
   "manageDrive",
@@ -72,6 +74,7 @@ const EXPECTED_DOMAIN_TOOL_NAMES: readonly string[] = [
   "installSkill",
   "manageWorkflow",
   "managePage",
+  "buildPage",
   "transform",
 ];
 
@@ -146,8 +149,12 @@ const runSearchTools = async (
 };
 
 describe("Chatbot Progressive Disclosure — end-to-end", () => {
-  test("tool registry: 13 core tools + 21 domain tools, categories correct", () => {
-    const tools = chatbotAgentSet.primary.tools;
+  // The counts drifted to 13 + 24 while this file sat outside both the
+  // typecheck and CI: `webMap`, `manageDocument` and `buildPage` were added to
+  // the registry and nothing here noticed. That is what the list is FOR — a
+  // registry change should show up as a diff on this file.
+  test("tool registry: 13 core tools + 24 domain tools, categories correct", () => {
+    const tools = defaultChatbotAgentSet().primary.tools;
     const coreNames = Object.entries(tools)
       .filter(([, t]) => t.category === "core")
       .map(([n]) => n);
@@ -159,7 +166,7 @@ describe("Chatbot Progressive Disclosure — end-to-end", () => {
   });
 
   test("step 0 with a fresh manager exposes core tools only — no domain leakage", () => {
-    const tools = chatbotAgentSet.primary.tools;
+    const tools = defaultChatbotAgentSet().primary.tools;
     const manager = new DynamicToolManager();
     const active = computeActiveTools(tools, manager);
     expect(new Set(active)).toEqual(new Set(EXPECTED_CORE_TOOL_NAMES));
@@ -169,7 +176,7 @@ describe("Chatbot Progressive Disclosure — end-to-end", () => {
   });
 
   test("full cycle: searchTools select: → manager mutation → next step exposes the activated domain tool", async () => {
-    const tools = chatbotAgentSet.primary.tools;
+    const tools = defaultChatbotAgentSet().primary.tools;
     const manager = new DynamicToolManager();
     const { ctx } = buildCtx(manager);
 
@@ -203,7 +210,7 @@ describe("Chatbot Progressive Disclosure — end-to-end", () => {
   });
 
   test("full cycle: searchTools with free-form keyword query also activates", async () => {
-    const tools = chatbotAgentSet.primary.tools;
+    const tools = defaultChatbotAgentSet().primary.tools;
     const manager = new DynamicToolManager();
     const { ctx } = buildCtx(manager);
 
@@ -222,7 +229,7 @@ describe("Chatbot Progressive Disclosure — end-to-end", () => {
     // M2.5: model passes a bare camelCase tool name and would
     // otherwise fall through to the scorer, which can't tokenize
     // the glued name. See search-tools.ts fast-path comment.
-    const tools = chatbotAgentSet.primary.tools;
+    const tools = defaultChatbotAgentSet().primary.tools;
     const manager = new DynamicToolManager();
     const { ctx } = buildCtx(manager);
 
@@ -242,7 +249,7 @@ describe("Chatbot Progressive Disclosure — end-to-end", () => {
     // rehydrated from the `searchTools` tool-result messages already
     // present in the history, so the model does NOT need to
     // re-discover tools it already used.
-    const tools = chatbotAgentSet.primary.tools;
+    const tools = defaultChatbotAgentSet().primary.tools;
     const manager = new DynamicToolManager();
     const history: ModelMessage[] = [
       { role: "user", content: "list my documents" },
@@ -292,7 +299,7 @@ describe("Chatbot Progressive Disclosure — end-to-end", () => {
   });
 
   test("replay is idempotent — running the same history twice does not duplicate activations", () => {
-    const tools = chatbotAgentSet.primary.tools;
+    const tools = defaultChatbotAgentSet().primary.tools;
     const manager = new DynamicToolManager();
     const history: ModelMessage[] = [
       {

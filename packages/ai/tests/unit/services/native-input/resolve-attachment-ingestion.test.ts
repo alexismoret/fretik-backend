@@ -34,7 +34,9 @@ const profileWith = (
     },
     cache: { strategy: "none" },
     reasoning: { style: "none", defaultLevel: "none" },
-    provider: { requireParameters: true },
+    // No `requireParameters`: the flag left the profile shape when it became
+    // unconditional on the wire, and the fixture kept carrying it.
+    provider: {},
     enabled: true,
   },
 });

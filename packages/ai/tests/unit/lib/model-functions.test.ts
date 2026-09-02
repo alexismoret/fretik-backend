@@ -303,6 +303,7 @@ const namedRow = (
   },
   syncedAt: new Date("2026-08-30T03:00:00.000Z"),
   boundRoles: [],
+  source: "sync",
 });
 
 describe("display names", () => {

@@ -1,4 +1,4 @@
-import { z } from "zod";
+import { z } from "@hono/zod-openapi";
 import { aiMemoryActorEnum, aiMemoryScopeEnum } from "../db/schema/ai-memory";
 
 /**

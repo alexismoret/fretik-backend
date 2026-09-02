@@ -1,16 +1,26 @@
 import { drizzle } from "drizzle-orm/node-postgres";
-import { migrate } from "drizzle-orm/node-postgres/migrator";
-import { resolve } from "node:path";
-import { Client } from "pg";
 import { relations } from "./relations";
 
+/**
+ * The database handle — and NOTHING else.
+ *
+ * This module used to end by applying migrations at import time, so every
+ * process that read a row also had the power to rewrite the schema of whatever
+ * `DATABASE_URL` pointed at. See `./migrations.ts` for the incident that
+ * caused, and for the explicit entry points that replaced it.
+ */
 const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) {
-  throw "Missing env var DATABASE_URL";
+  throw new Error("Missing env var DATABASE_URL");
 }
 
 const db = drizzle(databaseUrl, {
-  logger: process.env.NODE_ENV != "production",
+  // Everywhere but production AND tests. It used to be "anything but
+  // production", which meant an integration run printed every statement it
+  // issued — several hundred lines per file, with the one failing assertion
+  // buried somewhere inside them.
+  logger:
+    process.env.NODE_ENV !== "production" && process.env.NODE_ENV !== "test",
   relations,
 });
 
@@ -30,42 +40,5 @@ export type Transaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
  * take `tx?: Transaction` and resolve `const exec = tx ?? db`.
  */
 export type Executor = typeof db | Transaction;
-
-const MIGRATION_LOCK_ID = 4242424242424242n;
-
-export const runMigrationsWithLock = async () => {
-  const lockClient = new Client({ connectionString: databaseUrl });
-  await lockClient.connect();
-
-  try {
-    console.log("[Migrations] Acquiring advisory lock…");
-    await lockClient.query("SELECT pg_advisory_lock($1)", [MIGRATION_LOCK_ID]);
-    console.log("[Migrations] Lock acquired, running migrations…");
-
-    await migrate(db, {
-      migrationsFolder: resolve(import.meta.dir, "../../drizzle"),
-    });
-
-    console.log("[Migrations] Done");
-  } finally {
-    try {
-      await lockClient.query("SELECT pg_advisory_unlock($1)", [
-        MIGRATION_LOCK_ID,
-      ]);
-    } catch (err) {
-      console.error("[Migrations] Failed to release advisory lock:", err);
-    }
-    await lockClient.end();
-  }
-};
-
-// Skip auto-migration under `bun test` — unit tests don't have a
-// real Postgres reachable and the eager `connect()` inside the
-// advisory-lock client would crash the top-level await. Production
-// + dev (NODE_ENV unset, "development", or "production") still
-// auto-migrate at boot exactly as before.
-if (process.env.NODE_ENV !== "test") {
-  await runMigrationsWithLock();
-}
 
 export default db;

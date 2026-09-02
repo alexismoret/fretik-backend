@@ -9,8 +9,14 @@ import { formatTeamCollectionsBlock } from "../../../src/agents/chatbot/team-col
  * (whose real columns are `<key>_amount`/`<key>_currency`).
  */
 
+/**
+ * `fields` is OMITTED from the `Partial` before the intersection: intersecting
+ * it instead means a literal has to satisfy both shapes, so `isTitle` was
+ * required after all and every fixture here failed to typecheck. The point of
+ * the override is that a fixture may leave `isTitle` out.
+ */
 const makeType = (
-  over: Partial<TeamSchemaCollection> & {
+  over: Omit<Partial<TeamSchemaCollection>, "fields"> & {
     key: string;
     fields: {
       key: string;

@@ -37,12 +37,12 @@ import type { HybridCandidate } from "./hybrid-search";
 
 const apiKey = process.env.OPENROUTER_API_KEY;
 if (!apiKey) {
-  throw "Missing OPENROUTER_API_KEY env";
+  throw new Error("Missing OPENROUTER_API_KEY env");
 }
 
 const rerankModelId = process.env.OPENROUTER_RERANK_MODEL;
 if (!rerankModelId) {
-  throw "Missing OPENROUTER_RERANK_MODEL env";
+  throw new Error("Missing OPENROUTER_RERANK_MODEL env");
 }
 
 const OPENROUTER_RERANK_URL = `${OPENROUTER_API_BASE_URL}/rerank`;

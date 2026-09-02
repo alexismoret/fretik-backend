@@ -2,7 +2,7 @@ import Redis from "ioredis";
 
 const databaseUrl = process.env.REDIS_URL;
 if (!databaseUrl) {
-  throw "Missing env var REDIS_URL";
+  throw new Error("Missing env var REDIS_URL");
 }
 
 export const redis = new Redis(databaseUrl, {

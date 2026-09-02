@@ -7,7 +7,7 @@ import { renderEmail } from "./render";
 
 const appUrl = process.env.APP_URL;
 if (!appUrl) {
-  throw "Missing APP_URL env";
+  throw new Error("Missing APP_URL env");
 }
 
 /** BCP-47 tag for date formatting, derived from the email locale. */

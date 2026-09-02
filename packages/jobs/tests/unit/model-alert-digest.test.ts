@@ -7,7 +7,10 @@ import { buildAlertDigest } from "../../src/workers/model-alert-digest";
  * sweep: `@fretik/shared/lib/email` throws at module load without its Scaleway
  * variables, so a test that reached it would die before its first assertion.
  * The only import here that touches `@fretik/shared` is a type, which is erased
- * — this file runs with an EMPTY environment, no database and no Redis.
+ * — this file reaches no database and no Redis. (Since 2026-09-02 that is
+ * guaranteed rather than merely true: `tests/preload.ts` points every service
+ * variable at a dead port, so a future import that opens a connection fails
+ * loudly instead of finding the developer's real one through `.env`.)
  */
 
 const alert = (over: Partial<ModelAlertRow>): ModelAlertRow => ({

@@ -1,4 +1,5 @@
 import db from "@fretik/shared/db";
+import { assertOperatorTarget } from "@fretik/shared/lib/operator-guard";
 
 /**
  * Read-only audit of what the memory system wrote ON ITS OWN — the "measure"
@@ -26,6 +27,10 @@ const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
 
 /** The families an autonomous memory pass can write. */
 const MEMORY_EVENT_PREFIXES = ["episode.", "memory.", "link."] as const;
+
+// Read-only, and guarded anyway: an audit whose output nobody can attribute to
+// a database is an audit of nothing in particular.
+await assertOperatorTarget(Bun.argv);
 
 const events = await db.query.domainEvents.findMany({
   where: {

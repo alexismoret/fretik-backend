@@ -307,6 +307,8 @@ export const modelAlerts = pgTable(
         | "sync-failed"
         | "sync-degraded"
         | "unknown-provider"
+        /** The deploy-time audit found the engine contradicting itself. */
+        | "audit-drift"
       >()
       .notNull(),
     severity: varchar("severity", { length: 16 })

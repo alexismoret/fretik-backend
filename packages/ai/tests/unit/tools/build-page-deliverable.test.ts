@@ -97,10 +97,13 @@ describe("editedAfterLastReview", () => {
     verdict: "ship",
     iteration: "2/3",
   };
+  // `text` is part of the step shape the SUT reads, so a fixture that omits it
+  // is not a step — it just happened to satisfy the fields this suite asserts
+  // on. Empty is the honest value here: these cases are about tool calls.
   const fullStep = (
     calls: { toolCallId: string; toolName: string; input: unknown }[],
     results: { toolCallId: string; toolName: string; output: unknown }[],
-  ) => ({ toolCalls: calls, toolResults: results });
+  ) => ({ text: "", toolCalls: calls, toolResults: results });
 
   test("a review as the last managePage result means the page is as judged", () => {
     expect(
@@ -216,8 +219,9 @@ const buildResult = (over: {
   steps: over.steps ?? [],
 });
 
-const createdAndReviewed = [
+const createdAndReviewed: BuildSteps = [
   {
+    text: "",
     toolCalls: [
       { toolCallId: "c1", toolName: "managePage", input: { action: "create" } },
     ],
@@ -230,6 +234,7 @@ const createdAndReviewed = [
     ],
   },
   {
+    text: "",
     toolCalls: [
       { toolCallId: "c2", toolName: "managePage", input: { action: "review" } },
     ],

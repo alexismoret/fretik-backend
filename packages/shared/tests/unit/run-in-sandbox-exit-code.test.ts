@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { CommandExitError } from "e2b";
-import { mockModule } from "./mock-module";
+import { mockModule } from "../lib/mock-module";
 
 /**
  * `sbx.commands.run()` THROWS `CommandExitError` on a non-zero exit — it does

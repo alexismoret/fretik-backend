@@ -30,6 +30,7 @@
  * Idempotent: creating an existing key is a no-op, promoting a published row
  * is a no-op, and the enabled pass only writes rows whose state differs.
  */
+import { assertOperatorTarget } from "@fretik/shared/lib/operator-guard";
 import { isTransportId } from "@fretik/shared/model-registry/types";
 import { addFromCatalogue } from "@fretik/shared/services/model-registry/add-from-catalogue";
 import { readLiveStateRow } from "@fretik/shared/services/model-registry/live";
@@ -74,6 +75,10 @@ if (!parsed.success) {
   process.exit(2);
 }
 const manifest = parsed.data;
+
+// After the manifest parses (a bad file should fail without a database) and
+// before anything is written. `--apply` rewrites the whole routing table.
+await assertOperatorTarget(Bun.argv);
 console.info(
   `manifest ${path}: ${manifest.entries.length.toString()} published model(s), exported ${manifest.exportedAt}`,
 );

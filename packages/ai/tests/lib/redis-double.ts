@@ -18,7 +18,10 @@
  */
 
 type Entry =
-  { value: string } | { hash: Map<string, string> } | { set: Set<string> };
+  | { value: string }
+  | { hash: Map<string, string> }
+  | { set: Set<string> }
+  | { zset: Map<string, number> };
 
 const store = new Map<string, Entry>();
 
@@ -41,6 +44,22 @@ const setAt = (key: string): Set<string> => {
   const set = new Set<string>();
   store.set(key, { set });
   return set;
+};
+
+const zsetAt = (key: string): Map<string, number> => {
+  const e = store.get(key);
+  if (e && "zset" in e) return e.zset;
+  const zset = new Map<string, number>();
+  store.set(key, { zset });
+  return zset;
+};
+
+/** `-inf` / `+inf` / a numeric string, as ioredis accepts them. */
+const asScore = (bound: number | string): number => {
+  if (typeof bound === "number") return bound;
+  if (bound === "-inf") return Number.NEGATIVE_INFINITY;
+  if (bound === "+inf" || bound === "inf") return Number.POSITIVE_INFINITY;
+  return Number.parseFloat(bound);
 };
 
 const notImplemented = (name: string) => (): never => {
@@ -101,6 +120,58 @@ export const redisDouble = {
     return Promise.resolve(e && "set" in e ? [...e.set] : []);
   },
 
+  // --- sorted sets ---
+  // Implemented for real, because `lib/rate-limit.ts` is a CONCURRENCY
+  // SEMAPHORE built out of them: it drops stale members by score, claims a
+  // slot, counts, and gives the slot back when it is over cap. A stub that
+  // answered 0 or `undefined` would hand out unlimited slots and the limiter's
+  // tests would pass against a limiter that does not limit. Every embedding
+  // path in the suite goes through this.
+  zadd: (key: string, score: number, member: string): Promise<number> => {
+    const zset = zsetAt(key);
+    const isNew = !zset.has(member);
+    zset.set(member, score);
+    return Promise.resolve(isNew ? 1 : 0);
+  },
+  zcard: (key: string): Promise<number> => {
+    const e = store.get(key);
+    return Promise.resolve(e && "zset" in e ? e.zset.size : 0);
+  },
+  zrem: (key: string, ...members: string[]): Promise<number> => {
+    const e = store.get(key);
+    if (!e || !("zset" in e)) return Promise.resolve(0);
+    let removed = 0;
+    for (const m of members.flat()) if (e.zset.delete(String(m))) removed += 1;
+    return Promise.resolve(removed);
+  },
+  zremrangebyscore: (
+    key: string,
+    min: number | string,
+    max: number | string,
+  ): Promise<number> => {
+    const e = store.get(key);
+    if (!e || !("zset" in e)) return Promise.resolve(0);
+    const lo = asScore(min);
+    const hi = asScore(max);
+    let removed = 0;
+    for (const [member, score] of [...e.zset]) {
+      if (score >= lo && score <= hi) {
+        e.zset.delete(member);
+        removed += 1;
+      }
+    }
+    return Promise.resolve(removed);
+  },
+  zrange: (key: string, start: number, stop: number): Promise<string[]> => {
+    const e = store.get(key);
+    if (!e || !("zset" in e)) return Promise.resolve([]);
+    const ordered = [...e.zset]
+      .sort(([, a], [, b]) => a - b)
+      .map(([member]) => member);
+    const end = stop < 0 ? ordered.length + stop + 1 : stop + 1;
+    return Promise.resolve(ordered.slice(start, end));
+  },
+
   // --- keyspace ---
   del: (...keys: string[]): Promise<number> => {
     let n = 0;
@@ -124,9 +195,6 @@ export const redisDouble = {
   publish: notImplemented("publish"),
   xrange: notImplemented("xrange"),
   xrevrange: notImplemented("xrevrange"),
-  zadd: notImplemented("zadd"),
-  zcard: notImplemented("zcard"),
-  zrange: notImplemented("zrange"),
   getBuffer: notImplemented("getBuffer"),
   mgetBuffer: notImplemented("mgetBuffer"),
 };

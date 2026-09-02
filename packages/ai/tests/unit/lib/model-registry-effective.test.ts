@@ -227,8 +227,13 @@ describe("synthesis defaults", () => {
         defaultEffort: "ultra",
       });
       expect(profile?.assessment.reasoning.defaultLevel).toBe("low");
-      // An unmodelled vendor default is simply not recorded.
-      expect(profile?.catalog.reasoning?.defaultEffort).toBeUndefined();
+      // An unmodelled vendor default is simply not recorded — asserted on the
+      // KEYS because `ModelProfile`'s reasoning shape has no `defaultEffort`
+      // at all, so reading the property could only ever answer `undefined`
+      // whatever the synthesiser did with it.
+      expect(Object.keys(profile?.catalog.reasoning ?? {})).not.toContain(
+        "defaultEffort",
+      );
     });
 
     test("no contract at all ⇒ no ladder invented", () => {

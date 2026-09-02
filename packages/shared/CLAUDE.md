@@ -18,6 +18,7 @@ This package owns the **generic B2B core** of Fretik. Schemas, services, and lib
 - **Services = one file per operation.** `services/{domain}/` holds `upload.ts`, `delete.ts`, `retrieve.ts`, etc. Each exports a function. No class monoliths, no `index.ts` that re-exports everything.
 - **Every new export must be wired in `package.json` `exports`.** Consumers import `@fretik/shared/services/documents/upload`, not a relative path. If it's not in `exports`, it doesn't exist.
 - **Migration lock.** `db:migrate` holds a PG advisory lock — safe to run concurrently, only one wins. Don't add your own locking on top.
+- **Importing `./db` never migrates.** The handle is just a handle; `./db/migrations` owns applying, and refuses without an authority (`RUN_MIGRATIONS=true` on a service, or the operator guard). Never re-add a migration call to a module's top level, and never add a second migration path beside `db:migrate` — CI only exercises that one.
 - **Bulk writes use `@fretik/shared/lib/db-bulk` — never loop a single-row service.** When you write a caller-supplied LIST of rows (records, links, events, …), do it with SET-BASED statements: one multi-row `INSERT` / `DELETE` / `UPDATE … FROM (VALUES …)` per chunk. A `for` loop calling a single-row service over thousands of rows is N round-trips and is a regression. Use `chunkForBulk()` (keeps each statement under Postgres' 65535-param ceiling), `MAX_BULK_ITEMS` (enforce at the request boundary), and `formatBulkRowError()` (per-row error lines). Keep the single-row service (`createCollectionRecord`) AND a `bulk*` sibling (`bulkCreateCollectionRecords`) — they have different contracts (throw-on-first vs per-row partial success), mirroring `readRecordData` / `readRecordDataBatch`.
 
 ## Pattern reference
@@ -29,4 +30,4 @@ When adding a new service operation, mirror `src/services/documents/upload.ts` �
 - `db/index.ts` must import `./schema` BEFORE `./relations` — relations reference tables, so the import order is load-bearing.
 - Fire-and-forget promises look fine locally but get orphaned when the process exits — always `await` unless explicitly documented as fire-and-forget.
 - `auth.ts` in `lib/` is imported by both API and worker — changing session shape requires coordinating both sides.
-- `db:push` is dev-only. Any schema change that ships needs `db:generate` + commit the migration file.
+- **There is no `db:push`.** It was removed on 2026-09-02: it exists to skip the migration file, and the migration file is the only thing CI replays and production applies. A schema change is `db:generate`, review the SQL, commit it, `db:migrate`.

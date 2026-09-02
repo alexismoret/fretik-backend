@@ -3,7 +3,7 @@ import type { HonoInternalAppType } from "../types/hono";
 
 const INTERNAL_KEY = process.env.INTERNAL_KEY;
 if (!INTERNAL_KEY) {
-  throw "Missing INTERNAL_KEY env";
+  throw new Error("Missing INTERNAL_KEY env");
 }
 
 /**

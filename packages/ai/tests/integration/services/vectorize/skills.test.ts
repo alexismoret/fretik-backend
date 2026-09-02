@@ -1,12 +1,9 @@
 /**
  * Full-pipeline integration tests for skill vectorisation (S3).
  *
- * Hits the real DB AND real OpenRouter (cheap model for contextual
- * enrichment + Qwen3-Embedding-8B for embeddings). They are slow
- * (LLM round-trips) and require:
- *   - Postgres reachable via DATABASE_URL
- *   - OPENROUTER_API_KEY set
- *   - Redis reachable via REDIS_URL
+ * Real Postgres and real Redis; OpenRouter is DOUBLED (see
+ * `tests/lib/embeddings-double.ts` — it is a process boundary, and this file
+ * used to cross it on every run).
  *
  * Skills are GLOBAL rows: team_id / organization_id / user_id all
  * NULL. The `ai_vectors_scope_consistency` CHECK constraint enforces
@@ -20,11 +17,12 @@ import db from "@fretik/shared/db";
 import { aiVectors } from "@fretik/shared/db/schema";
 import { afterAll, describe, expect, test } from "bun:test";
 import { and, eq, sql } from "drizzle-orm";
-import {
-  deleteSkillFileVectors,
-  listIndexedSkillFiles,
-  vectorizeSkillFile,
-} from "../../../../src/services/vectorize/skills";
+import { installEmbeddingDoubles } from "../../../lib/embeddings-double";
+
+await installEmbeddingDoubles();
+
+const { deleteSkillFileVectors, listIndexedSkillFiles, vectorizeSkillFile } =
+  await import("../../../../src/services/vectorize/skills");
 
 const TEST_PREFIX = "test_skill_";
 

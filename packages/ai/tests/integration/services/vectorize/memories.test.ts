@@ -1,15 +1,12 @@
 /**
  * Full-pipeline integration tests for memory vectorisation (S2).
  *
- * These tests hit the real DB AND real OpenRouter (cheap model for
- * contextual enrichment + Qwen3-Embedding-8B for embeddings). They
- * are slow (LLM round-trips) and require:
- *   - Postgres reachable via DATABASE_URL
- *   - OPENROUTER_API_KEY set
- *   - Redis reachable via REDIS_URL (semaphore for cheap-model calls)
- *
- * Skip pattern: `bun test --test-name-pattern='memory vectorize'` to
- * run these in isolation.
+ * Real Postgres and real Redis. OpenRouter is DOUBLED — it is a process
+ * boundary, and until 2026-09-02 this file crossed it: real embeddings and one
+ * cheap-model call per chunk on every local run, and a 401 the first time CI
+ * ever ran with a database. See `tests/lib/embeddings-double.ts` for what that
+ * trades away. The subject here is which rows land in `ai_vectors` and which
+ * stale ones get cleared, and every assertion below is on a column.
  */
 import db from "@fretik/shared/db";
 import {
@@ -19,11 +16,15 @@ import {
 } from "@fretik/shared/db/schema";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { and, eq } from "drizzle-orm";
-import { vectorizeSource } from "../../../../src/services/vectorize";
+import { installEmbeddingDoubles } from "../../../lib/embeddings-double";
 import {
   createMemoryTestFixture,
   type MemoryTestFixture,
 } from "../../lib/db-fixtures";
+
+await installEmbeddingDoubles();
+
+const { vectorizeSource } = await import("../../../../src/services/vectorize");
 
 const buildMetadata = (
   scope: "user" | "team",

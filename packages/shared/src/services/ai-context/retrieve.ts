@@ -89,6 +89,25 @@ export const findContextProfile = async (
   return row ?? null;
 };
 
+/**
+ * The profile the caller's scope owns, or a 404 — the authorisation step every
+ * file-level operation starts with.
+ *
+ * A context file belongs to a profile, and a profile belongs to one team or to
+ * one person. The `organization_id` denormalised onto `ai_context_files` was
+ * added to save a JOIN when LISTING; three services then used it as the
+ * permission check, which let any member of the organisation reach any team's
+ * file — and any colleague's personal one — given its id.
+ *
+ * The 404 deliberately says "file", not "profile": whether a file exists is
+ * itself information the caller has no right to.
+ */
+export const requireOwnedProfileId = async (key: ScopeKey): Promise<string> => {
+  const profile = await findContextProfile(key);
+  if (!profile) return throwHttpError(404, notFound("Context file not found"));
+  return profile.id;
+};
+
 const summariseProfile = (
   profile: AiContextProfile,
   updatedBy: { id: string; name: string } | null,
@@ -211,12 +230,12 @@ export const getContextProfile = async (
  */
 export const getContextFileContent = async (args: {
   fileId: string;
-  organizationId: string;
+  scope: ScopeKey;
 }): Promise<{ file: AiContextFile; content: string | null }> => {
   const file = await db.query.aiContextFiles.findFirst({
     where: {
       id: args.fileId,
-      organizationId: args.organizationId,
+      profileId: await requireOwnedProfileId(args.scope),
     },
   });
   if (!file) {

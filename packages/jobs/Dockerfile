@@ -34,6 +34,16 @@ RUN --mount=type=cache,target=/root/.bun/install/cache \
 FROM install AS release
 ENV NODE_ENV=production
 
+# The one fact a laptop cannot fake — see `lib/operator-guard.ts` and the copy
+# of this note in packages/api/Dockerfile.
+ENV FRETIK_RUNTIME=container
+
+# Which commit this image IS — see the copy of this note in
+# packages/ai/Dockerfile. The worker registers no release tasks today; it
+# carries the SHA so the three images stay identical in this respect.
+ARG GIT_SHA=""
+ENV GIT_SHA=$GIT_SHA
+
 # poppler-utils: the document-processing worker parses PDFs via
 # node-poppler (@fretik/shared/services/file-extraction).
 RUN apt-get update \

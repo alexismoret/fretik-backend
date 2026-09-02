@@ -54,7 +54,7 @@ import type { DynamicToolManager } from "./dynamic-tools";
  * instantiates it unconditionally so tools never have to defend
  * against a missing field.
  */
-export interface AgentRuntimeContext {
+export type AgentRuntimeContext = {
   organizationId: string;
   teamId: string;
   userId?: string;
@@ -275,7 +275,7 @@ export interface AgentRuntimeContext {
    * this a sub-agent silently ran at its profile's default instead.
    */
   reasoningLevel?: string;
-}
+};
 
 /**
  * Minimal view of an external-app connection that we ship into the
@@ -315,9 +315,17 @@ const RUNTIME_CONTEXT_BRAND: unique symbol = Symbol(
   "fretik.agent.runtime-context",
 );
 
-interface BrandedRuntimeContext extends AgentRuntimeContext {
+/**
+ * A TYPE, not an interface, and `AgentRuntimeContext` above is one too: the
+ * SDK's `Context` is `Record<string, unknown>`, and TypeScript only grants an
+ * implicit index signature to object types written as type ALIASES. As
+ * interfaces these were unassignable to `Context`, so every call site that
+ * hands a branded context to `tool.execute` — the whole tool test surface —
+ * needed a cast to compile. They are the same runtime shape either way.
+ */
+type BrandedRuntimeContext = AgentRuntimeContext & {
   readonly [RUNTIME_CONTEXT_BRAND]: true;
-}
+};
 
 /**
  * Wrap an `AgentRuntimeContext` so it carries the brand symbol.

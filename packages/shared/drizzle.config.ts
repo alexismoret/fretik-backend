@@ -2,7 +2,7 @@ import { defineConfig } from "drizzle-kit";
 
 const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) {
-  throw "Missing env var DATABASE_URL";
+  throw new Error("Missing env var DATABASE_URL");
 }
 
 export default defineConfig({

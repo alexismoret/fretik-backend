@@ -146,6 +146,33 @@ describe("mergeEndpointStats", () => {
     });
   });
 
+  test("a MEASUREMENT never crosses transports, only portable facts do", () => {
+    // Measured 2026-09-02 on `glm-5.3-flash`: the gateway clocks Morph at 110
+    // tokens/s while OpenRouter's own p50 for the same host and model is 41.
+    // Both are real; neither describes the other's route. A fold would produce
+    // a figure belonging to no route at all — and that figure is what the
+    // throughput rule grades and what an operator checks against a provider's
+    // own dashboard before deciding the registry can be trusted.
+    const merged = mergeEndpointStats(
+      [endpoint({ provider: "morph", quantization: undefined })],
+      [
+        endpoint({
+          provider: "morph",
+          quantization: "fp8",
+          throughputP50: 110,
+          latencyP50Ms: 1628,
+          uptime1d: 99.9,
+        }),
+      ],
+    );
+    expect(merged[0]?.throughputP50).toBeUndefined();
+    expect(merged[0]?.latencyP50Ms).toBeUndefined();
+    expect(merged[0]?.uptime1d).toBeUndefined();
+    // The half the enrichment exists for still travels: how the weights are
+    // served is a property of the deployment, not of who routed to it.
+    expect(merged[0]?.quantization).toBe("fp8");
+  });
+
   test("providers present only in the enrichment source are dropped", () => {
     const merged = mergeEndpointStats(
       [endpoint({ provider: "deepinfra" })],

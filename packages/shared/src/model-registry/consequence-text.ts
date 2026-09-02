@@ -46,5 +46,11 @@ export const describeConsequence = (consequence: Consequence): string => {
       return "Routing re-narrowed to the vetted pool, which had a member left.";
     case "last-resort-lifted":
       return "The last-resort flag is lifted, so roles and team selections point back at this model.";
+    case "exclusion-is-durable":
+      return "This is an exclusion, not a quarantine: nothing releases it. No re-probe runs and no date expires — it stands until somebody puts the host back, which is what makes it the right instrument for a reason a probe cannot settle.";
+    case "pool-emptied":
+      return "That was the last vetted member. Routing widens to whatever else the catalogue lists for this model, which is a set nobody vetted — put a host back or expect the breaker to be the only thing between a turn and an unknown upstream.";
+    case "returns-on-next-sync":
+      return "The host is eligible again. It re-enters the pool on the next sync pass, once the endpoints are re-read — not immediately.";
   }
 };

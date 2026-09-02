@@ -143,24 +143,26 @@ export const mergeEndpointStats = (
       // admits a host into a pool on the strength of a route no call will take.
       quantization: stat.quantization ?? extra.quantization,
       supportsToolChoice: stat.supportsToolChoice ?? extra.supportsToolChoice,
-      uptime5m: stat.uptime5m ?? extra.uptime5m,
-      uptime15m: stat.uptime15m ?? extra.uptime15m,
-      uptime1h: stat.uptime1h ?? extra.uptime1h,
-      uptime1d: stat.uptime1d ?? extra.uptime1d,
-      throughputP50: stat.throughputP50 ?? extra.throughputP50,
-      throughputP95: stat.throughputP95 ?? extra.throughputP95,
-      latencyP50Ms: stat.latencyP50Ms ?? extra.latencyP50Ms,
-      latencyP90Ms: stat.latencyP90Ms ?? extra.latencyP90Ms,
-      latencyP95Ms: stat.latencyP95Ms ?? extra.latencyP95Ms,
-      status: stat.status ?? extra.status,
-      // The NEWER stamp: both halves were observed this pass, and the merged
-      // row is as fresh as its freshest evidence.
-      measuredAt:
-        stat.measuredAt !== undefined && extra.measuredAt !== undefined
-          ? stat.measuredAt >= extra.measuredAt
-            ? stat.measuredAt
-            : extra.measuredAt
-          : (stat.measuredAt ?? extra.measuredAt),
+      // Uptime, throughput, latency and status are ABSENT for the same reason
+      // as `hasZdr`, and it is the same mistake wearing a different hat: they
+      // are not facts about a host, they are OBSERVATIONS of one aggregator's
+      // traffic to one route.
+      //
+      // Measured 2026-09-02 on `glm-5.3-flash`: the gateway clocks Morph at
+      // 110 tokens/s while OpenRouter's own last-30-minutes p50 for the same
+      // host and the same model is 41. Neither is wrong; they describe
+      // different routes under different load. Folding one into the other
+      // produces a number that belongs to no route at all — and that number is
+      // what `throughput-floor` grades and what an operator compares against a
+      // provider's dashboard when deciding whether the registry can be trusted.
+      //
+      // What the enrichment is FOR is the portable half: `quantization`, the
+      // cache shape, the parameters a deployment accepts. Those describe how
+      // the weights are served, and they travel.
+      //
+      // `measuredAt` therefore stays the primary's, carried by the spread: it
+      // stamps measurements, and no measurement crosses any more. Taking the
+      // enrichment's would date figures the enrichment did not contribute.
     };
   });
 };

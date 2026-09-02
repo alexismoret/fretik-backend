@@ -6,12 +6,18 @@ import {
   promotionEnablement,
 } from "../../model-registry/policy";
 import {
+  normalizeProviderList,
+  normalizeProviderName,
+} from "../../model-registry/provider-names";
+import {
   IMPLEMENTED_TRANSPORTS,
   isTransportId,
   type AcknowledgeAlertOutcome,
   type BulkFailure,
   type DisabledReason,
   type DynamicProfile,
+  type ExcludeProviderOutcome,
+  type IncludeProviderOutcome,
   type PricingSnapshot,
   type PromoteOutcome,
   type RetireOutcome,
@@ -82,6 +88,97 @@ export const setTransport = async (
     .where(eq(modelLiveState.profileKey, profileKey));
   await invalidateLiveRegistry();
   return { kind: "switched", from: state.transport, to: transport };
+};
+
+/**
+ * Take a host out of one model's pool, durably, for a reason no probe settles.
+ *
+ * Writes `providerPool[transport].ignore` — the judgment half of a pool, the
+ * one the sync carries across passes rather than recomputing. It takes effect
+ * on the next model construction, because both transports read the row's
+ * `ignore` and send it on the wire; the sync then drops the host from `only` on
+ * its next pass.
+ *
+ * Not a quarantine, and the difference is the point: a quarantine expires in
+ * seven days and is released when the host passes its re-probe, which is right
+ * for "this host truncated an answer" and wrong for "this host is not worth its
+ * price" — the probe would pass and silently undo the decision.
+ *
+ * Excluding the LAST member is allowed. The pool then empties and the breaker's
+ * widening takes over, which is a consequence to report, not a reason to refuse
+ * a deliberate act.
+ */
+export const setProviderExcluded = async (
+  profileKey: string,
+  provider: string,
+  transport: TransportId,
+): Promise<ExcludeProviderOutcome> => {
+  const state = await readLiveStateRow(profileKey);
+  if (!state) return { kind: "unknown-model" };
+  const name = normalizeProviderName(provider);
+  const pool = state.providerPool[transport] ?? {};
+  const ignore = normalizeProviderList(pool.ignore ?? []);
+  if (ignore.includes(name)) {
+    return { kind: "already-excluded", provider: name, transport };
+  }
+  const only = normalizeProviderList(pool.only ?? []).filter(
+    (member) => member !== name,
+  );
+  await db
+    .update(modelLiveState)
+    .set({
+      providerPool: {
+        ...state.providerPool,
+        [transport]: {
+          ...pool,
+          ignore: [...ignore, name],
+          ...(pool.only === undefined ? {} : { only }),
+        },
+      },
+      source: "admin",
+    })
+    .where(eq(modelLiveState.profileKey, profileKey));
+  await invalidateLiveRegistry();
+  return {
+    kind: "excluded",
+    provider: name,
+    transport,
+    remaining: only.length,
+  };
+};
+
+/** Undo an exclusion. The host returns to the pool on the next sync pass. */
+export const setProviderIncluded = async (
+  profileKey: string,
+  provider: string,
+  transport: TransportId,
+): Promise<IncludeProviderOutcome> => {
+  const state = await readLiveStateRow(profileKey);
+  if (!state) return { kind: "unknown-model" };
+  const name = normalizeProviderName(provider);
+  const pool = state.providerPool[transport] ?? {};
+  const ignore = normalizeProviderList(pool.ignore ?? []);
+  if (!ignore.includes(name)) {
+    return { kind: "not-excluded", provider: name, transport };
+  }
+  const kept = ignore.filter((member) => member !== name);
+  await db
+    .update(modelLiveState)
+    .set({
+      providerPool: {
+        ...state.providerPool,
+        // An empty `ignore` is dropped rather than stored as `[]`: the row
+        // should read "no judgment recorded", not "a judgment about nobody".
+        [transport]:
+          kept.length === 0
+            ? { ...pool, ignore: undefined }
+            : { ...pool, ignore: kept },
+      },
+      source: "admin",
+    })
+    .where(eq(modelLiveState.profileKey, profileKey));
+  await invalidateLiveRegistry();
+  return { kind: "included", provider: name, transport };
 };
 
 /**

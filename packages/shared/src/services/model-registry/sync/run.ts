@@ -268,6 +268,8 @@ interface SyncContext {
   aa: ReadonlyMap<string, AaMetrics>;
   /** Previous streaks, keyed by profile key — not carried by `LiveModelState`. */
   streaks: Map<string, number>;
+  /** The transport the PUBLISHED fleet routes through, when it has one. */
+  fleet: TransportId | undefined;
   alert: (input: RaiseAlertInput) => Promise<void>;
 }
 
@@ -504,12 +506,40 @@ const reprobeExpiredQuarantines = async (
   return changed ? kept : undefined;
 };
 
+/**
+ * The transport this pass should sync the row on.
+ *
+ * A CANDIDATE follows the fleet; a published model never moves on its own.
+ *
+ * The asymmetry is the whole rule. Moving a published model changes where live
+ * traffic lands, which is a decision with consequences a person weighs — it is
+ * the engine's rollback and it stays manual. A candidate is invisible to teams
+ * and has never served a call, so its transport is not a decision at all: it is
+ * an artefact of whichever catalogue happened to be consulted first. On
+ * 2026-09-02 that artefact was 10 of 15 gateway candidates on a fleet where all
+ * 22 published models route through OpenRouter — ten switches somebody would
+ * have had to click, one at a time, to undo a default nobody chose.
+ *
+ * The five with no OpenRouter id stay where they are: a fleet preference cannot
+ * conjure a route that does not exist.
+ */
+export const alignedTransport = (
+  row: Pick<LiveModelState, "status" | "transport" | "modelIds">,
+  fleet: TransportId | undefined,
+): TransportId =>
+  row.status === "candidate" &&
+  fleet !== undefined &&
+  fleet !== row.transport &&
+  row.modelIds[fleet] !== undefined
+    ? fleet
+    : row.transport;
+
 const syncOneModel = async (
   ctx: SyncContext,
   row: LiveModelState,
 ): Promise<void> => {
   ctx.stats.modelsSeen += 1;
-  const transport = row.transport;
+  const transport = alignedTransport(row, ctx.fleet);
   const modelId = row.modelIds[transport];
   if (modelId === undefined) {
     ctx.stats.errors.push(
@@ -559,7 +589,18 @@ const syncOneModel = async (
   // field and only within the carry window. Without this, one unauthenticated
   // pass blanks every percentile on the fleet and the rules that read them go
   // quiet — which is exactly what happened, twice, reporting `ok` both times.
-  const carried = carryForwardMeasurements(fetched, row.endpointStats, ctx.now);
+  //
+  // "Yesterday's" means yesterday ON THIS TRANSPORT. A row that just moved
+  // carries figures observed somewhere else, and carrying those forward would
+  // describe the new route with the old one's numbers — the gateway clocks
+  // Morph at 110 tokens/s on `glm-5.3-flash` where OpenRouter measures 41.
+  // Starting empty costs one pass of percentiles and states the truth: this
+  // route has not been measured yet.
+  const carried = carryForwardMeasurements(
+    fetched,
+    transport === row.transport ? row.endpointStats : [],
+    ctx.now,
+  );
   const merged = carried.endpoints;
   ctx.stats.endpointsCarriedForward += carried.carriedForward;
 
@@ -845,6 +886,11 @@ const syncOneModel = async (
   }
 
   const update: Partial<NewModelLiveStateRow> = {
+    // Written only when it MOVED — see `alignedTransport`. Everything else in
+    // this update was already computed against the new transport, so the row
+    // lands coherent: its endpoints, pool and pricing all describe where it now
+    // routes rather than where it used to.
+    ...(transport === row.transport ? {} : { transport }),
     ...(Object.keys(gainedIds).length === 0
       ? {}
       : { modelIds: { ...row.modelIds, ...gainedIds } }),
@@ -1380,10 +1426,15 @@ export const runModelSync = async (
     catalogued,
     aa: await fetchArtificialAnalysis(),
     streaks: new Map(),
+    // Set once the rows are read, just below.
+    fleet: undefined,
     alert,
   };
 
   const rows = await readAllLiveStateRows();
+  // Read once, before any row is touched: a candidate aligned mid-pass must not
+  // then count as a vote for the transport it was just moved to.
+  ctx.fleet = fleetTransport(rows);
   // `LiveModelState` deliberately does not carry `policyFailStreak` — it is
   // sync bookkeeping, not something the read path should hand to a resolver —
   // so the previous streaks come from one extra projection rather than from a
@@ -1418,7 +1469,7 @@ export const runModelSync = async (
   if (onlyKeys === undefined) {
     const known = new Set(rows.flatMap((row) => Object.values(row.modelIds)));
     try {
-      await discoverCandidates(ctx, known, fleetTransport(rows));
+      await discoverCandidates(ctx, known, ctx.fleet);
     } catch (err: unknown) {
       stats.errors.push(`discovery: ${message(err)}`);
     }

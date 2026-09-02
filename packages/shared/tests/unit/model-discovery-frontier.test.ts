@@ -2,7 +2,10 @@ import { describe, expect, test } from "bun:test";
 import type { PolicyReport } from "../../src/model-registry/types";
 import { isDiscoveryVariant } from "../../src/services/model-registry/discovery-probes";
 import type { AllowedPool } from "../../src/services/model-registry/sync/compute";
-import { rejectionReason } from "../../src/services/model-registry/sync/run";
+import {
+  alignedTransport,
+  rejectionReason,
+} from "../../src/services/model-registry/sync/run";
 
 /**
  * Discovery had a budget and no memory, which is a stuck frontier rather than a
@@ -33,6 +36,50 @@ describe("isDiscoveryVariant", () => {
     expect(isDiscoveryVariant("glm-5.2")).toBe(false);
     // Not a suffix match on the whole string: `free` inside a name is a name.
     expect(isDiscoveryVariant("someone/freeform-8b")).toBe(false);
+  });
+});
+
+describe("alignedTransport", () => {
+  const row = (
+    over: Partial<Parameters<typeof alignedTransport>[0]> = {},
+  ): Parameters<typeof alignedTransport>[0] => ({
+    status: "candidate",
+    transport: "gateway",
+    modelIds: {
+      gateway: "alibaba/qwen3.8-flash",
+      openrouter: "qwen/qwen3.8-flash",
+    },
+    ...over,
+  });
+
+  test("a candidate follows the fleet, because its transport is an artefact", () => {
+    // On 2026-09-02, 10 of 15 gateway candidates against a fleet where all 22
+    // published models route through OpenRouter — ten switches somebody would
+    // have clicked one at a time to undo a default nobody chose.
+    expect(alignedTransport(row(), "openrouter")).toBe("openrouter");
+  });
+
+  test("a PUBLISHED model never moves on its own", () => {
+    // Moving it changes where live traffic lands. That is the engine's rollback
+    // and it stays a decision a person takes.
+    expect(alignedTransport(row({ status: "published" }), "openrouter")).toBe(
+      "gateway",
+    );
+    expect(alignedTransport(row({ status: "retired" }), "openrouter")).toBe(
+      "gateway",
+    );
+  });
+
+  test("a preference cannot conjure a route that does not exist", () => {
+    // The five gateway-only candidates: no OpenRouter id, so nowhere to go.
+    expect(
+      alignedTransport(
+        row({ modelIds: { gateway: "openai/gpt-5.6-sol-fast" } }),
+        "openrouter",
+      ),
+    ).toBe("gateway");
+    // And a fleet with no preference (empty, or evenly split) moves nothing.
+    expect(alignedTransport(row(), undefined)).toBe("gateway");
   });
 });
 

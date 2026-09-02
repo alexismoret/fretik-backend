@@ -378,6 +378,33 @@ export type SetTransportOutcome =
   | { kind: "already-on-transport"; transport: TransportId }
   | { kind: "switched"; from: TransportId; to: TransportId };
 
+/**
+ * Taking a host out of a model's pool for a reason no probe can settle.
+ *
+ * The counterpart to a quarantine, and deliberately a different mechanism: a
+ * quarantine is a seven-day TIMEOUT on an integrity failure, released when the
+ * host passes its re-probe. "This host is not worth its price" is not a failure
+ * and no probe will ever disagree with it — expressed as a quarantine it would
+ * quietly undo itself a week later. It is a JUDGMENT, so it goes where the
+ * other judgments live: `providerPool[transport].ignore`, which the sync
+ * carries across passes and both transports send on the wire.
+ */
+export type ExcludeProviderOutcome =
+  | { kind: "unknown-model" }
+  | { kind: "already-excluded"; provider: string; transport: TransportId }
+  | {
+      kind: "excluded";
+      provider: string;
+      transport: TransportId;
+      /** Pool members left. Zero is allowed and is worth saying out loud. */
+      remaining: number;
+    };
+
+export type IncludeProviderOutcome =
+  | { kind: "unknown-model" }
+  | { kind: "not-excluded"; provider: string; transport: TransportId }
+  | { kind: "included"; provider: string; transport: TransportId };
+
 export type SetEnabledOutcome =
   | { kind: "unknown-model" }
   | {
@@ -541,7 +568,12 @@ export type Consequence =
   /** The date is a review trigger, not an amnesty: the sync re-probes on it. */
   | { code: "release-is-review-trigger"; releaseAt: string }
   | { code: "pool-renarrowed" }
-  | { code: "last-resort-lifted" };
+  | { code: "last-resort-lifted" }
+  /** An exclusion has no expiry — unlike a quarantine, nothing releases it. */
+  | { code: "exclusion-is-durable" }
+  /** The last member was excluded: routing widens to whatever is left. */
+  | { code: "pool-emptied" }
+  | { code: "returns-on-next-sync" };
 
 /**
  * A model row at the size an operator surface needs it.

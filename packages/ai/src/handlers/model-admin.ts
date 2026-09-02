@@ -53,8 +53,10 @@ import {
 import {
   acknowledgeModelAlerts,
   addModelFromCatalogue,
+  excludeUpstream,
   forecastEnablement,
   forecastPromotions,
+  includeUpstream,
   promoteModels,
   quarantineUpstream,
   releaseUpstream,
@@ -1169,6 +1171,9 @@ const consequenceSchema = z.discriminatedUnion("code", [
   }),
   z.object({ code: z.literal("pool-renarrowed") }),
   z.object({ code: z.literal("last-resort-lifted") }),
+  z.object({ code: z.literal("exclusion-is-durable") }),
+  z.object({ code: z.literal("pool-emptied") }),
+  z.object({ code: z.literal("returns-on-next-sync") }),
 ]);
 
 /** The two consequences whose payload the wire shape does not take verbatim. */
@@ -1895,6 +1900,134 @@ modelAdminRoutes.openapi(releaseRoute, async (c) => {
     consequences: result.consequences.map(toWireConsequence),
   };
   if (result.outcome.kind === "released") return c.json(wire, 200);
+  return c.json(wire, 409);
+});
+
+// ---------------------------------------------------------------------------
+// Durable exclusions
+// ---------------------------------------------------------------------------
+
+const excludeOutcomeSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("unknown-model") }),
+  z.object({
+    kind: z.literal("already-excluded"),
+    provider: z.string(),
+    transport: z.enum(TRANSPORT_IDS),
+  }),
+  z.object({
+    kind: z.literal("excluded"),
+    provider: z.string(),
+    transport: z.enum(TRANSPORT_IDS),
+    remaining: z.number(),
+  }),
+]);
+
+const includeOutcomeSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("unknown-model") }),
+  z.object({
+    kind: z.literal("not-excluded"),
+    provider: z.string(),
+    transport: z.enum(TRANSPORT_IDS),
+  }),
+  z.object({
+    kind: z.literal("included"),
+    provider: z.string(),
+    transport: z.enum(TRANSPORT_IDS),
+  }),
+]);
+
+const excludeRoute = createRoute({
+  method: "post",
+  path: "/models/{profileKey}/exclude",
+  summary: "Take an upstream out of a pool for good (super-admin)",
+  tags: ["Model admin"],
+  request: {
+    params: profileKeyParam,
+    body: {
+      content: {
+        "application/json": {
+          schema: z.object({
+            provider: z.string().min(1).max(64),
+            transport: servedTransportSchema.optional(),
+            /** Free text: the whole point is a reason no probe can settle. */
+            reason: z.string().min(1).max(500),
+          }),
+        },
+      },
+      required: true,
+    },
+  },
+  responses: writeResponses(
+    excludeOutcomeSchema,
+    "Excluded. Unlike a quarantine this has NO expiry and no re-probe: it is the instrument for price, rate limits and commercial judgment, where a probe would pass and quietly undo the decision.",
+  ),
+});
+
+modelAdminRoutes.openapi(excludeRoute, async (c) => {
+  const { profileKey } = c.req.valid("param");
+  const body = c.req.valid("json");
+  const state = await readLiveStateRow(profileKey);
+  if (state === undefined) {
+    return throwHttpError(404, notFound(`No model row for "${profileKey}".`));
+  }
+  const result = await excludeUpstream({
+    profileKey,
+    provider: body.provider,
+    transport: body.transport ?? state.transport,
+    reason: body.reason,
+    actor: { kind: "operator", userId: c.get("user").id },
+  });
+  const wire = {
+    ...result,
+    consequences: result.consequences.map(toWireConsequence),
+  };
+  if (result.outcome.kind === "excluded") return c.json(wire, 200);
+  return c.json(wire, 409);
+});
+
+const includeRoute = createRoute({
+  method: "post",
+  path: "/models/{profileKey}/include",
+  summary: "Undo a durable exclusion (super-admin)",
+  tags: ["Model admin"],
+  request: {
+    params: profileKeyParam,
+    body: {
+      content: {
+        "application/json": {
+          schema: z.object({
+            provider: z.string().min(1).max(64),
+            transport: servedTransportSchema.optional(),
+          }),
+        },
+      },
+      required: true,
+    },
+  },
+  responses: writeResponses(
+    includeOutcomeSchema,
+    "The host is eligible again. It re-enters the pool on the next sync pass, not immediately.",
+  ),
+});
+
+modelAdminRoutes.openapi(includeRoute, async (c) => {
+  const { profileKey } = c.req.valid("param");
+  const body = c.req.valid("json");
+  const state = await readLiveStateRow(profileKey);
+  if (state === undefined) {
+    return throwHttpError(404, notFound(`No model row for "${profileKey}".`));
+  }
+  const result = await includeUpstream({
+    profileKey,
+    provider: body.provider,
+    transport: body.transport ?? state.transport,
+    actor: { kind: "operator", userId: c.get("user").id },
+  });
+  const wire = {
+    ...result,
+    consequences: result.consequences.map(toWireConsequence),
+  };
+  if (result.outcome.kind === "included") return c.json(wire, 200);
   return c.json(wire, 409);
 });
 

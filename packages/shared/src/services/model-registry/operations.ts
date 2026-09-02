@@ -10,7 +10,9 @@ import type {
   BulkFailure,
   Consequence,
   DisabledReason,
+  ExcludeProviderOutcome,
   IncidentKind,
+  IncludeProviderOutcome,
   LiveModelState,
   ModelStateSummary,
   ModelWriteActor,
@@ -30,6 +32,8 @@ import {
   retireModel,
   setEnabled,
   setEnabledMany,
+  setProviderExcluded,
+  setProviderIncluded,
   setTransport,
 } from "./admin";
 import {
@@ -389,6 +393,78 @@ export const quarantineUpstream = async (
     },
   });
 };
+
+/**
+ * Exclude a host from one model's pool, durably.
+ *
+ * The sibling of `quarantineUpstream` for the reasons a probe cannot settle —
+ * price, an unfavourable rate limit, a commercial decision. Logged under its
+ * own action so the journal distinguishes "the breaker's ladder was pulled by
+ * hand" from "somebody made a judgment call".
+ */
+export const excludeUpstream = async (
+  input: OperationInput & {
+    profileKey: string;
+    provider: string;
+    transport: TransportId;
+    reason: string;
+  },
+): Promise<OperationResult<ExcludeProviderOutcome>> =>
+  perform<ExcludeProviderOutcome>({
+    actor: input.actor,
+    now: input.now ?? new Date(),
+    action: "exclude",
+    profileKey: input.profileKey,
+    extraPayload: { provider: input.provider, reason: input.reason },
+    run: async () => {
+      const outcome = await setProviderExcluded(
+        input.profileKey,
+        input.provider,
+        input.transport,
+      );
+      const consequences: Consequence[] =
+        outcome.kind === "excluded"
+          ? [
+              { code: "exclusion-is-durable" },
+              ...(outcome.remaining === 0
+                ? [{ code: "pool-emptied" as const }]
+                : []),
+            ]
+          : [];
+      return { outcome, consequences, wrote: outcome.kind === "excluded" };
+    },
+  });
+
+/** Undo an exclusion. The host returns to the pool on the next sync pass. */
+export const includeUpstream = async (
+  input: OperationInput & {
+    profileKey: string;
+    provider: string;
+    transport: TransportId;
+  },
+): Promise<OperationResult<IncludeProviderOutcome>> =>
+  perform<IncludeProviderOutcome>({
+    actor: input.actor,
+    now: input.now ?? new Date(),
+    action: "include",
+    profileKey: input.profileKey,
+    extraPayload: { provider: input.provider },
+    run: async () => {
+      const outcome = await setProviderIncluded(
+        input.profileKey,
+        input.provider,
+        input.transport,
+      );
+      return {
+        outcome,
+        consequences:
+          outcome.kind === "included"
+            ? [{ code: "returns-on-next-sync" as const }]
+            : [],
+        wrote: outcome.kind === "included",
+      };
+    },
+  });
 
 export const releaseUpstream = async (
   input: OperationInput & {

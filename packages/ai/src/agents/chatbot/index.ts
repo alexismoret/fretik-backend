@@ -9,9 +9,9 @@ import {
   type ResolvedModel,
 } from "../../lib/model-registry/resolve";
 import { areWebToolsAvailable, WEB_TOOL_NAMES } from "../../lib/web-egress";
+import { salvagePageProject } from "../../services/page-project/salvage";
 import { createBuildPageTool } from "../../tools/build-page";
 import { createDispatchAgentTool } from "../../tools/dispatch-agent";
-import { savePageSource } from "../../tools/manage-page";
 import {
   buildAgentSet,
   buildToolsContext,
@@ -504,12 +504,18 @@ const subAgentCheapSet = (): AgentSet<ChatbotCallOptions, SubAgentTools> =>
 /**
  * Page-builder step budget. Higher than the generic sub-agent's 25 because a
  * build is a PIPELINE, not a task: probe, brief, component APIs (up to 6 per
- * call), the write, then up to three render-review-fix rounds of two calls
- * each. At 25 the loop would run out of budget precisely during the reviews —
- * the part that makes the page good. Tunable via `PAGE_BUILDER_MAX_STEPS`.
+ * call), a write per file, a build, then the review loop. At 25 the loop would
+ * run out of budget precisely during the reviews — the part that makes the page
+ * good. Tunable via `PAGE_BUILDER_MAX_STEPS`.
+ *
+ * 45 → 80 on 2026-09-03, when a page became a project: the same page now costs
+ * one step per file instead of one whole-file emission, so the step count went
+ * up while the TOKENS per step went down by roughly a factor of eight. Steps
+ * are the cheap axis — an 80-step build of 3 000-token writes is a fraction of
+ * a 45-step build of 25 000-token ones.
  */
 const parsePageBuilderMaxSteps = (): number =>
-  parseIntEnv("PAGE_BUILDER_MAX_STEPS", { fallback: 45, min: 1, max: 120 });
+  parseIntEnv("PAGE_BUILDER_MAX_STEPS", { fallback: 80, min: 1, max: 160 });
 
 const pageBuilderSystemPrompt = (ctx: AgentRuntimeContext): Promise<string> =>
   buildPageBuilderSystemPrompt(ctx);
@@ -517,11 +523,11 @@ const pageBuilderSystemPrompt = (ctx: AgentRuntimeContext): Promise<string> =>
 /**
  * Page-builder agent set — the third delegate, reached through the `buildPage`
  * tool and nothing else (`dispatchAgent` has no route to it). Since
- * 2026-08-21 that door is also the ONLY way a page gets authored at all: every
- * other agent's `managePage` is built with `pageAuthoring: false`.
+ * 2026-08-21 that door is also the ONLY way a page gets authored at all: no
+ * other agent has the `page*` tools, and `managePage` cannot author.
  *
- * On the PRIMARY model, never the cheap one: it writes a whole Vue SFC and
- * then reads a design critique of it. Its tool registry is a short positive
+ * On the PRIMARY model, never the cheap one: it writes a Vue project file by
+ * file and then reads a design critique of it. Its tool registry is a short positive
  * list (`buildPageBuilderTools`), so no gating hook is needed — every tool it
  * has, it may call on every step. The team policy gate still applies, which is
  * why it shares `subAgentPrepareStep`: a team that disabled `managePage` must
@@ -538,11 +544,11 @@ const makePageBuilderSet = (
     fallbackModel: resolveModel("chat-fallback"),
     stopWhen: [isStepCount(parsePageBuilderMaxSteps())],
     repairToolCall: llmRepairToolCall<PageBuilderTools>(),
-    // 75% of `buildPage`'s 15-minute dispatch deadline. Past this the hard
+    // 75% of `buildPage`'s 25-minute dispatch deadline. Past this the hard
     // cut is close enough that starting anything — a fix round, a review —
     // loses the whole run's tail; landing what exists beats polishing it.
     softDeadline: {
-      afterMs: 675_000,
+      afterMs: 1_125_000,
       text: "[deadline] The build is nearly out of time and will be cut off shortly. Land it NOW: make sure the page is saved, then stop — no more edits, no more reviews. Hand back the url with an honest one-line status of what was and was not verified.",
     },
     prepareStep: pageBuilderPrepareStep,
@@ -610,8 +616,8 @@ export const buildPageTool = createBuildPageTool({
   // parent turn has had since C4.
   resolvePageBuilderFallback: (profileKey) =>
     getPageBuilderSet(profileKey).fallback,
-  // The rescue write for a build cut between writing its page and saving it.
-  savePageSource,
+  // The rescue build for a run cut between writing its files and building them.
+  salvagePage: salvagePageProject,
 });
 
 /**

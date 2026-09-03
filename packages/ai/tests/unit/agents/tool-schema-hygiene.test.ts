@@ -63,8 +63,8 @@ const isZodType = (value: unknown): value is z.ZodType =>
  */
 const registeredSchemas = (): Map<string, z.ZodType> => {
   const map = new Map<string, z.ZodType>();
-  const domainTools = buildDomainTools({ pageAuthoring: false });
-  const authoringTools = buildDomainTools({ pageAuthoring: true });
+  const domainTools = buildDomainTools();
+  const authoringTools = buildDomainTools();
   const register = (tools: Record<string, unknown>): void => {
     for (const [name, tool] of Object.entries(tools)) {
       if (typeof tool !== "object" || tool === null) continue;

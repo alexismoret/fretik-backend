@@ -1,6 +1,6 @@
 # Review rubric
 
-What `managePage { action: "review" }` measures and what it judges. The same text is the critic's instructions, so nothing here is a surprise: build against it.
+What `pageReview` measures and what it judges. The same text is the critic's instructions, so nothing here is a surprise: build against it.
 
 The review renders the saved page in a real browser at 1280, 1024 and 390, clicks what looks clickable, and captures the page a second time with every dataset emptied. Two channels come back, and they do not overlap.
 
@@ -17,7 +17,7 @@ A page can be beautiful and fail the gate. Those failures come back as `blocking
 
 **The score is judged**, from the screenshots and the brief, by a critic that did not build the page and starts from the assumption that it is mediocre. Four criteria.
 
-Two things the critic is held to, because they are where a review goes wrong in opposite directions. **8 is not a resting place** — a page that works and reads cleanly lands at 7 or 8, and the critic owes you what separates it from the band above rather than four eights and a compliment. And **the data is live**: a dataset with no rows today is a legitimate state of a working page, so the review judges whether the page explains itself when empty, never how much data happens to exist right now.
+One thing the critic is held to: **the data is live.** A dataset with no rows today is a legitimate state of a working page, so the review judges whether the page explains itself when empty, never how much data happens to exist right now.
 
 ## design ×0.35 — is this a designed screen, or an arranged one
 
@@ -63,11 +63,11 @@ The harshest question, and the one that separates a good page from a memorable o
 
 The weighted score is computed from the four, server-side. **Ship** needs all three: a passing gate, no blocking finding, and ≥ 7.5. Anything else is **revise**.
 
-Three reviews per page. Past that the score stops moving and the edits start trading one flaw for another — spend the budget on the findings that name a fix, and hand the rest to the user.
+The gate comes first and the critic looks once. A review of a project that has not built returns the build errors and nothing else; a review whose gate fails returns `blocking` and no score, because a critic reading screenshots of a broken page grades the wrong thing. Once the gate is clean the critique runs — one per build — and the review after it is the gate again, which ends the loop. Five mounted reviews per page, enforced: past that the score moves inside the critic's own noise and the edits start trading one flaw for another.
 
 ## Findings
 
-Each finding names where it is on screen, what is wrong, and the fix. They arrive sorted by severity; `blocking` ones come from the gate and are facts, `major` and `minor` are the critic's judgement. Apply them with `update { edits }` — a finding is about one region, so resending the whole file to change one card is waste.
+Each finding names the file it is in, where it is on screen, what is wrong, and the fix. They arrive sorted by severity; `blocking` ones come from the gate and are facts, `major` and `minor` are the critic's judgement. Apply them with `pageEdit` in the file named — a finding is about one region, so rewriting a whole file to change one card is waste.
 
 ## Elevations
 
@@ -75,6 +75,5 @@ A second list, and a different question: not what is broken, but what would make
 
 They arrive whenever the page scores below 9, **including on a page that ships** — that is the whole point of the channel. A page with no defects still has a next level, and without this the review of a working page returns nothing to do.
 
-- **A round left after a passing verdict is spent here.** Apply them the same way as findings, one `edits` call each, then review again.
-- **On the last round they become what you tell the user.** "Still weak" is a shrug; an elevation is a specific thing you would do next, which is what someone can decide about.
+- **They are what you tell the user, not another round.** A passing verdict ends the loop; "still weak" is a shrug, while an elevation is a specific thing you would do next, which is what someone can decide about.
 - They are about the design and the capability, never about the data. Nobody asks for more records.

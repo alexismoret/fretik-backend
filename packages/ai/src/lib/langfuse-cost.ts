@@ -100,8 +100,9 @@ const extractUpstreamProvider = (
  * Measured 2026-08-26: every killed page write came back after ~120s of
  * silence carrying no finish reason at all — OpenRouter sent `null`, which
  * lands here as `other` — because the provider buffers tool-call arguments and
- * an idle watchdog closed the socket (`tools/page-emitted-source.ts` carries
- * the full account). Nothing in the trace said so: the calls read as ordinary
+ * an idle watchdog closed the socket. (The page builder now writes files of a
+ * few thousand tokens rather than one 25 000-token argument, which is what
+ * took the page write out of that window.) Nothing in the trace said so: the calls read as ordinary
  * slow ones, and finding them meant replaying OpenRouter's generation log by
  * hand. Flagged here, on the seam that already knows the serving upstream,
  * "which provider cuts us, and how often" becomes a filter in the UI.

@@ -29,9 +29,11 @@ describe("page environment contract", () => {
 
   test("carries what the model cannot know from training", () => {
     const contract = renderPageEnvironmentContract();
-    // The runtime half: what may be imported, what the bridge offers, what the
-    // sandbox forbids.
+    // The runtime half: how the project is laid out, what may be imported,
+    // what the bridge offers, what the sandbox forbids.
+    expect(contract).toContain("## the project");
     expect(contract).toContain("## imports");
+    expect(contract).toContain("## controls");
     expect(contract).toContain("## the bridge");
     expect(contract).toContain("## sandbox rules");
     // The data half: the grammar a definition has to be written in.
@@ -63,7 +65,13 @@ describe("page environment contract", () => {
     // A contract that grows without bound stops being a contract and starts
     // being a manual the model skims. Every sentence here is one the builder
     // reads before writing a line, on every single build.
-    expect(PAGE_ENVIRONMENT_GUIDE.length).toBeLessThan(7_500);
+    //
+    // 7 500 → 10 000 on 2026-09-03, when a page became a PROJECT: the guide
+    // gained the file grammar, the Nuxt-UI-not-native control rule, the Vue
+    // pitfalls sheet and the never-invent-rows rule — five things it must now
+    // enumerate, not five paragraphs of appetite. The budget follows what the
+    // section has to list; growth with nothing new listed is padding.
+    expect(PAGE_ENVIRONMENT_GUIDE.length).toBeLessThan(10_000);
   });
 
   test("the generated half tracks the schema, and only the schema", () => {
@@ -83,6 +91,16 @@ describe("page environment contract", () => {
     const contract = renderPageEnvironmentContract();
     expect(contract).toContain("never build a class name at runtime");
     expect(contract).toContain("NEVER wrap them");
+  });
+
+  test("forbids invented rows where the model cannot miss it", () => {
+    // The one defect neither the compiler nor the review can catch: a page
+    // filled from a `mockData()` renders beautifully and is a lie. It lived in
+    // `data.md` — a file the builder may never open — while a build over an
+    // unconnected app shipped 78 fabricated rows and claimed "simulation mode"
+    // (Langfuse `01a03e9b…`, 2026-08-26). A rule that must hold on every build
+    // belongs in the text the builder always has.
+    expect(renderPageEnvironmentContract()).toContain("NEVER invent rows");
   });
 });
 

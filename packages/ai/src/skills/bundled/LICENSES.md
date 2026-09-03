@@ -30,8 +30,8 @@ claims hold.
 ## `building-pages` and its sources
 
 One third-party source feeds it, kept outside this folder: the **Nuxt UI docs**
-(MIT, https://ui.nuxt.com). The component corpus served by
-`managePage { action: "components" }` is generated verbatim from the library's
+(MIT, https://ui.nuxt.com). The component corpus served by `pageDocs` is
+generated verbatim from the library's
 published `llms-full.txt` by `scripts/sync-nuxt-ui-docs.ts` into
 `src/tools/assets/nuxt-ui/`, each file carrying its source and licence line. MIT
 permits this — regenerate on every `@nuxt/ui` upgrade rather than editing by hand.

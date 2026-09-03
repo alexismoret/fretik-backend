@@ -21,6 +21,7 @@ import { createManagePageTool } from "../../tools/manage-page";
 import { createManageRecordTool } from "../../tools/manage-record";
 import { createManageWorkflowTool } from "../../tools/manage-workflow";
 import { createMemoryTool } from "../../tools/memory";
+import { buildPageProjectTools } from "../../tools/page-project";
 import { createPresentFilesTool } from "../../tools/present-files";
 import { createPythonTool } from "../../tools/python";
 import { createRagSearchTool } from "../../tools/rag-search";
@@ -238,14 +239,7 @@ export const buildCoreTools = (domainTools: SearchableToolRegistry) => ({
  * auto-sets `shouldDefer: true` and `prepareStep` in `./index.ts`
  * keeps them inactive until `searchTools` activates them by name.
  */
-/**
- * @param config.pageAuthoring — whether this registry's `managePage` may WRITE
- * a page (`create`, `dry_run`, and the two reference actions that only matter
- * to whoever writes code). True for the page builder alone; every other agent
- * routes a page through `buildPage`. Explicit at all three call sites rather
- * than defaulted, because a default is how the wrong one gets picked silently.
- */
-export const buildDomainTools = (config: { pageAuthoring: boolean }) => ({
+export const buildDomainTools = () => ({
   listDocuments: buildChatbotTool({
     ...createListDocumentsTool(),
     category: "domain",
@@ -414,18 +408,17 @@ export const buildDomainTools = (config: { pageAuthoring: boolean }) => ({
     // Authoring belongs to `buildPage`, which resolves the `page-build` model
     // and carries the doctrine in its cached prompt. See the docblock on
     // `createManagePageTool` for the measurement behind the split.
-    ...createManagePageTool({ authoring: config.pageAuthoring }),
+    ...createManagePageTool(),
     category: "domain",
     searchHint:
       "page dashboard app interface view chart graph kpi table visualise visualize report display layout custom ui mini-app tool public link share live data",
     // Writes page code (and mints public URLs) — not read-only.
     isReadOnly: false,
     // …but every result it returns is RE-FETCHABLE, which is what compaction
-    // actually cares about: get_guide, list, get and dry_run all replay
-    // identically, and the one durable fact a create returns (the pageId) is
-    // recoverable with `list`. Without this override the guide + page source
-    // stayed pinned for the life of the conversation — heaviest exactly when
-    // the window is under pressure.
+    // actually cares about: `list`, `get` and `review` all replay identically,
+    // and an update's durable outcome is in the page. Without this override a
+    // page's source stayed pinned for the life of the conversation — heaviest
+    // exactly when the window is under pressure.
     microcompactable: true,
   }),
   manageWorkflow: buildChatbotTool({
@@ -484,7 +477,7 @@ export const buildChatbotTools = (extras: {
   // the builder agent is constructed from a tool set, so the caller has to
   // pass it in.
   const domainTools = {
-    ...buildDomainTools({ pageAuthoring: false }),
+    ...buildDomainTools(),
     buildPage: extras.buildPage,
   };
   const coreTools = buildCoreTools(domainTools);
@@ -515,7 +508,7 @@ export type ChatbotTools = ReturnType<typeof buildChatbotTools>;
 export const buildSubAgentTools = () => {
   // A generic delegate authors no page either: the door to the builder is
   // `dispatchAgent({ agent: "page-builder" })`, which its parent already has.
-  const domainTools = buildDomainTools({ pageAuthoring: false });
+  const domainTools = buildDomainTools();
   const allCoreTools = buildCoreTools(domainTools);
   const { searchTools: _searchTools, ...coreWithoutSearch } = allCoreTools;
   // Sub-agents keep the web tools like everyone else; this only honours the
@@ -531,22 +524,67 @@ export type SubAgentTools = ReturnType<typeof buildSubAgentTools>;
  *
  * Building a page is one long ordered task, and every tool that is not part of
  * it is a way to leave the path: the two shipped pages that failed did so by
- * skipping `components`, not by lacking a capability. So this registry holds
- * `managePage`, the probes that answer "what is actually in this data", the
- * icon catalogue, and the two file tools that open the skill — nothing else.
- * `python`/`bash`-driven analysis, memory, Drive writes, workflows and skill
- * authoring all belong to the parent agent.
+ * skipping the component API, not by lacking a capability. So this registry
+ * holds the eight `page*` tools, the probes that answer "what is actually in
+ * this data", the icon catalogue, and the two file tools that open the skill —
+ * nothing else. `python`/`bash`-driven analysis, memory, Drive writes,
+ * workflows and skill authoring all belong to the parent agent.
  *
  * `bash` is here for one reason (`ls skills/…` to see what the bundle offers);
  * `read` is what actually opens those files.
  */
 export const buildPageBuilderTools = () => {
-  // The one registry that may AUTHOR a page. `create`, `dry_run`, `get_guide`
-  // and `components` exist here and nowhere else in the product.
-  const domainTools = buildDomainTools({ pageAuthoring: true });
+  const domainTools = buildDomainTools();
   const coreTools = buildCoreTools(domainTools);
+  const project = buildPageProjectTools();
+  // `category`/`searchHint` are the chatbot registry's Progressive Disclosure
+  // metadata and mean nothing here — this set is handed to the builder whole.
+  // What `buildChatbotTool` is for is the rest: the caption every tool call
+  // shows the user, JSON-safe outputs, and the throw backstop.
+  const builderTool = { category: "domain" as const, isReadOnly: false };
   return {
-    managePage: domainTools.managePage,
+    // The eight tools that author a page. They exist here and nowhere else in
+    // the product: the parent's `managePage` reads, renames and publishes.
+    pageRead: buildChatbotTool({
+      ...project.pageRead,
+      ...builderTool,
+      searchHint: "page read file manifest",
+    }),
+    pageWrite: buildChatbotTool({
+      ...project.pageWrite,
+      ...builderTool,
+      searchHint: "page write file component",
+    }),
+    pageEdit: buildChatbotTool({
+      ...project.pageEdit,
+      ...builderTool,
+      searchHint: "page edit patch replace",
+    }),
+    pageSearch: buildChatbotTool({
+      ...project.pageSearch,
+      ...builderTool,
+      searchHint: "page search grep find",
+    }),
+    pageBuild: buildChatbotTool({
+      ...project.pageBuild,
+      ...builderTool,
+      searchHint: "page build compile save",
+    }),
+    pageProbe: buildChatbotTool({
+      ...project.pageProbe,
+      ...builderTool,
+      searchHint: "page probe dataset sample data",
+    }),
+    pageReview: buildChatbotTool({
+      ...project.pageReview,
+      ...builderTool,
+      searchHint: "page review render critique",
+    }),
+    pageDocs: buildChatbotTool({
+      ...project.pageDocs,
+      ...builderTool,
+      searchHint: "page components api props slots",
+    }),
     describeCollection: domainTools.describeCollection,
     listRecords: domainTools.listRecords,
     getRecord: domainTools.getRecord,

@@ -127,6 +127,15 @@ export interface PageGateContext {
    * read-only dashboard of faking writes it never claimed to have.
    */
   declaredOperations?: number;
+  /**
+   * What the CODE already proved, before anything was rendered — a native
+   * control where a Nuxt UI one belongs, a file past its ceiling.
+   *
+   * They lead the blocking list because they are certain where a screenshot is
+   * inference, and because several of them are invisible in a capture: a
+   * native `<select>` looks like a select.
+   */
+  staticFindings?: string[];
 }
 
 export const gatePageRender = (
@@ -135,7 +144,8 @@ export const gatePageRender = (
 ): PageGateResult => {
   const declaredDatasets = context.declaredDatasets ?? 0;
   const declaredOperations = context.declaredOperations ?? 0;
-  const blocking: string[] = [];
+  // First in the list, deliberately: they are the certain ones.
+  const blocking: string[] = [...(context.staticFindings ?? [])];
   const observations: string[] = [];
 
   if (!render.mounted) {
@@ -168,7 +178,7 @@ export const gatePageRender = (
       interaction.overlayTextLength < EMPTY_OVERLAY_CHARS
     ) {
       blocking.push(
-        `Clicking ${interaction.target} opens an overlay with nothing in it. Either the handler never receives the item (a Nuxt UI emit passes the EVENT first: \`@select="(e, row) => open(row)"\`) or the content sits in a slot that is not the panel (a modal's default slot is its TRIGGER — the panel is \`#body\`/\`#content\`). Read the component's API with { action: "components" } and re-wire it.`,
+        `Clicking ${interaction.target} opens an overlay with nothing in it. Either the handler never receives the item (a Nuxt UI emit passes the EVENT first: \`@select="(e, row) => open(row)"\`) or the content sits in a slot that is not the panel (a modal's default slot is its TRIGGER — the panel is \`#body\`/\`#content\`). Read the component's API with pageDocs and re-wire it.`,
       );
       continue;
     }

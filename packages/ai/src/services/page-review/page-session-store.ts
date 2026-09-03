@@ -1,4 +1,6 @@
 import { redis } from "@fretik/shared/lib/redis";
+import { eachPageFile } from "@fretik/shared/schemas/pages";
+import type { PageElevation, PageFinding } from "./evaluate";
 
 /**
  * What this conversation has already done with pages — the two facts a single
@@ -10,7 +12,18 @@ import { redis } from "@fretik/shared/lib/redis";
  * exactly right — the conversation that knew them is gone.
  */
 
-export const MAX_PAGE_REVIEW_ITERATIONS = 3;
+/**
+ * How many times one page may be RENDERED for review in a run.
+ *
+ * It was three SCORED rounds, and the measurement that ended that: over two
+ * production builds the three rounds scored 6.6 → 6.8 → 7.0 and 6.3 → 6.6 →
+ * 6.1, every step inside the critic's own run-to-run spread (the same bytes
+ * scored 6.8 and 7.8 two minutes apart, 2026-08-23). Three paid critiques
+ * bought noise. The loop is now gate-first with ONE critique, so what is
+ * bounded is renders — the gate is cheap and worth repeating after a fix, and
+ * five is more than a build has ever needed.
+ */
+export const MAX_PAGE_REVIEWS = 5;
 
 /** Long enough to cover a build session, short enough to forget it after. */
 const TTL_SECONDS = 24 * 60 * 60;
@@ -24,11 +37,9 @@ const reviewKey = (
     : `pages:review:page:${pageId}`;
 
 /**
- * How many times this page has been reviewed, so the builder can be told to
- * stop. Refinement loops driven by a visual critic plateau fast — the published
- * ablations put the useful range at two to three passes, after which edits
- * trade one flaw for another. Nothing enforces the budget for the model, so the
- * count travels with the review result and the directive changes at the cap.
+ * How many times this page has been rendered for review, so the builder can be
+ * told to stop. Nothing enforces the budget for the model, so the count travels
+ * with the review result and the directive changes at the cap.
  */
 export const bumpPageReviewIteration = async (
   conversationId: string | undefined,
@@ -57,93 +68,55 @@ export const readPageReviewIterations = async (
 };
 
 /**
- * What each review round scored, and which stored version holds it.
+ * The ONE critique this run has paid for, if any.
  *
- * The loop needs this because refinement is NOT monotonic: a published ablation
- * (ReLook) finds revisions that regress, and best-of-cycles beats last-cycle by
- * several points because the best page often appears mid-loop rather than at
- * the end. Keeping only the final state throws that away by construction.
- *
- * Scores live here rather than on the page row for the same reason as the
- * counters above: they belong to one build session, not to the page.
+ * The critic looks once, after the mechanical gate is clean, and its findings
+ * are applied once. What follows is a gate-only pass: a second opinion on a
+ * page whose first opinion has been applied measures the critic, not the page.
  */
-const roundsKey = (
+const critiqueKey = (
   conversationId: string | undefined,
   pageId: string,
 ): string =>
   conversationId
-    ? `pages:rounds:${conversationId}:${pageId}`
-    : `pages:rounds:page:${pageId}`;
+    ? `pages:critique:${conversationId}:${pageId}`
+    : `pages:critique:page:${pageId}`;
 
-export interface PageReviewRound {
-  round: number;
-  versionNumber: number;
+export interface PageCritiqueRecord {
+  /** The bytes it judged. */
+  sourceHash: string;
   score: number;
-  gatePass: boolean;
+  findings: PageFinding[];
+  elevations: PageElevation[];
 }
 
-export const recordPageReviewRound = async (
+export const recordPageCritique = async (
   conversationId: string | undefined,
   pageId: string,
-  entry: PageReviewRound,
+  critique: PageCritiqueRecord,
 ): Promise<void> => {
-  const key = roundsKey(conversationId, pageId);
-  await redis.hset(key, {
-    [String(entry.round)]: JSON.stringify(entry),
-  });
-  await redis.expire(key, TTL_SECONDS);
+  await redis.setex(
+    critiqueKey(conversationId, pageId),
+    TTL_SECONDS,
+    JSON.stringify(critique),
+  );
 };
 
-/**
- * How much better an earlier round must have scored before the page is put
- * back into it. The critic's own run-to-run spread is a couple of tenths, so a
- * tie-break would swap the page over noise — which is its own kind of damage.
- */
-export const BEST_ROUND_MARGIN = 0.3;
-
-/**
- * The earlier round worth returning to, or null to keep what is on screen.
- *
- * Only rounds that PASSED their gate qualify: a higher design score on a page
- * with an empty overlay or a dead control is a prettier broken page, and the
- * gate is measured while the score is judged.
- */
-export const bestEarlierRound = (
-  rounds: PageReviewRound[],
-  current: { round: number; score: number },
-): PageReviewRound | null =>
-  rounds
-    .filter(
-      (round) =>
-        round.gatePass &&
-        round.round !== current.round &&
-        round.score > current.score + BEST_ROUND_MARGIN,
-    )
-    .sort((a, b) => b.score - a.score)[0] ?? null;
-
-export const listPageReviewRounds = async (
+export const readPageCritique = async (
   conversationId: string | undefined,
   pageId: string,
-): Promise<PageReviewRound[]> => {
-  const raw = await redis.hgetall(roundsKey(conversationId, pageId));
-  const rounds: PageReviewRound[] = [];
-  for (const value of Object.values(raw)) {
-    try {
-      const parsed: unknown = JSON.parse(value);
-      if (
-        typeof parsed === "object" &&
-        parsed !== null &&
-        "round" in parsed &&
-        "versionNumber" in parsed &&
-        "score" in parsed
-      ) {
-        rounds.push(parsed as PageReviewRound);
-      }
-    } catch {
-      // A malformed entry is one lost round, not a failed review.
+): Promise<PageCritiqueRecord | null> => {
+  const raw = await redis.get(critiqueKey(conversationId, pageId));
+  if (raw === null) return null;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed === "object" && parsed !== null && "score" in parsed) {
+      return parsed as PageCritiqueRecord;
     }
+  } catch {
+    // A malformed record means the critic looks again, which is safe.
   }
-  return rounds.sort((a, b) => a.round - b.round);
+  return null;
 };
 
 /**
@@ -181,6 +154,22 @@ export interface PageReviewVerdict {
  */
 export const hashPageSource = (source: string): string =>
   new Bun.CryptoHasher("sha256").update(source).digest("hex");
+
+/**
+ * The same, over a whole project — what a verdict is actually pinned to now
+ * that a page is several files. Hashing the entry alone would let a component
+ * change under a "ship" verdict without anyone re-reviewing it.
+ */
+export const hashPageCode = (code: {
+  source: string;
+  files?: Record<string, string> | undefined;
+}): string => {
+  const hasher = new Bun.CryptoHasher("sha256");
+  for (const [path, content] of eachPageFile(code)) {
+    hasher.update(`${path}\0${content}\0`);
+  }
+  return hasher.digest("hex");
+};
 
 export const recordPageReviewVerdict = async (
   conversationId: string | undefined,

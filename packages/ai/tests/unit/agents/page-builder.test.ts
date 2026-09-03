@@ -13,9 +13,16 @@ describe("page-builder tool registry", () => {
   const tools = buildPageBuilderTools();
   const names = Object.keys(tools);
 
-  test("carries the page tool and the probes that answer what is in the data", () => {
+  test("carries the eight page tools and the probes that answer what is in the data", () => {
     for (const required of [
-      "managePage",
+      "pageRead",
+      "pageWrite",
+      "pageEdit",
+      "pageSearch",
+      "pageBuild",
+      "pageProbe",
+      "pageReview",
+      "pageDocs",
       "describeCollection",
       "listRecords",
       "querySql",
@@ -23,6 +30,15 @@ describe("page-builder tool registry", () => {
     ]) {
       expect(names).toContain(required);
     }
+  });
+
+  /**
+   * Authoring moved to the `page*` tools, and `managePage` went with it: two
+   * ways to write the same page is two write paths to keep honest, and the one
+   * that stays is the one that holds a working copy.
+   */
+  test("does not carry managePage", () => {
+    expect(names).not.toContain("managePage");
   });
 
   test("cannot delegate — no dispatchAgent, and no buildPage recursion", () => {

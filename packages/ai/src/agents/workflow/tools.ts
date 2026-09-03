@@ -36,7 +36,7 @@ export const buildWorkflowTools = (extras: {
     updateSkill: _updateSkill,
     manageWorkflow: _manageWorkflow,
     ...domainTools
-  } = buildDomainTools({ pageAuthoring: false });
+  } = buildDomainTools();
   const { askUserQuestion: _askUserQuestion, ...coreTools } =
     buildCoreTools(domainTools);
   // The domain tools destructured out above are the canonical
@@ -96,7 +96,7 @@ export const workflowToolHintNames = (): ReadonlySet<string> => {
     updateSkill: _updateSkill,
     manageWorkflow: _manageWorkflow,
     ...domainTools
-  } = buildDomainTools({ pageAuthoring: false });
+  } = buildDomainTools();
   const { askUserQuestion: _askUserQuestion, ...coreTools } =
     buildCoreTools(domainTools);
   cachedHintNames = new Set<string>([

@@ -1,6 +1,6 @@
 # Data and actions
 
-The data half of a page is declarative, and it is the security boundary: the code can only ask for what the definition declared. `managePage { action: "get_guide" }` carries the full grammar — this file is how to use it well.
+The data half of a page is declarative, and it is the security boundary: the code can only ask for what `page.json` declared. The environment contract in your prompt carries the full grammar — this file is how to use it well.
 
 ## Declaring
 
@@ -9,10 +9,10 @@ The data half of a page is declarative, and it is the security boundary: the cod
 - **A filter re-queries; it never narrows the rows already loaded.** Filtering a `computed` over the rows in hand looks identical to the real thing while the team has fewer records than the dataset's `limit`, and silently becomes a filter over the first hundred the day they have more. Send the choice as a variable, read it back in the dataset's filters.
 - **A paginated list gets its own `records` dataset.** The server is the paginator, however many millions sit behind it.
 - **Ratios, joins and derived columns are the PAGE's work, in a `computed()`** — over rows it already has, in the browser it is already running in. There is no server-side transform dataset; anything that has to be true over every row is an `aggregate`, in SQL.
-- **`external` is for small, fresh reads** through the viewer's own connection — an inbox, today's events. Volume and history belong in a collection synced by a workflow: a third party cannot be filtered, grouped or indexed. `dry_run` shows the real answer shape first.
+- **`external` is for small, fresh reads** through the viewer's own connection — an inbox, today's events. Volume and history belong in a collection synced by a workflow: a third party cannot be filtered, grouped or indexed. `pageProbe` shows the real answer shape first. A provider that answers one call at a time is slow by nature: give each dataset its own `datasetIds` query and render each as it lands.
 - **`providerKey` is the app's key as the connections list prints it, character for character.** NEVER the Python module name: `some_app` is the module, `some-app` is the key. A page written the other way resolves no connection and tells every viewer to connect an app the team already has — it does not fail, it just never loads.
 - **An `external` dataset pages through its own `args`, or not at all.** `queries` is the `collections` paginator and is ignored here. Where the action takes an offset, a cursor or a page token, bind a variable to it and raise it to load more; where it takes none, one call is the whole answer, and the list must not look like one that scrolls to an end it never reaches.
-- **Probe before you design.** `dry_run` with datasets and no `code` returns real field names, a real row and real distinct values. Never design against imagined fields.
+- **Probe before you design.** `pageProbe` with the datasets you are considering returns real field names, real rows and real distinct values — before a line of code exists. Never design against imagined fields.
 
 ## Reading
 
@@ -22,7 +22,7 @@ const result = await fretik.data.query({ variables, datasetIds, queries });
 
 Every dataset comes back as one of `{ status: "ok", rows, fields, totalCount?, page?, pageSize? }`, `{ status: "error", message }`, `{ status: "forbidden" }`, or `{ status: "needs_connection", providerKey }`. **Render all four.** A page that only handles `ok` shows a blank region when a query fails, and the user cannot tell it apart from "no data".
 
-**NEVER substitute rows of your own for a dataset that came back empty, `error` or `needs_connection`.** A fallback to invented rows — a `demoData` array, a `catch` that fills the page with plausible figures — makes a broken page look like a working one, and an operations reader acts on numbers that describe nothing. The empty state IS the answer: say which dataset is empty and what would fill it. Literal rows that are genuinely part of the design (a reference table, a legend) belong in an `inline` dataset, where they are declared rather than improvised.
+Substituting rows of your own for a dataset that answered nothing is refused at build — the rule and what to do instead are in the environment contract's `## the bridge`. What belongs here is the shape of the answer: the empty state says which dataset is empty and what would fill it.
 
 Load everything once on mount, then refetch narrowly with `datasetIds`.
 

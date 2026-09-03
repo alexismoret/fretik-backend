@@ -1,6 +1,6 @@
 # Choosing components
 
-Every component below is registered globally in the page runtime — no import, just `<UBadge>`. This file says **which one to reach for**. For what a component actually accepts — every prop, slot, variant, default — call `managePage { action: "components", components: ["UTable", "USlideover"] }` (up to 6 per call) and read the real API before writing the template. Guessed props are silently dropped.
+Every component below is registered globally in the page runtime — no import, just `<UBadge>`. This file says **which one to reach for**. For what a component actually accepts — every prop, slot, variant, default — call `pageDocs { components: ["UTable", "USlideover"] }` (up to 6 per call) and read the real API before writing the template. Guessed props are silently dropped.
 
 Two rules that decide most of it:
 
@@ -97,7 +97,7 @@ Wrap every input in `UFormField` (label, description, error) and the set in `UFo
 
 **Rich text is `UEditor`, and it is more capable than a `UTextarea` with formatting.** Reach for it wherever the text a person writes will be READ as formatted — a message composer, a note, a description, a template — and for `UTextarea` only where the value is genuinely plain. It is a TipTap editor: `v-model` plus `content-type="markdown" | "html" | "json"` parses and serialises in that format, so it is also the markdown↔HTML converter you would otherwise look for a library for. A template ref exposes `.editor`, the TipTap instance, for `getHTML()` / `getJSON()` when you need the other format at submit time. Its companions all take `:editor` and a plain `items` array you build yourself: `UEditorToolbar` (formatting controls), `UEditorMentionMenu` and `UEditorSuggestionMenu` (a trigger character — `@`, `/`, `:` — over items you can feed from a dataset), `UEditorEmojiMenu`, `UEditorDragHandle` (reorder blocks).
 
-That family carries a trap worth generalising: **a component's published EXAMPLES may import things this runtime does not serve.** `UEditor`'s reach for `@tiptap/*`, `scule` and `@nuxt/ui/utils/editor`, and the compiler refuses all three by name. Read the API through `{ action: "components" }`, build the item arrays by hand, and treat any import outside `get_guide`'s list as absent however official the snippet looks.
+That family carries a trap worth generalising: **a component's published EXAMPLES may import things this runtime does not serve.** `UEditor`'s reach for `@tiptap/*`, `scule` and `@nuxt/ui/utils/editor`, and the compiler refuses all three by name. Read the API through `pageDocs`, build the item arrays by hand, and treat any import outside the environment contract's list as absent however official the snippet looks.
 
 ## Layer something over the page
 

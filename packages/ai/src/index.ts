@@ -81,7 +81,7 @@ if (process.env.RUN_MIGRATIONS === "true") {
   await assertMigrationsCurrent("ai");
 }
 
-// managePage's dry_run executes page datasets, including external ones — the
+// pageProbe and every build execute page datasets, external ones included — the
 // seam refuses in any process that skips this install.
 installExternalPageQueryExecutor();
 

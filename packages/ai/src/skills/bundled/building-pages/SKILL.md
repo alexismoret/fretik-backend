@@ -5,7 +5,7 @@ description: Pages — live, data-bound screens the team opens in the app, writt
 
 # Pages
 
-A page is ONE Vue SFC over the team's data. The server compiles it on save and the app runs it in a sandboxed frame styled with the team's own design system. It stores CODE plus a data contract, never a snapshot — it re-queries every time someone opens it, so its figures are never stale.
+A page is a small Vue project over the team's data — `Page.vue`, `components/*.vue`, `composables/*.ts`, and a `page.json` holding its brief and data contract. The server compiles the whole project on every build and the app runs it in a sandboxed frame styled with the team's own design system. It stores CODE plus that contract, never a snapshot — it re-queries every time someone opens it, so its figures are never stale.
 
 The bar is not "it displays the data". It is: **someone reopens this page every Monday instead of asking you.**
 
@@ -13,11 +13,11 @@ The bar is not "it displays the data". It is: **someone reopens this page every 
 
 `buildPage`, and only `buildPage`. You have no `create`.
 
-It runs a specialist on the model the team picked for page design, with the design doctrine, the runtime contract and the row shapes of the data already in its prompt — so it starts writing where you would still be reading. It probes the data for real field names, writes the page's brief, reads the API of every component it uses, then RENDERS the page in a real browser, clicks through it, and fixes what it saw before handing back a url.
+It runs a specialist on the model the team picked for page design, with the design doctrine, the runtime contract and the row shapes of the data already in its prompt — so it starts writing where you would still be reading. It probes the data for real field names, writes the page's brief, reads the API of every component it uses, writes the project file by file, then RENDERS the page in a real browser, clicks through it, and fixes what it saw before handing back a url.
 
 Send it everything past a targeted edit: a new page, a new view or feature on an existing one, a redesign, a section that needs different data. Put the whole request in `task`, in the user's own words, with the collections by name and the pageId when there is one — it never sees this conversation, so what you leave out it decides for itself. Do not narrow a vague ask on the user's behalf; the builder is built to expand it.
 
-What is yours, through `managePage`: read a page, retouch a word, a label, a colour or a threshold with `edits`, `review` one to see what is actually wrong, publish it, delete it. That split is worth what it costs — a delegate to change one title is waste, and a title changed by hand is instant.
+What is yours, through `managePage`: read a page — its manifest, and one file at a time — retouch a word, a label, a colour or a threshold with `edits`, `review` one to see what is actually wrong, publish it, delete it. That split is worth what it costs — a delegate to change one title is waste, and a title changed by hand is instant.
 
 ## When a page is the wrong answer
 
@@ -34,7 +34,7 @@ A page earns its keep when the team will REOPEN it.
 
 ## The builder's references
 
-The files under `references/` are the page builder's manual, not background reading — open them only if you are the one writing the SFC.
+The files under `references/` are the page builder's manual, not background reading — open them only if you are the one writing the code.
 
 | You are about to                                                          | Read                                                                                                                                   |
 | ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |

@@ -21,12 +21,12 @@ const step = (results: { toolName: string; output: unknown }[]) => ({
 });
 
 describe("lastPageRef", () => {
-  test("reads the page out of a managePage result", () => {
+  test("reads the page out of a build result", () => {
     expect(
       lastPageRef([
         step([
           {
-            toolName: "managePage",
+            toolName: "pageBuild",
             output: { pageId: "p1", url: "/pages/p1" },
           },
         ]),
@@ -37,9 +37,9 @@ describe("lastPageRef", () => {
   test("takes the LAST page named — a build creates, then edits, then reviews", () => {
     expect(
       lastPageRef([
-        step([{ toolName: "managePage", output: { pageId: "created" } }]),
+        step([{ toolName: "pageBuild", output: { pageId: "created" } }]),
         step([{ toolName: "describeCollection", output: { fields: [] } }]),
-        step([{ toolName: "managePage", output: { pageId: "reviewed" } }]),
+        step([{ toolName: "pageReview", output: { pageId: "reviewed" } }]),
       ])?.pageId,
     ).toBe("reviewed");
   });
@@ -47,7 +47,7 @@ describe("lastPageRef", () => {
   test("falls back to the canonical route when the result carries no url", () => {
     expect(
       lastPageRef([
-        step([{ toolName: "managePage", output: { pageId: "p2" } }]),
+        step([{ toolName: "pageBuild", output: { pageId: "p2" } }]),
       ]),
     ).toEqual({ pageId: "p2", url: "/pages/p2" });
   });
@@ -56,10 +56,10 @@ describe("lastPageRef", () => {
     // A failed review after a good create still leaves a page worth opening.
     expect(
       lastPageRef([
-        step([{ toolName: "managePage", output: { pageId: "p3" } }]),
+        step([{ toolName: "pageBuild", output: { pageId: "p3" } }]),
         step([
           {
-            toolName: "managePage",
+            toolName: "pageReview",
             output: { error: "boom", code: "INVALID_ARGS" },
           },
         ]),
@@ -95,7 +95,7 @@ describe("editedAfterLastReview", () => {
     pageId: "p1",
     gate: "pass",
     verdict: "ship",
-    iteration: "2/3",
+    iteration: "2/5",
   };
   // `text` is part of the step shape the SUT reads, so a fixture that omits it
   // is not a step — it just happened to satisfy the fields this suite asserts
@@ -105,45 +105,35 @@ describe("editedAfterLastReview", () => {
     results: { toolCallId: string; toolName: string; output: unknown }[],
   ) => ({ text: "", toolCalls: calls, toolResults: results });
 
-  test("a review as the last managePage result means the page is as judged", () => {
+  test("a review as the last page result means the page is as judged", () => {
     expect(
       editedAfterLastReview([
         fullStep(
-          [
-            {
-              toolCallId: "c1",
-              toolName: "managePage",
-              input: { action: "review" },
-            },
-          ],
-          [{ toolCallId: "c1", toolName: "managePage", output: reviewOutput }],
+          [{ toolCallId: "c1", toolName: "pageReview", input: {} }],
+          [{ toolCallId: "c1", toolName: "pageReview", output: reviewOutput }],
         ),
       ]),
     ).toBe(false);
   });
 
-  test("an update after the review makes it stale", () => {
+  test("a write after the review makes it stale", () => {
     expect(
       editedAfterLastReview([
         fullStep(
           [
-            {
-              toolCallId: "c1",
-              toolName: "managePage",
-              input: { action: "review" },
-            },
+            { toolCallId: "c1", toolName: "pageReview", input: {} },
             {
               toolCallId: "c2",
-              toolName: "managePage",
-              input: { action: "update" },
+              toolName: "pageEdit",
+              input: { path: "Page.vue" },
             },
           ],
           [
-            { toolCallId: "c1", toolName: "managePage", output: reviewOutput },
+            { toolCallId: "c1", toolName: "pageReview", output: reviewOutput },
             {
               toolCallId: "c2",
-              toolName: "managePage",
-              output: { pageId: "p1", updated: true },
+              toolName: "pageEdit",
+              output: { path: "Page.vue", applied: true },
             },
           ],
         ),
@@ -156,23 +146,19 @@ describe("editedAfterLastReview", () => {
       editedAfterLastReview([
         fullStep(
           [
-            {
-              toolCallId: "c1",
-              toolName: "managePage",
-              input: { action: "review" },
-            },
+            { toolCallId: "c1", toolName: "pageReview", input: {} },
             {
               toolCallId: "c2",
-              toolName: "managePage",
-              input: { action: "get" },
+              toolName: "pageRead",
+              input: { path: "Page.vue" },
             },
           ],
           [
-            { toolCallId: "c1", toolName: "managePage", output: reviewOutput },
+            { toolCallId: "c1", toolName: "pageReview", output: reviewOutput },
             {
               toolCallId: "c2",
-              toolName: "managePage",
-              output: { pageId: "p1", definition: {} },
+              toolName: "pageRead",
+              output: { path: "Page.vue", content: "…" },
             },
           ],
         ),
@@ -222,30 +208,26 @@ const buildResult = (over: {
 const createdAndReviewed: BuildSteps = [
   {
     text: "",
-    toolCalls: [
-      { toolCallId: "c1", toolName: "managePage", input: { action: "create" } },
-    ],
+    toolCalls: [{ toolCallId: "c1", toolName: "pageBuild", input: {} }],
     toolResults: [
       {
         toolCallId: "c1",
-        toolName: "managePage",
+        toolName: "pageBuild",
         output: { pageId: "p1", url: "/pages/p1" },
       },
     ],
   },
   {
     text: "",
-    toolCalls: [
-      { toolCallId: "c2", toolName: "managePage", input: { action: "review" } },
-    ],
+    toolCalls: [{ toolCallId: "c2", toolName: "pageReview", input: {} }],
     toolResults: [
       {
         toolCallId: "c2",
-        toolName: "managePage",
+        toolName: "pageReview",
         output: {
           pageId: "p1",
           url: "/pages/p1",
-          iteration: "1/3",
+          iteration: "1/5",
           gate: "pass",
           verdict: "revise",
           score: 7,

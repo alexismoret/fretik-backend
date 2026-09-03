@@ -25,6 +25,8 @@ const SOURCE = [
   "</script>",
 ].join("\n");
 
+const LANE = ["<template>", "  <p>lane</p>", "</template>"].join("\n");
+
 /** Fresh scope per test so the real Redis store never bleeds state across. */
 let scope = "";
 let pageId = PAGE_ID;
@@ -140,7 +142,13 @@ await mockModule("@fretik/shared/services/pages/retrieve", {
       // Present because the real schema always fills it: the gate reads it to
       // decide whether "no operation ran" is a defect or the design.
       operations: [],
-      code: { source: SOURCE, compiled: { js: "x", css: "" } },
+      code: {
+        source: SOURCE,
+        // A project, not a lone SFC: the edit path patches the file an edit
+        // names, and a single-file fixture could not tell the two apart.
+        files: { "components/Lane.vue": LANE },
+        compiled: { js: "x", css: "" },
+      },
     },
     runtimeErrors: [],
   }),
@@ -202,22 +210,19 @@ const { wrapRuntimeContext } =
 const { getProfileForRole } =
   await import("../../../src/lib/model-registry/resolve");
 const {
+  MAX_PAGE_REVIEWS,
   bumpPageReviewIteration,
-  hashPageSource,
-  readPageDraft,
+  hashPageCode,
   readPageReviewIterations,
   readPageReviewVerdict,
   recordPageReviewVerdict,
 } = await import("../../../src/services/page-review/page-session-store");
 
 const execManagePage = async (
-  input: { action: "review" | "update" | "create" | "get" } & Record<
-    string,
-    unknown
-  >,
+  input: { action: "review" | "update" | "get" } & Record<string, unknown>,
   overrides: { traceId?: string } = {},
 ): Promise<Record<string, unknown>> => {
-  const tool = createManagePageTool({ authoring: true });
+  const tool = createManagePageTool();
   if (typeof tool.execute !== "function") {
     throw new Error("managePage missing execute");
   }
@@ -257,20 +262,23 @@ const compileRefusal = () =>
     ),
   });
 
+const spendBudget = async (): Promise<void> => {
+  for (let index = 0; index < MAX_PAGE_REVIEWS; index += 1) {
+    // eslint-disable-next-line no-await-in-loop -- the counter is the subject
+    await bumpPageReviewIteration(scope, pageId);
+  }
+};
+
 describe("review budget — hard, shared, checked before the render", () => {
   test("a spent budget refuses without opening a browser", async () => {
-    await bumpPageReviewIteration(scope, pageId);
-    await bumpPageReviewIteration(scope, pageId);
-    await bumpPageReviewIteration(scope, pageId);
+    await spendBudget();
     const result = await execManagePage({ action: "review" });
     expect(result["review"]).toBe("refused");
     expect(renderCalls).toHaveLength(0);
   });
 
   test("the builder's `.page` trace suffix counts in the parent's scope", async () => {
-    await bumpPageReviewIteration(scope, pageId);
-    await bumpPageReviewIteration(scope, pageId);
-    await bumpPageReviewIteration(scope, pageId);
+    await spendBudget();
     const result = await execManagePage(
       { action: "review" },
       { traceId: `${scope}.page` },
@@ -278,12 +286,19 @@ describe("review budget — hard, shared, checked before the render", () => {
     expect(result["review"]).toBe("refused");
   });
 
-  test("a failed critique consumes NO round", async () => {
+  /**
+   * The budget counts RENDERS since the loop became gate-first, so a critic
+   * that fell over still costs the browser it used — and nothing more. What it
+   * must not do is leave a verdict behind: with none recorded, the next review
+   * renders and critiques again instead of returning "unverified" for ever.
+   */
+  test("a failed critique costs its render and pins no verdict", async () => {
     critiqueResult = { ok: false, reason: "upstream rate-limited" };
     const result = await execManagePage({ action: "review" });
     expect(result["verdict"]).toBe("unverified");
-    expect(String(result["next"])).toContain("did not consume");
-    expect(await readPageReviewIterations(scope, pageId)).toBe(0);
+    expect(String(result["next"])).toContain("critic was unavailable");
+    expect(await readPageReviewIterations(scope, pageId)).toBe(1);
+    expect(await readPageReviewVerdict(scope, pageId)).toBe(null);
   });
 
   test("a scored ship ends the loop and pins the verdict to the bytes", async () => {
@@ -303,12 +318,17 @@ describe("review budget — hard, shared, checked before the render", () => {
     expect(String(result["next"])).toContain("Do NOT edit or review again");
     const verdict = await readPageReviewVerdict(scope, pageId);
     expect(verdict?.shipped).toBe(true);
-    expect(verdict?.sourceHash).toBe(hashPageSource(SOURCE));
+    expect(verdict?.sourceHash).toBe(
+      hashPageCode({ source: SOURCE, files: { "components/Lane.vue": LANE } }),
+    );
   });
 
   test("an unchanged page returns its standing verdict — no render, no round", async () => {
     await recordPageReviewVerdict(scope, pageId, {
-      sourceHash: hashPageSource(SOURCE),
+      sourceHash: hashPageCode({
+        source: SOURCE,
+        files: { "components/Lane.vue": LANE },
+      }),
       shipped: true,
       round: 1,
       result: { verdict: "ship", score: 8 },
@@ -327,6 +347,47 @@ describe("review budget — hard, shared, checked before the render", () => {
  * version identical to the one before it and reported success — so the agent
  * believed a fix had landed and reviewed a page nothing had touched.
  */
+/**
+ * `get` prints ONE file, and says what the others are.
+ *
+ * A page is a project now, and the parent's edits anchor inside one file. The
+ * old shape returned `definition.code.source` — which, on a project, is the
+ * entry file wearing the name of the whole page: every component was invisible
+ * and an edit against one of them could only miss.
+ */
+describe("get — a project, one file at a time", () => {
+  test("names every file, and returns the entry by default", async () => {
+    const result = await execManagePage({ action: "get" });
+
+    expect(result["file"]).toBe("Page.vue");
+    expect(result["source"]).toBe(SOURCE);
+    const manifest = String(result["project"]);
+    expect(manifest).toContain("Page.vue");
+    expect(manifest).toContain("components/Lane.vue");
+  });
+
+  test("returns the file that was asked for", async () => {
+    const result = await execManagePage({
+      action: "get",
+      file: "components/Lane.vue",
+    });
+
+    expect(result["file"]).toBe("components/Lane.vue");
+    expect(result["source"]).toBe(LANE);
+  });
+
+  test("refuses a file the page does not have, naming the ones it does", async () => {
+    const result = await execManagePage({
+      action: "get",
+      file: "components/Nope.vue",
+    });
+
+    expect(result["code"]).toBe("INVALID_ARGS");
+    // The recovery is in the answer: no second call to discover the paths.
+    expect(String(result["hint"])).toContain("components/Lane.vue");
+  });
+});
+
 describe("update — a call that changes nothing is refused", () => {
   test("an empty definition writes no version", async () => {
     const result = await execManagePage({ action: "update", definition: {} });
@@ -348,71 +409,48 @@ describe("update — a call that changes nothing is refused", () => {
   });
 });
 
-describe("update — no page-scale write is ever paid twice", () => {
-  test("a compile refusal KEEPS the submitted source as a draft", async () => {
-    updateThrows = compileRefusal();
-    const submitted = `${SOURCE}\nbroken((`;
-    const result = await execManagePage({
-      action: "update",
-      definition: { code: { source: submitted } },
-      rewrite: true,
-    });
-    // NOT an input-shape code: the call was well formed, the SOURCE was not.
-    // Under INVALID_ARGS the loop guard tells the model "the call is
-    // malformed, the tool is right, retry the same shape" — the advice that
-    // produced seven identical refusals on 2026-08-28.
-    expect(result["code"]).toBe("COMPILE_FAILED");
-    expect(String(result["hint"])).toContain("kept for 15 minutes");
-    expect(await readPageDraft(scope, pageId)).toBe(submitted);
-  });
-
-  test("get returns the kept draft, so reading and editing see one document", async () => {
-    updateThrows = compileRefusal();
-    const submitted = `${SOURCE}\nbroken((`;
-    await execManagePage({
-      action: "update",
-      definition: { code: { source: submitted } },
-      rewrite: true,
-    });
-    const view = await execManagePage({ action: "get" });
-    const definition = view["definition"] as { code: { source: string } };
-    expect(definition.code.source).toBe(submitted);
-    expect(view["sourceIs"]).toBe("kept-draft");
-  });
-
-  test("the draft only wins when EVERY edit lands on it", async () => {
-    updateThrows = compileRefusal();
-    const submitted = `${SOURCE}\nbroken((`;
-    await execManagePage({
-      action: "update",
-      definition: { code: { source: submitted } },
-      rewrite: true,
-    });
-    updateThrows = null;
-    // One anchor matches the draft, the other matches neither document. A
-    // single match used to pin the whole batch to the draft and drop the
-    // miss in silence, so the repair never landed and the same broken text
-    // recompiled forever.
+/**
+ * What the parent may do to a page it did not write: patch a file by name, and
+ * be told plainly when a patch does not land. Authoring — and the working copy
+ * that makes a refused build cheap — belongs to the builder's `page*` tools.
+ */
+describe("update — edits, per file", () => {
+  test("an edit that names a file patches THAT file", async () => {
     const result = await execManagePage({
       action: "update",
       edits: [
-        { oldString: "broken((", newString: "// fixed" },
-        { oldString: "text that is in neither document", newString: "x" },
+        {
+          file: "components/Lane.vue",
+          oldString: "<p>lane</p>",
+          newString: "<p>lane!</p>",
+        },
       ],
     });
-    expect(result["code"]).toBe("INVALID_ARGS");
-    expect(String(result["error"])).toContain("kept draft");
-    // The draft is untouched: a batch that did not fully apply never became
-    // the new draft, so the next attempt still starts from a known text.
-    expect(await readPageDraft(scope, pageId)).toBe(submitted);
+    expect(result["code"]).toBeUndefined();
+    const sent = updateCalls.at(-1)?.input["definition"] as {
+      code: { source: string; files: Record<string, string> };
+    };
+    // The entry is untouched and the component carries the change.
+    expect(sent.code.source).toBe(SOURCE);
+    expect(sent.code.files["components/Lane.vue"]).toContain("<p>lane!</p>");
   });
 
-  test("a compile refusal names the edits that did NOT land", async () => {
-    // Partial application against the saved page: one anchor lands, one has
-    // drifted, and the result does not compile. The miss used to be computed
-    // and then dropped on this path — reported only when the write SUCCEEDED
-    // — so an agent whose repair edit had silently missed read the same error
-    // again and concluded the tool was ignoring it.
+  test("an edit naming a file the page does not have says which it has", async () => {
+    const result = await execManagePage({
+      action: "update",
+      edits: [{ file: "components/Ghost.vue", oldString: "a", newString: "b" }],
+    });
+    expect(result["code"]).toBe("INVALID_ARGS");
+    expect(String(result["error"])).toContain("components/Lane.vue");
+    expect(updateCalls).toHaveLength(0);
+  });
+
+  test("a compile refusal names the edits that did NOT land, and saves nothing", async () => {
+    // Partial application: one anchor lands, one has drifted, and the result
+    // does not compile. The miss used to be computed and then dropped on this
+    // path — reported only when the write SUCCEEDED — so an agent whose repair
+    // edit had silently missed read the same error again and concluded the
+    // tool was ignoring it.
     updateThrows = compileRefusal();
     const result = await execManagePage({
       action: "update",
@@ -423,97 +461,19 @@ describe("update — no page-scale write is ever paid twice", () => {
     });
     expect(result["code"]).toBe("COMPILE_FAILED");
     expect(String(result["hint"])).toContain("did NOT apply");
+    expect(String(result["hint"])).toContain("untouched");
   });
 
-  test("the next edits anchor on the kept draft, and success clears it", async () => {
-    updateThrows = compileRefusal();
-    const submitted = `${SOURCE}\nbroken((`;
-    await execManagePage({
-      action: "update",
-      definition: { code: { source: submitted } },
-      rewrite: true,
-    });
-    updateThrows = null;
+  /**
+   * Authoring is the builder's, and the enum is what enforces it: a
+   * `definition` here is a whole-file write under an edit's name.
+   */
+  test("a definition is refused, whatever it carries", async () => {
     const result = await execManagePage({
-      action: "update",
-      edits: [{ oldString: "broken((", newString: "// fixed" }],
-    });
-    expect(result["editsNotApplied"]).toBeUndefined();
-    const sent = updateCalls.at(-1)?.input["definition"] as {
-      code: { source: string };
-    };
-    expect(sent.code.source).toBe(`${SOURCE}\n// fixed`);
-    expect(await readPageDraft(scope, pageId)).toBeNull();
-  });
-
-  test("a destructive shrink is refused; growth passes without `rewrite`", async () => {
-    const shrunk = await execManagePage({
       action: "update",
       definition: { code: { source: "<template><p>tiny</p></template>" } },
     });
-    expect(shrunk["code"]).toBe("INVALID_ARGS");
-    expect(String(shrunk["hint"])).toContain("rewrite: true");
-
-    const grown = await execManagePage({
-      action: "update",
-      definition: { code: { source: `${SOURCE}\n<!-- a new section -->` } },
-    });
-    expect(grown["code"]).toBeUndefined();
-    expect(updateCalls).toHaveLength(1);
-  });
-});
-
-describe("create — the page that does not exist yet is the costliest to lose", () => {
-  const NEW_SOURCE = [
-    "<template>",
-    "  <div><h1>Fresh board</h1></div>",
-    "</template>",
-    "<script setup>",
-    "const oops = (",
-    "</script>",
-  ].join("\n");
-
-  test("a refused create keeps its source under the turn's pending slot", async () => {
-    createThrows = compileRefusal();
-    const result = await execManagePage({
-      action: "create",
-      name: "Fresh board",
-      definition: { code: { source: NEW_SOURCE } },
-    });
-    expect(result["code"]).toBe("INVALID_ARGS");
-    expect(String(result["hint"])).toContain("WAS KEPT");
-    expect(await readPageDraft(scope, "new")).toBe(NEW_SOURCE);
-  });
-
-  test("create + edits re-anchors on it, so the SFC is emitted once", async () => {
-    createThrows = compileRefusal();
-    await execManagePage({
-      action: "create",
-      name: "Fresh board",
-      definition: { code: { source: NEW_SOURCE } },
-    });
-    createThrows = null;
-    const result = await execManagePage({
-      action: "create",
-      name: "Fresh board",
-      edits: [{ oldString: "const oops = (", newString: "const ok = 1;" }],
-    });
-    expect(result["code"]).toBeUndefined();
-    expect(createCalls.at(-1)?.input.definition.code.source).toBe(
-      NEW_SOURCE.replace("const oops = (", "const ok = 1;"),
-    );
-    // Landed, so the pending slot is gone: the next create starts clean.
-    expect(await readPageDraft(scope, "new")).toBeNull();
-  });
-
-  test("edits with nothing pending say so instead of writing an empty page", async () => {
-    const result = await execManagePage({
-      action: "create",
-      name: "Fresh board",
-      edits: [{ oldString: "a", newString: "b" }],
-    });
-    expect(result["code"]).toBe("INVALID_ARGS");
-    expect(String(result["error"])).toContain("no page to edit");
-    expect(createCalls).toHaveLength(0);
+    expect(result["code"]).toBe("PAGE_REQUIRES_BUILDER");
+    expect(updateCalls).toHaveLength(0);
   });
 });

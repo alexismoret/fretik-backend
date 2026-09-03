@@ -5,8 +5,7 @@ import type { ChatbotCallOptions } from "../agents/chatbot";
 import { buildChatbotTool } from "../agents/shared/chatbot-tool";
 import type { AgentRuntimeContext } from "../agents/shared/runtime-context";
 import { createSubAgentExecute } from "../agents/shared/sub-agent";
-import type { SalvageOutcome } from "./manage-page";
-import { lastVueFence } from "./page-emitted-source";
+import type { PageSalvageOutcome } from "../services/page-project/salvage";
 
 /**
  * `buildPage` — hand a whole page to the specialist that builds it.
@@ -23,8 +22,8 @@ import { lastVueFence } from "./page-emitted-source";
  * alongside it.
  *
  * The page builder is a full agent (`agents/chatbot/index.ts`): it probes the
- * data, writes a brief, reads the component APIs, writes the SFC, then RENDERS
- * the page in a browser and fixes what it sees, up to three rounds. It shares
+ * data, writes a brief, reads the component APIs, writes the project file by
+ * file, then RENDERS the page in a browser and fixes what it sees. It shares
  * the conversation's team scope and cannot delegate further.
  */
 
@@ -57,19 +56,28 @@ const pageRefSchema = z.object({
 });
 
 /**
- * The builder's `managePage` actions that leave nothing behind — what makes a
- * dead run safe to retry (`hasSideEffect` below). Listed rather than derived
- * from the action enum on purpose: a new action must be classified by hand,
- * and the failure of forgetting is a build retried after it wrote, which is
- * worse than one not retried at all.
+ * The builder's tools that leave nothing behind — what makes a dead run safe to
+ * retry (`hasSideEffect` below). Listed rather than derived, on purpose: a new
+ * tool must be classified by hand, and the failure of forgetting is a build
+ * retried after it wrote, which is worse than one not retried at all.
+ *
+ * `pageWrite` and `pageEdit` are NOT here even though they publish nothing:
+ * they fill the run's working copy, and a retry that started over would write
+ * its files on top of a project the first attempt had half-built.
  */
-const PAGE_BUILDER_READ_ACTIONS = new Set([
-  "get_guide",
-  "components",
-  "dry_run",
-  "get",
-  "list",
-  "stage",
+const PAGE_BUILDER_READ_TOOLS = new Set([
+  "pageRead",
+  "pageSearch",
+  "pageProbe",
+  "pageDocs",
+  "read",
+  "bash",
+  "describeCollection",
+  "listRecords",
+  "getRecord",
+  "listDocuments",
+  "querySql",
+  "searchIcons",
 ]);
 
 const reviewRefSchema = z.object({
@@ -96,7 +104,7 @@ export const lastReviewRef = (
 ): z.infer<typeof reviewRefSchema> | undefined => {
   for (const step of [...steps].reverse()) {
     for (const toolResult of [...step.toolResults].reverse()) {
-      if (toolResult.toolName !== "managePage") continue;
+      if (toolResult.toolName !== "pageReview") continue;
       const parsed = reviewRefSchema.safeParse(toolResult.output);
       if (parsed.success) return parsed.data;
     }
@@ -118,56 +126,6 @@ export type BuildSteps = readonly {
     output: unknown;
   }[];
 }[];
-
-/**
- * A page source the builder wrote and never saved.
- *
- * The fence protocol (`page-emitted-source.ts`) makes this recoverable: the
- * SFC streams as ordinary text, so it is sitting in the trajectory of any run
- * that died between writing the file and claiming it — an upstream cut, the
- * step budget, the hard deadline. Before the protocol that source existed only
- * as tool-call arguments the transport had already thrown away, and the build
- * came back with nothing to show for its most expensive generation.
- *
- * Claimed is claimed: a successful `create`/`update` carrying code or edits at
- * or after the fence's step means the write landed, and re-saving over it would
- * undo whatever the review loop did next.
- */
-export const findOrphanFence = (
-  steps: BuildSteps,
-): { source: string; stepIndex: number } | null => {
-  let fence: { source: string; stepIndex: number } | null = null;
-  for (const [index, step] of steps.entries()) {
-    const source = lastVueFence(step.text);
-    if (source !== null) fence = { source, stepIndex: index };
-  }
-  if (fence === null) return null;
-  for (const [index, step] of steps.entries()) {
-    if (index < fence.stepIndex) continue;
-    const writes = new Set<string>();
-    for (const call of step.toolCalls) {
-      if (call.toolName !== "managePage") continue;
-      if (typeof call.input !== "object" || call.input === null) continue;
-      const action = Reflect.get(call.input, "action");
-      if (action !== "create" && action !== "update") continue;
-      const definition = Reflect.get(call.input, "definition");
-      const wroteCode =
-        typeof definition === "object" &&
-        definition !== null &&
-        Reflect.get(definition, "code") !== undefined;
-      if (wroteCode || Reflect.get(call.input, "edits") !== undefined) {
-        writes.add(call.toolCallId);
-      }
-    }
-    for (const result of step.toolResults) {
-      if (!writes.has(result.toolCallId)) continue;
-      // Shape probe, not validation — the issues are discarded, so skip
-      // building them (z.validate, zod 4.5).
-      if (z.validate(pageRefSchema, result.output)) return null;
-    }
-  }
-  return fence;
-};
 
 /**
  * What `formatBuildResult` actually reads of a finished run. Declared
@@ -196,30 +154,16 @@ export interface BuildTrajectory {
  * skipped.
  */
 export const editedAfterLastReview = (steps: BuildSteps): boolean => {
-  const actionByCall = new Map<string, string>();
-  for (const step of steps) {
-    for (const call of step.toolCalls) {
-      if (call.toolName !== "managePage") continue;
-      if (typeof call.input !== "object" || call.input === null) continue;
-      const action = Reflect.get(call.input, "action");
-      if (typeof action === "string") {
-        actionByCall.set(call.toolCallId, action);
-      }
-    }
-  }
   for (const step of [...steps].reverse()) {
     for (const toolResult of [...step.toolResults].reverse()) {
-      if (toolResult.toolName !== "managePage") continue;
-      // Shape probe, not validation — see above.
-      if (z.validate(reviewRefSchema, toolResult.output)) return false;
-      const action = actionByCall.get(toolResult.toolCallId);
-      if (
-        action !== undefined &&
-        action !== "review" &&
-        !PAGE_BUILDER_READ_ACTIONS.has(action)
-      ) {
-        return true;
+      if (toolResult.toolName === "pageReview") {
+        // Shape probe, not validation — see above.
+        if (z.validate(reviewRefSchema, toolResult.output)) return false;
+        continue;
       }
+      if (PAGE_BUILDER_READ_TOOLS.has(toolResult.toolName)) continue;
+      // A write of any kind — a file, or the build that published it.
+      return true;
     }
   }
   return false;
@@ -245,7 +189,12 @@ export const lastPageRef = (
 ): { pageId: string; url: string } | undefined => {
   for (const step of [...steps].reverse()) {
     for (const toolResult of [...step.toolResults].reverse()) {
-      if (toolResult.toolName !== "managePage") continue;
+      if (
+        toolResult.toolName !== "pageBuild" &&
+        toolResult.toolName !== "pageReview"
+      ) {
+        continue;
+      }
       const parsed = pageRefSchema.safeParse(toolResult.output);
       if (!parsed.success) continue;
       return {
@@ -270,7 +219,7 @@ export const lastPageRef = (
  */
 export const formatBuildResult = (
   result: BuildTrajectory,
-  salvaged?: SalvageOutcome,
+  salvaged?: PageSalvageOutcome,
 ): {
   summary: string;
   pageId?: string;
@@ -288,7 +237,7 @@ export const formatBuildResult = (
    */
   if (salvaged?.saved === true) {
     return {
-      summary: `[recovered: the builder was cut off after writing the page but before saving it, so the source was saved for it. The page EXISTS and nobody has looked at it. Do NOT call buildPage again: run managePage { action: "review" } on it, apply what comes back with update { edits }, and hand back the url.]`,
+      summary: `[recovered: the builder was cut off after writing its files but before building them, so the build was finished for it. The page EXISTS and nobody has looked at it. Do NOT call buildPage again: run managePage { action: "review" } on it, apply what comes back with update { edits }, and hand back the url.]`,
       pageId: salvaged.pageId,
       url: salvaged.url,
       reviewed: false,
@@ -383,49 +332,46 @@ export const createBuildPageTool = <TTools extends ToolSet>(deps: {
     profileKey?: string,
   ) => Agent<ChatbotCallOptions, TTools>;
   /**
-   * Save a page source outside a tool call — `savePageSource` in
-   * `manage-page.ts`. Injected rather than imported so this module keeps no
-   * runtime edge to the page services (and through them the database): every
-   * branch above is decided from a trajectory, and that is what makes them
-   * assertable from plain objects.
+   * Finish the build of a run that died before it could — `salvagePageProject`
+   * in `services/page-project/salvage.ts`. Injected rather than imported so
+   * this module keeps no runtime edge to the page services (and through them
+   * the database): every branch above is decided from a trajectory, and that
+   * is what makes them assertable from plain objects.
    */
-  savePageSource: (params: {
-    source: string;
-    pageId?: string;
+  salvagePage: (params: {
+    scope: string;
     teamId: string;
     organizationId: string;
     userId: string | null;
     conversationId?: string;
-  }) => Promise<SalvageOutcome>;
+  }) => Promise<PageSalvageOutcome | null>;
 }) => {
   const inputSchema = buildPageInputSchema;
   const formatResult = formatBuildResult;
 
   /**
-   * Save what the run wrote but never claimed. Runs before the empty-run
-   * retry, so a build that produced a whole page is finished rather than
-   * started over — a rebuild from zero costs ~250s and reproduces the same
-   * upstream risk on the same slow provider.
+   * Build what the run wrote but never built. Runs before the empty-run retry,
+   * so a build that produced a whole project is finished rather than started
+   * over — a rebuild from zero costs ~250s and reproduces the same upstream
+   * risk on the same slow provider.
+   *
+   * The scope is the BUILDER's trace, which is where its working copy lives
+   * (`buildCallOptions` below appends `.page`); with no trace the builder
+   * keyed its copy by the conversation, and so does this.
    */
   const salvage = async (
-    result: BuildTrajectory,
+    _result: BuildTrajectory,
     ctx: AgentRuntimeContext,
-  ): Promise<SalvageOutcome | null> => {
-    const orphan = findOrphanFence(result.steps);
-    if (orphan === null) return null;
-    const ref = lastPageRef(result.steps);
-    console.error(
-      `[build-page] unclaimed page source (${orphan.source.length.toString()} chars) — saving it`,
-    );
-    return await deps.savePageSource({
-      source: orphan.source,
-      ...(ref ? { pageId: ref.pageId } : {}),
+  ): Promise<PageSalvageOutcome | null> =>
+    await deps.salvagePage({
+      scope: ctx.traceId
+        ? `${ctx.traceId}.page`
+        : (ctx.conversationId ?? "no-run"),
       teamId: ctx.teamId,
       organizationId: ctx.organizationId,
       userId: ctx.userId ?? null,
       ...(ctx.conversationId ? { conversationId: ctx.conversationId } : {}),
     });
-  };
 
   /**
    * What the parent's card draws while the build runs.
@@ -464,7 +410,7 @@ export const createBuildPageTool = <TTools extends ToolSet>(deps: {
     z.infer<typeof inputSchema>,
     ReturnType<typeof formatResult>,
     ReturnType<typeof progress>,
-    SalvageOutcome
+    PageSalvageOutcome
   >({
     salvage,
     subAgent: (ctx) => deps.resolvePageBuilder(ctx.pageBuildProfileKey),
@@ -475,14 +421,7 @@ export const createBuildPageTool = <TTools extends ToolSet>(deps: {
     // the data — leaves nothing behind, and a build that died in that opening
     // stretch is exactly the one worth attempting again. `review` counts as a
     // write: it stores a round of the page.
-    hasSideEffect: ({ toolName, input }) => {
-      if (toolName !== "managePage") return true;
-      const action =
-        typeof input === "object" && input !== null && "action" in input
-          ? (input as { action?: unknown }).action
-          : undefined;
-      return !PAGE_BUILDER_READ_ACTIONS.has(String(action));
-    },
+    hasSideEffect: ({ toolName }) => !PAGE_BUILDER_READ_TOOLS.has(toolName),
     progress,
     buildMessages: async ({ task, collectionKeys }, ctx) => {
       // Read the schema here, once, rather than letting the builder spend a
@@ -529,7 +468,12 @@ export const createBuildPageTool = <TTools extends ToolSet>(deps: {
     // wrap up at 75% of this budget, so reaching the hard cut again means a
     // real hang — what it replaces is infinity (measured 2026-08-21, a stalled
     // in-process render held the parent turn open 45+ minutes).
-    deadlineMs: 15 * 60 * 1000,
+    //
+    // 15 → 25 minutes with the project model: a build is now many small calls
+    // instead of three enormous ones, and each one that lands is kept in the
+    // working copy. A cut here no longer loses a generation, so the budget can
+    // cover a page of a dozen files without the wall arriving mid-page.
+    deadlineMs: 25 * 60 * 1000,
     onDeadline: () => ({
       summary:
         '[incomplete: the build ran out of time — a step hung. The page may exist in an unreviewed state: call managePage { action: "list" } to check, and { action: "review" } before telling the user it is ready.]',
@@ -543,14 +487,14 @@ export const createBuildPageTool = <TTools extends ToolSet>(deps: {
       "build create page dashboard app interface view report visualise visualize custom ui mini-app screen design",
     isReadOnly: false,
     description: [
-      "Build a page — the whole thing, by a specialist that can SEE what it made. It probes the data for real field names, writes the page's brief, reads the API of every component it uses, writes the Vue SFC, then renders the page in a real browser, clicks through it, and fixes what is broken before handing it back. Returns the url plus what it built and what is still weak.",
+      "Build a page — the whole thing, by a specialist that can SEE what it made. It probes the data for real field names, writes the page's brief, reads the API of every component it uses, writes the project file by file, then renders the page in a real browser, clicks through it, and fixes what is broken before handing it back. Returns the url plus what it built and what is still weak.",
       "",
       "- Send it any page request beyond a one-line change: a new page, a new view or feature on an existing one, a redesign. `managePage` is for reading a page, a small targeted edit, and publishing — it has no `create`, so this is not a preference, it is the only route.",
       "- It carries the design doctrine, the runtime contract and the data-shape rules in its own prompt: there is NOTHING for you to read before calling it. Reading `skills/building-pages/references/` yourself buys the page nothing and costs a turn.",
       "- Put EVERYTHING in `task`: what the user asked for in their own words, the collections by name, the pageId when editing, and any constraint they stated. It never sees this conversation — what you omit, it decides for itself.",
       "- Send the SHAPE of the data, never its values. Type and field names, yes; totals and counts you queried, no. A page reads its own figures live, and a task that already answers the question invites a page that prints the answer instead of fetching it — one shipped showing a total the code never loaded.",
       "- Do not narrow the request on the user's behalf. A vague ask is not a small ask; the builder is built to expand it, and a task string that pre-trims it to a title and a table produces exactly that.",
-      "- One call per page. A build runs long (data probe, then up to three render-and-fix rounds), so do not launch it in parallel with itself.",
+      "- One call per page. A build runs long — data probe, the files, then a review loop that gates, critiques once and gates again — so do not launch it in parallel with itself.",
       "- Hand back the url it returns, and repeat what it says is still weak rather than smoothing it over.",
       '- Trust `review` over the summary: `gate` is measured, `verdict` and `score` are judged, and they disagree routinely. Anything other than `verdict: "ship"` — or `reviewed: false`, meaning nobody looked at the page — is told to the user in one plain sentence, never as a checkmark.',
     ].join("\n"),

@@ -2,7 +2,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /**
- * The component reference corpus served by `managePage { action: "components" }`.
+ * The component reference corpus served by `pageDocs`.
  *
  * A page is real Vue over real Nuxt UI, so the agent needs the real API of the
  * components it is about to use — every prop, every slot. 117 components of

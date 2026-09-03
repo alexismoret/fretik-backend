@@ -168,7 +168,8 @@ export const buildSubAgentSystemPrompt = async (
  * Page-builder system prompt. Same shape as the sub-agent's — static text,
  * Langfuse-managed, `.md` fallback — and separate from it on purpose: this
  * agent's value is an ORDERED pipeline (expand → probe → brief → component
- * APIs → build → review), which is exactly what a shared prompt cannot carry.
+ * APIs → write the files → build → review), which is exactly what a shared
+ * prompt cannot carry.
  */
 export const buildPageBuilderSystemPrompt = async (
   ctx: AgentRuntimeContext,

@@ -91,8 +91,15 @@ const CRITIC_PROVIDER_OPTIONS = {
 };
 /** Three screenshots plus reasoning; the call is off the user's hot path. */
 const TIMEOUT_MS = 180_000;
-/** Past this the list stops being a fix list and becomes a mood. */
-const MAX_FINDINGS = 12;
+/**
+ * Past this the list stops being a fix list and becomes a mood.
+ *
+ * 12 → 6 on 2026-09-03, with the loop: there is ONE critique per build now, and
+ * its majors are applied once. A list of twelve was a list nobody finished — the
+ * measured rounds spent their edits on the tail while the top of the list came
+ * back unchanged. Six forces the critic to rank.
+ */
+const MAX_FINDINGS = 6;
 /** One round can absorb three real improvements; a longer list is a wish list. */
 const MAX_ELEVATIONS = 3;
 
@@ -170,13 +177,12 @@ const readRubric = (): Promise<string> => {
 const INSTRUCTIONS = [
   "You are reviewing a page built for a business team by another agent. You did not build it, you owe its author nothing, and your job is to be the last person who looks at it before its users do.",
   "Start from the assumption that it is mediocre and let the screenshots change your mind. A page that renders correctly and decides nothing scores 5 — that is the middle of the scale, not a failing grade, and most pages belong there. Reserve 9 and 10 for work you would show someone.",
-  "8 is not a resting place. A page that works, reads cleanly and decides one thing is a 7 or an 8, and saying so is only half the job: name what separates it from the band above. Four eights and a compliment is the answer of someone who stopped looking.",
-  "You see what the page renders, never its source. Judge the screen. Every finding names where it is on screen, what is wrong, and what to do instead — the builder has the code and will find it from your description.",
+  "You see what the page renders, never its source. Judge the screen. Every finding names where it is on screen, what is wrong, and what to do instead — and, when the file list below makes it obvious, which file it lives in.",
   "Report only what you can see. Do not repeat anything listed as already known.",
   "The data is live and it is the team's, not yours. A dataset with no rows today is a legitimate state of a working page, not a defect — judge whether the page explains itself and offers the way forward when it is empty, never how much data happens to exist right now. Never ask for more data, more records, or a fuller example.",
   "Answer with a single JSON object and nothing else:",
   '{ "scores": { "design": 0-10, "functionality": 0-10, "craft": 0-10, "originality": 0-10 }, "summary": "one sentence on what this page is and where it stands", "findings": [ { "severity": "major" | "minor", "where": "...", "problem": "...", "fix": "..." } ], "elevations": [ { "where": "...", "change": "...", "gain": "..." } ] }',
-  '"major" is something a user would hit or complain about; "minor" is polish. Order them by severity. An empty findings list is a real answer when nothing on the page is wrong.',
+  '"major" is something a user would HIT — a control that misleads, a figure that cannot be read, a region that breaks at a width; "minor" is polish. Only the majors get applied, so a major you would not stop a release for is a minor. Order them by severity, at most four that matter, and an empty list is a real answer when nothing on the page is wrong.',
   "`elevations` is the other question, and it is not the same one: not what is broken, but what would make this page better than it is. At most three, ordered by how much they change the page, each naming where on screen it goes, the concrete change, and what the reader gains. Return at least one whenever the page scores below 9 — a page with no defects still has a next level, and this is where it is written down. Reach for the change that is specific to THIS subject: the value that should wear its own colour, the figure that should carry its comparison, the region that should be denser or larger, the view the data supports and the page does not offer. Never propose more data.",
 ].join("\n");
 
@@ -270,6 +276,15 @@ export interface PageCritiqueInput {
    * page that lives behind a click is judged by nobody.
    */
   interactions?: readonly PageRenderInteraction[];
+  /**
+   * The project's manifest — path, size, what each file exposes.
+   *
+   * Not the code: the critic judges the screen, and source would let it grade
+   * what it read instead of what a user sees. What the file list buys is a
+   * finding that names the file to open, which is the difference between one
+   * edit and a search.
+   */
+  files?: string;
 }
 
 /**
@@ -292,6 +307,14 @@ export const buildCritiqueContent = async (
         type: "text",
         text: `# The page under review\n\nName: ${params.pageName}\n\n${describeBrief(params.brief)}`,
       },
+      ...(params.files !== undefined && params.files.length > 0
+        ? [
+            {
+              type: "text" as const,
+              text: `## files of this page\n${params.files}`,
+            },
+          ]
+        : []),
       ...(params.known.length > 0
         ? [
             {

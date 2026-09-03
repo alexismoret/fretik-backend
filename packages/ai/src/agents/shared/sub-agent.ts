@@ -139,11 +139,12 @@ export interface CreateSubAgentExecuteConfig<
    * Rescue whatever a finished run produced but failed to commit, BEFORE the
    * empty-run retry decides to start over.
    *
-   * The ordering is the whole point. A run cut mid-flight can hold a complete
-   * deliverable in its own transcript — `buildPage` streams page source as text
-   * precisely so that it does (`tools/page-emitted-source.ts`) — and rebuilding
-   * from zero is both the most expensive recovery in the product and a fresh
-   * roll of the same dice that just came up short.
+   * The ordering is the whole point. A run cut mid-flight can have produced
+   * everything but the commit — `buildPage` keeps the files it wrote in a
+   * working copy precisely so that it does
+   * (`services/page-project/salvage.ts`) — and rebuilding from zero is both
+   * the most expensive recovery in the product and a fresh roll of the same
+   * dice that just came up short.
    *
    * Returns null when there is nothing to rescue, which is the normal case.
    */

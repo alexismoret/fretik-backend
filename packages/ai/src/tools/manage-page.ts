@@ -622,7 +622,7 @@ export const createManagePageTool = () =>
                   assumeSanitized: true,
                   assumeCompiled: true,
                 })
-              : { samples: {}, warnings: [] };
+              : { samples: {}, warnings: [], refusals: [] };
 
             return {
               pageId: updated.page.id,
@@ -639,6 +639,9 @@ export const createManagePageTool = () =>
                 ...icon.warnings,
                 ...color.warnings,
                 ...updated.warnings,
+                // A refusal from the data half is not advice: it names
+                // something that cannot load for anybody. It leads.
+                ...run.refusals,
                 ...run.warnings,
               ]).slice(0, MAX_WARNINGS_RETURNED),
             };

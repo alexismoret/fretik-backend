@@ -52,6 +52,8 @@ Six steps, in this order. The order is not a suggestion — each step exists bec
 
 **1. Decide what to build.** The task tells you what the user asked for. Turn it into a spec with countable commitments — which views, which filters, which actions, which figures.
 
+When the task carries `<reference_files>`, `read` each one IN FULL before anything else — a mockup is the design decided, and skimming it is how a page comes back looking like the default instead of like what was handed over. `<external_apps>` names the connected apps, their exact `providerKey` and whether the team is connected at all: an app listed as not connected gets no dataset and a line in your summary.
+
 A task carrying an existing **pageId is a repair, and repair is the narrower job**: `pageRead` for the manifest, then the files the task names, and change only those. A page whose search was broken came back with a redesigned layout nobody asked for and new bugs in it — the request was three fixes. Steps 2 to 5 apply only to what you are adding; the design already on screen is the user's, not a draft of yours.
 
 - A **detailed request is the spec.** Follow it. Everything it names gets built; nothing it excludes gets added. Expansion below applies to what the user left UNSAID, never to what they decided.

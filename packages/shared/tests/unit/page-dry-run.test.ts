@@ -33,7 +33,7 @@ const withDatasets = (
 });
 
 describe("dryRunPage — characterisation of today's output", () => {
-  test("reports row count and one clipped sample row", async () => {
+  test("reports row count and real rows, long values clipped", async () => {
     const long = "x".repeat(200);
     const result = await dryRunPage({
       definition: withDatasets([
@@ -45,13 +45,56 @@ describe("dryRunPage — characterisation of today's output", () => {
     });
 
     expect(result.samples.sales?.rowCount).toBe(1);
-    const sample = result.samples.sales?.sample;
+    const [first] = result.samples.sales?.rows ?? [];
     const note =
-      typeof sample === "object" && sample !== null && !Array.isArray(sample)
-        ? sample.note
+      typeof first === "object" && first !== null && !Array.isArray(first)
+        ? first.note
         : undefined;
     expect(typeof note === "string" && note.length).toBe(161);
     expect(typeof note === "string" && note.endsWith("…")).toBe(true);
+  });
+
+  /**
+   * Five rows, not one — the change that made this a probe.
+   *
+   * One row says a field exists and nothing about what it holds, and a page
+   * designed from one row is how a filter over an unused status ships. The
+   * profile is the same answer in summary form: what recurs, what is empty.
+   */
+  test("returns several rows and a per-field profile", async () => {
+    const rows = [
+      { status: "open", owner: "ana", amount: 10 },
+      { status: "open", owner: "bo", amount: 20 },
+      { status: "won", owner: "ana", amount: 30 },
+      { status: "won", owner: null, amount: 40 },
+      { status: "lost", owner: "cy", amount: 50 },
+      { status: "open", owner: "ana", amount: 60 },
+    ];
+    const result = await dryRunPage({
+      definition: withDatasets([{ id: "deals", kind: "inline", rows }]),
+      teamId: "team-1",
+      userId: null,
+      assumeCompiled: true,
+    });
+
+    const sample = result.samples.deals;
+    expect(sample?.rowCount).toBe(6);
+    // Capped: a probe shows the shape, it does not dump the data.
+    expect(sample?.rows).toHaveLength(5);
+
+    const status = sample?.profile?.["status"];
+    expect(status?.distinct).toBe(3);
+    // The vocabulary a filter is built from, most common first.
+    expect(status?.top?.[0]).toEqual({ value: "open", count: 3 });
+
+    const owner = sample?.profile?.["owner"];
+    expect(owner?.nulls).toBe(1);
+
+    const amount = sample?.profile?.["amount"];
+    expect(amount?.min).toBe(10);
+    expect(amount?.max).toBe(60);
+    // Stated, never implied: these numbers describe the rows that came back.
+    expect(amount?.basis).toBe("window");
   });
 
   test("a grouped dataset reports its distinct group values", async () => {
@@ -88,7 +131,12 @@ describe("dryRunPage — characterisation of today's output", () => {
     );
   });
 
-  test("empty code is a warning, not a refusal — a dry run persists nothing", async () => {
+  /**
+   * Two channels, because they ask for different actions: `refusals` is what
+   * the write path would reject, `warnings` is advice. Mixed into one list, the
+   * agent triaged instead of acting.
+   */
+  test("empty code is a refusal — the write path would reject it", async () => {
     const result = await dryRunPage({
       definition: withDatasets([], ""),
       teamId: "team-1",
@@ -96,8 +144,24 @@ describe("dryRunPage — characterisation of today's output", () => {
       assumeCompiled: true,
     });
     expect(
-      result.warnings.some((w) => w.includes("code.source is empty")),
+      result.refusals.some((line) => line.includes("code.source is empty")),
     ).toBe(true);
+  });
+
+  test("a data probe carries no code, and that is not a finding", async () => {
+    // `pageProbe` runs before a line of code exists. Telling it to write an
+    // SFC is advice about a step it is not on.
+    const result = await dryRunPage({
+      definition: withDatasets(
+        [{ id: "sales", kind: "inline", rows: [{ amount: 1 }] }],
+        "",
+      ),
+      teamId: "team-1",
+      userId: null,
+      dataOnly: true,
+    });
+    expect(result.refusals).toHaveLength(0);
+    expect(result.samples.sales?.rowCount).toBe(1);
   });
 
   test("without assumeCompiled, compile errors land in warnings", async () => {

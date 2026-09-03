@@ -165,7 +165,7 @@ await mockModule("@fretik/shared/services/pages/restore", {
 });
 
 await mockModule("@fretik/shared/services/pages/dry-run", {
-  dryRunPage: async () => ({ samples: {}, warnings: [] }),
+  dryRunPage: async () => ({ samples: {}, warnings: [], refusals: [] }),
 });
 
 await mockModule("@fretik/shared/services/organization/member-role", {

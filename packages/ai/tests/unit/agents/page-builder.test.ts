@@ -74,8 +74,24 @@ describe("buildPage input", () => {
     expect(Object.keys(buildPageInputSchema.shape).sort()).toEqual([
       "collectionKeys",
       "description",
+      "externalApps",
+      "referenceFiles",
       "task",
     ]);
+  });
+
+  test("a reference is a PATH — contents have no way in", () => {
+    // The distinction the isolation rests on: the builder opens the file
+    // itself with `read`, which slices it and folds `data:` URIs. A mockup
+    // pasted into the task string is a 30 kB line paid for on every step —
+    // measured on the build where a reference HTML never reached the builder
+    // at all, because there was no field for it (2026-08-28).
+    const withContents = buildPageInputSchema.safeParse({
+      task: "rebuild the cockpit from this mockup",
+      description: "cockpit rebuild",
+      referenceFiles: ["a".repeat(301)],
+    });
+    expect(withContents.success).toBe(false);
   });
 
   test("bounds the type keys it will resolve", () => {

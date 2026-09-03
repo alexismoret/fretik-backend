@@ -6,6 +6,7 @@ import { buildChatbotTool } from "../agents/shared/chatbot-tool";
 import type { AgentRuntimeContext } from "../agents/shared/runtime-context";
 import { createSubAgentExecute } from "../agents/shared/sub-agent";
 import type { PageSalvageOutcome } from "../services/page-project/salvage";
+import { describeExternalApps } from "./page-external-apps";
 
 /**
  * `buildPage` — hand a whole page to the specialist that builds it.
@@ -27,6 +28,11 @@ import type { PageSalvageOutcome } from "../services/page-project/salvage";
  * the conversation's team scope and cannot delegate further.
  */
 
+/** A page reads a handful of apps, not a catalogue — and each skill is ~5k tokens. */
+const MAX_EXTERNAL_APPS = 3;
+/** Enough for a mockup and its data; more is a project, not a reference. */
+const MAX_REFERENCE_FILES = 4;
+
 export const buildPageInputSchema = z.object({
   task: z
     .string()
@@ -47,6 +53,20 @@ export const buildPageInputSchema = z.object({
     .optional()
     .describe(
       "Type keys from <team_collections> the page reads. Their fields and ids are handed to the builder up front, saving it a probe per type. List every type it will touch; a wrong key is reported back, not guessed at.",
+    ),
+  externalApps: z
+    .array(z.string().min(1).max(60))
+    .max(MAX_EXTERNAL_APPS)
+    .optional()
+    .describe(
+      "Connected apps the page reads, by the key the connections list shows. The builder gets each one's skill and whether the team is actually connected — without it, it guesses the key and a wrong key reads as 'no data'.",
+    ),
+  referenceFiles: z
+    .array(z.string().min(1).max(300))
+    .max(MAX_REFERENCE_FILES)
+    .optional()
+    .describe(
+      "Paths of files the user gave as a reference — a mockup, an export, a screenshot's description. The builder opens them with `read`. Pass the path, never the contents.",
     ),
 });
 
@@ -423,7 +443,10 @@ export const createBuildPageTool = <TTools extends ToolSet>(deps: {
     // write: it stores a round of the page.
     hasSideEffect: ({ toolName }) => !PAGE_BUILDER_READ_TOOLS.has(toolName),
     progress,
-    buildMessages: async ({ task, collectionKeys }, ctx) => {
+    buildMessages: async (
+      { task, collectionKeys, externalApps, referenceFiles },
+      ctx,
+    ) => {
       // Read the schema here, once, rather than letting the builder spend a
       // tool step per type on it. A failure is not worth the build: the types
       // are an accelerator, and the builder can still probe for itself.
@@ -434,15 +457,39 @@ export const createBuildPageTool = <TTools extends ToolSet>(deps: {
             keys: collectionKeys,
           }).catch(() => "")
         : "";
-      return [
-        {
-          role: "user",
-          content:
-            rowTypes.length > 0
-              ? `${task}\n\n<collections>\n${rowTypes}\n</collections>`
-              : task,
-        },
-      ];
+      // Same reasoning, one step further: a provider's key, its connection
+      // state and its actions are things the builder cannot discover — it has
+      // no `searchTools`, and a guessed key reads as "no data" (2026-08-26).
+      const apps = externalApps?.length
+        ? await describeExternalApps({
+            keys: externalApps,
+            conversationId: ctx.conversationId,
+            teamId: ctx.teamId,
+          }).catch(() => ({ block: null, unknown: [] as string[] }))
+        : { block: null, unknown: [] as string[] };
+      // PATHS, never contents: the builder opens them with `read`, which
+      // slices and folds `data:` URIs. A mockup pasted into a task string is a
+      // 30 kB line the model reads once and pays for on every step.
+      const references = referenceFiles?.length
+        ? [
+            "<reference_files>",
+            ...referenceFiles.map((path) => `- ${path}`),
+            "Open each one in full with `read` before you design.",
+            "</reference_files>",
+          ].join("\n")
+        : "";
+
+      const blocks = [
+        task,
+        rowTypes.length > 0 ? `<collections>\n${rowTypes}\n</collections>` : "",
+        apps.block ?? "",
+        apps.unknown.length > 0
+          ? `<external_apps_unknown>\nNo connected app answers to: ${apps.unknown.join(", ")}. Do not declare a dataset over one of these.\n</external_apps_unknown>`
+          : "",
+        references,
+      ].filter((block) => block.length > 0);
+
+      return [{ role: "user", content: blocks.join("\n\n") }];
     },
     buildCallOptions: (_input, ctx) => ({
       teamId: ctx.teamId,
@@ -492,6 +539,7 @@ export const createBuildPageTool = <TTools extends ToolSet>(deps: {
       "- Send it any page request beyond a one-line change: a new page, a new view or feature on an existing one, a redesign. `managePage` is for reading a page, a small targeted edit, and publishing — it has no `create`, so this is not a preference, it is the only route.",
       "- It carries the design doctrine, the runtime contract and the data-shape rules in its own prompt: there is NOTHING for you to read before calling it. Reading `skills/building-pages/references/` yourself buys the page nothing and costs a turn.",
       "- Put EVERYTHING in `task`: what the user asked for in their own words, the collections by name, the pageId when editing, and any constraint they stated. It never sees this conversation — what you omit, it decides for itself.",
+      "- Name the `externalApps` the page reads and the `referenceFiles` the user gave you (paths — a mockup, an export). The builder cannot discover either: it has no tool search, so a provider key it guesses reads as 'no data', and a reference it never hears about is a reference it cannot follow.",
       "- Send the SHAPE of the data, never its values. Type and field names, yes; totals and counts you queried, no. A page reads its own figures live, and a task that already answers the question invites a page that prints the answer instead of fetching it — one shipped showing a total the code never loaded.",
       "- Do not narrow the request on the user's behalf. A vague ask is not a small ask; the builder is built to expand it, and a task string that pre-trims it to a title and a table produces exactly that.",
       "- One call per page. A build runs long — data probe, the files, then a review loop that gates, critiques once and gates again — so do not launch it in parallel with itself.",

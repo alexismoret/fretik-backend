@@ -26,7 +26,7 @@ import { loadPageProjectContext } from "./context";
 
 export const createPageProbeTool = () =>
   tool({
-    description: `Run datasets and return what they really hold: row count, real field names, real rows, and what to do when one refuses. Probe BEFORE you design — a column named from a guess is how a page ships "[object Object]". With no arguments it probes the datasets declared in ${PAGE_JSON_FILE}; pass \`datasets\` to try one before declaring it.`,
+    description: `Run datasets and return what they really hold: real rows, the real field names, and per field how often it is empty, how many distinct values it takes and which ones — plus a one-line \`fix\` for any dataset that refuses. Probe BEFORE you design: a column named from a guess is how a page ships "[object Object]", and a filter built without the vocabulary is a filter over values nobody uses. With no arguments it probes the datasets declared in ${PAGE_JSON_FILE}; pass \`datasets\` to try one before declaring it.`,
     inputSchema: z.object({
       datasets: z
         .array(PageDatasetSchema)
@@ -86,10 +86,16 @@ export const createPageProbeTool = () =>
         },
         teamId: project.teamId,
         userId: project.userId,
+        dataOnly: true,
       });
 
       return {
         samples: run.samples,
+        // Separate channels because they ask for different things: a refusal
+        // changes what gets BUILT — a dataset over an app nobody on the team
+        // is connected to must not become a region of the page — while a
+        // warning is something to tidy.
+        ...(run.refusals.length > 0 ? { refusals: run.refusals } : {}),
         ...(run.warnings.length > 0 ? { warnings: run.warnings } : {}),
       };
     },

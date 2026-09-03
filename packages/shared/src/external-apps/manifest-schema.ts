@@ -192,6 +192,18 @@ export type HttpDirectAuthSpec = z.infer<typeof httpDirectAuthSchema>;
 export const httpDirectExtraHeaderSchema = z.object({
   name: z.string().min(1),
   source: httpDirectSourceSchema,
+  /**
+   * When true, the header is SKIPPED if its source is absent or empty,
+   * instead of failing the call.
+   *
+   * Use it for a selector the API treats as a NARROWING filter rather than
+   * as part of the credential: omitting it means "the credential's natural
+   * scope", and sending a value the credential is not entitled to is an
+   * outright rejection. Such a selector must be omissible, or every
+   * connection is forced to guess one. Leave it off (the default) for a
+   * header the API genuinely requires on every request.
+   */
+  optional: z.boolean().optional(),
 });
 export type HttpDirectExtraHeader = z.infer<typeof httpDirectExtraHeaderSchema>;
 

@@ -39,11 +39,17 @@ export interface HttpDirectCall {
   body?: unknown;
 }
 
+/**
+ * Read one `credentials.<key>` / `connection_config.<key>` dot path off the
+ * stored connection. Returns `undefined` when the value is absent or empty
+ * — callers decide whether that is fatal (the auth credential) or means
+ * "skip this header" (an `optional` extra header).
+ */
 const resolveSource = (
   source: string,
   credentials: Record<string, unknown>,
   connectionConfig: Record<string, unknown>,
-): string => {
+): string | undefined => {
   const dotIdx = source.indexOf(".");
   if (dotIdx <= 0) {
     throw new Error(`http-direct: invalid source path "${source}"`);
@@ -62,11 +68,7 @@ const resolveSource = (
     );
   }
   const value = bag[key];
-  if (value === undefined || value === null || value === "") {
-    throw new Error(
-      `http-direct: missing required value at "${source}" on this connection`,
-    );
-  }
+  if (value === undefined || value === null || value === "") return undefined;
   if (typeof value === "string") return value;
   if (typeof value === "number" || typeof value === "boolean") {
     return value.toString();
@@ -74,6 +76,59 @@ const resolveSource = (
   throw new Error(
     `http-direct: value at "${source}" must be a string, number or boolean (got ${typeof value})`,
   );
+};
+
+/**
+ * Project the stored connection onto the auth + extra headers a
+ * `http-direct` transport declares. Pure, and exported so the rule that
+ * decides whether a call is even attempted is testable without a Nango
+ * double: the credential is mandatory, an extra header is mandatory unless
+ * it declares `optional`, and an optional one with nothing behind it is
+ * omitted rather than sent empty.
+ *
+ * Returns the header map plus any auth value that belongs in the query
+ * string (`auth.kind === "query"`).
+ */
+export const projectHttpDirectAuth = (
+  transport: HttpDirectTransport,
+  credentials: Record<string, unknown>,
+  connectionConfig: Record<string, unknown>,
+): { headers: Record<string, string>; query: Record<string, string> } => {
+  const headers: Record<string, string> = {};
+  const query: Record<string, string> = {};
+
+  const authValue = resolveSource(
+    transport.auth.source,
+    credentials,
+    connectionConfig,
+  );
+  if (authValue === undefined) {
+    throw new Error(
+      `http-direct: missing required value at "${transport.auth.source}" on this connection`,
+    );
+  }
+  const authProjected =
+    transport.auth.scheme !== undefined
+      ? `${transport.auth.scheme}${authValue}`
+      : authValue;
+  if (transport.auth.kind === "header") {
+    headers[transport.auth.name] = authProjected;
+  } else {
+    query[transport.auth.name] = authProjected;
+  }
+
+  for (const extra of transport.extraHeaders ?? []) {
+    const value = resolveSource(extra.source, credentials, connectionConfig);
+    if (value === undefined) {
+      if (extra.optional === true) continue;
+      throw new Error(
+        `http-direct: missing required value at "${extra.source}" on this connection`,
+      );
+    }
+    headers[extra.name] = value;
+  }
+
+  return { headers, query };
 };
 
 const buildUrl = (
@@ -117,12 +172,12 @@ export const callHttpDirect = async (
   const rawCredentials: Record<string, unknown> = isRecord(
     connection.credentials,
   )
-    ? (connection.credentials as Record<string, unknown>)
+    ? connection.credentials
     : {};
   const rawConnectionConfig: Record<string, unknown> = isRecord(
     connection.connection_config,
   )
-    ? (connection.connection_config as Record<string, unknown>)
+    ? connection.connection_config
     : {};
   // Reverse `nangoKey` rename so transport's `auth.source` /
   // `extraHeaders.source` paths address the canonical snake_case keys
@@ -135,33 +190,16 @@ export const callHttpDirect = async (
       rawConnectionConfig,
     );
 
-  const headers: Record<string, string> = {};
-  const query: Record<string, string> = { ...(call.query ?? {}) };
-
-  // Inject the primary credential.
-  const authValue = resolveSource(
-    call.transport.auth.source,
+  const projected = projectHttpDirectAuth(
+    call.transport,
     credentials,
     connectionConfig,
   );
-  const authProjected =
-    call.transport.auth.scheme !== undefined
-      ? `${call.transport.auth.scheme}${authValue}`
-      : authValue;
-  if (call.transport.auth.kind === "header") {
-    headers[call.transport.auth.name] = authProjected;
-  } else {
-    query[call.transport.auth.name] = authProjected;
-  }
-
-  // Inject extra static headers (tenant / account selectors).
-  for (const extra of call.transport.extraHeaders ?? []) {
-    headers[extra.name] = resolveSource(
-      extra.source,
-      credentials,
-      connectionConfig,
-    );
-  }
+  const headers: Record<string, string> = projected.headers;
+  const query: Record<string, string> = {
+    ...(call.query ?? {}),
+    ...projected.query,
+  };
 
   const url = buildUrl(
     call.transport.baseUrl,

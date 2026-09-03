@@ -193,9 +193,9 @@ const cargoLine: ParamSpec = {
  * `guidance.md` for the routing rule.
  *
  * Transport: `http-direct` — Shiptify is NOT in Nango's catalog, so we
- * collect the API key + account id via our own descriptor-driven form and
- * fire `fetch()` ourselves. Source-of-truth swagger spec is committed at
- * `openapi.json` alongside this file (~218 endpoints).
+ * collect the API key + optional account id via our own descriptor-driven
+ * form and fire `fetch()` ourselves. Source-of-truth swagger spec is
+ * committed at `openapi.json` alongside this file (~224 endpoints).
  *
  * Out-of-scope today (intentional, low-ROI for the agent): warehouse / dock
  * modules (`/slots`, `/visits`, `/dock-orders`, `/transport-requests`,
@@ -204,11 +204,22 @@ const cargoLine: ParamSpec = {
  * `/price-details`). Re-evaluate per customer request.
  *
  * Auth model:
- *  - `credentials.api_key`     → `Authorization: <api_key>` header
- *  - `connection_config.account_id` → `X-Account-ID: <account_id>` header
- *  - `connection_config.account_label` (optional) → displayed in UI only
- *  - `connection.options.account_type` → `shipper` | `carrier` (exposed to
- *    the agent; picked once at connection time).
+ *  - `credentials.api_key` → `Authorization: <api_key>` header, verbatim.
+ *    Shiptify's tokens carry their own scheme prefix; we never add one.
+ *  - `connection_config.account_id` → `X-Account-ID` header, OPTIONAL.
+ *  - `connection.options.account_type` → `shipper` | `carrier`, auto-filled
+ *    from `/accounts/` at connect time and exposed to the agent.
+ *
+ * `X-Account-ID` is a NARROWING filter, not a tenant key — this is the
+ * single most load-bearing fact about connecting Shiptify. A token already
+ * carries its own scope: for a token issued on a carrier group it is every
+ * account of that group. Sending the header restricts the call to ONE
+ * account, and Shiptify answers `403 "Account is not available"` for any
+ * account the token may not act on — measured: on a group token listing 18
+ * accounts, 17 of them 403 and the 18th silently hides the other 17's
+ * shipments. Omitted (the default), the token keeps its natural scope,
+ * which is what almost every connection wants. `dynamic-options.ts` probes
+ * each account so the form can only ever offer one that works.
  */
 export const shiptifyManifest: ProviderManifest = {
   key: "shiptify",
@@ -232,11 +243,13 @@ export const shiptifyManifest: ProviderManifest = {
       source: "credentials.api_key",
     },
     extraHeaders: [
-      // Every Shiptify endpoint expects the caller to declare which
-      // account it acts upon (a single API key can have several accounts
-      // — carrier-side vs shipper-side). The account_id is set once at
-      // connection creation and projected onto every request.
-      { name: "X-Account-ID", source: "connection_config.account_id" },
+      // Optional on purpose — see the auth-model note above. Omitted, the
+      // token keeps its own scope; set, it narrows every call to one account.
+      {
+        name: "X-Account-ID",
+        source: "connection_config.account_id",
+        optional: true,
+      },
     ],
   },
 
@@ -244,13 +257,14 @@ export const shiptifyManifest: ProviderManifest = {
     fields: [
       {
         // Shiptify account role — `/accounts/` returns `type: shipper |
-        // carrier` per row. Auto-filled by the modal from the chosen
-        // `account_id`'s `meta.account_type` (see `dynamic-options.ts`);
-        // the default below is the fallback the user sees if the
-        // dropdown hasn't populated yet. The agent reads this value from
-        // the system prompt's <external_apps> block and routes to the
-        // matching action prefix — `galaxy_*` for carrier, unprefixed
-        // for shipper.
+        // carrier` per row. Auto-filled by the modal from the Account
+        // field's `meta.account_type`, which `dynamic-options.ts` sets on
+        // every entry INCLUDING the "every account" one (it reports the
+        // role shared by the accounts the token reaches). The default
+        // below only shows before the dropdown has populated. The agent
+        // reads this value from the system prompt's <external_apps> block
+        // and routes to the matching action prefix — `galaxy_*` for
+        // carrier, unprefixed for shipper.
         key: "account_type",
         labelKey:
           "settings.externalApps.providers.shiptify.options.account_type.label",
@@ -299,13 +313,18 @@ export const shiptifyManifest: ProviderManifest = {
       },
       {
         // Resolved from the API key via `listAccounts` (see
-        // `dynamic-options.ts`). The dropdown auto-populates once the
-        // user pastes a valid token — no need for them to chase the
-        // account id by hand.
+        // `dynamic-options.ts`), which probes each account and offers only
+        // the ones the token can actually act on, behind an "every account
+        // this key can reach" entry.
+        //
+        // OPTIONAL: the empty value is the recommended one — it sends no
+        // `X-Account-ID` and leaves the token at its natural scope. Picking
+        // an account is how a user with a multi-account token restricts a
+        // connection to one of them.
         key: "account_id",
         target: "connection_config",
         kind: "dynamic-select",
-        required: true,
+        required: false,
         dependsOn: ["api_key"],
         optionsHandler: "listAccounts",
         labelKey:
@@ -336,7 +355,14 @@ export const shiptifyManifest: ProviderManifest = {
       comment: { type: "string", optional: true },
       created_at: { type: "datetime", optional: true },
     },
-    /** Shipment summary — what `list_shipments` / `get_shipment` return. */
+    /**
+     * A shipment. ONE shape for both roles: `/shipments/*` (shipper view)
+     * and `/galaxy*` (carrier view) return the same object — verified
+     * field-by-field against the live API — so there is no reason to make
+     * the agent learn two models. `weight` / `cost` / `goods_value` are
+     * free-text decimals in Shiptify's own payload; the `total_*` fields
+     * are the numeric ones.
+     */
     Shipment: {
       id: { type: "integer" },
       code: {
@@ -344,7 +370,7 @@ export const shiptifyManifest: ProviderManifest = {
         optional: true,
         description: "Shiptify shipment code",
       },
-      status: { type: "string" },
+      status: { type: "string", optional: true },
       tracking_code: { type: "string", optional: true },
       name: { type: "string", optional: true },
       internal_ref: {
@@ -352,20 +378,43 @@ export const shiptifyManifest: ProviderManifest = {
         optional: true,
         description: "Third-party reference set by the caller",
       },
+      other_reference: {
+        type: "string",
+        optional: true,
+        description: "Second third-party reference (project / order name)",
+      },
       shipper_id: { type: "integer", optional: true },
       carrier_id: { type: "integer", optional: true },
+      shipper_name: {
+        type: "string",
+        optional: true,
+        description: "Flattened from the nested shipper row",
+      },
       sh_request_id: {
         type: "integer",
         optional: true,
         description: "Parent shipment-request id",
       },
+      quote_request_id: { type: "integer", optional: true },
       total_weight: { type: "number", optional: true },
       total_volume: { type: "number", optional: true },
       total_linear_meters: { type: "number", optional: true },
+      weight: { type: "string", optional: true, description: "Free-text" },
+      cost: {
+        type: "string",
+        optional: true,
+        description: "Free-text decimal, account currency",
+      },
+      goods_value: { type: "string", optional: true },
+      co2_amount: { type: "number", optional: true },
+      date: { type: "string", optional: true },
       estimated_departure_time: { type: "datetime", optional: true },
       real_departure_time: { type: "datetime", optional: true },
       estimated_arrival_time: { type: "datetime", optional: true },
       real_arrival_time: { type: "datetime", optional: true },
+      created_at: { type: "datetime", optional: true },
+      archived_carrier: { type: "boolean", optional: true },
+      archived_shipper: { type: "boolean", optional: true },
       shipment_mode: {
         type: "string",
         optional: true,
@@ -389,9 +438,14 @@ export const shiptifyManifest: ProviderManifest = {
       type: {
         type: "string",
         optional: true,
-        description: "Point type (pickup, delivery, transit, …)",
+        description: "Point type (departure, arrival, transit, …)",
       },
-      position: { type: "integer", optional: true },
+      code: { type: "string", optional: true },
+      position: {
+        type: "integer",
+        optional: true,
+        description: "Order along the journey, 0-based",
+      },
       address_id: { type: "integer", optional: true },
       planned_date: { type: "datetime", optional: true },
       planned_time: { type: "string", optional: true, description: "HH:mm" },
@@ -457,6 +511,10 @@ export const shiptifyManifest: ProviderManifest = {
      * of any create_shipment_request action. Mode flags (`for_sea`,
      * `for_road`, …) let the agent filter by the booking's mode so the
      * line is dimensionally compatible.
+     *
+     * Shiptify ships the four dimensional fields as free text (`""` when
+     * unset); the `contentTypeList` mapper coerces them to numbers or null
+     * so the agent can compare them without parsing.
      */
     ContentType: {
       id: { type: "integer" },
@@ -484,6 +542,12 @@ export const shiptifyManifest: ProviderManifest = {
       for_sea: { type: "boolean", optional: true },
       for_air: { type: "boolean", optional: true },
       for_rail: { type: "boolean", optional: true },
+      for_express: { type: "boolean", optional: true },
+      for_groupage: { type: "boolean", optional: true },
+      for_courier: { type: "boolean", optional: true },
+      for_air_sea: { type: "boolean", optional: true },
+      for_ro_ro: { type: "boolean", optional: true },
+      for_river: { type: "boolean", optional: true },
     },
     /** Generic `{ id?, internal_ref? }` returned by create endpoints. */
     WriteResult: {
@@ -499,105 +563,84 @@ export const shiptifyManifest: ProviderManifest = {
       },
     },
 
-    // ─── Galaxy (carrier-side) shapes ────────────────────────────────
+    // ─── Carrier-side shapes ─────────────────────────────────────────
     //
-    // Galaxy is Shiptify's carrier-side namespace. The shapes below are
-    // returned by `/galaxy/*` endpoints and exposed only when the
-    // connection's `account_type === "carrier"`.
+    // Galaxy is Shiptify's carrier-side namespace and the `galaxy_*`
+    // actions below are how a carrier connection reads and writes. It has
+    // no shipment shape of its own: `/shipments/{id}` and
+    // `/galaxy/shipments/{id}` return the SAME 46 fields with the same
+    // values for the same shipment (verified against the live API), so
+    // both roles share the `Shipment` type above. The separate
+    // `GalaxyShipment` this replaces declared 21 of those 46 and silently
+    // dropped `total_weight`, `total_volume`, `created_at` and both
+    // tracking links from every carrier read.
 
     /**
-     * Shipment from a carrier's perspective — what
-     * `/galaxy/shipments/{id}` and `/galaxy/carrier/shipments` return.
-     * Shares many fields with `Shipment` but adds carrier-only data
-     * (cost, goods_value, archived_carrier, co2_amount) and uses `weight`
-     * as a string per Shiptify's spec (not `total_weight: number`).
+     * One quote request a carrier received — the RFQ inbox row returned by
+     * `list_quote_requests`. It embeds the price lines the carrier is
+     * asked to fill (`price_details`) and the parent shipment request, so
+     * answering an RFQ needs no second read.
      */
-    GalaxyShipment: {
+    QuoteRequest: {
       id: { type: "integer" },
-      code: { type: "string", optional: true },
-      status: { type: "string", optional: true },
-      tracking_code: { type: "string", optional: true },
-      name: { type: "string", optional: true },
-      internal_ref: {
-        type: "string",
-        optional: true,
-        description: "Third-party reference set by the caller",
-      },
-      other_reference: {
-        type: "string",
-        optional: true,
-        description: "Third-party project name",
-      },
-      shipper_id: { type: "integer", optional: true },
-      carrier_id: { type: "integer", optional: true },
       sh_request_id: {
         type: "integer",
         optional: true,
         description: "Parent shipment-request id",
       },
-      quote_request_id: { type: "integer", optional: true },
-      weight: {
+      carrier_id: { type: "integer", optional: true },
+      status: {
         type: "string",
         optional: true,
-        description: "Free-text weight as returned by Shiptify",
+        description: "new | canceled | …",
       },
+      is_read: { type: "boolean", optional: true },
+      reply_before: {
+        type: "datetime",
+        optional: true,
+        description: "Deadline to answer the RFQ",
+      },
+      shipment_mode_id: { type: "integer", optional: true },
       cost: {
         type: "string",
         optional: true,
-        description: "Carrier cost (free-text decimal)",
+        description: "Free-text decimal — 0.000 until the carrier prices it",
       },
-      goods_value: { type: "string", optional: true },
-      date: { type: "string", optional: true },
-      in_out: { type: "string", optional: true },
-      co2_amount: { type: "number", optional: true },
-      archived_carrier: { type: "boolean", optional: true },
-      shipment_mode: {
-        type: "string",
+      currency_code: { type: "string", optional: true },
+      date_departure: { type: "datetime", optional: true },
+      date_arrival: { type: "datetime", optional: true },
+      shipment_request: {
+        type: "object",
         optional: true,
-        description: "Resolved mode label (e.g. road, sea, air)",
+        description: "The shipper's request this quote answers",
+        fields: {
+          id: { type: "integer", optional: true },
+          name: { type: "string", optional: true },
+          pre_awarded: { type: "boolean", optional: true },
+        },
       },
-    },
-
-    /**
-     * Shipment request from a carrier's perspective — what
-     * `/galaxy/carrier/shipment-requests` and
-     * `/galaxy/carrier/shipment-requests/ready_to_book` return.
-     */
-    GalaxyShipmentRequest: {
-      id: { type: "integer" },
-      name: { type: "string", optional: true },
-      status: { type: "string", optional: true },
-      internal_ref: { type: "string", optional: true },
-      other_reference: { type: "string", optional: true },
-      shipper_id: { type: "integer", optional: true },
-      shipper_internal_ref: { type: "string", optional: true },
-      shipment_mode: {
-        type: "string",
+      price_details: {
+        type: "array",
         optional: true,
-        description: "Resolved mode label",
-      },
-      shipment_mode_id: { type: "integer", optional: true },
-      reply_before: { type: "datetime", optional: true },
-      total_weight: { type: "number", optional: true },
-      total_volume: { type: "number", optional: true },
-      total_linear_meters: { type: "number", optional: true },
-      pre_awarded: { type: "boolean", optional: true },
-      comment: { type: "string", optional: true },
-      created_at: { type: "datetime", optional: true },
-    },
-
-    /** One pricing line on a carrier-side quote. */
-    GalaxyPriceQuote: {
-      id: { type: "integer" },
-      price_detail_id: {
-        type: "integer",
-        optional: true,
-        description: "Foreign key into /dictionary/shipment-price-details",
-      },
-      price: {
-        type: "number",
-        optional: true,
-        description: "Decimal amount in the account's currency",
+        description: "Price lines — null `price` means the line is unquoted",
+        items: {
+          type: "object",
+          fields: {
+            id: { type: "integer", optional: true },
+            name: {
+              type: "string",
+              optional: true,
+              description: "Line label (Freight, Admin, …)",
+            },
+            price: {
+              type: "string",
+              optional: true,
+              description:
+                "Free-text decimal like every Shiptify amount — parse before computing",
+            },
+            currency_code: { type: "string", optional: true },
+          },
+        },
       },
     },
 
@@ -867,7 +910,11 @@ export const shiptifyManifest: ProviderManifest = {
     {
       name: "list_shipments",
       kind: "read",
-      summary: "List shipments — the main tracking hub",
+      summary:
+        "List shipments — the shipper's main tracking hub, with strong filters",
+      // Answers for a carrier too, but only for the account the token was
+      // issued on. A carrier wanting its whole group calls
+      // galaxy_list_shipments.
       endpoint: { method: "GET", path: "/shipments/" },
       response: "shipmentList",
       params: {
@@ -1183,8 +1230,16 @@ export const shiptifyManifest: ProviderManifest = {
       name: "list_content_types",
       kind: "read",
       summary:
-        "List active cargo content types — call before any create_shipment_request* to resolve `type_id` on each cargo line",
-      endpoint: { method: "GET", path: "/content-types/active" },
+        "List cargo content types — call before any create_shipment_request* to resolve `type_id` on each cargo line",
+      // `/content-types/active` is the account's curated subset but answers
+      // 403 "User is not shipper" on a carrier token, which left carriers
+      // with no way to resolve the `type_id` their own create action
+      // requires. `/content-types` is the full catalogue and answers for
+      // both roles — the only variant that never blocks a connection. It
+      // returns ~1 400 rows: the mapper trims each to the declared fields,
+      // and the agent filters in Python (see guidance.md).
+      endpoint: { method: "GET", path: "/content-types" },
+      response: "contentTypeList",
       params: {},
       returns: { list: "ContentType" },
     },
@@ -1195,45 +1250,24 @@ export const shiptifyManifest: ProviderManifest = {
     // "carrier"`. Shipper accounts get 403 "User is not carrier" here.
     // See guidance.md for the routing rule.
 
-    // ─── Galaxy shipment requests (carrier inbox) — read ───────────
+    // ─── Carrier RFQ inbox — read ──────────────────────────────────
     {
-      name: "galaxy_list_carrier_shipment_requests",
+      name: "list_quote_requests",
       kind: "read",
-      summary: "List shipment requests received as a carrier (the quote inbox)",
-      endpoint: { method: "GET", path: "/galaxy/carrier/shipment-requests" },
+      summary: "List the quote requests received as a carrier (the RFQ inbox)",
+      // Not `galaxy_`-prefixed: the path is not under /galaxy, and this is
+      // the ONE read that answers the carrier's inbox question. It replaces
+      // `galaxy_list_carrier_shipment_requests` and
+      // `galaxy_list_ready_to_book`, both of which addressed
+      // /galaxy/carrier/shipment-requests[/ready_to_book] with GET — routes
+      // that exist only as POST (they CREATE a request) and so returned a
+      // router 404 on every call.
+      endpoint: { method: "GET", path: "/quote-requests/" },
       params: {
         limit: { type: "integer", min: 1, max: 100, default: 25 },
         offset: { type: "integer", min: 0, max: 100000, default: 0 },
       },
-      returns: { list: "GalaxyShipmentRequest" },
-      response: "galaxyShipmentRequestList",
-    },
-    {
-      name: "galaxy_list_ready_to_book",
-      kind: "read",
-      summary:
-        "List awarded shipment requests waiting for the carrier to book them",
-      endpoint: {
-        method: "GET",
-        path: "/galaxy/carrier/shipment-requests/ready_to_book",
-      },
-      params: {
-        limit: { type: "integer", min: 1, max: 100, default: 25 },
-        offset: { type: "integer", min: 0, max: 100000, default: 0 },
-      },
-      returns: { list: "GalaxyShipmentRequest" },
-      response: "galaxyShipmentRequestList",
-    },
-    {
-      name: "galaxy_list_shipment_request_attachments",
-      kind: "read",
-      summary: "List attachments on a carrier-side shipment request",
-      endpoint: {
-        method: "GET",
-        path: "/galaxy/shipment-requests/{id}/attachments",
-      },
-      params: { id: { type: "integer", in: "path" } },
-      returns: { list: "Attachment" },
+      returns: { list: "QuoteRequest" },
     },
 
     // ─── Galaxy shipment requests — write ──────────────────────────
@@ -1395,32 +1429,13 @@ export const shiptifyManifest: ProviderManifest = {
       returns: { ref: "WriteResult" },
     },
 
-    // ─── Galaxy quote pricing (carrier's RFQ response) ─────────────
-    {
-      name: "galaxy_list_quote_prices",
-      kind: "read",
-      summary: "List the price lines proposed on a carrier-side quote",
-      endpoint: {
-        method: "GET",
-        path: "/galaxy/carrier/shipment-requests/{id}/prices",
-      },
-      params: { id: { type: "integer", in: "path" } },
-      returns: { list: "GalaxyPriceQuote" },
-    },
-    {
-      name: "galaxy_get_quote_price",
-      kind: "read",
-      summary: "Fetch one price line on a carrier-side quote",
-      endpoint: {
-        method: "GET",
-        path: "/galaxy/carrier/shipment-requests/{id}/prices/{priceId}",
-      },
-      params: {
-        id: { type: "integer", in: "path" },
-        priceId: { type: "integer", in: "path" },
-      },
-      returns: { ref: "GalaxyPriceQuote" },
-    },
+    // ─── Galaxy quote handling (carrier's RFQ response) ────────────
+    //
+    // No read action for price lines: `list_quote_requests` already ships
+    // them inline as `price_details`. The two that used to live here
+    // addressed /galaxy/carrier/shipment-requests/{id}/prices[/{priceId}]
+    // — the sub-resource is not a GET at all, and the list variant answers
+    // 404 for both the quote-request id and the shipment-request id.
     {
       name: "galaxy_cancel_quote_request",
       kind: "write",
@@ -1438,14 +1453,31 @@ export const shiptifyManifest: ProviderManifest = {
       name: "galaxy_list_shipments",
       kind: "read",
       summary:
-        "List shipments from the carrier's perspective — main tracking hub",
-      endpoint: { method: "GET", path: "/galaxy/carrier/shipments" },
+        "List shipments from the carrier's perspective — main tracking hub, ALWAYS date-filtered",
+      // `/galaxy-data/shipments`, not `/galaxy/carrier/shipments` (a POST
+      // that CREATES a shipment; the GET this used to declare 404'd).
+      // This is also the read that spans a carrier GROUP: `list_shipments`
+      // returns only the shipments of the account the token was issued on,
+      // while this one covers every account the token reaches (measured:
+      // 12 carrier accounts in one page).
+      endpoint: { method: "GET", path: "/galaxy-data/shipments" },
       params: {
         limit: { type: "integer", min: 1, max: 100, default: 25 },
         offset: { type: "integer", min: 0, max: 100000, default: 0 },
+        created_date_from: {
+          type: "datetime",
+          optional: true,
+          description:
+            "YYYY-MM-DD. PASS IT ON EVERY CALL: unlike list_shipments, this endpoint returns OLDEST-first, so an unfiltered call answers with the oldest shipments on the account — years old — and never reaches current ones.",
+        },
+        created_date_to: { type: "datetime", optional: true },
+        departure_date_min: { type: "datetime", optional: true },
+        departure_date_max: { type: "datetime", optional: true },
+        arrival_date_min: { type: "datetime", optional: true },
+        arrival_date_max: { type: "datetime", optional: true },
       },
-      returns: { list: "GalaxyShipment" },
-      response: "galaxyShipmentList",
+      returns: { list: "Shipment" },
+      response: "shipmentList",
     },
     {
       name: "galaxy_get_shipment",
@@ -1453,8 +1485,8 @@ export const shiptifyManifest: ProviderManifest = {
       summary: "Fetch one carrier-side shipment by id",
       endpoint: { method: "GET", path: "/galaxy/shipments/{id}" },
       params: { id: { type: "integer", in: "path" } },
-      returns: { ref: "GalaxyShipment" },
-      response: "galaxyShipment",
+      returns: { ref: "Shipment" },
+      response: "shipment",
     },
     {
       name: "galaxy_list_tracking_points",
@@ -1661,8 +1693,10 @@ export const shiptifyManifest: ProviderManifest = {
       kind: "write",
       summary:
         "Move a tracking point of a carrier-side shipment to a different address",
+      // PATCH, not PUT — the PUT spelling this used to declare is not a
+      // route and answered 404.
       endpoint: {
-        method: "PUT",
+        method: "PATCH",
         path: "/galaxy/shipments/{id}/tracking-points/location",
       },
       params: {

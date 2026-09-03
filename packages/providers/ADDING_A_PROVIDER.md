@@ -277,6 +277,40 @@ Wire them in by referencing `request: "sendEmailRequest"` /
 handles param placement by `in: "path" | "query" | "body"` — only write a
 mapper when you need to reshape.
 
+### `http-direct` (mappers.ts, same as above)
+
+Same declarative contract as `nango-proxy` — the same `buildRequest()`,
+the same mappers — but the egress is our own `fetch()`. Use it for an HTTP
+API that is not in Nango's catalog. The transport block says how to put
+the stored connection on the wire:
+
+```ts
+transport: {
+  kind: "http-direct",
+  baseUrl: "https://api.example.com",
+  auth: { kind: "header", name: "Authorization", source: "credentials.api_key" },
+  extraHeaders: [
+    { name: "X-Tenant", source: "connection_config.tenant" },
+    { name: "X-Scope", source: "connection_config.scope", optional: true },
+  ],
+},
+```
+
+**Decide, per extra header, whether it is a tenant KEY or a narrowing
+FILTER — the two need opposite defaults, and getting it wrong makes
+connections that can never work.** A key identifies who the credential
+is: mandatory, and the API cannot answer without it. A filter restricts a
+credential that already has a scope: mark it `optional`, so a connection
+that names nothing keeps the credential's natural reach.
+
+The tell is what the API does with a value the credential is not entitled
+to. If it answers a hard error, the header is a filter and every value you
+offer the user has to be one you verified — probe them in the field's
+`dynamicOptions` handler and offer only what answers, plus an empty
+"everything this credential reaches" entry. Offering the API's own "what
+can I see" list is not the same question, and the difference only shows up
+at the user's first real action.
+
 ### `custom-handler` (handlers.ts)
 
 ```ts

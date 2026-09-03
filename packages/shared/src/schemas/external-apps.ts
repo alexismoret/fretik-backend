@@ -512,6 +512,13 @@ export const dynamicOptionsResponseSchema = z.object({
         value: z.string(),
         label: z.string(),
         /**
+         * i18n key the frontend renders instead of `label`, for the
+         * synthetic entries a handler adds to a provider-sourced list
+         * ("all", "default", "none") — our copy, so it is translated
+         * like every other displayed string.
+         */
+        labelKey: z.string().optional(),
+        /**
          * Optional per-option metadata. The frontend modal uses it to
          * auto-fill sibling form fields when the user picks an option —
          * e.g. Shiptify's `listAccounts` ships `meta: { account_type:

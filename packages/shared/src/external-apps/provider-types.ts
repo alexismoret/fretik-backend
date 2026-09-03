@@ -97,7 +97,16 @@ export type ProviderTestCredentials = (input: {
 export interface DynamicOptionsResult {
   options: Array<{
     value: string;
+    /** Label as returned by the provider. Used whenever `labelKey` is absent. */
     label: string;
+    /**
+     * i18n key the frontend renders instead of `label`. For the SYNTHETIC
+     * entries a handler adds to a provider-sourced list — "all", "default",
+     * "none" — which are our copy, not the provider's data, and therefore
+     * have to be translated like every other displayed string. An option
+     * carrying provider data leaves this unset.
+     */
+    labelKey?: string;
     /**
      * Optional per-option metadata. The frontend modal reads it when the
      * user picks an option and projects flagged keys into sibling form

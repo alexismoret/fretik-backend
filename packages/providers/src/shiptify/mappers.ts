@@ -45,7 +45,7 @@ const attachmentDownload = (raw: unknown): { url: string } => {
     raw !== null &&
     typeof raw === "object" &&
     "url" in raw &&
-    typeof (raw as { url: unknown }).url === "string"
+    typeof raw.url === "string"
   ) {
     return { url: (raw as { url: string }).url };
   }
@@ -57,92 +57,100 @@ const attachmentDownload = (raw: unknown): { url: string } => {
 };
 
 /**
- * Flatten a Shipment row from the Shiptify API into the manifest's
- * `Shipment` shape. Two normalisations:
+ * Flatten a shipment row into the manifest's `Shipment` shape. Used by
+ * BOTH roles: `/shipments/*` and `/galaxy*` return the same 46 fields for
+ * the same shipment, so they share one mapper as they share one type.
+ *
+ * Two normalisations:
  *  - `shipment_mode` arrives as `{id, name}` (the lookup row) but the
  *    manifest declares a `string`; we expose the `name` so the agent
- *    reads `s.shipment_mode === "Air"` without a sub-object dereference.
- *  - Top-level Pydantic ignores unknown keys (carrier, address_from,
- *    address_dest, booker, contents, …) — no rewrite needed for those.
+ *    reads `s.shipment_mode == "Air"` without a sub-object dereference.
+ *  - `shipper` is nested as `{id, name}`; we project `shipper.name` into
+ *    a top-level `shipper_name` and backfill `shipper_id` when the row
+ *    only carried the nested one.
+ *
+ * Everything else passes through — Pydantic drops the keys the type does
+ * not declare (carrier, address_from, address_dest, booker, contents, …).
  */
 const flattenShipment = (raw: unknown): Record<string, unknown> => {
   if (!isRecord(raw)) {
     return raw as Record<string, unknown>;
   }
   const row = raw;
+  const out: Record<string, unknown> = { ...row };
   const mode = row.shipment_mode;
   if (isRecord(mode) && typeof mode.name === "string") {
-    return { ...row, shipment_mode: mode.name };
+    out.shipment_mode = mode.name;
   }
-  return row;
+  const shipper = row.shipper;
+  if (isRecord(shipper)) {
+    if (typeof shipper.name === "string") out.shipper_name = shipper.name;
+    if (typeof shipper.id === "number" && out.shipper_id === undefined) {
+      out.shipper_id = shipper.id;
+    }
+  }
+  return out;
 };
 
 const shipmentList = (raw: unknown): unknown =>
   Array.isArray(raw) ? raw.map(flattenShipment) : raw;
 
 /**
- * Galaxy (carrier-side) shipment normalisation. Same `shipment_mode`
- * flatten as `flattenShipment`, plus a `shipper: {id, name}` flatten —
- * Galaxy responses often nest the shipper row instead of exposing just
- * `shipper_id`. We project `shipper.name` into a top-level
- * `shipper_name` so the agent reads it without sub-object navigation
- * and keep the original `shipper_id` (the manifest's `GalaxyShipment`
- * type already declares it). Unknown keys are passed through.
+ * `/content-types` is the only content-type list both roles can read, and
+ * it returns the FULL catalogue (~1 400 rows × 27 fields) with the four
+ * dimensional fields as free text — `""` when unset, `"120"` when set.
+ * The manifest declares them as numbers, so parse them here rather than
+ * making every caller do it, and keep only the declared keys: the agent
+ * filters this list in the sandbox, and two thirds of each row is weight
+ * it never reads.
  */
-const flattenGalaxyShipment = (raw: unknown): Record<string, unknown> => {
+const CONTENT_TYPE_KEYS = [
+  "id",
+  "name",
+  "dimension_unit",
+  "weight_unit",
+  "is_container",
+  "iso_container_type",
+  "for_road",
+  "for_sea",
+  "for_air",
+  "for_rail",
+  "for_express",
+  "for_groupage",
+  "for_courier",
+  "for_air_sea",
+  "for_ro_ro",
+  "for_river",
+] as const;
+
+const DIMENSION_KEYS = ["length", "width", "height", "weight"] as const;
+
+/** `"120.5"` → 120.5; `""`, `null`, `"n/a"` → undefined (Pydantic `None`). */
+const toNumberOrUndefined = (value: unknown): number | undefined => {
+  if (typeof value === "number")
+    return Number.isFinite(value) ? value : undefined;
+  if (typeof value !== "string" || value.trim() === "") return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+};
+
+const trimContentType = (raw: unknown): Record<string, unknown> => {
   if (!isRecord(raw)) {
     return raw as Record<string, unknown>;
   }
-  const row = raw;
-  const out: Record<string, unknown> = { ...row };
-  const mode = row.shipment_mode;
-  if (isRecord(mode) && typeof mode.name === "string") {
-    out.shipment_mode = mode.name;
+  const out: Record<string, unknown> = {};
+  for (const key of CONTENT_TYPE_KEYS) {
+    if (raw[key] !== undefined) out[key] = raw[key];
   }
-  const shipper = row.shipper;
-  if (isRecord(shipper)) {
-    if (typeof shipper.name === "string") out.shipper_name = shipper.name;
-    if (typeof shipper.id === "number" && out.shipper_id === undefined) {
-      out.shipper_id = shipper.id;
-    }
+  for (const key of DIMENSION_KEYS) {
+    const parsed = toNumberOrUndefined(raw[key]);
+    if (parsed !== undefined) out[key] = parsed;
   }
   return out;
 };
 
-const galaxyShipmentList = (raw: unknown): unknown =>
-  Array.isArray(raw) ? raw.map(flattenGalaxyShipment) : raw;
-
-/**
- * Galaxy shipment-request normalisation — flattens nested
- * `shipper: {id, name}` and `shipment_mode: {id, name}` the same way
- * the shipper-side request mapper does. Used by
- * `galaxy_list_carrier_shipment_requests`, `galaxy_list_ready_to_book`,
- * and any future single-SR getter.
- */
-const flattenGalaxyShipmentRequest = (
-  raw: unknown,
-): Record<string, unknown> => {
-  if (!isRecord(raw)) {
-    return raw as Record<string, unknown>;
-  }
-  const row = raw;
-  const out: Record<string, unknown> = { ...row };
-  const mode = row.shipment_mode;
-  if (isRecord(mode) && typeof mode.name === "string") {
-    out.shipment_mode = mode.name;
-  }
-  const shipper = row.shipper;
-  if (isRecord(shipper)) {
-    if (typeof shipper.name === "string") out.shipper_name = shipper.name;
-    if (typeof shipper.id === "number" && out.shipper_id === undefined) {
-      out.shipper_id = shipper.id;
-    }
-  }
-  return out;
-};
-
-const galaxyShipmentRequestList = (raw: unknown): unknown =>
-  Array.isArray(raw) ? raw.map(flattenGalaxyShipmentRequest) : raw;
+const contentTypeList = (raw: unknown): unknown =>
+  Array.isArray(raw) ? raw.map(trimContentType) : raw;
 
 export const shiptifyMappers: ProviderMappers = {
   request: {
@@ -152,9 +160,6 @@ export const shiptifyMappers: ProviderMappers = {
     attachmentDownload,
     shipment: flattenShipment,
     shipmentList,
-    galaxyShipment: flattenGalaxyShipment,
-    galaxyShipmentList,
-    galaxyShipmentRequest: flattenGalaxyShipmentRequest,
-    galaxyShipmentRequestList,
+    contentTypeList,
   },
 };

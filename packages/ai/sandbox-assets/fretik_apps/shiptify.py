@@ -1,6 +1,6 @@
 # AUTO-GENERATED from manifest.ts — do not edit by hand. Regenerate: bun run gen:sdk
 
-"""Shiptify provider — 54 actions.
+"""Shiptify provider — 50 actions.
 
 All calls go through fretik-backend, which dispatches them to the
 provider (Nango Proxy or a custom handler). Write actions return an
@@ -31,21 +31,32 @@ class ShipmentRequest(BaseModel):
 
 class Shipment(BaseModel):
     id: int
-    status: str
     code: str | None = None
+    status: str | None = None
     tracking_code: str | None = None
     name: str | None = None
     internal_ref: str | None = None
+    other_reference: str | None = None
     shipper_id: int | None = None
     carrier_id: int | None = None
+    shipper_name: str | None = None
     sh_request_id: int | None = None
+    quote_request_id: int | None = None
     total_weight: float | None = None
     total_volume: float | None = None
     total_linear_meters: float | None = None
+    weight: str | None = None
+    cost: str | None = None
+    goods_value: str | None = None
+    co2_amount: float | None = None
+    date: str | None = None
     estimated_departure_time: str | None = None
     real_departure_time: str | None = None
     estimated_arrival_time: str | None = None
     real_arrival_time: str | None = None
+    created_at: str | None = None
+    archived_carrier: bool | None = None
+    archived_shipper: bool | None = None
     shipment_mode: str | None = None
     shiptify_private_link: str | None = None
     shiptify_public_link: str | None = None
@@ -55,6 +66,7 @@ class TrackingPoint(BaseModel):
     id: int
     shipment_id: int | None = None
     type: str | None = None
+    code: str | None = None
     position: int | None = None
     address_id: int | None = None
     planned_date: str | None = None
@@ -114,6 +126,12 @@ class ContentType(BaseModel):
     for_sea: bool | None = None
     for_air: bool | None = None
     for_rail: bool | None = None
+    for_express: bool | None = None
+    for_groupage: bool | None = None
+    for_courier: bool | None = None
+    for_air_sea: bool | None = None
+    for_ro_ro: bool | None = None
+    for_river: bool | None = None
 
 
 class WriteResult(BaseModel):
@@ -126,51 +144,20 @@ class AttachmentDownload(BaseModel):
     url: str
 
 
-class GalaxyShipment(BaseModel):
+class QuoteRequest(BaseModel):
     id: int
-    code: str | None = None
-    status: str | None = None
-    tracking_code: str | None = None
-    name: str | None = None
-    internal_ref: str | None = None
-    other_reference: str | None = None
-    shipper_id: int | None = None
-    carrier_id: int | None = None
     sh_request_id: int | None = None
-    quote_request_id: int | None = None
-    weight: str | None = None
-    cost: str | None = None
-    goods_value: str | None = None
-    date: str | None = None
-    in_out: str | None = None
-    co2_amount: float | None = None
-    archived_carrier: bool | None = None
-    shipment_mode: str | None = None
-
-
-class GalaxyShipmentRequest(BaseModel):
-    id: int
-    name: str | None = None
+    carrier_id: int | None = None
     status: str | None = None
-    internal_ref: str | None = None
-    other_reference: str | None = None
-    shipper_id: int | None = None
-    shipper_internal_ref: str | None = None
-    shipment_mode: str | None = None
-    shipment_mode_id: int | None = None
+    is_read: bool | None = None
     reply_before: str | None = None
-    total_weight: float | None = None
-    total_volume: float | None = None
-    total_linear_meters: float | None = None
-    pre_awarded: bool | None = None
-    comment: str | None = None
-    created_at: str | None = None
-
-
-class GalaxyPriceQuote(BaseModel):
-    id: int
-    price_detail_id: int | None = None
-    price: float | None = None
+    shipment_mode_id: int | None = None
+    cost: str | None = None
+    currency_code: str | None = None
+    date_departure: str | None = None
+    date_arrival: str | None = None
+    shipment_request: dict[str, Any] | None = None
+    price_details: list[dict[str, Any]] | None = None
 
 
 class GalaxyShipper(BaseModel):
@@ -382,18 +369,9 @@ class ListContentTypesArgs(BaseModel):
     pass
 
 
-class GalaxyListCarrierShipmentRequestsArgs(BaseModel):
+class ListQuoteRequestsArgs(BaseModel):
     limit: int | None = 25
     offset: int | None = 0
-
-
-class GalaxyListReadyToBookArgs(BaseModel):
-    limit: int | None = 25
-    offset: int | None = 0
-
-
-class GalaxyListShipmentRequestAttachmentsArgs(BaseModel):
-    id: int
 
 
 class GalaxyCreateCarrierShipmentRequestArgs(BaseModel):
@@ -444,15 +422,6 @@ class GalaxySendShipmentRequestMessageArgs(BaseModel):
     sender_email: str | None = None
 
 
-class GalaxyListQuotePricesArgs(BaseModel):
-    id: int
-
-
-class GalaxyGetQuotePriceArgs(BaseModel):
-    id: int
-    priceId: int
-
-
 class GalaxyCancelQuoteRequestArgs(BaseModel):
     id: int
 
@@ -460,6 +429,12 @@ class GalaxyCancelQuoteRequestArgs(BaseModel):
 class GalaxyListShipmentsArgs(BaseModel):
     limit: int | None = 25
     offset: int | None = 0
+    created_date_from: str | None = None
+    created_date_to: str | None = None
+    departure_date_min: str | None = None
+    departure_date_max: str | None = None
+    arrival_date_min: str | None = None
+    arrival_date_max: str | None = None
 
 
 class GalaxyGetShipmentArgs(BaseModel):
@@ -649,7 +624,7 @@ def list_shipments(
     shipper_id: int | None = None,
     connection_id: str | None = None,
 ) -> list[Shipment]:
-    """List shipments — the main tracking hub
+    """List shipments — the shipper's main tracking hub, with strong filters
 
     created_date_from: Filter by creation date (YYYY-MM-DD)
 
@@ -784,7 +759,7 @@ def list_shipment_modes(
 def list_content_types(
     connection_id: str | None = None,
 ) -> list[ContentType]:
-    """List active cargo content types — call before any create_shipment_request* to resolve `type_id` on each cargo line
+    """List cargo content types — call before any create_shipment_request* to resolve `type_id` on each cargo line
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
@@ -796,110 +771,52 @@ def list_content_types(
     return [ContentType(**item) for item in data]
 
 
-def galaxy_list_carrier_shipment_requests(
+def list_quote_requests(
     limit: int | None = 25,
     offset: int | None = 0,
     connection_id: str | None = None,
-) -> list[GalaxyShipmentRequest]:
-    """List shipment requests received as a carrier (the quote inbox)
+) -> list[QuoteRequest]:
+    """List the quote requests received as a carrier (the RFQ inbox)
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    _args = GalaxyListCarrierShipmentRequestsArgs(limit=limit, offset=offset).model_dump(exclude_none=True)
+    _args = ListQuoteRequestsArgs(limit=limit, offset=offset).model_dump(exclude_none=True)
     if connection_id is not None:
         _args["connection_id"] = connection_id
-    data = _call_read("shiptify.galaxy_list_carrier_shipment_requests", _args)
-    return [GalaxyShipmentRequest(**item) for item in data]
-
-
-def galaxy_list_ready_to_book(
-    limit: int | None = 25,
-    offset: int | None = 0,
-    connection_id: str | None = None,
-) -> list[GalaxyShipmentRequest]:
-    """List awarded shipment requests waiting for the carrier to book them
-
-    connection_id: pick a specific connection when several exist for this
-    provider. Pass the ID surfaced in the agent context.
-    """
-    _args = GalaxyListReadyToBookArgs(limit=limit, offset=offset).model_dump(exclude_none=True)
-    if connection_id is not None:
-        _args["connection_id"] = connection_id
-    data = _call_read("shiptify.galaxy_list_ready_to_book", _args)
-    return [GalaxyShipmentRequest(**item) for item in data]
-
-
-def galaxy_list_shipment_request_attachments(
-    id: int,
-    connection_id: str | None = None,
-) -> list[Attachment]:
-    """List attachments on a carrier-side shipment request
-
-    connection_id: pick a specific connection when several exist for this
-    provider. Pass the ID surfaced in the agent context.
-    """
-    _args = GalaxyListShipmentRequestAttachmentsArgs(id=id).model_dump(exclude_none=True)
-    if connection_id is not None:
-        _args["connection_id"] = connection_id
-    data = _call_read("shiptify.galaxy_list_shipment_request_attachments", _args)
-    return [Attachment(**item) for item in data]
-
-
-def galaxy_list_quote_prices(
-    id: int,
-    connection_id: str | None = None,
-) -> list[GalaxyPriceQuote]:
-    """List the price lines proposed on a carrier-side quote
-
-    connection_id: pick a specific connection when several exist for this
-    provider. Pass the ID surfaced in the agent context.
-    """
-    _args = GalaxyListQuotePricesArgs(id=id).model_dump(exclude_none=True)
-    if connection_id is not None:
-        _args["connection_id"] = connection_id
-    data = _call_read("shiptify.galaxy_list_quote_prices", _args)
-    return [GalaxyPriceQuote(**item) for item in data]
-
-
-def galaxy_get_quote_price(
-    id: int,
-    priceId: int,
-    connection_id: str | None = None,
-) -> GalaxyPriceQuote:
-    """Fetch one price line on a carrier-side quote
-
-    connection_id: pick a specific connection when several exist for this
-    provider. Pass the ID surfaced in the agent context.
-    """
-    _args = GalaxyGetQuotePriceArgs(id=id, priceId=priceId).model_dump(exclude_none=True)
-    if connection_id is not None:
-        _args["connection_id"] = connection_id
-    data = _call_read("shiptify.galaxy_get_quote_price", _args)
-    return GalaxyPriceQuote(**data)
+    data = _call_read("shiptify.list_quote_requests", _args)
+    return [QuoteRequest(**item) for item in data]
 
 
 def galaxy_list_shipments(
     limit: int | None = 25,
     offset: int | None = 0,
+    created_date_from: str | None = None,
+    created_date_to: str | None = None,
+    departure_date_min: str | None = None,
+    departure_date_max: str | None = None,
+    arrival_date_min: str | None = None,
+    arrival_date_max: str | None = None,
     connection_id: str | None = None,
-) -> list[GalaxyShipment]:
-    """List shipments from the carrier's perspective — main tracking hub
+) -> list[Shipment]:
+    """List shipments from the carrier's perspective — main tracking hub, ALWAYS date-filtered
+
+    created_date_from: YYYY-MM-DD. PASS IT ON EVERY CALL: unlike list_shipments, this endpoint returns OLDEST-first, so an unfiltered call answers with the oldest shipments on the account — years old — and never reaches current ones.
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
     """
-    _args = GalaxyListShipmentsArgs(limit=limit, offset=offset).model_dump(exclude_none=True)
+    _args = GalaxyListShipmentsArgs(limit=limit, offset=offset, created_date_from=created_date_from, created_date_to=created_date_to, departure_date_min=departure_date_min, departure_date_max=departure_date_max, arrival_date_min=arrival_date_min, arrival_date_max=arrival_date_max).model_dump(exclude_none=True)
     if connection_id is not None:
         _args["connection_id"] = connection_id
     data = _call_read("shiptify.galaxy_list_shipments", _args)
-    return [GalaxyShipment(**item) for item in data]
+    return [Shipment(**item) for item in data]
 
 
 def galaxy_get_shipment(
     id: int,
     connection_id: str | None = None,
-) -> GalaxyShipment:
+) -> Shipment:
     """Fetch one carrier-side shipment by id
 
     connection_id: pick a specific connection when several exist for this
@@ -909,7 +826,7 @@ def galaxy_get_shipment(
     if connection_id is not None:
         _args["connection_id"] = connection_id
     data = _call_read("shiptify.galaxy_get_shipment", _args)
-    return GalaxyShipment(**data)
+    return Shipment(**data)
 
 
 def galaxy_list_tracking_points(

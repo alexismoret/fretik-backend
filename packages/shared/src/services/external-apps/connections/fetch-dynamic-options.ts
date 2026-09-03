@@ -1,3 +1,4 @@
+import type { DynamicOptionsResult } from "../../../external-apps/provider-types";
 import { getProvider } from "../../../external-apps/registry";
 import { throwHttpError } from "../../../lib/errors";
 import { ERROR_CODES } from "../../../schemas/errors";
@@ -21,7 +22,7 @@ export const fetchDynamicOptions = async (params: {
   fieldKey: string;
   credentials: Record<string, unknown>;
   connectionConfig: Record<string, unknown>;
-}): Promise<{ options: Array<{ value: string; label: string }> }> => {
+}): Promise<DynamicOptionsResult> => {
   const provider = getProvider(params.providerKey);
   if (provider === undefined) {
     return throwHttpError(404, {

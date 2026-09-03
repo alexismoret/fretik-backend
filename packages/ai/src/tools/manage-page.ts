@@ -262,10 +262,18 @@ const assembleDefinition = (
     : (sections?.theme ?? base.theme)
       ? { theme: sections?.theme ?? base.theme }
       : {}),
+  // A `code` section replaces the ENTRY file, never the project: the other
+  // files are carried over untouched. Dropping them here would delete every
+  // component of a page whose entry was rewritten — it would still compile,
+  // from Page.vue alone, with every `<KpiStrip>` gone.
   code: sections?.code
-    ? { source: sections.code.source }
+    ? {
+        source: sections.code.source,
+        ...(base.code.files !== undefined ? { files: base.code.files } : {}),
+      }
     : {
         source: base.code.source,
+        ...(base.code.files !== undefined ? { files: base.code.files } : {}),
         ...(base.code.compiled ? { compiled: base.code.compiled } : {}),
       },
 });

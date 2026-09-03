@@ -110,11 +110,29 @@ export const PAGE_LIMITS = {
    */
   maxOperations: 40,
 
-  /** The page's Vue SFC source, characters. */
+  /** The page's entry SFC, characters. */
   maxSourceChars: 240_000,
+  /**
+   * The rest of the project: components, composables and helpers, keyed by
+   * path (`PAGE_FILE_PATH_RE`).
+   *
+   * A page stopped being one file because of what one file COSTS to change:
+   * measured over two production builds (2026-08-28), a fix that touched 7% of
+   * the lines re-emitted the whole 25 000-token SFC, three times in a row. The
+   * unit of rewrite has to be small enough that rewriting it is cheap, which is
+   * the same reason a codebase is not one file.
+   *
+   * `maxFileChars` is the SCHEMA's ceiling, deliberately twice what the lint
+   * asks for (300 lines / 12 000 chars): a file a little over the norm gets a
+   * lint that says "split it", never an opaque parse failure. `maxProjectChars`
+   * is what all of them together may weigh.
+   */
+  maxFiles: 40,
+  maxFileChars: 24_000,
+  maxProjectChars: 600_000,
   /** Compiled module / stylesheet ceilings — a compile output past these is a
-   * bug, not a page. JS tracks `maxSourceChars` at the measured ~2.5× ratio. */
-  maxCompiledJsChars: 800_000,
+   * bug, not a page. JS tracks the project ceiling at the measured ~2.5× ratio. */
+  maxCompiledJsChars: 2_000_000,
   maxCompiledCssChars: 100_000,
   /**
    * Targeted source edits per update call.
@@ -763,14 +781,84 @@ export const PageCompiledSchema = z.object({
 });
 export type PageCompiled = z.infer<typeof PageCompiledSchema>;
 
-export const PageCodeSchema = z.object({
-  /** One complete Vue SFC: `<template>` (+ optional `<script setup lang="ts">`, `<style scoped>`). */
-  source: z.string().max(PAGE_LIMITS.maxSourceChars),
-  /** Present after a successful compile; absent means "never compiled cleanly".
-   * Stripped from every tool response — the agent reads `source` only. */
-  compiled: PageCompiledSchema.optional(),
-});
+/** The entry file's name. Its content is `code.source`, not a `files` key. */
+export const PAGE_ENTRY_FILE = "Page.vue";
+
+/**
+ * Where a page's other files may live, and what they may be called.
+ *
+ * A grammar rather than a free path, for two reasons. The compiler derives
+ * behaviour from the SHAPE — `components/<Pascal>.vue` is auto-registered as
+ * `<Pascal>`, so the name is an interface, not a label — and a model writing
+ * files invents directory conventions on the spot unless the tool refuses
+ * them. Three directories, one purpose each, no nesting.
+ */
+export const PAGE_FILE_PATH_RE =
+  /^(?:components\/[A-Z][A-Za-z0-9]{0,39}\.vue|composables\/use[A-Z][A-Za-z0-9]{0,39}\.ts|lib\/[a-z][a-zA-Z0-9-]{0,39}\.ts)$/;
+
+export const PageCodeSchema = z
+  .object({
+    /** The entry SFC: `<template>` (+ optional `<script setup lang="ts">`, `<style scoped>`). */
+    source: z.string().max(PAGE_LIMITS.maxSourceChars),
+    /**
+     * The rest of the project, keyed by path. A `components/Name.vue` is
+     * usable as `<Name>` from any template in the page without an import;
+     * `composables/` and `lib/` are imported relatively.
+     *
+     * Absent on every page written before the project model, and absent on any
+     * page that genuinely fits in one file.
+     */
+    files: z
+      .record(
+        z.string().regex(PAGE_FILE_PATH_RE),
+        z.string().max(PAGE_LIMITS.maxFileChars),
+      )
+      .optional(),
+    /** Present after a successful compile; absent means "never compiled cleanly".
+     * Stripped from every tool response — the agent reads the files only. */
+    compiled: PageCompiledSchema.optional(),
+  })
+  .superRefine((code, ctx) => {
+    const paths = Object.keys(code.files ?? {});
+    if (paths.length > PAGE_LIMITS.maxFiles) {
+      ctx.addIssue({
+        code: "custom",
+        message: `${paths.length.toString()} files; the ceiling is ${PAGE_LIMITS.maxFiles.toString()} besides ${PAGE_ENTRY_FILE}.`,
+        path: ["files"],
+      });
+    }
+    const total = pageCodeChars(code);
+    if (total > PAGE_LIMITS.maxProjectChars) {
+      ctx.addIssue({
+        code: "custom",
+        message: `the project is ${total.toString()} chars; the ceiling is ${PAGE_LIMITS.maxProjectChars.toString()}.`,
+        path: ["files"],
+      });
+    }
+  });
 export type PageCode = z.infer<typeof PageCodeSchema>;
+
+/**
+ * Every file of a page, entry first, as `[path, source]`.
+ *
+ * The one place that knows the entry is not a `files` key. Everything that
+ * walks a page's code — compile, hash, sanitize, lint, size — goes through
+ * this, so a page with no `files` and a page with thirty read identically.
+ */
+export const eachPageFile = (code: {
+  source: string;
+  files?: Record<string, string> | undefined;
+}): [string, string][] => [
+  [PAGE_ENTRY_FILE, code.source],
+  ...Object.entries(code.files ?? {}).sort(([a], [b]) => a.localeCompare(b)),
+];
+
+/** What the whole project weighs, in characters. */
+export const pageCodeChars = (code: {
+  source: string;
+  files?: Record<string, string> | undefined;
+}): number =>
+  eachPageFile(code).reduce((total, [, content]) => total + content.length, 0);
 
 // ==================== //
 // THE DEFINITION       //
@@ -820,6 +908,8 @@ export const EMPTY_PAGE_DEFINITION: PageDefinition = {
  * Exact-match semantics: `oldString` must occur exactly once unless
  * `replaceAll`. */
 export const PageCodeEditSchema = z.object({
+  /** Which file to patch. Absent means the entry, `Page.vue`. */
+  file: z.string().regex(PAGE_FILE_PATH_RE).optional(),
   oldString: z.string().min(1).max(PAGE_LIMITS.maxEditChars),
   newString: z.string().max(PAGE_LIMITS.maxEditChars),
   replaceAll: z.boolean().optional(),

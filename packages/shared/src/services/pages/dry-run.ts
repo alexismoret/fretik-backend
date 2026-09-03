@@ -175,12 +175,15 @@ export const dryRunPage = async (params: {
       "code.source is empty — the page renders nothing yet. Write the complete SFC and send it with update.",
     );
   } else if (!params.assumeCompiled) {
-    const compiled = await compilePageCode({ source: definition.code.source });
+    const compiled = await compilePageCode({
+      source: definition.code.source,
+      files: definition.code.files,
+    });
     if (!compiled.ok) {
       for (const error of compiled.errors) {
         pushPageWarning(
           warnings,
-          `code [${error.block}]: ${error.message}${
+          `code ${error.file !== undefined ? `${error.file} ` : ""}[${error.block}]: ${error.message}${
             error.line !== undefined ? ` (line ${error.line.toString()})` : ""
           }`,
         );

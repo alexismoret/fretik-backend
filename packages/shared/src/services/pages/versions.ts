@@ -55,7 +55,15 @@ export interface PageVersionActor {
  */
 const withoutCompiled = (definition: PageDefinition): PageDefinition => ({
   ...definition,
-  code: { source: definition.code.source },
+  code: {
+    source: definition.code.source,
+    // Every other file of the project, kept: they are SOURCE, not artifacts,
+    // and a version that dropped them would restore a page reduced to its
+    // entry file — compiling cleanly, and missing every component it used.
+    ...(definition.code.files !== undefined
+      ? { files: definition.code.files }
+      : {}),
+  },
 });
 
 /**

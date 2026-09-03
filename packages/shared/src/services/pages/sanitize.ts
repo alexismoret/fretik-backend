@@ -5,6 +5,7 @@ import {
   PAGE_ACCENT_TOKENS,
   PAGE_COMPONENT_COLORS,
   PAGE_LIMITS,
+  eachPageFile,
   eachPageVarRef,
 } from "../../schemas/pages";
 
@@ -521,7 +522,13 @@ export const sanitizePageDefinition = (
   // written in the source, the definition does not carry it, and the call is
   // certain to reach a bridge with nothing to route it to — the same category
   // as a compile error, which already refuses.
-  const requested = idsRequestedByCode(definition.code.source);
+  // Every file, as one text. These scans ask what the CODE mentions — a
+  // dataset id, an operation id, a variable key — and a page's code is now
+  // several files, any of which may be the one that calls the bridge.
+  const code = eachPageFile(definition.code)
+    .map(([, content]) => content)
+    .join("\n");
+  const requested = idsRequestedByCode(code);
   const operationIds = new Set(definition.operations.map((o) => o.id));
   for (const id of requested.datasets) {
     if (datasetIds.has(id)) continue;
@@ -551,10 +558,10 @@ export const sanitizePageDefinition = (
   // stays sound: an id that appears nowhere in the source as a string literal
   // cannot be the one a computed expression resolves to. Measured on that same
   // page, this weaker form still names all three dead declarations.
-  const computedOperationId = OPS_RUN_COMPUTED_RE.test(definition.code.source);
+  const computedOperationId = OPS_RUN_COMPUTED_RE.test(code);
   for (const operation of definition.operations) {
     const called = computedOperationId
-      ? appearsAsLiteral(definition.code.source, operation.id)
+      ? appearsAsLiteral(code, operation.id)
       : requested.operations.has(operation.id);
     if (called) continue;
     pushPageWarning(
@@ -562,13 +569,13 @@ export const sanitizePageDefinition = (
       `the page declares operation "${operation.id}" and never runs it — the id appears in no \`fretik.ops.run\` call in the source, so every control that promises it is inert. Wire the control to it, or drop both.`,
     );
   }
-  for (const color of invalidComponentColors(definition.code.source)) {
+  for (const color of invalidComponentColors(code)) {
     pushPageWarning(
       warnings,
       `color="${color}" is not a Nuxt UI colour — the component draws with no colour at all, silently. Use one of ${PAGE_COMPONENT_COLORS.join(", ")}; for a data hue, bind \`:style\` to \`var(--color-${color}-500)\` instead.`,
     );
   }
-  for (const [hue, key] of suspectHueProperties(definition.code.source)) {
+  for (const [hue, key] of suspectHueProperties(code)) {
     pushPageWarning(
       warnings,
       `"${key}: '${hue}'" holds a Tailwind hue, and this page never uses the \`var(--color-…)\` recipe — if it reaches a component's \`color\` prop, that component draws with no colour at all, silently. A \`color\` prop takes only ${PAGE_COMPONENT_COLORS.join(", ")}; a data hue belongs in \`:style\` as \`var(--color-${hue}-500)\`.`,
@@ -581,7 +588,7 @@ export const sanitizePageDefinition = (
   // moves changes nothing while the page looks like it responded. It is the
   // softest of the three (the call still succeeds), so it is the first to
   // demote if it proves noisy on the existing corpus.
-  for (const key of variableKeysSentByCode(definition.code.source)) {
+  for (const key of variableKeysSentByCode(code)) {
     if (variableKeys.has(key)) continue;
     pushPageWarning(
       errors,

@@ -1,5 +1,9 @@
 import type { Page } from "../../db/schema";
-import type { PageResponse, PageSummary } from "../../schemas/pages";
+import {
+  pageCodeChars,
+  type PageResponse,
+  type PageSummary,
+} from "../../schemas/pages";
 import { derivePageDescription } from "./derive-description";
 
 /** Public URL of a published page; null while unpublished. */
@@ -49,7 +53,7 @@ export const serializePageSummary = (row: Page): PageSummary => {
     description:
       derivePageDescription({ current: rest.description, definition }) ??
       rest.description,
-    sourceBytes: definition.code.source.length,
+    sourceBytes: pageCodeChars(definition.code),
     datasetCount: definition.datasets.length,
   };
 };

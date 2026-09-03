@@ -6,7 +6,10 @@ import {
 } from "vue/compiler-sfc";
 import { badRequest, throwHttpError } from "../../lib/errors";
 import {
+  eachPageFile,
+  PAGE_ENTRY_FILE,
   PAGE_LIMITS,
+  pageCodeChars,
   type PageCompiled,
   type PageDefinition,
 } from "../../schemas/pages";
@@ -82,6 +85,8 @@ export interface PageCompileError {
   message: string;
   line?: number;
   column?: number;
+  /** Which file of the project, when it is not the entry. */
+  file?: string;
 }
 
 export type PageCompileResult =
@@ -89,13 +94,14 @@ export type PageCompileResult =
       ok: true;
       compiled: PageCompiled;
       /**
-       * Deterministic repairs applied before compiling, and the source they
+       * Deterministic repairs applied before compiling, and the files they
        * produced. Present only when something was actually changed — and when
-       * it is, `source` is what MUST be stored: the compiled artifacts belong
-       * to it, and the agent's next edit anchors against it.
+       * it is, these are what MUST be stored: the compiled artifacts belong to
+       * them, and the agent's next edit anchors against them.
        */
       autofixes?: PageAutofix[];
       source?: string;
+      files?: Record<string, string>;
     }
   | { ok: false; errors: PageCompileError[] };
 
@@ -106,7 +112,7 @@ export const formatPageCompileErrors = (errors: PageCompileError[]): string =>
     "Page code failed to compile — nothing was saved. Fix the source and resend it:",
     ...errors.map(
       (error) =>
-        `- [${error.block}] ${error.message}${
+        `- ${error.file !== undefined ? `${error.file} ` : ""}[${error.block}] ${error.message}${
           error.line !== undefined ? ` (line ${error.line.toString()})` : ""
         }`,
     ),
@@ -145,6 +151,26 @@ const sha256 = (text: string): string => {
 export const pageSourceHash = async (source: string): Promise<string> => {
   const theme = await themeAssets();
   return sha256(`${source}\0${PAGE_RUNTIME_VERSION}\0${theme.hash}`);
+};
+
+/**
+ * The recompile trigger for a whole project.
+ *
+ * A one-file page hashes exactly as it always did — same bytes, same key, so
+ * nothing already stored is invalidated by the arrival of the project model.
+ * With files, every path and every byte goes in: renaming a component changes
+ * the build even when the text does not.
+ */
+export const pageProjectHash = async (
+  project: [string, string][],
+): Promise<string> => {
+  const [entry, ...rest] = project;
+  if (rest.length === 0) return await pageSourceHash(entry?.[1] ?? "");
+  const theme = await themeAssets();
+  const body = project
+    .map(([path, content]) => `${path}\0${content}`)
+    .join("\0");
+  return sha256(`${body}\0${PAGE_RUNTIME_VERSION}\0${theme.hash}`);
 };
 
 interface LocatedError {
@@ -280,27 +306,41 @@ interface SfcOutput {
   css: string;
 }
 
-/** parse → compileScript/compileTemplate → assemble one ES module whose
- * default export is the page component and whose footer mounts it. */
+/**
+ * parse → compileScript/compileTemplate → one ES module per SFC.
+ *
+ * The ENTRY's module mounts itself (`mountPage`); every other file exports its
+ * component and nothing more — it is imported, not run.
+ */
 const compileSfc = (
   source: string,
+  options: { path: string; isEntry: boolean } = {
+    path: PAGE_ENTRY_FILE,
+    isEntry: true,
+  },
 ):
   | { ok: true; output: SfcOutput }
   | { ok: false; errors: PageCompileError[] } => {
-  const { descriptor, errors: parseErrors } = parse(source, {
-    filename: "page.vue",
-  });
+  const filename = options.isEntry ? "page.vue" : options.path;
+  const at = (errors: PageCompileError[]): PageCompileError[] =>
+    options.isEntry
+      ? errors
+      : errors.map((error) => ({ ...error, file: options.path }));
+
+  const { descriptor, errors: parseErrors } = parse(source, { filename });
   if (parseErrors.length > 0) {
     return {
       ok: false,
-      errors: parseErrors.map((e) => toError("structure", e)),
+      errors: at(parseErrors.map((e) => toError("structure", e))),
     };
   }
 
   const structural = structuralErrors(descriptor);
-  if (structural.length > 0) return { ok: false, errors: structural };
+  if (structural.length > 0) return { ok: false, errors: at(structural) };
 
-  const scopeHash = sha256(source).slice(0, 8);
+  // Salted with the path: two files with identical content would otherwise
+  // share a scope id, and one's scoped styles would leak into the other.
+  const scopeHash = sha256(`${options.path}\0${source}`).slice(0, 8);
   const scoped = descriptor.styles.some((style) => style.scoped);
   const scopeId = `data-v-${scopeHash}`;
   const isTs =
@@ -330,7 +370,7 @@ const compileSfc = (
       }
       const template = compileTemplate({
         id: scopeHash,
-        filename: "page.vue",
+        filename,
         source: descriptor.template?.content ?? "",
         scoped,
         compilerOptions: scoped ? { scopeId } : undefined,
@@ -338,23 +378,25 @@ const compileSfc = (
       if (template.errors.length > 0) {
         return {
           ok: false,
-          errors: template.errors.map((e) => toError("template", e)),
+          errors: at(template.errors.map((e) => toError("template", e))),
         };
       }
       js = `${scriptContent}\n${template.code}\n__page__.render = render;`;
     }
   } catch (error) {
-    return { ok: false, errors: [toError("script", error)] };
+    return { ok: false, errors: at([toError("script", error)]) };
   }
 
   if (scoped) js += `\n__page__.__scopeId = ${JSON.stringify(scopeId)};`;
-  js += `\nimport { mountPage as __fretikMountPage } from "#fretik/sdk";\n__fretikMountPage(__page__);\nexport default __page__;`;
+  js += options.isEntry
+    ? `\nimport { mountPage as __fretikMountPage } from "#fretik/sdk";\n__fretikMountPage(__page__);\nexport default __page__;`
+    : `\nexport default __page__;`;
 
   if (isTs) {
     try {
       js = new Bun.Transpiler({ loader: "ts" }).transformSync(js);
     } catch (error) {
-      return { ok: false, errors: [toError("script", error)] };
+      return { ok: false, errors: at([toError("script", error)]) };
     }
   }
 
@@ -363,14 +405,14 @@ const compileSfc = (
     if (style.scoped) {
       const compiled = compileStyle({
         source: style.content,
-        filename: "page.vue",
+        filename,
         id: scopeId,
         scoped: true,
       });
       if (compiled.errors.length > 0) {
         return {
           ok: false,
-          errors: compiled.errors.map((e) => toError("style", e)),
+          errors: at(compiled.errors.map((e) => toError("style", e))),
         };
       }
       css += `${compiled.code}\n`;
@@ -382,25 +424,79 @@ const compileSfc = (
   return { ok: true, output: { js, css } };
 };
 
-/** Refuse any import the iframe's import map cannot serve. */
-const importErrors = (js: string): PageCompileError[] => {
-  const transpiler = new Bun.Transpiler({ loader: "js" });
+/**
+ * Refuse any import the iframe's import map cannot serve.
+ *
+ * `declared` is the project's own files: a relative specifier is legitimate
+ * exactly when it names one of them. On a single-file page there are none, so
+ * every relative import is refused, as it always was.
+ */
+const importErrors = (
+  js: string,
+  context: { from: string; declared: ReadonlySet<string> } = {
+    from: PAGE_ENTRY_FILE,
+    declared: new Set(),
+  },
+): PageCompileError[] => {
+  // A `.ts` helper is scanned as it was written, types and all; everything
+  // else reaching here is compiled output.
+  const transpiler = new Bun.Transpiler({
+    loader: context.from.endsWith(".ts") ? "ts" : "js",
+  });
   const errors: PageCompileError[] = [];
+  const at = (message: string): PageCompileError => ({
+    block: "imports",
+    message,
+    ...(context.from === PAGE_ENTRY_FILE ? {} : { file: context.from }),
+  });
   for (const found of transpiler.scanImports(js)) {
     if (ALLOWED_IMPORTS.has(found.path)) continue;
     if (found.path.startsWith("./") || found.path.startsWith("../")) {
-      errors.push({
-        block: "imports",
-        message: `relative import "${found.path}" — a page is ONE file; inline the code.`,
-      });
+      const target = resolveProjectImport(context.from, found.path);
+      if (target !== null && context.declared.has(target)) continue;
+      errors.push(
+        at(
+          context.declared.size === 0
+            ? `relative import "${found.path}" — this page has no other files; write one (components/…, composables/…, lib/…) or inline the code.`
+            : `relative import "${found.path}" resolves to "${target ?? found.path}", which this page does not have. Its files are: ${[...context.declared].join(", ")}.`,
+        ),
+      );
       continue;
     }
-    errors.push({
-      block: "imports",
-      message: `import "${found.path}" is not available in the page runtime. Allowed: ${[...ALLOWED_IMPORTS].join(", ")}.`,
-    });
+    errors.push(
+      at(
+        `import "${found.path}" is not available in the page runtime. Allowed: ${[...ALLOWED_IMPORTS].join(", ")}.`,
+      ),
+    );
   }
   return errors;
+};
+
+/**
+ * Where a relative specifier points, as a project path — or null when it walks
+ * outside the project.
+ *
+ * `.ts` is implied the way a bundler implies it: the model writes
+ * `../composables/usePageData`, which is what every Vue project it has read
+ * looks like.
+ */
+const resolveProjectImport = (
+  from: string,
+  specifier: string,
+): string | null => {
+  const segments = from.split("/").slice(0, -1);
+  for (const part of specifier.split("/")) {
+    if (part === "." || part === "") continue;
+    if (part === "..") {
+      if (segments.length === 0) return null;
+      segments.pop();
+      continue;
+    }
+    segments.push(part);
+  }
+  const path = segments.join("/");
+  if (path === "") return null;
+  return /\.(ts|vue)$/.test(path) ? path : `${path}.ts`;
 };
 
 const TAILWIND_TIMEOUT_MS = 10_000;
@@ -465,7 +561,7 @@ const resolveTailwindEntries = (): { theme: string; utilities: string } => {
  *   layer suppresses the scanned output itself, yielding an empty stylesheet.
  */
 const compileTailwind = async (
-  source: string,
+  files: [string, string][],
 ): Promise<
   { ok: true; css: string } | { ok: false; error: PageCompileError }
 > => {
@@ -475,13 +571,19 @@ const compileTailwind = async (
   const inputCss = [
     `@import "${entries.theme}" layer(theme) reference;`,
     `@import "${entries.utilities}" layer(utilities) source(none);`,
-    '@source "./page.vue";',
+    // Explicit globs rather than a bare directory: `@source "./src"` leans on
+    // Tailwind's own content heuristics (ignore files, extension guesses), and
+    // a class silently unscanned is a page that renders unstyled.
+    '@source "./src/**/*.vue";',
+    '@source "./src/**/*.ts";',
     theme.css,
   ].join("\n");
 
   await acquireTailwindSlot();
   try {
-    await Bun.write(`${dir}/page.vue`, source);
+    await Promise.all(
+      files.map(([path, content]) => Bun.write(`${dir}/src/${path}`, content)),
+    );
     await Bun.write(`${dir}/input.css`, inputCss);
 
     const proc = Bun.spawn(
@@ -521,46 +623,245 @@ const compileTailwind = async (
   }
 };
 
+/**
+ * The component registry every template resolves against.
+ *
+ * `components/KpiStrip.vue` is `<KpiStrip>` anywhere in the page, with no
+ * import — the Nuxt convention the model already writes by habit, and the one
+ * that removes the whole class of "I forgot the import" failures.
+ *
+ * Read through GETTERS rather than copied into an object literal, because two
+ * components that use each other form an import cycle: at the moment a module
+ * body runs, its cyclic partner's default export may still be uninitialised,
+ * and a literal would capture `undefined` for good. A getter reads the live
+ * binding when Vue actually resolves the tag.
+ */
+const componentRegistryModule = (componentPaths: string[]): string => {
+  const lines = ["export const components = {};"];
+  componentPaths.forEach((path, index) => {
+    const name = path.slice("components/".length, -".vue".length);
+    lines.unshift(
+      `import __c${index.toString()} from "./${modulePath(path)}";`,
+    );
+    lines.push(
+      `Object.defineProperty(components, ${JSON.stringify(name)}, { get: () => __c${index.toString()}, enumerable: true });`,
+    );
+  });
+  return lines.join("\n");
+};
+
+/** Where a project path's compiled module sits in the build scratch. */
+const modulePath = (path: string): string =>
+  path.endsWith(".vue") ? `${path}.js` : path;
+
+/** How a module at `from` reaches the registry at the build root. */
+const registrySpecifier = (from: string): string =>
+  from.includes("/") ? "../__components.js" : "./__components.js";
+
+/**
+ * Link the project's modules into the ONE ES module the iframe loads.
+ *
+ * Bun's bundler resolves only what is INSIDE the project — everything the
+ * import map serves stays an import, exactly as the single-file path leaves it.
+ */
+const bundleProject = async (
+  modules: [string, string][],
+): Promise<
+  { ok: true; js: string } | { ok: false; error: PageCompileError }
+> => {
+  const id = Bun.randomUUIDv7();
+  const dir = `${SCRATCH_ROOT}/${id}`;
+  try {
+    await Promise.all(
+      modules.map(([path, content]) => Bun.write(`${dir}/${path}`, content)),
+    );
+    const built = await Bun.build({
+      entrypoints: [`${dir}/${modulePath(PAGE_ENTRY_FILE)}`],
+      external: [...ALLOWED_IMPORTS],
+      target: "browser",
+      format: "esm",
+      minify: false,
+      throw: false,
+    });
+    if (!built.success) {
+      const [first] = built.logs;
+      return {
+        ok: false,
+        error: {
+          block: "imports",
+          message: `the page's files could not be linked together: ${first?.message ?? "unknown bundler error"}`,
+        },
+      };
+    }
+    const [output] = built.outputs;
+    if (output === undefined) {
+      return {
+        ok: false,
+        error: { block: "imports", message: "the bundler produced no module." },
+      };
+    }
+    // Bun labels each concatenated module with its path relative to the CWD,
+    // so the stored artifact would otherwise carry `…/tmp/<uuid>/…` — a leak
+    // of the machine that built it, and a module whose bytes differ on every
+    // compile of identical source. Cutting at the scratch id leaves the
+    // project-relative path, which is the only part that means anything.
+    const js = (await output.text()).replace(
+      new RegExp(`[^\\s"']*${id}/`, "g"),
+      "",
+    );
+    return { ok: true, js };
+  } catch (error) {
+    return {
+      ok: false,
+      error: {
+        block: "imports",
+        message: `the page's files could not be linked together: ${error instanceof Error ? error.message : String(error)}`,
+      },
+    };
+  } finally {
+    void Bun.$`rm -rf ${dir}`.quiet().nothrow();
+  }
+};
+
+/**
+ * Compile every file, then link them.
+ *
+ * A one-file page takes the path it always took — its module IS the compiled
+ * SFC, byte for byte, with no bundler in the way. Files turn that module into
+ * an entry point: each component compiles on its own, a generated registry
+ * makes them resolvable by name, and Bun links the graph.
+ */
+const buildModules = async (
+  project: [string, string][],
+): Promise<
+  { ok: true; output: SfcOutput } | { ok: false; errors: PageCompileError[] }
+> => {
+  const declared = new Set(project.map(([path]) => path));
+  const componentPaths = project
+    .map(([path]) => path)
+    .filter((path) => path.startsWith("components/"));
+
+  const modules: [string, string][] = [];
+  const errors: PageCompileError[] = [];
+  let css = "";
+
+  for (const [path, content] of project) {
+    if (!path.endsWith(".vue")) {
+      // A `.ts` helper is handed to the bundler as it was written; Bun strips
+      // its types the same way the SFC path does.
+      errors.push(...importErrors(content, { from: path, declared }));
+      modules.push([path, content]);
+      continue;
+    }
+    const isEntry = path === PAGE_ENTRY_FILE;
+    const sfc = compileSfc(content, { path, isEntry });
+    if (!sfc.ok) {
+      errors.push(...sfc.errors);
+      continue;
+    }
+    errors.push(...importErrors(sfc.output.js, { from: path, declared }));
+    css += sfc.output.css;
+    const registry =
+      componentPaths.length > 0
+        ? `\nimport { components as __fretikComponents } from ${JSON.stringify(registrySpecifier(path))};\n__page__.components = __fretikComponents;`
+        : "";
+    modules.push([modulePath(path), `${sfc.output.js}${registry}`]);
+  }
+  if (errors.length > 0) return { ok: false, errors };
+
+  const entry = modules.find(([path]) => path === modulePath(PAGE_ENTRY_FILE));
+  if (entry === undefined) {
+    return {
+      ok: false,
+      errors: [
+        { block: "structure", message: `${PAGE_ENTRY_FILE} is missing.` },
+      ],
+    };
+  }
+  if (project.length === 1) return { ok: true, output: { js: entry[1], css } };
+
+  modules.push(["__components.js", componentRegistryModule(componentPaths)]);
+  const linked = await bundleProject(modules);
+  if (!linked.ok) return { ok: false, errors: [linked.error] };
+  return { ok: true, output: { js: linked.js, css } };
+};
+
+/** Every ceiling a project has to clear before anything is compiled. */
+const projectSizeError = (
+  source: string,
+  files: Record<string, string>,
+): PageCompileError | null => {
+  if (source.length > PAGE_LIMITS.maxSourceChars) {
+    return {
+      block: "size",
+      message: `source is ${source.length.toString()} chars; the ceiling is ${PAGE_LIMITS.maxSourceChars.toString()}.`,
+    };
+  }
+  const paths = Object.keys(files);
+  if (paths.length > PAGE_LIMITS.maxFiles) {
+    return {
+      block: "size",
+      message: `${paths.length.toString()} files besides ${PAGE_ENTRY_FILE}; the ceiling is ${PAGE_LIMITS.maxFiles.toString()}.`,
+    };
+  }
+  for (const [path, content] of Object.entries(files)) {
+    if (content.length > PAGE_LIMITS.maxFileChars) {
+      return {
+        block: "size",
+        file: path,
+        message: `${content.length.toString()} chars; the ceiling for one file is ${PAGE_LIMITS.maxFileChars.toString()}. Split it.`,
+      };
+    }
+  }
+  const total = pageCodeChars({ source, files });
+  if (total > PAGE_LIMITS.maxProjectChars) {
+    return {
+      block: "size",
+      message: `the project is ${total.toString()} chars; the ceiling is ${PAGE_LIMITS.maxProjectChars.toString()}.`,
+    };
+  }
+  return null;
+};
+
 /** In-flight dedupe: create + its dry-run (or two turns racing) compile one
  * source once. Keyed by content hash; entries clear on settle. */
 const inflight = new Map<string, Promise<PageCompileResult>>();
 
 export const compilePageCode = async (params: {
   source: string;
+  /** The rest of the project, keyed by path. Absent for a one-file page. */
+  files?: Record<string, string> | undefined;
 }): Promise<PageCompileResult> => {
   // Repair first, then hash: the artifacts, the dedupe key and the stored
   // source must all describe the SAME text. Hashing the original would cache a
   // compile under a source nobody keeps.
   const repair = autofixPageSource(params.source);
   const source = repair.source;
-  const changed = repair.autofixes.length > 0;
+  const repairs = [...repair.autofixes];
+  const files: Record<string, string> = {};
+  for (const [path, content] of Object.entries(params.files ?? {})) {
+    const fixed = autofixPageSource(content);
+    files[path] = fixed.source;
+    for (const fix of fixed.autofixes) repairs.push({ ...fix, file: path });
+  }
+  const project = eachPageFile({ source, files });
+  const changed = repairs.length > 0;
 
-  const key = await pageSourceHash(source);
+  const key = await pageProjectHash(project);
   const running = inflight.get(key);
   if (running) return running;
 
   const task = (async (): Promise<PageCompileResult> => {
-    if (source.length > PAGE_LIMITS.maxSourceChars) {
-      return {
-        ok: false,
-        errors: [
-          {
-            block: "size",
-            message: `source is ${source.length.toString()} chars; the ceiling is ${PAGE_LIMITS.maxSourceChars.toString()}.`,
-          },
-        ],
-      };
-    }
+    const sizeError = projectSizeError(source, files);
+    if (sizeError) return { ok: false, errors: [sizeError] };
 
-    const sfc = compileSfc(source);
-    if (!sfc.ok) return sfc;
+    const built = await buildModules(project);
+    if (!built.ok) return { ok: false, errors: built.errors };
 
-    const badImports = importErrors(sfc.output.js);
-    if (badImports.length > 0) return { ok: false, errors: badImports };
-
-    const tailwind = await compileTailwind(source);
+    const tailwind = await compileTailwind(project);
     if (!tailwind.ok) return { ok: false, errors: [tailwind.error] };
 
+    const sfc = built;
     const css = `${tailwind.css}\n${sfc.output.css}`.trim();
     if (sfc.output.js.length > PAGE_LIMITS.maxCompiledJsChars) {
       return {
@@ -596,7 +897,13 @@ export const compilePageCode = async (params: {
         sourceHash: key,
         compiledAt: new Date().toISOString(),
       },
-      ...(changed ? { autofixes: repair.autofixes, source } : {}),
+      ...(changed
+        ? {
+            autofixes: repairs,
+            source,
+            ...(Object.keys(files).length > 0 ? { files } : {}),
+          }
+        : {}),
     };
   })();
 
@@ -621,10 +928,19 @@ export const ensurePageCompiled = async (
   options?: { previous?: PageCompiled },
 ): Promise<{ definition: PageDefinition; autofixes: PageAutofix[] }> => {
   const source = definition.code.source;
+  const files = definition.code.files;
+  // `files` travels through every branch below. A path that reconstructs
+  // `code` from `source` alone drops the rest of the project on the floor —
+  // the page still compiles, from the entry file only, and every component it
+  // used is gone.
+  const keep = files !== undefined ? { files } : {};
   if (source.trim().length === 0) {
-    return { definition: { ...definition, code: { source } }, autofixes: [] };
+    return {
+      definition: { ...definition, code: { source, ...keep } },
+      autofixes: [],
+    };
   }
-  const hash = await pageSourceHash(source);
+  const hash = await pageProjectHash(eachPageFile({ source, files }));
   if (definition.code.compiled?.sourceHash === hash) {
     return { definition, autofixes: [] };
   }
@@ -632,25 +948,30 @@ export const ensurePageCompiled = async (
     return {
       definition: {
         ...definition,
-        code: { source, compiled: options.previous },
+        code: { source, ...keep, compiled: options.previous },
       },
       autofixes: [],
     };
   }
-  const result = await compilePageCode({ source });
+  const result = await compilePageCode({ source, files });
   if (!result.ok) {
     return throwHttpError(
       400,
       badRequest(formatPageCompileErrors(result.errors)),
     );
   }
-  // When a repair fired, the REPAIRED source is what gets stored — the
-  // compiled artifacts belong to it, and a stored source the agent's edits
-  // could not anchor against would be worse than the mistake it fixed.
+  // When a repair fired, the REPAIRED text is what gets stored — the compiled
+  // artifacts belong to it, and a stored source the agent's edits could not
+  // anchor against would be worse than the mistake it fixed.
+  const repaired = result.files ?? files;
   return {
     definition: {
       ...definition,
-      code: { source: result.source ?? source, compiled: result.compiled },
+      code: {
+        source: result.source ?? source,
+        ...(repaired !== undefined ? { files: repaired } : {}),
+        compiled: result.compiled,
+      },
     },
     autofixes: result.autofixes ?? [],
   };

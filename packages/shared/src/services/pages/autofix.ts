@@ -31,6 +31,8 @@ import { ZERO_WIDTH_AND_BIDI } from "../../lib/text-integrity";
 export interface PageAutofix {
   /** Agent-facing, one line: what was changed and why. */
   message: string;
+  /** Which file of the project it was applied to, when it is not the entry. */
+  file?: string;
 }
 
 /**

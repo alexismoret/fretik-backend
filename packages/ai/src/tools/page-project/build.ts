@@ -1,6 +1,7 @@
 import { tool } from "ai";
 import { z } from "zod";
 import { buildPageProject } from "../../services/page-project/build";
+import { recordPageWrite } from "../../services/page-project/write-stats";
 import { listComponentsRead } from "../../services/page-review/page-session-store";
 import { MAX_COMPONENT_DOCS, listContractHeavy } from "../page-component-docs";
 import { loadPageProjectContext, manifestOf } from "./context";
@@ -79,6 +80,21 @@ export const createPageBuildTool = () =>
       }
 
       await project.save(result.state);
+      // One event per green build, so the writes above it can be counted per
+      // page rather than per run: `charsEmitted: 0` because a build emits
+      // nothing — what it records is the project it published.
+      const files = Object.values(result.state.files);
+      recordPageWrite({
+        mode: "build",
+        path: result.pageId,
+        linesChanged: 0,
+        linesTotal: files.reduce(
+          (total, file) => total + file.split("\n").length,
+          0,
+        ),
+        charsEmitted: 0,
+        ratio: 0,
+      });
       const warnings = [
         ...result.warnings,
         ...(result.unchanged

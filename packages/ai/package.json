@@ -22,6 +22,7 @@
     "evals:transport-smoke": "bun run evals/transport-smoke.ts",
     "check": "bun run typecheck && bun run lint && bun run format:check",
     "langfuse:seed-prompts": "bun run scripts/seed-langfuse-prompts.ts",
+    "pages:measure-writes": "bun run scripts/measure-page-writes.ts",
     "langfuse:triage-cases": "bun run scripts/triage-eval-cases.ts",
     "langfuse:sync-datasets": "bun run evals/langfuse/dataset-sync.ts",
     "langfuse:seed-eval-config": "bun run scripts/seed-langfuse-eval-config.ts",

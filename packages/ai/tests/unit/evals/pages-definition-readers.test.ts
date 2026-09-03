@@ -284,3 +284,61 @@ describe("pages eval — code shape (v3) readers", () => {
     expect(definitionText(CODE_DEFINITION)).toContain("fretik.data.query");
   });
 });
+
+/**
+ * v4: a page is a project, and the readers must not score the split as a loss.
+ *
+ * A page that moved its table into `components/Rows.vue` still HAS a table. An
+ * assertion reading only the entry file would report a deleted table, a
+ * shrunken source and a missing chart — three false failures for a change the
+ * whole redesign is about.
+ */
+describe("pages eval — project shape (v4) readers", () => {
+  const PROJECT_DEFINITION = {
+    version: 3,
+    variables: [],
+    datasets: NESTED_DEFINITION.datasets,
+    operations: [],
+    code: {
+      source: [
+        "<template>",
+        '  <div><LaneBoard :rows="rows" /></div>',
+        "</template>",
+        '<script setup lang="ts">',
+        "const rows = ref([]);",
+        "</script>",
+      ].join("\n"),
+      files: {
+        "components/LaneBoard.vue": [
+          "<template>",
+          '  <UTable :data="rows" /><canvas ref="el" />',
+          "</template>",
+          '<script setup lang="ts">',
+          "import Chart from 'chart.js/auto';",
+          "</script>",
+        ].join("\n"),
+      },
+    },
+  };
+
+  it("counts the components of every file, not just the entry", () => {
+    const types = nodeTypes(PROJECT_DEFINITION);
+    expect(types).toContain("LaneBoard");
+    expect(types).toContain("UTable");
+    expect(types).toContain("canvas");
+  });
+
+  it("still scans templates only, per file", () => {
+    // The naive fix — concatenate, then slice from the first `<template` to
+    // the last `</template>` — swallows every script block in between, and
+    // `import Chart from …` becomes a node.
+    expect(nodeTypes(PROJECT_DEFINITION)).not.toContain("Chart");
+  });
+
+  it("pageSource carries the whole project", () => {
+    const source = pageSource(PROJECT_DEFINITION);
+    expect(source).toContain("LaneBoard");
+    expect(source).toContain("UTable");
+    expect(source).toContain("chart.js");
+  });
+});

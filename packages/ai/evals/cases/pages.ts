@@ -19,6 +19,7 @@ import {
 } from "@fretik/shared/db/schema";
 import {
   PageDefinitionSchema,
+  eachPageFile,
   type PageDefinition,
 } from "@fretik/shared/schemas/pages";
 import { createCollectionRecord } from "@fretik/shared/services/collection-records/create";
@@ -38,6 +39,11 @@ import {
   dryRunPage,
   type PageDryRun,
 } from "@fretik/shared/services/pages/dry-run";
+import {
+  findingsOfSeverity,
+  formatPageLintFinding,
+  lintPageProject,
+} from "@fretik/shared/services/pages/lint";
 import { and, eq, inArray, lt } from "drizzle-orm";
 import { judgePage } from "../page-design-judge";
 import {
@@ -900,6 +906,65 @@ const operationIsCalled = (
   return true;
 };
 
+/**
+ * The lints, asserted end to end.
+ *
+ * They already refuse or warn inside the build, so what these add is the other
+ * half of the claim: that a real build over real data comes out clean. A lint
+ * nobody's page ever trips is a lint that proves nothing, and one that trips on
+ * every build is a rule the pipeline is not actually enforcing.
+ */
+const lintClean = (
+  name: string,
+  severity: "error" | "blocking",
+): EvalCase["assertions"][number] => ({
+  type: "custom",
+  name,
+  fn: async (_r, ctx) => {
+    const page = await pageForConversation(ctx);
+    if (!page) return "no page was saved";
+    const parsed = PageDefinitionSchema.safeParse(page.definition);
+    if (!parsed.success) return "the stored definition does not parse";
+    const findings = findingsOfSeverity(
+      lintPageProject(parsed.data.code),
+      severity,
+    );
+    return findings.length === 0
+      ? true
+      : findings.map(formatPageLintFinding).join(" | ");
+  },
+});
+
+/** Rows nobody's data produced — the defect that renders beautifully. */
+const noFabricatedRows = lintClean("no-fabricated-rows", "error");
+/** `<select>` where `USelect` belongs, and its family. */
+const noNativeControls = lintClean("no-native-controls", "blocking");
+
+/**
+ * The page is a PROJECT, not one long file.
+ *
+ * The point of the redesign, stated as something observable: a page of any
+ * size comes out as several files, because that is what makes the next fix an
+ * edit instead of a re-emission. A single-file answer to a multi-view request
+ * is the old behaviour surviving the new tools.
+ */
+const usesProjectFiles = (
+  minFiles: number,
+): EvalCase["assertions"][number] => ({
+  type: "custom",
+  name: "uses-project-files",
+  fn: async (_r, ctx) => {
+    const page = await pageForConversation(ctx);
+    if (!page) return "no page was saved";
+    const parsed = PageDefinitionSchema.safeParse(page.definition);
+    if (!parsed.success) return "the stored definition does not parse";
+    const count = eachPageFile(parsed.data.code).length;
+    return count >= minFiles
+      ? true
+      : `the page is ${count.toString()} file(s); a page this size should be at least ${minFiles.toString()} — one component per region.`;
+  },
+});
+
 const DESIGN_FLOOR = 6.5;
 
 const designIsAtLeastCompetent: EvalCase["assertions"][number] = {
@@ -950,6 +1015,8 @@ const dashboard: EvalCase = {
     usesSeededType,
     datasetsReturnedRows,
     noFinalWarnings,
+    noFabricatedRows,
+    noNativeControls,
     {
       type: "custom",
       name: "has-chart-and-stat",
@@ -1052,6 +1119,10 @@ const filterableDirectory: EvalCase = {
     { type: "toolUsed", tools: pageTools },
     pageSaved(3),
     usesSeededType,
+    // A directory is filters and a table — the two places a native `<select>`
+    // and a native `<table>` were measured shipping.
+    noNativeControls,
+    noFabricatedRows,
     {
       type: "custom",
       name: "relation-reaches-the-row",
@@ -1898,20 +1969,25 @@ const gigaPage: EvalCase = {
     { type: "toolUsed", tools: pageTools },
     pageSaved(14),
     usesSeededType,
+    // Four views and a write, and they are SEVERAL files: the point of the
+    // project model is that the next fix rewrites one region, not the page.
+    usesProjectFiles(4),
     {
       type: "custom",
-      name: "the-source-arrived-whole",
+      name: "the-page-arrived-whole",
       fn: async (_r, ctx) => {
         const page = await pageForConversation(ctx);
         if (!page) return "no page was saved";
+        // Every file, because that is what "the page" now means — a table that
+        // moved into its own component was not deleted.
         const source = pageSource(page.definition);
         if (source.length < 18_000)
-          return `the source is ${source.length.toString()} characters — four views and a write do not fit in that, so something was dropped rather than built`;
-        // A skeleton marker still in the stored source is the exact failure
-        // the doctrine is meant to prevent: a section that was planned, left
-        // as a placeholder, and handed over as if it were finished.
-        if (/SECTION:\s*[a-z0-9_-]+/i.test(source))
-          return "an unfilled `SECTION:` stub is still in the page — the skeleton was handed over before every section was written";
+          return `the project is ${source.length.toString()} characters — four views and a write do not fit in that, so something was dropped rather than built`;
+        // A placeholder handed over as if it were finished. The `SECTION:`
+        // marker protocol is gone, but the failure it guarded is not: a region
+        // planned, stubbed and shipped.
+        if (/\bTODO\b|\bFIXME\b|placeholder for/i.test(source))
+          return "a stub is still in the page — a region was planned and handed over before it was written";
         return true;
       },
     },

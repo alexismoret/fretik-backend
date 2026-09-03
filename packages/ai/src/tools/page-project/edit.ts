@@ -12,6 +12,7 @@ import {
   hashFileContent,
   MAX_EDIT_FAILURES,
 } from "../../services/page-project/store";
+import { measurePageWrite } from "../../services/page-project/write-stats";
 import { loadPageProjectContext } from "./context";
 import { lintDelta } from "./lint";
 
@@ -177,6 +178,17 @@ export const createPageEditTool = () =>
         },
       });
 
+      const lint = lintDelta(path, content, next);
+      // What an edit COSTS: the two strings it sent, against the lines it moved.
+      measurePageWrite({
+        mode: "edit",
+        path,
+        before: content,
+        after: next,
+        charsEmitted: input.oldString.length + input.newString.length,
+        ...(lint.lintDelta !== undefined ? { lintDelta: lint.lintDelta } : {}),
+      });
+
       const first = found.matches[0];
       return {
         path,
@@ -185,7 +197,7 @@ export const createPageEditTool = () =>
         ...(found.strategy === "exact" ? {} : { matchedBy: found.strategy }),
         at: first !== undefined ? `line ${first.line.toString()}` : undefined,
         now: input.newString.slice(0, DIFF_CONTEXT_CHARS),
-        ...lintDelta(path, content, next),
+        ...lint,
       };
     },
   });

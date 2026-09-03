@@ -10,6 +10,10 @@
  *   - v1  `{ root: PageNode[] }`       — nested tree, `children`/`cells` recurse
  *   - v2  `{ spec: { elements: {} } }` — flat map, `children` are key refs
  *   - v3  `{ code: { source } }`       — one Vue SFC; the TEMPLATE is the tree
+ *   - v4  `{ code: { source, files } }` — a project: the entry plus its
+ *         components, composables and helpers. Read as ONE text, because that
+ *         is what "the page" means to every assertion here: a page whose table
+ *         moved into `components/Rows.vue` did not lose its table.
  *
  * All three are read here, so the same assertion scores any of them. For v3
  * there are no nodes to walk: the closest equivalent of "which components does
@@ -23,12 +27,28 @@
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   typeof v === "object" && v !== null && !Array.isArray(v);
 
-/** The authored Vue SFC of a code page (v3); "" for shapes that have none. */
-export const pageSource = (definition: unknown): string => {
-  if (!isRecord(definition)) return "";
+/**
+ * All the code of a code page (v3/v4), entry first; "" for shapes that have
+ * none.
+ *
+ * Every file, not just the entry: a page that moved its table into
+ * `components/Rows.vue` still HAS a table, and an assertion reading the entry
+ * alone would score the split as a deletion.
+ */
+export const pageFiles = (definition: unknown): string[] => {
+  if (!isRecord(definition)) return [];
   const code = definition.code;
-  return isRecord(code) && typeof code.source === "string" ? code.source : "";
+  if (!isRecord(code)) return [];
+  const entry = typeof code.source === "string" ? code.source : "";
+  const files = isRecord(code.files) ? code.files : {};
+  const rest = Object.keys(files)
+    .sort()
+    .map((path) => (typeof files[path] === "string" ? files[path] : ""));
+  return [entry, ...rest].filter((part) => part.trim().length > 0);
 };
+
+export const pageSource = (definition: unknown): string =>
+  pageFiles(definition).join("\n");
 
 /** Every node of a definition, whichever shape it uses. */
 export const collectNodes = (
@@ -43,20 +63,25 @@ export const collectNodes = (
   // the one lowercase tag that carries structure (a chart). Closing tags and
   // plain HTML stay uncounted, so prose-heavy pages are probed via
   // `pageSource`, not node counts.
-  const source = pageSource(definition);
-  if (source.trim().length > 0) {
-    const templateStart = source.indexOf("<template");
-    const templateEnd = source.lastIndexOf("</template>");
-    const template =
-      templateStart !== -1 && templateEnd > templateStart
-        ? source.slice(templateStart, templateEnd)
-        : source;
-    for (const match of template.matchAll(/<([A-Z][A-Za-z0-9]*)\b/g)) {
-      const tag = match[1];
-      if (tag) out.push({ type: tag });
+  // Per FILE, not over the concatenation: one span from the first `<template`
+  // to the last `</template>` would swallow every script block in between, and
+  // a component name inside a string would count as a node.
+  const files = pageFiles(definition);
+  if (files.length > 0) {
+    for (const file of files) {
+      const templateStart = file.indexOf("<template");
+      const templateEnd = file.lastIndexOf("</template>");
+      const template =
+        templateStart !== -1 && templateEnd > templateStart
+          ? file.slice(templateStart, templateEnd)
+          : file;
+      for (const match of template.matchAll(/<([A-Z][A-Za-z0-9]*)\b/g)) {
+        const tag = match[1];
+        if (tag) out.push({ type: tag });
+      }
+      const canvasCount = template.match(/<canvas\b/g)?.length ?? 0;
+      for (let i = 0; i < canvasCount; i++) out.push({ type: "canvas" });
     }
-    const canvasCount = template.match(/<canvas\b/g)?.length ?? 0;
-    for (let i = 0; i < canvasCount; i++) out.push({ type: "canvas" });
     return out;
   }
 

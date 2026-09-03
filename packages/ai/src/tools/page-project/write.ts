@@ -7,6 +7,7 @@ import { tool } from "ai";
 import { z } from "zod";
 import { TOOL_ERROR_CODES, toolError } from "../../lib/tool-error-codes";
 import { hashFileContent } from "../../services/page-project/store";
+import { measurePageWrite } from "../../services/page-project/write-stats";
 import { isEntry, loadPageProjectContext, looksLineNumbered } from "./context";
 import { lintDelta } from "./lint";
 
@@ -91,6 +92,14 @@ export const createPageWriteTool = () =>
 
       const lines = input.content.split("\n").length;
       const lint = lintDelta(path, state.files[path], input.content);
+      measurePageWrite({
+        mode: "write",
+        path,
+        before: state.files[path],
+        after: input.content,
+        charsEmitted: input.content.length,
+        ...(lint.lintDelta !== undefined ? { lintDelta: lint.lintDelta } : {}),
+      });
       await project.save({
         ...state,
         files: { ...files, [path]: input.content },

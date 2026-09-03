@@ -1,6 +1,11 @@
 import { parseApiError } from "@fretik/shared/schemas/errors";
 import type { PageDefinition } from "@fretik/shared/schemas/pages";
 import { createPage } from "@fretik/shared/services/pages/create";
+import {
+  formatPageLintFinding,
+  lintErrorsRefusingBuild,
+  lintPageProject,
+} from "@fretik/shared/services/pages/lint";
 import { updatePage } from "@fretik/shared/services/pages/update";
 import type { PageRequester } from "@fretik/shared/services/pages/visibility";
 import { HTTPException } from "hono/http-exception";
@@ -114,6 +119,15 @@ export const buildPageProject = async (
     code,
   };
 
+  // The one lint that refuses: rows the team's data never produced. Checked
+  // BEFORE the compile, because a page that compiles and lies is exactly the
+  // thing every other gate in this pipeline lets through.
+  const lint = lintPageProject(code);
+  const refusals = lintErrorsRefusingBuild(lint);
+  if (refusals.length > 0) {
+    return { ok: false, errors: refusals };
+  }
+
   const hash = hashProjectFiles(projectFiles(state));
   if (state.builtHash === hash && state.pageId !== undefined) {
     return {
@@ -177,7 +191,10 @@ export const buildPageProject = async (
       ok: true,
       pageId: saved.page.id,
       url: `/pages/${saved.page.id}`,
-      warnings: saved.warnings,
+      // The lints that do not refuse ride with the save's own warnings: a
+      // native control fails the review, so hearing it here is one edit
+      // instead of a render.
+      warnings: [...saved.warnings, ...lint.map(formatPageLintFinding)],
       unchanged: false,
       state: { ...state, pageId: saved.page.id, builtHash: hash },
     };

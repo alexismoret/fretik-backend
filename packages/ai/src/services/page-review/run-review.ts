@@ -3,6 +3,10 @@ import {
   eachPageFile,
   type PageDefinition,
 } from "@fretik/shared/schemas/pages";
+import {
+  lintFindingsBlockingReview,
+  lintPageProject,
+} from "@fretik/shared/services/pages/lint";
 import { renderPage } from "@fretik/shared/services/pages/render/render-page";
 import { writePageVersion } from "@fretik/shared/services/pages/versions";
 import { renderProjectManifest } from "../page-project/manifest";
@@ -53,12 +57,6 @@ export interface PageReviewRequest {
    * and the caches fall back to the page itself.
    */
   scope: string | undefined;
-  /**
-   * Findings the CODE already proved, before anything was rendered — a native
-   * control, a file past its ceiling. They lead the blocking list because they
-   * are certain, and because a screenshot cannot show them.
-   */
-  staticFindings?: string[];
 }
 
 /** The phase a result belongs to, so the caller's next step is unambiguous. */
@@ -132,12 +130,18 @@ export const runPageReview = async (
     };
   }
 
+  // What the CODE already proves, before anything renders: a native control
+  // where a component belongs. It leads the blocking list because it is certain
+  // and because a screenshot cannot show it — the two measured pages carried
+  // ten of these between them and the critic scored both without noticing.
+  const staticFindings = lintFindingsBlockingReview(
+    lintPageProject(page.definition.code),
+  );
+
   const gate = gatePageRender(render, {
     declaredDatasets: page.definition.datasets.length,
     declaredOperations: page.definition.operations.length,
-    ...(request.staticFindings !== undefined
-      ? { staticFindings: request.staticFindings }
-      : {}),
+    staticFindings,
   });
 
   // A page that never mounted was not judged, so the attempt consumes no

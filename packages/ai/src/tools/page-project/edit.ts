@@ -13,6 +13,7 @@ import {
   MAX_EDIT_FAILURES,
 } from "../../services/page-project/store";
 import { loadPageProjectContext } from "./context";
+import { lintDelta } from "./lint";
 
 /**
  * Change part of a file in place.
@@ -184,6 +185,7 @@ export const createPageEditTool = () =>
         ...(found.strategy === "exact" ? {} : { matchedBy: found.strategy }),
         at: first !== undefined ? `line ${first.line.toString()}` : undefined,
         now: input.newString.slice(0, DIFF_CONTEXT_CHARS),
+        ...lintDelta(path, content, next),
       };
     },
   });

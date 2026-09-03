@@ -8,6 +8,8 @@ import {
   eachPageFile,
   eachPageVarRef,
 } from "../../schemas/pages";
+// One reading of a script, two readers: this pass and the lints.
+import { isAstNode, propertyKeyName, visitAst } from "./lint/ast";
 
 /**
  * Static pass over the DATA half of a page definition — datasets, variables,
@@ -135,40 +137,6 @@ const idsRequestedByCode = (
     if (match[1]) operations.add(match[1]);
   }
   return { datasets, operations };
-};
-
-/** Enough of a Babel node to read one without importing `@babel/types`, which
- * is installed only as a transitive of `vue/compiler-sfc` and would have to
- * become a direct dependency to be imported by name. */
-interface AstNode {
-  type: string;
-  [key: string]: unknown;
-}
-const isAstNode = (value: unknown): value is AstNode =>
-  typeof value === "object" &&
-  value !== null &&
-  typeof Reflect.get(value, "type") === "string";
-
-const visitAst = (value: unknown, fn: (node: AstNode) => void): void => {
-  if (Array.isArray(value)) {
-    for (const item of value) visitAst(item, fn);
-    return;
-  }
-  if (!isAstNode(value)) return;
-  fn(value);
-  for (const key of Object.keys(value)) {
-    if (key === "loc" || key === "leadingComments") continue;
-    visitAst(value[key], fn);
-  }
-};
-
-/** The non-computed name of an object property key, or null. */
-const propertyKeyName = (node: AstNode): string | null => {
-  if (node.type !== "ObjectProperty" || node["computed"] === true) return null;
-  const key = node["key"];
-  if (!isAstNode(key)) return null;
-  const name = key.type === "Identifier" ? key["name"] : key["value"];
-  return typeof name === "string" ? name : null;
 };
 
 /**

@@ -8,6 +8,7 @@ import { z } from "zod";
 import { TOOL_ERROR_CODES, toolError } from "../../lib/tool-error-codes";
 import { hashFileContent } from "../../services/page-project/store";
 import { isEntry, loadPageProjectContext, looksLineNumbered } from "./context";
+import { lintDelta } from "./lint";
 
 /**
  * Write one whole file of the page.
@@ -89,6 +90,7 @@ export const createPageWriteTool = () =>
       }
 
       const lines = input.content.split("\n").length;
+      const lint = lintDelta(path, state.files[path], input.content);
       await project.save({
         ...state,
         files: { ...files, [path]: input.content },
@@ -113,6 +115,7 @@ export const createPageWriteTool = () =>
               warning: `${lines.toString()} lines. Past ${SOFT_LINE_LIMIT.toString()} a file is doing several jobs — move a region into its own component while it is still easy.`,
             }
           : {}),
+        ...lint,
       };
     },
   });

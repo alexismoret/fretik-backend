@@ -77,10 +77,18 @@ export interface ExternalPageQueryExecutor {
     cacheTtlSeconds?: number;
     /** Bypass the cached answer (refresh button); still repopulates. */
     fresh?: boolean;
+    /**
+     * Epoch ms past which THIS RUN stops waiting on third parties — shared by
+     * every external dataset of one page render, because a serial app's
+     * datasets run in sequence and their waits would otherwise add up. A
+     * dataset that finds nothing left says so and is asked again later; the
+     * work already started keeps running into the cache.
+     */
+    deadlineAt?: number;
   }) => Promise<
     | { status: "ok"; rows: PageValue[]; truncated: boolean }
     | { status: "needs_connection"; providerKey: string; displayName?: string }
-    | { status: "error"; message: string }
+    | { status: "error"; message: string; retryAfterMs?: number }
   >;
 }
 
@@ -257,7 +265,10 @@ export const externalSource: PageDataSource = {
             : {}),
         })
       : undefined,
-  resolve: async (dataset, { teamId, userId, pageId, state, fresh }) => {
+  resolve: async (
+    dataset,
+    { teamId, userId, pageId, state, fresh, deadlineAt },
+  ) => {
     if (!executor) return { status: "error", message: NOT_ENABLED };
     if (!dataset.operation || (!dataset.connectionId && !dataset.providerKey)) {
       return {
@@ -289,6 +300,7 @@ export const externalSource: PageDataSource = {
         ? { cacheTtlSeconds: dataset.cacheTtlSeconds }
         : {}),
       ...(fresh !== undefined ? { fresh } : {}),
+      ...(deadlineAt !== undefined ? { deadlineAt } : {}),
     });
     if (result.status === "ok") {
       const fields = inferExternalFields(result.rows);
@@ -308,6 +320,12 @@ export const externalSource: PageDataSource = {
           : {}),
       };
     }
-    return { status: "error", message: result.message };
+    return {
+      status: "error",
+      message: result.message,
+      ...(result.retryAfterMs !== undefined
+        ? { retryAfterMs: result.retryAfterMs }
+        : {}),
+    };
   },
 };

@@ -137,6 +137,9 @@ await mockModule("@fretik/shared/services/pages/retrieve", {
     definition: {
       brief: undefined,
       datasets: [],
+      // Present because the real schema always fills it: the gate reads it to
+      // decide whether "no operation ran" is a defect or the design.
+      operations: [],
       code: { source: SOURCE, compiled: { js: "x", css: "" } },
     },
     runtimeErrors: [],
@@ -315,6 +318,33 @@ describe("review budget — hard, shared, checked before the render", () => {
     expect(String(result["next"])).toContain("verdict stands");
     expect(renderCalls).toHaveLength(0);
     expect(await readPageReviewIterations(scope, pageId)).toBe(0);
+  });
+});
+
+/**
+ * An update has to carry a change. Measured in production (Langfuse
+ * `01a0469c…`): `update { pageId, definition: {} }` was accepted, wrote a
+ * version identical to the one before it and reported success — so the agent
+ * believed a fix had landed and reviewed a page nothing had touched.
+ */
+describe("update — a call that changes nothing is refused", () => {
+  test("an empty definition writes no version", async () => {
+    const result = await execManagePage({ action: "update", definition: {} });
+    expect(result["code"]).toBe("INVALID_ARGS");
+    expect(String(result["error"])).toContain("nothing to change");
+    expect(updateCalls).toHaveLength(0);
+  });
+
+  test("no sections at all is the same refusal", async () => {
+    const result = await execManagePage({ action: "update" });
+    expect(result["code"]).toBe("INVALID_ARGS");
+    expect(updateCalls).toHaveLength(0);
+  });
+
+  test("metadata alone is a real change and still lands", async () => {
+    await execManagePage({ action: "update", name: "Board v2" });
+    expect(updateCalls).toHaveLength(1);
+    expect(updateCalls[0]?.input["name"]).toBe("Board v2");
   });
 });
 

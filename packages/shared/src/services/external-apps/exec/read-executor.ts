@@ -37,11 +37,16 @@ import { callNangoProxy } from "./nango-proxy";
  * `finally` the moment the call returns, so a 300 ms read frees it after
  * 300 ms. What this number buys is the ceiling on how long a connection stays
  * blocked by a holder that died mid-call — and it must EXCEED the longest
- * legitimate call (MCP transport times out at 30 s), because a lease expiring
- * under a live holder is the one way two calls overlap, which is the single
- * thing the slot exists to prevent.
+ * legitimate call, because a lease expiring under a live holder is the one way
+ * two calls overlap, which is the single thing the slot exists to prevent.
+ *
+ * The longest legitimate call is the TRANSPORT's ceiling, not any caller's: a
+ * page dataset stops waiting at 45 s (`page-query.ts`) but deliberately leaves
+ * the call running so its answer still reaches the cache, and a provider client
+ * may run to its own timeout — Akanea WMS aborts at 60 s. Hence 70 s: past
+ * every transport, and still an outer bound a stuck holder cannot exceed.
  */
-const READ_LEASE_MS = 35_000;
+const READ_LEASE_MS = 70_000;
 
 export const executeReadAction = async (
   resolved: ResolvedAction,

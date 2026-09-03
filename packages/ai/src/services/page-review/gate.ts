@@ -116,12 +116,25 @@ const inspectOverlaySnapshot = (interaction: {
   return defects;
 };
 
-export const gatePageRender = (
-  render: PageRenderResult,
+/** What the DEFINITION says, which the render alone cannot know. */
+export interface PageGateContext {
   /** How many datasets the page declares — the `/empty` capture only means
    *  something for a page that has data to lose. */
-  declaredDatasets = 0,
+  declaredDatasets?: number;
+  /**
+   * How many operations the page declares. Zero means the page has no write to
+   * wire, so "no operation ran" is the correct outcome and saying it accuses a
+   * read-only dashboard of faking writes it never claimed to have.
+   */
+  declaredOperations?: number;
+}
+
+export const gatePageRender = (
+  render: PageRenderResult,
+  context: PageGateContext = {},
 ): PageGateResult => {
+  const declaredDatasets = context.declaredDatasets ?? 0;
+  const declaredOperations = context.declaredOperations ?? 0;
   const blocking: string[] = [];
   const observations: string[] = [];
 
@@ -284,12 +297,22 @@ export const gatePageRender = (
   // resolved a `setTimeout` and toasted "sent" passed three rounds of this.
   // Reported rather than blocked: plenty of good pages are read-only, and the
   // reader (builder or critic) is the one who knows which this is.
-  if (render.interactions.length > 0) {
+  //
+  // Said only for a page that DECLARES an operation. A read-only dashboard runs
+  // none by design, and telling its author every write is "unwired or faked"
+  // sent two builds chasing a defect that did not exist.
+  if (render.interactions.length > 0 && declaredOperations > 0) {
     const calls = render.opsRuns.length;
     observations.push(
       calls === 0
-        ? `${render.interactions.length.toString()} targets clicked and NO operation ran — every write on this page is either unwired or faked in local state.`
+        ? `${render.interactions.length.toString()} targets clicked and NO operation ran, though this page declares ${declaredOperations.toString()} — every write on it is either unwired or faked in local state.`
         : `${calls.toString()} operation ${calls === 1 ? "call" : "calls"} fired by those clicks: ${[...new Set(render.opsRuns)].join(", ")}.`,
+    );
+  }
+
+  if (render.skippedActive !== undefined && render.skippedActive > 0) {
+    observations.push(
+      `${render.skippedActive.toString()} ${render.skippedActive === 1 ? "control was" : "controls were"} left unclicked because ${render.skippedActive === 1 ? "it was" : "they were"} already in the state a click would set (the selected tab, the active segment) — nothing was measured about ${render.skippedActive === 1 ? "it" : "them"}.`,
     );
   }
 

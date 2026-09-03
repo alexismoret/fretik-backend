@@ -102,7 +102,10 @@ const main = async (): Promise<void> => {
       );
       continue;
     }
-    const gate = gatePageRender(render);
+    const gate = gatePageRender(render, {
+      declaredDatasets: page.definition.datasets.length,
+      declaredOperations: page.definition.operations.length,
+    });
     const shots: PageRenderShot[] = render.shots;
 
     console.log(`\n${"=".repeat(78)}`);

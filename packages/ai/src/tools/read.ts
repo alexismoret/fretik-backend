@@ -84,6 +84,39 @@ const MAX_READ_CHARS = 30_000;
 /** Defense-in-depth persisted-output ceiling for `read` results. */
 const READ_PERSIST_THRESHOLD_CHARS = 120_000;
 
+/**
+ * An inlined binary: `data:<mime>;base64,` followed by enough payload to
+ * matter. 200 characters is the floor — a tracking pixel or a tiny inline icon
+ * costs nothing and reads as ordinary markup, while a real image runs to tens
+ * of thousands and eats the whole slice.
+ */
+const DATA_URI_RE = /(data:[\w.+-]+\/[\w.+-]+;base64,)([A-Za-z0-9+/=]{200,})/g;
+
+/**
+ * Replace inlined base64 payloads with their size.
+ *
+ * The bytes are unusable to a reader — no model does anything with base64 — and
+ * they are dense enough to consume a whole read on their own: a mockup whose
+ * logo sat in one 30 000-character line returned a third of the file and none
+ * of its structure. The `data:` prefix stays, so the markup still reads as
+ * markup and the omission is visible where it happened.
+ */
+export const collapseDataUris = (
+  text: string,
+): { text: string; collapsed: number; charsOmitted: number } => {
+  let collapsed = 0;
+  let charsOmitted = 0;
+  const folded = text.replace(
+    DATA_URI_RE,
+    (_match, prefix: string, payload: string) => {
+      collapsed += 1;
+      charsOmitted += payload.length;
+      return `${prefix}…[${payload.length.toString()} chars of base64 omitted]`;
+    },
+  );
+  return { text: folded, collapsed, charsOmitted };
+};
+
 type ReadSource = "original" | "ocr-sidecar" | "persisted-output";
 
 const resolveSidecarBasename = (filename: string): string => {
@@ -664,6 +697,15 @@ export const createReadTool = () =>
         }
       }
 
+      // Embedded bytes, folded before anything counts a line.
+      //
+      // Measured 2026-08-28: an HTML mockup the user attached carried its logo
+      // as a single `data:image/png;base64,…` line of 30 000 characters — the
+      // byte cap fired ON THAT LINE, so one `read` returned a third of the file
+      // and nothing a reader could use. Base64 is not something the agent can
+      // act on in any case: what it needs is the markup around it.
+      const folded = collapseDataUris(text);
+      text = folded.text;
       // Line-based slicing (claude-code parity). offset is 1-indexed;
       // accept 0 permissively (0-indexed habit) and treat it as the start.
       const lines = text.split("\n");
@@ -731,10 +773,19 @@ export const createReadTool = () =>
       };
       if (truncatedByBytes) payload.truncatedByBytes = true;
 
+      const notices: string[] = [];
       if (numLines < totalLines) {
         const nextOffset = startLine + numLines;
-        payload.notice = `Returned ${numLines.toString()} of ${totalLines.toString()} lines (lines ${startLine.toString()}–${(startLine + numLines - 1).toString()}).${truncatedByBytes ? ` Byte safety cap fired (${(MAX_READ_CHARS / 1000).toFixed(0)}K chars).` : ""} Call \`read("${finalRelative}", offset=${nextOffset.toString()})\` to continue, use \`extract\` for structured data across the whole document, or \`pd.read_csv(...)\` in \`python\` for tabular files.`;
+        notices.push(
+          `Returned ${numLines.toString()} of ${totalLines.toString()} lines (lines ${startLine.toString()}–${(startLine + numLines - 1).toString()}).${truncatedByBytes ? ` Byte safety cap fired (${(MAX_READ_CHARS / 1000).toFixed(0)}K chars).` : ""} Call \`read("${finalRelative}", offset=${nextOffset.toString()})\` to continue, use \`extract\` for structured data across the whole document, or \`pd.read_csv(...)\` in \`python\` for tabular files.`,
+        );
       }
+      if (folded.collapsed > 0) {
+        notices.push(
+          `${folded.collapsed.toString()} inlined base64 ${folded.collapsed === 1 ? "payload was" : "payloads were"} folded to ${folded.charsOmitted.toString()} characters of markers — the file's own bytes are unchanged, and \`python\` reads them if you need them.`,
+        );
+      }
+      if (notices.length > 0) payload.notice = notices.join(" ");
 
       return maybePersistLargeOutput(
         payload,

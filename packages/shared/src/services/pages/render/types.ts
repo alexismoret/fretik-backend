@@ -128,6 +128,16 @@ export interface PageRenderResult {
    * the difference observable.
    */
   opsRuns: string[];
+  /**
+   * Clickable controls the probe deliberately did not click, because they were
+   * already in the state a click would set — the selected tab, the active
+   * segment, the checked toggle.
+   *
+   * Absent when there were none. It exists so a reader is not left assuming
+   * every control was tried: clicking one of these changes nothing BY DESIGN,
+   * and reporting that as a dead control blocked two pages that were fine.
+   */
+  skippedActive?: number;
   /** Present when the page had draggable elements at mount; see the type. */
   drag?: PageRenderDrag;
   /**

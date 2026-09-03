@@ -403,6 +403,7 @@ describe("page gate — operation traffic", () => {
         interactions: [interaction({ target: 'button "Envoyer"' })],
         opsRuns: [],
       }),
+      { declaredOperations: 1 },
     );
     expect(gate.pass).toBe(true);
     expect(gate.observations.join(" ")).toContain("NO operation ran");
@@ -414,6 +415,7 @@ describe("page gate — operation traffic", () => {
         interactions: [interaction({ target: 'button "Envoyer"' })],
         opsRuns: ["send_mail", "send_mail", "mark_read"],
       }),
+      { declaredOperations: 2 },
     );
     const observed = gate.observations.join(" ");
     expect(observed).toContain("3 operation calls");
@@ -421,7 +423,51 @@ describe("page gate — operation traffic", () => {
   });
 
   test("a page nobody clicked says nothing either way", () => {
-    const gate = gatePageRender(render({ interactions: [], opsRuns: [] }));
+    const gate = gatePageRender(render({ interactions: [], opsRuns: [] }), {
+      declaredOperations: 1,
+    });
     expect(gate.observations.join(" ")).not.toContain("operation");
+  });
+
+  /**
+   * A read-only dashboard declares no operation, so none running is the
+   * correct outcome. Two production builds were told every write on the page
+   * was "unwired or faked" — on pages that had no write to wire — and spent
+   * review rounds looking for it.
+   */
+  test("a page that declares no operation is not accused of faking one", () => {
+    const gate = gatePageRender(
+      render({
+        interactions: [interaction({ target: 'button "Filtrer"' })],
+        opsRuns: [],
+      }),
+      { declaredDatasets: 2, declaredOperations: 0 },
+    );
+    expect(gate.observations.join(" ")).not.toContain("NO operation ran");
+  });
+});
+
+/**
+ * The probe leaves the already-selected tab alone — clicking it changes
+ * nothing by design. Saying so is what keeps a reader from assuming every
+ * control was measured.
+ */
+describe("page gate — controls left alone", () => {
+  test("controls already in their target state are reported, not counted as dead", () => {
+    const gate = gatePageRender(
+      render({
+        interactions: [interaction({ target: 'button "Lanes"' })],
+        skippedActive: 3,
+      }),
+    );
+    expect(gate.pass).toBe(true);
+    expect(gate.observations.join(" ")).toContain("3 controls were left");
+  });
+
+  test("a page with nothing skipped says nothing about it", () => {
+    const gate = gatePageRender(
+      render({ interactions: [interaction({ target: 'button "Lanes"' })] }),
+    );
+    expect(gate.observations.join(" ")).not.toContain("left unclicked");
   });
 });

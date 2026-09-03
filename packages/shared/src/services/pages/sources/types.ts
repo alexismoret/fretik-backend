@@ -51,6 +51,18 @@ export interface PageDataSourceContext {
    * (but still repopulate). Never set on the public route.
    */
   fresh?: boolean;
+  /**
+   * Epoch ms past which this RUN stops waiting on anything outside the
+   * database — shared by every dataset of one render.
+   *
+   * It exists for third parties, and only a source that calls one reads it: a
+   * slow app is waited out per call, and datasets that must not overlap run in
+   * sequence, so without one budget over the whole run a single unresponsive
+   * app costs the render the SUM of its widgets' waits. What is left is spent
+   * in declaration order; a dataset that finds nothing left is asked again on
+   * the next render, by which time the answer already in flight is cached.
+   */
+  deadlineAt?: number;
 }
 
 export interface PageDataSource {

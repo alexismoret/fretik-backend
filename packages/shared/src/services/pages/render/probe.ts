@@ -126,16 +126,40 @@ export const buildProbeScript = (): string => `
     return kind + ' "' + (text.length > 48 ? text.slice(0, 48) + '…' : text || '(no text)') + '"';
   };
 
+  /**
+   * A control ALREADY in the state a click would put it in — the selected tab,
+   * the active segment of a group, the checked toggle.
+   *
+   * Clicking one changes nothing, by design, and the probe cannot tell that
+   * from a control that does not work: two shipped pages were blocked on
+   * "clicking ₫ VND changes nothing" and "clicking Vue d'ensemble changes
+   * nothing", both about the segment that was already showing.
+   *
+   * \`aria-expanded\` and \`data-state="open"\` are deliberately NOT here: an open
+   * disclosure closes when clicked, which is a real change and worth measuring.
+   */
+  const ACTIVE_STATES = ['active', 'checked', 'on', 'selected'];
+  const isActive = (el) => {
+    for (const attr of ['aria-selected', 'aria-pressed', 'aria-checked']) {
+      if (el.getAttribute(attr) === 'true') return true;
+    }
+    const current = el.getAttribute('aria-current');
+    if (current !== null && current !== 'false') return true;
+    return ACTIVE_STATES.indexOf(el.getAttribute('data-state')) !== -1;
+  };
+
   /** Targets that ADVERTISE themselves as clickable, one per family so a
    * 60-row table costs one click, not sixty. */
   const collect = () => {
     const out = [];
     const seen = new Set();
+    let skippedActive = 0;
     const push = (el, kind) => {
       if (!el || seen.has(el) || !visible(el)) return;
       if (el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true') return;
       if (el.closest(OVERLAY_SELECTOR)) return;
       seen.add(el);
+      if (isActive(el)) { skippedActive += 1; return; }
       out.push({ el, kind });
     };
 
@@ -146,7 +170,7 @@ export const buildProbeScript = (): string => `
     }
     for (const el of document.querySelectorAll('button, [role="button"]')) push(el, 'button');
     for (const el of document.querySelectorAll('.cursor-pointer')) push(el, 'pointer');
-    return out;
+    return { targets: out, skippedActive };
   };
 
   const fireClick = (el) => {
@@ -305,8 +329,9 @@ export const buildProbeScript = (): string => `
     // Snapshots are capped independently of the click budget: a page whose
     // every row opens the same slideover would otherwise send the same tree
     // five times, and the fifth copy tells the critic nothing the first did not.
-    session = { targets: collect().slice(0, max), index: 0, results: [], snapshotsLeft: 4 };
-    return { count: session.targets.length };
+    const found = collect();
+    session = { targets: found.targets.slice(0, max), index: 0, results: [], snapshotsLeft: 4 };
+    return { count: session.targets.length, skippedActive: found.skippedActive };
   };
 
   const interactStep = async () => {

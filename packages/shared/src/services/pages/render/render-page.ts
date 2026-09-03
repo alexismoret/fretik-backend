@@ -442,6 +442,13 @@ export const renderPage = async (params: {
       const interactions: PageRenderInteraction[] = [];
       const begun = asRecord(await probe("interactBegin"));
       const steps = typeof begun?.["count"] === "number" ? begun["count"] : 0;
+      // Controls the probe left alone because they were already in the state a
+      // click would set. Reported so the gate can say what it did NOT measure
+      // instead of a reader assuming every control was tried.
+      const skippedActive =
+        typeof begun?.["skippedActive"] === "number"
+          ? begun["skippedActive"]
+          : 0;
       let overlayShots = 0;
       for (let index = 0; index < steps; index += 1) {
         const step = asInteractionStep(await probe("interactStep"));
@@ -479,6 +486,7 @@ export const renderPage = async (params: {
         consoleErrors: [...consoleErrors],
         pageErrors,
         opsRuns,
+        ...(skippedActive > 0 ? { skippedActive } : {}),
         ...(drag ? { drag } : {}),
       };
     });

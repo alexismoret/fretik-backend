@@ -1222,7 +1222,17 @@ export const PageDatasetResultSchema = z.discriminatedUnion("status", [
     /** Human name of the app, when a pinned connection told us. */
     displayName: z.string().optional(),
   }),
-  z.object({ status: z.literal("error"), message: z.string() }),
+  z.object({
+    status: z.literal("error"),
+    message: z.string(),
+    /**
+     * Set when the failure is a WAIT rather than a refusal: a third party still
+     * working on the answer, which will be cached when it lands. A page that
+     * renders this state may ask the same dataset again after this delay
+     * instead of settling on "unavailable"; everything else ignores it.
+     */
+    retryAfterMs: z.number().int().positive().optional(),
+  }),
 ]);
 export type PageDatasetResult = z.infer<typeof PageDatasetResultSchema>;
 

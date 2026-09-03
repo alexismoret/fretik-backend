@@ -50,6 +50,12 @@ const SOURCE = `<template>
     <UButton label="run-op" @click="runOp" />
     <UButton label="fake-op" @click="faked = true" />
     <p v-if="faked" class="text-sm">Saved!</p>
+
+    <!-- A segment group: the one already showing announces itself with
+         aria-pressed, and clicking it changes nothing BY DESIGN. -->
+    <UButton label="active-segment" aria-pressed="true" @click="segment = 'a'" />
+    <UButton label="other-segment" aria-pressed="false" @click="segment = 'b'" />
+    <p class="text-sm">Segment {{ segment }}</p>
   </div>
 </template>
 
@@ -59,6 +65,7 @@ import { fretik } from "#fretik/sdk";
 const goodOpen = ref(false);
 const badOpen = ref(false);
 const faked = ref(false);
+const segment = ref("a");
 const runOp = async () => { await fretik.ops.run("archive", {}); };
 </script>`;
 
@@ -203,6 +210,17 @@ describe("page renderer", () => {
     // is the only evidence left. A mail client whose send button resolved a
     // `setTimeout` and toasted "sent" cleared three rounds of review.
     expect(result.opsRuns).toContain("archive");
+
+    // A control already in the state a click would set is left alone and
+    // COUNTED, never clicked and reported dead. Two shipped pages were blocked
+    // on "clicking ₫ VND changes nothing" and "clicking Vue d'ensemble changes
+    // nothing" — both about the segment that was already showing.
+    const clicked = result.interactions.map(
+      (interaction) => interaction.target,
+    );
+    expect(clicked.join(" | ")).toContain("other-segment");
+    expect(clicked.join(" | ")).not.toContain("active-segment");
+    expect(result.skippedActive ?? 0).toBeGreaterThan(0);
 
     closeRenderViews();
   }, 120_000);

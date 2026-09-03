@@ -110,6 +110,19 @@ export const capDatasetBytes = (
 /** A dataset slower than this is worth a line in the logs, not a failure. */
 const SLOW_DATASET_MS = 1000;
 
+/**
+ * How long ONE run may spend waiting on third parties, every external dataset
+ * counted together.
+ *
+ * A single call waits up to 45 s (`exec/page-query.ts`), and datasets over an
+ * app that leases a licence seat run one after another — so five slow widgets
+ * would hold a render for minutes without a ceiling over the whole run. 90 s
+ * buys two full waits, which is what a cold page over a genuinely slow app
+ * needs to warm its cache; the datasets past the budget are not asked at all
+ * and come back on the next render against the answers that landed meanwhile.
+ */
+const EXTERNAL_RUN_BUDGET_MS = 90_000;
+
 /** Postgres `undefined_column` — the dataset named a field the type has not. */
 const UNDEFINED_COLUMN = "42703";
 const MAX_ERROR_CHARS = 300;
@@ -178,8 +191,16 @@ export const runPageData = async (params: {
   queries?: Record<string, PageDatasetQuery>;
   /** Refresh button: sources that cache upstream answers bypass their read. */
   fresh?: boolean;
+  /**
+   * How long this run may spend waiting on third parties, all datasets
+   * together. Defaults to `EXTERNAL_RUN_BUDGET_MS`; a caller with its own
+   * ceiling (a render harness, a job) passes a smaller one.
+   */
+  externalBudgetMs?: number;
 }): Promise<PageDataResponse> => {
   const state = resolvePageState(params.definition, params.variables);
+  const deadlineAt =
+    Date.now() + (params.externalBudgetMs ?? EXTERNAL_RUN_BUDGET_MS);
 
   const wanted = params.datasetIds ? new Set(params.datasetIds) : null;
   const results: Record<string, PageDatasetResult> = {};
@@ -211,6 +232,7 @@ export const runPageData = async (params: {
           ? { query: params.queries[id] }
           : {}),
         ...(params.fresh !== undefined ? { fresh: params.fresh } : {}),
+        deadlineAt,
       });
     } catch (cause) {
       return { status: "error", message: describeDatasetError(cause) };

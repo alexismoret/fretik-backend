@@ -110,7 +110,10 @@ const run = async (params: {
     };
   }
 
-  const gate = gatePageRender(render);
+  const gate = gatePageRender(render, {
+    declaredDatasets: params.definition.datasets.length,
+    declaredOperations: params.definition.operations.length,
+  });
   if (!render.mounted) return { mounted: false, gate, critique: null };
 
   const critique = await critiqueWithRetry({

@@ -1032,6 +1032,32 @@ export const createManagePageTool = (config: { authoring: boolean }) =>
                 "Call { action: 'list' } to find it.",
               );
             }
+            // An update carrying nothing to change. Measured in production
+            // (Langfuse `01a0469c…`): `update { pageId, definition: {} }` was
+            // accepted, wrote a version identical to the one before it, and
+            // came back reporting success — so the agent believed a fix had
+            // landed, and reviewed a page nothing had touched. Refused before
+            // the read, because the cheapest answer to "what did this change?"
+            // is "nothing, and here is what you meant to send".
+            const changes = [
+              definitionInput !== undefined &&
+                Object.values(definitionInput).some(
+                  (section) => section !== undefined,
+                ),
+              (input.edits?.length ?? 0) > 0,
+              input.name !== undefined,
+              input.description !== undefined,
+              input.icon !== undefined,
+              input.color !== undefined,
+              input.scope !== undefined,
+            ];
+            if (!changes.some(Boolean)) {
+              return toolError(
+                TOOL_ERROR_CODES.INVALID_ARGS,
+                "This update carries nothing to change — no edits, no definition section, no metadata.",
+                "Send `edits` for a targeted source change, a `definition` section for datasets/operations/brief, or `name`/`description`/`icon`/`color`/`scope` for the card. An empty `definition: {}` changes nothing and is not how a page is saved.",
+              );
+            }
             // The other half of the authoring split. Removing `create` from the
             // enum closes the front door; a `definition` on update is the back
             // one — `{ code: { source } }` replaces the whole SFC, which is
@@ -1349,10 +1375,10 @@ export const createManagePageTool = (config: { authoring: boolean }) =>
               };
             }
 
-            const gate = gatePageRender(
-              render,
-              page.definition.datasets.length,
-            );
+            const gate = gatePageRender(render, {
+              declaredDatasets: page.definition.datasets.length,
+              declaredOperations: page.definition.operations.length,
+            });
             // A page that never mounted was not judged, so the attempt
             // consumes no round: this is a crash-fix loop, not a review.
             if (!render.mounted) {

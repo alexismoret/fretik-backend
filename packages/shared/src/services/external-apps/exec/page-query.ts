@@ -57,14 +57,44 @@ const resolveResultPath = (payload: unknown, path: string): unknown => {
  *    by construction (distinct connection ids);
  *  - an upstream budget per connection per minute — a crowd can exhaust the
  *    budget, never the third party's patience;
- *  - a page-specific timeout well under the transport's own 30 s — a slow app
- *    costs its widget a message, not the page a hang.
+ *  - a wait a caller will not exceed, and a run budget across all of a page's
+ *    external datasets — a slow app costs its widget a message, not the page a
+ *    hang.
  *
  * And one invariant: this path NEVER writes `connection.status`. A page view
  * must not be able to flip a team's integration to `error`.
  */
 
-const UPSTREAM_TIMEOUT_MS = 10_000;
+/**
+ * How long a CALLER waits for an answer — not how long the call may take.
+ *
+ * Measured 2026-08-28 in production (Langfuse session `01a03e9b…`): an Akanea
+ * WMS read takes 12-15 s (a licence seat is leased per action and its calls
+ * cannot overlap), so at the old 10 s every one of a page's five datasets came
+ * back `error` — in the app AND in the review harness, which reads the same
+ * fixtures. Worse, the answer that arrived at 13 s was thrown away, so the next
+ * render started from cold and failed identically. The provider's own client
+ * tolerates 60 s; ten was a page-side invention nothing supported.
+ *
+ * So the wait is 45 s, and the WORK is never abandoned: a call that outlives
+ * the wait keeps running and fills the cache when it lands, which turns the
+ * first slow render into a warm-up rather than a permanent wall. A caller past
+ * this ceiling gets "still working, ask again" instead of the truncated lie
+ * that the app failed.
+ *
+ * Two things bound it from outside and neither is ours to raise here: the MCP
+ * transport aborts at 30 s (`mcp/client.ts`), and a registry provider's own
+ * client aborts at whatever it declares (Akanea: 60 s). The connection slot's
+ * lease must exceed the LONGEST of those, not this — see `read-executor.ts`.
+ */
+const UPSTREAM_TIMEOUT_MS = 45_000;
+/**
+ * Below this much remaining run budget, a dataset that has not started does not
+ * start: no answer can arrive inside what is left, so the call would take a
+ * licence seat and a slot in the per-minute budget to return the same "still
+ * working" it returns for free.
+ */
+const MIN_CALL_MS = 3_000;
 /**
  * Upstream calls one connection may make per minute, SHARED by everyone
  * reading through it — which on a team connection means the whole team.
@@ -90,20 +120,32 @@ type PageQueryResult = Awaited<
 >;
 type PageQueryRows = { rows: PageValue[]; truncated: boolean };
 
-/** In-flight upstream runs, keyed like the cache — joined even by `fresh`
- * requests: a run under way IS a fresh upstream answer. */
+/**
+ * In-flight upstream runs, keyed like the cache — joined even by `fresh`
+ * requests: a run under way IS a fresh upstream answer.
+ *
+ * An entry outlives the caller that started it. A caller whose wait runs out
+ * walks away; the run stays here until it lands, so the next reader joins it
+ * instead of asking a third party the same question a second time.
+ */
 const inFlight = new Map<string, Promise<PageQueryResult>>();
 
-const withTimeout = async <T>(work: Promise<T>): Promise<T> => {
+/** What a wait that ran out returns instead of an answer. */
+const STILL_WORKING = Symbol("still-working");
+
+/**
+ * Wait `ms` for `work`, then give up on the WAIT — never on the work.
+ * `work` must not reject: it is left running with nobody watching it.
+ */
+const waitFor = async <T>(
+  work: Promise<T>,
+  ms: number,
+): Promise<T | typeof STILL_WORKING> => {
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const gate = new Promise<never>((_, reject) => {
+  const gate = new Promise<typeof STILL_WORKING>((resolve) => {
     timer = setTimeout(() => {
-      reject(
-        new Error(
-          `the app did not answer within ${(UPSTREAM_TIMEOUT_MS / 1000).toString()}s`,
-        ),
-      );
-    }, UPSTREAM_TIMEOUT_MS);
+      resolve(STILL_WORKING);
+    }, ms);
   });
   try {
     return await Promise.race([work, gate]);
@@ -111,6 +153,35 @@ const withTimeout = async <T>(work: Promise<T>): Promise<T> => {
     if (timer !== undefined) clearTimeout(timer);
   }
 };
+
+/**
+ * What a caller gets when the app is slower than its wait.
+ *
+ * Deliberately NOT "the app failed": the question is still being asked, the
+ * answer will be in the cache, and a page that renders "unavailable" here tells
+ * its viewer something false. `retryAfterMs` is what a page waits before asking
+ * the same dataset again — long enough that a retry storm cannot form, short
+ * enough that a 15 s app fills in while someone is still looking.
+ */
+const stillWorking = (
+  connection: ExternalAppConnection,
+  waitedMs: number,
+): PageQueryResult => ({
+  status: "error",
+  message: `"${connection.displayName}" is still working after ${Math.max(Math.round(waitedMs / 1000), 1).toString()}s — its answer is being cached, not lost. Query this dataset again in a few seconds.`,
+  retryAfterMs: 5_000,
+});
+
+/**
+ * What a dataset gets when the render's shared budget ran out before its turn —
+ * the app was never asked, so there is nothing in flight to wait for and
+ * nothing wrong with the app either.
+ */
+const notAsked = (connection: ExternalAppConnection): PageQueryResult => ({
+  status: "error",
+  message: `this page spent its budget waiting on "${connection.displayName}" before reaching this dataset — query it on its own in a few seconds, when the earlier answers are cached.`,
+  retryAfterMs: 5_000,
+});
 
 /**
  * Replace base64 payloads with a marker anywhere in the answer. A page cannot
@@ -229,9 +300,7 @@ const callUpstream = async (
     if (level === "blocked") {
       return { ok: false, message: blockedMessage(operation, connection) };
     }
-    const raw = await withTimeout(
-      mcpCallTool(connection, action.mcpToolName, args),
-    );
+    const raw = await mcpCallTool(connection, action.mcpToolName, args);
     return { ok: true, data: normalizeMcpResult(raw) };
   }
 
@@ -266,19 +335,30 @@ const callUpstream = async (
       message: `invalid args for "${operation}": ${error instanceof Error ? error.message : String(error)}`,
     };
   }
-  const data = await withTimeout(
-    executeReadAction(resolved, connection, validated),
-  );
+  const data = await executeReadAction(resolved, connection, validated);
   return { ok: true, data };
 };
 
+/**
+ * One upstream question, start to finish, cache write included.
+ *
+ * NEVER REJECTS, and that is load-bearing: it is left running by a caller whose
+ * wait ran out, so a rejection here would surface as an unhandled one with
+ * nobody left to catch it.
+ */
 const runQuery = async (
   input: PageQueryInput,
   connection: ExternalAppConnection,
   cacheKey: string,
   ttlSeconds: number,
 ): Promise<PageQueryResult> => {
-  if (!(await underBudget(connection.id))) {
+  let underMinuteBudget: boolean;
+  try {
+    underMinuteBudget = await underBudget(connection.id);
+  } catch {
+    underMinuteBudget = true;
+  }
+  if (!underMinuteBudget) {
     return {
       status: "error",
       message: `"${connection.displayName}" hit its per-minute budget — the page is asking a third party too often; raise the dataset's cacheTtlSeconds`,
@@ -310,7 +390,13 @@ const runQuery = async (
   }
 
   const result: PageQueryResult = { status: "ok", ...capRows(asRows(payload)) };
-  await redis.set(cacheKey, JSON.stringify(result), "EX", ttlSeconds);
+  try {
+    // The one write that matters when the caller has already given up: an
+    // answer that lands late is the next render's cache hit.
+    await redis.set(cacheKey, JSON.stringify(result), "EX", ttlSeconds);
+  } catch {
+    // A cache that refuses the write costs the next reader an upstream call.
+  }
   return result;
 };
 
@@ -371,16 +457,30 @@ export const externalPageQueryExecutor: ExternalPageQueryExecutor = {
         }
       }
     }
-    const running = inFlight.get(cacheKey);
-    if (running !== undefined) return await running;
+    // How long THIS caller may wait: its own ceiling, and whatever is left of
+    // the run's shared budget when a caller declared one. A page's external
+    // datasets run one after another on a serial connection, so without the
+    // shared budget a dead app would cost the render the sum of its widgets.
+    const remaining =
+      input.deadlineAt === undefined
+        ? UPSTREAM_TIMEOUT_MS
+        : Math.min(UPSTREAM_TIMEOUT_MS, input.deadlineAt - Date.now());
 
-    const execution = runQuery(input, connection, cacheKey, ttlSeconds);
-    inFlight.set(cacheKey, execution);
-    try {
-      return await execution;
-    } finally {
-      inFlight.delete(cacheKey);
+    let running = inFlight.get(cacheKey);
+    if (running === undefined) {
+      if (remaining < MIN_CALL_MS) return notAsked(connection);
+      const execution = runQuery(input, connection, cacheKey, ttlSeconds);
+      inFlight.set(cacheKey, execution);
+      void execution.finally(() => {
+        if (inFlight.get(cacheKey) === execution) inFlight.delete(cacheKey);
+      });
+      running = execution;
     }
+
+    const settled = await waitFor(running, Math.max(remaining, 0));
+    return settled === STILL_WORKING
+      ? stillWorking(connection, remaining)
+      : settled;
   },
 };
 

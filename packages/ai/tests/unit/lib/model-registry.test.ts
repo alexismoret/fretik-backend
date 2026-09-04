@@ -333,11 +333,12 @@ describe("role bindings — default model ids pinned (chat: gated M3 flip)", () 
     // flagship, not the eval header — could reach it, and every page the
     // product ever generated came from the code default. Repointed 2026-08-19
     // on a neutral-judge A/B (the control failed to save a page at all on the
-    // canonical case), then 2026-09-04 onto GLM 5.3 Flash on a bench rather
-    // than a judge — 3/3 intact on every upstream that answered, a flat 5×
-    // cache discount, 5× the price gap. Pinned here so the next move is a
-    // deliberate edit with a run behind it, exactly like the critic above.
-    "page-build": "z-ai/glm-5.3-flash",
+    // canonical case). GLM 5.3 Flash held it for one evening on 2026-09-04 —
+    // a bench, not a judge — and the A/B that followed sent it back: −0.65
+    // design, −0.07 correctness, one dead pager, at a third of the price.
+    // Pinned here so the next move is a deliberate edit with a run behind it,
+    // exactly like the critic above.
+    "page-build": "google/gemini-3.7-flash",
     transform: "deepseek/deepseek-v4-flash-0731",
     "transform-fallback": "google/gemini-3.7-flash",
     "tool-repair": "openai/gpt-oss-120b",
@@ -380,7 +381,7 @@ describe("role bindings — default model ids pinned (chat: gated M3 flip)", () 
     // builder moved onto the critic's model. Cheaper as an assertion.
     //
     // Family is derived from the model id now, so the check no longer needs a
-    // registry: `zai-glm-5-3-flash` and `gpt-5.6-luna` cannot be the same maker
+    // registry: `gemini-3.7-flash` and `gpt-5.6-luna` cannot be the same maker
     // whatever the rows say.
     const builder = ROLE_BINDINGS["page-build"].profileKey;
     const critic = ROLE_BINDINGS["page-review"].profileKey;

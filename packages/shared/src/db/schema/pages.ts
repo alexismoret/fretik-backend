@@ -73,6 +73,20 @@ export const pages = pgTable(
       onDelete: "set null",
     }),
 
+    /**
+     * Out of the way, not gone: an archived page renders at its own URL and
+     * appears in no listing — not the team's hub, not `managePage list`.
+     *
+     * It exists because the eval harness needed the opposite of a delete. Its
+     * runs cost real money and their output IS the evidence — a score says a
+     * page was worth 6.8, only the page says why — but a page left standing is
+     * a page the next run's agent finds, and an agent that finds a page already
+     * covering the ask is RIGHT to stop and ask which one to change (measured
+     * 2026-09-04: two cases scored 0.188 and 0.250 for exactly that). Deleting
+     * destroys the evidence; archiving keeps it and takes it out of the way.
+     */
+    archivedAt: timestamp("archived_at", { withTimezone: true }),
+
     // Provenance: the chat that authored this page, for "open the
     // conversation that built this".
     sourceConversationId: uuid("source_conversation_id").references(

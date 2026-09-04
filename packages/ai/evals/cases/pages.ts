@@ -46,7 +46,7 @@ import {
 } from "@fretik/shared/services/pages/lint";
 import { derivePageRoutesOfCode } from "@fretik/shared/services/pages/routes";
 import { deletePageVectorRows } from "@fretik/shared/services/pages/vector-refresh";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import { judgePage } from "../page-design-judge";
 import {
   designScoreAtLeast,
@@ -489,7 +489,7 @@ const pageForConversation = async (
 };
 
 /**
- * The pages THIS run built, remembered across runs so the next one can sweep
+ * The pages THIS run built, remembered across runs so the next one can ARCHIVE
  * them — and nothing else.
  *
  * Sweeping used to be zero-retention: every case deleted its own page the
@@ -497,7 +497,16 @@ const pageForConversation = async (
  * the run of 2026-08-16 produced one page whose filter was better than the
  * assertion that failed it, and there was nothing left to look at. Scores tell
  * you a page was worth 6.8; only the page tells you why. So a run's output is
- * kept and the PREVIOUS run's is what gets swept.
+ * kept and the PREVIOUS run's is what gets archived.
+ *
+ * Nothing is deleted any more (2026-09-04). A run costs real money and its
+ * pages are the only place its DESIGN can be read — and a screenshot does not
+ * answer the questions that matter, because a pager that never advances and a
+ * filter that clears nothing photograph exactly like the working ones. Reading
+ * them means opening them in a browser, which means they have to still be
+ * there. `pages.archivedAt` is the primitive that lets both be true: the page
+ * renders at its own URL, and it is in no listing the next run's agent can
+ * reach.
  *
  * That intent was implemented twice as a GUESS about which rows were the
  * harness's — "older than 12 hours", then "older than this process" — and both
@@ -510,7 +519,7 @@ const pageForConversation = async (
  *
  * The one thing that is not a guess is the list of ids the harness watched
  * appear, keyed off the ephemeral conversation each case runs in. So that is
- * what it keeps. A missing or unreadable ledger sweeps NOTHING: this deletes
+ * what it keeps. A missing or unreadable ledger touches NOTHING: this archives
  * rows it recorded creating, never rows it merely suspects.
  */
 const PAGE_LEDGER_PATH = `${import.meta.dir}/../.eval-pages.json`;
@@ -537,17 +546,20 @@ const sweepPreviousRun = async (): Promise<void> => {
   const ids = await readPageLedger();
   if (ids.length === 0) return;
   await db
-    .delete(pages)
+    .update(pages)
+    .set({ archivedAt: new Date() })
     .where(and(eq(pages.teamId, teamId), inArray(pages.id, ids)));
   // The row is half of a page. `ai_vectors.source_id` is polymorphic, so no
-  // foreign key cascades it, and a raw delete here leaves the page's card in
-  // the knowledge index forever — which is worse than leaving the page:
-  // `searchKnowledge` keeps answering with it, and a builder that finds a page
-  // already covering the ask is RIGHT to stop and ask which one to change.
-  // Measured 2026-09-04: 17 indexed pages against 2 real ones, and two
-  // generation cases scored 0.188 and 0.250 for declining to duplicate five
-  // pages that did not exist. `deletePage` gets this right; every sweep that
-  // bypasses it has to do the same by hand.
+  // foreign key cascades it, and archiving the row leaves the page's card in
+  // the knowledge index — which defeats the whole point: `searchKnowledge`
+  // keeps answering with it, and a builder that finds a page already covering
+  // the ask is RIGHT to stop and ask which one to change. Measured 2026-09-04:
+  // 17 indexed pages against 2 real ones, and two generation cases scored 0.188
+  // and 0.250 for declining to duplicate five pages that did not exist.
+  //
+  // De-indexing is what makes the page invisible to the AGENT; the row staying
+  // is what keeps it visible to us. The two channels are separate and both have
+  // to be closed — `managePage list` by `archivedAt`, `searchKnowledge` here.
   await Promise.all(ids.map((id) => deletePageVectorRows(id)));
 };
 
@@ -614,16 +626,32 @@ const sweepSameNamePages = async (
   ctx: EvalCaseContext,
   name: string,
 ): Promise<void> => {
-  // The ids first: the vector rows are keyed by page id, and after the delete
-  // there is nothing left to read them off. Same reason as `sweepPreviousRun` —
-  // a page whose card outlives its row keeps answering `searchKnowledge`.
+  // The ids first: the vector rows are keyed by page id, and archiving does not
+  // tell you which rows moved. Same reason as `sweepPreviousRun` — a page whose
+  // card outlives its listing keeps answering `searchKnowledge`.
   const doomed = await db
     .select({ id: pages.id })
     .from(pages)
-    .where(and(eq(pages.teamId, ctx.teamId), eq(pages.name, name)));
+    .where(
+      and(
+        eq(pages.teamId, ctx.teamId),
+        eq(pages.name, name),
+        isNull(pages.archivedAt),
+      ),
+    );
+  if (doomed.length === 0) return;
   await db
-    .delete(pages)
-    .where(and(eq(pages.teamId, ctx.teamId), eq(pages.name, name)));
+    .update(pages)
+    .set({ archivedAt: new Date() })
+    .where(
+      and(
+        eq(pages.teamId, ctx.teamId),
+        inArray(
+          pages.id,
+          doomed.map((row) => row.id),
+        ),
+      ),
+    );
   await Promise.all(doomed.map((row) => deletePageVectorRows(row.id)));
 };
 

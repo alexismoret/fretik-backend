@@ -68,6 +68,8 @@ interface ProbeStat {
   horizontalOverflow: boolean;
   clipped: number;
   draggables: number;
+  /** Tags Vue could not resolve — see `unresolvedComponents` in the probe. */
+  unresolved: string[];
 }
 
 /** The probe answers over postMessage, so its payload is untyped JSON on
@@ -88,6 +90,11 @@ const asProbeStat = (value: unknown): ProbeStat | null => {
     clipped: typeof record["clipped"] === "number" ? record["clipped"] : 0,
     draggables:
       typeof record["draggables"] === "number" ? record["draggables"] : 0,
+    unresolved: Array.isArray(record["unresolved"])
+      ? record["unresolved"].filter(
+          (tag): tag is string => typeof tag === "string",
+        )
+      : [],
   };
 };
 
@@ -366,6 +373,10 @@ export const renderPage = async (params: {
     return await withRenderView(async (view, consoleErrors) => {
       const shots: PageRenderShot[] = [];
       const layout: Record<string, PageRenderLayout> = {};
+      // Unioned across every capture — the entry screen, each static route and
+      // each view a link reached. A component that fails to resolve in one view
+      // and nowhere else is still a hole in the page.
+      const unresolvedSeen = new Set<string>();
 
       const settle = async (): Promise<boolean> =>
         (await waitFor(
@@ -403,6 +414,7 @@ export const renderPage = async (params: {
             clipped: stat.clipped,
             textLength: stat.textLength,
           };
+          for (const tag of stat.unresolved) unresolvedSeen.add(tag);
         }
         shots.push({
           label: viewport.label,
@@ -620,6 +632,7 @@ export const renderPage = async (params: {
       ];
       const downloads =
         (await view.evaluate<string[]>("window.__STATE__.downloads")) ?? [];
+      const unresolvedComponents = [...unresolvedSeen];
 
       await view.navigate(`${origin}/empty`);
       await settle();
@@ -641,6 +654,7 @@ export const renderPage = async (params: {
           : {}),
         ...(routeMisses.length > 0 ? { routeMisses } : {}),
         ...(downloads.length > 0 ? { downloads } : {}),
+        ...(unresolvedComponents.length > 0 ? { unresolvedComponents } : {}),
       };
     });
   } catch (error) {

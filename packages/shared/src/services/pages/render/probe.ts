@@ -270,6 +270,28 @@ export const buildProbeScript = (): string => `
 
   const draggables = () => [...document.querySelectorAll('[draggable="true"]')].filter(visible);
 
+  /**
+   * Components Vue could not resolve, by tag.
+   *
+   * The runtime ships a PRODUCTION Vue build — it carries no warning strings at
+   * all, so "Failed to resolve component" is never logged and the console sink
+   * cannot see this. What Vue does instead is render the unresolved name as a
+   * literal tag, and a tag with no dash that the browser does not know becomes
+   * an HTMLUnknownElement. That is the whole detector.
+   *
+   * Measured 2026-09-04: a generated page whose ItemsTable.vue used
+   * <StatusCell /> rendered an empty column on every row, and nothing anywhere
+   * in the pipeline said so.
+   */
+  const unresolvedComponents = () => {
+    const seen = new Set();
+    for (const el of document.querySelectorAll('*')) {
+      if (el instanceof HTMLUnknownElement) seen.add(el.tagName.toLowerCase());
+      if (seen.size >= 8) break;
+    }
+    return [...seen];
+  };
+
   const stat = () => {
     const app = document.getElementById('app');
     const doc = document.documentElement;
@@ -279,6 +301,7 @@ export const buildProbeScript = (): string => `
       horizontalOverflow: doc.scrollWidth > doc.clientWidth + 2,
       clipped: clippedCount(),
       draggables: draggables().length,
+      unresolved: unresolvedComponents(),
     };
   };
 

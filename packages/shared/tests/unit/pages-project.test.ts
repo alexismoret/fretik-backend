@@ -186,12 +186,22 @@ describe("a project in a real browser", () => {
     }
 
     expect(result.mounted).toBe(true);
-    // Vue warns rather than throws on an unresolved component, so a registry
-    // that failed would show up here and nowhere else.
-    expect(result.consoleErrors.join(" ")).not.toContain("resolve component");
     expect(result.pageErrors).toEqual([]);
-    // `KpiStrip` renders inside `LaneBoard`, which the entry never imports —
-    // one component reaching another through the registry alone.
+    // THE assertion of this test. `KpiStrip` renders inside `LaneBoard`, which
+    // the entry never imports — one component reaching another through the
+    // registry alone, and the case that was broken from the day the registry
+    // shipped: the bundler must emit `__components.js` after the components it
+    // imports, so `__page__.components = components` inside a component ran
+    // against a hoisted-undefined `var`. Only the entry, emitted last, saw the
+    // real object.
+    //
+    // It was invisible in every direction. Vue does not throw on an unresolved
+    // component, and it does not warn either — the runtime ships a PRODUCTION
+    // build with the warning strings stripped, so `consoleErrors` stays empty
+    // and the old assertion here (`not.toContain("resolve component")`) could
+    // never fail. What Vue does is render the name as an unknown tag, which is
+    // what the probe reports and what this asserts on.
+    expect(result.unresolvedComponents ?? []).toEqual([]);
     expect(result.layout["desktop"]?.textLength ?? 0).toBeGreaterThan(0);
     const clicked = result.interactions.map(
       (interaction) => interaction.target,

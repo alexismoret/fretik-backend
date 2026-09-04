@@ -549,3 +549,25 @@ describe("page gate — the page's other views", () => {
     );
   });
 });
+
+describe("components that resolved to nothing", () => {
+  /**
+   * The 2026-09-04 defect: a generated page used <StatusCell /> inside
+   * components/ItemsTable.vue, the compiler's registry reached that file as
+   * `undefined`, and the Status column rendered blank on every row. Nothing
+   * reported it — Vue ships a production build here, so there is no warning to
+   * catch, and the page had plenty of text elsewhere.
+   */
+  test("blocks, naming the tag, so the builder can fix the name", () => {
+    const gate = gatePageRender(
+      render({ unresolvedComponents: ["statuscell"] }),
+    );
+    expect(gate.pass).toBe(false);
+    expect(gate.blocking.join(" ")).toContain("statuscell");
+  });
+
+  test("a page whose components all resolved says nothing about them", () => {
+    const gate = gatePageRender(render({}));
+    expect(gate.blocking.join(" ")).not.toContain("resolved to nothing");
+  });
+});

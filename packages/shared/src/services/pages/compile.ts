@@ -856,9 +856,19 @@ const buildModules = async (
     }
     errors.push(...importErrors(sfc.output.js, { from: path, declared }));
     css += sfc.output.css;
+    // A GETTER, never a plain assignment. The registry module imports every
+    // component, so the bundler must emit it AFTER them — which means a
+    // `__page__.components = __fretikComponents` statement inside a component
+    // runs while the registry's `var components` is still hoisted-undefined.
+    // Only the entry, emitted last, ever saw the real object; every other file
+    // got `undefined` and `resolveComponent` silently rendered nothing. That
+    // is invisible to the compiler, the lints and the gate: the page builds,
+    // and one cell of a table is simply blank (measured 2026-09-04 on a
+    // generated page whose ItemsTable.vue used <StatusCell />). Reading it
+    // lazily moves the lookup to render time, after every module has run.
     const registry =
       componentPaths.length > 0
-        ? `\nimport { components as __fretikComponents } from ${JSON.stringify(registrySpecifier(path, COMPONENT_REGISTRY_MODULE))};\n__page__.components = __fretikComponents;`
+        ? `\nimport { components as __fretikComponents } from ${JSON.stringify(registrySpecifier(path, COMPONENT_REGISTRY_MODULE))};\nObject.defineProperty(__page__, "components", { get: () => __fretikComponents, configurable: true });`
         : "";
     modules.push([modulePath(path), `${sfc.output.js}${registry}`]);
   }

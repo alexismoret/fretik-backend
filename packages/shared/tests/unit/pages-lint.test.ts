@@ -363,3 +363,56 @@ describe("a project, and the delta of one write", () => {
     expect(newLintFindings(before, after)).toHaveLength(0);
   });
 });
+
+describe("dead handlers", () => {
+  /**
+   * The shape that shipped on 2026-09-04: `Page.vue` passed `@clear` to a
+   * component and defined no `clearFilters`. It compiled, mounted, and the
+   * button sat in the empty state doing nothing — the runtime is a production
+   * Vue build, so the "not defined on instance" warning does not exist.
+   */
+  test("fires on an event bound to a name the file never defines", () => {
+    const findings = lintPageFile(
+      "Page.vue",
+      sfc(
+        "const rows = [];",
+        '<ItemsTable :rows="rows" @clear="clearFilters" />',
+      ),
+    );
+    const dead = findings.filter((f) => f.rule === "dead-handler");
+    expect(dead).toHaveLength(1);
+    expect(dead[0]?.severity).toBe("error");
+    expect(dead[0]?.message).toContain("clearFilters");
+  });
+
+  test("stays silent when the handler is defined, however it was declared", () => {
+    const script = [
+      "import { ref } from 'vue';",
+      "const open = ref(false);",
+      "function clearFilters() { open.value = false; }",
+      "const { reload } = useThing();",
+      "const onPick = () => {};",
+    ].join("\n");
+    const findings = lintPageFile(
+      "Page.vue",
+      sfc(
+        script,
+        '<Bar @clear="clearFilters" @reload="reload" @pick="onPick" />',
+      ),
+    );
+    expect(findings.filter((f) => f.rule === "dead-handler")).toEqual([]);
+  });
+
+  test("ignores anything that is not a bare identifier", () => {
+    // Calls, assignments and `$event` are expressions Vue evaluates in the
+    // render scope; only a lone identifier has one legal meaning.
+    const findings = lintPageFile(
+      "Page.vue",
+      sfc(
+        "const open = ref(false);",
+        '<Bar @a="doThing(row)" @b="open = true" @c="$emit(\'x\')" />',
+      ),
+    );
+    expect(findings.filter((f) => f.rule === "dead-handler")).toEqual([]);
+  });
+});

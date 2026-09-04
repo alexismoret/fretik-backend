@@ -158,6 +158,16 @@ export interface PageRenderResult {
   /** Filenames the page asked the host to save during the click pass. */
   downloads?: string[];
   /**
+   * Tags Vue rendered because it could not resolve a component of that name.
+   *
+   * The one defect the console can never report: the runtime ships a
+   * PRODUCTION Vue build with every warning string stripped, so an unresolved
+   * component logs nothing and simply renders an empty unknown element. The
+   * page mounts, the gate sees text, the critic sees a screenshot with a blank
+   * column, and no rule anywhere names the cause.
+   */
+  unresolvedComponents?: string[];
+  /**
    * Set when no browser was reachable. The review then proceeds on whatever it
    * has rather than failing the page for our own infrastructure.
    */

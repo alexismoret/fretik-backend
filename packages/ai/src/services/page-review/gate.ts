@@ -46,6 +46,8 @@ const MIN_CLIPPED_ELEMENTS = 3;
 
 /** Broken links to name. Past three the repair is one decision, not three. */
 const MAX_ROUTE_MISSES = 3;
+/** Distinct unresolved component tags named before the list stops being useful. */
+const MAX_UNRESOLVED_COMPONENTS = 4;
 
 /** Console noise is quoted, not summarised — the message IS the lead. */
 const CONSOLE_MESSAGE_CHARS = 300;
@@ -280,6 +282,19 @@ export const gatePageRender = (
   for (const miss of (render.routeMisses ?? []).slice(0, MAX_ROUTE_MISSES)) {
     blocking.push(
       `A link leads somewhere no view answers. ${miss} Add the file for it under pages/, or point the link at a view that exists.`,
+    );
+  }
+
+  // Blocking, and the reason it has to be: the page LOOKS fine. Vue rendered an
+  // unknown tag where a component should be, so a column or a region is simply
+  // blank — no error, no warning (the runtime is a production Vue build), and a
+  // screenshot the critic reads as a design choice.
+  for (const tag of (render.unresolvedComponents ?? []).slice(
+    0,
+    MAX_UNRESOLVED_COMPONENTS,
+  )) {
+    blocking.push(
+      `<${tag}> is used somewhere in the page but resolved to nothing, so that spot renders empty. Check the name against the file under components/ — a component is registered under its filename, exactly as spelled.`,
     );
   }
 

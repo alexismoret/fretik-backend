@@ -335,6 +335,43 @@ export const ROLE_BINDINGS: Record<ModelRole, RoleBinding> = {
   // it ignored the team's flagship entirely. Every page this product has ever
   // generated — evals and real teams alike — was written by the code default.
   //
+  // Repointed to zai-glm-5-3-flash on 2026-09-04. A PRICE and SPEED move, and
+  // saying so is the point: the 2026-08-19 repoint below rested on design
+  // scores from a neutral judge, this one does not. What backs it is
+  // `models:bench -- --profile zai-glm-5-3-flash` (8 upstreams × 3 runs of
+  // 4 096 tokens):
+  //
+  //   upstream   intact   tok/s    cold $    warm $   cache
+  //   together      3/3   144.9   0.00785   0.00159    100%
+  //   wafer         3/3    37.1   0.00523   0.00105    100%   ← quarantined
+  //   novita        3/3    28.2   0.00393   0.00079    100%
+  //   modal         2/3    47.8   0.00785         —       —   (2× 429)
+  //   baseten       1/3   140.4         —         —       —   (5× 429)
+  //
+  // Two columns decide it. `intact` is 3/3 on every upstream that answered
+  // without an upstream 429 — the truncation-at-tool-call gate, and every
+  // builder turn ends in a tool call. And warm against cold is a flat 5×, so
+  // the ~20 K prefix the builder replays once per step IS cached: no GLM
+  // endpoint publishes `supports_implicit_caching`, which is why the policy
+  // rule reads FAIL, but the billed price is the evidence and the price says
+  // it caches. Against gemini-3.7-flash that is $0.15/$0.50 per MTok versus
+  // $0.75/$3.75, 145 tok/s on the fastest clean host versus 93, and AA 57.5
+  // intelligence / 58.2 agentic versus 56.0 / 45.1 (coding 71.5 versus 76.1).
+  // A build measured at $0.71 on Gemini projects near $0.25.
+  //
+  // Two hosts are out of the pool by hand, both from that run: `sailresearch`
+  // caps completions at 2 048 tokens where the rest of the pool is ≥ 128 000
+  // (a multi-file `pageWrite` routed there is cut silently, and this role
+  // sends no `maxOutputTokens`), and `wafer` spent its whole 4 096-token
+  // allowance on reasoning without writing an answer. Quarantines lapse after
+  // a re-probe on 2026-09-11 — a short probe will not see either defect, so
+  // check `models:admin -- show` before trusting the pool again.
+  //
+  // NOT measured, and the honest gap: design score. `PAGE_BUILD_REASONING_MAX_TOKENS`
+  // was tuned against Gemini's thinking, and GLM 5.3 Flash defaults to `max`
+  // effort — the `pages` suite is what says whether 8 000 is still the right
+  // allowance and whether pages got better or only cheaper.
+  //
   // Repointed to gemini-3.7-flash on 2026-08-19 by the A/B that role was
   // created to make possible — three building cases, both arms judged by a
   // NEUTRAL critic (claude-sonnet-5, `--page-judge-candidate`), because the
@@ -368,7 +405,7 @@ export const ROLE_BINDINGS: Record<ModelRole, RoleBinding> = {
   // THIS AND `page-review` MOVE TOGETHER. They may never share a family.
   "page-build": {
     role: "page-build",
-    profileKey: "gemini-3.7-flash",
+    profileKey: "zai-glm-5-3-flash",
     settingsKind: "page-build",
     wrapCache: true,
   },

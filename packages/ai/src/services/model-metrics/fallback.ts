@@ -125,6 +125,17 @@ export const FALLBACK_METRICS: Record<string, FallbackMetric> = {
   },
   // Z.ai
   "glm-5.2": { intelligence: 51.1, speed: 156.7, timeToFirstAnswer: 13.7 },
+  // The page builder since 2026-09-04. AA carries no throughput at all for
+  // this record, so `speed` is the median of our OWN pool (`models:bench`
+  // 2026-09-04: together 144.9, baseten 140.4, modal 47.8, novita 28.2) rather
+  // than a provider-class guess. `timeToFirstAnswer` is AA's, measured at the
+  // `max` effort this model defaults to — the `page-build` role caps thinking
+  // at 8 000 tokens and does not wait that long.
+  "zai-glm-5-3-flash": {
+    intelligence: 57.5,
+    speed: 94,
+    timeToFirstAnswer: 44,
+  },
   // xAI
   "grok-4.5": { intelligence: 53.8, speed: 55.8, timeToFirstAnswer: 12.6 },
   // Thinking Machines

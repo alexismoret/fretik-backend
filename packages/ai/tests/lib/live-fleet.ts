@@ -214,6 +214,37 @@ export const BOUND_ROWS: readonly LiveModelState[] = [
       }),
     }),
   ),
+  // The page BUILDER since 2026-09-04. Reasoning is MANDATORY on it, which is
+  // the branch `settingsForRole`'s `page-build` case turns on, and the pool is
+  // the wire one — the two hosts quarantined out of it (`sailresearch`, 2048
+  // output cap; `wafer`, reasoning that never converged) are absent here for
+  // the same reason production drops them.
+  row({
+    profileKey: "zai-glm-5-3-flash",
+    modelIds: {
+      openrouter: "z-ai/glm-5.3-flash",
+      gateway: "zai/glm-5.3-flash",
+    },
+    providerPool: {
+      openrouter: {
+        only: ["together", "novita", "baseten", "modal"],
+        sort: "throughput",
+      },
+    },
+    endpointStats: [
+      endpoint({ provider: "together", hasZdr: true }),
+      endpoint({ provider: "novita", hasZdr: true, quantization: "fp8" }),
+    ],
+    dynamicProfile: dynamic({
+      family: "zai",
+      inputModalities: ["text", "image", "video"],
+      supportsReasoning: true,
+      reasoning: {
+        mandatory: true,
+        supportedEfforts: ["max", "high", "low"],
+      },
+    }),
+  }),
   // Not bound to any role — models a TEAM can pick, which is what the
   // per-team flagship cases need. `glm-5.2` carries the smallest real ladder
   // there is (two rungs), so it exercises the stored-depth branches.

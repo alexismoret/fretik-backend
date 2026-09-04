@@ -5,9 +5,10 @@
  * `@openrouter/ai-sdk-provider@3.0.0` drops reasoning_details entries that
  * arrive without a thought signature (Gemini/Anthropic replay would be
  * rejected otherwise — its issues #423/#418) and warns about it on EVERY
- * affected step. With the page builder on `gemini-3.7-flash` that is a warning
- * per builder step, dozens per page build, drowning the console (measured
- * 2026-08-22/23 eval runs). The signatures are lost in the provider's own
+ * affected step. On a page builder whose model reasons — `gemini-3.7-flash`
+ * when this was measured on the 2026-08-22/23 eval runs, `zai-glm-5-3-flash`
+ * since — that is a warning per builder step, dozens per page build, drowning
+ * the console. The signatures are lost in the provider's own
  * stream handling; there is no released fix and nothing on our side to change.
  *
  * The provider skips its `console.warn` whenever `AI_SDK_LOG_WARNINGS` is a

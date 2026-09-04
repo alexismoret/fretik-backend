@@ -118,6 +118,7 @@ Check these before your first review — they are what models leave out when nob
 - **The four dataset states.** Loading, rows, zero rows, failure. A page built only for "rows" is broken three days out of four, and the review renders the empty one on purpose.
 - **Interactive states.** Hover, focus, disabled, loading. A control with no feedback reads as a control that does not work.
 - **Consistency across views.** One value keeps one colour and one label everywhere on the page — cell, chart, legend, filter.
+- **A page with views that never says where you are.** Give a page more than one view and the shell owes the reader a nav or a breadcrumb with the current one marked, and every view a way back. The review opens each of them on its own, the way a shared link does, and judges it with none of the first screen's context.
 - **Values a person can read.** No raw key, no ISO timestamp, no ID, no `[object Object]` reaching a user.
 
 </blind_spots>

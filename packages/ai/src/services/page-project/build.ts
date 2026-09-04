@@ -9,6 +9,7 @@ import {
   lintPageProject,
 } from "@fretik/shared/services/pages/lint";
 import { updatePage } from "@fretik/shared/services/pages/update";
+import type { PageVersionMeta } from "@fretik/shared/services/pages/versions";
 import type { PageRequester } from "@fretik/shared/services/pages/visibility";
 import { HTTPException } from "hono/http-exception";
 import { PAGE_JSON_FILE, parsePageJson, type PageJson } from "./page-json";
@@ -42,6 +43,8 @@ export interface BuildPageProjectInput {
   userId: string | null;
   conversationId: string | undefined;
   requester: PageRequester | undefined;
+  /** The turn, so the version can be priced later (`PageVersionMeta.traceId`). */
+  traceId?: string | undefined;
   /**
    * This build is finishing a run that died, not one the agent asked for.
    *
@@ -121,6 +124,20 @@ export const buildPageProject = async (
   // and renders whatever its code renders.
   const sections: PageJson = manifest?.value ?? {};
 
+  /**
+   * What this version cost, in our own row — the writes, and the turn to price
+   * them against. Omitted entirely when there is neither, so a restore or a
+   * hand-edit does not carry an empty object.
+   */
+  const wrote = state.writes !== undefined && state.writes.length > 0;
+  const versionMeta: PageVersionMeta | undefined =
+    wrote || input.traceId !== undefined
+      ? {
+          ...(wrote ? { writes: state.writes } : {}),
+          ...(input.traceId === undefined ? {} : { traceId: input.traceId }),
+        }
+      : undefined;
+
   const definition: PageDefinition = {
     version: 3,
     ...(sections.brief !== undefined ? { brief: sections.brief } : {}),
@@ -196,9 +213,7 @@ export const buildPageProject = async (
             },
             // What this version cost to write, in our own row. See
             // `PageVersionMeta.writes` for why it cannot live in telemetry.
-            ...(state.writes !== undefined && state.writes.length > 0
-              ? { versionMeta: { writes: state.writes } }
-              : {}),
+            ...(versionMeta === undefined ? {} : { versionMeta }),
           })
         : await createPage({
             teamId: input.teamId,
@@ -217,9 +232,7 @@ export const buildPageProject = async (
               userId: input.userId,
               conversationId: input.conversationId ?? null,
             },
-            ...(state.writes !== undefined && state.writes.length > 0
-              ? { versionMeta: { writes: state.writes } }
-              : {}),
+            ...(versionMeta === undefined ? {} : { versionMeta }),
           });
 
     return {

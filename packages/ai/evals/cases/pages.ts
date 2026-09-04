@@ -44,6 +44,7 @@ import {
   formatPageLintFinding,
   lintPageProject,
 } from "@fretik/shared/services/pages/lint";
+import { derivePageRoutesOfCode } from "@fretik/shared/services/pages/routes";
 import { and, eq, inArray } from "drizzle-orm";
 import { judgePage } from "../page-design-judge";
 import {
@@ -2320,6 +2321,195 @@ const fileToObjectsToPage: EvalCase = {
   ],
 };
 
+/**
+ * A page with views of its own.
+ *
+ * `pages/<name>.vue` became an address in the app's URL on 2026-09-04, and
+ * this is the only case that asks for one — in the user's words, never in
+ * ours: "send it to a colleague" is what a route is FOR, and a page that
+ * answers it with a slideover has answered a different question.
+ *
+ * Deliberately not a scale case. `page-giga-multi-view` already measures what
+ * a large page costs; this measures whether the builder reaches for a view
+ * when the ask names a thing somebody would link to, and whether the second
+ * view arrives as a screen rather than as a leftover.
+ */
+const miniAppListDetail: EvalCase = {
+  id: "page-mini-app-list-detail",
+  description:
+    "An ask that names a link produces a real second view — its own file, its own address — and not a panel over the list.",
+  prompt: `Build us a page for our "${ITEM_LABEL}" records: the list first, and when I open one, everything we know about that one. I need to be able to send a colleague the link to a single item and have them land straight on it.`,
+  tags: ["pages", "generation", "routing"],
+  seed: seedItems,
+  cleanup: cleanupPages,
+  budget: {
+    maxToolCalls: 24,
+    expectedTools: [
+      "searchTools",
+      "buildPage",
+      "describeCollection",
+      "managePage",
+    ],
+  },
+  assertions: [
+    { type: "noError" },
+    { type: "toolUsed", tools: pageTools },
+    pageSaved(6),
+    usesSeededType,
+    noNativeControls,
+    noFabricatedRows,
+    usesProjectFiles(3),
+    {
+      type: "custom",
+      name: "the-detail-has-its-own-address",
+      fn: async (_r, ctx) => {
+        const page = await pageForConversation(ctx);
+        if (!page) return "no page was saved";
+        const parsed = PageDefinitionSchema.safeParse(page.definition);
+        if (!parsed.success) return "the stored definition does not parse";
+        const routes = derivePageRoutesOfCode(parsed.data.code);
+        if (!routes.ok)
+          return `the page declares views that do not resolve: ${routes.errors.join(" ")}`;
+        if (routes.routes.length === 0)
+          return "the page has no views of its own — the detail cannot be sent as a link, which is what the request asked for";
+        const dynamic = routes.routes.filter(
+          (route) => route.params.length > 0,
+        );
+        if (dynamic.length === 0)
+          return `the page's views are ${routes.routes.map((route) => route.path).join(", ")} — none takes an id, so there is no address for ONE item`;
+        return true;
+      },
+    },
+    {
+      type: "custom",
+      name: "the-detail-reads-its-own-address",
+      fn: async (_r, ctx) => {
+        const page = await pageForConversation(ctx);
+        if (!page) return "no page was saved";
+        const source = pageSource(page.definition);
+        // A route whose param nothing reads renders the same screen for every
+        // id: the link works and shows the wrong record, which is worse than
+        // no link at all.
+        if (!/useRoute\s*\(/.test(source))
+          return "no view reads useRoute() — a route with an id nothing reads shows the same record for every link";
+        if (!/<RouterView|<router-view/.test(source))
+          return "the shell never renders <RouterView /> — the views cannot appear (the build should have refused this)";
+        return true;
+      },
+    },
+    datasetsReturnedRows,
+    noFinalWarnings,
+    notPublished,
+    { type: "latencyUnder", ms: BUILD_LATENCY_MS },
+    rendersAndWorks,
+    designIsAtLeastCompetent,
+    {
+      type: "judge",
+      rubric:
+        "The assistant built a page whose list opens each item on a screen of its own that can be linked to, and said so. CORRECT if it reports the page and the reader can tell an item opens on its own view reachable by link. PARTIAL if the page exists but the reply is vague about the detail, or the detail opens in a panel while the reply claims a link. INCORRECT if no page was built, or the detail is absent.",
+    },
+  ],
+};
+
+/**
+ * The opposite answer to a neighbouring question, and that is the point.
+ *
+ * Here the reader compares as they go, so the list must stay in sight — a
+ * route would take it away, and a slideover would cover it. The two cases
+ * together are what stop "always a route" from replacing "always a
+ * slideover" as the reflex: the doctrine's container tree has four answers
+ * and the suite should exercise more than one of them.
+ */
+const workbenchSplit: EvalCase = {
+  id: "page-workbench-split",
+  description:
+    "An ask that says 'keep the list in sight' gets a split, not an overlay and not a route — and the selection survives a reload.",
+  prompt: `Make me a working screen for our "${ITEM_LABEL}" records: the list on the left, the details of whichever one I have selected on the right, side by side — I go through them one after another, so I never want the list covered up or replaced. Arrow keys should move the selection, and reloading the page should keep me on the same item.`,
+  tags: ["pages", "generation", "interactivity"],
+  seed: seedItems,
+  cleanup: cleanupPages,
+  budget: {
+    maxToolCalls: 24,
+    expectedTools: [
+      "searchTools",
+      "buildPage",
+      "describeCollection",
+      "managePage",
+    ],
+  },
+  assertions: [
+    { type: "noError" },
+    { type: "toolUsed", tools: pageTools },
+    pageSaved(6),
+    usesSeededType,
+    noNativeControls,
+    noFabricatedRows,
+    usesProjectFiles(3),
+    {
+      type: "custom",
+      name: "the-list-stays-in-sight",
+      fn: async (_r, ctx) => {
+        const page = await pageForConversation(ctx);
+        if (!page) return "no page was saved";
+        const source = pageSource(page.definition);
+        // The user said it twice: never covered, never replaced. An overlay is
+        // the reflex answer and the wrong one here.
+        if (/<USlideover|<UModal|<UDrawer/.test(source))
+          return "the detail opens in an overlay — the request was explicit that the list must not be covered";
+        return true;
+      },
+    },
+    {
+      type: "custom",
+      name: "the-selection-survives-a-reload",
+      fn: async (_r, ctx) => {
+        const page = await pageForConversation(ctx);
+        if (!page) return "no page was saved";
+        const parsed = PageDefinitionSchema.safeParse(page.definition);
+        if (!parsed.success) return "the stored definition does not parse";
+        const source = pageSource(page.definition);
+        // Two honest ways to make a selection outlive a reload: a declared
+        // variable, which the host mirrors into `?v.<key>`, or a route that
+        // carries it. Either is a link somebody can send; a ref alone is not.
+        const seeded =
+          parsed.data.variables.length > 0 &&
+          /fretik\.context\.variables/.test(source);
+        const routed = derivePageRoutesOfCode(parsed.data.code);
+        const hasParam =
+          routed.ok && routed.routes.some((route) => route.params.length > 0);
+        return seeded || hasParam
+          ? true
+          : "the selection lives only in a ref — reloading loses it, and there is nothing to send. Declare it as a variable and seed it from fretik.context.variables, or give the selected item an address.";
+      },
+    },
+    {
+      type: "custom",
+      name: "arrow-keys-move-the-selection",
+      fn: async (_r, ctx) => {
+        const page = await pageForConversation(ctx);
+        if (!page) return "no page was saved";
+        const source = pageSource(page.definition);
+        return /ArrowDown|ArrowUp|defineShortcuts|arrowdown|arrowup/.test(
+          source,
+        )
+          ? true
+          : "nothing handles the arrow keys, though going through items one after another was the stated way this screen is used";
+      },
+    },
+    datasetsReturnedRows,
+    noFinalWarnings,
+    notPublished,
+    { type: "latencyUnder", ms: BUILD_LATENCY_MS },
+    rendersAndWorks,
+    designIsAtLeastCompetent,
+    {
+      type: "judge",
+      rubric:
+        "The assistant built a screen with the list and the detail side by side, keyboard movement between items, and a selection that survives a reload, and described it. CORRECT if it reports the page and the reader can tell the list and the detail are visible together. PARTIAL if the page exists but the reply is vague, or one of the three (side-by-side, arrow keys, selection kept) is missing and unmentioned. INCORRECT if no page was built, or the detail replaces or covers the list.",
+    },
+  ],
+};
+
 export const pagesSuite: EvalSuite = {
   name: "pages",
   summary:
@@ -2338,5 +2528,7 @@ export const pagesSuite: EvalSuite = {
     consolePage,
     scheduledPage,
     fileToObjectsToPage,
+    miniAppListDetail,
+    workbenchSplit,
   ],
 };

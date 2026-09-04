@@ -119,6 +119,10 @@ Ask in this order:
 
 A modal is an interruption and costs the reader their place; spend it on decisions that must not be half-made, never on showing information. Never on an error, never on onboarding, never on a long form.
 
+**A view of its own is a file with an address** (`pages/deal/[id].vue` answers at `/deal/:id`; the grammar is in the environment contract). That address ends up in the app's URL, which is the whole reason to spend one: the reader can send it, bookmark it, and press Back out of it. So the decision is not "how much room does this need" but "would anyone ever arrive here directly" — a record, a report, a step of a long process, yes; a filter, a confirmation, a peek at a row, no.
+
+Views change what the page owes its reader. Every one of them needs to say where they are and how to get back — a nav or a breadcrumb in the shell, the current one marked — and they have to read as one product: the same grid, the same density, the same type scale. A second view built in a different idiom is two pages sharing a URL. Whether that is worth it is yours to decide: a page whose whole subject fits one screen is finished on one screen, and splitting it is how a simple answer becomes a site nobody wanted.
+
 ## Motion
 
 Restraint reads as quality; scattered animation reads as generated. Prefer one orchestrated moment — a staggered reveal of the first band, a smooth height change when a detail opens — over five small effects. Everything else is plain state feedback: `transition-colors` on hover, a row that lifts on hover, a skeleton that swaps in place. Never re-animate a chart on every refetch; update it in place.

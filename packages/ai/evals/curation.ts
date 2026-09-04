@@ -283,4 +283,15 @@ export const CURATED: Record<string, CuratedCase> = {
   // chose, so it grades the chain and not the assistant's vocabulary.
   // tool-use (1)
   "page-from-uploaded-file": { capability: "tool-use" },
+  // ── Views of its own (2026-09-04). A page became able to hold several
+  // screens, each with an address in the app's URL, and nothing measured
+  // whether the builder reaches for one — or, just as importantly, whether it
+  // now reaches for one everywhere. The two cases are deliberately opposite
+  // answers to neighbouring asks: "send a colleague the link to one item"
+  // wants a view, "I never want the list covered up" wants a split. One
+  // without the other would replace the old slideover reflex with a route
+  // reflex and measure nothing.
+  // generation (2)
+  "page-mini-app-list-detail": { capability: "generation" },
+  "page-workbench-split": { capability: "generation" },
 };

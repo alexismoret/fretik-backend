@@ -56,6 +56,19 @@ export interface PageVersionMeta {
     charsEmitted: number;
     ratio: number;
   }[];
+  /**
+   * The TURN this version was written in, so its cost can be looked up.
+   *
+   * Characters emitted say what a page cost to WRITE; they say nothing about
+   * what it cost to think — and on a builder whose input is a cached prefix
+   * replayed once per step, the thinking is most of the bill. Langfuse prices
+   * a trace and this is the key to ask it with (`pages:measure-writes`).
+   *
+   * The whole turn, not the build alone: the builder's generations nest under
+   * the trace that dispatched it, and a turn that built a page is a turn that
+   * was about building a page.
+   */
+  traceId?: string;
 }
 
 type TxCallback = Parameters<typeof db.transaction>[0];

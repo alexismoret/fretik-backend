@@ -24,7 +24,7 @@ export const createPageReadTool = () =>
         .string()
         .optional()
         .describe(
-          `Which file — "${PAGE_ENTRY_FILE}", "components/Name.vue", "composables/useName.ts", "lib/name.ts". Omit for the manifest.`,
+          `Which file — "${PAGE_ENTRY_FILE}", "components/Name.vue", "pages/name.vue", "composables/useName.ts", "lib/name.ts". Omit for the manifest.`,
         ),
       pageId: z
         .uuid()

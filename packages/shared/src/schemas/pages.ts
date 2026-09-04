@@ -860,12 +860,19 @@ export const PAGE_ENTRY_FILE = "Page.vue";
  *
  * A grammar rather than a free path, for two reasons. The compiler derives
  * behaviour from the SHAPE — `components/<Pascal>.vue` is auto-registered as
- * `<Pascal>`, so the name is an interface, not a label — and a model writing
- * files invents directory conventions on the spot unless the tool refuses
- * them. Three directories, one purpose each, no nesting.
+ * `<Pascal>`, `pages/<kebab>/[<param>].vue` becomes the route `/<kebab>/:<param>`
+ * — so the name is an interface, not a label; and a model writing files
+ * invents directory conventions on the spot unless the tool refuses them.
+ *
+ * Four directories, one purpose each. Only `pages/` nests, exactly once: the
+ * depth is what separates a mini-app's views from a directory tree nobody
+ * asked for, and one level covers list → record, which is the shape that
+ * wanted routes in the first place. A `[param]` may not sit at the first
+ * level — `pages/[id].vue` would answer at `/anything` and swallow every
+ * static view the page has.
  */
 export const PAGE_FILE_PATH_RE =
-  /^(?:components\/[A-Z][A-Za-z0-9]{0,39}\.vue|composables\/use[A-Z][A-Za-z0-9]{0,39}\.ts|lib\/[a-z][a-zA-Z0-9-]{0,39}\.ts)$/;
+  /^(?:components\/[A-Z][A-Za-z0-9]{0,39}\.vue|composables\/use[A-Z][A-Za-z0-9]{0,39}\.ts|lib\/[a-z][a-zA-Z0-9-]{0,39}\.ts|pages\/(?:index|[a-z][a-z0-9-]{0,39}(?:\/(?:index|[a-z][a-z0-9-]{0,39}|\[[a-z][a-zA-Z0-9]{0,29}\]))?)\.vue)$/;
 
 export const PageCodeSchema = z
   .object({

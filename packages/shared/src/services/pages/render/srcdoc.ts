@@ -45,6 +45,7 @@ export const buildPageSrcdoc = (params: {
   const importMap = JSON.stringify({
     imports: {
       vue: `${assetsBase}/vue.js`,
+      "vue-router": `${assetsBase}/router.js`,
       "@nuxt/ui": `${assetsBase}/ui.js`,
       "chart.js": `${assetsBase}/chart.js`,
       "chart.js/auto": `${assetsBase}/chart.js`,

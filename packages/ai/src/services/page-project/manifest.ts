@@ -1,4 +1,9 @@
 import { PAGE_ENTRY_FILE } from "@fretik/shared/schemas/pages";
+import {
+  derivePageRoutes,
+  formatRouteTable,
+  projectHasRoutes,
+} from "@fretik/shared/services/pages/routes";
 
 /**
  * What the project LOOKS like, in the fewest lines that still let an agent
@@ -93,10 +98,12 @@ const signature = (path: string, content: string): string => {
 };
 
 /**
- * The project as a table: `path  N lines  what it offers`.
+ * The project as a table: `path  N lines  what it offers`, and — when the page
+ * has views of its own — the addresses they answer at.
  *
  * The entry comes first, then components, then the rest — the order somebody
- * reads a project in, not alphabetical order.
+ * reads a project in, not alphabetical order. The route line goes LAST, where
+ * it reads as what the files add up to rather than as a heading.
  */
 export const renderProjectManifest = (
   files: Record<string, string>,
@@ -108,7 +115,7 @@ export const renderProjectManifest = (
   });
   if (paths.length === 0) return "(no files yet)";
   const width = Math.min(Math.max(...paths.map((path) => path.length)) + 2, 34);
-  return paths
+  const table = paths
     .map((path) => {
       const content = files[path] ?? "";
       const lines = content === "" ? 0 : content.split("\n").length;
@@ -116,4 +123,7 @@ export const renderProjectManifest = (
       return `${path.padEnd(width)}${`${lines.toString()} lines`.padEnd(11)}${note}`.trimEnd();
     })
     .join("\n");
+
+  if (!projectHasRoutes(paths)) return table;
+  return `${table}\nroutes: ${formatRouteTable(derivePageRoutes(paths))}`;
 };

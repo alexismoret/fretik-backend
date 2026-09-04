@@ -14,6 +14,7 @@ import {
   type PageDefinition,
 } from "../../schemas/pages";
 import { autofixPageSource, type PageAutofix } from "./autofix";
+import { derivePageRoutes, type PageRoute } from "./routes";
 
 /**
  * Server-side compile of a page's Vue SFC — validation and build in one step.
@@ -34,7 +35,21 @@ import { autofixPageSource, type PageAutofix } from "./autofix";
  * tokens so utilities resolve against the runtime.css variables).
  */
 
-export const PAGE_RUNTIME_VERSION = "v1";
+/**
+ * Which `/page-runtime/<version>/` assets a fresh compile is built against.
+ *
+ * DEPLOY ORDER IS LOAD-BEARING, in this direction only: the frame imports
+ * these files from the APP origin, so the app carrying `v2/` must be live
+ * before the backend starts stamping `v2` on compiles. Ship them the other way
+ * round and every page compiled in between renders a blank frame, because its
+ * import map points at files nobody is serving yet.
+ *
+ * Nothing breaks for pages already stored: `compiled.runtimeVersion` travels
+ * with the artifact and decides that page's import map, and `v1/` stays
+ * committed and served until the last page compiled against it has been
+ * rebuilt.
+ */
+export const PAGE_RUNTIME_VERSION = "v2";
 
 /** Import specifiers the iframe's import map serves. Anything else cannot
  * resolve at runtime, so it is refused at compile time with its name.
@@ -67,6 +82,10 @@ export const PAGE_RUNTIME_VERSION = "v1";
  */
 const ALLOWED_IMPORTS = new Set([
   "vue",
+  // A view reads its own address: `useRoute().params.id`. `RouterLink` and
+  // `RouterView` need no import — the SDK installs the router, which registers
+  // both globally.
+  "vue-router",
   "@nuxt/ui",
   "#fretik/sdk",
   "chart.js",
@@ -77,6 +96,21 @@ const ALLOWED_IMPORTS = new Set([
   "@atlaskit/pragmatic-drag-and-drop/combine",
   "@atlaskit/pragmatic-drag-and-drop/reorder",
   "@atlaskit/pragmatic-drag-and-drop-hitbox/closest-edge",
+]);
+
+/**
+ * Modules this compiler writes into the build itself.
+ *
+ * Both are lookup tables the SHAPE of the project decides — which components
+ * exist, which views answer where — so neither can be written by hand without
+ * being able to disagree with the files. They sit at the build root under
+ * names no project path can collide with (`PAGE_FILE_PATH_RE` has no `__`).
+ */
+const COMPONENT_REGISTRY_MODULE = "__components.js";
+const ROUTE_REGISTRY_MODULE = "__routes.js";
+const GENERATED_MODULES = new Set([
+  COMPONENT_REGISTRY_MODULE,
+  ROUTE_REGISTRY_MODULE,
 ]);
 
 export interface PageCompileError {
@@ -314,7 +348,7 @@ interface SfcOutput {
  */
 const compileSfc = (
   source: string,
-  options: { path: string; isEntry: boolean } = {
+  options: { path: string; isEntry: boolean; hasRoutes?: boolean } = {
     path: PAGE_ENTRY_FILE,
     isEntry: true,
   },
@@ -388,8 +422,13 @@ const compileSfc = (
   }
 
   if (scoped) js += `\n__page__.__scopeId = ${JSON.stringify(scopeId)};`;
+  // The mount call is byte-identical to what it always was for a page with no
+  // views of its own — which is what keeps every stored page's `sourceHash`
+  // and every test written against that text valid.
   js += options.isEntry
-    ? `\nimport { mountPage as __fretikMountPage } from "#fretik/sdk";\n__fretikMountPage(__page__);\nexport default __page__;`
+    ? options.hasRoutes === true
+      ? `\nimport { mountPage as __fretikMountPage } from "#fretik/sdk";\nimport { routes as __fretikRoutes } from "./${ROUTE_REGISTRY_MODULE}";\n__fretikMountPage(__page__, { routes: __fretikRoutes });\nexport default __page__;`
+      : `\nimport { mountPage as __fretikMountPage } from "#fretik/sdk";\n__fretikMountPage(__page__);\nexport default __page__;`
     : `\nexport default __page__;`;
 
   if (isTs) {
@@ -451,6 +490,12 @@ const importErrors = (
   });
   for (const found of transpiler.scanImports(js)) {
     if (ALLOWED_IMPORTS.has(found.path)) continue;
+    // The registries this compiler generates and wires itself. Allowed, and
+    // deliberately absent from `declared`: they are not the page's files, and
+    // naming them in the "its files are" line would offer the agent a module
+    // it must never write.
+    if (GENERATED_MODULES.has(found.path.replace(/^(?:\.\.?\/)+/, "")))
+      continue;
     if (found.path.startsWith("./") || found.path.startsWith("../")) {
       const target = resolveProjectImport(context.from, found.path);
       if (target !== null && context.declared.has(target)) continue;
@@ -636,7 +681,7 @@ const compileTailwind = async (
  * and a literal would capture `undefined` for good. A getter reads the live
  * binding when Vue actually resolves the tag.
  */
-const componentRegistryModule = (componentPaths: string[]): string => {
+const componentRegistryModule = (componentPaths: readonly string[]): string => {
   const lines = ["export const components = {};"];
   componentPaths.forEach((path, index) => {
     const name = path.slice("components/".length, -".vue".length);
@@ -650,13 +695,47 @@ const componentRegistryModule = (componentPaths: string[]): string => {
   return lines.join("\n");
 };
 
+/**
+ * The route table the SDK mounts the page with.
+ *
+ * Static imports, not the lazy ones a real Nuxt app would use: the whole page
+ * is already one module the frame loads in a single request, so splitting it
+ * would buy a second request for something the reader has by then already
+ * downloaded. The route's `component` is the view's default export, which is
+ * why `pages/*.vue` compiles exactly like a component and not like the entry.
+ */
+const routeRegistryModule = (routes: readonly PageRoute[]): string => {
+  const lines = routes.map(
+    (route, index) =>
+      `  { path: ${JSON.stringify(route.path)}, name: ${JSON.stringify(route.name)}, component: __v${index.toString()} },`,
+  );
+  return [
+    ...routes.map(
+      (route, index) =>
+        `import __v${index.toString()} from "./${modulePath(route.file)}";`,
+    ),
+    "export const routes = [",
+    ...lines,
+    "];",
+  ].join("\n");
+};
+
 /** Where a project path's compiled module sits in the build scratch. */
 const modulePath = (path: string): string =>
   path.endsWith(".vue") ? `${path}.js` : path;
 
-/** How a module at `from` reaches the registry at the build root. */
-const registrySpecifier = (from: string): string =>
-  from.includes("/") ? "../__components.js" : "./__components.js";
+/**
+ * How a module at `from` reaches a generated registry at the build root.
+ *
+ * Counts segments rather than testing for a slash: `pages/` nests, so
+ * `pages/deal/[id].vue` is two directories down and `../` alone would resolve
+ * to `pages/__components.js` — a module that does not exist, and a link error
+ * naming a file the agent never wrote.
+ */
+const registrySpecifier = (from: string, module: string): string => {
+  const depth = from.split("/").length - 1;
+  return depth === 0 ? `./${module}` : `${"../".repeat(depth)}${module}`;
+};
 
 /**
  * Link the project's modules into the ONE ES module the iframe loads.
@@ -741,6 +820,18 @@ const buildModules = async (
     .map(([path]) => path)
     .filter((path) => path.startsWith("components/"));
 
+  const derived = derivePageRoutes(project.map(([path]) => path));
+  if (!derived.ok) {
+    return {
+      ok: false,
+      errors: derived.errors.map((message) => ({
+        block: "structure",
+        message,
+      })),
+    };
+  }
+  const routes = derived.routes;
+
   const modules: [string, string][] = [];
   const errors: PageCompileError[] = [];
   let css = "";
@@ -754,7 +845,11 @@ const buildModules = async (
       continue;
     }
     const isEntry = path === PAGE_ENTRY_FILE;
-    const sfc = compileSfc(content, { path, isEntry });
+    const sfc = compileSfc(content, {
+      path,
+      isEntry,
+      hasRoutes: routes.length > 0,
+    });
     if (!sfc.ok) {
       errors.push(...sfc.errors);
       continue;
@@ -763,7 +858,7 @@ const buildModules = async (
     css += sfc.output.css;
     const registry =
       componentPaths.length > 0
-        ? `\nimport { components as __fretikComponents } from ${JSON.stringify(registrySpecifier(path))};\n__page__.components = __fretikComponents;`
+        ? `\nimport { components as __fretikComponents } from ${JSON.stringify(registrySpecifier(path, COMPONENT_REGISTRY_MODULE))};\n__page__.components = __fretikComponents;`
         : "";
     modules.push([modulePath(path), `${sfc.output.js}${registry}`]);
   }
@@ -780,7 +875,13 @@ const buildModules = async (
   }
   if (project.length === 1) return { ok: true, output: { js: entry[1], css } };
 
-  modules.push(["__components.js", componentRegistryModule(componentPaths)]);
+  modules.push([
+    COMPONENT_REGISTRY_MODULE,
+    componentRegistryModule(componentPaths),
+  ]);
+  if (routes.length > 0) {
+    modules.push([ROUTE_REGISTRY_MODULE, routeRegistryModule(routes)]);
+  }
   const linked = await bundleProject(modules);
   if (!linked.ok) return { ok: false, errors: [linked.error] };
   return { ok: true, output: { js: linked.js, css } };

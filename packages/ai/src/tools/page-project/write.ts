@@ -45,7 +45,7 @@ const FileSchema = z.object({
   path: z
     .string()
     .describe(
-      `"${PAGE_ENTRY_FILE}" (the page itself), "components/Name.vue" (usable as <Name> anywhere, no import), "composables/useName.ts", "lib/name.ts", "page.json".`,
+      `"${PAGE_ENTRY_FILE}" (the page itself, or the shell when there are views), "components/Name.vue" (usable as <Name> anywhere, no import), "pages/index.vue" + "pages/name.vue" + "pages/name/[param].vue" (views with their own address — writing any of them requires pages/index.vue and a <RouterView /> in ${PAGE_ENTRY_FILE}), "composables/useName.ts", "lib/name.ts", "page.json".`,
     ),
   content: z
     .string()
@@ -95,7 +95,7 @@ export const createPageWriteTool = () =>
           outcomes.push({
             path,
             error: `"${path}" is not a path this page can have.`,
-            hint: `Use ${PAGE_ENTRY_FILE}, ${PAGE_JSON_FILE}, components/<PascalName>.vue, composables/use<Name>.ts, or lib/<name>.ts — one level deep, no other directories.`,
+            hint: `Use ${PAGE_ENTRY_FILE}, ${PAGE_JSON_FILE}, components/<PascalName>.vue, composables/use<Name>.ts, lib/<name>.ts, or a view: pages/index.vue, pages/<kebab>.vue, pages/<kebab>/[param].vue. Only pages/ nests, once — no other directories.`,
           });
           continue;
         }

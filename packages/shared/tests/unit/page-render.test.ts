@@ -91,8 +91,14 @@ describe("page srcdoc", () => {
       parentOrigin: "http://host",
     });
     expect(plain).toContain("connect-src 'none'");
+    // Read off the artifact, not written as a literal: what makes a page's
+    // frame load the right assets is that the map follows the version the
+    // compile stamped, and a hard-coded version tests the constant instead.
     expect(plain).toContain(
-      '"#fretik/sdk":"http://host/page-runtime/v1/sdk.js"',
+      `"#fretik/sdk":"http://host/page-runtime/${result.compiled.runtimeVersion}/sdk.js"`,
+    );
+    expect(plain).toContain(
+      `"vue-router":"http://host/page-runtime/${result.compiled.runtimeVersion}/router.js"`,
     );
     // The document a user's browser loads must never carry the probe.
     expect(plain).not.toContain("__probe__");

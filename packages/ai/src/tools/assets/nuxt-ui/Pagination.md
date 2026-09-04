@@ -74,7 +74,7 @@ interface PaginationProps {
   ui?: { root?: SlotClass; list?: SlotClass; ellipsis?: SlotClass; label?: SlotClass; first?: SlotClass; prev?: SlotClass; item?: SlotClass; next?: SlotClass; last?: SlotClass; } | undefined;
   /**
    * The value of the page that should be active when initially rendered.
-   *
+   * 
    * Use when you do not need to control the value state.
    */
   defaultPage?: number | undefined;
@@ -136,13 +136,17 @@ interface PaginationEmits {
 }
 ```
 
+## Composition
+
+Parts placed by name: `#first`, `#prev`, `#next`, `#last`, `#ellipsis`, `#item`.
+
 ## Usage
 
 Use the `default-page` prop or the `v-model:page` directive to control the current page.
 
 ```vue
 <script setup lang="ts">
-const page = ref(5);
+const page = ref(5)
 </script>
 
 <template>
@@ -150,9 +154,9 @@ const page = ref(5);
 </template>
 ```
 
-> \[!NOTE]
->
-> The Pagination component uses some [`Button`](https://ui.nuxt.com/docs/components/button) to display the pages, use [`color`](https://ui.nuxt.com/#color), [`variant`](https://ui.nuxt.com/#variant) and [`size`](https://ui.nuxt.com/#size) props to style them.
+> [!NOTE]
+> 
+> The Pagination component uses some [`Button`](https://ui.nuxt.com/docs/components/button) to display the pages, use [`color`](#color), [`variant`](#variant) and [`size`](#size) props to style them.
 
 ### Total
 
@@ -160,7 +164,7 @@ Use the `total` prop to set the total number of items in the list.
 
 ```vue
 <script setup lang="ts">
-const page = ref(5);
+const page = ref(5)
 </script>
 
 <template>
@@ -174,7 +178,7 @@ Use the `items-per-page` prop to set the number of items per page. Defaults to `
 
 ```vue
 <script setup lang="ts">
-const page = ref(5);
+const page = ref(5)
 </script>
 
 <template>
@@ -188,7 +192,7 @@ Use the `sibling-count` prop to set the number of siblings to show. Defaults to 
 
 ```vue
 <script setup lang="ts">
-const page = ref(5);
+const page = ref(5)
 </script>
 
 <template>
@@ -202,7 +206,7 @@ Use the `show-edges` prop to always show the ellipsis, first and last pages. Def
 
 ```vue
 <script setup lang="ts">
-const page = ref(5);
+const page = ref(5)
 </script>
 
 <template>
@@ -216,16 +220,11 @@ Use the `show-controls` prop to show the first, prev, next and last buttons. Def
 
 ```vue
 <script setup lang="ts">
-const page = ref(5);
+const page = ref(5)
 </script>
 
 <template>
-  <UPagination
-    v-model:page="page"
-    :show-controls="false"
-    show-edges
-    :total="100"
-  />
+  <UPagination v-model:page="page" :show-controls="false" show-edges :total="100" />
 </template>
 ```
 
@@ -235,7 +234,7 @@ Use the `color` prop to set the color of the inactive controls. Defaults to `neu
 
 ```vue
 <script setup lang="ts">
-const page = ref(5);
+const page = ref(5)
 </script>
 
 <template>
@@ -249,16 +248,11 @@ Use the `variant` prop to set the variant of the inactive controls. Defaults to 
 
 ```vue
 <script setup lang="ts">
-const page = ref(5);
+const page = ref(5)
 </script>
 
 <template>
-  <UPagination
-    v-model:page="page"
-    color="neutral"
-    variant="subtle"
-    :total="100"
-  />
+  <UPagination v-model:page="page" color="neutral" variant="subtle" :total="100" />
 </template>
 ```
 
@@ -268,7 +262,7 @@ Use the `active-color` prop to set the color of the active control. Defaults to 
 
 ```vue
 <script setup lang="ts">
-const page = ref(5);
+const page = ref(5)
 </script>
 
 <template>
@@ -282,16 +276,11 @@ Use the `active-variant` prop to set the variant of the active control. Defaults
 
 ```vue
 <script setup lang="ts">
-const page = ref(5);
+const page = ref(5)
 </script>
 
 <template>
-  <UPagination
-    v-model:page="page"
-    active-color="primary"
-    active-variant="subtle"
-    :total="100"
-  />
+  <UPagination v-model:page="page" active-color="primary" active-variant="subtle" :total="100" />
 </template>
 ```
 
@@ -301,7 +290,7 @@ Use the `size` prop to set the size of the controls. Defaults to `md`.
 
 ```vue
 <script setup lang="ts">
-const page = ref(5);
+const page = ref(5)
 </script>
 
 <template>
@@ -315,7 +304,7 @@ Use the `disabled` prop to disable the pagination controls.
 
 ```vue
 <script setup lang="ts">
-const page = ref(5);
+const page = ref(5)
 </script>
 
 <template>
@@ -331,29 +320,23 @@ Use the `to` prop to transform buttons into links. Pass a function that receives
 
 ```vue [PaginationLinksExample.vue]
 <script setup lang="ts">
-const page = ref(5);
+const page = ref(5)
 
 function to(page: number) {
   return {
     query: {
-      page,
+      page
     },
-    hash: "#with-links",
-  };
+    hash: '#with-links'
+  }
 }
 </script>
 
 <template>
-  <UPagination
-    v-model:page="page"
-    :total="100"
-    :to="to"
-    :sibling-count="1"
-    show-edges
-  />
+  <UPagination v-model:page="page" :total="100" :to="to" :sibling-count="1" show-edges />
 </template>
 ```
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > In this example we're adding the `#with-links` hash to avoid going to the top of the page.

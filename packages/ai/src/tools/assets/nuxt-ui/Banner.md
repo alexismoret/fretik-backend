@@ -32,20 +32,11 @@ interface BannerProps {
    */
   actions?: ButtonProps[] | undefined;
   to?: string | it | et | undefined;
-  target?:
-    null | "_blank" | "_parent" | "_self" | "_top" | (string & {}) | undefined;
+  target?: null | "_blank" | "_parent" | "_self" | "_top" | string & {} | undefined;
   /**
    * @default 'primary'
    */
-  color?:
-    | "error"
-    | "primary"
-    | "secondary"
-    | "success"
-    | "info"
-    | "warning"
-    | "neutral"
-    | undefined;
+  color?: "error" | "primary" | "secondary" | "success" | "info" | "warning" | "neutral" | undefined;
   /**
    * Display a close button to dismiss the banner.
    * `{ size: 'md', color: 'neutral', variant: 'ghost' }`{lang="ts-type"}
@@ -57,19 +48,7 @@ interface BannerProps {
    * @default appConfig.ui.icons.close
    */
   closeIcon?: any;
-  ui?:
-    | {
-        root?: SlotClass;
-        container?: SlotClass;
-        left?: SlotClass;
-        center?: SlotClass;
-        right?: SlotClass;
-        icon?: SlotClass;
-        title?: SlotClass;
-        actions?: SlotClass;
-        close?: SlotClass;
-      }
-    | undefined;
+  ui?: { root?: SlotClass; container?: SlotClass; left?: SlotClass; center?: SlotClass; right?: SlotClass; icon?: SlotClass; title?: SlotClass; actions?: SlotClass; close?: SlotClass; } | undefined;
 }
 ```
 
@@ -97,6 +76,10 @@ interface BannerEmits {
   close: (payload: []) => void;
 }
 ```
+
+## Composition
+
+Parts placed by name: `#actions`, `#close`.
 
 ## Usage
 
@@ -126,11 +109,7 @@ Use the `color` prop to change the color of the Banner.
 
 ```vue
 <template>
-  <UBanner
-    color="neutral"
-    icon="i-lucide-info"
-    title="This is a banner with an icon."
-  />
+  <UBanner color="neutral" icon="i-lucide-info" title="This is a banner with an icon." />
 </template>
 ```
 
@@ -138,32 +117,32 @@ Use the `color` prop to change the color of the Banner.
 
 Use the `close` prop to display a [Button](https://ui.nuxt.com/docs/components/button) to dismiss the Banner. Defaults to `false`.
 
-> \[!TIP]
->
+> [!TIP]
+> 
 > A `close` event will be emitted when the close button is clicked.
 
 ```vue [BannerExample.vue]
 <script setup lang="ts">
-import type { BannerProps } from "@nuxt/ui";
+import type { BannerProps } from '@nuxt/ui'
 
-const { id = "example" } = defineProps<{
-  id?: string;
-  title?: string;
-  color?: BannerProps["color"];
-  closeIcon?: string;
-}>();
+const { id = 'example' } = defineProps<{
+  id?: string
+  title?: string
+  color?: BannerProps['color']
+  closeIcon?: string
+}>()
 
 function onClose() {
-  localStorage.removeItem(`banner-${id}`);
+  localStorage.removeItem(`banner-${id}`)
 
   setTimeout(() => {
-    document.querySelector("html")?.classList.remove("hide-banner");
-  }, 1000);
+    document.querySelector('html')?.classList.remove('hide-banner')
+  }, 1000)
 }
 
 onBeforeMount(() => {
-  localStorage.removeItem(`banner-${id}`);
-});
+  localStorage.removeItem(`banner-${id}`)
+})
 </script>
 
 <template>
@@ -178,12 +157,14 @@ onBeforeMount(() => {
 </template>
 ```
 
-> \[!NOTE]
->
-> When closed, `banner-${id}` will be stored in the local storage to prevent it from being displayed again. :br For the example above, `banner-example` will be stored in the local storage.
+> [!NOTE]
+> 
+> When closed, `banner-${id}` will be stored in the local storage to prevent it from being displayed again. <br />
+> 
+>  For the example above, `banner-example` will be stored in the local storage.
 
-> \[!CAUTION]
->
+> [!CAUTION]
+> 
 > To persist the dismissed state across page reloads, you must specify an `id` prop. Without an explicit `id`, the banner will only be hidden for the current session and will reappear on page reload.
 
 ### Close Icon
@@ -192,26 +173,26 @@ Use the `close-icon` prop to customize the close button [Icon](https://ui.nuxt.c
 
 ```vue [BannerExample.vue]
 <script setup lang="ts">
-import type { BannerProps } from "@nuxt/ui";
+import type { BannerProps } from '@nuxt/ui'
 
-const { id = "example" } = defineProps<{
-  id?: string;
-  title?: string;
-  color?: BannerProps["color"];
-  closeIcon?: string;
-}>();
+const { id = 'example' } = defineProps<{
+  id?: string
+  title?: string
+  color?: BannerProps['color']
+  closeIcon?: string
+}>()
 
 function onClose() {
-  localStorage.removeItem(`banner-${id}`);
+  localStorage.removeItem(`banner-${id}`)
 
   setTimeout(() => {
-    document.querySelector("html")?.classList.remove("hide-banner");
-  }, 1000);
+    document.querySelector('html')?.classList.remove('hide-banner')
+  }, 1000)
 }
 
 onBeforeMount(() => {
-  localStorage.removeItem(`banner-${id}`);
-});
+  localStorage.removeItem(`banner-${id}`)
+})
 </script>
 
 <template>
@@ -228,16 +209,16 @@ onBeforeMount(() => {
 
 **Nuxt:**
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/getting-started/integrations/icons/nuxt#theme
->
+> 
 > You can customize this icon globally in your `app.config.ts` under `ui.icons.close` key.
 
 **Vue:**
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/getting-started/integrations/icons/vue#theme
->
+> 
 > You can customize this icon globally in your `vite.config.ts` under `ui.icons.close` key.
 
 ### Actions
@@ -246,18 +227,18 @@ Use the `actions` prop to add some [Button](https://ui.nuxt.com/docs/components/
 
 ```vue
 <script setup lang="ts">
-import type { ButtonProps } from "@nuxt/ui";
+import type { ButtonProps } from '@nuxt/ui'
 
 const actions = ref<ButtonProps[]>([
   {
     label: "Action 1",
-    variant: "outline",
+    variant: "outline"
   },
   {
     label: "Action 2",
-    trailingIcon: "i-lucide-arrow-right",
-  },
-]);
+    trailingIcon: "i-lucide-arrow-right"
+  }
+])
 </script>
 
 <template>
@@ -265,27 +246,22 @@ const actions = ref<ButtonProps[]>([
 </template>
 ```
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > The action buttons default to `color="neutral"` and `size="xs"`. You can customize these values by passing them directly to each action button.
 
 ### Link
 
-You can pass any property from the [`<NuxtLink>`](https://nuxt.com/docs/api/components/nuxt-link){rel="&#x22;nofollow&#x22;"} component such as `to`, `target`, `rel`, etc.
+You can pass any property from the [`<NuxtLink>`](https://nuxt.com/docs/api/components/nuxt-link) component such as `to`, `target`, `rel`, etc.
 
 ```vue
 <template>
-  <UBanner
-    to="https://nuxtlabs.com/"
-    target="_blank"
-    title="NuxtLabs is joining Vercel!"
-    color="primary"
-  />
+  <UBanner to="https://nuxtlabs.com/" target="_blank" title="NuxtLabs is joining Vercel!" color="primary" />
 </template>
 ```
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > The `NuxtLink` component will inherit all other attributes you pass to the `User` component.
 
 ## Examples
@@ -294,13 +270,10 @@ You can pass any property from the [`<NuxtLink>`](https://nuxt.com/docs/api/comp
 
 Use the Banner component in your `app.vue` or in a layout:
 
-```vue [app.vue] {3}
+```vue [app.vue]
 <template>
   <UApp>
-    <UBanner
-      icon="i-lucide-construction"
-      title="Nuxt UI v4 has been released!"
-    />
+    <UBanner icon="i-lucide-construction" title="Nuxt UI v4 has been released!" />
 
     <UHeader />
 

@@ -23,15 +23,7 @@ interface SliderProps {
   /**
    * @default 'primary'
    */
-  color?:
-    | "primary"
-    | "secondary"
-    | "success"
-    | "info"
-    | "warning"
-    | "error"
-    | "neutral"
-    | undefined;
+  color?: "primary" | "secondary" | "success" | "info" | "warning" | "error" | "neutral" | undefined;
   /**
    * The orientation of the slider.
    * @default 'horizontal'
@@ -47,14 +39,7 @@ interface SliderProps {
    * The value of the slider when initially rendered. Use when you do not need to control the state of the slider.
    */
   defaultValue?: number | number[] | undefined;
-  ui?:
-    | {
-        root?: SlotClass;
-        track?: SlotClass;
-        range?: SlotClass;
-        thumb?: SlotClass;
-      }
-    | undefined;
+  ui?: { root?: SlotClass; track?: SlotClass; range?: SlotClass; thumb?: SlotClass; } | undefined;
   /**
    * The name of the field. Submitted with its owning form as part of a name/value pair.
    */
@@ -108,7 +93,7 @@ Use the `v-model` directive to control the value of the Slider.
 
 ```vue
 <script setup lang="ts">
-const value = ref(50);
+const value = ref(50)
 </script>
 
 <template>
@@ -124,10 +109,10 @@ Use the `default-value` prop to set the initial value when you do not need to co
 </template>
 ```
 
-> \[!TIP]
->
+> [!TIP]
+> 
 > Use `aria-label` or `aria-labelledby` to name a single thumb Slider, they are forwarded to the thumb which is the element with the `slider` role.
->
+> 
 > The thumbs of a multiple thumbs Slider are named by their position so they can be told apart, `Minimum` / `Maximum` for two thumbs and `Value n of m` for three or more. Those names are kept, and an `aria-label` names the Slider as a whole through a `group` role on the root instead of being repeated on every thumb.
 
 ### Min / Max
@@ -156,7 +141,10 @@ Use the `v-model` directive or the `default-value` prop with an array of values 
 
 ```vue
 <script setup lang="ts">
-const value = ref([25, 75]);
+const value = ref([
+  25,
+  75
+])
 </script>
 
 <template>
@@ -168,7 +156,11 @@ Use the `min-steps-between-thumbs` prop to limit the minimum distance between th
 
 ```vue
 <script setup lang="ts">
-const value = ref([25, 50, 75]);
+const value = ref([
+  25,
+  50,
+  75
+])
 </script>
 
 <template>

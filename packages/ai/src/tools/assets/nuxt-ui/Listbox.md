@@ -174,71 +174,75 @@ interface ListboxEmits {
 }
 ```
 
+## Composition
+
+Parts placed by name: `#loading`, `#empty`, `#item`, `#item-leading`, `#item-label`, `#item-description`, `#item-trailing`.
+
 ## Usage
 
 Use the `v-model` directive to control the value of the Listbox or the `default-value` prop to set the initial value when you do not need to control its state.
 
 ```vue
 <script setup lang="ts">
-import type { ListboxItem } from "@nuxt/ui";
+import type { ListboxItem } from '@nuxt/ui'
 
 const items = ref<ListboxItem[]>([
   {
     label: "France",
     icon: "i-lucide-map-pin",
-    value: "FR",
+    value: "FR"
   },
   {
     label: "Germany",
     icon: "i-lucide-map-pin",
-    value: "DE",
+    value: "DE"
   },
   {
     label: "Italy",
     icon: "i-lucide-map-pin",
-    value: "IT",
+    value: "IT"
   },
   {
     label: "Spain",
     icon: "i-lucide-map-pin",
-    value: "ES",
+    value: "ES"
   },
   {
     label: "Netherlands",
     icon: "i-lucide-map-pin",
-    value: "NL",
+    value: "NL"
   },
   {
     label: "Poland",
     icon: "i-lucide-map-pin",
-    value: "PL",
+    value: "PL"
   },
   {
     label: "Belgium",
     icon: "i-lucide-map-pin",
-    value: "BE",
+    value: "BE"
   },
   {
     label: "Portugal",
     icon: "i-lucide-map-pin",
-    value: "PT",
+    value: "PT"
   },
   {
     label: "Austria",
     icon: "i-lucide-map-pin",
-    value: "AT",
+    value: "AT"
   },
   {
     label: "Sweden",
     icon: "i-lucide-map-pin",
-    value: "SE",
-  },
-]);
+    value: "SE"
+  }
+])
 const value = ref({
   label: "France",
   icon: "i-lucide-map-pin",
-  value: "FR",
-});
+  value: "FR"
+})
 </script>
 
 <template>
@@ -250,47 +254,47 @@ const value = ref({
 
 Use the `items` prop as an array of objects with the following properties:
 
-- `label?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- [`description?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}](https://ui.nuxt.com/#with-description-in-items)
-- [`type?: "label" | "separator" | "item"`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}](https://ui.nuxt.com/#with-items-type)
-- [`icon?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}](https://ui.nuxt.com/#with-icon-in-items)
-- [`avatar?: AvatarProps`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}](https://ui.nuxt.com/#with-avatar-in-items)
-- [`chip?: ChipProps`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}](https://ui.nuxt.com/#with-chip-in-items)
-- `disabled?: boolean`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `onSelect?: (e: Event) => void`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `class?: any`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `ui?: { label?: ClassNameValue, separator?: ClassNameValue, item?: ClassNameValue, itemLeadingIcon?: ClassNameValue, ... }`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
+- `label?: string`
+- [`description?: string`](#with-description-in-items)
+- [`type?: "label" | "separator" | "item"`](#with-items-type)
+- [`icon?: string`](#with-icon-in-items)
+- [`avatar?: AvatarProps`](#with-avatar-in-items)
+- [`chip?: ChipProps`](#with-chip-in-items)
+- `disabled?: boolean`
+- `onSelect?: (e: Event) => void`
+- `class?: any`
+- `ui?: { label?: ClassNameValue, separator?: ClassNameValue, item?: ClassNameValue, itemLeadingIcon?: ClassNameValue, ... }`
 
 ```vue
 <script setup lang="ts">
-import type { ListboxItem } from "@nuxt/ui";
+import type { ListboxItem } from '@nuxt/ui'
 
 const items = ref<ListboxItem[]>([
   {
     label: "France",
     description: "The Hexagon",
     icon: "i-lucide-map-pin",
-    value: "FR",
+    value: "FR"
   },
   {
     label: "Germany",
     description: "The Federal Republic",
     icon: "i-lucide-map-pin",
-    value: "DE",
+    value: "DE"
   },
   {
     label: "Italy",
     description: "The Boot",
     icon: "i-lucide-map-pin",
-    value: "IT",
+    value: "IT"
   },
   {
     label: "Spain",
     description: "The Bull Skin",
     icon: "i-lucide-map-pin",
-    value: "ES",
-  },
-]);
+    value: "ES"
+  }
+])
 </script>
 
 <template>
@@ -302,39 +306,39 @@ You can also pass an array of arrays to the `items` prop to display separated gr
 
 ```vue
 <script setup lang="ts">
-import type { ListboxItem } from "@nuxt/ui";
+import type { ListboxItem } from '@nuxt/ui'
 
 const items = ref<ListboxItem[][]>([
   [
     {
       label: "France",
       icon: "i-lucide-map-pin",
-      value: "FR",
+      value: "FR"
     },
     {
       label: "Germany",
       icon: "i-lucide-map-pin",
-      value: "DE",
+      value: "DE"
     },
     {
       label: "Italy",
       icon: "i-lucide-map-pin",
-      value: "IT",
-    },
+      value: "IT"
+    }
   ],
   [
     {
       label: "Brazil",
       icon: "i-lucide-map-pin",
-      value: "BR",
+      value: "BR"
     },
     {
       label: "Argentina",
       icon: "i-lucide-map-pin",
-      value: "AR",
-    },
-  ],
-]);
+      value: "AR"
+    }
+  ]
+])
 </script>
 
 <template>
@@ -348,30 +352,30 @@ Use the `multiple` prop to allow selecting multiple items. When enabled, the `v-
 
 ```vue
 <script setup lang="ts">
-import type { ListboxItem } from "@nuxt/ui";
+import type { ListboxItem } from '@nuxt/ui'
 
 const items = ref<ListboxItem[]>([
   {
     label: "France",
     icon: "i-lucide-map-pin",
-    value: "FR",
+    value: "FR"
   },
   {
     label: "Germany",
     icon: "i-lucide-map-pin",
-    value: "DE",
+    value: "DE"
   },
   {
     label: "Italy",
     icon: "i-lucide-map-pin",
-    value: "IT",
+    value: "IT"
   },
   {
     label: "Spain",
     icon: "i-lucide-map-pin",
-    value: "ES",
-  },
-]);
+    value: "ES"
+  }
+])
 </script>
 
 <template>
@@ -385,31 +389,31 @@ You can choose to bind a single property of the object rather than the whole obj
 
 ```vue
 <script setup lang="ts">
-import type { ListboxItem } from "@nuxt/ui";
+import type { ListboxItem } from '@nuxt/ui'
 
 const items = ref<ListboxItem[]>([
   {
     label: "France",
     icon: "i-lucide-map-pin",
-    value: "FR",
+    value: "FR"
   },
   {
     label: "Germany",
     icon: "i-lucide-map-pin",
-    value: "DE",
+    value: "DE"
   },
   {
     label: "Italy",
     icon: "i-lucide-map-pin",
-    value: "IT",
+    value: "IT"
   },
   {
     label: "Spain",
     icon: "i-lucide-map-pin",
-    value: "ES",
-  },
-]);
-const value = ref("FR");
+    value: "ES"
+  }
+])
+const value = ref("FR")
 </script>
 
 <template>
@@ -427,52 +431,52 @@ You can use the `type` property with `separator` to display a separator between 
 
 ```vue
 <script setup lang="ts">
-import type { ListboxItem } from "@nuxt/ui";
+import type { ListboxItem } from '@nuxt/ui'
 
 const items = ref<ListboxItem[][]>([
   [
     {
       type: "label",
-      label: "Fruits",
+      label: "Fruits"
     },
     {
-      label: "Apple",
+      label: "Apple"
     },
     {
-      label: "Banana",
+      label: "Banana"
     },
     {
-      label: "Blueberry",
+      label: "Blueberry"
     },
     {
-      label: "Grapes",
+      label: "Grapes"
     },
     {
-      label: "Pineapple",
-    },
+      label: "Pineapple"
+    }
   ],
   [
     {
       type: "label",
-      label: "Vegetables",
+      label: "Vegetables"
     },
     {
-      label: "Aubergine",
+      label: "Aubergine"
     },
     {
-      label: "Broccoli",
+      label: "Broccoli"
     },
     {
-      label: "Carrot",
+      label: "Carrot"
     },
     {
-      label: "Courgette",
+      label: "Courgette"
     },
     {
-      label: "Leek",
-    },
-  ],
-]);
+      label: "Leek"
+    }
+  ]
+])
 </script>
 
 <template>
@@ -480,8 +484,8 @@ const items = ref<ListboxItem[][]>([
 </template>
 ```
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > When using `label` items as group headings, pass an array of arrays so a label gets filtered out together with its group when searching.
 
 ### With icon in items
@@ -490,30 +494,30 @@ You can use the `icon` property to display an [Icon](https://ui.nuxt.com/docs/co
 
 ```vue
 <script setup lang="ts">
-import type { ListboxItem } from "@nuxt/ui";
+import type { ListboxItem } from '@nuxt/ui'
 
 const items = ref<ListboxItem[]>([
   {
     label: "Backlog",
     icon: "i-lucide-circle-help",
-    value: "backlog",
+    value: "backlog"
   },
   {
     label: "Todo",
     icon: "i-lucide-circle-plus",
-    value: "todo",
+    value: "todo"
   },
   {
     label: "In Progress",
     icon: "i-lucide-circle-arrow-up",
-    value: "in_progress",
+    value: "in_progress"
   },
   {
     label: "Done",
     icon: "i-lucide-circle-check",
-    value: "done",
-  },
-]);
+    value: "done"
+  }
+])
 </script>
 
 <template>
@@ -527,34 +531,34 @@ You can use the `avatar` property to display an [Avatar](https://ui.nuxt.com/doc
 
 ```vue
 <script setup lang="ts">
-import type { ListboxItem } from "@nuxt/ui";
+import type { ListboxItem } from '@nuxt/ui'
 
 const items = ref<ListboxItem[]>([
   {
     label: "benjamincanac",
     avatar: {
-      src: "https://github.com/benjamincanac.png",
-    },
+      src: "https://github.com/benjamincanac.png"
+    }
   },
   {
     label: "romhml",
     avatar: {
-      src: "https://github.com/romhml.png",
-    },
+      src: "https://github.com/romhml.png"
+    }
   },
   {
     label: "atinux",
     avatar: {
-      src: "https://github.com/atinux.png",
-    },
+      src: "https://github.com/atinux.png"
+    }
   },
   {
     label: "HugoRCD",
     avatar: {
-      src: "https://github.com/HugoRCD.png",
-    },
-  },
-]);
+      src: "https://github.com/HugoRCD.png"
+    }
+  }
+])
 </script>
 
 <template>
@@ -568,28 +572,28 @@ You can use the `chip` property to display a [Chip](https://ui.nuxt.com/docs/com
 
 ```vue
 <script setup lang="ts">
-import type { ListboxItem } from "@nuxt/ui";
+import type { ListboxItem } from '@nuxt/ui'
 
 const items = ref<ListboxItem[]>([
   {
     label: "bug",
     chip: {
-      color: "error",
-    },
+      color: "error"
+    }
   },
   {
     label: "feature",
     chip: {
-      color: "success",
-    },
+      color: "success"
+    }
   },
   {
     label: "enhancement",
     chip: {
-      color: "info",
-    },
-  },
-]);
+      color: "info"
+    }
+  }
+])
 </script>
 
 <template>

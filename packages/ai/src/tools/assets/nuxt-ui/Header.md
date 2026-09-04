@@ -49,21 +49,7 @@ interface HeaderProps {
    * @default true
    */
   autoClose?: boolean | undefined;
-  ui?:
-    | {
-        root?: SlotClass;
-        container?: SlotClass;
-        left?: SlotClass;
-        center?: SlotClass;
-        right?: SlotClass;
-        title?: SlotClass;
-        toggle?: SlotClass;
-        content?: SlotClass;
-        overlay?: SlotClass;
-        header?: SlotClass;
-        body?: SlotClass;
-      }
-    | undefined;
+  ui?: { root?: SlotClass; container?: SlotClass; left?: SlotClass; center?: SlotClass; right?: SlotClass; title?: SlotClass; toggle?: SlotClass; content?: SlotClass; overlay?: SlotClass; header?: SlotClass; body?: SlotClass; } | undefined;
   /**
    * @default false
    */
@@ -101,45 +87,55 @@ interface HeaderEmits {
 }
 ```
 
+## Composition
+
+Parts placed by name: `#left`, `#right`, `#toggle`, `#top`, `#bottom`, `#body`, `#content`.
+
+```vue
+<template>
+  <UHeader>
+    <template #left>
+      <NuxtLink to="/docs">
+        <Logo class="h-6 w-auto" />
+      </NuxtLink>
+    </template></UHeader>
+</template>
+```
+
 ## Usage
 
 The Header component renders a `<header>` element.
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/getting-started/theme/css-variables#header
->
+> 
 > Its height is defined through a `--ui-header-height` CSS variable.
 
 Use the `left`, `default` and `right` slots to customize the header and the `body` or `content` slots to customize the header menu.
 
 ```vue [HeaderExample.vue]
 <script setup lang="ts">
-import type { NavigationMenuItem } from "@nuxt/ui";
+import type { NavigationMenuItem } from '@nuxt/ui'
 
-const route = useRoute();
+const route = useRoute()
 
-const items = computed<NavigationMenuItem[]>(() => [
-  {
-    label: "Docs",
-    to: "/docs/getting-started",
-    active: route.path.startsWith("/docs/getting-started"),
-  },
-  {
-    label: "Components",
-    to: "/docs/components",
-    active: route.path.startsWith("/docs/components"),
-  },
-  {
-    label: "Figma",
-    to: "https://go.nuxt.com/figma-ui",
-    target: "_blank",
-  },
-  {
-    label: "Releases",
-    to: "https://github.com/nuxt/ui/releases",
-    target: "_blank",
-  },
-]);
+const items = computed<NavigationMenuItem[]>(() => [{
+  label: 'Docs',
+  to: '/docs/getting-started',
+  active: route.path.startsWith('/docs/getting-started')
+}, {
+  label: 'Components',
+  to: '/docs/components',
+  active: route.path.startsWith('/docs/components')
+}, {
+  label: 'Figma',
+  to: 'https://go.nuxt.com/figma-ui',
+  target: '_blank'
+}, {
+  label: 'Releases',
+  to: 'https://github.com/nuxt/ui/releases',
+  target: '_blank'
+}])
 </script>
 
 <template>
@@ -168,8 +164,8 @@ const items = computed<NavigationMenuItem[]>(() => [
 </template>
 ```
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > In this example, we use the [NavigationMenu](https://ui.nuxt.com/docs/components/navigation-menu) component to render the header links in the center.
 
 ### Title
@@ -184,17 +180,17 @@ Use the `title` prop to change the title of the header. Defaults to `Nuxt UI`.
 
 You can also use the `title` slot to add your own logo.
 
-> \[!TIP]
+> [!TIP]
 > See: #props
->
+> 
 > You should still add the `title` prop to replace the default `aria-label` of the link.
 
 ```vue
 <template>
   <UHeader>
     <template #title>
-      <Logo class="h-6 w-auto" /> </template
-  ></UHeader>
+      <Logo class="h-6 w-auto" />
+    </template></UHeader>
 </template>
 ```
 
@@ -216,8 +212,8 @@ You can also use the `left` slot to override the link entirely.
     <template #left>
       <NuxtLink to="/docs">
         <Logo class="h-6 w-auto" />
-      </NuxtLink> </template
-  ></UHeader>
+      </NuxtLink>
+    </template></UHeader>
 </template>
 ```
 
@@ -227,43 +223,38 @@ Use the `mode` prop to change the mode of the header menu. Defaults to `modal`.
 
 Use the `body` slot to fill the menu body (under the header) or the `content` slot to fill the entire menu.
 
-> \[!TIP]
+> [!TIP]
 > See: #props
->
+> 
 > You can use the `menu` prop to customize the menu of the header, it will adapt depending on the mode you choose.
 
 ```vue [HeaderMenuExample.vue]
 <script setup lang="ts">
-import type { NavigationMenuItem } from "@nuxt/ui";
+import type { NavigationMenuItem } from '@nuxt/ui'
 
-const route = useRoute();
+const route = useRoute()
 
-const items = computed<NavigationMenuItem[]>(() => [
-  {
-    label: "Docs",
-    to: "/docs/getting-started",
-    icon: "i-lucide-book-open",
-    active: route.path.startsWith("/docs/getting-started"),
-  },
-  {
-    label: "Components",
-    to: "/docs/components",
-    icon: "i-lucide-box",
-    active: route.path.startsWith("/docs/components"),
-  },
-  {
-    label: "Figma",
-    icon: "i-simple-icons-figma",
-    to: "https://go.nuxt.com/figma-ui",
-    target: "_blank",
-  },
-  {
-    label: "Releases",
-    icon: "i-lucide-rocket",
-    to: "https://github.com/nuxt/ui/releases",
-    target: "_blank",
-  },
-]);
+const items = computed<NavigationMenuItem[]>(() => [{
+  label: 'Docs',
+  to: '/docs/getting-started',
+  icon: 'i-lucide-book-open',
+  active: route.path.startsWith('/docs/getting-started')
+}, {
+  label: 'Components',
+  to: '/docs/components',
+  icon: 'i-lucide-box',
+  active: route.path.startsWith('/docs/components')
+}, {
+  label: 'Figma',
+  icon: 'i-simple-icons-figma',
+  to: 'https://go.nuxt.com/figma-ui',
+  target: '_blank'
+}, {
+  label: 'Releases',
+  icon: 'i-lucide-rocket',
+  to: 'https://github.com/nuxt/ui/releases',
+  target: '_blank'
+}])
 </script>
 
 <template>
@@ -304,36 +295,31 @@ You can pass any property from the [Button](https://ui.nuxt.com/docs/components/
 
 ```vue [HeaderToggleExample.vue]
 <script setup lang="ts">
-import type { NavigationMenuItem } from "@nuxt/ui";
+import type { NavigationMenuItem } from '@nuxt/ui'
 
-const route = useRoute();
+const route = useRoute()
 
-const items = computed<NavigationMenuItem[]>(() => [
-  {
-    label: "Docs",
-    to: "/docs/getting-started",
-    icon: "i-lucide-book-open",
-    active: route.path.startsWith("/docs/getting-started"),
-  },
-  {
-    label: "Components",
-    to: "/docs/components",
-    icon: "i-lucide-box",
-    active: route.path.startsWith("/docs/components"),
-  },
-  {
-    label: "Figma",
-    icon: "i-simple-icons-figma",
-    to: "https://go.nuxt.com/figma-ui",
-    target: "_blank",
-  },
-  {
-    label: "Releases",
-    icon: "i-lucide-rocket",
-    to: "https://github.com/nuxt/ui/releases",
-    target: "_blank",
-  },
-]);
+const items = computed<NavigationMenuItem[]>(() => [{
+  label: 'Docs',
+  to: '/docs/getting-started',
+  icon: 'i-lucide-book-open',
+  active: route.path.startsWith('/docs/getting-started')
+}, {
+  label: 'Components',
+  to: '/docs/components',
+  icon: 'i-lucide-box',
+  active: route.path.startsWith('/docs/components')
+}, {
+  label: 'Figma',
+  icon: 'i-simple-icons-figma',
+  to: 'https://go.nuxt.com/figma-ui',
+  target: '_blank'
+}, {
+  label: 'Releases',
+  icon: 'i-lucide-rocket',
+  to: 'https://github.com/nuxt/ui/releases',
+  target: '_blank'
+}])
 </script>
 
 <template>
@@ -341,7 +327,7 @@ const items = computed<NavigationMenuItem[]>(() => [
     :toggle="{
       color: 'primary',
       variant: 'subtle',
-      class: 'rounded-full',
+      class: 'rounded-full'
     }"
   >
     <template #title>
@@ -378,65 +364,58 @@ _(truncated — ask for fewer components to see more, or rely on the API block a
 
 ### With animated toggle
 
-Use the `#toggle` slot to replace the default toggle button with a custom animated hamburger icon using [Motion Vue](https://motion.dev/docs/vue/motion-component){rel="&#x22;nofollow&#x22;"}.
+Use the `#toggle` slot to replace the default toggle button with a custom animated hamburger icon using [Motion Vue](https://motion.dev/docs/vue/motion-component).
 
 ```vue [HeaderToggleAnimatedExample.vue]
 <script setup lang="ts">
-import { motion } from "motion-v";
-import type { VariantType } from "motion-v";
-import type { NavigationMenuItem } from "@nuxt/ui";
+import { motion } from 'motion-v'
+import type { VariantType } from 'motion-v'
+import type { NavigationMenuItem } from '@nuxt/ui'
 
-const route = useRoute();
+const route = useRoute()
 
-const items = computed<NavigationMenuItem[]>(() => [
-  {
-    label: "Docs",
-    to: "/docs/getting-started",
-    icon: "i-lucide-book-open",
-    active: route.path.startsWith("/docs/getting-started"),
-  },
-  {
-    label: "Components",
-    to: "/docs/components",
-    icon: "i-lucide-box",
-    active: route.path.startsWith("/docs/components"),
-  },
-  {
-    label: "Figma",
-    icon: "i-simple-icons-figma",
-    to: "https://go.nuxt.com/figma-ui",
-    target: "_blank",
-  },
-  {
-    label: "Releases",
-    icon: "i-lucide-rocket",
-    to: "https://github.com/nuxt/ui/releases",
-    target: "_blank",
-  },
-]);
+const items = computed<NavigationMenuItem[]>(() => [{
+  label: 'Docs',
+  to: '/docs/getting-started',
+  icon: 'i-lucide-book-open',
+  active: route.path.startsWith('/docs/getting-started')
+}, {
+  label: 'Components',
+  to: '/docs/components',
+  icon: 'i-lucide-box',
+  active: route.path.startsWith('/docs/components')
+}, {
+  label: 'Figma',
+  icon: 'i-simple-icons-figma',
+  to: 'https://go.nuxt.com/figma-ui',
+  target: '_blank'
+}, {
+  label: 'Releases',
+  icon: 'i-lucide-rocket',
+  to: 'https://github.com/nuxt/ui/releases',
+  target: '_blank'
+}])
 
-const variants: {
-  [k: string]: VariantType | ((custom: unknown) => VariantType);
-} = {
+const variants: { [k: string]: VariantType | ((custom: unknown) => VariantType) } = {
   normal: {
     rotate: 0,
     y: 0,
-    opacity: 1,
+    opacity: 1
   },
   close: (custom: unknown) => {
-    const c = custom as number;
+    const c = custom as number
     return {
       rotate: c === 1 ? 45 : c === 3 ? -45 : 0,
       y: c === 1 ? 6 : c === 3 ? -6 : 0,
       opacity: c === 2 ? 0 : 1,
       transition: {
-        type: "spring",
+        type: 'spring',
         stiffness: 260,
-        damping: 20,
-      },
-    };
-  },
-};
+        damping: 20
+      }
+    }
+  }
+}
 </script>
 
 <template>
@@ -526,34 +505,29 @@ const variants: {
 
 Use the Header component in your `app.vue` or in a layout:
 
-```vue [app.vue] {28-51}
+```vue [app.vue]
 <script setup lang="ts">
-import type { NavigationMenuItem } from "@nuxt/ui";
+import type { NavigationMenuItem } from '@nuxt/ui'
 
-const route = useRoute();
+const route = useRoute()
 
-const items = computed<NavigationMenuItem[]>(() => [
-  {
-    label: "Docs",
-    to: "/docs/getting-started",
-    active: route.path.startsWith("/docs/getting-started"),
-  },
-  {
-    label: "Components",
-    to: "/docs/components",
-    active: route.path.startsWith("/docs/components"),
-  },
-  {
-    label: "Figma",
-    to: "https://go.nuxt.com/figma-ui",
-    target: "_blank",
-  },
-  {
-    label: "Releases",
-    to: "https://github.com/nuxt/ui/releases",
-    target: "_blank",
-  },
-]);
+const items = computed<NavigationMenuItem[]>(() => [{
+  label: 'Docs',
+  to: '/docs/getting-started',
+  active: route.path.startsWith('/docs/getting-started')
+}, {
+  label: 'Components',
+  to: '/docs/components',
+  active: route.path.startsWith('/docs/components')
+}, {
+  label: 'Figma',
+  to: 'https://go.nuxt.com/figma-ui',
+  target: '_blank'
+}, {
+  label: 'Releases',
+  to: 'https://github.com/nuxt/ui/releases',
+  target: '_blank'
+}])
 </script>
 
 <template>
@@ -579,11 +553,7 @@ const items = computed<NavigationMenuItem[]>(() => [
       </template>
 
       <template #body>
-        <UNavigationMenu
-          :items="items"
-          orientation="vertical"
-          class="-mx-2.5"
-        />
+        <UNavigationMenu :items="items" orientation="vertical" class="-mx-2.5" />
       </template>
     </UHeader>
 

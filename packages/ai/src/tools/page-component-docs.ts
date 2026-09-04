@@ -11,9 +11,14 @@ import { fileURLToPath } from "node:url";
  * (`scripts/sync-nuxt-ui-docs.ts`, re-run on every `@nuxt/ui` upgrade) and
  * served by name, on demand.
  *
- * This is the same split the library itself recommends: the skill carries the
- * JUDGMENT (which component, which layout, which density), the lookup carries
- * the API surface. Neither is in the system prompt.
+ * This is the same split the library itself recommends, with one correction
+ * measured on ten generated pages: the CHOICE half — which component, and when
+ * it earns the screen — now lives in `catalogue.json` and is rendered into the
+ * builder's prompt (`page-component-catalogue.ts`), because a choice list that
+ * must be fetched is a choice list the model skips, and skipping it produced
+ * the same seventeen components on every page. What stays here is the API
+ * surface: too large for a prompt, and only needed for the handful a given
+ * page settles on.
  */
 
 const ASSETS_DIR = join(
@@ -21,11 +26,21 @@ const ASSETS_DIR = join(
   "assets/nuxt-ui",
 );
 
-/** Per-call ceiling. Six components is a whole page's palette; beyond that the
- * agent is browsing, not building, and the turn drowns in interface dumps. */
-export const MAX_COMPONENT_DOCS = 6;
+/**
+ * Per-call ceiling. Eight components is a whole page's palette; beyond that
+ * the agent is browsing, not building, and the turn drowns in interface dumps.
+ *
+ * Six until the catalogue landed. The catalogue names every component in the
+ * prompt, so a page now arrives at this tool having CHOSEN eight or ten rather
+ * than the same five it always used — and splitting that into two calls costs
+ * a full replay of the conversation for nothing. The digest keeps the size in
+ * check: eight API blocks measure about what six used to.
+ */
+export const MAX_COMPONENT_DOCS = 8;
 
-type ComponentIndex = { components: Record<string, string> };
+/** Names only — which components have a reference file. What each one is FOR
+ * lives in `catalogue.json`, which the builder reads in its prompt. */
+type ComponentIndex = { components: string[] };
 
 let indexPromise: Promise<ComponentIndex> | null = null;
 
@@ -52,12 +67,18 @@ const canonical = (name: string, known: string[]): string | undefined => {
 /**
  * Where a reference stops being the CONTRACT and starts being illustration.
  *
- * Each generated file is `## API` (props, slots, emits) then `## Usage` and
- * `## Examples`. The API half is what a page cannot guess and must not get
- * wrong; the rest is prose about a library the model already knows. Measured
- * across the corpus, the API is 33% of the bytes — a six-component call drops
- * from ~32k tokens to ~12k, which is the difference between reading the docs
- * and drowning in them.
+ * Each generated file is `## API` (props, slots, emits), then `## Composition`
+ * — one real snippet showing which part goes in which named slot — then
+ * `## Usage` and `## Examples`. Everything above the Usage heading is what a
+ * page cannot guess and must not get wrong; the rest is prose about a library
+ * the model already knows. Measured across the corpus, that half is about a
+ * third of the bytes — an eight-component call lands near where six used to,
+ * which is the difference between reading the docs and drowning in them.
+ *
+ * Composition sits above the cut deliberately. A slot list gives the names and
+ * never which one supersedes which: nothing in `Slideover`'s nine peer slots
+ * says `default` is the trigger and `#body` is the panel, and that one fact
+ * has broken three shipped pages, silently, each of which compiled.
  *
  * Sliced at READ time rather than emitted as a second file by the sync script:
  * a derived artifact committed next to its source is one more thing that can
@@ -86,7 +107,7 @@ export const readComponentDocs = async (
     };
   }
 
-  const known = Object.keys(index.components);
+  const known = index.components;
   const requested = names.slice(0, MAX_COMPONENT_DOCS);
 
   const results = await Promise.all(
@@ -123,9 +144,7 @@ export const readComponentDocs = async (
 /** Every component the page runtime registers — the answer to "what may I use". */
 export const listComponentNames = async (): Promise<string[]> => {
   const index = await loadIndex().catch(() => null);
-  return index === null
-    ? []
-    : Object.keys(index.components).map((name) => `U${name}`);
+  return index === null ? [] : index.components.map((name) => `U${name}`);
 };
 
 /**
@@ -176,7 +195,7 @@ const isContractHeavy = async (resolved: string): Promise<boolean> => {
 export const listContractHeavy = async (names: string[]): Promise<string[]> => {
   const index = await loadIndex().catch(() => null);
   if (index === null) return [];
-  const known = Object.keys(index.components);
+  const known = index.components;
 
   const verdicts = await Promise.all(
     names.map(async (name) => {

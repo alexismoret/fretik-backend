@@ -51,19 +51,7 @@ interface FormFieldProps {
    * @default 'vertical'
    */
   orientation?: "vertical" | "horizontal" | undefined;
-  ui?:
-    | {
-        root?: SlotClass;
-        wrapper?: SlotClass;
-        labelWrapper?: SlotClass;
-        label?: SlotClass;
-        container?: SlotClass;
-        description?: SlotClass;
-        error?: SlotClass;
-        hint?: SlotClass;
-        help?: SlotClass;
-      }
-    | undefined;
+  ui?: { root?: SlotClass; wrapper?: SlotClass; labelWrapper?: SlotClass; label?: SlotClass; container?: SlotClass; description?: SlotClass; error?: SlotClass; hint?: SlotClass; help?: SlotClass; } | undefined;
 }
 ```
 
@@ -83,6 +71,10 @@ interface FormFieldSlots {
 }
 ```
 
+## Composition
+
+Parts placed by name: `#hint`, `#help`, `#error`.
+
 ## Usage
 
 Wrap any form component with a FormField. Used in a [Form](https://ui.nuxt.com/docs/components/form), it provides validation and error handling.
@@ -99,8 +91,8 @@ Use the `label` prop to set the label for the form control.
 </template>
 ```
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > The label `for` attribute and the form control are associated with a unique `id` if not provided.
 
 When using the `required` prop, an asterisk is added next to the label.
@@ -119,10 +111,7 @@ Use the `description` prop to provide additional information below the label.
 
 ```vue
 <template>
-  <UFormField
-    label="Email"
-    description="We'll never share your email with anyone else."
-  >
+  <UFormField label="Email" description="We'll never share your email with anyone else.">
     <UInput placeholder="Enter your email" class="w-full" />
   </UFormField>
 </template>
@@ -166,18 +155,18 @@ When used inside a [Form](https://ui.nuxt.com/docs/components/form), this is aut
 </template>
 ```
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/getting-started/theme/design-system#color-system
->
+> 
 > This sets the `color` to `error` on the form control. You can change it globally in your `app.config.ts`.
 
 ### Error Pattern
 
 Use the `error-pattern` prop to match form errors with a regular expression. This is especially relevant for components with array values such as [InputTags](https://ui.nuxt.com/docs/components/input-tags), where errors include array indices in their name (e.g. `tags.0`).
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/components/form#error-reporting
->
+> 
 > See an example of using `error-pattern` within a Form.
 
 ### Size
@@ -186,13 +175,7 @@ Use the `size` prop to change the size of the FormField, the `size` is proxied t
 
 ```vue
 <template>
-  <UFormField
-    label="Email"
-    description="We'll never share your email with anyone else."
-    hint="Optional"
-    help="Please enter a valid email address."
-    size="xl"
-  >
+  <UFormField label="Email" description="We'll never share your email with anyone else." hint="Optional" help="Please enter a valid email address." size="xl">
     <UInput placeholder="Enter your email" class="w-full" />
   </UFormField>
 </template>
@@ -204,12 +187,7 @@ Use the `orientation` prop to change the layout of the FormField. Defaults to `v
 
 ```vue
 <template>
-  <UFormField
-    orientation="horizontal"
-    label="Email"
-    help="Please enter a valid email address."
-    class="w-72"
-  >
+  <UFormField orientation="horizontal" label="Email" help="Please enter a valid email address." class="w-72">
     <UInput placeholder="Enter your email" class="w-full" />
   </UFormField>
 </template>

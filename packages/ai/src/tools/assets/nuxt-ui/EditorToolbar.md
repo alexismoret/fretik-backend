@@ -21,54 +21,29 @@ interface EditorToolbarProps {
    * The color of the toolbar controls.
    * @default 'neutral'
    */
-  color?:
-    | "primary"
-    | "secondary"
-    | "success"
-    | "info"
-    | "warning"
-    | "error"
-    | "neutral"
-    | undefined;
+  color?: "primary" | "secondary" | "success" | "info" | "warning" | "error" | "neutral" | undefined;
   /**
    * The variant of the toolbar controls.
    * @default 'ghost'
    */
-  variant?:
-    "solid" | "outline" | "soft" | "subtle" | "ghost" | "link" | undefined;
+  variant?: "solid" | "outline" | "soft" | "subtle" | "ghost" | "link" | undefined;
   /**
    * The color of the active toolbar control.
    * @default 'primary'
    */
-  activeColor?:
-    | "primary"
-    | "secondary"
-    | "success"
-    | "info"
-    | "warning"
-    | "error"
-    | "neutral"
-    | undefined;
+  activeColor?: "primary" | "secondary" | "success" | "info" | "warning" | "error" | "neutral" | undefined;
   /**
    * The variant of the active toolbar control.
    * @default 'soft'
    */
-  activeVariant?:
-    "solid" | "outline" | "soft" | "subtle" | "ghost" | "link" | undefined;
+  activeVariant?: "solid" | "outline" | "soft" | "subtle" | "ghost" | "link" | undefined;
   /**
    * The size of the toolbar controls.
    * @default 'sm'
    */
   size?: "xs" | "sm" | "md" | "lg" | "xl" | undefined;
   items?: T | undefined;
-  ui?:
-    | {
-        root?: SlotClass;
-        base?: SlotClass;
-        group?: SlotClass;
-        separator?: SlotClass;
-      }
-    | undefined;
+  ui?: { root?: SlotClass; base?: SlotClass; group?: SlotClass; separator?: SlotClass; } | undefined;
   /**
    * @default 'fixed'
    */
@@ -95,7 +70,7 @@ interface EditorToolbarProps {
   shouldShow?: unknown;
   /**
    * The DOM element to append your menu to. Default is the editor's parent element.
-   *
+   * 
    * Sometimes the menu needs to be appended to a different DOM context due to accessibility, clipping, or z-index issues.
    */
   appendTo?: unknown;
@@ -125,95 +100,85 @@ interface EditorToolbarSlots {
 }
 ```
 
+## Composition
+
+Parts placed by name: `#item`.
+
+Also written in the docs and absent from the interface above — one per column or item: `#content`, `#link`.
+
 ## Usage
 
 The EditorToolbar component displays a toolbar of formatting buttons that automatically sync their active state with the editor content. It supports three layout modes using the `@tiptap/vue-3/menus` package:
 
-- `fixed`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"} (always visible)
-- `bubble`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"} (appears on text selection)
-- `floating`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"} (appears on empty lines)
+- `fixed` (always visible)
+- `bubble` (appears on text selection)
+- `floating` (appears on empty lines)
 
-> \[!CAUTION]
->
+> [!CAUTION]
+> 
 > It must be used inside an [Editor](https://ui.nuxt.com/docs/components/editor) component's default slot to have access to the editor instance.
 
 ```vue [EditorToolbarExample.vue]
 <script setup lang="ts">
-import type { EditorToolbarItem } from "@nuxt/ui";
+import type { EditorToolbarItem } from '@nuxt/ui'
 
 const value = ref(`# Toolbar
 
-Select some text to see the formatting toolbar appear above your selection.`);
+Select some text to see the formatting toolbar appear above your selection.`)
 
-const items: EditorToolbarItem[][] = [
-  [
-    {
-      icon: "i-lucide-heading",
-      tooltip: { text: "Headings" },
-      content: {
-        align: "start",
-      },
-      items: [
-        {
-          kind: "heading",
-          level: 1,
-          icon: "i-lucide-heading-1",
-          label: "Heading 1",
-        },
-        {
-          kind: "heading",
-          level: 2,
-          icon: "i-lucide-heading-2",
-          label: "Heading 2",
-        },
-        {
-          kind: "heading",
-          level: 3,
-          icon: "i-lucide-heading-3",
-          label: "Heading 3",
-        },
-        {
-          kind: "heading",
-          level: 4,
-          icon: "i-lucide-heading-4",
-          label: "Heading 4",
-        },
-      ],
-    },
-  ],
-  [
-    {
-      kind: "mark",
-      mark: "bold",
-      icon: "i-lucide-bold",
-      tooltip: { text: "Bold" },
-    },
-    {
-      kind: "mark",
-      mark: "italic",
-      icon: "i-lucide-italic",
-      tooltip: { text: "Italic" },
-    },
-    {
-      kind: "mark",
-      mark: "underline",
-      icon: "i-lucide-underline",
-      tooltip: { text: "Underline" },
-    },
-    {
-      kind: "mark",
-      mark: "strike",
-      icon: "i-lucide-strikethrough",
-      tooltip: { text: "Strikethrough" },
-    },
-    {
-      kind: "mark",
-      mark: "code",
-      icon: "i-lucide-code",
-      tooltip: { text: "Code" },
-    },
-  ],
-];
+const items: EditorToolbarItem[][] = [[{
+  icon: 'i-lucide-heading',
+  tooltip: { text: 'Headings' },
+  content: {
+    align: 'start'
+  },
+  items: [{
+    kind: 'heading',
+    level: 1,
+    icon: 'i-lucide-heading-1',
+    label: 'Heading 1'
+  }, {
+    kind: 'heading',
+    level: 2,
+    icon: 'i-lucide-heading-2',
+    label: 'Heading 2'
+  }, {
+    kind: 'heading',
+    level: 3,
+    icon: 'i-lucide-heading-3',
+    label: 'Heading 3'
+  }, {
+    kind: 'heading',
+    level: 4,
+    icon: 'i-lucide-heading-4',
+    label: 'Heading 4'
+  }]
+}], [{
+  kind: 'mark',
+  mark: 'bold',
+  icon: 'i-lucide-bold',
+  tooltip: { text: 'Bold' }
+}, {
+  kind: 'mark',
+  mark: 'italic',
+  icon: 'i-lucide-italic',
+  tooltip: { text: 'Italic' }
+}, {
+  kind: 'mark',
+  mark: 'underline',
+  icon: 'i-lucide-underline',
+  tooltip: { text: 'Underline' }
+}, {
+  kind: 'mark',
+  mark: 'strike',
+  icon: 'i-lucide-strikethrough',
+  tooltip: { text: 'Strikethrough' }
+}, {
+  kind: 'mark',
+  mark: 'code',
+  icon: 'i-lucide-code',
+  tooltip: { text: 'Code' }
+}]]
 </script>
 
 <template>
@@ -228,206 +193,173 @@ const items: EditorToolbarItem[][] = [
 </template>
 ```
 
-> \[!NOTE]
->
-> The bubble and floating layouts use TipTap's [BubbleMenu](https://tiptap.dev/docs/editor/extensions/functionality/bubble-menu){rel="&#x22;nofollow&#x22;"} and [FloatingMenu](https://tiptap.dev/docs/editor/extensions/functionality/floatingmenu){rel="&#x22;nofollow&#x22;"} extensions.
+> [!NOTE]
+> 
+> The bubble and floating layouts use TipTap's [BubbleMenu](https://tiptap.dev/docs/editor/extensions/functionality/bubble-menu) and [FloatingMenu](https://tiptap.dev/docs/editor/extensions/functionality/floatingmenu) extensions.
 
 ### Items
 
 Use the `items` prop as an array of objects with the following properties:
 
-- `label?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `icon?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `color?: "error" | "primary" | "secondary" | "success" | "info" | "warning" | "neutral"`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `activeColor?: "error" | "primary" | "secondary" | "success" | "info" | "warning" | "neutral"`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `variant?: "solid" | "outline" | "soft" | "ghost" | "link" | "subtle"`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `activeVariant?: "solid" | "outline" | "soft" | "ghost" | "link" | "subtle"`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `size?: "xs" | "sm" | "md" | "lg" | "xl"`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- [`kind?: "mark" | "textAlign" | "heading" | "link" | "image" | "blockquote" | "bulletList" | "orderedList" | "taskList" | "codeBlock" | "horizontalRule" | "paragraph" | "undo" | "redo" | "clearFormatting" | "duplicate" | "delete" | "moveUp" | "moveDown" | "suggestion" | "mention" | "emoji"`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}](https://ui.nuxt.com/docs/components/editor#handlers)
-- `disabled?: boolean`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `loading?: boolean`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `active?: boolean`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `tooltip?: TooltipProps`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- [`slot?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}](https://ui.nuxt.com/#with-link-popover)
-- `onClick?: (e: MouseEvent) => void`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `items?: EditorToolbarItem[] | EditorToolbarItem[][]`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `class?: any`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
+- `label?: string`
+- `icon?: string`
+- `color?: "error" | "primary" | "secondary" | "success" | "info" | "warning" | "neutral"`
+- `activeColor?: "error" | "primary" | "secondary" | "success" | "info" | "warning" | "neutral"`
+- `variant?: "solid" | "outline" | "soft" | "ghost" | "link" | "subtle"`
+- `activeVariant?: "solid" | "outline" | "soft" | "ghost" | "link" | "subtle"`
+- `size?: "xs" | "sm" | "md" | "lg" | "xl"`
+- [`kind?: "mark" | "textAlign" | "heading" | "link" | "image" | "blockquote" | "bulletList" | "orderedList" | "taskList" | "codeBlock" | "horizontalRule" | "paragraph" | "undo" | "redo" | "clearFormatting" | "duplicate" | "delete" | "moveUp" | "moveDown" | "suggestion" | "mention" | "emoji"`](https://ui.nuxt.com/docs/components/editor#handlers)
+- `disabled?: boolean`
+- `loading?: boolean`
+- `active?: boolean`
+- `tooltip?: TooltipProps`
+- [`slot?: string`](#with-link-popover)
+- `onClick?: (e: MouseEvent) => void`
+- `items?: EditorToolbarItem[] | EditorToolbarItem[][]`
+- `class?: any`
 
 You can pass any property from the [Button](https://ui.nuxt.com/docs/components/button#props) component such as `color`, `variant`, `size`, etc.
 
 ```vue [EditorToolbarItemsExample.vue]
 <script setup lang="ts">
-import type { EditorToolbarItem } from "@nuxt/ui";
-import { TextAlign } from "@tiptap/extension-text-align";
+import type { EditorToolbarItem } from '@nuxt/ui'
+import { TextAlign } from '@tiptap/extension-text-align'
 
-const value =
-  ref(`This toolbar showcases **all available formatting options** using built-in handlers. Try the different controls to see them in action!
+const value = ref(`This toolbar showcases **all available formatting options** using built-in handlers. Try the different controls to see them in action!
 
 You can apply **bold**, *italic*, <u>underline</u>, ~~strikethrough~~, and \`inline code\` formatting to your text.
-`);
+`)
 
 const items: EditorToolbarItem[][] = [
   // History controls
-  [
-    {
-      kind: "undo",
-      icon: "i-lucide-undo",
-      tooltip: { text: "Undo" },
-    },
-    {
-      kind: "redo",
-      icon: "i-lucide-redo",
-      tooltip: { text: "Redo" },
-    },
-  ],
+  [{
+    kind: 'undo',
+    icon: 'i-lucide-undo',
+    tooltip: { text: 'Undo' }
+  }, {
+    kind: 'redo',
+    icon: 'i-lucide-redo',
+    tooltip: { text: 'Redo' }
+  }],
   // Block types
-  [
-    {
-      icon: "i-lucide-heading",
-      tooltip: { text: "Headings" },
-      content: {
-        align: "start",
-      },
-      items: [
-        {
-          kind: "heading",
-          level: 1,
-          icon: "i-lucide-heading-1",
-          label: "Heading 1",
-        },
-        {
-          kind: "heading",
-          level: 2,
-          icon: "i-lucide-heading-2",
-          label: "Heading 2",
-        },
-        {
-          kind: "heading",
-          level: 3,
-          icon: "i-lucide-heading-3",
-          label: "Heading 3",
-        },
-        {
-          kind: "heading",
-          level: 4,
-          icon: "i-lucide-heading-4",
-          label: "Heading 4",
-        },
-      ],
+  [{
+    icon: 'i-lucide-heading',
+    tooltip: { text: 'Headings' },
+    content: {
+      align: 'start'
     },
-    {
-      icon: "i-lucide-list",
-      tooltip: { text: "Lists" },
-      content: {
-        align: "start",
-      },
-      items: [
-        {
-          kind: "bulletList",
-          icon: "i-lucide-list",
-          label: "Bullet List",
-        },
-        {
-          kind: "orderedList",
-          icon: "i-lucide-list-ordered",
-          label: "Ordered List",
-        },
-      ],
+    items: [{
+      kind: 'heading',
+      level: 1,
+      icon: 'i-lucide-heading-1',
+      label: 'Heading 1'
+    }, {
+      kind: 'heading',
+      level: 2,
+      icon: 'i-lucide-heading-2',
+      label: 'Heading 2'
+    }, {
+      kind: 'heading',
+      level: 3,
+      icon: 'i-lucide-heading-3',
+      label: 'Heading 3'
+    }, {
+      kind: 'heading',
+      level: 4,
+      icon: 'i-lucide-heading-4',
+      label: 'Heading 4'
+    }]
+  }, {
+    icon: 'i-lucide-list',
+    tooltip: { text: 'Lists' },
+    content: {
+      align: 'start'
     },
-    {
-      kind: "blockquote",
-      icon: "i-lucide-text-quote",
-      tooltip: { text: "Blockquote" },
-    },
-    {
-      kind: "codeBlock",
-      icon: "i-lucide-square-code",
-      tooltip: { text: "Code Block" },
-    },
-    {
-      kind: "horizontalRule",
-      icon: "i-lucide-separator-horizontal",
-      tooltip: { text: "Horizontal Rule" },
-    },
-  ],
+    items: [{
+      kind: 'bulletList',
+      icon: 'i-lucide-list',
+      label: 'Bullet List'
+    }, {
+      kind: 'orderedList',
+      icon: 'i-lucide-list-ordered',
+      label: 'Ordered List'
+    }]
+  }, {
+    kind: 'blockquote',
+    icon: 'i-lucide-text-quote',
+    tooltip: { text: 'Blockquote' }
+  }, {
+    kind: 'codeBlock',
+    icon: 'i-lucide-square-code',
+    tooltip: { text: 'Code Block' }
+  }, {
+    kind: 'horizontalRule',
+    icon: 'i-lucide-separator-horizontal',
+    tooltip: { text: 'Horizontal Rule' }
+  }],
   // Text formatting
-  [
-    {
-      kind: "mark",
-      mark: "bold",
-      icon: "i-lucide-bold",
-      tooltip: { text: "Bold" },
-    },
-    {
-      kind: "mark",
-      mark: "italic",
-      icon: "i-lucide-italic",
-      tooltip: { text: "Italic" },
-    },
-    {
-      kind: "mark",
-      mark: "underline",
-      icon: "i-lucide-underline",
-      tooltip: { text: "Underline" },
-    },
-    {
-      kind: "mark",
-      mark: "strike",
-      icon: "i-lucide-strikethrough",
-      tooltip: { text: "Strikethrough" },
-    },
-    {
-      kind: "mark",
-      mark: "code",
-      icon: "i-lucide-code",
-      tooltip: { text: "Code" },
-    },
-  ],
+  [{
+    kind: 'mark',
+    mark: 'bold',
+    icon: 'i-lucide-bold',
+    tooltip: { text: 'Bold' }
+  }, {
+    kind: 'mark',
+    mark: 'italic',
+    icon: 'i-lucide-italic',
+    tooltip: { text: 'Italic' }
+  }, {
+    kind: 'mark',
+    mark: 'underline',
+    icon: 'i-lucide-underline',
+    tooltip: { text: 'Underline' }
+  }, {
+    kind: 'mark',
+    mark: 'strike',
+    icon: 'i-lucide-strikethrough',
+    tooltip: { text: 'Strikethrough' }
+  }, {
+    kind: 'mark',
+    mark: 'code',
+    icon: 'i-lucide-code',
+    tooltip: { text: 'Code' }
+  }],
   // Link
-  [
-    {
-      kind: "link",
-      icon: "i-lucide-link",
-      tooltip: { text: "Link" },
-    },
-  ],
+  [{
+    kind: 'link',
+    icon: 'i-lucide-link',
+    tooltip: { text: 'Link' }
+  }],
   // Text alignment
-  [
-    {
-      icon: "i-lucide-align-justify",
-      tooltip: { text: "Text Align" },
-      content: {
-        align: "end",
-      },
-      items: [
-        {
-          kind: "textAlign",
-          align: "left",
-          icon: "i-lucide-align-left",
-          label: "Align Left",
-        },
-        {
-          kind: "textAlign",
-          align: "center",
-          icon: "i-lucide-align-center",
-          label: "Align Center",
-        },
-        {
-          kind: "textAlign",
-          align: "right",
-          icon: "i-lucide-align-right",
-          label: "Align Right",
-        },
-        {
-          kind: "textAlign",
-          align: "justify",
-          icon: "i-lucide-align-justify",
-          label: "Align Justify",
-        },
-      ],
+  [{
+    icon: 'i-lucide-align-justify',
+    tooltip: { text: 'Text Align' },
+    content: {
+      align: 'end'
     },
-  ],
-];
+    items: [{
+      kind: 'textAlign',
+      align: 'left',
+      icon: 'i-lucide-align-left',
+      label: 'Align Left'
+    }, {
+      kind: 'textAlign',
+      align: 'center',
+      icon: 'i-lucide-align-center',
+      label: 'Align Center'
+    }, {
+      kind: 'textAlign',
+      align: 'right',
+      icon: 'i-lucide-align-right',
+      label: 'Align Right'
+    }, {
+      kind: 'textAlign',
+      align: 'justify',
+      icon: 'i-lucide-align-justify',
+      label: 'Align Justify'
+    }]
+  }]
+]
 </script>
 
 <template>
@@ -438,11 +370,7 @@ const items: EditorToolbarItem[][] = [
     :extensions="[TextAlign.configure({ types: ['heading', 'paragraph'] })]"
     class="w-full min-h-37 flex flex-col gap-4"
   >
-    <UEditorToolbar
-      :editor="editor"
-      :items="items"
-      class="sm:px-8 overflow-x-auto"
-    />
+    <UEditorToolbar :editor="editor" :items="items" class="sm:px-8 overflow-x-auto" />
   </UEditor>
 </template>
 ```
@@ -457,48 +385,37 @@ Use the `should-show` prop to create context-specific toolbars that appear only 
 
 ```vue [EditorToolbarImageExample.vue]
 <script setup lang="ts">
-import type { Editor } from "@tiptap/vue-3";
-import type { EditorToolbarItem } from "@nuxt/ui";
+import type { Editor } from '@tiptap/vue-3'
+import type { EditorToolbarItem } from '@nuxt/ui'
 
 const value = ref(`Click on the image below to see the image-specific toolbar:
 
-![Image Placeholder](/placeholder.jpeg)`);
+![Image Placeholder](/placeholder.jpeg)`)
 
 const items = (editor: Editor): EditorToolbarItem[][] => {
-  const node = editor.state.doc.nodeAt(editor.state.selection.from);
+  const node = editor.state.doc.nodeAt(editor.state.selection.from)
 
-  return [
-    [
-      {
-        icon: "i-lucide-download",
-        to: node?.attrs?.src,
-        download: true,
-        tooltip: { text: "Download" },
-      },
-    ],
-    [
-      {
-        icon: "i-lucide-trash",
-        tooltip: { text: "Delete" },
-        onClick: () => {
-          const { state } = editor;
-          const { selection } = state;
+  return [[{
+    icon: 'i-lucide-download',
+    to: node?.attrs?.src,
+    download: true,
+    tooltip: { text: 'Download' }
+  }], [{
+    icon: 'i-lucide-trash',
+    tooltip: { text: 'Delete' },
+    onClick: () => {
+      const { state } = editor
+      const { selection } = state
 
-          const pos = selection.from;
-          const node = state.doc.nodeAt(pos);
+      const pos = selection.from
+      const node = state.doc.nodeAt(pos)
 
-          if (node && node.type.name === "image") {
-            editor
-              .chain()
-              .focus()
-              .deleteRange({ from: pos, to: pos + node.nodeSize })
-              .run();
-          }
-        },
-      },
-    ],
-  ];
-};
+      if (node && node.type.name === 'image') {
+        editor.chain().focus().deleteRange({ from: pos, to: pos + node.nodeSize }).run()
+      }
+    }
+  }]]
+}
 </script>
 
 <template>
@@ -512,11 +429,9 @@ const items = (editor: Editor): EditorToolbarItem[][] => {
       :editor="editor"
       :items="items(editor)"
       layout="bubble"
-      :should-show="
-        ({ editor, view }) => {
-          return editor.isActive('image') && view.hasFocus();
-        }
-      "
+      :should-show="({ editor, view }) => {
+        return editor.isActive('image') && view.hasFocus()
+      }"
     />
   </UEditor>
 </template>
@@ -530,95 +445,91 @@ This example demonstrates how to create a custom link popover using the `slot` p
 
 ```vue [EditorLinkPopover.vue]
 <script setup lang="ts">
-import type { Editor } from "@tiptap/vue-3";
+import type { Editor } from '@tiptap/vue-3'
 
 const props = defineProps<{
-  editor: Editor;
-  autoOpen?: boolean;
-}>();
+  editor: Editor
+  autoOpen?: boolean
+}>()
 
-const open = ref(false);
-const url = ref("");
+const open = ref(false)
+const url = ref('')
 
-const active = computed(() => props.editor.isActive("link"));
+const active = computed(() => props.editor.isActive('link'))
 const disabled = computed(() => {
-  if (!props.editor.isEditable) return true;
-  const { selection } = props.editor.state;
-  return selection.empty && !props.editor.isActive("link");
-});
+  if (!props.editor.isEditable) return true
+  const { selection } = props.editor.state
+  return selection.empty && !props.editor.isActive('link')
+})
 
-watch(
-  () => props.editor,
-  (editor, _, onCleanup) => {
-    if (!editor) return;
+watch(() => props.editor, (editor, _, onCleanup) => {
+  if (!editor) return
 
-    const updateUrl = () => {
-      const { href } = editor.getAttributes("link");
-      url.value = href || "";
-    };
+  const updateUrl = () => {
+    const { href } = editor.getAttributes('link')
+    url.value = href || ''
+  }
 
-    updateUrl();
-    editor.on("selectionUpdate", updateUrl);
+  updateUrl()
+  editor.on('selectionUpdate', updateUrl)
 
-    onCleanup(() => {
-      editor.off("selectionUpdate", updateUrl);
-    });
-  },
-  { immediate: true },
-);
+  onCleanup(() => {
+    editor.off('selectionUpdate', updateUrl)
+  })
+}, { immediate: true })
 
 watch(active, (isActive) => {
   if (isActive && props.autoOpen) {
-    open.value = true;
+    open.value = true
   }
-});
+})
 
 function setLink() {
-  if (!url.value) return;
+  if (!url.value) return
 
-  const { selection } = props.editor.state;
-  const isEmpty = selection.empty;
-  const hasCode = props.editor.isActive("code");
+  const { selection } = props.editor.state
+  const isEmpty = selection.empty
+  const hasCode = props.editor.isActive('code')
 
-  let chain = props.editor.chain().focus();
+  let chain = props.editor.chain().focus()
 
   // When linking code, extend the code mark range first to select the full code
   if (hasCode && !isEmpty) {
-    chain = chain.extendMarkRange("code").setLink({ href: url.value });
+    chain = chain.extendMarkRange('code').setLink({ href: url.value })
   } else {
-    chain = chain.extendMarkRange("link").setLink({ href: url.value });
+    chain = chain.extendMarkRange('link').setLink({ href: url.value })
 
     if (isEmpty) {
-      chain = chain.insertContent({ type: "text", text: url.value });
+      chain = chain.insertContent({ type: 'text', text: url.value })
     }
   }
 
-  chain.run();
-  open.value = false;
+  chain.run()
+  open.value = false
 }
 
 function removeLink() {
   props.editor
     .chain()
     .focus()
-    .extendMarkRange("link")
+    .extendMarkRange('link')
     .unsetLink()
-    .setMeta("preventAutolink", true)
-    .run();
+    .setMeta('preventAutolink', true)
+    .run()
 
-  url.value = "";
-  open.value = false;
+  url.value = ''
+  open.value = false
 }
 
 function openLink() {
-  if (!url.value) return;
-  window.open(url.value, "_blank", "noopener,noreferrer");
+  if (!url.value) return
+  window.open(url.value, '_blank', 'noopener,noreferrer')
 }
 
 function handleKeyDown(event: KeyboardEvent) {
-  if (event.key === "Enter") {
-    event.preventDefault();
-    setLink();
+  if (event.key === 'Enter') {
+    event.preventDefault()
+    setLink()
   }
 }
 </script>

@@ -25,7 +25,7 @@ interface FieldGroupProps {
    * @default 'horizontal'
    */
   orientation?: "horizontal" | "vertical" | undefined;
-  ui?: { base?: any } | undefined;
+  ui?: { base?: any; } | undefined;
 }
 ```
 
@@ -105,7 +105,11 @@ You can use a [Tooltip](https://ui.nuxt.com/docs/components/tooltip) within a fi
     <UInput color="neutral" variant="outline" placeholder="Enter token" />
 
     <UTooltip text="Copy to clipboard">
-      <UButton color="neutral" variant="subtle" icon="i-lucide-clipboard" />
+      <UButton
+        color="neutral"
+        variant="subtle"
+        icon="i-lucide-clipboard"
+      />
     </UTooltip>
   </UFieldGroup>
 </template>
@@ -117,32 +121,32 @@ You can use a [DropdownMenu](https://ui.nuxt.com/docs/components/dropdown-menu) 
 
 ```vue [FieldGroupDropdownExample.vue]
 <script setup lang="ts">
-import type { DropdownMenuItem } from "@nuxt/ui";
+import type { DropdownMenuItem } from '@nuxt/ui'
 
 const items: DropdownMenuItem[] = [
   {
-    label: "Team",
-    icon: "i-lucide-users",
+    label: 'Team',
+    icon: 'i-lucide-users'
   },
   {
-    label: "Invite users",
-    icon: "i-lucide-user-plus",
+    label: 'Invite users',
+    icon: 'i-lucide-user-plus',
     children: [
       {
-        label: "Invite by email",
-        icon: "i-lucide-send-horizontal",
+        label: 'Invite by email',
+        icon: 'i-lucide-send-horizontal'
       },
       {
-        label: "Invite by link",
-        icon: "i-lucide-link",
-      },
-    ],
+        label: 'Invite by link',
+        icon: 'i-lucide-link'
+      }
+    ]
   },
   {
-    label: "New team",
-    icon: "i-lucide-plus",
-  },
-];
+    label: 'New team',
+    icon: 'i-lucide-plus'
+  }
+]
 </script>
 
 <template>
@@ -150,7 +154,11 @@ const items: DropdownMenuItem[] = [
     <UButton color="neutral" variant="subtle" label="Settings" />
 
     <UDropdownMenu :items="items">
-      <UButton color="neutral" variant="outline" icon="i-lucide-chevron-down" />
+      <UButton
+        color="neutral"
+        variant="outline"
+        icon="i-lucide-chevron-down"
+      />
     </UDropdownMenu>
   </UFieldGroup>
 </template>

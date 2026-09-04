@@ -77,20 +77,11 @@ interface LinkProps {
   /**
    * Where to display the linked URL, as the name for a browsing context.
    */
-  target?:
-    null | (string & {}) | "_blank" | "_parent" | "_self" | "_top" | undefined;
+  target?: null | string & {} | "_blank" | "_parent" | "_self" | "_top" | undefined;
   /**
    * A rel attribute value to apply on the link. Defaults to "noopener noreferrer" for external links.
    */
-  rel?:
-    | null
-    | "noopener"
-    | "noreferrer"
-    | "nofollow"
-    | "sponsored"
-    | "ugc"
-    | (string & {})
-    | undefined;
+  rel?: null | "noopener" | "noreferrer" | "nofollow" | "sponsored" | "ugc" | string & {} | undefined;
   /**
    * If set to true, no rel attribute will be added to the link
    */
@@ -106,11 +97,7 @@ interface LinkProps {
   /**
    * Allows controlling when to prefetch links. By default, prefetch is triggered only on visibility.
    */
-  prefetchOn?:
-    | "visibility"
-    | "interaction"
-    | Partial<{ visibility: boolean; interaction: boolean }>
-    | undefined;
+  prefetchOn?: "visibility" | "interaction" | Partial<{ visibility: boolean; interaction: boolean; }> | undefined;
   /**
    * Escape hatch to disable `prefetch` attribute.
    */
@@ -132,15 +119,7 @@ interface LinkProps {
    * Value passed to the attribute `aria-current` when the link is exact active.
    * @default 'page'
    */
-  ariaCurrentValue?:
-    | "step"
-    | "page"
-    | "true"
-    | "false"
-    | "location"
-    | "date"
-    | "time"
-    | undefined;
+  ariaCurrentValue?: "step" | "page" | "true" | "false" | "location" | "date" | "time" | undefined;
   /**
    * Pass the returned promise of `router.push()` to `document.startViewTransition()` if supported.
    */
@@ -157,17 +136,7 @@ interface LinkProps {
   formmethod?: string | undefined;
   formnovalidate?: false | true | "true" | "false" | undefined;
   formtarget?: string | undefined;
-  referrerpolicy?:
-    | ""
-    | "no-referrer"
-    | "no-referrer-when-downgrade"
-    | "origin"
-    | "origin-when-cross-origin"
-    | "same-origin"
-    | "strict-origin"
-    | "strict-origin-when-cross-origin"
-    | "unsafe-url"
-    | undefined;
+  referrerpolicy?: "" | "no-referrer" | "no-referrer-when-downgrade" | "origin" | "origin-when-cross-origin" | "same-origin" | "strict-origin" | "strict-origin-when-cross-origin" | "unsafe-url" | undefined;
   download?: any;
   hreflang?: string | undefined;
   media?: string | undefined;
@@ -175,9 +144,9 @@ interface LinkProps {
 }
 ```
 
-> \[!NOTE]
-> See: https\://developer.mozilla.org/en-US/docs/Web/HTML/Element/a#attributes
->
+> [!NOTE]
+> See: https://developer.mozilla.org/en-US/docs/Web/HTML/Element/a#attributes
+> 
 > This component also supports all native `<a>` HTML attributes.
 
 ### Slots
@@ -193,17 +162,18 @@ interface LinkSlots {
 
 ## Usage
 
-The Link component is a wrapper around [`<NuxtLink>`](https://nuxt.com/docs/api/components/nuxt-link){rel="&#x22;nofollow&#x22;"} using the [`custom`](https://router.vuejs.org/api/interfaces/RouterLinkProps.html#Properties-custom){rel="&#x22;nofollow&#x22;"} prop. It provides a few extra props:
+The Link component is a wrapper around [`<NuxtLink>`](https://nuxt.com/docs/api/components/nuxt-link) using the [`custom`](https://router.vuejs.org/api/interfaces/RouterLinkProps.html#Properties-custom) prop. It provides a few extra props:
 
 - `inactive-class` prop to set a class when the link is inactive, `active-class` is used when active.
 - `exact` prop to style with `active-class` when the link is active and the route is exactly the same as the current route.
-- `exact-query` and `exact-hash` props to style with `active-class`when the link is active and the query or hash is exactly the same as the current query or hash.
+- `exact-query` and `exact-hash` props to style with `active-class` when the link is active and the query or hash is exactly the same as the current query or hash.
+
   - use `exact-query="partial"` to style with `active-class` when the link is active and the query partially match the current query.
 
-The incentive behind this is to provide the same API as NuxtLink back in Nuxt 2 / Vue 2. You can read more about it in the Vue Router [migration from Vue 2](https://router.vuejs.org/guide/migration/#removal-of-the-exact-prop-in-router-link){rel="&#x22;nofollow&#x22;"} guide.
+The incentive behind this is to provide the same API as NuxtLink back in Nuxt 2 / Vue 2. You can read more about it in the Vue Router [migration from Vue 2](https://router.vuejs.org/guide/migration/#removal-of-the-exact-prop-in-router-link) guide.
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > It is used by the [`Breadcrumb`](https://ui.nuxt.com/docs/components/breadcrumb), [`Button`](https://ui.nuxt.com/docs/components/button), [`ContextMenu`](https://ui.nuxt.com/docs/components/context-menu), [`DropdownMenu`](https://ui.nuxt.com/docs/components/dropdown-menu) and [`NavigationMenu`](https://ui.nuxt.com/docs/components/navigation-menu) components.
 
 ### Tag
@@ -212,56 +182,58 @@ The `Link` components renders an `<a>` tag when a `to` prop is provided, otherwi
 
 ```vue
 <template>
-  <ULink as="button"> Link </ULink>
+  <ULink as="button">
+    Link
+  </ULink>
 </template>
 ```
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > You can inspect the rendered HTML by changing the `to` prop.
 
 ### Style
 
-By default, the link has default active and inactive styles, check out the [#theme](https://ui.nuxt.com/#theme) section.
+By default, the link has default active and inactive styles, check out the [#theme](#theme) section.
 
 ```vue
 <template>
-  <ULink to="/docs/components/link"> Link </ULink>
+  <ULink to="/docs/components/link">
+    Link
+  </ULink>
 </template>
 ```
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > Try changing the `to` prop to see the active and inactive states.
 
 You can override this behavior by using the `raw` prop and provide your own styles using `class`, `active-class` and `inactive-class`.
 
 ```vue
 <template>
-  <ULink
-    raw
-    to="/docs/components/link"
-    active-class="font-bold"
-    inactive-class="text-muted"
-  >
+  <ULink raw to="/docs/components/link" active-class="font-bold" inactive-class="text-muted">
     Link
   </ULink>
 </template>
 ```
 
-> \[!NOTE]
->
-> If you're using the [Tailwind CSS IntelliSense](https://marketplace.visualstudio.com/items?itemName=bradlc.vscode-tailwindcss){rel="&#x22;nofollow&#x22;"} extension for VSCode and wish to get autocompletion for the `active-class` and `inactive-class` props, you can add the following settings to your `.vscode/settings.json`:
->
+> [!NOTE]
+> 
+> If you're using the [Tailwind CSS IntelliSense](https://marketplace.visualstudio.com/items?itemName=bradlc.vscode-tailwindcss) extension for VSCode and wish to get autocompletion for the `active-class` and `inactive-class` props, you can add the following settings to your `.vscode/settings.json`:
+> 
 > ```json [.vscode/settings.json]
 > {
->   "tailwindCSS.classAttributes": ["active-class", "inactive-class"]
+>   "tailwindCSS.classAttributes": [
+>     "active-class",
+>     "inactive-class"
+>   ]
 > }
 > ```
 
 ### Locale `4.7+`
 
-The Link component automatically integrates with [`@nuxtjs/i18n`](https://i18n.nuxtjs.org/){rel="&#x22;nofollow&#x22;"} when installed. Internal links are automatically localized using the `$localePath` helper without requiring manual wrapping.
+The Link component automatically integrates with [`@nuxtjs/i18n`](https://i18n.nuxtjs.org/) when installed. Internal links are automatically localized using the `$localePath` helper without requiring manual wrapping.
 
 ```vue
 <template>
@@ -270,11 +242,11 @@ The Link component automatically integrates with [`@nuxtjs/i18n`](https://i18n.n
 </template>
 ```
 
-> \[!TIP]
->
+> [!TIP]
+> 
 > You can still manually use `localePath()` or `localeRoute()` if needed.
 
-> \[!NOTE]
+> [!NOTE]
 > See: /docs/getting-started/integrations/i18n/nuxt#dynamic-locale
->
+> 
 > Learn more about Internationalization in Nuxt UI.

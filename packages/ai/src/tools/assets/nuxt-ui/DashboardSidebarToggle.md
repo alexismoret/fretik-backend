@@ -108,10 +108,14 @@ interface DashboardSidebarToggleProps {
 }
 ```
 
-> \[!NOTE]
-> See: https\://developer.mozilla.org/en-US/docs/Web/HTML/Element/button#attributes
->
+> [!NOTE]
+> See: https://developer.mozilla.org/en-US/docs/Web/HTML/Element/button#attributes
+> 
 > This component also supports all native `<button>` HTML attributes.
+
+## Composition
+
+Also written in the docs and absent from the interface above — one per column or item: `#toggle`, `#header`.
 
 ## Usage
 
@@ -133,8 +137,8 @@ It extends the [Button](https://ui.nuxt.com/docs/components/button) component, s
 </template>
 ```
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > The button defaults to `color="neutral"` and `variant="ghost"`.
 
 ## Examples
@@ -143,7 +147,7 @@ It extends the [Button](https://ui.nuxt.com/docs/components/button) component, s
 
 Even though this component is automatically displayed on mobile, you can use the `toggle` slot of the [DashboardNavbar](https://ui.nuxt.com/docs/components/dashboard-navbar) and [DashboardSidebar](https://ui.nuxt.com/docs/components/dashboard-sidebar) components to customize the button.
 
-```vue [layouts/dashboard.vue] {4-6}
+```vue [layouts/dashboard.vue]
 <template>
   <UDashboardGroup>
     <UDashboardSidebar>
@@ -157,11 +161,11 @@ Even though this component is automatically displayed on mobile, you can use the
 </template>
 ```
 
-```vue [pages/index.vue] {11-13}
+```vue [pages/index.vue]
 <script setup lang="ts">
 definePageMeta({
-  layout: "dashboard",
-});
+  layout: 'dashboard'
+})
 </script>
 
 <template>
@@ -177,6 +181,6 @@ definePageMeta({
 </template>
 ```
 
-> \[!TIP]
->
+> [!TIP]
+> 
 > When using the `toggle-side` prop of the `DashboardSidebar` and `DashboardNavbar` components, the button will be displayed on the specified side.

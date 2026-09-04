@@ -32,7 +32,7 @@ interface SplitterProps {
    * @default false
    */
   disabled?: boolean | undefined;
-  ui?: { root?: SlotClass; panel?: SlotClass; handle?: SlotClass } | undefined;
+  ui?: { root?: SlotClass; panel?: SlotClass; handle?: SlotClass; } | undefined;
   /**
    * Unique id used to auto-save group arrangement via `localStorage`.
    */
@@ -73,12 +73,16 @@ interface SplitterEmits {
   layout: (payload: [val: number[]]) => void;
   collapse: (payload: [index: number]) => void;
   expand: (payload: [index: number]) => void;
-  resize: (
-    payload: [index: number, size: number, prevSize?: number | undefined],
-  ) => void;
+  resize: (payload: [index: number, size: number, prevSize?: number | undefined]) => void;
   dragging: (payload: [index: number, dragging: boolean]) => void;
 }
 ```
+
+## Composition
+
+Parts placed by name: `#resize-handle`.
+
+Also written in the docs and absent from the interface above — one per column or item: `#left`, `#main`, `#right`, `#sidebar`, `#first`, `#second`.
 
 ## Usage
 
@@ -86,60 +90,65 @@ Use the Splitter component to display a list of resizable panels separated by dr
 
 ```vue [SplitterExample.vue]
 <script setup lang="ts">
-import type { SplitterItem } from "@nuxt/ui";
+import type { SplitterItem } from '@nuxt/ui'
 
-const card =
-  "bg-elevated/50 border border-default rounded-xl items-center justify-center text-muted font-medium";
+const card = 'bg-elevated/50 border border-default rounded-xl items-center justify-center text-muted font-medium'
 
 const items: SplitterItem[] = [
-  { slot: "left", minSize: 15, defaultSize: 25, class: card },
-  { slot: "main", minSize: 30, defaultSize: 50, class: card },
-  { slot: "right", minSize: 15, defaultSize: 25, class: card },
-];
+  { slot: 'left', minSize: 15, defaultSize: 25, class: card },
+  { slot: 'main', minSize: 30, defaultSize: 50, class: card },
+  { slot: 'right', minSize: 15, defaultSize: 25, class: card }
+]
 </script>
 
 <template>
   <div class="w-full h-96">
     <USplitter id="splitter-example" :items="items">
-      <template #left> Left </template>
+      <template #left>
+        Left
+      </template>
 
-      <template #main> Main </template>
+      <template #main>
+        Main
+      </template>
 
-      <template #right> Right </template>
+      <template #right>
+        Right
+      </template>
     </USplitter>
   </div>
 </template>
 ```
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > The Splitter fills the height of its container, so make sure a parent element defines one.
 
 ### Items
 
 Use the `items` prop as an array of objects with the following properties:
 
-- `defaultSize?: number`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `minSize?: number`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `maxSize?: number`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `collapsible?: boolean`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `collapsedSize?: number`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `sizeUnit?: '%' | 'px'`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `order?: number`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `id?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `slot?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `class?: any`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `ui?: { panel?: ClassNameValue }`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
+- `defaultSize?: number`
+- `minSize?: number`
+- `maxSize?: number`
+- `collapsible?: boolean`
+- `collapsedSize?: number`
+- `sizeUnit?: '%' | 'px'`
+- `order?: number`
+- `id?: string`
+- `slot?: string`
+- `class?: any`
+- `ui?: { panel?: ClassNameValue }`
 
 Use the `slot` key to fill the content of a panel and the `class` key to style it. Items without a `slot` key fall back to a `panel-{index}` slot. Sizes are percentages by default, set `sizeUnit: 'px'` on an item for pixel values.
 
-> \[!CAUTION]
->
+> [!CAUTION]
+> 
 > When rendering on the server, set the `id` prop and give `defaultSize` to all items or to none. Ids are generated automatically otherwise and the server and the client can disagree, which breaks the layout on hydration. An item without a `defaultSize` falls back to an equal share on the server, so mixing the two makes panels jump once hydrated. Pixel sizes are measured on the client and always shift a little.
 
 ```vue
 <script setup lang="ts">
-import type { SplitterItem } from "@nuxt/ui";
+import type { SplitterItem } from '@nuxt/ui'
 
 const items = ref<SplitterItem[]>([
   {
@@ -147,23 +156,24 @@ const items = ref<SplitterItem[]>([
     minSize: 15,
     maxSize: 40,
     defaultSize: 25,
-    class:
-      "bg-elevated/50 border border-default rounded-xl items-center justify-center text-muted font-medium",
+    class: "bg-elevated/50 border border-default rounded-xl items-center justify-center text-muted font-medium"
   },
   {
     slot: "main",
     defaultSize: 75,
-    class:
-      "bg-elevated/50 border border-default rounded-xl items-center justify-center text-muted font-medium",
-  },
-]);
+    class: "bg-elevated/50 border border-default rounded-xl items-center justify-center text-muted font-medium"
+  }
+])
 </script>
 
 <template>
   <USplitter id="splitter-items" :items="items">
-    <template #sidebar> Sidebar </template>
-    <template #main> Main </template></USplitter
-  >
+    <template #sidebar>
+      Sidebar
+    </template>
+    <template #main>
+      Main
+    </template></USplitter>
 </template>
 ```
 
@@ -173,27 +183,28 @@ Use the `orientation` prop to change the direction of the splitter. Defaults to 
 
 ```vue
 <script setup lang="ts">
-import type { SplitterItem } from "@nuxt/ui";
+import type { SplitterItem } from '@nuxt/ui'
 
 const items = ref<SplitterItem[]>([
   {
     slot: "first",
-    class:
-      "bg-elevated/50 border border-default rounded-xl items-center justify-center text-muted font-medium",
+    class: "bg-elevated/50 border border-default rounded-xl items-center justify-center text-muted font-medium"
   },
   {
     slot: "second",
-    class:
-      "bg-elevated/50 border border-default rounded-xl items-center justify-center text-muted font-medium",
-  },
-]);
+    class: "bg-elevated/50 border border-default rounded-xl items-center justify-center text-muted font-medium"
+  }
+])
 </script>
 
 <template>
   <USplitter id="splitter-orientation" orientation="vertical" :items="items">
-    <template #first> First </template>
-    <template #second> Second </template></USplitter
-  >
+    <template #first>
+      First
+    </template>
+    <template #second>
+      Second
+    </template></USplitter>
 </template>
 ```
 
@@ -205,24 +216,12 @@ Set `collapsible: true` on an item to let it collapse past its `minSize`, and us
 
 ```vue [SplitterCollapsibleExample.vue]
 <script setup lang="ts">
-import type { SplitterItem } from "@nuxt/ui";
+import type { SplitterItem } from '@nuxt/ui'
 
 const items: SplitterItem[] = [
-  {
-    slot: "sidebar",
-    sizeUnit: "px",
-    minSize: 150,
-    defaultSize: 250,
-    collapsible: true,
-    collapsedSize: 48,
-    class: "bg-elevated/50 border border-default rounded-xl",
-  },
-  {
-    slot: "main",
-    class:
-      "bg-elevated/50 border border-default rounded-xl items-center justify-center text-muted font-medium",
-  },
-];
+  { slot: 'sidebar', sizeUnit: 'px', minSize: 150, defaultSize: 250, collapsible: true, collapsedSize: 48, class: 'bg-elevated/50 border border-default rounded-xl' },
+  { slot: 'main', class: 'bg-elevated/50 border border-default rounded-xl items-center justify-center text-muted font-medium' }
+]
 </script>
 
 <template>
@@ -231,11 +230,7 @@ const items: SplitterItem[] = [
       <template #sidebar="{ collapsed, collapse, expand }">
         <div class="flex-1 flex items-center justify-center p-2">
           <UButton
-            :icon="
-              collapsed
-                ? 'i-lucide-panel-left-open'
-                : 'i-lucide-panel-left-close'
-            "
+            :icon="collapsed ? 'i-lucide-panel-left-open' : 'i-lucide-panel-left-close'"
             :label="collapsed ? undefined : 'Collapse'"
             :aria-label="collapsed ? 'Expand' : undefined"
             color="neutral"
@@ -245,7 +240,9 @@ const items: SplitterItem[] = [
         </div>
       </template>
 
-      <template #main> Main </template>
+      <template #main>
+        Main
+      </template>
     </USplitter>
   </div>
 </template>
@@ -257,36 +254,37 @@ Nest a `Splitter` inside a panel to build two-dimensional, IDE-style layouts.
 
 ```vue [SplitterNestedExample.vue]
 <script setup lang="ts">
-import type { SplitterItem } from "@nuxt/ui";
+import type { SplitterItem } from '@nuxt/ui'
 
-const card =
-  "bg-elevated/50 border border-default rounded-xl items-center justify-center text-muted font-medium";
+const card = 'bg-elevated/50 border border-default rounded-xl items-center justify-center text-muted font-medium'
 
 const items: SplitterItem[] = [
-  { slot: "left", minSize: 20, class: card },
-  { slot: "right", minSize: 20 },
-];
+  { slot: 'left', minSize: 20, class: card },
+  { slot: 'right', minSize: 20 }
+]
 
 const nested: SplitterItem[] = [
-  { slot: "top", minSize: 20, class: card },
-  { slot: "bottom", minSize: 20, class: card },
-];
+  { slot: 'top', minSize: 20, class: card },
+  { slot: 'bottom', minSize: 20, class: card }
+]
 </script>
 
 <template>
   <div class="w-full h-96">
     <USplitter id="splitter-nested-example" :items="items">
-      <template #left> Left </template>
+      <template #left>
+        Left
+      </template>
 
       <template #right>
-        <USplitter
-          id="splitter-nested-example-inner"
-          orientation="vertical"
-          :items="nested"
-        >
-          <template #top> Top </template>
+        <USplitter id="splitter-nested-example-inner" orientation="vertical" :items="nested">
+          <template #top>
+            Top
+          </template>
 
-          <template #bottom> Bottom </template>
+          <template #bottom>
+            Bottom
+          </template>
         </USplitter>
       </template>
     </USplitter>
@@ -300,37 +298,24 @@ The handle is invisible by default. Use the `ui` prop to restyle it, for example
 
 ```vue [SplitterCustomHandleExample.vue]
 <script setup lang="ts">
-import type { SplitterItem } from "@nuxt/ui";
+import type { SplitterItem } from '@nuxt/ui'
 
 const items: SplitterItem[] = [
-  {
-    slot: "left",
-    minSize: 20,
-    defaultSize: 30,
-    class: "items-center justify-center text-muted font-medium",
-  },
-  {
-    slot: "right",
-    defaultSize: 70,
-    class: "items-center justify-center text-muted font-medium",
-  },
-];
+  { slot: 'left', minSize: 20, defaultSize: 30, class: 'items-center justify-center text-muted font-medium' },
+  { slot: 'right', defaultSize: 70, class: 'items-center justify-center text-muted font-medium' }
+]
 </script>
 
 <template>
   <div class="w-full h-96">
-    <USplitter
-      id="splitter-custom-handle-example"
-      :items="items"
-      :ui="{
-        handle:
-          'data-[orientation=horizontal]:w-px data-[orientation=vertical]:h-px bg-border transition-colors data-[state=hover]:bg-primary data-[state=drag]:bg-primary',
-      }"
-      class="rounded-lg border border-default overflow-hidden"
-    >
-      <template #left> Left </template>
+    <USplitter id="splitter-custom-handle-example" :items="items" :ui="{ handle: 'data-[orientation=horizontal]:w-px data-[orientation=vertical]:h-px bg-border transition-colors data-[state=hover]:bg-primary data-[state=drag]:bg-primary' }" class="rounded-lg border border-default overflow-hidden">
+      <template #left>
+        Left
+      </template>
 
-      <template #right> Right </template>
+      <template #right>
+        Right
+      </template>
     </USplitter>
   </div>
 </template>

@@ -28,15 +28,7 @@ interface FileUploadProps {
   /**
    * @default 'primary'
    */
-  color?:
-    | "primary"
-    | "secondary"
-    | "success"
-    | "info"
-    | "warning"
-    | "error"
-    | "neutral"
-    | undefined;
+  color?: "primary" | "secondary" | "success" | "info" | "warning" | "error" | "neutral" | undefined;
   /**
    * The `button` variant is only available when `multiple` is `false`.
    * @default 'area'
@@ -116,25 +108,7 @@ interface FileUploadProps {
    * @default true
    */
   preview?: boolean | undefined;
-  ui?:
-    | {
-        root?: SlotClass;
-        base?: SlotClass;
-        wrapper?: SlotClass;
-        icon?: SlotClass;
-        avatar?: SlotClass;
-        label?: SlotClass;
-        description?: SlotClass;
-        actions?: SlotClass;
-        files?: SlotClass;
-        file?: SlotClass;
-        fileLeadingAvatar?: SlotClass;
-        fileWrapper?: SlotClass;
-        fileName?: SlotClass;
-        fileSize?: SlotClass;
-        fileTrailingButton?: SlotClass;
-      }
-    | undefined;
+  ui?: { root?: SlotClass; base?: SlotClass; wrapper?: SlotClass; icon?: SlotClass; avatar?: SlotClass; label?: SlotClass; description?: SlotClass; actions?: SlotClass; files?: SlotClass; file?: SlotClass; fileLeadingAvatar?: SlotClass; fileWrapper?: SlotClass; fileName?: SlotClass; fileSize?: SlotClass; fileTrailingButton?: SlotClass; } | undefined;
   form?: string | undefined;
   formaction?: string | undefined;
   formenctype?: string | undefined;
@@ -145,9 +119,9 @@ interface FileUploadProps {
 }
 ```
 
-> \[!NOTE]
-> See: https\://developer.mozilla.org/en-US/docs/Web/HTML/Element/input#attributes
->
+> [!NOTE]
+> See: https://developer.mozilla.org/en-US/docs/Web/HTML/Element/input#attributes
+> 
 > This component also supports all native `<input>` HTML attributes.
 
 ### Slots
@@ -189,10 +163,14 @@ interface FileUploadEmits {
 
 When accessing the component via a template ref, you can use the following:
 
-| Name                                                                                                                              | Type                  |
-| --------------------------------------------------------------------------------------------------------------------------------- | --------------------- |
-| `inputRef`{.language-ts-type.shiki.shiki-themes.material-theme-lighter.material-theme.material-theme-palenight lang="ts-type"}    | `Ref<HTMLInputElement | null>`{.language-ts-type.shiki.shiki-themes.material-theme-lighter.material-theme.material-theme-palenight lang="ts-type"} |
-| `dropzoneRef`{.language-ts-type.shiki.shiki-themes.material-theme-lighter.material-theme.material-theme-palenight lang="ts-type"} | `Ref<HTMLDivElement   | null>`{.language-ts-type.shiki.shiki-themes.material-theme-lighter.material-theme.material-theme-palenight lang="ts-type"} |
+| Name | Type |
+| --- | --- |
+| `inputRef` | `Ref<HTMLInputElement \| null>` |
+| `dropzoneRef` | `Ref<HTMLDivElement \| null>` |
+
+## Composition
+
+Parts placed by name: `#actions`, `#files`, `#files-top`, `#files-bottom`, `#file`, `#file-leading`, `#file-name`, `#file-size`, `#file-trailing`.
 
 ## Usage
 
@@ -200,7 +178,7 @@ Use the `v-model` directive to control the value of the FileUpload.
 
 ```vue
 <script setup lang="ts">
-const value = ref(null);
+const value = ref(null)
 </script>
 
 <template>
@@ -232,9 +210,9 @@ Use the `dropzone` prop to enable/disable the droppable area. Defaults to `true`
 
 Use the `interactive` prop to enable/disable the clickable area. Defaults to `true`.
 
-> \[!TIP]
+> [!TIP]
 > See: #with-files-bottom-slot
->
+> 
 > This can be useful when adding a `Button` component in the `#actions` slot.
 
 ```vue
@@ -245,7 +223,7 @@ Use the `interactive` prop to enable/disable the clickable area. Defaults to `tr
 
 ### Accept
 
-Use the `accept` prop to specify the allowed file types for the input. Provide a comma-separated list of [MIME types](https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/MIME_types){rel="&#x22;nofollow&#x22;"} or file extensions (e.g. `image/png,application/pdf,.jpg`). Defaults to `*` (all file types).
+Use the `accept` prop to specify the allowed file types for the input. Provide a comma-separated list of [MIME types](https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/MIME_types) or file extensions (e.g. `image/png,application/pdf,.jpg`). Defaults to `*` (all file types).
 
 ```vue
 <template>
@@ -269,11 +247,7 @@ Use the `description` prop to set the description of the FileUpload.
 
 ```vue
 <template>
-  <UFileUpload
-    label="Drop your image here"
-    description="SVG, PNG, JPG or GIF (max. 2MB)"
-    class="w-96 min-h-48"
-  />
+  <UFileUpload label="Drop your image here" description="SVG, PNG, JPG or GIF (max. 2MB)" class="w-96 min-h-48" />
 </template>
 ```
 
@@ -283,27 +257,22 @@ Use the `icon` prop to set the icon of the FileUpload. Defaults to `i-lucide-upl
 
 ```vue
 <template>
-  <UFileUpload
-    icon="i-lucide-image"
-    label="Drop your image here"
-    description="SVG, PNG, JPG or GIF (max. 2MB)"
-    class="w-96 min-h-48"
-  />
+  <UFileUpload icon="i-lucide-image" label="Drop your image here" description="SVG, PNG, JPG or GIF (max. 2MB)" class="w-96 min-h-48" />
 </template>
 ```
 
 **Nuxt:**
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/getting-started/integrations/icons/nuxt#theme
->
+> 
 > You can customize this icon globally in your `app.config.ts` under `ui.icons.upload` key.
 
 **Vue:**
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/getting-started/integrations/icons/vue#theme
->
+> 
 > You can customize this icon globally in your `vite.config.ts` under `ui.icons.upload` key.
 
 ### Color
@@ -312,18 +281,12 @@ Use the `color` prop to change the color of the FileUpload.
 
 ```vue
 <template>
-  <UFileUpload
-    color="neutral"
-    highlight
-    label="Drop your image here"
-    description="SVG, PNG, JPG or GIF (max. 2MB)"
-    class="w-96 min-h-48"
-  />
+  <UFileUpload color="neutral" highlight label="Drop your image here" description="SVG, PNG, JPG or GIF (max. 2MB)" class="w-96 min-h-48" />
 </template>
 ```
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > The `highlight` prop is used here to show the focus state. It's used internally when a validation error occurs.
 
 ### Variant
@@ -342,12 +305,7 @@ Use the `size` prop to change the size of the FileUpload.
 
 ```vue
 <template>
-  <UFileUpload
-    size="xl"
-    variant="area"
-    label="Drop your image here"
-    description="SVG, PNG, JPG or GIF (max. 2MB)"
-  />
+  <UFileUpload size="xl" variant="area" label="Drop your image here" description="SVG, PNG, JPG or GIF (max. 2MB)" />
 </template>
 ```
 
@@ -355,22 +313,15 @@ Use the `size` prop to change the size of the FileUpload.
 
 Use the `layout` prop to change how the files are displayed in the FileUpload. Defaults to `grid`.
 
-> \[!WARNING]
->
+> [!WARNING]
+> 
 > This prop only works when `variant` is `area`.
 
 ```vue
 <template>
-  <UFileUpload
-    layout="list"
-    multiple
-    label="Drop your images here"
-    description="SVG, PNG, JPG or GIF (max. 2MB)"
-    class="w-96"
-    :ui="{
-      base: 'min-h-48',
-    }"
-  />
+  <UFileUpload layout="list" multiple label="Drop your images here" description="SVG, PNG, JPG or GIF (max. 2MB)" class="w-96" :ui="{
+  base: 'min-h-48'
+}" />
 </template>
 ```
 
@@ -378,23 +329,15 @@ Use the `layout` prop to change how the files are displayed in the FileUpload. D
 
 Use the `position` prop to change the position of the files in the FileUpload. Defaults to `outside`.
 
-> \[!WARNING]
->
+> [!WARNING]
+> 
 > This prop only works when `variant` is `area` and when `layout` is `list`.
 
 ```vue
 <template>
-  <UFileUpload
-    position="inside"
-    layout="list"
-    multiple
-    label="Drop your images here"
-    description="SVG, PNG, JPG or GIF (max. 2MB)"
-    class="w-96"
-    :ui="{
-      base: 'min-h-48',
-    }"
-  />
+  <UFileUpload position="inside" layout="list" multiple label="Drop your images here" description="SVG, PNG, JPG or GIF (max. 2MB)" class="w-96" :ui="{
+  base: 'min-h-48'
+}" />
 </template>
 ```
 
@@ -406,88 +349,72 @@ You can use the FileUpload within a [Form](https://ui.nuxt.com/docs/components/f
 
 ```vue [FileUploadFormValidationExample.vue]
 <script setup lang="ts">
-import * as z from "zod";
-import type { FormSubmitEvent } from "@nuxt/ui";
+import * as z from 'zod'
+import type { FormSubmitEvent } from '@nuxt/ui'
 
-const MAX_FILE_SIZE = 2 * 1024 * 1024; // 2MB
-const MIN_DIMENSIONS = { width: 200, height: 200 };
-const MAX_DIMENSIONS = { width: 4096, height: 4096 };
-const ACCEPTED_IMAGE_TYPES = [
-  "image/jpeg",
-  "image/jpg",
-  "image/png",
-  "image/webp",
-];
+const MAX_FILE_SIZE = 2 * 1024 * 1024 // 2MB
+const MIN_DIMENSIONS = { width: 200, height: 200 }
+const MAX_DIMENSIONS = { width: 4096, height: 4096 }
+const ACCEPTED_IMAGE_TYPES = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp']
 
 const formatBytes = (bytes: number, decimals = 2) => {
-  if (bytes === 0) return "0 Bytes";
-  const k = 1024;
-  const dm = decimals < 0 ? 0 : decimals;
-  const sizes = ["Bytes", "KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB"];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return (
-    Number.parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + " " + sizes[i]
-  );
-};
+  if (bytes === 0) return '0 Bytes'
+  const k = 1024
+  const dm = decimals < 0 ? 0 : decimals
+  const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB', 'ZB', 'YB']
+  const i = Math.floor(Math.log(bytes) / Math.log(k))
+  return Number.parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i]
+}
 
 const schema = z.object({
   image: z
     .instanceof(File, {
-      message: "Please select an image file.",
+      message: 'Please select an image file.'
     })
-    .refine((file) => file.size <= MAX_FILE_SIZE, {
-      message: `The image is too large. Please choose an image smaller than ${formatBytes(MAX_FILE_SIZE)}.`,
+    .refine(file => file.size <= MAX_FILE_SIZE, {
+      message: `The image is too large. Please choose an image smaller than ${formatBytes(MAX_FILE_SIZE)}.`
     })
-    .refine((file) => ACCEPTED_IMAGE_TYPES.includes(file.type), {
-      message: "Please upload a valid image file (JPEG, PNG, or WebP).",
+    .refine(file => ACCEPTED_IMAGE_TYPES.includes(file.type), {
+      message: 'Please upload a valid image file (JPEG, PNG, or WebP).'
     })
     .refine(
-      (file) =>
+      file =>
         new Promise((resolve) => {
-          const reader = new FileReader();
+          const reader = new FileReader()
           reader.onload = (e) => {
-            const img = new Image();
+            const img = new Image()
             img.onload = () => {
-              const meetsDimensions =
-                img.width >= MIN_DIMENSIONS.width &&
-                img.height >= MIN_DIMENSIONS.height &&
-                img.width <= MAX_DIMENSIONS.width &&
-                img.height <= MAX_DIMENSIONS.height;
-              resolve(meetsDimensions);
-            };
-            img.src = e.target?.result as string;
-          };
-          reader.readAsDataURL(file);
+              const meetsDimensions
+                = img.width >= MIN_DIMENSIONS.width
+                  && img.height >= MIN_DIMENSIONS.height
+                  && img.width <= MAX_DIMENSIONS.width
+                  && img.height <= MAX_DIMENSIONS.height
+              resolve(meetsDimensions)
+            }
+            img.src = e.target?.result as string
+          }
+          reader.readAsDataURL(file)
         }),
       {
-        message: `The image dimensions are invalid. Please upload an image between ${MIN_DIMENSIONS.width}x${MIN_DIMENSIONS.height} and ${MAX_DIMENSIONS.width}x${MAX_DIMENSIONS.height} pixels.`,
-      },
-    ),
-});
+        message: `The image dimensions are invalid. Please upload an image between ${MIN_DIMENSIONS.width}x${MIN_DIMENSIONS.height} and ${MAX_DIMENSIONS.width}x${MAX_DIMENSIONS.height} pixels.`
+      }
+    )
+})
 
-type Schema = z.output<typeof schema>;
+type Schema = z.output<typeof schema>
 
 const state = reactive<Partial<Schema>>({
-  image: undefined,
-});
+  image: undefined
+})
 
 async function onSubmit(event: FormSubmitEvent<Schema>) {
-  console.log(event.data);
+  console.log(event.data)
 }
 </script>
 
 <template>
-  <UForm
-    :schema="schema"
-    :state="state"
-    class="space-y-4 w-96"
-    @submit="onSubmit"
-  >
-    <UFormField
-      name="image"
-      label="Image"
-      description="JPG, GIF or PNG. 2MB Max."
-    >
+  <UForm :schema="schema" :state="state" class="space-y-4 w-96" @submit="onSubmit">
+    <UFormField name="image" label="Image" description="JPG, GIF or PNG. 2MB Max.">
       <UFileUpload v-model="state.image" accept="image/*" class="min-h-48" />
     </UFormField>
 
@@ -502,110 +429,81 @@ You can use the default slot to make your own FileUpload component.
 
 ```vue [FileUploadDefaultSlotExample.vue]
 <script setup lang="ts">
-import * as z from "zod";
-import type { FormSubmitEvent } from "@nuxt/ui";
+import * as z from 'zod'
+import type { FormSubmitEvent } from '@nuxt/ui'
 
-const MAX_FILE_SIZE = 2 * 1024 * 1024; // 2MB
-const MIN_DIMENSIONS = { width: 200, height: 200 };
-const MAX_DIMENSIONS = { width: 4096, height: 4096 };
-const ACCEPTED_IMAGE_TYPES = [
-  "image/jpeg",
-  "image/jpg",
-  "image/png",
-  "image/webp",
-];
+const MAX_FILE_SIZE = 2 * 1024 * 1024 // 2MB
+const MIN_DIMENSIONS = { width: 200, height: 200 }
+const MAX_DIMENSIONS = { width: 4096, height: 4096 }
+const ACCEPTED_IMAGE_TYPES = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp']
 
 const formatBytes = (bytes: number, decimals = 2) => {
-  if (bytes === 0) return "0 Bytes";
-  const k = 1024;
-  const dm = decimals < 0 ? 0 : decimals;
-  const sizes = ["Bytes", "KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB"];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return (
-    Number.parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + " " + sizes[i]
-  );
-};
+  if (bytes === 0) return '0 Bytes'
+  const k = 1024
+  const dm = decimals < 0 ? 0 : decimals
+  const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB', 'ZB', 'YB']
+  const i = Math.floor(Math.log(bytes) / Math.log(k))
+  return Number.parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i]
+}
 
 const schema = z.object({
   avatar: z
     .instanceof(File, {
-      message: "Please select an image file.",
+      message: 'Please select an image file.'
     })
-    .refine((file) => file.size <= MAX_FILE_SIZE, {
-      message: `The image is too large. Please choose an image smaller than ${formatBytes(MAX_FILE_SIZE)}.`,
+    .refine(file => file.size <= MAX_FILE_SIZE, {
+      message: `The image is too large. Please choose an image smaller than ${formatBytes(MAX_FILE_SIZE)}.`
     })
-    .refine((file) => ACCEPTED_IMAGE_TYPES.includes(file.type), {
-      message: "Please upload a valid image file (JPEG, PNG, or WebP).",
+    .refine(file => ACCEPTED_IMAGE_TYPES.includes(file.type), {
+      message: 'Please upload a valid image file (JPEG, PNG, or WebP).'
     })
     .refine(
-      (file) =>
+      file =>
         new Promise((resolve) => {
-          const reader = new FileReader();
+          const reader = new FileReader()
           reader.onload = (e) => {
-            const img = new Image();
+            const img = new Image()
             img.onload = () => {
-              const meetsDimensions =
-                img.width >= MIN_DIMENSIONS.width &&
-                img.height >= MIN_DIMENSIONS.height &&
-                img.width <= MAX_DIMENSIONS.width &&
-                img.height <= MAX_DIMENSIONS.height;
-              resolve(meetsDimensions);
-            };
-            img.src = e.target?.result as string;
-          };
-          reader.readAsDataURL(file);
+              const meetsDimensions
+                = img.width >= MIN_DIMENSIONS.width
+                  && img.height >= MIN_DIMENSIONS.height
+                  && img.width <= MAX_DIMENSIONS.width
+                  && img.height <= MAX_DIMENSIONS.height
+              resolve(meetsDimensions)
+            }
+            img.src = e.target?.result as string
+          }
+          reader.readAsDataURL(file)
         }),
       {
-        message: `The image dimensions are invalid. Please upload an image between ${MIN_DIMENSIONS.width}x${MIN_DIMENSIONS.height} and ${MAX_DIMENSIONS.width}x${MAX_DIMENSIONS.height} pixels.`,
-      },
-    ),
-});
+        message: `The image dimensions are invalid. Please upload an image between ${MIN_DIMENSIONS.width}x${MIN_DIMENSIONS.height} and ${MAX_DIMENSIONS.width}x${MAX_DIMENSIONS.height} pixels.`
+      }
+    )
+})
 
-type Schema = z.output<typeof schema>;
+type Schema = z.output<typeof schema>
 
 const state = reactive<Partial<Schema>>({
-  avatar: undefined,
-});
+  avatar: undefined
+})
 
 function createObjectUrl(file: File): string {
-  return URL.createObjectURL(file);
+  return URL.createObjectURL(file)
 }
 
 async function onSubmit(event: FormSubmitEvent<Schema>) {
-  console.log(event.data);
+  console.log(event.data)
 }
 </script>
 
 <template>
-  <UForm
-    :schema="schema"
-    :state="state"
-    class="space-y-4 w-64"
-    @submit="onSubmit"
-  >
-    <UFormField
-      name="avatar"
-      label="Avatar"
-      description="JPG, GIF or PNG. 1MB Max."
-    >
-      <UFileUpload
-        v-slot="{ open, removeFile }"
-        v-model="state.avatar"
-        accept="image/*"
-      >
+  <UForm :schema="schema" :state="state" class="space-y-4 w-64" @submit="onSubmit">
+    <UFormField name="avatar" label="Avatar" description="JPG, GIF or PNG. 1MB Max.">
+      <UFileUpload v-slot="{ open, removeFile }" v-model="state.avatar" accept="image/*">
         <div class="flex flex-wrap items-center gap-3">
-          <UAvatar
-            size="lg"
-            :src="state.avatar ? createObjectUrl(state.avatar) : undefined"
-            icon="i-lucide-image"
-          />
+          <UAvatar size="lg" :src="state.avatar ? createObjectUrl(state.avatar) : undefined" icon="i-lucide-image" />
 
-          <UButton
-            :label="state.avatar ? 'Change image' : 'Upload image'"
-            color="neutral"
-            variant="outline"
-            @click="open()"
-          />
+          <UButton :label="state.avatar ? 'Change image' : 'Upload image'" color="neutral" variant="outline" @click="open()" />
         </div>
 
         <p v-if="state.avatar" class="text-xs text-muted mt-1.5">

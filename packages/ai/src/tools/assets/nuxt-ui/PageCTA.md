@@ -37,19 +37,7 @@ interface PageCTAProps {
    * `{ size: 'lg' }`{lang="ts-type"}
    */
   links?: ButtonProps[] | undefined;
-  ui?:
-    | {
-        root?: SlotClass;
-        container?: SlotClass;
-        wrapper?: SlotClass;
-        header?: SlotClass;
-        title?: SlotClass;
-        description?: SlotClass;
-        body?: SlotClass;
-        footer?: SlotClass;
-        links?: SlotClass;
-      }
-    | undefined;
+  ui?: { root?: SlotClass; container?: SlotClass; wrapper?: SlotClass; header?: SlotClass; title?: SlotClass; description?: SlotClass; body?: SlotClass; footer?: SlotClass; links?: SlotClass; } | undefined;
 }
 ```
 
@@ -72,20 +60,36 @@ interface PageCTASlots {
 }
 ```
 
+## Composition
+
+Parts placed by name: `#top`, `#body`, `#links`, `#bottom`.
+
 ## Usage
 
 The PageCTA component provides a flexible way to display a call to action in your pages with an illustration in the default slot.
 
 ```vue
 <template>
-  <u-page-c-t-a :links=[{"label":"Get started","color":"neutral"},{"label":"Learn more","color":"neutral","variant":"subtle","trailingIcon":"i-lucide-arrow-right"}] description=Preview the latest Tailwind CSS and get started with Nuxt UI. orientation=horizontal title=Trusted and supported by our amazing community>
-  <img alt=Illustration src=https://picsum.photos/640/616 /></u-page-c-t-a>
+  <u-page-c-t-a :links="[
+    {
+      label: 'Get started',
+      color: 'neutral'
+    },
+    {
+      label: 'Learn more',
+      color: 'neutral',
+      variant: 'subtle',
+      trailingIcon: 'i-lucide-arrow-right'
+    }
+  ]" description="Preview the latest Tailwind CSS and get started with Nuxt UI." orientation="horizontal" title="Trusted and supported by our amazing community">
+    <img alt="Illustration" class="w-full rounded-lg" :height="308" src="https://picsum.photos/640/616" :width="320" />
+  </u-page-c-t-a>
 </template>
 ```
 
 Use it inside a [PageSection](https://ui.nuxt.com/docs/components/page-section) component or directly in your page:
 
-```vue {4,8-10}
+```vue
 <template>
   <UPageHero />
 
@@ -101,8 +105,8 @@ Use it inside a [PageSection](https://ui.nuxt.com/docs/components/page-section) 
 </template>
 ```
 
-> \[!TIP]
->
+> [!TIP]
+> 
 > Use `px-0` and `rounded-none` classes to make the CTA fill the edge of the page on mobile.
 
 ### Title
@@ -121,10 +125,7 @@ Use the `description` prop to set the description of the CTA.
 
 ```vue
 <template>
-  <UPageCTA
-    title="Trusted and supported by our amazing community"
-    description="We've built a strong, lasting partnership. Their trust is our driving force, propelling us towards shared success."
-  />
+  <UPageCTA title="Trusted and supported by our amazing community" description="We've built a strong, lasting partnership. Their trust is our driving force, propelling us towards shared success." />
 </template>
 ```
 
@@ -134,28 +135,24 @@ Use the `links` prop to display a list of [Button](https://ui.nuxt.com/docs/comp
 
 ```vue
 <script setup lang="ts">
-import type { ButtonProps } from "@nuxt/ui";
+import type { ButtonProps } from '@nuxt/ui'
 
 const links = ref<ButtonProps[]>([
   {
     label: "Get started",
-    color: "neutral",
+    color: "neutral"
   },
   {
     label: "Learn more",
     color: "neutral",
     variant: "subtle",
-    trailingIcon: "i-lucide-arrow-right",
-  },
-]);
+    trailingIcon: "i-lucide-arrow-right"
+  }
+])
 </script>
 
 <template>
-  <UPageCTA
-    title="Trusted and supported by our amazing community"
-    description="We've built a strong, lasting partnership. Their trust is our driving force, propelling us towards shared success."
-    :links="links"
-  />
+  <UPageCTA title="Trusted and supported by our amazing community" description="We've built a strong, lasting partnership. Their trust is our driving force, propelling us towards shared success." :links="links" />
 </template>
 ```
 
@@ -165,34 +162,29 @@ Use the `variant` prop to change the style of the CTA.
 
 ```vue
 <script setup lang="ts">
-import type { ButtonProps } from "@nuxt/ui";
+import type { ButtonProps } from '@nuxt/ui'
 
 const links = ref<ButtonProps[]>([
   {
     label: "Get started",
-    color: "neutral",
+    color: "neutral"
   },
   {
     label: "Learn more",
     color: "neutral",
     variant: "subtle",
-    trailingIcon: "i-lucide-arrow-right",
-  },
-]);
+    trailingIcon: "i-lucide-arrow-right"
+  }
+])
 </script>
 
 <template>
-  <UPageCTA
-    title="Trusted and supported by our amazing community"
-    description="We've built a strong, lasting partnership. Their trust is our driving force, propelling us towards shared success."
-    variant="soft"
-    :links="links"
-  />
+  <UPageCTA title="Trusted and supported by our amazing community" description="We've built a strong, lasting partnership. Their trust is our driving force, propelling us towards shared success." variant="soft" :links="links" />
 </template>
 ```
 
-> \[!TIP]
->
+> [!TIP]
+> 
 > You can apply the `light` or `dark` class to the `links` slot when using the `solid` variant to reverse the colors.
 
 ### Orientation
@@ -201,37 +193,25 @@ Use the `orientation` prop to change the orientation with the default slot. Defa
 
 ```vue
 <script setup lang="ts">
-import type { ButtonProps } from "@nuxt/ui";
+import type { ButtonProps } from '@nuxt/ui'
 
 const links = ref<ButtonProps[]>([
   {
     label: "Get started",
-    color: "neutral",
+    color: "neutral"
   },
   {
     label: "Learn more",
     color: "neutral",
     variant: "subtle",
-    trailingIcon: "i-lucide-arrow-right",
-  },
-]);
+    trailingIcon: "i-lucide-arrow-right"
+  }
+])
 </script>
 
 <template>
-  <UPageCTA
-    title="Trusted and supported by our amazing community"
-    description="We've built a strong, lasting partnership. Their trust is our driving force, propelling us towards shared success."
-    orientation="horizontal"
-    :links="links"
-  >
-    <img
-      src="https://picsum.photos/640/728"
-      width="320"
-      height="364"
-      alt="Illustration"
-      class="w-full rounded-lg"
-      loading="lazy"
-    />
+  <UPageCTA title="Trusted and supported by our amazing community" description="We've built a strong, lasting partnership. Their trust is our driving force, propelling us towards shared success." orientation="horizontal" :links="links">
+    <img src="https://picsum.photos/640/728" width="320" height="364" alt="Illustration" class="w-full rounded-lg" loading="lazy" />
   </UPageCTA>
 </template>
 ```
@@ -242,38 +222,25 @@ Use the `reverse` prop to reverse the orientation of the default slot.
 
 ```vue
 <script setup lang="ts">
-import type { ButtonProps } from "@nuxt/ui";
+import type { ButtonProps } from '@nuxt/ui'
 
 const links = ref<ButtonProps[]>([
   {
     label: "Get started",
-    color: "neutral",
+    color: "neutral"
   },
   {
     label: "Learn more",
     color: "neutral",
     variant: "subtle",
-    trailingIcon: "i-lucide-arrow-right",
-  },
-]);
+    trailingIcon: "i-lucide-arrow-right"
+  }
+])
 </script>
 
 <template>
-  <UPageCTA
-    title="Trusted and supported by our amazing community"
-    description="We've built a strong, lasting partnership. Their trust is our driving force, propelling us towards shared success."
-    orientation="horizontal"
-    reverse
-    :links="links"
-  >
-    <img
-      src="https://picsum.photos/640/728"
-      width="320"
-      height="364"
-      alt="Illustration"
-      class="w-full rounded-lg"
-      loading="lazy"
-    />
+  <UPageCTA title="Trusted and supported by our amazing community" description="We've built a strong, lasting partnership. Their trust is our driving force, propelling us towards shared success." orientation="horizontal" reverse :links="links">
+    <img src="https://picsum.photos/640/728" width="320" height="364" alt="Illustration" class="w-full rounded-lg" loading="lazy" />
   </UPageCTA>
 </template>
 ```

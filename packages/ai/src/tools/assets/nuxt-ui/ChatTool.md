@@ -62,21 +62,7 @@ interface ChatToolProps {
    * `{ size: 'xs' }`{lang="ts-type"}
    */
   actions?: ButtonProps[] | undefined;
-  ui?:
-    | {
-        root?: SlotClass;
-        trigger?: SlotClass;
-        leading?: SlotClass;
-        leadingIcon?: SlotClass;
-        chevronIcon?: SlotClass;
-        label?: SlotClass;
-        suffix?: SlotClass;
-        trailingIcon?: SlotClass;
-        content?: SlotClass;
-        body?: SlotClass;
-        actions?: SlotClass;
-      }
-    | undefined;
+  ui?: { root?: SlotClass; trigger?: SlotClass; leading?: SlotClass; leadingIcon?: SlotClass; chevronIcon?: SlotClass; label?: SlotClass; suffix?: SlotClass; trailingIcon?: SlotClass; content?: SlotClass; body?: SlotClass; actions?: SlotClass; } | undefined;
   /**
    * When `true`, prevents the user from interacting with the collapsible.
    */
@@ -121,31 +107,35 @@ interface ChatToolEmits {
 }
 ```
 
+## Composition
+
+Parts placed by name: `#actions`.
+
 ## Usage
 
 The ChatTool component renders a collapsible block that displays AI tool invocation status, such as "Searching components" or "Reading documentation". When a default slot is provided, it becomes collapsible to reveal tool output.
 
 ```vue [ChatToolExample.vue]
 <script setup lang="ts">
-const streaming = ref(true);
+const streaming = ref(true)
 const result = ref(`$ pnpm run lint
 
 > eslint .
 
 ✔ No lint errors found.
-`);
+`)
 
-let timer: ReturnType<typeof setTimeout> | undefined;
+let timer: ReturnType<typeof setTimeout> | undefined
 
 onMounted(() => {
   timer = setTimeout(() => {
-    streaming.value = false;
-  }, 5000);
-});
+    streaming.value = false
+  }, 5000)
+})
 
 onUnmounted(() => {
-  clearTimeout(timer);
-});
+  clearTimeout(timer)
+})
 </script>
 
 <template>
@@ -193,8 +183,8 @@ Use the `streaming` prop to indicate the tool is actively running. The text disp
 </template>
 ```
 
-> \[!TIP]
->
+> [!TIP]
+> 
 > Use the `isToolStreaming` utility from `@nuxt/ui/utils/ai` to determine if a tool part is still running. It returns `false` when the tool is waiting for a user approval.
 
 ### Shimmer
@@ -203,14 +193,10 @@ When streaming, the trigger label uses the [`ChatShimmer`](https://ui.nuxt.com/d
 
 ```vue
 <template>
-  <UChatTool
-    streaming
-    text="Searching components..."
-    :shimmer="{
-      duration: 2,
-      spread: 2,
-    }"
-  />
+  <UChatTool streaming text="Searching components..." :shimmer="{
+  duration: 2,
+  spread: 2
+}" />
 </template>
 ```
 
@@ -240,43 +226,35 @@ Use the `loading-icon` prop to customize the loading icon. Defaults to `i-lucide
 
 ```vue
 <template>
-  <UChatTool
-    loading
-    loading-icon="i-lucide-loader"
-    text="Searching components..."
-  />
+  <UChatTool loading loading-icon="i-lucide-loader" text="Searching components..." />
 </template>
 ```
 
 **Nuxt:**
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/getting-started/integrations/icons/nuxt#theme
->
+> 
 > You can customize this icon globally in your `app.config.ts` under `ui.icons.loading` key.
 
 **Vue:**
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/getting-started/integrations/icons/vue#theme
->
+> 
 > You can customize this icon globally in your `vite.config.ts` under `ui.icons.loading` key.
 
 ### Chevron
 
 Use the `chevron` prop to change the position of the chevron icon.
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > When `chevron` is set to `leading` with an `icon`, the icon swaps with the chevron on hover and when open.
 
 ```vue
 <template>
-  <UChatTool
-    chevron="leading"
-    icon="i-lucide-search"
-    text="Searched components"
-  >
+  <UChatTool chevron="leading" icon="i-lucide-search" text="Searched components">
     Tool output content
   </UChatTool>
 </template>
@@ -296,16 +274,16 @@ Use the `chevron-icon` prop to customize the chevron [Icon](https://ui.nuxt.com/
 
 **Nuxt:**
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/getting-started/integrations/icons/nuxt#theme
->
+> 
 > You can customize this icon globally in your `app.config.ts` under `ui.icons.chevronDown` key.
 
 **Vue:**
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/getting-started/integrations/icons/vue#theme
->
+> 
 > You can customize this icon globally in your `vite.config.ts` under `ui.icons.chevronDown` key.
 
 ### Variant
@@ -314,12 +292,7 @@ Use the `variant` prop to change the visual style. Defaults to `inline`.
 
 ```vue
 <template>
-  <UChatTool
-    variant="card"
-    text="Searched components"
-    icon="i-lucide-search"
-    chevron="trailing"
-  >
+  <UChatTool variant="card" text="Searched components" icon="i-lucide-search" chevron="trailing">
     Tool output content
   </UChatTool>
 </template>
@@ -331,21 +304,16 @@ Use the `actions` prop to display a list of [Button](https://ui.nuxt.com/docs/co
 
 ```vue
 <template>
-  <UChatTool
-    :actions="[
-      {
-        label: 'Approve',
-      },
-      {
-        label: 'Deny',
-        color: 'neutral',
-        variant: 'soft',
-      },
-    ]"
-    text="Run terminal command"
-    variant="card"
-    icon="i-lucide-terminal"
-  >
+  <UChatTool :actions="[
+  {
+    label: 'Approve'
+  },
+  {
+    label: 'Deny',
+    color: 'neutral',
+    variant: 'soft'
+  }
+]" text="Run terminal command" variant="card" icon="i-lucide-terminal">
     $ pnpm run lint
   </UChatTool>
 </template>
@@ -353,45 +321,43 @@ Use the `actions` prop to display a list of [Button](https://ui.nuxt.com/docs/co
 
 ## Examples
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/components/chat
->
+> 
 > Check the **Chat** overview page for installation instructions, server setup and usage examples.
 
 ### With approval flow `4.10+`
 
-Use the `actions` prop to build a tool approval flow with the [AI SDK](https://ai-sdk.dev/docs/agents/tool-approvals){rel="&#x22;nofollow&#x22;"}. When a tool part is in the `approval-requested` state, display the approve and deny actions and respond with `addToolApprovalResponse`.
+Use the `actions` prop to build a tool approval flow with the [AI SDK](https://ai-sdk.dev/docs/agents/tool-approvals). When a tool part is in the `approval-requested` state, display the approve and deny actions and respond with `addToolApprovalResponse`.
 
 ```vue [ChatToolApprovalExample.vue]
 <script setup lang="ts">
-import type { ButtonProps } from "@nuxt/ui";
+import type { ButtonProps } from '@nuxt/ui'
 
-const state = ref<"approval-requested" | "output-available" | "output-denied">(
-  "approval-requested",
-);
-const result = ref("");
+const state = ref<'approval-requested' | 'output-available' | 'output-denied'>('approval-requested')
+const result = ref('')
 
 const text = computed(() => {
-  if (state.value === "approval-requested") return "Run terminal command";
-  if (state.value === "output-denied") return "Command cancelled";
-  return result.value ? "Ran terminal command" : "Running terminal command";
-});
+  if (state.value === 'approval-requested') return 'Run terminal command'
+  if (state.value === 'output-denied') return 'Command cancelled'
+  return result.value ? 'Ran terminal command' : 'Running terminal command'
+})
 
-const output = computed(() => result.value || "$ pnpm run lint");
+const output = computed(() => result.value || '$ pnpm run lint')
 
 const actions = computed<ButtonProps[] | undefined>(() => {
-  if (state.value !== "approval-requested") return undefined;
+  if (state.value !== 'approval-requested') return undefined
 
   return [
-    { label: "Approve", onClick: onApprove },
-    { label: "Deny", color: "neutral", variant: "soft", onClick: onDeny },
-  ];
-});
+    { label: 'Approve', onClick: onApprove },
+    { label: 'Deny', color: 'neutral', variant: 'soft', onClick: onDeny }
+  ]
+})
 
-let timer: ReturnType<typeof setTimeout> | undefined;
+let timer: ReturnType<typeof setTimeout> | undefined
 
 function onApprove() {
-  state.value = "output-available";
+  state.value = 'output-available'
 
   timer = setTimeout(() => {
     result.value = `$ pnpm run lint
@@ -399,23 +365,23 @@ function onApprove() {
 > eslint .
 
 ✔ No lint errors found.
-`;
-  }, 2000);
+`
+  }, 2000)
 }
 
 function onDeny() {
-  state.value = "output-denied";
+  state.value = 'output-denied'
 }
 
 function reset() {
-  clearTimeout(timer);
-  state.value = "approval-requested";
-  result.value = "";
+  clearTimeout(timer)
+  state.value = 'approval-requested'
+  result.value = ''
 }
 
 onUnmounted(() => {
-  clearTimeout(timer);
-});
+  clearTimeout(timer)
+})
 </script>
 
 <template>
@@ -445,49 +411,29 @@ onUnmounted(() => {
 </template>
 ```
 
-> \[!TIP]
->
+> [!TIP]
+> 
 > Use the `isToolApprovalPending` utility from `@nuxt/ui/utils/ai` to detect a pending approval, `isToolStreaming` returns `false` in this state.
->
+> 
 > ```vue
 > <script setup lang="ts">
-> import { useChat } from "@ai-sdk/vue";
-> import { lastAssistantMessageIsCompleteWithApprovalResponses } from "ai";
->
+> import { useChat } from '@ai-sdk/vue'
+> import { lastAssistantMessageIsCompleteWithApprovalResponses } from 'ai'
+> 
 > const { messages, addToolApprovalResponse } = useChat({
->   sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithApprovalResponses,
-> });
+>   sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithApprovalResponses
+> })
 > </script>
->
+> 
 > <template>
 >   <UChatTool
 >     v-if="isToolUIPart(part)"
 >     :text="getToolName(part)"
 >     :streaming="isToolStreaming(part)"
->     :actions="
->       part.state === 'approval-requested'
->         ? [
->             {
->               label: 'Approve',
->               onClick: () =>
->                 addToolApprovalResponse({
->                   id: part.approval.id,
->                   approved: true,
->                 }),
->             },
->             {
->               label: 'Deny',
->               color: 'neutral',
->               variant: 'ghost',
->               onClick: () =>
->                 addToolApprovalResponse({
->                   id: part.approval.id,
->                   approved: false,
->                 }),
->             },
->           ]
->         : undefined
->     "
+>     :actions="part.state === 'approval-requested' ? [
+>       { label: 'Approve', onClick: () => addToolApprovalResponse({ id: part.approval.id, approved: true }) },
+>       { label: 'Deny', color: 'neutral', variant: 'ghost', onClick: () => addToolApprovalResponse({ id: part.approval.id, approved: false }) }
+>     ] : undefined"
 >   />
 > </template>
 > ```

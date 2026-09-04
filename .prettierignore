@@ -1,0 +1,16 @@
+# Generated artefacts, and why this file has to exist at the ROOT.
+#
+# Each package already ignores its own generated output, and `bun run
+# format:check` honours those because it runs with the package as its cwd.
+# The pre-commit hook does not: lint-staged runs from here, so prettier
+# resolves its ignore file from here and never sees packages/*/.prettierignore.
+#
+# The result was a loop. `nuxt-ui:sync-docs` writes 117 markdown files, the
+# hook reformatted all of them on the way into the commit, and the next sync
+# wrote them back — 117 files of churn per cycle, with a green format:check at
+# every step. Keep this list in step with the package-level ones.
+packages/ai/src/tools/assets/
+packages/ai/sandbox-assets/
+packages/ai/.eval-runs/
+packages/ai/evals/.triage/
+packages/shared/src/services/pages/compile-assets/theme-tokens.css

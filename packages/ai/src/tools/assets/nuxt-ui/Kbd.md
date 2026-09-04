@@ -20,15 +20,7 @@ interface KbdProps {
   /**
    * @default 'neutral'
    */
-  color?:
-    | "primary"
-    | "secondary"
-    | "success"
-    | "info"
-    | "warning"
-    | "error"
-    | "neutral"
-    | undefined;
+  color?: "primary" | "secondary" | "success" | "info" | "warning" | "error" | "neutral" | undefined;
   /**
    * @default 'outline'
    */
@@ -37,7 +29,7 @@ interface KbdProps {
    * @default 'md'
    */
   size?: "sm" | "md" | "lg" | undefined;
-  ui?: { base?: any } | undefined;
+  ui?: { base?: any; } | undefined;
 }
 ```
 
@@ -58,7 +50,9 @@ Use the default slot to set the value of the Kbd.
 
 ```vue
 <template>
-  <UKbd> K </UKbd>
+  <UKbd>
+    K
+  </UKbd>
 </template>
 ```
 
@@ -72,7 +66,7 @@ Use the `value` prop to set the value of the Kbd.
 </template>
 ```
 
-You can pass special keys to the `value` prop that goes through the [`useKbd`](https://github.com/nuxt/ui/blob/v4/src/runtime/composables/useKbd.ts){rel="&#x22;nofollow&#x22;"} composable. For example, the `meta` key displays as `⌘` on macOS and `Ctrl` on other platforms.
+You can pass special keys to the `value` prop that goes through the [`useKbd`](https://github.com/nuxt/ui/blob/v4/src/runtime/composables/useKbd.ts) composable. For example, the `meta` key displays as `⌘` on macOS and `Ctrl` on other platforms.
 
 ```vue
 <template>
@@ -86,7 +80,9 @@ Use the `color` prop to change the color of the Kbd.
 
 ```vue
 <template>
-  <UKbd color="neutral"> K </UKbd>
+  <UKbd color="neutral">
+    K
+  </UKbd>
 </template>
 ```
 
@@ -96,7 +92,9 @@ Use the `variant` prop to change the variant of the Kbd.
 
 ```vue
 <template>
-  <UKbd color="neutral" variant="solid"> K </UKbd>
+  <UKbd color="neutral" variant="solid">
+    K
+  </UKbd>
 </template>
 ```
 
@@ -106,7 +104,9 @@ Use the `size` prop to change the size of the Kbd.
 
 ```vue
 <template>
-  <UKbd size="lg"> K </UKbd>
+  <UKbd size="lg">
+    K
+  </UKbd>
 </template>
 ```
 
@@ -118,6 +118,8 @@ Use the `class` prop to override the base styles of the Badge.
 
 ```vue
 <template>
-  <UKbd class="font-bold rounded-full" variant="subtle"> K </UKbd>
+  <UKbd class="font-bold rounded-full" variant="subtle">
+    K
+  </UKbd>
 </template>
 ```

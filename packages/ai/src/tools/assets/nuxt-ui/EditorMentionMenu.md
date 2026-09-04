@@ -49,7 +49,7 @@ interface EditorMentionMenuProps {
   suggestion?: Omit<Partial<SuggestionOptions<any, any>>, "editor" | "char" | "pluginKey" | "items" | "command" | "render"> | undefined;
   /**
    * The DOM element to append the menu to. Default is the editor's parent element.
-   *
+   * 
    * Sometimes the menu needs to be appended to a different DOM context due to accessibility, clipping, or z-index issues.
    */
   appendTo?: HTMLElement | (): HTMLElement | undefined;
@@ -70,55 +70,50 @@ interface EditorMentionMenuProps {
 
 The EditorMentionMenu component displays a menu of user suggestions when typing a trigger character (defaults to `@`) in the editor and inserts the selected mention using the `@tiptap/extension-mention` package. The trigger character is also used as the prefix when rendering the inserted mention.
 
-> \[!NOTE]
->
-> It uses the `useEditorMenu` composable built on top of TipTap's [Suggestion](https://tiptap.dev/docs/editor/api/utilities/suggestion){rel="&#x22;nofollow&#x22;"} utility to filter items as you type and support keyboard navigation (arrow keys, enter to select, escape to close).
+> [!NOTE]
+> 
+> It uses the `useEditorMenu` composable built on top of TipTap's [Suggestion](https://tiptap.dev/docs/editor/api/utilities/suggestion) utility to filter items as you type and support keyboard navigation (arrow keys, enter to select, escape to close).
 
-> \[!CAUTION]
->
+> [!CAUTION]
+> 
 > It must be used inside an [Editor](https://ui.nuxt.com/docs/components/editor) component's default slot to have access to the editor instance.
 
 ```vue [EditorMentionMenuExample.vue]
 <script setup lang="ts">
-import type { EditorMentionMenuItem } from "@nuxt/ui";
+import type { EditorMentionMenuItem } from '@nuxt/ui'
 
 const value = ref(`# Mention Menu
 
-Type @ to mention someone and select from the list of available users.`);
+Type @ to mention someone and select from the list of available users.`)
 
-const items: EditorMentionMenuItem[] = [
-  {
-    label: "benjamincanac",
-    avatar: {
-      src: "https://avatars.githubusercontent.com/u/739984?v=4",
-      loading: "lazy" as const,
-    },
-  },
-  {
-    label: "atinux",
-    avatar: {
-      src: "https://avatars.githubusercontent.com/u/904724?v=4",
-      loading: "lazy" as const,
-    },
-  },
-  {
-    label: "danielroe",
-    avatar: {
-      src: "https://avatars.githubusercontent.com/u/28706372?v=4",
-      loading: "lazy" as const,
-    },
-  },
-  {
-    label: "pi0",
-    avatar: {
-      src: "https://avatars.githubusercontent.com/u/5158436?v=4",
-      loading: "lazy" as const,
-    },
-  },
-];
+const items: EditorMentionMenuItem[] = [{
+  label: 'benjamincanac',
+  avatar: {
+    src: 'https://avatars.githubusercontent.com/u/739984?v=4',
+    loading: 'lazy' as const
+  }
+}, {
+  label: 'atinux',
+  avatar: {
+    src: 'https://avatars.githubusercontent.com/u/904724?v=4',
+    loading: 'lazy' as const
+  }
+}, {
+  label: 'danielroe',
+  avatar: {
+    src: 'https://avatars.githubusercontent.com/u/28706372?v=4',
+    loading: 'lazy' as const
+  }
+}, {
+  label: 'pi0',
+  avatar: {
+    src: 'https://avatars.githubusercontent.com/u/5158436?v=4',
+    loading: 'lazy' as const
+  }
+}]
 
 // SSR-safe function to append menus to body (avoids z-index issues in docs)
-const appendToBody = import.meta.client ? () => document.body : undefined;
+const appendToBody = false ? () => document.body : undefined
 </script>
 
 <template>
@@ -129,89 +124,56 @@ const appendToBody = import.meta.client ? () => document.body : undefined;
     placeholder="Type @ to mention someone..."
     class="w-full min-h-21"
   >
-    <UEditorMentionMenu
-      :editor="editor"
-      :items="items"
-      :append-to="appendToBody"
-    />
+    <UEditorMentionMenu :editor="editor" :items="items" :append-to="appendToBody" />
   </UEditor>
 </template>
 ```
 
-> \[!NOTE]
-> See: https\://tiptap.dev/docs/editor/extensions/nodes/mention
->
+> [!NOTE]
+> See: https://tiptap.dev/docs/editor/extensions/nodes/mention
+> 
 > Learn more about the Mention extension in the TipTap documentation.
 
 ### Items
 
 Use the `items` prop as an array of objects with the following properties:
 
-- `label: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `avatar?: AvatarProps`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `icon?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `description?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `disabled?: boolean`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
+- `label: string`
+- `avatar?: AvatarProps`
+- `icon?: string`
+- `description?: string`
+- `disabled?: boolean`
 
 ```vue [EditorMentionMenuItemsExample.vue]
 <script setup lang="ts">
-import type { EditorMentionMenuItem } from "@nuxt/ui";
+import type { EditorMentionMenuItem } from '@nuxt/ui'
 
 const value = ref(`Type @ to mention a user.
 
-You can customize the items with avatars, icons, and descriptions.`);
+You can customize the items with avatars, icons, and descriptions.`)
 
-const items: EditorMentionMenuItem[] = [
-  {
-    label: "benjamincanac",
-    avatar: {
-      src: "https://avatars.githubusercontent.com/u/739984?v=4",
-      loading: "lazy" as const,
-    },
-  },
-  {
-    label: "HugoRCD",
-    avatar: {
-      src: "https://avatars.githubusercontent.com/u/71938701?v=4",
-      loading: "lazy" as const,
-    },
-  },
-  {
-    label: "romhml",
-    avatar: {
-      src: "https://avatars.githubusercontent.com/u/25613751?v=4",
-      loading: "lazy" as const,
-    },
-  },
-  {
-    label: "sandros94",
-    avatar: {
-      src: "https://avatars.githubusercontent.com/u/13056429?v=4",
-      loading: "lazy" as const,
-    },
-  },
-  {
-    label: "hywax",
-    avatar: {
-      src: "https://avatars.githubusercontent.com/u/149865959?v=4",
-      loading: "lazy" as const,
-    },
-  },
-  {
-    label: "J-Michalek",
-    avatar: {
-      src: "https://avatars.githubusercontent.com/u/71264422?v=4",
-      loading: "lazy" as const,
-    },
-  },
-  {
-    label: "genu",
-    avatar: {
-      src: "https://avatars.githubusercontent.com/u/928780?v=4",
-      loading: "lazy" as const,
-    },
-  },
-];
+const items: EditorMentionMenuItem[] = [{
+  label: 'benjamincanac',
+  avatar: { src: 'https://avatars.githubusercontent.com/u/739984?v=4', loading: 'lazy' as const }
+}, {
+  label: 'HugoRCD',
+  avatar: { src: 'https://avatars.githubusercontent.com/u/71938701?v=4', loading: 'lazy' as const }
+}, {
+  label: 'romhml',
+  avatar: { src: 'https://avatars.githubusercontent.com/u/25613751?v=4', loading: 'lazy' as const }
+}, {
+  label: 'sandros94',
+  avatar: { src: 'https://avatars.githubusercontent.com/u/13056429?v=4', loading: 'lazy' as const }
+}, {
+  label: 'hywax',
+  avatar: { src: 'https://avatars.githubusercontent.com/u/149865959?v=4', loading: 'lazy' as const }
+}, {
+  label: 'J-Michalek',
+  avatar: { src: 'https://avatars.githubusercontent.com/u/71264422?v=4', loading: 'lazy' as const }
+}, {
+  label: 'genu',
+  avatar: { src: 'https://avatars.githubusercontent.com/u/928780?v=4', loading: 'lazy' as const }
+}]
 </script>
 
 <template>
@@ -227,13 +189,13 @@ const items: EditorMentionMenuItem[] = [
 </template>
 ```
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > You can also pass an array of arrays to the `items` prop to create separated groups of items.
 
 ### Char
 
-Use the `char` prop to change the trigger character. Defaults to `@`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}. The trigger character is also used as the prefix when rendering the inserted mention (e.g. `#channel` instead of `@channel`).
+Use the `char` prop to change the trigger character. Defaults to `@`. The trigger character is also used as the prefix when rendering the inserted mention (e.g. `#channel` instead of `@channel`).
 
 ```vue
 <template>
@@ -243,31 +205,22 @@ Use the `char` prop to change the trigger character. Defaults to `@`{.shiki,shik
 </template>
 ```
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > You can use multiple `EditorMentionMenu` components on the same editor with different `char` and `plugin-key` props to support different mention types.
->
+> 
 > ```vue
 > <template>
 >   <UEditor v-slot="{ editor }">
->     <UEditorMentionMenu
->       :editor="editor"
->       :items="users"
->       plugin-key="mentionMenu"
->     />
->     <UEditorMentionMenu
->       :editor="editor"
->       :items="tags"
->       char="#"
->       plugin-key="tagMenu"
->     />
+>     <UEditorMentionMenu :editor="editor" :items="users" plugin-key="mentionMenu" />
+>     <UEditorMentionMenu :editor="editor" :items="tags" char="#" plugin-key="tagMenu" />
 >   </UEditor>
 > </template>
 > ```
 
 ### Suggestion `4.7+`
 
-Use the `suggestion` prop to customize TipTap's [Suggestion matching behavior](https://tiptap.dev/docs/editor/api/utilities/suggestion#settings){rel="&#x22;nofollow&#x22;"}.
+Use the `suggestion` prop to customize TipTap's [Suggestion matching behavior](https://tiptap.dev/docs/editor/api/utilities/suggestion#settings).
 
 This is useful when the trigger character should open directly after other characters instead of requiring the default whitespace prefix.
 
@@ -279,7 +232,7 @@ This is useful when the trigger character should open directly after other chara
       :items="items"
       char="#"
       :suggestion="{
-        allowedPrefixes: null,
+        allowedPrefixes: null
       }"
     />
   </UEditor>
@@ -288,7 +241,7 @@ This is useful when the trigger character should open directly after other chara
 
 ### Options
 
-Use the `options` prop to customize the positioning behavior using [Floating UI options](https://floating-ui.com/docs/computeposition#options){rel="&#x22;nofollow&#x22;"}.
+Use the `options` prop to customize the positioning behavior using [Floating UI options](https://floating-ui.com/docs/computeposition#options).
 
 ```vue
 <template>
@@ -298,7 +251,7 @@ Use the `options` prop to customize the positioning behavior using [Floating UI 
       :items="items"
       :options="{
         placement: 'bottom-start',
-        offset: 4,
+        offset: 4
       }"
     />
   </UEditor>
@@ -313,42 +266,26 @@ You can set the `ignore-filter` prop to `true` to disable the internal search an
 
 ```vue [EditorMentionMenuIgnoreFilterExample.vue]
 <script setup lang="ts">
-import { refDebounced } from "@vueuse/core";
+import { refDebounced } from '@vueuse/core'
 
 const value = ref(`# Async Mention Menu
 
-Type @ to mention someone. Results are fetched from an API as you type.`);
+Type @ to mention someone. Results are fetched from an API as you type.`)
 
-const searchTerm = ref("");
-const searchTermDebounced = refDebounced(searchTerm, 200);
+const searchTerm = ref('')
+const searchTermDebounced = refDebounced(searchTerm, 200)
 
-const { data: items } = useLazyFetch(
-  "https://dummyjson.com/users/search?limit=10",
-  {
-    key: "editor-mention-users-search",
-    params: { q: searchTermDebounced },
-    transform: (data: {
-      users: {
-        id: number;
-        firstName: string;
-        lastName: string;
-        image: string;
-      }[];
-    }) => {
-      return (
-        data.users?.map((user) => ({
-          id: user.id,
-          label: `${user.firstName} ${user.lastName}`,
-          avatar: { src: user.image, loading: "lazy" as const },
-        })) || []
-      );
-    },
-    server: false,
+const { data: items } = useLazyFetch('https://dummyjson.com/users/search?limit=10', {
+  key: 'editor-mention-users-search',
+  params: { q: searchTermDebounced },
+  transform: (data: { users: { id: number, firstName: string, lastName: string, image: string }[] }) => {
+    return data.users?.map(user => ({ id: user.id, label: `${user.firstName} ${user.lastName}`, avatar: { src: user.image, loading: 'lazy' as const } })) || []
   },
-);
+  server: false
+})
 
 // SSR-safe function to append menus to body (avoids z-index issues in docs)
-const appendToBody = import.meta.client ? () => document.body : undefined;
+const appendToBody = false ? () => document.body : undefined
 </script>
 
 <template>
@@ -370,6 +307,6 @@ const appendToBody = import.meta.client ? () => document.body : undefined;
 </template>
 ```
 
-> \[!NOTE]
->
-> This example uses [`refDebounced`](https://vueuse.org/shared/refDebounced/){rel="&#x22;nofollow&#x22;"} to debounce the API calls.
+> [!NOTE]
+> 
+> This example uses [`refDebounced`](https://vueuse.org/shared/refDebounced/) to debounce the API calls.

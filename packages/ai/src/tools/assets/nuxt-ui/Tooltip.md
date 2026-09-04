@@ -21,14 +21,11 @@ interface TooltipProps {
   kbds?: (string | undefined)[] | KbdProps[] | undefined;
   /**
    * The content of the tooltip.
-   *
+   * 
    * Inherits from the `tooltip.content` of the {@link AppProps } component when not provided.
    * @default { side: 'bottom', sideOffset: 8, collisionPadding: 8 }
    */
-  content?:
-    | (Omit<TooltipContentProps, "as" | "asChild"> &
-        Partial<EmitsToProps<TooltipContentImplEmits>>)
-    | undefined;
+  content?: Omit<TooltipContentProps, "as" | "asChild"> & Partial<EmitsToProps<TooltipContentImplEmits>> | undefined;
   /**
    * Display an arrow alongside the tooltip.
    * `{ rounded: true }`{lang="ts-type"}
@@ -42,19 +39,11 @@ interface TooltipProps {
   portal?: string | false | true | HTMLElement | undefined;
   /**
    * The reference (or anchor) element that is being referred to for positioning.
-   *
+   * 
    * If not provided will use the current component as anchor.
    */
   reference?: Element | VirtualElement | undefined;
-  ui?:
-    | {
-        content?: SlotClass;
-        arrow?: SlotClass;
-        text?: SlotClass;
-        kbds?: SlotClass;
-        kbdsSize?: SlotClass;
-      }
-    | undefined;
+  ui?: { content?: SlotClass; arrow?: SlotClass; text?: SlotClass; kbds?: SlotClass; kbdsSize?: SlotClass; } | undefined;
   /**
    * The open state of the tooltip when it is initially rendered.
    * Use when you do not need to control its open state.
@@ -120,6 +109,10 @@ interface TooltipEmits {
 }
 ```
 
+## Composition
+
+Parts placed by name: `#content`.
+
 ## Usage
 
 Use a [Button](https://ui.nuxt.com/docs/components/button) or any other component in the default slot of the Tooltip.
@@ -132,13 +125,13 @@ Use a [Button](https://ui.nuxt.com/docs/components/button) or any other componen
 </template>
 ```
 
-> \[!WARNING]
->
-> Make sure to wrap your app with the [`App`](https://ui.nuxt.com/docs/components/app) component which uses the [`TooltipProvider`](https://reka-ui.com/docs/components/tooltip#provider){rel="&#x22;nofollow&#x22;"} component from Reka UI.
+> [!WARNING]
+> 
+> Make sure to wrap your app with the [`App`](https://ui.nuxt.com/docs/components/app) component which uses the [`TooltipProvider`](https://reka-ui.com/docs/components/tooltip#provider) component from Reka UI.
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/components/app#props
->
+> 
 > You can check the `App` component `tooltip` prop to see how to configure the Tooltip globally.
 
 ### Text
@@ -159,14 +152,17 @@ Use the `kbds` prop to render [Kbd](https://ui.nuxt.com/docs/components/kbd) com
 
 ```vue
 <template>
-  <UTooltip text="Open on GitHub" :kbds="['meta', 'G']">
+  <UTooltip text="Open on GitHub" :kbds="[
+  'meta',
+  'G'
+]">
     <UButton label="Open" color="neutral" variant="subtle" />
   </UTooltip>
 </template>
 ```
 
-> \[!TIP]
->
+> [!TIP]
+> 
 > You can use special keys like `meta` that displays as `⌘` on macOS and `Ctrl` on other platforms.
 
 ### Delay
@@ -181,28 +177,25 @@ Use the `delay-duration` prop to change the delay before the Tooltip appears. Fo
 </template>
 ```
 
-> \[!TIP]
->
+> [!TIP]
+> 
 > This can be configured globally through the `tooltip.delayDuration` option in the [`App`](https://ui.nuxt.com/docs/components/app) component.
 
 ### Content
 
 Use the `content` prop to control how the Tooltip content is rendered, like its `align` or `side` for example.
 
-> \[!TIP]
->
+> [!TIP]
+> 
 > This can be configured globally through the `tooltip.content` option in the [`App`](https://ui.nuxt.com/docs/components/app) component.
 
 ```vue
 <template>
-  <UTooltip
-    :content="{
-      align: 'center',
-      side: 'bottom',
-      sideOffset: 8,
-    }"
-    text="Open on GitHub"
-  >
+  <UTooltip :content="{
+  align: 'center',
+  side: 'bottom',
+  sideOffset: 8
+}" text="Open on GitHub">
     <UButton label="Open" color="neutral" variant="subtle" />
   </UTooltip>
 </template>
@@ -240,11 +233,11 @@ You can control the open state by using the `default-open` prop or the `v-model:
 
 ```vue [TooltipOpenExample.vue]
 <script setup lang="ts">
-const open = ref(false);
+const open = ref(false)
 
 defineShortcuts({
-  o: () => (open.value = !open.value),
-});
+  o: () => open.value = !open.value
+})
 </script>
 
 <template>
@@ -254,18 +247,18 @@ defineShortcuts({
 </template>
 ```
 
-> \[!NOTE]
->
-> In this example, leveraging [`defineShortcuts`](https://ui.nuxt.com/docs/composables/define-shortcuts), you can toggle the Tooltip by pressing :kbd{value="O"}.
+> [!NOTE]
+> 
+> In this example, leveraging [`defineShortcuts`](https://ui.nuxt.com/docs/composables/define-shortcuts), you can toggle the Tooltip by pressing `O`.
 
 ### With following cursor
 
-You can make the Tooltip follow the cursor when hovering over an element using the [`reference`](https://reka-ui.com/docs/components/tooltip#trigger){rel="&#x22;nofollow&#x22;"} prop:
+You can make the Tooltip follow the cursor when hovering over an element using the [`reference`](https://reka-ui.com/docs/components/tooltip#trigger) prop:
 
 ```vue [TooltipCursorExample.vue]
 <script setup lang="ts">
-const open = ref(false);
-const anchor = ref({ x: 0, y: 0 });
+const open = ref(false)
+const anchor = ref({ x: 0, y: 0 })
 
 const reference = computed(() => ({
   getBoundingClientRect: () =>
@@ -276,9 +269,9 @@ const reference = computed(() => ({
       right: anchor.value.x,
       top: anchor.value.y,
       bottom: anchor.value.y,
-      ...anchor.value,
-    }) as DOMRect,
-}));
+      ...anchor.value
+    } as DOMRect)
+}))
 </script>
 
 <template>
@@ -291,12 +284,10 @@ const reference = computed(() => ({
       class="flex items-center justify-center rounded-md border border-dashed border-accented text-sm aspect-video w-72"
       @pointerenter="open = true"
       @pointerleave="open = false"
-      @pointermove="
-        (ev: PointerEvent) => {
-          anchor.x = ev.clientX;
-          anchor.y = ev.clientY;
-        }
-      "
+      @pointermove="(ev: PointerEvent) => {
+        anchor.x = ev.clientX
+        anchor.y = ev.clientY
+      }"
     >
       Hover me
     </div>

@@ -57,9 +57,9 @@ interface AuthFormProps {
 }
 ```
 
-> \[!NOTE]
-> See: https\://developer.mozilla.org/en-US/docs/Web/HTML/Element/form#attributes
->
+> [!NOTE]
+> See: https://developer.mozilla.org/en-US/docs/Web/HTML/Element/form#attributes
+> 
 > This component also supports all native `<form>` HTML attributes.
 
 ### Slots
@@ -94,11 +94,11 @@ interface AuthFormEmits {
 
 ### Expose
 
-You can access the typed component instance (exposing formRef and state) using [`useTemplateRef`](https://vuejs.org/api/composition-api-helpers.html#usetemplateref){rel="&#x22;nofollow&#x22;"}. For example, in a separate form (e.g. a "reset" form) you can do:
+You can access the typed component instance (exposing formRef and state) using [`useTemplateRef`](https://vuejs.org/api/composition-api-helpers.html#usetemplateref). For example, in a separate form (e.g. a "reset" form) you can do:
 
 ```vue
 <script setup lang="ts">
-const authForm = useTemplateRef("authForm");
+const authForm = useTemplateRef('authForm')
 </script>
 
 <template>
@@ -108,10 +108,16 @@ const authForm = useTemplateRef("authForm");
 
 This gives you access to the following (exposed) properties:
 
-| Name                                                                                                                          | Type                                                                                                                                          |
-| ----------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| `formRef`{.language-ts-type.shiki.shiki-themes.material-theme-lighter.material-theme.material-theme-palenight lang="ts-type"} | `Ref<HTMLFormElement                                                                                                                          | null>`{.language-ts-type.shiki.shiki-themes.material-theme-lighter.material-theme.material-theme-palenight lang="ts-type"} |
-| `state`{.language-ts-type.shiki.shiki-themes.material-theme-lighter.material-theme.material-theme-palenight lang="ts-type"}   | `Reactive<FormStateType>`{.language-ts-type.shiki.shiki-themes.material-theme-lighter.material-theme.material-theme-palenight lang="ts-type"} |
+| Name | Type |
+| --- | --- |
+| `formRef` | `Ref<HTMLFormElement \| null>` |
+| `state` | `Reactive<FormStateType>` |
+
+## Composition
+
+Parts placed by name: `#providers`, `#separator`, `#validation`, `#submit`.
+
+Also written in the docs and absent from the interface above — one per column or item: `#password-hint`.
 
 ## Usage
 
@@ -119,61 +125,52 @@ Built on top of the [Form](https://ui.nuxt.com/docs/components/form) component, 
 
 ```vue [AuthFormExample.vue]
 <script setup lang="ts">
-import * as z from "zod";
-import type { FormSubmitEvent, AuthFormField } from "@nuxt/ui";
+import * as z from 'zod'
+import type { FormSubmitEvent, AuthFormField } from '@nuxt/ui'
 
-const toast = useToast();
+const toast = useToast()
 
-const fields: AuthFormField[] = [
-  {
-    name: "email",
-    type: "email",
-    label: "Email",
-    placeholder: "Enter your email",
-    required: true,
-  },
-  {
-    name: "password",
-    label: "Password",
-    type: "password",
-    placeholder: "Enter your password",
-    required: true,
-  },
-  {
-    name: "remember",
-    label: "Remember me",
-    type: "checkbox",
-  },
-];
+const fields: AuthFormField[] = [{
+  name: 'email',
+  type: 'email',
+  label: 'Email',
+  placeholder: 'Enter your email',
+  required: true
+}, {
+  name: 'password',
+  label: 'Password',
+  type: 'password',
+  placeholder: 'Enter your password',
+  required: true
+}, {
+  name: 'remember',
+  label: 'Remember me',
+  type: 'checkbox'
+}]
 
-const providers = [
-  {
-    label: "Google",
-    icon: "i-simple-icons-google",
-    onClick: () => {
-      toast.add({ title: "Google", description: "Login with Google" });
-    },
-  },
-  {
-    label: "GitHub",
-    icon: "i-simple-icons-github",
-    onClick: () => {
-      toast.add({ title: "GitHub", description: "Login with GitHub" });
-    },
-  },
-];
+const providers = [{
+  label: 'Google',
+  icon: 'i-simple-icons-google',
+  onClick: () => {
+    toast.add({ title: 'Google', description: 'Login with Google' })
+  }
+}, {
+  label: 'GitHub',
+  icon: 'i-simple-icons-github',
+  onClick: () => {
+    toast.add({ title: 'GitHub', description: 'Login with GitHub' })
+  }
+}]
 
 const schema = z.object({
-  email: z.email("Invalid email"),
-  password: z
-    .string("Password is required")
-    .min(8, "Must be at least 8 characters"),
-});
+  email: z.email('Invalid email'),
+  password: z.string('Password is required').min(8, 'Must be at least 8 characters')
+})
 
-type Schema = z.output<typeof schema>;
+type Schema = z.output<typeof schema>
 
 function onSubmit(payload: FormSubmitEvent<Schema>) {
-  console.log("Submitted", payload);
+  console.log('Submitted', payload)
 }
 </script>
 
@@ -200,8 +197,8 @@ The Form will construct itself based on the `fields` prop and the state will be 
 
 Use the `fields` prop as an array of objects with the following properties:
 
-- `name: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `type: 'checkbox' | 'select' | 'otp' | 'InputHTMLAttributes['type']'`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
+- `name: string`
+- `type: 'checkbox' | 'select' | 'otp' | 'InputHTMLAttributes['type']'`
 
 Each field must include a `type` property, which determines the input component and any additional props applied: `checkbox` fields use [Checkbox](https://ui.nuxt.com/docs/components/checkbox#props) props, `select` fields use [SelectMenu](https://ui.nuxt.com/docs/components/select-menu#props) props, `otp` fields use [PinInput](https://ui.nuxt.com/docs/components/pin-input#props) props, and all other types use [Input](https://ui.nuxt.com/docs/components/input#props) props.
 
@@ -209,7 +206,7 @@ You can also pass any property from the [FormField](https://ui.nuxt.com/docs/com
 
 ```vue
 <script setup lang="ts">
-import type { AuthFormField } from "@nuxt/ui";
+import type { AuthFormField } from '@nuxt/ui'
 
 const fields = ref<AuthFormField[]>([
   {
@@ -217,14 +214,14 @@ const fields = ref<AuthFormField[]>([
     type: "email",
     label: "Email",
     placeholder: "Enter your email",
-    required: true,
+    required: true
   },
   {
     name: "password",
     type: "password",
     label: "Password",
     placeholder: "Enter your password",
-    required: true,
+    required: true
   },
   {
     name: "country",
@@ -234,36 +231,36 @@ const fields = ref<AuthFormField[]>([
     items: [
       {
         label: "United States",
-        value: "us",
+        value: "us"
       },
       {
         label: "France",
-        value: "fr",
+        value: "fr"
       },
       {
         label: "United Kingdom",
-        value: "uk",
+        value: "uk"
       },
       {
         label: "Australia",
-        value: "au",
-      },
-    ],
+        value: "au"
+      }
+    ]
   },
   {
     name: "otp",
     type: "otp",
     label: "OTP",
     length: 6,
-    placeholder: "○",
+    placeholder: "○"
   },
   {
     name: "remember",
     type: "checkbox",
     label: "Remember me",
-    description: "You will be logged in for 30 days.",
-  },
-]);
+    description: "You will be logged in for 30 days."
+  }
+])
 </script>
 
 <template>
@@ -277,20 +274,20 @@ Use the `title` prop to set the title of the Form.
 
 ```vue
 <script setup lang="ts">
-import type { AuthFormField } from "@nuxt/ui";
+import type { AuthFormField } from '@nuxt/ui'
 
 const fields = ref<AuthFormField[]>([
   {
     name: "email",
     type: "text",
-    label: "Email",
+    label: "Email"
   },
   {
     name: "password",
     type: "password",
-    label: "Password",
-  },
-]);
+    label: "Password"
+  }
+])
 </script>
 
 <template>
@@ -304,29 +301,24 @@ Use the `description` prop to set the description of the Form.
 
 ```vue
 <script setup lang="ts">
-import type { AuthFormField } from "@nuxt/ui";
+import type { AuthFormField } from '@nuxt/ui'
 
 const fields = ref<AuthFormField[]>([
   {
     name: "email",
     type: "text",
-    label: "Email",
+    label: "Email"
   },
   {
     name: "password",
     type: "password",
-    label: "Password",
-  },
-]);
+    label: "Password"
+  }
+])
 </script>
 
 <template>
-  <UAuthForm
-    title="Login"
-    description="Enter your credentials to access your account."
-    :fields="fields"
-    class="max-w-md"
-  />
+  <UAuthForm title="Login" description="Enter your credentials to access your account." :fields="fields" class="max-w-md" />
 </template>
 ```
 
@@ -336,30 +328,24 @@ Use the `icon` prop to set the icon of the Form.
 
 ```vue
 <script setup lang="ts">
-import type { AuthFormField } from "@nuxt/ui";
+import type { AuthFormField } from '@nuxt/ui'
 
 const fields = ref<AuthFormField[]>([
   {
     name: "email",
     type: "text",
-    label: "Email",
+    label: "Email"
   },
   {
     name: "password",
     type: "password",
-    label: "Password",
-  },
-]);
+    label: "Password"
+  }
+])
 </script>
 
 <template>
-  <UAuthForm
-    title="Login"
-    description="Enter your credentials to access your account."
-    icon="i-lucide-user"
-    :fields="fields"
-    class="max-w-md"
-  />
+  <UAuthForm title="Login" description="Enter your credentials to access your account." icon="i-lucide-user" :fields="fields" class="max-w-md" />
 </template>
 ```
 
@@ -373,61 +359,52 @@ You can wrap the `AuthForm` component with the [PageCard](https://ui.nuxt.com/do
 
 ```vue [AuthFormPageExample.vue]
 <script setup lang="ts">
-import * as z from "zod";
-import type { FormSubmitEvent, AuthFormField } from "@nuxt/ui";
+import * as z from 'zod'
+import type { FormSubmitEvent, AuthFormField } from '@nuxt/ui'
 
-const toast = useToast();
+const toast = useToast()
 
-const fields: AuthFormField[] = [
-  {
-    name: "email",
-    type: "email",
-    label: "Email",
-    placeholder: "Enter your email",
-    required: true,
-  },
-  {
-    name: "password",
-    label: "Password",
-    type: "password",
-    placeholder: "Enter your password",
-    required: true,
-  },
-  {
-    name: "remember",
-    label: "Remember me",
-    type: "checkbox",
-  },
-];
+const fields: AuthFormField[] = [{
+  name: 'email',
+  type: 'email',
+  label: 'Email',
+  placeholder: 'Enter your email',
+  required: true
+}, {
+  name: 'password',
+  label: 'Password',
+  type: 'password',
+  placeholder: 'Enter your password',
+  required: true
+}, {
+  name: 'remember',
+  label: 'Remember me',
+  type: 'checkbox'
+}]
 
-const providers = [
-  {
-    label: "Google",
-    icon: "i-simple-icons-google",
-    onClick: () => {
-      toast.add({ title: "Google", description: "Login with Google" });
-    },
-  },
-  {
-    label: "GitHub",
-    icon: "i-simple-icons-github",
-    onClick: () => {
-      toast.add({ title: "GitHub", description: "Login with GitHub" });
-    },
-  },
-];
+const providers = [{
+  label: 'Google',
+  icon: 'i-simple-icons-google',
+  onClick: () => {
+    toast.add({ title: 'Google', description: 'Login with Google' })
+  }
+}, {
+  label: 'GitHub',
+  icon: 'i-simple-icons-github',
+  onClick: () => {
+    toast.add({ title: 'GitHub', description: 'Login with GitHub' })
+  }
+}]
 
 const schema = z.object({
-  email: z.email("Invalid email"),
-  password: z
-    .string("Password is required")
-    .min(8, "Must be at least 8 characters"),
-});
+  email: z.email('Invalid email'),
+  password: z.string('Password is required').min(8, 'Must be at least 8 characters')
+})
 
-type Schema = z.output<typeof schema>;
+type Schema = z.output<typeof schema>
 
 function onSubmit(payload: FormSubmitEvent<Schema>) {
-  console.log("Submitted", payload);
+  console.log('Submitted', payload)
 }
 </script>
 
@@ -443,21 +420,16 @@ function onSubmit(payload: FormSubmitEvent<Schema>) {
         @submit="onSubmit"
       >
         <template #description>
-          Don't have an account?
-          <ULink to="#" class="text-primary font-medium">Sign up</ULink>.
+          Don't have an account? <ULink to="#" class="text-primary font-medium">Sign up</ULink>.
         </template>
         <template #password-hint>
-          <ULink to="#" class="text-primary font-medium" tabindex="-1"
-            >Forgot password?</ULink
-          >
+          <ULink to="#" class="text-primary font-medium" tabindex="-1">Forgot password?</ULink>
         </template>
         <template #validation>
           <UAlert color="error" icon="i-lucide-info" title="Error signing in" />
         </template>
         <template #footer>
-          By signing in, you agree to our
-          <ULink to="#" class="text-primary font-medium">Terms of Service</ULink
-          >.
+          By signing in, you agree to our <ULink to="#" class="text-primary font-medium">Terms of Service</ULink>.
         </template>
       </UAuthForm>
     </UPageCard>

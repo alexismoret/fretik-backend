@@ -16,7 +16,7 @@ interface DashboardGroupProps {
    * @default 'div'
    */
   as?: any;
-  ui?: { base?: any } | undefined;
+  ui?: { base?: any; } | undefined;
   /**
    * The storage to use for the size.
    * @default 'cookie'
@@ -61,7 +61,7 @@ The DashboardGroup component is the main layout that wraps the [DashboardSidebar
 
 Use it in a layout or in your `app.vue`:
 
-```vue [layouts/dashboard.vue] {2,6}
+```vue [layouts/dashboard.vue]
 <template>
   <UDashboardGroup>
     <UDashboardSidebar />

@@ -80,31 +80,7 @@ interface PricingPlanProps {
    * Enlarge the plan to make it more prominent.
    */
   scale?: boolean | undefined;
-  ui?:
-    | {
-        root?: SlotClass;
-        header?: SlotClass;
-        body?: SlotClass;
-        footer?: SlotClass;
-        titleWrapper?: SlotClass;
-        title?: SlotClass;
-        description?: SlotClass;
-        priceWrapper?: SlotClass;
-        price?: SlotClass;
-        discount?: SlotClass;
-        billing?: SlotClass;
-        billingPeriod?: SlotClass;
-        billingCycle?: SlotClass;
-        features?: SlotClass;
-        feature?: SlotClass;
-        featureIcon?: SlotClass;
-        featureTitle?: SlotClass;
-        badge?: SlotClass;
-        button?: SlotClass;
-        tagline?: SlotClass;
-        terms?: SlotClass;
-      }
-    | undefined;
+  ui?: { root?: SlotClass; header?: SlotClass; body?: SlotClass; footer?: SlotClass; titleWrapper?: SlotClass; title?: SlotClass; description?: SlotClass; priceWrapper?: SlotClass; price?: SlotClass; discount?: SlotClass; billing?: SlotClass; billingPeriod?: SlotClass; billingCycle?: SlotClass; features?: SlotClass; feature?: SlotClass; featureIcon?: SlotClass; featureTitle?: SlotClass; badge?: SlotClass; button?: SlotClass; tagline?: SlotClass; terms?: SlotClass; } | undefined;
 }
 ```
 
@@ -131,19 +107,31 @@ interface PricingPlanSlots {
 }
 ```
 
+## Composition
+
+Parts placed by name: `#badge`, `#price`, `#discount`, `#billing`, `#features`, `#button`, `#body`, `#tagline`, `#terms`.
+
 ## Usage
 
 The PricingPlan component provides a flexible way to display a pricing plan with customizable content including title, description, price, features, etc.
 
 ```vue
 <template>
-  <u-pricing-plan :button={"label":"Buy now"} :features=["One developer","Unlimited projects","Access to GitHub repository","Unlimited patch & minor updates","Lifetime access"] badge=Most popular billing-cycle=/month description=For bootstrappers and indie hackers. discount=$199 price=$249 title=Solo />
+  <u-pricing-plan :button="{
+    label: 'Buy now'
+  }" :features="[
+    'One developer',
+    'Unlimited projects',
+    'Access to GitHub repository',
+    'Unlimited patch & minor updates',
+    'Lifetime access'
+  ]" badge="Most popular" billing-cycle="/month" class="w-96" description="For bootstrappers and indie hackers." discount="$199" price="$249" title="Solo" />
 </template>
 ```
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/components/pricing-plans
->
+> 
 > Use the `PricingPlans` component to display multiple pricing plans in a responsive grid layout.
 
 ### Title
@@ -162,10 +150,7 @@ Use the `description` prop to set the description of the PricingPlan.
 
 ```vue
 <template>
-  <UPricingPlan
-    title="Solo"
-    description="For bootstrappers and indie hackers."
-  />
+  <UPricingPlan title="Solo" description="For bootstrappers and indie hackers." />
 </template>
 ```
 
@@ -175,11 +160,7 @@ Use the `badge` prop to display a [Badge](https://ui.nuxt.com/docs/components/ba
 
 ```vue
 <template>
-  <UPricingPlan
-    title="Solo"
-    description="For bootstrappers and indie hackers."
-    badge="Most popular"
-  />
+  <UPricingPlan title="Solo" description="For bootstrappers and indie hackers." badge="Most popular" />
 </template>
 ```
 
@@ -187,15 +168,11 @@ You can pass any property from the [Badge](https://ui.nuxt.com/docs/components/b
 
 ```vue
 <template>
-  <UPricingPlan
-    title="Solo"
-    description="For bootstrappers and indie hackers."
-    :badge="{
-      label: 'Most popular',
-      color: 'neutral',
-      variant: 'solid',
-    }"
-  />
+  <UPricingPlan title="Solo" description="For bootstrappers and indie hackers." :badge="{
+  label: 'Most popular',
+  color: 'neutral',
+  variant: 'solid'
+}" />
 </template>
 ```
 
@@ -205,11 +182,7 @@ Use the `price` prop to set the price of the PricingPlan.
 
 ```vue
 <template>
-  <UPricingPlan
-    title="Solo"
-    description="For bootstrappers and indie hackers."
-    price="$249"
-  />
+  <UPricingPlan title="Solo" description="For bootstrappers and indie hackers." price="$249" />
 </template>
 ```
 
@@ -219,12 +192,7 @@ Use the `discount` prop to set a discounted price that will be displayed alongsi
 
 ```vue
 <template>
-  <UPricingPlan
-    title="Solo"
-    description="For bootstrappers and indie hackers."
-    price="$249"
-    discount="$199"
-  />
+  <UPricingPlan title="Solo" description="For bootstrappers and indie hackers." price="$249" discount="$199" />
 </template>
 ```
 
@@ -234,13 +202,7 @@ Use the `billing-cycle` and/or `billing-period` props to display the billing inf
 
 ```vue
 <template>
-  <UPricingPlan
-    title="Solo"
-    description="For bootstrappers and indie hackers."
-    price="$9"
-    billing-cycle="/month"
-    billing-period="billed annually"
-  />
+  <UPricingPlan title="Solo" description="For bootstrappers and indie hackers." price="$9" billing-cycle="/month" billing-period="billed annually" />
 </template>
 ```
 
@@ -250,75 +212,65 @@ Use the `features` prop as an array of string to display a list of features on t
 
 ```vue
 <template>
-  <UPricingPlan
-    title="Solo"
-    description="For bootstrappers and indie hackers."
-    price="$249"
-    :features="[
-      'One developer',
-      'Unlimited projects',
-      'Access to GitHub repository',
-      'Unlimited patch & minor updates',
-      'Lifetime access',
-    ]"
-  />
+  <UPricingPlan title="Solo" description="For bootstrappers and indie hackers." price="$249" :features="[
+  'One developer',
+  'Unlimited projects',
+  'Access to GitHub repository',
+  'Unlimited patch & minor updates',
+  'Lifetime access'
+]" />
 </template>
 ```
 
 **Nuxt:**
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/getting-started/integrations/icons/nuxt#theme
->
+> 
 > You can customize this icon globally in your `app.config.ts` under `ui.icons.success` key.
 
 **Vue:**
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/getting-started/integrations/icons/vue#theme
->
+> 
 > You can customize this icon globally in your `vite.config.ts` under `ui.icons.success` key.
 
 You can also pass an array of objects with the following properties:
 
-- `title: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `icon?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
+- `title: string`
+- `icon?: string`
 
 ```vue
 <script setup lang="ts">
-import type { PricingPlanFeature } from "@nuxt/ui";
+import type { PricingPlanFeature } from '@nuxt/ui'
 
 const features = ref<PricingPlanFeature[]>([
   {
     title: "One developer",
-    icon: "i-lucide-user",
+    icon: "i-lucide-user"
   },
   {
     title: "Unlimited projects",
-    icon: "i-lucide-infinity",
+    icon: "i-lucide-infinity"
   },
   {
     title: "Access to GitHub repository",
-    icon: "i-lucide-github",
+    icon: "i-lucide-github"
   },
   {
     title: "Unlimited patch & minor updates",
-    icon: "i-lucide-refresh-cw",
+    icon: "i-lucide-refresh-cw"
   },
   {
     title: "Lifetime access",
-    icon: "i-lucide-clock",
-  },
-]);
+    icon: "i-lucide-clock"
+  }
+])
 </script>
 
 <template>
-  <UPricingPlan
-    title="Solo"
-    description="For bootstrappers and indie hackers."
-    price="$249"
-    :features="features"
-  />
+  <UPricingPlan title="Solo" description="For bootstrappers and indie hackers." price="$249" :features="features" />
 </template>
 ```
 
@@ -328,26 +280,20 @@ Use the `button` prop with any property from the [Button](https://ui.nuxt.com/do
 
 ```vue
 <template>
-  <UPricingPlan
-    title="Solo"
-    description="For bootstrappers and indie hackers."
-    price="$249"
-    :features="[
-      'One developer',
-      'Unlimited projects',
-      'Access to GitHub repository',
-      'Unlimited patch & minor updates',
-      'Lifetime access',
-    ]"
-    :button="{
-      label: 'Buy now',
-    }"
-  />
+  <UPricingPlan title="Solo" description="For bootstrappers and indie hackers." price="$249" :features="[
+  'One developer',
+  'Unlimited projects',
+  'Access to GitHub repository',
+  'Unlimited patch & minor updates',
+  'Lifetime access'
+]" :button="{
+  label: 'Buy now'
+}" />
 </template>
 ```
 
-> \[!TIP]
->
+> [!TIP]
+> 
 > Use the `onClick` field to add a click handler to trigger the plan purchase.
 
 ### Variant
@@ -356,22 +302,15 @@ Use the `variant` prop to change the variant of the PricingPlan.
 
 ```vue
 <template>
-  <UPricingPlan
-    title="Solo"
-    description="For bootstrappers and indie hackers."
-    price="$249"
-    :features="[
-      'One developer',
-      'Unlimited projects',
-      'Access to GitHub repository',
-      'Unlimited patch & minor updates',
-      'Lifetime access',
-    ]"
-    :button="{
-      label: 'Buy now',
-    }"
-    variant="subtle"
-  />
+  <UPricingPlan title="Solo" description="For bootstrappers and indie hackers." price="$249" :features="[
+  'One developer',
+  'Unlimited projects',
+  'Access to GitHub repository',
+  'Unlimited patch & minor updates',
+  'Lifetime access'
+]" :button="{
+  label: 'Buy now'
+}" variant="subtle" />
 </template>
 ```
 
@@ -381,48 +320,18 @@ Use the `orientation` prop to change the orientation of the PricingPlan. Default
 
 ```vue
 <template>
-  <UPricingPlan
-    title="Solo"
-    description="For bootstrappers and indie hackers."
-    price="$249"
-    :features="[
-      'One developer',
-      'Unlimited projects',
-      'Access to GitHub repository',
-      'Lifetime access',
-    ]"
-    :button="{
-      label: 'Buy now',
-    }"
-    orientation="horizontal"
-    variant="outline"
-  />
+  <UPricingPlan title="Solo" description="For bootstrappers and indie hackers." price="$249" :features="[
+  'One developer',
+  'Unlimited projects',
+  'Access to GitHub repository',
+  'Lifetime access'
+]" :button="{
+  label: 'Buy now'
+}" orientation="horizontal" variant="outline" />
 </template>
 ```
 
 ### Tagline
 
-Use the `tagline` prop to display a tagline text above the price.
-
-```vue
-<template>
-  <UPricingPlan
-    title="Solo"
-    description="For bootstrappers and indie hackers."
-    price="$249"
-    :features="[
-      'One developer',
-      'Unlimited projects',
-      'Access to GitHub repository',
-      'Lifetime access',
-    ]"
-    :button="{
-      label: 'Buy now',
-    }"
-    orientation="horizontal"
-    tagline="Pay once, own it forever"
-  />
-</template>
-```
 
 _(truncated — ask for fewer components to see more, or rely on the API block above)_

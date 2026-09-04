@@ -21,31 +21,7 @@ interface InputProps {
   /**
    * @default 'text'
    */
-  type?:
-    | "number"
-    | "image"
-    | "text"
-    | "button"
-    | "search"
-    | "time"
-    | "color"
-    | "checkbox"
-    | "date"
-    | "datetime-local"
-    | "email"
-    | "file"
-    | "hidden"
-    | "month"
-    | "password"
-    | "radio"
-    | "range"
-    | "reset"
-    | "submit"
-    | "tel"
-    | "url"
-    | "week"
-    | (string & {})
-    | undefined;
+  type?: "number" | "image" | "text" | "button" | "search" | "time" | "color" | "checkbox" | "date" | "datetime-local" | "email" | "file" | "hidden" | "month" | "password" | "radio" | "range" | "reset" | "submit" | "tel" | "url" | "week" | string & {} | undefined;
   /**
    * The placeholder text when the input is empty.
    */
@@ -53,15 +29,7 @@ interface InputProps {
   /**
    * @default 'primary'
    */
-  color?:
-    | "primary"
-    | "secondary"
-    | "success"
-    | "info"
-    | "warning"
-    | "error"
-    | "neutral"
-    | undefined;
+  color?: "primary" | "secondary" | "success" | "info" | "warning" | "error" | "neutral" | undefined;
   /**
    * @default 'outline'
    */
@@ -74,7 +42,7 @@ interface InputProps {
   /**
    * @default 'off'
    */
-  autocomplete?: (string & {}) | "on" | "off" | undefined;
+  autocomplete?: string & {} | "on" | "off" | undefined;
   autofocus?: boolean | undefined;
   /**
    * @default 0
@@ -92,18 +60,7 @@ interface InputProps {
   modelValue?: _Number<_Optional<_Nullable<T, Mod>, Mod>, Mod> | undefined;
   defaultValue?: _Number<_Optional<_Nullable<T, Mod>, Mod>, Mod> | undefined;
   modelModifiers?: Mod | undefined;
-  ui?:
-    | {
-        root?: SlotClass;
-        base?: SlotClass;
-        leading?: SlotClass;
-        leadingIcon?: SlotClass;
-        leadingAvatar?: SlotClass;
-        leadingAvatarSize?: SlotClass;
-        trailing?: SlotClass;
-        trailingIcon?: SlotClass;
-      }
-    | undefined;
+  ui?: { root?: SlotClass; base?: SlotClass; leading?: SlotClass; leadingIcon?: SlotClass; leadingAvatar?: SlotClass; leadingAvatarSize?: SlotClass; trailing?: SlotClass; trailingIcon?: SlotClass; } | undefined;
   /**
    * Display an icon based on the `leading` and `trailing` props.
    */
@@ -137,15 +94,7 @@ interface InputProps {
    * @default appConfig.ui.icons.loading
    */
   loadingIcon?: any;
-  enterKeyHint?:
-    | "search"
-    | "enter"
-    | "done"
-    | "go"
-    | "next"
-    | "previous"
-    | "send"
-    | undefined;
+  enterKeyHint?: "search" | "enter" | "done" | "go" | "next" | "previous" | "send" | undefined;
   form?: string | undefined;
   formaction?: string | undefined;
   formenctype?: string | undefined;
@@ -163,9 +112,9 @@ interface InputProps {
 }
 ```
 
-> \[!NOTE]
-> See: https\://developer.mozilla.org/en-US/docs/Web/HTML/Element/input#attributes
->
+> [!NOTE]
+> See: https://developer.mozilla.org/en-US/docs/Web/HTML/Element/input#attributes
+> 
 > This component also supports all native `<input>` HTML attributes.
 
 ### Slots
@@ -198,9 +147,13 @@ interface InputEmits {
 
 When accessing the component via a template ref, you can use the following:
 
-| Name                                                                                                                           | Type                  |
-| ------------------------------------------------------------------------------------------------------------------------------ | --------------------- |
-| `inputRef`{.language-ts-type.shiki.shiki-themes.material-theme-lighter.material-theme.material-theme-palenight lang="ts-type"} | `Ref<HTMLInputElement | null>`{.language-ts-type.shiki.shiki-themes.material-theme-lighter.material-theme.material-theme-palenight lang="ts-type"} |
+| Name | Type |
+| --- | --- |
+| `inputRef` | `Ref<HTMLInputElement \| null>` |
+
+## Composition
+
+Also written in the docs and absent from the interface above — one per column or item: `#item-leading`, `#item-label`.
 
 ## Usage
 
@@ -208,7 +161,7 @@ Use the `v-model` directive to control the value of the Input.
 
 ```vue
 <script setup lang="ts">
-const value = ref("");
+const value = ref("")
 </script>
 
 <template>
@@ -228,9 +181,9 @@ Some types have been implemented in their own components such as [Checkbox](http
 </template>
 ```
 
-> \[!NOTE]
-> See: https\://developer.mozilla.org/en-US/docs/Web/HTML/Element/input#input\_types
->
+> [!NOTE]
+> See: https://developer.mozilla.org/en-US/docs/Web/HTML/Element/input#input_types
+> 
 > You can check all the available types on the MDN Web Docs.
 
 ### Placeholder
@@ -253,8 +206,8 @@ Use the `color` prop to change the ring color when the Input is focused.
 </template>
 ```
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > The `highlight` prop is used here to show the focus state. It's used internally when a validation error occurs.
 
 ### Variant
@@ -263,12 +216,7 @@ Use the `variant` prop to change the variant of the Input.
 
 ```vue
 <template>
-  <UInput
-    color="neutral"
-    variant="subtle"
-    :highlight="false"
-    placeholder="Search..."
-  />
+  <UInput color="neutral" variant="subtle" :highlight="false" placeholder="Search..." />
 </template>
 ```
 
@@ -288,12 +236,7 @@ Use the `icon` prop to show an [Icon](https://ui.nuxt.com/docs/components/icon) 
 
 ```vue
 <template>
-  <UInput
-    icon="i-lucide-search"
-    size="md"
-    variant="outline"
-    placeholder="Search..."
-  />
+  <UInput icon="i-lucide-search" size="md" variant="outline" placeholder="Search..." />
 </template>
 ```
 
@@ -301,11 +244,7 @@ Use the `leading` and `trailing` props to set the icon position or the `leading-
 
 ```vue
 <template>
-  <UInput
-    trailing-icon="i-lucide-at-sign"
-    placeholder="Enter your email"
-    size="md"
-  />
+  <UInput trailing-icon="i-lucide-at-sign" placeholder="Enter your email" size="md" />
 </template>
 ```
 
@@ -315,15 +254,10 @@ Use the `avatar` prop to show an [Avatar](https://ui.nuxt.com/docs/components/av
 
 ```vue
 <template>
-  <UInput
-    :avatar="{
-      src: 'https://github.com/nuxt.png',
-      loading: 'lazy',
-    }"
-    size="md"
-    variant="outline"
-    placeholder="Search..."
-  />
+  <UInput :avatar="{
+  src: 'https://github.com/nuxt.png',
+  loading: 'lazy'
+}" size="md" variant="outline" placeholder="Search..." />
 </template>
 ```
 
@@ -349,16 +283,16 @@ Use the `loading-icon` prop to customize the loading icon. Defaults to `i-lucide
 
 **Nuxt:**
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/getting-started/integrations/icons/nuxt#theme
->
+> 
 > You can customize this icon globally in your `app.config.ts` under `ui.icons.loading` key.
 
 **Vue:**
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/getting-started/integrations/icons/vue#theme
->
+> 
 > You can customize this icon globally in your `vite.config.ts` under `ui.icons.loading` key.
 
 ### Disabled
@@ -379,7 +313,7 @@ You can put a [Button](https://ui.nuxt.com/docs/components/button) inside the `#
 
 ```vue [InputClearButtonExample.vue]
 <script setup lang="ts">
-const value = ref("Click to clear");
+const value = ref('Click to clear')
 </script>
 
 <template>
@@ -408,15 +342,18 @@ You can put a [Button](https://ui.nuxt.com/docs/components/button) inside the `#
 
 ```vue [InputCopyButtonExample.vue]
 <script setup lang="ts">
-import { useClipboard } from "@vueuse/core";
+import { useClipboard } from '@vueuse/core'
 
-const value = ref("npx nuxt module add ui");
+const value = ref('npx nuxt module add ui')
 
-const { copy, copied } = useClipboard();
+const { copy, copied } = useClipboard()
 </script>
 
 <template>
-  <UInput v-model="value" :ui="{ trailing: 'pr-0.5' }">
+  <UInput
+    v-model="value"
+    :ui="{ trailing: 'pr-0.5' }"
+  >
     <template v-if="value?.length" #trailing>
       <UTooltip text="Copy to clipboard" :content="{ side: 'right' }">
         <UButton
@@ -439,8 +376,8 @@ You can put a [Button](https://ui.nuxt.com/docs/components/button) inside the `#
 
 ```vue [InputPasswordToggleExample.vue]
 <script setup lang="ts">
-const show = ref(false);
-const password = ref("");
+const show = ref(false)
+const password = ref('')
 </script>
 
 <template>
@@ -468,7 +405,7 @@ const password = ref("");
 <style>
 /* Hide the password reveal button in Edge */
 ::-ms-reveal {
-  display: none;
+    display: none;
 }
 </style>
 ```
@@ -479,40 +416,37 @@ You can use the [Progress](https://ui.nuxt.com/docs/components/progress) compone
 
 ```vue [InputPasswordStrengthIndicatorExample.vue]
 <script setup lang="ts">
-const show = ref(false);
-const password = ref("");
+const show = ref(false)
+const password = ref('')
 
 function checkStrength(str: string) {
   const requirements = [
-    { regex: /.{8,}/, text: "At least 8 characters" },
-    { regex: /\d/, text: "At least 1 number" },
-    { regex: /[a-z]/, text: "At least 1 lowercase letter" },
-    { regex: /[A-Z]/, text: "At least 1 uppercase letter" },
-  ];
+    { regex: /.{8,}/, text: 'At least 8 characters' },
+    { regex: /\d/, text: 'At least 1 number' },
+    { regex: /[a-z]/, text: 'At least 1 lowercase letter' },
+    { regex: /[A-Z]/, text: 'At least 1 uppercase letter' }
+  ]
 
-  return requirements.map((req) => ({
-    met: req.regex.test(str),
-    text: req.text,
-  }));
+  return requirements.map(req => ({ met: req.regex.test(str), text: req.text }))
 }
 
-const strength = computed(() => checkStrength(password.value));
-const score = computed(() => strength.value.filter((req) => req.met).length);
+const strength = computed(() => checkStrength(password.value))
+const score = computed(() => strength.value.filter(req => req.met).length)
 
 const color = computed(() => {
-  if (score.value === 0) return "neutral";
-  if (score.value <= 1) return "error";
-  if (score.value <= 2) return "warning";
-  if (score.value === 3) return "warning";
-  return "success";
-});
+  if (score.value === 0) return 'neutral'
+  if (score.value <= 1) return 'error'
+  if (score.value <= 2) return 'warning'
+  if (score.value === 3) return 'warning'
+  return 'success'
+})
 
 const text = computed(() => {
-  if (score.value === 0) return "Enter a password";
-  if (score.value <= 2) return "Weak password";
-  if (score.value === 3) return "Medium password";
-  return "Strong password";
-});
+  if (score.value === 0) return 'Enter a password'
+  if (score.value <= 2) return 'Weak password'
+  if (score.value === 3) return 'Medium password'
+  return 'Strong password'
+})
 </script>
 
 <template>
@@ -562,15 +496,12 @@ const text = computed(() => {
         class="flex items-center gap-0.5"
         :class="req.met ? 'text-success' : 'text-muted'"
       >
-        <UIcon
-          :name="req.met ? 'i-lucide-circle-check' : 'i-lucide-circle-x'"
-          class="size-4 shrink-0"
-        />
+        <UIcon :name="req.met ? 'i-lucide-circle-check' : 'i-lucide-circle-x'" class="size-4 shrink-0" />
 
         <span class="text-xs font-light">
           {{ req.text }}
           <span class="sr-only">
-            {{ req.met ? " - Requirement met" : " - Requirement not met" }}
+            {{ req.met ? ' - Requirement met' : ' - Requirement not met' }}
           </span>
         </span>
       </li>

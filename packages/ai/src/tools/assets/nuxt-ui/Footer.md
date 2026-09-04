@@ -16,17 +16,7 @@ interface FooterProps {
    * @default 'footer'
    */
   as?: any;
-  ui?:
-    | {
-        root?: SlotClass;
-        top?: SlotClass;
-        bottom?: SlotClass;
-        container?: SlotClass;
-        left?: SlotClass;
-        center?: SlotClass;
-        right?: SlotClass;
-      }
-    | undefined;
+  ui?: { root?: SlotClass; top?: SlotClass; bottom?: SlotClass; container?: SlotClass; left?: SlotClass; center?: SlotClass; right?: SlotClass; } | undefined;
 }
 ```
 
@@ -45,6 +35,10 @@ interface FooterSlots {
 }
 ```
 
+## Composition
+
+Parts placed by name: `#left`, `#right`, `#top`, `#bottom`.
+
 ## Usage
 
 The Footer component renders a `<footer>` element.
@@ -53,25 +47,21 @@ Use the `left`, `default` and `right` slots to customize the footer.
 
 ```vue [FooterExample.vue]
 <script setup lang="ts">
-import type { NavigationMenuItem } from "@nuxt/ui";
+import type { NavigationMenuItem } from '@nuxt/ui'
 
-const items: NavigationMenuItem[] = [
-  {
-    label: "Figma Kit",
-    to: "https://go.nuxt.com/figma-ui",
-    target: "_blank",
-  },
-  {
-    label: "Playground",
-    to: "https://stackblitz.com/edit/nuxt-ui",
-    target: "_blank",
-  },
-  {
-    label: "Releases",
-    to: "https://github.com/nuxt/ui/releases",
-    target: "_blank",
-  },
-];
+const items: NavigationMenuItem[] = [{
+  label: 'Figma Kit',
+  to: 'https://go.nuxt.com/figma-ui',
+  target: '_blank'
+}, {
+  label: 'Playground',
+  to: 'https://stackblitz.com/edit/nuxt-ui',
+  target: '_blank'
+}, {
+  label: 'Releases',
+  to: 'https://github.com/nuxt/ui/releases',
+  target: '_blank'
+}]
 </script>
 
 <template>
@@ -114,13 +104,13 @@ const items: NavigationMenuItem[] = [
 </template>
 ```
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > In this example, we use the [NavigationMenu](https://ui.nuxt.com/docs/components/navigation-menu) component to render the footer links in the center.
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/components/footer-columns
->
+> 
 > You can use the `FooterColumns` component to display a list of links inside the `top` slot.
 
 ## Examples
@@ -129,27 +119,23 @@ const items: NavigationMenuItem[] = [
 
 Use the Footer component in your `app.vue` or in a layout:
 
-```vue [app.vue] {32-67}
+```vue [app.vue]
 <script setup lang="ts">
-import type { NavigationMenuItem } from "@nuxt/ui";
+import type { NavigationMenuItem } from '@nuxt/ui'
 
-const items: NavigationMenuItem[] = [
-  {
-    label: "Figma Kit",
-    to: "https://go.nuxt.com/figma-ui",
-    target: "_blank",
-  },
-  {
-    label: "Playground",
-    to: "https://stackblitz.com/edit/nuxt-ui",
-    target: "_blank",
-  },
-  {
-    label: "Releases",
-    to: "https://github.com/nuxt/ui/releases",
-    target: "_blank",
-  },
-];
+const items: NavigationMenuItem[] = [{
+  label: 'Figma Kit',
+  to: 'https://go.nuxt.com/figma-ui',
+  target: '_blank'
+}, {
+  label: 'Playground',
+  to: 'https://stackblitz.com/edit/nuxt-ui',
+  target: '_blank'
+}, {
+  label: 'Releases',
+  to: 'https://github.com/nuxt/ui/releases',
+  target: '_blank'
+}]
 </script>
 
 <template>
@@ -204,6 +190,6 @@ const items: NavigationMenuItem[] = [
 </template>
 ```
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > In this example, we use the [Separator](https://ui.nuxt.com/docs/components/separator) component to add a border above the footer.

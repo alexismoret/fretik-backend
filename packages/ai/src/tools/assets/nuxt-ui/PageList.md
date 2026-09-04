@@ -20,7 +20,7 @@ interface PageListProps {
    * @default false
    */
   divide?: boolean | undefined;
-  ui?: { base?: any } | undefined;
+  ui?: { base?: any; } | undefined;
 }
 ```
 
@@ -35,6 +35,10 @@ interface PageListSlots {
 }
 ```
 
+## Composition
+
+Also written in the docs and absent from the interface above — one per column or item: `#body`.
+
 ## Usage
 
 The PageList component provides a flexible way to display content in a vertical list layout. It's perfect for creating stacked lists of [PageCard](https://ui.nuxt.com/docs/components/page-card) components or any other elements, with optional dividers between items.
@@ -43,94 +47,94 @@ The PageList component provides a flexible way to display content in a vertical 
 <script setup lang="ts">
 const users = ref([
   {
-    name: "Benjamin Canac",
-    description: "benjamincanac",
-    to: "https://github.com/benjamincanac",
-    target: "_blank",
+    name: 'Benjamin Canac',
+    description: 'benjamincanac',
+    to: 'https://github.com/benjamincanac',
+    target: '_blank',
     avatar: {
-      src: "https://github.com/benjamincanac.png",
-      alt: "benjamincanac",
-      loading: "lazy" as const,
-    },
+      src: 'https://github.com/benjamincanac.png',
+      alt: 'benjamincanac',
+      loading: 'lazy' as const
+    }
   },
   {
-    name: "Romain Hamel",
-    description: "romhml",
-    to: "https://github.com/romhml",
-    target: "_blank",
+    name: 'Romain Hamel',
+    description: 'romhml',
+    to: 'https://github.com/romhml',
+    target: '_blank',
     avatar: {
-      src: "https://github.com/romhml.png",
-      alt: "romhml",
-      loading: "lazy" as const,
-    },
+      src: 'https://github.com/romhml.png',
+      alt: 'romhml',
+      loading: 'lazy' as const
+    }
   },
   {
-    name: "Sébastien Chopin",
-    description: "atinux",
-    to: "https://github.com/atinux",
-    target: "_blank",
+    name: 'Sébastien Chopin',
+    description: 'atinux',
+    to: 'https://github.com/atinux',
+    target: '_blank',
     avatar: {
-      src: "https://github.com/atinux.png",
-      alt: "atinux",
-      loading: "lazy" as const,
-    },
+      src: 'https://github.com/atinux.png',
+      alt: 'atinux',
+      loading: 'lazy' as const
+    }
   },
   {
-    name: "Hugo Richard",
-    description: "HugoRCD",
-    to: "https://github.com/HugoRCD",
-    target: "_blank",
+    name: 'Hugo Richard',
+    description: 'HugoRCD',
+    to: 'https://github.com/HugoRCD',
+    target: '_blank',
     avatar: {
-      src: "https://github.com/HugoRCD.png",
-      alt: "HugoRCD",
-      loading: "lazy" as const,
-    },
+      src: 'https://github.com/HugoRCD.png',
+      alt: 'HugoRCD',
+      loading: 'lazy' as const
+    }
   },
   {
-    name: "Sandro Circi",
-    description: "sandros94",
-    to: "https://github.com/sandros94",
-    target: "_blank",
+    name: 'Sandro Circi',
+    description: 'sandros94',
+    to: 'https://github.com/sandros94',
+    target: '_blank',
     avatar: {
-      src: "https://github.com/sandros94.png",
-      alt: "sandros94",
-      loading: "lazy" as const,
-    },
+      src: 'https://github.com/sandros94.png',
+      alt: 'sandros94',
+      loading: 'lazy' as const
+    }
   },
   {
-    name: "Daniel Roe",
-    description: "danielroe",
-    to: "https://github.com/danielroe",
-    target: "_blank",
+    name: 'Daniel Roe',
+    description: 'danielroe',
+    to: 'https://github.com/danielroe',
+    target: '_blank',
     avatar: {
-      src: "https://github.com/danielroe.png",
-      alt: "danielroe",
-      loading: "lazy" as const,
-    },
+      src: 'https://github.com/danielroe.png',
+      alt: 'danielroe',
+      loading: 'lazy' as const
+    }
   },
   {
-    name: "Jakub Michálek",
-    description: "J-Michalek",
-    to: "https://github.com/J-Michalek",
-    target: "_blank",
+    name: 'Jakub Michálek',
+    description: 'J-Michalek',
+    to: 'https://github.com/J-Michalek',
+    target: '_blank',
     avatar: {
-      src: "https://github.com/J-Michalek.png",
-      alt: "J-Michalek",
-      loading: "lazy" as const,
-    },
+      src: 'https://github.com/J-Michalek.png',
+      alt: 'J-Michalek',
+      loading: 'lazy' as const
+    }
   },
   {
-    name: "Eugen Istoc",
-    description: "genu",
-    to: "https://github.com/genu",
-    target: "_blank",
+    name: 'Eugen Istoc',
+    description: 'genu',
+    to: 'https://github.com/genu',
+    target: '_blank',
     avatar: {
-      src: "https://github.com/genu.png",
-      alt: "genu",
-      loading: "lazy" as const,
-    },
-  },
-]);
+      src: 'https://github.com/genu.png',
+      alt: 'genu',
+      loading: 'lazy' as const
+    }
+  }
+])
 </script>
 
 <template>
@@ -143,13 +147,7 @@ const users = ref([
       :target="user.target"
     >
       <template #body>
-        <UUser
-          :name="user.name"
-          :description="user.description"
-          :avatar="user.avatar"
-          size="xl"
-          class="relative"
-        />
+        <UUser :name="user.name" :description="user.description" :avatar="user.avatar" size="xl" class="relative" />
       </template>
     </UPageCard>
   </UPageList>
@@ -164,94 +162,94 @@ Use the `divide` prop to add a divider between each child element.
 <script setup lang="ts">
 const users = ref([
   {
-    name: "Benjamin Canac",
-    description: "benjamincanac",
-    to: "https://github.com/benjamincanac",
-    target: "_blank",
+    name: 'Benjamin Canac',
+    description: 'benjamincanac',
+    to: 'https://github.com/benjamincanac',
+    target: '_blank',
     avatar: {
-      src: "https://github.com/benjamincanac.png",
-      alt: "benjamincanac",
-      loading: "lazy" as const,
-    },
+      src: 'https://github.com/benjamincanac.png',
+      alt: 'benjamincanac',
+      loading: 'lazy' as const
+    }
   },
   {
-    name: "Romain Hamel",
-    description: "romhml",
-    to: "https://github.com/romhml",
-    target: "_blank",
+    name: 'Romain Hamel',
+    description: 'romhml',
+    to: 'https://github.com/romhml',
+    target: '_blank',
     avatar: {
-      src: "https://github.com/romhml.png",
-      alt: "romhml",
-      loading: "lazy" as const,
-    },
+      src: 'https://github.com/romhml.png',
+      alt: 'romhml',
+      loading: 'lazy' as const
+    }
   },
   {
-    name: "Sébastien Chopin",
-    description: "atinux",
-    to: "https://github.com/atinux",
-    target: "_blank",
+    name: 'Sébastien Chopin',
+    description: 'atinux',
+    to: 'https://github.com/atinux',
+    target: '_blank',
     avatar: {
-      src: "https://github.com/atinux.png",
-      alt: "atinux",
-      loading: "lazy" as const,
-    },
+      src: 'https://github.com/atinux.png',
+      alt: 'atinux',
+      loading: 'lazy' as const
+    }
   },
   {
-    name: "Hugo Richard",
-    description: "HugoRCD",
-    to: "https://github.com/HugoRCD",
-    target: "_blank",
+    name: 'Hugo Richard',
+    description: 'HugoRCD',
+    to: 'https://github.com/HugoRCD',
+    target: '_blank',
     avatar: {
-      src: "https://github.com/HugoRCD.png",
-      alt: "HugoRCD",
-      loading: "lazy" as const,
-    },
+      src: 'https://github.com/HugoRCD.png',
+      alt: 'HugoRCD',
+      loading: 'lazy' as const
+    }
   },
   {
-    name: "Sandro Circi",
-    description: "sandros94",
-    to: "https://github.com/sandros94",
-    target: "_blank",
+    name: 'Sandro Circi',
+    description: 'sandros94',
+    to: 'https://github.com/sandros94',
+    target: '_blank',
     avatar: {
-      src: "https://github.com/sandros94.png",
-      alt: "sandros94",
-      loading: "lazy" as const,
-    },
+      src: 'https://github.com/sandros94.png',
+      alt: 'sandros94',
+      loading: 'lazy' as const
+    }
   },
   {
-    name: "Daniel Roe",
-    description: "danielroe",
-    to: "https://github.com/danielroe",
-    target: "_blank",
+    name: 'Daniel Roe',
+    description: 'danielroe',
+    to: 'https://github.com/danielroe',
+    target: '_blank',
     avatar: {
-      src: "https://github.com/danielroe.png",
-      alt: "danielroe",
-      loading: "lazy" as const,
-    },
+      src: 'https://github.com/danielroe.png',
+      alt: 'danielroe',
+      loading: 'lazy' as const
+    }
   },
   {
-    name: "Jakub Michálek",
-    description: "J-Michalek",
-    to: "https://github.com/J-Michalek",
-    target: "_blank",
+    name: 'Jakub Michálek',
+    description: 'J-Michalek',
+    to: 'https://github.com/J-Michalek',
+    target: '_blank',
     avatar: {
-      src: "https://github.com/J-Michalek.png",
-      alt: "J-Michalek",
-      loading: "lazy" as const,
-    },
+      src: 'https://github.com/J-Michalek.png',
+      alt: 'J-Michalek',
+      loading: 'lazy' as const
+    }
   },
   {
-    name: "Eugen Istoc",
-    description: "genu",
-    to: "https://github.com/genu",
-    target: "_blank",
+    name: 'Eugen Istoc',
+    description: 'genu',
+    to: 'https://github.com/genu',
+    target: '_blank',
     avatar: {
-      src: "https://github.com/genu.png",
-      alt: "genu",
-      loading: "lazy" as const,
-    },
-  },
-]);
+      src: 'https://github.com/genu.png',
+      alt: 'genu',
+      loading: 'lazy' as const
+    }
+  }
+])
 </script>
 
 <template>
@@ -264,12 +262,7 @@ const users = ref([
       :target="user.target"
     >
       <template #body>
-        <UUser
-          :name="user.name"
-          :description="user.description"
-          :avatar="user.avatar"
-          size="xl"
-        />
+        <UUser :name="user.name" :description="user.description" :avatar="user.avatar" size="xl" />
       </template>
     </UPageCard>
   </UPageList>

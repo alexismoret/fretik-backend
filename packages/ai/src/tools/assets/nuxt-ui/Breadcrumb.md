@@ -25,37 +25,13 @@ interface BreadcrumbProps {
   /**
    * @default 'primary'
    */
-  color?:
-    | "primary"
-    | "secondary"
-    | "success"
-    | "info"
-    | "warning"
-    | "error"
-    | "neutral"
-    | undefined;
+  color?: "primary" | "secondary" | "success" | "info" | "warning" | "error" | "neutral" | undefined;
   /**
    * The key used to get the label from the item.
    * @default 'label'
    */
-  labelKey?:
-    | (keyof Extract<NestedItem<T>, object> & string)
-    | DotPathKeys<Extract<NestedItem<T>, object>>
-    | undefined;
-  ui?:
-    | {
-        root?: SlotClass;
-        list?: SlotClass;
-        item?: SlotClass;
-        link?: SlotClass;
-        linkLeadingIcon?: SlotClass;
-        linkLeadingAvatar?: SlotClass;
-        linkLeadingAvatarSize?: SlotClass;
-        linkLabel?: SlotClass;
-        separator?: SlotClass;
-        separatorIcon?: SlotClass;
-      }
-    | undefined;
+  labelKey?: keyof Extract<NestedItem<T>, object> & string | DotPathKeys<Extract<NestedItem<T>, object>> | undefined;
+  ui?: { root?: SlotClass; list?: SlotClass; item?: SlotClass; link?: SlotClass; linkLeadingIcon?: SlotClass; linkLeadingAvatar?: SlotClass; linkLeadingAvatarSize?: SlotClass; linkLabel?: SlotClass; separator?: SlotClass; separatorIcon?: SlotClass; } | undefined;
 }
 ```
 
@@ -74,31 +50,66 @@ interface BreadcrumbSlots {
 }
 ```
 
+## Composition
+
+Parts placed by name: `#item`, `#item-leading`, `#item-label`, `#item-trailing`, `#separator`.
+
+Also written in the docs and absent from the interface above — one per column or item: `#dropdown`.
+
+```vue
+<script setup lang="ts">
+import type { BreadcrumbItem } from '@nuxt/ui'
+
+const items: BreadcrumbItem[] = [
+  {
+    label: 'Docs',
+    to: '/docs'
+  },
+  {
+    label: 'Components',
+    to: '/docs/components'
+  },
+  {
+    label: 'Breadcrumb',
+    to: '/docs/components/breadcrumb'
+  }
+]
+</script>
+
+<template>
+  <UBreadcrumb :items="items">
+    <template #separator>
+      <span class="mx-2 text-muted">/</span>
+    </template>
+  </UBreadcrumb>
+</template>
+```
+
 ## Usage
 
 Use the Breadcrumb component to show the current page's location in your site's hierarchy.
 
 ```vue
 <script setup lang="ts">
-import type { BreadcrumbItem } from "@nuxt/ui";
+import type { BreadcrumbItem } from '@nuxt/ui'
 
 const items = ref<BreadcrumbItem[]>([
   {
     label: "Docs",
     icon: "i-lucide-book-open",
-    to: "/docs",
+    to: "/docs"
   },
   {
     label: "Components",
     icon: "i-lucide-box",
-    to: "/docs/components",
+    to: "/docs/components"
   },
   {
     label: "Breadcrumb",
     icon: "i-lucide-link",
-    to: "/docs/components/breadcrumb",
-  },
-]);
+    to: "/docs/components/breadcrumb"
+  }
+])
 </script>
 
 <template>
@@ -110,36 +121,36 @@ const items = ref<BreadcrumbItem[]>([
 
 Use the `items` prop as an array of objects with the following properties:
 
-- `label?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `icon?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `avatar?: AvatarProps`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- [`slot?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}](https://ui.nuxt.com/#with-custom-slot)
-- `class?: any`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `ui?: { item?: ClassNameValue, link?: ClassNameValue, linkLeadingIcon?: ClassNameValue, linkLeadingAvatar?: ClassNameValue, linkLabel?: ClassNameValue, separator?: ClassNameValue, separatorIcon?: ClassNameValue }`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
+- `label?: string`
+- `icon?: string`
+- `avatar?: AvatarProps`
+- [`slot?: string`](#with-custom-slot)
+- `class?: any`
+- `ui?: { item?: ClassNameValue, link?: ClassNameValue, linkLeadingIcon?: ClassNameValue, linkLeadingAvatar?: ClassNameValue, linkLabel?: ClassNameValue, separator?: ClassNameValue, separatorIcon?: ClassNameValue }`
 
 You can pass any property from the [Link](https://ui.nuxt.com/docs/components/link#props) component such as `to`, `target`, etc.
 
 ```vue
 <script setup lang="ts">
-import type { BreadcrumbItem } from "@nuxt/ui";
+import type { BreadcrumbItem } from '@nuxt/ui'
 
 const items = ref<BreadcrumbItem[]>([
   {
     label: "Docs",
     icon: "i-lucide-book-open",
-    to: "/docs",
+    to: "/docs"
   },
   {
     label: "Components",
     icon: "i-lucide-box",
-    to: "/docs/components",
+    to: "/docs/components"
   },
   {
     label: "Breadcrumb",
     icon: "i-lucide-link",
-    to: "/docs/components/breadcrumb",
-  },
-]);
+    to: "/docs/components/breadcrumb"
+  }
+])
 </script>
 
 <template>
@@ -147,8 +158,8 @@ const items = ref<BreadcrumbItem[]>([
 </template>
 ```
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > A `span` is rendered instead of a link when the `to` property is not defined.
 
 ### Separator Icon
@@ -157,25 +168,25 @@ Use the `separator-icon` prop to customize the [Icon](https://ui.nuxt.com/docs/c
 
 ```vue
 <script setup lang="ts">
-import type { BreadcrumbItem } from "@nuxt/ui";
+import type { BreadcrumbItem } from '@nuxt/ui'
 
 const items = ref<BreadcrumbItem[]>([
   {
     label: "Docs",
     icon: "i-lucide-book-open",
-    to: "/docs",
+    to: "/docs"
   },
   {
     label: "Components",
     icon: "i-lucide-box",
-    to: "/docs/components",
+    to: "/docs/components"
   },
   {
     label: "Breadcrumb",
     icon: "i-lucide-link",
-    to: "/docs/components/breadcrumb",
-  },
-]);
+    to: "/docs/components/breadcrumb"
+  }
+])
 </script>
 
 <template>
@@ -185,16 +196,16 @@ const items = ref<BreadcrumbItem[]>([
 
 **Nuxt:**
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/getting-started/integrations/icons/nuxt#theme
->
+> 
 > You can customize this icon globally in your `app.config.ts` under `ui.icons.chevronRight` key.
 
 **Vue:**
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/getting-started/integrations/icons/vue#theme
->
+> 
 > You can customize this icon globally in your `vite.config.ts` under `ui.icons.chevronRight` key.
 
 ### Color `4.8+`
@@ -203,25 +214,25 @@ Use the `color` prop to change the color of the active Breadcrumb.
 
 ```vue
 <script setup lang="ts">
-import type { BreadcrumbItem } from "@nuxt/ui";
+import type { BreadcrumbItem } from '@nuxt/ui'
 
 const items = ref<BreadcrumbItem[]>([
   {
     label: "Docs",
     icon: "i-lucide-book-open",
-    to: "/docs",
+    to: "/docs"
   },
   {
     label: "Components",
     icon: "i-lucide-box",
-    to: "/docs/components",
+    to: "/docs/components"
   },
   {
     label: "Breadcrumb",
     icon: "i-lucide-link",
-    to: "/docs/components/breadcrumb",
-  },
-]);
+    to: "/docs/components/breadcrumb"
+  }
+])
 </script>
 
 <template>
@@ -237,22 +248,22 @@ Use the `#separator` slot to customize the separator between each item.
 
 ```vue [BreadcrumbSeparatorSlotExample.vue]
 <script setup lang="ts">
-import type { BreadcrumbItem } from "@nuxt/ui";
+import type { BreadcrumbItem } from '@nuxt/ui'
 
 const items: BreadcrumbItem[] = [
   {
-    label: "Docs",
-    to: "/docs",
+    label: 'Docs',
+    to: '/docs'
   },
   {
-    label: "Components",
-    to: "/docs/components",
+    label: 'Components',
+    to: '/docs/components'
   },
   {
-    label: "Breadcrumb",
-    to: "/docs/components/breadcrumb",
-  },
-];
+    label: 'Breadcrumb',
+    to: '/docs/components/breadcrumb'
+  }
+]
 </script>
 
 <template>
@@ -270,64 +281,59 @@ Use the `slot` property to customize a specific item.
 
 You will have access to the following slots:
 
-- `#{{ item.slot }}`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `#{{ item.slot }}-leading`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `#{{ item.slot }}-label`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `#{{ item.slot }}-trailing`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
+- `#{{ item.slot }}`
+- `#{{ item.slot }}-leading`
+- `#{{ item.slot }}-label`
+- `#{{ item.slot }}-trailing`
 
 ```vue [BreadcrumbCustomSlotExample.vue]
 <script setup lang="ts">
-import type { BreadcrumbItem } from "@nuxt/ui";
+import type { BreadcrumbItem } from '@nuxt/ui'
 
 const items = [
   {
-    label: "Home",
-    to: "/",
+    label: 'Home',
+    to: '/'
   },
   {
-    slot: "dropdown" as const,
-    icon: "i-lucide-ellipsis",
+    slot: 'dropdown' as const,
+    icon: 'i-lucide-ellipsis',
     children: [
       {
-        label: "Documentation",
-        to: "/docs",
+        label: 'Documentation',
+        to: '/docs'
       },
       {
-        label: "Themes",
+        label: 'Themes'
       },
       {
-        label: "GitHub",
-      },
-    ],
+        label: 'GitHub'
+      }
+    ]
   },
   {
-    label: "Components",
-    to: "/docs/components",
+    label: 'Components',
+    to: '/docs/components'
   },
   {
-    label: "Breadcrumb",
-    to: "/docs/components/breadcrumb",
-  },
-] satisfies BreadcrumbItem[];
+    label: 'Breadcrumb',
+    to: '/docs/components/breadcrumb'
+  }
+] satisfies BreadcrumbItem[]
 </script>
 
 <template>
   <UBreadcrumb :items="items">
     <template #dropdown="{ item }">
       <UDropdownMenu :items="item.children">
-        <UButton
-          :icon="item.icon"
-          color="neutral"
-          variant="link"
-          class="p-0.5"
-        />
+        <UButton :icon="item.icon" color="neutral" variant="link" class="p-0.5" />
       </UDropdownMenu>
     </template>
   </UBreadcrumb>
 </template>
 ```
 
-> \[!TIP]
+> [!TIP]
 > See: #slots
->
+> 
 > You can also use the `#item`, `#item-leading`, `#item-label` and `#item-trailing` slots to customize all items.

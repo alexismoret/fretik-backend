@@ -130,13 +130,19 @@ interface TreeEmits {
 }
 ```
 
+## Composition
+
+Parts placed by name: `#item-wrapper`, `#item`, `#item-leading`, `#item-label`, `#item-trailing`.
+
+Also written in the docs and absent from the interface above — one per column or item: `#app`.
+
 ## Usage
 
 Use the Tree component to display a hierarchical structure of items.
 
 ```vue
 <script setup lang="ts">
-import type { TreeItem } from "@nuxt/ui";
+import type { TreeItem } from '@nuxt/ui'
 
 const items = ref<TreeItem[]>([
   {
@@ -148,13 +154,13 @@ const items = ref<TreeItem[]>([
         children: [
           {
             label: "useAuth.ts",
-            icon: "i-vscode-icons-file-type-typescript",
+            icon: "i-vscode-icons-file-type-typescript"
           },
           {
             label: "useUser.ts",
-            icon: "i-vscode-icons-file-type-typescript",
-          },
-        ],
+            icon: "i-vscode-icons-file-type-typescript"
+          }
+        ]
       },
       {
         label: "components/",
@@ -162,25 +168,25 @@ const items = ref<TreeItem[]>([
         children: [
           {
             label: "Card.vue",
-            icon: "i-vscode-icons-file-type-vue",
+            icon: "i-vscode-icons-file-type-vue"
           },
           {
             label: "Button.vue",
-            icon: "i-vscode-icons-file-type-vue",
-          },
-        ],
-      },
-    ],
+            icon: "i-vscode-icons-file-type-vue"
+          }
+        ]
+      }
+    ]
   },
   {
     label: "app.vue",
-    icon: "i-vscode-icons-file-type-vue",
+    icon: "i-vscode-icons-file-type-vue"
   },
   {
     label: "nuxt.config.ts",
-    icon: "i-vscode-icons-file-type-nuxt",
-  },
-]);
+    icon: "i-vscode-icons-file-type-nuxt"
+  }
+])
 </script>
 
 <template>
@@ -192,25 +198,25 @@ const items = ref<TreeItem[]>([
 
 Use the `items` prop as an array of objects with the following properties:
 
-- `icon?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `label?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `trailingIcon?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `defaultExpanded?: boolean`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `disabled?: boolean`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `slot?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `children?: TreeItem[]`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `onToggle?: (e: TreeItemToggleEvent<TreeItem>) => void`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `onSelect?: (e: TreeItemSelectEvent<TreeItem>) => void`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `class?: any`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `ui?: { item?: ClassNameValue, itemWithChildren?: ClassNameValue, link?: ClassNameValue, linkLeadingIcon?: ClassNameValue, linkLabel?: ClassNameValue, linkTrailing?: ClassNameValue, linkTrailingIcon?: ClassNameValue, listWithChildren?: ClassNameValue }`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
+- `icon?: string`
+- `label?: string`
+- `trailingIcon?: string`
+- `defaultExpanded?: boolean`
+- `disabled?: boolean`
+- `slot?: string`
+- `children?: TreeItem[]`
+- `onToggle?: (e: TreeItemToggleEvent<TreeItem>) => void`
+- `onSelect?: (e: TreeItemSelectEvent<TreeItem>) => void`
+- `class?: any`
+- `ui?: { item?: ClassNameValue, itemWithChildren?: ClassNameValue, link?: ClassNameValue, linkLeadingIcon?: ClassNameValue, linkLabel?: ClassNameValue, linkTrailing?: ClassNameValue, linkTrailingIcon?: ClassNameValue, listWithChildren?: ClassNameValue }`
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > A unique identifier is required for each item. The component will use the `label` prop as identifier if no `get-key` is provided. Ideally you should provide a `get-key` function prop to return a unique identifier. Alternatively, you can use the `labelKey` prop to specify which property to use as the unique identifier.
 
 ```vue
 <script setup lang="ts">
-import type { TreeItem } from "@nuxt/ui";
+import type { TreeItem } from '@nuxt/ui'
 
 const items = ref<TreeItem[]>([
   {
@@ -222,13 +228,13 @@ const items = ref<TreeItem[]>([
         children: [
           {
             label: "useAuth.ts",
-            icon: "i-vscode-icons-file-type-typescript",
+            icon: "i-vscode-icons-file-type-typescript"
           },
           {
             label: "useUser.ts",
-            icon: "i-vscode-icons-file-type-typescript",
-          },
-        ],
+            icon: "i-vscode-icons-file-type-typescript"
+          }
+        ]
       },
       {
         label: "components/",
@@ -236,25 +242,25 @@ const items = ref<TreeItem[]>([
         children: [
           {
             label: "Card.vue",
-            icon: "i-vscode-icons-file-type-vue",
+            icon: "i-vscode-icons-file-type-vue"
           },
           {
             label: "Button.vue",
-            icon: "i-vscode-icons-file-type-vue",
-          },
-        ],
-      },
-    ],
+            icon: "i-vscode-icons-file-type-vue"
+          }
+        ]
+      }
+    ]
   },
   {
     label: "app.vue",
-    icon: "i-vscode-icons-file-type-vue",
+    icon: "i-vscode-icons-file-type-vue"
   },
   {
     label: "nuxt.config.ts",
-    icon: "i-vscode-icons-file-type-nuxt",
-  },
-]);
+    icon: "i-vscode-icons-file-type-nuxt"
+  }
+])
 </script>
 
 <template>
@@ -268,7 +274,7 @@ Use the `multiple` prop to allow multiple item selections.
 
 ```vue
 <script setup lang="ts">
-import type { TreeItem } from "@nuxt/ui";
+import type { TreeItem } from '@nuxt/ui'
 
 const items = ref<TreeItem[]>([
   {
@@ -280,13 +286,13 @@ const items = ref<TreeItem[]>([
         children: [
           {
             label: "useAuth.ts",
-            icon: "i-vscode-icons-file-type-typescript",
+            icon: "i-vscode-icons-file-type-typescript"
           },
           {
             label: "useUser.ts",
-            icon: "i-vscode-icons-file-type-typescript",
-          },
-        ],
+            icon: "i-vscode-icons-file-type-typescript"
+          }
+        ]
       },
       {
         label: "components/",
@@ -294,25 +300,25 @@ const items = ref<TreeItem[]>([
         children: [
           {
             label: "Card.vue",
-            icon: "i-vscode-icons-file-type-vue",
+            icon: "i-vscode-icons-file-type-vue"
           },
           {
             label: "Button.vue",
-            icon: "i-vscode-icons-file-type-vue",
-          },
-        ],
-      },
-    ],
+            icon: "i-vscode-icons-file-type-vue"
+          }
+        ]
+      }
+    ]
   },
   {
     label: "app.vue",
-    icon: "i-vscode-icons-file-type-vue",
+    icon: "i-vscode-icons-file-type-vue"
   },
   {
     label: "nuxt.config.ts",
-    icon: "i-vscode-icons-file-type-nuxt",
-  },
-]);
+    icon: "i-vscode-icons-file-type-nuxt"
+  }
+])
 </script>
 
 <template>
@@ -326,7 +332,7 @@ Use the `nested` prop to control whether the Tree is rendered with nested struct
 
 ```vue
 <script setup lang="ts">
-import type { TreeItem } from "@nuxt/ui";
+import type { TreeItem } from '@nuxt/ui'
 
 const items = ref<TreeItem[]>([
   {
@@ -338,13 +344,13 @@ const items = ref<TreeItem[]>([
         children: [
           {
             label: "useAuth.ts",
-            icon: "i-vscode-icons-file-type-typescript",
+            icon: "i-vscode-icons-file-type-typescript"
           },
           {
             label: "useUser.ts",
-            icon: "i-vscode-icons-file-type-typescript",
-          },
-        ],
+            icon: "i-vscode-icons-file-type-typescript"
+          }
+        ]
       },
       {
         label: "components/",
@@ -352,25 +358,25 @@ const items = ref<TreeItem[]>([
         children: [
           {
             label: "Card.vue",
-            icon: "i-vscode-icons-file-type-vue",
+            icon: "i-vscode-icons-file-type-vue"
           },
           {
             label: "Button.vue",
-            icon: "i-vscode-icons-file-type-vue",
-          },
-        ],
-      },
-    ],
+            icon: "i-vscode-icons-file-type-vue"
+          }
+        ]
+      }
+    ]
   },
   {
     label: "app.vue",
-    icon: "i-vscode-icons-file-type-vue",
+    icon: "i-vscode-icons-file-type-vue"
   },
   {
     label: "nuxt.config.ts",
-    icon: "i-vscode-icons-file-type-nuxt",
-  },
-]);
+    icon: "i-vscode-icons-file-type-nuxt"
+  }
+])
 </script>
 
 <template>
@@ -388,35 +394,35 @@ You can control the selected item(s) by using the `default-value` prop or the `v
 
 ```vue [TreeModelValueExample.vue]
 <script setup lang="ts">
-import type { TreeItem } from "@nuxt/ui";
+import type { TreeItem } from '@nuxt/ui'
 
 const items: TreeItem[] = [
   {
-    label: "app/",
+    label: 'app/',
     defaultExpanded: true,
     children: [
       {
-        label: "composables/",
+        label: 'composables/',
         children: [
-          { label: "useAuth.ts", icon: "i-vscode-icons-file-type-typescript" },
-          { label: "useUser.ts", icon: "i-vscode-icons-file-type-typescript" },
-        ],
+          { label: 'useAuth.ts', icon: 'i-vscode-icons-file-type-typescript' },
+          { label: 'useUser.ts', icon: 'i-vscode-icons-file-type-typescript' }
+        ]
       },
       {
-        label: "components/",
+        label: 'components/',
         defaultExpanded: true,
         children: [
-          { label: "Card.vue", icon: "i-vscode-icons-file-type-vue" },
-          { label: "Button.vue", icon: "i-vscode-icons-file-type-vue" },
-        ],
-      },
-    ],
+          { label: 'Card.vue', icon: 'i-vscode-icons-file-type-vue' },
+          { label: 'Button.vue', icon: 'i-vscode-icons-file-type-vue' }
+        ]
+      }
+    ]
   },
-  { label: "app.vue", icon: "i-vscode-icons-file-type-vue" },
-  { label: "nuxt.config.ts", icon: "i-vscode-icons-file-type-nuxt" },
-];
+  { label: 'app.vue', icon: 'i-vscode-icons-file-type-vue' },
+  { label: 'nuxt.config.ts', icon: 'i-vscode-icons-file-type-nuxt' }
+]
 
-const value = ref();
+const value = ref()
 </script>
 
 <template>
@@ -424,49 +430,49 @@ const value = ref();
 </template>
 ```
 
-> \[!TIP]
->
+> [!TIP]
+> 
 > Use the `get-key` prop to change the function used to get the unique key from each item when a `v-model` or `default-value` is provided.
 
-If you want to prevent an item from being selected, you can use the `item.onSelect()`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"} property or the global `select` event:
+If you want to prevent an item from being selected, you can use the `item.onSelect()` property or the global `select` event:
 
 ```vue [TreeOnSelectExample.vue]
 <script setup lang="ts">
-import type { TreeItemSelectEvent } from "reka-ui";
-import type { TreeItem } from "@nuxt/ui";
+import type { TreeItemSelectEvent } from 'reka-ui'
+import type { TreeItem } from '@nuxt/ui'
 
 const items: TreeItem[] = [
   {
-    label: "app/",
+    label: 'app/',
     defaultExpanded: true,
     onSelect: (e: Event) => {
-      e.preventDefault();
+      e.preventDefault()
     },
     children: [
       {
-        label: "composables/",
+        label: 'composables/',
         children: [
-          { label: "useAuth.ts", icon: "i-vscode-icons-file-type-typescript" },
-          { label: "useUser.ts", icon: "i-vscode-icons-file-type-typescript" },
-        ],
+          { label: 'useAuth.ts', icon: 'i-vscode-icons-file-type-typescript' },
+          { label: 'useUser.ts', icon: 'i-vscode-icons-file-type-typescript' }
+        ]
       },
       {
-        label: "components/",
+        label: 'components/',
         defaultExpanded: true,
         children: [
-          { label: "Card.vue", icon: "i-vscode-icons-file-type-vue" },
-          { label: "Button.vue", icon: "i-vscode-icons-file-type-vue" },
-        ],
-      },
-    ],
+          { label: 'Card.vue', icon: 'i-vscode-icons-file-type-vue' },
+          { label: 'Button.vue', icon: 'i-vscode-icons-file-type-vue' }
+        ]
+      }
+    ]
   },
-  { label: "app.vue", icon: "i-vscode-icons-file-type-vue" },
-  { label: "nuxt.config.ts", icon: "i-vscode-icons-file-type-nuxt" },
-];
+  { label: 'app.vue', icon: 'i-vscode-icons-file-type-vue' },
+  { label: 'nuxt.config.ts', icon: 'i-vscode-icons-file-type-nuxt' }
+]
 
 function onSelect(e: TreeItemSelectEvent<TreeItem>) {
-  if (e.detail.originalEvent.type === "click") {
-    e.preventDefault();
+  if (e.detail.originalEvent.type === 'click') {
+    e.preventDefault()
   }
 }
 </script>
@@ -476,8 +482,8 @@ function onSelect(e: TreeItemSelectEvent<TreeItem>) {
 </template>
 ```
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > This lets you expand or collapse a parent item without selecting it.
 
 ### Control expanded items
@@ -486,86 +492,82 @@ You can control the expanded items by using the `default-expanded` prop or the `
 
 ```vue [TreeExpandedExample.vue]
 <script setup lang="ts">
-import type { TreeItem } from "@nuxt/ui";
+import type { TreeItem } from '@nuxt/ui'
 
 const items = [
   {
-    label: "app/",
-    id: "app",
+    label: 'app/',
+    id: 'app',
     children: [
       {
-        label: "composables/",
-        id: "app/composables",
+        label: 'composables/',
+        id: 'app/composables',
         children: [
-          { label: "useAuth.ts", icon: "i-vscode-icons-file-type-typescript" },
-          { label: "useUser.ts", icon: "i-vscode-icons-file-type-typescript" },
-        ],
+          { label: 'useAuth.ts', icon: 'i-vscode-icons-file-type-typescript' },
+          { label: 'useUser.ts', icon: 'i-vscode-icons-file-type-typescript' }
+        ]
       },
       {
-        label: "components/",
-        id: "app/components",
+        label: 'components/',
+        id: 'app/components',
         children: [
-          { label: "Card.vue", icon: "i-vscode-icons-file-type-vue" },
-          { label: "Button.vue", icon: "i-vscode-icons-file-type-vue" },
-        ],
-      },
-    ],
+          { label: 'Card.vue', icon: 'i-vscode-icons-file-type-vue' },
+          { label: 'Button.vue', icon: 'i-vscode-icons-file-type-vue' }
+        ]
+      }
+    ]
   },
-  { label: "app.vue", id: "app.vue", icon: "i-vscode-icons-file-type-vue" },
-  {
-    label: "nuxt.config.ts",
-    id: "nuxt.config.ts",
-    icon: "i-vscode-icons-file-type-nuxt",
-  },
-] satisfies TreeItem[];
+  { label: 'app.vue', id: 'app.vue', icon: 'i-vscode-icons-file-type-vue' },
+  { label: 'nuxt.config.ts', id: 'nuxt.config.ts', icon: 'i-vscode-icons-file-type-nuxt' }
+] satisfies TreeItem[]
 
-const expanded = ref(["app", "app/composables"]);
+const expanded = ref(['app', 'app/composables'])
 </script>
 
 <template>
-  <UTree v-model:expanded="expanded" :items="items" :get-key="(i) => i.id" />
+  <UTree v-model:expanded="expanded" :items="items" :get-key="i => i.id" />
 </template>
 ```
 
-If you want to prevent an item from being expanded, you can use the `item.onToggle()`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"} property or the global `toggle` event:
+If you want to prevent an item from being expanded, you can use the `item.onToggle()` property or the global `toggle` event:
 
 ```vue [TreeOnToggleExample.vue]
 <script setup lang="ts">
-import type { TreeItemToggleEvent } from "reka-ui";
-import type { TreeItem } from "@nuxt/ui";
+import type { TreeItemToggleEvent } from 'reka-ui'
+import type { TreeItem } from '@nuxt/ui'
 
 const items: TreeItem[] = [
   {
-    label: "app/",
+    label: 'app/',
     defaultExpanded: true,
     onToggle: (e: Event) => {
-      e.preventDefault();
+      e.preventDefault()
     },
     children: [
       {
-        label: "composables/",
+        label: 'composables/',
         children: [
-          { label: "useAuth.ts", icon: "i-vscode-icons-file-type-typescript" },
-          { label: "useUser.ts", icon: "i-vscode-icons-file-type-typescript" },
-        ],
+          { label: 'useAuth.ts', icon: 'i-vscode-icons-file-type-typescript' },
+          { label: 'useUser.ts', icon: 'i-vscode-icons-file-type-typescript' }
+        ]
       },
       {
-        label: "components/",
+        label: 'components/',
         defaultExpanded: true,
         children: [
-          { label: "Card.vue", icon: "i-vscode-icons-file-type-vue" },
-          { label: "Button.vue", icon: "i-vscode-icons-file-type-vue" },
-        ],
-      },
-    ],
+          { label: 'Card.vue', icon: 'i-vscode-icons-file-type-vue' },
+          { label: 'Button.vue', icon: 'i-vscode-icons-file-type-vue' }
+        ]
+      }
+    ]
   },
-  { label: "app.vue", icon: "i-vscode-icons-file-type-vue" },
-  { label: "nuxt.config.ts", icon: "i-vscode-icons-file-type-nuxt" },
-];
+  { label: 'app.vue', icon: 'i-vscode-icons-file-type-vue' },
+  { label: 'nuxt.config.ts', icon: 'i-vscode-icons-file-type-nuxt' }
+]
 
 function onToggle(e: TreeItemToggleEvent<TreeItem>) {
-  if (e.detail.originalEvent.type === "keydown") {
-    e.preventDefault();
+  if (e.detail.originalEvent.type === 'keydown') {
+    e.preventDefault()
   }
 }
 </script>

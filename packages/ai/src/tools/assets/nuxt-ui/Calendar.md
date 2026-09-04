@@ -234,15 +234,21 @@ interface CalendarEmits {
 }
 ```
 
+## Composition
+
+Parts placed by name: `#heading`, `#day`, `#week-day`, `#month-cell`, `#year-cell`.
+
+Also written in the docs and absent from the interface above — one per column or item: `#content`.
+
 ## Usage
 
 Use the `v-model` directive to control the selected date.
 
 ```vue
 <script setup lang="ts">
-import { CalendarDate } from "@internationalized/date";
+import { CalendarDate } from '@internationalized/date'
 
-const value = shallowRef(new CalendarDate(2022, 2, 3));
+const value = shallowRef(new CalendarDate(2022, 2, 3))
 </script>
 
 <template>
@@ -254,9 +260,9 @@ Use the `default-value` prop to set the initial value when you do not need to co
 
 ```vue
 <script setup lang="ts">
-import { CalendarDate } from "@internationalized/date";
+import { CalendarDate } from '@internationalized/date'
 
-const defaultValue = shallowRef(new CalendarDate(2022, 2, 6));
+const defaultValue = shallowRef(new CalendarDate(2022, 2, 6))
 </script>
 
 <template>
@@ -266,16 +272,16 @@ const defaultValue = shallowRef(new CalendarDate(2022, 2, 6));
 
 **Nuxt:**
 
-> \[!NOTE]
+> [!NOTE]
 > See: /docs/getting-started/integrations/i18n/nuxt#locale
->
+> 
 > This component uses the `@internationalized/date` package for locale-aware formatting. The date format is determined by the `locale` prop of the App component.
 
 **Vue:**
 
-> \[!NOTE]
+> [!NOTE]
 > See: /docs/getting-started/integrations/i18n/vue#locale
->
+> 
 > This component uses the `@internationalized/date` package for locale-aware formatting. The date format is determined by the `locale` prop of the App component.
 
 ### Type `4.9+`
@@ -286,9 +292,9 @@ When using `date`, click the heading to switch from the day view to a month then
 
 ```vue
 <script setup lang="ts">
-import { CalendarDate } from "@internationalized/date";
+import { CalendarDate } from '@internationalized/date'
 
-const value = shallowRef(new CalendarDate(2022, 2, 1));
+const value = shallowRef(new CalendarDate(2022, 2, 1))
 </script>
 
 <template>
@@ -300,9 +306,9 @@ Use `type="year"` to render a standalone year picker.
 
 ```vue
 <script setup lang="ts">
-import { CalendarDate } from "@internationalized/date";
+import { CalendarDate } from '@internationalized/date'
 
-const value = shallowRef(new CalendarDate(2022, 1, 1));
+const value = shallowRef(new CalendarDate(2022, 1, 1))
 </script>
 
 <template>
@@ -316,13 +322,9 @@ Use the `multiple` prop to allow multiple selections.
 
 ```vue
 <script setup lang="ts">
-import { CalendarDate } from "@internationalized/date";
+import { CalendarDate } from '@internationalized/date'
 
-const value = shallowRef([
-  new CalendarDate(2022, 2, 4),
-  new CalendarDate(2022, 2, 6),
-  new CalendarDate(2022, 2, 8),
-]);
+const value = shallowRef([new CalendarDate(2022, 2, 4), new CalendarDate(2022, 2, 6), new CalendarDate(2022, 2, 8)])
 </script>
 
 <template>
@@ -336,12 +338,9 @@ Use the `range` prop to select a range of dates.
 
 ```vue
 <script setup lang="ts">
-import { CalendarDate } from "@internationalized/date";
+import { CalendarDate } from '@internationalized/date'
 
-const value = shallowRef({
-  start: new CalendarDate(2022, 2, 3),
-  end: new CalendarDate(2022, 2, 20),
-});
+const value = shallowRef({ start: new CalendarDate(2022, 2, 3), end: new CalendarDate(2022, 2, 20) })
 </script>
 
 <template>
@@ -353,12 +352,9 @@ The `range` prop also works with `type="month"` and `type="year"`, letting you s
 
 ```vue
 <script setup lang="ts">
-import { CalendarDate } from "@internationalized/date";
+import { CalendarDate } from '@internationalized/date'
 
-const value = shallowRef({
-  start: new CalendarDate(2022, 2, 1),
-  end: new CalendarDate(2022, 6, 1),
-});
+const value = shallowRef({ start: new CalendarDate(2022, 2, 1), end: new CalendarDate(2022, 6, 1) })
 </script>
 
 <template>
@@ -390,16 +386,13 @@ Use the `prev-month` and `next-month` props to override the month buttons.
 
 ```vue
 <template>
-  <UCalendar
-    :prev-month="{
-      color: 'primary',
-      variant: 'soft',
-    }"
-    :next-month="{
-      color: 'primary',
-      variant: 'soft',
-    }"
-  />
+  <UCalendar :prev-month="{
+  color: 'primary',
+  variant: 'soft'
+}" :next-month="{
+  color: 'primary',
+  variant: 'soft'
+}" />
 </template>
 ```
 
@@ -417,16 +410,13 @@ Use the `prev-year` and `next-year` props to override the year buttons.
 
 ```vue
 <template>
-  <UCalendar
-    :prev-year="{
-      color: 'primary',
-      variant: 'soft',
-    }"
-    :next-year="{
-      color: 'primary',
-      variant: 'soft',
-    }"
-  />
+  <UCalendar :prev-year="{
+  color: 'primary',
+  variant: 'soft'
+}" :next-year="{
+  color: 'primary',
+  variant: 'soft'
+}" />
 </template>
 ```
 
@@ -444,12 +434,10 @@ Set the `view-control` prop to an object to override the heading button.
 
 ```vue
 <template>
-  <UCalendar
-    :view-control="{
-      color: 'primary',
-      variant: 'soft',
-    }"
-  />
+  <UCalendar :view-control="{
+  color: 'primary',
+  variant: 'soft'
+}" />
 </template>
 ```
 
@@ -485,34 +473,30 @@ Use the [Chip](https://ui.nuxt.com/docs/components/chip) component to add events
 
 ```vue [CalendarEventsExample.vue]
 <script setup lang="ts">
-import { CalendarDate } from "@internationalized/date";
+import { CalendarDate } from '@internationalized/date'
 
-const modelValue = shallowRef(new CalendarDate(2022, 1, 10));
+const modelValue = shallowRef(new CalendarDate(2022, 1, 10))
 
 function getColorByDate(date: Date) {
-  const isWeekend = date.getDay() % 6 == 0;
-  const isDayMeeting = date.getDay() % 3 == 0;
+  const isWeekend = date.getDay() % 6 == 0
+  const isDayMeeting = date.getDay() % 3 == 0
 
   if (isWeekend) {
-    return undefined;
+    return undefined
   }
 
   if (isDayMeeting) {
-    return "error";
+    return 'error'
   }
 
-  return "success";
+  return 'success'
 }
 </script>
 
 <template>
   <UCalendar v-model="modelValue">
     <template #day="{ day }">
-      <UChip
-        :show="!!getColorByDate(day.toDate('UTC'))"
-        :color="getColorByDate(day.toDate('UTC'))"
-        size="2xs"
-      >
+      <UChip :show="!!getColorByDate(day.toDate('UTC'))" :color="getColorByDate(day.toDate('UTC'))" size="2xs">
         {{ day.day }}
       </UChip>
     </template>
@@ -526,17 +510,17 @@ Use the `is-date-disabled` prop with a function to mark specific dates as disabl
 
 ```vue [CalendarDisabledDatesExample.vue]
 <script setup lang="ts">
-import type { DateValue } from "@internationalized/date";
-import { CalendarDate } from "@internationalized/date";
+import type { DateValue } from '@internationalized/date'
+import { CalendarDate } from '@internationalized/date'
 
 const modelValue = shallowRef({
   start: new CalendarDate(2022, 1, 1),
-  end: new CalendarDate(2022, 1, 9),
-});
+  end: new CalendarDate(2022, 1, 9)
+})
 
 const isDateDisabled = (date: DateValue) => {
-  return date.day >= 10 && date.day <= 16;
-};
+  return date.day >= 10 && date.day <= 16
+}
 </script>
 
 <template>
@@ -550,25 +534,21 @@ Use the `is-date-unavailable` prop with a function to mark specific dates as una
 
 ```vue [CalendarUnavailableDatesExample.vue]
 <script setup lang="ts">
-import type { DateValue } from "@internationalized/date";
-import { CalendarDate } from "@internationalized/date";
+import type { DateValue } from '@internationalized/date'
+import { CalendarDate } from '@internationalized/date'
 
 const modelValue = shallowRef({
   start: new CalendarDate(2022, 1, 1),
-  end: new CalendarDate(2022, 1, 9),
-});
+  end: new CalendarDate(2022, 1, 9)
+})
 
 const isDateUnavailable = (date: DateValue) => {
-  return date.day >= 10 && date.day <= 16;
-};
+  return date.day >= 10 && date.day <= 16
+}
 </script>
 
 <template>
-  <UCalendar
-    v-model="modelValue"
-    :is-date-unavailable="isDateUnavailable"
-    range
-  />
+  <UCalendar v-model="modelValue" :is-date-unavailable="isDateUnavailable" range />
 </template>
 ```
 
@@ -578,11 +558,11 @@ Use the `min-value` and `max-value` props to limit the dates.
 
 ```vue [CalendarMinMaxDatesExample.vue]
 <script setup lang="ts">
-import { CalendarDate } from "@internationalized/date";
+import { CalendarDate } from '@internationalized/date'
 
-const modelValue = shallowRef(new CalendarDate(2023, 9, 10));
-const minDate = new CalendarDate(2023, 9, 1);
-const maxDate = new CalendarDate(2023, 9, 30);
+const modelValue = shallowRef(new CalendarDate(2023, 9, 10))
+const minDate = new CalendarDate(2023, 9, 1)
+const maxDate = new CalendarDate(2023, 9, 30)
 </script>
 
 <template>
@@ -596,11 +576,9 @@ You can use other calenders from `@internationalized/date` to implement a differ
 
 ```vue [CalendarOtherSystemExample.vue]
 <script lang="ts" setup>
-import { CalendarDate, HebrewCalendar } from "@internationalized/date";
+import { CalendarDate, HebrewCalendar } from '@internationalized/date'
 
-const hebrewDate = shallowRef(
-  new CalendarDate(new HebrewCalendar(), 5781, 1, 1),
-);
+const hebrewDate = shallowRef(new CalendarDate(new HebrewCalendar(), 5781, 1, 1))
 </script>
 
 <template>
@@ -608,9 +586,9 @@ const hebrewDate = shallowRef(
 </template>
 ```
 
-> \[!NOTE]
-> See: https\://react-spectrum.adobe.com/internationalized/date/Calendar.html#implementations
->
+> [!NOTE]
+> See: https://react-spectrum.adobe.com/internationalized/date/Calendar.html#implementations
+> 
 > You can check all the available calendars on `@internationalized/date` docs.
 
 ### With external controls
@@ -619,9 +597,9 @@ You can control the calendar with external controls by manipulating the date pas
 
 ```vue [CalendarExternalControlsExample.vue]
 <script setup lang="ts">
-import { CalendarDate } from "@internationalized/date";
+import { CalendarDate } from '@internationalized/date'
 
-const date = shallowRef(new CalendarDate(2025, 4, 2));
+const date = shallowRef(new CalendarDate(2025, 4, 2))
 </script>
 
 <template>
@@ -629,19 +607,11 @@ const date = shallowRef(new CalendarDate(2025, 4, 2));
     <UCalendar v-model="date" :month-controls="false" :year-controls="false" />
 
     <div class="flex justify-between gap-4">
-      <UButton
-        color="neutral"
-        variant="outline"
-        @click="date = date.subtract({ months: 1 })"
-      >
+      <UButton color="neutral" variant="outline" @click="date = date.subtract({ months: 1 })">
         Prev
       </UButton>
 
-      <UButton
-        color="neutral"
-        variant="outline"
-        @click="date = date.add({ months: 1 })"
-      >
+      <UButton color="neutral" variant="outline" @click="date = date.add({ months: 1 })">
         Next
       </UButton>
     </div>
@@ -655,21 +625,16 @@ Use the `today` function from `@internationalized/date` with `getLocalTimeZone` 
 
 ```vue [CalendarTodayExample.vue]
 <script setup lang="ts">
-import { getLocalTimeZone, today } from "@internationalized/date";
+import { getLocalTimeZone, today } from '@internationalized/date'
 
-const date = shallowRef(today(getLocalTimeZone()));
+const date = shallowRef(today(getLocalTimeZone()))
 </script>
 
 <template>
   <div class="flex flex-col gap-4">
     <UCalendar v-model="date" />
 
-    <UButton
-      color="neutral"
-      variant="outline"
-      class="justify-center"
-      @click="date = today(getLocalTimeZone())"
-    >
+    <UButton color="neutral" variant="outline" class="justify-center" @click="date = today(getLocalTimeZone())">
       Today
     </UButton>
   </div>

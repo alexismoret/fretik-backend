@@ -1,6 +1,7 @@
 import { tool } from "ai";
 import { z } from "zod";
 import { buildPageProject } from "../../services/page-project/build";
+import { componentsUsed } from "../../services/page-project/manifest";
 import { recordPageWrite } from "../../services/page-project/write-stats";
 import { listComponentsRead } from "../../services/page-review/page-session-store";
 import { MAX_COMPONENT_DOCS, listContractHeavy } from "../page-component-docs";
@@ -13,9 +14,6 @@ import { loadPageProjectContext, manifestOf } from "./context";
  * knocks on. What the tool adds is what the agent needs on top of the outcome:
  * the project's shape, and the one sentence saying what to do next.
  */
-
-/** `<UModal`, `<u-modal`, `</USlideover>` — every Nuxt UI tag in a template. */
-const USED_COMPONENT_RE = /<\/?[uU][A-Z-][A-Za-z0-9-]*/g;
 
 /**
  * Name the components this page places by hand without ever having read their
@@ -36,8 +34,7 @@ const unreadComponentWarnings = async (
   const used = new Set(
     Object.entries(files)
       .filter(([path]) => path.endsWith(".vue"))
-      .flatMap(([, content]) => [...content.matchAll(USED_COMPONENT_RE)])
-      .map((match) => match[0].replace(/^<\/?/, "")),
+      .flatMap(([, content]) => componentsUsed(content)),
   );
   const heavy = await listContractHeavy([...used]);
   if (heavy.length === 0) return [];

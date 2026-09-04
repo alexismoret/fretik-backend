@@ -36,18 +36,7 @@ interface DashboardSidebarProps {
    * @default true
    */
   autoClose?: boolean | undefined;
-  ui?:
-    | {
-        root?: SlotClass;
-        header?: SlotClass;
-        body?: SlotClass;
-        footer?: SlotClass;
-        toggle?: SlotClass;
-        handle?: SlotClass;
-        content?: SlotClass;
-        overlay?: SlotClass;
-      }
-    | undefined;
+  ui?: { root?: SlotClass; header?: SlotClass; body?: SlotClass; footer?: SlotClass; toggle?: SlotClass; handle?: SlotClass; content?: SlotClass; overlay?: SlotClass; } | undefined;
   /**
    * The id of the panel.
    * @default useId()
@@ -115,20 +104,24 @@ interface DashboardSidebarSlots {
 }
 ```
 
+## Composition
+
+Parts placed by name: `#toggle`, `#content`, `#resize-handle`.
+
 ## Usage
 
 The DashboardSidebar component is used to display a sidebar in a dashboard layout. It supports drag-to-resize, state persistence and integrates with [DashboardGroup](https://ui.nuxt.com/docs/components/dashboard-group), [DashboardPanel](https://ui.nuxt.com/docs/components/dashboard-panel) and [DashboardNavbar](https://ui.nuxt.com/docs/components/dashboard-navbar).
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/components/sidebar
->
+> 
 > **DashboardSidebar vs Sidebar**: This component is designed for dashboard layouts with drag-to-resize, state persistence and `DashboardGroup` integration. For a simple, standalone sidebar (chat panel, settings, navigation), use [Sidebar](https://ui.nuxt.com/docs/components/sidebar) instead.
 
 Its state (size, collapsed, etc.) will be saved based on the `storage` and `storage-key` props you provide to the [DashboardGroup](https://ui.nuxt.com/docs/components/dashboard-group#props) component.
 
 Use it inside the default slot of the [DashboardGroup](https://ui.nuxt.com/docs/components/dashboard-group) component:
 
-```vue [layouts/dashboard.vue] {3}
+```vue [layouts/dashboard.vue]
 <template>
   <UDashboardGroup>
     <UDashboardSidebar />
@@ -138,79 +131,56 @@ Use it inside the default slot of the [DashboardGroup](https://ui.nuxt.com/docs/
 </template>
 ```
 
-> \[!WARNING]
->
+> [!WARNING]
+> 
 > This component does not have a single root element when using the `resizable` prop, so wrap it in a container (e.g. `<div class="flex flex-1">`) if you use page transitions or require a single root for layout.
 
 Use the `header`, `default` and `footer` slots to customize the sidebar and the `body` or `content` slots to customize the sidebar menu.
 
 ```vue [DashboardSidebarExample.vue]
 <script setup lang="ts">
-import type { NavigationMenuItem } from "@nuxt/ui";
+import type { NavigationMenuItem } from '@nuxt/ui'
 
-const items: NavigationMenuItem[][] = [
-  [
-    {
-      label: "Home",
-      icon: "i-lucide-house",
-      active: true,
-    },
-    {
-      label: "Inbox",
-      icon: "i-lucide-inbox",
-      badge: "4",
-    },
-    {
-      label: "Contacts",
-      icon: "i-lucide-users",
-    },
-    {
-      label: "Settings",
-      icon: "i-lucide-settings",
-      defaultOpen: true,
-      children: [
-        {
-          label: "General",
-        },
-        {
-          label: "Members",
-        },
-        {
-          label: "Notifications",
-        },
-      ],
-    },
-  ],
-  [
-    {
-      label: "Feedback",
-      icon: "i-lucide-message-circle",
-      to: "https://github.com/nuxt-ui-templates/dashboard",
-      target: "_blank",
-    },
-    {
-      label: "Help & Support",
-      icon: "i-lucide-info",
-      to: "https://github.com/nuxt/ui",
-      target: "_blank",
-    },
-  ],
-];
+const items: NavigationMenuItem[][] = [[{
+  label: 'Home',
+  icon: 'i-lucide-house',
+  active: true
+}, {
+  label: 'Inbox',
+  icon: 'i-lucide-inbox',
+  badge: '4'
+}, {
+  label: 'Contacts',
+  icon: 'i-lucide-users'
+}, {
+  label: 'Settings',
+  icon: 'i-lucide-settings',
+  defaultOpen: true,
+  children: [{
+    label: 'General'
+  }, {
+    label: 'Members'
+  }, {
+    label: 'Notifications'
+  }]
+}], [{
+  label: 'Feedback',
+  icon: 'i-lucide-message-circle',
+  to: 'https://github.com/nuxt-ui-templates/dashboard',
+  target: '_blank'
+}, {
+  label: 'Help & Support',
+  icon: 'i-lucide-info',
+  to: 'https://github.com/nuxt/ui',
+  target: '_blank'
+}]]
 </script>
 
 <template>
-  <UDashboardSidebar
-    collapsible
-    resizable
-    :ui="{ footer: 'border-t border-default' }"
-  >
+  <UDashboardSidebar collapsible resizable :ui="{ footer: 'border-t border-default' }">
     <template #header="{ collapsed }">
       <Logo v-if="!collapsed" class="h-5 w-auto shrink-0" />
-      <UIcon
-        v-else
-        name="i-simple-icons-nuxtdotjs"
-        class="size-5 text-primary mx-auto"
-      />
+      <UIcon v-else name="i-simple-icons-nuxtdotjs" class="size-5 text-primary mx-auto" />
     </template>
 
     <template #default="{ collapsed }">
@@ -248,7 +218,7 @@ const items: NavigationMenuItem[][] = [
       <UButton
         :avatar="{
           src: 'https://github.com/benjamincanac.png',
-          loading: 'lazy' as const,
+          loading: 'lazy' as const
         }"
         :label="collapsed ? undefined : 'Benjamin'"
         color="neutral"
@@ -261,8 +231,8 @@ const items: NavigationMenuItem[][] = [
 </template>
 ```
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > Drag the sidebar near the left edge of the screen to collapse it.
 
 ### Resizable
@@ -281,8 +251,8 @@ Use the `resizable` prop to make the sidebar resizable.
 
 Use the `collapsible` prop to make the sidebar collapsible when dragging near the edge of the screen.
 
-> \[!WARNING]
->
+> [!WARNING]
+> 
 > The [`DashboardSidebarCollapse`](https://ui.nuxt.com/docs/components/dashboard-sidebar-collapse) component will have no effect if the sidebar is not **collapsible**.
 
 ```vue
@@ -293,37 +263,30 @@ Use the `collapsible` prop to make the sidebar collapsible when dragging near th
 </template>
 ```
 
-> \[!TIP]
+> [!TIP]
 > See: #slots
->
+> 
 > You can access the `collapsed` state in the slot props to customize the content of the sidebar when it is collapsed.
 
 ### Size
 
-Use the `min-size`, `max-size`, `default-size` and `collapsed-size` props to customize the size of the sidebar.
+Use the `min-size`,  `max-size`, `default-size` and `collapsed-size` props to customize the size of the sidebar.
 
 ```vue
 <template>
-  <UDashboardSidebar
-    resizable
-    collapsible
-    :min-size="22"
-    :default-size="35"
-    :max-size="40"
-    :collapsed-size="0"
-  >
+  <UDashboardSidebar resizable collapsible :min-size="22" :default-size="35" :max-size="40" :collapsed-size="0">
     <Placeholder class="h-96" />
   </UDashboardSidebar>
 </template>
 ```
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/components/dashboard-group#props
->
+> 
 > Sizes are calculated as percentages by default. You can change this using the `unit` prop on the `DashboardGroup` component.
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > The `collapsed-size` prop is set to `0` by default but the sidebar has a `min-w-16` to make sure it is visible.
 
 ### Side
@@ -344,34 +307,30 @@ Use the `mode` prop to change the mode of the sidebar menu. Defaults to `slideov
 
 Use the `body` slot to fill the menu body (under the header) or the `content` slot to fill the entire menu.
 
-> \[!TIP]
+> [!TIP]
 > See: #props
->
+> 
 > You can use the `menu` prop to customize the menu of the sidebar, it will adapt depending on the mode you choose.
 
 ```vue [DashboardSidebarModeExample.vue]
 <script setup lang="ts">
-import type { NavigationMenuItem } from "@nuxt/ui";
+import type { NavigationMenuItem } from '@nuxt/ui'
 
 defineProps<{
-  mode: "drawer" | "slideover" | "modal";
-}>();
+  mode: 'drawer' | 'slideover' | 'modal'
+}>()
 
-const items: NavigationMenuItem[] = [
-  {
-    label: "Home",
-    icon: "i-lucide-house",
-    active: true,
-  },
-  {
-    label: "Inbox",
-    icon: "i-lucide-inbox",
-  },
-  {
-    label: "Contacts",
-    icon: "i-lucide-users",
-  },
-];
+const items: NavigationMenuItem[] = [{
+  label: 'Home',
+  icon: 'i-lucide-house',
+  active: true
+}, {
+  label: 'Inbox',
+  icon: 'i-lucide-inbox'
+}, {
+  label: 'Contacts',
+  icon: 'i-lucide-users'
+}]
 </script>
 
 <template>
@@ -379,14 +338,13 @@ const items: NavigationMenuItem[] = [
     <UDashboardSidebar :mode="mode">
       <template #header="{ collapsed }">
         <Logo v-if="!collapsed" class="h-5 w-auto" />
-        <UIcon
-          v-else
-          name="i-simple-icons-nuxtdotjs"
-          class="size-5 text-primary mx-auto"
-        />
+        <UIcon v-else name="i-simple-icons-nuxtdotjs" class="size-5 text-primary mx-auto" />
       </template>
 
-      <UNavigationMenu :items="items" orientation="vertical" />
+      <UNavigationMenu
+        :items="items"
+        orientation="vertical"
+      />
     </UDashboardSidebar>
 
     <UDashboardPanel>
@@ -408,50 +366,45 @@ You can control the open state by using the `open` prop or the `v-model:open` di
 
 ```vue [DashboardSidebarOpenExample.vue]
 <script setup lang="ts">
-import type { NavigationMenuItem } from "@nuxt/ui";
+import type { NavigationMenuItem } from '@nuxt/ui'
 
-const items: NavigationMenuItem[] = [
-  {
-    label: "Home",
-    icon: "i-lucide-house",
-    active: true,
-  },
-  {
-    label: "Inbox",
-    icon: "i-lucide-inbox",
-  },
-  {
-    label: "Contacts",
-    icon: "i-lucide-users",
-  },
-];
+const items: NavigationMenuItem[] = [{
+  label: 'Home',
+  icon: 'i-lucide-house',
+  active: true
+}, {
+  label: 'Inbox',
+  icon: 'i-lucide-inbox'
+}, {
+  label: 'Contacts',
+  icon: 'i-lucide-users'
+}]
 
-const open = ref(true);
+const open = ref(true)
 
 defineShortcuts({
-  o: () => (open.value = !open.value),
-});
+  o: () => open.value = !open.value
+})
 </script>
 
 <template>
   <UDashboardSidebar v-model:open="open">
     <template #header="{ collapsed }">
       <Logo v-if="!collapsed" class="h-5 w-auto" />
-      <UIcon
-        v-else
-        name="i-simple-icons-nuxtdotjs"
-        class="size-5 text-primary mx-auto"
-      />
+      <UIcon v-else name="i-simple-icons-nuxtdotjs" class="size-5 text-primary mx-auto" />
     </template>
 
-    <UNavigationMenu :items="items" orientation="vertical" />
+    <UNavigationMenu
+      :items="items"
+      orientation="vertical"
+    />
   </UDashboardSidebar>
 </template>
 ```
 
-> \[!NOTE]
->
-> In this example, leveraging [`defineShortcuts`](https://ui.nuxt.com/docs/composables/define-shortcuts), you can toggle the open state of the DashboardSidebar by pressing :kbd{value="O"}.
+> [!NOTE]
+> 
+> In this example, leveraging [`defineShortcuts`](https://ui.nuxt.com/docs/composables/define-shortcuts), you can toggle the open state of the DashboardSidebar by pressing `O`.
 
 ### Control collapsed state
 
@@ -459,40 +412,32 @@ You can control the collapsed state by using the `collapsed` prop or the `v-mode
 
 ```vue [DashboardSidebarCollapsedExample.vue]
 <script setup lang="ts">
-import type { NavigationMenuItem } from "@nuxt/ui";
+import type { NavigationMenuItem } from '@nuxt/ui'
 
-const items: NavigationMenuItem[] = [
-  {
-    label: "Home",
-    icon: "i-lucide-house",
-    active: true,
-  },
-  {
-    label: "Inbox",
-    icon: "i-lucide-inbox",
-  },
-  {
-    label: "Contacts",
-    icon: "i-lucide-users",
-  },
-];
+const items: NavigationMenuItem[] = [{
+  label: 'Home',
+  icon: 'i-lucide-house',
+  active: true
+}, {
+  label: 'Inbox',
+  icon: 'i-lucide-inbox'
+}, {
+  label: 'Contacts',
+  icon: 'i-lucide-users'
+}]
 
-const collapsed = ref(false);
+const collapsed = ref(false)
 
 defineShortcuts({
-  c: () => (collapsed.value = !collapsed.value),
-});
+  c: () => collapsed.value = !collapsed.value
+})
 </script>
 
 <template>
   <UDashboardSidebar v-model:collapsed="collapsed" collapsible>
     <template #header>
       <Logo v-if="!collapsed" class="h-5 w-auto" />
-      <UIcon
-        v-else
-        name="i-simple-icons-nuxtdotjs"
-        class="size-5 text-primary mx-auto"
-      />
+      <UIcon v-else name="i-simple-icons-nuxtdotjs" class="size-5 text-primary mx-auto" />
     </template>
 
     <UNavigationMenu
@@ -504,6 +449,6 @@ defineShortcuts({
 </template>
 ```
 
-> \[!NOTE]
->
-> In this example, leveraging [`defineShortcuts`](https://ui.nuxt.com/docs/composables/define-shortcuts), you can toggle the collapsed state of the DashboardSidebar by pressing :kbd{value="C"}.
+> [!NOTE]
+> 
+> In this example, leveraging [`defineShortcuts`](https://ui.nuxt.com/docs/composables/define-shortcuts), you can toggle the collapsed state of the DashboardSidebar by pressing `C`.

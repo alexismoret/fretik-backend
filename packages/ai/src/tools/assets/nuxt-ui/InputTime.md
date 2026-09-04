@@ -171,15 +171,19 @@ interface InputTimeEmits {
 }
 ```
 
+## Composition
+
+Parts placed by name: `#separator`.
+
 ## Usage
 
 Use the `v-model` directive to control the selected time.
 
 ```vue
 <script setup lang="ts">
-import { Time } from "@internationalized/date";
+import { Time } from '@internationalized/date'
 
-const value = shallowRef(new Time(12, 30, 0));
+const value = shallowRef(new Time(12, 30, 0))
 </script>
 
 <template>
@@ -191,9 +195,9 @@ Use the `default-value` prop to set the initial value when you do not need to co
 
 ```vue
 <script setup lang="ts">
-import { Time } from "@internationalized/date";
+import { Time } from '@internationalized/date'
 
-const defaultValue = shallowRef(new Time(9, 45, 0));
+const defaultValue = shallowRef(new Time(9, 45, 0))
 </script>
 
 <template>
@@ -203,16 +207,16 @@ const defaultValue = shallowRef(new Time(9, 45, 0));
 
 **Nuxt:**
 
-> \[!NOTE]
+> [!NOTE]
 > See: /docs/getting-started/integrations/i18n/nuxt#locale
->
+> 
 > This component uses the `@internationalized/date` package for locale-aware formatting. The time format is determined by the `locale` prop of the App component.
 
 **Vue:**
 
-> \[!NOTE]
+> [!NOTE]
 > See: /docs/getting-started/integrations/i18n/vue#locale
->
+> 
 > This component uses the `@internationalized/date` package for locale-aware formatting. The time format is determined by the `locale` prop of the App component.
 
 ### Range
@@ -221,12 +225,9 @@ Use the `range` prop to enable time range selection with start and end times.
 
 ```vue
 <script setup lang="ts">
-import { Time } from "@internationalized/date";
+import { Time } from '@internationalized/date'
 
-const value = shallowRef({
-  start: new Time(9, 0, 0),
-  end: new Time(17, 30, 0),
-});
+const value = shallowRef({ start: new Time(9, 0, 0), end: new Time(17, 30, 0) })
 </script>
 
 <template>
@@ -240,9 +241,9 @@ Use the `hour-cycle` prop to change the hour cycle of the InputTime. Defaults to
 
 ```vue
 <script setup lang="ts">
-import { Time } from "@internationalized/date";
+import { Time } from '@internationalized/date'
 
-const defaultValue = shallowRef(new Time(16, 30, 0));
+const defaultValue = shallowRef(new Time(16, 30, 0))
 </script>
 
 <template>
@@ -260,8 +261,8 @@ Use the `color` prop to change the color of the InputTime.
 </template>
 ```
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > The `highlight` prop is used here to show the focus state. It's used internally when a validation error occurs.
 
 ### Variant
@@ -294,8 +295,8 @@ Use the `icon` prop to show an [Icon](https://ui.nuxt.com/docs/components/icon) 
 </template>
 ```
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > Use the `leading` and `trailing` props to set the icon position or the `leading-icon` and `trailing-icon` props to set a different icon for each position.
 
 ### Separator Icon
@@ -310,16 +311,16 @@ Use the `separator-icon` prop to change the [Icon](https://ui.nuxt.com/docs/comp
 
 **Nuxt:**
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/getting-started/integrations/icons/nuxt#theme
->
+> 
 > You can customize this icon globally in your `app.config.ts` under `ui.icons.minus` key.
 
 **Vue:**
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/getting-started/integrations/icons/vue#theme
->
+> 
 > You can customize this icon globally in your `vite.config.ts` under `ui.icons.minus` key.
 
 ### Avatar
@@ -328,14 +329,10 @@ Use the `avatar` prop to show an [Avatar](https://ui.nuxt.com/docs/components/av
 
 ```vue
 <template>
-  <UInputTime
-    :avatar="{
-      src: 'https://github.com/vuejs.png',
-      loading: 'lazy',
-    }"
-    size="md"
-    variant="outline"
-  />
+  <UInputTime :avatar="{
+  src: 'https://github.com/vuejs.png',
+  loading: 'lazy'
+}" size="md" variant="outline" />
 </template>
 ```
 
@@ -357,9 +354,9 @@ You can use the InputTime within a [FormField](https://ui.nuxt.com/docs/componen
 
 ```vue [InputTimeFormFieldExample.vue]
 <script setup lang="ts">
-import { Time } from "@internationalized/date";
+import { Time } from '@internationalized/date'
 
-const time = shallowRef(new Time(12, 30, 0));
+const time = shallowRef(new Time(12, 30, 0))
 </script>
 
 <template>

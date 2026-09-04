@@ -51,7 +51,7 @@ interface ProgressProps {
   ui?: { root?: SlotClass; base?: SlotClass; indicator?: SlotClass; status?: SlotClass; steps?: SlotClass; step?: SlotClass; } | undefined;
   /**
    * A function to get the accessible label text in a human-readable format.
-   *
+   * 
    *  If not provided, the value label will be read as the numeric value as a percentage of the max value.
    */
   getValueLabel?: (value: number | null | undefined, max: number): string | undefined | undefined;
@@ -90,13 +90,17 @@ interface ProgressEmits {
 }
 ```
 
+## Composition
+
+Parts placed by name: `#status`.
+
 ## Usage
 
 Use the `v-model` directive to control the value of the Progress.
 
 ```vue
 <script setup lang="ts">
-const value = ref(50);
+const value = ref(50)
 </script>
 
 <template>
@@ -104,8 +108,8 @@ const value = ref(50);
 </template>
 ```
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > Use the [`ProgressGroup`](https://ui.nuxt.com/docs/components/progress-group) component to split a single bar into multiple segments that add up to a total.
 
 ### Max
@@ -114,7 +118,7 @@ Use the `max` prop to set the maximum value of the Progress.
 
 ```vue
 <script setup lang="ts">
-const value = ref(3);
+const value = ref(3)
 </script>
 
 <template>
@@ -126,14 +130,17 @@ Use the `max` prop with an array of strings to display the active step under the
 
 ```vue
 <script setup lang="ts">
-const value = ref(3);
+const value = ref(3)
 </script>
 
 <template>
-  <UProgress
-    v-model="value"
-    :max="['Waiting...', 'Cloning...', 'Migrating...', 'Deploying...', 'Done!']"
-  />
+  <UProgress v-model="value" :max="[
+  'Waiting...',
+  'Cloning...',
+  'Migrating...',
+  'Deploying...',
+  'Done!'
+]" />
 </template>
 ```
 
@@ -143,7 +150,7 @@ Use the `status` prop to display the current Progress value above the bar.
 
 ```vue
 <script setup lang="ts">
-const value = ref(50);
+const value = ref(50)
 </script>
 
 <template>
@@ -151,17 +158,17 @@ const value = ref(50);
 </template>
 ```
 
-> \[!TIP]
->
+> [!TIP]
+> 
 > The status tracks the end of the bar, use `:ui="{ status: 'w-full' }"` to make it span the full width instead.
 
 ### Indeterminate
 
-When no `v-model` is set or the value is `null`, the Progress becomes _indeterminate_. The progress bar is animated as a `carousel`, but you can change it using the [`animation`](https://ui.nuxt.com/#animation) prop.
+When no `v-model` is set or the value is `null`, the Progress becomes *indeterminate*. The progress bar is animated as a `carousel`, but you can change it using the [`animation`](#animation) prop.
 
 ```vue
 <script setup lang="ts">
-const value = ref(null);
+const value = ref(null)
 </script>
 
 <template>
@@ -179,8 +186,8 @@ Use the `animation` prop to change the animation of the Progress to an inverse c
 </template>
 ```
 
-> \[!TIP]
->
+> [!TIP]
+> 
 > The animation is automatically disabled when the user prefers reduced motion, the indeterminate bar is displayed as a full width pulse instead.
 
 ### Orientation
@@ -203,8 +210,8 @@ Use the `color` prop to change the color of the Progress.
 </template>
 ```
 
-> \[!TIP]
->
+> [!TIP]
+> 
 > This prop also accepts any CSS color value for palettes outside the theme.
 
 ### Size

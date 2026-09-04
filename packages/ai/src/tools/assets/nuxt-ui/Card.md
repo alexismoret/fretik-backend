@@ -22,16 +22,7 @@ interface CardProps {
    * @default 'outline'
    */
   variant?: "solid" | "outline" | "soft" | "subtle" | undefined;
-  ui?:
-    | {
-        root?: SlotClass;
-        header?: SlotClass;
-        title?: SlotClass;
-        description?: SlotClass;
-        body?: SlotClass;
-        footer?: SlotClass;
-      }
-    | undefined;
+  ui?: { root?: SlotClass; header?: SlotClass; title?: SlotClass; description?: SlotClass; body?: SlotClass; footer?: SlotClass; } | undefined;
 }
 ```
 
@@ -58,13 +49,13 @@ Use the `header`, `default` and `footer` slots to add content to the Card.
 <template>
   <UCard>
     <Placeholder class="h-32" />
-
+  
     <template #header>
       <Placeholder class="h-8" />
     </template>
     <template #footer>
-      <Placeholder class="h-8" /> </template
-  ></UCard>
+      <Placeholder class="h-8" />
+    </template></UCard>
 </template>
 ```
 
@@ -86,11 +77,7 @@ Use the `description` prop to set the description of the Card's header.
 
 ```vue
 <template>
-  <UCard
-    title="Card with description"
-    description="Lorem ipsum dolor sit amet, consectetur adipiscing elit."
-    class="w-full"
-  >
+  <UCard title="Card with description" description="Lorem ipsum dolor sit amet, consectetur adipiscing elit." class="w-full">
     <Placeholder class="h-32" />
   </UCard>
 </template>
@@ -104,12 +91,12 @@ Use the `variant` prop to change the variant of the Card.
 <template>
   <UCard variant="subtle">
     <Placeholder class="h-32" />
-
+  
     <template #header>
       <Placeholder class="h-8" />
     </template>
     <template #footer>
-      <Placeholder class="h-8" /> </template
-  ></UCard>
+      <Placeholder class="h-8" />
+    </template></UCard>
 </template>
 ```

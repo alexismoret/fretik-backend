@@ -26,18 +26,12 @@ interface RadioGroupProps {
    * When `items` is an array of objects, select the field to use as the label.
    * @default 'label'
    */
-  labelKey?:
-    | (keyof Extract<NestedItem<T>, object> & string)
-    | DotPathKeys<Extract<NestedItem<T>, object>>
-    | undefined;
+  labelKey?: keyof Extract<NestedItem<T>, object> & string | DotPathKeys<Extract<NestedItem<T>, object>> | undefined;
   /**
    * When `items` is an array of objects, select the field to use as the description.
    * @default 'description'
    */
-  descriptionKey?:
-    | (keyof Extract<NestedItem<T>, object> & string)
-    | DotPathKeys<Extract<NestedItem<T>, object>>
-    | undefined;
+  descriptionKey?: keyof Extract<NestedItem<T>, object> & string | DotPathKeys<Extract<NestedItem<T>, object>> | undefined;
   items?: T | undefined;
   /**
    * The controlled value of the RadioGroup. Can be bind as `v-model`.
@@ -58,15 +52,7 @@ interface RadioGroupProps {
   /**
    * @default 'primary'
    */
-  color?:
-    | "primary"
-    | "secondary"
-    | "success"
-    | "info"
-    | "warning"
-    | "error"
-    | "neutral"
-    | undefined;
+  color?: "primary" | "secondary" | "success" | "info" | "warning" | "error" | "neutral" | undefined;
   /**
    * Highlight the ring color like a focus state.
    * @default false
@@ -82,21 +68,7 @@ interface RadioGroupProps {
    * @default 'start'
    */
   indicator?: "start" | "end" | "hidden" | undefined;
-  ui?:
-    | {
-        root?: SlotClass;
-        fieldset?: SlotClass;
-        legend?: SlotClass;
-        item?: SlotClass;
-        container?: SlotClass;
-        base?: SlotClass;
-        indicator?: SlotClass;
-        wrapper?: SlotClass;
-        label?: SlotClass;
-        icon?: SlotClass;
-        description?: SlotClass;
-      }
-    | undefined;
+  ui?: { root?: SlotClass; fieldset?: SlotClass; legend?: SlotClass; item?: SlotClass; container?: SlotClass; base?: SlotClass; indicator?: SlotClass; wrapper?: SlotClass; label?: SlotClass; icon?: SlotClass; description?: SlotClass; } | undefined;
   /**
    * When `true`, prevents the user from interacting with radio items.
    */
@@ -141,14 +113,22 @@ interface RadioGroupEmits {
 }
 ```
 
+## Composition
+
+Parts placed by name: `#legend`.
+
 ## Usage
 
 Use the `v-model` directive to control the value of the RadioGroup or the `default-value` prop to set the initial value when you do not need to control its state.
 
 ```vue
 <script setup lang="ts">
-const items = ref(["System", "Light", "Dark"]);
-const value = ref("System");
+const items = ref([
+  "System",
+  "Light",
+  "Dark"
+])
+const value = ref("System")
 </script>
 
 <template>
@@ -162,8 +142,12 @@ Use the `items` prop as an array of strings or numbers:
 
 ```vue
 <script setup lang="ts">
-const items = ref(["System", "Light", "Dark"]);
-const value = ref("System");
+const items = ref([
+  "System",
+  "Light",
+  "Dark"
+])
+const value = ref("System")
 </script>
 
 <template>
@@ -173,36 +157,36 @@ const value = ref("System");
 
 You can also pass an array of objects with the following properties:
 
-- `label?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `description?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- [`value?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}](https://ui.nuxt.com/#value-key)
-- `disabled?: boolean`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- [`icon?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}](https://ui.nuxt.com/#indicator)
-- `class?: any`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `ui?: { item?: ClassNameValue, container?: ClassNameValue, base?: ClassNameValue, 'indicator'?: ClassNameValue, wrapper?: ClassNameValue, label?: ClassNameValue, icon?: ClassNameValue, description?: ClassNameValue }`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
+- `label?: string`
+- `description?: string`
+- [`value?: string`](#value-key)
+- `disabled?: boolean`
+- [`icon?: string`](#indicator)
+- `class?: any`
+- `ui?: { item?: ClassNameValue, container?: ClassNameValue, base?: ClassNameValue, 'indicator'?: ClassNameValue, wrapper?: ClassNameValue, label?: ClassNameValue, icon?: ClassNameValue, description?: ClassNameValue }`
 
 ```vue
 <script setup lang="ts">
-import type { RadioGroupItem } from "@nuxt/ui";
+import type { RadioGroupItem } from '@nuxt/ui'
 
 const items = ref<RadioGroupItem[]>([
   {
     label: "System",
     description: "Matches your device settings.",
-    value: "system",
+    value: "system"
   },
   {
     label: "Light",
     description: "Always uses the light theme.",
-    value: "light",
+    value: "light"
   },
   {
     label: "Dark",
     description: "Always uses the dark theme.",
-    value: "dark",
-  },
-]);
-const value = ref("system");
+    value: "dark"
+  }
+])
+const value = ref("system")
 </script>
 
 <template>
@@ -210,8 +194,8 @@ const value = ref("system");
 </template>
 ```
 
-> \[!CAUTION]
->
+> [!CAUTION]
+> 
 > When using objects, you need to reference the `value` property of the object in the `v-model` directive or the `default-value` prop.
 
 ### Value Key
@@ -220,26 +204,26 @@ You can change the property that is used to set the value by using the `value-ke
 
 ```vue
 <script setup lang="ts">
-import type { RadioGroupItem } from "@nuxt/ui";
+import type { RadioGroupItem } from '@nuxt/ui'
 
 const items = ref<RadioGroupItem[]>([
   {
     label: "System",
     description: "Matches your device settings.",
-    id: "system",
+    id: "system"
   },
   {
     label: "Light",
     description: "Always uses the light theme.",
-    id: "light",
+    id: "light"
   },
   {
     label: "Dark",
     description: "Always uses the dark theme.",
-    id: "dark",
-  },
-]);
-const value = ref("light");
+    id: "dark"
+  }
+])
+const value = ref("light")
 </script>
 
 <template>
@@ -253,7 +237,11 @@ Use the `legend` prop to set the legend of the RadioGroup.
 
 ```vue
 <script setup lang="ts">
-const items = ref(["System", "Light", "Dark"]);
+const items = ref([
+  "System",
+  "Light",
+  "Dark"
+])
 </script>
 
 <template>
@@ -267,7 +255,11 @@ Use the `color` prop to change the color of the RadioGroup.
 
 ```vue
 <script setup lang="ts">
-const items = ref(["System", "Light", "Dark"]);
+const items = ref([
+  "System",
+  "Light",
+  "Dark"
+])
 </script>
 
 <template>
@@ -281,34 +273,29 @@ Use the `variant` prop to change the variant of the RadioGroup.
 
 ```vue
 <script setup lang="ts">
-import type { RadioGroupItem } from "@nuxt/ui";
+import type { RadioGroupItem } from '@nuxt/ui'
 
 const items = ref<RadioGroupItem[]>([
   {
     label: "System",
     value: "system",
-    description: "Matches your device settings.",
+    description: "Matches your device settings."
   },
   {
     label: "Light",
     value: "light",
-    description: "Always uses the light theme.",
+    description: "Always uses the light theme."
   },
   {
     label: "Dark",
     value: "dark",
-    description: "Always uses the dark theme.",
-  },
-]);
+    description: "Always uses the dark theme."
+  }
+])
 </script>
 
 <template>
-  <URadioGroup
-    color="primary"
-    variant="card"
-    default-value="system"
-    :items="items"
-  />
+  <URadioGroup color="primary" variant="card" default-value="system" :items="items" />
 </template>
 ```
 
@@ -318,7 +305,11 @@ Use the `size` prop to change the size of the RadioGroup.
 
 ```vue
 <script setup lang="ts">
-const items = ref(["System", "Light", "Dark"]);
+const items = ref([
+  "System",
+  "Light",
+  "Dark"
+])
 </script>
 
 <template>
@@ -332,21 +323,21 @@ Use the `orientation` prop to change the orientation of the RadioGroup. Defaults
 
 ```vue
 <script setup lang="ts">
-const items = ref(["System", "Light", "Dark"]);
+const items = ref([
+  "System",
+  "Light",
+  "Dark"
+])
 </script>
 
 <template>
-  <URadioGroup
-    orientation="horizontal"
-    variant="list"
-    default-value="System"
-    :items="items"
-  />
+  <URadioGroup orientation="horizontal" variant="list" default-value="System" :items="items" />
 </template>
 ```
 
 ### Indicator
 
 Use the `indicator` prop to change the position or hide the indicator. Defaults to `start`.
+
 
 _(truncated — ask for fewer components to see more, or rely on the API block above)_

@@ -31,15 +31,7 @@ interface SeparatorProps {
   /**
    * @default 'neutral'
    */
-  color?:
-    | "error"
-    | "neutral"
-    | "primary"
-    | "secondary"
-    | "success"
-    | "info"
-    | "warning"
-    | undefined;
+  color?: "error" | "neutral" | "primary" | "secondary" | "success" | "info" | "warning" | undefined;
   /**
    * @default 'xs'
    */
@@ -58,17 +50,7 @@ interface SeparatorProps {
    * @default 'center'
    */
   position?: "center" | "start" | "end" | undefined;
-  ui?:
-    | {
-        root?: SlotClass;
-        border?: SlotClass;
-        container?: SlotClass;
-        icon?: SlotClass;
-        avatar?: SlotClass;
-        avatarSize?: SlotClass;
-        label?: SlotClass;
-      }
-    | undefined;
+  ui?: { root?: SlotClass; border?: SlotClass; container?: SlotClass; icon?: SlotClass; avatar?: SlotClass; avatarSize?: SlotClass; label?: SlotClass; } | undefined;
   /**
    * Whether or not the component is purely decorative. <br>When `true`, accessibility-related attributes
    * are updated so that that the rendered element is removed from the accessibility tree.
@@ -144,12 +126,10 @@ Use the `avatar` prop to display an avatar in the middle of the Separator.
 
 ```vue
 <template>
-  <USeparator
-    :avatar="{
-      src: 'https://github.com/nuxt.png',
-      loading: 'lazy',
-    }"
-  />
+  <USeparator :avatar="{
+  src: 'https://github.com/nuxt.png',
+  loading: 'lazy'
+}" />
 </template>
 ```
 

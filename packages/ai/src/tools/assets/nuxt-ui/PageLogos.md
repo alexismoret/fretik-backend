@@ -22,14 +22,7 @@ interface PageLogosProps {
    * @default false
    */
   marquee?: boolean | MarqueeProps | undefined;
-  ui?:
-    | {
-        root?: SlotClass;
-        title?: SlotClass;
-        logos?: SlotClass;
-        logo?: SlotClass;
-      }
-    | undefined;
+  ui?: { root?: SlotClass; title?: SlotClass; logos?: SlotClass; logo?: SlotClass; } | undefined;
 }
 ```
 
@@ -50,16 +43,14 @@ The PageLogos component provides a flexible way to display a list of logos or im
 
 ```vue
 <template>
-  <UPageLogos
-    :items="[
-      'i-simple-icons-github',
-      'i-simple-icons-discord',
-      'i-simple-icons-x',
-      'i-simple-icons-instagram',
-      'i-simple-icons-linkedin',
-      'i-simple-icons-facebook',
-    ]"
-  />
+  <UPageLogos :items="[
+  'i-simple-icons-github',
+  'i-simple-icons-discord',
+  'i-simple-icons-x',
+  'i-simple-icons-instagram',
+  'i-simple-icons-linkedin',
+  'i-simple-icons-facebook'
+]" />
 </template>
 ```
 
@@ -69,17 +60,14 @@ Use the `title` prop to set the title above the logos.
 
 ```vue
 <template>
-  <UPageLogos
-    title="Trusted by the best front-end teams"
-    :items="[
-      'i-simple-icons-github',
-      'i-simple-icons-discord',
-      'i-simple-icons-x',
-      'i-simple-icons-instagram',
-      'i-simple-icons-linkedin',
-      'i-simple-icons-facebook',
-    ]"
-  />
+  <UPageLogos title="Trusted by the best front-end teams" :items="[
+  'i-simple-icons-github',
+  'i-simple-icons-discord',
+  'i-simple-icons-x',
+  'i-simple-icons-instagram',
+  'i-simple-icons-linkedin',
+  'i-simple-icons-facebook'
+]" />
 </template>
 ```
 
@@ -92,18 +80,18 @@ You can display logos in two ways:
 - An icon name (e.g. `i-simple-icons-github`)
 - An object containing `src` and `alt` properties for images, which will be utilized in a `UAvatar` component
 
-2. Using the default slot to have complete control over the content
+1. Using the default slot to have complete control over the content
 
 ```vue [PageLogosWithItems.vue]
 <script setup lang="ts">
 const items = [
-  "i-simple-icons-github",
-  "i-simple-icons-discord",
-  "i-simple-icons-x",
-  "i-simple-icons-instagram",
-  "i-simple-icons-linkedin",
-  "i-simple-icons-facebook",
-];
+  'i-simple-icons-github',
+  'i-simple-icons-discord',
+  'i-simple-icons-x',
+  'i-simple-icons-instagram',
+  'i-simple-icons-linkedin',
+  'i-simple-icons-facebook'
+]
 </script>
 
 <template>
@@ -130,22 +118,18 @@ Use the `marquee` prop to enable a marquee effect for the logos.
 
 ```vue
 <template>
-  <UPageLogos
-    title="Trusted by the best front-end teams"
-    marquee
-    :items="[
-      'i-simple-icons-github',
-      'i-simple-icons-discord',
-      'i-simple-icons-x',
-      'i-simple-icons-instagram',
-      'i-simple-icons-linkedin',
-      'i-simple-icons-facebook',
-    ]"
-  />
+  <UPageLogos title="Trusted by the best front-end teams" marquee :items="[
+  'i-simple-icons-github',
+  'i-simple-icons-discord',
+  'i-simple-icons-x',
+  'i-simple-icons-instagram',
+  'i-simple-icons-linkedin',
+  'i-simple-icons-facebook'
+]" />
 </template>
 ```
 
-> \[!NOTE]
+> [!NOTE]
 > See: /docs/components/marquee
->
+> 
 > When you use `marquee` mode, you can customize its behavior by passing props. For more info, check out the `Marquee` component.

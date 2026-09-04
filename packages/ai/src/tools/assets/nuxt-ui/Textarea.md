@@ -25,15 +25,7 @@ interface TextareaProps {
   /**
    * @default 'primary'
    */
-  color?:
-    | "primary"
-    | "secondary"
-    | "success"
-    | "info"
-    | "warning"
-    | "error"
-    | "neutral"
-    | undefined;
+  color?: "primary" | "secondary" | "success" | "info" | "warning" | "error" | "neutral" | undefined;
   /**
    * @default 'outline'
    */
@@ -73,18 +65,7 @@ interface TextareaProps {
   defaultValue?: _Number<_Optional<_Nullable<T, Mod>, Mod>, Mod> | undefined;
   modelValue?: _Number<_Optional<_Nullable<T, Mod>, Mod>, Mod> | undefined;
   modelModifiers?: Mod | undefined;
-  ui?:
-    | {
-        root?: SlotClass;
-        base?: SlotClass;
-        leading?: SlotClass;
-        leadingIcon?: SlotClass;
-        leadingAvatar?: SlotClass;
-        leadingAvatarSize?: SlotClass;
-        trailing?: SlotClass;
-        trailingIcon?: SlotClass;
-      }
-    | undefined;
+  ui?: { root?: SlotClass; base?: SlotClass; leading?: SlotClass; leadingIcon?: SlotClass; leadingAvatar?: SlotClass; leadingAvatarSize?: SlotClass; trailing?: SlotClass; trailingIcon?: SlotClass; } | undefined;
   /**
    * Display an icon based on the `leading` and `trailing` props.
    */
@@ -129,9 +110,9 @@ interface TextareaProps {
 }
 ```
 
-> \[!NOTE]
-> See: https\://developer.mozilla.org/en-US/docs/Web/HTML/Element/textarea#attributes
->
+> [!NOTE]
+> See: https://developer.mozilla.org/en-US/docs/Web/HTML/Element/textarea#attributes
+> 
 > This component also supports all native `<textarea>` HTML attributes.
 
 ### Slots
@@ -164,10 +145,10 @@ interface TextareaEmits {
 
 When accessing the component via a template ref, you can use the following:
 
-| Name                                                                                                                              | Type                                                                                                                             |
-| --------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `textareaRef`{.language-ts-type.shiki.shiki-themes.material-theme-lighter.material-theme.material-theme-palenight lang="ts-type"} | `Ref<HTMLTextAreaElement                                                                                                         | null>`{.language-ts-type.shiki.shiki-themes.material-theme-lighter.material-theme.material-theme-palenight lang="ts-type"} |
-| `autoResize`{.language-ts-type.shiki.shiki-themes.material-theme-lighter.material-theme.material-theme-palenight lang="ts-type"}  | `() => void`{.language-ts-type.shiki.shiki-themes.material-theme-lighter.material-theme.material-theme-palenight lang="ts-type"} |
+| Name | Type |
+| --- | --- |
+| `textareaRef` | `Ref<HTMLTextAreaElement \| null>` |
+| `autoResize` | `() => void` |
 
 ## Usage
 
@@ -175,7 +156,7 @@ Use the `v-model` directive to control the value of the Textarea.
 
 ```vue
 <script setup lang="ts">
-const value = ref("");
+const value = ref("")
 </script>
 
 <template>
@@ -209,9 +190,7 @@ Use the `autoresize` prop to enable autoresizing the height of the Textarea.
 
 ```vue
 <script setup lang="ts">
-const value = ref(
-  "This is a long text that will autoresize the height of the Textarea.",
-);
+const value = ref("This is a long text that will autoresize the height of the Textarea.")
 </script>
 
 <template>
@@ -223,9 +202,7 @@ Use the `maxrows` prop to set the maximum number of rows when autoresizing. If s
 
 ```vue
 <script setup lang="ts">
-const value = ref(
-  "This is a long text that will autoresize the height of the Textarea with a maximum of 4 rows.",
-);
+const value = ref("This is a long text that will autoresize the height of the Textarea with a maximum of 4 rows.")
 </script>
 
 <template>
@@ -243,8 +220,8 @@ Use the `color` prop to change the ring color when the Textarea is focused.
 </template>
 ```
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > The `highlight` prop is used here to show the focus state. It's used internally when a validation error occurs.
 
 ### Variant
@@ -253,12 +230,7 @@ Use the `variant` prop to change the variant of the Textarea.
 
 ```vue
 <template>
-  <UTextarea
-    color="neutral"
-    variant="subtle"
-    :highlight="false"
-    placeholder="Type something..."
-  />
+  <UTextarea color="neutral" variant="subtle" :highlight="false" placeholder="Type something..." />
 </template>
 ```
 
@@ -278,13 +250,7 @@ Use the `icon` prop to show an [Icon](https://ui.nuxt.com/docs/components/icon) 
 
 ```vue
 <template>
-  <UTextarea
-    icon="i-lucide-search"
-    size="md"
-    variant="outline"
-    placeholder="Search..."
-    :rows="1"
-  />
+  <UTextarea icon="i-lucide-search" size="md" variant="outline" placeholder="Search..." :rows="1" />
 </template>
 ```
 
@@ -292,12 +258,7 @@ Use the `leading` and `trailing` props to set the icon position or the `leading-
 
 ```vue
 <template>
-  <UTextarea
-    trailing-icon="i-lucide-at-sign"
-    placeholder="Enter your email"
-    size="md"
-    :rows="1"
-  />
+  <UTextarea trailing-icon="i-lucide-at-sign" placeholder="Enter your email" size="md" :rows="1" />
 </template>
 ```
 
@@ -307,16 +268,10 @@ Use the `avatar` prop to show an [Avatar](https://ui.nuxt.com/docs/components/av
 
 ```vue
 <template>
-  <UTextarea
-    :avatar="{
-      src: 'https://github.com/nuxt.png',
-      loading: 'lazy',
-    }"
-    size="md"
-    variant="outline"
-    placeholder="Search..."
-    :rows="1"
-  />
+  <UTextarea :avatar="{
+  src: 'https://github.com/nuxt.png',
+  loading: 'lazy'
+}" size="md" variant="outline" placeholder="Search..." :rows="1" />
 </template>
 ```
 
@@ -336,27 +291,22 @@ Use the `loading-icon` prop to customize the loading icon. Defaults to `i-lucide
 
 ```vue
 <template>
-  <UTextarea
-    loading
-    loading-icon="i-lucide-loader"
-    placeholder="Search..."
-    :rows="1"
-  />
+  <UTextarea loading loading-icon="i-lucide-loader" placeholder="Search..." :rows="1" />
 </template>
 ```
 
 **Nuxt:**
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/getting-started/integrations/icons/nuxt#theme
->
+> 
 > You can customize this icon globally in your `app.config.ts` under `ui.icons.loading` key.
 
 **Vue:**
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/getting-started/integrations/icons/vue#theme
->
+> 
 > You can customize this icon globally in your `vite.config.ts` under `ui.icons.loading` key.
 
 ### Disabled

@@ -16,7 +16,7 @@ interface PageBodyProps {
    * @default 'div'
    */
   as?: any;
-  ui?: { base?: any } | undefined;
+  ui?: { base?: any; } | undefined;
 }
 ```
 
@@ -31,13 +31,17 @@ interface PageBodySlots {
 }
 ```
 
+## Composition
+
+Also written in the docs and absent from the interface above — one per column or item: `#right`.
+
 ## Usage
 
 The PageBody component wraps your main content and adds some padding for consistent spacing.
 
 Use it inside the default slot of the [Page](https://ui.nuxt.com/docs/components/page) component, after the [PageHeader](https://ui.nuxt.com/docs/components/page-header) component:
 
-```vue {5}
+```vue
 <template>
   <UPage>
     <UPageHeader />
@@ -49,29 +53,29 @@ Use it inside the default slot of the [Page](https://ui.nuxt.com/docs/components
 
 ## Examples
 
-> \[!NOTE]
->
-> While these examples use [Nuxt Content](https://content.nuxt.com){rel="&#x22;nofollow&#x22;"}, the components can be integrated with any content management system.
+> [!NOTE]
+> 
+> While these examples use [Nuxt Content](https://content.nuxt.com), the components can be integrated with any content management system.
 
 ### Within a page
 
 Use the PageBody component in a page to display the content of the page:
 
-```vue [pages/[...slug\].vue] {21-27}
+```vue [pages/[...slug].vue]
 <script setup lang="ts">
-const route = useRoute();
+const route = useRoute()
 
 definePageMeta({
-  layout: "docs",
-});
+  layout: 'docs'
+})
 
 const { data: page } = await useAsyncData(route.path, () => {
-  return queryCollection("docs").path(route.path).first();
-});
+  return queryCollection('docs').path(route.path).first()
+})
 
 const { data: surround } = await useAsyncData(`${route.path}-surround`, () => {
-  return queryCollectionItemSurroundings("content", route.path);
-});
+  return queryCollectionItemSurroundings('content', route.path)
+})
 </script>
 
 <template>
@@ -93,6 +97,6 @@ const { data: surround } = await useAsyncData(`${route.path}-surround`, () => {
 </template>
 ```
 
-> \[!NOTE]
->
-> In this example, we use the [`ContentRenderer`](https://content.nuxt.com/docs/components/content-renderer){rel="&#x22;nofollow&#x22;"} component from `@nuxt/content` to render the content of the page.
+> [!NOTE]
+> 
+> In this example, we use the [`ContentRenderer`](https://content.nuxt.com/docs/components/content-renderer) component from `@nuxt/content` to render the content of the page.

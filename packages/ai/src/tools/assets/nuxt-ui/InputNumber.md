@@ -23,15 +23,7 @@ interface InputNumberProps {
   /**
    * @default 'primary'
    */
-  color?:
-    | "primary"
-    | "secondary"
-    | "success"
-    | "info"
-    | "warning"
-    | "error"
-    | "neutral"
-    | undefined;
+  color?: "primary" | "secondary" | "success" | "info" | "warning" | "error" | "neutral" | undefined;
   /**
    * @default 'outline'
    */
@@ -84,18 +76,9 @@ interface InputNumberProps {
   autofocus?: boolean | undefined;
   autofocusDelay?: number | undefined;
   defaultValue?: NonNullable<T> | undefined;
-  modelValue?: T | Mod extends { optional: true }
-    ? undefined
-    : never | undefined;
+  modelValue?: T | Mod extends { optional: true; } ? undefined : never | undefined;
   modelModifiers?: Mod | undefined;
-  ui?:
-    | {
-        root?: SlotClass;
-        base?: SlotClass;
-        increment?: SlotClass;
-        decrement?: SlotClass;
-      }
-    | undefined;
+  ui?: { root?: SlotClass; base?: SlotClass; increment?: SlotClass; decrement?: SlotClass; } | undefined;
   /**
    * The smallest value allowed for the input.
    */
@@ -152,15 +135,7 @@ interface InputNumberProps {
    * The locale to use for formatting and currencies
    */
   locale?: string | undefined;
-  enterKeyHint?:
-    | "enter"
-    | "done"
-    | "go"
-    | "next"
-    | "previous"
-    | "search"
-    | "send"
-    | undefined;
+  enterKeyHint?: "enter" | "done" | "go" | "next" | "previous" | "search" | "send" | undefined;
   form?: string | undefined;
   formaction?: string | undefined;
   formenctype?: string | undefined;
@@ -168,13 +143,13 @@ interface InputNumberProps {
   formnovalidate?: false | true | "true" | "false" | undefined;
   formtarget?: string | undefined;
   list?: string | undefined;
-  autocomplete?: "on" | "off" | (string & {}) | undefined;
+  autocomplete?: "on" | "off" | string & {} | undefined;
 }
 ```
 
-> \[!NOTE]
-> See: https\://developer.mozilla.org/en-US/docs/Web/HTML/Element/input#attributes
->
+> [!NOTE]
+> See: https://developer.mozilla.org/en-US/docs/Web/HTML/Element/input#attributes
+> 
 > This component also supports all native `<input>` HTML attributes.
 
 ### Slots
@@ -206,9 +181,31 @@ interface InputNumberEmits {
 
 When accessing the component via a template ref, you can use the following:
 
-| Name                                                                                                                           | Type                  |
-| ------------------------------------------------------------------------------------------------------------------------------ | --------------------- |
-| `inputRef`{.language-ts-type.shiki.shiki-themes.material-theme-lighter.material-theme.material-theme-palenight lang="ts-type"} | `Ref<HTMLInputElement | null>`{.language-ts-type.shiki.shiki-themes.material-theme-lighter.material-theme.material-theme-palenight lang="ts-type"} |
+| Name | Type |
+| --- | --- |
+| `inputRef` | `Ref<HTMLInputElement \| null>` |
+
+## Composition
+
+Parts placed by name: `#increment`, `#decrement`.
+
+```vue
+<script setup lang="ts">
+const value = ref(5)
+</script>
+
+<template>
+  <UInputNumber v-model="value">
+    <template #decrement>
+      <UButton size="xs" icon="i-lucide-minus" />
+    </template>
+
+    <template #increment>
+      <UButton size="xs" icon="i-lucide-plus" />
+    </template>
+  </UInputNumber>
+</template>
+```
 
 ## Usage
 
@@ -216,7 +213,7 @@ Use the `v-model` directive to control the value of the InputNumber.
 
 ```vue
 <script setup lang="ts">
-const value = ref(5);
+const value = ref(5)
 </script>
 
 <template>
@@ -232,9 +229,9 @@ Use the `default-value` prop to set the initial value when you do not need to co
 </template>
 ```
 
-> \[!NOTE]
->
-> This component relies on the [`@internationalized/number`](https://react-spectrum.adobe.com/internationalized/number/index.html){rel="&#x22;nofollow&#x22;"} package which provides utilities for formatting and parsing numbers across locales and numbering systems.
+> [!NOTE]
+> 
+> This component relies on the [`@internationalized/number`](https://react-spectrum.adobe.com/internationalized/number/index.html) package which provides utilities for formatting and parsing numbers across locales and numbering systems.
 
 ### Min / Max
 
@@ -242,7 +239,7 @@ Use the `min` and `max` props to set the minimum and maximum values of the Input
 
 ```vue
 <script setup lang="ts">
-const value = ref(5);
+const value = ref(5)
 </script>
 
 <template>
@@ -256,7 +253,7 @@ Use the `step` prop to set the step value of the InputNumber.
 
 ```vue
 <script setup lang="ts">
-const value = ref(5);
+const value = ref(5)
 </script>
 
 <template>
@@ -270,7 +267,7 @@ Use the `orientation` prop to change the orientation of the InputNumber.
 
 ```vue
 <script setup lang="ts">
-const value = ref(5);
+const value = ref(5)
 </script>
 
 <template>
@@ -294,7 +291,7 @@ Use the `color` prop to change the ring color when the InputNumber is focused.
 
 ```vue
 <script setup lang="ts">
-const value = ref(5);
+const value = ref(5)
 </script>
 
 <template>
@@ -308,16 +305,11 @@ Use the `variant` prop to change the variant of the InputNumber.
 
 ```vue
 <script setup lang="ts">
-const value = ref(5);
+const value = ref(5)
 </script>
 
 <template>
-  <UInputNumber
-    v-model="value"
-    variant="subtle"
-    color="neutral"
-    :highlight="false"
-  />
+  <UInputNumber v-model="value" variant="subtle" color="neutral" :highlight="false" />
 </template>
 ```
 
@@ -327,7 +319,7 @@ Use the `size` prop to change the size of the InputNumber.
 
 ```vue
 <script setup lang="ts">
-const value = ref(5);
+const value = ref(5)
 </script>
 
 <template>
@@ -341,7 +333,7 @@ Use the `disabled` prop to disable the InputNumber.
 
 ```vue
 <script setup lang="ts">
-const value = ref(5);
+const value = ref(5)
 </script>
 
 <template>
@@ -351,27 +343,23 @@ const value = ref(5);
 
 ### Increment / Decrement
 
-Use the `increment` and `decrement` props to customize the increment and decrement buttons with any [Button](https://ui.nuxt.com/docs/components/button) props. Defaults to `{ variant: 'link' }`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}.
+Use the `increment` and `decrement` props to customize the increment and decrement buttons with any [Button](https://ui.nuxt.com/docs/components/button) props. Defaults to `{ variant: 'link' }`.
 
 ```vue
 <script setup lang="ts">
-const value = ref(5);
+const value = ref(5)
 </script>
 
 <template>
-  <UInputNumber
-    v-model="value"
-    :increment="{
-      color: 'neutral',
-      variant: 'solid',
-      size: 'xs',
-    }"
-    :decrement="{
-      color: 'neutral',
-      variant: 'solid',
-      size: 'xs',
-    }"
-  />
+  <UInputNumber v-model="value" :increment="{
+  color: 'neutral',
+  variant: 'solid',
+  size: 'xs'
+}" :decrement="{
+  color: 'neutral',
+  variant: 'solid',
+  size: 'xs'
+}" />
 </template>
 ```
 
@@ -381,15 +369,11 @@ Use the `increment-icon` and `decrement-icon` props to customize the buttons [Ic
 
 ```vue
 <script setup lang="ts">
-const value = ref(5);
+const value = ref(5)
 </script>
 
 <template>
-  <UInputNumber
-    v-model="value"
-    increment-icon="i-lucide-arrow-right"
-    decrement-icon="i-lucide-arrow-left"
-  />
+  <UInputNumber v-model="value" increment-icon="i-lucide-arrow-right" decrement-icon="i-lucide-arrow-left" />
 </template>
 ```
 
@@ -401,7 +385,7 @@ Use the `format-options` prop to customize the format of the value.
 
 ```vue [InputNumberDecimalExample.vue]
 <script setup lang="ts">
-const value = ref(5);
+const value = ref(5)
 </script>
 
 <template>
@@ -409,7 +393,7 @@ const value = ref(5);
     v-model="value"
     :format-options="{
       signDisplay: 'exceptZero',
-      minimumFractionDigits: 1,
+      minimumFractionDigits: 1
     }"
   />
 </template>
@@ -421,7 +405,7 @@ Use the `format-options` prop with `style: 'percent'` to customize the format of
 
 ```vue [InputNumberPercentageExample.vue]
 <script setup lang="ts">
-const value = ref(0.05);
+const value = ref(0.05)
 </script>
 
 <template>
@@ -429,7 +413,7 @@ const value = ref(0.05);
     v-model="value"
     :step="0.01"
     :format-options="{
-      style: 'percent',
+      style: 'percent'
     }"
   />
 </template>
@@ -441,7 +425,7 @@ Use the `format-options` prop with `style: 'currency'` to customize the format o
 
 ```vue [InputNumberCurrencyExample.vue]
 <script setup lang="ts">
-const value = ref(1500);
+const value = ref(1500)
 </script>
 
 <template>
@@ -451,7 +435,7 @@ const value = ref(1500);
       style: 'currency',
       currency: 'EUR',
       currencyDisplay: 'code',
-      currencySign: 'accounting',
+      currencySign: 'accounting'
     }"
   />
 </template>
@@ -463,11 +447,15 @@ You can use the `increment` and `decrement` props to control visibility of the b
 
 ```vue [InputNumberWithoutButtonsExample.vue]
 <script setup lang="ts">
-const value = ref(5);
+const value = ref(5)
 </script>
 
 <template>
-  <UInputNumber v-model="value" :increment="false" :decrement="false" />
+  <UInputNumber
+    v-model="value"
+    :increment="false"
+    :decrement="false"
+  />
 </template>
 ```
 
@@ -477,7 +465,7 @@ You can use the InputNumber within a [FormField](https://ui.nuxt.com/docs/compon
 
 ```vue [InputNumberFormFieldExample.vue]
 <script setup lang="ts">
-const retries = ref(0);
+const retries = ref(0)
 </script>
 
 <template>
@@ -493,7 +481,7 @@ Use the `#increment` and `#decrement` slots to customize the buttons.
 
 ```vue [InputNumberSlotsExample.vue]
 <script setup lang="ts">
-const value = ref(5);
+const value = ref(5)
 </script>
 
 <template>

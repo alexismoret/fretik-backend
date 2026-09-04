@@ -208,13 +208,19 @@ interface CommandPaletteEmits {
 }
 ```
 
+## Composition
+
+Parts placed by name: `#empty`, `#back`, `#close`, `#item`, `#item-leading`, `#item-label`, `#item-description`, `#item-trailing`, `#group-label`.
+
+Also written in the docs and absent from the interface above — one per column or item: `#content`, `#trailing`, `#users-leading`, `#billing-label`.
+
 ## Usage
 
 Use the `v-model` directive to control the value of the CommandPalette or the `default-value` prop to set the initial value when you do not need to control its state.
 
 ```vue
 <script setup lang="ts">
-import type { CommandPaletteGroup } from "@nuxt/ui";
+import type { CommandPaletteGroup } from '@nuxt/ui'
 
 const groups = ref<CommandPaletteGroup[]>([
   {
@@ -226,69 +232,69 @@ const groups = ref<CommandPaletteGroup[]>([
         suffix: "benjamincanac",
         avatar: {
           src: "https://github.com/benjamincanac.png",
-          loading: "lazy",
-        },
+          loading: "lazy"
+        }
       },
       {
         label: "Romain Hamel",
         suffix: "romhml",
         avatar: {
           src: "https://github.com/romhml.png",
-          loading: "lazy",
-        },
+          loading: "lazy"
+        }
       },
       {
         label: "Sébastien Chopin",
         suffix: "atinux",
         avatar: {
           src: "https://github.com/atinux.png",
-          loading: "lazy",
-        },
+          loading: "lazy"
+        }
       },
       {
         label: "Hugo Richard",
         suffix: "HugoRCD",
         avatar: {
           src: "https://github.com/HugoRCD.png",
-          loading: "lazy",
-        },
+          loading: "lazy"
+        }
       },
       {
         label: "Sandro Circi",
         suffix: "sandros94",
         avatar: {
           src: "https://github.com/sandros94.png",
-          loading: "lazy",
-        },
+          loading: "lazy"
+        }
       },
       {
         label: "Daniel Roe",
         suffix: "danielroe",
         avatar: {
           src: "https://github.com/danielroe.png",
-          loading: "lazy",
-        },
+          loading: "lazy"
+        }
       },
       {
         label: "Jakub Michálek",
         suffix: "J-Michalek",
         avatar: {
           src: "https://github.com/J-Michalek.png",
-          loading: "lazy",
-        },
+          loading: "lazy"
+        }
       },
       {
         label: "Eugen Istoc",
         suffix: "genu",
         avatar: {
           src: "https://github.com/genu.png",
-          loading: "lazy",
-        },
-      },
-    ],
-  },
-]);
-const value = ref({});
+          loading: "lazy"
+        }
+      }
+    ]
+  }
+])
+const value = ref({})
 </script>
 
 <template>
@@ -296,51 +302,51 @@ const value = ref({});
 </template>
 ```
 
-> \[!TIP]
+> [!TIP]
 > See: #control-selected-items
->
+> 
 > You can also use the `@update:model-value` event to listen to the selected item(s).
 
 ### Groups
 
 The CommandPalette component filters groups and ranks matching commands by relevance as users type. It provides dynamic, instant search results for efficient command discovery. Use the `groups` prop as an array of objects with the following properties:
 
-- `id: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `label?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `slot?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `items?: CommandPaletteItem[]`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- [`ignoreFilter?: boolean`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}](https://ui.nuxt.com/#with-ignore-filter)
-- [`postFilter?: (searchTerm: string, items: T[]) => T[]`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}](https://ui.nuxt.com/#with-post-filtered-items)
-- `highlightedIcon?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
+- `id: string`
+- `label?: string`
+- `slot?: string`
+- `items?: CommandPaletteItem[]`
+- [`ignoreFilter?: boolean`](#with-ignore-filter)
+- [`postFilter?: (searchTerm: string, items: T[]) => T[]`](#with-post-filtered-items)
+- `highlightedIcon?: string`
 
-> \[!CAUTION]
->
+> [!CAUTION]
+> 
 > You must provide an `id` for each group otherwise the group will be ignored.
 
 Each group contains an `items` array of objects that define the commands. Each item can have the following properties:
 
-- `prefix?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `label?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `suffix?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `icon?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `avatar?: AvatarProps`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `chip?: ChipProps`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `kbds?: string[] | KbdProps[]`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `active?: boolean`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `loading?: boolean`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `disabled?: boolean`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- [`slot?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}](https://ui.nuxt.com/#with-custom-slot)
-- `placeholder?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `children?: CommandPaletteItem[]`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `onSelect?: (e: Event) => void`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `class?: any`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `ui?: { item?: ClassNameValue, itemLeadingIcon?: ClassNameValue, itemLeadingAvatarSize?: ClassNameValue, itemLeadingAvatar?: ClassNameValue, itemLeadingChipSize?: ClassNameValue, itemLeadingChip?: ClassNameValue, itemLabel?: ClassNameValue, itemLabelPrefix?: ClassNameValue, itemLabelBase?: ClassNameValue, itemLabelSuffix?: ClassNameValue, itemTrailing?: ClassNameValue, itemTrailingKbds?: ClassNameValue, itemTrailingKbdsSize?: ClassNameValue, itemTrailingHighlightedIcon?: ClassNameValue, itemTrailingIcon?: ClassNameValue }`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
+- `prefix?: string`
+- `label?: string`
+- `suffix?: string`
+- `icon?: string`
+- `avatar?: AvatarProps`
+- `chip?: ChipProps`
+- `kbds?: string[] | KbdProps[]`
+- `active?: boolean`
+- `loading?: boolean`
+- `disabled?: boolean`
+- [`slot?: string`](#with-custom-slot)
+- `placeholder?: string`
+- `children?: CommandPaletteItem[]`
+- `onSelect?: (e: Event) => void`
+- `class?: any`
+- `ui?: { item?: ClassNameValue, itemLeadingIcon?: ClassNameValue, itemLeadingAvatarSize?: ClassNameValue, itemLeadingAvatar?: ClassNameValue, itemLeadingChipSize?: ClassNameValue, itemLeadingChip?: ClassNameValue, itemLabel?: ClassNameValue, itemLabelPrefix?: ClassNameValue, itemLabelBase?: ClassNameValue, itemLabelSuffix?: ClassNameValue, itemTrailing?: ClassNameValue, itemTrailingKbds?: ClassNameValue, itemTrailingKbdsSize?: ClassNameValue, itemTrailingHighlightedIcon?: ClassNameValue, itemTrailingIcon?: ClassNameValue }`
 
 You can pass any property from the [Link](https://ui.nuxt.com/docs/components/link#props) component such as `to`, `target`, etc.
 
 ```vue
 <script setup lang="ts">
-import type { CommandPaletteGroup } from "@nuxt/ui";
+import type { CommandPaletteGroup } from '@nuxt/ui'
 
 const groups = ref<CommandPaletteGroup[]>([
   {
@@ -352,69 +358,69 @@ const groups = ref<CommandPaletteGroup[]>([
         suffix: "benjamincanac",
         avatar: {
           src: "https://github.com/benjamincanac.png",
-          loading: "lazy",
-        },
+          loading: "lazy"
+        }
       },
       {
         label: "Romain Hamel",
         suffix: "romhml",
         avatar: {
           src: "https://github.com/romhml.png",
-          loading: "lazy",
-        },
+          loading: "lazy"
+        }
       },
       {
         label: "Sébastien Chopin",
         suffix: "atinux",
         avatar: {
           src: "https://github.com/atinux.png",
-          loading: "lazy",
-        },
+          loading: "lazy"
+        }
       },
       {
         label: "Hugo Richard",
         suffix: "HugoRCD",
         avatar: {
           src: "https://github.com/HugoRCD.png",
-          loading: "lazy",
-        },
+          loading: "lazy"
+        }
       },
       {
         label: "Sandro Circi",
         suffix: "sandros94",
         avatar: {
           src: "https://github.com/sandros94.png",
-          loading: "lazy",
-        },
+          loading: "lazy"
+        }
       },
       {
         label: "Daniel Roe",
         suffix: "danielroe",
         avatar: {
           src: "https://github.com/danielroe.png",
-          loading: "lazy",
-        },
+          loading: "lazy"
+        }
       },
       {
         label: "Jakub Michálek",
         suffix: "J-Michalek",
         avatar: {
           src: "https://github.com/J-Michalek.png",
-          loading: "lazy",
-        },
+          loading: "lazy"
+        }
       },
       {
         label: "Eugen Istoc",
         suffix: "genu",
         avatar: {
           src: "https://github.com/genu.png",
-          loading: "lazy",
-        },
-      },
-    ],
-  },
-]);
-const value = ref({});
+          loading: "lazy"
+        }
+      }
+    ]
+  }
+])
+const value = ref({})
 </script>
 
 <template>
@@ -422,9 +428,9 @@ const value = ref({});
 </template>
 ```
 
-> \[!TIP]
+> [!TIP]
 > See: #with-children-in-items
->
+> 
 > Each item can take a `children` array of objects with the following properties to create submenus:
 
 ### Multiple
@@ -441,140 +447,152 @@ You can control the selected item(s) by using the `default-value` prop or the `v
 
 ```vue [CommandPaletteSelectExample.vue]
 <script setup lang="ts">
-const toast = useToast();
+const toast = useToast()
 
 const groups = ref([
   {
-    id: "users",
-    label: "Users",
+    id: 'users',
+    label: 'Users',
     items: [
       {
-        label: "Benjamin Canac",
-        suffix: "benjamincanac",
-        to: "https://github.com/benjamincanac",
-        target: "_blank",
+        label: 'Benjamin Canac',
+        suffix: 'benjamincanac',
+        to: 'https://github.com/benjamincanac',
+        target: '_blank',
         avatar: {
-          src: "https://github.com/benjamincanac.png",
-          loading: "lazy" as const,
-        },
+          src: 'https://github.com/benjamincanac.png',
+          loading: 'lazy' as const
+        }
       },
       {
-        label: "Romain Hamel",
-        suffix: "romhml",
-        to: "https://github.com/romhml",
-        target: "_blank",
+        label: 'Romain Hamel',
+        suffix: 'romhml',
+        to: 'https://github.com/romhml',
+        target: '_blank',
         avatar: {
-          src: "https://github.com/romhml.png",
-          loading: "lazy" as const,
-        },
+          src: 'https://github.com/romhml.png',
+          loading: 'lazy' as const
+        }
       },
       {
-        label: "Sébastien Chopin",
-        suffix: "atinux",
-        to: "https://github.com/atinux",
-        target: "_blank",
+        label: 'Sébastien Chopin',
+        suffix: 'atinux',
+        to: 'https://github.com/atinux',
+        target: '_blank',
         avatar: {
-          src: "https://github.com/atinux.png",
-          loading: "lazy" as const,
-        },
+          src: 'https://github.com/atinux.png',
+          loading: 'lazy' as const
+        }
       },
       {
-        label: "Hugo Richard",
-        suffix: "HugoRCD",
-        to: "https://github.com/HugoRCD",
-        target: "_blank",
+        label: 'Hugo Richard',
+        suffix: 'HugoRCD',
+        to: 'https://github.com/HugoRCD',
+        target: '_blank',
         avatar: {
-          src: "https://github.com/HugoRCD.png",
-          loading: "lazy" as const,
-        },
+          src: 'https://github.com/HugoRCD.png',
+          loading: 'lazy' as const
+        }
       },
       {
-        label: "Sandro Circi",
-        suffix: "sandros94",
-        to: "https://github.com/sandros94",
-        target: "_blank",
+        label: 'Sandro Circi',
+        suffix: 'sandros94',
+        to: 'https://github.com/sandros94',
+        target: '_blank',
         avatar: {
-          src: "https://github.com/sandros94.png",
-          loading: "lazy" as const,
-        },
+          src: 'https://github.com/sandros94.png',
+          loading: 'lazy' as const
+        }
       },
       {
-        label: "Daniel Roe",
-        suffix: "danielroe",
-        to: "https://github.com/danielroe",
-        target: "_blank",
+        label: 'Daniel Roe',
+        suffix: 'danielroe',
+        to: 'https://github.com/danielroe',
+        target: '_blank',
         avatar: {
-          src: "https://github.com/danielroe.png",
-          loading: "lazy" as const,
-        },
+          src: 'https://github.com/danielroe.png',
+          loading: 'lazy' as const
+        }
       },
       {
-        label: "Jakub Michálek",
-        suffix: "J-Michalek",
-        to: "https://github.com/J-Michalek",
-        target: "_blank",
+        label: 'Jakub Michálek',
+        suffix: 'J-Michalek',
+        to: 'https://github.com/J-Michalek',
+        target: '_blank',
         avatar: {
-          src: "https://github.com/J-Michalek.png",
-          loading: "lazy" as const,
-        },
+          src: 'https://github.com/J-Michalek.png',
+          loading: 'lazy' as const
+        }
       },
       {
-        label: "Eugen Istoc",
-        suffix: "genu",
-        to: "https://github.com/genu",
-        target: "_blank",
+        label: 'Eugen Istoc',
+        suffix: 'genu',
+        to: 'https://github.com/genu',
+        target: '_blank',
         avatar: {
-          src: "https://github.com/genu.png",
-          loading: "lazy" as const,
-        },
-      },
-    ],
+          src: 'https://github.com/genu.png',
+          loading: 'lazy' as const
+        }
+      }
+    ]
   },
   {
-    id: "actions",
+    id: 'actions',
     items: [
       {
-        label: "Add new file",
-        suffix: "Create a new file in the current directory or workspace.",
-        icon: "i-lucide-file-plus",
-        kbds: ["meta", "N"],
+        label: 'Add new file',
+        suffix: 'Create a new file in the current directory or workspace.',
+        icon: 'i-lucide-file-plus',
+        kbds: [
+          'meta',
+          'N'
+        ],
         onSelect() {
-          toast.add({ title: "Add new file" });
-        },
+          toast.add({ title: 'Add new file' })
+        }
       },
       {
-        label: "Add new folder",
-        suffix: "Create a new folder in the current directory or workspace.",
-        icon: "i-lucide-folder-plus",
-        kbds: ["meta", "F"],
+        label: 'Add new folder',
+        suffix: 'Create a new folder in the current directory or workspace.',
+        icon: 'i-lucide-folder-plus',
+        kbds: [
+          'meta',
+          'F'
+        ],
         onSelect() {
-          toast.add({ title: "Add new folder" });
-        },
+          toast.add({ title: 'Add new folder' })
+        }
       },
       {
-        label: "Add hashtag",
-        suffix: "Add a hashtag to the current item.",
-        icon: "i-lucide-hash",
-        kbds: ["meta", "H"],
+        label: 'Add hashtag',
+        suffix: 'Add a hashtag to the current item.',
+        icon: 'i-lucide-hash',
+        kbds: [
+          'meta',
+          'H'
+        ],
         onSelect() {
-          toast.add({ title: "Add hashtag" });
-        },
+          toast.add({ title: 'Add hashtag' })
+        }
       },
       {
-        label: "Add label",
-        suffix: "Add a label to the current item.",
-        icon: "i-lucide-tag",
-        kbds: ["meta", "L"],
+        label: 'Add label',
+        suffix: 'Add a label to the current item.',
+        icon: 'i-lucide-tag',
+        kbds: [
+          'meta',
+          'L'
+        ],
         onSelect() {
-          toast.add({ title: "Add label" });
-        },
-      },
-    ],
-  },
-]);
+          toast.add({ title: 'Add label' })
+        }
+      }
+    ]
+  }
+])
 
 function onSelect(item: any) {
-  console.log(item);
+  console.log(item)
 }
 </script>
 

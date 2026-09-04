@@ -21,15 +21,7 @@ interface CheckboxProps {
   /**
    * @default 'primary'
    */
-  color?:
-    | "primary"
-    | "secondary"
-    | "success"
-    | "info"
-    | "warning"
-    | "error"
-    | "neutral"
-    | undefined;
+  color?: "primary" | "secondary" | "success" | "info" | "warning" | "error" | "neutral" | undefined;
   /**
    * @default 'list'
    */
@@ -58,18 +50,7 @@ interface CheckboxProps {
    * @default appConfig.ui.icons.minus
    */
   indeterminateIcon?: any;
-  ui?:
-    | {
-        root?: SlotClass;
-        container?: SlotClass;
-        base?: SlotClass;
-        indicator?: SlotClass;
-        icon?: SlotClass;
-        wrapper?: SlotClass;
-        label?: SlotClass;
-        description?: SlotClass;
-      }
-    | undefined;
+  ui?: { root?: SlotClass; container?: SlotClass; base?: SlotClass; indicator?: SlotClass; icon?: SlotClass; wrapper?: SlotClass; label?: SlotClass; description?: SlotClass; } | undefined;
   /**
    * When `true`, prevents the user from interacting with the checkbox
    */
@@ -117,9 +98,9 @@ interface CheckboxProps {
 }
 ```
 
-> \[!NOTE]
-> See: https\://developer.mozilla.org/en-US/docs/Web/HTML/Element/button#attributes
->
+> [!NOTE]
+> See: https://developer.mozilla.org/en-US/docs/Web/HTML/Element/button#attributes
+> 
 > This component also supports all native `<button>` HTML attributes.
 
 ### Slots
@@ -152,7 +133,7 @@ Use the `v-model` directive to control the checked state of the Checkbox.
 
 ```vue
 <script setup lang="ts">
-const value = ref(true);
+const value = ref(true)
 </script>
 
 <template>
@@ -170,7 +151,7 @@ Use the `default-value` prop to set the initial value when you do not need to co
 
 ### Indeterminate
 
-Use the `indeterminate` value in the `v-model` directive or `default-value` prop to set the Checkbox to an [indeterminate state](https://developer.mozilla.org/en-US/docs/Web/HTML/Element/input/checkbox#indeterminate_state_checkboxes){rel="&#x22;nofollow&#x22;"}.
+Use the `indeterminate` value in the `v-model` directive or `default-value` prop to set the Checkbox to an [indeterminate state](https://developer.mozilla.org/en-US/docs/Web/HTML/Element/input/checkbox#indeterminate_state_checkboxes).
 
 ```vue
 <template>
@@ -190,16 +171,16 @@ Use the `indeterminate-icon` prop to customize the indeterminate icon. Defaults 
 
 **Nuxt:**
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/getting-started/integrations/icons/nuxt#theme
->
+> 
 > You can customize this icon globally in your `app.config.ts` under `ui.icons.minus` key.
 
 **Vue:**
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/getting-started/integrations/icons/vue#theme
->
+> 
 > You can customize this icon globally in your `vite.config.ts` under `ui.icons.minus` key.
 
 ### Label
@@ -242,16 +223,16 @@ Use the `icon` prop to set the icon of the Checkbox when it is checked. Defaults
 
 **Nuxt:**
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/getting-started/integrations/icons/nuxt#theme
->
+> 
 > You can customize this icon globally in your `app.config.ts` under `ui.icons.check` key.
 
 **Vue:**
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/getting-started/integrations/icons/vue#theme
->
+> 
 > You can customize this icon globally in your `vite.config.ts` under `ui.icons.check` key.
 
 ### Color
@@ -288,19 +269,13 @@ Use the `size` prop to change the size of the Checkbox.
 
 Use the `indicator` prop to change the position or hide the indicator. Defaults to `start`.
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > When `indicator` is `hidden`, the icon is displayed above the label instead.
 
 ```vue
 <template>
-  <UCheckbox
-    indicator="hidden"
-    variant="card"
-    icon="i-lucide-heart"
-    default-value
-    label="Check me"
-  />
+  <UCheckbox indicator="hidden" variant="card" icon="i-lucide-heart" default-value label="Check me" />
 </template>
 ```
 

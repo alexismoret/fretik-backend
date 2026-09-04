@@ -23,50 +23,15 @@ interface AvatarProps {
   /**
    * @default 'md'
    */
-  size?:
-    | "md"
-    | "xs"
-    | "sm"
-    | "lg"
-    | "xl"
-    | "3xs"
-    | "2xs"
-    | "2xl"
-    | "3xl"
-    | undefined;
+  size?: "md" | "xs" | "sm" | "lg" | "xl" | "3xs" | "2xs" | "2xl" | "3xl" | undefined;
   /**
    * @default 'neutral'
    */
-  color?:
-    | "error"
-    | "primary"
-    | "secondary"
-    | "success"
-    | "info"
-    | "warning"
-    | "neutral"
-    | undefined;
+  color?: "error" | "primary" | "secondary" | "success" | "info" | "warning" | "neutral" | undefined;
   chip?: boolean | ChipProps | undefined;
-  ui?:
-    | {
-        root?: SlotClass;
-        image?: SlotClass;
-        fallback?: SlotClass;
-        icon?: SlotClass;
-      }
-    | undefined;
+  ui?: { root?: SlotClass; image?: SlotClass; fallback?: SlotClass; icon?: SlotClass; } | undefined;
   loading?: "lazy" | "eager" | undefined;
-  referrerpolicy?:
-    | ""
-    | "no-referrer"
-    | "no-referrer-when-downgrade"
-    | "origin"
-    | "origin-when-cross-origin"
-    | "same-origin"
-    | "strict-origin"
-    | "strict-origin-when-cross-origin"
-    | "unsafe-url"
-    | undefined;
+  referrerpolicy?: "" | "no-referrer" | "no-referrer-when-downgrade" | "origin" | "origin-when-cross-origin" | "same-origin" | "strict-origin" | "strict-origin-when-cross-origin" | "unsafe-url" | undefined;
   decoding?: "async" | "auto" | "sync" | undefined;
   height?: string | number | undefined;
   sizes?: string | undefined;
@@ -77,14 +42,14 @@ interface AvatarProps {
 }
 ```
 
-> \[!NOTE]
-> See: https\://developer.mozilla.org/en-US/docs/Web/HTML/Element/img#attributes
->
+> [!NOTE]
+> See: https://developer.mozilla.org/en-US/docs/Web/HTML/Element/img#attributes
+> 
 > This component also supports all native `<img>` HTML attributes.
 
 ## Usage
 
-The Avatar uses the `<NuxtImg>` component when [`@nuxt/image`](https://github.com/nuxt/image){rel="&#x22;nofollow&#x22;"} is installed, falling back to `img` otherwise.
+The Avatar uses the `<NuxtImg>` component when [`@nuxt/image`](https://github.com/nuxt/image) is installed, falling back to `img` otherwise.
 
 ```vue
 <template>
@@ -92,12 +57,12 @@ The Avatar uses the `<NuxtImg>` component when [`@nuxt/image`](https://github.co
 </template>
 ```
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > You can pass any property from the HTML `<img>` element such as `alt`, `loading`, etc.
 
-> \[!TIP]
->
+> [!TIP]
+> 
 > To opt-out of `@nuxt/image`, use the `as` prop: `:as="{ img: 'img' }"`.
 
 ### Src
@@ -116,16 +81,12 @@ Use the `size` prop to set the size of the Avatar.
 
 ```vue
 <template>
-  <UAvatar
-    src="https://github.com/benjamincanac.png"
-    size="xl"
-    loading="lazy"
-  />
+  <UAvatar src="https://github.com/benjamincanac.png" size="xl" loading="lazy" />
 </template>
 ```
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > The `<img>` element's `width` and `height` are automatically set based on the `size` prop.
 
 ### Icon
@@ -158,8 +119,8 @@ When no icon or text is provided, the **initials** of the `alt` prop is used as 
 </template>
 ```
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > The `alt` prop is passed to the `img` element as the `alt` attribute.
 
 ### Color `4.8+`
@@ -178,13 +139,9 @@ Use the `chip` prop to display a chip around the Avatar.
 
 ```vue
 <template>
-  <UAvatar
-    src="https://github.com/benjamincanac.png"
-    loading="lazy"
-    :chip="{
-      inset: true,
-    }"
-  />
+  <UAvatar src="https://github.com/benjamincanac.png" loading="lazy" :chip="{
+  inset: true
+}" />
 </template>
 ```
 
@@ -212,12 +169,7 @@ You can use a CSS mask to display an Avatar with a custom shape instead of a sim
 
 ```vue [AvatarMaskExample.vue]
 <template>
-  <UAvatar
-    class="rounded-none squircle"
-    src="https://avatars.githubusercontent.com/u/739984?v=4"
-    alt="Benjamin Canac"
-    loading="lazy"
-  />
+  <UAvatar class="rounded-none squircle" src="https://avatars.githubusercontent.com/u/739984?v=4" alt="Benjamin Canac" loading="lazy" />
 </template>
 
 <style>

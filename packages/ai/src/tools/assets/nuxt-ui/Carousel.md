@@ -174,11 +174,11 @@ interface CarouselEmits {
 
 ### Expose
 
-You can access the typed component instance using [`useTemplateRef`](https://vuejs.org/api/composition-api-helpers.html#usetemplateref){rel="&#x22;nofollow&#x22;"}.
+You can access the typed component instance using [`useTemplateRef`](https://vuejs.org/api/composition-api-helpers.html#usetemplateref).
 
 ```vue
 <script setup lang="ts">
-const carousel = useTemplateRef("carousel");
+const carousel = useTemplateRef('carousel')
 </script>
 
 <template>
@@ -188,10 +188,10 @@ const carousel = useTemplateRef("carousel");
 
 This will give you access to the following:
 
-| Name                                                                                                                           | Type                    |
-| ------------------------------------------------------------------------------------------------------------------------------ | ----------------------- |
-| `emblaRef`{.language-ts-type.shiki.shiki-themes.material-theme-lighter.material-theme.material-theme-palenight lang="ts-type"} | `Ref<HTMLElement        | null>`{.language-ts-type.shiki.shiki-themes.material-theme-lighter.material-theme.material-theme-palenight lang="ts-type"}                                                                                             |
-| `emblaApi`{.language-ts-type.shiki.shiki-themes.material-theme-lighter.material-theme.material-theme-palenight lang="ts-type"} | [`Ref<EmblaCarouselType | null>`{.language-ts-type.shiki.shiki-themes.material-theme-lighter.material-theme.material-theme-palenight lang="ts-type"}](https://www.embla-carousel.com/docs/v8/api/methods#typescript){rel="&#x22;nofollow&#x22;"} |
+| Name | Type |
+| --- | --- |
+| `emblaRef` | `Ref<HTMLElement \| null>` |
+| `emblaApi` | [`Ref<EmblaCarouselType \| null>`](https://www.embla-carousel.com/docs/v8/api/methods#typescript) |
 
 ## Usage
 
@@ -200,13 +200,13 @@ Use the Carousel component to display a list of items in a carousel.
 ```vue [CarouselExample.vue]
 <script setup lang="ts">
 const items = [
-  "https://picsum.photos/640/640?random=1",
-  "https://picsum.photos/640/640?random=2",
-  "https://picsum.photos/640/640?random=3",
-  "https://picsum.photos/640/640?random=4",
-  "https://picsum.photos/640/640?random=5",
-  "https://picsum.photos/640/640?random=6",
-];
+  'https://picsum.photos/640/640?random=1',
+  'https://picsum.photos/640/640?random=2',
+  'https://picsum.photos/640/640?random=3',
+  'https://picsum.photos/640/640?random=4',
+  'https://picsum.photos/640/640?random=5',
+  'https://picsum.photos/640/640?random=6'
+]
 </script>
 
 <template>
@@ -223,16 +223,16 @@ const items = [
       item: 'basis-1/3 ps-0',
       prev: 'sm:start-8',
       next: 'sm:end-8',
-      container: 'ms-0',
+      container: 'ms-0'
     }"
   >
-    <img :src="item" width="320" height="320" />
+    <img :src="item" width="320" height="320">
   </UCarousel>
 </template>
 ```
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > Use your mouse to drag the carousel horizontally on desktop.
 
 ### Items
@@ -242,56 +242,44 @@ Use the `items` prop as an array and render each item using the default slot:
 ```vue [CarouselItemsExample.vue]
 <script setup lang="ts">
 const items = [
-  "https://picsum.photos/640/640?random=1",
-  "https://picsum.photos/640/640?random=2",
-  "https://picsum.photos/640/640?random=3",
-  "https://picsum.photos/640/640?random=4",
-  "https://picsum.photos/640/640?random=5",
-  "https://picsum.photos/640/640?random=6",
-];
+  'https://picsum.photos/640/640?random=1',
+  'https://picsum.photos/640/640?random=2',
+  'https://picsum.photos/640/640?random=3',
+  'https://picsum.photos/640/640?random=4',
+  'https://picsum.photos/640/640?random=5',
+  'https://picsum.photos/640/640?random=6'
+]
 </script>
 
 <template>
   <UCarousel v-slot="{ item }" :items="items" class="w-full max-w-xs mx-auto">
-    <img
-      :src="item"
-      width="320"
-      height="320"
-      class="rounded-lg"
-      loading="lazy"
-    />
+    <img :src="item" width="320" height="320" class="rounded-lg" loading="lazy">
   </UCarousel>
 </template>
 ```
 
 You can also pass an array of objects with the following properties:
 
-- `class?: any`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `ui?: { item?: ClassNameValue }`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
+- `class?: any`
+- `ui?: { item?: ClassNameValue }`
 
-You can control how many items are visible by using the [`basis`](https://tailwindcss.com/docs/flex-basis){rel="&#x22;nofollow&#x22;"} / [`width`](https://tailwindcss.com/docs/width){rel="&#x22;nofollow&#x22;"} utility classes on the `item`:
+You can control how many items are visible by using the [`basis`](https://tailwindcss.com/docs/flex-basis) / [`width`](https://tailwindcss.com/docs/width) utility classes on the `item`:
 
 ```vue [CarouselItemsMultipleExample.vue]
 <script setup lang="ts">
 const items = [
-  "https://picsum.photos/468/468?random=1",
-  "https://picsum.photos/468/468?random=2",
-  "https://picsum.photos/468/468?random=3",
-  "https://picsum.photos/468/468?random=4",
-  "https://picsum.photos/468/468?random=5",
-  "https://picsum.photos/468/468?random=6",
-];
+  'https://picsum.photos/468/468?random=1',
+  'https://picsum.photos/468/468?random=2',
+  'https://picsum.photos/468/468?random=3',
+  'https://picsum.photos/468/468?random=4',
+  'https://picsum.photos/468/468?random=5',
+  'https://picsum.photos/468/468?random=6'
+]
 </script>
 
 <template>
   <UCarousel v-slot="{ item }" :items="items" :ui="{ item: 'basis-1/3' }">
-    <img
-      :src="item"
-      width="234"
-      height="234"
-      class="rounded-lg"
-      loading="lazy"
-    />
+    <img :src="item" width="234" height="234" class="rounded-lg" loading="lazy">
   </UCarousel>
 </template>
 ```
@@ -300,20 +288,20 @@ const items = [
 
 Use the `orientation` prop to change the orientation of the Progress. Defaults to `horizontal`.
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > Use your mouse to drag the carousel vertically on desktop.
 
 ```vue [CarouselOrientationExample.vue]
 <script setup lang="ts">
 const items = [
-  "https://picsum.photos/640/640?random=1",
-  "https://picsum.photos/640/640?random=2",
-  "https://picsum.photos/640/640?random=3",
-  "https://picsum.photos/640/640?random=4",
-  "https://picsum.photos/640/640?random=5",
-  "https://picsum.photos/640/640?random=6",
-];
+  'https://picsum.photos/640/640?random=1',
+  'https://picsum.photos/640/640?random=2',
+  'https://picsum.photos/640/640?random=3',
+  'https://picsum.photos/640/640?random=4',
+  'https://picsum.photos/640/640?random=5',
+  'https://picsum.photos/640/640?random=6'
+]
 </script>
 
 <template>
@@ -324,19 +312,13 @@ const items = [
     :ui="{ container: 'h-[336px]' }"
     class="w-full max-w-xs mx-auto"
   >
-    <img
-      :src="item"
-      width="320"
-      height="320"
-      class="rounded-lg"
-      loading="lazy"
-    />
+    <img :src="item" width="320" height="320" class="rounded-lg" loading="lazy">
   </UCarousel>
 </template>
 ```
 
-> \[!CAUTION]
->
+> [!CAUTION]
+> 
 > You need to specify a `height` on the container in vertical orientation.
 
 ### Arrows
@@ -346,29 +328,18 @@ Use the `arrows` prop to display prev and next buttons.
 ```vue [CarouselArrowsExample.vue]
 <script setup lang="ts">
 const items = [
-  "https://picsum.photos/640/640?random=1",
-  "https://picsum.photos/640/640?random=2",
-  "https://picsum.photos/640/640?random=3",
-  "https://picsum.photos/640/640?random=4",
-  "https://picsum.photos/640/640?random=5",
-  "https://picsum.photos/640/640?random=6",
-];
+  'https://picsum.photos/640/640?random=1',
+  'https://picsum.photos/640/640?random=2',
+  'https://picsum.photos/640/640?random=3',
+  'https://picsum.photos/640/640?random=4',
+  'https://picsum.photos/640/640?random=5',
+  'https://picsum.photos/640/640?random=6'
+]
 </script>
 
 <template>
-  <UCarousel
-    v-slot="{ item }"
-    arrows
-    :items="items"
-    class="w-full max-w-xs mx-auto"
-  >
-    <img
-      :src="item"
-      width="320"
-      height="320"
-      class="rounded-lg"
-      loading="lazy"
-    />
+  <UCarousel v-slot="{ item }" arrows :items="items" class="w-full max-w-xs mx-auto">
+    <img :src="item" width="320" height="320" class="rounded-lg" loading="lazy">
   </UCarousel>
 </template>
 ```
@@ -380,13 +351,13 @@ Use the `prev` and `next` props to customize the prev and next buttons with any 
 ```vue [CarouselPrevNextExample.vue]
 <script setup lang="ts">
 const items = [
-  "https://picsum.photos/640/640?random=1",
-  "https://picsum.photos/640/640?random=2",
-  "https://picsum.photos/640/640?random=3",
-  "https://picsum.photos/640/640?random=4",
-  "https://picsum.photos/640/640?random=5",
-  "https://picsum.photos/640/640?random=6",
-];
+  'https://picsum.photos/640/640?random=1',
+  'https://picsum.photos/640/640?random=2',
+  'https://picsum.photos/640/640?random=3',
+  'https://picsum.photos/640/640?random=4',
+  'https://picsum.photos/640/640?random=5',
+  'https://picsum.photos/640/640?random=6'
+]
 </script>
 
 <template>
@@ -398,13 +369,7 @@ const items = [
     :items="items"
     class="w-full max-w-xs mx-auto"
   >
-    <img
-      :src="item"
-      width="320"
-      height="320"
-      class="rounded-lg"
-      loading="lazy"
-    />
+    <img :src="item" width="320" height="320" class="rounded-lg" loading="lazy">
   </UCarousel>
 </template>
 ```
@@ -416,18 +381,18 @@ Use the `prev-icon` and `next-icon` props to customize the buttons [Icon](https:
 ```vue [CarouselPrevNextIconExample.vue]
 <script setup lang="ts">
 defineProps<{
-  prevIcon?: string;
-  nextIcon?: string;
-}>();
+  prevIcon?: string
+  nextIcon?: string
+}>()
 
 const items = [
-  "https://picsum.photos/640/640?random=1",
-  "https://picsum.photos/640/640?random=2",
-  "https://picsum.photos/640/640?random=3",
-  "https://picsum.photos/640/640?random=4",
-  "https://picsum.photos/640/640?random=5",
-  "https://picsum.photos/640/640?random=6",
-];
+  'https://picsum.photos/640/640?random=1',
+  'https://picsum.photos/640/640?random=2',
+  'https://picsum.photos/640/640?random=3',
+  'https://picsum.photos/640/640?random=4',
+  'https://picsum.photos/640/640?random=5',
+  'https://picsum.photos/640/640?random=6'
+]
 </script>
 
 <template>
@@ -439,22 +404,16 @@ const items = [
     :items="items"
     class="w-full max-w-xs mx-auto"
   >
-    <img
-      :src="item"
-      width="320"
-      height="320"
-      class="rounded-lg"
-      loading="lazy"
-    />
+    <img :src="item" width="320" height="320" class="rounded-lg" loading="lazy">
   </UCarousel>
 </template>
 ```
 
 **Nuxt:**
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/getting-started/integrations/icons/nuxt#theme
->
+> 
 > You can customize these icons globally in your `app.config.ts` under `ui.icons.arrowLeft` / `ui.icons.arrowRight` key.
 
 _(truncated — ask for fewer components to see more, or rely on the API block above)_
@@ -463,36 +422,36 @@ _(truncated — ask for fewer components to see more, or rely on the API block a
 
 ### With thumbnails
 
-You can use the [`scrollTo`](https://www.embla-carousel.com/docs/v8/api/methods#scrollto){rel="&#x22;nofollow&#x22;"} method on [`emblaApi`](https://ui.nuxt.com/#expose) to display thumbnails under the carousel that navigate to a specific slide.
+You can use the [`scrollTo`](https://www.embla-carousel.com/docs/v8/api/methods#scrollto) method on [`emblaApi`](#expose) to display thumbnails under the carousel that navigate to a specific slide.
 
 ```vue [CarouselThumbnailsExample.vue]
 <script setup lang="ts">
 const items = [
-  "https://picsum.photos/640/640?random=1",
-  "https://picsum.photos/640/640?random=2",
-  "https://picsum.photos/640/640?random=3",
-  "https://picsum.photos/640/640?random=4",
-  "https://picsum.photos/640/640?random=5",
-  "https://picsum.photos/640/640?random=6",
-];
+  'https://picsum.photos/640/640?random=1',
+  'https://picsum.photos/640/640?random=2',
+  'https://picsum.photos/640/640?random=3',
+  'https://picsum.photos/640/640?random=4',
+  'https://picsum.photos/640/640?random=5',
+  'https://picsum.photos/640/640?random=6'
+]
 
-const carousel = useTemplateRef("carousel");
-const activeIndex = ref(0);
+const carousel = useTemplateRef('carousel')
+const activeIndex = ref(0)
 
 function onClickPrev() {
-  activeIndex.value--;
+  activeIndex.value--
 }
 function onClickNext() {
-  activeIndex.value++;
+  activeIndex.value++
 }
 function onSelect(index: number) {
-  activeIndex.value = index;
+  activeIndex.value = index
 }
 
 function select(index: number) {
-  activeIndex.value = index;
+  activeIndex.value = index
 
-  carousel.value?.emblaApi?.scrollTo(index);
+  carousel.value?.emblaApi?.scrollTo(index)
 }
 </script>
 
@@ -508,13 +467,7 @@ function select(index: number) {
       class="w-full max-w-xs mx-auto"
       @select="onSelect"
     >
-      <img
-        :src="item"
-        width="320"
-        height="320"
-        class="rounded-lg"
-        loading="lazy"
-      />
+      <img :src="item" width="320" height="320" class="rounded-lg" loading="lazy">
     </UCarousel>
 
     <div class="flex gap-1 justify-between pt-4 max-w-xs mx-auto">
@@ -525,13 +478,7 @@ function select(index: number) {
         :class="{ 'opacity-100': activeIndex === index }"
         @click="select(index)"
       >
-        <img
-          :src="item"
-          width="44"
-          height="44"
-          class="rounded-lg"
-          loading="lazy"
-        />
+        <img :src="item" width="44" height="44" class="rounded-lg" loading="lazy">
       </div>
     </div>
   </div>

@@ -247,9 +247,9 @@ interface InputMenuProps {
 }
 ```
 
-> \[!NOTE]
-> See: https\://developer.mozilla.org/en-US/docs/Web/HTML/Element/input#attributes
->
+> [!NOTE]
+> See: https://developer.mozilla.org/en-US/docs/Web/HTML/Element/input#attributes
+> 
 > This component also supports all native `<input>` HTML attributes.
 
 ### Slots
@@ -299,10 +299,14 @@ interface InputMenuEmits {
 
 When accessing the component via a template ref, you can use the following:
 
-| Name                                                                                                                              | Type                  |
-| --------------------------------------------------------------------------------------------------------------------------------- | --------------------- |
-| `inputRef`{.language-ts-type.shiki.shiki-themes.material-theme-lighter.material-theme.material-theme-palenight lang="ts-type"}    | `Ref<HTMLInputElement | null>`{.language-ts-type.shiki.shiki-themes.material-theme-lighter.material-theme.material-theme-palenight lang="ts-type"} |
-| `viewportRef`{.language-ts-type.shiki.shiki-themes.material-theme-lighter.material-theme.material-theme-palenight lang="ts-type"} | `Ref<HTMLDivElement   | null>`{.language-ts-type.shiki.shiki-themes.material-theme-lighter.material-theme.material-theme-palenight lang="ts-type"} |
+| Name | Type |
+| --- | --- |
+| `inputRef` | `Ref<HTMLInputElement \| null>` |
+| `viewportRef` | `Ref<HTMLDivElement \| null>` |
+
+## Composition
+
+Parts placed by name: `#empty`, `#item`, `#item-leading`, `#item-label`, `#item-description`, `#item-trailing`, `#tags-item-text`, `#tags-item-delete`, `#content-top`, `#content-bottom`, `#create-item-label`.
 
 ## Usage
 
@@ -310,8 +314,13 @@ Use the `v-model` directive to control the value of the InputMenu or the `defaul
 
 ```vue
 <script setup lang="ts">
-const items = ref(["Backlog", "Todo", "In Progress", "Done"]);
-const value = ref("Backlog");
+const items = ref([
+  "Backlog",
+  "Todo",
+  "In Progress",
+  "Done"
+])
+const value = ref("Backlog")
 </script>
 
 <template>
@@ -319,12 +328,12 @@ const value = ref("Backlog");
 </template>
 ```
 
-> \[!TIP]
->
-> Use this over an [`Input`](https://ui.nuxt.com/docs/components/input) to take advantage of Reka UI's [`Combobox`](https://reka-ui.com/docs/components/combobox){rel="&#x22;nofollow&#x22;"} component that offers autocomplete capabilities.
+> [!TIP]
+> 
+> Use this over an [`Input`](https://ui.nuxt.com/docs/components/input) to take advantage of Reka UI's [`Combobox`](https://reka-ui.com/docs/components/combobox) component that offers autocomplete capabilities.
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > This component is similar to the [`SelectMenu`](https://ui.nuxt.com/docs/components/select-menu) but it's using an Input instead of a Select.
 
 ### Items
@@ -333,8 +342,13 @@ Use the `items` prop as an array of strings, numbers or booleans:
 
 ```vue
 <script setup lang="ts">
-const items = ref(["Backlog", "Todo", "In Progress", "Done"]);
-const value = ref("Backlog");
+const items = ref([
+  "Backlog",
+  "Todo",
+  "In Progress",
+  "Done"
+])
+const value = ref("Backlog")
 </script>
 
 <template>
@@ -344,37 +358,37 @@ const value = ref("Backlog");
 
 You can also pass an array of objects with the following properties:
 
-- `label?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- [`type?: "label" | "separator" | "item"`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}](https://ui.nuxt.com/#with-items-type)
-- [`icon?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}](https://ui.nuxt.com/#with-icons-in-items)
-- [`avatar?: AvatarProps`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}](https://ui.nuxt.com/#with-avatar-in-items)
-- [`chip?: ChipProps`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}](https://ui.nuxt.com/#with-chip-in-items)
-- `disabled?: boolean`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `onSelect?: (e: Event) => void`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `class?: any`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `ui?: { tagsItem?: ClassNameValue, tagsItemText?: ClassNameValue, tagsItemDelete?: ClassNameValue, tagsItemDeleteIcon?: ClassNameValue, label?: ClassNameValue, separator?: ClassNameValue, item?: ClassNameValue, itemLeadingIcon?: ClassNameValue, itemLeadingAvatarSize?: ClassNameValue, itemLeadingAvatar?: ClassNameValue, itemLeadingChip?: ClassNameValue, itemLeadingChipSize?: ClassNameValue, itemLabel?: ClassNameValue, itemTrailing?: ClassNameValue, itemTrailingIcon?: ClassNameValue }`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
+- `label?: string`
+- [`type?: "label" | "separator" | "item"`](#with-items-type)
+- [`icon?: string`](#with-icons-in-items)
+- [`avatar?: AvatarProps`](#with-avatar-in-items)
+- [`chip?: ChipProps`](#with-chip-in-items)
+- `disabled?: boolean`
+- `onSelect?: (e: Event) => void`
+- `class?: any`
+- `ui?: { tagsItem?: ClassNameValue, tagsItemText?: ClassNameValue, tagsItemDelete?: ClassNameValue, tagsItemDeleteIcon?: ClassNameValue, label?: ClassNameValue, separator?: ClassNameValue, item?: ClassNameValue, itemLeadingIcon?: ClassNameValue, itemLeadingAvatarSize?: ClassNameValue, itemLeadingAvatar?: ClassNameValue, itemLeadingChip?: ClassNameValue, itemLeadingChipSize?: ClassNameValue, itemLabel?: ClassNameValue, itemTrailing?: ClassNameValue, itemTrailingIcon?: ClassNameValue }`
 
 ```vue
 <script setup lang="ts">
-import type { InputMenuItem } from "@nuxt/ui";
+import type { InputMenuItem } from '@nuxt/ui'
 
 const items = ref<InputMenuItem[]>([
   {
-    label: "Backlog",
+    label: "Backlog"
   },
   {
-    label: "Todo",
+    label: "Todo"
   },
   {
-    label: "In Progress",
+    label: "In Progress"
   },
   {
-    label: "Done",
-  },
-]);
+    label: "Done"
+  }
+])
 const value = ref({
-  label: "Todo",
-});
+  label: "Todo"
+})
 </script>
 
 <template>
@@ -387,10 +401,22 @@ You can also pass an array of arrays to the `items` prop to display separated gr
 ```vue
 <script setup lang="ts">
 const items = ref([
-  ["Apple", "Banana", "Blueberry", "Grapes", "Pineapple"],
-  ["Aubergine", "Broccoli", "Carrot", "Courgette", "Leek"],
-]);
-const value = ref("Apple");
+  [
+    "Apple",
+    "Banana",
+    "Blueberry",
+    "Grapes",
+    "Pineapple"
+  ],
+  [
+    "Aubergine",
+    "Broccoli",
+    "Carrot",
+    "Courgette",
+    "Leek"
+  ]
+])
+const value = ref("Apple")
 </script>
 
 <template>
@@ -404,27 +430,27 @@ You can choose to bind a single property of the object rather than the whole obj
 
 ```vue
 <script setup lang="ts">
-import type { InputMenuItem } from "@nuxt/ui";
+import type { InputMenuItem } from '@nuxt/ui'
 
 const items = ref<InputMenuItem[]>([
   {
     label: "Backlog",
-    id: "backlog",
+    id: "backlog"
   },
   {
     label: "Todo",
-    id: "todo",
+    id: "todo"
   },
   {
     label: "In Progress",
-    id: "in_progress",
+    id: "in_progress"
   },
   {
     label: "Done",
-    id: "done",
-  },
-]);
-const value = ref("todo");
+    id: "done"
+  }
+])
+const value = ref("todo")
 </script>
 
 <template>
@@ -432,8 +458,8 @@ const value = ref("todo");
 </template>
 ```
 
-> \[!TIP]
->
+> [!TIP]
+> 
 > Use the `by` prop to compare objects by a field instead of reference when the `model-value` is an object.
 
 ### Multiple
@@ -442,8 +468,16 @@ Use the `multiple` prop to allow multiple selections, the selected items will be
 
 ```vue
 <script setup lang="ts">
-const items = ref(["Backlog", "Todo", "In Progress", "Done"]);
-const value = ref(["Backlog", "Todo"]);
+const items = ref([
+  "Backlog",
+  "Todo",
+  "In Progress",
+  "Done"
+])
+const value = ref([
+  "Backlog",
+  "Todo"
+])
 </script>
 
 <template>
@@ -451,8 +485,8 @@ const value = ref(["Backlog", "Todo"]);
 </template>
 ```
 
-> \[!CAUTION]
->
+> [!CAUTION]
+> 
 > Ensure to pass an array to the `default-value` prop or the `v-model` directive.
 
 ### Delete Icon
@@ -461,37 +495,41 @@ With `multiple`, use the `delete-icon` prop to customize the delete [Icon](https
 
 ```vue
 <script setup lang="ts">
-const items = ref(["Backlog", "Todo", "In Progress", "Done"]);
-const value = ref(["Backlog", "Todo"]);
+const items = ref([
+  "Backlog",
+  "Todo",
+  "In Progress",
+  "Done"
+])
+const value = ref([
+  "Backlog",
+  "Todo"
+])
 </script>
 
 <template>
-  <UInputMenu
-    v-model="value"
-    multiple
-    delete-icon="i-lucide-trash"
-    :items="items"
-  />
+  <UInputMenu v-model="value" multiple delete-icon="i-lucide-trash" :items="items" />
 </template>
 ```
 
 **Nuxt:**
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/getting-started/integrations/icons/nuxt#theme
->
+> 
 > You can customize this icon globally in your `app.config.ts` under `ui.icons.close` key.
 
 **Vue:**
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/getting-started/integrations/icons/vue#theme
->
+> 
 > You can customize this icon globally in your `vite.config.ts` under `ui.icons.close` key.
 
 ### Placeholder
 
 Use the `placeholder` prop to set a placeholder text.
+
 
 _(truncated — ask for fewer components to see more, or rely on the API block above)_
 
@@ -503,33 +541,33 @@ You can use the `type` property with `separator` to display a separator between 
 
 ```vue
 <script setup lang="ts">
-import type { InputMenuItem } from "@nuxt/ui";
+import type { InputMenuItem } from '@nuxt/ui'
 
 const items = ref<InputMenuItem[]>([
   [
     {
       type: "label",
-      label: "Fruits",
+      label: "Fruits"
     },
     "Apple",
     "Banana",
     "Blueberry",
     "Grapes",
-    "Pineapple",
+    "Pineapple"
   ],
   [
     {
       type: "label",
-      label: "Vegetables",
+      label: "Vegetables"
     },
     "Aubergine",
     "Broccoli",
     "Carrot",
     "Courgette",
-    "Leek",
-  ],
-]);
-const value = ref("Apple");
+    "Leek"
+  ]
+])
+const value = ref("Apple")
 </script>
 
 <template>
@@ -537,8 +575,8 @@ const value = ref("Apple");
 </template>
 ```
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > When using `label` items as group headings, pass an array of arrays so a label gets filtered out together with its group when searching.
 
 ### With icon in items
@@ -547,32 +585,32 @@ You can use the `icon` property to display an [Icon](https://ui.nuxt.com/docs/co
 
 ```vue [InputMenuItemsIconExample.vue]
 <script setup lang="ts">
-import type { InputMenuItem } from "@nuxt/ui";
+import type { InputMenuItem } from '@nuxt/ui'
 
 const items = ref([
   {
-    label: "Backlog",
-    value: "backlog",
-    icon: "i-lucide-circle-help",
+    label: 'Backlog',
+    value: 'backlog',
+    icon: 'i-lucide-circle-help'
   },
   {
-    label: "Todo",
-    value: "todo",
-    icon: "i-lucide-circle-plus",
+    label: 'Todo',
+    value: 'todo',
+    icon: 'i-lucide-circle-plus'
   },
   {
-    label: "In Progress",
-    value: "in_progress",
-    icon: "i-lucide-circle-arrow-up",
+    label: 'In Progress',
+    value: 'in_progress',
+    icon: 'i-lucide-circle-arrow-up'
   },
   {
-    label: "Done",
-    value: "done",
-    icon: "i-lucide-circle-check",
-  },
-] satisfies InputMenuItem[]);
+    label: 'Done',
+    value: 'done',
+    icon: 'i-lucide-circle-check'
+  }
+] satisfies InputMenuItem[])
 
-const value = ref(items.value[0]);
+const value = ref(items.value[0])
 </script>
 
 <template>
@@ -580,8 +618,8 @@ const value = ref(items.value[0]);
 </template>
 ```
 
-> \[!TIP]
->
+> [!TIP]
+> 
 > You can also use the `#leading` slot to display the selected icon.
 
 ### With avatar in items
@@ -590,48 +628,48 @@ You can use the `avatar` property to display an [Avatar](https://ui.nuxt.com/doc
 
 ```vue [InputMenuItemsAvatarExample.vue]
 <script setup lang="ts">
-import type { InputMenuItem } from "@nuxt/ui";
+import type { InputMenuItem } from '@nuxt/ui'
 
 const items = ref([
   {
-    label: "benjamincanac",
-    value: "benjamincanac",
+    label: 'benjamincanac',
+    value: 'benjamincanac',
     avatar: {
-      src: "https://github.com/benjamincanac.png",
-      alt: "benjamincanac",
-      loading: "lazy" as const,
-    },
+      src: 'https://github.com/benjamincanac.png',
+      alt: 'benjamincanac',
+      loading: 'lazy' as const
+    }
   },
   {
-    label: "romhml",
-    value: "romhml",
+    label: 'romhml',
+    value: 'romhml',
     avatar: {
-      src: "https://github.com/romhml.png",
-      alt: "romhml",
-      loading: "lazy" as const,
-    },
+      src: 'https://github.com/romhml.png',
+      alt: 'romhml',
+      loading: 'lazy' as const
+    }
   },
   {
-    label: "noook",
-    value: "noook",
+    label: 'noook',
+    value: 'noook',
     avatar: {
-      src: "https://github.com/noook.png",
-      alt: "noook",
-      loading: "lazy" as const,
-    },
+      src: 'https://github.com/noook.png',
+      alt: 'noook',
+      loading: 'lazy' as const
+    }
   },
   {
-    label: "sandros94",
-    value: "sandros94",
+    label: 'sandros94',
+    value: 'sandros94',
     avatar: {
-      src: "https://github.com/sandros94.png",
-      alt: "sandros94",
-      loading: "lazy" as const,
-    },
-  },
-] satisfies InputMenuItem[]);
+      src: 'https://github.com/sandros94.png',
+      alt: 'sandros94',
+      loading: 'lazy' as const
+    }
+  }
+] satisfies InputMenuItem[])
 
-const value = ref(items.value[0]);
+const value = ref(items.value[0])
 </script>
 
 <template>
@@ -639,8 +677,8 @@ const value = ref(items.value[0]);
 </template>
 ```
 
-> \[!TIP]
->
+> [!TIP]
+> 
 > You can also use the `#leading` slot to display the selected avatar.
 
 ### With chip in items
@@ -649,33 +687,33 @@ You can use the `chip` property to display a [Chip](https://ui.nuxt.com/docs/com
 
 ```vue [InputMenuItemsChipExample.vue]
 <script setup lang="ts">
-import type { InputMenuItem, ChipProps } from "@nuxt/ui";
+import type { InputMenuItem, ChipProps } from '@nuxt/ui'
 
 const items = ref([
   {
-    label: "bug",
-    value: "bug",
+    label: 'bug',
+    value: 'bug',
     chip: {
-      color: "error",
-    },
+      color: 'error'
+    }
   },
   {
-    label: "feature",
-    value: "feature",
+    label: 'feature',
+    value: 'feature',
     chip: {
-      color: "success",
-    },
+      color: 'success'
+    }
   },
   {
-    label: "enhancement",
-    value: "enhancement",
+    label: 'enhancement',
+    value: 'enhancement',
     chip: {
-      color: "info",
-    },
-  },
-] satisfies InputMenuItem[]);
+      color: 'info'
+    }
+  }
+] satisfies InputMenuItem[])
 
-const value = ref(items.value[0]);
+const value = ref(items.value[0])
 </script>
 
 <template>
@@ -686,7 +724,7 @@ const value = ref(items.value[0]);
         v-bind="modelValue.chip"
         inset
         standalone
-        :size="ui.itemLeadingChipSize() as ChipProps['size']"
+        :size="(ui.itemLeadingChipSize() as ChipProps['size'])"
         :class="ui.itemLeadingChip()"
       />
     </template>

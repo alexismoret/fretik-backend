@@ -20,10 +20,7 @@ interface PopoverProps {
    * The content of the popover.
    * @default { side: 'bottom', sideOffset: 8, collisionPadding: 8 }
    */
-  content?:
-    | (Omit<PopoverContentProps, "as" | "asChild" | "forceMount"> &
-        Partial<EmitsToProps<PopoverContentImplEmits>>)
-    | undefined;
+  content?: Omit<PopoverContentProps, "as" | "asChild" | "forceMount"> & Partial<EmitsToProps<PopoverContentImplEmits>> | undefined;
   /**
    * Display an arrow alongside the popover.
    * `{ rounded: true }`{lang="ts-type"}
@@ -37,7 +34,7 @@ interface PopoverProps {
   portal?: string | false | true | HTMLElement | undefined;
   /**
    * The reference (or anchor) element that is being referred to for positioning.
-   *
+   * 
    * Accepts an element or a virtual element (anything with `getBoundingClientRect`),
    * and can be changed reactively to re-anchor the popover (e.g. for a guided tour).
    * If not provided will use the current component as anchor.
@@ -48,7 +45,7 @@ interface PopoverProps {
    * @default true
    */
   dismissible?: boolean | undefined;
-  ui?: { content?: SlotClass; arrow?: SlotClass } | undefined;
+  ui?: { content?: SlotClass; arrow?: SlotClass; } | undefined;
   /**
    * The open state of the popover when it is initially rendered. Use when you do not need to control its open state.
    */
@@ -92,9 +89,9 @@ interface PopoverSlots {
 }
 ```
 
-> \[!NOTE]
->
-> The `close` function is only available when `mode` is set to `click` because Reka UI exposes this for [`Popover`](https://reka-ui.com/docs/components/popover#close-using-slot-props){rel="&#x22;nofollow&#x22;"} but not for [`HoverCard`](https://reka-ui.com/docs/components/hover-card){rel="&#x22;nofollow&#x22;"}.
+> [!NOTE]
+> 
+> The `close` function is only available when `mode` is set to `click` because Reka UI exposes this for [`Popover`](https://reka-ui.com/docs/components/popover#close-using-slot-props) but not for [`HoverCard`](https://reka-ui.com/docs/components/hover-card).
 
 ### Emits
 
@@ -108,6 +105,21 @@ interface PopoverEmits {
 }
 ```
 
+## Composition
+
+Parts placed by name: `#content`, `#anchor`.
+
+```vue
+<template>
+  <UPopover>
+    <UButton label="Open" color="neutral" variant="subtle" />
+  
+    <template #content>
+      <Placeholder class="size-48 m-4 inline-flex" />
+    </template></UPopover>
+</template>
+```
+
 ## Usage
 
 Use a [Button](https://ui.nuxt.com/docs/components/button) or any other component in the default slot of the Popover.
@@ -118,10 +130,10 @@ Then, use the `#content` slot to add the content displayed when the Popover is o
 <template>
   <UPopover>
     <UButton label="Open" color="neutral" variant="subtle" />
-
+  
     <template #content>
-      <Placeholder class="size-48 m-4 inline-flex" /> </template
-  ></UPopover>
+      <Placeholder class="size-48 m-4 inline-flex" />
+    </template></UPopover>
 </template>
 ```
 
@@ -129,24 +141,24 @@ Then, use the `#content` slot to add the content displayed when the Popover is o
 
 Use the `mode` prop to change the mode of the Popover. Defaults to `click`.
 
-> \[!TIP]
->
+> [!TIP]
+> 
 > In `hover` mode, set the `enable-touch` prop to let users toggle the Popover by tapping the trigger on touch devices, or use the `click` mode for triggers meant to be tapped.
 
 ```vue
 <template>
   <UPopover mode="hover" enable-touch>
     <UButton label="Open" color="neutral" variant="subtle" />
-
+  
     <template #content>
-      <Placeholder class="size-48 m-4 inline-flex" /> </template
-  ></UPopover>
+      <Placeholder class="size-48 m-4 inline-flex" />
+    </template></UPopover>
 </template>
 ```
 
-> \[!NOTE]
->
-> When using the `hover` mode, the Reka UI [`HoverCard`](https://reka-ui.com/docs/components/hover-card){rel="&#x22;nofollow&#x22;"} component is used instead of the [`Popover`](https://reka-ui.com/docs/components/popover){rel="&#x22;nofollow&#x22;"}.
+> [!NOTE]
+> 
+> When using the `hover` mode, the Reka UI [`HoverCard`](https://reka-ui.com/docs/components/hover-card) component is used instead of the [`Popover`](https://reka-ui.com/docs/components/popover).
 
 ### Delay
 
@@ -156,10 +168,10 @@ When using the `hover` mode, you can use the `open-delay` and `close-delay` prop
 <template>
   <UPopover mode="hover" :open-delay="500" :close-delay="300">
     <UButton label="Open" color="neutral" variant="subtle" />
-
+  
     <template #content>
-      <Placeholder class="size-48 m-4 inline-flex" /> </template
-  ></UPopover>
+      <Placeholder class="size-48 m-4 inline-flex" />
+    </template></UPopover>
 </template>
 ```
 
@@ -169,18 +181,16 @@ Use the `content` prop to control how the Popover content is rendered, like its 
 
 ```vue
 <template>
-  <UPopover
-    :content="{
-      align: 'center',
-      side: 'bottom',
-      sideOffset: 8,
-    }"
-  >
+  <UPopover :content="{
+  align: 'center',
+  side: 'bottom',
+  sideOffset: 8
+}">
     <UButton label="Open" color="neutral" variant="subtle" />
-
+  
     <template #content>
-      <Placeholder class="size-48 m-4 inline-flex" /> </template
-  ></UPopover>
+      <Placeholder class="size-48 m-4 inline-flex" />
+    </template></UPopover>
 </template>
 ```
 
@@ -192,10 +202,10 @@ Use the `arrow` prop to display an arrow on the Popover.
 <template>
   <UPopover arrow>
     <UButton label="Open" color="neutral" variant="subtle" />
-
+  
     <template #content>
-      <Placeholder class="size-48 m-4 inline-flex" /> </template
-  ></UPopover>
+      <Placeholder class="size-48 m-4 inline-flex" />
+    </template></UPopover>
 </template>
 ```
 
@@ -207,10 +217,10 @@ Use the `modal` prop to control whether the Popover blocks interaction with outs
 <template>
   <UPopover modal>
     <UButton label="Open" color="neutral" variant="subtle" />
-
+  
     <template #content>
-      <Placeholder class="size-48 m-4 inline-flex" /> </template
-  ></UPopover>
+      <Placeholder class="size-48 m-4 inline-flex" />
+    </template></UPopover>
 </template>
 ```
 
@@ -218,8 +228,8 @@ Use the `modal` prop to control whether the Popover blocks interaction with outs
 
 Use the `dismissible` prop to control whether the Popover is dismissible when clicking outside of it or pressing escape. Defaults to `true`.
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > A `close:prevent` event will be emitted when the user tries to close it.
 
 ```vue [PopoverDismissibleExample.vue]
@@ -229,14 +239,11 @@ Use the `dismissible` prop to control whether the Popover is dismissible when cl
 
     <template #content="{ close }">
       <div class="flex items-center gap-4 mb-4">
-        <h2 class="text-highlighted font-semibold">Popover non-dismissible</h2>
+        <h2 class="text-highlighted font-semibold">
+          Popover non-dismissible
+        </h2>
 
-        <UButton
-          color="neutral"
-          variant="ghost"
-          icon="i-lucide-x"
-          @click="close"
-        />
+        <UButton color="neutral" variant="ghost" icon="i-lucide-x" @click="close" />
       </div>
 
       <Placeholder class="size-full min-h-48" />
@@ -253,11 +260,11 @@ You can control the open state by using the `default-open` prop or the `v-model:
 
 ```vue [PopoverOpenExample.vue]
 <script setup lang="ts">
-const open = ref(false);
+const open = ref(false)
 
 defineShortcuts({
-  o: () => (open.value = !open.value),
-});
+  o: () => open.value = !open.value
+})
 </script>
 
 <template>
@@ -271,9 +278,9 @@ defineShortcuts({
 </template>
 ```
 
-> \[!NOTE]
->
-> In this example, leveraging [`defineShortcuts`](https://ui.nuxt.com/docs/composables/define-shortcuts), you can toggle the Popover by pressing :kbd{value="O"}.
+> [!NOTE]
+> 
+> In this example, leveraging [`defineShortcuts`](https://ui.nuxt.com/docs/composables/define-shortcuts), you can toggle the Popover by pressing `O`.
 
 ### With command palette
 
@@ -281,33 +288,33 @@ You can use a [CommandPalette](https://ui.nuxt.com/docs/components/command-palet
 
 ```vue [PopoverCommandPaletteExample.vue]
 <script setup lang="ts">
-import type { CommandPaletteItem } from "@nuxt/ui";
+import type { CommandPaletteItem } from '@nuxt/ui'
 
 const items = ref([
   {
-    label: "bug",
-    value: "bug",
+    label: 'bug',
+    value: 'bug',
     chip: {
-      color: "error",
-    },
+      color: 'error'
+    }
   },
   {
-    label: "feature",
-    value: "feature",
+    label: 'feature',
+    value: 'feature',
     chip: {
-      color: "success",
-    },
+      color: 'success'
+    }
   },
   {
-    label: "enhancement",
-    value: "enhancement",
+    label: 'enhancement',
+    value: 'enhancement',
     chip: {
-      color: "info",
-    },
-  },
-] satisfies CommandPaletteItem[]);
+      color: 'info'
+    }
+  }
+] satisfies CommandPaletteItem[])
 
-const label = ref([]);
+const label = ref([])
 </script>
 
 <template>
@@ -334,12 +341,12 @@ const label = ref([]);
 
 ### With following cursor
 
-You can make the Popover follow the cursor when hovering over an element using the [`reference`](https://reka-ui.com/docs/components/tooltip#trigger){rel="&#x22;nofollow&#x22;"} prop:
+You can make the Popover follow the cursor when hovering over an element using the [`reference`](https://reka-ui.com/docs/components/tooltip#trigger) prop:
 
 ```vue [PopoverCursorExample.vue]
 <script setup lang="ts">
-const open = ref(false);
-const anchor = ref({ x: 0, y: 0 });
+const open = ref(false)
+const anchor = ref({ x: 0, y: 0 })
 
 const reference = computed(() => ({
   getBoundingClientRect: () =>
@@ -350,9 +357,9 @@ const reference = computed(() => ({
       right: anchor.value.x,
       top: anchor.value.y,
       bottom: anchor.value.y,
-      ...anchor.value,
-    }) as DOMRect,
-}));
+      ...anchor.value
+    } as DOMRect)
+}))
 </script>
 
 <template>
@@ -365,12 +372,10 @@ const reference = computed(() => ({
       class="flex items-center justify-center rounded-md border border-dashed border-accented text-sm aspect-video w-72"
       @pointerenter="open = true"
       @pointerleave="open = false"
-      @pointermove="
-        (ev: PointerEvent) => {
-          anchor.x = ev.clientX;
-          anchor.y = ev.clientY;
-        }
-      "
+      @pointermove="(ev: PointerEvent) => {
+        anchor.x = ev.clientX
+        anchor.y = ev.clientY
+      }"
     >
       Hover me
     </div>
@@ -388,13 +393,13 @@ const reference = computed(() => ({
 
 You can use the `#anchor` slot to position the Popover against a custom element.
 
-> \[!WARNING]
->
+> [!WARNING]
+> 
 > This slot only works when `mode` is `click`.
 
 ```vue [PopoverAnchorSlotExample.vue]
 <script lang="ts" setup>
-const open = ref(false);
+const open = ref(false)
 </script>
 
 <template>
@@ -404,11 +409,7 @@ const open = ref(false);
     :ui="{ content: 'w-(--reka-popper-anchor-width) p-4' }"
   >
     <template #anchor>
-      <UInput
-        placeholder="Focus to open"
-        @focus="open = true"
-        @blur="open = false"
-      />
+      <UInput placeholder="Focus to open" @focus="open = true" @blur="open = false" />
     </template>
 
     <template #content>

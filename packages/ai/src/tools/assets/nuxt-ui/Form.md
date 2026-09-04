@@ -70,9 +70,9 @@ interface FormProps {
 }
 ```
 
-> \[!NOTE]
-> See: https\://developer.mozilla.org/en-US/docs/Web/HTML/Element/form#attributes
->
+> [!NOTE]
+> See: https://developer.mozilla.org/en-US/docs/Web/HTML/Element/form#attributes
+> 
 > This component also supports all native `<form>` HTML attributes.
 
 ### Slots
@@ -100,11 +100,11 @@ interface FormEmits {
 
 ### Expose
 
-You can access the typed component instance using [`useTemplateRef`](https://vuejs.org/api/composition-api-helpers.html#usetemplateref){rel="&#x22;nofollow&#x22;"}.
+You can access the typed component instance using [`useTemplateRef`](https://vuejs.org/api/composition-api-helpers.html#usetemplateref).
 
 ```vue
 <script setup lang="ts">
-const form = useTemplateRef("form");
+const form = useTemplateRef('form')
 </script>
 
 <template>
@@ -114,23 +114,23 @@ const form = useTemplateRef("form");
 
 This will give you access to the following:
 
-| Name                                                                                                                                | Type                                                                                                                                                                                                                                                            |
-| ----------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `submit()`{.language-ts-type.shiki.shiki-themes.material-theme-lighter.material-theme.material-theme-palenight lang="ts-type"}      | `Promise<void>`{.language-ts-type.shiki.shiki-themes.material-theme-lighter.material-theme.material-theme-palenight lang="ts-type"} :br Triggers form submission with HTML5 validation.                                                                         |
-| `validate(opts: { name?: keyof T                                                                                                    | (keyof T)[], silent?: boolean, nested?: boolean, transform?: boolean })`{.language-ts-type.shiki.shiki-themes.material-theme-lighter.material-theme.material-theme-palenight lang="ts-type"}                                                                    | `Promise<T>`{.language-ts-type.shiki.shiki-themes.material-theme-lighter.material-theme.material-theme-palenight lang="ts-type"} :br Triggers form validation. Will raise any errors unless `opts.silent` is set to true.                           |
-| `clear(path?: keyof T                                                                                                               | RegExp)`{.language-ts-type.shiki.shiki-themes.material-theme-lighter.material-theme.material-theme-palenight lang="ts-type"}                                                                                                                                    | `void` :br Clears form errors associated with a specific path. If no path is provided, clears all form errors.                                                                                                                                      |
-| `getErrors(path?: keyof T                                                                                                           | RegExp)`{.language-ts-type.shiki.shiki-themes.material-theme-lighter.material-theme.material-theme-palenight lang="ts-type"}                                                                                                                                    | `FormErrorWithId[]`{.language-ts-type.shiki.shiki-themes.material-theme-lighter.material-theme.material-theme-palenight lang="ts-type"} :br Retrieves form errors associated with a specific path. If no path is provided, returns all form errors. |
-| `setErrors(errors: FormError[], name?: keyof T                                                                                      | RegExp)`{.language-ts-type.shiki.shiki-themes.material-theme-lighter.material-theme.material-theme-palenight lang="ts-type"}                                                                                                                                    | `void` :br Sets form errors for a given path. If no path is provided, overrides all errors.                                                                                                                                                         |
-| `errors`{.language-ts-type.shiki.shiki-themes.material-theme-lighter.material-theme.material-theme-palenight lang="ts-type"}        | `Ref<FormErrorWithId[]>`{.language-ts-type.shiki.shiki-themes.material-theme-lighter.material-theme.material-theme-palenight lang="ts-type"} :br A reference to the array containing validation errors. Use this to access or manipulate the error information. |
-| `disabled`{.language-ts-type.shiki.shiki-themes.material-theme-lighter.material-theme.material-theme-palenight lang="ts-type"}      | `Ref<boolean>`{.language-ts-type.shiki.shiki-themes.material-theme-lighter.material-theme.material-theme-palenight lang="ts-type"}                                                                                                                              |
-| `dirty`{.language-ts-type.shiki.shiki-themes.material-theme-lighter.material-theme.material-theme-palenight lang="ts-type"}         | `Ref<boolean>`{.language-ts-type.shiki.shiki-themes.material-theme-lighter.material-theme.material-theme-palenight lang="ts-type"} `true` if at least one form field has been updated by the user.                                                              |
-| `dirtyFields`{.language-ts-type.shiki.shiki-themes.material-theme-lighter.material-theme.material-theme-palenight lang="ts-type"}   | `ReadonlySet<DeepReadonly<keyof T>>`{.language-ts-type.shiki.shiki-themes.material-theme-lighter.material-theme.material-theme-palenight lang="ts-type"} Tracks fields that have been modified by the user.                                                     |
-| `touchedFields`{.language-ts-type.shiki.shiki-themes.material-theme-lighter.material-theme.material-theme-palenight lang="ts-type"} | `ReadonlySet<DeepReadonly<keyof T>>`{.language-ts-type.shiki.shiki-themes.material-theme-lighter.material-theme.material-theme-palenight lang="ts-type"} Tracks fields that the user interacted with.                                                           |
-| `blurredFields`{.language-ts-type.shiki.shiki-themes.material-theme-lighter.material-theme.material-theme-palenight lang="ts-type"} | `ReadonlySet<DeepReadonly<keyof T>>`{.language-ts-type.shiki.shiki-themes.material-theme-lighter.material-theme.material-theme-palenight lang="ts-type"} Tracks fields blurred by the user.                                                                     |
+| Name | Type |
+| --- | --- |
+| `submit()` | `Promise<void>` <br> Triggers form submission with HTML5 validation. |
+| `validate(opts: { name?: keyof T \| (keyof T)[], silent?: boolean, nested?: boolean, transform?: boolean })` | `Promise<T>` <br> Triggers form validation. Will raise any errors unless `opts.silent` is set to true. |
+| `clear(path?: keyof T \| RegExp)` | `void` <br> Clears form errors associated with a specific path. If no path is provided, clears all form errors. |
+| `getErrors(path?: keyof T \| RegExp)` | `FormErrorWithId[]` <br> Retrieves form errors associated with a specific path. If no path is provided, returns all form errors. |
+| `setErrors(errors: FormError[], name?: keyof T \| RegExp)` | `void` <br> Sets form errors for a given path. If no path is provided, overrides all errors. |
+| `errors` | `Ref<FormErrorWithId[]>` <br> A reference to the array containing validation errors. Use this to access or manipulate the error information. |
+| `disabled` | `Ref<boolean>` |
+| `dirty` | `Ref<boolean>` `true` if at least one form field has been updated by the user. |
+| `dirtyFields` | `ReadonlySet<DeepReadonly<keyof T>>` Tracks fields that have been modified by the user. |
+| `touchedFields` | `ReadonlySet<DeepReadonly<keyof T>>` Tracks fields that the user interacted with. |
+| `blurredFields` | `ReadonlySet<DeepReadonly<keyof T>>` Tracks fields blurred by the user. |
 
 ## Usage
 
-Use the Form component to validate form data using any validation library supporting [Standard Schema](https://github.com/standard-schema/standard-schema){rel="&#x22;nofollow&#x22;"} such as [Valibot](https://github.com/fabian-hiller/valibot){rel="&#x22;nofollow&#x22;"}, [Zod](https://github.com/colinhacks/zod){rel="&#x22;nofollow&#x22;"}, [Regle](https://github.com/victorgarciaesgi/regle){rel="&#x22;nofollow&#x22;"}, [Yup](https://github.com/jquense/yup){rel="&#x22;nofollow&#x22;"}, [Joi](https://github.com/hapijs/joi){rel="&#x22;nofollow&#x22;"} or [Superstruct](https://github.com/ianstormtaylor/superstruct){rel="&#x22;nofollow&#x22;"} or your own validation logic.
+Use the Form component to validate form data using any validation library supporting [Standard Schema](https://github.com/standard-schema/standard-schema) such as [Valibot](https://github.com/fabian-hiller/valibot), [Zod](https://github.com/colinhacks/zod), [Regle](https://github.com/victorgarciaesgi/regle), [Yup](https://github.com/jquense/yup), [Joi](https://github.com/hapijs/joi) or [Superstruct](https://github.com/ianstormtaylor/superstruct) or your own validation logic.
 
 It works with the [FormField](https://ui.nuxt.com/docs/components/form-field) component to display error messages around form elements automatically.
 
@@ -139,37 +139,33 @@ It works with the [FormField](https://ui.nuxt.com/docs/components/form-field) co
 It requires two props:
 
 - `state` - a reactive object holding the form's state.
-- `schema` - any [Standard Schema](https://github.com/standard-schema/standard-schema){rel="&#x22;nofollow&#x22;"} or [Superstruct](https://github.com/ianstormtaylor/superstruct){rel="&#x22;nofollow&#x22;"}.
+- `schema` - any [Standard Schema](https://github.com/standard-schema/standard-schema) or [Superstruct](https://github.com/ianstormtaylor/superstruct).
 
-> \[!WARNING]
->
+> [!WARNING]
+> 
 > **No validation library is included** by default, ensure you **install the one you need**.
 
 ```vue [FormExampleValibot.vue]
 <script setup lang="ts">
-import * as v from "valibot";
-import type { FormSubmitEvent } from "@nuxt/ui";
+import * as v from 'valibot'
+import type { FormSubmitEvent } from '@nuxt/ui'
 
 const schema = v.object({
-  email: v.pipe(v.string(), v.email("Invalid email")),
-  password: v.pipe(v.string(), v.minLength(8, "Must be at least 8 characters")),
-});
+  email: v.pipe(v.string(), v.email('Invalid email')),
+  password: v.pipe(v.string(), v.minLength(8, 'Must be at least 8 characters'))
+})
 
-type Schema = v.InferOutput<typeof schema>;
+type Schema = v.InferOutput<typeof schema>
 
 const state = reactive({
-  email: "",
-  password: "",
-});
+  email: '',
+  password: ''
+})
 
-const toast = useToast();
+const toast = useToast()
 async function onSubmit(event: FormSubmitEvent<Schema>) {
-  toast.add({
-    title: "Success",
-    description: "The form has been submitted.",
-    color: "success",
-  });
-  console.log(event.data);
+  toast.add({ title: 'Success', description: 'The form has been submitted.', color: 'success' })
+  console.log(event.data)
 }
 </script>
 
@@ -183,38 +179,34 @@ async function onSubmit(event: FormSubmitEvent<Schema>) {
       <UInput v-model="state.password" type="password" />
     </UFormField>
 
-    <UButton type="submit"> Submit </UButton>
+    <UButton type="submit">
+      Submit
+    </UButton>
   </UForm>
 </template>
 ```
 
 ```vue [FormExampleZod.vue]
 <script setup lang="ts">
-import * as z from "zod";
-import type { FormSubmitEvent } from "@nuxt/ui";
+import * as z from 'zod'
+import type { FormSubmitEvent } from '@nuxt/ui'
 
 const schema = z.object({
-  email: z.email("Invalid email"),
-  password: z
-    .string("Password is required")
-    .min(8, "Must be at least 8 characters"),
-});
+  email: z.email('Invalid email'),
+  password: z.string('Password is required').min(8, 'Must be at least 8 characters')
+})
 
-type Schema = z.output<typeof schema>;
+type Schema = z.output<typeof schema>
 
 const state = reactive<Partial<Schema>>({
   email: undefined,
-  password: undefined,
-});
+  password: undefined
+})
 
-const toast = useToast();
+const toast = useToast()
 async function onSubmit(event: FormSubmitEvent<Schema>) {
-  toast.add({
-    title: "Success",
-    description: "The form has been submitted.",
-    color: "success",
-  });
-  console.log(event.data);
+  toast.add({ title: 'Success', description: 'The form has been submitted.', color: 'success' })
+  console.log(event.data)
 }
 </script>
 
@@ -228,38 +220,30 @@ async function onSubmit(event: FormSubmitEvent<Schema>) {
       <UInput v-model="state.password" type="password" />
     </UFormField>
 
-    <UButton type="submit"> Submit </UButton>
+    <UButton type="submit">
+      Submit
+    </UButton>
   </UForm>
 </template>
 ```
 
 ```vue [FormExampleRegle.vue]
 <script setup lang="ts">
-import { useRegle, type InferInput } from "@regle/core";
-import { required, email, minLength, withMessage } from "@regle/rules";
-import type { FormSubmitEvent } from "@nuxt/ui";
+import { useRegle, type InferInput } from '@regle/core'
+import { required, email, minLength, withMessage } from '@regle/rules'
+import type { FormSubmitEvent } from '@nuxt/ui'
 
-const { r$ } = useRegle(
-  { email: "", password: "" },
-  {
-    email: { required, email: withMessage(email, "Invalid email") },
-    password: {
-      required,
-      minLength: withMessage(minLength(8), "Must be at least 8 characters"),
-    },
-  },
-);
+const { r$ } = useRegle({ email: '', password: '' }, {
+  email: { required, email: withMessage(email, 'Invalid email') },
+  password: { required, minLength: withMessage(minLength(8), 'Must be at least 8 characters') }
+})
 
-type Schema = InferInput<typeof r$>;
+type Schema = InferInput<typeof r$>
 
-const toast = useToast();
+const toast = useToast()
 async function onSubmit(event: FormSubmitEvent<Schema>) {
-  toast.add({
-    title: "Success",
-    description: "The form has been submitted.",
-    color: "success",
-  });
-  console.log(event.data);
+  toast.add({ title: 'Success', description: 'The form has been submitted.', color: 'success' })
+  console.log(event.data)
 }
 </script>
 
@@ -273,39 +257,37 @@ async function onSubmit(event: FormSubmitEvent<Schema>) {
       <UInput v-model="r$.$value.password" type="password" />
     </UFormField>
 
-    <UButton type="submit"> Submit </UButton>
+    <UButton type="submit">
+      Submit
+    </UButton>
   </UForm>
 </template>
 ```
 
 ```vue [FormExampleYup.vue]
 <script setup lang="ts">
-import { object, string } from "yup";
-import type { InferType } from "yup";
-import type { FormSubmitEvent } from "@nuxt/ui";
+import { object, string } from 'yup'
+import type { InferType } from 'yup'
+import type { FormSubmitEvent } from '@nuxt/ui'
 
 const schema = object({
-  email: string().email("Invalid email").required("Required"),
+  email: string().email('Invalid email').required('Required'),
   password: string()
-    .min(8, "Must be at least 8 characters")
-    .required("Required"),
-});
+    .min(8, 'Must be at least 8 characters')
+    .required('Required')
+})
 
-type Schema = InferType<typeof schema>;
+type Schema = InferType<typeof schema>
 
 const state = reactive({
   email: undefined,
-  password: undefined,
-});
+  password: undefined
+})
 
-const toast = useToast();
+const toast = useToast()
 async function onSubmit(event: FormSubmitEvent<Schema>) {
-  toast.add({
-    title: "Success",
-    description: "The form has been submitted.",
-    color: "success",
-  });
-  console.log(event.data);
+  toast.add({ title: 'Success', description: 'The form has been submitted.', color: 'success' })
+  console.log(event.data)
 }
 </script>
 
@@ -319,34 +301,34 @@ async function onSubmit(event: FormSubmitEvent<Schema>) {
       <UInput v-model="state.password" type="password" />
     </UFormField>
 
-    <UButton type="submit"> Submit </UButton>
+    <UButton type="submit">
+      Submit
+    </UButton>
   </UForm>
 </template>
 ```
 
 ```vue [FormExampleJoi.vue]
 <script setup lang="ts">
-import Joi from "joi";
-import type { FormSubmitEvent } from "@nuxt/ui";
+import Joi from 'joi'
+import type { FormSubmitEvent } from '@nuxt/ui'
 
 const schema = Joi.object({
   email: Joi.string().required(),
-  password: Joi.string().min(8).required(),
-});
+  password: Joi.string()
+    .min(8)
+    .required()
+})
 
 const state = reactive({
   email: undefined,
-  password: undefined,
-});
+  password: undefined
+})
 
-const toast = useToast();
+const toast = useToast()
 async function onSubmit(event: FormSubmitEvent<typeof state>) {
-  toast.add({
-    title: "Success",
-    description: "The form has been submitted.",
-    color: "success",
-  });
-  console.log(event.data);
+  toast.add({ title: 'Success', description: 'The form has been submitted.', color: 'success' })
+  console.log(event.data)
 }
 </script>
 
@@ -360,34 +342,36 @@ async function onSubmit(event: FormSubmitEvent<typeof state>) {
       <UInput v-model="state.password" type="password" />
     </UFormField>
 
-    <UButton type="submit"> Submit </UButton>
+    <UButton type="submit">
+      Submit
+    </UButton>
   </UForm>
 </template>
 ```
 
 ```vue [FormExampleSuperstruct.vue]
 <script setup lang="ts">
-import { object, string, nonempty, refine } from "superstruct";
-import type { Infer } from "superstruct";
-import type { FormSubmitEvent } from "@nuxt/ui";
+import { object, string, nonempty, refine } from 'superstruct'
+import type { Infer } from 'superstruct'
+import type { FormSubmitEvent } from '@nuxt/ui'
 
 const schema = object({
   email: nonempty(string()),
-  password: refine(string(), "Password", (value) => {
-    if (value.length >= 8) return true;
-    return "Must be at least 8 characters";
-  }),
-});
+  password: refine(string(), 'Password', (value) => {
+    if (value.length >= 8) return true
+    return 'Must be at least 8 characters'
+  })
+})
 
 const state = reactive({
-  email: "",
-  password: "",
-});
+  email: '',
+  password: ''
+})
 
-type Schema = Infer<typeof schema>;
+type Schema = Infer<typeof schema>
 
 async function onSubmit(event: FormSubmitEvent<Schema>) {
-  console.log(event.data);
+  console.log(event.data)
 }
 </script>
 
@@ -401,7 +385,9 @@ async function onSubmit(event: FormSubmitEvent<Schema>) {
       <UInput v-model="state.password" type="password" />
     </UFormField>
 
-    <UButton type="submit"> Submit </UButton>
+    <UButton type="submit">
+      Submit
+    </UButton>
   </UForm>
 </template>
 ```

@@ -19,34 +19,16 @@ interface AvatarGroupProps {
   /**
    * @default 'md'
    */
-  size?:
-    | "md"
-    | "xs"
-    | "sm"
-    | "lg"
-    | "xl"
-    | "3xs"
-    | "2xs"
-    | "2xl"
-    | "3xl"
-    | undefined;
+  size?: "md" | "xs" | "sm" | "lg" | "xl" | "3xs" | "2xs" | "2xl" | "3xl" | undefined;
   /**
    * @default 'neutral'
    */
-  color?:
-    | "error"
-    | "primary"
-    | "secondary"
-    | "success"
-    | "info"
-    | "warning"
-    | "neutral"
-    | undefined;
+  color?: "error" | "primary" | "secondary" | "success" | "info" | "warning" | "neutral" | undefined;
   /**
    * The maximum number of avatars to display.
    */
   max?: string | number | undefined;
-  ui?: { root?: SlotClass; base?: SlotClass } | undefined;
+  ui?: { root?: SlotClass; base?: SlotClass; } | undefined;
 }
 ```
 
@@ -82,21 +64,9 @@ Use the `size` prop to change the size of all the avatars.
 ```vue
 <template>
   <UAvatarGroup size="xl">
-    <UAvatar
-      src="https://github.com/benjamincanac.png"
-      alt="Benjamin Canac"
-      loading="lazy"
-    />
-    <UAvatar
-      src="https://github.com/romhml.png"
-      alt="Romain Hamel"
-      loading="lazy"
-    />
-    <UAvatar
-      src="https://github.com/noook.png"
-      alt="Neil Richter"
-      loading="lazy"
-    />
+    <UAvatar src="https://github.com/benjamincanac.png" alt="Benjamin Canac" loading="lazy" />
+    <UAvatar src="https://github.com/romhml.png" alt="Romain Hamel" loading="lazy" />
+    <UAvatar src="https://github.com/noook.png" alt="Neil Richter" loading="lazy" />
   </UAvatarGroup>
 </template>
 ```
@@ -108,21 +78,9 @@ Use the `max` prop to limit the number of avatars displayed. The rest is display
 ```vue
 <template>
   <UAvatarGroup :max="2">
-    <UAvatar
-      src="https://github.com/benjamincanac.png"
-      alt="Benjamin Canac"
-      loading="lazy"
-    />
-    <UAvatar
-      src="https://github.com/romhml.png"
-      alt="Romain Hamel"
-      loading="lazy"
-    />
-    <UAvatar
-      src="https://github.com/noook.png"
-      alt="Neil Richter"
-      loading="lazy"
-    />
+    <UAvatar src="https://github.com/benjamincanac.png" alt="Benjamin Canac" loading="lazy" />
+    <UAvatar src="https://github.com/romhml.png" alt="Romain Hamel" loading="lazy" />
+    <UAvatar src="https://github.com/noook.png" alt="Neil Richter" loading="lazy" />
   </UAvatarGroup>
 </template>
 ```
@@ -297,6 +255,6 @@ Wrap an avatar with a CSS mask to display it with a custom shape.
 </style>
 ```
 
-> \[!WARNING]
->
+> [!WARNING]
+> 
 > The `chip` prop does not work correctly when using a mask. Chips may be cut depending on the mask shape.

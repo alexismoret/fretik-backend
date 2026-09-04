@@ -19,6 +19,29 @@ const EMITS_RE = /defineEmits<\{([\s\S]*?)\}>/;
 const RUNTIME_PROPS_RE = /defineProps\(\s*\{([\s\S]*?)\}\s*\)/;
 const EXPORT_RE = /export\s+(?:const|function|class)\s+([A-Za-z_$][\w$]*)/g;
 const SCRIPT_RE = /<script[^>]*>([\s\S]*?)<\/script>/;
+const SCRIPT_BLOCK_RE = /<script[^>]*>[\s\S]*?<\/script>/g;
+
+/** `<UModal`, `<u-modal`, `</USlideover>` — every Nuxt UI tag in a template. */
+const USED_COMPONENT_RE = /<\/?[uU][A-Z-][A-Za-z0-9-]*/g;
+
+/** Past this the line stops being a reminder and becomes a second file. */
+const MAX_LISTED_COMPONENTS = 8;
+
+/**
+ * Which Nuxt UI components a file places.
+ *
+ * One scan, three readers: the manifest line below, the build's "placed
+ * without reading their API" warning, and the critic — which judges pixels and
+ * could never otherwise say that a screen of `UCard`s had a `UTimeline`
+ * available to it.
+ */
+export const componentsUsed = (content: string): string[] => [
+  ...new Set(
+    [...content.matchAll(USED_COMPONENT_RE)].map((match) =>
+      match[0].replace(/^<\/?/, ""),
+    ),
+  ),
+];
 
 /** `rows: Row[]; currency?: string` → `rows, currency?`. */
 const keysOf = (block: string): string[] =>
@@ -54,6 +77,17 @@ const signature = (path: string, content: string): string => {
   if (emits !== undefined) {
     const keys = keysOf(emits);
     if (keys.length > 0) parts.push(`emits: ${keys.join(", ")}`);
+  }
+  // The whole block, removed by position — slicing by the capture's LENGTH
+  // leaves the tail of the script behind, and a component named in a comment
+  // there would be reported as placed on screen.
+  const template = content.replace(SCRIPT_BLOCK_RE, "");
+  const used = componentsUsed(template).sort();
+  if (used.length > 0) {
+    const shown = used.slice(0, MAX_LISTED_COMPONENTS).join(", ");
+    parts.push(
+      `uses: ${shown}${used.length > MAX_LISTED_COMPONENTS ? ", …" : ""}`,
+    );
   }
   return parts.join(" · ");
 };

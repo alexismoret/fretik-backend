@@ -26,31 +26,13 @@ interface AccordionProps {
    * The key used to get the value from the item.
    * @default 'value'
    */
-  valueKey?:
-    | (keyof Extract<NestedItem<T>, object> & string)
-    | DotPathKeys<Extract<NestedItem<T>, object>>
-    | undefined;
+  valueKey?: keyof Extract<NestedItem<T>, object> & string | DotPathKeys<Extract<NestedItem<T>, object>> | undefined;
   /**
    * The key used to get the label from the item.
    * @default 'label'
    */
-  labelKey?:
-    | (keyof Extract<NestedItem<T>, object> & string)
-    | DotPathKeys<Extract<NestedItem<T>, object>>
-    | undefined;
-  ui?:
-    | {
-        root?: SlotClass;
-        item?: SlotClass;
-        header?: SlotClass;
-        trigger?: SlotClass;
-        content?: SlotClass;
-        body?: SlotClass;
-        leadingIcon?: SlotClass;
-        trailingIcon?: SlotClass;
-        label?: SlotClass;
-      }
-    | undefined;
+  labelKey?: keyof Extract<NestedItem<T>, object> & string | DotPathKeys<Extract<NestedItem<T>, object>> | undefined;
+  ui?: { root?: SlotClass; item?: SlotClass; header?: SlotClass; trigger?: SlotClass; content?: SlotClass; body?: SlotClass; leadingIcon?: SlotClass; trailingIcon?: SlotClass; label?: SlotClass; } | undefined;
   /**
    * When type is "single", allows closing content when clicking trigger for an open item.
    * When type is "multiple", this prop has no effect.
@@ -59,19 +41,19 @@ interface AccordionProps {
   collapsible?: boolean | undefined;
   /**
    * The default active value of the item(s).
-   *
+   * 
    * Use when you do not need to control the state of the item(s).
    */
   defaultValue?: string | string[] | undefined;
   /**
    * The controlled value of the active item(s).
-   *
+   * 
    * Use this when you need to control the state of the items. Can be binded with `v-model`
    */
   modelValue?: string | string[] | undefined;
   /**
    * Determines whether a "single" or "multiple" items can be selected at a time.
-   *
+   * 
    * This prop will overwrite the inferred type from `modelValue` and `defaultValue`.
    * @default 'single'
    */
@@ -115,31 +97,63 @@ interface AccordionEmits {
 }
 ```
 
+## Composition
+
+Parts placed by name: `#content`, `#body`.
+
+Also written in the docs and absent from the interface above — one per column or item: `#colors`.
+
+```vue
+<script setup lang="ts">
+import type { AccordionItem } from '@nuxt/ui'
+
+const items: AccordionItem[] = [
+  {
+    label: 'Icons',
+    icon: 'i-lucide-smile'
+  },
+  {
+    label: 'Colors',
+    icon: 'i-lucide-swatch-book'
+  },
+  {
+    label: 'Components',
+    icon: 'i-lucide-box'
+  }
+]
+</script>
+
+<template>
+  <UAccordion :items="items">
+    <template #body="{ item }">
+      This is the {{ item.label }} panel.
+    </template>
+  </UAccordion>
+</template>
+```
+
 ## Usage
 
 Use the Accordion component to display a list of collapsible items.
 
 ```vue
 <script setup lang="ts">
-import type { AccordionItem } from "@nuxt/ui";
+import type { AccordionItem } from '@nuxt/ui'
 
 const items = ref<AccordionItem[]>([
   {
     label: "Is Nuxt UI free to use?",
-    content:
-      "Yes! Nuxt UI is completely free and open source under the MIT license. All 125+ components are available to everyone.",
+    content: "Yes! Nuxt UI is completely free and open source under the MIT license. All 125+ components are available to everyone."
   },
   {
     label: "Can I use Nuxt UI with Vue without Nuxt?",
-    content:
-      "Yes! While optimized for Nuxt, Nuxt UI works perfectly with standalone Vue projects via our Vite plugin. You can follow the [installation guide](/docs/getting-started/installation/vue) to get started.",
+    content: "Yes! While optimized for Nuxt, Nuxt UI works perfectly with standalone Vue projects via our Vite plugin. You can follow the [installation guide](/docs/getting-started/installation/vue) to get started."
   },
   {
     label: "Is Nuxt UI production-ready?",
-    content:
-      "Yes! Nuxt UI is used in production by thousands of applications with extensive tests, regular updates, and active maintenance.",
-  },
-]);
+    content: "Yes! Nuxt UI is used in production by thousands of applications with extensive tests, regular updates, and active maintenance."
+  }
+])
 </script>
 
 <template>
@@ -151,39 +165,37 @@ const items = ref<AccordionItem[]>([
 
 Use the `items` prop as an array of objects with the following properties:
 
-- `label?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `icon?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `trailingIcon?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `content?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `value?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `disabled?: boolean`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- [`slot?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}](https://ui.nuxt.com/#with-custom-slot)
-- `class?: any`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `ui?: { item?: ClassNameValue, header?: ClassNameValue, trigger?: ClassNameValue, leadingIcon?: ClassNameValue, label?: ClassNameValue, trailingIcon?: ClassNameValue, content?: ClassNameValue, body?: ClassNameValue }`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
+- `label?: string`
+- `icon?: string`
+- `trailingIcon?: string`
+- `content?: string`
+- `value?: string`
+- `disabled?: boolean`
+- [`slot?: string`](#with-custom-slot)
+- `class?: any`
+- `ui?: { item?: ClassNameValue, header?: ClassNameValue, trigger?: ClassNameValue, leadingIcon?: ClassNameValue, label?: ClassNameValue, trailingIcon?: ClassNameValue, content?: ClassNameValue, body?: ClassNameValue }`
 
 ```vue
 <script setup lang="ts">
-import type { AccordionItem } from "@nuxt/ui";
+import type { AccordionItem } from '@nuxt/ui'
 
 const items = ref<AccordionItem[]>([
   {
     label: "Icons",
     icon: "i-lucide-smile",
-    content: "You have nothing to do, @nuxt/icon will handle it automatically.",
+    content: "You have nothing to do, @nuxt/icon will handle it automatically."
   },
   {
     label: "Colors",
     icon: "i-lucide-swatch-book",
-    content:
-      "Choose a primary and a neutral color from your Tailwind CSS theme.",
+    content: "Choose a primary and a neutral color from your Tailwind CSS theme."
   },
   {
     label: "Components",
     icon: "i-lucide-box",
-    content:
-      "You can customize components by using the `class` / `ui` props or in your app.config.ts.",
-  },
-]);
+    content: "You can customize components by using the `class` / `ui` props or in your app.config.ts."
+  }
+])
 </script>
 
 <template>
@@ -197,27 +209,25 @@ Set the `type` prop to `multiple` to allow multiple items to be active at the sa
 
 ```vue
 <script setup lang="ts">
-import type { AccordionItem } from "@nuxt/ui";
+import type { AccordionItem } from '@nuxt/ui'
 
 const items = ref<AccordionItem[]>([
   {
     label: "Icons",
     icon: "i-lucide-smile",
-    content: "You have nothing to do, @nuxt/icon will handle it automatically.",
+    content: "You have nothing to do, @nuxt/icon will handle it automatically."
   },
   {
     label: "Colors",
     icon: "i-lucide-swatch-book",
-    content:
-      "Choose a primary and a neutral color from your Tailwind CSS theme.",
+    content: "Choose a primary and a neutral color from your Tailwind CSS theme."
   },
   {
     label: "Components",
     icon: "i-lucide-box",
-    content:
-      "You can customize components by using the `class` / `ui` props or in your app.config.ts.",
-  },
-]);
+    content: "You can customize components by using the `class` / `ui` props or in your app.config.ts."
+  }
+])
 </script>
 
 <template>
@@ -231,27 +241,25 @@ When `type` is `single`, you can set the `collapsible` prop to `false` to preven
 
 ```vue
 <script setup lang="ts">
-import type { AccordionItem } from "@nuxt/ui";
+import type { AccordionItem } from '@nuxt/ui'
 
 const items = ref<AccordionItem[]>([
   {
     label: "Icons",
     icon: "i-lucide-smile",
-    content: "You have nothing to do, @nuxt/icon will handle it automatically.",
+    content: "You have nothing to do, @nuxt/icon will handle it automatically."
   },
   {
     label: "Colors",
     icon: "i-lucide-swatch-book",
-    content:
-      "Choose a primary and a neutral color from your Tailwind CSS theme.",
+    content: "Choose a primary and a neutral color from your Tailwind CSS theme."
   },
   {
     label: "Components",
     icon: "i-lucide-box",
-    content:
-      "You can customize components by using the `class` / `ui` props or in your app.config.ts.",
-  },
-]);
+    content: "You can customize components by using the `class` / `ui` props or in your app.config.ts."
+  }
+])
 </script>
 
 <template>
@@ -265,27 +273,25 @@ Use the `unmount-on-hide` prop to prevent the content from being unmounted when 
 
 ```vue
 <script setup lang="ts">
-import type { AccordionItem } from "@nuxt/ui";
+import type { AccordionItem } from '@nuxt/ui'
 
 const items = ref<AccordionItem[]>([
   {
     label: "Icons",
     icon: "i-lucide-smile",
-    content: "You have nothing to do, @nuxt/icon will handle it automatically.",
+    content: "You have nothing to do, @nuxt/icon will handle it automatically."
   },
   {
     label: "Colors",
     icon: "i-lucide-swatch-book",
-    content:
-      "Choose a primary and a neutral color from your Tailwind CSS theme.",
+    content: "Choose a primary and a neutral color from your Tailwind CSS theme."
   },
   {
     label: "Components",
     icon: "i-lucide-box",
-    content:
-      "You can customize components by using the `class` / `ui` props or in your app.config.ts.",
-  },
-]);
+    content: "You can customize components by using the `class` / `ui` props or in your app.config.ts."
+  }
+])
 </script>
 
 <template>
@@ -293,8 +299,8 @@ const items = ref<AccordionItem[]>([
 </template>
 ```
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > You can inspect the DOM to see each item's content being rendered.
 
 ### Disabled
@@ -305,28 +311,26 @@ You can also disable a specific item by using the `disabled` property in the ite
 
 ```vue
 <script setup lang="ts">
-import type { AccordionItem } from "@nuxt/ui";
+import type { AccordionItem } from '@nuxt/ui'
 
 const items = ref<AccordionItem[]>([
   {
     label: "Icons",
     icon: "i-lucide-smile",
-    content: "You have nothing to do, @nuxt/icon will handle it automatically.",
+    content: "You have nothing to do, @nuxt/icon will handle it automatically."
   },
   {
     label: "Colors",
     icon: "i-lucide-swatch-book",
-    content:
-      "Choose a primary and a neutral color from your Tailwind CSS theme.",
-    disabled: true,
+    content: "Choose a primary and a neutral color from your Tailwind CSS theme.",
+    disabled: true
   },
   {
     label: "Components",
     icon: "i-lucide-box",
-    content:
-      "You can customize components by using the `class` / `ui` props or in your app.config.ts.",
-  },
-]);
+    content: "You can customize components by using the `class` / `ui` props or in your app.config.ts."
+  }
+])
 </script>
 
 <template>
@@ -338,34 +342,32 @@ const items = ref<AccordionItem[]>([
 
 Use the `trailing-icon` prop to customize the trailing [Icon](https://ui.nuxt.com/docs/components/icon) of each item. Defaults to `i-lucide-chevron-down`.
 
-> \[!TIP]
->
+> [!TIP]
+> 
 > You can also set an icon for a specific item by using the `trailingIcon` property in the item object.
 
 ```vue
 <script setup lang="ts">
-import type { AccordionItem } from "@nuxt/ui";
+import type { AccordionItem } from '@nuxt/ui'
 
 const items = ref<AccordionItem[]>([
   {
     label: "Icons",
     icon: "i-lucide-smile",
     content: "You have nothing to do, @nuxt/icon will handle it automatically.",
-    trailingIcon: "i-lucide-plus",
+    trailingIcon: "i-lucide-plus"
   },
   {
     label: "Colors",
     icon: "i-lucide-swatch-book",
-    content:
-      "Choose a primary and a neutral color from your Tailwind CSS theme.",
+    content: "Choose a primary and a neutral color from your Tailwind CSS theme."
   },
   {
     label: "Components",
     icon: "i-lucide-box",
-    content:
-      "You can customize components by using the `class` / `ui` props or in your app.config.ts.",
-  },
-]);
+    content: "You can customize components by using the `class` / `ui` props or in your app.config.ts."
+  }
+])
 </script>
 
 <template>
@@ -383,36 +385,34 @@ You can control the active item by using the `default-value` prop or the `v-mode
 
 ```vue [AccordionModelValueExample.vue]
 <script setup lang="ts">
-import type { AccordionItem } from "@nuxt/ui";
+import type { AccordionItem } from '@nuxt/ui'
 
 const items: AccordionItem[] = [
   {
-    label: "Icons",
-    icon: "i-lucide-smile",
-    content: "You have nothing to do, @nuxt/icon will handle it automatically.",
+    label: 'Icons',
+    icon: 'i-lucide-smile',
+    content: 'You have nothing to do, @nuxt/icon will handle it automatically.'
   },
   {
-    label: "Colors",
-    icon: "i-lucide-swatch-book",
-    content:
-      "Choose a primary and a neutral color from your Tailwind CSS theme.",
+    label: 'Colors',
+    icon: 'i-lucide-swatch-book',
+    content: 'Choose a primary and a neutral color from your Tailwind CSS theme.'
   },
   {
-    label: "Components",
-    icon: "i-lucide-box",
-    content:
-      "You can customize components by using the `class` / `ui` props or in your app.config.ts.",
-  },
-];
+    label: 'Components',
+    icon: 'i-lucide-box',
+    content: 'You can customize components by using the `class` / `ui` props or in your app.config.ts.'
+  }
+]
 
-const active = ref("0");
+const active = ref('0')
 
 // Note: This is for demonstration purposes only. Don't do this at home.
 onMounted(() => {
   setInterval(() => {
-    active.value = String((Number(active.value) + 1) % items.length);
-  }, 2000);
-});
+    active.value = String((Number(active.value) + 1) % items.length)
+  }, 2000)
+})
 </script>
 
 <template>
@@ -420,48 +420,46 @@ onMounted(() => {
 </template>
 ```
 
-> \[!TIP]
->
+> [!TIP]
+> 
 > Use the `value-key` prop to change the key used to match items when a `v-model` or `default-value` is provided.
 
-> \[!CAUTION]
->
+> [!CAUTION]
+> 
 > When `type="multiple"`, ensure to pass an array to the `default-value` prop or the `v-model` directive.
 
 ### With drag and drop
 
-Use the [`useSortable`](https://vueuse.org/integrations/useSortable/){rel="&#x22;nofollow&#x22;"} composable from [`@vueuse/integrations`](https://vueuse.org/integrations/README.html){rel="&#x22;nofollow&#x22;"} to enable drag and drop functionality on the Accordion. This integration wraps [Sortable.js](https://sortablejs.github.io/Sortable/){rel="&#x22;nofollow&#x22;"} to provide a seamless drag and drop experience.
+Use the [`useSortable`](https://vueuse.org/integrations/useSortable/) composable from [`@vueuse/integrations`](https://vueuse.org/integrations/README.html) to enable drag and drop functionality on the Accordion. This integration wraps [Sortable.js](https://sortablejs.github.io/Sortable/) to provide a seamless drag and drop experience.
 
 ```vue [AccordionDragAndDropExample.vue]
 <script setup lang="ts">
-import type { AccordionItem } from "@nuxt/ui";
-import { useSortable } from "@vueuse/integrations/useSortable";
+import type { AccordionItem } from '@nuxt/ui'
+import { useSortable } from '@vueuse/integrations/useSortable'
 
 const items = shallowRef<AccordionItem[]>([
   {
-    label: "Icons",
-    icon: "i-lucide-smile",
-    content: "You have nothing to do, @nuxt/icon will handle it automatically.",
+    label: 'Icons',
+    icon: 'i-lucide-smile',
+    content: 'You have nothing to do, @nuxt/icon will handle it automatically.'
   },
   {
-    label: "Colors",
-    icon: "i-lucide-swatch-book",
-    content:
-      "Choose a primary and a neutral color from your Tailwind CSS theme.",
+    label: 'Colors',
+    icon: 'i-lucide-swatch-book',
+    content: 'Choose a primary and a neutral color from your Tailwind CSS theme.'
   },
   {
-    label: "Components",
-    icon: "i-lucide-box",
-    content:
-      "You can customize components by using the `class` / `ui` props or in your app.config.ts.",
-  },
-]);
+    label: 'Components',
+    icon: 'i-lucide-box',
+    content: 'You can customize components by using the `class` / `ui` props or in your app.config.ts.'
+  }
+])
 
-const accordion = useTemplateRef<HTMLElement>("accordion");
+const accordion = useTemplateRef<HTMLElement>('accordion')
 
 useSortable(accordion, items, {
-  animation: 150,
-});
+  animation: 150
+})
 </script>
 
 <template>
@@ -475,34 +473,36 @@ Use the `#body` slot to customize the body of each item.
 
 ```vue [AccordionBodySlotExample.vue]
 <script setup lang="ts">
-import type { AccordionItem } from "@nuxt/ui";
+import type { AccordionItem } from '@nuxt/ui'
 
 const items: AccordionItem[] = [
   {
-    label: "Icons",
-    icon: "i-lucide-smile",
+    label: 'Icons',
+    icon: 'i-lucide-smile'
   },
   {
-    label: "Colors",
-    icon: "i-lucide-swatch-book",
+    label: 'Colors',
+    icon: 'i-lucide-swatch-book'
   },
   {
-    label: "Components",
-    icon: "i-lucide-box",
-  },
-];
+    label: 'Components',
+    icon: 'i-lucide-box'
+  }
+]
 </script>
 
 <template>
   <UAccordion :items="items">
-    <template #body="{ item }"> This is the {{ item.label }} panel. </template>
+    <template #body="{ item }">
+      This is the {{ item.label }} panel.
+    </template>
   </UAccordion>
 </template>
 ```
 
-> \[!TIP]
->
-> The `#body` slot includes some pre-defined styles, use the [`#content` slot](https://ui.nuxt.com/#with-content-slot) if you want to start from scratch.
+> [!TIP]
+> 
+> The `#body` slot includes some pre-defined styles, use the [`#content` slot](#with-content-slot) if you want to start from scratch.
 
 ### With content slot
 
@@ -510,22 +510,22 @@ Use the `#content` slot to customize the content of each item.
 
 ```vue [AccordionContentSlotExample.vue]
 <script setup lang="ts">
-import type { AccordionItem } from "@nuxt/ui";
+import type { AccordionItem } from '@nuxt/ui'
 
 const items: AccordionItem[] = [
   {
-    label: "Icons",
-    icon: "i-lucide-smile",
+    label: 'Icons',
+    icon: 'i-lucide-smile'
   },
   {
-    label: "Colors",
-    icon: "i-lucide-swatch-book",
+    label: 'Colors',
+    icon: 'i-lucide-swatch-book'
   },
   {
-    label: "Components",
-    icon: "i-lucide-box",
-  },
-];
+    label: 'Components',
+    icon: 'i-lucide-box'
+  }
+]
 </script>
 
 <template>
@@ -538,5 +538,6 @@ const items: AccordionItem[] = [
   </UAccordion>
 </template>
 ```
+
 
 _(truncated — ask for fewer components to see more, or rely on the API block above)_

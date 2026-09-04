@@ -33,7 +33,7 @@ interface PricingPlansProps {
    * @default false
    */
   scale?: boolean | undefined;
-  ui?: { base?: any } | undefined;
+  ui?: { base?: any; } | undefined;
 }
 ```
 
@@ -61,20 +61,28 @@ interface PricingPlansSlots {
 }
 ```
 
+## Composition
+
+Parts placed by name: `#badge`, `#price`, `#discount`, `#billing`, `#features`, `#button`, `#body`, `#tagline`, `#terms`.
+
 ## Usage
 
 The PricingPlans component provides a flexible layout to display a list of [PricingPlan](https://ui.nuxt.com/docs/components/pricing-plan) components using either the default slot or the `plans` prop.
 
-```vue {2,8}
+```vue
 <template>
   <UPricingPlans>
-    <UPricingPlan v-for="(plan, index) in plans" :key="index" v-bind="plan" />
+    <UPricingPlan
+      v-for="(plan, index) in plans"
+      :key="index"
+      v-bind="plan"
+    />
   </UPricingPlans>
 </template>
 ```
 
-> \[!TIP]
->
+> [!TIP]
+> 
 > The grid columns will be automatically calculated based on the number of plans, this works with the `plans` prop but also with the default slot.
 
 ### Plans
@@ -83,37 +91,46 @@ Use the `plans` prop as an array of objects with the properties of the [PricingP
 
 ```vue
 <script setup lang="ts">
-import type { PricingPlanProps } from "@nuxt/ui";
+import type { PricingPlanProps } from '@nuxt/ui'
 
 const plans = ref<PricingPlanProps[]>([
   {
     title: "Solo",
     description: "Tailored for indie hackers.",
     price: "$249",
-    features: ["One developer", "Lifetime access"],
+    features: [
+      "One developer",
+      "Lifetime access"
+    ],
     button: {
-      label: "Buy now",
-    },
+      label: "Buy now"
+    }
   },
   {
     title: "Startup",
     description: "Best suited for small teams.",
     price: "$499",
-    features: ["Up to 5 developers", "Everything in Solo"],
+    features: [
+      "Up to 5 developers",
+      "Everything in Solo"
+    ],
     button: {
-      label: "Buy now",
-    },
+      label: "Buy now"
+    }
   },
   {
     title: "Organization",
     description: "Ideal for larger teams and organizations.",
     price: "$999",
-    features: ["Up to 20 developers", "Everything in Startup"],
+    features: [
+      "Up to 20 developers",
+      "Everything in Startup"
+    ],
     button: {
-      label: "Buy now",
-    },
-  },
-]);
+      label: "Buy now"
+    }
+  }
+])
 </script>
 
 <template>
@@ -127,37 +144,46 @@ Use the `orientation` prop to change the orientation of the PricingPlans. Defaul
 
 ```vue
 <script setup lang="ts">
-import type { PricingPlanProps } from "@nuxt/ui";
+import type { PricingPlanProps } from '@nuxt/ui'
 
 const plans = ref<PricingPlanProps[]>([
   {
     title: "Solo",
     description: "Tailored for indie hackers.",
     price: "$249",
-    features: ["One developer", "Lifetime access"],
+    features: [
+      "One developer",
+      "Lifetime access"
+    ],
     button: {
-      label: "Buy now",
-    },
+      label: "Buy now"
+    }
   },
   {
     title: "Startup",
     description: "Best suited for small teams.",
     price: "$499",
-    features: ["Up to 5 developers", "Everything in Solo"],
+    features: [
+      "Up to 5 developers",
+      "Everything in Solo"
+    ],
     button: {
-      label: "Buy now",
-    },
+      label: "Buy now"
+    }
   },
   {
     title: "Organization",
     description: "Ideal for larger teams and organizations.",
     price: "$999",
-    features: ["Up to 20 developers", "Everything in Startup"],
+    features: [
+      "Up to 20 developers",
+      "Everything in Startup"
+    ],
     button: {
-      label: "Buy now",
-    },
-  },
-]);
+      label: "Buy now"
+    }
+  }
+])
 </script>
 
 <template>
@@ -165,8 +191,8 @@ const plans = ref<PricingPlanProps[]>([
 </template>
 ```
 
-> \[!TIP]
->
+> [!TIP]
+> 
 > When using the `plans` prop instead of the default slot, the `orientation` of the plans is automatically reversed, `horizontal` to `vertical` and vice versa.
 
 ### Compact
@@ -175,38 +201,47 @@ Use the `compact` prop to reduce the padding between the plans when one of the p
 
 ```vue
 <script setup lang="ts">
-import type { PricingPlanProps } from "@nuxt/ui";
+import type { PricingPlanProps } from '@nuxt/ui'
 
 const plans = ref<PricingPlanProps[]>([
   {
     title: "Solo",
     description: "Tailored for indie hackers.",
     price: "$249",
-    features: ["One developer", "Lifetime access"],
+    features: [
+      "One developer",
+      "Lifetime access"
+    ],
     button: {
-      label: "Buy now",
-    },
+      label: "Buy now"
+    }
   },
   {
     title: "Startup",
     description: "Best suited for small teams.",
     price: "$499",
     scale: true,
-    features: ["Up to 5 developers", "Everything in Solo"],
+    features: [
+      "Up to 5 developers",
+      "Everything in Solo"
+    ],
     button: {
-      label: "Buy now",
-    },
+      label: "Buy now"
+    }
   },
   {
     title: "Organization",
     description: "Ideal for larger teams and organizations.",
     price: "$999",
-    features: ["Up to 20 developers", "Everything in Startup"],
+    features: [
+      "Up to 20 developers",
+      "Everything in Startup"
+    ],
     button: {
-      label: "Buy now",
-    },
-  },
-]);
+      label: "Buy now"
+    }
+  }
+])
 </script>
 
 <template>
@@ -220,38 +255,47 @@ Use the `scale` prop to adjust the spacing between the plans when one of the pla
 
 ```vue
 <script setup lang="ts">
-import type { PricingPlanProps } from "@nuxt/ui";
+import type { PricingPlanProps } from '@nuxt/ui'
 
 const plans = ref<PricingPlanProps[]>([
   {
     title: "Solo",
     description: "Tailored for indie hackers.",
     price: "$249",
-    features: ["One developer", "Lifetime access"],
+    features: [
+      "One developer",
+      "Lifetime access"
+    ],
     button: {
-      label: "Buy now",
-    },
+      label: "Buy now"
+    }
   },
   {
     title: "Startup",
     description: "Best suited for small teams.",
     price: "$499",
     scale: true,
-    features: ["Up to 5 developers", "Everything in Solo"],
+    features: [
+      "Up to 5 developers",
+      "Everything in Solo"
+    ],
     button: {
-      label: "Buy now",
-    },
+      label: "Buy now"
+    }
   },
   {
     title: "Organization",
     description: "Ideal for larger teams and organizations.",
     price: "$999",
-    features: ["Up to 20 developers", "Everything in Startup"],
+    features: [
+      "Up to 20 developers",
+      "Everything in Startup"
+    ],
     button: {
-      label: "Buy now",
-    },
-  },
-]);
+      label: "Buy now"
+    }
+  }
+])
 </script>
 
 <template>
@@ -263,19 +307,17 @@ _(truncated — ask for fewer components to see more, or rely on the API block a
 
 ## Examples
 
-> \[!NOTE]
->
-> While these examples use [Nuxt Content](https://content.nuxt.com){rel="&#x22;nofollow&#x22;"}, the components can be integrated with any content management system.
+> [!NOTE]
+> 
+> While these examples use [Nuxt Content](https://content.nuxt.com), the components can be integrated with any content management system.
 
 ### Within a page
 
 Use the PricingPlans component in a page to create a pricing page:
 
-```vue [pages/pricing/index.vue] {11}
+```vue [pages/pricing/index.vue]
 <script setup lang="ts">
-const { data: plans } = await useAsyncData("plans", () =>
-  queryCollection("plans").all(),
-);
+const { data: plans } = await useAsyncData('plans', () => queryCollection('plans').all())
 </script>
 
 <template>
@@ -291,6 +333,6 @@ const { data: plans } = await useAsyncData("plans", () =>
 </template>
 ```
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > In this example, the `plans` are fetched using `queryCollection` from the `@nuxt/content` module.

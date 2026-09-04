@@ -37,15 +37,7 @@ interface InputRatingProps {
   /**
    * @default 'primary'
    */
-  color?:
-    | "primary"
-    | "secondary"
-    | "success"
-    | "info"
-    | "warning"
-    | "error"
-    | "neutral"
-    | undefined;
+  color?: "primary" | "secondary" | "success" | "info" | "warning" | "error" | "neutral" | undefined;
   /**
    * @default 'md'
    */
@@ -55,15 +47,7 @@ interface InputRatingProps {
    * @default 'horizontal'
    */
   orientation?: "horizontal" | "vertical" | undefined;
-  ui?:
-    | {
-        root?: SlotClass;
-        item?: SlotClass;
-        indicator?: SlotClass;
-        icon?: SlotClass;
-        emptyIcon?: SlotClass;
-      }
-    | undefined;
+  ui?: { root?: SlotClass; item?: SlotClass; indicator?: SlotClass; icon?: SlotClass; emptyIcon?: SlotClass; } | undefined;
   /**
    * The granularity each rating item is divided into.
    * @default 1
@@ -134,13 +118,17 @@ interface InputRatingEmits {
 }
 ```
 
+## Composition
+
+Parts placed by name: `#item`.
+
 ## Usage
 
 Use the `v-model` directive to control the rating value of the InputRating component.
 
 ```vue
 <script setup lang="ts">
-const value = ref(3);
+const value = ref(3)
 </script>
 
 <template>
@@ -208,16 +196,16 @@ Use the `icon` prop to customize the icon used for stars. Defaults to `i-lucide-
 
 **Nuxt:**
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/getting-started/integrations/icons/nuxt#theme
->
+> 
 > You can customize the default star icon globally in your `app.config.ts` under `ui.icons.star` key.
 
 **Vue:**
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/getting-started/integrations/icons/vue#theme
->
+> 
 > You can customize the default star icon globally in your `vite.config.ts` under `ui.icons.star` key.
 
 ### Empty Icon
@@ -226,11 +214,7 @@ Use the `empty-icon` prop to customize the icon used for empty stars. If not pro
 
 ```vue
 <template>
-  <UInputRating
-    empty-icon="i-ph-star"
-    icon="i-ph-star-fill"
-    :default-value="3"
-  />
+  <UInputRating empty-icon="i-ph-star" icon="i-ph-star-fill" :default-value="3" />
 </template>
 ```
 

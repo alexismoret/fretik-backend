@@ -155,9 +155,9 @@ interface ChatPromptSubmitProps {
 }
 ```
 
-> \[!NOTE]
-> See: https\://developer.mozilla.org/en-US/docs/Web/HTML/Element/button#attributes
->
+> [!NOTE]
+> See: https://developer.mozilla.org/en-US/docs/Web/HTML/Element/button#attributes
+> 
 > This component also supports all native `<button>` HTML attributes.
 
 ### Slots
@@ -193,69 +193,23 @@ It extends the [Button](https://ui.nuxt.com/docs/components/button) component, s
 
 ```vue
 <template>
-  <u-chat-prompt-submit />
-  <template v-slot:code=>
-  <pre className=language-vue shiki shiki-themes material-theme-lighter material-theme material-theme-palenight code=<template>
-    <UChatPrompt>
-      <UChatPromptSubmit />
-    </UChatPrompt>
-  </template>
-   language=vue meta= style=>
-  <code __ignoreMap=>
-  <span class=line>
-  <span class=sMK4o>
-  <</span>
-  <span class=swJcz>
-  template</span>
-  <span class=sMK4o>
-  >
-  </span></span>
-  <span class=line>
-  <span class=sMK4o>
-    <</span>
-  <span class=swJcz>
-  UChatPrompt</span>
-  <span class=sMK4o>
-  >
-  </span></span>
-  <span class=line>
-  <span class=sMK4o>
-      <</span>
-  <span class=swJcz>
-  UChatPromptSubmit</span>
-  <span class=sMK4o>
-   />
-  </span></span>
-  <span class=line>
-  <span class=sMK4o>
-    </</span>
-  <span class=swJcz>
-  UChatPrompt</span>
-  <span class=sMK4o>
-  >
-  </span></span>
-  <span class=line>
-  <span class=sMK4o>
-  </</span>
-  <span class=swJcz>
-  template</span>
-  <span class=sMK4o>
-  >
-  </span></span></code></pre></template>
+  <UChatPrompt>
+    <UChatPromptSubmit />
+  </UChatPrompt>
 </template>
 ```
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > You can also use it inside the `footer` slot of the [`ChatPrompt`](https://ui.nuxt.com/docs/components/chat-prompt) component.
 
 ### Ready
 
-When its status is `ready`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}, use the `color`, `variant` and `icon` props to customize the Button. Defaults to:
+When its status is `ready`, use the `color`, `variant` and `icon` props to customize the Button. Defaults to:
 
-- `color="primary"`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `variant="solid"`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `icon="i-lucide-arrow-up"`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
+- `color="primary"`
+- `variant="solid"`
+- `icon="i-lucide-arrow-up"`
 
 ```vue
 <template>
@@ -265,132 +219,117 @@ When its status is `ready`{.shiki,shiki-themes,material-theme-lighter,material-t
 
 **Nuxt:**
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/getting-started/integrations/icons/nuxt#theme
->
+> 
 > You can customize this icon globally in your `app.config.ts` under `ui.icons.arrowUp` key.
 
 **Vue:**
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/getting-started/integrations/icons/vue#theme
->
+> 
 > You can customize this icon globally in your `vite.config.ts` under `ui.icons.arrowUp` key.
 
 ### Submitted
 
-When its status is `submitted`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}, use the `submitted-color`, `submitted-variant` and `submitted-icon` props to customize the Button. Defaults to:
+When its status is `submitted`, use the `submitted-color`, `submitted-variant` and `submitted-icon` props to customize the Button. Defaults to:
 
-- `submittedColor="neutral"`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `submittedVariant="subtle"`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `submittedIcon="i-lucide-square"`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
+- `submittedColor="neutral"`
+- `submittedVariant="subtle"`
+- `submittedIcon="i-lucide-square"`
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > The `stop` event is emitted when the user clicks on the Button.
 
 ```vue
 <template>
-  <UChatPromptSubmit
-    submitted-color="neutral"
-    submitted-variant="subtle"
-    submitted-icon="i-lucide-square"
-    status="submitted"
-  />
+  <UChatPromptSubmit submitted-color="neutral" submitted-variant="subtle" submitted-icon="i-lucide-square" status="submitted" />
 </template>
 ```
 
 **Nuxt:**
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/getting-started/integrations/icons/nuxt#theme
->
+> 
 > You can customize this icon globally in your `app.config.ts` under `ui.icons.stop` key.
 
 **Vue:**
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/getting-started/integrations/icons/vue#theme
->
+> 
 > You can customize this icon globally in your `vite.config.ts` under `ui.icons.stop` key.
 
 ### Streaming
 
-When its status is `streaming`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}, use the `streaming-color`, `streaming-variant` and `streaming-icon` props to customize the Button. Defaults to:
+When its status is `streaming`, use the `streaming-color`, `streaming-variant` and `streaming-icon` props to customize the Button. Defaults to:
 
-- `streamingColor="neutral"`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `streamingVariant="subtle"`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `streamingIcon="i-lucide-square"`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
+- `streamingColor="neutral"`
+- `streamingVariant="subtle"`
+- `streamingIcon="i-lucide-square"`
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > The `stop` event is emitted when the user clicks on the Button.
 
 ```vue
 <template>
-  <UChatPromptSubmit
-    streaming-color="neutral"
-    streaming-variant="subtle"
-    streaming-icon="i-lucide-square"
-    status="streaming"
-  />
+  <UChatPromptSubmit streaming-color="neutral" streaming-variant="subtle" streaming-icon="i-lucide-square" status="streaming" />
 </template>
 ```
 
 **Nuxt:**
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/getting-started/integrations/icons/nuxt#theme
->
+> 
 > You can customize this icon globally in your `app.config.ts` under `ui.icons.stop` key.
 
 **Vue:**
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/getting-started/integrations/icons/vue#theme
->
+> 
 > You can customize this icon globally in your `vite.config.ts` under `ui.icons.stop` key.
 
 ### Error
 
-When its status is `error`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}, use the `error-color`, `error-variant` and `error-icon` props to customize the Button. Defaults to:
+When its status is `error`, use the `error-color`, `error-variant` and `error-icon` props to customize the Button. Defaults to:
 
-- `errorColor="error"`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `errorVariant="soft"`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `errorIcon="i-lucide-rotate-ccw"`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
+- `errorColor="error"`
+- `errorVariant="soft"`
+- `errorIcon="i-lucide-rotate-ccw"`
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > The `reload` event is emitted when the user clicks on the Button.
 
 ```vue
 <template>
-  <UChatPromptSubmit
-    error-color="error"
-    error-variant="soft"
-    error-icon="i-lucide-rotate-ccw"
-    status="error"
-  />
+  <UChatPromptSubmit error-color="error" error-variant="soft" error-icon="i-lucide-rotate-ccw" status="error" />
 </template>
 ```
 
 **Nuxt:**
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/getting-started/integrations/icons/nuxt#theme
->
+> 
 > You can customize this icon globally in your `app.config.ts` under `ui.icons.reload` key.
 
 **Vue:**
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/getting-started/integrations/icons/vue#theme
->
+> 
 > You can customize this icon globally in your `vite.config.ts` under `ui.icons.reload` key.
 
 ## Examples
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/components/chat
->
+> 
 > Check the **Chat** overview page for installation instructions, server setup and usage examples.

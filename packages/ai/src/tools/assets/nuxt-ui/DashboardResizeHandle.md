@@ -16,7 +16,7 @@ interface DashboardResizeHandleProps {
    * @default 'div'
    */
   as?: any;
-  ui?: { base?: any } | undefined;
+  ui?: { base?: any; } | undefined;
 }
 ```
 
@@ -31,6 +31,10 @@ interface DashboardResizeHandleSlots {
 }
 ```
 
+## Composition
+
+Also written in the docs and absent from the interface above — one per column or item: `#resize-handle`.
+
 ## Usage
 
 The DashboardResizeHandle component is used by the [DashboardSidebar](https://ui.nuxt.com/docs/components/dashboard-sidebar) and [DashboardPanel](https://ui.nuxt.com/docs/components/dashboard-panel) components.
@@ -43,7 +47,7 @@ It is automatically displayed when the `resizable` prop is set, **you don't have
 
 Even though this component is automatically displayed when the `resizable` prop is set, you can use the `resize-handle` slot of the [DashboardSidebar](https://ui.nuxt.com/docs/components/dashboard-sidebar) and [DashboardPanel](https://ui.nuxt.com/docs/components/dashboard-panel) components to customize the handle.
 
-```vue [layouts/dashboard.vue] {4-10}
+```vue [layouts/dashboard.vue]
 <template>
   <UDashboardGroup>
     <UDashboardSidebar resizable>
@@ -62,11 +66,11 @@ Even though this component is automatically displayed when the `resizable` prop 
 </template>
 ```
 
-```vue [pages/index.vue] {9-15}
+```vue [pages/index.vue]
 <script setup lang="ts">
 definePageMeta({
-  layout: "dashboard",
-});
+  layout: 'dashboard'
+})
 </script>
 
 <template>
@@ -83,6 +87,6 @@ definePageMeta({
 </template>
 ```
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > In this example, we add an `after` pseudo-element to display a vertical line on hover.

@@ -34,36 +34,13 @@ interface ProgressGroupProps {
    * Any theme color, or any CSS color value for palettes outside the theme.
    * @default 'primary'
    */
-  color?:
-    | "primary"
-    | "secondary"
-    | "success"
-    | "info"
-    | "warning"
-    | "error"
-    | "neutral"
-    | (string & {})
-    | undefined;
+  color?: "primary" | "secondary" | "success" | "info" | "warning" | "error" | "neutral" | string & {} | undefined;
   /**
    * The orientation of the progress bar.
    * @default 'horizontal'
    */
   orientation?: "horizontal" | "vertical" | undefined;
-  ui?:
-    | {
-        root?: SlotClass;
-        base?: SlotClass;
-        segment?: SlotClass;
-        indicator?: SlotClass;
-        status?: SlotClass;
-        list?: SlotClass;
-        item?: SlotClass;
-        itemLeadingIcon?: SlotClass;
-        itemLeadingDot?: SlotClass;
-        itemLabel?: SlotClass;
-        itemTrailing?: SlotClass;
-      }
-    | undefined;
+  ui?: { root?: SlotClass; base?: SlotClass; segment?: SlotClass; indicator?: SlotClass; status?: SlotClass; list?: SlotClass; item?: SlotClass; itemLeadingIcon?: SlotClass; itemLeadingDot?: SlotClass; itemLabel?: SlotClass; itemTrailing?: SlotClass; } | undefined;
 }
 ```
 
@@ -82,40 +59,69 @@ interface ProgressGroupSlots {
 }
 ```
 
+## Composition
+
+Parts placed by name: `#status`, `#item`, `#item-leading`, `#item-label`, `#item-trailing`.
+
+```vue
+<script setup lang="ts">
+import type { ProgressGroupItem } from '@nuxt/ui'
+
+const items: ProgressGroupItem[] = [
+  { label: 'System', value: 24, color: 'neutral' },
+  { label: 'Apps', value: 8, color: 'error' },
+  { label: 'Documents', value: 12, color: 'warning' },
+  { label: 'Multimedia', value: 42, color: 'success' }
+]
+</script>
+
+<template>
+  <UProgressGroup :items="items" :max="128" class="w-96">
+    <template #item-label="{ item }">
+      <span class="font-medium">{{ item.label }}</span>
+    </template>
+
+    <template #item-trailing="{ item }">
+      {{ item.value }}GB
+    </template>
+  </UProgressGroup>
+</template>
+```
+
 ## Usage
 
 Use the ProgressGroup component to display multiple values as segments of a single progress bar.
 
 ```vue
 <script setup lang="ts">
-import type { ProgressGroupItem } from "@nuxt/ui";
+import type { ProgressGroupItem } from '@nuxt/ui'
 
 const items = ref<ProgressGroupItem[]>([
   {
     label: "System",
     value: 24,
     color: "neutral",
-    icon: "i-lucide-cog",
+    icon: "i-lucide-cog"
   },
   {
     label: "Apps",
     value: 8,
     color: "error",
-    icon: "i-lucide-app-window",
+    icon: "i-lucide-app-window"
   },
   {
     label: "Documents",
     value: 12,
     color: "warning",
-    icon: "i-lucide-file",
+    icon: "i-lucide-file"
   },
   {
     label: "Multimedia",
     value: 42,
     color: "success",
-    icon: "i-lucide-film",
-  },
-]);
+    icon: "i-lucide-film"
+  }
+])
 </script>
 
 <template>
@@ -127,35 +133,35 @@ const items = ref<ProgressGroupItem[]>([
 
 Use the `items` prop as an array of objects with the following properties:
 
-- `label?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `icon?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `value?: number`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- [`color?: "primary" | "secondary" | "success" | "info" | "warning" | "error" | "neutral" | (string & {})`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}](https://ui.nuxt.com/#with-custom-colors)
-- `slot?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `class?: any`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `ui?: { segment?: ClassNameValue, indicator?: ClassNameValue, item?: ClassNameValue, itemLeadingIcon?: ClassNameValue, itemLeadingDot?: ClassNameValue, itemLabel?: ClassNameValue, itemTrailing?: ClassNameValue }`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
+- `label?: string`
+- `icon?: string`
+- `value?: number`
+- [`color?: "primary" | "secondary" | "success" | "info" | "warning" | "error" | "neutral" | (string & {})`](#with-custom-colors)
+- `slot?: string`
+- `class?: any`
+- `ui?: { segment?: ClassNameValue, indicator?: ClassNameValue, item?: ClassNameValue, itemLeadingIcon?: ClassNameValue, itemLeadingDot?: ClassNameValue, itemLabel?: ClassNameValue, itemTrailing?: ClassNameValue }`
 
 ```vue
 <script setup lang="ts">
-import type { ProgressGroupItem } from "@nuxt/ui";
+import type { ProgressGroupItem } from '@nuxt/ui'
 
 const items = ref<ProgressGroupItem[]>([
   {
     label: "Compute",
     value: 42,
-    color: "primary",
+    color: "primary"
   },
   {
     label: "Storage",
     value: 18,
-    color: "info",
+    color: "info"
   },
   {
     label: "Bandwidth",
     value: 9,
-    color: "warning",
-  },
-]);
+    color: "warning"
+  }
+])
 </script>
 
 <template>
@@ -163,8 +169,8 @@ const items = ref<ProgressGroupItem[]>([
 </template>
 ```
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > Items without an `icon` get a colored dot in the list instead.
 
 ### Max
@@ -173,20 +179,20 @@ Use the `max` prop to set the value all items add up to. Defaults to `100`.
 
 ```vue
 <script setup lang="ts">
-import type { ProgressGroupItem } from "@nuxt/ui";
+import type { ProgressGroupItem } from '@nuxt/ui'
 
 const items = ref<ProgressGroupItem[]>([
   {
     label: "Used",
     value: 128,
-    color: "primary",
+    color: "primary"
   },
   {
     label: "Reserved",
     value: 64,
-    color: "neutral",
-  },
-]);
+    color: "neutral"
+  }
+])
 </script>
 
 <template>
@@ -194,8 +200,8 @@ const items = ref<ProgressGroupItem[]>([
 </template>
 ```
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > Values are clamped between `0` and `max`, and segments that add up to more than `max` share the track proportionally.
 
 ### Status
@@ -204,25 +210,25 @@ Use the `status` prop to display the summed value above the bar.
 
 ```vue
 <script setup lang="ts">
-import type { ProgressGroupItem } from "@nuxt/ui";
+import type { ProgressGroupItem } from '@nuxt/ui'
 
 const items = ref<ProgressGroupItem[]>([
   {
     label: "System",
     value: 24,
-    color: "neutral",
+    color: "neutral"
   },
   {
     label: "Apps",
     value: 8,
-    color: "error",
+    color: "error"
   },
   {
     label: "Multimedia",
     value: 42,
-    color: "success",
-  },
-]);
+    color: "success"
+  }
+])
 </script>
 
 <template>
@@ -230,8 +236,8 @@ const items = ref<ProgressGroupItem[]>([
 </template>
 ```
 
-> \[!TIP]
->
+> [!TIP]
+> 
 > The status tracks the end of the bar, use `:ui="{ status: 'w-full' }"` to make it span the full width instead.
 
 ### Color
@@ -240,18 +246,18 @@ Use the `color` prop to change the color of every segment that doesn't set its o
 
 ```vue
 <script setup lang="ts">
-import type { ProgressGroupItem } from "@nuxt/ui";
+import type { ProgressGroupItem } from '@nuxt/ui'
 
 const items = ref<ProgressGroupItem[]>([
   {
     label: "Read",
-    value: 42,
+    value: 42
   },
   {
     label: "Write",
-    value: 18,
-  },
-]);
+    value: 18
+  }
+])
 </script>
 
 <template>
@@ -259,8 +265,8 @@ const items = ref<ProgressGroupItem[]>([
 </template>
 ```
 
-> \[!TIP]
->
+> [!TIP]
+> 
 > Both this prop and each item's `color` accept any CSS color value, which is handy for palettes outside the theme.
 
 ### Size
@@ -269,20 +275,20 @@ Use the `size` prop to change the size of the ProgressGroup.
 
 ```vue
 <script setup lang="ts">
-import type { ProgressGroupItem } from "@nuxt/ui";
+import type { ProgressGroupItem } from '@nuxt/ui'
 
 const items = ref<ProgressGroupItem[]>([
   {
     label: "Read",
     value: 42,
-    color: "primary",
+    color: "primary"
   },
   {
     label: "Write",
     value: 18,
-    color: "info",
-  },
-]);
+    color: "info"
+  }
+])
 </script>
 
 <template>
@@ -296,20 +302,20 @@ Use the `orientation` prop to change the orientation of the ProgressGroup. Defau
 
 ```vue
 <script setup lang="ts">
-import type { ProgressGroupItem } from "@nuxt/ui";
+import type { ProgressGroupItem } from '@nuxt/ui'
 
 const items = ref<ProgressGroupItem[]>([
   {
     label: "Read",
     value: 42,
-    color: "primary",
+    color: "primary"
   },
   {
     label: "Write",
     value: 18,
-    color: "info",
-  },
-]);
+    color: "info"
+  }
+])
 </script>
 
 <template>
@@ -327,31 +333,27 @@ Use the `#status` slot to replace the summed percentage with your own content.
 
 ```vue [ProgressGroupStatusExample.vue]
 <script setup lang="ts">
-import type { ProgressGroupItem } from "@nuxt/ui";
+import type { ProgressGroupItem } from '@nuxt/ui'
 
-const max = 128;
+const max = 128
 
 const items: ProgressGroupItem[] = [
-  { label: "System", value: 24, color: "neutral", icon: "i-lucide-cog" },
-  { label: "Apps", value: 8, color: "error", icon: "i-lucide-app-window" },
-  { label: "Documents", value: 12, color: "warning", icon: "i-lucide-file" },
-  { label: "Multimedia", value: 42, color: "success", icon: "i-lucide-film" },
-];
+  { label: 'System', value: 24, color: 'neutral', icon: 'i-lucide-cog' },
+  { label: 'Apps', value: 8, color: 'error', icon: 'i-lucide-app-window' },
+  { label: 'Documents', value: 12, color: 'warning', icon: 'i-lucide-file' },
+  { label: 'Multimedia', value: 42, color: 'success', icon: 'i-lucide-film' }
+]
 
-const used = items.reduce((total, item) => total + (item.value ?? 0), 0);
+const used = items.reduce((total, item) => total + (item.value ?? 0), 0)
 </script>
 
 <template>
-  <UProgressGroup
-    :items="items"
-    :max="max"
-    status
-    class="w-96"
-    :ui="{ status: 'w-full justify-between' }"
-  >
+  <UProgressGroup :items="items" :max="max" status class="w-96" :ui="{ status: 'w-full justify-between' }">
     <template #status>
       <p>{{ used }}GB used</p>
-      <p class="text-muted">{{ max - used }}GB remaining</p>
+      <p class="text-muted">
+        {{ max - used }}GB remaining
+      </p>
     </template>
   </UProgressGroup>
 </template>
@@ -363,14 +365,14 @@ Use the `#item-label` and `#item-trailing` slots to change what each entry displ
 
 ```vue [ProgressGroupItemExample.vue]
 <script setup lang="ts">
-import type { ProgressGroupItem } from "@nuxt/ui";
+import type { ProgressGroupItem } from '@nuxt/ui'
 
 const items: ProgressGroupItem[] = [
-  { label: "System", value: 24, color: "neutral" },
-  { label: "Apps", value: 8, color: "error" },
-  { label: "Documents", value: 12, color: "warning" },
-  { label: "Multimedia", value: 42, color: "success" },
-];
+  { label: 'System', value: 24, color: 'neutral' },
+  { label: 'Apps', value: 8, color: 'error' },
+  { label: 'Documents', value: 12, color: 'warning' },
+  { label: 'Multimedia', value: 42, color: 'success' }
+]
 </script>
 
 <template>
@@ -379,7 +381,9 @@ const items: ProgressGroupItem[] = [
       <span class="font-medium">{{ item.label }}</span>
     </template>
 
-    <template #item-trailing="{ item }"> {{ item.value }}GB </template>
+    <template #item-trailing="{ item }">
+      {{ item.value }}GB
+    </template>
   </UProgressGroup>
 </template>
 ```
@@ -390,37 +394,35 @@ Give each item a CSS color to build a breakdown outside the theme palette.
 
 ```vue [ProgressGroupCustomColorExample.vue]
 <script setup lang="ts">
-import type { ProgressGroupItem } from "@nuxt/ui";
+import type { ProgressGroupItem } from '@nuxt/ui'
 
-const max = 128;
+const max = 128
 
 const items: ProgressGroupItem[] = [
-  { label: "System prompt", value: 4.2, color: "var(--color-neutral-400)" },
-  { label: "Tool definitions", value: 18.4, color: "var(--color-violet-400)" },
-  { label: "Rules", value: 12.8, color: "var(--color-green-400)" },
-  { label: "Skills", value: 7.1, color: "var(--color-amber-400)" },
-  { label: "MCP & dynamic tools", value: 17.1, color: "var(--color-rose-400)" },
-  { label: "Subagent definitions", value: 5.5, color: "var(--color-sky-400)" },
-  { label: "Conversation", value: 24.6, color: "var(--color-orange-400)" },
-];
+  { label: 'System prompt', value: 4.2, color: 'var(--color-neutral-400)' },
+  { label: 'Tool definitions', value: 18.4, color: 'var(--color-violet-400)' },
+  { label: 'Rules', value: 12.8, color: 'var(--color-green-400)' },
+  { label: 'Skills', value: 7.1, color: 'var(--color-amber-400)' },
+  { label: 'MCP & dynamic tools', value: 17.1, color: 'var(--color-rose-400)' },
+  { label: 'Subagent definitions', value: 5.5, color: 'var(--color-sky-400)' },
+  { label: 'Conversation', value: 24.6, color: 'var(--color-orange-400)' }
+]
 
-const used = items.reduce((total, item) => total + (item.value ?? 0), 0);
+const used = items.reduce((total, item) => total + (item.value ?? 0), 0)
 </script>
 
 <template>
-  <UProgressGroup
-    :items="items"
-    :max="max"
-    status
-    class="w-96"
-    :ui="{ status: 'w-full justify-between' }"
-  >
+  <UProgressGroup :items="items" :max="max" status class="w-96" :ui="{ status: 'w-full justify-between' }">
     <template #status="{ percent }">
       <p>{{ percent }}% Full</p>
-      <p class="text-muted">~{{ used.toFixed(1) }}K / {{ max }}K Tokens</p>
+      <p class="text-muted">
+        ~{{ used.toFixed(1) }}K / {{ max }}K Tokens
+      </p>
     </template>
 
-    <template #item-trailing="{ item }"> {{ item.value }}K </template>
+    <template #item-trailing="{ item }">
+      {{ item.value }}K
+    </template>
   </UProgressGroup>
 </template>
 ```

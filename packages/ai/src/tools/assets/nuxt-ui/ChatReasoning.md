@@ -49,19 +49,7 @@ interface ChatReasoningProps {
    * Customize the [`ChatShimmer`](https://ui.nuxt.com/docs/components/chat-shimmer) component when streaming.
    */
   shimmer?: Partial<Omit<ChatShimmerProps, "text">> | undefined;
-  ui?:
-    | {
-        root?: SlotClass;
-        trigger?: SlotClass;
-        leading?: SlotClass;
-        leadingIcon?: SlotClass;
-        chevronIcon?: SlotClass;
-        label?: SlotClass;
-        trailingIcon?: SlotClass;
-        content?: SlotClass;
-        body?: SlotClass;
-      }
-    | undefined;
+  ui?: { root?: SlotClass; trigger?: SlotClass; leading?: SlotClass; leadingIcon?: SlotClass; chevronIcon?: SlotClass; label?: SlotClass; trailingIcon?: SlotClass; content?: SlotClass; body?: SlotClass; } | undefined;
   /**
    * When `true`, prevents the user from interacting with the collapsible.
    */
@@ -111,35 +99,38 @@ The ChatReasoning component renders a collapsible block that displays AI reasoni
 
 ```vue [ChatReasoningExample.vue]
 <script setup lang="ts">
-const streaming = ref(false);
-const text = ref("");
+const streaming = ref(false)
+const text = ref('')
 
 async function simulateStreaming() {
-  streaming.value = true;
-  text.value = "";
+  streaming.value = true
+  text.value = ''
 
-  const content =
-    "The user is asking about Vue components. I should explain the Composition API pattern and how it relates to their question about reactive state management. Let me think about the best way to structure this response.\n\nFirst, I need to consider the key differences between the Options API and Composition API. The Composition API was introduced in Vue 3 to address limitations of the Options API when building large-scale applications.\n\nFor reactive state management specifically, the Composition API offers ref() for primitive values and reactive() for objects.";
+  const content = 'The user is asking about Vue components. I should explain the Composition API pattern and how it relates to their question about reactive state management. Let me think about the best way to structure this response.\n\nFirst, I need to consider the key differences between the Options API and Composition API. The Composition API was introduced in Vue 3 to address limitations of the Options API when building large-scale applications.\n\nFor reactive state management specifically, the Composition API offers ref() for primitive values and reactive() for objects.'
 
   for (const char of content) {
-    text.value += char;
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    text.value += char
+    await new Promise(resolve => setTimeout(resolve, 10))
   }
 
-  streaming.value = false;
+  streaming.value = false
 }
 
-onMounted(simulateStreaming);
+onMounted(simulateStreaming)
 </script>
 
 <template>
-  <UChatReasoning :text="text" :streaming="streaming" class="w-60" />
+  <UChatReasoning
+    :text="text"
+    :streaming="streaming"
+    class="w-60"
+  />
 </template>
 ```
 
-> \[!NOTE]
+> [!NOTE]
 > See: /docs/composables/use-scroll-shadow
->
+> 
 > The body content uses the `useScrollShadow` composable to apply fade shadows when overflowing.
 
 ### Text
@@ -162,8 +153,8 @@ Use the `streaming` prop to indicate active reasoning. The component auto-opens 
 </template>
 ```
 
-> \[!TIP]
->
+> [!TIP]
+> 
 > Use the `isPartStreaming` utility from `@nuxt/ui/utils/ai` to determine if a part is currently being streamed.
 
 ### Shimmer
@@ -172,14 +163,10 @@ When streaming, the trigger label uses the [`ChatShimmer`](https://ui.nuxt.com/d
 
 ```vue
 <template>
-  <UChatReasoning
-    streaming
-    text="The user is asking about Vue components..."
-    :shimmer="{
-      duration: 2,
-      spread: 2,
-    }"
-  />
+  <UChatReasoning streaming text="The user is asking about Vue components..." :shimmer="{
+  duration: 2,
+  spread: 2
+}" />
 </template>
 ```
 
@@ -189,10 +176,7 @@ Use the `icon` prop to display an [Icon](https://ui.nuxt.com/docs/components/ico
 
 ```vue
 <template>
-  <UChatReasoning
-    icon="i-lucide-brain"
-    text="The user is asking about Vue components..."
-  />
+  <UChatReasoning icon="i-lucide-brain" text="The user is asking about Vue components..." />
 </template>
 ```
 
@@ -200,17 +184,13 @@ Use the `icon` prop to display an [Icon](https://ui.nuxt.com/docs/components/ico
 
 Use the `chevron` prop to change the position of the chevron icon.
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > When `chevron` is set to `leading` with an `icon`, the icon swaps with the chevron on hover and when open.
 
 ```vue
 <template>
-  <UChatReasoning
-    chevron="leading"
-    icon="i-lucide-brain"
-    text="The user is asking about Vue components..."
-  />
+  <UChatReasoning chevron="leading" icon="i-lucide-brain" text="The user is asking about Vue components..." />
 </template>
 ```
 
@@ -220,30 +200,27 @@ Use the `chevron-icon` prop to customize the chevron [Icon](https://ui.nuxt.com/
 
 ```vue
 <template>
-  <UChatReasoning
-    chevron-icon="i-lucide-arrow-down"
-    text="The user is asking about Vue components..."
-  />
+  <UChatReasoning chevron-icon="i-lucide-arrow-down" text="The user is asking about Vue components..." />
 </template>
 ```
 
 **Nuxt:**
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/getting-started/integrations/icons/nuxt#theme
->
+> 
 > You can customize this icon globally in your `app.config.ts` under `ui.icons.chevronDown` key.
 
 **Vue:**
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/getting-started/integrations/icons/vue#theme
->
+> 
 > You can customize this icon globally in your `vite.config.ts` under `ui.icons.chevronDown` key.
 
 ## Examples
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/components/chat
->
+> 
 > Check the **Chat** overview page for installation instructions, server setup and usage examples.

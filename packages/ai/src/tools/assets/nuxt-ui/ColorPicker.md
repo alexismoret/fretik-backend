@@ -39,17 +39,7 @@ interface ColorPickerProps {
    * @default 'md'
    */
   size?: "xs" | "sm" | "md" | "lg" | "xl" | undefined;
-  ui?:
-    | {
-        root?: SlotClass;
-        picker?: SlotClass;
-        selector?: SlotClass;
-        selectorBackground?: SlotClass;
-        selectorThumb?: SlotClass;
-        track?: SlotClass;
-        trackThumb?: SlotClass;
-      }
-    | undefined;
+  ui?: { root?: SlotClass; picker?: SlotClass; selector?: SlotClass; selectorBackground?: SlotClass; selectorThumb?: SlotClass; track?: SlotClass; trackThumb?: SlotClass; } | undefined;
   modelValue?: string | undefined;
 }
 ```
@@ -65,13 +55,17 @@ interface ColorPickerEmits {
 }
 ```
 
+## Composition
+
+Also written in the docs and absent from the interface above — one per column or item: `#leading`, `#content`.
+
 ## Usage
 
 Use the `v-model` directive to control the value of the ColorPicker.
 
 ```vue
 <script setup lang="ts">
-const value = ref("#00C16A");
+const value = ref("#00C16A")
 </script>
 
 <template>
@@ -93,7 +87,7 @@ Use the `format` prop to set `rgb` value of the ColorPicker.
 
 ```vue
 <script setup lang="ts">
-const value = ref("rgb(0, 193, 106)");
+const value = ref("rgb(0, 193, 106)")
 </script>
 
 <template>
@@ -107,7 +101,7 @@ Use the `format` prop to set `hsl` value of the ColorPicker.
 
 ```vue
 <script setup lang="ts">
-const value = ref("hsl(153, 100%, 37.8%)");
+const value = ref("hsl(153, 100%, 37.8%)")
 </script>
 
 <template>
@@ -121,7 +115,7 @@ Use the `format` prop to set `cmyk` value of the ColorPicker.
 
 ```vue
 <script setup lang="ts">
-const value = ref("cmyk(100%, 0%, 45.08%, 24.31%)");
+const value = ref("cmyk(100%, 0%, 45.08%, 24.31%)")
 </script>
 
 <template>
@@ -135,7 +129,7 @@ Use the `format` prop to set `lab` value of the ColorPicker.
 
 ```vue
 <script setup lang="ts">
-const value = ref("lab(68.88% -60.41% 32.55%)");
+const value = ref("lab(68.88% -60.41% 32.55%)")
 </script>
 
 <template>
@@ -149,7 +143,7 @@ Use the `throttle` prop to set the throttle value of the ColorPicker.
 
 ```vue
 <script setup lang="ts">
-const value = ref("#00C16A");
+const value = ref("#00C16A")
 </script>
 
 <template>
@@ -185,9 +179,9 @@ Use a [Button](https://ui.nuxt.com/docs/components/button) and a [Popover](https
 
 ```vue [ColorPickerChooserExample.vue]
 <script setup lang="ts">
-const color = ref("#00C16A");
+const color = ref('#00C16A')
 
-const chip = computed(() => ({ backgroundColor: color.value }));
+const chip = computed(() => ({ backgroundColor: color.value }))
 </script>
 
 <template>

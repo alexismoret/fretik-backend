@@ -19,15 +19,7 @@ interface SwitchProps {
   /**
    * @default 'primary'
    */
-  color?:
-    | "primary"
-    | "secondary"
-    | "success"
-    | "info"
-    | "warning"
-    | "error"
-    | "neutral"
-    | undefined;
+  color?: "primary" | "secondary" | "success" | "info" | "warning" | "error" | "neutral" | undefined;
   /**
    * @default 'md'
    */
@@ -55,18 +47,7 @@ interface SwitchProps {
   uncheckedIcon?: any;
   label?: string | undefined;
   description?: string | undefined;
-  ui?:
-    | {
-        root?: SlotClass;
-        base?: SlotClass;
-        container?: SlotClass;
-        thumb?: SlotClass;
-        icon?: SlotClass;
-        wrapper?: SlotClass;
-        label?: SlotClass;
-        description?: SlotClass;
-      }
-    | undefined;
+  ui?: { root?: SlotClass; base?: SlotClass; container?: SlotClass; thumb?: SlotClass; icon?: SlotClass; wrapper?: SlotClass; label?: SlotClass; description?: SlotClass; } | undefined;
   /**
    * When `true`, prevents the user from interacting with the switch.
    */
@@ -110,9 +91,9 @@ interface SwitchProps {
 }
 ```
 
-> \[!NOTE]
-> See: https\://developer.mozilla.org/en-US/docs/Web/HTML/Element/button#attributes
->
+> [!NOTE]
+> See: https://developer.mozilla.org/en-US/docs/Web/HTML/Element/button#attributes
+> 
 > This component also supports all native `<button>` HTML attributes.
 
 ### Slots
@@ -145,7 +126,7 @@ Use the `v-model` directive to control the checked state of the Switch.
 
 ```vue
 <script setup lang="ts">
-const value = ref(true);
+const value = ref(true)
 </script>
 
 <template>
@@ -195,12 +176,7 @@ Use the `checked-icon` and `unchecked-icon` props to set the icons of the Switch
 
 ```vue
 <template>
-  <USwitch
-    unchecked-icon="i-lucide-x"
-    checked-icon="i-lucide-check"
-    default-value
-    label="Check me"
-  />
+  <USwitch unchecked-icon="i-lucide-x" checked-icon="i-lucide-check" default-value label="Check me" />
 </template>
 ```
 
@@ -220,27 +196,22 @@ Use the `loading-icon` prop to customize the loading icon. Defaults to `i-lucide
 
 ```vue
 <template>
-  <USwitch
-    loading
-    loading-icon="i-lucide-loader"
-    default-value
-    label="Check me"
-  />
+  <USwitch loading loading-icon="i-lucide-loader" default-value label="Check me" />
 </template>
 ```
 
 **Nuxt:**
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/getting-started/integrations/icons/nuxt#theme
->
+> 
 > You can customize this icon globally in your `app.config.ts` under `ui.icons.loading` key.
 
 **Vue:**
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/getting-started/integrations/icons/vue#theme
->
+> 
 > You can customize this icon globally in your `vite.config.ts` under `ui.icons.loading` key.
 
 ### Color

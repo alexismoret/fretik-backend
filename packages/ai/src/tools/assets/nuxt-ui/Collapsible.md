@@ -16,7 +16,7 @@ interface CollapsibleProps {
    * @default 'div'
    */
   as?: any;
-  ui?: { root?: SlotClass; content?: SlotClass } | undefined;
+  ui?: { root?: SlotClass; content?: SlotClass; } | undefined;
   /**
    * When `true`, prevents the user from interacting with the collapsible.
    */
@@ -60,6 +60,21 @@ interface CollapsibleEmits {
 }
 ```
 
+## Composition
+
+Parts placed by name: `#content`.
+
+```vue
+<template>
+  <UCollapsible class="flex flex-col gap-2 w-48">
+    <UButton label="Open" color="neutral" variant="subtle" trailing-icon="i-lucide-chevron-down" block />
+  
+    <template #content>
+      <Placeholder class="h-48" />
+    </template></UCollapsible>
+</template>
+```
+
 ## Usage
 
 Use a [Button](https://ui.nuxt.com/docs/components/button) or any other component in the default slot of the Collapsible.
@@ -69,16 +84,11 @@ Then, use the `#content` slot to add the content displayed when the Collapsible 
 ```vue
 <template>
   <UCollapsible class="flex flex-col gap-2 w-48">
-    <UButton
-      label="Open"
-      color="neutral"
-      variant="subtle"
-      trailing-icon="i-lucide-chevron-down"
-      block />
-
+    <UButton label="Open" color="neutral" variant="subtle" trailing-icon="i-lucide-chevron-down" block />
+  
     <template #content>
-      <Placeholder class="h-48" /> </template
-  ></UCollapsible>
+      <Placeholder class="h-48" />
+    </template></UCollapsible>
 </template>
 ```
 
@@ -89,21 +99,16 @@ Use the `unmount-on-hide` prop to prevent the content from being unmounted when 
 ```vue
 <template>
   <UCollapsible :unmount-on-hide="false" class="flex flex-col gap-2 w-48">
-    <UButton
-      label="Open"
-      color="neutral"
-      variant="subtle"
-      trailing-icon="i-lucide-chevron-down"
-      block />
-
+    <UButton label="Open" color="neutral" variant="subtle" trailing-icon="i-lucide-chevron-down" block />
+  
     <template #content>
-      <Placeholder class="h-48" /> </template
-  ></UCollapsible>
+      <Placeholder class="h-48" />
+    </template></UCollapsible>
 </template>
 ```
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > You can inspect the DOM to see the content being rendered.
 
 ### Disabled
@@ -113,16 +118,11 @@ Use the `disabled` prop to disable the Collapsible.
 ```vue
 <template>
   <UCollapsible class="flex flex-col gap-2 w-48" disabled>
-    <UButton
-      label="Open"
-      color="neutral"
-      variant="subtle"
-      trailing-icon="i-lucide-chevron-down"
-      block />
-
+    <UButton label="Open" color="neutral" variant="subtle" trailing-icon="i-lucide-chevron-down" block />
+  
     <template #content>
-      <Placeholder class="h-48" /> </template
-  ></UCollapsible>
+      <Placeholder class="h-48" />
+    </template></UCollapsible>
 </template>
 ```
 
@@ -134,11 +134,11 @@ You can control the open state by using the `default-open` prop or the `v-model:
 
 ```vue [CollapsibleOpenExample.vue]
 <script setup lang="ts">
-const open = ref(true);
+const open = ref(true)
 
 defineShortcuts({
-  o: () => (open.value = !open.value),
-});
+  o: () => open.value = !open.value
+})
 </script>
 
 <template>
@@ -158,12 +158,12 @@ defineShortcuts({
 </template>
 ```
 
-> \[!NOTE]
->
-> In this example, leveraging [`defineShortcuts`](https://ui.nuxt.com/docs/composables/define-shortcuts), you can toggle the Collapsible by pressing :kbd{value="O"}.
+> [!NOTE]
+> 
+> In this example, leveraging [`defineShortcuts`](https://ui.nuxt.com/docs/composables/define-shortcuts), you can toggle the Collapsible by pressing `O`.
 
-> \[!TIP]
->
+> [!TIP]
+> 
 > This lets you move the trigger outside of the Collapsible or remove it entirely.
 
 ### With rotating icon
@@ -180,8 +180,7 @@ Here is an example with a rotating icon in the Button that indicates the open st
       variant="subtle"
       trailing-icon="i-lucide-chevron-down"
       :ui="{
-        trailingIcon:
-          'group-data-[state=open]:rotate-180 transition-transform duration-200',
+        trailingIcon: 'group-data-[state=open]:rotate-180 transition-transform duration-200'
       }"
       block
     />

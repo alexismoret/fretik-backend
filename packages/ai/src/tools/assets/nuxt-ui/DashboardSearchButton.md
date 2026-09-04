@@ -127,9 +127,9 @@ interface DashboardSearchButtonProps {
 }
 ```
 
-> \[!NOTE]
-> See: https\://developer.mozilla.org/en-US/docs/Web/HTML/Element/button#attributes
->
+> [!NOTE]
+> See: https://developer.mozilla.org/en-US/docs/Web/HTML/Element/button#attributes
+> 
 > This component also supports all native `<button>` HTML attributes.
 
 ### Slots
@@ -163,14 +163,14 @@ It extends the [Button](https://ui.nuxt.com/docs/components/button) component, s
 </template>
 ```
 
-> \[!NOTE]
+> [!NOTE]
 > See: #collapsed
->
+> 
 > The button defaults to `color="neutral"` and `variant="outline"` when not collapsed, `variant="ghost"` when collapsed.
 
 ### Collapsed
 
-Use the `collapsed` prop to hide the button's label and [kbds](https://ui.nuxt.com/#kbds). Defaults to `false`.
+Use the `collapsed` prop to hide the button's label and [kbds](#kbds). Defaults to `false`.
 
 ```vue
 <template>
@@ -178,17 +178,20 @@ Use the `collapsed` prop to hide the button's label and [kbds](https://ui.nuxt.c
 </template>
 ```
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/components/dashboard-sidebar#slots
->
+> 
 > When using the button in the **DashboardSidebar** component, use the `collapsed` slot prop directly.
 
 ### Kbds
 
-Use the `kbds` prop to display keyboard keys in the button. Defaults to `['meta', 'K']`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"} to match the default shortcut of the [DashboardSearch](https://ui.nuxt.com/docs/components/dashboard-search#shortcut) component.
+Use the `kbds` prop to display keyboard keys in the button. Defaults to `['meta', 'K']` to match the default shortcut of the [DashboardSearch](https://ui.nuxt.com/docs/components/dashboard-search#shortcut) component.
 
 ```vue
 <template>
-  <UDashboardSearchButton :collapsed="false" :kbds="['alt', 'O']" />
+  <UDashboardSearchButton :collapsed="false" :kbds="[
+  'alt',
+  'O'
+]" />
 </template>
 ```

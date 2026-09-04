@@ -26,13 +26,7 @@ interface DashboardSearchProps {
    * `{ fixed: true }`{lang="ts-type"}
    * @default true
    */
-  input?:
-    | boolean
-    | Omit<
-        InputProps<AcceptableValue, ModelModifiers>,
-        "modelValue" | "defaultValue"
-      >
-    | undefined;
+  input?: boolean | Omit<InputProps<AcceptableValue, ModelModifiers>, "modelValue" | "defaultValue"> | undefined;
   /**
    * Keyboard shortcut to open the search (used by [`defineShortcuts`](https://ui.nuxt.com/docs/composables/define-shortcuts))
    * @default 'meta_k'
@@ -64,37 +58,7 @@ matchAllWhenSearchEmpty: true
    * @default true
    */
   colorMode?: boolean | undefined;
-  ui?:
-    | ({ modal?: SlotClass; input?: SlotClass } & {
-        root?: SlotClass;
-        input?: SlotClass;
-        close?: SlotClass;
-        back?: SlotClass;
-        content?: SlotClass;
-        footer?: SlotClass;
-        viewport?: SlotClass;
-        group?: SlotClass;
-        empty?: SlotClass;
-        label?: SlotClass;
-        item?: SlotClass;
-        itemLeadingIcon?: SlotClass;
-        itemLeadingAvatar?: SlotClass;
-        itemLeadingAvatarSize?: SlotClass;
-        itemLeadingChip?: SlotClass;
-        itemLeadingChipSize?: SlotClass;
-        itemTrailing?: SlotClass;
-        itemTrailingIcon?: SlotClass;
-        itemTrailingHighlightedIcon?: SlotClass;
-        itemTrailingKbds?: SlotClass;
-        itemTrailingKbdsSize?: SlotClass;
-        itemWrapper?: SlotClass;
-        itemLabel?: SlotClass;
-        itemLabelBase?: SlotClass;
-        itemLabelPrefix?: SlotClass;
-        itemLabelSuffix?: SlotClass;
-        itemDescription?: SlotClass;
-      })
-    | undefined;
+  ui?: { modal?: SlotClass; input?: SlotClass; } & { root?: SlotClass; input?: SlotClass; close?: SlotClass; back?: SlotClass; content?: SlotClass; footer?: SlotClass; viewport?: SlotClass; group?: SlotClass; empty?: SlotClass; label?: SlotClass; item?: SlotClass; itemLeadingIcon?: SlotClass; itemLeadingAvatar?: SlotClass; itemLeadingAvatarSize?: SlotClass; itemLeadingChip?: SlotClass; itemLeadingChipSize?: SlotClass; itemTrailing?: SlotClass; itemTrailingIcon?: SlotClass; itemTrailingHighlightedIcon?: SlotClass; itemTrailingKbds?: SlotClass; itemTrailingKbdsSize?: SlotClass; itemWrapper?: SlotClass; itemLabel?: SlotClass; itemLabelBase?: SlotClass; itemLabelPrefix?: SlotClass; itemLabelSuffix?: SlotClass; itemDescription?: SlotClass; } | undefined;
   title?: string | undefined;
   /**
    * Animate the modal when opening or closing.
@@ -110,10 +74,7 @@ matchAllWhenSearchEmpty: true
   /**
    * The content of the modal.
    */
-  content?:
-    | (Omit<DialogContentProps, "as" | "asChild" | "forceMount"> &
-        Partial<EmitsToProps<DialogContentImplEmits>>)
-    | undefined;
+  content?: Omit<DialogContentProps, "as" | "asChild" | "forceMount"> & Partial<EmitsToProps<DialogContentImplEmits>> | undefined;
   /**
    * When `false`, the modal will not close when clicking outside or pressing escape.
    * @default true
@@ -224,13 +185,7 @@ matchAllWhenSearchEmpty: true
    * Note: when enabled, all groups are flattened into a single list due to a limitation of Reka UI (https://github.com/unovue/reka-ui/issues/1885).
    * @default false
    */
-  virtualize?:
-    | boolean
-    | {
-        overscan?: number | undefined;
-        estimateSize?: number | ((index: number) => number) | undefined;
-      }
-    | undefined;
+  virtualize?: boolean | { overscan?: number | undefined; estimateSize?: number | ((index: number) => number) | undefined; } | undefined;
   groups?: CommandPaletteGroup<CommandPaletteItem>[] | undefined;
   /**
    * @default false
@@ -280,9 +235,13 @@ interface DashboardSearchEmits {
 
 When accessing the component via a template ref, you can use the following:
 
-| Name                                                                                                                                    | Type                                      |
-| --------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------- |
-| `commandPaletteRef`{.language-ts-type.shiki.shiki-themes.material-theme-lighter.material-theme.material-theme-palenight lang="ts-type"} | `Ref<InstanceType<typeof UCommandPalette> | null>`{.language-ts-type.shiki.shiki-themes.material-theme-lighter.material-theme.material-theme-palenight lang="ts-type"} |
+| Name | Type |
+| --- | --- |
+| `commandPaletteRef` | `Ref<InstanceType<typeof UCommandPalette> \| null>` |
+
+## Composition
+
+Parts placed by name: `#empty`, `#back`, `#close`, `#item`, `#item-leading`, `#item-label`, `#item-description`, `#item-trailing`, `#group-label`, `#content`.
 
 ## Usage
 
@@ -290,7 +249,7 @@ The DashboardSearch component extends the [CommandPalette](https://ui.nuxt.com/d
 
 Use it inside the default slot of the [DashboardGroup](https://ui.nuxt.com/docs/components/dashboard-group) component:
 
-```vue [layouts/dashboard.vue] {3}
+```vue [layouts/dashboard.vue]
 <template>
   <UDashboardGroup>
     <UDashboardSidebar>
@@ -304,15 +263,15 @@ Use it inside the default slot of the [DashboardGroup](https://ui.nuxt.com/docs/
 </template>
 ```
 
-> \[!TIP]
->
-> You can open the CommandPalette by pressing :kbd{value="meta"} :kbd{.ms-px value="K"}, by using the [DashboardSearchButton](https://ui.nuxt.com/docs/components/dashboard-search-button) component or by using a `v-model:open`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts"} directive.
+> [!TIP]
+> 
+> You can open the CommandPalette by pressing `Meta` `K`, by using the [DashboardSearchButton](https://ui.nuxt.com/docs/components/dashboard-search-button) component or by using a `v-model:open` directive.
 
 ### Shortcut
 
-Use the `shortcut` prop to change the shortcut used in [defineShortcuts](https://ui.nuxt.com/docs/composables/define-shortcuts) to open the ContentSearch component. Defaults to `meta_k` ( :kbd{value="meta"} :kbd{value="K"} ).
+Use the `shortcut` prop to change the shortcut used in [defineShortcuts](https://ui.nuxt.com/docs/composables/define-shortcuts) to open the ContentSearch component. Defaults to `meta_k` (`Meta` `K`).
 
-```vue [app.vue] {4}
+```vue [app.vue]
 <template>
   <UDashboardSearch
     v-model:search-term="searchTerm"
@@ -330,14 +289,14 @@ By default, a group of commands will be added to the command palette so you can 
 ```vue [pages/index.vue]
 <script setup lang="ts">
 definePageMeta({
-  colorMode: "dark",
-});
+  colorMode: 'dark'
+})
 </script>
 ```
 
 You can disable this behavior by setting the `color-mode` prop to `false`:
 
-```vue [app.vue] {4}
+```vue [app.vue]
 <template>
   <UDashboardSearch
     v-model:search-term="searchTerm"

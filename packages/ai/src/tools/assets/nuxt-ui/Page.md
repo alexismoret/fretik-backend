@@ -16,14 +16,7 @@ interface PageProps {
    * @default 'div'
    */
   as?: any;
-  ui?:
-    | {
-        root?: SlotClass;
-        left?: SlotClass;
-        center?: SlotClass;
-        right?: SlotClass;
-      }
-    | undefined;
+  ui?: { root?: SlotClass; left?: SlotClass; center?: SlotClass; right?: SlotClass; } | undefined;
 }
 ```
 
@@ -40,11 +33,11 @@ interface PageSlots {
 }
 ```
 
-## Usage
+## Composition
 
-The Page component helps you create layouts with optional left and right columns. It's perfect for building documentation sites and other content-focused pages.
+Parts placed by name: `#left`, `#right`.
 
-```vue {2,6}
+```vue
 <template>
   <UPage>
     <template #left />
@@ -54,25 +47,39 @@ The Page component helps you create layouts with optional left and right columns
 </template>
 ```
 
-> \[!TIP]
->
+## Usage
+
+The Page component helps you create layouts with optional left and right columns. It's perfect for building documentation sites and other content-focused pages.
+
+```vue
+<template>
+  <UPage>
+    <template #left />
+
+    <template #right />
+  </UPage>
+</template>
+```
+
+> [!TIP]
+> 
 > The page will display as a centered single column layout if no slots are specified.
 
 ## Examples
 
-> \[!NOTE]
->
-> While these examples use [Nuxt Content](https://content.nuxt.com){rel="&#x22;nofollow&#x22;"}, the components can be integrated with any content management system.
+> [!NOTE]
+> 
+> While these examples use [Nuxt Content](https://content.nuxt.com), the components can be integrated with any content management system.
 
 ### Within a layout
 
 Use the Page component in a layout with the `left` slot to display a navigation:
 
-```vue [layouts/docs.vue] {9-13}
+```vue [layouts/docs.vue]
 <script setup lang="ts">
-import type { ContentNavigationItem } from "@nuxt/content";
+import type { ContentNavigationItem } from '@nuxt/content'
 
-const navigation = inject<Ref<ContentNavigationItem[]>>("navigation");
+const navigation = inject<Ref<ContentNavigationItem[]>>('navigation')
 </script>
 
 <template>
@@ -88,29 +95,29 @@ const navigation = inject<Ref<ContentNavigationItem[]>>("navigation");
 </template>
 ```
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > In this example, we use the `ContentNavigation` component to display the navigation injected in `app.vue`.
 
 ### Within a page
 
 Use the Page component in a page with the `right` slot to display a table of contents:
 
-```vue [pages/[...slug\].vue] {29-31}
+```vue [pages/[...slug].vue]
 <script setup lang="ts">
-const route = useRoute();
+const route = useRoute()
 
 definePageMeta({
-  layout: "docs",
-});
+  layout: 'docs'
+})
 
 const { data: page } = await useAsyncData(route.path, () => {
-  return queryCollection("docs").path(route.path).first();
-});
+  return queryCollection('docs').path(route.path).first()
+})
 
 const { data: surround } = await useAsyncData(`${route.path}-surround`, () => {
-  return queryCollectionItemSurroundings("content", route.path);
-});
+  return queryCollectionItemSurroundings('content', route.path)
+})
 </script>
 
 <template>
@@ -132,6 +139,6 @@ const { data: surround } = await useAsyncData(`${route.path}-surround`, () => {
 </template>
 ```
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > In this example, we use the `ContentToc` component to display the table of contents.

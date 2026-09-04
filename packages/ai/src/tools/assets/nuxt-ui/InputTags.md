@@ -154,9 +154,9 @@ interface InputTagsProps {
 }
 ```
 
-> \[!NOTE]
-> See: https\://developer.mozilla.org/en-US/docs/Web/HTML/Element/input#attributes
->
+> [!NOTE]
+> See: https://developer.mozilla.org/en-US/docs/Web/HTML/Element/input#attributes
+> 
 > This component also supports all native `<input>` HTML attributes.
 
 ### Slots
@@ -195,9 +195,13 @@ interface InputTagsEmits {
 
 When accessing the component via a template ref, you can use the following:
 
-| Name                                                                                                                           | Type                  |
-| ------------------------------------------------------------------------------------------------------------------------------ | --------------------- |
-| `inputRef`{.language-ts-type.shiki.shiki-themes.material-theme-lighter.material-theme.material-theme-palenight lang="ts-type"} | `Ref<HTMLInputElement | null>`{.language-ts-type.shiki.shiki-themes.material-theme-lighter.material-theme.material-theme-palenight lang="ts-type"} |
+| Name | Type |
+| --- | --- |
+| `inputRef` | `Ref<HTMLInputElement \| null>` |
+
+## Composition
+
+Parts placed by name: `#item-text`, `#item-delete`.
 
 ## Usage
 
@@ -205,7 +209,9 @@ Use the `v-model` directive to control the value of the InputTags.
 
 ```vue
 <script setup lang="ts">
-const value = ref(["Vue"]);
+const value = ref([
+  "Vue"
+])
 </script>
 
 <template>
@@ -217,7 +223,9 @@ Use the `default-value` prop to set the initial value when you do not need to co
 
 ```vue
 <template>
-  <UInputTags :default-value="['Vue']" />
+  <UInputTags :default-value="[
+  'Vue'
+]" />
 </template>
 ```
 
@@ -247,7 +255,9 @@ Use the `color` prop to change the ring color when the InputTags is focused.
 
 ```vue
 <script setup lang="ts">
-const value = ref(["Vue"]);
+const value = ref([
+  "Vue"
+])
 </script>
 
 <template>
@@ -255,8 +265,8 @@ const value = ref(["Vue"]);
 </template>
 ```
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > The `highlight` prop is used here to show the focus state. It's used internally when a validation error occurs.
 
 ### Variants
@@ -265,16 +275,13 @@ Use the `variant` prop to change the appearance of the InputTags.
 
 ```vue
 <script setup lang="ts">
-const value = ref(["Vue"]);
+const value = ref([
+  "Vue"
+])
 </script>
 
 <template>
-  <UInputTags
-    v-model="value"
-    variant="subtle"
-    color="neutral"
-    :highlight="false"
-  />
+  <UInputTags v-model="value" variant="subtle" color="neutral" :highlight="false" />
 </template>
 ```
 
@@ -284,7 +291,9 @@ Use the `size` prop to adjust the size of the InputTags.
 
 ```vue
 <script setup lang="ts">
-const value = ref(["Vue"]);
+const value = ref([
+  "Vue"
+])
 </script>
 
 <template>
@@ -298,21 +307,18 @@ Use the `icon` prop to show an [Icon](https://ui.nuxt.com/docs/components/icon) 
 
 ```vue
 <script setup lang="ts">
-const value = ref(["Vue"]);
+const value = ref([
+  "Vue"
+])
 </script>
 
 <template>
-  <UInputTags
-    v-model="value"
-    icon="i-lucide-search"
-    size="md"
-    variant="outline"
-  />
+  <UInputTags v-model="value" icon="i-lucide-search" size="md" variant="outline" />
 </template>
 ```
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > Use the `leading` and `trailing` props to set the icon position or the `leading-icon` and `trailing-icon` props to set a different icon for each position.
 
 ### Avatar
@@ -321,19 +327,16 @@ Use the `avatar` prop to show an [Avatar](https://ui.nuxt.com/docs/components/av
 
 ```vue
 <script setup lang="ts">
-const value = ref(["Vue"]);
+const value = ref([
+  "Vue"
+])
 </script>
 
 <template>
-  <UInputTags
-    v-model="value"
-    :avatar="{
-      src: 'https://github.com/vuejs.png',
-      loading: 'lazy',
-    }"
-    size="md"
-    variant="outline"
-  />
+  <UInputTags v-model="value" :avatar="{
+  src: 'https://github.com/vuejs.png',
+  loading: 'lazy'
+}" size="md" variant="outline" />
 </template>
 ```
 
@@ -343,7 +346,9 @@ Use the `delete-icon` prop to customize the delete [Icon](https://ui.nuxt.com/do
 
 ```vue
 <script setup lang="ts">
-const value = ref(["Vue"]);
+const value = ref([
+  "Vue"
+])
 </script>
 
 <template>
@@ -353,16 +358,16 @@ const value = ref(["Vue"]);
 
 **Nuxt:**
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/getting-started/integrations/icons/nuxt#theme
->
+> 
 > You can customize this icon globally in your `app.config.ts` under `ui.icons.close` key.
 
 **Vue:**
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/getting-started/integrations/icons/vue#theme
->
+> 
 > You can customize this icon globally in your `vite.config.ts` under `ui.icons.close` key.
 
 ### Loading
@@ -371,7 +376,9 @@ Use the `loading` prop to show a loading icon on the InputTags.
 
 ```vue
 <script setup lang="ts">
-const value = ref(["Vue"]);
+const value = ref([
+  "Vue"
+])
 </script>
 
 <template>
@@ -385,7 +392,9 @@ Use the `loading-icon` prop to customize the loading icon. Defaults to `i-lucide
 
 ```vue
 <script setup lang="ts">
-const value = ref(["Vue"]);
+const value = ref([
+  "Vue"
+])
 </script>
 
 <template>
@@ -395,16 +404,16 @@ const value = ref(["Vue"]);
 
 **Nuxt:**
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/getting-started/integrations/icons/nuxt#theme
->
+> 
 > You can customize this icon globally in your `app.config.ts` under `ui.icons.loading` key.
 
 **Vue:**
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/getting-started/integrations/icons/vue#theme
->
+> 
 > You can customize this icon globally in your `vite.config.ts` under `ui.icons.loading` key.
 
 ### Disabled
@@ -413,7 +422,9 @@ Use the `disabled` prop to disable the InputTags.
 
 ```vue
 <script setup lang="ts">
-const value = ref(["Vue"]);
+const value = ref([
+  "Vue"
+])
 </script>
 
 <template>
@@ -431,7 +442,7 @@ You can use the InputTags within a [FormField](https://ui.nuxt.com/docs/componen
 
 ```vue [InputTagsFormFieldExample.vue]
 <script setup lang="ts">
-const tags = ref(["Vue"]);
+const tags = ref(['Vue'])
 </script>
 
 <template>

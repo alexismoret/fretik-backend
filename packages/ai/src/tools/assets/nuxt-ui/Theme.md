@@ -38,20 +38,20 @@ interface ThemeSlots {
 
 The Theme component overrides default **slot classes** and **props** of all child components without modifying each one individually. It uses Vue's `provide` / `inject` mechanism under the hood, so the overrides apply at any depth.
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > The Theme component doesn't render any HTML element, it only provides theme overrides to its children.
 
 **Nuxt:**
 
-> \[!TIP]
->
+> [!TIP]
+> 
 > For app-level theme configuration, we recommend using the `app.config.ts` file instead.
 
 **Vue:**
 
-> \[!TIP]
->
+> [!TIP]
+> 
 > For app-level theme configuration, we recommend using the `vite.config.ts` file instead.
 
 ### Slot classes
@@ -63,8 +63,8 @@ Use the `ui` prop to override slot classes of descendant components. Keys are co
   <UTheme
     :ui="{
       button: {
-        base: 'rounded-full',
-      },
+        base: 'rounded-full'
+      }
     }"
   >
     <div class="flex items-center gap-2">
@@ -85,7 +85,7 @@ Use the `props` prop to override the default value of any prop on descendant com
   <UTheme
     :props="{
       button: { color: 'neutral', variant: 'subtle', size: 'lg' },
-      tooltip: { delayDuration: 0, arrow: true },
+      tooltip: { delayDuration: 0, arrow: true }
     }"
   >
     <div class="flex items-center gap-2">
@@ -99,8 +99,8 @@ Use the `props` prop to override the default value of any prop on descendant com
 </template>
 ```
 
-> \[!TIP]
->
+> [!TIP]
+> 
 > Explicit props on a component (e.g. `<UButton color="primary" />`) always win over `<UTheme :props>`. Theme defaults only apply when the prop wasn't passed explicitly.
 
 ## Examples
@@ -115,12 +115,12 @@ Use different keys in `ui` or `props` to theme multiple component types at once.
     :props="{
       button: { color: 'neutral', variant: 'outline', size: 'lg' },
       input: { size: 'lg' },
-      select: { size: 'lg' },
+      select: { size: 'lg' }
     }"
     :ui="{
       button: { base: 'rounded-full' },
       input: { base: 'rounded-full' },
-      select: { base: 'rounded-full' },
+      select: { base: 'rounded-full' }
     }"
   >
     <div class="flex items-center gap-2">
@@ -141,13 +141,11 @@ Nest multiple Theme components to compose overrides. The innermost Theme takes p
   <UTheme
     :ui="{
       button: {
-        base: 'rounded-full',
-      },
+        base: 'rounded-full'
+      }
     }"
   >
-    <div
-      class="flex flex-col items-start gap-4 border border-muted p-4 rounded-lg"
-    >
+    <div class="flex flex-col items-start gap-4 border border-muted p-4 rounded-lg">
       <div class="flex items-center gap-2">
         <UButton label="Outer theme" />
         <UButton label="Outer theme" color="neutral" variant="outline" />
@@ -156,8 +154,8 @@ Nest multiple Theme components to compose overrides. The innermost Theme takes p
       <UTheme
         :ui="{
           button: {
-            base: 'font-black uppercase',
-          },
+            base: 'font-black uppercase'
+          }
         }"
       >
         <div class="border border-muted p-4 rounded-lg">
@@ -181,8 +179,8 @@ Explicitly setting any prop (including `ui`) on an individual component always t
   <UTheme
     :ui="{
       button: {
-        base: 'rounded-full',
-      },
+        base: 'rounded-full'
+      }
     }"
   >
     <div class="flex items-center gap-2">
@@ -199,15 +197,15 @@ The overrides are available to all descendant components regardless of how deepl
 
 ```vue [ThemeDeepExample.vue]
 <script setup lang="ts">
-import MyButton from "./MyButton.vue";
+import MyButton from './MyButton.vue'
 </script>
 
 <template>
   <UTheme
     :ui="{
       button: {
-        base: 'rounded-full',
-      },
+        base: 'rounded-full'
+      }
     }"
   >
     <UCard :ui="{ body: 'flex items-center gap-2 sm:flex-row flex-col' }">
@@ -218,8 +216,8 @@ import MyButton from "./MyButton.vue";
 </template>
 ```
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > In this example, `MyButton` is a custom component that renders a `UButton` internally. The theme overrides still apply because they propagate through the entire component tree.
 
 ### Form components
@@ -228,31 +226,27 @@ Use the Theme component to apply consistent styling across a group of form compo
 
 ```vue [ThemeFormExample.vue]
 <script setup lang="ts">
-import * as z from "zod";
-import type { FormSubmitEvent } from "@nuxt/ui";
+import * as z from 'zod'
+import type { FormSubmitEvent } from '@nuxt/ui'
 
 const schema = z.object({
-  name: z.string().min(2, "Too short"),
-  email: z.email("Invalid email"),
-  bio: z.string().optional(),
-});
+  name: z.string().min(2, 'Too short'),
+  email: z.email('Invalid email'),
+  bio: z.string().optional()
+})
 
-type Schema = z.output<typeof schema>;
+type Schema = z.output<typeof schema>
 
 const state = reactive<Partial<Schema>>({
-  name: "John Doe",
-  email: "john@example.com",
-  bio: undefined,
-});
+  name: 'John Doe',
+  email: 'john@example.com',
+  bio: undefined
+})
 
-const toast = useToast();
+const toast = useToast()
 async function onSubmit(event: FormSubmitEvent<Schema>) {
-  toast.add({
-    title: "Saved",
-    description: "Your profile has been updated.",
-    color: "success",
-  });
-  console.log(event.data);
+  toast.add({ title: 'Saved', description: 'Your profile has been updated.', color: 'success' })
+  console.log(event.data)
 }
 </script>
 
@@ -260,47 +254,32 @@ async function onSubmit(event: FormSubmitEvent<Schema>) {
   <UTheme
     :props="{
       input: { size: 'lg' },
-      textarea: { size: 'lg' },
+      textarea: { size: 'lg' }
     }"
     :ui="{
       formField: {
         root: 'flex max-sm:flex-col justify-between gap-4',
-        wrapper: 'w-full sm:max-w-xs',
-      },
+        wrapper: 'w-full sm:max-w-xs'
+      }
     }"
   >
-    <UForm
-      :schema="schema"
-      :state="state"
-      class="space-y-4 w-full"
-      @submit="onSubmit"
-    >
-      <UFormField
-        label="Name"
-        name="name"
-        description="Your public display name."
-      >
+    <UForm :schema="schema" :state="state" class="space-y-4 w-full" @submit="onSubmit">
+      <UFormField label="Name" name="name" description="Your public display name.">
         <UInput v-model="state.name" />
       </UFormField>
 
-      <UFormField
-        label="Email"
-        name="email"
-        description="Used for notifications."
-      >
+      <UFormField label="Email" name="email" description="Used for notifications.">
         <UInput v-model="state.email" type="email" />
       </UFormField>
 
-      <UFormField
-        label="Bio"
-        name="bio"
-        description="A short description about yourself."
-      >
+      <UFormField label="Bio" name="bio" description="A short description about yourself.">
         <UTextarea v-model="state.bio" placeholder="Tell us about yourself" />
       </UFormField>
 
       <div class="flex justify-end">
-        <UButton type="submit"> Save changes </UButton>
+        <UButton type="submit">
+          Save changes
+        </UButton>
       </div>
     </UForm>
   </UTheme>

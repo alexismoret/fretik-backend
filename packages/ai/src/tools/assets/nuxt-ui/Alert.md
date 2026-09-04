@@ -23,15 +23,7 @@ interface AlertProps {
   /**
    * @default 'primary'
    */
-  color?:
-    | "error"
-    | "primary"
-    | "secondary"
-    | "success"
-    | "info"
-    | "warning"
-    | "neutral"
-    | undefined;
+  color?: "error" | "primary" | "secondary" | "success" | "info" | "warning" | "neutral" | undefined;
   /**
    * @default 'solid'
    */
@@ -59,19 +51,7 @@ interface AlertProps {
    * @default appConfig.ui.icons.close
    */
   closeIcon?: any;
-  ui?:
-    | {
-        root?: SlotClass;
-        wrapper?: SlotClass;
-        title?: SlotClass;
-        description?: SlotClass;
-        icon?: SlotClass;
-        avatar?: SlotClass;
-        avatarSize?: SlotClass;
-        actions?: SlotClass;
-        close?: SlotClass;
-      }
-    | undefined;
+  ui?: { root?: SlotClass; wrapper?: SlotClass; title?: SlotClass; description?: SlotClass; icon?: SlotClass; avatar?: SlotClass; avatarSize?: SlotClass; actions?: SlotClass; close?: SlotClass; } | undefined;
 }
 ```
 
@@ -101,6 +81,10 @@ interface AlertEmits {
 }
 ```
 
+## Composition
+
+Parts placed by name: `#actions`, `#close`.
+
 ## Usage
 
 ### Title
@@ -119,10 +103,7 @@ Use the `description` prop to set the description of the Alert.
 
 ```vue
 <template>
-  <UAlert
-    title="Heads up!"
-    description="You can change the primary color in your app config."
-  />
+  <UAlert title="Heads up!" description="You can change the primary color in your app config." />
 </template>
 ```
 
@@ -132,11 +113,7 @@ Use the `icon` prop to show an [Icon](https://ui.nuxt.com/docs/components/icon).
 
 ```vue
 <template>
-  <UAlert
-    title="Heads up!"
-    description="You can change the primary color in your app config."
-    icon="i-lucide-terminal"
-  />
+  <UAlert title="Heads up!" description="You can change the primary color in your app config." icon="i-lucide-terminal" />
 </template>
 ```
 
@@ -146,13 +123,9 @@ Use the `avatar` prop to show an [Avatar](https://ui.nuxt.com/docs/components/av
 
 ```vue
 <template>
-  <UAlert
-    title="Heads up!"
-    description="You can change the primary color in your app config."
-    :avatar="{
-      src: 'https://github.com/nuxt.png',
-    }"
-  />
+  <UAlert title="Heads up!" description="You can change the primary color in your app config." :avatar="{
+  src: 'https://github.com/nuxt.png'
+}" />
 </template>
 ```
 
@@ -162,12 +135,7 @@ Use the `color` prop to change the color of the Alert.
 
 ```vue
 <template>
-  <UAlert
-    color="neutral"
-    title="Heads up!"
-    description="You can change the primary color in your app config."
-    icon="i-lucide-terminal"
-  />
+  <UAlert color="neutral" title="Heads up!" description="You can change the primary color in your app config." icon="i-lucide-terminal" />
 </template>
 ```
 
@@ -177,13 +145,7 @@ Use the `variant` prop to change the variant of the Alert.
 
 ```vue
 <template>
-  <UAlert
-    color="neutral"
-    variant="subtle"
-    title="Heads up!"
-    description="You can change the primary color in your app config."
-    icon="i-lucide-terminal"
-  />
+  <UAlert color="neutral" variant="subtle" title="Heads up!" description="You can change the primary color in your app config." icon="i-lucide-terminal" />
 </template>
 ```
 
@@ -191,19 +153,13 @@ Use the `variant` prop to change the variant of the Alert.
 
 Use the `close` prop to display a [Button](https://ui.nuxt.com/docs/components/button) to dismiss the Alert.
 
-> \[!TIP]
->
+> [!TIP]
+> 
 > An `update:open` event will be emitted when the close button is clicked.
 
 ```vue
 <template>
-  <UAlert
-    title="Heads up!"
-    description="You can change the primary color in your app config."
-    color="neutral"
-    variant="outline"
-    close
-  />
+  <UAlert title="Heads up!" description="You can change the primary color in your app config." color="neutral" variant="outline" close />
 </template>
 ```
 
@@ -211,17 +167,11 @@ You can pass any property from the [Button](https://ui.nuxt.com/docs/components/
 
 ```vue
 <template>
-  <UAlert
-    title="Heads up!"
-    description="You can change the primary color in your app config."
-    color="neutral"
-    variant="outline"
-    :close="{
-      color: 'primary',
-      variant: 'outline',
-      class: 'rounded-full',
-    }"
-  />
+  <UAlert title="Heads up!" description="You can change the primary color in your app config." color="neutral" variant="outline" :close="{
+  color: 'primary',
+  variant: 'outline',
+  class: 'rounded-full'
+}" />
 </template>
 ```
 
@@ -231,29 +181,22 @@ Use the `close-icon` prop to customize the close button [Icon](https://ui.nuxt.c
 
 ```vue
 <template>
-  <UAlert
-    title="Heads up!"
-    description="You can change the primary color in your app config."
-    color="neutral"
-    variant="outline"
-    close
-    close-icon="i-lucide-arrow-right"
-  />
+  <UAlert title="Heads up!" description="You can change the primary color in your app config." color="neutral" variant="outline" close close-icon="i-lucide-arrow-right" />
 </template>
 ```
 
 **Nuxt:**
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/getting-started/integrations/icons/nuxt#theme
->
+> 
 > You can customize this icon globally in your `app.config.ts` under `ui.icons.close` key.
 
 **Vue:**
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/getting-started/integrations/icons/vue#theme
->
+> 
 > You can customize this icon globally in your `vite.config.ts` under `ui.icons.close` key.
 
 ### Actions
@@ -262,22 +205,16 @@ Use the `actions` prop to add some [Button](https://ui.nuxt.com/docs/components/
 
 ```vue
 <template>
-  <UAlert
-    title="Heads up!"
-    description="You can change the primary color in your app config."
-    color="neutral"
-    variant="outline"
-    :actions="[
-      {
-        label: 'Action 1',
-      },
-      {
-        label: 'Action 2',
-        color: 'neutral',
-        variant: 'subtle',
-      },
-    ]"
-  />
+  <UAlert title="Heads up!" description="You can change the primary color in your app config." color="neutral" variant="outline" :actions="[
+  {
+    label: 'Action 1'
+  },
+  {
+    label: 'Action 2',
+    color: 'neutral',
+    variant: 'subtle'
+  }
+]" />
 </template>
 ```
 
@@ -287,23 +224,16 @@ Use the `orientation` prop to change the orientation of the Alert.
 
 ```vue
 <template>
-  <UAlert
-    title="Heads up!"
-    description="You can change the primary color in your app config."
-    color="neutral"
-    variant="outline"
-    orientation="horizontal"
-    :actions="[
-      {
-        label: 'Action 1',
-      },
-      {
-        label: 'Action 2',
-        color: 'neutral',
-        variant: 'subtle',
-      },
-    ]"
-  />
+  <UAlert title="Heads up!" description="You can change the primary color in your app config." color="neutral" variant="outline" orientation="horizontal" :actions="[
+  {
+    label: 'Action 1'
+  },
+  {
+    label: 'Action 2',
+    color: 'neutral',
+    variant: 'subtle'
+  }
+]" />
 </template>
 ```
 
@@ -315,11 +245,7 @@ Use the `class` prop to override the base styles of the Alert.
 
 ```vue
 <template>
-  <UAlert
-    title="Heads up!"
-    description="You can change the primary color in your app config."
-    class="rounded-none"
-  />
+  <UAlert title="Heads up!" description="You can change the primary color in your app config." class="rounded-none" />
 </template>
 ```
 
@@ -329,13 +255,8 @@ Use the `ui` prop to override the slots styles of the Alert.
 
 ```vue
 <template>
-  <UAlert
-    title="Heads up!"
-    description="You can change the primary color in your app config."
-    icon="i-lucide-rocket"
-    :ui="{
-      icon: 'size-11',
-    }"
-  />
+  <UAlert title="Heads up!" description="You can change the primary color in your app config." icon="i-lucide-rocket" :ui="{
+  icon: 'size-11'
+}" />
 </template>
 ```

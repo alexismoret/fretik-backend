@@ -68,10 +68,7 @@ Use the `description` prop to set the description of the feature.
 
 ```vue
 <template>
-  <UPageFeature
-    title="Theme"
-    description="Customize Nuxt UI with your own colors, fonts, and more."
-  />
+  <UPageFeature title="Theme" description="Customize Nuxt UI with your own colors, fonts, and more." />
 </template>
 ```
 
@@ -81,27 +78,17 @@ Use the `icon` prop to set the icon of the feature.
 
 ```vue
 <template>
-  <UPageFeature
-    title="Theme"
-    description="Customize Nuxt UI with your own colors, fonts, and more."
-    icon="i-lucide-swatch-book"
-  />
+  <UPageFeature title="Theme" description="Customize Nuxt UI with your own colors, fonts, and more." icon="i-lucide-swatch-book" />
 </template>
 ```
 
 ### Link
 
-You can pass any property from the [`<NuxtLink>`](https://nuxt.com/docs/api/components/nuxt-link){rel="&#x22;nofollow&#x22;"} component such as `to`, `target`, `rel`, etc.
+You can pass any property from the [`<NuxtLink>`](https://nuxt.com/docs/api/components/nuxt-link) component such as `to`, `target`, `rel`, etc.
 
 ```vue
 <template>
-  <UPageFeature
-    title="Theme"
-    description="Customize Nuxt UI with your own colors, fonts, and more."
-    icon="i-lucide-swatch-book"
-    to="/docs/getting-started/theme/design-system"
-    target="_blank"
-  />
+  <UPageFeature title="Theme" description="Customize Nuxt UI with your own colors, fonts, and more." icon="i-lucide-swatch-book" to="/docs/getting-started/theme/design-system" target="_blank" />
 </template>
 ```
 
@@ -111,11 +98,6 @@ Use the `orientation` prop to change the orientation of the feature. Defaults to
 
 ```vue
 <template>
-  <UPageFeature
-    orientation="vertical"
-    title="Theme"
-    description="Customize Nuxt UI with your own colors, fonts, and more."
-    icon="i-lucide-swatch-book"
-  />
+  <UPageFeature orientation="vertical" title="Theme" description="Customize Nuxt UI with your own colors, fonts, and more." icon="i-lucide-swatch-book" />
 </template>
 ```

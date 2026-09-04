@@ -70,19 +70,34 @@ interface BlogPostSlots {
 }
 ```
 
+## Composition
+
+Parts placed by name: `#date`, `#badge`, `#authors`, `#body`.
+
 ## Usage
 
 The BlogPost component provides a flexible way to display an `<article>` element with customizable content including title, description, image, etc.
 
 ```vue
 <template>
-  <u-blog-post :authors=[{"name":"Anthony Fu","description":"antfu7","avatar":{"src":"https://github.com/antfu.png","loading":"lazy"},"to":"https://github.com/antfu","target":"_blank"}] date=2024-11-25 description=Discover Nuxt Icon v1 - a modern, versatile, and customizable icon solution for your Nuxt projects. image=https://nuxt.com/assets/blog/nuxt-icon/cover.png target=_blank title=Introducing Nuxt Icon v1 to=https://nuxt.com/blog/nuxt-icon-v1-0 />
+  <u-blog-post :authors="[
+    {
+      name: 'Anthony Fu',
+      description: 'antfu7',
+      avatar: {
+        src: 'https://github.com/antfu.png',
+        loading: 'lazy'
+      },
+      to: 'https://github.com/antfu',
+      target: '_blank'
+    }
+  ]" class="w-96" date="2024-11-25" description="Discover Nuxt Icon v1 - a modern, versatile, and customizable icon solution for your Nuxt projects." image="https://nuxt.com/assets/blog/nuxt-icon/cover.png" target="_blank" title="Introducing Nuxt Icon v1" to="https://nuxt.com/blog/nuxt-icon-v1-0" />
 </template>
 ```
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/components/blog-posts
->
+> 
 > Use the `BlogPosts` component to display multiple blog posts in a responsive grid layout.
 
 ### Title
@@ -101,10 +116,7 @@ Use the `description` prop to display the description of the BlogPost.
 
 ```vue
 <template>
-  <UBlogPost
-    title="Introducing Nuxt Icon v1"
-    description="Discover Nuxt Icon v1 - a modern, versatile, and customizable icon solution for your Nuxt projects."
-  />
+  <UBlogPost title="Introducing Nuxt Icon v1" description="Discover Nuxt Icon v1 - a modern, versatile, and customizable icon solution for your Nuxt projects." />
 </template>
 ```
 
@@ -112,17 +124,13 @@ Use the `description` prop to display the description of the BlogPost.
 
 Use the `date` prop to display the date of the BlogPost.
 
-> \[!TIP]
->
+> [!TIP]
+> 
 > The date is automatically formatted to the [current locale](https://ui.nuxt.com/docs/getting-started/integrations/i18n/nuxt#locale). You can either pass a `Date` object or a string.
 
 ```vue
 <template>
-  <UBlogPost
-    title="Introducing Nuxt Icon v1"
-    description="Discover Nuxt Icon v1 - a modern, versatile, and customizable icon solution for your Nuxt projects."
-    date="2024-11-25"
-  />
+  <UBlogPost title="Introducing Nuxt Icon v1" description="Discover Nuxt Icon v1 - a modern, versatile, and customizable icon solution for your Nuxt projects." date="2024-11-25" />
 </template>
 ```
 
@@ -132,11 +140,7 @@ Use the `badge` prop to display a [Badge](https://ui.nuxt.com/docs/components/ba
 
 ```vue
 <template>
-  <UBlogPost
-    title="Introducing Nuxt Icon v1"
-    description="Discover Nuxt Icon v1 - a modern, versatile, and customizable icon solution for your Nuxt projects."
-    badge="Release"
-  />
+  <UBlogPost title="Introducing Nuxt Icon v1" description="Discover Nuxt Icon v1 - a modern, versatile, and customizable icon solution for your Nuxt projects." badge="Release" />
 </template>
 ```
 
@@ -144,15 +148,11 @@ You can pass any property from the [Badge](https://ui.nuxt.com/docs/components/b
 
 ```vue
 <template>
-  <UBlogPost
-    title="Introducing Nuxt Icon v1"
-    description="Discover Nuxt Icon v1 - a modern, versatile, and customizable icon solution for your Nuxt projects."
-    :badge="{
-      label: 'Release',
-      color: 'primary',
-      variant: 'solid',
-    }"
-  />
+  <UBlogPost title="Introducing Nuxt Icon v1" description="Discover Nuxt Icon v1 - a modern, versatile, and customizable icon solution for your Nuxt projects." :badge="{
+  label: 'Release',
+  color: 'primary',
+  variant: 'solid'
+}" />
 </template>
 ```
 
@@ -160,18 +160,13 @@ You can pass any property from the [Badge](https://ui.nuxt.com/docs/components/b
 
 Use the `image` prop to display an image in the BlogPost.
 
-> \[!NOTE]
->
-> If [`@nuxt/image`](https://image.nuxt.com/get-started/installation){rel="&#x22;nofollow&#x22;"} is installed, the `<NuxtImg>` component will be used instead of the native `img` tag.
+> [!NOTE]
+> 
+> If [`@nuxt/image`](https://image.nuxt.com/get-started/installation) is installed, the `<NuxtImg>` component will be used instead of the native `img` tag.
 
 ```vue
 <template>
-  <UBlogPost
-    title="Introducing Nuxt Icon v1"
-    description="Discover Nuxt Icon v1 - a modern, versatile, and customizable icon solution for your Nuxt projects."
-    image="https://nuxt.com/assets/blog/nuxt-icon/cover.png"
-    date="2024-11-25"
-  />
+  <UBlogPost title="Introducing Nuxt Icon v1" description="Discover Nuxt Icon v1 - a modern, versatile, and customizable icon solution for your Nuxt projects." image="https://nuxt.com/assets/blog/nuxt-icon/cover.png" date="2024-11-25" />
 </template>
 ```
 
@@ -179,18 +174,18 @@ Use the `image` prop to display an image in the BlogPost.
 
 Use the `authors` prop to display a list of [User](https://ui.nuxt.com/docs/components/user) in the BlogPost as an array of objects with the following properties:
 
-- `name?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `description?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `avatar?: Omit<AvatarProps, 'size'>`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `chip?: boolean | Omit<ChipProps, 'size' | 'inset'>`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `size?: UserProps['size']`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `orientation?: UserProps['orientation']`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
+- `name?: string`
+- `description?: string`
+- `avatar?: Omit<AvatarProps, 'size'>`
+- `chip?: boolean | Omit<ChipProps, 'size' | 'inset'>`
+- `size?: UserProps['size']`
+- `orientation?: UserProps['orientation']`
 
 You can pass any property from the [Link](https://ui.nuxt.com/docs/components/link#props) component such as `to`, `target`, etc.
 
 ```vue
 <script setup lang="ts">
-import type { UserProps } from "@nuxt/ui";
+import type { UserProps } from '@nuxt/ui'
 
 const authors = ref<UserProps[]>([
   {
@@ -198,22 +193,16 @@ const authors = ref<UserProps[]>([
     description: "antfu7",
     avatar: {
       src: "https://github.com/antfu.png",
-      loading: "lazy",
+      loading: "lazy"
     },
     to: "https://github.com/antfu",
-    target: "_blank",
-  },
-]);
+    target: "_blank"
+  }
+])
 </script>
 
 <template>
-  <UBlogPost
-    title="Introducing Nuxt Icon v1"
-    description="Discover Nuxt Icon v1 - a modern, versatile, and customizable icon solution for your Nuxt projects."
-    image="https://nuxt.com/assets/blog/nuxt-icon/cover.png"
-    date="2024-11-25"
-    :authors="authors"
-  />
+  <UBlogPost title="Introducing Nuxt Icon v1" description="Discover Nuxt Icon v1 - a modern, versatile, and customizable icon solution for your Nuxt projects." image="https://nuxt.com/assets/blog/nuxt-icon/cover.png" date="2024-11-25" :authors="authors" />
 </template>
 ```
 
@@ -221,7 +210,7 @@ When the `authors` prop has more than one item, the [AvatarGroup](https://ui.nux
 
 ```vue
 <script setup lang="ts">
-import type { UserProps } from "@nuxt/ui";
+import type { UserProps } from '@nuxt/ui'
 
 const authors = ref<UserProps[]>([
   {
@@ -229,49 +218,36 @@ const authors = ref<UserProps[]>([
     description: "antfu7",
     avatar: {
       src: "https://github.com/antfu.png",
-      loading: "lazy",
+      loading: "lazy"
     },
     to: "https://github.com/antfu",
-    target: "_blank",
+    target: "_blank"
   },
   {
     name: "Benjamin Canac",
     description: "benjamincanac",
     avatar: {
       src: "https://github.com/benjamincanac.png",
-      loading: "lazy",
+      loading: "lazy"
     },
     to: "https://github.com/benjamincanac",
-    target: "_blank",
-  },
-]);
+    target: "_blank"
+  }
+])
 </script>
 
 <template>
-  <UBlogPost
-    title="Introducing Nuxt Icon v1"
-    description="Discover Nuxt Icon v1 - a modern, versatile, and customizable icon solution for your Nuxt projects."
-    image="https://nuxt.com/assets/blog/nuxt-icon/cover.png"
-    date="2024-11-25"
-    :authors="authors"
-  />
+  <UBlogPost title="Introducing Nuxt Icon v1" description="Discover Nuxt Icon v1 - a modern, versatile, and customizable icon solution for your Nuxt projects." image="https://nuxt.com/assets/blog/nuxt-icon/cover.png" date="2024-11-25" :authors="authors" />
 </template>
 ```
 
 ### Link
 
-You can pass any property from the [`<NuxtLink>`](https://nuxt.com/docs/api/components/nuxt-link){rel="&#x22;nofollow&#x22;"} component such as `to`, `target`, `rel`, etc.
+You can pass any property from the [`<NuxtLink>`](https://nuxt.com/docs/api/components/nuxt-link) component such as `to`, `target`, `rel`, etc.
 
 ```vue
 <template>
-  <UBlogPost
-    title="Introducing Nuxt Icon v1"
-    description="Discover Nuxt Icon v1 - a modern, versatile, and customizable icon solution for your Nuxt projects."
-    image="https://nuxt.com/assets/blog/nuxt-icon/cover.png"
-    date="2024-11-25"
-    to="https://nuxt.com/blog/nuxt-icon-v1-0"
-    target="_blank"
-  />
+  <UBlogPost title="Introducing Nuxt Icon v1" description="Discover Nuxt Icon v1 - a modern, versatile, and customizable icon solution for your Nuxt projects." image="https://nuxt.com/assets/blog/nuxt-icon/cover.png" date="2024-11-25" to="https://nuxt.com/blog/nuxt-icon-v1-0" target="_blank" />
 </template>
 ```
 
@@ -281,20 +257,12 @@ Use the `variant` prop to change the style of the BlogPost.
 
 ```vue
 <template>
-  <UBlogPost
-    title="Introducing Nuxt Icon v1"
-    description="Discover Nuxt Icon v1 - a modern, versatile, and customizable icon solution for your Nuxt projects."
-    image="https://nuxt.com/assets/blog/nuxt-icon/cover.png"
-    date="2024-11-25"
-    to="https://nuxt.com/blog/nuxt-icon-v1-0"
-    target="_blank"
-    variant="naked"
-  />
+  <UBlogPost title="Introducing Nuxt Icon v1" description="Discover Nuxt Icon v1 - a modern, versatile, and customizable icon solution for your Nuxt projects." image="https://nuxt.com/assets/blog/nuxt-icon/cover.png" date="2024-11-25" to="https://nuxt.com/blog/nuxt-icon-v1-0" target="_blank" variant="naked" />
 </template>
 ```
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > The styling will be different wether you provide a `to` prop or an `image`.
 
 ### Orientation
@@ -303,15 +271,6 @@ Use the `orientation` prop to change the BlogPost orientation. Defaults to `vert
 
 ```vue
 <template>
-  <UBlogPost
-    title="Introducing Nuxt Icon v1"
-    description="Discover Nuxt Icon v1 - a modern, versatile, and customizable icon solution for your Nuxt projects."
-    image="https://nuxt.com/assets/blog/nuxt-icon/cover.png"
-    date="2024-11-25"
-    to="https://nuxt.com/blog/nuxt-icon-v1-0"
-    target="_blank"
-    orientation="horizontal"
-    variant="outline"
-  />
+  <UBlogPost title="Introducing Nuxt Icon v1" description="Discover Nuxt Icon v1 - a modern, versatile, and customizable icon solution for your Nuxt projects." image="https://nuxt.com/assets/blog/nuxt-icon/cover.png" date="2024-11-25" to="https://nuxt.com/blog/nuxt-icon-v1-0" target="_blank" orientation="horizontal" variant="outline" />
 </template>
 ```

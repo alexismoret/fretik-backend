@@ -32,17 +32,7 @@ interface DashboardNavbarProps {
    * @default 'left'
    */
   toggleSide?: "left" | "right" | undefined;
-  ui?:
-    | {
-        root?: SlotClass;
-        left?: SlotClass;
-        icon?: SlotClass;
-        title?: SlotClass;
-        center?: SlotClass;
-        right?: SlotClass;
-        toggle?: SlotClass;
-      }
-    | undefined;
+  ui?: { root?: SlotClass; left?: SlotClass; icon?: SlotClass; title?: SlotClass; center?: SlotClass; right?: SlotClass; toggle?: SlotClass; } | undefined;
 }
 ```
 
@@ -63,17 +53,23 @@ interface DashboardNavbarSlots {
 }
 ```
 
+## Composition
+
+Parts placed by name: `#left`, `#right`, `#toggle`.
+
+Also written in the docs and absent from the interface above — one per column or item: `#header`.
+
 ## Usage
 
 The DashboardNavbar component is a responsive navigation bar that integrates with the [DashboardSidebar](https://ui.nuxt.com/docs/components/dashboard-sidebar) component. It includes a mobile toggle button to enable responsive navigation in dashboard layouts.
 
 Use it inside the `header` slot of the [DashboardPanel](https://ui.nuxt.com/docs/components/dashboard-panel) component:
 
-```vue [pages/index.vue] {9-11}
+```vue [pages/index.vue]
 <script setup lang="ts">
 definePageMeta({
-  layout: "dashboard",
-});
+  layout: 'dashboard'
+})
 </script>
 
 <template>
@@ -89,18 +85,15 @@ Use the `left`, `default` and `right` slots to customize the navbar.
 
 ```vue [DashboardNavbarExample.vue]
 <script setup lang="ts">
-import type { TabsItem } from "@nuxt/ui";
+import type { TabsItem } from '@nuxt/ui'
 
-const items: TabsItem[] = [
-  {
-    label: "All",
-    value: "all",
-  },
-  {
-    label: "Unread",
-    value: "unread",
-  },
-];
+const items: TabsItem[] = [{
+  label: 'All',
+  value: 'all'
+}, {
+  label: 'Unread',
+  value: 'unread'
+}]
 </script>
 
 <template>
@@ -126,8 +119,8 @@ const items: TabsItem[] = [
 </template>
 ```
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > In this example, we use the [Tabs](https://ui.nuxt.com/docs/components/tabs) component in the right slot to display some tabs.
 
 ### Title
@@ -163,7 +156,7 @@ You can pass any property from the [Button](https://ui.nuxt.com/docs/components/
     :toggle="{
       color: 'primary',
       variant: 'subtle',
-      class: 'rounded-full',
+      class: 'rounded-full'
     }"
   />
 </template>
@@ -175,6 +168,9 @@ Use the `toggle-side` prop to change the side of the toggle button. Defaults to 
 
 ```vue [DashboardNavbarToggleSideExample.vue]
 <template>
-  <UDashboardNavbar title="Dashboard" toggle-side="right" />
+  <UDashboardNavbar
+    title="Dashboard"
+    toggle-side="right"
+  />
 </template>
 ```

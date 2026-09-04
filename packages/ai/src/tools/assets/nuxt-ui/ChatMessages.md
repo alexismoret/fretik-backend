@@ -38,22 +38,12 @@ interface ChatMessagesProps {
    * The `user` messages props.
    * `{ side: 'right', variant: 'soft' }`{lang="ts-type"}
    */
-  user?:
-    | Pick<
-        PropsBase<T>,
-        "actions" | "ui" | "variant" | "icon" | "avatar" | "side"
-      >
-    | undefined;
+  user?: Pick<PropsBase<T>, "actions" | "ui" | "variant" | "icon" | "avatar" | "side"> | undefined;
   /**
    * The `assistant` messages props.
    * `{ side: 'left', variant: 'naked' }`{lang="ts-type"}
    */
-  assistant?:
-    | Pick<
-        PropsBase<T>,
-        "actions" | "ui" | "variant" | "icon" | "avatar" | "side"
-      >
-    | undefined;
+  assistant?: Pick<PropsBase<T>, "actions" | "ui" | "variant" | "icon" | "avatar" | "side"> | undefined;
   /**
    * Render the messages in a compact style.
    * This is done automatically when used inside a `UChatPalette`{lang="ts-type"}.
@@ -65,14 +55,7 @@ interface ChatMessagesProps {
    * @default 0
    */
   spacingOffset?: number | undefined;
-  ui?:
-    | {
-        root?: SlotClass;
-        indicator?: SlotClass;
-        viewport?: SlotClass;
-        autoScroll?: SlotClass;
-      }
-    | undefined;
+  ui?: { root?: SlotClass; indicator?: SlotClass; viewport?: SlotClass; autoScroll?: SlotClass; } | undefined;
 }
 ```
 
@@ -95,15 +78,15 @@ interface ChatMessagesSlots {
 }
 ```
 
-> \[!TIP]
->
+> [!TIP]
+> 
 > You can use all the slots of the [`ChatMessage`](https://ui.nuxt.com/docs/components/chat-message#slots) component inside ChatMessages, they are automatically forwarded so you can customize individual messages when using the `messages` prop.
->
-> ```vue {7-15}
+> 
+> ```vue
 > <script setup lang="ts">
-> import { isTextUIPart } from "ai";
+> import { isTextUIPart } from 'ai'
 > </script>
->
+> 
 > <template>
 >   <UChatMessages :messages="messages" :status="status">
 >     <template #content="{ message }">
@@ -124,15 +107,19 @@ interface ChatMessagesSlots {
 
 When accessing the component via a template ref, you can use the following:
 
-| Name                                                             | Type                                                                                                                       |
-| ---------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `registerMessageRef(id: string, element: ComponentPublicInstance | null)`{.language-ts-type.shiki.shiki-themes.material-theme-lighter.material-theme.material-theme-palenight lang="ts-type"} | `void`{.language-ts-type.shiki.shiki-themes.material-theme-lighter.material-theme.material-theme-palenight lang="ts-type"} |
+| Name | Type |
+| --- | --- |
+| `registerMessageRef(id: string, element: ComponentPublicInstance \| null)` | `void` |
+
+## Composition
+
+Parts placed by name: `#indicator`, `#viewport`, `#files`, `#body`, `#content`, `#actions`.
 
 ## Usage
 
 The ChatMessages component displays a list of [ChatMessage](https://ui.nuxt.com/docs/components/chat-message) components using either the default slot or the `messages` prop.
 
-```vue {2,8}
+```vue
 <template>
   <UChatMessages>
     <UChatMessage
@@ -144,14 +131,14 @@ The ChatMessages component displays a list of [ChatMessage](https://ui.nuxt.com/
 </template>
 ```
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > This component is purpose-built for AI chatbots with features like:
->
-> - Initial scroll to the bottom upon loading ([`shouldScrollToBottom`](https://ui.nuxt.com/#should-scroll-to-bottom)).
-> - Continuous scrolling down as new messages arrive ([`shouldAutoScroll`](https://ui.nuxt.com/#should-auto-scroll)).
-> - An "Auto scroll" button appears when scrolled up, allowing users to jump back to the latest messages ([`autoScroll`](https://ui.nuxt.com/#auto-scroll)).
-> - A loading indicator displays while the assistant is processing ([`status`](https://ui.nuxt.com/#status)).
+> 
+> - Initial scroll to the bottom upon loading ([`shouldScrollToBottom`](#should-scroll-to-bottom)).
+> - Continuous scrolling down as new messages arrive ([`shouldAutoScroll`](#should-auto-scroll)).
+> - An "Auto scroll" button appears when scrolled up, allowing users to jump back to the latest messages ([`autoScroll`](#auto-scroll)).
+> - A loading indicator displays while the assistant is processing ([`status`](#status)).
 > - Submitted messages are scrolled to the top of the viewport and the height of the last user message is dynamically adjusted.
 
 ### Messages
@@ -167,9 +154,9 @@ const messages = ref([
     parts: [
       {
         type: "text",
-        text: "Hello, how are you?",
-      },
-    ],
+        text: "Hello, how are you?"
+      }
+    ]
   },
   {
     id: "7a92b3c1-d5f8-4e76-b8a9-3c1e5fb2e0d8",
@@ -177,9 +164,9 @@ const messages = ref([
     parts: [
       {
         type: "text",
-        text: "I am doing well, thank you for asking! How can I assist you today?",
-      },
-    ],
+        text: "I am doing well, thank you for asking! How can I assist you today?"
+      }
+    ]
   },
   {
     id: "9c84d6a7-8b23-4f12-a1d5-e7f3b9c05e2a",
@@ -187,9 +174,9 @@ const messages = ref([
     parts: [
       {
         type: "text",
-        text: "What is the current weather in Tokyo?",
-      },
-    ],
+        text: "What is the current weather in Tokyo?"
+      }
+    ]
   },
   {
     id: "b2e5f8c3-a1d9-4e67-b3f2-c9d8e7a6b5f4",
@@ -197,11 +184,11 @@ const messages = ref([
     parts: [
       {
         type: "text",
-        text: "Based on the latest data, Tokyo is currently experiencing sunny weather with temperatures around 24°C (75°F). It's a beautiful day with clear skies.",
-      },
-    ],
-  },
-]);
+        text: "Based on the latest data, Tokyo is currently experiencing sunny weather with temperatures around 24°C (75°F). It's a beautiful day with clear skies."
+      }
+    ]
+  }
+])
 </script>
 
 <template>
@@ -222,11 +209,11 @@ const messages = ref([
     parts: [
       {
         type: "text",
-        text: "Hello, how are you?",
-      },
-    ],
-  },
-]);
+        text: "Hello, how are you?"
+      }
+    ]
+  }
+])
 </script>
 
 <template>
@@ -234,10 +221,10 @@ const messages = ref([
 </template>
 ```
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > Here's the detail of the different statuses from the AI SDK `useChat` composable:
->
+> 
 > - `submitted`: The message has been sent to the API and we're awaiting the start of the response stream.
 > - `streaming`: The response is actively streaming in from the API, receiving chunks of data.
 > - `ready`: The full response has been received and processed; a new user message can be submitted.
@@ -247,8 +234,8 @@ const messages = ref([
 
 Use the `user` prop to change the [ChatMessage](https://ui.nuxt.com/docs/components/chat-message) props for `user` messages. Defaults to:
 
-- `side: 'right'`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `variant: 'soft'`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
+- `side: 'right'`
+- `variant: 'soft'`
 
 ```vue
 <script setup lang="ts">
@@ -259,9 +246,9 @@ const messages = ref([
     parts: [
       {
         type: "text",
-        text: "Hello, how are you?",
-      },
-    ],
+        text: "Hello, how are you?"
+      }
+    ]
   },
   {
     id: "7a92b3c1-d5f8-4e76-b8a9-3c1e5fb2e0d8",
@@ -269,9 +256,9 @@ const messages = ref([
     parts: [
       {
         type: "text",
-        text: "I am doing well, thank you for asking! How can I assist you today?",
-      },
-    ],
+        text: "I am doing well, thank you for asking! How can I assist you today?"
+      }
+    ]
   },
   {
     id: "9c84d6a7-8b23-4f12-a1d5-e7f3b9c05e2a",
@@ -279,9 +266,9 @@ const messages = ref([
     parts: [
       {
         type: "text",
-        text: "What is the current weather in Tokyo?",
-      },
-    ],
+        text: "What is the current weather in Tokyo?"
+      }
+    ]
   },
   {
     id: "b2e5f8c3-a1d9-4e67-b3f2-c9d8e7a6b5f4",
@@ -289,25 +276,22 @@ const messages = ref([
     parts: [
       {
         type: "text",
-        text: "Based on the latest data, Tokyo is currently experiencing sunny weather with temperatures around 24°C (75°F). It's a beautiful day with clear skies.",
-      },
-    ],
-  },
-]);
+        text: "Based on the latest data, Tokyo is currently experiencing sunny weather with temperatures around 24°C (75°F). It's a beautiful day with clear skies."
+      }
+    ]
+  }
+])
 </script>
 
 <template>
-  <UChatMessages
-    :user="{
-      side: 'left',
-      variant: 'solid',
-      avatar: {
-        src: 'https://github.com/benjamincanac.png',
-        loading: 'lazy',
-      },
-    }"
-    :messages="messages"
-  />
+  <UChatMessages :user="{
+  side: 'left',
+  variant: 'solid',
+  avatar: {
+    src: 'https://github.com/benjamincanac.png',
+    loading: 'lazy'
+  }
+}" :messages="messages" />
 </template>
 ```
 
@@ -315,8 +299,8 @@ const messages = ref([
 
 Use the `assistant` prop to change the [ChatMessage](https://ui.nuxt.com/docs/components/chat-message) props for `assistant` messages. Defaults to:
 
-- `side: 'left'`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `variant: 'naked'`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
+- `side: 'left'`
+- `variant: 'naked'`
 
 ```vue
 <script setup lang="ts">
@@ -327,9 +311,9 @@ const messages = ref([
     parts: [
       {
         type: "text",
-        text: "Hello, how are you?",
-      },
-    ],
+        text: "Hello, how are you?"
+      }
+    ]
   },
   {
     id: "7a92b3c1-d5f8-4e76-b8a9-3c1e5fb2e0d8",
@@ -337,9 +321,9 @@ const messages = ref([
     parts: [
       {
         type: "text",
-        text: "I am doing well, thank you for asking! How can I assist you today?",
-      },
-    ],
+        text: "I am doing well, thank you for asking! How can I assist you today?"
+      }
+    ]
   },
   {
     id: "9c84d6a7-8b23-4f12-a1d5-e7f3b9c05e2a",
@@ -347,9 +331,9 @@ const messages = ref([
     parts: [
       {
         type: "text",
-        text: "What is the current weather in Tokyo?",
-      },
-    ],
+        text: "What is the current weather in Tokyo?"
+      }
+    ]
   },
   {
     id: "b2e5f8c3-a1d9-4e67-b3f2-c9d8e7a6b5f4",
@@ -357,30 +341,27 @@ const messages = ref([
     parts: [
       {
         type: "text",
-        text: "Based on the latest data, Tokyo is currently experiencing sunny weather with temperatures around 24°C (75°F). It's a beautiful day with clear skies.",
-      },
-    ],
-  },
-]);
+        text: "Based on the latest data, Tokyo is currently experiencing sunny weather with temperatures around 24°C (75°F). It's a beautiful day with clear skies."
+      }
+    ]
+  }
+])
 </script>
 
 <template>
-  <UChatMessages
-    :assistant="{
-      side: 'left',
-      variant: 'outline',
-      avatar: {
-        icon: 'i-lucide-bot',
-      },
-      actions: [
-        {
-          label: 'Copy to clipboard',
-          icon: 'i-lucide-copy',
-        },
-      ],
-    }"
-    :messages="messages"
-  />
+  <UChatMessages :assistant="{
+  side: 'left',
+  variant: 'outline',
+  avatar: {
+    icon: 'i-lucide-bot'
+  },
+  actions: [
+    {
+      label: 'Copy to clipboard',
+      icon: 'i-lucide-copy'
+    }
+  ]
+}" :messages="messages" />
 </template>
 ```
 
@@ -388,9 +369,9 @@ _(truncated — ask for fewer components to see more, or rely on the API block a
 
 ## Examples
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/components/chat
->
+> 
 > Check the **Chat** overview page for installation instructions, server setup and usage examples.
 
 ### With indicator slot
@@ -399,136 +380,101 @@ Use the `#indicator` slot to customize the loading indicator with a [`ChatShimme
 
 ```vue [ChatMessagesIndicatorSlotExample.vue]
 <script setup lang="ts">
-import type { UIMessage } from "ai";
-import { useChat } from "@ai-sdk/vue";
+import type { UIMessage } from 'ai'
+import { useChat } from '@ai-sdk/vue'
 
-const initialMessages: UIMessage[] = [
-  {
-    id: "1",
-    role: "user",
-    parts: [{ type: "text", text: "Hello! Can you help me with something?" }],
-  },
-];
+const initialMessages: UIMessage[] = [{
+  id: '1',
+  role: 'user',
+  parts: [{ type: 'text', text: 'Hello! Can you help me with something?' }]
+}]
 
 const { messages } = useChat({
-  messages: initialMessages,
-});
+  messages: initialMessages
+})
 
-const size = 4;
-const gap = 2;
-const totalDots = size * size;
+const size = 4
+const gap = 2
+const totalDots = size * size
 
 const patterns = [
-  [
-    [0],
-    [1],
-    [2],
-    [3],
-    [7],
-    [11],
-    [15],
-    [14],
-    [13],
-    [12],
-    [8],
-    [4],
-    [5],
-    [6],
-    [10],
-    [9],
-  ],
-  [
-    [0, 4, 8, 12],
-    [1, 5, 9, 13],
-    [2, 6, 10, 14],
-    [3, 7, 11, 15],
-  ],
-  [
-    [5, 6, 9, 10],
-    [1, 4, 7, 8, 11, 14],
-    [0, 3, 12, 15],
-    [1, 4, 7, 8, 11, 14],
-    [5, 6, 9, 10],
-  ],
-  [[0], [1, 4], [2, 5, 8], [3, 6, 9, 12], [7, 10, 13], [11, 14], [15]],
-];
+  [[0], [1], [2], [3], [7], [11], [15], [14], [13], [12], [8], [4], [5], [6], [10], [9]],
+  [[0, 4, 8, 12], [1, 5, 9, 13], [2, 6, 10, 14], [3, 7, 11, 15]],
+  [[5, 6, 9, 10], [1, 4, 7, 8, 11, 14], [0, 3, 12, 15], [1, 4, 7, 8, 11, 14], [5, 6, 9, 10]],
+  [[0], [1, 4], [2, 5, 8], [3, 6, 9, 12], [7, 10, 13], [11, 14], [15]]
+]
 
-const activeDots = ref<Set<number>>(new Set());
-let patternIndex = 0;
-let stepIndex = 0;
+const activeDots = ref<Set<number>>(new Set())
+let patternIndex = 0
+let stepIndex = 0
 
 function nextStep() {
-  const pattern = patterns[patternIndex];
-  if (!pattern) return;
+  const pattern = patterns[patternIndex]
+  if (!pattern) return
 
-  activeDots.value = new Set(pattern[stepIndex]);
-  stepIndex++;
+  activeDots.value = new Set(pattern[stepIndex])
+  stepIndex++
 
   if (stepIndex >= pattern.length) {
-    stepIndex = 0;
-    patternIndex = (patternIndex + 1) % patterns.length;
+    stepIndex = 0
+    patternIndex = (patternIndex + 1) % patterns.length
   }
 }
 
-const statusMessages = [
-  "Searching...",
-  "Reading...",
-  "Analyzing...",
-  "Thinking...",
-];
-const currentIndex = ref(0);
-const displayedText = ref(statusMessages[0]!);
-const chars = "abcdefghijklmnopqrstuvwxyz";
+const statusMessages = ['Searching...', 'Reading...', 'Analyzing...', 'Thinking...']
+const currentIndex = ref(0)
+const displayedText = ref(statusMessages[0]!)
+const chars = 'abcdefghijklmnopqrstuvwxyz'
 
 function scramble(from: string, to: string) {
-  const maxLength = Math.max(from.length, to.length);
-  let frame = 0;
-  const totalFrames = 15;
+  const maxLength = Math.max(from.length, to.length)
+  let frame = 0
+  const totalFrames = 15
 
   const step = () => {
-    frame++;
-    let result = "";
-    const progress = (frame / totalFrames) * maxLength;
+    frame++
+    let result = ''
+    const progress = (frame / totalFrames) * maxLength
 
     for (let i = 0; i < maxLength; i++) {
       if (i < progress - 2) {
-        result += to[i] || "";
+        result += to[i] || ''
       } else if (i < progress) {
-        result += chars[Math.floor(Math.random() * chars.length)];
+        result += chars[Math.floor(Math.random() * chars.length)]
       } else {
-        result += from[i] || "";
+        result += from[i] || ''
       }
     }
 
-    displayedText.value = result;
+    displayedText.value = result
 
     if (frame < totalFrames) {
-      requestAnimationFrame(step);
+      requestAnimationFrame(step)
     } else {
-      displayedText.value = to;
+      displayedText.value = to
     }
-  };
+  }
 
-  requestAnimationFrame(step);
+  requestAnimationFrame(step)
 }
 
-let matrixInterval: ReturnType<typeof setInterval> | undefined;
-let textInterval: ReturnType<typeof setInterval> | undefined;
+let matrixInterval: ReturnType<typeof setInterval> | undefined
+let textInterval: ReturnType<typeof setInterval> | undefined
 
 onMounted(() => {
-  nextStep();
-  matrixInterval = setInterval(nextStep, 120);
+  nextStep()
+  matrixInterval = setInterval(nextStep, 120)
   textInterval = setInterval(() => {
-    const prev = displayedText.value;
-    currentIndex.value = (currentIndex.value + 1) % statusMessages.length;
-    scramble(prev, statusMessages[currentIndex.value]!);
-  }, 3000);
-});
+    const prev = displayedText.value
+    currentIndex.value = (currentIndex.value + 1) % statusMessages.length
+    scramble(prev, statusMessages[currentIndex.value]!)
+  }, 3000)
+})
 
 onUnmounted(() => {
-  clearInterval(matrixInterval);
-  clearInterval(textInterval);
-});
+  clearInterval(matrixInterval)
+  clearInterval(textInterval)
+})
 </script>
 
 <template>
@@ -543,7 +489,7 @@ onUnmounted(() => {
           class="shrink-0 grid size-4"
           :style="{
             gridTemplateColumns: `repeat(${size}, 1fr)`,
-            gap: `${gap}px`,
+            gap: `${gap}px`
           }"
         >
           <span

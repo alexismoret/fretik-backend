@@ -197,14 +197,14 @@ interface ButtonProps {
 }
 ```
 
-> \[!NOTE]
-> See: https\://developer.mozilla.org/en-US/docs/Web/HTML/Element/button#attributes
->
+> [!NOTE]
+> See: https://developer.mozilla.org/en-US/docs/Web/HTML/Element/button#attributes
+> 
 > This component also supports all native `<button>` HTML attributes.
 
-> \[!NOTE]
-> See: https\://github.com/nuxt/ui/blob/v4/src/runtime/components/Link.vue#L13
->
+> [!NOTE]
+> See: https://github.com/nuxt/ui/blob/v4/src/runtime/components/Link.vue#L13
+> 
 > The `Button` component extends the `Link` component. Check out the source code on GitHub.
 
 ### Slots
@@ -226,7 +226,9 @@ Use the default slot to set the label of the Button.
 
 ```vue
 <template>
-  <UButton> Button </UButton>
+  <UButton>
+    Button
+  </UButton>
 </template>
 ```
 
@@ -246,7 +248,9 @@ Use the `color` prop to change the color of the Button.
 
 ```vue
 <template>
-  <UButton color="neutral"> Button </UButton>
+  <UButton color="neutral">
+    Button
+  </UButton>
 </template>
 ```
 
@@ -256,7 +260,9 @@ Use the `variant` prop to change the variant of the Button.
 
 ```vue
 <template>
-  <UButton color="neutral" variant="outline"> Button </UButton>
+  <UButton color="neutral" variant="outline">
+    Button
+  </UButton>
 </template>
 ```
 
@@ -266,7 +272,9 @@ Use the `size` prop to change the size of the Button.
 
 ```vue
 <template>
-  <UButton size="xl"> Button </UButton>
+  <UButton size="xl">
+    Button
+  </UButton>
 </template>
 ```
 
@@ -286,7 +294,9 @@ Use the `leading` and `trailing` props to set the icon position or the `leading-
 
 ```vue
 <template>
-  <UButton trailing-icon="i-lucide-arrow-right" size="md"> Button </UButton>
+  <UButton trailing-icon="i-lucide-arrow-right" size="md">
+    Button
+  </UButton>
 </template>
 ```
 
@@ -304,15 +314,10 @@ Use the `avatar` prop to show an [Avatar](https://ui.nuxt.com/docs/components/av
 
 ```vue
 <template>
-  <UButton
-    :avatar="{
-      src: 'https://github.com/nuxt.png',
-      loading: 'lazy',
-    }"
-    size="md"
-    color="neutral"
-    variant="outline"
-  >
+  <UButton :avatar="{
+  src: 'https://github.com/nuxt.png',
+  loading: 'lazy'
+}" size="md" color="neutral" variant="outline">
     Button
   </UButton>
 </template>
@@ -322,15 +327,10 @@ The `label` as prop or slot is optional so you can use the Button as an avatar-o
 
 ```vue
 <template>
-  <UButton
-    :avatar="{
-      src: 'https://github.com/nuxt.png',
-      loading: 'lazy',
-    }"
-    size="md"
-    color="neutral"
-    variant="outline"
-  />
+  <UButton :avatar="{
+  src: 'https://github.com/nuxt.png',
+  loading: 'lazy'
+}" size="md" color="neutral" variant="outline" />
 </template>
 ```
 
@@ -340,7 +340,9 @@ You can pass any property from the [Link](https://ui.nuxt.com/docs/components/li
 
 ```vue
 <template>
-  <UButton to="https://github.com/nuxt/ui" target="_blank"> Button </UButton>
+  <UButton to="https://github.com/nuxt/ui" target="_blank">
+    Button
+  </UButton>
 </template>
 ```
 
@@ -348,13 +350,7 @@ When the Button is a link or when using the `active` prop, you can use the `acti
 
 ```vue
 <template>
-  <UButton
-    active
-    color="neutral"
-    variant="outline"
-    active-color="primary"
-    active-variant="solid"
-  >
+  <UButton active color="neutral" variant="outline" active-color="primary" active-variant="solid">
     Button
   </UButton>
 </template>
@@ -370,10 +366,10 @@ You can also use the `active-class` and `inactive-class` props to customize the 
 </template>
 ```
 
-> \[!TIP]
->
+> [!TIP]
+> 
 > You can configure these styles globally in your `app.config.ts` file under the `ui.button.variants.active` key.
->
+> 
 > ```ts
 > export default defineAppConfig({
 >   ui: {
@@ -381,13 +377,13 @@ You can also use the `active-class` and `inactive-class` props to customize the 
 >       variants: {
 >         active: {
 >           true: {
->             base: "font-bold",
->           },
->         },
->       },
->     },
->   },
-> });
+>             base: 'font-bold'
+>           }
+>         }
+>       }
+>     }
+>   }
+> })
 > ```
 
 ### Loading
@@ -396,7 +392,9 @@ Use the `loading` prop to show a loading icon and disable the Button.
 
 ```vue
 <template>
-  <UButton loading :trailing="false"> Button </UButton>
+  <UButton loading :trailing="false">
+    Button
+  </UButton>
 </template>
 ```
 
@@ -405,12 +403,14 @@ Use the `loading-auto` prop to show the loading icon automatically while the `@c
 ```vue [ButtonLoadingAutoExample.vue]
 <script setup lang="ts">
 async function onClick() {
-  return new Promise<void>((res) => setTimeout(res, 1000));
+  return new Promise<void>(res => setTimeout(res, 1000))
 }
 </script>
 
 <template>
-  <UButton loading-auto @click="onClick"> Button </UButton>
+  <UButton loading-auto @click="onClick">
+    Button
+  </UButton>
 </template>
 ```
 
@@ -418,16 +418,15 @@ This also works with the [Form](https://ui.nuxt.com/docs/components/form) compon
 
 ```vue [ButtonLoadingAutoFormExample.vue]
 <script setup lang="ts">
-const state = reactive({ fullName: "" });
+const state = reactive({ fullName: '' })
 
 async function onSubmit() {
-  return new Promise<void>((res) => setTimeout(res, 1000));
+  return new Promise<void>(res => setTimeout(res, 1000))
 }
 
 async function validate(data: Partial<typeof state>) {
-  if (!data.fullName?.length)
-    return [{ name: "fullName", message: "Required" }];
-  return [];
+  if (!data.fullName?.length) return [{ name: 'fullName', message: 'Required' }]
+  return []
 }
 </script>
 
@@ -436,10 +435,13 @@ async function validate(data: Partial<typeof state>) {
     <UFormField name="fullName" label="Full name">
       <UInput v-model="state.fullName" />
     </UFormField>
-    <UButton type="submit" class="mt-2" loading-auto> Submit </UButton>
+    <UButton type="submit" class="mt-2" loading-auto>
+      Submit
+    </UButton>
   </UForm>
 </template>
 ```
+
 
 _(truncated — ask for fewer components to see more, or rely on the API block above)_
 
@@ -451,7 +453,9 @@ Use the `class` prop to override the base styles of the Button.
 
 ```vue
 <template>
-  <UButton class="font-bold rounded-full"> Button </UButton>
+  <UButton class="font-bold rounded-full">
+    Button
+  </UButton>
 </template>
 ```
 
@@ -461,14 +465,9 @@ Use the `ui` prop to override the slots styles of the Button.
 
 ```vue
 <template>
-  <UButton
-    icon="i-lucide-rocket"
-    color="neutral"
-    variant="outline"
-    :ui="{
-      leadingIcon: 'text-primary',
-    }"
-  >
+  <UButton icon="i-lucide-rocket" color="neutral" variant="outline" :ui="{
+  leadingIcon: 'text-primary'
+}">
     Button
   </UButton>
 </template>

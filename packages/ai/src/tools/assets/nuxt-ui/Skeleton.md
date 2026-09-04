@@ -16,7 +16,7 @@ interface SkeletonProps {
    * @default 'div'
    */
   as?: any;
-  ui?: { base?: any } | undefined;
+  ui?: { base?: any; } | undefined;
 }
 ```
 

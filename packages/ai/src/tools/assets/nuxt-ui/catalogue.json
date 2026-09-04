@@ -1,0 +1,726 @@
+{
+  "note": "Hand-maintained. One entry per component the page runtime registers, and the sync script (scripts/sync-nuxt-ui-docs.ts) fails when that stops being true. This is the CHOICE half of the component docs — what each one is for, and what it is not for. The API half is generated per component from the library's own docs and served by pageDocs. Keep every line short: the whole file is rendered into the builder's cached prompt prefix, so a paragraph here is paid on every build. `job` groups the render; `not` is only written where the confusion is real; `why` replaces when/not for a component the page frame cannot run.",
+  "jobs": {
+    "structure": "arrange the screen",
+    "navigation": "move between views",
+    "records": "show a set of records",
+    "value": "show one value",
+    "input": "ask for input",
+    "overlay": "layer something over the view",
+    "feedback": "tell the reader what is happening",
+    "content": "prose, messages, rich text",
+    "excluded": "registered, but the page frame cannot run it"
+  },
+  "components": {
+    "Accordion": {
+      "job": "structure",
+      "what": "stacked sections that open one at a time",
+      "when": "grouped detail the reader opens on demand, in order",
+      "not": "peer views of one subject (UTabs) or a single block (UCollapsible)",
+      "distinctive": "`items`, `type=\"multiple\"`, `#body`"
+    },
+    "Alert": {
+      "job": "feedback",
+      "what": "a message that stays on the page",
+      "when": "a condition the reader must keep seeing: a failed dataset, a stale figure",
+      "not": "confirmation of something they just did (`useToast()`)",
+      "distinctive": "`color`, `variant`, `#actions` for the way out"
+    },
+    "App": {
+      "job": "excluded",
+      "why": "already mounted around your page — a second one double-mounts overlays and toasts"
+    },
+    "AuthForm": {
+      "job": "input",
+      "what": "a sign-in form with fields, providers and validation",
+      "when": "a page whose subject is credentials — rare",
+      "not": "signing into Fretik: the app owns that, a page is already authenticated",
+      "distinctive": "`fields`, `providers`, `:validate`"
+    },
+    "Avatar": {
+      "job": "value",
+      "what": "one person or thing, as an image or initials",
+      "when": "identity inside a dense row",
+      "distinctive": "`src`, `alt` becomes the initials, `size`"
+    },
+    "AvatarGroup": {
+      "job": "value",
+      "what": "several avatars stacked, with an overflow count",
+      "when": "who is on this, in one cell",
+      "distinctive": "`:max` turns the rest into +N"
+    },
+    "Badge": {
+      "job": "value",
+      "what": "a short status or tag",
+      "when": "one categorical value, read at a glance",
+      "not": "prose, a number worth reading, or every field of a row",
+      "distinctive": "`variant=\"subtle\"` for data, `solid` for the one that leads"
+    },
+    "Banner": {
+      "job": "feedback",
+      "what": "a strip across the very top of the page",
+      "when": "one page-wide condition above everything else",
+      "distinctive": "never pass `id` — with one it reads localStorage and writes to `<head>`, and the frame has neither"
+    },
+    "BlogPost": {
+      "job": "records",
+      "what": "one article card: image, date, authors, badge",
+      "when": "an item whose subject really is an article or a post",
+      "distinctive": "`to`, `image`, `authors`, `orientation`"
+    },
+    "BlogPosts": {
+      "job": "records",
+      "what": "a responsive grid of BlogPost",
+      "when": "the set is articles and the image carries meaning",
+      "not": "business records with an image field — that is UPageGrid or UTable",
+      "distinctive": "`orientation`, wraps `UBlogPost` children"
+    },
+    "Breadcrumb": {
+      "job": "navigation",
+      "what": "the trail back up a hierarchy",
+      "when": "a view reached from another one — a detail, a nested list",
+      "distinctive": "`items` with `to`, `#separator`"
+    },
+    "Button": {
+      "job": "input",
+      "what": "the verb of the page",
+      "when": "anything the reader clicks to make something happen",
+      "distinctive": "`variant`, `color`, `loading`, `icon`; `to` makes it navigate"
+    },
+    "Calendar": {
+      "job": "records",
+      "what": "a month grid the reader browses",
+      "when": "the subject IS dates — availability, load per day, what falls on the 12th",
+      "not": "picking a date in a form (UInputDate)",
+      "distinctive": "values are `@internationalized/date`, never `Date`; `#day` carries your own content"
+    },
+    "Card": {
+      "job": "structure",
+      "what": "a bordered unit with header, body and footer",
+      "when": "content that could move elsewhere whole",
+      "not": "every region of a page — a heading and spacing group just as well, and a page of cards has no hierarchy",
+      "distinctive": "`variant` outline | soft | subtle"
+    },
+    "Carousel": {
+      "job": "records",
+      "what": "one item at a time, swiped",
+      "when": "images the reader browses without comparing",
+      "not": "data — a carousel hides everything it is not showing",
+      "distinctive": "`items`, `arrows`, `dots`, `loop`, autoplay plugins"
+    },
+    "ChangelogVersion": {
+      "job": "records",
+      "what": "one dated entry with title, description and body",
+      "when": "an item on a release or history rail",
+      "distinctive": "`date`, `badge`, `authors`, `#body`"
+    },
+    "ChangelogVersions": {
+      "job": "records",
+      "what": "dated entries down an indicator rail",
+      "when": "releases, audits, decisions — a history the reader scrolls",
+      "not": "short events with no body (UTimeline is denser)",
+      "distinctive": "`indicator`, wraps `UChangelogVersion`"
+    },
+    "ChatMessage": {
+      "job": "content",
+      "what": "one message with avatar, actions and its own side",
+      "when": "any exchange: a mailbox, a ticket thread, comments on a record",
+      "distinctive": "`side`, `variant`, `avatar`, `#actions`"
+    },
+    "ChatMessages": {
+      "job": "content",
+      "what": "a scrolling thread that sticks to the bottom",
+      "when": "the page is a conversation, not a list of texts",
+      "distinctive": "`messages`, `should-auto-scroll`, `#indicator`"
+    },
+    "ChatPalette": {
+      "job": "content",
+      "what": "a chat laid out for an overlay",
+      "when": "a thread inside a UModal or USlideover",
+      "distinctive": "`#prompt` at the bottom, content above"
+    },
+    "ChatPrompt": {
+      "job": "content",
+      "what": "the composer: autoresizing textarea plus a toolbar",
+      "when": "the reader writes into a thread",
+      "distinctive": "`variant`, `#footer`, submits on Enter"
+    },
+    "ChatPromptSubmit": {
+      "job": "content",
+      "what": "the send button that knows the stream's status",
+      "when": "beside a UChatPrompt",
+      "distinctive": "`status` swaps label, icon and colour"
+    },
+    "ChatReasoning": {
+      "job": "content",
+      "what": "a collapsible block of intermediate thinking",
+      "when": "showing how an answer was reached",
+      "distinctive": "`duration`, `default-open`"
+    },
+    "ChatShimmer": {
+      "job": "content",
+      "what": "text that shimmers while it is being produced",
+      "when": "a message is still arriving",
+      "distinctive": "put the pending text in the default slot"
+    },
+    "ChatTool": {
+      "job": "content",
+      "what": "one step of work, with its state and result",
+      "when": "showing what a process did, step by step",
+      "distinctive": "`type`, `state`, `#output`"
+    },
+    "Checkbox": {
+      "job": "input",
+      "what": "one boolean",
+      "when": "a single yes/no the reader ticks",
+      "not": "a setting that takes effect immediately (USwitch)",
+      "distinctive": "`indeterminate` for a partial selection"
+    },
+    "CheckboxGroup": {
+      "job": "input",
+      "what": "several choices from a list, all visible",
+      "when": "a filter over a handful of known values",
+      "distinctive": "`items`, `orientation`, `variant=\"card\"` for a chunky choice"
+    },
+    "Chip": {
+      "job": "value",
+      "what": "a dot or count on the corner of something else",
+      "when": "unread, pending, needs-attention on an avatar or a button",
+      "distinctive": "wraps its child; `text`, `position`, `show`"
+    },
+    "Collapsible": {
+      "job": "structure",
+      "what": "one block that opens and closes",
+      "when": "detail that would crowd the screen but must stay reachable",
+      "distinctive": "`#content`; the trigger is the default slot"
+    },
+    "ColorPicker": {
+      "job": "input",
+      "what": "a colour, as hex, rgb or hsl",
+      "when": "the reader chooses a colour that is data",
+      "distinctive": "`format`, `throttle`"
+    },
+    "CommandPalette": {
+      "job": "navigation",
+      "what": "search-and-jump over everything at once",
+      "when": "a mini-app with more views or records than a menu can hold",
+      "distinctive": "`groups`, `fuse` options, `#item`; pair with `defineShortcuts`"
+    },
+    "Container": {
+      "job": "structure",
+      "what": "a centred max-width wrapper",
+      "when": "prose or a form that must not run the whole width",
+      "not": "a table or a board — those want the frame",
+      "distinctive": "one class does the same; use it when the cap repeats"
+    },
+    "ContextMenu": {
+      "job": "overlay",
+      "what": "the verbs of an item, on right-click",
+      "when": "a dense list where a visible button per row would be noise",
+      "not": "the only way to reach an action — it is invisible until tried",
+      "distinctive": "wraps the target; `items` as nested arrays for groups"
+    },
+    "DashboardGroup": {
+      "job": "excluded",
+      "why": "the app's dashboard shell — it calls Nuxt hooks and persists in a cookie the frame has none of"
+    },
+    "DashboardNavbar": {
+      "job": "excluded",
+      "why": "the app already draws the bar above your page; alone it has no group to answer to"
+    },
+    "DashboardPanel": {
+      "job": "excluded",
+      "why": "persists its size in a cookie the frame has none of; USplitter is the resizable split that works here"
+    },
+    "DashboardResizeHandle": {
+      "job": "excluded",
+      "why": "belongs to UDashboardPanel; measured 0px wide inside a page"
+    },
+    "DashboardSearch": {
+      "job": "excluded",
+      "why": "wired to the app's own command palette and shortcuts"
+    },
+    "DashboardSearchButton": {
+      "job": "excluded",
+      "why": "opens the app's search, which the frame cannot reach"
+    },
+    "DashboardSidebar": {
+      "job": "excluded",
+      "why": "the app's sidebar, cookie-persisted; USidebar or UPage + UPageAside is the rail that works in a page"
+    },
+    "DashboardSidebarCollapse": {
+      "job": "excluded",
+      "why": "toggles the app's sidebar, not yours"
+    },
+    "DashboardSidebarToggle": {
+      "job": "excluded",
+      "why": "toggles the app's sidebar, not yours"
+    },
+    "DashboardToolbar": {
+      "job": "excluded",
+      "why": "belongs to the app's dashboard shell; a plain flex row is the toolbar of a page"
+    },
+    "Drawer": {
+      "job": "overlay",
+      "what": "a sheet that rises from an edge, dragged",
+      "when": "a touch-first choice or a quick action sheet",
+      "not": "a long form — the panel is short by design",
+      "distinctive": "`#body` holds it; `direction`, `should-scale-background`"
+    },
+    "DropdownMenu": {
+      "job": "overlay",
+      "what": "the verbs of one item, under a trigger",
+      "when": "a row or a card has more than two actions",
+      "distinctive": "default slot is the TRIGGER; `items` as nested arrays for groups"
+    },
+    "Editor": {
+      "job": "content",
+      "what": "a rich-text editor over TipTap",
+      "when": "text written to be read formatted — a note, a message, a description",
+      "not": "a plain value (UTextarea)",
+      "distinctive": "`content-type=\"markdown|html|json\"` IS the converter; ref → `.editor`"
+    },
+    "EditorDragHandle": {
+      "job": "content",
+      "what": "a grip that reorders blocks",
+      "when": "the reader rearranges a long document",
+      "distinctive": "takes `:editor`"
+    },
+    "EditorEmojiMenu": {
+      "job": "content",
+      "what": "the `:` emoji picker",
+      "when": "casual writing, beside a UEditor",
+      "distinctive": "takes `:editor`"
+    },
+    "EditorMentionMenu": {
+      "job": "content",
+      "what": "the `@` mention menu",
+      "when": "writing that points at people or records",
+      "distinctive": "takes `:editor` and an ordinary `items` array"
+    },
+    "EditorSuggestionMenu": {
+      "job": "content",
+      "what": "the `/` command menu",
+      "when": "a document where blocks are inserted by name",
+      "distinctive": "takes `:editor`"
+    },
+    "EditorToolbar": {
+      "job": "content",
+      "what": "the formatting bar, fixed, floating or bubble",
+      "when": "beside a UEditor the reader writes in",
+      "distinctive": "`variant`, takes `:editor`"
+    },
+    "Empty": {
+      "job": "feedback",
+      "what": "the state where there is nothing yet",
+      "when": "every list, every region — always",
+      "distinctive": "`title` says what is missing, `description` and `#actions` say what to do"
+    },
+    "FieldGroup": {
+      "job": "input",
+      "what": "several controls welded into one",
+      "when": "an input and its button, a segmented row",
+      "distinctive": "`size` and `orientation` apply to the whole group"
+    },
+    "FileUpload": {
+      "job": "input",
+      "what": "a drop area or a button that takes files",
+      "when": "the reader adds a file from the page",
+      "distinctive": "`variant=\"area\"`, `accept`, `multiple`, `#files-top`"
+    },
+    "Footer": {
+      "job": "excluded",
+      "why": "the app frames your page; a second footer inside it reads as a bug"
+    },
+    "FooterColumns": {
+      "job": "excluded",
+      "why": "link columns for a marketing footer the page does not own"
+    },
+    "Form": {
+      "job": "input",
+      "what": "validation, error placement and submit for a set of fields",
+      "when": "anything the reader fills in and sends",
+      "distinctive": "`:validate` returns the errors — no schema library ships in the frame; `@submit`, `.validate()`"
+    },
+    "FormField": {
+      "job": "input",
+      "what": "label, description, hint and error around one input",
+      "when": "every input inside a form",
+      "not": "filters above a table — those are controls in a toolbar, not a form",
+      "distinctive": "`name` links it to the error UForm reports"
+    },
+    "Header": {
+      "job": "excluded",
+      "why": "the app draws the header above your page"
+    },
+    "Icon": {
+      "job": "value",
+      "what": "one icon",
+      "when": "an icon that carries meaning, never as decoration on every label",
+      "distinctive": "`i-lucide-*` only, written literally — a name built at runtime renders blank"
+    },
+    "Input": {
+      "job": "input",
+      "what": "one line of text",
+      "when": "free text, a search box, an email",
+      "distinctive": "`icon`, `trailing`, `#trailing` for a clear button, `loading`"
+    },
+    "InputDate": {
+      "job": "input",
+      "what": "a date or a range, with a calendar",
+      "when": "the reader picks a day in a form or a filter",
+      "distinctive": "values are `@internationalized/date`, never `Date`; `range`, `multiple`"
+    },
+    "InputMenu": {
+      "job": "input",
+      "what": "type freely and pick from suggestions",
+      "when": "the value may exist or may be new",
+      "not": "a closed list (USelectMenu)",
+      "distinctive": "`create-item` turns typing into a new value"
+    },
+    "InputNumber": {
+      "job": "input",
+      "what": "a number with steppers",
+      "when": "a quantity with a min, a max or a step",
+      "distinctive": "`format-options` for currency and percent"
+    },
+    "InputRating": {
+      "job": "value",
+      "what": "a score out of five",
+      "when": "reading a rating (`disabled`) or asking for one",
+      "distinctive": "`disabled` makes it a display; `#item` for a custom mark"
+    },
+    "InputTags": {
+      "job": "input",
+      "what": "several free values as chips",
+      "when": "tags, recipients, keywords",
+      "distinctive": "`max`, `delete-icon`, `#item-text`"
+    },
+    "InputTime": {
+      "job": "input",
+      "what": "an hour and a minute",
+      "when": "a time of day, beside a date",
+      "distinctive": "`hour-cycle`, values are `@internationalized/date`"
+    },
+    "Kbd": {
+      "job": "value",
+      "what": "a keyboard key",
+      "when": "a page that has shortcuts — say so where the action is",
+      "distinctive": "`value=\"meta\"` renders the platform key"
+    },
+    "Link": {
+      "job": "navigation",
+      "what": "one link, with an active state",
+      "when": "moving between views of this page (`to=\"/deal/12\"`)",
+      "not": "leaving the page — that is `fretik.ui.openUrl`",
+      "distinctive": "`active-class`, `exact`; renders a plain `<a>` when `to` is external"
+    },
+    "Listbox": {
+      "job": "records",
+      "what": "a list, always visible, that the reader picks from",
+      "when": "a choice that stays on screen beside what it filters",
+      "not": "a value hidden behind a trigger (USelectMenu)",
+      "distinctive": "`items`, `multiple`, `#item-trailing`"
+    },
+    "Main": {
+      "job": "excluded",
+      "why": "the app's main region already contains your page"
+    },
+    "Marquee": {
+      "job": "structure",
+      "what": "content scrolling past, forever",
+      "when": "a ticker of live values along one edge",
+      "not": "anything the reader must read carefully",
+      "distinctive": "`pause-on-hover`, `reverse`, `overlay`"
+    },
+    "Modal": {
+      "job": "overlay",
+      "what": "an interruption the reader must finish or cancel",
+      "when": "a destructive confirmation, a decision that cannot be half-made",
+      "not": "showing detail, or any long task — those are a view or a slideover",
+      "distinctive": "default slot is the TRIGGER, the panel is `#body`; `dismissible=false`"
+    },
+    "NavigationMenu": {
+      "job": "navigation",
+      "what": "the menu of a mini-app, horizontal or vertical",
+      "when": "the page has views and the reader must see which one they are on",
+      "distinctive": "`items` with `to`, `orientation`, `highlight`; active state comes from the route"
+    },
+    "Page": {
+      "job": "structure",
+      "what": "a body with optional left and right columns",
+      "when": "a layout with a rail — filters on one side, content in the middle",
+      "distinctive": "`#left` / `#right` take a UPageAside; the default slot is the body"
+    },
+    "PageAnchors": {
+      "job": "navigation",
+      "what": "a short list of jump links",
+      "when": "a long report the reader navigates by section",
+      "distinctive": "`links` with `icon` and `to`"
+    },
+    "PageAside": {
+      "job": "structure",
+      "what": "a sticky rail that scrolls with the reader",
+      "when": "filters, a summary or a table of contents that must stay put",
+      "distinctive": "goes in UPage's `#left`/`#right`; sticky from `lg` up, stacked below"
+    },
+    "PageBody": {
+      "job": "structure",
+      "what": "the padded main column inside UPage",
+      "when": "using UPage, after a UPageHeader",
+      "distinctive": "spacing only — no border, no background"
+    },
+    "PageCTA": {
+      "job": "structure",
+      "what": "a band that asks for one action",
+      "when": "the end of a report, where the reader decides what to do next",
+      "distinctive": "`variant=\"subtle|soft|naked\"`, `links`, `#top` for a background"
+    },
+    "PageCard": {
+      "job": "structure",
+      "what": "a card with icon, badge, highlight and links",
+      "when": "a grid of things that each open somewhere",
+      "not": "a plain container (UCard) — this one has an opinion",
+      "distinctive": "`to` makes the whole card the target; `highlight`, `spotlight`, `reverse`"
+    },
+    "PageColumns": {
+      "job": "structure",
+      "what": "a masonry flow of uneven children",
+      "when": "cards of different heights that must not leave gaps",
+      "distinctive": "children flow between columns; a grid keeps rows aligned instead"
+    },
+    "PageFeature": {
+      "job": "structure",
+      "what": "one icon, title and description",
+      "when": "explaining a capability inside a UPageSection",
+      "distinctive": "`to` makes it a link; used through UPageSection's `features`"
+    },
+    "PageGrid": {
+      "job": "structure",
+      "what": "a responsive card grid",
+      "when": "few items, each visual or with its own actions",
+      "not": "many rows the reader compares (UTable)",
+      "distinctive": "wraps UPageCard children and fixes the columns"
+    },
+    "PageHeader": {
+      "job": "structure",
+      "what": "a title, a description and the page's actions",
+      "when": "the top of a view, when plain markup would repeat",
+      "distinctive": "`headline`, `#links`, `#description`"
+    },
+    "PageHero": {
+      "job": "structure",
+      "what": "an opening band: title, description, links, media",
+      "when": "a report or a briefing whose first screen is a statement",
+      "not": "a working screen — the answer belongs above the fold, not a headline about it",
+      "distinctive": "`orientation`, `#top`/`#bottom` for background, `reverse`"
+    },
+    "PageLinks": {
+      "job": "navigation",
+      "what": "a labelled list of related links",
+      "when": "sources, related records, what to read next",
+      "distinctive": "`title`, `links` with `icon`"
+    },
+    "PageList": {
+      "job": "records",
+      "what": "a vertical list of rich items",
+      "when": "items with two lines and a thumbnail, read one by one",
+      "not": "values the reader compares column by column (UTable)",
+      "distinctive": "`divide`, wraps UPageCard with `variant=\"ghost\"`"
+    },
+    "PageLogos": {
+      "job": "structure",
+      "what": "a row of logos or marks",
+      "when": "the sources or partners behind a report",
+      "distinctive": "`title`, `items`, `marquee` to scroll them"
+    },
+    "PageSection": {
+      "job": "structure",
+      "what": "a full-width band with a headline and a feature grid",
+      "when": "a report's chapters, where each one makes one point",
+      "not": "a region of a working screen — it is sized for reading, not for scanning",
+      "distinctive": "`features`, `orientation`, `#top` for a background"
+    },
+    "Pagination": {
+      "job": "navigation",
+      "what": "page N of M",
+      "when": "the dataset reports more rows than one screen holds",
+      "not": "a feed (`useInfiniteScroll`)",
+      "distinctive": "`total`, `items-per-page`, `sibling-count`; feed the page back into the query"
+    },
+    "PinInput": {
+      "job": "input",
+      "what": "a fixed-length code, one box per character",
+      "when": "a short code the reader types from somewhere else",
+      "distinctive": "`length`, `otp`, `mask`"
+    },
+    "Popover": {
+      "job": "overlay",
+      "what": "a small block anchored to what opened it",
+      "when": "a definition, a mini-form, a filter that fits in a corner",
+      "not": "a whole record (USlideover)",
+      "distinctive": "default slot is the TRIGGER, the block is `#content`; `mode=\"hover\"`"
+    },
+    "PricingPlan": {
+      "job": "records",
+      "what": "one offer: price, terms, features, button",
+      "when": "the subject is what something costs",
+      "distinctive": "`highlight`, `discount`, `billing-cycle`, `features`"
+    },
+    "PricingPlans": {
+      "job": "records",
+      "what": "offers side by side",
+      "when": "comparing a handful of packages",
+      "distinctive": "`compact`, `scale` on the recommended one"
+    },
+    "PricingTable": {
+      "job": "records",
+      "what": "a feature matrix across offers",
+      "when": "the comparison is per feature, not per price",
+      "distinctive": "`sections` with per-tier values; a UTable when the columns are data"
+    },
+    "Progress": {
+      "job": "value",
+      "what": "one ratio, as a bar",
+      "when": "completeness of a record, a quota, work done",
+      "distinctive": "`:model-value=\"null\"` is indeterminate; `size=\"xs\"` fits inside a row"
+    },
+    "ProgressGroup": {
+      "job": "value",
+      "what": "one total split into named parts, with a legend",
+      "when": "a breakdown of a whole — before reaching for a pie",
+      "distinctive": "`items` with value, label and colour; `status` prints them"
+    },
+    "RadioGroup": {
+      "job": "input",
+      "what": "one choice from a few, all visible",
+      "when": "the options themselves need reading",
+      "not": "more than about six values (USelect)",
+      "distinctive": "`variant=\"card|table\"` when each option needs a description"
+    },
+    "ScrollArea": {
+      "job": "structure",
+      "what": "a scrolling region with a styled bar",
+      "when": "a bounded region whose scrollbar would otherwise be invisible or ugly",
+      "distinctive": "the region still needs a height; `type=\"hover\"`"
+    },
+    "Select": {
+      "job": "input",
+      "what": "a short fixed list behind a trigger",
+      "when": "status, role, currency — values the reader knows by name",
+      "not": "a long or searchable list (USelectMenu)",
+      "distinctive": "`items` may nest for groups; `value-key`"
+    },
+    "SelectMenu": {
+      "job": "input",
+      "what": "a searchable list, single or multiple",
+      "when": "the list is long, grouped, or picked from more than once",
+      "distinctive": "search is built in; `multiple`, `#item-label`, `create-item`"
+    },
+    "Separator": {
+      "job": "structure",
+      "what": "a divider, optionally carrying a label",
+      "when": "a break inside one region that headings would over-state",
+      "distinctive": "`label`, `icon`, `orientation=\"vertical\"` needs a height"
+    },
+    "Sidebar": {
+      "job": "navigation",
+      "what": "a standalone rail with a header, a body and a footer",
+      "when": "a mini-app whose navigation lives down one side",
+      "not": "the app's own sidebar — this one is yours, inside the page",
+      "distinctive": "`collapsed`, `#rail`, `side`; needs a parent with a height"
+    },
+    "Skeleton": {
+      "job": "feedback",
+      "what": "a placeholder shaped like what is coming",
+      "when": "the first load of any region",
+      "not": "a spinner over the whole page — that hides the layout the reader already had",
+      "distinctive": "give it the size of the real thing, not a generic bar"
+    },
+    "Slideover": {
+      "job": "overlay",
+      "what": "a panel over the view, from an edge",
+      "when": "the list must stay in sight — triage, compare, a quick look",
+      "not": "a rich detail someone would send by link; that is a view of its own",
+      "distinctive": "default slot is the TRIGGER, the panel is `#body`; `side`, `inset`"
+    },
+    "Slider": {
+      "job": "input",
+      "what": "a value along a track",
+      "when": "an approximate number with a known range, or a range with two handles",
+      "distinctive": "`min`, `max`, `step`, an array model gives two handles"
+    },
+    "Splitter": {
+      "job": "structure",
+      "what": "panes the reader resizes",
+      "when": "two regions weighed against each other — a list and its detail",
+      "not": "proportions you have decided (a grid)",
+      "distinctive": "the parent must carry a height; `autoSaveId` saves nothing in the frame"
+    },
+    "Stepper": {
+      "job": "navigation",
+      "what": "an ordered process with a current step",
+      "when": "something completed in order, where going back is legal",
+      "distinctive": "`items`, `#content`, `.next()`/`.prev()` on the ref"
+    },
+    "Switch": {
+      "job": "input",
+      "what": "a setting that takes effect at once",
+      "when": "turning something on, with no save button",
+      "not": "a field inside a form the reader submits (UCheckbox)",
+      "distinctive": "`loading`, `checked-icon`"
+    },
+    "Table": {
+      "job": "records",
+      "what": "a data grid: sorting, selection, pinning, virtualisation",
+      "when": "rows compared column by column, scanned for outliers",
+      "not": "items with two fields and a picture (UPageList)",
+      "distinctive": "`#<column>-cell` slots, `@select(event, row)`, `sticky`, `:ui` REPLACES the class it names"
+    },
+    "Tabs": {
+      "job": "navigation",
+      "what": "peer views swapped in place",
+      "when": "one subject seen several ways, switched instantly, no link to share",
+      "not": "views someone would bookmark or send — those are routes",
+      "distinctive": "`items`, `content=false` to place the panels yourself, `variant=\"pill|link\"`"
+    },
+    "Textarea": {
+      "job": "input",
+      "what": "several lines of plain text",
+      "when": "a value that is genuinely plain — a reason, a note nobody formats",
+      "not": "text read formatted (UEditor)",
+      "distinctive": "`autoresize`, `maxrows`"
+    },
+    "Theme": {
+      "job": "structure",
+      "what": "a scoped colour and prop override for one subtree",
+      "when": "a region that must carry its own accent without touching the page",
+      "distinctive": "`ui` and `props` apply to every descendant"
+    },
+    "Timeline": {
+      "job": "records",
+      "what": "dated events down a rail",
+      "when": "history, activity, what happened and when",
+      "distinctive": "`items` with `date`, `icon`; `orientation`, `#description` for a body"
+    },
+    "Tooltip": {
+      "job": "overlay",
+      "what": "a word or two on hover and focus",
+      "when": "naming an icon-only button, expanding a truncated value",
+      "not": "anything interactive, and never the only place a fact appears",
+      "distinctive": "`text`, `:delay-duration`, `kbds` prints the shortcut"
+    },
+    "Tree": {
+      "job": "records",
+      "what": "a hierarchy that expands",
+      "when": "the data nests — folders, categories, an org chart",
+      "distinctive": "`items` with `children`, `#item-label`, `multiple`"
+    },
+    "User": {
+      "job": "value",
+      "what": "avatar, name and description in one",
+      "when": "a person anywhere — a cell, a header, a list",
+      "distinctive": "`orientation`, `to` makes the whole block a link"
+    }
+  }
+}

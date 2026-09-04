@@ -16,7 +16,7 @@ interface MainProps {
    * @default 'main'
    */
   as?: any;
-  ui?: { base?: any } | undefined;
+  ui?: { base?: any; } | undefined;
 }
 ```
 
@@ -35,9 +35,9 @@ interface MainSlots {
 
 The Main component renders a `<main>` element that works together with the [Header](https://ui.nuxt.com/docs/components/header) component to create a full-height layout that extends to the viewport's available height.
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/getting-started/theme/css-variables#header
->
+> 
 > The Main component uses the `--ui-header-height` CSS variable to position itself correctly below the `Header`.
 
 ## Examples
@@ -46,7 +46,7 @@ The Main component renders a `<main>` element that works together with the [Head
 
 Use the Main component in your `app.vue` or in a layout:
 
-```vue [app.vue] {5-9}
+```vue [app.vue]
 <template>
   <UApp>
     <UHeader />

@@ -50,6 +50,10 @@ interface UserSlots {
 }
 ```
 
+## Composition
+
+Parts placed by name: `#avatar`, `#name`.
+
 ## Usage
 
 ### Name
@@ -78,15 +82,11 @@ Use the `avatar` prop to display an [Avatar](https://ui.nuxt.com/docs/components
 
 ```vue
 <template>
-  <UUser
-    name="John Doe"
-    description="Software Engineer"
-    :avatar="{
-      src: 'https://i.pravatar.cc/150?u=john-doe',
-      loading: 'lazy',
-      icon: 'i-lucide-image',
-    }"
-  />
+  <UUser name="John Doe" description="Software Engineer" :avatar="{
+  src: 'https://i.pravatar.cc/150?u=john-doe',
+  loading: 'lazy',
+  icon: 'i-lucide-image'
+}" />
 </template>
 ```
 
@@ -107,50 +107,15 @@ interface AvatarProps {
   /**
    * @default 'md'
    */
-  size?:
-    | "md"
-    | "xs"
-    | "sm"
-    | "lg"
-    | "xl"
-    | "3xs"
-    | "2xs"
-    | "2xl"
-    | "3xl"
-    | undefined;
+  size?: "md" | "xs" | "sm" | "lg" | "xl" | "3xs" | "2xs" | "2xl" | "3xl" | undefined;
   /**
    * @default 'neutral'
    */
-  color?:
-    | "error"
-    | "primary"
-    | "secondary"
-    | "success"
-    | "info"
-    | "warning"
-    | "neutral"
-    | undefined;
+  color?: "error" | "primary" | "secondary" | "success" | "info" | "warning" | "neutral" | undefined;
   chip?: boolean | ChipProps | undefined;
-  ui?:
-    | {
-        root?: SlotClass;
-        image?: SlotClass;
-        fallback?: SlotClass;
-        icon?: SlotClass;
-      }
-    | undefined;
+  ui?: { root?: SlotClass; image?: SlotClass; fallback?: SlotClass; icon?: SlotClass; } | undefined;
   loading?: "lazy" | "eager" | undefined;
-  referrerpolicy?:
-    | ""
-    | "no-referrer"
-    | "no-referrer-when-downgrade"
-    | "origin"
-    | "origin-when-cross-origin"
-    | "same-origin"
-    | "strict-origin"
-    | "strict-origin-when-cross-origin"
-    | "unsafe-url"
-    | undefined;
+  referrerpolicy?: "" | "no-referrer" | "no-referrer-when-downgrade" | "origin" | "origin-when-cross-origin" | "same-origin" | "strict-origin" | "strict-origin-when-cross-origin" | "unsafe-url" | undefined;
   decoding?: "async" | "auto" | "sync" | undefined;
   height?: string | number | undefined;
   sizes?: string | undefined;
@@ -167,17 +132,12 @@ Use the `chip` prop to display a [Chip](https://ui.nuxt.com/docs/components/chip
 
 ```vue
 <template>
-  <UUser
-    name="John Doe"
-    description="Software Engineer"
-    :avatar="{
-      src: 'https://i.pravatar.cc/150?u=john-doe',
-    }"
-    :chip="{
-      color: 'primary',
-      position: 'top-right',
-    }"
-  />
+  <UUser name="John Doe" description="Software Engineer" :avatar="{
+  src: 'https://i.pravatar.cc/150?u=john-doe'
+}" :chip="{
+  color: 'primary',
+  position: 'top-right'
+}" />
 </template>
 ```
 
@@ -198,35 +158,16 @@ interface ChipProps {
   /**
    * @default 'primary'
    */
-  color?:
-    | "primary"
-    | "secondary"
-    | "success"
-    | "info"
-    | "warning"
-    | "error"
-    | "neutral"
-    | undefined;
+  color?: "primary" | "secondary" | "success" | "info" | "warning" | "error" | "neutral" | undefined;
   /**
    * @default 'md'
    */
-  size?:
-    | "xs"
-    | "sm"
-    | "md"
-    | "lg"
-    | "xl"
-    | "3xs"
-    | "2xs"
-    | "2xl"
-    | "3xl"
-    | undefined;
+  size?: "xs" | "sm" | "md" | "lg" | "xl" | "3xs" | "2xs" | "2xl" | "3xl" | undefined;
   /**
    * The position of the chip.
    * @default 'top-right'
    */
-  position?:
-    "top-right" | "bottom-right" | "top-left" | "bottom-left" | undefined;
+  position?: "top-right" | "bottom-right" | "top-left" | "bottom-left" | undefined;
   /**
    * When `true`, keep the chip inside the component for rounded elements.
    * @default false
@@ -237,7 +178,7 @@ interface ChipProps {
    * @default false
    */
   standalone?: boolean | undefined;
-  ui?: { root?: SlotClass; base?: SlotClass } | undefined;
+  ui?: { root?: SlotClass; base?: SlotClass; } | undefined;
   /**
    * @default true
    */
@@ -251,15 +192,9 @@ Use the `size` prop to change the size of the user avatar and text.
 
 ```vue
 <template>
-  <UUser
-    name="John Doe"
-    description="Software Engineer"
-    :avatar="{
-      src: 'https://i.pravatar.cc/150?u=john-doe',
-    }"
-    chip
-    size="xl"
-  />
+  <UUser name="John Doe" description="Software Engineer" :avatar="{
+  src: 'https://i.pravatar.cc/150?u=john-doe'
+}" chip size="xl" />
 </template>
 ```
 
@@ -269,35 +204,24 @@ Use the `orientation` prop to change the orientation. Defaults to `horizontal`.
 
 ```vue
 <template>
-  <UUser
-    orientation="vertical"
-    name="John Doe"
-    description="Software Engineer"
-    :avatar="{
-      src: 'https://i.pravatar.cc/150?u=john-doe',
-    }"
-  />
+  <UUser orientation="vertical" name="John Doe" description="Software Engineer" :avatar="{
+  src: 'https://i.pravatar.cc/150?u=john-doe'
+}" />
 </template>
 ```
 
 ### Link
 
-You can pass any property from the [`<NuxtLink>`](https://nuxt.com/docs/api/components/nuxt-link){rel="&#x22;nofollow&#x22;"} component such as `to`, `target`, `rel`, etc.
+You can pass any property from the [`<NuxtLink>`](https://nuxt.com/docs/api/components/nuxt-link) component such as `to`, `target`, `rel`, etc.
 
 ```vue
 <template>
-  <UUser
-    to="https://github.com/benjamincanac"
-    target="_blank"
-    name="Benjamin Canac"
-    description="Software Engineer"
-    :avatar="{
-      src: 'https://github.com/benjamincanac.png',
-    }"
-  />
+  <UUser to="https://github.com/benjamincanac" target="_blank" name="Benjamin Canac" description="Software Engineer" :avatar="{
+  src: 'https://github.com/benjamincanac.png'
+}" />
 </template>
 ```
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > The `NuxtLink` component will inherit all other attributes you pass to the `User` component.

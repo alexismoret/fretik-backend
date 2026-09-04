@@ -16,7 +16,7 @@ interface ContainerProps {
    * @default 'div'
    */
   as?: any;
-  ui?: { base?: any } | undefined;
+  ui?: { base?: any; } | undefined;
 }
 ```
 
@@ -35,9 +35,9 @@ interface ContainerSlots {
 
 Use the default slot to center and constrain the width of your content.
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/getting-started/theme/css-variables#container
->
+> 
 > Its max width is controlled by the `--ui-container` CSS variable.
 
 ```vue [ContainerExample.vue]

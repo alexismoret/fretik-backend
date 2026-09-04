@@ -16,10 +16,7 @@ interface SlideoverProps {
   /**
    * The content of the slideover.
    */
-  content?:
-    | (Omit<DialogContentProps, "as" | "asChild" | "forceMount"> &
-        Partial<EmitsToProps<DialogContentImplEmits>>)
-    | undefined;
+  content?: Omit<DialogContentProps, "as" | "asChild" | "forceMount"> & Partial<EmitsToProps<DialogContentImplEmits>> | undefined;
   /**
    * Render an overlay behind the slideover.
    * @default true
@@ -61,19 +58,7 @@ interface SlideoverProps {
    * @default true
    */
   dismissible?: boolean | undefined;
-  ui?:
-    | {
-        overlay?: SlotClass;
-        content?: SlotClass;
-        header?: SlotClass;
-        wrapper?: SlotClass;
-        body?: SlotClass;
-        footer?: SlotClass;
-        title?: SlotClass;
-        description?: SlotClass;
-        close?: SlotClass;
-      }
-    | undefined;
+  ui?: { overlay?: SlotClass; content?: SlotClass; header?: SlotClass; wrapper?: SlotClass; body?: SlotClass; footer?: SlotClass; title?: SlotClass; description?: SlotClass; close?: SlotClass; } | undefined;
   /**
    * The controlled open state of the dialog. Can be binded as `v-model:open`.
    */
@@ -132,6 +117,21 @@ interface SlideoverEmits {
 }
 ```
 
+## Composition
+
+Parts placed by name: `#content`, `#actions`, `#close`, `#body`.
+
+```vue
+<template>
+  <USlideover>
+    <UButton label="Open" color="neutral" variant="subtle" />
+  
+    <template #content>
+      <Placeholder class="h-full m-4" />
+    </template></USlideover>
+</template>
+```
+
 ## Usage
 
 Use a [Button](https://ui.nuxt.com/docs/components/button) or any other component in the default slot of the Slideover.
@@ -142,14 +142,14 @@ Then, use the `#content` slot to add the content displayed when the Slideover is
 <template>
   <USlideover>
     <UButton label="Open" color="neutral" variant="subtle" />
-
+  
     <template #content>
-      <Placeholder class="h-full m-4" /> </template
-  ></USlideover>
+      <Placeholder class="h-full m-4" />
+    </template></USlideover>
 </template>
 ```
 
-You can also use the `#header`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}, `#body`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"} and `#footer`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"} slots to customize the Slideover's content.
+You can also use the `#header`, `#body` and `#footer` slots to customize the Slideover's content.
 
 ### Title
 
@@ -159,10 +159,10 @@ Use the `title` prop to set the title of the Slideover's header.
 <template>
   <USlideover title="Slideover with title">
     <UButton label="Open" color="neutral" variant="subtle" />
-
+  
     <template #body>
-      <Placeholder class="h-full" /> </template
-  ></USlideover>
+      <Placeholder class="h-full" />
+    </template></USlideover>
 </template>
 ```
 
@@ -172,15 +172,12 @@ Use the `description` prop to set the description of the Slideover's header.
 
 ```vue
 <template>
-  <USlideover
-    title="Slideover with description"
-    description="Lorem ipsum dolor sit amet, consectetur adipiscing elit."
-  >
+  <USlideover title="Slideover with description" description="Lorem ipsum dolor sit amet, consectetur adipiscing elit.">
     <UButton label="Open" color="neutral" variant="subtle" />
-
+  
     <template #body>
-      <Placeholder class="h-full" /> </template
-  ></USlideover>
+      <Placeholder class="h-full" />
+    </template></USlideover>
 </template>
 ```
 
@@ -192,24 +189,21 @@ You can pass any property from the [Button](https://ui.nuxt.com/docs/components/
 
 ```vue
 <template>
-  <USlideover
-    title="Slideover with close button"
-    :close="{
-      color: 'primary',
-      variant: 'outline',
-      class: 'rounded-full',
-    }"
-  >
+  <USlideover title="Slideover with close button" :close="{
+  color: 'primary',
+  variant: 'outline',
+  class: 'rounded-full'
+}">
     <UButton label="Open" color="neutral" variant="subtle" />
-
+  
     <template #body>
-      <Placeholder class="h-full" /> </template
-  ></USlideover>
+      <Placeholder class="h-full" />
+    </template></USlideover>
 </template>
 ```
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > The close button is not displayed if the `#content` slot is used as it's a part of the header.
 
 ### Close Icon
@@ -218,30 +212,27 @@ Use the `close-icon` prop to customize the close button [Icon](https://ui.nuxt.c
 
 ```vue
 <template>
-  <USlideover
-    title="Slideover with close button"
-    close-icon="i-lucide-arrow-right"
-  >
+  <USlideover title="Slideover with close button" close-icon="i-lucide-arrow-right">
     <UButton label="Open" color="neutral" variant="subtle" />
-
+  
     <template #body>
-      <Placeholder class="h-full" /> </template
-  ></USlideover>
+      <Placeholder class="h-full" />
+    </template></USlideover>
 </template>
 ```
 
 **Nuxt:**
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/getting-started/integrations/icons/nuxt#theme
->
+> 
 > You can customize this icon globally in your `app.config.ts` under `ui.icons.close` key.
 
 **Vue:**
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/getting-started/integrations/icons/vue#theme
->
+> 
 > You can customize this icon globally in your `vite.config.ts` under `ui.icons.close` key.
 
 ### Side
@@ -252,10 +243,10 @@ Use the `side` prop to set the side of the screen where the Slideover will slide
 <template>
   <USlideover side="left" title="Slideover with side">
     <UButton label="Open" color="neutral" variant="subtle" />
-
+  
     <template #body>
-      <Placeholder class="h-full min-h-48" /> </template
-  ></USlideover>
+      <Placeholder class="h-full min-h-48" />
+    </template></USlideover>
 </template>
 ```
 
@@ -267,10 +258,10 @@ Use the `inset` prop to inset the Slideover from the edges.
 <template>
   <USlideover side="right" inset title="Slideover with inset">
     <UButton label="Open" color="neutral" variant="subtle" />
-
+  
     <template #body>
-      <Placeholder class="min-w-96 min-h-96 size-full" /> </template
-  ></USlideover>
+      <Placeholder class="min-w-96 min-h-96 size-full" />
+    </template></USlideover>
 </template>
 ```
 
@@ -282,10 +273,10 @@ Use the `transition` prop to control whether the Slideover is animated or not. D
 <template>
   <USlideover :transition="false" title="Slideover without transition">
     <UButton label="Open" color="neutral" variant="subtle" />
-
+  
     <template #body>
-      <Placeholder class="h-full" /> </template
-  ></USlideover>
+      <Placeholder class="h-full" />
+    </template></USlideover>
 </template>
 ```
 
@@ -297,10 +288,10 @@ Use the `overlay` prop to control whether the Slideover has an overlay or not. D
 <template>
   <USlideover :overlay="false" title="Slideover without overlay">
     <UButton label="Open" color="neutral" variant="subtle" />
-
+  
     <template #body>
-      <Placeholder class="h-full" /> </template
-  ></USlideover>
+      <Placeholder class="h-full" />
+    </template></USlideover>
 </template>
 ```
 
@@ -308,18 +299,18 @@ Use the `overlay` prop to control whether the Slideover has an overlay or not. D
 
 Use the `modal` prop to control whether the Slideover blocks interaction with outside content. Defaults to `true`.
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > When `modal` is set to `false`, the overlay is automatically disabled and outside content becomes interactive.
 
 ```vue
 <template>
   <USlideover :modal="false" title="Slideover interactive">
     <UButton label="Open" color="neutral" variant="subtle" />
-
+  
     <template #body>
-      <Placeholder class="h-full" /> </template
-  ></USlideover>
+      <Placeholder class="h-full" />
+    </template></USlideover>
 </template>
 ```
 
@@ -327,22 +318,22 @@ Use the `modal` prop to control whether the Slideover blocks interaction with ou
 
 Use the `dismissible` prop to control whether the Slideover is dismissible when clicking outside of it or pressing escape. Defaults to `true`.
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > A `close:prevent` event will be emitted when the user tries to close it.
 
-> \[!TIP]
->
+> [!TIP]
+> 
 > You can combine `modal: false` with `dismissible: false` to make the Slideover's background interactive without closing it.
 
 ```vue
 <template>
   <USlideover :dismissible="false" modal title="Slideover non-dismissible">
     <UButton label="Open" color="neutral" variant="subtle" />
-
+  
     <template #body>
-      <Placeholder class="h-full" /> </template
-  ></USlideover>
+      <Placeholder class="h-full" />
+    </template></USlideover>
 </template>
 ```
 
@@ -354,14 +345,15 @@ Use the `unmount-on-hide` prop to prevent the Slideover's content from being unm
 <template>
   <USlideover :unmount-on-hide="false" title="Slideover">
     <UButton label="Open" color="neutral" variant="subtle" />
-
+  
     <template #body>
-      <Placeholder class="h-full" /> </template
-  ></USlideover>
+      <Placeholder class="h-full" />
+    </template></USlideover>
 </template>
 ```
 
-> \[!NOTE]
+> [!NOTE]
+> 
 
 _(truncated — ask for fewer components to see more, or rely on the API block above)_
 
@@ -373,11 +365,11 @@ You can control the open state by using the `default-open` prop or the `v-model:
 
 ```vue [SlideoverOpenExample.vue]
 <script setup lang="ts">
-const open = ref(false);
+const open = ref(false)
 
 defineShortcuts({
-  o: () => (open.value = !open.value),
-});
+  o: () => open.value = !open.value
+})
 </script>
 
 <template>
@@ -391,49 +383,42 @@ defineShortcuts({
 </template>
 ```
 
-> \[!NOTE]
->
-> In this example, leveraging [`defineShortcuts`](https://ui.nuxt.com/docs/composables/define-shortcuts), you can toggle the Slideover by pressing :kbd{value="O"}.
+> [!NOTE]
+> 
+> In this example, leveraging [`defineShortcuts`](https://ui.nuxt.com/docs/composables/define-shortcuts), you can toggle the Slideover by pressing `O`.
 
-> \[!TIP]
->
+> [!TIP]
+> 
 > This lets you move the trigger outside of the Slideover or remove it entirely.
 
 ### Programmatic usage
 
 You can use the [`useOverlay`](https://ui.nuxt.com/docs/composables/use-overlay) composable to open a Slideover programmatically.
 
-> \[!WARNING]
->
-> Make sure to wrap your app with the [`App`](https://ui.nuxt.com/docs/components/app) component which uses the [`OverlayProvider`](https://github.com/nuxt/ui/blob/v4/src/runtime/components/OverlayProvider.vue){rel="&#x22;nofollow&#x22;"} component.
+> [!WARNING]
+> 
+> Make sure to wrap your app with the [`App`](https://ui.nuxt.com/docs/components/app) component which uses the [`OverlayProvider`](https://github.com/nuxt/ui/blob/v4/src/runtime/components/OverlayProvider.vue) component.
 
 First, create a slideover component that will be opened programmatically:
 
 ```vue [SlideoverExample.vue]
 <script setup lang="ts">
 defineProps<{
-  count: number;
-}>();
+  count: number
+}>()
 
-const emit = defineEmits<{ close: [boolean] }>();
+const emit = defineEmits<{ close: [boolean] }>()
 </script>
 
 <template>
-  <USlideover
-    :close="{ onClick: () => emit('close', false) }"
-    :description="`This slideover was opened programmatically ${count} times`"
-  >
+  <USlideover :close="{ onClick: () => emit('close', false) }" :description="`This slideover was opened programmatically ${count} times`">
     <template #body>
       <Placeholder class="h-full" />
     </template>
 
     <template #footer>
       <div class="flex gap-2">
-        <UButton
-          color="neutral"
-          label="Dismiss"
-          @click="emit('close', false)"
-        />
+        <UButton color="neutral" label="Dismiss" @click="emit('close', false)" />
         <UButton label="Success" @click="emit('close', true)" />
       </div>
     </template>
@@ -441,51 +426,51 @@ const emit = defineEmits<{ close: [boolean] }>();
 </template>
 ```
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > We are emitting a `close` event when the slideover is closed or dismissed here. You can emit any data through the `close` event, and that data becomes the resolved value of `open()`. The event must be emitted for the promise to resolve.
 
 Then, use it in your app:
 
 ```vue [SlideoverProgrammaticExample.vue]
 <script setup lang="ts">
-import { LazySlideoverExample } from "#components";
+import { LazySlideoverExample } from '#components'
 
-const count = ref(0);
+const count = ref(0)
 
-const toast = useToast();
-const overlay = useOverlay();
+const toast = useToast()
+const overlay = useOverlay()
 
-const slideover = overlay.create(LazySlideoverExample);
+const slideover = overlay.create(LazySlideoverExample)
 
 async function open() {
   const instance = slideover.open({
-    count: count.value,
-  });
+    count: count.value
+  })
 
-  const shouldIncrement = await instance.result;
+  const shouldIncrement = await instance.result
 
   if (shouldIncrement) {
-    count.value++;
+    count.value++
 
     toast.add({
       title: `Success: ${shouldIncrement}`,
-      color: "success",
-      id: "slideover-success",
-    });
+      color: 'success',
+      id: 'slideover-success'
+    })
 
     // Update the count
     slideover.patch({
-      count: count.value,
-    });
-    return;
+      count: count.value
+    })
+    return
   }
 
   toast.add({
     title: `Dismissed: ${shouldIncrement}`,
-    color: "error",
-    id: "slideover-dismiss",
-  });
+    color: 'error',
+    id: 'slideover-dismiss'
+  })
 }
 </script>
 
@@ -494,8 +479,8 @@ async function open() {
 </template>
 ```
 
-> \[!TIP]
->
+> [!TIP]
+> 
 > You can close the slideover within the slideover component by emitting `emit('close')`.
 
 ### Nested slideovers
@@ -504,16 +489,12 @@ You can nest slideovers within each other.
 
 ```vue [SlideoverNestedExample.vue]
 <script setup lang="ts">
-const first = ref(false);
-const second = ref(false);
+const first = ref(false)
+const second = ref(false)
 </script>
 
 <template>
-  <USlideover
-    v-model:open="first"
-    title="First slideover"
-    :ui="{ footer: 'justify-end' }"
-  >
+  <USlideover v-model:open="first" title="First slideover" :ui="{ footer: 'justify-end' }">
     <UButton color="neutral" variant="subtle" label="Open" />
 
     <template #body>
@@ -521,18 +502,9 @@ const second = ref(false);
     </template>
 
     <template #footer>
-      <UButton
-        label="Close"
-        color="neutral"
-        variant="outline"
-        @click="first = false"
-      />
+      <UButton label="Close" color="neutral" variant="outline" @click="first = false" />
 
-      <USlideover
-        v-model:open="second"
-        title="Second slideover"
-        :ui="{ footer: 'justify-end' }"
-      >
+      <USlideover v-model:open="second" title="Second slideover" :ui="{ footer: 'justify-end' }">
         <UButton label="Open second" color="neutral" />
 
         <template #body>
@@ -540,12 +512,7 @@ const second = ref(false);
         </template>
 
         <template #footer>
-          <UButton
-            label="Close"
-            color="neutral"
-            variant="outline"
-            @click="second = false"
-          />
+          <UButton label="Close" color="neutral" variant="outline" @click="second = false" />
         </template>
       </USlideover>
     </template>

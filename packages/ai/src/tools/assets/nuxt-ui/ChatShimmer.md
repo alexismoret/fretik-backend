@@ -38,12 +38,12 @@ interface ChatShimmerProps {
 
 The ChatShimmer component renders an element with an animated shimmer gradient over text, commonly used to indicate streaming or loading states in chat interfaces.
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > This component is automatically used by the [`ChatTool`](https://ui.nuxt.com/docs/components/chat-tool) and [`ChatReasoning`](https://ui.nuxt.com/docs/components/chat-reasoning) components when streaming.
 
-> \[!TIP]
->
+> [!TIP]
+> 
 > The animation is automatically disabled when the user prefers reduced motion, the text is displayed as static muted text instead.
 
 ### Text
@@ -78,7 +78,7 @@ Use the `spread` prop to control the width of the shimmer highlight. The actual 
 
 ## Examples
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/components/chat
->
+> 
 > Check the **Chat** overview page for installation instructions, server setup and usage examples.

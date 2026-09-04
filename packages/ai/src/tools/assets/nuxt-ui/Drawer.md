@@ -26,10 +26,7 @@ interface DrawerProps {
   /**
    * The content of the drawer.
    */
-  content?:
-    | (Omit<DialogContentProps, "as" | "asChild" | "forceMount"> &
-        Partial<EmitsToProps<DialogContentImplEmits>>)
-    | undefined;
+  content?: Omit<DialogContentProps, "as" | "asChild" | "forceMount"> & Partial<EmitsToProps<DialogContentImplEmits>> | undefined;
   /**
    * Render an overlay behind the drawer.
    * @default true
@@ -61,22 +58,7 @@ interface DrawerProps {
    * @default appConfig.ui.icons.close
    */
   closeIcon?: any;
-  ui?:
-    | {
-        overlay?: SlotClass;
-        content?: SlotClass;
-        handle?: SlotClass;
-        container?: SlotClass;
-        header?: SlotClass;
-        wrapper?: SlotClass;
-        title?: SlotClass;
-        description?: SlotClass;
-        actions?: SlotClass;
-        body?: SlotClass;
-        footer?: SlotClass;
-        close?: SlotClass;
-      }
-    | undefined;
+  ui?: { overlay?: SlotClass; content?: SlotClass; handle?: SlotClass; container?: SlotClass; header?: SlotClass; wrapper?: SlotClass; title?: SlotClass; description?: SlotClass; actions?: SlotClass; body?: SlotClass; footer?: SlotClass; close?: SlotClass; } | undefined;
   activeSnapPoint?: null | string | number | undefined;
   /**
    * Number between 0 and 1 that determines when the drawer should be closed.
@@ -171,6 +153,21 @@ interface DrawerEmits {
 }
 ```
 
+## Composition
+
+Parts placed by name: `#content`, `#actions`, `#close`, `#body`.
+
+```vue
+<template>
+  <UDrawer>
+    <UButton label="Open" color="neutral" variant="subtle" trailing-icon="i-lucide-chevron-up" />
+  
+    <template #content>
+      <Placeholder class="h-48 m-4" />
+    </template></UDrawer>
+</template>
+```
+
 ## Usage
 
 Use a [Button](https://ui.nuxt.com/docs/components/button) or any other component in the default slot of the Drawer.
@@ -180,19 +177,15 @@ Then, use the `#content` slot to add the content displayed when the Drawer is op
 ```vue
 <template>
   <UDrawer>
-    <UButton
-      label="Open"
-      color="neutral"
-      variant="subtle"
-      trailing-icon="i-lucide-chevron-up" />
-
+    <UButton label="Open" color="neutral" variant="subtle" trailing-icon="i-lucide-chevron-up" />
+  
     <template #content>
-      <Placeholder class="h-48 m-4" /> </template
-  ></UDrawer>
+      <Placeholder class="h-48 m-4" />
+    </template></UDrawer>
 </template>
 ```
 
-You can also use the `#header`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}, `#body`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"} and `#footer`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"} slots to customize the Drawer's content.
+You can also use the `#header`, `#body` and `#footer` slots to customize the Drawer's content.
 
 ### Title
 
@@ -201,15 +194,11 @@ Use the `title` prop to set the title of the Drawer's header.
 ```vue
 <template>
   <UDrawer title="Drawer with title">
-    <UButton
-      label="Open"
-      color="neutral"
-      variant="subtle"
-      trailing-icon="i-lucide-chevron-up" />
-
+    <UButton label="Open" color="neutral" variant="subtle" trailing-icon="i-lucide-chevron-up" />
+  
     <template #body>
-      <Placeholder class="h-48" /> </template
-  ></UDrawer>
+      <Placeholder class="h-48" />
+    </template></UDrawer>
 </template>
 ```
 
@@ -219,19 +208,12 @@ Use the `description` prop to set the description of the Drawer's header.
 
 ```vue
 <template>
-  <UDrawer
-    title="Drawer with description"
-    description="Lorem ipsum dolor sit amet, consectetur adipiscing elit."
-  >
-    <UButton
-      label="Open"
-      color="neutral"
-      variant="subtle"
-      trailing-icon="i-lucide-chevron-up" />
-
+  <UDrawer title="Drawer with description" description="Lorem ipsum dolor sit amet, consectetur adipiscing elit.">
+    <UButton label="Open" color="neutral" variant="subtle" trailing-icon="i-lucide-chevron-up" />
+  
     <template #body>
-      <Placeholder class="h-48" /> </template
-  ></UDrawer>
+      <Placeholder class="h-48" />
+    </template></UDrawer>
 </template>
 ```
 
@@ -243,23 +225,16 @@ You can pass any property from the [Button](https://ui.nuxt.com/docs/components/
 
 ```vue
 <template>
-  <UDrawer
-    title="Drawer with close button"
-    :close="{
-      color: 'primary',
-      variant: 'outline',
-      class: 'rounded-full',
-    }"
-  >
-    <UButton
-      label="Open"
-      color="neutral"
-      variant="subtle"
-      trailing-icon="i-lucide-chevron-up" />
-
+  <UDrawer title="Drawer with close button" :close="{
+  color: 'primary',
+  variant: 'outline',
+  class: 'rounded-full'
+}">
+    <UButton label="Open" color="neutral" variant="subtle" trailing-icon="i-lucide-chevron-up" />
+  
     <template #body>
-      <Placeholder class="h-48" /> </template
-  ></UDrawer>
+      <Placeholder class="h-48" />
+    </template></UDrawer>
 </template>
 ```
 
@@ -269,20 +244,12 @@ Use the `close-icon` prop to customize the close button [Icon](https://ui.nuxt.c
 
 ```vue
 <template>
-  <UDrawer
-    title="Drawer with close button"
-    close
-    close-icon="i-lucide-arrow-right"
-  >
-    <UButton
-      label="Open"
-      color="neutral"
-      variant="subtle"
-      trailing-icon="i-lucide-chevron-up" />
-
+  <UDrawer title="Drawer with close button" close close-icon="i-lucide-arrow-right">
+    <UButton label="Open" color="neutral" variant="subtle" trailing-icon="i-lucide-chevron-up" />
+  
     <template #body>
-      <Placeholder class="h-48" /> </template
-  ></UDrawer>
+      <Placeholder class="h-48" />
+    </template></UDrawer>
 </template>
 ```
 
@@ -293,15 +260,11 @@ Use the `direction` prop to control the direction of the Drawer. Defaults to `bo
 ```vue
 <template>
   <UDrawer direction="right">
-    <UButton
-      label="Open"
-      color="neutral"
-      variant="subtle"
-      trailing-icon="i-lucide-chevron-up" />
-
+    <UButton label="Open" color="neutral" variant="subtle" trailing-icon="i-lucide-chevron-up" />
+  
     <template #content>
-      <Placeholder class="min-w-96 min-h-96 size-full m-4" /> </template
-  ></UDrawer>
+      <Placeholder class="min-w-96 min-h-96 size-full m-4" />
+    </template></UDrawer>
 </template>
 ```
 
@@ -312,15 +275,11 @@ Use the `inset` prop to inset the Drawer from the edges.
 ```vue
 <template>
   <UDrawer direction="right" inset>
-    <UButton
-      label="Open"
-      color="neutral"
-      variant="subtle"
-      trailing-icon="i-lucide-chevron-up" />
-
+    <UButton label="Open" color="neutral" variant="subtle" trailing-icon="i-lucide-chevron-up" />
+  
     <template #content>
-      <Placeholder class="min-w-96 min-h-96 size-full m-4" /> </template
-  ></UDrawer>
+      <Placeholder class="min-w-96 min-h-96 size-full m-4" />
+    </template></UDrawer>
 </template>
 ```
 
@@ -331,15 +290,11 @@ Use the `handle` prop to control whether the Drawer has a handle or not. Default
 ```vue
 <template>
   <UDrawer :handle="false">
-    <UButton
-      label="Open"
-      color="neutral"
-      variant="subtle"
-      trailing-icon="i-lucide-chevron-up" />
-
+    <UButton label="Open" color="neutral" variant="subtle" trailing-icon="i-lucide-chevron-up" />
+  
     <template #content>
-      <Placeholder class="h-48 m-4" /> </template
-  ></UDrawer>
+      <Placeholder class="h-48 m-4" />
+    </template></UDrawer>
 </template>
 ```
 
@@ -350,15 +305,11 @@ Use the `handle-only` prop to only allow the Drawer to be dragged by the handle.
 ```vue
 <template>
   <UDrawer handle-only>
-    <UButton
-      label="Open"
-      color="neutral"
-      variant="subtle"
-      trailing-icon="i-lucide-chevron-up" />
-
+    <UButton label="Open" color="neutral" variant="subtle" trailing-icon="i-lucide-chevron-up" />
+  
     <template #content>
-      <Placeholder class="h-48 m-4" /> </template
-  ></UDrawer>
+      <Placeholder class="h-48 m-4" />
+    </template></UDrawer>
 </template>
 ```
 
@@ -369,15 +320,11 @@ Use the `overlay` prop to control whether the Drawer has an overlay or not. Defa
 ```vue
 <template>
   <UDrawer :overlay="false">
-    <UButton
-      label="Open"
-      color="neutral"
-      variant="subtle"
-      trailing-icon="i-lucide-chevron-up" />
-
+    <UButton label="Open" color="neutral" variant="subtle" trailing-icon="i-lucide-chevron-up" />
+  
     <template #content>
-      <Placeholder class="h-48 m-4" /> </template
-  ></UDrawer>
+      <Placeholder class="h-48 m-4" />
+    </template></UDrawer>
 </template>
 ```
 
@@ -385,22 +332,18 @@ Use the `overlay` prop to control whether the Drawer has an overlay or not. Defa
 
 Use the `modal` prop to control whether the Drawer blocks interaction with outside content. Defaults to `true`.
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > When `modal` is set to `false`, the overlay is automatically disabled and outside content becomes interactive.
 
 ```vue
 <template>
   <UDrawer :modal="false">
-    <UButton
-      label="Open"
-      color="neutral"
-      variant="subtle"
-      trailing-icon="i-lucide-chevron-up" />
-
+    <UButton label="Open" color="neutral" variant="subtle" trailing-icon="i-lucide-chevron-up" />
+  
     <template #content>
-      <Placeholder class="h-48 m-4" /> </template
-  ></UDrawer>
+      <Placeholder class="h-48 m-4" />
+    </template></UDrawer>
 </template>
 ```
 
@@ -408,17 +351,17 @@ Use the `modal` prop to control whether the Drawer blocks interaction with outsi
 
 Use the `dismissible` prop to control whether the Drawer is dismissible when clicking outside of it or pressing escape. Defaults to `true`.
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > A `close:prevent` event will be emitted when the user tries to close it.
 
-> \[!TIP]
->
+> [!TIP]
+> 
 > You can combine `modal: false` with `dismissible: false` to make the Drawer's background interactive without closing it.
 
 ```vue [DrawerDismissibleExample.vue]
 <script setup lang="ts">
-const open = ref(false);
+const open = ref(false)
 </script>
 
 <template>
@@ -430,12 +373,7 @@ const open = ref(false);
     :modal="false"
     :handle="false"
   >
-    <UButton
-      label="Open"
-      color="neutral"
-      variant="subtle"
-      trailing-icon="i-lucide-chevron-up"
-    />
+    <UButton label="Open" color="neutral" variant="subtle" trailing-icon="i-lucide-chevron-up" />
 
     <template #body>
       <Placeholder class="size-full min-h-48" />
@@ -451,15 +389,11 @@ Use the `should-scale-background` prop to scale the background when the Drawer i
 ```vue
 <template>
   <UDrawer should-scale-background set-background-color-on-scale>
-    <UButton
-      label="Open"
-      color="neutral"
-      variant="subtle"
-      trailing-icon="i-lucide-chevron-up" />
-
+    <UButton label="Open" color="neutral" variant="subtle" trailing-icon="i-lucide-chevron-up" />
+  
     <template #content>
-      <Placeholder class="h-48 m-4" /> </template
-  ></UDrawer>
+      <Placeholder class="h-48 m-4" />
+    </template></UDrawer>
 </template>
 ```
 
@@ -473,21 +407,16 @@ You can control the open state by using the `default-open` prop or the `v-model:
 
 ```vue [DrawerOpenExample.vue]
 <script setup lang="ts">
-const open = ref(false);
+const open = ref(false)
 
 defineShortcuts({
-  o: () => (open.value = !open.value),
-});
+  o: () => open.value = !open.value
+})
 </script>
 
 <template>
   <UDrawer v-model:open="open">
-    <UButton
-      label="Open"
-      color="neutral"
-      variant="subtle"
-      trailing-icon="i-lucide-chevron-up"
-    />
+    <UButton label="Open" color="neutral" variant="subtle" trailing-icon="i-lucide-chevron-up" />
 
     <template #content>
       <Placeholder class="h-48 m-4" />
@@ -496,12 +425,12 @@ defineShortcuts({
 </template>
 ```
 
-> \[!NOTE]
->
-> In this example, leveraging [`defineShortcuts`](https://ui.nuxt.com/docs/composables/define-shortcuts), you can toggle the Drawer by pressing :kbd{value="O"}.
+> [!NOTE]
+> 
+> In this example, leveraging [`defineShortcuts`](https://ui.nuxt.com/docs/composables/define-shortcuts), you can toggle the Drawer by pressing `O`.
 
-> \[!TIP]
->
+> [!TIP]
+> 
 > This lets you move the trigger outside of the Drawer or remove it entirely.
 
 ### Responsive drawer
@@ -510,43 +439,33 @@ You can render a [Modal](https://ui.nuxt.com/docs/components/modal) component on
 
 ```vue [DrawerResponsiveExample.vue]
 <script lang="ts" setup>
-import { createReusableTemplate, useMediaQuery } from "@vueuse/core";
+import { createReusableTemplate, useMediaQuery } from '@vueuse/core'
 
-const [DefineFormTemplate, ReuseFormTemplate] = createReusableTemplate();
-const isDesktop = useMediaQuery("(min-width: 768px)");
+const [DefineFormTemplate, ReuseFormTemplate] = createReusableTemplate()
+const isDesktop = useMediaQuery('(min-width: 768px)')
 
-const open = ref(false);
+const open = ref(false)
 
 const state = reactive({
-  email: undefined,
-});
+  email: undefined
+})
 
-const title = "Edit profile";
-const description =
-  "Make changes to your profile here. Click save when you're done.";
+const title = 'Edit profile'
+const description = 'Make changes to your profile here. Click save when you\'re done.'
 </script>
 
 <template>
   <DefineFormTemplate>
     <UForm :state="state" class="space-y-4">
       <UFormField label="Email" name="email" required>
-        <UInput
-          v-model="state.email"
-          placeholder="shadcn@example.com"
-          required
-        />
+        <UInput v-model="state.email" placeholder="shadcn@example.com" required />
       </UFormField>
 
       <UButton label="Save changes" type="submit" />
     </UForm>
   </DefineFormTemplate>
 
-  <UModal
-    v-if="isDesktop"
-    v-model:open="open"
-    :title="title"
-    :description="description"
-  >
+  <UModal v-if="isDesktop" v-model:open="open" :title="title" :description="description">
     <UButton label="Edit profile" color="neutral" variant="outline" />
 
     <template #body>
@@ -571,12 +490,7 @@ You can nest drawers within each other by using the `nested` prop.
 ```vue [DrawerNestedExample.vue]
 <template>
   <UDrawer :ui="{ content: 'h-full', overlay: 'bg-inverted/30' }">
-    <UButton
-      label="Open"
-      color="neutral"
-      variant="subtle"
-      trailing-icon="i-lucide-chevron-up"
-    />
+    <UButton label="Open" color="neutral" variant="subtle" trailing-icon="i-lucide-chevron-up" />
 
     <template #footer>
       <UDrawer nested :ui="{ content: 'h-full', overlay: 'bg-inverted/30' }">
@@ -597,22 +511,12 @@ Use the `#footer` slot to add content after the Drawer's body.
 
 ```vue [DrawerFooterSlotExample.vue]
 <script setup lang="ts">
-const open = ref(false);
+const open = ref(false)
 </script>
 
 <template>
-  <UDrawer
-    v-model:open="open"
-    title="Drawer with footer"
-    description="This is useful when you want a form in a Drawer."
-    :ui="{ container: 'max-w-xl mx-auto' }"
-  >
-    <UButton
-      label="Open"
-      color="neutral"
-      variant="subtle"
-      trailing-icon="i-lucide-chevron-up"
-    />
+  <UDrawer v-model:open="open" title="Drawer with footer" description="This is useful when you want a form in a Drawer." :ui="{ container: 'max-w-xl mx-auto' }">
+    <UButton label="Open" color="neutral" variant="subtle" trailing-icon="i-lucide-chevron-up" />
 
     <template #body>
       <Placeholder class="h-48" />
@@ -620,13 +524,7 @@ const open = ref(false);
 
     <template #footer>
       <UButton label="Submit" color="neutral" class="justify-center" />
-      <UButton
-        label="Cancel"
-        color="neutral"
-        variant="outline"
-        class="justify-center"
-        @click="open = false"
-      />
+      <UButton label="Cancel" color="neutral" variant="outline" class="justify-center" @click="open = false" />
     </template>
   </UDrawer>
 </template>
@@ -638,45 +536,27 @@ You can use a [CommandPalette](https://ui.nuxt.com/docs/components/command-palet
 
 ```vue [DrawerCommandPaletteExample.vue]
 <script setup lang="ts">
-const searchTerm = ref("");
+const searchTerm = ref('')
 
-const {
-  data: users,
-  status,
-  execute,
-} = await useLazyFetch("https://jsonplaceholder.typicode.com/users", {
-  key: "drawer-command-palette-users",
+const { data: users, status, execute } = await useLazyFetch('https://jsonplaceholder.typicode.com/users', {
+  key: 'drawer-command-palette-users',
   params: { q: searchTerm },
-  transform: (data: { id: number; name: string; email: string }[]) => {
-    return (
-      data?.map((user) => ({
-        id: user.id,
-        label: user.name,
-        suffix: user.email,
-        avatar: {
-          src: `https://i.pravatar.cc/120?img=${user.id}`,
-          loading: "lazy" as const,
-        },
-      })) || []
-    );
+  transform: (data: { id: number, name: string, email: string }[]) => {
+    return data?.map(user => ({ id: user.id, label: user.name, suffix: user.email, avatar: { src: `https://i.pravatar.cc/120?img=${user.id}`, loading: 'lazy' as const } })) || []
   },
-  immediate: false,
-});
+  immediate: false
+})
 
-const groups = computed(() => [
-  {
-    id: "users",
-    label: searchTerm.value
-      ? `Users matching “${searchTerm.value}”...`
-      : "Users",
-    items: users.value || [],
-    ignoreFilter: true,
-  },
-]);
+const groups = computed(() => [{
+  id: 'users',
+  label: searchTerm.value ? `Users matching “${searchTerm.value}”...` : 'Users',
+  items: users.value || [],
+  ignoreFilter: true
+}])
 
 function onOpen() {
   if (!users.value?.length) {
-    execute();
+    execute()
   }
 }
 </script>

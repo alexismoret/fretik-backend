@@ -20,15 +20,7 @@ interface BadgeProps {
   /**
    * @default 'primary'
    */
-  color?:
-    | "error"
-    | "primary"
-    | "secondary"
-    | "success"
-    | "info"
-    | "warning"
-    | "neutral"
-    | undefined;
+  color?: "error" | "primary" | "secondary" | "success" | "info" | "warning" | "neutral" | undefined;
   /**
    * @default 'solid'
    */
@@ -41,16 +33,7 @@ interface BadgeProps {
    * Render the badge with equal padding on all sides.
    */
   square?: boolean | undefined;
-  ui?:
-    | {
-        base?: SlotClass;
-        label?: SlotClass;
-        leadingIcon?: SlotClass;
-        leadingAvatar?: SlotClass;
-        leadingAvatarSize?: SlotClass;
-        trailingIcon?: SlotClass;
-      }
-    | undefined;
+  ui?: { base?: SlotClass; label?: SlotClass; leadingIcon?: SlotClass; leadingAvatar?: SlotClass; leadingAvatarSize?: SlotClass; trailingIcon?: SlotClass; } | undefined;
   /**
    * Display an icon based on the `leading` and `trailing` props.
    */
@@ -97,7 +80,9 @@ Use the default slot to set the label of the Badge.
 
 ```vue
 <template>
-  <UBadge> Badge </UBadge>
+  <UBadge>
+    Badge
+  </UBadge>
 </template>
 ```
 
@@ -117,7 +102,9 @@ Use the `color` prop to change the color of the Badge.
 
 ```vue
 <template>
-  <UBadge color="neutral"> Badge </UBadge>
+  <UBadge color="neutral">
+    Badge
+  </UBadge>
 </template>
 ```
 
@@ -127,7 +114,9 @@ Use the `variant` props to change the variant of the Badge.
 
 ```vue
 <template>
-  <UBadge color="neutral" variant="outline"> Badge </UBadge>
+  <UBadge color="neutral" variant="outline">
+    Badge
+  </UBadge>
 </template>
 ```
 
@@ -137,7 +126,9 @@ Use the `size` prop to change the size of the Badge.
 
 ```vue
 <template>
-  <UBadge size="xl"> Badge </UBadge>
+  <UBadge size="xl">
+    Badge
+  </UBadge>
 </template>
 ```
 
@@ -157,7 +148,9 @@ Use the `leading` and `trailing` props to set the icon position or the `leading-
 
 ```vue
 <template>
-  <UBadge trailing-icon="i-lucide-arrow-right" size="md"> Badge </UBadge>
+  <UBadge trailing-icon="i-lucide-arrow-right" size="md">
+    Badge
+  </UBadge>
 </template>
 ```
 
@@ -167,15 +160,10 @@ Use the `avatar` prop to show an [Avatar](https://ui.nuxt.com/docs/components/av
 
 ```vue
 <template>
-  <UBadge
-    :avatar="{
-      src: 'https://github.com/nuxt.png',
-      loading: 'lazy',
-    }"
-    size="md"
-    color="neutral"
-    variant="outline"
-  >
+  <UBadge :avatar="{
+  src: 'https://github.com/nuxt.png',
+  loading: 'lazy'
+}" size="md" color="neutral" variant="outline">
     Badge
   </UBadge>
 </template>
@@ -189,6 +177,8 @@ Use the `class` prop to override the base styles of the Badge.
 
 ```vue
 <template>
-  <UBadge class="font-bold rounded-full"> Badge </UBadge>
+  <UBadge class="font-bold rounded-full">
+    Badge
+  </UBadge>
 </template>
 ```

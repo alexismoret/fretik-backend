@@ -18,7 +18,7 @@ interface NavigationMenuProps {
   as?: any;
   /**
    * Determines whether a "single" or "multiple" items can be selected at a time.
-   *
+   * 
    * Only works when `orientation` is `vertical`.
    * @default 'multiple'
    */
@@ -28,7 +28,7 @@ interface NavigationMenuProps {
    * - In horizontal orientation: always `string`
    * - In vertical orientation with `type="single"`: `string`
    * - In vertical orientation with `type="multiple"`: `string[]`
-   *
+   * 
    * Use this when you need to control the state of the items. Can be binded with `v-model`
    */
   modelValue?: NavigationMenuModelValue<K, O> | undefined;
@@ -37,7 +37,7 @@ interface NavigationMenuProps {
    * - In horizontal orientation: always `string`
    * - In vertical orientation with `type="single"`: `string`
    * - In vertical orientation with `type="multiple"`: `string[]`
-   *
+   * 
    * Use when you do not need to control the state of the item(s).
    */
   defaultValue?: NavigationMenuModelValue<K, O> | undefined;
@@ -56,15 +56,7 @@ interface NavigationMenuProps {
   /**
    * @default 'primary'
    */
-  color?:
-    | "primary"
-    | "secondary"
-    | "success"
-    | "info"
-    | "warning"
-    | "error"
-    | "neutral"
-    | undefined;
+  color?: "primary" | "secondary" | "success" | "info" | "warning" | "error" | "neutral" | undefined;
   /**
    * @default 'pill'
    */
@@ -100,22 +92,11 @@ interface NavigationMenuProps {
   /**
    * @default 'primary'
    */
-  highlightColor?:
-    | "primary"
-    | "secondary"
-    | "success"
-    | "info"
-    | "warning"
-    | "error"
-    | "neutral"
-    | undefined;
+  highlightColor?: "primary" | "secondary" | "success" | "info" | "warning" | "error" | "neutral" | undefined;
   /**
    * The content of the menu.
    */
-  content?:
-    | (Omit<NavigationMenuContentProps, "as" | "asChild" | "forceMount"> &
-        Partial<EmitsToProps<DismissableLayerEmits>>)
-    | undefined;
+  content?: Omit<NavigationMenuContentProps, "as" | "asChild" | "forceMount"> & Partial<EmitsToProps<DismissableLayerEmits>> | undefined;
   /**
    * The orientation of the content.
    * Only works when `orientation` is `horizontal`.
@@ -131,52 +112,13 @@ interface NavigationMenuProps {
    * The key used to get the value from the item.
    * @default 'value'
    */
-  valueKey?:
-    | (keyof Extract<NestedItem<T>, object> & string)
-    | DotPathKeys<Extract<NestedItem<T>, object>>
-    | undefined;
+  valueKey?: keyof Extract<NestedItem<T>, object> & string | DotPathKeys<Extract<NestedItem<T>, object>> | undefined;
   /**
    * The key used to get the label from the item.
    * @default 'label'
    */
-  labelKey?:
-    | (keyof Extract<NestedItem<T>, object> & string)
-    | DotPathKeys<Extract<NestedItem<T>, object>>
-    | undefined;
-  ui?:
-    | {
-        root?: SlotClass;
-        list?: SlotClass;
-        label?: SlotClass;
-        item?: SlotClass;
-        link?: SlotClass;
-        linkLeadingIcon?: SlotClass;
-        linkLeadingAvatar?: SlotClass;
-        linkLeadingAvatarSize?: SlotClass;
-        linkLeadingChipSize?: SlotClass;
-        linkTrailing?: SlotClass;
-        linkTrailingBadge?: SlotClass;
-        linkTrailingBadgeSize?: SlotClass;
-        linkTrailingIcon?: SlotClass;
-        linkLabel?: SlotClass;
-        linkLabelExternalIcon?: SlotClass;
-        childList?: SlotClass;
-        childLabel?: SlotClass;
-        childItem?: SlotClass;
-        childLink?: SlotClass;
-        childLinkWrapper?: SlotClass;
-        childLinkIcon?: SlotClass;
-        childLinkLabel?: SlotClass;
-        childLinkLabelExternalIcon?: SlotClass;
-        childLinkDescription?: SlotClass;
-        separator?: SlotClass;
-        viewportWrapper?: SlotClass;
-        viewport?: SlotClass;
-        content?: SlotClass;
-        indicator?: SlotClass;
-        arrow?: SlotClass;
-      }
-    | undefined;
+  labelKey?: keyof Extract<NestedItem<T>, object> & string | DotPathKeys<Extract<NestedItem<T>, object>> | undefined;
+  ui?: { root?: SlotClass; list?: SlotClass; label?: SlotClass; item?: SlotClass; link?: SlotClass; linkLeadingIcon?: SlotClass; linkLeadingAvatar?: SlotClass; linkLeadingAvatarSize?: SlotClass; linkLeadingChipSize?: SlotClass; linkTrailing?: SlotClass; linkTrailingBadge?: SlotClass; linkTrailingBadgeSize?: SlotClass; linkTrailingIcon?: SlotClass; linkLabel?: SlotClass; linkLabelExternalIcon?: SlotClass; childList?: SlotClass; childLabel?: SlotClass; childItem?: SlotClass; childLink?: SlotClass; childLinkWrapper?: SlotClass; childLinkIcon?: SlotClass; childLinkLabel?: SlotClass; childLinkLabelExternalIcon?: SlotClass; childLinkDescription?: SlotClass; separator?: SlotClass; viewportWrapper?: SlotClass; viewport?: SlotClass; content?: SlotClass; indicator?: SlotClass; arrow?: SlotClass; } | undefined;
   /**
    * The duration from when the pointer enters the trigger until the tooltip gets opened.
    * @default 0
@@ -249,13 +191,19 @@ interface NavigationMenuEmits {
 }
 ```
 
+## Composition
+
+Parts placed by name: `#item`, `#item-leading`, `#item-label`, `#item-trailing`, `#item-content`, `#list-leading`, `#list-trailing`.
+
+Also written in the docs and absent from the interface above — one per column or item: `#more`, `#github-trailing`, `#personal-label-trailing`, `#teams-label-trailing`, `#docs-content`.
+
 ## Usage
 
 Use the NavigationMenu component to display a list of links horizontally or vertically.
 
 ```vue
 <script setup lang="ts">
-import type { NavigationMenuItem } from "@nuxt/ui";
+import type { NavigationMenuItem } from '@nuxt/ui'
 
 const items = ref<NavigationMenuItem[]>([
   {
@@ -266,33 +214,29 @@ const items = ref<NavigationMenuItem[]>([
       {
         label: "Introduction",
         description: "Fully styled and customizable components for Nuxt.",
-        icon: "i-lucide-house",
+        icon: "i-lucide-house"
       },
       {
         label: "Installation",
-        description:
-          "Learn how to install and configure Nuxt UI in your application.",
-        icon: "i-lucide-cloud-download",
+        description: "Learn how to install and configure Nuxt UI in your application.",
+        icon: "i-lucide-cloud-download"
       },
       {
         label: "Icons",
         icon: "i-lucide-smile",
-        description:
-          "You have nothing to do, @nuxt/icon will handle it automatically.",
+        description: "You have nothing to do, @nuxt/icon will handle it automatically."
       },
       {
         label: "Colors",
         icon: "i-lucide-swatch-book",
-        description:
-          "Choose a primary and a neutral color from your Tailwind CSS theme.",
+        description: "Choose a primary and a neutral color from your Tailwind CSS theme."
       },
       {
         label: "Theme",
         icon: "i-lucide-cog",
-        description:
-          "You can customize components by using the `class` / `ui` props or in your app.config.ts.",
-      },
-    ],
+        description: "You can customize components by using the `class` / `ui` props or in your app.config.ts."
+      }
+    ]
   },
   {
     label: "Composables",
@@ -303,21 +247,21 @@ const items = ref<NavigationMenuItem[]>([
         label: "defineShortcuts",
         icon: "i-lucide-file-text",
         description: "Define shortcuts for your application.",
-        to: "/docs/composables/define-shortcuts",
+        to: "/docs/composables/define-shortcuts"
       },
       {
         label: "useOverlay",
         icon: "i-lucide-file-text",
         description: "Display a modal/slideover within your application.",
-        to: "/docs/composables/use-overlay",
+        to: "/docs/composables/use-overlay"
       },
       {
         label: "useToast",
         icon: "i-lucide-file-text",
         description: "Display a toast within your application.",
-        to: "/docs/composables/use-toast",
-      },
-    ],
+        to: "/docs/composables/use-toast"
+      }
+    ]
   },
   {
     label: "Components",
@@ -329,54 +273,53 @@ const items = ref<NavigationMenuItem[]>([
         label: "Link",
         icon: "i-lucide-file-text",
         description: "Use NuxtLink with superpowers.",
-        to: "/docs/components/link",
+        to: "/docs/components/link"
       },
       {
         label: "Modal",
         icon: "i-lucide-file-text",
         description: "Display a modal within your application.",
-        to: "/docs/components/modal",
+        to: "/docs/components/modal"
       },
       {
         label: "NavigationMenu",
         icon: "i-lucide-file-text",
         description: "Display a list of links.",
-        to: "/docs/components/navigation-menu",
+        to: "/docs/components/navigation-menu"
       },
       {
         label: "Pagination",
         icon: "i-lucide-file-text",
         description: "Display a list of pages.",
-        to: "/docs/components/pagination",
+        to: "/docs/components/pagination"
       },
       {
         label: "Popover",
         icon: "i-lucide-file-text",
-        description:
-          "Display a non-modal dialog that floats around a trigger element.",
-        to: "/docs/components/popover",
+        description: "Display a non-modal dialog that floats around a trigger element.",
+        to: "/docs/components/popover"
       },
       {
         label: "Progress",
         icon: "i-lucide-file-text",
         description: "Show a horizontal bar to indicate task progression.",
-        to: "/docs/components/progress",
-      },
-    ],
+        to: "/docs/components/progress"
+      }
+    ]
   },
   {
     label: "GitHub",
     icon: "i-simple-icons-github",
     badge: "6k",
     to: "https://github.com/nuxt/ui",
-    target: "_blank",
+    target: "_blank"
   },
   {
     label: "Help",
     icon: "i-lucide-circle-help",
-    disabled: true,
-  },
-]);
+    disabled: true
+  }
+])
 </script>
 
 <template>
@@ -388,30 +331,30 @@ const items = ref<NavigationMenuItem[]>([
 
 Use the `items` prop as an array of objects with the following properties:
 
-- `label?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `icon?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `avatar?: AvatarProps`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `badge?: string | number | BadgeProps`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- [`chip?: boolean | ChipProps`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}](https://ui.nuxt.com/#with-chip-in-items)
-- [`tooltip?: TooltipProps`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}](https://ui.nuxt.com/#with-tooltip-in-items)
-- [`popover?: PopoverProps`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}](https://ui.nuxt.com/#with-popover-in-items)
-- `trailingIcon?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `type?: 'label' | 'trigger' | 'link'`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `defaultOpen?: boolean`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `open?: boolean`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `value?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `disabled?: boolean`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- [`slot?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}](https://ui.nuxt.com/#with-custom-slot)
-- `onSelect?: (e: Event) => void`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `children?: NavigationMenuChildItem[]`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `class?: any`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `ui?: { linkLeadingAvatarSize?: ClassNameValue, linkLeadingAvatar?: ClassNameValue, linkLeadingIcon?: ClassNameValue, linkLeadingChipSize?: ClassNameValue, linkLabel?: ClassNameValue, linkLabelExternalIcon?: ClassNameValue, linkTrailing?: ClassNameValue, linkTrailingBadgeSize?: ClassNameValue, linkTrailingBadge?: ClassNameValue, linkTrailingIcon?: ClassNameValue, label?: ClassNameValue, link?: ClassNameValue, content?: ClassNameValue, childList?: ClassNameValue, childLabel?: ClassNameValue, childItem?: ClassNameValue, childLink?: ClassNameValue, childLinkIcon?: ClassNameValue, childLinkWrapper?: ClassNameValue, childLinkLabel?: ClassNameValue, childLinkLabelExternalIcon?: ClassNameValue, childLinkDescription?: ClassNameValue }`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
+- `label?: string`
+- `icon?: string`
+- `avatar?: AvatarProps`
+- `badge?: string | number | BadgeProps`
+- [`chip?: boolean | ChipProps`](#with-chip-in-items)
+- [`tooltip?: TooltipProps`](#with-tooltip-in-items)
+- [`popover?: PopoverProps`](#with-popover-in-items)
+- `trailingIcon?: string`
+- `type?: 'label' | 'trigger' | 'link'`
+- `defaultOpen?: boolean`
+- `open?: boolean`
+- `value?: string`
+- `disabled?: boolean`
+- [`slot?: string`](#with-custom-slot)
+- `onSelect?: (e: Event) => void`
+- `children?: NavigationMenuChildItem[]`
+- `class?: any`
+- `ui?: { linkLeadingAvatarSize?: ClassNameValue, linkLeadingAvatar?: ClassNameValue, linkLeadingIcon?: ClassNameValue, linkLeadingChipSize?: ClassNameValue, linkLabel?: ClassNameValue, linkLabelExternalIcon?: ClassNameValue, linkTrailing?: ClassNameValue, linkTrailingBadgeSize?: ClassNameValue, linkTrailingBadge?: ClassNameValue, linkTrailingIcon?: ClassNameValue, label?: ClassNameValue, link?: ClassNameValue, content?: ClassNameValue, childList?: ClassNameValue, childLabel?: ClassNameValue, childItem?: ClassNameValue, childLink?: ClassNameValue, childLinkIcon?: ClassNameValue, childLinkWrapper?: ClassNameValue, childLinkLabel?: ClassNameValue, childLinkLabelExternalIcon?: ClassNameValue, childLinkDescription?: ClassNameValue }`
 
 You can pass any property from the [Link](https://ui.nuxt.com/docs/components/link#props) component such as `to`, `target`, etc.
 
 ```vue
 <script setup lang="ts">
-import type { NavigationMenuItem } from "@nuxt/ui";
+import type { NavigationMenuItem } from '@nuxt/ui'
 
 const items = ref<NavigationMenuItem[]>([
   {
@@ -422,33 +365,29 @@ const items = ref<NavigationMenuItem[]>([
       {
         label: "Introduction",
         description: "Fully styled and customizable components for Nuxt.",
-        icon: "i-lucide-house",
+        icon: "i-lucide-house"
       },
       {
         label: "Installation",
-        description:
-          "Learn how to install and configure Nuxt UI in your application.",
-        icon: "i-lucide-cloud-download",
+        description: "Learn how to install and configure Nuxt UI in your application.",
+        icon: "i-lucide-cloud-download"
       },
       {
         label: "Icons",
         icon: "i-lucide-smile",
-        description:
-          "You have nothing to do, @nuxt/icon will handle it automatically.",
+        description: "You have nothing to do, @nuxt/icon will handle it automatically."
       },
       {
         label: "Colors",
         icon: "i-lucide-swatch-book",
-        description:
-          "Choose a primary and a neutral color from your Tailwind CSS theme.",
+        description: "Choose a primary and a neutral color from your Tailwind CSS theme."
       },
       {
         label: "Theme",
         icon: "i-lucide-cog",
-        description:
-          "You can customize components by using the `class` / `ui` props or in your app.config.ts.",
-      },
-    ],
+        description: "You can customize components by using the `class` / `ui` props or in your app.config.ts."
+      }
+    ]
   },
   {
     label: "Composables",
@@ -459,21 +398,21 @@ const items = ref<NavigationMenuItem[]>([
         label: "defineShortcuts",
         icon: "i-lucide-file-text",
         description: "Define shortcuts for your application.",
-        to: "/docs/composables/define-shortcuts",
+        to: "/docs/composables/define-shortcuts"
       },
       {
         label: "useOverlay",
         icon: "i-lucide-file-text",
         description: "Display a modal/slideover within your application.",
-        to: "/docs/composables/use-overlay",
+        to: "/docs/composables/use-overlay"
       },
       {
         label: "useToast",
         icon: "i-lucide-file-text",
         description: "Display a toast within your application.",
-        to: "/docs/composables/use-toast",
-      },
-    ],
+        to: "/docs/composables/use-toast"
+      }
+    ]
   },
   {
     label: "Components",
@@ -485,54 +424,53 @@ const items = ref<NavigationMenuItem[]>([
         label: "Link",
         icon: "i-lucide-file-text",
         description: "Use NuxtLink with superpowers.",
-        to: "/docs/components/link",
+        to: "/docs/components/link"
       },
       {
         label: "Modal",
         icon: "i-lucide-file-text",
         description: "Display a modal within your application.",
-        to: "/docs/components/modal",
+        to: "/docs/components/modal"
       },
       {
         label: "NavigationMenu",
         icon: "i-lucide-file-text",
         description: "Display a list of links.",
-        to: "/docs/components/navigation-menu",
+        to: "/docs/components/navigation-menu"
       },
       {
         label: "Pagination",
         icon: "i-lucide-file-text",
         description: "Display a list of pages.",
-        to: "/docs/components/pagination",
+        to: "/docs/components/pagination"
       },
       {
         label: "Popover",
         icon: "i-lucide-file-text",
-        description:
-          "Display a non-modal dialog that floats around a trigger element.",
-        to: "/docs/components/popover",
+        description: "Display a non-modal dialog that floats around a trigger element.",
+        to: "/docs/components/popover"
       },
       {
         label: "Progress",
         icon: "i-lucide-file-text",
         description: "Show a horizontal bar to indicate task progression.",
-        to: "/docs/components/progress",
-      },
-    ],
+        to: "/docs/components/progress"
+      }
+    ]
   },
   {
     label: "GitHub",
     icon: "i-simple-icons-github",
     badge: "6k",
     to: "https://github.com/nuxt/ui",
-    target: "_blank",
+    target: "_blank"
   },
   {
     label: "Help",
     icon: "i-lucide-circle-help",
-    disabled: true,
-  },
-]);
+    disabled: true
+  }
+])
 </script>
 
 <template>
@@ -550,155 +488,146 @@ You can control the active item(s) by using the `default-value` prop or the `v-m
 
 ```vue [NavigationMenuModelValueExample.vue]
 <script setup lang="ts">
-import type { NavigationMenuItem } from "@nuxt/ui";
+import type { NavigationMenuItem } from '@nuxt/ui'
 
 const items: NavigationMenuItem[] = [
   {
-    label: "Guide",
-    icon: "i-lucide-book-open",
+    label: 'Guide',
+    icon: 'i-lucide-book-open',
     children: [
       {
-        label: "Introduction",
-        description: "Fully styled and customizable components for Nuxt.",
-        icon: "i-lucide-house",
+        label: 'Introduction',
+        description: 'Fully styled and customizable components for Nuxt.',
+        icon: 'i-lucide-house'
       },
       {
-        label: "Installation",
-        description:
-          "Learn how to install and configure Nuxt UI in your application.",
-        icon: "i-lucide-cloud-download",
+        label: 'Installation',
+        description: 'Learn how to install and configure Nuxt UI in your application.',
+        icon: 'i-lucide-cloud-download'
       },
       {
-        label: "Icons",
-        icon: "i-lucide-smile",
-        description:
-          "You have nothing to do, @nuxt/icon will handle it automatically.",
+        label: 'Icons',
+        icon: 'i-lucide-smile',
+        description: 'You have nothing to do, @nuxt/icon will handle it automatically.'
       },
       {
-        label: "Colors",
-        icon: "i-lucide-swatch-book",
-        description:
-          "Choose a primary and a neutral color from your Tailwind CSS theme.",
+        label: 'Colors',
+        icon: 'i-lucide-swatch-book',
+        description: 'Choose a primary and a neutral color from your Tailwind CSS theme.'
       },
       {
-        label: "Theme",
-        icon: "i-lucide-cog",
-        description:
-          "You can customize components by using the `class` / `ui` props or in your app.config.ts.",
-      },
-    ],
+        label: 'Theme',
+        icon: 'i-lucide-cog',
+        description: 'You can customize components by using the `class` / `ui` props or in your app.config.ts.'
+      }
+    ]
   },
   {
-    label: "Composables",
-    icon: "i-lucide-database",
+    label: 'Composables',
+    icon: 'i-lucide-database',
     children: [
       {
-        label: "defineShortcuts",
-        icon: "i-lucide-file-text",
-        description: "Define shortcuts for your application.",
+        label: 'defineShortcuts',
+        icon: 'i-lucide-file-text',
+        description: 'Define shortcuts for your application.'
       },
       {
-        label: "useOverlay",
-        icon: "i-lucide-file-text",
-        description: "Display a modal/slideover within your application.",
+        label: 'useOverlay',
+        icon: 'i-lucide-file-text',
+        description: 'Display a modal/slideover within your application.'
       },
       {
-        label: "useToast",
-        icon: "i-lucide-file-text",
-        description: "Display a toast within your application.",
-      },
-    ],
+        label: 'useToast',
+        icon: 'i-lucide-file-text',
+        description: 'Display a toast within your application.'
+      }
+    ]
   },
   {
-    label: "Components",
-    icon: "i-lucide-box",
+    label: 'Components',
+    icon: 'i-lucide-box',
     children: [
       {
-        label: "Link",
-        icon: "i-lucide-file-text",
-        description: "Use NuxtLink with superpowers.",
+        label: 'Link',
+        icon: 'i-lucide-file-text',
+        description: 'Use NuxtLink with superpowers.'
       },
       {
-        label: "Modal",
-        icon: "i-lucide-file-text",
-        description: "Display a modal within your application.",
+        label: 'Modal',
+        icon: 'i-lucide-file-text',
+        description: 'Display a modal within your application.'
       },
       {
-        label: "NavigationMenu",
-        icon: "i-lucide-file-text",
-        description: "Display a list of links.",
+        label: 'NavigationMenu',
+        icon: 'i-lucide-file-text',
+        description: 'Display a list of links.'
       },
       {
-        label: "Pagination",
-        icon: "i-lucide-file-text",
-        description: "Display a list of pages.",
+        label: 'Pagination',
+        icon: 'i-lucide-file-text',
+        description: 'Display a list of pages.'
       },
       {
-        label: "Popover",
-        icon: "i-lucide-file-text",
-        description:
-          "Display a non-modal dialog that floats around a trigger element.",
+        label: 'Popover',
+        icon: 'i-lucide-file-text',
+        description: 'Display a non-modal dialog that floats around a trigger element.'
       },
       {
-        label: "Progress",
-        icon: "i-lucide-file-text",
-        description: "Show a horizontal bar to indicate task progression.",
-      },
-    ],
-  },
-];
+        label: 'Progress',
+        icon: 'i-lucide-file-text',
+        description: 'Show a horizontal bar to indicate task progression.'
+      }
+    ]
+  }
+]
 
-const active = ref();
+const active = ref()
 
 defineShortcuts({
   1: () => {
-    active.value = "item-0";
+    active.value = 'item-0'
   },
   2: () => {
-    active.value = "item-1";
+    active.value = 'item-1'
   },
   3: () => {
-    active.value = "item-2";
-  },
-});
+    active.value = 'item-2'
+  }
+})
 </script>
 
 <template>
-  <UNavigationMenu
-    v-model="active"
-    :items="items"
-    class="w-full justify-center"
-  />
+  <UNavigationMenu v-model="active" :items="items" class="w-full justify-center" />
 </template>
 ```
 
-> \[!TIP]
->
+> [!TIP]
+> 
 > Use the `value-key` prop to change the key used to match items when a `v-model` or `default-value` is provided.
 
-> \[!NOTE]
->
-> In this example, leveraging [`defineShortcuts`](https://ui.nuxt.com/docs/composables/define-shortcuts), you can switch the active item by pressing :kbd{value="1"}, :kbd{value="2"}, or :kbd{value="3"}.
+> [!NOTE]
+> 
+> In this example, leveraging [`defineShortcuts`](https://ui.nuxt.com/docs/composables/define-shortcuts), you can switch the active item by pressing `1`, `2`, or `3`.
 
 ### With tooltip in items
 
 When orientation is `vertical` and the menu is `collapsed`, you can set the `tooltip` prop to `true` to display a [Tooltip](https://ui.nuxt.com/docs/components/tooltip) around items with their label but you can also use the `tooltip` property on each item to override the default tooltip. In `horizontal` orientation, you can use the `tooltip` property on each item to display a [Tooltip](https://ui.nuxt.com/docs/components/tooltip) around items.
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > The `tooltip` property on an item will always display a tooltip regardless of the global `tooltip` prop.
 
 You can pass any property from the [Tooltip](https://ui.nuxt.com/docs/components/tooltip) component globally or on each item.
 
 ```vue
 <script setup lang="ts">
-import type { NavigationMenuItem } from "@nuxt/ui";
+import type { NavigationMenuItem } from '@nuxt/ui'
 
 const items = ref<NavigationMenuItem[][]>([
   [
     {
       label: "Links",
-      type: "label",
+      type: "label"
     },
     {
       label: "Guide",
@@ -707,33 +636,29 @@ const items = ref<NavigationMenuItem[][]>([
         {
           label: "Introduction",
           description: "Fully styled and customizable components for Nuxt.",
-          icon: "i-lucide-house",
+          icon: "i-lucide-house"
         },
         {
           label: "Installation",
-          description:
-            "Learn how to install and configure Nuxt UI in your application.",
-          icon: "i-lucide-cloud-download",
+          description: "Learn how to install and configure Nuxt UI in your application.",
+          icon: "i-lucide-cloud-download"
         },
         {
           label: "Icons",
           icon: "i-lucide-smile",
-          description:
-            "You have nothing to do, @nuxt/icon will handle it automatically.",
+          description: "You have nothing to do, @nuxt/icon will handle it automatically."
         },
         {
           label: "Colors",
           icon: "i-lucide-swatch-book",
-          description:
-            "Choose a primary and a neutral color from your Tailwind CSS theme.",
+          description: "Choose a primary and a neutral color from your Tailwind CSS theme."
         },
         {
           label: "Theme",
           icon: "i-lucide-cog",
-          description:
-            "You can customize components by using the `class` / `ui` props or in your app.config.ts.",
-        },
-      ],
+          description: "You can customize components by using the `class` / `ui` props or in your app.config.ts."
+        }
+      ]
     },
     {
       label: "Composables",
@@ -743,21 +668,21 @@ const items = ref<NavigationMenuItem[][]>([
           label: "defineShortcuts",
           icon: "i-lucide-file-text",
           description: "Define shortcuts for your application.",
-          to: "/docs/composables/define-shortcuts",
+          to: "/docs/composables/define-shortcuts"
         },
         {
           label: "useOverlay",
           icon: "i-lucide-file-text",
           description: "Display a modal/slideover within your application.",
-          to: "/docs/composables/use-overlay",
+          to: "/docs/composables/use-overlay"
         },
         {
           label: "useToast",
           icon: "i-lucide-file-text",
           description: "Display a toast within your application.",
-          to: "/docs/composables/use-toast",
-        },
-      ],
+          to: "/docs/composables/use-toast"
+        }
+      ]
     },
     {
       label: "Components",
@@ -769,41 +694,40 @@ const items = ref<NavigationMenuItem[][]>([
           label: "Link",
           icon: "i-lucide-file-text",
           description: "Use NuxtLink with superpowers.",
-          to: "/docs/components/link",
+          to: "/docs/components/link"
         },
         {
           label: "Modal",
           icon: "i-lucide-file-text",
           description: "Display a modal within your application.",
-          to: "/docs/components/modal",
+          to: "/docs/components/modal"
         },
         {
           label: "NavigationMenu",
           icon: "i-lucide-file-text",
           description: "Display a list of links.",
-          to: "/docs/components/navigation-menu",
+          to: "/docs/components/navigation-menu"
         },
         {
           label: "Pagination",
           icon: "i-lucide-file-text",
           description: "Display a list of pages.",
-          to: "/docs/components/pagination",
+          to: "/docs/components/pagination"
         },
         {
           label: "Popover",
           icon: "i-lucide-file-text",
-          description:
-            "Display a non-modal dialog that floats around a trigger element.",
-          to: "/docs/components/popover",
+          description: "Display a non-modal dialog that floats around a trigger element.",
+          to: "/docs/components/popover"
         },
         {
           label: "Progress",
           icon: "i-lucide-file-text",
           description: "Show a horizontal bar to indicate task progression.",
-          to: "/docs/components/progress",
-        },
-      ],
-    },
+          to: "/docs/components/progress"
+        }
+      ]
+    }
   ],
   [
     {
@@ -814,16 +738,18 @@ const items = ref<NavigationMenuItem[][]>([
       target: "_blank",
       tooltip: {
         text: "Open on GitHub",
-        kbds: ["6k"],
-      },
+        kbds: [
+          "6k"
+        ]
+      }
     },
     {
       label: "Help",
       icon: "i-lucide-circle-help",
-      disabled: true,
-    },
-  ],
-]);
+      disabled: true
+    }
+  ]
+])
 </script>
 
 <template>

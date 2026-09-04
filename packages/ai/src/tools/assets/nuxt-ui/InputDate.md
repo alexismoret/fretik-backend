@@ -170,15 +170,21 @@ interface InputDateEmits {
 }
 ```
 
+## Composition
+
+Parts placed by name: `#separator`.
+
+Also written in the docs and absent from the interface above — one per column or item: `#content`.
+
 ## Usage
 
 Use the `v-model` directive to control the selected date.
 
 ```vue
 <script setup lang="ts">
-import { CalendarDate } from "@internationalized/date";
+import { CalendarDate } from '@internationalized/date'
 
-const value = shallowRef(new CalendarDate(2022, 2, 3));
+const value = shallowRef(new CalendarDate(2022, 2, 3))
 </script>
 
 <template>
@@ -190,9 +196,9 @@ Use the `default-value` prop to set the initial value when you do not need to co
 
 ```vue
 <script setup lang="ts">
-import { CalendarDate } from "@internationalized/date";
+import { CalendarDate } from '@internationalized/date'
 
-const defaultValue = shallowRef(new CalendarDate(2022, 2, 6));
+const defaultValue = shallowRef(new CalendarDate(2022, 2, 6))
 </script>
 
 <template>
@@ -202,16 +208,16 @@ const defaultValue = shallowRef(new CalendarDate(2022, 2, 6));
 
 **Nuxt:**
 
-> \[!NOTE]
+> [!NOTE]
 > See: /docs/getting-started/integrations/i18n/nuxt#locale
->
+> 
 > This component uses the `@internationalized/date` package for locale-aware formatting. The date format is determined by the `locale` prop of the App component.
 
 **Vue:**
 
-> \[!NOTE]
+> [!NOTE]
 > See: /docs/getting-started/integrations/i18n/vue#locale
->
+> 
 > This component uses the `@internationalized/date` package for locale-aware formatting. The date format is determined by the `locale` prop of the App component.
 
 ### Range
@@ -220,12 +226,9 @@ Use the `range` prop to select a range of dates.
 
 ```vue
 <script setup lang="ts">
-import { CalendarDate } from "@internationalized/date";
+import { CalendarDate } from '@internationalized/date'
 
-const value = shallowRef({
-  start: new CalendarDate(2022, 2, 3),
-  end: new CalendarDate(2022, 2, 20),
-});
+const value = shallowRef({ start: new CalendarDate(2022, 2, 3), end: new CalendarDate(2022, 2, 20) })
 </script>
 
 <template>
@@ -273,8 +276,8 @@ Use the `icon` prop to show an [Icon](https://ui.nuxt.com/docs/components/icon) 
 </template>
 ```
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > Use the `leading` and `trailing` props to set the icon position or the `leading-icon` and `trailing-icon` props to set a different icon for each position.
 
 ### Separator Icon
@@ -289,16 +292,16 @@ Use the `separator-icon` prop to change the [Icon](https://ui.nuxt.com/docs/comp
 
 **Nuxt:**
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/getting-started/integrations/icons/nuxt#theme
->
+> 
 > You can customize this icon globally in your `app.config.ts` under `ui.icons.minus` key.
 
 **Vue:**
 
-> \[!TIP]
+> [!TIP]
 > See: /docs/getting-started/integrations/icons/vue#theme
->
+> 
 > You can customize this icon globally in your `vite.config.ts` under `ui.icons.minus` key.
 
 ### Avatar
@@ -307,14 +310,10 @@ Use the `avatar` prop to show an [Avatar](https://ui.nuxt.com/docs/components/av
 
 ```vue
 <template>
-  <UInputDate
-    :avatar="{
-      src: 'https://github.com/vuejs.png',
-      loading: 'lazy',
-    }"
-    size="md"
-    variant="outline"
-  />
+  <UInputDate :avatar="{
+  src: 'https://github.com/vuejs.png',
+  loading: 'lazy'
+}" size="md" variant="outline" />
 </template>
 ```
 
@@ -336,25 +335,21 @@ Use the `is-date-unavailable` prop with a function to mark specific dates as una
 
 ```vue [InputDateUnavailableDatesExample.vue]
 <script setup lang="ts">
-import type { DateValue } from "@internationalized/date";
-import { CalendarDate } from "@internationalized/date";
+import type { DateValue } from '@internationalized/date'
+import { CalendarDate } from '@internationalized/date'
 
 const modelValue = shallowRef({
   start: new CalendarDate(2022, 1, 1),
-  end: new CalendarDate(2022, 1, 9),
-});
+  end: new CalendarDate(2022, 1, 9)
+})
 
 const isDateUnavailable = (date: DateValue) => {
-  return date.day >= 10 && date.day <= 16;
-};
+  return date.day >= 10 && date.day <= 16
+}
 </script>
 
 <template>
-  <UInputDate
-    v-model="modelValue"
-    :is-date-unavailable="isDateUnavailable"
-    range
-  />
+  <UInputDate v-model="modelValue" :is-date-unavailable="isDateUnavailable" range />
 </template>
 ```
 
@@ -364,11 +359,11 @@ Use the `min-value` and `max-value` props to limit the dates.
 
 ```vue [InputDateMinMaxDatesExample.vue]
 <script setup lang="ts">
-import { CalendarDate } from "@internationalized/date";
+import { CalendarDate } from '@internationalized/date'
 
-const modelValue = shallowRef(new CalendarDate(2023, 9, 10));
-const minDate = new CalendarDate(2023, 9, 1);
-const maxDate = new CalendarDate(2023, 9, 30);
+const modelValue = shallowRef(new CalendarDate(2023, 9, 10))
+const minDate = new CalendarDate(2023, 9, 1)
+const maxDate = new CalendarDate(2023, 9, 30)
 </script>
 
 <template>
@@ -382,11 +377,11 @@ Use a [Calendar](https://ui.nuxt.com/docs/components/calendar) and a [Popover](h
 
 ```vue [InputDateDatePickerExample.vue]
 <script setup lang="ts">
-import { CalendarDate } from "@internationalized/date";
+import { CalendarDate } from '@internationalized/date'
 
-const inputDate = useTemplateRef("inputDate");
+const inputDate = useTemplateRef('inputDate')
 
-const modelValue = shallowRef(new CalendarDate(2022, 1, 10));
+const modelValue = shallowRef(new CalendarDate(2022, 1, 10))
 </script>
 
 <template>
@@ -417,14 +412,14 @@ Use a [Calendar](https://ui.nuxt.com/docs/components/calendar) and a [Popover](h
 
 ```vue [InputDateDateRangePickerExample.vue]
 <script setup lang="ts">
-import { CalendarDate } from "@internationalized/date";
+import { CalendarDate } from '@internationalized/date'
 
-const inputDate = useTemplateRef("inputDate");
+const inputDate = useTemplateRef('inputDate')
 
 const modelValue = shallowRef({
   start: new CalendarDate(2022, 1, 10),
-  end: new CalendarDate(2022, 1, 20),
-});
+  end: new CalendarDate(2022, 1, 20)
+})
 </script>
 
 <template>
@@ -441,12 +436,7 @@ const modelValue = shallowRef({
         />
 
         <template #content>
-          <UCalendar
-            v-model="modelValue"
-            class="p-2"
-            :number-of-months="2"
-            range
-          />
+          <UCalendar v-model="modelValue" class="p-2" :number-of-months="2" range />
         </template>
       </UPopover>
     </template>

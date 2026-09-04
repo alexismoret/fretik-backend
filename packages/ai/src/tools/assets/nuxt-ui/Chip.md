@@ -23,35 +23,16 @@ interface ChipProps {
   /**
    * @default 'primary'
    */
-  color?:
-    | "primary"
-    | "secondary"
-    | "success"
-    | "info"
-    | "warning"
-    | "error"
-    | "neutral"
-    | undefined;
+  color?: "primary" | "secondary" | "success" | "info" | "warning" | "error" | "neutral" | undefined;
   /**
    * @default 'md'
    */
-  size?:
-    | "xs"
-    | "sm"
-    | "md"
-    | "lg"
-    | "xl"
-    | "3xs"
-    | "2xs"
-    | "2xl"
-    | "3xl"
-    | undefined;
+  size?: "xs" | "sm" | "md" | "lg" | "xl" | "3xs" | "2xs" | "2xl" | "3xl" | undefined;
   /**
    * The position of the chip.
    * @default 'top-right'
    */
-  position?:
-    "top-right" | "bottom-right" | "top-left" | "bottom-left" | undefined;
+  position?: "top-right" | "bottom-right" | "top-left" | "bottom-left" | undefined;
   /**
    * When `true`, keep the chip inside the component for rounded elements.
    * @default false
@@ -62,7 +43,7 @@ interface ChipProps {
    * @default false
    */
   standalone?: boolean | undefined;
-  ui?: { root?: SlotClass; base?: SlotClass } | undefined;
+  ui?: { root?: SlotClass; base?: SlotClass; } | undefined;
   /**
    * @default true
    */
@@ -92,6 +73,10 @@ interface ChipEmits {
   update:show: (payload: [value: boolean]) => void;
 }
 ```
+
+## Composition
+
+Parts placed by name: `#content`.
 
 ## Usage
 
@@ -175,8 +160,8 @@ Use the `standalone` prop alongside the `inset` prop to display the Chip inline.
 </template>
 ```
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > It's used this way in the [`CommandPalette`](https://ui.nuxt.com/docs/components/command-palette), [`InputMenu`](https://ui.nuxt.com/docs/components/input-menu), [`Select`](https://ui.nuxt.com/docs/components/select) or [`SelectMenu`](https://ui.nuxt.com/docs/components/select-menu) components for example.
 
 ## Examples
@@ -187,31 +172,21 @@ You can control the visibility of the Chip using the `show` prop.
 
 ```vue [ChipShowExample.vue]
 <script setup lang="ts">
-const statuses = ["online", "away", "busy", "offline"];
-const status = ref(statuses[0]);
+const statuses = ['online', 'away', 'busy', 'offline']
+const status = ref(statuses[0])
 
-const color = computed(() =>
-  status.value
-    ? ({
-        online: "success",
-        away: "warning",
-        busy: "error",
-        offline: "neutral",
-      }[status.value] as any)
-    : "online",
-);
+const color = computed(() => status.value ? { online: 'success', away: 'warning', busy: 'error', offline: 'neutral' }[status.value] as any : 'online')
 
-const show = computed(() => status.value !== "offline");
+const show = computed(() => status.value !== 'offline')
 
 // Note: This is for demonstration purposes only. Don't do this at home.
 onMounted(() => {
   setInterval(() => {
     if (status.value) {
-      status.value =
-        statuses[(statuses.indexOf(status.value) + 1) % statuses.length];
+      status.value = statuses[(statuses.indexOf(status.value) + 1) % statuses.length]
     }
-  }, 1000);
-});
+  }, 1000)
+})
 </script>
 
 <template>
@@ -221,6 +196,6 @@ onMounted(() => {
 </template>
 ```
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > In this example, the Chip has a color per status and is displayed when the status is not `offline`.

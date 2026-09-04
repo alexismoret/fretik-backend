@@ -108,14 +108,18 @@ interface DashboardSidebarCollapseProps {
 }
 ```
 
-> \[!NOTE]
-> See: https\://developer.mozilla.org/en-US/docs/Web/HTML/Element/button#attributes
->
+> [!NOTE]
+> See: https://developer.mozilla.org/en-US/docs/Web/HTML/Element/button#attributes
+> 
 > This component also supports all native `<button>` HTML attributes.
+
+## Composition
+
+Also written in the docs and absent from the interface above — one per column or item: `#header`, `#leading`.
 
 ## Usage
 
-The DashboardSidebarCollapse component is used to collapse/expand the [DashboardSidebar](https://ui.nuxt.com/docs/components/dashboard-sidebar) component **when its `collapsible` prop is set**.
+The DashboardSidebarCollapse component is used to collapse/expand the [DashboardSidebar](https://ui.nuxt.com/docs/components/dashboard-sidebar) component **when its collapsible prop is set**.
 
 ```vue
 <template>
@@ -131,8 +135,8 @@ It extends the [Button](https://ui.nuxt.com/docs/components/button) component, s
 </template>
 ```
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > The button defaults to `color="neutral"` and `variant="ghost"`.
 
 ## Examples
@@ -141,7 +145,7 @@ It extends the [Button](https://ui.nuxt.com/docs/components/button) component, s
 
 You can put this component in the `header` slot of the [DashboardSidebar](https://ui.nuxt.com/docs/components/dashboard-sidebar) component and use the `collapsed` prop to hide the left part of the header for example:
 
-```vue [layouts/dashboard.vue] {4-8}
+```vue [layouts/dashboard.vue]
 <template>
   <UDashboardGroup>
     <UDashboardSidebar collapsible>
@@ -161,11 +165,11 @@ You can put this component in the `header` slot of the [DashboardSidebar](https:
 
 You can put this component in the `leading` slot of the [DashboardNavbar](https://ui.nuxt.com/docs/components/dashboard-navbar) component to display it before the title for example:
 
-```vue [pages/index.vue] {11-13}
+```vue [pages/index.vue]
 <script setup lang="ts">
 definePageMeta({
-  layout: "dashboard",
-});
+  layout: 'dashboard'
+})
 </script>
 
 <template>

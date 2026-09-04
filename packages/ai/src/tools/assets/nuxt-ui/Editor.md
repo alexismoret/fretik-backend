@@ -101,7 +101,7 @@ interface EditorProps {
   enablePasteRules?: false | true | (string | AnyExtension)[] | undefined;
   /**
    * Determines whether core extensions are enabled.
-   *
+   * 
    * If set to `false`, all core extensions will be disabled.
    * To disable specific core extensions, provide an object where the keys are the extension names and the values are `false`.
    * Extensions not listed in the object will remain enabled.
@@ -211,20 +211,24 @@ interface EditorEmits {
 
 When accessing the component via a template ref, you can use the following:
 
-| Name                                                                                                                         | Type        |
-| ---------------------------------------------------------------------------------------------------------------------------- | ----------- |
-| `editor`{.language-ts-type.shiki.shiki-themes.material-theme-lighter.material-theme.material-theme-palenight lang="ts-type"} | `Ref<Editor | undefined>`{.language-ts-type.shiki.shiki-themes.material-theme-lighter.material-theme.material-theme-palenight lang="ts-type"} |
+| Name | Type |
+| --- | --- |
+| `editor` | `Ref<Editor \| undefined>` |
 
-> \[!NOTE]
-> See: https\://tiptap.dev/docs/editor/api/editor
->
+> [!NOTE]
+> See: https://tiptap.dev/docs/editor/api/editor
+> 
 > The exposed editor instance is the TipTap Editor API. Check the TipTap documentation for all available methods and properties.
+
+## Composition
+
+Also written in the docs and absent from the interface above — one per column or item: `#leading`.
 
 ## Usage
 
-The Editor component provides a powerful rich text editing experience built on [TipTap](https://tiptap.dev/){rel="&#x22;nofollow&#x22;"}. It supports multiple content formats (JSON, HTML, Markdown), customizable toolbars, drag-and-drop block reordering, slash commands, mentions, emoji picker, and extensible architecture for adding custom functionality.
+The Editor component provides a powerful rich text editing experience built on [TipTap](https://tiptap.dev/). It supports multiple content formats (JSON, HTML, Markdown), customizable toolbars, drag-and-drop block reordering, slash commands, mentions, emoji picker, and extensible architecture for adding custom functionality.
 
-````vue [EditorExample.vue]
+```vue [EditorExample.vue]
 <script setup lang="ts">
 import type { EditorCustomHandlers, EditorToolbarItem, EditorSuggestionMenuItem, EditorMentionMenuItem, EditorEmojiMenuItem, DropdownMenuItem } from '@nuxt/ui'
 import type { Editor, JSONContent } from '@tiptap/vue-3'
@@ -247,9 +251,9 @@ Welcome to the **Nuxt UI Editor** — a powerful rich text editing experience bu
 
 ## Examples
 
-> \[!NOTE]
-> See: https\://github.com/nuxt-ui-templates/editor
->
+> [!NOTE]
+> See: https://github.com/nuxt-ui-templates/editor
+> 
 > Check out the source code of our **Editor template** on GitHub for a real-life example.
 
 ### With toolbar
@@ -329,7 +333,7 @@ const items: EditorToolbarItem[][] = [[{
     <UEditorToolbar :editor="editor" :items="items" layout="bubble" />
   </UEditor>
 </template>
-````
+```
 
 ### With drag handle
 
@@ -339,7 +343,7 @@ You can use the [EditorDragHandle](https://ui.nuxt.com/docs/components/editor-dr
 <script setup lang="ts">
 const value = ref(`# Drag Handle
 
-Hover over the left side of this block to see the drag handle appear and reorder blocks.`);
+Hover over the left side of this block to see the drag handle appear and reorder blocks.`)
 </script>
 
 <template>
@@ -360,83 +364,64 @@ You can use the [EditorSuggestionMenu](https://ui.nuxt.com/docs/components/edito
 
 ```vue [EditorSuggestionMenuExample.vue]
 <script setup lang="ts">
-import type { EditorSuggestionMenuItem } from "@nuxt/ui";
+import type { EditorSuggestionMenuItem } from '@nuxt/ui'
 
 const value = ref(`# Suggestion Menu
 
-Type / to open the suggestion menu and browse available formatting commands.`);
+Type / to open the suggestion menu and browse available formatting commands.`)
 
-const items: EditorSuggestionMenuItem[][] = [
-  [
-    {
-      type: "label",
-      label: "Text",
-    },
-    {
-      kind: "paragraph",
-      label: "Paragraph",
-      icon: "i-lucide-type",
-    },
-    {
-      kind: "heading",
-      level: 1,
-      label: "Heading 1",
-      icon: "i-lucide-heading-1",
-    },
-    {
-      kind: "heading",
-      level: 2,
-      label: "Heading 2",
-      icon: "i-lucide-heading-2",
-    },
-    {
-      kind: "heading",
-      level: 3,
-      label: "Heading 3",
-      icon: "i-lucide-heading-3",
-    },
-  ],
-  [
-    {
-      type: "label",
-      label: "Lists",
-    },
-    {
-      kind: "bulletList",
-      label: "Bullet List",
-      icon: "i-lucide-list",
-    },
-    {
-      kind: "orderedList",
-      label: "Numbered List",
-      icon: "i-lucide-list-ordered",
-    },
-  ],
-  [
-    {
-      type: "label",
-      label: "Insert",
-    },
-    {
-      kind: "blockquote",
-      label: "Blockquote",
-      icon: "i-lucide-text-quote",
-    },
-    {
-      kind: "codeBlock",
-      label: "Code Block",
-      icon: "i-lucide-square-code",
-    },
-    {
-      kind: "horizontalRule",
-      label: "Divider",
-      icon: "i-lucide-separator-horizontal",
-    },
-  ],
-];
+const items: EditorSuggestionMenuItem[][] = [[{
+  type: 'label',
+  label: 'Text'
+}, {
+  kind: 'paragraph',
+  label: 'Paragraph',
+  icon: 'i-lucide-type'
+}, {
+  kind: 'heading',
+  level: 1,
+  label: 'Heading 1',
+  icon: 'i-lucide-heading-1'
+}, {
+  kind: 'heading',
+  level: 2,
+  label: 'Heading 2',
+  icon: 'i-lucide-heading-2'
+}, {
+  kind: 'heading',
+  level: 3,
+  label: 'Heading 3',
+  icon: 'i-lucide-heading-3'
+}], [{
+  type: 'label',
+  label: 'Lists'
+}, {
+  kind: 'bulletList',
+  label: 'Bullet List',
+  icon: 'i-lucide-list'
+}, {
+  kind: 'orderedList',
+  label: 'Numbered List',
+  icon: 'i-lucide-list-ordered'
+}], [{
+  type: 'label',
+  label: 'Insert'
+}, {
+  kind: 'blockquote',
+  label: 'Blockquote',
+  icon: 'i-lucide-text-quote'
+}, {
+  kind: 'codeBlock',
+  label: 'Code Block',
+  icon: 'i-lucide-square-code'
+}, {
+  kind: 'horizontalRule',
+  label: 'Divider',
+  icon: 'i-lucide-separator-horizontal'
+}]]
 
 // SSR-safe function to append menus to body (avoids z-index issues in docs)
-const appendToBody = import.meta.client ? () => document.body : undefined;
+const appendToBody = false ? () => document.body : undefined
 </script>
 
 <template>
@@ -447,11 +432,7 @@ const appendToBody = import.meta.client ? () => document.body : undefined;
     placeholder="Type / for commands..."
     class="w-full min-h-21"
   >
-    <UEditorSuggestionMenu
-      :editor="editor"
-      :items="items"
-      :append-to="appendToBody"
-    />
+    <UEditorSuggestionMenu :editor="editor" :items="items" :append-to="appendToBody" />
   </UEditor>
 </template>
 ```

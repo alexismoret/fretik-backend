@@ -24,17 +24,7 @@ interface PageHeaderProps {
    * `{ color: 'neutral', variant: 'outline' }`{lang="ts-type"}
    */
   links?: ButtonProps[] | undefined;
-  ui?:
-    | {
-        root?: SlotClass;
-        container?: SlotClass;
-        wrapper?: SlotClass;
-        headline?: SlotClass;
-        title?: SlotClass;
-        description?: SlotClass;
-        links?: SlotClass;
-      }
-    | undefined;
+  ui?: { root?: SlotClass; container?: SlotClass; wrapper?: SlotClass; headline?: SlotClass; title?: SlotClass; description?: SlotClass; links?: SlotClass; } | undefined;
 }
 ```
 
@@ -53,13 +43,19 @@ interface PageHeaderSlots {
 }
 ```
 
+## Composition
+
+Parts placed by name: `#headline`, `#links`.
+
+Also written in the docs and absent from the interface above — one per column or item: `#right`.
+
 ## Usage
 
 The PageHeader component displays a header for your page.
 
 Use it inside the default slot of the [Page](https://ui.nuxt.com/docs/components/page) component, before the [PageBody](https://ui.nuxt.com/docs/components/page-body) component:
 
-```vue {3}
+```vue
 <template>
   <UPage>
     <UPageHeader />
@@ -85,10 +81,7 @@ Use the `description` prop to display a description in the header.
 
 ```vue
 <template>
-  <UPageHeader
-    title="PageHeader"
-    description="A responsive page header with title, description and actions."
-  />
+  <UPageHeader title="PageHeader" description="A responsive page header with title, description and actions." />
 </template>
 ```
 
@@ -98,11 +91,7 @@ Use the `headline` prop to display a headline in the header.
 
 ```vue
 <template>
-  <UPageHeader
-    title="PageHeader"
-    description="A responsive page header with title, description and actions."
-    headline="Components"
-  />
+  <UPageHeader title="PageHeader" description="A responsive page header with title, description and actions." headline="Components" />
 </template>
 ```
 
@@ -112,53 +101,48 @@ Use the `links` prop to display a list of [Button](https://ui.nuxt.com/docs/comp
 
 ```vue
 <script setup lang="ts">
-import type { ButtonProps } from "@nuxt/ui";
+import type { ButtonProps } from '@nuxt/ui'
 
 const links = ref<ButtonProps[]>([
   {
     label: "GitHub",
     icon: "i-simple-icons-github",
     to: "https://github.com/nuxt/ui/tree/v4/src/runtime/components/PageHeader.vue",
-    target: "_blank",
-  },
-]);
+    target: "_blank"
+  }
+])
 </script>
 
 <template>
-  <UPageHeader
-    title="PageHeader"
-    description="A responsive page header with title, description and actions."
-    headline="Components"
-    :links="links"
-  />
+  <UPageHeader title="PageHeader" description="A responsive page header with title, description and actions." headline="Components" :links="links" />
 </template>
 ```
 
 ## Examples
 
-> \[!NOTE]
->
-> While these examples use [Nuxt Content](https://content.nuxt.com){rel="&#x22;nofollow&#x22;"}, the components can be integrated with any content management system.
+> [!NOTE]
+> 
+> While these examples use [Nuxt Content](https://content.nuxt.com), the components can be integrated with any content management system.
 
 ### Within a page
 
 Use the PageHeader component in a page to display the header of the page:
 
-```vue [pages/[...slug\].vue] {19-24}
+```vue [pages/[...slug].vue]
 <script setup lang="ts">
-const route = useRoute();
+const route = useRoute()
 
 definePageMeta({
-  layout: "docs",
-});
+  layout: 'docs'
+})
 
 const { data: page } = await useAsyncData(route.path, () => {
-  return queryCollection("docs").path(route.path).first();
-});
+  return queryCollection('docs').path(route.path).first()
+})
 
 const { data: surround } = await useAsyncData(`${route.path}-surround`, () => {
-  return queryCollectionItemSurroundings("content", route.path);
-});
+  return queryCollectionItemSurroundings('content', route.path)
+})
 </script>
 
 <template>

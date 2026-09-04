@@ -19,15 +19,7 @@ interface PinInputProps {
   /**
    * @default 'primary'
    */
-  color?:
-    | "primary"
-    | "secondary"
-    | "success"
-    | "info"
-    | "warning"
-    | "error"
-    | "neutral"
-    | undefined;
+  color?: "primary" | "secondary" | "success" | "info" | "warning" | "error" | "neutral" | undefined;
   /**
    * @default 'outline'
    */
@@ -56,8 +48,7 @@ interface PinInputProps {
    * Pass a number to insert one after every Nth input, or an array of positions to insert after specific inputs.
    */
   separator?: number | number[] | undefined;
-  ui?:
-    { root?: SlotClass; base?: SlotClass; separator?: SlotClass } | undefined;
+  ui?: { root?: SlotClass; base?: SlotClass; separator?: SlotClass; } | undefined;
   /**
    * The default value of the pin inputs when it is initially rendered. Use when you do not need to control its checked state.
    */
@@ -131,9 +122,23 @@ interface PinInputEmits {
 
 When accessing the component via a template ref, you can use the following:
 
-| Name                                                                                                                            | Type                                                                                                                                                 |
-| ------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `inputsRef`{.language-ts-type.shiki.shiki-themes.material-theme-lighter.material-theme.material-theme-palenight lang="ts-type"} | `Ref<ComponentPublicInstance[]>`{.language-ts-type.shiki.shiki-themes.material-theme-lighter.material-theme.material-theme-palenight lang="ts-type"} |
+| Name | Type |
+| --- | --- |
+| `inputsRef` | `Ref<ComponentPublicInstance[]>` |
+
+## Composition
+
+Parts placed by name: `#separator`.
+
+```vue
+<template>
+  <UPinInput :length="6" :separator="3" placeholder="○">
+    <template #separator>
+      <UIcon name="i-lucide-minus" class="size-4" />
+    </template>
+  </UPinInput>
+</template>
+```
 
 ## Usage
 
@@ -141,7 +146,7 @@ Use the `v-model` directive to control the value of the PinInput.
 
 ```vue
 <script setup lang="ts">
-const value = ref([]);
+const value = ref([])
 </script>
 
 <template>
@@ -153,7 +158,11 @@ Use the `default-value` prop to set the initial value when you do not need to co
 
 ```vue
 <template>
-  <UPinInput :default-value="['1', '2', '3']" />
+  <UPinInput :default-value="[
+  '1',
+  '2',
+  '3'
+]" />
 </template>
 ```
 
@@ -167,8 +176,8 @@ Use the `type` prop to change the input type. Defaults to `text`.
 </template>
 ```
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > When `type` is set to `number`, it will only accept numeric characters.
 
 ### Mask
@@ -177,7 +186,13 @@ Use the `mask` prop to treat the input like a password.
 
 ```vue
 <template>
-  <UPinInput mask :default-value="['1', '2', '3', '4', '5']" />
+  <UPinInput mask :default-value="[
+  '1',
+  '2',
+  '3',
+  '4',
+  '5'
+]" />
 </template>
 ```
 
@@ -225,7 +240,10 @@ You can also pass an array of positions to insert separators after specific inpu
 
 ```vue
 <template>
-  <UPinInput :length="7" :separator="[3, 4]" placeholder="○" />
+  <UPinInput :length="7" :separator="[
+  3,
+  4
+]" placeholder="○" />
 </template>
 ```
 
@@ -239,8 +257,8 @@ Use the `color` prop to change the ring color when the PinInput is focused.
 </template>
 ```
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > The `highlight` prop is used here to show the focus state. It's used internally when a validation error occurs.
 
 ### Variant
@@ -249,12 +267,7 @@ Use the `variant` prop to change the variant of the PinInput.
 
 ```vue
 <template>
-  <UPinInput
-    color="neutral"
-    variant="subtle"
-    :highlight="false"
-    placeholder="○"
-  />
+  <UPinInput color="neutral" variant="subtle" :highlight="false" placeholder="○" />
 </template>
 ```
 

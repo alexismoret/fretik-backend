@@ -20,29 +20,11 @@ interface TimelineProps {
   /**
    * @default 'md'
    */
-  size?:
-    | "3xs"
-    | "2xs"
-    | "xs"
-    | "sm"
-    | "md"
-    | "lg"
-    | "xl"
-    | "2xl"
-    | "3xl"
-    | undefined;
+  size?: "3xs" | "2xs" | "xs" | "sm" | "md" | "lg" | "xl" | "2xl" | "3xl" | undefined;
   /**
    * @default 'primary'
    */
-  color?:
-    | "primary"
-    | "secondary"
-    | "success"
-    | "info"
-    | "warning"
-    | "error"
-    | "neutral"
-    | undefined;
+  color?: "primary" | "secondary" | "success" | "info" | "warning" | "error" | "neutral" | undefined;
   /**
    * The orientation of the Timeline.
    * @default 'vertical'
@@ -52,25 +34,10 @@ interface TimelineProps {
    * The key used to get the value from the item.
    * @default 'value'
    */
-  valueKey?:
-    | (keyof Extract<NestedItem<T>, object> & string)
-    | DotPathKeys<Extract<NestedItem<T>, object>>
-    | undefined;
+  valueKey?: keyof Extract<NestedItem<T>, object> & string | DotPathKeys<Extract<NestedItem<T>, object>> | undefined;
   defaultValue?: string | number | undefined;
   reverse?: boolean | undefined;
-  ui?:
-    | {
-        root?: SlotClass;
-        item?: SlotClass;
-        container?: SlotClass;
-        indicator?: SlotClass;
-        separator?: SlotClass;
-        wrapper?: SlotClass;
-        date?: SlotClass;
-        title?: SlotClass;
-        description?: SlotClass;
-      }
-    | undefined;
+  ui?: { root?: SlotClass; item?: SlotClass; container?: SlotClass; indicator?: SlotClass; separator?: SlotClass; wrapper?: SlotClass; date?: SlotClass; title?: SlotClass; description?: SlotClass; } | undefined;
   modelValue?: string | number | undefined;
 }
 ```
@@ -102,44 +69,46 @@ interface TimelineEmits {
 }
 ```
 
+## Composition
+
+Parts placed by name: `#indicator`, `#wrapper`, `#date`.
+
+Also written in the docs and absent from the interface above — one per column or item: `#development-title`.
+
 ## Usage
 
 Use the Timeline component to display a list of items in a timeline.
 
 ```vue
 <script setup lang="ts">
-import type { TimelineItem } from "@nuxt/ui";
+import type { TimelineItem } from '@nuxt/ui'
 
 const items = ref<TimelineItem[]>([
   {
     date: "Mar 15, 2025",
     title: "Project Kickoff",
-    description:
-      "Kicked off the project with team alignment. Set up project milestones and allocated resources.",
-    icon: "i-lucide-rocket",
+    description: "Kicked off the project with team alignment. Set up project milestones and allocated resources.",
+    icon: "i-lucide-rocket"
   },
   {
     date: "Mar 22 2025",
     title: "Design Phase",
-    description:
-      "User research and design workshops. Created wireframes and prototypes for user testing.",
-    icon: "i-lucide-palette",
+    description: "User research and design workshops. Created wireframes and prototypes for user testing.",
+    icon: "i-lucide-palette"
   },
   {
     date: "Mar 29 2025",
     title: "Development Sprint",
-    description:
-      "Frontend and backend development. Implemented core features and integrated with APIs.",
-    icon: "i-lucide-code",
+    description: "Frontend and backend development. Implemented core features and integrated with APIs.",
+    icon: "i-lucide-code"
   },
   {
     date: "Apr 5 2025",
     title: "Testing & Deployment",
-    description:
-      "QA testing and performance optimization. Deployed the application to production.",
-    icon: "i-lucide-check-circle",
-  },
-]);
+    description: "QA testing and performance optimization. Deployed the application to production.",
+    icon: "i-lucide-check-circle"
+  }
+])
 </script>
 
 <template>
@@ -151,50 +120,46 @@ const items = ref<TimelineItem[]>([
 
 Use the `items` prop as an array of objects with the following properties:
 
-- `date?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `title?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `description?: AvatarProps`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `icon?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `avatar?: AvatarProps`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `value?: string | number`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- [`slot?: string`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}](https://ui.nuxt.com/#with-custom-slot)
-- `class?: any`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `ui?: { item?: ClassNameValue, container?: ClassNameValue, indicator?: ClassNameValue, separator?: ClassNameValue, wrapper?: ClassNameValue, date?: ClassNameValue, title?: ClassNameValue, description?: ClassNameValue }`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
+- `date?: string`
+- `title?: string`
+- `description?: AvatarProps`
+- `icon?: string`
+- `avatar?: AvatarProps`
+- `value?: string | number`
+- [`slot?: string`](#with-custom-slot)
+- `class?: any`
+- `ui?: { item?: ClassNameValue, container?: ClassNameValue, indicator?: ClassNameValue, separator?: ClassNameValue, wrapper?: ClassNameValue, date?: ClassNameValue, title?: ClassNameValue, description?: ClassNameValue }`
 
 ```vue
 <script setup lang="ts">
-import type { TimelineItem } from "@nuxt/ui";
+import type { TimelineItem } from '@nuxt/ui'
 
 const items = ref<TimelineItem[]>([
   {
     date: "Mar 15, 2025",
     title: "Project Kickoff",
-    description:
-      "Kicked off the project with team alignment. Set up project milestones and allocated resources.",
-    icon: "i-lucide-rocket",
+    description: "Kicked off the project with team alignment. Set up project milestones and allocated resources.",
+    icon: "i-lucide-rocket"
   },
   {
     date: "Mar 22 2025",
     title: "Design Phase",
-    description:
-      "User research and design workshops. Created wireframes and prototypes for user testing.",
-    icon: "i-lucide-palette",
+    description: "User research and design workshops. Created wireframes and prototypes for user testing.",
+    icon: "i-lucide-palette"
   },
   {
     date: "Mar 29 2025",
     title: "Development Sprint",
-    description:
-      "Frontend and backend development. Implemented core features and integrated with APIs.",
-    icon: "i-lucide-code",
+    description: "Frontend and backend development. Implemented core features and integrated with APIs.",
+    icon: "i-lucide-code"
   },
   {
     date: "Apr 5 2025",
     title: "Testing & Deployment",
-    description:
-      "QA testing and performance optimization. Deployed the application to production.",
-    icon: "i-lucide-check-circle",
-  },
-]);
+    description: "QA testing and performance optimization. Deployed the application to production.",
+    icon: "i-lucide-check-circle"
+  }
+])
 </script>
 
 <template>
@@ -208,38 +173,34 @@ Use the `color` prop to change the color of the active items in a Timeline.
 
 ```vue
 <script setup lang="ts">
-import type { TimelineItem } from "@nuxt/ui";
+import type { TimelineItem } from '@nuxt/ui'
 
 const items = ref<TimelineItem[]>([
   {
     date: "Mar 15, 2025",
     title: "Project Kickoff",
-    description:
-      "Kicked off the project with team alignment. Set up project milestones and allocated resources.",
-    icon: "i-lucide-rocket",
+    description: "Kicked off the project with team alignment. Set up project milestones and allocated resources.",
+    icon: "i-lucide-rocket"
   },
   {
     date: "Mar 22 2025",
     title: "Design Phase",
-    description:
-      "User research and design workshops. Created wireframes and prototypes for user testing.",
-    icon: "i-lucide-palette",
+    description: "User research and design workshops. Created wireframes and prototypes for user testing.",
+    icon: "i-lucide-palette"
   },
   {
     date: "Mar 29 2025",
     title: "Development Sprint",
-    description:
-      "Frontend and backend development. Implemented core features and integrated with APIs.",
-    icon: "i-lucide-code",
+    description: "Frontend and backend development. Implemented core features and integrated with APIs.",
+    icon: "i-lucide-code"
   },
   {
     date: "Apr 5 2025",
     title: "Testing & Deployment",
-    description:
-      "QA testing and performance optimization. Deployed the application to production.",
-    icon: "i-lucide-check-circle",
-  },
-]);
+    description: "QA testing and performance optimization. Deployed the application to production.",
+    icon: "i-lucide-check-circle"
+  }
+])
 </script>
 
 <template>
@@ -253,38 +214,34 @@ Use the `size` prop to change the size of the Timeline.
 
 ```vue
 <script setup lang="ts">
-import type { TimelineItem } from "@nuxt/ui";
+import type { TimelineItem } from '@nuxt/ui'
 
 const items = ref<TimelineItem[]>([
   {
     date: "Mar 15, 2025",
     title: "Project Kickoff",
-    description:
-      "Kicked off the project with team alignment. Set up project milestones and allocated resources.",
-    icon: "i-lucide-rocket",
+    description: "Kicked off the project with team alignment. Set up project milestones and allocated resources.",
+    icon: "i-lucide-rocket"
   },
   {
     date: "Mar 22 2025",
     title: "Design Phase",
-    description:
-      "User research and design workshops. Created wireframes and prototypes for user testing.",
-    icon: "i-lucide-palette",
+    description: "User research and design workshops. Created wireframes and prototypes for user testing.",
+    icon: "i-lucide-palette"
   },
   {
     date: "Mar 29 2025",
     title: "Development Sprint",
-    description:
-      "Frontend and backend development. Implemented core features and integrated with APIs.",
-    icon: "i-lucide-code",
+    description: "Frontend and backend development. Implemented core features and integrated with APIs.",
+    icon: "i-lucide-code"
   },
   {
     date: "Apr 5 2025",
     title: "Testing & Deployment",
-    description:
-      "QA testing and performance optimization. Deployed the application to production.",
-    icon: "i-lucide-check-circle",
-  },
-]);
+    description: "QA testing and performance optimization. Deployed the application to production.",
+    icon: "i-lucide-check-circle"
+  }
+])
 </script>
 
 <template>
@@ -298,43 +255,38 @@ Use the `orientation` prop to change the orientation of the Timeline. Defaults t
 
 ```vue
 <script setup lang="ts">
-import type { TimelineItem } from "@nuxt/ui";
+import type { TimelineItem } from '@nuxt/ui'
 
 const items = ref<TimelineItem[]>([
   {
     date: "Mar 15, 2025",
     title: "Project Kickoff",
     description: "Kicked off the project with team alignment.",
-    icon: "i-lucide-rocket",
+    icon: "i-lucide-rocket"
   },
   {
     date: "Mar 22 2025",
     title: "Design Phase",
     description: "User research and design workshops.",
-    icon: "i-lucide-palette",
+    icon: "i-lucide-palette"
   },
   {
     date: "Mar 29 2025",
     title: "Development Sprint",
     description: "Frontend and backend development.",
-    icon: "i-lucide-code",
+    icon: "i-lucide-code"
   },
   {
     date: "Apr 5 2025",
     title: "Testing & Deployment",
     description: "QA testing and performance optimization.",
-    icon: "i-lucide-check-circle",
-  },
-]);
+    icon: "i-lucide-check-circle"
+  }
+])
 </script>
 
 <template>
-  <UTimeline
-    orientation="horizontal"
-    :default-value="2"
-    :items="items"
-    class="w-full"
-  />
+  <UTimeline orientation="horizontal" :default-value="2" :items="items" class="w-full" />
 </template>
 ```
 
@@ -344,44 +296,38 @@ Use the reverse prop to reverse the direction of the Timeline.
 
 ```vue
 <script setup lang="ts">
-import type { TimelineItem } from "@nuxt/ui";
+import type { TimelineItem } from '@nuxt/ui'
 
 const items = ref<TimelineItem[]>([
   {
     date: "Mar 15, 2025",
     title: "Project Kickoff",
     description: "Kicked off the project with team alignment.",
-    icon: "i-lucide-rocket",
+    icon: "i-lucide-rocket"
   },
   {
     date: "Mar 22 2025",
     title: "Design Phase",
     description: "User research and design workshops.",
-    icon: "i-lucide-palette",
+    icon: "i-lucide-palette"
   },
   {
     date: "Mar 29 2025",
     title: "Development Sprint",
     description: "Frontend and backend development.",
-    icon: "i-lucide-code",
+    icon: "i-lucide-code"
   },
   {
     date: "Apr 5 2025",
     title: "Testing & Deployment",
     description: "QA testing and performance optimization.",
-    icon: "i-lucide-check-circle",
-  },
-]);
+    icon: "i-lucide-check-circle"
+  }
+])
 </script>
 
 <template>
-  <UTimeline
-    reverse
-    v-model="value"
-    orientation="vertical"
-    :items="items"
-    class="w-full"
-  />
+  <UTimeline reverse v-model="value" orientation="vertical" :items="items" class="w-full" />
 </template>
 ```
 
@@ -395,51 +341,42 @@ You can control the active item by using the `default-value` prop or the `v-mode
 
 ```vue [TimelineModelValueExample.vue]
 <script setup lang="ts">
-import type { TimelineItem } from "@nuxt/ui";
+import type { TimelineItem } from '@nuxt/ui'
 
-const items: TimelineItem[] = [
-  {
-    date: "Mar 15, 2025",
-    title: "Project Kickoff",
-    description:
-      "Kicked off the project with team alignment. Set up project milestones and allocated resources.",
-    icon: "i-lucide-rocket",
-    value: "kickoff",
-  },
-  {
-    date: "Mar 22, 2025",
-    title: "Design Phase",
-    description:
-      "User research and design workshops. Created wireframes and prototypes for user testing.",
-    icon: "i-lucide-palette",
-    value: "design",
-  },
-  {
-    date: "Mar 29, 2025",
-    title: "Development Sprint",
-    description:
-      "Frontend and backend development. Implemented core features and integrated with APIs.",
-    icon: "i-lucide-code",
-    value: "development",
-  },
-  {
-    date: "Apr 5, 2025",
-    title: "Testing & Deployment",
-    description:
-      "QA testing and performance optimization. Deployed the application to production.",
-    icon: "i-lucide-check-circle",
-    value: "deployment",
-  },
-];
+const items: TimelineItem[] = [{
+  date: 'Mar 15, 2025',
+  title: 'Project Kickoff',
+  description: 'Kicked off the project with team alignment. Set up project milestones and allocated resources.',
+  icon: 'i-lucide-rocket',
+  value: 'kickoff'
+}, {
+  date: 'Mar 22, 2025',
+  title: 'Design Phase',
+  description: 'User research and design workshops. Created wireframes and prototypes for user testing.',
+  icon: 'i-lucide-palette',
+  value: 'design'
+}, {
+  date: 'Mar 29, 2025',
+  title: 'Development Sprint',
+  description: 'Frontend and backend development. Implemented core features and integrated with APIs.',
+  icon: 'i-lucide-code',
+  value: 'development'
+}, {
+  date: 'Apr 5, 2025',
+  title: 'Testing & Deployment',
+  description: 'QA testing and performance optimization. Deployed the application to production.',
+  icon: 'i-lucide-check-circle',
+  value: 'deployment'
+}]
 
-const active = ref(0);
+const active = ref(0)
 
 // Note: This is for demonstration purposes only. Don't do this at home.
 onMounted(() => {
   setInterval(() => {
-    active.value = (active.value + 1) % items.length;
-  }, 2000);
-});
+    active.value = (active.value + 1) % items.length
+  }, 2000)
+})
 </script>
 
 <template>
@@ -447,68 +384,64 @@ onMounted(() => {
 </template>
 ```
 
-> \[!TIP]
->
+> [!TIP]
+> 
 > Use the `value-key` prop to change the key used to match items when a `v-model` or `default-value` is provided.
 
 ### With select event
 
 You can add a `@select` listener to make items clickable.
 
-> \[!NOTE]
->
+> [!NOTE]
+> 
 > The handler function receives the `Event` and `TimelineItem` as the first and second arguments respectively.
 
 ```vue [TimelineSelectExample.vue]
 <script setup lang="ts">
-import type { TimelineItem } from "@nuxt/ui";
+import type { TimelineItem } from '@nuxt/ui'
 
-const items: TimelineItem[] = [
-  {
-    date: "Mar 15, 2025",
-    title: "Project Kickoff",
-    description:
-      "Kicked off the project with team alignment. Set up project milestones and allocated resources.",
-    icon: "i-lucide-rocket",
-    value: "kickoff",
-  },
-  {
-    date: "Mar 22, 2025",
-    title: "Design Phase",
-    description:
-      "User research and design workshops. Created wireframes and prototypes for user testing.",
-    icon: "i-lucide-palette",
-    value: "design",
-  },
-  {
-    date: "Mar 29, 2025",
-    title: "Development Sprint",
-    description:
-      "Frontend and backend development. Implemented core features and integrated with APIs.",
-    icon: "i-lucide-code",
-    value: "development",
-  },
-  {
-    date: "Apr 5, 2025",
-    title: "Testing & Deployment",
-    description:
-      "QA testing and performance optimization. Deployed the application to production.",
-    icon: "i-lucide-check-circle",
-    value: "deployment",
-  },
-];
+const items: TimelineItem[] = [{
+  date: 'Mar 15, 2025',
+  title: 'Project Kickoff',
+  description: 'Kicked off the project with team alignment. Set up project milestones and allocated resources.',
+  icon: 'i-lucide-rocket',
+  value: 'kickoff'
+}, {
+  date: 'Mar 22, 2025',
+  title: 'Design Phase',
+  description: 'User research and design workshops. Created wireframes and prototypes for user testing.',
+  icon: 'i-lucide-palette',
+  value: 'design'
+}, {
+  date: 'Mar 29, 2025',
+  title: 'Development Sprint',
+  description: 'Frontend and backend development. Implemented core features and integrated with APIs.',
+  icon: 'i-lucide-code',
+  value: 'development'
+}, {
+  date: 'Apr 5, 2025',
+  title: 'Testing & Deployment',
+  description: 'QA testing and performance optimization. Deployed the application to production.',
+  icon: 'i-lucide-check-circle',
+  value: 'deployment'
+}]
 
-const active = ref<string | number>("kickoff");
+const active = ref<string | number>('kickoff')
 
 function onSelect(_e: Event, item: TimelineItem) {
   if (item.value) {
-    active.value = item.value;
+    active.value = item.value
   }
 }
 </script>
 
 <template>
-  <UTimeline v-model="active" :items="items" class="w-96" @select="onSelect" />
+  <UTimeline
+    v-model="active"
+    :items="items"
+    class="w-96"
+    @select="onSelect"
+  />
 </template>
 ```
 
@@ -518,43 +451,36 @@ Use the `ui` prop to create a Timeline with alternating layout.
 
 ```vue [TimelineAlternatingLayoutExample.vue]
 <script setup lang="ts">
-import type { TimelineItem } from "@nuxt/ui";
+import type { TimelineItem } from '@nuxt/ui'
 
-const items: TimelineItem[] = [
-  {
-    date: "Mar 15, 2025",
-    title: "Project Kickoff",
-    icon: "i-lucide-rocket",
-    value: "kickoff",
-  },
-  {
-    date: "Mar 22, 2025",
-    title: "Design Phase",
-    icon: "i-lucide-palette",
-    value: "design",
-  },
-  {
-    date: "Mar 29, 2025",
-    title: "Development Sprint",
-    icon: "i-lucide-code",
-    value: "development",
-  },
-  {
-    date: "Apr 5, 2025",
-    title: "Testing & Deployment",
-    icon: "i-lucide-check-circle",
-    value: "deployment",
-  },
-];
+const items: TimelineItem[] = [{
+  date: 'Mar 15, 2025',
+  title: 'Project Kickoff',
+  icon: 'i-lucide-rocket',
+  value: 'kickoff'
+}, {
+  date: 'Mar 22, 2025',
+  title: 'Design Phase',
+  icon: 'i-lucide-palette',
+  value: 'design'
+}, {
+  date: 'Mar 29, 2025',
+  title: 'Development Sprint',
+  icon: 'i-lucide-code',
+  value: 'development'
+}, {
+  date: 'Apr 5, 2025',
+  title: 'Testing & Deployment',
+  icon: 'i-lucide-check-circle',
+  value: 'deployment'
+}]
 </script>
 
 <template>
   <UTimeline
     :items="items"
     :default-value="2"
-    :ui="{
-      item: 'even:flex-row-reverse even:-translate-x-[calc(100%-2rem)] rtl:even:translate-x-[calc(100%-2rem)] even:text-end',
-    }"
+    :ui="{ item: 'even:flex-row-reverse even:-translate-x-[calc(100%-2rem)] rtl:even:translate-x-[calc(100%-2rem)] even:text-end' }"
     class="translate-x-[calc(50%-1rem)] rtl:-translate-x-[calc(50%-1rem)]"
   />
 </template>
@@ -566,8 +492,8 @@ Use the `slot` property to customize a specific item.
 
 You will have access to the following slots:
 
-- `#{{ item.slot }}-indicator`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `#{{ item.slot }}-date`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
-- `#{{ item.slot }}-title`{.shiki,shiki-themes,material-theme-lighter,material-theme,material-theme-palenight lang="ts-type"}
+- `#{{ item.slot }}-indicator`
+- `#{{ item.slot }}-date`
+- `#{{ item.slot }}-title`
 
 _(truncated — ask for fewer components to see more, or rely on the API block above)_

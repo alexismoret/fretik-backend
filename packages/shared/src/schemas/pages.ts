@@ -829,6 +829,23 @@ export const PageBriefSchema = z.object({
      * written without having considered an alternative.
      */
     defaultsRejected: z.array(briefField).max(6).optional(),
+    /**
+     * The OTHER shape this page could have taken, named, and why it loses.
+     *
+     * `defaultsRejected` was supposed to be that argument and turned out not to
+     * be: measured over three generated pages, every entry rejected a WIDGET
+     * and kept the composition — "four generic stat boxes" replaced by one big
+     * figure beside four smaller boxes, "a static table" by the same table with
+     * a dropdown in it. Each is a real improvement and none of them is a
+     * different page, so all three shipped the band-chart-table every dashboard
+     * is.
+     *
+     * This field is the one the `design-plan` lint can hold to a standard a
+     * decoration cannot meet: it must name an archetype the chosen one does not
+     * already contain. Rejecting "board" for a dataset with no lanes is a
+     * legitimate answer — what is not legitimate is never having considered one.
+     */
+    alternative: briefField.optional(),
   }),
 });
 export type PageBrief = z.infer<typeof PageBriefSchema>;

@@ -27,8 +27,17 @@ import type { PageLintFinding } from "./types";
  * - `hierarchy` — what leads? Unstated, everything ends up the same size.
  * - `containers` — where does depth open? Undecided, everything is a
  *   slideover, which is how the same overlay ended up on ten pages.
- * - `defaultsRejected` — what did you NOT do? The only field that cannot be
- *   written without having considered an alternative.
+ * - `defaultsRejected` — what did you NOT do?
+ * - `alternative` — which other SHAPE was in the running, and why it lost.
+ *
+ * The last one exists because the one before it did not do its job. Measured
+ * over three generated pages: every `defaultsRejected` entry rejected a WIDGET
+ * and kept the composition — "four generic stat boxes" became one big figure
+ * beside four smaller boxes, "a static table" became the same table with a
+ * dropdown in it. Real improvements, and all three pages still shipped the
+ * band-chart-table every dashboard is. A decoration can satisfy "name a default
+ * you rejected"; it cannot satisfy "name another archetype", which is why this
+ * field is checked against the archetype vocabulary rather than for presence.
  *
  * Required on a page being created, advisory on one being repaired: a page
  * written before the plan existed must stay repairable without its author
@@ -36,6 +45,29 @@ import type { PageLintFinding } from "./types";
  */
 
 const PAGE_JSON = "page.json";
+
+/**
+ * The shapes the doctrine names. Not a closed set for `archetype` — a page may
+ * invent one, and the free string is deliberate — but `alternative` is checked
+ * against it, because the whole point is to force a comparison between two
+ * shapes rather than two treatments of one.
+ */
+const ARCHETYPES = [
+  "cockpit",
+  "workbench",
+  "ledger",
+  "board",
+  "feed",
+  "console",
+  "report",
+  "wizard",
+  "directory",
+] as const;
+
+const archetypesIn = (text: string): string[] => {
+  const lower = text.toLowerCase();
+  return ARCHETYPES.filter((name) => lower.includes(name));
+};
 
 const finding = (
   severity: "error" | "warning",
@@ -58,7 +90,7 @@ export const lintPageDesignPlan = (
     return [
       finding(
         severity,
-        "page.json has no brief. Write it before the files: brief.product (job, audience, features) and brief.design (archetype, layout, hierarchy, containers, signature, defaultsRejected). The plan is the design decided — a page that starts at the first component becomes a title, four equal cards and a table.",
+        "page.json has no brief. Write it before the files: brief.product (job, audience, features) and brief.design (archetype, layout, hierarchy, containers, signature, defaultsRejected, alternative). The plan is the design decided — a page that starts at the first component becomes a title, four equal cards and a table.",
       ),
     ];
   }
@@ -92,12 +124,39 @@ export const lintPageDesignPlan = (
     );
   }
 
-  if (missing.length === 0) return [];
+  const alternative = design.alternative ?? "";
+  if (alternative.trim().length === 0) {
+    missing.push(
+      `alternative — the other shape that was in the running and why it lost, naming one of: ${ARCHETYPES.join(", ")}`,
+    );
+  }
 
-  return [
-    finding(
-      severity,
-      `brief.design is incomplete — ${missing.join("; ")}. Fill these in page.json before building: this is the plan the review scores the screen against.`,
-    ),
-  ];
+  const findings: PageLintFinding[] = [];
+  if (missing.length > 0) {
+    findings.push(
+      finding(
+        severity,
+        `brief.design is incomplete — ${missing.join("; ")}. Fill these in page.json before building: this is the plan the review scores the screen against.`,
+      ),
+    );
+  } else {
+    // Both fields are present: the alternative has to name a shape the chosen
+    // archetype does not already contain. "Ledger with a cockpit band" rejecting
+    // "a ledger" is one shape described twice, which is the failure this rule
+    // exists for — not a typo to be forgiving about.
+    const chosen = archetypesIn(design.archetype ?? "");
+    const offered = archetypesIn(alternative).filter(
+      (name) => !chosen.includes(name),
+    );
+    if (offered.length === 0) {
+      findings.push(
+        finding(
+          severity,
+          `brief.design.alternative names no shape the archetype does not already have. Name one of: ${ARCHETYPES.join(", ")} — a different composition, not a different widget — and say in one line why it loses for this data. Rejecting it on the data ("a board, but nothing here has lanes") is a real answer; never having considered one is not.`,
+        ),
+      );
+    }
+  }
+
+  return findings;
 };

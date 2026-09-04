@@ -27,6 +27,7 @@ const plan = (overrides: Partial<PageBrief["design"]> = {}): PageBrief => ({
     containers: "detail in a panel, quick status inline, delete behind a modal",
     signature: "the overdue figure wears the error hue and its own bar",
     defaultsRejected: ["four equal KPI cards → one figure at 3x and two small"],
+    alternative: "a board — but a deal has no lane anyone moves it between",
     ...overrides,
   },
 });
@@ -83,6 +84,44 @@ describe("design plan", () => {
     });
     expect(findings).toHaveLength(1);
     expect(findings[0]?.severity).toBe("warning");
+  });
+
+  test("a plan with no rejected SHAPE is refused", () => {
+    const findings = lintPageDesignPlan(plan({ alternative: undefined }), {
+      required: true,
+    });
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.message).toContain("alternative");
+  });
+
+  test("the alternative must name a shape the archetype does not have", () => {
+    // The failure this rule exists for: one composition described twice. A
+    // "ledger with a cockpit band" that rejects "a cockpit" rejected nothing —
+    // and that is exactly the shape three generated pages arrived at.
+    const findings = lintPageDesignPlan(
+      plan({
+        archetype: "ledger with a cockpit band",
+        alternative: "a plain cockpit — too little room for the rows",
+      }),
+      { required: true },
+    );
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.message).toContain("names no shape");
+  });
+
+  test("rejecting a shape ON THE DATA is a real answer", () => {
+    // The rule asks for a comparison, never for a particular outcome: "a board,
+    // but nothing here has lanes" is a page that considered one and said no.
+    expect(
+      lintPageDesignPlan(
+        plan({
+          archetype: "ledger with a cockpit band",
+          alternative:
+            "a board — nothing in this data has lanes to move between",
+        }),
+        { required: true },
+      ),
+    ).toHaveLength(0);
   });
 
   test("the old three-field brief still parses", () => {

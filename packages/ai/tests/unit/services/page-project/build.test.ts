@@ -72,6 +72,7 @@ const PAGE_JSON = JSON.stringify({
       containers: "detail inline, cancellation behind a modal",
       signature: "late rows carry the error hue down their left edge",
       defaultsRejected: ["four equal KPI cards → one figure and two small"],
+      alternative: "a board — nothing in this data has a lane to move between",
     },
   },
 });

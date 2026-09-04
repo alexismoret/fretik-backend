@@ -238,8 +238,9 @@ const describeBrief = (brief: PageBrief | undefined): string => {
     ...(design.defaultsRejected && design.defaultsRejected.length > 0
       ? [`Defaults it rejected: ${design.defaultsRejected.join("; ")}`]
       : []),
+    ...(design.alternative ? [`Shape it rejected: ${design.alternative}`] : []),
     "",
-    "Score it against this plan as much as against the rubric: a page that quietly dropped what it promised is not finished, however good the part it kept. Where it named a default it was avoiding, check the screen for that default — a plan is worth nothing if the page it describes is the one that would have been built anyway.",
+    "Score it against this plan as much as against the rubric: a page that quietly dropped what it promised is not finished, however good the part it kept. Where it named a default it was avoiding, check the screen for that default — a plan is worth nothing if the page it describes is the one that would have been built anyway. And where it named another SHAPE it rejected, ask whether the one it built is actually different from it, or the same composition wearing the other one's vocabulary.",
   ].join("\n");
 };
 

@@ -242,6 +242,114 @@ describe("what the lints say about views", () => {
   });
 });
 
+/**
+ * The review's own fixture: a shell, a static second view, a dynamic one
+ * reached by clicking, and one link into nothing.
+ *
+ * Deliberately not the fixture above — this one exists to be RENDERED, and
+ * every element in it is there to make one assertion possible.
+ */
+const APP_SHELL = `<template>
+  <div class="p-6 space-y-4">
+    <nav class="flex gap-3">
+      <a href="/settings" class="text-sm">Settings</a>
+    </nav>
+    <RouterView />
+  </div>
+</template>`;
+
+const APP_VIEWS: Record<string, string> = {
+  "pages/index.vue": `<template>
+  <div class="space-y-2">
+    <h1 class="text-2xl font-display tracking-tight">Every deal</h1>
+    <a href="/deal/1" class="text-sm">Open the first deal</a>
+    <a href="/nope" class="text-sm">A link into nothing</a>
+  </div>
+</template>`,
+  "pages/settings/index.vue": `<template>
+  <div class="space-y-2">
+    <h2 class="text-2xl">Settings</h2>
+    <p class="text-sm text-muted">Everything about how this page behaves for the team.</p>
+  </div>
+</template>`,
+  "pages/deal/[id].vue": `<template>
+  <div class="space-y-2">
+    <h2 class="text-2xl">Deal {{ route.params.id }}</h2>
+    <p class="text-sm text-muted">What we know about this one, on its own screen.</p>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { useRoute } from "vue-router";
+const route = useRoute();
+</script>`,
+};
+
+describe("what the review sees of a page's other views", () => {
+  test("opens each static view, follows a link to reach a dynamic one, and leaves outward links alone", async () => {
+    const compileResult = await compilePageCode({
+      source: APP_SHELL,
+      files: APP_VIEWS,
+    });
+    if (!compileResult.ok)
+      throw new Error(JSON.stringify(compileResult.errors));
+
+    const result = await renderPage({
+      compiled: compileResult.compiled,
+      definition: {
+        version: 3,
+        variables: [],
+        datasets: [],
+        operations: [],
+        code: {
+          source: APP_SHELL,
+          files: APP_VIEWS,
+          compiled: compileResult.compiled,
+        },
+      },
+      teamId: "00000000-0000-7000-8000-000000000000",
+      userId: null,
+      pageName: "Mini-app probe",
+    });
+
+    if (result.degraded !== undefined) {
+      expect(result.shots).toHaveLength(0);
+      return;
+    }
+
+    expect(result.mounted).toBe(true);
+    expect(result.routes).toEqual(["/", "/deal/:id", "/settings"]);
+
+    // The static view: reached by `route.set`, the way the app's back button
+    // and a pasted link reach it. `textLength` is what the gate reads to say
+    // "this view renders nothing".
+    expect(result.layout["route:/settings"]?.textLength ?? 0).toBeGreaterThan(
+      25,
+    );
+
+    // The dynamic view. `/deal/:id` is a shape, not a place, so the only
+    // address that reaches it is one the page itself wrote — which is why the
+    // renderer follows the screen's own links. Captioned with the link, so the
+    // critic judges the view as the answer to "open this record".
+    const dealShot = result.shots.find(
+      (shot) => shot.label === "route:/deal/1",
+    );
+    expect(dealShot).toBeDefined();
+    expect(dealShot?.caption ?? "").toContain("first deal");
+    expect(result.layout["route:/deal/1"]?.textLength ?? 0).toBeGreaterThan(25);
+
+    // A link the router does not match is not a view of this page: the SDK
+    // hands it to the host, exactly as it does a link to a document. Nothing
+    // is captured for it, and it is not an error.
+    expect(result.shots.some((shot) => shot.label === "route:/nope")).toBe(
+      false,
+    );
+    expect(result.pageErrors).toEqual([]);
+
+    closeRenderViews();
+  }, 180_000);
+});
+
 describe("a page with views in a real browser", () => {
   test("mounts on its index view, with the router the shell and the views share", async () => {
     const compileResult = await compilePageCode({

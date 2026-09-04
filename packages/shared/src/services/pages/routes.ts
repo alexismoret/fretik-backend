@@ -125,6 +125,36 @@ export const derivePageRoutesOfCode = (code: {
 }): PageRoutesResult =>
   derivePageRoutes(eachPageFile(code).map(([path]) => path));
 
+/** `/deal/:id` → matches `/deal/7`, not `/deal/7/notes`. */
+const matcher = (path: string): RegExp =>
+  new RegExp(
+    `^${path
+      .split("/")
+      .map((segment) =>
+        segment.startsWith(":")
+          ? "[^/]+"
+          : segment.replaceAll(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+      )
+      .join("/")}$`,
+  );
+
+/**
+ * Does any declared view answer at this address?
+ *
+ * The question two callers ask for different reasons — a lint asking whether a
+ * link points anywhere, and the renderer asking whether the view it just
+ * landed on is one of the page's own or the not-found placeholder — so the
+ * pattern lives here rather than being written twice with two subtly
+ * different escapes. The query string is not part of the address.
+ */
+export const matchesPageRoute = (
+  routes: readonly PageRoute[],
+  fullPath: string,
+): boolean => {
+  const path = fullPath.split("?")[0]?.split("#")[0] ?? fullPath;
+  return routes.some((route) => matcher(route.path).test(path));
+};
+
 /**
  * `/ → pages/index.vue · /activity/:id → pages/activity/[id].vue`
  *

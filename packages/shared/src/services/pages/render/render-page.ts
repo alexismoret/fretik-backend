@@ -3,6 +3,7 @@ import type {
   PageDataResponse,
   PageDefinition,
 } from "../../../schemas/pages";
+import { derivePageRoutesOfCode, matchesPageRoute } from "../routes";
 import { runPageData } from "../run-page-data";
 import { assetContentType, readRuntimeAsset } from "./assets";
 import { buildHarnessHtml } from "./harness";
@@ -144,7 +145,10 @@ const asInteractions = (value: unknown): PageRenderInteraction[] => {
       target:
         typeof record["target"] === "string" ? record["target"] : "(unnamed)",
       kind:
-        kind === "row" || kind === "button" || kind === "pointer"
+        kind === "row" ||
+        kind === "button" ||
+        kind === "pointer" ||
+        kind === "link"
           ? kind
           : "pointer",
       domChanged: record["domChanged"] === true,
@@ -175,6 +179,22 @@ const asInteractions = (value: unknown): PageRenderInteraction[] => {
   return out;
 };
 
+/** Where the arrival screen links, inside the page. Untyped JSON on arrival. */
+const asLinkTargets = (value: unknown): { href: string; label: string }[] => {
+  if (!Array.isArray(value)) return [];
+  const out: { href: string; label: string }[] = [];
+  for (const item of value) {
+    const record = asRecord(item);
+    const href = record?.["href"];
+    if (typeof href !== "string" || !href.startsWith("/")) continue;
+    out.push({
+      href,
+      label: typeof record?.["label"] === "string" ? record["label"] : href,
+    });
+  }
+  return out;
+};
+
 /** One step of the stepped click pass, or null once the pass is exhausted. */
 const asInteractionStep = (value: unknown): PageRenderInteraction | null => {
   const record = asRecord(value);
@@ -191,6 +211,20 @@ const asInteractionStep = (value: unknown): PageRenderInteraction | null => {
  * cover the same overlays.
  */
 const MAX_OVERLAY_SHOTS = 4;
+
+/**
+ * How many of a page's own views get their own capture.
+ *
+ * Before this, view 2 of a mini-app was judged by nobody: the review looked at
+ * `/`, three widths of `/`, and its empty state. A page can now declare views
+ * a reader reaches by link, and every one of them is a screen someone works
+ * in — held to the same bar as the first.
+ *
+ * Six, and desktop only. Each costs a navigation, a settle and an image, and
+ * the point is coverage of the SHAPES a page takes, not of its rows: past six
+ * the extra captures are the same view with a different id.
+ */
+const MAX_ROUTE_SHOTS = 6;
 
 /** Same datasets, no rows — the empty state, without waiting for a quiet day. */
 const emptyFixtures = (
@@ -238,6 +272,11 @@ export const renderPage = async (params: {
     pageErrors: [],
     opsRuns: [],
   };
+
+  // The same derivation the compiler used to build the page's route table, so
+  // "this view rendered nothing" is said about a view the page really has.
+  const derived = derivePageRoutesOfCode(params.definition.code);
+  const routes = derived.ok ? derived.routes : [];
 
   const runtimeReady =
     (await readRuntimeAsset(`${params.compiled.runtimeVersion}/sdk.js`)) !==
@@ -353,7 +392,10 @@ export const renderPage = async (params: {
         return raw === null ? null : JSON.parse(raw);
       };
 
-      const capture = async (viewport: PageRenderViewport): Promise<void> => {
+      const capture = async (
+        viewport: PageRenderViewport,
+        caption?: string,
+      ): Promise<void> => {
         const stat = asProbeStat(await probe("stat"));
         if (stat) {
           layout[viewport.label] = {
@@ -367,6 +409,7 @@ export const renderPage = async (params: {
           width: viewport.width,
           height: viewport.height,
           png: await view.screenshot(),
+          ...(caption === undefined ? {} : { caption }),
         });
       };
 
@@ -414,6 +457,88 @@ export const renderPage = async (params: {
       }
       await probe("scrollStart");
 
+      /**
+       * The page's other views, each on its own screen.
+       *
+       * Static routes are reached the way the app's back button reaches them
+       * — a `route.set` note, the frame's own router doing the navigation —
+       * so what is captured is a view that was NAVIGATED to. A dynamic route
+       * (`/deal/:id`) has no literal address to send; those are reached by
+       * the click pass below, which follows a link and photographs where it
+       * lands.
+       *
+       * Desktop only. The three widths answer "does this layout survive a
+       * narrow screen", which is a property of the page's grid, not of each
+       * view — and a review that captured six views at three widths would
+       * cost eighteen images to say it once.
+       */
+      // Read BEFORE anything navigates: this is where the ARRIVAL screen
+      // links, and every question below is asked from another view.
+      const links = asLinkTargets(await probe("links"));
+
+      const capturedRoutes = new Set<string>(["/"]);
+      /** Photograph the view already on screen. */
+      const captureRouteHere = async (
+        path: string,
+        caption?: string,
+      ): Promise<void> => {
+        if (capturedRoutes.has(path) || capturedRoutes.size > MAX_ROUTE_SHOTS) {
+          return;
+        }
+        capturedRoutes.add(path);
+        await capture({ ...DESKTOP, label: `route:${path}` }, caption);
+      };
+      /** Go there, wait for it to arrive and settle, then photograph it. */
+      const visitRoute = async (
+        path: string,
+        caption?: string,
+      ): Promise<void> => {
+        if (capturedRoutes.has(path) || capturedRoutes.size > MAX_ROUTE_SHOTS) {
+          return;
+        }
+        await view.evaluate(`window.__route(${JSON.stringify(path)})`);
+        const arrived =
+          (await waitFor(
+            async () =>
+              (await view.evaluate<boolean>(
+                `window.__routeSettled(${JSON.stringify(path)}, ${SETTLE_QUIET_MS.toString()})`,
+              ))
+                ? true
+                : null,
+            SETTLE_TIMEOUT_MS,
+          )) === true;
+        if (!arrived) return;
+        await Bun.sleep(REFLOW_MS);
+        await captureRouteHere(path, caption);
+      };
+
+      // Static routes have a literal address, so they are opened the way a
+      // shared link opens them.
+      for (const route of routes) {
+        if (route.params.length > 0 || route.path === "/") continue;
+        await visitRoute(route.path);
+      }
+
+      // A DYNAMIC view has no address of its own — `/deal/:id` is a shape, not
+      // a place — so the only way to reach one is to take an address the page
+      // itself wrote. What the screen links to IS that address.
+      //
+      // Followed rather than clicked, and that is not a shortcut: the click
+      // pass holds element references, and following a link swaps the view,
+      // which detaches every target collected against the old one. A pass that
+      // clicked one link would skip the rest as detached nodes and stop there
+      // — measured, on exactly this fixture.
+      for (const link of links) {
+        if (!matchesPageRoute(routes, link.href)) continue;
+        await visitRoute(link.href, link.label);
+      }
+
+      if (capturedRoutes.size > 1) {
+        await view.evaluate(`window.__route("/")`);
+        await settle();
+        await probe("scrollStart");
+      }
+
       await view.resize(TABLET.width, TABLET.height);
       await Bun.sleep(REFLOW_MS);
       await capture(TABLET);
@@ -454,6 +579,22 @@ export const renderPage = async (params: {
         const step = asInteractionStep(await probe("interactStep"));
         if (!step) break;
         interactions.push(step);
+
+        // A control that navigated — a row whose handler calls `router.push`
+        // rather than rendering a link. The view is captured if it is new;
+        // either way the pass goes home, because the targets it still holds
+        // belong to the screen that just went away.
+        const after = await view.evaluate<string>("window.__STATE__.route");
+        if (typeof after === "string" && after !== "/") {
+          if (matchesPageRoute(routes, after)) {
+            await Bun.sleep(REFLOW_MS);
+            await captureRouteHere(after, step.target);
+          }
+          await view.evaluate(`window.__route("/")`);
+          await settle();
+          continue;
+        }
+
         if (!step.overlayOpened || overlayShots >= MAX_OVERLAY_SHOTS) continue;
         overlayShots += 1;
         await Bun.sleep(REFLOW_MS);
@@ -472,6 +613,13 @@ export const renderPage = async (params: {
       );
       const opsRuns =
         (await view.evaluate<string[]>("window.__STATE__.opsRuns")) ?? [];
+      const routeMisses = [
+        ...new Set(
+          (await view.evaluate<string[]>("window.__STATE__.routeMisses")) ?? [],
+        ),
+      ];
+      const downloads =
+        (await view.evaluate<string[]>("window.__STATE__.downloads")) ?? [];
 
       await view.navigate(`${origin}/empty`);
       await settle();
@@ -488,6 +636,11 @@ export const renderPage = async (params: {
         opsRuns,
         ...(skippedActive > 0 ? { skippedActive } : {}),
         ...(drag ? { drag } : {}),
+        ...(routes.length > 0
+          ? { routes: routes.map((route) => route.path) }
+          : {}),
+        ...(routeMisses.length > 0 ? { routeMisses } : {}),
+        ...(downloads.length > 0 ? { downloads } : {}),
       };
     });
   } catch (error) {

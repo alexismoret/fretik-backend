@@ -471,3 +471,81 @@ describe("page gate — controls left alone", () => {
     expect(gate.observations.join(" ")).not.toContain("left unclicked");
   });
 });
+
+/**
+ * A page's own views.
+ *
+ * Nothing upstream can catch a view that mounts and paints nothing: the
+ * compiler links the module, the lints see a template, and the first screen —
+ * the only one anyone used to look at — is fine.
+ */
+describe("page gate — the page's other views", () => {
+  test("a view that renders nothing is blocking, and the message names it", () => {
+    const gate = gatePageRender(
+      render({
+        routes: ["/", "/deal/:id"],
+        layout: {
+          desktop: { horizontalOverflow: false, clipped: 0, textLength: 2_400 },
+          "route:/deal/1": {
+            horizontalOverflow: false,
+            clipped: 0,
+            textLength: 4,
+          },
+          "empty-state": {
+            horizontalOverflow: false,
+            clipped: 0,
+            textLength: 420,
+          },
+        },
+      }),
+    );
+    expect(gate.pass).toBe(false);
+    expect(gate.blocking.join(" ")).toContain("/deal/1");
+    expect(gate.blocking.join(" ")).toContain("renders nothing");
+  });
+
+  test("a view with content passes, and the captures are reported", () => {
+    const gate = gatePageRender(
+      render({
+        routes: ["/", "/settings"],
+        layout: {
+          desktop: { horizontalOverflow: false, clipped: 0, textLength: 2_400 },
+          "route:/settings": {
+            horizontalOverflow: false,
+            clipped: 0,
+            textLength: 900,
+          },
+          "empty-state": {
+            horizontalOverflow: false,
+            clipped: 0,
+            textLength: 420,
+          },
+        },
+      }),
+    );
+    expect(gate.pass).toBe(true);
+    expect(gate.observations.join(" ")).toContain("/settings");
+  });
+
+  test("a route the router could not match blocks, however the page reached it", () => {
+    const gate = gatePageRender(
+      render({
+        routes: ["/", "/deal/:id"],
+        routeMisses: [
+          'No view matches "/archive" — add the file for it under pages/.',
+        ],
+      }),
+    );
+    expect(gate.pass).toBe(false);
+    expect(gate.blocking.join(" ")).toContain("/archive");
+  });
+
+  test("a page with no views of its own is never asked about them", () => {
+    const gate = gatePageRender(
+      render({ interactions: [interaction({ target: 'button "Lanes"' })] }),
+    );
+    expect(gate.observations.join(" ")).not.toContain(
+      "of the page's own views",
+    );
+  });
+});

@@ -44,6 +44,9 @@ const EMPTY_STATE_SAME_RATIO = 0.9;
  */
 const MIN_CLIPPED_ELEMENTS = 3;
 
+/** Broken links to name. Past three the repair is one decision, not three. */
+const MAX_ROUTE_MISSES = 3;
+
 /** Console noise is quoted, not summarised — the message IS the lead. */
 const CONSOLE_MESSAGE_CHARS = 300;
 const MAX_CONSOLE_QUOTED = 3;
@@ -256,6 +259,36 @@ export const gatePageRender = (
   ) {
     blocking.push(
       "With every dataset returning zero rows the page renders essentially the same content as with data — same figures, same rows. It is not reading its datasets, or it falls back to rows of its own when they come back empty. A page must NEVER show data it invented: drive every figure from the dataset, and say plainly which one is empty.",
+    );
+  }
+
+  // The page's own views, each held to the bar the first screen is held to.
+  //
+  // A view that mounts and paints nothing is the routing equivalent of the
+  // blank empty state above: the file exists, the route resolves, the reader
+  // clicks the link and lands on a header with a hole under it. Nothing else
+  // catches it — the compiler links the module, the lints see a template, and
+  // the first screen looks fine.
+  for (const [label, layout] of Object.entries(render.layout)) {
+    if (!label.startsWith("route:")) continue;
+    if (layout.textLength >= MIN_EMPTY_STATE_CHARS) continue;
+    blocking.push(
+      `The view at ${label.slice("route:".length)} renders nothing — its file under pages/ mounts, but puts no content on screen. Every view is a screen someone works in: it needs its own answer, and a way back.`,
+    );
+  }
+
+  for (const miss of (render.routeMisses ?? []).slice(0, MAX_ROUTE_MISSES)) {
+    blocking.push(
+      `A link leads somewhere no view answers. ${miss} Add the file for it under pages/, or point the link at a view that exists.`,
+    );
+  }
+
+  const routeShots = Object.keys(render.layout).filter((label) =>
+    label.startsWith("route:"),
+  );
+  if (routeShots.length > 0) {
+    observations.push(
+      `${routeShots.length.toString()} of the page's own views were opened and captured: ${routeShots.map((label) => label.slice("route:".length)).join(", ")}.`,
     );
   }
 

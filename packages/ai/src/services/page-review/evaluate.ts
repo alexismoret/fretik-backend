@@ -293,6 +293,14 @@ const describeShot = (shot: PageRenderShot): string => {
   if (shot.label === "empty-state") {
     return `### ${shot.label} — the same page with every dataset returning zero rows. This is day one, and any day a filter matches nothing. It should still explain itself and offer the way forward.`;
   }
+  if (shot.label.startsWith("route:")) {
+    const path = shot.label.slice("route:".length);
+    const how =
+      shot.caption === undefined
+        ? "opened directly, the way a shared link opens it"
+        : `reached by clicking ${shot.caption}`;
+    return `### ${shot.label} — another view of this same page, at ${path}, ${how}. It is not a secondary screen: someone will arrive here from a link with none of the first screen's context, so it is held to the same bar. Does it say where the reader is, give them a way back, answer its own question rather than repeating the list they came from — and read as the same product as the first capture?`;
+  }
   if (shot.label.startsWith("overlay")) {
     return `### ${shot.label} — the panel that opened on clicking ${shot.caption ?? "a control"}, captured while it was open. It is part of the page and held to the same bar: its own spacing, hierarchy and states, not a looser standard because it sits on top.`;
   }

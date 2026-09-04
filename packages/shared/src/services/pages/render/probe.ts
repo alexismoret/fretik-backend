@@ -25,8 +25,18 @@ export const EMPTY_OVERLAY_CHARS = 80;
 /** Clicking more than this adds latency without adding coverage. */
 export const MAX_INTERACTIONS = 10;
 
+/**
+ * How many links into the page's own views the click pass may follow.
+ *
+ * Every one of them costs a capture, and a list of forty records offers forty
+ * links to the same view with a different id. Four is enough to reach the
+ * detail view, a second static view, and still leave the budget for buttons.
+ */
+export const MAX_LINK_TARGETS = 4;
+
 export const buildProbeScript = (): string => `
 (() => {
+  const MAX_LINK_TARGETS = ${MAX_LINK_TARGETS.toString()};
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const frames = () => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
 
@@ -171,6 +181,32 @@ export const buildProbeScript = (): string => `
     for (const el of document.querySelectorAll('button, [role="button"]')) push(el, 'button');
     for (const el of document.querySelectorAll('.cursor-pointer')) push(el, 'pointer');
     return { targets: out, skippedActive };
+  };
+
+  /**
+   * Where this screen links, inside the page itself.
+   *
+   * Addresses, not elements, and deliberately: the click pass holds element
+   * REFERENCES, and following a link swaps the view — which detaches every
+   * target it collected, so a pass that clicked one link would skip everything
+   * after it as a detached node and end there. An href survives navigation
+   * because it is a string.
+   *
+   * Deduplicated: a table of forty rows linking to forty records is one
+   * question, asked once. Protocol-relative (\`//host\`) is external.
+   */
+  const linkTargets = () => {
+    const out = [];
+    const seen = new Set();
+    for (const el of document.querySelectorAll('a[href^="/"], [data-route]')) {
+      if (out.length >= MAX_LINK_TARGETS) break;
+      const href = el.getAttribute('href') || el.getAttribute('data-route') || '';
+      if (href.length === 0 || href.indexOf('//') === 0 || seen.has(href)) continue;
+      if (!visible(el)) continue;
+      seen.add(href);
+      out.push({ href, label: label(el, 'link') });
+    }
+    return out;
   };
 
   const fireClick = (el) => {
@@ -453,6 +489,7 @@ export const buildProbeScript = (): string => `
       else if (data.cmd === 'scrollEnd') value = scrollEnd();
       else if (data.cmd === 'scrollStart') value = scrollStart();
       else if (data.cmd === 'dragCheck') value = await dragCheck();
+      else if (data.cmd === 'links') value = linkTargets();
       else if (data.cmd === 'interact') value = await interact(${MAX_INTERACTIONS.toString()});
       else if (data.cmd === 'interactBegin') value = interactBegin(${MAX_INTERACTIONS.toString()});
       else if (data.cmd === 'interactStep') value = await interactStep();

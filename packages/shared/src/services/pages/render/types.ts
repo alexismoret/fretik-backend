@@ -38,7 +38,7 @@ export interface PageRenderInteraction {
   /** Human-readable target, e.g. `row "GEODIS France"`. */
   target: string;
   /** How the target advertised itself as clickable. */
-  kind: "row" | "button" | "pointer";
+  kind: "row" | "button" | "pointer" | "link";
   domChanged: boolean;
   overlayOpened: boolean;
   /** Visible characters inside the overlay the click opened, when one opened. */
@@ -140,6 +140,23 @@ export interface PageRenderResult {
   skippedActive?: number;
   /** Present when the page had draggable elements at mount; see the type. */
   drag?: PageRenderDrag;
+  /**
+   * The views this page declares, when it declares any — the same derivation
+   * the compiler used, so the gate can say "this route rendered nothing"
+   * about a route that exists rather than about a URL someone typed.
+   */
+  routes?: string[];
+  /**
+   * Addresses something on the page linked to that no view answers.
+   *
+   * Reported by the frame's router, not inferred here: only it knows what its
+   * table matched. Kept out of `pageErrors` because it is not a crash — the
+   * page runs, one of its links just leads to an empty view, and a reader
+   * finds that before anyone else does.
+   */
+  routeMisses?: string[];
+  /** Filenames the page asked the host to save during the click pass. */
+  downloads?: string[];
   /**
    * Set when no browser was reachable. The review then proceeds on whatever it
    * has rather than failing the page for our own infrastructure.

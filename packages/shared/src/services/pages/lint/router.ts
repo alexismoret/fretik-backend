@@ -1,5 +1,5 @@
 import { PAGE_ENTRY_FILE } from "../../../schemas/pages";
-import type { PageRoute } from "../routes";
+import { matchesPageRoute, type PageRoute } from "../routes";
 import type { PageLintFinding } from "./types";
 import { staticProp, templateElements } from "./walk-template";
 
@@ -15,19 +15,6 @@ import { staticProp, templateElements } from "./walk-template";
  */
 
 const ROUTER_VIEW_RE = /<(?:RouterView|router-view)\b/;
-
-/** `/deal/:id` → matches `/deal/7`, not `/deal/7/notes`. */
-const routeMatcher = (path: string): RegExp =>
-  new RegExp(
-    `^${path
-      .split("/")
-      .map((segment) =>
-        segment.startsWith(":")
-          ? "[^/]+"
-          : segment.replaceAll(/[.*+?^${}()|[\]\\]/g, "\\$&"),
-      )
-      .join("/")}$`,
-  );
 
 /**
  * The entry is the shell, and a shell with no outlet shows nothing.
@@ -72,7 +59,6 @@ export const lintRouteLinks = (
   routes: readonly PageRoute[],
 ): PageLintFinding[] => {
   if (routes.length === 0) return [];
-  const matchers = routes.map((route) => routeMatcher(route.path));
   const findings: PageLintFinding[] = [];
   const seen = new Set<string>();
 
@@ -82,7 +68,7 @@ export const lintRouteLinks = (
       if (value === null) continue;
       if (!value.startsWith("/") || value.startsWith("//")) continue;
       const target = value.split("?")[0]?.split("#")[0] ?? value;
-      if (matchers.some((matcher) => matcher.test(target))) continue;
+      if (matchesPageRoute(routes, target)) continue;
       if (seen.has(target)) continue;
       seen.add(target);
       findings.push({

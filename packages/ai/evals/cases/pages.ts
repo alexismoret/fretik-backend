@@ -45,6 +45,7 @@ import {
   lintPageProject,
 } from "@fretik/shared/services/pages/lint";
 import { derivePageRoutesOfCode } from "@fretik/shared/services/pages/routes";
+import { deletePageVectorRows } from "@fretik/shared/services/pages/vector-refresh";
 import { and, eq, inArray } from "drizzle-orm";
 import { judgePage } from "../page-design-judge";
 import {
@@ -538,6 +539,16 @@ const sweepPreviousRun = async (): Promise<void> => {
   await db
     .delete(pages)
     .where(and(eq(pages.teamId, teamId), inArray(pages.id, ids)));
+  // The row is half of a page. `ai_vectors.source_id` is polymorphic, so no
+  // foreign key cascades it, and a raw delete here leaves the page's card in
+  // the knowledge index forever — which is worse than leaving the page:
+  // `searchKnowledge` keeps answering with it, and a builder that finds a page
+  // already covering the ask is RIGHT to stop and ask which one to change.
+  // Measured 2026-09-04: 17 indexed pages against 2 real ones, and two
+  // generation cases scored 0.188 and 0.250 for declining to duplicate five
+  // pages that did not exist. `deletePage` gets this right; every sweep that
+  // bypasses it has to do the same by hand.
+  await Promise.all(ids.map((id) => deletePageVectorRows(id)));
 };
 
 /**
@@ -603,9 +614,17 @@ const sweepSameNamePages = async (
   ctx: EvalCaseContext,
   name: string,
 ): Promise<void> => {
+  // The ids first: the vector rows are keyed by page id, and after the delete
+  // there is nothing left to read them off. Same reason as `sweepPreviousRun` —
+  // a page whose card outlives its row keeps answering `searchKnowledge`.
+  const doomed = await db
+    .select({ id: pages.id })
+    .from(pages)
+    .where(and(eq(pages.teamId, ctx.teamId), eq(pages.name, name)));
   await db
     .delete(pages)
     .where(and(eq(pages.teamId, ctx.teamId), eq(pages.name, name)));
+  await Promise.all(doomed.map((row) => deletePageVectorRows(row.id)));
 };
 
 /**

@@ -48,6 +48,7 @@
  * ==================================================================
  */
 
+import { warmModelRegistry } from "../src/lib/model-registry/resolve";
 import { ROLE_BINDINGS } from "../src/lib/model-registry/role-bindings";
 import { runChatbotExperiment } from "./langfuse/experiment";
 import type { Capability } from "./types";
@@ -187,6 +188,18 @@ const main = async (): Promise<void> => {
   if (opts.pageJudgeCandidate) {
     process.env.EVAL_PAGE_JUDGE_PROFILE = opts.pageJudgeCandidate;
   }
+  // …and because it runs HERE, this process needs the live registry, which is
+  // a database read nothing else on this path performs. Without it the critic
+  // resolves against an empty snapshot and throws "No model profile for key
+  // gpt-5.6-luna", the SDK logs "Skipping item", and the case DISAPPEARS from
+  // the run rather than failing in it.
+  //
+  // It only ever bit the cases that build something: an assertion set whose
+  // page was never saved short-circuits before the judge, so the suite looked
+  // healthy precisely when it was measuring nothing. Measured 2026-09-04 — two
+  // generation cases built real multi-file pages and reported no result at all,
+  // and the run summary said "3 items" for five requested.
+  await warmModelRegistry();
   const result = await runChatbotExperiment({
     smoke: opts.smoke,
     deterministicOnly: opts.deterministicOnly,

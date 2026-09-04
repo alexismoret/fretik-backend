@@ -13,7 +13,7 @@ These are not mistakes. Each one is a defensible choice that a model makes becau
 - An icon on every label, a badge on every value, a card around every paragraph.
 - Everything centred, everything the same size, everything the same weight.
 - Gradients, glass, and glow used as decoration rather than as meaning.
-- Section headings that name a container rather than a subject: "Overview", "Details", "Statistics", "Data".
+- Section headings that name a container rather than a subject — "Overview", "Details", "Statistics", "Data" — and the same reflex one step down, naming the WIDGET: "Monthly histogram of due dates & budget" is the chart you built, while "Where the budget lands, month by month" is what the reader takes away. A heading that survives being read aloud to someone who cannot see the screen is naming the subject.
 - One filter, no sort, no detail view — the page you look at instead of the page you work in.
 - **The same dozen components, whatever the subject.** Measured across ten generated pages: a table, a slideover, a select, a skeleton, an empty state, and icons — seventeen components out of the hundred and seventeen the runtime registers. No avatars on people, no timeline on dated events, no tabs, and a status badge on two pages out of ten. The catalogue is above, in full, one line each; reaching for the first component that would work is what makes it useless.
 - **Everything at one width.** Sections stacked full-bleed down the page, all the same, because nobody decided which one was the subject.

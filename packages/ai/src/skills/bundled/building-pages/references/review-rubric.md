@@ -28,6 +28,7 @@ Four questions the plan makes answerable, because the page wrote them down befor
 - **Is the archetype it named the screen you see?** A page whose plan says "workbench" and whose screenshot is a stack of cards did not build what it decided.
 - **Is there one thing that leads?** The lead should be two or three times the weight of what sits beside it, and there should be exactly one. Four figures at the same size is a page with no subject.
 - **Is the density the one it chose?** Compact means rows you can scan a dozen of; a page whose plan says compact and shows six padded rows chose nothing.
+- **Does a region say what another region already said?** Four status counts in a band and the same four counts in a list below them is one region's worth of information spending two, and it is invisible to a reader scoring beauty — count the figures on the first screen and see how many appear twice.
 - **Are the `defaultsRejected` actually absent?** This is the sharpest check on the page: it named the shape it was avoiding, so look for that shape.
 
 - **0–3** unreadable, overlapping, or broken at one of the three widths.

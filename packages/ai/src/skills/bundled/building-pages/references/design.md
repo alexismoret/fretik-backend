@@ -67,6 +67,8 @@ Orphaned space almost always comes from a container sized by a sibling rather th
 
 Decoration never counts as filling — no illustration, no oversized icon, no gradient, no restatement of a figure already on screen. Space doing no work is better empty and small than full of filler. The inverse fails too: a dense region with no passive space around it is unreadable. Space is a budget, not a leftover.
 
+**A figure appears once.** The rule above bites hardest at the size of a whole region: a band of four status counts above a list of the same four counts with the same percentages spends a third of the first screen saying one thing twice, and reads as two regions when the page has one. A second appearance is only a region when it adds the level below — what makes up the number, how it moved, or the rows behind it. Otherwise it is the space the missing region needed.
+
 ## Hierarchy
 
 Three levels per screen, no more: the answer, the evidence, the detail. Make the difference obvious in size and weight rather than in colour, and say which is which in `brief.design.hierarchy` — in sizes and shares, because "clear hierarchy" is true of every layout its author has just finished.

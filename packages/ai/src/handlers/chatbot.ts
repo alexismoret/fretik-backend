@@ -115,6 +115,7 @@ import { flushLangfuse, langfuseEnabled } from "../lib/langfuse";
 import { deleteScore, recordScore } from "../lib/langfuse-scores";
 import {
   effectiveReasoningLevel,
+  ensureModelRegistryWarm,
   getProfileForRole,
   reasoningParamForProfile,
   resolveChatModelForProfile,
@@ -2090,8 +2091,24 @@ const wrapResponseWithSseHeartbeat = (response: Response): Response => {
 // USER-FACING ROUTES   //
 // ==================== //
 
+/**
+ * Every turn resolves a model, and a model resolves against a snapshot this
+ * process may have lost — see `ensureModelRegistryWarm`. A no-op on the common
+ * path (one synchronous check), and the difference between a replica that
+ * recovers and one that answers `UNKNOWN_MODEL_PROFILE` about healthy rows
+ * until somebody restarts it.
+ */
+const registryWarmMiddleware = async (
+  _c: unknown,
+  next: () => Promise<void>,
+): Promise<void> => {
+  await ensureModelRegistryWarm();
+  await next();
+};
+
 const chatbotRoutes = new OpenAPIHono<HonoLoggedAppType>();
 chatbotRoutes.use("*", authMiddleware);
+chatbotRoutes.use("*", registryWarmMiddleware);
 // Rate limit ONLY the user-facing /stream route, and only AFTER the
 // auth middleware has populated `c.get("team")`. The limit is scoped
 // per teamId — see middlewares/chatbot-rate-limit.ts for rationale.
@@ -2814,6 +2831,7 @@ chatbotRoutes.post("/:conversationId/summary", async (c) => {
 
 const chatbotInternalRoutes = new OpenAPIHono<HonoInternalAppType>();
 chatbotInternalRoutes.use("*", internalMiddleware);
+chatbotInternalRoutes.use("*", registryWarmMiddleware);
 
 /**
  * POST /internal/agents/chatbot/invoke

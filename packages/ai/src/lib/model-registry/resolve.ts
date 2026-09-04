@@ -11,6 +11,7 @@ import {
 } from "@fretik/shared/model-registry/types";
 import {
   getLiveRegistry,
+  getLiveSnapshotSync,
   getLiveStateSync,
   onLiveRegistryChange,
 } from "@fretik/shared/services/model-registry/live";
@@ -1101,8 +1102,11 @@ export const clearResolvedModelCache = (): void => {
  * snapshot and memoizes that, so a quarantine written yesterday would not apply
  * until the first invalidation of the day.
  *
- * Never throws. A replica that cannot reach the database still serves, on the
- * curated defaults — which is the same thing it did before this table existed.
+ * Never throws — but "does not throw" is no longer "still serves". Since the
+ * curated profiles were deleted (2026-08-30) there are no code defaults left to
+ * fall back to: a replica whose snapshot never filled answers `Unknown model
+ * profile key` to EVERY key, on every turn, and the message blames whichever key
+ * the caller named. `ensureModelRegistryWarm` is what makes that recoverable.
  */
 export const warmModelRegistry = async (): Promise<void> => {
   try {
@@ -1114,6 +1118,34 @@ export const warmModelRegistry = async (): Promise<void> => {
       err instanceof Error ? err.message : err,
     );
   }
+};
+
+let warming: Promise<void> | null = null;
+
+/**
+ * Warm the registry if this process has never held it — otherwise a no-op, and
+ * a synchronous one on the common path.
+ *
+ * The snapshot is module state, and module state does not only get set at boot:
+ * it gets LOST. Measured 2026-09-04 in dev — `bun --hot` re-evaluated the
+ * registry modules after an edit to `role-bindings.ts`, the snapshot went back
+ * to cold, and every turn afterwards answered
+ * `UNKNOWN_MODEL_PROFILE: "deepseek-v4-flash"` about a row that was `published,
+ * enabled, healthy` in the database. Two eval cases scored 0.125 for it. The
+ * same shape reaches production by a different road: a replica that boots while
+ * the database is briefly unreachable logs one warning and then 400s forever,
+ * because `onLiveRegistryChange` only fires on a WRITE and nothing else retries.
+ *
+ * An empty map is left alone deliberately: a registry with no rows is a real
+ * (if broken) state and re-reading it on every turn would hammer the database
+ * for the same answer. Only "never fetched" warms.
+ */
+export const ensureModelRegistryWarm = async (): Promise<void> => {
+  if (getLiveSnapshotSync() !== undefined) return;
+  warming ??= warmModelRegistry().finally(() => {
+    warming = null;
+  });
+  await warming;
 };
 
 // Any write, on any replica, invalidates every instance built from the old

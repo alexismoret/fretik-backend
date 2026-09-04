@@ -6,15 +6,21 @@ That constraint frees your whole design budget for the axes that actually decide
 
 ## Composition
 
-**The shape follows the question.** Decide which one you are building before writing a line:
+**The shape follows the question.** Name the shape in `brief.design.archetype` before writing a line — an unnamed screen defaults, and the default is a title, four equal cards and a table.
 
-| What the user is really asking | Shape                                                                                          |
-| ------------------------------ | ---------------------------------------------------------------------------------------------- |
-| "How are we doing?"            | **Overview** — headline figures, then the one view that explains them, then the rows behind it |
-| "Find the one that…"           | **Directory** — filters and search on top, dense list underneath, detail in a slideover        |
-| "Work through these"           | **Master–detail** — the queue on the left, the selected item filling the right                 |
-| "Do the thing"                 | **Console** — the action panel beside the state it acts on                                     |
-| "What happened, and when"      | **Feed** — a timeline, grouped, newest first                                                   |
+| What the reader came to do | Shape                                                                                      |
+| -------------------------- | ------------------------------------------------------------------------------------------ |
+| "How are we doing?"        | **Cockpit** — the figure that answers it, then the view that explains it, then the rows    |
+| "Find the one that…"       | **Directory** — filters and search on top, a dense list under them                         |
+| "Work through these"       | **Workbench** — the queue held beside the item, both live, the selection driving the right |
+| "Check the numbers"        | **Ledger** — one dense table that IS the page, sorted, totalled, sticky-headed             |
+| "Where is everything?"     | **Board** — columns that are the real states, and moving between them is the action        |
+| "What happened, and when"  | **Feed** — dated events on a rail, grouped, newest first                                   |
+| "Do the thing"             | **Console** — the action panel beside the state it acts on, and the result below           |
+| "Read this and decide"     | **Report** — a narrative down one column, figures inline, sections anchored                |
+| "Get me through this"      | **Wizard** — one decision per step, the state of the whole visible throughout              |
+
+These are starting points and not a menu: combine two (a cockpit band above a workbench is the most useful page most teams have), or name one they do not cover. What matters is that the shape was CHOSEN — write it down, in `archetype`, in your own words.
 
 Then hold to these:
 
@@ -22,9 +28,28 @@ Then hold to these:
 - **The composition is decided whole, then split.** Files are how a page is maintained, never how it is designed: choose the shape, the order and the weight of every region on the finished screen first, and only then cut it into components, each arriving with its place already assigned. A component designed on its own comes out a self-contained card — its own border, its own title, its own padding — and a page of those is a grid of boxes with no hierarchy, which reads worse than the same page written in one file. Regions of one composition share edges and alignment; they do not each announce themselves.
 - **The answer comes first.** The most important figure, state or row is visible before any scrolling. Everything else earns its place below it. If the top of your page is a title and a row of grey boxes, the answer is not on screen.
 - **Fill the frame, but cap the line.** The page owns the app's whole content area. Cap prose and forms around `max-w-3xl` for readability; let tables and boards run wide. A narrow column floating in a wide frame reads as broken.
-- **One vertical rhythm.** Pick `space-y-6` (calm) or `space-y-4` (dense) for the page and let sections differ by weight, not by ad-hoc margins.
 - **Every region is sized by its content**, never the reverse. Give any drawn region — a chart, a map, a preview — an explicit height and let its container wrap it.
 - **Unbounded content gets a bounded viewport.** Rows, a feed, a log, a long panel have no natural size — they are whatever the query returned today. Give that region a fixed height, scroll inside it, and pin whatever orients the reader to its edge. A region that grows with its data pushes everything below it off the screen and scrolls its own headings away.
+
+## Grid and proportion
+
+A stack of full-width sections is the layout you get when none was chosen. Decide the columns, then the spans, and write both in `brief.design.grid`.
+
+- **Twelve columns, one gutter.** `grid grid-cols-12 gap-4` (or `gap-6` when calm) is enough for every page here. Regions take spans: `col-span-8` + `col-span-4` for a subject with a rail, `col-span-7` + `col-span-5` when the two are nearly peers, `col-span-3` × 4 for a band of figures. Uneven spans are the point — 6/6 says the two halves matter equally, and they rarely do.
+- **A grid when the rows must line up, a flex column when they must not.** Regions of different heights in a row will stretch to the tallest one, which is where orphaned space comes from; `items-start` or a grid with explicit row spans stops it.
+- **The rail.** One narrow column beside the subject — filters, a summary, related records, a table of contents — is the shape most pages want and almost none build. `UPage` with `#left`/`#right` takes a `UPageAside` and makes it sticky; `USidebar` is the same thing standing alone. Around `w-64` to `w-80`; more than that and it competes with the subject.
+- **Three widths, and only three.** The page is captured and judged at 1280, 1024 and 390. At 1024 a four-across band becomes two-across (`grid-cols-2 lg:grid-cols-4`); at 390 every multi-column region is one column and the wide region scrolls inside itself. A layout with no `lg:` in it was written for one width.
+- **Full-bleed earns its width.** A band that runs the whole frame above a narrower body is one of the few moves that reads as designed rather than assembled — use it once, for the thing the page is about.
+
+## Density
+
+How tightly the screen is packed is a decision about the reader, and it belongs in `brief.design.density`. An operator triaging a queue and a manager reading a summary do not want the same page.
+
+- **Compact** — `size="sm"` on tables, buttons, inputs and badges; `space-y-3`/`gap-3`; twelve or more rows visible without scrolling. Right whenever the reader's job is to scan, compare or work through a list. Most working screens are this, and almost no generated one is.
+- **Comfortable** — the defaults, `space-y-4`/`space-y-6`. Right for a mixed page somebody reads a few times a day.
+- **Spacious** — `size="lg"`, `space-y-8`, one thing per band. Right for a report or a single decision, and wrong the moment there is a list.
+
+Pick one and hold it: a page whose table is compact and whose form is spacious reads as two pages stapled together. Density is not the same as clutter — a dense screen with a firm grid and one clear hierarchy is easier to work in than a sparse one with neither.
 
 ## Space
 
@@ -44,12 +69,20 @@ Decoration never counts as filling — no illustration, no oversized icon, no gr
 
 ## Hierarchy
 
-Three levels per screen, no more: the answer, the evidence, the detail. Make the difference obvious in size and weight rather than in colour.
+Three levels per screen, no more: the answer, the evidence, the detail. Make the difference obvious in size and weight rather than in colour, and say which is which in `brief.design.hierarchy` — in sizes and shares, because "clear hierarchy" is true of every layout its author has just finished.
 
-- Page title `text-2xl font-display tracking-tight`, plus one line of `text-sm text-muted` saying what the page is FOR — not what it contains.
-- Section heading `text-sm font-medium text-highlighted`, with a count beside it when a count is informative.
-- Figures in `font-display tabular-nums`, sized by importance. `tabular-nums` on every column of numbers, always — proportional digits make columns ragged.
-- Small uppercase labels (`text-xs uppercase tracking-wide text-muted`) are a seasoning. Three is a pattern; twelve is noise.
+The scale, so the difference is a decision and not a nudge:
+
+| Role                             | Type                                                                                               |
+| -------------------------------- | -------------------------------------------------------------------------------------------------- |
+| The one figure the page is about | `text-4xl` or `text-5xl font-display tabular-nums tracking-tight`                                  |
+| Page title                       | `text-2xl font-display tracking-tight` + one `text-sm text-muted` line saying what the page is FOR |
+| Supporting figures               | `text-xl` / `text-2xl font-display tabular-nums`                                                   |
+| Section heading                  | `text-sm font-medium text-highlighted`, with a count when it informs                               |
+| Body and cells                   | the default; `text-sm` when the density is compact                                                 |
+| Eyebrow                          | `text-xs uppercase tracking-wide text-muted` — three per page is a pattern, twelve is noise        |
+
+**One step, not three.** A page where the headline figure is `text-xl` and the supporting ones are `text-lg` has no hierarchy, only a gradient. The lead should be two or three times the size of what sits beside it, and there should be exactly one of it. `tabular-nums` on every column of numbers, always — proportional digits make columns ragged.
 
 ## Make every element carry information
 
@@ -65,17 +98,32 @@ This is where most generated screens fail: they render values correctly and mean
 
 Two palettes, and the difference decides everything:
 
-- **The chrome — surfaces, text, borders, buttons, states — uses semantic tokens only**: `text-default` `text-muted` `text-dimmed` `text-toned` `text-highlighted`, `bg-default` `bg-elevated` `bg-accented` `bg-muted`, `border-default` `border-muted` `border-accented`, and the `primary` / `success` / `warning` / `error` / `neutral` scales. Never a hex or a raw hue here: this is what keeps the page correct in both light and dark mode without you thinking about it. **The build SCANS every file for a raw hue** — `bg-blue-500`, `text-rose-600`, `bg-zinc-500/10` — and each one fails the review, wherever it hides. The one that hides best is a lookup object mapping your categories to class strings: that is a second, private copy of a schema that already carries a colour, it drifts from the app the day someone adds an option, and it is the shape this rule exists to stop.
-- **Surfaces are a hierarchy, not a palette.** `bg-default` is the page, and anything sitting ON the page shares it — a card is set apart by its border and its spacing, not by a fill. The raised tokens are a claim that something floats above the page or is currently active: an overlay, a hover, a selected row, one deliberately lifted unit. Give every container the same raised grey and nothing is above anything — you get a field of grey slabs, which is the most recognisable signature of a generated screen. Where a region really must lift, tint rather than fill (`bg-elevated/40`), and keep one level of elevation per screen.
+- **The chrome — surfaces, text, borders, buttons, states — uses semantic tokens only**: `text-default` `text-muted` `text-dimmed` `text-toned` `text-highlighted`, `bg-default` `bg-elevated` `bg-accented` `bg-muted`, `border-default` `border-muted` `border-accented`, and the `primary` / `success` / `warning` / `error` / `neutral` scales. Never a hex or a raw hue here: that is what keeps the page correct in both modes without you thinking about it, and the build scans every file for one. The shape that hides best is a lookup mapping your categories to class strings — a private second copy of a schema that already carries a colour.
+- **Surfaces are a hierarchy, not a palette.** `bg-default` is the page, and anything sitting ON it shares it — a card is set apart by its border and its spacing, not by a fill. The raised tokens claim that something floats above the page or is active: an overlay, a hover, a selected row, one deliberately lifted unit. Give every container the same raised grey and nothing is above anything. Where a region must lift, tint rather than fill (`bg-elevated/40`), one level per screen.
 - **The data brings its own colours, and they are meant to be used.** Categories, statuses, types and owners carry a colour and often an icon in the schema, and the full palette is live in the runtime — bound as CSS variables, since a class name cannot be assembled at runtime (`references/data.md` § Colour and icons). A page that renders every category in grey has thrown away the product's own visual language and reads as a report, not a screen. Reserve neutral for values that genuinely have no colour.
 - **One value, one colour, everywhere on the page** — cell, chart segment, legend, filter chip. A category that changes colour between two regions of the same screen is worse than no colour at all.
-- **One dimension per row leads; the others are text.** A row carries several — status, priority, team, owner — and colouring them all makes them compete until none of them reads: a line of pale badges is a wash the eye skims, and the reader is left hunting for the one that mattered. Pick the dimension the page is FOR, give it the badge and the schema's colour, and set the rest in plain text. This is a question of rank, not of quantity: the answer to a washed-out row is never a louder palette, it is one fewer thing asking to be looked at.
+- **One dimension per row leads; the others are text.** A row carries several — status, priority, team, owner — and colouring them all makes them compete until none reads: a line of pale badges is a wash the eye skims. Pick the dimension the page is FOR, give it the badge and the schema's colour, set the rest in plain text. A question of rank, not quantity — the answer to a washed-out row is one fewer thing asking to be looked at.
 - **`primary` is scarce** — the one action that matters, and at most one figure. It is the app's accent, not a category colour; never use it to mean a data value.
 - **Never let colour carry meaning alone.** Pair it with an icon, a label or a position.
+
+## Where depth opens
+
+Every page has more to say than fits, and the question is where the rest goes. Answer it once, in `brief.design.containers`, for each kind of depth the page holds — because the reflex answer is a slideover for everything, and a page where every detail opens the same panel has decided nothing.
+
+Ask in this order:
+
+1. **Does the reader need what is on screen while they look?** No, and it is long or rich → its own view. No, and it must be finished or abandoned → `UModal`. Yes → keep going.
+2. **How much is there?** A word or a date → `UTooltip`. A small block, a mini-form, a filter → `UPopover`. A whole record → `USlideover`, which is what keeps the list in sight while you read one of its rows.
+3. **How often?** Ten times a session — editing a status, assigning an owner — and it goes INLINE: in the row, in a `UDropdownMenu` on the row, in place. An overlay per repetition is a page that fights its own reader.
+4. **Is there an identity somebody would send to a colleague?** Then it is a view of its own even when a panel would have fit — a link to "the deal" is worth more than a slightly quicker panel.
+
+A modal is an interruption and costs the reader their place; spend it on decisions that must not be half-made, never on showing information. Never on an error, never on onboarding, never on a long form.
 
 ## Motion
 
 Restraint reads as quality; scattered animation reads as generated. Prefer one orchestrated moment — a staggered reveal of the first band, a smooth height change when a detail opens — over five small effects. Everything else is plain state feedback: `transition-colors` on hover, a row that lifts on hover, a skeleton that swaps in place. Never re-animate a chart on every refetch; update it in place.
+
+What is available without a library: `<Transition>` and `<TransitionGroup>` (a list that re-sorts should move, not jump), Tailwind's `transition-*`/`duration-*`/`animate-*`, and `useTransition` from `@vueuse/core` for a figure that counts up once on load. Wrap anything that moves on its own in `motion-safe:` — a reader who asked their system for less motion is asking you.
 
 ## Interaction
 
@@ -97,7 +145,7 @@ Ambition is part of the brief: when in doubt between shipping one more real capa
 Nobody asks for these, and a page without them reads as a first draft. They are the baseline a page is expected to clear before anything it was actually asked for counts as delivered — countable on purpose, so "is this finished" has an answer:
 
 - **A filter over the dimension the page is for**, wired as a variable so it re-queries, from about twenty rows; a text search from about thirty; a clickable sort on the columns whose descriptor says `sortable`; pagination whenever `totalCount` exceeds the page size.
-- **A detail view for the entity being listed** — an overlay is enough — and, when the type is writable, at least one action inside it.
+- **A detail view for the entity being listed**, opening where § Where depth opens sends it, and — when the type is writable — at least one action inside it.
 - **A writable type means a write.** Declare at least one `record` operation and CALL it from the code; a declared operation nothing runs is a page that still sends the user elsewhere to do the work.
 - **A layout that groups by a changeable value is itself the control.** Columns for a status, lanes for an owner, cells for a date: when the arrangement encodes a field, moving an item between groups sets that field. Drawing that arrangement and then routing the change through a dropdown elsewhere withholds the affordance the layout just promised — which reads as broken, not as simpler. Mechanics in `references/pattern-board.md`, and the registration rule in `libraries/drag-and-drop.md` before any `draggable()`.
 - **A figure band whenever an aggregate means something** — one `aggregate` dataset, not a sum over the loaded page.
@@ -126,3 +174,4 @@ Words are design material; write them with the same care as spacing.
 4. **Meaning audit** — for each figure, name its comparison. Any figure without one either gets one or gets demoted to a line of text.
 5. **Loading and failure** — the review renders the EMPTY state; it never sees the other two. Find `loading` and a failed dataset in your source, for every dataset.
 6. **Verb check** — name one thing the user can do here and the exact element they click to do it. If there is none, add detail-on-demand at minimum; if the target is smaller than the thing it opens, move it up to the container.
+7. **Plan check** — reread `brief.design`. Is the archetype you named the screen you built? Is the hierarchy the one on screen, or did everything end up the same size? And go down `defaultsRejected` line by line: a page that named "four equal cards" as the thing it was avoiding and shipped four equal cards has written its own worst review, and the critic reads that list too.

@@ -36,11 +36,11 @@ A page earns its keep when the team will REOPEN it.
 
 The files under `references/` are the page builder's manual, not background reading — open them only if you are the one writing the code.
 
-| You are about to                                                          | Read                                                                                                                                   |
-| ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| Choose components, or render a table, list, form or overlay well          | `references/components.md`                                                                                                             |
-| Wire datasets, filters, pagination, formatting, charts, or a write action | `references/data.md`                                                                                                                   |
-| Start from a working page of the same family                              | `references/pattern-directory.md` (filter, scan, open, act) · `pattern-overview.md` (figure band) · `pattern-board.md` (drag and drop) |
-| Use a third-party library the runtime allows                              | `references/libraries/<name>.md` — one file per library that behaves differently here than its own docs assume                         |
+| You are about to                                                          | Read                                                                                                                                                                                                                   |
+| ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Bound a region, page a long list, avoid a silent component trap           | `references/techniques.md`                                                                                                                                                                                             |
+| Wire datasets, filters, pagination, formatting, charts, or a write action | `references/data.md`                                                                                                                                                                                                   |
+| Start from a working page of the same family                              | `references/pattern-directory.md` (filter, scan, open, act) · `pattern-workbench.md` (queue beside item) · `pattern-detail.md` (one record) · `pattern-overview.md` (figure band) · `pattern-board.md` (drag and drop) |
+| Use a third-party library the runtime allows                              | `references/libraries/<name>.md` — one file per library that behaves differently here than its own docs assume                                                                                                         |
 
 `design.md` and `taste.md` are in the builder's system prompt verbatim — reading them is a step spent re-fetching what it already has. `review-rubric.md` is the critic's own copy, nobody else's.

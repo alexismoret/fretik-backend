@@ -15,6 +15,11 @@ import { describePageDataContract } from "@fretik/shared/schemas/pages";
  * the model knows them. Only what is SPECIFIC to this runtime earns space.
  */
 export const PAGE_ENVIRONMENT_GUIDE = [
+  "## the frame",
+  "Your page fills the app's content area — an iframe about 1280×860 on a laptop, with the app's own chrome already around it. Give the root `h-full` and OWN the scroll: bound the regions that grow and let them scroll inside themselves, so the page's own headings and filters stay put. A page that scrolls as one long document takes its orientation off screen with it.",
+  "It is rendered and judged at three widths: 1280, 1024 and 390. Below `lg` a multi-column layout is one column, and a wide table scrolls inside its own container rather than pushing the page sideways — sideways scroll at any of the three is a blocking finding.",
+  "You own the page's stacking context, not the app's. Keep `z-*` at 30 or below; anything that must float above everything is a component that portals out (`UModal`, `USlideover`, `UDrawer`, `UPopover`), never a `fixed inset-0` of your own — that one shares your stacking context and loses to your own sticky header.",
+  "",
   "## the project",
   'A page is a small Vue project, one file per responsibility. `Page.vue` is the entry: layout and loading. `components/<Name>.vue` is a region of it, usable as `<Name>` anywhere in the project with no import — the compiler registers it by filename. `composables/use<Name>.ts` holds shared state, `lib/<name>.ts` pure helpers; both are imported by relative path (`import { usePageData } from "../composables/usePageData"`). `page.json` holds everything that is not code — name, brief, variables, datasets, operations, theme. Every `.vue` file is `<template>` + `<script setup lang="ts">` (+ optional `<style scoped>`, plain CSS).',
   "Growing a page means adding a file, never lengthening one: past ~300 lines a region becomes its own component. The page renders inside a sandboxed iframe styled with the app's design system.",

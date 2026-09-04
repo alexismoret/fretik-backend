@@ -15,9 +15,14 @@ import { BUNDLED_SKILLS_DIR } from "../../skills/paths";
  * stay the skill's own, still read by the main agent when IT edits a page. A
  * copy authored into the prompt would drift the week either file improved.
  *
- * What deliberately stays a read: `components.md` and `data.md` (conditional —
+ * What deliberately stays a read: `techniques.md` and `data.md` (conditional —
  * a page with no records needs neither) and the pattern files (one family per
  * page at most). Only doctrine that fires on EVERY page earns prompt space.
+ *
+ * The component CATALOGUE is a third block, rendered next to these two by
+ * `prompt-renderer.ts`. It arrived here for the same reason and by a harder
+ * measurement: with the list behind an optional read, ten generated pages
+ * composed out of the same seventeen components.
  */
 
 const reference = (name: string): Promise<string> =>

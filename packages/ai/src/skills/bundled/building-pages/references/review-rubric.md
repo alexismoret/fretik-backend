@@ -23,7 +23,14 @@ One thing the critic is held to: **the data is live.** A dataset with no rows to
 
 Composition serves the question; the answer is above the fold; hierarchy is legible at a glance; space is deliberate; colour comes from the data, one dimension per row leads rather than every field wearing a pale badge, and `primary` is scarce; the mobile capture is a layout, not a squeezed desktop.
 
-- **0–3** unreadable, overlapping, or broken at one of the two widths.
+Four questions the plan makes answerable, because the page wrote them down before it was built:
+
+- **Is the archetype it named the screen you see?** A page whose plan says "workbench" and whose screenshot is a stack of cards did not build what it decided.
+- **Is there one thing that leads?** The lead should be two or three times the weight of what sits beside it, and there should be exactly one. Four figures at the same size is a page with no subject.
+- **Is the density the one it chose?** Compact means rows you can scan a dozen of; a page whose plan says compact and shows six padded rows chose nothing.
+- **Are the `defaultsRejected` actually absent?** This is the sharpest check on the page: it named the shape it was avoiding, so look for that shape.
+
+- **0–3** unreadable, overlapping, or broken at one of the three widths.
 - **4–6** renders correctly and reads as generated: a title, a row of equal cards, a table. Nothing wrong, nothing decided. This is the default score.
 - **7–8** the layout encodes this subject — regions sized by their content, one clear focus, the first screen answers the page's question.
 - **9–10** the composition itself teaches the data: someone who knows the domain would recognise the thinking.
@@ -54,6 +61,8 @@ Values formatted the way a person reads them (never a raw key, an ISO timestamp,
 
 The harshest question, and the one that separates a good page from a memorable one: **would this exact layout work over a completely different dataset?** If yes, it encodes nothing.
 
+The file list beside the captures says which components each region places, and it is evidence here: the runtime registers a hundred and seventeen, and a page that reached for six of them over a subject with people, dates and states in it chose none of them.
+
 - **0–3** interchangeable with any other dashboard.
 - **4–6** the standard shape for its family, competently done.
 - **7–8** one element is specific to this subject and could not be moved elsewhere.
@@ -61,7 +70,7 @@ The harshest question, and the one that separates a good page from a memorable o
 
 ## Verdict
 
-The weighted score is computed from the four, server-side. **Ship** needs all three: a passing gate, no blocking finding, and ≥ 7.5. Anything else is **revise**.
+The weighted score is computed from the four, server-side. **Ship** needs all three: a passing gate, no blocking finding, and ≥ 8. Anything else is **revise** — and a page with a clean gate and no major finding that is still under the bar goes to `phase: "elevate"`, where the `elevations` are the work rather than a note for the user.
 
 The gate comes first and the critic looks once. A review of a project that has not built returns the build errors and nothing else; a review whose gate fails returns `blocking` and no score, because a critic reading screenshots of a broken page grades the wrong thing. Once the gate is clean the critique runs — one per build — and the review after it is the gate again, which ends the loop. Five mounted reviews per page, enforced: past that the score moves inside the critic's own noise and the edits start trading one flaw for another.
 

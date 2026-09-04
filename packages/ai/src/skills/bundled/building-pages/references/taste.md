@@ -15,19 +15,23 @@ These are not mistakes. Each one is a defensible choice that a model makes becau
 - Gradients, glass, and glow used as decoration rather than as meaning.
 - Section headings that name a container rather than a subject: "Overview", "Details", "Statistics", "Data".
 - One filter, no sort, no detail view — the page you look at instead of the page you work in.
-- **The same dozen components, whatever the subject.** Measured across ten generated pages: a table, a slideover, a select, a skeleton, an empty state, and icons — seventeen components out of the hundred and fifteen the runtime registers. No avatars on people, no timeline on dated events, no tabs, and a status badge on two pages out of ten. The catalogue is not the constraint; reaching for the first component that would work is.
+- **The same dozen components, whatever the subject.** Measured across ten generated pages: a table, a slideover, a select, a skeleton, an empty state, and icons — seventeen components out of the hundred and seventeen the runtime registers. No avatars on people, no timeline on dated events, no tabs, and a status badge on two pages out of ten. The catalogue is above, in full, one line each; reaching for the first component that would work is what makes it useless.
+- **Everything at one width.** Sections stacked full-bleed down the page, all the same, because nobody decided which one was the subject.
 
 The test is not "is this wrong". It is: **remove the data and read the layout. Could it be any other page?**
+
+And its harder sibling, once the plan exists: **read `defaultsRejected` and look at the screen.** A page that named a default it was avoiding and shipped it anyway has not been designed; it has been described.
 
 ## Where the audacity goes
 
 The palette, the typefaces, the radius and dark mode come from the team's design system and are pushed into your page live. You do not get to pick them, and that is not the constraint it sounds like — it removes the axes where taste is cheapest and leaves five where it actually decides:
 
-1. **Layout.** An asymmetric split, a rail down one side, a master–detail that fills the screen, a band that runs full width above a narrow column. Almost every generated page is a stack of equal-width sections; almost no good one is.
+1. **Layout.** An asymmetric split, a rail down one side, a workbench that fills the screen, a band that runs full width above a narrow column. Almost every generated page is a stack of equal-width sections; almost no good one is.
 2. **Scale.** One figure at three times the size of everything else says what the page is about, before any label. A page where every number is the same size has no subject.
 3. **One signature element.** The thing the page is remembered by — see below. One. Two is a collection.
 4. **One motion moment.** A staggered reveal of the first band, a height that grows as a detail opens. Everything else is plain state feedback.
 5. **The data's own colour as structure.** Not a decorative accent: the thing that makes a category recognisable across the cell, the chart, the legend and the filter.
+6. **One more view than was asked for**, when the data supports it and the reader would use it. Not one more block — one more way to see the same subject: the same records on their dates, the same figures split by the dimension nobody thought to slice.
 
 ## Signature elements that earn their place
 
@@ -39,6 +43,8 @@ A signature is not an ornament. It is one place where the page does something sp
 - A calendar or timeline rail that puts the rows on the axis the work actually happens on.
 - A completeness meter per row, so the gaps in the data become the work.
 - A grouped board where the columns are the real states of the process, and moving between them is the action.
+- Two views of one subject held side by side, so the comparison is the page rather than a thing the reader assembles in their head.
+- A period rail down one side that filters everything at once, so the question "and last month?" costs one click.
 
 Each one exists because someone asked what the reader would do next. That is the whole method: **name the decision the reader came to make, then build the one element that makes it obvious.** If you cannot name the decision, the page is a report.
 

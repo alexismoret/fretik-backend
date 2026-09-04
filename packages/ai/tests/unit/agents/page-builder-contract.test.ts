@@ -71,7 +71,26 @@ describe("page environment contract", () => {
     // pitfalls sheet and the never-invent-rows rule — five things it must now
     // enumerate, not five paragraphs of appetite. The budget follows what the
     // section has to list; growth with nothing new listed is padding.
-    expect(PAGE_ENVIRONMENT_GUIDE.length).toBeLessThan(10_000);
+    //
+    // 10 000 → 13 000 on 2026-09-04 for one more list: THE FRAME. The single
+    // most load-bearing unstated fact in the system — a page never knew it
+    // renders in an iframe of a given size, that it owns its own scroll, which
+    // three widths it is judged at, or that the overlay layer above z-30
+    // belongs to the app. Every one of those had a lint or a gate enforcing it
+    // and no sentence teaching it, so the builder could only learn them by
+    // tripping them.
+    expect(PAGE_ENVIRONMENT_GUIDE.length).toBeLessThan(13_000);
+  });
+
+  test("states the frame, which every layout rule depends on", () => {
+    const contract = renderPageEnvironmentContract();
+    expect(contract).toContain("## the frame");
+    // The three captured widths, named where the page can act on them.
+    expect(contract).toContain("1024");
+    expect(contract).toContain("390");
+    // The z-ceiling and the hand-rolled overlay were lint-only knowledge.
+    expect(contract).toContain("z-*");
+    expect(contract).toContain("fixed inset-0");
   });
 
   test("the generated half tracks the schema, and only the schema", () => {

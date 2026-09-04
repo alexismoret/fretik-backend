@@ -94,9 +94,19 @@ publicPageRoutes.use(
   perTokenLimiter(2000, "rl:page-cap:", "rateLimitPageCap"),
 );
 
+/**
+ * 120/min per IP, not 30: a published page may be a small app now, and a
+ * visitor clicking through its views asks a question per view.
+ *
+ * 30 was set when a page was one screen that queried once at mount, and it was
+ * already the tightest cap in the path — six times tighter than the client's
+ * own bucket, so a legitimate reader hit the SERVER's limit first and got an
+ * error the page could not explain. The per-token hourly cap is what actually
+ * bounds a scraper; this one only has to bound a burst.
+ */
 publicPageRoutes.use(
   "/:token/data",
-  perIpLimiter(30, "rl:page-data-ip:", "rateLimitPageDataIp"),
+  perIpLimiter(120, "rl:page-data-ip:", "rateLimitPageDataIp"),
   perTokenLimiter(1000, "rl:page-data-cap:", "rateLimitPageDataCap"),
 );
 

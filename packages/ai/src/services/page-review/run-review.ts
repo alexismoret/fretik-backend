@@ -14,8 +14,11 @@ import { renderProjectManifest } from "../page-project/manifest";
 import { evaluatePageDesign, SHIP_SCORE } from "./evaluate";
 import { gatePageRender } from "./gate";
 import {
+  bumpCritiqueFailures,
   bumpPageReviewIteration,
+  clearCritiqueFailures,
   hashPageCode,
+  MAX_CRITIQUE_FAILURES,
   MAX_PAGE_REVIEWS,
   readPageCritique,
   readPageReviewIterations,
@@ -291,8 +294,16 @@ export const runPageReview = async (
     ),
   });
   // A critic that failed (after its own retries) judged nothing, so nothing is
-  // recorded — on 2026-08-23 one upstream rate limit silently ate a round.
+  // recorded — on 2026-08-23 one upstream rate limit silently ate a round. The
+  // ATTEMPT is counted instead: a round that costs the caller nothing is a round
+  // the caller repeats, and during one upstream incident that ran to 114 critic
+  // calls and 483 builder calls over two builds (see `bumpCritiqueFailures`).
   if (!critique.ok) {
+    const downCount = await bumpCritiqueFailures(
+      request.conversationId,
+      page.id,
+    );
+    const exhausted = downCount >= MAX_CRITIQUE_FAILURES;
     return {
       pageId: page.id,
       url: `/pages/${page.id}`,
@@ -301,9 +312,13 @@ export const runPageReview = async (
       verdict: "unverified",
       ...(gate.observations.length > 0 ? { observed: gate.observations } : {}),
       critiqueUnavailable: critique.reason,
-      next: "The critic was unavailable. The mechanical gate passed, so the page is sound as far as anything measured it; review again if you have budget, otherwise hand it over saying the design was not critiqued.",
+      next: exhausted
+        ? "The critic is down — this is the second attempt in a row and neither reached it. Do NOT review again: the mechanical gate passed, so hand the page over and say plainly that its design was never critiqued, so the user knows what they are getting."
+        : "The critic was unavailable. The mechanical gate passed, so the page is sound as far as anything measured it; review again if you have budget, otherwise hand it over saying the design was not critiqued.",
     };
   }
+  // It answered: whatever was wrong upstream is over.
+  await clearCritiqueFailures(request.conversationId, page.id);
 
   // A record of what was judged, kept for history. Nothing restores from it
   // any more — the best-of-rounds swap it existed for was retired with the

@@ -75,6 +75,42 @@ export const readPageReviewIterations = async (
 };
 
 /**
+ * How many times in a row the critic could not be reached for this page.
+ *
+ * A failed critique deliberately consumes no review round — an upstream rate
+ * limit is not the page's fault, and eating a round for it was a measured bug
+ * (2026-08-23). What that leaves, though, is a call with no cost to the caller:
+ * the review answers "the critic was unavailable, review again if you have
+ * budget", the agent does, the budget never moves, and the loop is bounded only
+ * by the agent's patience. Measured 2026-09-04, during an upstream rate limit on
+ * the critic's model: 114 critic calls and 483 builder calls across two builds,
+ * $8.56 where the same two cases had cost $0.61 — every one of those rounds also
+ * driving a browser and six screenshots.
+ *
+ * So the round stays free and the ATTEMPT is counted. Reset on any critique that
+ * comes back, so an incident costs a page two wasted rounds and never a loop.
+ */
+export const bumpCritiqueFailures = async (
+  conversationId: string | undefined,
+  pageId: string,
+): Promise<number> => {
+  const key = `${reviewKey(conversationId, pageId)}:critic-down`;
+  const count = await redis.incr(key);
+  await redis.expire(key, TTL_SECONDS);
+  return count;
+};
+
+export const clearCritiqueFailures = async (
+  conversationId: string | undefined,
+  pageId: string,
+): Promise<void> => {
+  await redis.del(`${reviewKey(conversationId, pageId)}:critic-down`);
+};
+
+/** Two attempts against a provider that is failing is diagnosis; more is a loop. */
+export const MAX_CRITIQUE_FAILURES = 2;
+
+/**
  * The ONE critique this run has paid for, if any.
  *
  * The critic looks once, after the mechanical gate is clean, and its findings

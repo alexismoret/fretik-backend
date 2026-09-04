@@ -41,9 +41,15 @@ describe("compilePageCode — a page that builds", () => {
       expect(result.compiled.js).toContain("mountPage");
       // The transpile step removed the annotation — the iframe runs plain JS.
       expect(result.compiled.js).not.toContain(": number");
-      // Tailwind scanned the source and emitted the used utility.
-      expect(result.compiled.css.length).toBeGreaterThan(0);
-      expect(result.compiled.css).toContain("p-4");
+      // Tailwind scanned the source — and then dropped `.p-4`, because
+      // runtime.css already declares it. Two Tailwind builds share the frame's
+      // document and Tailwind's property-order sort only holds within one
+      // stylesheet, so a second copy of a class moves it past rules that were
+      // sorted to beat it: that is how every `<UInput icon>` lost 20px of
+      // leading padding and drew its icon over its own placeholder (measured in
+      // a browser, 2026-09-04). What survives here is what runtime.css does NOT
+      // declare unconditionally.
+      expect(result.compiled.css).not.toContain(".p-4{");
       expect(result.compiled.sourceHash).toHaveLength(64);
     },
     TAILWIND_TIMEOUT_MS,

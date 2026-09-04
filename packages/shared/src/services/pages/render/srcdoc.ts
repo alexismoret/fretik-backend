@@ -73,6 +73,9 @@ export const buildPageSrcdoc = (params: {
     '<meta name="viewport" content="width=device-width, initial-scale=1">',
     `<script>window.__FRETIK__=${escapeScript(boot)}</script>`,
     `<script type="importmap">${escapeScript(importMap)}</script>`,
+    // Order is load-bearing and belongs to the compiler, not to this file: the
+    // page's sheet comes last and has been deduped against the runtime's, so a
+    // class has one definition and Tailwind's sort survives (`css-rules.ts`).
     `<link rel="stylesheet" href="${assetsBase}/runtime.css">`,
     `<style>${escapeStyle(params.compiled.css)}</style>`,
     "</head>",

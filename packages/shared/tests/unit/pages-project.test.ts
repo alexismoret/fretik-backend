@@ -51,7 +51,7 @@ defineProps<{ rows: { id: string; total: number }[] }>();
 </script>`,
   // Uses another component of the project, with no import of its own.
   "components/LaneBoard.vue": `<template>
-  <div class="mt-4 grid grid-cols-3 gap-2">
+  <div class="mt-4 grid grid-cols-3 gap-[7px]">
     <KpiStrip :rows="rows" />
     <UButton v-for="row in rows" :key="row.id" @click="emit('pick', row.id)">
       {{ row.id }}
@@ -95,9 +95,12 @@ describe("compilePageCode — a project of several files", () => {
     // resolved inside it. What is left importable is what the import map serves.
     expect(result.compiled.js).not.toContain("./composables/useRows");
     expect(result.compiled.js).toContain('from "#fretik/sdk"');
-    // `grid-cols-3` exists ONLY in components/LaneBoard.vue. A Tailwind pass
-    // that scanned the entry alone would render that board unstyled.
-    expect(result.compiled.css).toContain("grid-cols-3");
+    // `gap-[7px]` exists ONLY in components/LaneBoard.vue. A Tailwind pass that
+    // scanned the entry alone would render that board unstyled. An ARBITRARY
+    // value on purpose: the ordinary utilities that file also uses are dropped
+    // by the runtime dedupe (they are runtime.css's to declare), so a common
+    // class would prove nothing about which files were scanned.
+    expect(result.compiled.css).toContain("gap-\\[7px\\]");
     // Nothing about the machine that built it: the scratch path Bun labels
     // each module with is cut back to the project path.
     expect(result.compiled.js).not.toContain("/tmp/");

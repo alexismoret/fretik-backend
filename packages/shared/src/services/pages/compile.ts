@@ -14,6 +14,7 @@ import {
   type PageDefinition,
 } from "../../schemas/pages";
 import { autofixPageSource, type PageAutofix } from "./autofix";
+import { dropRulesDeclaredBy } from "./css-rules";
 import { derivePageRoutes, type PageRoute } from "./routes";
 
 /**
@@ -50,6 +51,24 @@ import { derivePageRoutes, type PageRoute } from "./routes";
  * rebuilt.
  */
 export const PAGE_RUNTIME_VERSION = "v2";
+
+/**
+ * Bump when the compiler's OUTPUT changes shape for source it has already
+ * compiled — a fix that a stored artifact would otherwise never receive.
+ *
+ * The stored `compiled` is keyed by source + runtime version + theme hash, none
+ * of which move when the compiler itself is corrected, so every page written
+ * before the fix keeps serving the broken artifact until somebody edits it.
+ * Measured 2026-09-04: the page CSS was emitted into `@layer utilities`, the
+ * same layer the runtime stylesheet uses, and being LATER in the document it
+ * re-declared `.px-2` after the runtime's `.ps-7` — so the leading padding lost
+ * and every component with an icon drew it on top of its own text. Fixing the
+ * layer fixed new pages and left the existing ones exactly as broken.
+ *
+ * Cheap to bump and expensive to forget: a bump costs one Tailwind subprocess
+ * per page, once, on next open.
+ */
+export const PAGE_COMPILER_REVISION = "2026-09-04-css-layer";
 
 /** Import specifiers the iframe's import map serves. Anything else cannot
  * resolve at runtime, so it is refused at compile time with its name.
@@ -176,6 +195,37 @@ const themeAssets = (): Promise<{ css: string; hash: string }> => {
   return themeAssetsPromise;
 };
 
+const runtimeSelectorsUrl = new URL(
+  "./compile-assets/runtime-selectors.json",
+  import.meta.url,
+);
+
+let runtimeSelectorsPromise: Promise<{
+  selectors: Set<string>;
+  hash: string;
+}> | null = null;
+/**
+ * Which classes runtime.css already declares unconditionally — the input to the
+ * dedupe in `compileTailwind`, synced beside the theme tokens by the same
+ * script and read once, for the same reason.
+ *
+ * Its hash enters the compile key: a rebuilt runtime declares a different set,
+ * and a page compiled against the old one keeps rules it should have dropped.
+ */
+const runtimeSelectors = (): Promise<{
+  selectors: Set<string>;
+  hash: string;
+}> => {
+  runtimeSelectorsPromise ??= (async () => {
+    const json = await (Bun.file(runtimeSelectorsUrl).json() as Promise<{
+      sha256: string;
+      selectors: string[];
+    }>);
+    return { selectors: new Set(json.selectors), hash: json.sha256 };
+  })();
+  return runtimeSelectorsPromise;
+};
+
 const sha256 = (text: string): string => {
   const hasher = new Bun.CryptoHasher("sha256");
   hasher.update(text);
@@ -184,7 +234,10 @@ const sha256 = (text: string): string => {
 
 export const pageSourceHash = async (source: string): Promise<string> => {
   const theme = await themeAssets();
-  return sha256(`${source}\0${PAGE_RUNTIME_VERSION}\0${theme.hash}`);
+  const runtime = await runtimeSelectors();
+  return sha256(
+    `${source}\0${PAGE_RUNTIME_VERSION}\0${PAGE_COMPILER_REVISION}\0${theme.hash}\0${runtime.hash}`,
+  );
 };
 
 /**
@@ -204,7 +257,10 @@ export const pageProjectHash = async (
   const body = project
     .map(([path, content]) => `${path}\0${content}`)
     .join("\0");
-  return sha256(`${body}\0${PAGE_RUNTIME_VERSION}\0${theme.hash}`);
+  const runtime = await runtimeSelectors();
+  return sha256(
+    `${body}\0${PAGE_RUNTIME_VERSION}\0${PAGE_COMPILER_REVISION}\0${theme.hash}\0${runtime.hash}`,
+  );
 };
 
 interface LocatedError {
@@ -604,6 +660,11 @@ const resolveTailwindEntries = (): { theme: string; utilities: string } => {
  * - `theme.css` is imported `reference` (token NAMES only — runtime.css owns
  *   the values) while `utilities.css` is NOT: `reference` on the utilities
  *   layer suppresses the scanned output itself, yielding an empty stylesheet.
+ *
+ * The output is then DEDUPED against runtime.css (`css-rules.ts`): two Tailwind
+ * builds share the frame's document, and a class this one re-declares moves to
+ * the end of the cascade past rules the other sorted to beat it. That is not a
+ * theory — it cost every `<UInput icon>` its leading padding until 2026-09-04.
  */
 const compileTailwind = async (
   files: [string, string][],
@@ -661,7 +722,8 @@ const compileTailwind = async (
       };
     }
     const css = await Bun.file(`${dir}/out.css`).text();
-    return { ok: true, css };
+    const runtime = await runtimeSelectors();
+    return { ok: true, css: dropRulesDeclaredBy(css, runtime.selectors) };
   } finally {
     releaseTailwindSlot();
     void Bun.$`rm -rf ${dir}`.quiet().nothrow();

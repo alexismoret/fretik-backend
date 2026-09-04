@@ -416,3 +416,59 @@ describe("dead handlers", () => {
     expect(findings.filter((f) => f.rule === "dead-handler")).toEqual([]);
   });
 });
+
+describe("named models", () => {
+  /**
+   * The shape that shipped on 2026-09-04: a 24-row table with a pager whose
+   * page 2 could not be reached. `UPagination`'s model is `page`, so a bare
+   * `v-model` binds a prop it never reads to an event it never emits — and
+   * everything downstream reports success, including a click-pass that sees
+   * the control respond to being clicked.
+   */
+  test("fires on a bare v-model where the component's model is named", () => {
+    const findings = lintPageFile(
+      "Page.vue",
+      sfc(
+        "const page = ref(1);",
+        '<UPagination v-model="page" :total="24" :items-per-page="10" />',
+      ),
+    );
+    const dead = findings.filter((f) => f.rule === "named-model");
+    expect(dead).toHaveLength(1);
+    expect(dead[0]?.severity).toBe("error");
+    expect(dead[0]?.message).toContain("v-model:page");
+  });
+
+  test("stays silent on the named form, and on kebab-case tags", () => {
+    const findings = lintPageFile(
+      "Page.vue",
+      sfc(
+        "const page = ref(1);\nconst open = ref(false);",
+        [
+          '<UPagination v-model:page="page" :total="24" />',
+          '<u-slideover v-model:open="open" />',
+        ].join("\n"),
+      ),
+    );
+    expect(findings.filter((f) => f.rule === "named-model")).toEqual([]);
+  });
+
+  test("catches the kebab-case spelling of the same mistake", () => {
+    const findings = lintPageFile(
+      "Page.vue",
+      sfc("const open = ref(false);", '<u-slideover v-model="open" />'),
+    );
+    expect(findings.filter((f) => f.rule === "named-model")).toHaveLength(1);
+  });
+
+  test("leaves alone every component whose model IS modelValue", () => {
+    const findings = lintPageFile(
+      "Page.vue",
+      sfc(
+        "const q = ref('');\nconst sel = ref('a');",
+        '<UInput v-model="q" /><USelect v-model="sel" :items="[]" />',
+      ),
+    );
+    expect(findings.filter((f) => f.rule === "named-model")).toEqual([]);
+  });
+});

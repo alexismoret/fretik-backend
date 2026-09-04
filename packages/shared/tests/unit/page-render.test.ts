@@ -103,6 +103,14 @@ describe("page srcdoc", () => {
     // The document a user's browser loads must never carry the probe.
     expect(plain).not.toContain("__probe__");
 
+    // The page's own sheet comes LAST, which is what lets its variants beat the
+    // runtime's base rules (`hidden sm:block` at desktop width). What makes
+    // that safe is the dedupe in the compiler, not an order here.
+    const runtimeAt = plain.indexOf("runtime.css");
+    const pageCssAt = plain.indexOf(result.compiled.css);
+    expect(runtimeAt).toBeGreaterThan(-1);
+    expect(runtimeAt).toBeLessThan(pageCssAt);
+
     const probed = buildPageSrcdoc({
       compiled: result.compiled,
       nonce: "n",

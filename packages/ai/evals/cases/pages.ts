@@ -46,7 +46,7 @@ import {
 } from "@fretik/shared/services/pages/lint";
 import { derivePageRoutesOfCode } from "@fretik/shared/services/pages/routes";
 import { deletePageVectorRows } from "@fretik/shared/services/pages/vector-refresh";
-import { and, eq, inArray, isNull } from "drizzle-orm";
+import { and, eq, inArray, isNull, or } from "drizzle-orm";
 import { judgePage } from "../page-design-judge";
 import {
   designScoreAtLeast,
@@ -438,6 +438,9 @@ const seedItemsOnce = async (ctx: EvalCaseContext): Promise<void> => {
 let seedInFlight: Promise<void> | null = null;
 
 const seedItems = async (ctx: EvalCaseContext): Promise<void> => {
+  // Per case, before the turn: the only record of this case that survives the
+  // run being killed mid-build. See the ledger docblock.
+  await rememberEvalConversation(ctx);
   seedInFlight ??= seedItemsOnce(ctx).catch((err: unknown) => {
     seedInFlight = null;
     throw err;
@@ -517,33 +520,100 @@ const pageForConversation = async (
  * the chat window a minute earlier. On 2026-09-04 the process-start rule
  * deleted five hand-built pages that had never been near an eval.
  *
- * The one thing that is not a guess is the list of ids the harness watched
- * appear, keyed off the ephemeral conversation each case runs in. So that is
- * what it keeps. A missing or unreadable ledger touches NOTHING: this archives
- * rows it recorded creating, never rows it merely suspects.
+ * The one thing that is not a guess is what the harness itself created, and it
+ * keeps TWO kinds of proof because one of them is not always written:
+ *
+ * - the page ids it watched appear, recorded per case at `cleanup`;
+ * - the ephemeral CONVERSATION ids it opened, recorded per case at `seed`,
+ *   before the turn runs.
+ *
+ * The second exists because a run that is killed mid-case never reaches its
+ * cleanup, so its pages are recorded nowhere — and those are precisely the
+ * pages that poison the next run. Measured 2026-09-04: a run stopped while both
+ * cases were building left two pages standing and indexed, and the next run's
+ * dashboard case found one of them, said "a dashboard for these records already
+ * exists", and asked which to change. Correct behaviour, 0.250, no page.
+ *
+ * A page whose case completed carries `sourceConversationId` NULL (the harness
+ * destroys the conversation, the FK nulls) and is caught by its id. A page from
+ * a killed case still points at its conversation and is caught by that. Neither
+ * path guesses: both name something this harness made.
  */
 const PAGE_LEDGER_PATH = `${import.meta.dir}/../.eval-pages.json`;
 
-const readPageLedger = async (): Promise<string[]> => {
+/** Conversations kept, so the file cannot grow without bound. */
+const LEDGER_CONVERSATIONS = 40;
+
+interface PageLedger {
+  pageIds: string[];
+  conversationIds: string[];
+}
+
+const readPageLedger = async (): Promise<PageLedger> => {
+  const strings = (value: unknown): string[] =>
+    Array.isArray(value)
+      ? value.filter((id): id is string => typeof id === "string")
+      : [];
   try {
     const parsed: unknown = await Bun.file(PAGE_LEDGER_PATH).json();
-    if (typeof parsed !== "object" || parsed === null) return [];
-    const ids: unknown = Reflect.get(parsed, "pageIds");
-    if (!Array.isArray(ids)) return [];
-    return ids.filter((id): id is string => typeof id === "string");
+    if (typeof parsed !== "object" || parsed === null)
+      return { pageIds: [], conversationIds: [] };
+    return {
+      pageIds: strings(Reflect.get(parsed, "pageIds")),
+      conversationIds: strings(Reflect.get(parsed, "conversationIds")),
+    };
   } catch {
-    return [];
+    return { pageIds: [], conversationIds: [] };
   }
 };
 
-/** Ids built by the run in progress. Written after every case, so a run that
- * dies half-way still leaves the next one something to sweep. */
+/** What the run in progress made. Written after every case AND at every seed,
+ * so a run that dies half-way still leaves the next one something to archive. */
 const builtThisRun = new Set<string>();
+const conversationsThisRun = new Set<string>();
+
+const writePageLedger = async (): Promise<void> => {
+  const ledger: PageLedger = {
+    pageIds: [...builtThisRun],
+    conversationIds: [...conversationsThisRun].slice(-LEDGER_CONVERSATIONS),
+  };
+  await Bun.write(PAGE_LEDGER_PATH, `${JSON.stringify(ledger, null, 2)}\n`);
+};
+
+/**
+ * Record the conversation this case runs in, BEFORE it runs. Called from the
+ * seeds — the only hook that fires early enough to survive a killed run.
+ */
+export const rememberEvalConversation = async (
+  ctx: EvalCaseContext,
+): Promise<void> => {
+  if (ctx.conversationId === "") return;
+  conversationsThisRun.add(ctx.conversationId);
+  await writePageLedger();
+};
 
 const sweepPreviousRun = async (): Promise<void> => {
   const teamId = process.env.EVAL_TEAM_ID;
   if (teamId === undefined || teamId === "") return;
-  const ids = await readPageLedger();
+  const ledger = await readPageLedger();
+  const doomed = await db
+    .select({ id: pages.id })
+    .from(pages)
+    .where(
+      and(
+        eq(pages.teamId, teamId),
+        isNull(pages.archivedAt),
+        or(
+          ledger.pageIds.length > 0
+            ? inArray(pages.id, ledger.pageIds)
+            : undefined,
+          ledger.conversationIds.length > 0
+            ? inArray(pages.sourceConversationId, ledger.conversationIds)
+            : undefined,
+        ),
+      ),
+    );
+  const ids = doomed.map((row) => row.id);
   if (ids.length === 0) return;
   await db
     .update(pages)
@@ -606,10 +676,7 @@ const cleanupPages = async (ctx: EvalCaseContext): Promise<void> => {
       ),
     );
   for (const row of built) builtThisRun.add(row.id);
-  await Bun.write(
-    PAGE_LEDGER_PATH,
-    `${JSON.stringify({ pageIds: [...builtThisRun] }, null, 2)}\n`,
-  );
+  await writePageLedger();
 
   await forgetFixtureActivity(ctx);
 };

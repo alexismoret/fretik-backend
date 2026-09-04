@@ -21,9 +21,16 @@ import type { PageElevation, PageFinding } from "./evaluate";
  * scored 6.8 and 7.8 two minutes apart, 2026-08-23). Three paid critiques
  * bought noise. The loop is now gate-first with ONE critique, so what is
  * bounded is renders — the gate is cheap and worth repeating after a fix, and
- * five is more than a build has ever needed.
+ * five is more than a build had ever needed.
+ *
+ * Six since the loop gained an elevation round (2026-09-04). The critique is
+ * no longer a single pass: it re-scores after every change, and a page that
+ * arrives correct but ordinary now spends a round making it better rather than
+ * shipping at 6.1 with the improvement written down for somebody else. That
+ * round has to come from somewhere, and the honest place is the budget rather
+ * than out of the fixes.
  */
-export const MAX_PAGE_REVIEWS = 5;
+export const MAX_PAGE_REVIEWS = 6;
 
 /** Long enough to cover a build session, short enough to forget it after. */
 const TTL_SECONDS = 24 * 60 * 60;

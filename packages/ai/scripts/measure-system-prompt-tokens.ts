@@ -46,6 +46,7 @@ import {
 
 const PROJECT_ROOT = `${import.meta.dir}/..`;
 const SYSTEM_PROMPT_PATH = `${PROJECT_ROOT}/src/agents/shared/agent-system-prompt.md`;
+const PAGE_BUILDER_PROMPT_PATH = `${PROJECT_ROOT}/src/agents/chatbot/page-builder-system-prompt.md`;
 const TOOLS_DIR = `${PROJECT_ROOT}/src/tools`;
 const SKILLS_DIR = `${PROJECT_ROOT}/src/skills/bundled`;
 
@@ -379,12 +380,53 @@ const measureSkills = async (): Promise<{
   return { per_skill, total_tokens: total };
 };
 
+/**
+ * The page builder's own prefix, which had no instrument until 2026-09-04.
+ *
+ * It is not a section of the unified template — it is a second agent with a
+ * second prompt, assembled in `prompt-renderer.ts` out of four blocks, three
+ * of them RENDERED from files rather than written in the `.md`. That
+ * assembly is what made it invisible here: nothing reads the four together
+ * except the runtime, so the surface this agent pays for on every one of its
+ * ~40 calls per build was the only unbudgeted one in the product.
+ *
+ * Safe to import: all three renderers read files at module load and pull in no
+ * DB, Redis or S3 client — the same property that lets `prompt-blocks.ts` be
+ * imported above, checked the same way (a fresh shell, no env file).
+ */
+const measurePageBuilder = async (): Promise<Record<string, number>> => {
+  const [
+    { renderComponentCatalogue },
+    { renderPageDesignDoctrine },
+    { renderPageEnvironmentContract },
+  ] = await Promise.all([
+    import("../src/tools/page-component-catalogue"),
+    import("../src/agents/chatbot/page-design-doctrine"),
+    import("../src/tools/page-environment-guide"),
+  ]);
+  const prompt = (await Bun.file(PAGE_BUILDER_PROMPT_PATH).text())
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .trim();
+
+  const blocks = {
+    system_prompt: tokensOf(prompt),
+    environment_contract: tokensOf(renderPageEnvironmentContract()),
+    design_doctrine: tokensOf(renderPageDesignDoctrine()),
+    component_catalogue: tokensOf(renderComponentCatalogue()),
+  };
+  return {
+    ...blocks,
+    _total_tokens: Object.values(blocks).reduce((sum, n) => sum + n, 0),
+  };
+};
+
 const main = async (): Promise<void> => {
   const template = await Bun.file(SYSTEM_PROMPT_PATH).text();
   const chatbot = measureAgentPrompt(template, "chatbot");
   const workflow = measureAgentPrompt(template, "workflow");
   const tools = await measureTools();
   const skills = await measureSkills();
+  const pageBuilder = await measurePageBuilder();
 
   const output = {
     tokenizer: "o200k_base (gpt-tokenizer)",
@@ -400,6 +442,7 @@ const main = async (): Promise<void> => {
       per_skill: skills.per_skill,
       _total_tokens: skills.total_tokens,
     },
+    page_builder: pageBuilder,
     // Chatbot's turn-0 static surface: resolved prompt + every tool
     // description + the L1 skills catalog. Runtime adds the expanded
     // dynamic suffix on top.

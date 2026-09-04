@@ -479,14 +479,20 @@ export const createBuildPageTool = <TTools extends ToolSet>(deps: {
           ].join("\n")
         : "";
 
+      // Context first, the ask LAST. Google's own guidance for Gemini 3 is to
+      // "place your specific instructions or questions at the end of the
+      // prompt, after the data context" — and the blocks above are exactly
+      // that context: the collections, the apps, the references. The task led
+      // here until 2026-09-04 for no reason beyond it being what a person
+      // would say first.
       const blocks = [
-        task,
         rowTypes.length > 0 ? `<collections>\n${rowTypes}\n</collections>` : "",
         apps.block ?? "",
         apps.unknown.length > 0
           ? `<external_apps_unknown>\nNo connected app answers to: ${apps.unknown.join(", ")}. Do not declare a dataset over one of these.\n</external_apps_unknown>`
           : "",
         references,
+        `<task>\n${task}\n</task>`,
       ].filter((block) => block.length > 0);
 
       return [{ role: "user", content: blocks.join("\n\n") }];

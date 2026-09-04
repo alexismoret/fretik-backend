@@ -353,6 +353,57 @@ describe("review budget — hard, shared, checked before the render", () => {
     );
   });
 
+  /**
+   * The state that used to ship, and the round it now buys.
+   *
+   * A page with a clean gate, no major finding and a 7.6 had nowhere to go:
+   * the loop could correct a page and could not improve one, because the one
+   * channel that knew what would make it better — `elevations` — came back
+   * with "these are not for you to build, hand them to the user". So a
+   * competent, ordinary page was the loop's terminal state.
+   */
+  test("nothing broken and under the bar spends a round on the elevations", async () => {
+    critiqueResult = {
+      ok: true,
+      critique: {
+        score: 7.6,
+        scores: { design: 7, functionality: 8, craft: 8, originality: 8 },
+        summary: "correct, ordinary",
+        findings: [],
+        elevations: ["rank the queue", "put the trend behind the figure"],
+        model: "test/critic",
+      },
+    };
+    const result = await execManagePage({ action: "review" });
+    expect(result["phase"]).toBe("elevate");
+    expect(result["verdict"]).toBe("revise");
+    expect(String(result["next"])).toContain("elevations");
+    expect(result["elevations"]).toEqual([
+      "rank the queue",
+      "put the trend behind the figure",
+    ]);
+  });
+
+  test("with the budget nearly gone it ships instead, and says what it did not do", async () => {
+    // An elevation nobody looks at afterwards is a change nobody verified, so
+    // the round is only worth starting while two renders remain.
+    await spendBudget();
+    critiqueResult = {
+      ok: true,
+      critique: {
+        score: 7.6,
+        scores: { design: 7, functionality: 8, craft: 8, originality: 8 },
+        summary: "correct, ordinary",
+        findings: [],
+        elevations: ["rank the queue"],
+        model: "test/critic",
+      },
+    };
+    const result = await execManagePage({ action: "review" });
+    expect(result["phase"]).not.toBe("elevate");
+    expect(result["verdict"]).toBe("ship");
+  });
+
   test("an unchanged page returns its standing verdict — no render, no round", async () => {
     await recordPageReviewVerdict(scope, pageId, {
       sourceHash: hashPageCode({

@@ -59,8 +59,24 @@ describe("critique scoring", () => {
         design: 8,
         functionality: 8,
         craft: 8,
-        originality: 7,
+        originality: 8,
       }),
     ).toBeGreaterThanOrEqual(SHIP_SCORE);
+  });
+
+  test("one soft axis no longer clears the bar on its own", () => {
+    // 7.8 — the old threshold shipped this, and pages that scored here are
+    // where "correct but ordinary" lives. It does not ship now; it spends an
+    // elevation round first, and ships after it whatever the round bought.
+    // The point is not that 7.8 is a bad page. It is that a loop which stops
+    // at the first page it cannot fault never builds a better one.
+    const score = weightedScore({
+      design: 8,
+      functionality: 8,
+      craft: 8,
+      originality: 7,
+    });
+    expect(score).toBe(7.8);
+    expect(score).toBeLessThan(SHIP_SCORE);
   });
 });

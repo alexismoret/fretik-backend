@@ -72,7 +72,7 @@ export interface PageReviewRequest {
 }
 
 /** The phase a result belongs to, so the caller's next step is unambiguous. */
-export type PageReviewPhase = "gate" | "critique" | "final";
+export type PageReviewPhase = "gate" | "critique" | "elevate" | "final";
 
 /**
  * Renders granted past `MAX_PAGE_REVIEWS`, gate-only.
@@ -87,9 +87,22 @@ const FINAL_LOOKS = 1;
 const FIX_BLOCKING =
   "Fix every line of `blocking` — those are measured, not opinions. Edit the file each one names, then review again. The critic looks once the gate passes.";
 const APPLY_FINDINGS =
-  "Apply each `finding` — they are what a user would hit — then review again. The next pass looks at what you changed, and the loop ends when nothing major is left or the budget runs out. `elevations` are not for you to build: hand them to the user.";
+  "Apply each `finding` — they are what a user would hit — then review again. The next pass looks at what you changed, and the loop ends when nothing major is left or the budget runs out.";
+const APPLY_ELEVATIONS =
+  "Nothing is broken and the page is under the bar. `elevations` are the difference: apply the first one — both when they are cheap — then review again. This is the round that decides whether the page is competent or good, so spend it on the change that alters the screen, not on polish.";
 const SHIP =
   "Nothing blocks this page: it ships as it stands. Hand back its url and pass on any `elevations` as what you would do next. Do NOT edit or review again — the verdict is final for this version.";
+
+/**
+ * How many renders an elevation round needs left to be worth starting.
+ *
+ * Two: one to build the change, one to see it. Starting with fewer spends the
+ * budget on a page nobody will look at again, which is how a review ends on a
+ * version that is different from the one it scored.
+ */
+const ELEVATION_MIN_BUDGET = 2;
+/** At most two per round: the first changes the screen, the third is polish. */
+const ELEVATIONS_PER_ROUND = 2;
 
 export const runPageReview = async (
   request: PageReviewRequest,
@@ -322,6 +335,29 @@ export const runPageReview = async (
   // hostage to a score it will never reach, and a builder with nothing left to
   // spend on reaching it — so it ships, and it says what it shipped.
   const exhausted = left <= 0;
+
+  /**
+   * Nothing is broken, and the page is not good enough.
+   *
+   * This state used to ship. The findings were empty, so the loop had nothing
+   * to ask for and handed over a 6.1 — while the one channel that knew what
+   * would make the page better was routed AWAY from the builder: `elevations`
+   * came back with "these are not for you to build, hand them to the user".
+   * The loop could correct a page and could not improve one, which is the
+   * whole difference between a page that works and a page worth showing.
+   *
+   * So it spends a round here when it has one to spare. Bounded on purpose:
+   * two elevations, and only while two renders remain, because an elevation
+   * nobody looks at afterwards is a change nobody verified.
+   */
+  const elevating =
+    !cleared &&
+    !exhausted &&
+    findings.length === 0 &&
+    elevations.length > 0 &&
+    left >= ELEVATION_MIN_BUDGET;
+
+  // `elevating` already requires budget, so the two can never both be true.
   const ships = cleared || exhausted;
 
   await recordPageCritique(scope, page.id, {
@@ -331,11 +367,22 @@ export const runPageReview = async (
     elevations,
   });
 
+  const phase: PageReviewPhase = ships
+    ? "final"
+    : elevating
+      ? "elevate"
+      : "critique";
+  // An elevation round hands back the ones it is asking for, not all three:
+  // what comes back is a work item, and three is a list to choose from.
+  const handedBack = elevating
+    ? elevations.slice(0, ELEVATIONS_PER_ROUND)
+    : elevations;
+
   const result = {
     pageId: page.id,
     url: `/pages/${page.id}`,
     iteration: seen,
-    phase: (ships ? "final" : "critique") as PageReviewPhase,
+    phase,
     gate: "pass" as const,
     verdict: ships ? ("ship" as const) : ("revise" as const),
     score: critique.critique.score,
@@ -343,13 +390,15 @@ export const runPageReview = async (
     summary: critique.critique.summary,
     ...(gate.observations.length > 0 ? { observed: gate.observations } : {}),
     ...(findings.length > 0 ? { findings } : {}),
-    ...(elevations.length > 0 ? { elevations } : {}),
+    ...(handedBack.length > 0 ? { elevations: handedBack } : {}),
     ...(previous !== null ? { previousScore: previous.score } : {}),
     next: cleared
       ? SHIP
       : exhausted
-        ? `The review budget is spent and this is the version that ships, at ${critique.critique.score.toFixed(1)}/10 with ${findings.length.toString()} finding(s) open. Hand back the url and tell the user plainly what is still weak, naming the findings — not "perfectible".`
-        : APPLY_FINDINGS,
+        ? `The review budget is spent and this is the version that ships, at ${critique.critique.score.toFixed(1)}/10 with ${findings.length.toString()} finding(s) open${elevations.length > 0 ? ` and ${elevations.length.toString()} elevation(s) unapplied` : ""}. Hand back the url and tell the user plainly what is still weak, naming them — not "perfectible".`
+        : elevating
+          ? APPLY_ELEVATIONS
+          : APPLY_FINDINGS,
   };
   await recordPageReviewVerdict(scope, page.id, {
     sourceHash,

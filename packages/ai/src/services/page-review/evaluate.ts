@@ -61,8 +61,22 @@ export const CRITIQUE_WEIGHTS = {
   originality: 0.2,
 } as const;
 
-/** Weighted score a page must reach to ship. Also stated in the rubric. */
-export const SHIP_SCORE = 7.5;
+/**
+ * Weighted score a page must reach to ship. Also stated in the rubric.
+ *
+ * 7.5 until the loop could do something about a page that was merely
+ * competent. With `elevations` routed out of the review, the bar was as high
+ * as the loop could act on: above it, a page with no findings had nowhere to
+ * go but out the door. Now an elevation round exists, so the bar moves to
+ * where "worth showing someone" actually sits on the rubric — the top of the
+ * 7-8 band, not its floor.
+ *
+ * Held against the critic's own spread (±0.5-1.0 on identical bytes), one
+ * point of design moves the weighted score by 0.35. So this threshold is a
+ * direction, and what it must never become is a per-round verdict read as
+ * precise: the eval design AVERAGE across cases is what says whether it moved.
+ */
+export const SHIP_SCORE = 8;
 
 /** Applied here rather than asked for: the model reports four observations,
  * the product decides what they are worth. */
@@ -186,25 +200,48 @@ const INSTRUCTIONS = [
   "`elevations` is the other question, and it is not the same one: not what is broken, but what would make this page better than it is. At most three, ordered by how much they change the page, each naming where on screen it goes, the concrete change, and what the reader gains. Return at least one whenever the page scores below 9 — a page with no defects still has a next level, and this is where it is written down. Reach for the change that is specific to THIS subject: the value that should wear its own colour, the figure that should carry its comparison, the region that should be denser or larger, the view the data supports and the page does not offer. Never propose more data.",
 ].join("\n");
 
-const describeBrief = (brief: PageBrief | undefined): string =>
-  brief
-    ? [
-        "## what this page was supposed to be",
-        `Job: ${brief.product.job}`,
-        `Audience: ${brief.product.audience}`,
-        ...(brief.product.features.length > 0
-          ? [`Promised: ${brief.product.features.join("; ")}`]
-          : []),
-        `Layout: ${brief.design.layout}`,
-        `Signature: ${brief.design.signature}`,
-        ...(brief.design.motion ? [`Motion: ${brief.design.motion}`] : []),
-        "",
-        "Score it against this brief as much as against the rubric: a page that quietly dropped what it promised is not finished, however good the part it kept.",
-      ].join("\n")
-    : [
-        "## no brief",
-        "This page was built without a written brief, so judge it on its own terms: what does it look like it is for, and does it do that well.",
-      ].join("\n");
+/**
+ * The plan the page committed to, in the words its builder wrote.
+ *
+ * The design half used to be three prose lines and the critic had no way to
+ * disagree with them. It is a plan now — an archetype, a hierarchy, a decision
+ * about where depth opens, and a list of the generated defaults this page said
+ * it would NOT take — and each of those is a claim a screenshot can contradict.
+ * `defaultsRejected` is the sharpest: a page that named "four equal KPI cards"
+ * as the thing it was avoiding, and shipped four equal KPI cards, has told the
+ * critic exactly where to look.
+ */
+const describeBrief = (brief: PageBrief | undefined): string => {
+  if (brief === undefined) {
+    return [
+      "## no brief",
+      "This page was built without a written brief, so judge it on its own terms: what does it look like it is for, and does it do that well.",
+    ].join("\n");
+  }
+  const design = brief.design;
+  return [
+    "## what this page was supposed to be",
+    `Job: ${brief.product.job}`,
+    `Audience: ${brief.product.audience}`,
+    ...(brief.product.features.length > 0
+      ? [`Promised: ${brief.product.features.join("; ")}`]
+      : []),
+    ...(design.archetype ? [`Shape: ${design.archetype}`] : []),
+    `Layout: ${design.layout}`,
+    ...(design.grid ? [`Grid: ${design.grid}`] : []),
+    ...(design.hierarchy ? [`Hierarchy: ${design.hierarchy}`] : []),
+    ...(design.density ? [`Density: ${design.density}`] : []),
+    ...(design.containers ? [`Depth opens: ${design.containers}`] : []),
+    `Signature: ${design.signature}`,
+    ...(design.motion ? [`Motion: ${design.motion}`] : []),
+    ...(design.states ? [`States: ${design.states}`] : []),
+    ...(design.defaultsRejected && design.defaultsRejected.length > 0
+      ? [`Defaults it rejected: ${design.defaultsRejected.join("; ")}`]
+      : []),
+    "",
+    "Score it against this plan as much as against the rubric: a page that quietly dropped what it promised is not finished, however good the part it kept. Where it named a default it was avoiding, check the screen for that default — a plan is worth nothing if the page it describes is the one that would have been built anyway.",
+  ].join("\n");
+};
 
 /**
  * The overlays the click pass opened, as text — alongside their captures.
@@ -311,7 +348,12 @@ export const buildCritiqueContent = async (
         ? [
             {
               type: "text" as const,
-              text: `## files of this page\n${params.files}`,
+              // `uses:` is the one thing here that is not navigation. It says
+              // which components the page reached for out of the hundred and
+              // seventeen it had, and it is how a finding stops being "this
+              // feels flat" and becomes "this list of dated events is a stack
+              // of divs; it is a timeline". Name the file AND the component.
+              text: `## files of this page, and the components each one places\n${params.files}`,
             },
           ]
         : []),

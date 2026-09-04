@@ -2,6 +2,7 @@ import { TOOL_PERMISSIONS_REMEDIATION } from "@fretik/shared/services/ai/remedia
 import { fetchManagedPrompt } from "../../lib/langfuse-prompts";
 import type { NativeIngestionPlan } from "../../services/native-input/prepare-model-messages";
 import { buildSessionStateBlock } from "../../services/session-state/build-block";
+import { renderComponentCatalogue } from "../../tools/page-component-catalogue";
 import { renderPageEnvironmentContract } from "../../tools/page-environment-guide";
 import { renderPageDesignDoctrine } from "../chatbot/page-design-doctrine";
 import type { SearchableToolRegistry } from "./chatbot-tool";
@@ -191,10 +192,16 @@ export const buildPageBuilderSystemPrompt = async (
   // this agent designs on every run, so the two files its prompt used to ORDER
   // it to read are not references — they are its prompt, arriving late and at
   // full price. The skill keeps them; nothing is copied.
+  // The catalogue is the third, and it is the one the measurement demanded:
+  // with the components behind an optional read, ten generated pages composed
+  // out of the same seventeen. A list of what exists is not a reference either
+  // — it is the vocabulary, and an agent cannot choose from a list it has to
+  // decide to go and get.
   return [
     text.replace(HTML_COMMENT_RE, "").trim(),
     `<environment_contract>\n${renderPageEnvironmentContract()}\n</environment_contract>`,
     `<design_doctrine>\n${renderPageDesignDoctrine()}\n</design_doctrine>`,
+    `<component_catalogue>\n${renderComponentCatalogue()}\n</component_catalogue>`,
   ].join("\n\n");
 };
 

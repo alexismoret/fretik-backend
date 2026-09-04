@@ -66,8 +66,31 @@ const run = async (
 const text = (value: unknown): string =>
   typeof value === "string" ? value : JSON.stringify(value ?? "");
 
+/** One file, the shape most cases here care about. */
 const write = (input: Record<string, unknown>) =>
-  run(createPageWriteTool(), input);
+  run(createPageWriteTool(), {
+    files: [{ path: input.path, content: input.content }],
+    ...(input.pageId !== undefined ? { pageId: input.pageId } : {}),
+  });
+
+/** The batch, which is what a build is supposed to send. */
+const writeMany = (files: { path: string; content: string }[]) =>
+  run(createPageWriteTool(), { files });
+
+/** A single file's outcome inside a batch result. */
+const outcome = (
+  result: Record<string, unknown>,
+  path: string,
+): Record<string, unknown> => {
+  const files = result.files;
+  if (!Array.isArray(files)) throw new Error("no files in the result");
+  for (const entry of files) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const record: Record<string, unknown> = { ...entry };
+    if (record.path === path) return record;
+  }
+  throw new Error(`no outcome for ${path}`);
+};
 const edit = (input: Record<string, unknown>) =>
   run(createPageEditTool(), input);
 const read = (input: Record<string, unknown> = {}) =>
@@ -88,10 +111,64 @@ describe("pageWrite", () => {
       ),
     });
 
-    expect(result.written).toBe(true);
+    expect(result.written).toBe(1);
     // The lint delta is the whole point of reporting anything here: the review
     // would have blocked on this, two minutes and a render later.
-    expect(String(result.lintDelta)).toContain("native control");
+    expect(text(outcome(result, "Page.vue").lintDelta)).toContain(
+      "native control",
+    );
+  });
+
+  test("writes a whole project in ONE call", async () => {
+    // The economy this tool exists for. The first multi-file build sent 15
+    // writes as 15 steps, and every step re-sent the conversation: 39 model
+    // calls, 3.25M input tokens, a bill 19% above the single-file design it
+    // replaced. A batch is one step whatever the model's mood.
+    const result = await writeMany([
+      { path: "Page.vue", content: ORIGINAL },
+      {
+        path: "components/Lane.vue",
+        content: "<template><p>lane</p></template>",
+      },
+      {
+        path: "composables/useData.ts",
+        content: "export const useData = () => ({});",
+      },
+      { path: "page.json", content: '{ "name": "Board", "datasets": [] }' },
+    ]);
+
+    expect(result.written).toBe(4);
+    const manifest = await read({});
+    expect(text(manifest.manifest ?? manifest.project)).toContain(
+      "components/Lane.vue",
+    );
+  });
+
+  test("page.json is a file this tool can write", async () => {
+    // It was not, until 2026-09-04: `PAGE_FILE_PATH_RE` validates `code.files`,
+    // which reaches the compiler, and page.json is not code — so the write path
+    // refused the ONE file that declares a page's datasets. The builder worked
+    // around the refusal by putting four dataset configs in a lib module, the
+    // server ran none of them, and the page shipped empty.
+    const result = await write({
+      path: "page.json",
+      content: '{ "name": "Deals", "datasets": [] }',
+    });
+
+    expect(result.written).toBe(1);
+    expect(outcome(result, "page.json").error).toBeUndefined();
+  });
+
+  test("one bad path in a batch does not cost the good ones", async () => {
+    const result = await writeMany([
+      { path: "Page.vue", content: ORIGINAL },
+      { path: "src/deep/Thing.vue", content: "<template><div /></template>" },
+    ]);
+
+    expect(result.written).toBe(1);
+    // Named, because a file the model believes it wrote and did not is a
+    // defect that surfaces three steps later as a missing import.
+    expect(text(result.refused)).toContain("src/deep/Thing.vue");
   });
 
   test("refuses its own output pasted back", async () => {
@@ -126,7 +203,7 @@ describe("pageWrite", () => {
       path: "components/LaneBoard.vue",
       content: "<template><div>lane</div></template>",
     });
-    expect(result.written).toBe(true);
+    expect(result.written).toBe(1);
 
     // And it is in the project: the manifest is what a later step reads.
     const manifest = await read({});

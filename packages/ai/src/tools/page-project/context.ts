@@ -1,9 +1,13 @@
-import { PAGE_ENTRY_FILE } from "@fretik/shared/schemas/pages";
+import {
+  PAGE_ENTRY_FILE,
+  PAGE_FILE_PATH_RE,
+} from "@fretik/shared/schemas/pages";
 import { isOrgAdmin } from "@fretik/shared/services/organization/member-role";
 import { getPage } from "@fretik/shared/services/pages/retrieve";
 import type { PageRequester } from "@fretik/shared/services/pages/visibility";
 import { getRuntimeContext } from "../../agents/shared/runtime-context";
 import { renderProjectManifest } from "../../services/page-project/manifest";
+import { PAGE_JSON_FILE } from "../../services/page-project/page-json";
 import {
   emptyProjectState,
   projectFromDefinition,
@@ -116,3 +120,20 @@ export const looksLineNumbered = (content: string): boolean => {
 };
 
 export const isEntry = (path: string): boolean => path === PAGE_ENTRY_FILE;
+
+/**
+ * Every path a project may hold — the code grammar, the entry, AND `page.json`.
+ *
+ * `page.json` has to be listed here explicitly because it is deliberately
+ * absent from `PAGE_FILE_PATH_RE`: that regex validates `code.files`, which is
+ * what reaches the compiler, and the manifest is not code. Enforcing the code
+ * grammar on a WRITE therefore refused the one file that declares a page's
+ * datasets — measured on 2026-09-04, where the builder answered the refusal by
+ * putting four dataset configs in `lib/dealsHelper.ts` instead. They compiled,
+ * they read as configuration, and the server ran none of them: the page shipped
+ * empty over a collection of 24 records, and its summary called it working.
+ */
+export const isProjectPath = (path: string): boolean =>
+  path === PAGE_ENTRY_FILE ||
+  path === PAGE_JSON_FILE ||
+  PAGE_FILE_PATH_RE.test(path);

@@ -44,7 +44,7 @@ import {
   formatPageLintFinding,
   lintPageProject,
 } from "@fretik/shared/services/pages/lint";
-import { and, eq, inArray, lt } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { judgePage } from "../page-design-judge";
 import {
   designScoreAtLeast,
@@ -487,46 +487,106 @@ const pageForConversation = async (
 };
 
 /**
- * When this eval process started — the line between "this run's pages" and
- * "an earlier run's".
+ * The pages THIS run built, remembered across runs so the next one can sweep
+ * them — and nothing else.
  *
  * Sweeping used to be zero-retention: every case deleted its own page the
  * moment the assertions were done. That is tidy and it destroys the evidence —
  * the run of 2026-08-16 produced one page whose filter was better than the
  * assertion that failed it, and there was nothing left to look at. Scores tell
- * you a page was worth 6.8; only the page tells you why.
+ * you a page was worth 6.8; only the page tells you why. So a run's output is
+ * kept and the PREVIOUS run's is what gets swept.
  *
- * So a run's output is kept and the PREVIOUS runs' output is what gets swept.
- * That intent was written down and then implemented as "older than 12 hours",
- * which is a different rule and a weaker one: two runs inside the window leave
- * each other's pages standing. Measured 2026-08-22 — a page named `Pilotage
- * Eval Work Items`, 7½ hours old, survived into the next run, and the agent
- * did the RIGHT thing with it: it found an existing page covering the ask and
- * declined to duplicate it. Two cases scored 0.25 and 0.30 for correct
- * behaviour against a workspace the harness had polluted.
+ * That intent was implemented twice as a GUESS about which rows were the
+ * harness's — "older than 12 hours", then "older than this process" — and both
+ * are wrong for the same reason: `EVAL_TEAM_ID` is a real team somebody works
+ * in (on this installation, the developer's own), and the harness invokes as
+ * that team's own user. Team, timestamp and user id therefore separate nothing:
+ * a page the builder just produced is indistinguishable from one made through
+ * the chat window a minute earlier. On 2026-09-04 the process-start rule
+ * deleted five hand-built pages that had never been near an eval.
  *
- * A process-start boundary is the rule the docblock always meant, and it needs
- * no window: a page created by a CONCURRENT sibling is necessarily newer than
- * the start of the process both cases run in, so nothing can race.
+ * The one thing that is not a guess is the list of ids the harness watched
+ * appear, keyed off the ephemeral conversation each case runs in. So that is
+ * what it keeps. A missing or unreadable ledger sweeps NOTHING: this deletes
+ * rows it recorded creating, never rows it merely suspects.
  */
-const RUN_STARTED_AT = new Date();
+const PAGE_LEDGER_PATH = `${import.meta.dir}/../.eval-pages.json`;
 
-/**
- * Sweep pages left by EARLIER runs, keep this one's. Runs from a `cleanup`
- * hook, so it fires once per case — the delete is idempotent and cheap, and
- * putting it here means no separate maintenance step anyone can forget.
- *
- * It fires AFTER a case, so the first wave of a run can still see what the
- * previous run left; what this guarantees is that a run never leaves anything
- * for the NEXT one. When a suite is being re-run to compare against itself,
- * that is the property that matters.
- */
-const cleanupPages = async (ctx: EvalCaseContext): Promise<void> => {
+const readPageLedger = async (): Promise<string[]> => {
+  try {
+    const parsed: unknown = await Bun.file(PAGE_LEDGER_PATH).json();
+    if (typeof parsed !== "object" || parsed === null) return [];
+    const ids: unknown = Reflect.get(parsed, "pageIds");
+    if (!Array.isArray(ids)) return [];
+    return ids.filter((id): id is string => typeof id === "string");
+  } catch {
+    return [];
+  }
+};
+
+/** Ids built by the run in progress. Written after every case, so a run that
+ * dies half-way still leaves the next one something to sweep. */
+const builtThisRun = new Set<string>();
+
+const sweepPreviousRun = async (): Promise<void> => {
+  const teamId = process.env.EVAL_TEAM_ID;
+  if (teamId === undefined || teamId === "") return;
+  const ids = await readPageLedger();
+  if (ids.length === 0) return;
   await db
     .delete(pages)
+    .where(and(eq(pages.teamId, teamId), inArray(pages.id, ids)));
+};
+
+/**
+ * Started at IMPORT, not from the first `cleanup` hook, and that is the whole
+ * point of it being here.
+ *
+ * A `cleanup` hook fires after a case, so the previous run's pages were still
+ * standing while the first wave ran — and a page builder that finds a page
+ * already covering the ask is RIGHT to stop and ask which one to change. It did
+ * exactly that on 2026-09-04: two of five cases built nothing and scored 0.188
+ * and 0.250 for correct behaviour against a workspace the harness had left
+ * dirty, the same signature recorded in August under the 12-hour rule. Keeping
+ * a run's own output for inspection never required showing it to the NEXT run.
+ *
+ * Sweeping this early is only safe because the ledger names ids: the earlier
+ * rules were guesses wide enough that running one before a case would have been
+ * reckless.
+ */
+const previousRunSwept: Promise<void> = sweepPreviousRun();
+
+/**
+ * Record what this case built. Runs from a `cleanup` hook, so it fires once per
+ * case — cheap, idempotent, and no separate maintenance step anyone can forget.
+ * The run's own pages stay: they are the evidence, and only the NEXT run sweeps
+ * them.
+ *
+ * The recording query runs BEFORE `destroyEphemeralConversation` (runner.ts
+ * calls `cleanup` first), which is what makes `sourceConversationId` a usable
+ * key: a moment later the FK is nulled and the link is gone.
+ */
+const cleanupPages = async (ctx: EvalCaseContext): Promise<void> => {
+  // The sweep started at import; a case that finishes before it lands must not
+  // race the delete against its own recording.
+  await previousRunSwept;
+
+  const built = await db
+    .select({ id: pages.id })
+    .from(pages)
     .where(
-      and(eq(pages.teamId, ctx.teamId), lt(pages.createdAt, RUN_STARTED_AT)),
+      and(
+        eq(pages.teamId, ctx.teamId),
+        eq(pages.sourceConversationId, ctx.conversationId),
+      ),
     );
+  for (const row of built) builtThisRun.add(row.id);
+  await Bun.write(
+    PAGE_LEDGER_PATH,
+    `${JSON.stringify({ pageIds: [...builtThisRun] }, null, 2)}\n`,
+  );
+
   await forgetFixtureActivity(ctx);
 };
 

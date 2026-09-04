@@ -4,6 +4,7 @@ import { createPage } from "@fretik/shared/services/pages/create";
 import {
   formatPageLintFinding,
   lintErrorsRefusingBuild,
+  lintPageDataContract,
   lintPageProject,
 } from "@fretik/shared/services/pages/lint";
 import { updatePage } from "@fretik/shared/services/pages/update";
@@ -119,10 +120,19 @@ export const buildPageProject = async (
     code,
   };
 
-  // The one lint that refuses: rows the team's data never produced. Checked
-  // BEFORE the compile, because a page that compiles and lies is exactly the
-  // thing every other gate in this pipeline lets through.
-  const lint = lintPageProject(code);
+  // The lints that refuse, both checked BEFORE the compile because a page that
+  // compiles and lies is exactly the thing every other gate lets through: rows
+  // the team's data never produced, and — since 2026-09-04 — code that queries
+  // datasets this definition does not declare. The second one is why the
+  // sentence above about a page with no `page.json` is safe: declaring nothing
+  // is legal only for a page that also asks for nothing.
+  const lint = [
+    ...lintPageProject(code),
+    ...lintPageDataContract(code, {
+      datasetIds: definition.datasets.map((dataset) => dataset.id),
+      operationIds: definition.operations.map((operation) => operation.id),
+    }),
+  ];
   const refusals = lintErrorsRefusingBuild(lint);
   if (refusals.length > 0) {
     return { ok: false, errors: refusals };
@@ -167,6 +177,11 @@ export const buildPageProject = async (
               userId: input.userId,
               conversationId: input.conversationId ?? null,
             },
+            // What this version cost to write, in our own row. See
+            // `PageVersionMeta.writes` for why it cannot live in telemetry.
+            ...(state.writes !== undefined && state.writes.length > 0
+              ? { versionMeta: { writes: state.writes } }
+              : {}),
           })
         : await createPage({
             teamId: input.teamId,
@@ -185,6 +200,9 @@ export const buildPageProject = async (
               userId: input.userId,
               conversationId: input.conversationId ?? null,
             },
+            ...(state.writes !== undefined && state.writes.length > 0
+              ? { versionMeta: { writes: state.writes } }
+              : {}),
           });
 
     return {

@@ -87,8 +87,14 @@ await mockModule("@fretik/shared/services/pages/render/render-page", {
 // real, so restoring it after this file leaves nothing behind.
 const realEvaluate = await import("../../../src/services/page-review/evaluate");
 let critiqueResult: Record<string, unknown> = { ok: false, reason: "unset" };
+// Counted, not just stubbed: the last look is defined by which half of the
+// review it runs, so "the critic was not called" has to be assertable.
+let critiqueCalls = 0;
 await mockModule("../../../src/services/page-review/evaluate", {
-  evaluatePageDesign: async () => critiqueResult,
+  evaluatePageDesign: async () => {
+    critiqueCalls += 1;
+    return critiqueResult;
+  },
 });
 
 const updateCalls: { input: Record<string, unknown> }[] = [];
@@ -253,6 +259,7 @@ beforeEach(() => {
   updateThrows = null;
   createThrows = null;
   critiqueResult = { ok: false, reason: "unset" };
+  critiqueCalls = 0;
 });
 
 const compileRefusal = () =>
@@ -270,8 +277,30 @@ const spendBudget = async (): Promise<void> => {
 };
 
 describe("review budget — hard, shared, checked before the render", () => {
-  test("a spent budget refuses without opening a browser", async () => {
+  /**
+   * The budget stops REVISION, never VERIFICATION.
+   *
+   * Reaching the cap means the page changed since its last verdict — identical
+   * bytes are answered by the cache before the counter is even read — so
+   * refusing outright hands over code nobody looked at. That is what happened
+   * on 2026-09-04: a build repaired what a review had found, had nothing left
+   * to look at the repair with, and shipped saying it had not been re-reviewed.
+   */
+  test("a spent budget still buys one look, and it skips the critic", async () => {
     await spendBudget();
+    const result = await execManagePage({ action: "review" });
+    expect(result["review"]).toBeUndefined();
+    expect(result["verdict"]).toBe("ship");
+    expect(result["gate"]).toBe("pass");
+    // The cheap half runs...
+    expect(renderCalls).toHaveLength(1);
+    // ...and the half the budget was drawn around does not.
+    expect(critiqueCalls).toBe(0);
+  });
+
+  test("past the last look it refuses without opening a browser", async () => {
+    await spendBudget();
+    await bumpPageReviewIteration(scope, pageId);
     const result = await execManagePage({ action: "review" });
     expect(result["review"]).toBe("refused");
     expect(renderCalls).toHaveLength(0);
@@ -279,6 +308,7 @@ describe("review budget — hard, shared, checked before the render", () => {
 
   test("the builder's `.page` trace suffix counts in the parent's scope", async () => {
     await spendBudget();
+    await bumpPageReviewIteration(scope, pageId);
     const result = await execManagePage(
       { action: "review" },
       { traceId: `${scope}.page` },

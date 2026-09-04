@@ -48,6 +48,11 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 # Eval triage analysis artifacts (ai package) — regenerable, large
 **/evals/.triage
 
+# Ledger of the pages the last eval run built, so the next one sweeps exactly
+# those (evals/cases/pages.ts). Machine-local: a shared copy would name rows
+# another machine's database has never heard of.
+**/evals/.eval-pages.json
+
 # Python bytecode caches (sandbox-assets SDK, bundled skill scripts, sdk-templates)
 __pycache__/
 *.pyc

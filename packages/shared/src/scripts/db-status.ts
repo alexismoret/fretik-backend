@@ -36,8 +36,16 @@ const main = async (): Promise<void> => {
     `target: ${row.database} on ${row.host ?? "local socket"}:${row.port.toString()} as ${row.user}`,
   );
 
-  const { applied, pending } = await listPendingMigrations();
+  const { applied, pending, drifted } = await listPendingMigrations();
   console.log(`applied: ${applied.toString()}`);
+
+  // Applied, but the file on disk no longer matches what ran. Printed, never
+  // gating: nothing an operator runs can reconcile it, and a database built
+  // from scratch today would get the edited SQL instead of this one's.
+  if (drifted.length > 0) {
+    console.log(`drifted: ${drifted.length.toString()} (edited after apply)`);
+    for (const name of drifted) console.log(`  - ${name}`);
+  }
 
   if (pending.length === 0) {
     console.log("pending: none — the schema is current");

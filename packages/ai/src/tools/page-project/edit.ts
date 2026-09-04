@@ -12,7 +12,10 @@ import {
   hashFileContent,
   MAX_EDIT_FAILURES,
 } from "../../services/page-project/store";
-import { measurePageWrite } from "../../services/page-project/write-stats";
+import {
+  measurePageWrite,
+  trackWrite,
+} from "../../services/page-project/write-stats";
 import { loadPageProjectContext } from "./context";
 import { lintDelta } from "./lint";
 
@@ -163,8 +166,20 @@ export const createPageEditTool = () =>
         );
       }
 
+      const lint = lintDelta(path, content, next);
+      // What an edit COSTS: the two strings it sent, against the lines it moved.
+      const measured = measurePageWrite({
+        mode: "edit",
+        path,
+        before: content,
+        after: next,
+        charsEmitted: input.oldString.length + input.newString.length,
+        ...(lint.lintDelta !== undefined ? { lintDelta: lint.lintDelta } : {}),
+      });
+
       await project.save({
         ...state,
+        writes: trackWrite(state.writes, measured),
         files: { ...state.files, [path]: next },
         seen: {
           ...state.seen,
@@ -176,17 +191,6 @@ export const createPageEditTool = () =>
             editFailures: 0,
           },
         },
-      });
-
-      const lint = lintDelta(path, content, next);
-      // What an edit COSTS: the two strings it sent, against the lines it moved.
-      measurePageWrite({
-        mode: "edit",
-        path,
-        before: content,
-        after: next,
-        charsEmitted: input.oldString.length + input.newString.length,
-        ...(lint.lintDelta !== undefined ? { lintDelta: lint.lintDelta } : {}),
       });
 
       const first = found.matches[0];

@@ -13,7 +13,7 @@ import { sanitizePageDefinition } from "./sanitize";
 import { serializePage } from "./serialize";
 import { validatePageDefinitionConnections } from "./validate-connections";
 import { refreshPageVectors } from "./vector-refresh";
-import type { PageVersionActor } from "./versions";
+import type { PageVersionActor, PageVersionMeta } from "./versions";
 import { trimPageVersions, writePageVersion } from "./versions";
 import { pageOwnerWriteError } from "./visibility";
 
@@ -36,6 +36,8 @@ export const createPage = async (params: {
   input: CreatePageInput;
   /** Who is writing, for the history. Defaults to the human doing the create. */
   actor?: PageVersionActor;
+  /** What producing this first version cost — see `PageVersionMeta.writes`. */
+  versionMeta?: PageVersionMeta;
 }): Promise<{ page: PageResponse; warnings: string[] }> => {
   const input = CreatePageSchema.parse(params.input);
 
@@ -106,6 +108,7 @@ export const createPage = async (params: {
         userId: params.createdByUserId,
         conversationId: input.sourceConversationId ?? null,
       },
+      ...(params.versionMeta ? { meta: params.versionMeta } : {}),
     });
     return created;
   });

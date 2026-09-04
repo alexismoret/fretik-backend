@@ -1,5 +1,6 @@
 import { diffLines } from "@fretik/shared/lib/line-diff";
 import { getActiveSpanId, startObservation } from "@langfuse/tracing";
+import { MAX_TRACKED_WRITES, type PageWriteRecord } from "./store";
 
 /**
  * What every write to a page's project cost, as a number.
@@ -55,9 +56,15 @@ export const measurePageWrite = (params: {
   /** What the model actually sent — a whole file, or just the new text. */
   charsEmitted: number;
   lintDelta?: string[];
-}): void => {
+}): PageWriteRecord => {
   const diff = diffLines(params.before ?? "", params.after);
   const linesTotal = params.after === "" ? 0 : params.after.split("\n").length;
+  const ratio = rewriteRatio({
+    charsEmitted: params.charsEmitted,
+    linesChanged: diff.changed,
+    linesTotal,
+    charsTotal: params.after.length,
+  });
   recordPageWrite({
     mode: params.mode,
     path: params.path,
@@ -65,14 +72,25 @@ export const measurePageWrite = (params: {
     linesTotal,
     charsEmitted: params.charsEmitted,
     ...(params.lintDelta !== undefined ? { lintDelta: params.lintDelta } : {}),
-    ratio: rewriteRatio({
-      charsEmitted: params.charsEmitted,
-      linesChanged: diff.changed,
-      linesTotal,
-      charsTotal: params.after.length,
-    }),
+    ratio,
   });
+  // Returned as well as traced: the event may not survive the deployment it
+  // lands on (v4 `events_only` strips metadata), the working copy always does.
+  return {
+    mode: params.mode === "build" ? "write" : params.mode,
+    path: params.path,
+    linesChanged: diff.changed,
+    linesTotal,
+    charsEmitted: params.charsEmitted,
+    ratio,
+  };
 };
+
+/** Append one measurement, oldest dropped first. */
+export const trackWrite = (
+  writes: PageWriteRecord[] | undefined,
+  record: PageWriteRecord,
+): PageWriteRecord[] => [...(writes ?? []), record].slice(-MAX_TRACKED_WRITES);
 
 /**
  * One `page-write` event per call, on the run's own trace.

@@ -66,6 +66,8 @@ Figures in the task are context, never data. Every number the page displays come
 
 **3. Write `page.json`, then plan the files.** `page.json` holds everything that is not code — the brief, the variables, the datasets you just probed, the operations. It goes in FIRST, because every later step reads it and because it outlives this conversation.
 
+**A dataset the page reads is declared in `page.json` or it does not exist.** The server runs what `page.json` declares and nothing else: a config written in a `lib/` module reads as configured, compiles, and returns nothing — one page shipped four of them and rendered "0 result" over a full collection. Same for an operation: undeclared, `fretik.ops.run` is refused. The build refuses both by name. An EMPTY dataset is a different thing entirely and is never a defect — a collection nobody has filled, an app nobody has connected: declare it, render its empty state, say so.
+
 - `brief.product`: the job the page does, who opens it, and the features you are committing to.
 - `brief.design`: the layout in prose, one signature element, and at most one moment of motion.
 
@@ -75,7 +77,7 @@ The file plan follows from the brief in one pass: one component per region of th
 
 **4. Read the API of every component you are about to use.** `pageDocs`, up to 6 at a time, before the template. This is not optional and it is not covered by knowing Nuxt UI: an unknown prop is dropped in silence, a mis-slotted panel renders in the wrong place, and a handler with a guessed signature receives the wrong argument. Two shipped pages failed exactly here — a slideover that opened empty, and a compose form that rendered permanently inline because it sat in a modal's trigger slot. Both compiled. Both logged nothing.
 
-**5. Write the files, then build.** One `pageWrite` per file, and **several `pageWrite` calls in the same message** — that is how a project gets laid out, not one file per turn. Order: `page.json`, the composable that loads the data, `Page.vue`, then one component per region. Then `pageBuild`.
+**5. Write the files, then build.** ONE `pageWrite`, carrying every file in its `files` array — `page.json`, the composable that loads the data, `Page.vue`, then one component per region. Then `pageBuild`. A build that sent its files one call at a time cost 39 model calls and 3.25M input tokens, because every extra call re-sends the whole conversation.
 
 - Nothing you write is visible to anyone until `pageBuild` is green, and a build that fails costs the build and nothing else: your files stay exactly as you wrote them and the errors come back as `file:line`. So write, build, read the lines, fix, build again — never hold a file back because you are unsure it compiles.
 - **Which tool fixes what**: 20 changed lines or fewer → `pageEdit`; more than that, or a file under 60 lines → `pageWrite` the file. After two failed edits on one file, stop anchoring and `pageWrite` it whole.
@@ -86,8 +88,8 @@ The file plan follows from the brief in one pass: one component per region of th
 
 - `blocking` first, always. Those are measured, not opinions — a control that changes nothing, an overlay that opens empty, content cut off at a width, a page that goes blank when the data does, a native `<select>` where a component belongs. Fix every one, each in the file it names, then review again. The critic does not look until the gate is clean.
 - Then `findings`, worst first, one edit per finding. A finding names one region, so it is one `pageEdit` in one file.
-- Then review once more. There is ONE critique per build: a green gate after it is the end of the loop, and the budget is five mounted reviews, enforced.
-- **`ship` is the end, immediately.** Hand back the url and stop — no more edits, no more reviews. The rounds after a green verdict were measured chasing tenths inside the critic's own noise while the clock ran out. Pass the `elevations` on as what you would do next: "still perfectible" tells the user nothing; a named change they can say yes or no to is worth having.
+- Then review again. The critic looks at what you changed and the loop ends when nothing major is left — not when it has spoken once. The budget is five mounted reviews, enforced; a `score` below the bar with findings open means the page is not finished, whatever it looks like.
+- **`ship` is the end, immediately.** Hand back the url and stop — no more edits, no more reviews. Pass the `elevations` on as what you would do next: "still perfectible" tells the user nothing; a named change they can say yes or no to is worth having. If the budget ran out before the bar, say the score and what is still open, in one plain sentence.
 
 </process>
 
@@ -127,7 +129,7 @@ Never report a page as finished on a review you did not run, and never describe 
 Eight tools work the project, and they are your instrument:
 
 - `pageRead` — one file with line numbers, or the manifest when you pass no path.
-- `pageWrite` — create or replace one whole file.
+- `pageWrite` — create or replace whole files; pass every file you are writing in one call.
 - `pageEdit` — replace an exact piece of a file you have read.
 - `pageSearch` — a regex across the files, `path:line`.
 - `pageBuild` — compile everything and, if it is green, save it as the page.

@@ -37,6 +37,25 @@ export interface PageVersionMeta {
   round?: number;
   score?: number;
   restoredFrom?: number;
+  /**
+   * What the writes that produced this version cost — mode, path, lines moved,
+   * characters emitted, and the ratio between them.
+   *
+   * Here rather than only in telemetry because telemetry lost it: a Langfuse v4
+   * `events_only` deployment strips `metadata` from the observations API, so
+   * the `page-write` events of the 2026-09-04 build came back as names and
+   * nothing else, and the script written to read them measured `undefined`.
+   * A number kept in our own row cannot be dropped by someone else's ingestion
+   * mode.
+   */
+  writes?: {
+    mode: "write" | "edit";
+    path: string;
+    linesChanged: number;
+    linesTotal: number;
+    charsEmitted: number;
+    ratio: number;
+  }[];
 }
 
 type TxCallback = Parameters<typeof db.transaction>[0];

@@ -4,6 +4,7 @@ import {
   newLintFindings,
   type PageLintFinding,
 } from "@fretik/shared/services/pages/lint";
+import { PAGE_JSON_FILE } from "../../services/page-project/page-json";
 
 /**
  * What a write or an edit INTRODUCED — never what the file already carried.
@@ -28,6 +29,10 @@ export const lintDelta = (
   before: string | undefined,
   after: string,
 ): { lintDelta?: string[]; lintRefusesBuild?: true } => {
+  // `page.json` is data, not code. Every rule here reads a script, and running
+  // them over JSON reports on a language nobody wrote — the build validates it
+  // against its own schema and says so in the file's own grammar.
+  if (path === PAGE_JSON_FILE) return {};
   let introduced: PageLintFinding[];
   try {
     introduced = newLintFindings(

@@ -57,7 +57,33 @@ export interface PageProjectState {
   pageId?: string;
   /** Hash of the files as they were last PROMOTED — the copy is dirty when it differs. */
   builtHash?: string;
+  /**
+   * What each write of this run cost, oldest first, capped at
+   * `MAX_TRACKED_WRITES`.
+   *
+   * It lives here rather than only in a Langfuse event because of what the
+   * events turned out to be worth: on a v4 `events_only` deployment the
+   * observations API strips `metadata` AND usage, so the nineteen `page-write`
+   * events of the 2026-09-04 build came back with their names and nothing else.
+   * `pages:measure-writes` reads `metadata.mode` and `rewriteRatio` and would
+   * have measured `undefined` forever. A build folds this into
+   * `page_versions.meta.writes`, where it is ours and stays readable.
+   */
+  writes?: PageWriteRecord[];
 }
+
+/** One write, as `page_versions.meta.writes` keeps it. */
+export interface PageWriteRecord {
+  mode: "write" | "edit";
+  path: string;
+  linesChanged: number;
+  linesTotal: number;
+  charsEmitted: number;
+  ratio: number;
+}
+
+/** Past this the record stops being a measurement and becomes a payload. */
+export const MAX_TRACKED_WRITES = 80;
 
 export const emptyProjectState = (): PageProjectState => ({
   files: {},

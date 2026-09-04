@@ -5,6 +5,7 @@ import {
 } from "@fretik/shared/schemas/pages";
 import {
   lintFindingsBlockingReview,
+  lintPageDataContract,
   lintPageProject,
 } from "@fretik/shared/services/pages/lint";
 import { renderPage } from "@fretik/shared/services/pages/render/render-page";
@@ -24,25 +25,36 @@ import {
 } from "./page-session-store";
 
 /**
- * Reviewing a page: the mechanical gate first, then ONE critique, then the gate
- * again — and that is the whole loop.
+ * Reviewing a page: the mechanical gate first, then the critic — and the loop
+ * ends when the critic has nothing major left, not when it has spoken once.
+ *
+ * Two failures shaped this, in that order.
  *
  * It was three scored rounds with a best-of restore, and two production builds
  * measured what that bought: 6.6 → 6.8 → 7.0 on one, 6.3 → 6.6 → 6.1 on the
  * other, every step inside the critic's own run-to-run spread (identical bytes
- * scored 6.8 and 7.8 two minutes apart, 2026-08-23). Three critiques, three
- * page-scale fix rounds, and a page no better than after the first.
+ * scored 6.8 and 7.8 two minutes apart, 2026-08-23). What was noisy there was
+ * RE-SCORING and CHOOSING: the same page judged again, and a winner picked
+ * between readings that differed by less than the critic's own variance.
  *
- * What DOES find real defects is the gate: it is measured, not judged — a dead
- * control, an overlay that opens empty, content cut off at a width, a blank
- * empty state. So the gate runs first and repeats after every fix, while the
- * critic — the expensive, noisy half — looks once, at a page that already
- * passes it, and its findings are applied once.
+ * Cutting to one critique fixed that and broke something else. On 2026-09-04 a
+ * page scored 5.4, and shipped — because the second pass shipped on sight of an
+ * existing critique, whatever it had said. The user was told the review had
+ * "validated" it. A score that gates nothing is not information, it is
+ * decoration on a verdict that was never in doubt.
+ *
+ * So: the critic looks after every change (identical bytes never get here — the
+ * verdict cache answers first), the latest version is always the one that
+ * stands, and shipping requires clearing the bar or running out of budget. No
+ * re-scoring, no choosing, no free pass.
+ *
+ * What finds defects first is still the gate: measured, not judged — a dead
+ * control, an overlay that opens empty, a native control, a control that writes
+ * into rows the page cannot save. It runs before the critic every time.
  *
  * One service, two callers: the builder's `pageReview` and the parent's
- * `managePage { action: "review" }`. They share the budget, the verdict cache
- * and the single critique, because they are looking at the same page in the
- * same turn.
+ * `managePage { action: "review" }`. They share the budget and the caches,
+ * because they are looking at the same page in the same turn.
  */
 
 /** What the caller is asking about. */
@@ -62,10 +74,20 @@ export interface PageReviewRequest {
 /** The phase a result belongs to, so the caller's next step is unambiguous. */
 export type PageReviewPhase = "gate" | "critique" | "final";
 
+/**
+ * Renders granted past `MAX_PAGE_REVIEWS`, gate-only.
+ *
+ * One, because one is what "never hand over code nobody looked at" costs. It is
+ * not a bigger budget by another name: these passes never call the critic, so
+ * the thing the budget was drawn around — paid re-scoring of a page the critic
+ * cannot score consistently anyway — is capped exactly where it was.
+ */
+const FINAL_LOOKS = 1;
+
 const FIX_BLOCKING =
   "Fix every line of `blocking` — those are measured, not opinions. Edit the file each one names, then review again. The critic looks once the gate passes.";
-const APPLY_ONCE =
-  "Apply each `finding`, then review once more: that pass is gate-only and ends the loop. `elevations` are not for you to build — hand them to the user.";
+const APPLY_FINDINGS =
+  "Apply each `finding` — they are what a user would hit — then review again. The next pass looks at what you changed, and the loop ends when nothing major is left or the budget runs out. `elevations` are not for you to build: hand them to the user.";
 const SHIP =
   "Nothing blocks this page: it ships as it stands. Hand back its url and pass on any `elevations` as what you would do next. Do NOT edit or review again — the verdict is final for this version.";
 
@@ -101,8 +123,21 @@ export const runPageReview = async (
 
   // Checked BEFORE the render, so a spent budget costs no browser, no
   // screenshots and no critic.
+  //
+  // Past the cap there is still ONE look left, and it is the difference between
+  // a budget that stops revision and a budget that stops verification. Reaching
+  // this line at all means the page CHANGED since its last verdict — identical
+  // bytes never get here, the cache answers above — so a flat refusal hands
+  // over code nobody has seen. Measured 2026-09-04: a build fixed what a review
+  // had found, had no budget left to look at the fix, and shipped saying so;
+  // "this wasn't re-reviewed" is an honest sentence, not a reviewed page.
+  //
+  // What that last look does NOT get is the critic. The expensive half stays
+  // capped exactly where it was, and this pass buys the cheap half the loop was
+  // always allowed to repeat: does it still mount, does the gate still pass.
   const spent = await readPageReviewIterations(scope, page.id);
-  if (spent >= MAX_PAGE_REVIEWS) {
+  const finalLook = spent >= MAX_PAGE_REVIEWS;
+  if (spent >= MAX_PAGE_REVIEWS + FINAL_LOOKS) {
     return {
       pageId: page.id,
       url: `/pages/${page.id}`,
@@ -131,12 +166,18 @@ export const runPageReview = async (
   }
 
   // What the CODE already proves, before anything renders: a native control
-  // where a component belongs. It leads the blocking list because it is certain
-  // and because a screenshot cannot show it — the two measured pages carried
-  // ten of these between them and the critic scored both without noticing.
-  const staticFindings = lintFindingsBlockingReview(
-    lintPageProject(page.definition.code),
-  );
+  // where a component belongs, and a control that writes into loaded rows the
+  // page has no operation to save. Both lead the blocking list because they are
+  // certain and because a screenshot cannot show either — the measured pages
+  // carried ten native controls and one faked write between them, and the
+  // critic scored all three without noticing any.
+  const staticFindings = lintFindingsBlockingReview([
+    ...lintPageProject(page.definition.code),
+    ...lintPageDataContract(page.definition.code, {
+      datasetIds: page.definition.datasets.map((dataset) => dataset.id),
+      operationIds: page.definition.operations.map((operation) => operation.id),
+    }),
+  ]);
 
   const gate = gatePageRender(render, {
     declaredDatasets: page.definition.datasets.length,
@@ -185,31 +226,44 @@ export const runPageReview = async (
     return result;
   }
 
-  // The gate is clean. Has the critic already looked, in this run?
-  const previous = await readPageCritique(scope, page.id);
-  if (previous !== null) {
-    const result = {
+  // The last look ends here: the page mounts and the gate is clean, which is
+  // everything this pass was granted to establish. Scoring it would reopen the
+  // half the budget exists to bound, and a fresh score with nothing left to
+  // spend on it is a number to feel bad about rather than one to act on.
+  if (finalLook) {
+    const previousCritique = await readPageCritique(scope, page.id);
+    return {
       pageId: page.id,
       url: `/pages/${page.id}`,
-      iteration: seen,
-      phase: "final" as PageReviewPhase,
+      iteration: `${iteration.toString()}/${MAX_PAGE_REVIEWS.toString()}`,
+      phase: "final",
       gate: "pass" as const,
       verdict: "ship" as const,
-      score: previous.score,
       ...(gate.observations.length > 0 ? { observed: gate.observations } : {}),
-      ...(previous.elevations.length > 0
-        ? { elevations: previous.elevations }
+      ...(previousCritique?.elevations !== undefined
+        ? { elevations: previousCritique.elevations }
         : {}),
-      next: SHIP,
+      next: "The budget bought one last look and the page passed it: it mounts and the gate is clean. Ship. Say that this version was checked mechanically but not re-scored for design, and pass `elevations` on.",
     };
-    await recordPageReviewVerdict(scope, page.id, {
-      sourceHash,
-      shipped: true,
-      round: iteration,
-      result,
-    });
-    return result;
   }
+
+  // The gate is clean, so the critic looks — again, if the page has changed
+  // since it last did.
+  //
+  // Until 2026-09-04 a second pass here shipped ON SIGHT, whatever the critic
+  // had said: one critique, findings applied once, ship. A build that measured
+  // 5.4/10 was handed to the user as "validée, aucun élément bloquant". The
+  // score was reported and gated nothing, which is worse than not reporting it
+  // — it made the summary sound checked.
+  //
+  // Repeating the critique is NOT the three-round loop that was retired. That
+  // one re-scored an unchanged page and picked the best round, which measured
+  // the critic's variance and called it progress. This one re-scores only after
+  // the builder changed something (identical bytes never reach here — the
+  // verdict cache answers first), keeps the latest version always, and stops
+  // the moment the critic has no major left. A page the critic clears at once
+  // costs exactly what it cost before.
+  const previous = await readPageCritique(scope, page.id);
 
   const critique = await evaluatePageDesign({
     pageName: page.name,
@@ -262,7 +316,13 @@ export const runPageReview = async (
     (finding) => finding.severity === "major",
   );
   const elevations = critique.critique.elevations;
-  const ships = critique.critique.score >= SHIP_SCORE && findings.length === 0;
+  const cleared =
+    critique.critique.score >= SHIP_SCORE && findings.length === 0;
+  // Out of budget ships whatever it has. The alternative is a page held
+  // hostage to a score it will never reach, and a builder with nothing left to
+  // spend on reaching it — so it ships, and it says what it shipped.
+  const exhausted = left <= 0;
+  const ships = cleared || exhausted;
 
   await recordPageCritique(scope, page.id, {
     sourceHash,
@@ -284,11 +344,12 @@ export const runPageReview = async (
     ...(gate.observations.length > 0 ? { observed: gate.observations } : {}),
     ...(findings.length > 0 ? { findings } : {}),
     ...(elevations.length > 0 ? { elevations } : {}),
-    next: ships
+    ...(previous !== null ? { previousScore: previous.score } : {}),
+    next: cleared
       ? SHIP
-      : left <= 0
-        ? "This was the last render. Apply what you can, then hand the page over naming the findings you did not get to."
-        : APPLY_ONCE,
+      : exhausted
+        ? `The review budget is spent and this is the version that ships, at ${critique.critique.score.toFixed(1)}/10 with ${findings.length.toString()} finding(s) open. Hand back the url and tell the user plainly what is still weak, naming the findings — not "perfectible".`
+        : APPLY_FINDINGS,
   };
   await recordPageReviewVerdict(scope, page.id, {
     sourceHash,

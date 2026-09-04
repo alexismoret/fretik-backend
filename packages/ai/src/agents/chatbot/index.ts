@@ -9,6 +9,7 @@ import {
   type ResolvedModel,
 } from "../../lib/model-registry/resolve";
 import { areWebToolsAvailable, WEB_TOOL_NAMES } from "../../lib/web-egress";
+import { prunePageWriteHistory } from "../../services/page-project/prune-history";
 import { salvagePageProject } from "../../services/page-project/salvage";
 import { createBuildPageTool } from "../../tools/build-page";
 import { createDispatchAgentTool } from "../../tools/dispatch-agent";
@@ -406,7 +407,11 @@ const subAgentPrepareStep = (
   };
 };
 
-/** The page builder's gate — same contract, its own concrete tool set. */
+/**
+ * The page builder's gate — same contract, its own concrete tool set, plus the
+ * one thing only this agent needs: its own write history, minus the file bodies
+ * it has already replaced. See `prunePageWriteHistory` for the measurement.
+ */
 const pageBuilderPrepareStep = (
   tools: PageBuilderTools,
 ): PrepareStepFunction<PageBuilderTools> => {
@@ -414,9 +419,13 @@ const pageBuilderPrepareStep = (
   return (stepContext) => {
     const ctx = getRuntimeContext(stepContext);
     const hidden = delegateHiddenToolNames(ctx);
+    const pruned = prunePageWriteHistory(stepContext.messages);
     return {
       activeTools: allNames.filter((name) => !hidden.has(name)),
       toolsContext: buildToolsContext(tools, ctx),
+      // Omitted when nothing was superseded: an override is carried forward by
+      // the SDK, and handing it an identical copy every step buys nothing.
+      ...(pruned !== null ? { messages: pruned } : {}),
     };
   };
 };

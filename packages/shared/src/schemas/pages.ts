@@ -712,8 +712,27 @@ export const PAGE_COMPONENT_COLORS = [
  * iframe (the host pushes it through the bridge context), so every Nuxt UI
  * component keeps its native variants and only changes hue.
  */
+export const PAGE_RADIUS_TOKENS = ["none", "sm", "md", "lg", "xl"] as const;
+
 export const PageThemeSchema = z.object({
   accent: z.enum(PAGE_ACCENT_TOKENS).optional(),
+  /**
+   * The corner radius every component inherits, as `--ui-radius`.
+   *
+   * The second axis a page may re-point, and the cheapest one that changes how
+   * a screen READS: square corners make a ledger look like a ledger, and the
+   * app's default makes everything look like the app. Accent alone moved hue
+   * and nothing else, so a page whose subject wanted a different temperature
+   * had to reach for hand-picked classes — which the palette lint refuses, and
+   * rightly.
+   *
+   * Applied where `accent` is, by the host through the bridge context rather
+   * than by the compiler: a theme that recompiled the page would make a colour
+   * change cost a build, and the host already pushes the live palette. Until
+   * the runtime carries it, this parses and does nothing — which is why the
+   * data contract does not mention it yet.
+   */
+  radius: z.enum(PAGE_RADIUS_TOKENS).optional(),
 });
 export type PageTheme = z.infer<typeof PageThemeSchema>;
 
@@ -751,13 +770,65 @@ export const PageBriefSchema = z.object({
      */
     features: z.array(briefField).max(PAGE_LIMITS.maxBriefFeatures).default([]),
   }),
+  /**
+   * The design, decided in writing before any of it is built.
+   *
+   * It was three prose fields — layout, signature, motion — and the review
+   * scored design at 0.35 against nothing it could check. Everything else the
+   * page commits to has a shape the machine can hold it to: datasets,
+   * operations, writes, native controls, the palette. Composition, the largest
+   * share of the score, was the one commitment written as an intention.
+   *
+   * The fields below are that intention made checkable. Every one is prose —
+   * a fixed vocabulary would decide the design instead of recording it — but
+   * each answers a question whose absence has a name in the failure log, and
+   * the critic reads them beside the screenshots to ask whether the page it
+   * sees is the page that was promised.
+   *
+   * All of them but `layout` and `signature` are optional AT PARSE: pages
+   * written before this existed must keep loading. What makes a new page write
+   * the plan is `lint/design-plan.ts`, which refuses the build without it.
+   */
   design: z.object({
+    /**
+     * The shape this screen takes, named. "Cockpit", "workbench", "ledger",
+     * "feed" — or something the doctrine never listed, which is the point of
+     * a free string. Naming it is what stops a page defaulting to a title, a
+     * row of four equal cards and a table.
+     */
+    archetype: briefField.optional(),
     /** The layout in prose — regions, what sits where, what dominates. */
     layout: briefField,
+    /**
+     * What leads, what supports, what recedes — and by how much. Written in
+     * sizes and shares rather than adjectives, because "clear hierarchy" is
+     * true of every layout its author has just finished.
+     */
+    hierarchy: briefField.optional(),
+    /** How tightly the screen is packed. An operator triaging a queue and a
+     * manager reading a summary do not want the same page. */
+    density: z.enum(["compact", "comfortable", "spacious"]).optional(),
+    /** The columns and the spans. */
+    grid: briefField.optional(),
+    /** Where each piece of depth opens: in place, in a popover, in a panel,
+     * in a view of its own, or behind a decision the reader must finish. */
+    containers: briefField.optional(),
     /** The ONE element this page is remembered by. Boldness is spent here. */
     signature: briefField,
     /** The single orchestrated moment of motion, if any. */
     motion: briefField.optional(),
+    /** What each region shows while loading, when empty, and when it fails. */
+    states: briefField.optional(),
+    /**
+     * The generated defaults this page deliberately did NOT take, each with
+     * what it does instead.
+     *
+     * The one field that is an argument rather than a description. A plan can
+     * describe the default output perfectly and still be the default output;
+     * naming what was rejected is the only part of the plan that cannot be
+     * written without having considered an alternative.
+     */
+    defaultsRejected: z.array(briefField).max(6).optional(),
   }),
 });
 export type PageBrief = z.infer<typeof PageBriefSchema>;

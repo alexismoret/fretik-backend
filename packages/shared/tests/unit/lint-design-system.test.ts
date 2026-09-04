@@ -1,6 +1,7 @@
 import "@hono/zod-openapi";
 import { describe, expect, test } from "bun:test";
 import {
+  lintCardRegions,
   lintRawPalette,
   lintStacking,
 } from "../../src/services/pages/lint/design-system";
@@ -119,5 +120,96 @@ describe("stacking", () => {
     expect(lintStacking("components/Panel.vue", sfc("<USlideover />"))).toEqual(
       [],
     );
+  });
+});
+
+describe("card regions", () => {
+  const page = (regions: string[]): string =>
+    [
+      "<template>",
+      '  <div class="space-y-6 p-6">',
+      ...regions.map((region) => `    ${region}`),
+      "  </div>",
+      "</template>",
+    ].join("\n");
+
+  test("fires on the shape the multi-file model made default", () => {
+    // A component drawn on its own comes out self-contained, and a page
+    // assembled from those is a grid of slabs where nothing leads. The
+    // doctrine has said so in prose for weeks.
+    const findings = lintCardRegions(
+      "Page.vue",
+      page([
+        "<UCard><KpiStrip /></UCard>",
+        "<UCard><LaneChart /></UCard>",
+        "<UCard><DealTable /></UCard>",
+        "<UCard><ActivityFeed /></UCard>",
+      ]),
+    );
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.rule).toBe("card-regions");
+    expect(findings[0]?.severity).toBe("warning");
+    expect(findings[0]?.message).toContain("4 of this screen's 4");
+  });
+
+  test("stays silent on a page that chose", () => {
+    // Two cards beside three regions that are not is composition, not a
+    // symptom — and refusing it would be the lint deciding the design.
+    expect(
+      lintCardRegions(
+        "Page.vue",
+        page([
+          "<PageHeading />",
+          "<KpiBand />",
+          "<UCard><LaneChart /></UCard>",
+          "<UCard><Notes /></UCard>",
+          "<DealTable />",
+        ]),
+      ),
+    ).toHaveLength(0);
+  });
+
+  test("stays silent on a card grid, which is a design", () => {
+    // `UPageCard` inside `UPageGrid` is the catalogue's answer for a set of
+    // things that each open somewhere. The regions here are the grid and its
+    // heading, not the cards inside it.
+    expect(
+      lintCardRegions(
+        "Page.vue",
+        page([
+          '<UPageHeader title="Apps" />',
+          "<UPageGrid><UPageCard /><UPageCard /><UPageCard /><UPageCard /><UPageCard /></UPageGrid>",
+        ]),
+      ),
+    ).toHaveLength(0);
+  });
+
+  test("stays silent under four regions", () => {
+    expect(
+      lintCardRegions(
+        "Page.vue",
+        page([
+          "<UCard><A /></UCard>",
+          "<UCard><B /></UCard>",
+          "<UCard><C /></UCard>",
+        ]),
+      ),
+    ).toHaveLength(0);
+  });
+
+  test("looks past the padding wrappers a page is written with", () => {
+    const source = [
+      "<template>",
+      '  <div class="h-full">',
+      '    <div class="mx-auto max-w-7xl space-y-4">',
+      "      <UCard><A /></UCard>",
+      "      <UCard><B /></UCard>",
+      "      <UCard><C /></UCard>",
+      "      <UCard><D /></UCard>",
+      "    </div>",
+      "  </div>",
+      "</template>",
+    ].join("\n");
+    expect(lintCardRegions("Page.vue", source)).toHaveLength(1);
   });
 });

@@ -1,5 +1,5 @@
 import type { PageLintFinding } from "./types";
-import { templateElements } from "./walk-template";
+import { templateElements, templateRegions } from "./walk-template";
 
 /**
  * The two system-level constraints a page inherits and cannot renegotiate: the
@@ -161,4 +161,58 @@ export const lintStacking = (
     }
   }
   return findings;
+};
+
+/**
+ * A screen whose every region is a bordered box has no hierarchy.
+ *
+ * This is the shape the multi-file model made easy and then made default. A
+ * component drawn on its own comes out self-contained — its own border, its
+ * own title, its own padding — and a page assembled from those is a grid of
+ * slabs where nothing leads, which reads worse than the same page written in
+ * one file. The doctrine says it ("regions of one composition share edges and
+ * alignment; they do not each announce themselves") and the pages kept coming
+ * back as card stacks, because the doctrine is prose and the file boundary is
+ * a habit.
+ *
+ * Deliberately narrow, so that what it catches is only ever the failure:
+ *
+ * - `UCard` only. `UPageCard` in a `UPageGrid` is a card grid, which is a
+ *   design and not a symptom.
+ * - Top-level siblings only. Cards INSIDE one region are that region's
+ *   business.
+ * - A majority of them, and at least four. Two cards beside three other
+ *   regions is a page that chose; five out of six is a page that did not.
+ *
+ * A warning: a page of cards is legible, it works, and refusing it would trade
+ * a working page for none. What it must not be is invisible.
+ */
+const MIN_CARD_REGIONS = 4;
+const CARD_REGION_SHARE = 0.6;
+
+export const lintCardRegions = (
+  path: string,
+  source: string,
+): PageLintFinding[] => {
+  const regions = templateRegions(source);
+  if (regions.length < MIN_CARD_REGIONS) return [];
+
+  const cards = regions.filter((region) => region.tag === "UCard");
+  if (
+    cards.length < MIN_CARD_REGIONS ||
+    cards.length < regions.length * CARD_REGION_SHARE
+  ) {
+    return [];
+  }
+
+  const first = cards[0];
+  return [
+    {
+      path,
+      line: first?.line ?? 0,
+      rule: "card-regions",
+      severity: "warning",
+      message: `${cards.length.toString()} of this screen's ${regions.length.toString()} top-level regions are UCard — a stack of equal boxes, which is what a page looks like when its composition was never decided. Regions of one composition share edges and alignment: give the one that leads its own weight and let the rest sit on the page. A container earns a border when its content is a unit that could move elsewhere whole.`,
+    },
+  ];
 };

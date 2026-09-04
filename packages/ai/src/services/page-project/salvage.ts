@@ -40,6 +40,7 @@ export const salvagePageProject = async (params: {
     userId: params.userId,
     conversationId: params.conversationId,
     requester: params.requester,
+    rescue: true,
   });
   // Nothing to rescue: the builder saved this itself. Reporting "recovered"
   // here would send the parent into a repair path for a page that is fine.

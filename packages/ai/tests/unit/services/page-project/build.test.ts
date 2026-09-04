@@ -57,9 +57,31 @@ const CLEAN = [
   "</script>",
 ].join("\n");
 
+/**
+ * A page being created has to carry its design plan, so every fixture that is
+ * about something else carries one. Tests that are about the plan pass their
+ * own `page.json`.
+ */
+const PAGE_JSON = JSON.stringify({
+  brief: {
+    product: { job: "Track orders", audience: "Ops, mid-shift", features: [] },
+    design: {
+      archetype: "ledger",
+      layout: "one wide table under a figure band",
+      hierarchy: "the late count leads; the table is the body",
+      containers: "detail inline, cancellation behind a modal",
+      signature: "late rows carry the error hue down their left edge",
+      defaultsRejected: ["four equal KPI cards → one figure and two small"],
+    },
+  },
+});
+
 const build = async (files: Record<string, string>) =>
   await buildPageProject({
-    state: { ...emptyProjectState(), files },
+    state: {
+      ...emptyProjectState(),
+      files: { "page.json": PAGE_JSON, ...files },
+    },
     teamId: "team-1",
     organizationId: "org-1",
     userId: "user-1",
@@ -161,5 +183,44 @@ describe("buildPageProject", () => {
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error("expected a refusal");
     expect(result.errors).toEqual(["Page.vue:2 unexpected token"]);
+  });
+
+  test("a page created without a design plan is refused", async () => {
+    // The design is decided before it is built, and the only mechanism that
+    // makes that true is this one: prose asked for a brief for weeks and the
+    // pages that skipped it are the pages that came back as four equal cards.
+    // Nothing is lost — the files stay in the working copy, and the fix is one
+    // edit to page.json.
+    const result = await buildPageProject({
+      state: { ...emptyProjectState(), files: { "Page.vue": CLEAN } },
+      teamId: "team-1",
+      organizationId: "org-1",
+      userId: "user-1",
+      conversationId: "conv-1",
+      requester: undefined,
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("expected a refusal");
+    expect(result.errors.join(" ")).toContain("brief");
+    expect(createCalls).toHaveLength(0);
+  });
+
+  test("a rescue saves the page anyway", async () => {
+    // Finishing the build of a run that died. The plan rule has no addressee
+    // once the builder is gone, and enforcing it here would trade a page that
+    // exists for nothing at all.
+    const result = await buildPageProject({
+      state: { ...emptyProjectState(), files: { "Page.vue": CLEAN } },
+      teamId: "team-1",
+      organizationId: "org-1",
+      userId: "user-1",
+      conversationId: "conv-1",
+      requester: undefined,
+      rescue: true,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(createCalls).toHaveLength(1);
   });
 });

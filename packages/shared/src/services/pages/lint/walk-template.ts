@@ -65,6 +65,78 @@ export const templateElements = (source: string): TemplateElement[] => {
   return out;
 };
 
+/** How far to descend through single-child wrappers before giving up. */
+const MAX_WRAPPER_DEPTH = 4;
+
+const elementChildren = (node: unknown): TemplateElement[] => {
+  const children = Reflect.get(
+    typeof node === "object" && node !== null ? node : {},
+    "children",
+  );
+  if (!Array.isArray(children)) return [];
+  const out: TemplateElement[] = [];
+  for (const child of children) {
+    if (typeof child !== "object" || child === null) continue;
+    const tag = Reflect.get(child, "tag");
+    if (typeof tag !== "string") continue;
+    const props = Reflect.get(child, "props");
+    const loc = Reflect.get(child, "loc");
+    const start =
+      typeof loc === "object" && loc !== null
+        ? Reflect.get(loc, "start")
+        : undefined;
+    const line =
+      typeof start === "object" && start !== null
+        ? Reflect.get(start, "line")
+        : undefined;
+    out.push({
+      tag,
+      props: Array.isArray(props) ? props : [],
+      line: typeof line === "number" ? line : 0,
+    });
+  }
+  return out;
+};
+
+/**
+ * The REGIONS of a screen — the first row of siblings, not every element.
+ *
+ * `templateElements` flattens, which is right for asking "is there a raw hue
+ * anywhere in this file" and useless for asking "what is this page made of at
+ * the top level". A page is a stack of regions; the wrappers above them
+ * (`<template><div class="p-6">…`) carry padding and nothing else, so this
+ * descends through them — as long as each has exactly one element child — and
+ * returns the first level that actually branches.
+ */
+export const templateRegions = (source: string): TemplateElement[] => {
+  let node: unknown;
+  try {
+    node = parseSfc(source).descriptor.template?.ast;
+  } catch {
+    return [];
+  }
+  if (node === undefined || node === null) return [];
+
+  for (let depth = 0; depth <= MAX_WRAPPER_DEPTH; depth++) {
+    const children = elementChildren(node);
+    if (children.length !== 1) return children;
+    const only = Reflect.get(
+      typeof node === "object" && node !== null ? node : {},
+      "children",
+    );
+    if (!Array.isArray(only)) return children;
+    const next = only.find(
+      (child) =>
+        typeof child === "object" &&
+        child !== null &&
+        typeof Reflect.get(child, "tag") === "string",
+    );
+    if (next === undefined) return children;
+    node = next;
+  }
+  return [];
+};
+
 /** The static value of an attribute (`color="primary"`), or null for a binding. */
 export const staticProp = (
   element: TemplateElement,

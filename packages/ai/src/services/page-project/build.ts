@@ -5,6 +5,7 @@ import {
   formatPageLintFinding,
   lintErrorsRefusingBuild,
   lintPageDataContract,
+  lintPageDesignPlan,
   lintPageProject,
 } from "@fretik/shared/services/pages/lint";
 import { updatePage } from "@fretik/shared/services/pages/update";
@@ -41,6 +42,16 @@ export interface BuildPageProjectInput {
   userId: string | null;
   conversationId: string | undefined;
   requester: PageRequester | undefined;
+  /**
+   * This build is finishing a run that died, not one the agent asked for.
+   *
+   * It relaxes exactly one thing: a page created without a design plan is
+   * saved rather than refused. The plan is required so that a builder decides
+   * the design before writing it — a rule that has no addressee once the
+   * builder is gone, and enforcing it here would trade a page that exists for
+   * nothing at all.
+   */
+  rescue?: boolean;
 }
 
 export type BuildPageProjectResult =
@@ -131,6 +142,12 @@ export const buildPageProject = async (
     ...lintPageDataContract(code, {
       datasetIds: definition.datasets.map((dataset) => dataset.id),
       operationIds: definition.operations.map((operation) => operation.id),
+    }),
+    // Required only where there is still someone to write it: a page being
+    // created by a live builder. A repair inherits whatever plan the page was
+    // built with, and a rescue has no builder left to ask.
+    ...lintPageDesignPlan(definition.brief, {
+      required: state.pageId === undefined && input.rescue !== true,
     }),
   ];
   const refusals = lintErrorsRefusingBuild(lint);

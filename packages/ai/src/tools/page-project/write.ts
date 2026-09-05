@@ -41,6 +41,37 @@ import { lintDelta } from "./lint";
 /** Past this a file stops being one thing, and the lint says so at build. */
 const SOFT_LINE_LIMIT = 300;
 
+/**
+ * Above this many changed lines a rewrite is the right call — the same number
+ * both this description and `pageEdit`'s already name.
+ */
+const EDIT_WOULD_HAVE_DONE = 20;
+
+/** Emitted per character that changed. 1 is surgical; the measured tail ran 24. */
+const WASTEFUL_RATIO = 6;
+
+/**
+ * Say what a rewrite cost, once it has already landed.
+ *
+ * Deliberately NOT a refusal. By the time this runs the whole file has been
+ * emitted and paid for, and it stays in the history either way — refusing would
+ * add a tool call and a second emission on top of a cost already sunk. The only
+ * rewrite this can still change is the NEXT one, so it reports rather than
+ * blocks, and only when the numbers say an edit would have done: measured over
+ * 14h, 855 of 1 136 writes replaced a whole file, at a p90 of 24.5 characters
+ * emitted per character that changed.
+ */
+const rewriteNote = (measured: {
+  linesChanged: number;
+  charsEmitted: number;
+  ratio: number;
+}): string | undefined =>
+  measured.linesChanged > 0 &&
+  measured.linesChanged <= EDIT_WOULD_HAVE_DONE &&
+  measured.ratio >= WASTEFUL_RATIO
+    ? `${measured.charsEmitted.toString()} chars written to change ${measured.linesChanged.toString()} lines. pageEdit sends the changed lines alone — reach for it under ${EDIT_WOULD_HAVE_DONE.toString()}.`
+    : undefined;
+
 const FileSchema = z.object({
   path: z
     .string()
@@ -163,15 +194,18 @@ export const createPageWriteTool = () =>
           },
         };
 
+        const warnings = [
+          lines > SOFT_LINE_LIMIT
+            ? `${lines.toString()} lines. Past ${SOFT_LINE_LIMIT.toString()} a file is doing several jobs — move a region into its own component while it is still easy.`
+            : undefined,
+          rewriteNote(measured),
+        ].filter((note) => note !== undefined);
+
         outcomes.push({
           path,
           lines,
           written: true,
-          ...(lines > SOFT_LINE_LIMIT
-            ? {
-                warning: `${lines.toString()} lines. Past ${SOFT_LINE_LIMIT.toString()} a file is doing several jobs — move a region into its own component while it is still easy.`,
-              }
-            : {}),
+          ...(warnings.length > 0 ? { warning: warnings.join(" ") } : {}),
           ...lint,
         });
       }

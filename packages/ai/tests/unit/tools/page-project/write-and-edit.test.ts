@@ -119,6 +119,50 @@ describe("pageWrite", () => {
     );
   });
 
+  /** A file long enough that rewriting it to change a line is visible. */
+  const long = (lines: string[]): string =>
+    [
+      "<template>",
+      '  <div class="p-6">',
+      ...lines,
+      "  </div>",
+      "</template>",
+    ].join("\n");
+  const rows = (label: string, count = 200): string[] =>
+    Array.from(
+      { length: count },
+      (_unused, index) =>
+        `    <p class="text-sm">${label} row ${(index + 1).toString()}</p>`,
+    );
+
+  test("a rewrite that changed a handful of lines says what it cost", async () => {
+    await write({ path: "Page.vue", content: long(rows("first")) });
+    const changed = rows("first");
+    changed[0] = '    <p class="text-lg">first row 1</p>';
+
+    const result = await write({ path: "Page.vue", content: long(changed) });
+
+    // Reported, never refused: the file is written and the note is about the
+    // NEXT rewrite. Refusing here would bill a second emission of what has
+    // already been paid for and kept in the history.
+    expect(outcome(result, "Page.vue").written).toBe(true);
+    expect(text(outcome(result, "Page.vue").warning)).toContain("pageEdit");
+  });
+
+  test("a rewrite that changed the file says nothing", async () => {
+    // The rule is about waste, not about writing. A file genuinely replaced is
+    // exactly what this tool is for, and nagging there would teach the model
+    // to edit where it should rewrite.
+    await write({ path: "Page.vue", content: long(rows("first")) });
+
+    const result = await write({
+      path: "Page.vue",
+      content: long(rows("second")),
+    });
+
+    expect(text(outcome(result, "Page.vue").warning)).not.toContain("pageEdit");
+  });
+
   test("writes a whole project in ONE call", async () => {
     // The economy this tool exists for. The first multi-file build sent 15
     // writes as 15 steps, and every step re-sent the conversation: 39 model

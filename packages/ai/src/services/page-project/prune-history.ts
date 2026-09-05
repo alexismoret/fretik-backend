@@ -1,7 +1,8 @@
 import type { ModelMessage } from "ai";
 
 /**
- * Drop the bodies of file writes a later write has already replaced.
+ * Drop the bodies of file writes a later write has already replaced — when the
+ * model this build runs on makes that worth what it costs.
  *
  * A build's history grows by the size of every file it writes, and every step
  * pays for all of it again. The first multi-file build measured what that
@@ -14,7 +15,31 @@ import type { ModelMessage } from "ai";
  * model does next depends on the version it already replaced, and the current
  * one is a `pageRead` away. So the superseded body becomes one line saying so.
  *
- * What is deliberately NOT pruned:
+ * That measurement was in TOKENS, and on a model that discounts a cached read
+ * tokens are not the price. Measured 2026-09-04 over 14h and 1 844 calls on
+ * Gemini 3.7 Flash: 95.8M input tokens for $23.82, an effective $0.249 per
+ * million against a $0.75 list — so about three quarters of the input was
+ * served from cache at $0.075/M, a tenth of the full rate. Against that,
+ * pruning inverts:
+ *
+ *   - the superseded body it removes was billed at the CACHE rate. Dropping
+ *     ~1 200 tokens saves about $0.00009 on each later step;
+ *   - removing it REWRITES a message the provider has already cached, so
+ *     everything after it reverts to the full rate on the next call. Thirty
+ *     thousand tokens at $0.675 of difference is about $0.02, once;
+ *   - and it fires on every rewrite of a path already written, which at the
+ *     measured 142 writes per page over ~10 files is most of them.
+ *
+ * Ten to one against — but only where the discount exists. So the decision is
+ * read from what the model's own row publishes rather than fixed here: with a
+ * cache read materially cheaper than a fresh one, pruning becomes a PRESSURE
+ * VALVE that opens only when the history threatens the context window; without
+ * one, every retained token is billed at full rate on every step and the
+ * eager pruning above is still the right answer. A model that publishes no
+ * cache price at all is not a model without a cache, it is a model nobody
+ * measured — and there the cheaper mistake is to keep pruning.
+ *
+ * What is deliberately NOT pruned, at any size:
  *   - the last write of every path — that is the file, as the model believes it
  *     to be, and forgetting it would make the model re-read what it just wrote;
  *   - tool RESULTS, which are small and carry the lint findings a fix depends
@@ -26,6 +51,61 @@ import type { ModelMessage } from "ai";
  */
 
 const WRITE_TOOL = "pageWrite";
+
+/**
+ * What the build runs on — the two facts that decide whether a body is worth
+ * more in the context or out of it. Both come from the resolved model's
+ * profile, so a team that switches model switches this with it.
+ */
+export interface PrunePricing {
+  /** The model's context window, in tokens. */
+  contextTokens: number;
+  /** List price of a fresh input token, per million. */
+  inputPerMTok: number;
+  /** Price of a cached read, per million. Absent when nothing published one. */
+  cacheReadPerMTok?: number;
+}
+
+/**
+ * How much cheaper a cached read has to be before carrying history beats
+ * shortening it. Half is well clear of both cases seen: the discount is
+ * typically 10x where it exists, and absent where it does not.
+ */
+const CACHE_PAYS_BELOW = 0.5;
+
+/**
+ * Where the valve opens, as a share of the context.
+ *
+ * Not a property of any model — it is the point where the run is heading for a
+ * wall the cache cannot save it from, and it is already relative to whatever
+ * window the model has. Not 90%: the prune has to happen while there is still
+ * room for the steps that come after it.
+ */
+const PRUNE_AT_CONTEXT_FRACTION = 0.6;
+
+/**
+ * Deliberately conservative — a page's history is code, which tokenizes nearer
+ * 3.7 chars per token, so this UNDER-counts and the valve opens slightly late.
+ * Late is the safe direction: opening early is the behaviour being undone.
+ */
+const CHARS_PER_TOKEN = 4;
+
+/**
+ * Whether this history is big enough that shortening it beats keeping it
+ * cached. `true` on any model whose cached reads are not materially cheaper —
+ * there, nothing is being traded away.
+ */
+const worthPruning = (
+  messages: readonly ModelMessage[],
+  pricing: PrunePricing,
+): boolean => {
+  const discounted =
+    pricing.cacheReadPerMTok !== undefined &&
+    pricing.cacheReadPerMTok <= pricing.inputPerMTok * CACHE_PAYS_BELOW;
+  if (!discounted) return true;
+  const estimatedTokens = JSON.stringify(messages).length / CHARS_PER_TOKEN;
+  return estimatedTokens >= pricing.contextTokens * PRUNE_AT_CONTEXT_FRACTION;
+};
 
 const SUPERSEDED =
   "[superseded: you wrote this file again later. The body was dropped from this message to keep the context small — pageRead it if you need what it says now.]";
@@ -74,13 +154,17 @@ const withoutBodies = (input: unknown, drop: Set<string>): unknown => {
 /**
  * Every message, with superseded write bodies collapsed.
  *
- * Returns the SAME array when there is nothing to prune, so a build that writes
- * each file once pays nothing for this — including the identity check the SDK
- * makes on the override.
+ * Returns `null` when nothing should change — nothing was superseded, or the
+ * model's cache makes carrying it cheaper than rewriting it — so a build that
+ * writes each file once pays nothing for this, including the identity check the
+ * SDK makes on the override.
  */
 export const prunePageWriteHistory = (
   messages: readonly ModelMessage[],
+  pricing: PrunePricing,
 ): ModelMessage[] | null => {
+  if (!worthPruning(messages, pricing)) return null;
+
   // Where each path was written LAST. Walking forward and overwriting leaves
   // exactly the surviving write per path.
   const lastWrite = new Map<string, number>();

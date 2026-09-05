@@ -1,5 +1,6 @@
 import type { ModelMessage } from "ai";
 import { describe, expect, test } from "bun:test";
+import type { PrunePricing } from "../../../../src/services/page-project/prune-history";
 import { prunePageWriteHistory } from "../../../../src/services/page-project/prune-history";
 
 /**
@@ -10,7 +11,24 @@ import { prunePageWriteHistory } from "../../../../src/services/page-project/pru
  * file body written stayed in the history and was re-sent on every later step.
  * These cases pin the one thing that makes that shrink — and the two things
  * that must not.
+ *
+ * Two properties, deliberately separated. Most cases here are about the
+ * ALGORITHM and run on a model with no cache discount, where the answer never
+ * depends on size. The last block is about WHEN it runs at all, which does.
  */
+
+/** No cheaper cached read published, so nothing is traded by pruning. */
+const NO_CACHE: PrunePricing = {
+  contextTokens: 1_000_000,
+  inputPerMTok: 0.75,
+};
+
+/** A cached read at a tenth of the fresh rate — the measured Gemini shape. */
+const CHEAP_CACHE: PrunePricing = {
+  contextTokens: 1_000_000,
+  inputPerMTok: 0.75,
+  cacheReadPerMTok: 0.075,
+};
 
 const writeCall = (
   files: { path: string; content: string }[],
@@ -55,7 +73,7 @@ describe("prunePageWriteHistory", () => {
       writeCall([{ path: "Page.vue", content: "SECOND VERSION" }], "b"),
     ];
 
-    const pruned = prunePageWriteHistory(messages);
+    const pruned = prunePageWriteHistory(messages, NO_CACHE);
     expect(pruned).not.toBeNull();
     const kept = bodies(pruned ?? []);
     expect(kept).toContain("SECOND VERSION");
@@ -78,7 +96,7 @@ describe("prunePageWriteHistory", () => {
       ),
     ];
 
-    expect(prunePageWriteHistory(messages)).toBeNull();
+    expect(prunePageWriteHistory(messages, NO_CACHE)).toBeNull();
   });
 
   test("a batch loses only the paths that were rewritten", () => {
@@ -93,7 +111,7 @@ describe("prunePageWriteHistory", () => {
       writeCall([{ path: "Page.vue", content: "PAGE V2" }], "b"),
     ];
 
-    const kept = bodies(prunePageWriteHistory(messages) ?? []);
+    const kept = bodies(prunePageWriteHistory(messages, NO_CACHE) ?? []);
     expect(kept).toContain("PAGE V2");
     // Written once, in the same call as a file that was rewritten: still the
     // current version of `lib/format.ts`, and still needed.
@@ -105,8 +123,8 @@ describe("prunePageWriteHistory", () => {
     // The SDK carries a `messages` override forward. Handing it an identical
     // array every step is work for nothing, so "no change" has to be sayable.
     const messages = [writeCall([{ path: "Page.vue", content: "ONLY" }])];
-    expect(prunePageWriteHistory(messages)).toBeNull();
-    expect(prunePageWriteHistory([])).toBeNull();
+    expect(prunePageWriteHistory(messages, NO_CACHE)).toBeNull();
+    expect(prunePageWriteHistory([], NO_CACHE)).toBeNull();
   });
 
   test("it touches nothing but page writes", () => {
@@ -127,8 +145,52 @@ describe("prunePageWriteHistory", () => {
       writeCall([{ path: "Page.vue", content: "V2" }], "b"),
     ];
 
-    const pruned = prunePageWriteHistory(messages) ?? [];
+    const pruned = prunePageWriteHistory(messages, NO_CACHE) ?? [];
     expect(pruned[0]).toEqual(messages[0]);
     expect(pruned[1]).toEqual(messages[1]);
+  });
+});
+
+describe("when it runs at all", () => {
+  /** A history whose size is the only thing under test. */
+  const rewritten = (bodyChars: number): ModelMessage[] => [
+    writeCall([{ path: "Page.vue", content: "A".repeat(bodyChars) }], "a"),
+    writeCall([{ path: "Page.vue", content: "B".repeat(bodyChars) }], "b"),
+  ];
+
+  test("a cheap cached read makes a small history worth keeping whole", () => {
+    // The measurement this rule comes from: dropping ~1 200 cached tokens saves
+    // $0.00009 a step, and rewriting the message that held them re-prices
+    // everything after it at the full rate — about $0.02, once.
+    expect(prunePageWriteHistory(rewritten(4_000), CHEAP_CACHE)).toBeNull();
+  });
+
+  test("the same history is pruned when nothing published a cache discount", () => {
+    // Same bytes, same rewrite — only the model changed. There the retained
+    // body is billed at full rate on every later step, so it goes.
+    expect(prunePageWriteHistory(rewritten(4_000), NO_CACHE)).not.toBeNull();
+  });
+
+  test("a discount too small to matter is not a discount", () => {
+    const shallow: PrunePricing = {
+      contextTokens: 1_000_000,
+      inputPerMTok: 0.75,
+      cacheReadPerMTok: 0.7,
+    };
+    expect(prunePageWriteHistory(rewritten(4_000), shallow)).not.toBeNull();
+  });
+
+  test("the valve opens when the history threatens the context window", () => {
+    // Past this point the run is heading for a wall the cache cannot save it
+    // from, and losing the cache is the cheaper of the two failures.
+    const small: PrunePricing = { ...CHEAP_CACHE, contextTokens: 4_000 };
+    expect(prunePageWriteHistory(rewritten(8_000), small)).not.toBeNull();
+  });
+
+  test("a bigger window on the same history keeps the valve shut", () => {
+    // Pins that the threshold is the MODEL's window and not a fixed size: the
+    // identical messages answer differently on a model with room for them.
+    const roomy: PrunePricing = { ...CHEAP_CACHE, contextTokens: 10_000_000 };
+    expect(prunePageWriteHistory(rewritten(8_000), roomy)).toBeNull();
   });
 });

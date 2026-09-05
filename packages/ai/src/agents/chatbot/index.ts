@@ -9,6 +9,7 @@ import {
   type ResolvedModel,
 } from "../../lib/model-registry/resolve";
 import { areWebToolsAvailable, WEB_TOOL_NAMES } from "../../lib/web-egress";
+import type { PrunePricing } from "../../services/page-project/prune-history";
 import { prunePageWriteHistory } from "../../services/page-project/prune-history";
 import { salvagePageProject } from "../../services/page-project/salvage";
 import { createBuildPageTool } from "../../tools/build-page";
@@ -410,25 +411,30 @@ const subAgentPrepareStep = (
 /**
  * The page builder's gate — same contract, its own concrete tool set, plus the
  * one thing only this agent needs: its own write history, minus the file bodies
- * it has already replaced. See `prunePageWriteHistory` for the measurement.
+ * it has already replaced.
+ *
+ * The pricing comes from the model actually resolved for this build rather than
+ * from a constant, because whether dropping a body is a saving or a loss is a
+ * property of that model's cache. See `prunePageWriteHistory` for the
+ * measurement on both sides.
  */
-const pageBuilderPrepareStep = (
-  tools: PageBuilderTools,
-): PrepareStepFunction<PageBuilderTools> => {
-  const allNames = Object.keys(tools) as (keyof PageBuilderTools)[];
-  return (stepContext) => {
-    const ctx = getRuntimeContext(stepContext);
-    const hidden = delegateHiddenToolNames(ctx);
-    const pruned = prunePageWriteHistory(stepContext.messages);
-    return {
-      activeTools: allNames.filter((name) => !hidden.has(name)),
-      toolsContext: buildToolsContext(tools, ctx),
-      // Omitted when nothing was superseded: an override is carried forward by
-      // the SDK, and handing it an identical copy every step buys nothing.
-      ...(pruned !== null ? { messages: pruned } : {}),
+const pageBuilderPrepareStep =
+  (pricing: PrunePricing) =>
+  (tools: PageBuilderTools): PrepareStepFunction<PageBuilderTools> => {
+    const allNames = Object.keys(tools) as (keyof PageBuilderTools)[];
+    return (stepContext) => {
+      const ctx = getRuntimeContext(stepContext);
+      const hidden = delegateHiddenToolNames(ctx);
+      const pruned = prunePageWriteHistory(stepContext.messages, pricing);
+      return {
+        activeTools: allNames.filter((name) => !hidden.has(name)),
+        toolsContext: buildToolsContext(tools, ctx),
+        // Omitted when nothing was superseded: an override is carried forward
+        // by the SDK, and handing it an identical copy every step buys nothing.
+        ...(pruned !== null ? { messages: pruned } : {}),
+      };
     };
   };
-};
 
 /**
  * Sub-agent set on the PRIMARY model — same model as the main agent
@@ -560,7 +566,15 @@ const makePageBuilderSet = (
       afterMs: 1_125_000,
       text: "[deadline] The build is nearly out of time and will be cut off shortly. Land it NOW: make sure the page is saved, then stop — no more edits, no more reviews. Hand back the url with an honest one-line status of what was and was not verified.",
     },
-    prepareStep: pageBuilderPrepareStep,
+    prepareStep: pageBuilderPrepareStep({
+      contextTokens: model.profile.catalog.contextLength,
+      inputPerMTok: model.profile.assessment.pricing.inputPerMTok,
+      ...(model.profile.assessment.pricing.cacheReadPerMTok !== undefined
+        ? {
+            cacheReadPerMTok: model.profile.assessment.pricing.cacheReadPerMTok,
+          }
+        : {}),
+    }),
     buildRuntimeContextBase: buildChatbotRuntimeContextBase,
     callOptionsSchema: ChatbotCallOptionsSchema,
   });

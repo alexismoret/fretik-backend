@@ -46,7 +46,7 @@ import {
 } from "@fretik/shared/services/pages/lint";
 import { derivePageRoutesOfCode } from "@fretik/shared/services/pages/routes";
 import { deletePageVectorRows } from "@fretik/shared/services/pages/vector-refresh";
-import { and, eq, inArray, isNull, or } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, or } from "drizzle-orm";
 import { judgePage } from "../page-design-judge";
 import {
   designScoreAtLeast,
@@ -592,6 +592,30 @@ export const rememberEvalConversation = async (
   await writePageLedger();
 };
 
+/**
+ * Take pages out of the agent's reach without taking them out of ours.
+ *
+ * The row is half of a page. `ai_vectors.source_id` is polymorphic, so no
+ * foreign key cascades it, and archiving the row leaves the page's card in the
+ * knowledge index — which defeats the whole point: `searchKnowledge` keeps
+ * answering with it, and a builder that finds a page already covering the ask
+ * is RIGHT to stop and ask which one to change. Measured 2026-09-04: 17 indexed
+ * pages against 2 real ones, and two generation cases scored 0.188 and 0.250
+ * for declining to duplicate five pages that did not exist.
+ *
+ * De-indexing is what makes the page invisible to the AGENT; the row staying is
+ * what keeps it visible to us. The two channels are separate and both have to
+ * be closed — `managePage list` by `archivedAt`, `searchKnowledge` here.
+ */
+const retirePages = async (teamId: string, ids: string[]): Promise<void> => {
+  if (ids.length === 0) return;
+  await db
+    .update(pages)
+    .set({ archivedAt: new Date() })
+    .where(and(eq(pages.teamId, teamId), inArray(pages.id, ids)));
+  await Promise.all(ids.map((id) => deletePageVectorRows(id)));
+};
+
 const sweepPreviousRun = async (): Promise<void> => {
   const teamId = process.env.EVAL_TEAM_ID;
   if (teamId === undefined || teamId === "") return;
@@ -613,24 +637,36 @@ const sweepPreviousRun = async (): Promise<void> => {
         ),
       ),
     );
-  const ids = doomed.map((row) => row.id);
-  if (ids.length === 0) return;
-  await db
-    .update(pages)
-    .set({ archivedAt: new Date() })
-    .where(and(eq(pages.teamId, teamId), inArray(pages.id, ids)));
-  // The row is half of a page. `ai_vectors.source_id` is polymorphic, so no
-  // foreign key cascades it, and archiving the row leaves the page's card in
-  // the knowledge index — which defeats the whole point: `searchKnowledge`
-  // keeps answering with it, and a builder that finds a page already covering
-  // the ask is RIGHT to stop and ask which one to change. Measured 2026-09-04:
-  // 17 indexed pages against 2 real ones, and two generation cases scored 0.188
-  // and 0.250 for declining to duplicate five pages that did not exist.
-  //
-  // De-indexing is what makes the page invisible to the AGENT; the row staying
-  // is what keeps it visible to us. The two channels are separate and both have
-  // to be closed — `managePage list` by `archivedAt`, `searchKnowledge` here.
-  await Promise.all(ids.map((id) => deletePageVectorRows(id)));
+  await retirePages(
+    teamId,
+    doomed.map((row) => row.id),
+  );
+  await deindexArchived(teamId);
+};
+
+/**
+ * De-index every archived page of the eval team, whoever archived it.
+ *
+ * Archiving and de-indexing were separate steps for one day too long, and the
+ * ledger only ever names the run that wrote it — so pages archived by an
+ * earlier run, or by the two guess-rules this file has since retired, kept
+ * their card in the knowledge index with nothing left that could reach them.
+ * Measured 2026-09-06: SEVEN archived dashboards still answering
+ * `searchKnowledge` in the eval team, which is why `page-dashboard-kpi-charts`
+ * scored 0.313, 0.250 and 0.188 across three repeats — the builder found a
+ * dashboard that already covered the ask and correctly declined to duplicate
+ * it. The page was invisible in every listing and loud in the one channel the
+ * agent actually searches.
+ *
+ * Not a guess about ownership: nothing in the product archives a page. Every
+ * `archivedAt` in this team was set by this harness.
+ */
+const deindexArchived = async (teamId: string): Promise<void> => {
+  const stale = await db
+    .select({ id: pages.id })
+    .from(pages)
+    .where(and(eq(pages.teamId, teamId), isNotNull(pages.archivedAt)));
+  await Promise.all(stale.map((row) => deletePageVectorRows(row.id)));
 };
 
 /**
@@ -652,14 +688,27 @@ const sweepPreviousRun = async (): Promise<void> => {
 const previousRunSwept: Promise<void> = sweepPreviousRun();
 
 /**
- * Record what this case built. Runs from a `cleanup` hook, so it fires once per
- * case — cheap, idempotent, and no separate maintenance step anyone can forget.
- * The run's own pages stay: they are the evidence, and only the NEXT run sweeps
- * them.
+ * Record what this case built, then retire it. Runs from a `cleanup` hook, so
+ * it fires once per case — cheap, idempotent, and no separate maintenance step
+ * anyone can forget.
  *
  * The recording query runs BEFORE `destroyEphemeralConversation` (runner.ts
  * calls `cleanup` first), which is what makes `sourceConversationId` a usable
  * key: a moment later the FK is nulled and the link is gone.
+ *
+ * Retiring here rather than at the next run's import is what makes `--repeats`
+ * mean anything on this suite. The import sweep fires once, so with three
+ * repeats of one case the second and third met the page the FIRST had just
+ * built — and correctly refused to duplicate it. Measured 2026-09-06: three
+ * repeats of `page-dashboard-kpi-charts` built nothing and scored 0.313, 0.250
+ * and 0.188, which read as a collapse in quality and was a collapse in the
+ * harness. The run's own pages are still the evidence: `retirePages` archives
+ * and de-indexes, it does not delete, and every page stays readable at its own
+ * URL for as long as anyone wants to look at it.
+ *
+ * Order matters. Assertions run BEFORE cleanup (`invokeChatbot → runAssertions
+ * → cleanup → destroy`), so the render gate and the design critic have already
+ * opened the page by the time it is archived.
  */
 const cleanupPages = async (ctx: EvalCaseContext): Promise<void> => {
   // The sweep started at import; a case that finishes before it lands must not
@@ -676,7 +725,13 @@ const cleanupPages = async (ctx: EvalCaseContext): Promise<void> => {
       ),
     );
   for (const row of built) builtThisRun.add(row.id);
+  // Still recorded, because retiring can fail and the next run has to catch
+  // what this one could not put away.
   await writePageLedger();
+  await retirePages(
+    ctx.teamId,
+    built.map((row) => row.id),
+  );
 
   await forgetFixtureActivity(ctx);
 };

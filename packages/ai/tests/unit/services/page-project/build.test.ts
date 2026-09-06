@@ -258,6 +258,18 @@ describe("buildPageProject — what the version says it cost", () => {
       reasoningTokens: 6_400,
       costUsd: 0.28123,
       costedSteps: 12,
+      providers: {
+        "google-vertex": {
+          steps: 9,
+          inputTokens: 700_000,
+          cacheReadTokens: 690_000,
+        },
+        "google-ai-studio": {
+          steps: 3,
+          inputTokens: 200_000,
+          cacheReadTokens: 90_000,
+        },
+      },
     });
     // The parent's own steps are in the same turn and must NOT land here:
     // this row is what the PAGE cost.
@@ -270,6 +282,9 @@ describe("buildPageProject — what the version says it cost", () => {
       reasoningTokens: 0,
       costUsd: 0.05,
       costedSteps: 4,
+      providers: {
+        "google-vertex": { steps: 4, inputTokens: 40_000, cacheReadTokens: 0 },
+      },
     });
 
     const result = await buildPageProject({

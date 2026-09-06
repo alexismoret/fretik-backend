@@ -33,7 +33,26 @@
  * same read.
  */
 import type { LanguageModelUsage, ProviderMetadata } from "ai";
-import { extractUpstreamCost } from "./langfuse-cost";
+import { extractUpstreamCost, extractUpstreamProvider } from "./langfuse-cost";
+
+/**
+ * What one upstream host served, and how much of it it had cached.
+ *
+ * A provider's prompt cache is its own: a run routed across two hosts pays full
+ * rate every time it changes lanes, whatever the gap. Measured 2026-09-06 on a
+ * 54-step page build: seven calls came back with ZERO cached input, four of
+ * them 10 to 32 seconds after the previous call — far inside any TTL — and the
+ * history was 126K tokens against a 1M window, so nothing had pruned the
+ * prefix. Those seven misses cost about $0.5 on a $1.4 page, the largest single
+ * item measured that day, and nothing recorded which host answered.
+ *
+ * Now something does.
+ */
+export interface ProviderUsage {
+  steps: number;
+  inputTokens: number;
+  cacheReadTokens: number;
+}
 
 /** One agent's spend inside a turn. Every field is a sum over steps. */
 export interface StepUsage {
@@ -44,6 +63,8 @@ export interface StepUsage {
   outputTokens: number;
   reasoningTokens: number;
   costUsd: number;
+  /** Per upstream host, so a cache miss can be attributed rather than guessed. */
+  providers: Record<string, ProviderUsage>;
   /**
    * How many of `steps` actually reported a cost.
    *
@@ -69,6 +90,7 @@ const emptyUsage = (): StepUsage => ({
   reasoningTokens: 0,
   costUsd: 0,
   costedSteps: 0,
+  providers: {},
 });
 
 const addInto = (target: StepUsage, step: StepUsage): void => {
@@ -80,6 +102,17 @@ const addInto = (target: StepUsage, step: StepUsage): void => {
   target.reasoningTokens += step.reasoningTokens;
   target.costUsd += step.costUsd;
   target.costedSteps += step.costedSteps;
+  for (const [host, served] of Object.entries(step.providers)) {
+    const bucket = target.providers[host] ?? {
+      steps: 0,
+      inputTokens: 0,
+      cacheReadTokens: 0,
+    };
+    bucket.steps += served.steps;
+    bucket.inputTokens += served.inputTokens;
+    bucket.cacheReadTokens += served.cacheReadTokens;
+    target.providers[host] = bucket;
+  }
 };
 
 /** The sum of two ledgers, neither mutated. */
@@ -104,15 +137,21 @@ export const summarizeStep = (step: {
 }): StepUsage => {
   const cost = extractUpstreamCost(step.providerMetadata);
   const usage = step.usage;
+  const inputTokens = usage?.inputTokens ?? 0;
+  const cacheReadTokens = usage?.inputTokenDetails?.cacheReadTokens ?? 0;
+  // A step whose transport names no host is counted, under a name that says so
+  // rather than under a plausible one. `undefined` is not `openrouter`.
+  const host = extractUpstreamProvider(step.providerMetadata) ?? "unattributed";
   return {
     steps: 1,
-    inputTokens: usage?.inputTokens ?? 0,
-    cacheReadTokens: usage?.inputTokenDetails?.cacheReadTokens ?? 0,
+    inputTokens,
+    cacheReadTokens,
     cacheWriteTokens: usage?.inputTokenDetails?.cacheWriteTokens ?? 0,
     outputTokens: usage?.outputTokens ?? 0,
     reasoningTokens: usage?.outputTokenDetails?.reasoningTokens ?? 0,
     costUsd: cost ?? 0,
     costedSteps: cost === undefined ? 0 : 1,
+    providers: { [host]: { steps: 1, inputTokens, cacheReadTokens } },
   };
 };
 

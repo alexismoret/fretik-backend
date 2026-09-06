@@ -100,6 +100,20 @@ export interface PageVersionMeta {
     cacheReadTokens: number;
     outputTokens: number;
     reasoningTokens: number;
+    /**
+     * Steps and cache reads per upstream host.
+     *
+     * A prompt cache belongs to the host that holds it, so a build routed
+     * across two of them pays full rate every time it changes lanes, whatever
+     * the gap since the last call. Measured 2026-09-06: seven zero-cache calls
+     * in one 54-step build, four of them 10-32 seconds apart, on a 126K history
+     * against a 1M window — no TTL and no pruning could explain them, and
+     * nothing recorded which host answered. Absent on rows written before that.
+     */
+    providers?: Record<
+      string,
+      { steps: number; inputTokens: number; cacheReadTokens: number }
+    >;
   };
 }
 

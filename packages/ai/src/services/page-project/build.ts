@@ -156,6 +156,9 @@ export const buildPageProject = async (
                   cacheReadTokens: spent.cacheReadTokens,
                   outputTokens: spent.outputTokens,
                   reasoningTokens: spent.reasoningTokens,
+                  ...(Object.keys(spent.providers).length > 0
+                    ? { providers: spent.providers }
+                    : {}),
                 },
               }),
         }

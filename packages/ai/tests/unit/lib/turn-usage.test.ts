@@ -1,6 +1,7 @@
 import type { LanguageModelUsage, ProviderMetadata } from "ai";
 import { beforeEach, describe, expect, test } from "bun:test";
 import {
+  mergeUsage,
   readAgentUsage,
   readTurnUsage,
   recordStepUsage,
@@ -204,6 +205,55 @@ describe("recordStepUsage", () => {
    * metadata simply omitted the spend, and the eval runner reported the cost
    * from Langfuse — the pipeline this ledger exists to stop trusting.
    */
+  /**
+   * A prompt cache belongs to the host that holds it. Steps summed across two
+   * hosts hide the only thing that explains a full-price replay ten seconds
+   * after a cached one, so the hosts are kept apart.
+   */
+  test("steps are split by the host that served them", () => {
+    const step = (host: string, input: number, cached: number) => ({
+      ...summarizeStep({}),
+      inputTokens: input,
+      cacheReadTokens: cached,
+      providers: {
+        [host]: { steps: 1, inputTokens: input, cacheReadTokens: cached },
+      },
+    });
+    recordStepUsage("turn-7", "chatbot.page-builder", step("vertex", 100, 90));
+    recordStepUsage("turn-7", "chatbot.page-builder", step("vertex", 100, 95));
+    recordStepUsage("turn-7", "chatbot.page-builder", step("studio", 100, 0));
+
+    const bucket = readAgentUsage("turn-7", "chatbot.page-builder");
+    expect(bucket?.providers["vertex"]).toEqual({
+      steps: 2,
+      inputTokens: 200,
+      cacheReadTokens: 185,
+    });
+    // The one that explains the bill: three steps, and a third of the input
+    // paid at full rate on a host that had never seen the prefix.
+    expect(bucket?.providers["studio"]).toEqual({
+      steps: 1,
+      inputTokens: 100,
+      cacheReadTokens: 0,
+    });
+    expect(bucket?.steps).toBe(3);
+  });
+
+  test("merging two ledgers adds hosts rather than replacing them", () => {
+    const a = {
+      ...summarizeStep({}),
+      providers: { vertex: { steps: 1, inputTokens: 10, cacheReadTokens: 9 } },
+    };
+    const b = {
+      ...summarizeStep({}),
+      providers: { studio: { steps: 1, inputTokens: 10, cacheReadTokens: 0 } },
+    };
+    const merged = mergeUsage(a, b);
+    expect(Object.keys(merged.providers).sort()).toEqual(["studio", "vertex"]);
+    // Neither input was mutated by the merge.
+    expect(Object.keys(a.providers)).toEqual(["vertex"]);
+  });
+
   test("a Langfuse trace id does not read a ledger keyed by the turn", () => {
     const runtimeTraceId = "0198f2c1-6a3e-7b21-9c44-7f0a2b6d1e58";
     const langfuseTraceId = "529b38becf7e5431c0d9cd2c88e0226f";

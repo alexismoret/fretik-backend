@@ -312,6 +312,18 @@ describe("formatBuildResult — the spend", () => {
     reasoningTokens: 24_800,
     costUsd: 0.71339,
     costedSteps: 31,
+    providers: {
+      "google-vertex": {
+        steps: 24,
+        inputTokens: 2_100_000,
+        cacheReadTokens: 1_900_000,
+      },
+      "google-ai-studio": {
+        steps: 7,
+        inputTokens: 460_000,
+        cacheReadTokens: 290_000,
+      },
+    },
   };
 
   test("a clean build reports its steps and its price", () => {

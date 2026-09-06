@@ -3,7 +3,6 @@ import { tool } from "ai";
 import { z } from "zod";
 import { TOOL_ERROR_CODES, toolError } from "../../lib/tool-error-codes";
 import { PAGE_JSON_FILE } from "../../services/page-project/page-json";
-import { hashFileContent } from "../../services/page-project/store";
 import {
   measurePageWrite,
   trackWrite,
@@ -196,7 +195,17 @@ export const createPageWriteTool = () =>
               ...state.seen[path],
               wroteAt: Date.now(),
               readAt: Date.now(),
-              readHash: hashFileContent(entry.content),
+              // Deliberately NOT `readHash`. That marks a file as READ, and
+              // `pageRead` answers "unchanged since you last read it — use
+              // that result" without the body. For a file that was written
+              // rather than read, the result it points at may no longer be in
+              // the history at all: `prunePageWriteHistory` replaces a
+              // superseded write with a line saying "pageRead it if you need
+              // what it says now", and the two rules then contradicted each
+              // other. What was left was to `pageWrite` the file whole from
+              // memory — the expensive shape, reached by following the advice.
+              // `readAt` still stands, so `pageEdit`'s "have you seen this
+              // file" guard passes on something you just wrote.
               editFailures: 0,
             },
           },

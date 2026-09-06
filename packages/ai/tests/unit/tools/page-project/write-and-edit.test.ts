@@ -440,14 +440,28 @@ describe("pageEdit", () => {
 });
 
 describe("pageRead", () => {
-  test("re-reading what you just wrote returns the FACT, not the bytes", async () => {
+  test("re-reading what you just READ returns the FACT, not the bytes", async () => {
     // The file is already in the context that asked for it. Re-sending it is
     // the cheapest possible way to spend a step budget.
     await write({ path: "Page.vue", content: ORIGINAL });
+    await read({ path: "Page.vue" });
+    const again = await read({ path: "Page.vue" });
+
+    expect(again.unchanged).toBe(true);
+    expect(String(again.notice)).toContain("use that result");
+  });
+
+  test("re-reading what you WROTE returns the bytes", async () => {
+    // A write does not count as a read, because the result it would point at
+    // may not be in the history any more: `prunePageWriteHistory` replaces a
+    // superseded write body with a line saying "pageRead it if you need what
+    // it says now", and answering that with "unchanged, use your earlier
+    // result" left `pageWrite` from memory as the only way to change the file.
+    await write({ path: "Page.vue", content: ORIGINAL });
     const result = await read({ path: "Page.vue" });
 
-    expect(result.unchanged).toBe(true);
-    expect(String(result.notice)).toContain("use that result");
+    expect(result.unchanged).toBeUndefined();
+    expect(text(result.content ?? result.source)).toContain("<template>");
   });
 
   test("numbers the lines it does return", async () => {

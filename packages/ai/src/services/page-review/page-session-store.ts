@@ -115,6 +115,51 @@ export const clearCritiqueFailures = async (
 export const MAX_CRITIQUE_FAILURES = 2;
 
 /**
+ * How many times in a row this page rendered without mounting.
+ *
+ * The same shape as the critic counter above, and for the same reason. A page
+ * that never mounted was not judged, so the attempt rightly consumes no review
+ * round — but that leaves another call with no cost to the caller, and the
+ * caller repeats what is free. Each of those repeats drives a full browser
+ * render, and the round budget that would eventually stop it never moves.
+ *
+ * So the round stays free and the ATTEMPT is counted. Cleared by any render
+ * that mounts, so a page that crashes, gets fixed and crashes differently is
+ * still allowed its second and third look.
+ */
+export const bumpUnmountedLooks = async (
+  /**
+   * The TURN, like the review budget beside it and unlike the critic counter
+   * above — a crash-fix loop belongs to one build, while an upstream outage
+   * belongs to whatever conversation is running into it.
+   */
+  scope: string | undefined,
+  pageId: string,
+): Promise<number> => {
+  const key = `${reviewKey(scope, pageId)}:unmounted`;
+  const count = await redis.incr(key);
+  await redis.expire(key, TTL_SECONDS);
+  return count;
+};
+
+export const clearUnmountedLooks = async (
+  scope: string | undefined,
+  pageId: string,
+): Promise<void> => {
+  await redis.del(`${reviewKey(scope, pageId)}:unmounted`);
+};
+
+/**
+ * Three, matching `MAX_EDIT_FAILURES`.
+ *
+ * A crash is one round to read and fix. A fix that introduces a second crash
+ * is two. The third miss in a row is the same signal the edit path already
+ * stops on — at that point the loop is not converging and the honest move is
+ * to hand the page over saying it was never verified.
+ */
+export const MAX_UNMOUNTED_LOOKS = 3;
+
+/**
  * The ONE critique this run has paid for, if any.
  *
  * The critic looks once, after the mechanical gate is clean, and its findings

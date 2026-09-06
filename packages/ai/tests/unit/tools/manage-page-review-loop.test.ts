@@ -75,11 +75,21 @@ const cleanRender = {
   opsRuns: ["update_status"],
 };
 
+/** A page that compiled and then threw at mount. Nothing about it is judgeable. */
+const crashedRender = {
+  ...cleanRender,
+  mounted: false,
+  interactions: [],
+  pageErrors: ["TypeError: rows is not iterable"],
+};
+
 const renderCalls: unknown[] = [];
+/** Swappable per test: what the browser comes back with. */
+let renderResult: Record<string, unknown> = cleanRender;
 await mockModule("@fretik/shared/services/pages/render/render-page", {
   renderPage: async (args: unknown) => {
     renderCalls.push(args);
-    return cleanRender;
+    return renderResult;
   },
 });
 
@@ -267,6 +277,7 @@ beforeEach(() => {
   createCalls.length = 0;
   updateThrows = null;
   createThrows = null;
+  renderResult = cleanRender;
   critiqueResult = { ok: false, reason: "unset" };
   critiqueCalls = 0;
 });
@@ -690,5 +701,51 @@ describe("pageReview builds what it is about to judge", () => {
     expect(result["code"]).toBe("INVALID_ARGS");
     expect(renderCalls).toHaveLength(0);
     expect(updateCalls).toHaveLength(0);
+  });
+});
+
+/**
+ * A page that never mounts is a free call, and free is what makes a call
+ * repeatable.
+ *
+ * The round is rightly not spent — nothing was judged — but that leaves the
+ * budget unable to stop the loop, and every attempt drives a full browser
+ * render. Same shape as the critic-failure bound next to it: the round stays
+ * free, the ATTEMPT is counted.
+ */
+describe("a crash-fix loop is bounded, and the budget still is not spent", () => {
+  test("the third render that never mounted says stop, and no round was spent", async () => {
+    renderResult = crashedRender;
+
+    const first = await execManagePage({ action: "review" });
+    expect(first["verdict"]).toBe("unverified");
+    expect(String(first["next"])).toContain("no review round was spent");
+
+    await execManagePage({ action: "review" });
+    const third = await execManagePage({ action: "review" });
+
+    expect(String(third["next"])).toContain("never mounted");
+    expect(String(third["next"])).toContain("Do NOT review again");
+    // The bound is on the ATTEMPT. The review budget is untouched, so a page
+    // that does get fixed still has all of its rounds.
+    expect(await readPageReviewIterations(scope, pageId)).toBe(0);
+  });
+
+  test("a render that mounts clears the count", async () => {
+    renderResult = crashedRender;
+    await execManagePage({ action: "review" });
+    await execManagePage({ action: "review" });
+
+    // Fixed: it mounts, and the gate has something to judge.
+    renderResult = cleanRender;
+    critiqueResult = { ok: false, reason: "upstream rate-limited" };
+    await execManagePage({ action: "review" });
+
+    // Broken again by the next edit — the count restarted, so this is look 1
+    // of 3 and not the last one.
+    renderResult = crashedRender;
+    const after = await execManagePage({ action: "review" });
+    expect(String(after["next"])).toContain("no review round was spent");
+    expect(String(after["next"])).not.toContain("Do NOT review again");
   });
 });

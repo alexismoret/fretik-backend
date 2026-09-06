@@ -16,10 +16,13 @@ import { gatePageRender } from "./gate";
 import {
   bumpCritiqueFailures,
   bumpPageReviewIteration,
+  bumpUnmountedLooks,
   clearCritiqueFailures,
+  clearUnmountedLooks,
   hashPageCode,
   MAX_CRITIQUE_FAILURES,
   MAX_PAGE_REVIEWS,
+  MAX_UNMOUNTED_LOOKS,
   readPageCritique,
   readPageReviewIterations,
   readPageReviewVerdict,
@@ -202,17 +205,24 @@ export const runPageReview = async (
   });
 
   // A page that never mounted was not judged, so the attempt consumes no
-  // round: this is a crash-fix loop, not a review.
+  // round: this is a crash-fix loop, not a review. The ATTEMPT is counted
+  // instead — free is exactly what makes a call repeatable, and each of these
+  // drives a full browser render (see `bumpUnmountedLooks`).
   if (!render.mounted) {
+    const looks = await bumpUnmountedLooks(scope, page.id);
+    const exhausted = looks >= MAX_UNMOUNTED_LOOKS;
     return {
       pageId: page.id,
       url: `/pages/${page.id}`,
       gate: "fail",
       verdict: "unverified",
       ...(gate.blocking.length > 0 ? { blocking: gate.blocking } : {}),
-      next: "The page never mounted, so no review round was spent. Read its runtime errors, fix the crash, and review again — nothing else about it can be judged until it renders.",
+      next: exhausted
+        ? `${looks.toString()} renders in a row never mounted. Do NOT review again: pageWrite the file the runtime error names — a whole file, since the anchors are clearly not where you think — build, and hand the page over saying plainly that it was never verified.`
+        : "The page never mounted, so no review round was spent. Read its runtime errors, fix the crash, and review again — nothing else about it can be judged until it renders.",
     };
   }
+  await clearUnmountedLooks(scope, page.id);
 
   const iteration = await bumpPageReviewIteration(scope, page.id);
   const left = MAX_PAGE_REVIEWS - iteration;

@@ -20,11 +20,16 @@ import {
  * What every `page*` tool needs before it can do anything: who is asking, which
  * run this is, and the files as they currently stand.
  *
- * The working copy is keyed by the RUN — a builder dispatch has its own trace
- * id — so two builds in one turn cannot write over each other, and a tool that
- * finds no copy for a page that already exists seeds one from what is stored.
- * That is what makes a repair start from the real page rather than from
- * nothing.
+ * The working copy is keyed by the builder's scope, which is the TURN's trace
+ * id plus a constant `.page` suffix — so every build of one turn shares one
+ * copy, one pageId and one review budget. This docblock claimed the opposite
+ * until 2026-09-06 ("a builder dispatch has its own trace id"); it does not,
+ * and `buildPage` refuses a second dispatch onto a page the turn already made
+ * rather than resuming it blind (`admitBuildForTurn`).
+ *
+ * A tool that finds no copy for a page that already exists seeds one from what
+ * is stored, which is what makes a repair start from the real page rather than
+ * from nothing.
  */
 
 export interface PageProjectContext {
@@ -33,8 +38,9 @@ export interface PageProjectContext {
   organizationId: string;
   conversationId: string | undefined;
   /**
-   * The RUN — one builder dispatch. Keys the working copy, so two builds in
-   * one turn keep their files apart.
+   * The builder's scope — the turn's trace plus `.page`. Keys the working
+   * copy, and it is the SAME for every build of a turn: a second dispatch
+   * resumes the first one's files rather than starting beside them.
    */
   scope: string;
   /**

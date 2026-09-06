@@ -349,6 +349,43 @@ describe("formatBuildResult — the spend", () => {
     expect(out.pageId).toBe("p9");
     expect(out.usage?.costUsd).toBe(0.7134);
   });
+});
+
+/**
+ * The salvage runs after EVERY run, including the ones that went fine.
+ *
+ * A builder that said its piece and left one last edit unbuilt was reported as
+ * a casualty — `incomplete`, its own summary discarded for a rescue notice —
+ * which is precisely the input that sends the parent hunting for more work on
+ * a page that is finished.
+ */
+describe("formatBuildResult — a clean run that ended on a write", () => {
+  test("keeps the builder's words and is NOT incomplete", () => {
+    const out = formatBuildResult(
+      buildResult({
+        finishReason: "stop",
+        text: "Built the board. The overdue lane leads.",
+        steps: createdAndReviewed,
+      }),
+      { saved: true, pageId: "p1", url: "/pages/p1" },
+    );
+
+    expect(out.incomplete).toBeUndefined();
+    expect(out.summary).toContain("Built the board");
+    // The one thing the rescue really does change is said, and only that.
+    expect(out.summary).toContain("never reviewed");
+    expect(out.pageId).toBe("p1");
+  });
+
+  test("a run cut off mid-write is still reported as a rescue", () => {
+    const out = formatBuildResult(
+      buildResult({ finishReason: "length", text: "" }),
+      { saved: true, pageId: "p1", url: "/pages/p1" },
+    );
+
+    expect(out.incomplete).toBe(true);
+    expect(out.summary).toContain("cut off");
+  });
 
   test("no ledger means no field — never a zero that reads as free", () => {
     const out = formatBuildResult(

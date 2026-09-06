@@ -150,6 +150,45 @@ export const clearUnmountedLooks = async (
 };
 
 /**
+ * How many page BUILDS this turn has dispatched.
+ *
+ * Every `buildPage` of one turn shares a working copy, a pageId and a review
+ * budget — the builder's scope is the turn's trace plus a constant `.page`
+ * suffix — so a second dispatch does not build a second page, it resumes the
+ * first one with a fresh 80-step budget and no memory of what the first found.
+ * Nothing bounded that: the parent's own prose invites another call on several
+ * of `formatBuildResult`'s branches, and `managePage review` answers "that
+ * work is buildPage's".
+ *
+ * Not observed running away in production — the trace that looked like 22
+ * builds was one build multiplied by a telemetry fan-out — but the shape is
+ * there in the code, and a build is the most expensive thing a turn can do.
+ */
+export const bumpTurnBuilds = async (
+  scope: string | undefined,
+): Promise<number> => {
+  // Keyed on the turn ALONE. Not on the page: the pageId does not exist until
+  // the first build has produced one, so folding it in would give the first
+  // dispatch and the second different keys and count both as the first.
+  const key = `pages:build:${scope ?? "no-turn"}`;
+  const count = await redis.incr(key);
+  await redis.expire(key, TTL_SECONDS);
+  return count;
+};
+
+/**
+ * Two, not one.
+ *
+ * `formatBuildResult` itself says "Call buildPage once more with the same
+ * task" when a run saved nothing at all, and that retry is the right move: a
+ * build that produced no page has nothing to resume and nothing to review. So
+ * the second dispatch is allowed when there is no page yet, and refused when
+ * there is one — at that point the cheap remedies (`managePage review`,
+ * `update`) are the ones that apply.
+ */
+export const MAX_TURN_BUILDS = 2;
+
+/**
  * Three, matching `MAX_EDIT_FAILURES`.
  *
  * A crash is one round to read and fix. A fix that introduces a second crash

@@ -7,6 +7,11 @@ import type { AgentRuntimeContext } from "../agents/shared/runtime-context";
 import { createSubAgentExecute } from "../agents/shared/sub-agent";
 import type { StepUsage } from "../lib/turn-usage";
 import type { PageSalvageOutcome } from "../services/page-project/salvage";
+import { readPageProject } from "../services/page-project/store";
+import {
+  bumpTurnBuilds,
+  MAX_TURN_BUILDS,
+} from "../services/page-review/page-session-store";
 import { describeExternalApps } from "./page-external-apps";
 
 /**
@@ -249,6 +254,50 @@ const summarizeSpend = (usage: StepUsage): BuildSpend => ({
 });
 
 /**
+ * Whether this turn gets to dispatch another build.
+ *
+ * Every `buildPage` of one turn shares a working copy, a pageId and a review
+ * budget — the builder's trace is the turn's plus a constant `.page` suffix —
+ * so a second dispatch does not build a second page. It resumes the first one
+ * with a fresh 80-step budget and no memory of what the first found, which is
+ * the most expensive way to reach a page that already exists.
+ *
+ * The parent is pulled toward exactly that: six of `formatBuildResult`'s
+ * branches end by naming `managePage { action: "review" }`, and `managePage`
+ * answers that real work found there "is `buildPage`'s". Nothing in code
+ * closed that cycle.
+ *
+ * Exported for its test — a bound that has never been exercised is a bound
+ * nobody knows the shape of.
+ */
+export const admitBuildForTurn = async (ctx: {
+  traceId?: string | undefined;
+  conversationId?: string | undefined;
+}): Promise<{ summary: string; pageId?: string; url?: string } | null> => {
+  const scope = ctx.traceId?.split(".")[0] ?? ctx.conversationId;
+  const copy = await readPageProject(
+    ctx.traceId ? `${ctx.traceId}.page` : (ctx.conversationId ?? "no-run"),
+  );
+  const built = copy?.pageId;
+  const count = await bumpTurnBuilds(scope);
+  if (count === 1) return null;
+  // No page came out of the first attempt: this IS the retry that
+  // `formatBuildResult` asks for, and there is nothing to resume or review.
+  if (built === undefined) {
+    return count <= MAX_TURN_BUILDS
+      ? null
+      : {
+          summary: `[refused: ${count.toString()} builds in this turn have saved no page. Do not call buildPage again — tell the user the build failed, and never name a page this tool did not return.]`,
+        };
+  }
+  return {
+    summary: `[refused: this turn already built page ${built}. Another buildPage would resume the same working copy and the same review budget from zero, which is the most expensive way to reach a page that exists. Use managePage { action: "review" } for its findings and { action: "update", edits } to apply them; a genuinely different page waits for the next turn.]`,
+    pageId: built,
+    url: `/pages/${built}`,
+  };
+};
+
+/**
  * The builder's own closing summary carries the url, what it built and what it
  * left weak. An unclean finish means the step budget ran out mid-build — usually
  * mid-review — so the page exists but nobody has confirmed it works. Saying that
@@ -290,6 +339,20 @@ export const formatBuildResult = (
    * parent off to rebuild one that now exists.
    */
   if (salvaged?.saved === true) {
+    // A CLEAN finish that happened to end on a write is not a casualty. The
+    // salvage runs after every run, so a builder that said its piece and left
+    // one last edit unbuilt was being reported as a rescue — `incomplete`,
+    // with its own summary discarded — which is the input that sends the
+    // parent looking for more work to do on a page that is finished.
+    if (result.finishReason === "stop" && text.length > 0) {
+      return {
+        summary: `[note: the last edits were built after the builder finished, so they were saved but never reviewed.]\n\n${text}`,
+        pageId: salvaged.pageId,
+        url: salvaged.url,
+        reviewed: false,
+        ...spend,
+      };
+    }
     return {
       summary: `[recovered: the builder was cut off after writing its files but before building them, so the build was finished for it. The page EXISTS and nobody has looked at it. Do NOT call buildPage again: run managePage { action: "review" } on it, apply what comes back with update { edits }, and hand back the url.]`,
       pageId: salvaged.pageId,
@@ -551,6 +614,7 @@ export const createBuildPageTool = <TTools extends ToolSet>(deps: {
       reasoningLevel: ctx.reasoningLevel,
     }),
     formatResult,
+    admit: (_input, ctx) => admitBuildForTurn(ctx),
     // Sized to catch a HANG, never to police slowness. The 2026-08-23 runs
     // proved that claim needs enforcing, not assuming: two of three builds hit
     // this wall mid-generation because every fix round was re-emitting the

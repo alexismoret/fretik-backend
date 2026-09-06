@@ -18,9 +18,13 @@ import { PAGE_JSON_FILE } from "./page-json";
  *
  * So writes land here, builds promote from here, and nothing in between is
  * lost. Redis rather than the page row for the same reason the review budget
- * lives here: it belongs to ONE run, not to the page. Keyed by the run's trace
- * id, so two builds in one turn cannot write over each other, and 24 hours is
- * long enough that a run which died mid-way can still be finished by hand.
+ * lives here: it belongs to a BUILD, not to the page. Keyed by the builder's
+ * scope — the turn's trace plus `.page` — so every build of one turn shares
+ * this copy. (Until 2026-09-06 this said two builds in one turn could not
+ * write over each other. They can, and always could: the suffix is constant.
+ * `buildPage` now refuses the second dispatch instead of letting it resume the
+ * first one blind.) 24 hours is long enough that a run which died mid-way can
+ * still be finished by hand.
  */
 
 const TTL_SECONDS = 24 * 60 * 60;

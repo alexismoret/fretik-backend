@@ -162,6 +162,16 @@ export interface CreateSubAgentExecuteConfig<
    * payload returned to the parent. Keep it tight — the parent will
    * see this verbatim in its own context window.
    */
+  /**
+   * Decide whether this dispatch happens at all, before any model is called.
+   *
+   * Return a tool-shaped result to REFUSE (the parent sees it as the call's
+   * answer), or `null` to let the run proceed. The seam exists because a
+   * sub-agent's cost is invisible from the parent's side — its whole loop is
+   * one tool call — so a dispatch worth declining has to be declined here, not
+   * discouraged in prose the parent may not follow.
+   */
+  admit?: (input: INPUT, ctx: AgentRuntimeContext) => Promise<OUTPUT | null>;
   formatResult: (
     result: GenerateTextResult<TOOLS, Record<string, unknown>, never>,
     salvaged?: SALVAGE,
@@ -282,6 +292,11 @@ export const createSubAgentExecute = <
     onToolStart: ((toolName: string, toolInput: unknown) => void) | undefined,
   ): Promise<OUTPUT> => {
     const ctx = getRuntimeContext(options);
+    // Asked BEFORE anything is built or sent, because a dispatch that should
+    // not happen is cheapest when it never starts: `buildMessages` alone
+    // resolves collections and skills.
+    const refusal = await config.admit?.(input, ctx);
+    if (refusal !== undefined && refusal !== null) return refusal;
     const messages = await config.buildMessages(input, ctx);
     const callOptions = config.buildCallOptions(input, ctx);
     const startedAt = Date.now();

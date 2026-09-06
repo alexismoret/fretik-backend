@@ -123,6 +123,7 @@ import {
 import { resolveTeamFlagship } from "../lib/model-registry/team-model";
 import type { ModelProfile, ReasoningLevel } from "../lib/model-registry/types";
 import { buildSensitiveInputScrubber } from "../lib/scrub-stream";
+import { createSseEventQueue } from "../lib/sse-event-queue";
 import { withHeartbeat } from "../lib/sse-heartbeat";
 import {
   classifyStreamError,
@@ -1250,6 +1251,37 @@ export const runChatbotTurn = async (
   // error mid-stream if even the microcompacted history is too large
   // — there is no longer a 422 hard-fail envelope.
   const COMPACTION_PART_ID = "compaction-status";
+
+  // Post-turn bookkeeping nothing downstream waits on: closing the Stop
+  // channel, shipping the turn's spans, dropping the in-process usage ledger.
+  // Kept OFF the client's end-of-turn path on purpose. `onFinish` runs inside
+  // the SDK stream's `flush()`, so the stream — and with it the turn log's end
+  // marker, hence the client's `[DONE]` — waits for everything awaited in it.
+  // With the Langfuse flush (unbounded network I/O) in there, a finished
+  // answer sat on screen for seconds with the composer still on Stop. The
+  // turn-log path runs this after the pump wrote the end marker; the
+  // stateless `/internal/invoke` path (no pump) runs it at the end of
+  // `onFinish`. Idempotent and self-catching: it is reached from both.
+  let settled = false;
+  const settleTurn = async (): Promise<void> => {
+    if (settled) return;
+    settled = true;
+    try {
+      await releaseAbortSubscriber();
+      await flushLangfuse();
+    } catch (err) {
+      console.warn(
+        `${params.logPrefix} post-turn settle failed:`,
+        err instanceof Error ? err.message : err,
+      );
+    } finally {
+      // The durable copies (the version row, the turn observation, the
+      // message metadata) are all written by now; dropping the ledger keeps
+      // a long-lived process from carrying every turn it ever served.
+      forgetTurnUsage(usageKey);
+    }
+  };
+
   const rawStream = createUIMessageStream<UIMessage>({
     originalMessages: params.history,
     // uuid v7 for any message id the outer stream mints itself — keeps
@@ -1264,41 +1296,86 @@ export const runChatbotTurn = async (
     // other error becomes a structured retryable frame.
     onError: recordStreamError,
     onFinish: async ({ messages: finalMessages }) => {
+      // ORDER IS THE CONTRACT HERE, and it is NOT the workflow handler's
+      // (`handlers/workflow.ts` ends the log BEFORE clearing the slot — it
+      // can, because it force-sets the id and never 409s). Two invariants:
+      //
+      //  - The client's `[DONE]` must never precede the slot release, or the
+      //    prompt a user types the instant the answer lands takes a 409.
+      //    `onFinish` runs inside the SDK stream's `flush()` and the log's
+      //    end marker is written after the stream closes, so everything
+      //    awaited here already happens first. The flip side is that
+      //    everything awaited here DELAYS `[DONE]`, which is why the slow
+      //    bookkeeping moved to `settleTurn` (see its docblock).
+      //  - The slot release and `turn-ended` must run even when persistence
+      //    throws. Nothing retries the persistence, so a slot held after a
+      //    failed write buys nothing and costs a 409 on every later prompt
+      //    plus a background-task resume that can never fire (the sweep
+      //    requires a null slot). The recorder's trailing flush has already
+      //    left this turn's `partial` rows in history, which is what an
+      //    interrupted turn is supposed to show.
+      let persistError: unknown;
       // Persist the turn's messages AND journal its `chat.turn` boundary in
       // ONE transaction — the outbox guarantee (both commit or neither). The
       // event feeds memory recall + future workflow triggers; dedup-keyed on
       // the final message id so a re-fired `onFinish` never double-journals.
       // Payload carries previews + tool names so the distiller can build an
       // episode without reloading the turn.
-      await db.transaction(async (tx) => {
-        const persisted = await persistAssistantMessages(
-          params.conversationId,
-          params.history,
-          finalMessages,
-          params.resumableStreamId ?? null,
-          tx,
-        );
-        if (!params.conversationId) return;
-        const lastMessageId = finalMessages[finalMessages.length - 1]?.id;
-        await emitDomainEvent({
-          tx,
-          organizationId: params.callOptions.organizationId,
-          teamId: params.callOptions.teamId,
-          type: "chat.turn",
-          actor: {
-            actorType: "agent",
-            actorUserId: params.callOptions.userId ?? null,
-            conversationId: params.conversationId,
-            agentKey: "chatbot",
-          },
-          payload: buildChatTurnPayload(
+      try {
+        await db.transaction(async (tx) => {
+          const persisted = await persistAssistantMessages(
+            params.conversationId,
             params.history,
-            persisted,
-            lastMessageId,
-          ),
-          dedupKey: lastMessageId ? `chat.turn:${lastMessageId}` : null,
+            finalMessages,
+            params.resumableStreamId ?? null,
+            tx,
+          );
+          if (!params.conversationId) return;
+          const lastMessageId = finalMessages[finalMessages.length - 1]?.id;
+          await emitDomainEvent({
+            tx,
+            organizationId: params.callOptions.organizationId,
+            teamId: params.callOptions.teamId,
+            type: "chat.turn",
+            actor: {
+              actorType: "agent",
+              actorUserId: params.callOptions.userId ?? null,
+              conversationId: params.conversationId,
+              agentKey: "chatbot",
+            },
+            payload: buildChatTurnPayload(
+              params.history,
+              persisted,
+              lastMessageId,
+            ),
+            dedupKey: lastMessageId ? `chat.turn:${lastMessageId}` : null,
+          });
         });
-      });
+      } catch (err) {
+        // Rethrown at the very end — the teardown below runs first.
+        persistError = err;
+        console.error(
+          `${params.logPrefix} turn persistence failed — tearing the turn down anyway:`,
+          err instanceof Error ? err.message : err,
+        );
+      }
+      // Release the active-stream slot so the next turn can start without
+      // tripping the 409 idempotence guard. Compare-and-swap on the streamId
+      // keeps us safe from clearing a fresher turn.
+      if (params.conversationId && params.resumableStreamId) {
+        await clearConversationActiveStream(
+          params.conversationId,
+          params.resumableStreamId,
+        );
+        // Tell every connected viewer the shared turn is over: stop the
+        // live fan-out + lift the send gate. `stopped` flags a user Stop
+        // so viewers render the same "Stopped" affordance on the partial.
+        await publishConversationEvent(params.conversationId, {
+          type: "turn-ended",
+          streamId: params.resumableStreamId,
+          stopped: abortController.signal.aborted,
+        });
+      }
       // Per-turn observability (tool calls, RAG hits, latency, cost) is
       // captured by Langfuse via `experimental_telemetry` — see
       // `lib/langfuse.ts`. No custom DB telemetry blob or structured log
@@ -1338,23 +1415,6 @@ export const runChatbotTurn = async (
           );
         });
       }
-      // Release the active-stream slot so the next turn can start
-      // without tripping the 409 idempotence guard. Compare-and-swap
-      // on the streamId keeps us safe from clearing a fresher turn.
-      if (params.conversationId && params.resumableStreamId) {
-        await clearConversationActiveStream(
-          params.conversationId,
-          params.resumableStreamId,
-        );
-        // Tell every connected viewer the shared turn is over: stop the
-        // live fan-out + lift the send gate. `stopped` flags a user Stop
-        // so viewers render the same "Stopped" affordance on the partial.
-        await publishConversationEvent(params.conversationId, {
-          type: "turn-ended",
-          streamId: params.resumableStreamId,
-          stopped: abortController.signal.aborted,
-        });
-      }
       // Drain background work that finished while this turn held the slot: a
       // resume needs a free slot, which only exists now. Goes through the
       // same signal as every other terminal path (rather than calling the
@@ -1374,15 +1434,17 @@ export const runChatbotTurn = async (
             );
           });
       }
-      await releaseAbortSubscriber();
-      // Ship this turn's spans to Langfuse promptly (don't wait for the
-      // batch interval). Soft-fails internally; never blocks the response.
-      await flushLangfuse();
-      // The usage ledger is in-process and has no reader past here: the
-      // durable copies (the version row, the turn observation, the message
-      // metadata) are all written by now. Dropping it keeps a long-lived
-      // process from carrying every turn it ever served.
-      forgetTurnUsage(usageKey);
+      // A turn-log turn settles AFTER its pump wrote the end marker (see the
+      // `.finally` on `pumpChunksToTurnLog` below) so the client's `[DONE]`
+      // never waits on a Langfuse flush. A stateless `/internal/invoke` turn
+      // has no pump, so here is its only chance.
+      if (params.resumableStreamId === undefined) {
+        await settleTurn();
+      }
+      // Surface the persistence failure now that the turn is torn down. The
+      // pump marks the log `r=error`, and readers emit `[DONE]` on any end
+      // marker — so the client still ends cleanly and can send again.
+      if (persistError !== undefined) throw persistError;
     },
     execute: async ({ writer }) => {
       // Trace I/O for the `chatbot-turn` parent span (set inside the
@@ -2032,7 +2094,15 @@ export const runChatbotTurn = async (
   // all decoupled from any HTTP connection's lifetime. Producer liveness
   // pings ride the log itself (see turn-log.ts), so no per-connection
   // heartbeat wrapper here.
-  void pumpChunksToTurnLog(resumableStreamId, outboundStream);
+  //
+  // The pump ends the log, and the end marker is what becomes the client's
+  // `[DONE]` — so the turn's slow bookkeeping hangs off the pump rather than
+  // off `onFinish`, which the log's closure waits for. It never rejects (it
+  // catches internally and still writes an `error` end marker), so the
+  // `.finally` runs on every outcome.
+  void pumpChunksToTurnLog(resumableStreamId, outboundStream).finally(
+    () => void settleTurn(),
+  );
   return new Response(readTurnLogAsSse(resumableStreamId, "0-0"), {
     status: 200,
     headers: { ...UI_MESSAGE_STREAM_HEADERS, ...ANTI_BUFFERING_HEADERS },
@@ -2414,6 +2484,16 @@ chatbotRoutes.get("/:conversationId/stream", async (c) => {
     }
     return new Response(null, { status: 204 });
   }
+  if (status.ended) {
+    // The log is closed but the slot survived it — the producer died between
+    // its end marker and its cleanup, or its persistence threw. The turn is
+    // over either way: everything it produced is in history, so serving the
+    // log again would only replay a finished turn behind a slot that keeps
+    // 409ing every new prompt. Same rule the maintenance sweep applies, but
+    // on demand instead of on its cadence.
+    await clearConversationActiveStream(conversationId, activeStreamId);
+    return new Response(null, { status: 204 });
+  }
   if (isTurnLogOrphan(status, Date.now())) {
     // Dead producer (deploy/crash mid-turn — or a stall long past even
     // the tool-aware deadline). SALVAGE, then clear: everything the turn
@@ -2510,77 +2590,58 @@ chatbotRoutes.get("/:conversationId/events", async (c) => {
     c.header(key, value);
   }
   return streamSSE(c, async (stream) => {
-    // Initial snapshot: any live turn + the current presence roster, so a
-    // viewer joining mid-turn fans in and renders avatars without waiting
-    // for the next event.
-    // `turn-started` alone is the attach invite: the turn log exists from
-    // the moment the slot is claimed (openTurnLog runs before the event is
-    // published), so a viewer can always attach immediately — the separate
-    // `turn-stream-ready` handshake is gone with the old buffer.
-    const activeStreamId = await getConversationActiveStream(conversationId);
-    if (activeStreamId) {
-      await stream.writeSSE({
-        event: "message",
-        data: JSON.stringify({
-          type: "turn-started",
-          streamId: activeStreamId,
-          byUserId: "",
-        }),
-      });
-    }
-    await stream.writeSSE({
-      event: "message",
-      data: JSON.stringify({
-        type: "presence",
-        viewers: await listViewers(conversationId),
-      }),
-    });
-
     // Bridge Redis pub/sub → an awaitable queue so every SSE write is
     // ordered + awaited (the Bun chunked-encoding footgun; see sse-utils).
-    //
-    // Shape matters here: the queue is FULLY DRAINED before blocking, and
-    // the wait primitive resolves WITHOUT consuming — the previous
-    // `Promise.race(heartbeat, waitForEvent())` shifted an event into a
-    // race the heartbeat had already won, silently dropping it (a lost
-    // `turn-started` meant a viewer never attached; a lost `turn-ended`
-    // left the send gate stuck until reload).
-    const queue: string[] = [];
-    let signalEvent: (() => void) | null = null;
-    const cleanup = await subscribeConversationEvents(
-      conversationId,
-      (payload) => {
-        queue.push(payload);
-        signalEvent?.();
-        signalEvent = null;
-      },
+    // The queue's shape is what keeps events from being dropped — see
+    // `lib/sse-event-queue.ts`. Subscribing here, BEFORE the snapshot below,
+    // is the other half of that: pub/sub has no replay.
+    const events = createSseEventQueue(CHATBOT_HEARTBEAT_MS);
+    const cleanup = await subscribeConversationEvents(conversationId, (p) =>
+      events.push(p),
     );
-    // Resolves "event" as soon as the queue is (or becomes) non-empty,
-    // "heartbeat" after the keep-alive interval. Never touches the queue.
-    const waitForEventOrHeartbeat = (): Promise<"event" | "heartbeat"> =>
-      new Promise((resolve) => {
-        if (queue.length > 0) {
-          resolve("event");
-          return;
-        }
-        const timer = setTimeout(() => {
-          signalEvent = null;
-          resolve("heartbeat");
-        }, CHATBOT_HEARTBEAT_MS);
-        signalEvent = () => {
-          clearTimeout(timer);
-          resolve("event");
-        };
-      });
 
     /* oxlint-disable no-await-in-loop -- sequential SSE writes are required */
     try {
+      // Initial snapshot: any live turn + the current presence roster, so a
+      // viewer joining mid-turn fans in and renders avatars without waiting
+      // for the next event.
+      // `turn-started` alone is the attach invite: the turn log exists from
+      // the moment the slot is claimed (openTurnLog runs before the event is
+      // published), so a viewer can always attach immediately — the separate
+      // `turn-stream-ready` handshake is gone with the old buffer.
+      //
+      // Written AFTER the subscription above, and inside this `try`, for two
+      // reasons. Subscribing second dropped every event published while the
+      // snapshot was on the wire — pub/sub has no replay, and a lost
+      // `turn-ended` leaves every viewer's send gate stuck on Stop until they
+      // reload. And a client that disconnects mid-snapshot must still reach
+      // the `finally` that unsubscribes. A `turn-started` delivered twice (in
+      // the queue AND in the snapshot) is harmless: the client's attach is
+      // single-flight and keyed by streamId.
+      const activeStreamId = await getConversationActiveStream(conversationId);
+      if (activeStreamId) {
+        await stream.writeSSE({
+          event: "message",
+          data: JSON.stringify({
+            type: "turn-started",
+            streamId: activeStreamId,
+            byUserId: "",
+          }),
+        });
+      }
+      await stream.writeSSE({
+        event: "message",
+        data: JSON.stringify({
+          type: "presence",
+          viewers: await listViewers(conversationId),
+        }),
+      });
+
       while (!stream.aborted) {
-        while (queue.length > 0) {
-          const next = queue.shift();
-          if (next) await stream.writeSSE({ event: "message", data: next });
+        for (let next = events.take(); next; next = events.take()) {
+          await stream.writeSSE({ event: "message", data: next });
         }
-        const outcome = await waitForEventOrHeartbeat();
+        const outcome = await events.waitForEventOrHeartbeat();
         if (outcome === "heartbeat") {
           await stream.writeSSE({ event: "ping", data: "ping" });
         }

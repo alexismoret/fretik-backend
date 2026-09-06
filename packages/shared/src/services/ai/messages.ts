@@ -1,5 +1,5 @@
 import type { UIMessage } from "ai";
-import { and, asc, desc, eq, gt, lte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, lte, notInArray, sql } from "drizzle-orm";
 import db, { type Transaction } from "../../db";
 import { aiConversations, aiMessages } from "../../db/schema";
 
@@ -316,6 +316,17 @@ export const saveMessages = async (
  *
  * Gated on `partial` so a finished message can never be deleted, and on
  * `turnId` so only this turn's rows are in scope.
+ *
+ * `notInArray` rather than a hand-written `<> ALL(…::uuid[])`: the raw form
+ * bound the id list as ONE parameter, and the driver sent a bare uuid string
+ * where Postgres wanted an array literal. Every chat turn therefore died here
+ * with `malformed array literal`, INSIDE the turn's transaction — so the
+ * authoritative message write and the `chat.turn` journal entry rolled back
+ * with it. What the user saw: a complete answer that reloads as "interrupted"
+ * (the recorder's `partial` rows were all that survived) and a conversation
+ * that refused the next prompt (the slot release never ran either, before it
+ * was moved out of the transaction's blast radius). One malformed cast, two
+ * headline symptoms.
  */
 export const deleteStalePartialMessages = async (params: {
   conversationId: string;
@@ -331,9 +342,7 @@ export const deleteStalePartialMessages = async (params: {
         eq(aiMessages.conversationId, conversationId),
         eq(aiMessages.turnId, turnId),
         sql`${aiMessages.metadata} ->> 'partial' = 'true'`,
-        keepIds.length > 0
-          ? sql`${aiMessages.id} <> ALL(${keepIds}::uuid[])`
-          : sql`true`,
+        keepIds.length > 0 ? notInArray(aiMessages.id, keepIds) : sql`true`,
       ),
     )
     .returning({ id: aiMessages.id });

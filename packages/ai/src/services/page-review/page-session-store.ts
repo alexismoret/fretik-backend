@@ -41,9 +41,18 @@ import type { PageElevation, PageFinding } from "./evaluate";
  * measurement error, and they are the expensive half: a late round replays a
  * history three times the size of an early one.
  *
+ * Then measured forward, three builds of `page-giga-multi-view` on a clean
+ * workspace: **$0.716 a page against $1.28 at six** (-44%), 28.7 model steps
+ * against 46, render gate 3/3, no tool error, design 6.93 against 7.30. The
+ * -0.37 is the whole cost of the cut and it is smaller than the critic's own
+ * spread on identical bytes; the two builds that actually SPENT their three
+ * rounds both scored 7.0, and the 6.8 came from a build that stopped after one
+ * — the cap was not what bound it.
+ *
  * `PAGE_MAX_REVIEWS` overrides it, because this is a quality-for-price trade
  * and the price moved: the number that justified six was taken when a page
- * cost $0.74, and it costs twice that now.
+ * cost $0.74, and it costs twice that now. Six is one environment variable
+ * away, with no revert and no deploy.
  */
 export const MAX_PAGE_REVIEWS = parseIntEnv("PAGE_MAX_REVIEWS", {
   fallback: 3,

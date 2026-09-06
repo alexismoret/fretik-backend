@@ -272,8 +272,32 @@ void runReleaseTasks(aiReleaseTasks(), {
   version: deployedVersion(VERSION),
 });
 
+/**
+ * How long Bun lets a socket sit before it closes it.
+ *
+ * Thirty seconds came in with the first push and was never revisited — the
+ * same three lines are in `api` and `jobs`, where nothing streams for
+ * minutes. Here everything does: one `pageReview` builds the project,
+ * renders it in a browser and runs a critic over the screenshot, and it is a
+ * SINGLE tool call, so the gap between two frames of a page build is now
+ * measured in minutes rather than seconds.
+ *
+ * A 5-second heartbeat rides `/internal/invoke` (`injectSseHeartbeat`) and is
+ * supposed to make that gap invisible. On 2026-09-06 four consecutive page
+ * builds still died between 90 and 121 seconds with "the socket connection
+ * was closed unexpectedly", while the server carried on and Langfuse recorded
+ * thirty-two model calls the caller never saw. Whatever lets a ping through
+ * on a short turn and not on a long one is not yet understood, so this is a
+ * floor and not a fix: 255 is Bun's documented maximum, and it turns a class
+ * of failure that killed the turn into one that at worst delays it.
+ *
+ * The real repair is a liveness signal the transport cannot swallow. Until
+ * then, a build that goes quiet for four minutes does not lose its work.
+ */
+const SOCKET_IDLE_TIMEOUT_SECONDS = 255;
+
 export default {
   port: process.env.PORT,
   fetch: app.fetch,
-  idleTimeout: 30,
+  idleTimeout: SOCKET_IDLE_TIMEOUT_SECONDS,
 };

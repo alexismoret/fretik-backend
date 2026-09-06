@@ -123,6 +123,7 @@ import {
 import { resolveTeamFlagship } from "../lib/model-registry/team-model";
 import type { ModelProfile, ReasoningLevel } from "../lib/model-registry/types";
 import { buildSensitiveInputScrubber } from "../lib/scrub-stream";
+import { withHeartbeat } from "../lib/sse-heartbeat";
 import {
   classifyStreamError,
   describeStreamError,
@@ -2066,63 +2067,24 @@ const encodePingFrame = (): string => {
 };
 
 /**
- * TransformStream factory that forwards every incoming chunk unchanged
- * and, in parallel, enqueues a `data-ping` frame every `intervalMs`.
- * The interval is torn down in `flush()`, which the standard
- * guarantees runs exactly once when the input stream closes (clean
- * finish, LLM error, or client disconnect).
+ * Ride a `data-ping` on the stateless `/internal/invoke` passthrough every
+ * `CHATBOT_HEARTBEAT_MS`, so a tool call that thinks for four minutes does not
+ * read as a dead connection. The turn-log paths get their liveness from the
+ * producer, inside the log itself (`turn-log.ts`), so every consumer inherits
+ * it there.
  *
- * Only used on the stateless `/internal/invoke` passthrough now — the
- * turn-log paths get their liveness pings from the producer, inside the
- * log itself (`turn-log.ts`), so every consumer inherits them.
+ * The pings come from `withHeartbeat`, which drives them from the READ side.
+ * The shape this replaced enqueued from a `setInterval` inside a
+ * TransformStream and emitted exactly one ping ever — see that module for what
+ * it cost.
  */
-const injectSseHeartbeat = <T extends Uint8Array | string>(
-  intervalMs: number,
-  encodePing: () => T,
-): TransformStream<T, T> => {
-  let interval: ReturnType<typeof setInterval> | null = null;
-  return new TransformStream<T, T>({
-    start(controller) {
-      // Emit one ping immediately so bytes flow before the model produces
-      // anything — borders the pre-first-token preamble (context loading /
-      // compaction) where an aggressive proxy could otherwise time out the
-      // idle connection before the first `intervalMs` elapses.
-      try {
-        controller.enqueue(encodePing());
-      } catch {
-        // Controller already closed — nothing to do.
-      }
-      interval = setInterval(() => {
-        try {
-          controller.enqueue(encodePing());
-        } catch {
-          // Controller closed — flush() will clear the timer.
-        }
-      }, intervalMs);
-    },
-    transform(chunk, controller) {
-      controller.enqueue(chunk);
-    },
-    flush() {
-      if (interval !== null) {
-        clearInterval(interval);
-        interval = null;
-      }
-    },
-  });
-};
-
-const injectSseHeartbeatBytes = (intervalMs: number) => {
-  const encoder = new TextEncoder();
-  return injectSseHeartbeat<Uint8Array>(intervalMs, () =>
-    encoder.encode(encodePingFrame()),
-  );
-};
-
 const wrapResponseWithSseHeartbeat = (response: Response): Response => {
   if (!response.body) return response;
+  const encoder = new TextEncoder();
   return new Response(
-    response.body.pipeThrough(injectSseHeartbeatBytes(CHATBOT_HEARTBEAT_MS)),
+    withHeartbeat(response.body, CHATBOT_HEARTBEAT_MS, () =>
+      encoder.encode(encodePingFrame()),
+    ),
     {
       status: response.status,
       statusText: response.statusText,

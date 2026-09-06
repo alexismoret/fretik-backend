@@ -205,6 +205,23 @@ describe("recordStepUsage", () => {
    * metadata simply omitted the spend, and the eval runner reported the cost
    * from Langfuse — the pipeline this ledger exists to stop trusting.
    */
+  test("a Langfuse trace id does not read a ledger keyed by the turn", () => {
+    const runtimeTraceId = "0198f2c1-6a3e-7b21-9c44-7f0a2b6d1e58";
+    const langfuseTraceId = "529b38becf7e5431c0d9cd2c88e0226f";
+    recordStepUsage(
+      runtimeTraceId,
+      "chatbot",
+      summarizeStep({
+        usage: usageOf({ input: 100 }),
+        providerMetadata: billed(0.5),
+      }),
+    );
+
+    expect(readTurnUsage(runtimeTraceId)?.total.costUsd).toBe(0.5);
+    // No hyphens to split on, so the fold to a turn root cannot rescue it.
+    expect(readTurnUsage(langfuseTraceId)).toBeUndefined();
+  });
+
   /**
    * A prompt cache belongs to the host that holds it. Steps summed across two
    * hosts hide the only thing that explains a full-price replay ten seconds
@@ -252,22 +269,5 @@ describe("recordStepUsage", () => {
     expect(Object.keys(merged.providers).sort()).toEqual(["studio", "vertex"]);
     // Neither input was mutated by the merge.
     expect(Object.keys(a.providers)).toEqual(["vertex"]);
-  });
-
-  test("a Langfuse trace id does not read a ledger keyed by the turn", () => {
-    const runtimeTraceId = "0198f2c1-6a3e-7b21-9c44-7f0a2b6d1e58";
-    const langfuseTraceId = "529b38becf7e5431c0d9cd2c88e0226f";
-    recordStepUsage(
-      runtimeTraceId,
-      "chatbot",
-      summarizeStep({
-        usage: usageOf({ input: 100 }),
-        providerMetadata: billed(0.5),
-      }),
-    );
-
-    expect(readTurnUsage(runtimeTraceId)?.total.costUsd).toBe(0.5);
-    // No hyphens to split on, so the fold to a turn root cannot rescue it.
-    expect(readTurnUsage(langfuseTraceId)).toBeUndefined();
   });
 });

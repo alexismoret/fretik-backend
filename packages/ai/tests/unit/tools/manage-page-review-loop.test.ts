@@ -221,6 +221,8 @@ afterAll(() => {
 const { createManagePageTool } = await import("../../../src/tools/manage-page");
 const { createPageReviewTool } =
   await import("../../../src/tools/page-project/review");
+const { createPageBuildTool } =
+  await import("../../../src/tools/page-project/build");
 const {
   emptyProjectState,
   hashProjectFiles,
@@ -701,6 +703,102 @@ describe("pageReview builds what it is about to judge", () => {
     expect(result["code"]).toBe("INVALID_ARGS");
     expect(renderCalls).toHaveLength(0);
     expect(updateCalls).toHaveLength(0);
+  });
+});
+
+/**
+ * A build of files nobody changed used to answer "change a file first".
+ *
+ * That answer cost a full model step — every step replays the whole
+ * conversation, whatever it produces — and the thing the builder wanted was
+ * already sitting in Redis under exactly these bytes.
+ */
+describe("pageBuild on an unchanged project", () => {
+  const PAGE_JSON = JSON.stringify({
+    brief: {
+      product: { job: "Watch lanes", audience: "Ops", features: [] },
+      design: {
+        archetype: "board",
+        layout: "lanes across, cards down",
+        hierarchy: "the blocked lane leads",
+        containers: "detail inline",
+        signature: "blocked cards carry the error hue",
+        defaultsRejected: ["four equal KPI cards"],
+        alternative: "a table — the point here is movement between lanes",
+      },
+    },
+  });
+
+  const execPageBuild = async (): Promise<Record<string, unknown>> => {
+    const tool = createPageBuildTool();
+    if (typeof tool.execute !== "function") {
+      throw new Error("pageBuild missing execute");
+    }
+    const ctx = {
+      organizationId: "org-1",
+      teamId: "team-1",
+      userId: crypto.randomUUID(),
+      conversationId: crypto.randomUUID(),
+      traceId: `${scope}.page`,
+      modelProfile: getProfileForRole("chat"),
+      dynamicToolManager: new DynamicToolManager(),
+    };
+    const result = await tool.execute(
+      {},
+      { toolCallId: "tc-1", messages: [], context: wrapRuntimeContext(ctx) },
+    );
+    if (typeof result !== "object" || result === null) {
+      throw new Error("pageBuild returned non-object");
+    }
+    return result as Record<string, unknown>;
+  };
+
+  /** A built copy, plus the hash a verdict would have been pinned to. */
+  const seedBuilt = async (): Promise<string> => {
+    const files = { "page.json": PAGE_JSON, "Page.vue": SOURCE };
+    const state = { ...emptyProjectState(), pageId, files };
+    const hash = hashProjectFiles(projectFiles(state));
+    await writePageProject(`${scope}.page`, { ...state, builtHash: hash });
+    return hash;
+  };
+
+  test("the standing verdict comes back instead of a bounce", async () => {
+    const hash = await seedBuilt();
+    await recordPageReviewVerdict(scope, pageId, {
+      sourceHash: hash,
+      shipped: true,
+      round: 2,
+      result: {
+        gate: "pass",
+        verdict: "ship",
+        score: 8.2,
+        iteration: "2/6",
+        next: "Nothing blocks this page: it ships as it stands.",
+      },
+    });
+
+    const result = await execPageBuild();
+    const review = result["review"] as Record<string, unknown> | undefined;
+
+    expect(review?.["verdict"]).toBe("ship");
+    expect(review?.["score"]).toBe(8.2);
+    expect(String(result["next"])).toContain("ships as it stands");
+  });
+
+  test("a verdict for OTHER bytes is not repeated as this one's", async () => {
+    // The whole guard: a verdict belongs to the version it judged.
+    await seedBuilt();
+    await recordPageReviewVerdict(scope, pageId, {
+      sourceHash: "a-different-version",
+      shipped: true,
+      round: 2,
+      result: { gate: "pass", verdict: "ship", score: 8.2 },
+    });
+
+    const result = await execPageBuild();
+
+    expect(result["review"]).toBeUndefined();
+    expect(String(result["next"])).toContain("has not been reviewed");
   });
 });
 

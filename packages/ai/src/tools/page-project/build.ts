@@ -4,7 +4,10 @@ import { buildPageProject } from "../../services/page-project/build";
 import { componentsUsed } from "../../services/page-project/manifest";
 import type { PageProjectState } from "../../services/page-project/store";
 import { recordPageWrite } from "../../services/page-project/write-stats";
-import { listComponentsRead } from "../../services/page-review/page-session-store";
+import {
+  listComponentsRead,
+  readPageReviewVerdict,
+} from "../../services/page-review/page-session-store";
 import { MAX_COMPONENT_DOCS, listContractHeavy } from "../page-component-docs";
 import {
   loadPageProjectContext,
@@ -147,6 +150,45 @@ export const buildFromContext = async (
   };
 };
 
+/** The fields of a stored verdict worth repeating — the judgement, not the prose. */
+const VERDICT_FIELDS = [
+  "gate",
+  "verdict",
+  "score",
+  "iteration",
+  "phase",
+] as const;
+
+/**
+ * The verdict already recorded for exactly these bytes, if there is one.
+ *
+ * `builtHash` and a verdict's `sourceHash` are both a sha256 over
+ * `path\0content\0` for every file of the project, so they are directly
+ * comparable — a match means this version is the one that was judged.
+ */
+const standingVerdict = async (
+  scope: string | undefined,
+  built: GreenBuild,
+): Promise<{ review: Record<string, unknown>; next: string } | undefined> => {
+  const stored = await readPageReviewVerdict(scope, built.pageId);
+  if (stored === null || stored.sourceHash !== built.state.builtHash) {
+    return undefined;
+  }
+  const review: Record<string, unknown> = {};
+  for (const field of VERDICT_FIELDS) {
+    const value = stored.result[field];
+    if (value !== undefined) review[field] = value;
+  }
+  const next = stored.result["next"];
+  return {
+    review,
+    next:
+      typeof next === "string"
+        ? next
+        : "Nothing changed since the last build, and this version already has its verdict.",
+  };
+};
+
 export const createPageBuildTool = () =>
   tool({
     description:
@@ -156,15 +198,25 @@ export const createPageBuildTool = () =>
       const project = await loadPageProjectContext(options);
       const built = await buildFromContext(project);
       if (!built.ok) return built;
+      // A build of files nobody changed answers nothing, and the answer cost a
+      // full model step — every step replays the whole conversation, whatever
+      // it produces. If this exact version already has a verdict, hand that
+      // back instead of asking for another review to fetch it.
+      const standing = built.unchanged
+        ? await standingVerdict(project.reviewScope, built)
+        : undefined;
       return {
         ok: true,
         pageId: built.pageId,
         url: built.url,
         manifest: built.manifest,
         ...(built.warnings !== undefined ? { warnings: built.warnings } : {}),
-        next: built.unchanged
-          ? "Nothing changed since the last build. Review it, or change a file first."
-          : "The page is saved and live at that url. Review it before handing it over.",
+        ...(standing !== undefined ? { review: standing.review } : {}),
+        next:
+          standing?.next ??
+          (built.unchanged
+            ? "Nothing changed since the last build, and this version has not been reviewed: pageReview it."
+            : "The page is saved and live at that url. Review it before handing it over."),
       };
     },
   });

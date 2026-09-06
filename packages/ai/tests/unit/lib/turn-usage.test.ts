@@ -191,4 +191,33 @@ describe("recordStepUsage", () => {
     // whether to fall back to Langfuse on exactly this difference.
     expect(readTurnUsage("never-seen")).toBeUndefined();
   });
+
+  /**
+   * The trap this ledger shipped in on 2026-09-06, and the reason the read
+   * side is worth a test of its own.
+   *
+   * Two identifiers in this codebase are called a trace id. The ledger's is
+   * the runtime context's — a UUIDv7 (the resumable `streamId`), suffixed by
+   * every delegate. The other is Langfuse's span context, 32 hex characters,
+   * and `handlers/chatbot.ts` had `readTurnUsage(getActiveTraceId())`: every
+   * step was counted and not one was ever read back. Nothing failed. The
+   * metadata simply omitted the spend, and the eval runner reported the cost
+   * from Langfuse — the pipeline this ledger exists to stop trusting.
+   */
+  test("a Langfuse trace id does not read a ledger keyed by the turn", () => {
+    const runtimeTraceId = "0198f2c1-6a3e-7b21-9c44-7f0a2b6d1e58";
+    const langfuseTraceId = "529b38becf7e5431c0d9cd2c88e0226f";
+    recordStepUsage(
+      runtimeTraceId,
+      "chatbot",
+      summarizeStep({
+        usage: usageOf({ input: 100 }),
+        providerMetadata: billed(0.5),
+      }),
+    );
+
+    expect(readTurnUsage(runtimeTraceId)?.total.costUsd).toBe(0.5);
+    // No hyphens to split on, so the fold to a turn root cannot rescue it.
+    expect(readTurnUsage(langfuseTraceId)).toBeUndefined();
+  });
 });

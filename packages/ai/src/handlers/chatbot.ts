@@ -1005,6 +1005,23 @@ export const runChatbotTurn = async (
     return tooManyFiles;
   }
 
+  /**
+   * The usage ledger's key, and NOT `getActiveTraceId()`.
+   *
+   * Two different identifiers call themselves a trace id here. This one is
+   * the runtime context's — the resumable `streamId`, threaded into every
+   * agent and suffixed by every delegate (`.page`, `.sub`), which is what
+   * `recordStepUsage` writes under. `getActiveTraceId()` is the Langfuse
+   * span context, 32 hex characters from a different namespace.
+   *
+   * Reading with the wrong one is silent: `readTurnUsage` answers
+   * `undefined` and the metadata simply omits the spend. The first version
+   * of this ledger shipped that way on 2026-09-06 — counted on every step,
+   * never once read back — and the only thing that caught it was the eval
+   * runner printing "server ledger absent" instead of a cost.
+   */
+  const usageKey = params.callOptions.traceId;
+
   // Context files are NOT hydrated here. `read("context/...")` serves
   // them Bun-side (no sandbox), and the `python` / `bash` tools hydrate
   // them into `/workspace/context/...` on demand via
@@ -1364,7 +1381,7 @@ export const runChatbotTurn = async (
       // durable copies (the version row, the turn observation, the message
       // metadata) are all written by now. Dropping it keeps a long-lived
       // process from carrying every turn it ever served.
-      forgetTurnUsage(turnTrace.traceId);
+      forgetTurnUsage(usageKey);
     },
     execute: async ({ writer }) => {
       // Trace I/O for the `chatbot-turn` parent span (set inside the
@@ -1453,7 +1470,7 @@ export const runChatbotTurn = async (
                     "fallback",
                     modelProfile.key,
                     getActiveTraceId(),
-                    readTurnUsage(getActiveTraceId()),
+                    readTurnUsage(usageKey),
                   );
                 },
               }),
@@ -1559,7 +1576,7 @@ export const runChatbotTurn = async (
                     servedBy,
                     modelProfile.key,
                     getActiveTraceId(),
-                    readTurnUsage(getActiveTraceId()),
+                    readTurnUsage(usageKey),
                   );
                 },
               }),
@@ -1721,7 +1738,7 @@ export const runChatbotTurn = async (
                   servedBy,
                   modelProfile.key,
                   getActiveTraceId(),
-                  readTurnUsage(getActiveTraceId()),
+                  readTurnUsage(usageKey),
                 );
               },
             }),
@@ -1903,7 +1920,7 @@ export const runChatbotTurn = async (
               // a 22x observation fan-out went unnoticed for two days because
               // there was nothing to disagree with. Metadata only, never
               // `costDetails`, which Langfuse would add to its children.
-              const spend = readTurnUsage(turnObservation.traceId);
+              const spend = readTurnUsage(usageKey);
               if (spend !== undefined) {
                 turnMetadata.costUsd = spend.total.costUsd.toFixed(4);
                 turnMetadata.modelSteps = spend.total.steps.toString();

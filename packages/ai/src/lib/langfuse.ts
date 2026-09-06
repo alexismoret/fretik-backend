@@ -36,6 +36,7 @@ import { LangfuseVercelAiSdkIntegration } from "@langfuse/vercel-ai-sdk";
 import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
 import { registerTelemetry, type TelemetryOptions } from "ai";
 import { langfuseMask } from "./langfuse-mask";
+import { registerLangfuseOnce } from "./langfuse-registration";
 
 const publicKey = process.env.LANGFUSE_PUBLIC_KEY;
 const secretKey = process.env.LANGFUSE_SECRET_KEY;
@@ -69,34 +70,60 @@ export const langfuseClient = langfuseEnabled
   : undefined;
 
 /**
- * The single span processor instance — also the flush handle. `undefined`
- * when `langfuseEnabled` is false.
+ * Everything the process registers globally, installed exactly once.
+ *
+ * Both registrations below write to `globalThis` and neither is idempotent, so
+ * a `bun --hot` reload — which re-evaluates this module without restarting the
+ * process — would otherwise fan every model call out into N Langfuse
+ * observations and leave `flushLangfuse` holding a processor attached to
+ * nothing. `registerLangfuseOnce` is where that is explained and prevented;
+ * the factory below is not even CALLED on a reload.
  */
-export const langfuseSpanProcessor = langfuseEnabled
-  ? new LangfuseSpanProcessor({
-      environment: langfuseEnvironment,
-      // Redact PII / secrets from every observation's input/output/metadata
-      // before export. See lib/langfuse-mask.ts.
-      mask: langfuseMask,
+const wiring = langfuseEnabled
+  ? registerLangfuseOnce(globalThis, () => {
+      const processor = new LangfuseSpanProcessor({
+        environment: langfuseEnvironment,
+        // Redact PII / secrets from every observation's input/output/metadata
+        // before export. See lib/langfuse-mask.ts.
+        mask: langfuseMask,
+      });
+      return {
+        registration: { processor },
+        install: () => {
+          // Register the span processor globally so exported spans reach
+          // Langfuse via the global OTel tracer.
+          new NodeTracerProvider({ spanProcessors: [processor] }).register();
+          // AI SDK v7 uses a callback-based telemetry system: register the
+          // Langfuse-owned integration so
+          // `generateText`/`streamText`/`ToolLoopAgent` telemetry events become
+          // costed Langfuse observations (model + tool spans), nested under
+          // whatever parent span `propagateAttributes` opened (`chatbot-turn`,
+          // `workflow-turn`, pipeline traces). Telemetry is then ON by default
+          // for every SDK call; `telemetry.isEnabled: false` opts a call out.
+          registerTelemetry(new LangfuseVercelAiSdkIntegration());
+        },
+      };
     })
   : undefined;
 
-if (langfuseSpanProcessor) {
-  // Register the span processor globally so exported spans reach Langfuse
-  // via the global OTel tracer.
-  new NodeTracerProvider({
-    spanProcessors: [langfuseSpanProcessor],
-  }).register();
-  // AI SDK v7 uses a callback-based telemetry system: register the
-  // Langfuse-owned integration so `generateText`/`streamText`/`ToolLoopAgent`
-  // telemetry events become costed Langfuse observations (model + tool spans),
-  // nested under whatever parent span `propagateAttributes` opened
-  // (`chatbot-turn`, `workflow-turn`, pipeline traces). Telemetry is then ON by
-  // default for every SDK call; `telemetry.isEnabled: false` opts a call out.
-  registerTelemetry(new LangfuseVercelAiSdkIntegration());
+/**
+ * The span processor attached to the live tracer provider — also the flush
+ * handle. `undefined` when `langfuseEnabled` is false.
+ */
+export const langfuseSpanProcessor = wiring?.registration.processor;
+
+if (wiring) {
+  // `integrations` is printed on every boot because it is the one number that
+  // says whether a cost read out of Langfuse can be believed: anything but 1
+  // multiplies every observation, and nothing downstream can tell.
   console.log(
-    `[langfuse] tracing enabled — environment=${langfuseEnvironment} host=${baseUrl ?? "?"}`,
+    `[langfuse] tracing enabled — environment=${langfuseEnvironment} host=${baseUrl ?? "?"} integrations=${wiring.integrations.toString()}${wiring.reused ? " (reused across hot reload)" : ""}`,
   );
+  if (wiring.integrations > 1) {
+    console.warn(
+      `[langfuse] ${wiring.integrations.toString()} AI SDK telemetry integrations are registered: every model call is exported that many times, so every count and every cost read from Langfuse is that many times too high. Restart the process before measuring anything.`,
+    );
+  }
 }
 
 /**
@@ -133,6 +160,11 @@ export const telemetryFor = (
  * Flush buffered spans to Langfuse. Call at the end of a turn (so a trace
  * appears promptly, not only on the batch interval) and on shutdown.
  * Soft-fails: a flush error must never break the response path.
+ *
+ * It flushes the processor the tracer provider actually holds — which is only
+ * true because the registration is guarded. Rebuilding one per module
+ * evaluation would leave this flushing a processor attached to nothing, and it
+ * would fail by doing nothing at all.
  */
 export const flushLangfuse = async (): Promise<void> => {
   if (!langfuseSpanProcessor) return;

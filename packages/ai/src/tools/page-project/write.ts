@@ -102,7 +102,7 @@ interface FileOutcome {
 
 export const createPageWriteTool = () =>
   tool({
-    description: `Create or REPLACE whole files of the page. Pass \`files\` with EVERY file you are writing in one call — laying out a project is one pageWrite, not one per file. Nothing is visible to viewers until pageBuild is green, so a file that does not compile yet still lands here. Use it for a new file and for a change past ~20 lines; pageEdit is for a smaller one. Keep a file under ${SOFT_LINE_LIMIT.toString()} lines: one component, one responsibility.`,
+    description: `Create or REPLACE whole files of the page. Pass \`files\` with EVERY file you are writing in one call — laying out a project is one pageWrite, not one per file. Nothing is visible to viewers until a build is green, so a file that does not compile yet still lands here. Use it for a new file and for a change past ~20 lines; pageEdit is for a smaller one. Keep a file under ${SOFT_LINE_LIMIT.toString()} lines: one component, one responsibility.`,
     inputSchema: z.object({
       files: z
         .array(FileSchema)

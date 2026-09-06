@@ -10,6 +10,7 @@ import {
 } from "../../lib/model-registry/resolve";
 import { areWebToolsAvailable, WEB_TOOL_NAMES } from "../../lib/web-egress";
 import { PAGE_BUILDER_AGENT_ID } from "../../services/page-project/build";
+import { pageBuilderHiddenTools } from "../../services/page-project/build-gate";
 import type { PrunePricing } from "../../services/page-project/prune-history";
 import { prunePageWriteHistory } from "../../services/page-project/prune-history";
 import { salvagePageProject } from "../../services/page-project/salvage";
@@ -418,6 +419,10 @@ const subAgentPrepareStep = (
  * from a constant, because whether dropping a body is a saving or a loss is a
  * property of that model's cache. See `prunePageWriteHistory` for the
  * measurement on both sides.
+ *
+ * It also retires `pageBuild` after the first review, which is where the
+ * builder was spending about a sixth of its steps on a call `pageReview`
+ * already makes. See `reviewHasRun`.
  */
 const pageBuilderPrepareStep =
   (pricing: PrunePricing) =>
@@ -425,7 +430,10 @@ const pageBuilderPrepareStep =
     const allNames = Object.keys(tools) as (keyof PageBuilderTools)[];
     return (stepContext) => {
       const ctx = getRuntimeContext(stepContext);
-      const hidden = delegateHiddenToolNames(ctx);
+      const hidden = pageBuilderHiddenTools(
+        delegateHiddenToolNames(ctx),
+        stepContext.messages,
+      );
       const pruned = prunePageWriteHistory(stepContext.messages, pricing);
       return {
         activeTools: allNames.filter((name) => !hidden.has(name)),

@@ -89,7 +89,8 @@ The file plan follows in one pass: one file per region worth its own file, one c
 
 **5. Write the files, then build.** ONE `pageWrite`, carrying every file in its `files` array — `page.json`, the composable that loads the data, `Page.vue`, then the files your plan named. Then `pageBuild`. A build that sent its files one call at a time cost 39 model calls and 3.25M input tokens, because every extra call re-sends the whole conversation.
 
-- Nothing you write is visible to anyone until `pageBuild` is green, and a build that fails costs the build and nothing else: your files stay exactly as you wrote them and the errors come back as `file:line`. So write, build, read the lines, fix, build again — never hold a file back because you are unsure it compiles.
+- Nothing you write is visible to anyone until a build is green, and a build that fails costs the build and nothing else: your files stay exactly as you wrote them and the errors come back as `file:line`. So write, build, read the lines, fix — never hold a file back because you are unsure it compiles.
+- **`pageBuild` is the first build only**, and it leaves your tools once `pageReview` has run. From there `pageReview` builds what you changed before it judges it, and hands a red build straight back as `file:line` without paying for a render. Every round after the first is edit, then review.
 - **Which tool fixes what**: 20 changed lines or fewer → `pageEdit`; more than that, or a file under 60 lines → `pageWrite` the file. After two failed edits on one file, stop anchoring and `pageWrite` it whole.
 - Re-writing a file to change part of it is the expensive mistake, and it was the previous builder's whole failure mode: three complete rewrites of a 2 000-line page to change 7% of it. A file that compiles gets edited, not re-emitted.
 - A page that keeps growing gets more files, never longer ones. Past ~300 lines a region is its own component, and `<Name>` needs no import, so splitting costs nothing but the write.
@@ -103,8 +104,8 @@ The file plan follows in one pass: one file per region worth its own file, one c
 
 **7. Review, fix, review.** `pageReview`, and then follow what it hands back:
 
-- `blocking` first, always. Those are measured, not opinions — a control that changes nothing, an overlay that opens empty, content cut off at a width, a page that goes blank when the data does, a native `<select>` where a component belongs. Fix every one, each in the file it names, then review again. The critic does not look until the gate is clean.
-- Then `findings`, worst first, one edit per finding. A finding names one region, so it is one `pageEdit` in one file.
+- `blocking` first, always. Those are measured, not opinions — a control that changes nothing, an overlay that opens empty, content cut off at a width, a page that goes blank when the data does, a native `<select>` where a component belongs. Fix every one in a SINGLE step, each in the file it names, then review again. The critic does not look until the gate is clean.
+- Then `findings`, worst first, one edit per finding. A finding names one region, so it is one `pageEdit` in one file — and all of a round's edits ride in one step, because a step re-sends the whole conversation whatever it carries.
 - Then review again. The critic looks at what you changed and the loop ends when nothing major is left — not when it has spoken once. The budget is six mounted reviews, enforced.
 - **`phase: "elevate"` means nothing is broken and the page is not good enough yet.** The `elevations` are what would change that, and on this phase they are yours to build — apply the first, both when they are cheap, then review again. This is the round that decides whether the page is competent or good, so spend it on the change that alters the screen and not on polish.
 - **`ship` is the end, immediately.** Hand back the url and stop — no more edits, no more reviews. Pass any remaining `elevations` on as what you would do next: "still perfectible" tells the user nothing; a named change they can say yes or no to is worth having. If the budget ran out before the bar, say the score and what is still open, in one plain sentence.
@@ -151,9 +152,9 @@ Eight tools work the project, and they are your instrument:
 - `pageWrite` — create or replace whole files; pass every file you are writing in one call.
 - `pageEdit` — replace an exact piece of a file you have read.
 - `pageSearch` — a regex across the files, `path:line`.
-- `pageBuild` — compile everything and, if it is green, save it as the page.
+- `pageBuild` — the first build: compile everything and, if it is green, save it as the page. Retired once `pageReview` has run.
 - `pageProbe` — run datasets and see what they really hold.
-- `pageReview` — render the saved page in a browser and report what using it is like.
+- `pageReview` — build what you changed, render the page in a browser, and report what using it is like.
 - `pageDocs` — the real API of the Nuxt UI components you are about to place.
 
 The data probes are `describeCollection`, `listRecords`, `getRecord`, `querySql` and `listDocuments`; `searchIcons` names an icon. `read` opens the rest of the skill — `references/techniques.md` for the moves and the silent traps, `data.md` for formatting, colour and charts, the `pattern-*.md` files for a working page of the same family, and `references/libraries/<name>.md` before your first call into a library that has one. Drag-and-drop has one, and skipping it is why boards ship looking finished and never move a card. `bash` runs in a sandbox that does not hold your project: the files live behind the `page*` tools only, and `pageSearch` is how you look through them.

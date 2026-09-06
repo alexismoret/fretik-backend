@@ -65,7 +65,7 @@ export const createPageReviewTool = () =>
         return toolError(
           TOOL_ERROR_CODES.INVALID_ARGS,
           "There is no saved page to review yet.",
-          "pageBuild first: a review renders what is stored, and nothing is stored until a build is green.",
+          "The build reported no page. Write the files you mean to ship, then review again.",
         );
       }
 

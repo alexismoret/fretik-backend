@@ -39,7 +39,7 @@ const DIFF_CONTEXT_CHARS = 240;
 
 export const createPageEditTool = () =>
   tool({
-    description: `Replace an exact piece of one file. Read the file first — an anchor you have not seen in THIS page is a memory of another one. \`oldString\` must match exactly once (whitespace is forgiven, code is not); use \`replaceAll\` to change every occurrence. For more than ~20 changed lines, or after two failed edits on a file, pageWrite the file instead. Nothing is visible to viewers until pageBuild is green.`,
+    description: `Replace an exact piece of one file. Read the file first — an anchor you have not seen in THIS page is a memory of another one. \`oldString\` must match exactly once (whitespace is forgiven, code is not); use \`replaceAll\` to change every occurrence. For more than ~20 changed lines, or after two failed edits on a file, pageWrite the file instead. Nothing is visible to viewers until a build is green.`,
     inputSchema: z.object({
       path: z
         .string()

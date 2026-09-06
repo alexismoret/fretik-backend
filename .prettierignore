@@ -13,4 +13,5 @@ packages/ai/src/tools/assets/
 packages/ai/sandbox-assets/
 packages/ai/.eval-runs/
 packages/ai/evals/.triage/
+packages/ai/evals/.eval-pages.json
 packages/shared/src/services/pages/compile-assets/theme-tokens.css

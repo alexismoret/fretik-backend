@@ -2216,7 +2216,18 @@ const gigaPage: EvalCase = {
         // A placeholder handed over as if it were finished. The `SECTION:`
         // marker protocol is gone, but the failure it guarded is not: a region
         // planned, stubbed and shipped.
-        if (/\bTODO\b|\bFIXME\b|placeholder for/i.test(source))
+        //
+        // Case-SENSITIVE on the two markers, because this case's own fixture
+        // uses the word: the seeded work items have a `'todo'` status, and an
+        // `/i` flag turned every status constant, badge label and menu entry
+        // into a stub. Measured 2026-09-06: 28 matches in a page that had no
+        // placeholder in it, on three builds out of three — reported as a
+        // quality defect until the matches were read. A stub marker is written
+        // in capitals; a status value is not.
+        if (
+          /\bTODO\b|\bFIXME\b/.test(source) ||
+          /placeholder for/i.test(source)
+        )
           return "a stub is still in the page — a region was planned and handed over before it was written";
         return true;
       },

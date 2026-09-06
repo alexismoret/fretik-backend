@@ -5,6 +5,7 @@ import type { ChatbotCallOptions } from "../agents/chatbot";
 import { buildChatbotTool } from "../agents/shared/chatbot-tool";
 import type { AgentRuntimeContext } from "../agents/shared/runtime-context";
 import { createSubAgentExecute } from "../agents/shared/sub-agent";
+import type { StepUsage } from "../lib/turn-usage";
 import type { PageSalvageOutcome } from "../services/page-project/salvage";
 import { describeExternalApps } from "./page-external-apps";
 
@@ -227,6 +228,27 @@ export const lastPageRef = (
 };
 
 /**
+ * The four numbers a page's price comes down to, kept short because the parent
+ * reads them verbatim. `steps` is the term that dominates: cost is linear in
+ * model steps at a near-constant price each, so a build that got cheaper is a
+ * build that took fewer of them.
+ */
+export interface BuildSpend {
+  steps: number;
+  costUsd: number;
+  outputTokens: number;
+  reasoningTokens: number;
+}
+
+/** Rounded so a tenth of a cent does not travel as sixteen digits. */
+const summarizeSpend = (usage: StepUsage): BuildSpend => ({
+  steps: usage.steps,
+  costUsd: Number(usage.costUsd.toFixed(4)),
+  outputTokens: usage.outputTokens,
+  reasoningTokens: usage.reasoningTokens,
+});
+
+/**
  * The builder's own closing summary carries the url, what it built and what it
  * left weak. An unclean finish means the step budget ran out mid-build — usually
  * mid-review — so the page exists but nobody has confirmed it works. Saying that
@@ -240,6 +262,7 @@ export const lastPageRef = (
 export const formatBuildResult = (
   result: BuildTrajectory,
   salvaged?: PageSalvageOutcome,
+  usage?: StepUsage,
 ): {
   summary: string;
   pageId?: string;
@@ -247,8 +270,19 @@ export const formatBuildResult = (
   incomplete?: boolean;
   review?: z.infer<typeof reviewRefSchema>;
   reviewed?: false;
+  usage?: BuildSpend;
 } => {
   const text = result.text.trim();
+  /**
+   * What the build cost, on the result itself.
+   *
+   * Four numbers, ~30 tokens, and they are the only place a page's price is
+   * stated by the process that paid it — everything else has to ask Langfuse,
+   * which is a pipeline reporting on us rather than a measurement of us. The
+   * parent gets it so it can say "31 steps" honestly instead of guessing, and
+   * the evals read it instead of summing observations.
+   */
+  const spend = usage === undefined ? {} : { usage: summarizeSpend(usage) };
   /**
    * A rescued page is reported BEFORE anything else the run said about itself,
    * because nothing the run said knows about it: the builder died mid-write, so
@@ -262,6 +296,7 @@ export const formatBuildResult = (
       url: salvaged.url,
       reviewed: false,
       incomplete: true,
+      ...spend,
     };
   }
   const ref = lastPageRef(result.steps);
@@ -270,7 +305,7 @@ export const formatBuildResult = (
   // and a build that reviewed and fell short read identically in prose.
   const outcome = review ? { review } : ref ? { reviewed: false as const } : {};
   if (result.finishReason === "stop" && text.length > 0) {
-    return { summary: text, ...ref, ...outcome };
+    return { summary: text, ...ref, ...outcome, ...spend };
   }
   /**
    * A clean finish with NOTHING said. Measured 2026-08-24
@@ -293,6 +328,7 @@ export const formatBuildResult = (
       ...ref,
       ...outcome,
       incomplete: true,
+      ...spend,
     };
   }
   /**
@@ -331,6 +367,7 @@ export const formatBuildResult = (
     ...ref,
     ...outcome,
     incomplete: true,
+    ...spend,
   };
 };
 

@@ -1,4 +1,5 @@
 import type { LanguageModelUsage, UIMessage } from "ai";
+import type { TurnUsage } from "../lib/turn-usage";
 
 /**
  * Shared turn-persistence + telemetry helpers for the chatbot and workflow
@@ -59,6 +60,17 @@ export const buildTurnMessageMetadata = (
   servedBy: "primary" | "fallback",
   modelProfileKey: string,
   traceId: string | undefined,
+  /**
+   * What the whole turn spent, delegates included.
+   *
+   * `usage` below is the PARENT stream's own tokens, which on a turn that
+   * delegated a page build is a small fraction of the bill — the builder's
+   * thirty-odd steps run inside one tool call and appear nowhere in it. This
+   * field is the turn's real price, counted by the process that paid it
+   * (`lib/turn-usage.ts`), and it is what the evals read instead of summing
+   * someone else's observations.
+   */
+  spend?: TurnUsage,
 ): Record<string, unknown> => ({
   ...(traceId !== undefined ? { langfuseTraceId: traceId } : {}),
   telemetry: {
@@ -73,5 +85,6 @@ export const buildTurnMessageMetadata = (
       reasoningTokens: part.totalUsage.outputTokenDetails?.reasoningTokens,
       cachedInputTokens: part.totalUsage.inputTokenDetails?.cacheReadTokens,
     },
+    ...(spend === undefined ? {} : { spend }),
   },
 });

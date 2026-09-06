@@ -49,8 +49,22 @@ export interface TaskOutput {
   error?: string;
   assertionResults: AssertionResult[];
   toolNames: string[];
-  /** Server `chatbot-turn` trace id → fetch the turn's agent cost. */
+  /** Server `chatbot-turn` trace id → cross-check the turn's cost. */
   traceId?: string;
+  /**
+   * What the turn cost, as the SERVER counted it (`src/lib/turn-usage.ts`).
+   *
+   * The authority, with Langfuse demoted to a cross-check: summing a trace's
+   * observations reported 22x the truth for two days in September 2026,
+   * because a hot-reloaded dev process had registered the telemetry
+   * integration 22 times and nothing downstream could tell.
+   */
+  spend?: {
+    steps: number;
+    costedSteps: number;
+    costUsd: number;
+    byAgent?: Record<string, { steps: number; costUsd: number }>;
+  };
   /** Turn finish reason — feeds the `zombie` mechanical score. */
   finishReason?: string;
   /** Agent-loop steps in the turn (`start-step` SSE frames). */

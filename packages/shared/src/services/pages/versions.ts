@@ -69,6 +69,32 @@ export interface PageVersionMeta {
    * was about building a page.
    */
   traceId?: string;
+  /**
+   * What the BUILDER had spent when this version was saved, counted by the
+   * process that spent it.
+   *
+   * `traceId` above only says who to ask. Asking turned out to be the problem:
+   * on 2026-09-05 the observability pipeline was multiplying every observation
+   * by 22, and a cost summed from it was 22 times the truth with nothing
+   * downstream able to notice. So the number lives here too, first-hand.
+   *
+   * `steps` is the term that matters — a page's price is very nearly its step
+   * count times a constant — and `costedSteps` below `steps` means `costUsd`
+   * is a floor, because some step reported no price.
+   *
+   * Scoped to the page-building agent, and current as of the moment of the
+   * build: the step that ran this build is not in it yet (one of roughly
+   * thirty), and a later version of the same page carries the fuller figure.
+   */
+  usage?: {
+    steps: number;
+    costedSteps: number;
+    costUsd: number;
+    inputTokens: number;
+    cacheReadTokens: number;
+    outputTokens: number;
+    reasoningTokens: number;
+  };
 }
 
 type TxCallback = Parameters<typeof db.transaction>[0];

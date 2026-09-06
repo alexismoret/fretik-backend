@@ -42,8 +42,10 @@ afterAll(() => {
   void mock.module("@fretik/shared/services/pages/update", () => realUpdate);
 });
 
-const { buildPageProject } =
+const { buildPageProject, PAGE_BUILDER_AGENT_ID } =
   await import("../../../../src/services/page-project/build");
+const { recordStepUsage, resetTurnUsage } =
+  await import("../../../../src/lib/turn-usage");
 const { emptyProjectState, hashProjectFiles, projectFiles } =
   await import("../../../../src/services/page-project/store");
 
@@ -223,5 +225,99 @@ describe("buildPageProject", () => {
 
     expect(result.ok).toBe(true);
     expect(createCalls).toHaveLength(1);
+  });
+});
+
+/** Walk a path of keys off an `unknown` without asserting a shape onto it. */
+const readNumber = (source: unknown, ...path: string[]): number | undefined => {
+  let cursor: unknown = source;
+  for (const key of path) {
+    if (typeof cursor !== "object" || cursor === null) return undefined;
+    cursor = Reflect.get(cursor, key);
+  }
+  return typeof cursor === "number" ? cursor : undefined;
+};
+
+/**
+ * The version row carries what the build cost, first-hand.
+ *
+ * The alternative — asking Langfuse afterwards with the stored `traceId` — is
+ * how a 22x fan-out came to be reported as a real bill on 2026-09-05. A number
+ * written by the process that spent it cannot be multiplied by someone else's
+ * ingestion mode.
+ */
+describe("buildPageProject — what the version says it cost", () => {
+  test("a green build stamps the builder's spend on the version", async () => {
+    resetTurnUsage();
+    recordStepUsage("turn-9", PAGE_BUILDER_AGENT_ID, {
+      steps: 12,
+      inputTokens: 900_000,
+      cacheReadTokens: 780_000,
+      cacheWriteTokens: 0,
+      outputTokens: 21_000,
+      reasoningTokens: 6_400,
+      costUsd: 0.28123,
+      costedSteps: 12,
+    });
+    // The parent's own steps are in the same turn and must NOT land here:
+    // this row is what the PAGE cost.
+    recordStepUsage("turn-9", "chatbot", {
+      steps: 4,
+      inputTokens: 40_000,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      outputTokens: 900,
+      reasoningTokens: 0,
+      costUsd: 0.05,
+      costedSteps: 4,
+    });
+
+    const result = await buildPageProject({
+      state: {
+        ...emptyProjectState(),
+        files: { "page.json": PAGE_JSON, "Page.vue": CLEAN },
+      },
+      teamId: "team-1",
+      organizationId: "org-1",
+      userId: "user-1",
+      conversationId: "conv-1",
+      requester: undefined,
+      traceId: "turn-9.page",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(readNumber(createCalls[0], "versionMeta", "usage", "steps")).toBe(
+      12,
+    );
+    expect(readNumber(createCalls[0], "versionMeta", "usage", "costUsd")).toBe(
+      0.2812,
+    );
+    expect(
+      readNumber(createCalls[0], "versionMeta", "usage", "reasoningTokens"),
+    ).toBe(6_400);
+  });
+
+  test("a build nobody metered carries no usage rather than a zero", async () => {
+    // A zero would read as a free page. Absent reads as unmeasured, which is
+    // what it is.
+    resetTurnUsage();
+
+    const result = await buildPageProject({
+      state: {
+        ...emptyProjectState(),
+        files: { "page.json": PAGE_JSON, "Page.vue": CLEAN },
+      },
+      teamId: "team-1",
+      organizationId: "org-1",
+      userId: "user-1",
+      conversationId: "conv-1",
+      requester: undefined,
+      traceId: "turn-unmetered.page",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(
+      readNumber(createCalls[0], "versionMeta", "usage", "steps"),
+    ).toBeUndefined();
   });
 });

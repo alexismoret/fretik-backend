@@ -12,6 +12,7 @@ import { updatePage } from "@fretik/shared/services/pages/update";
 import type { PageVersionMeta } from "@fretik/shared/services/pages/versions";
 import type { PageRequester } from "@fretik/shared/services/pages/visibility";
 import { HTTPException } from "hono/http-exception";
+import { readAgentUsage } from "../../lib/turn-usage";
 import { PAGE_JSON_FILE, parsePageJson, type PageJson } from "./page-json";
 import {
   codeFromProject,
@@ -35,6 +36,13 @@ import {
  * died after writing its files still has them in Redis, and finishing that
  * build is worth more than starting the whole thing over.
  */
+
+/**
+ * The page-building agent's id, shared with the agent that carries it
+ * (`makePageBuilderSet`) so the name a step is filed under and the name this
+ * reads back can never drift apart.
+ */
+export const PAGE_BUILDER_AGENT_ID = "chatbot.page-builder";
 
 export interface BuildPageProjectInput {
   state: PageProjectState;
@@ -125,16 +133,31 @@ export const buildPageProject = async (
   const sections: PageJson = manifest?.value ?? {};
 
   /**
-   * What this version cost, in our own row — the writes, and the turn to price
-   * them against. Omitted entirely when there is neither, so a restore or a
-   * hand-edit does not carry an empty object.
+   * What this version cost, in our own row — the writes, what the builder had
+   * spent, and the turn to cross-check both against. Omitted entirely when
+   * there is none of it, so a restore or a hand-edit does not carry an empty
+   * object.
    */
   const wrote = state.writes !== undefined && state.writes.length > 0;
+  const spent = readAgentUsage(input.traceId, PAGE_BUILDER_AGENT_ID);
   const versionMeta: PageVersionMeta | undefined =
-    wrote || input.traceId !== undefined
+    wrote || spent !== undefined || input.traceId !== undefined
       ? {
           ...(wrote ? { writes: state.writes } : {}),
           ...(input.traceId === undefined ? {} : { traceId: input.traceId }),
+          ...(spent === undefined
+            ? {}
+            : {
+                usage: {
+                  steps: spent.steps,
+                  costedSteps: spent.costedSteps,
+                  costUsd: Number(spent.costUsd.toFixed(4)),
+                  inputTokens: spent.inputTokens,
+                  cacheReadTokens: spent.cacheReadTokens,
+                  outputTokens: spent.outputTokens,
+                  reasoningTokens: spent.reasoningTokens,
+                },
+              }),
         }
       : undefined;
 

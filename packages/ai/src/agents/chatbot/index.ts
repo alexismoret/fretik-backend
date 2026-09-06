@@ -9,6 +9,7 @@ import {
   type ResolvedModel,
 } from "../../lib/model-registry/resolve";
 import { areWebToolsAvailable, WEB_TOOL_NAMES } from "../../lib/web-egress";
+import { PAGE_BUILDER_AGENT_ID } from "../../services/page-project/build";
 import type { PrunePricing } from "../../services/page-project/prune-history";
 import { prunePageWriteHistory } from "../../services/page-project/prune-history";
 import { salvagePageProject } from "../../services/page-project/salvage";
@@ -552,7 +553,7 @@ const makePageBuilderSet = (
   model: ResolvedModel,
 ): AgentSet<ChatbotCallOptions, PageBuilderTools> =>
   buildAgentSet<ChatbotCallOptions, PageBuilderTools>({
-    id: "chatbot.page-builder",
+    id: PAGE_BUILDER_AGENT_ID,
     buildTools: buildPageBuilderTools,
     systemPrompt: pageBuilderSystemPrompt,
     model,

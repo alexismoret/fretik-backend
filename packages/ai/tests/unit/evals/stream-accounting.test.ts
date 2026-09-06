@@ -111,3 +111,55 @@ describe("eval stream accounting — a progress yield is not a call", () => {
     expect(state.toolInputs.has("call_1")).toBe(true);
   });
 });
+
+/**
+ * The turn's price rides the same finish frame as its trace id.
+ *
+ * This is what `cost-agent-usd` reads now. It replaced summing the trace's
+ * Langfuse observations, which reported $129.50 for $5.89 of real traffic on
+ * 2026-09-05 and gave nobody a way to notice.
+ */
+describe("what the turn says it spent", () => {
+  const finishWith = (telemetry: unknown) => ({
+    type: "finish",
+    messageMetadata: { langfuseTraceId: "trace-1", telemetry },
+  });
+
+  test("the server's ledger is read off the finish frame", () => {
+    const state = createStreamState();
+    absorbChunk(
+      finishWith({
+        usage: { inputTokens: 900, outputTokens: 40, totalTokens: 940 },
+        spend: {
+          total: { steps: 34, costedSteps: 34, costUsd: 0.7912 },
+          byAgent: {
+            chatbot: { steps: 4, costUsd: 0.0412 },
+            "chatbot.page-builder": { steps: 30, costUsd: 0.75 },
+          },
+        },
+      }),
+      state,
+    );
+
+    expect(state.spend?.costUsd).toBe(0.7912);
+    expect(state.spend?.steps).toBe(34);
+    // The page's own price is the builder's bucket, not the turn's total: the
+    // parent's four steps are not part of what the page cost.
+    expect(state.spend?.byAgent?.["chatbot.page-builder"]?.costUsd).toBe(0.75);
+    // The parent stream's own token counts still travel, unchanged.
+    expect(state.usage?.totalTokens).toBe(940);
+  });
+
+  test("a service that sends no ledger leaves it undefined, not zero", () => {
+    // Zero would be scored as a free run. Undefined is what makes the runner
+    // fall back to the Langfuse sum instead.
+    const state = createStreamState();
+    absorbChunk(
+      finishWith({ usage: { inputTokens: 900, outputTokens: 40 } }),
+      state,
+    );
+
+    expect(state.spend).toBeUndefined();
+    expect(state.traceId).toBe("trace-1");
+  });
+});

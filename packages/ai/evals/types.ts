@@ -69,6 +69,25 @@ export interface InvokeResult {
     outputTokens?: number;
     totalTokens?: number;
   };
+  /**
+   * What the turn cost, counted by the server rather than by Langfuse.
+   *
+   * `usage` above is the parent stream's own tokens; on a turn that delegated
+   * a page build it misses the thirty-odd steps that were the bill. This is
+   * the whole turn, delegates included, from the server's in-process ledger
+   * (`src/lib/turn-usage.ts`), and it is what `cost-agent-usd` reports.
+   *
+   * Absent when the server did not send it — never zero, because zero is
+   * indistinguishable from a free turn and the fallback to Langfuse turns on
+   * exactly that difference.
+   */
+  spend?: {
+    steps: number;
+    costedSteps: number;
+    costUsd: number;
+    /** Per agent id (`chatbot`, `chatbot.page-builder`, …). */
+    byAgent?: Record<string, { steps: number; costUsd: number }>;
+  };
   httpStatus?: number;
   error?: string;
   /**

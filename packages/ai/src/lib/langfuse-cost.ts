@@ -48,7 +48,7 @@ import { extractOpenRouterReport } from "./model-registry/transports/openrouter"
  * figure as a DECIMAL STRING, the aggregator as a number; the adapters own that
  * difference.
  */
-const extractUpstreamCost = (
+export const extractUpstreamCost = (
   providerMetadata: SharedV4ProviderMetadata | undefined,
 ): number | undefined =>
   extractGatewayReport(providerMetadata).costUsd ??
@@ -87,7 +87,7 @@ export type CostEstimator = (usage: {
  * split across three upstreams). Recorded on every instrumented generation so
  * provider-correlated behaviour is a filter in the UI, not an investigation.
  */
-const extractUpstreamProvider = (
+export const extractUpstreamProvider = (
   providerMetadata: SharedV4ProviderMetadata | undefined,
 ): string | undefined =>
   extractGatewayReport(providerMetadata).servingProvider ??

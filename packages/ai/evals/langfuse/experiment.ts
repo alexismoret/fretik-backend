@@ -129,20 +129,36 @@ const fetchTraceCost = async (traceId: string): Promise<number | null> => {
 };
 
 /**
- * Run-level cost: sum each turn's agent cost (the server `chatbot-turn`
- * trace, via the captured `traceId`). Trace cost ingests asynchronously,
- * so wait then fetch with one retry for the stragglers. The in-process
- * judge cost is NOT included yet (constant across agent-model comparisons;
- * a follow-up). Lets you compare agent-model cost across runs in the UI.
+ * Run-level cost, from the server's own ledger, with Langfuse as the check.
+ *
+ * Each turn now reports what it spent over SSE (`TaskOutput.spend`), counted
+ * by the process that spent it. The Langfuse sum is still fetched — it
+ * ingests asynchronously, hence the wait and one retry — but only to be
+ * compared: when the two disagree by more than 5% the run says so, because
+ * the failure that made this necessary was invisible from inside Langfuse.
+ *
+ * The in-process judge cost is still NOT included (constant across
+ * agent-model comparisons; a follow-up).
  */
 const buildCostRunEvaluator = (): RunEvaluator => {
   return async ({ itemResults }) => {
     const traceIds: string[] = [];
+    /** What the SERVER says each turn cost, when it said anything. */
+    const served: number[] = [];
+    /** Per page build, from the page-builder's own bucket. */
+    const perPage: number[] = [];
     for (const r of itemResults) {
       const out: TaskOutput = r.output;
       if (out.traceId) traceIds.push(out.traceId);
+      if (out.spend !== undefined) {
+        served.push(out.spend.costUsd);
+        const builder = out.spend.byAgent?.["chatbot.page-builder"];
+        if (builder !== undefined && builder.steps > 0) {
+          perPage.push(builder.costUsd);
+        }
+      }
     }
-    if (traceIds.length === 0) return [];
+    if (traceIds.length === 0 && served.length === 0) return [];
     await sleep(6000);
     let costs = await Promise.all(traceIds.map(fetchTraceCost));
     if (costs.some((c) => c === null)) {
@@ -155,14 +171,29 @@ const buildCostRunEvaluator = (): RunEvaluator => {
       );
     }
     const have = costs.filter((c): c is number => typeof c === "number");
-    const total = have.reduce((a, b) => a + b, 0);
-    const perTurn = have.length > 0 ? total / have.length : 0;
+    const langfuseTotal = have.reduce((a, b) => a + b, 0);
+    const servedTotal = served.reduce((a, b) => a + b, 0);
+    /**
+     * The server's own ledger is the figure, and Langfuse is the check.
+     *
+     * Not a preference for first-party numbers on principle: summing a
+     * trace's observations reported $129.50 for $5.89 of traffic on
+     * 2026-09-05, because a hot-reloaded process had registered the
+     * telemetry integration 22 times (`src/lib/langfuse-registration.ts`).
+     * A run that reads only the pipeline cannot notice the pipeline is wrong.
+     */
+    const usingServer = served.length > 0;
+    const total = usingServer ? servedTotal : langfuseTotal;
+    const counted = usingServer ? served.length : have.length;
+    const perTurn = counted > 0 ? total / counted : 0;
     const evaluations: Evaluation[] = [
       {
         name: "cost-agent-usd",
         value: Number(total.toFixed(6)),
         dataType: "NUMERIC",
-        comment: `${have.length}/${traceIds.length} turns costed`,
+        comment: usingServer
+          ? `${served.length}/${itemResults.length} turns costed by the server`
+          : `${have.length}/${traceIds.length} turns costed from Langfuse (server ledger absent — old service?)`,
       },
       {
         name: "cost-per-turn-usd",
@@ -170,6 +201,33 @@ const buildCostRunEvaluator = (): RunEvaluator => {
         dataType: "NUMERIC",
       },
     ];
+    if (perPage.length > 0) {
+      evaluations.push({
+        name: "cost-per-page-usd",
+        value: Number(
+          (perPage.reduce((a, b) => a + b, 0) / perPage.length).toFixed(6),
+        ),
+        dataType: "NUMERIC",
+        comment: `${perPage.length} page build(s)`,
+      });
+    }
+    // The disagreement is the point. A drift above a few percent means one of
+    // the two is counting something the other cannot see — most likely an
+    // observation fan-out, which is invisible from inside Langfuse.
+    if (usingServer && have.length > 0 && servedTotal > 0) {
+      const drift = (langfuseTotal - servedTotal) / servedTotal;
+      if (Math.abs(drift) > 0.05) {
+        console.warn(
+          `[evals] cost drift: Langfuse says $${langfuseTotal.toFixed(4)}, the server counted $${servedTotal.toFixed(4)} (${(drift * 100).toFixed(0)}%). Check the service's boot line for \`integrations=\` — anything but 1 multiplies every observation.`,
+        );
+      }
+      evaluations.push({
+        name: "cost-langfuse-drift",
+        value: Number(drift.toFixed(4)),
+        dataType: "NUMERIC",
+        comment: `langfuse $${langfuseTotal.toFixed(4)} vs server $${servedTotal.toFixed(4)}`,
+      });
+    }
     return evaluations;
   };
 };

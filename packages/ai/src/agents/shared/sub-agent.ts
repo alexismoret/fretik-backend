@@ -5,6 +5,11 @@ import type {
   ToolExecutionOptions,
   ToolSet,
 } from "ai";
+import {
+  mergeUsage,
+  summarizeRunUsage,
+  type StepUsage,
+} from "../../lib/turn-usage";
 import { getRuntimeContext, type AgentRuntimeContext } from "./runtime-context";
 
 /**
@@ -160,6 +165,11 @@ export interface CreateSubAgentExecuteConfig<
   formatResult: (
     result: GenerateTextResult<TOOLS, Record<string, unknown>, never>,
     salvaged?: SALVAGE,
+    /**
+     * What the dispatch spent, summed over EVERY attempt — a fallback retry
+     * replaces `result`, and the parent paid for both.
+     */
+    usage?: StepUsage,
   ) => OUTPUT;
   /**
    * Hard wall-clock cap on one dispatch, REQUIRED. A sub-agent runs an
@@ -299,6 +309,7 @@ export const createSubAgentExecute = <
         });
 
       let result = await generate(config.subAgent(ctx), primaryDeadline);
+      let usage = summarizeRunUsage(result.steps);
       let salvaged = (await config.salvage?.(result, ctx)) ?? undefined;
       if (
         config.fallbackSubAgent &&
@@ -322,9 +333,10 @@ export const createSubAgentExecute = <
         );
         deadlines.push(fallbackDeadline);
         result = await generate(config.fallbackSubAgent(ctx), fallbackDeadline);
+        usage = mergeUsage(usage, summarizeRunUsage(result.steps));
         salvaged = (await config.salvage?.(result, ctx)) ?? undefined;
       }
-      return config.formatResult(result, salvaged);
+      return config.formatResult(result, salvaged, usage);
     } catch (err) {
       // Only a DEADLINE is absorbed into a tool-shaped result. A parent
       // abort must keep propagating (the turn is being torn down), and any

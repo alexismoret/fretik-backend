@@ -294,3 +294,70 @@ describe("formatBuildResult", () => {
     expect(out.summary).toContain('finishReason="length"');
   });
 });
+
+/**
+ * What the build cost travels on the result, whatever the result says.
+ *
+ * The branch that matters most is the FAILED one: a build that spent 40 steps
+ * and saved nothing still spent them, and a price that only rides on success
+ * makes the expensive failures the invisible ones.
+ */
+describe("formatBuildResult — the spend", () => {
+  const spent = {
+    steps: 31,
+    inputTokens: 2_560_000,
+    cacheReadTokens: 2_190_000,
+    cacheWriteTokens: 12_000,
+    outputTokens: 71_300,
+    reasoningTokens: 24_800,
+    costUsd: 0.71339,
+    costedSteps: 31,
+  };
+
+  test("a clean build reports its steps and its price", () => {
+    const out = formatBuildResult(
+      buildResult({
+        finishReason: "stop",
+        text: "Built the page.",
+        steps: createdAndReviewed,
+      }),
+      undefined,
+      spent,
+    );
+    expect(out.usage?.steps).toBe(31);
+    // Rounded, so a tenth of a cent does not reach the model as 16 digits.
+    expect(out.usage?.costUsd).toBe(0.7134);
+    expect(out.usage?.reasoningTokens).toBe(24_800);
+  });
+
+  test("a build that saved NOTHING still reports what it burned", () => {
+    const out = formatBuildResult(
+      buildResult({ finishReason: "stop", text: "" }),
+      undefined,
+      spent,
+    );
+    expect(out.summary).toContain("saved NO page");
+    expect(out.usage?.steps).toBe(31);
+  });
+
+  test("a rescued build reports it too", () => {
+    const out = formatBuildResult(
+      buildResult({ finishReason: "length", text: "" }),
+      { saved: true, pageId: "p9", url: "/pages/p9" },
+      spent,
+    );
+    expect(out.pageId).toBe("p9");
+    expect(out.usage?.costUsd).toBe(0.7134);
+  });
+
+  test("no ledger means no field — never a zero that reads as free", () => {
+    const out = formatBuildResult(
+      buildResult({
+        finishReason: "stop",
+        text: "Built the page.",
+        steps: createdAndReviewed,
+      }),
+    );
+    expect(out.usage).toBeUndefined();
+  });
+});

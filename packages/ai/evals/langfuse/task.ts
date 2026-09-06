@@ -91,6 +91,9 @@ export const buildExperimentTask = (opts?: RunCaseOptions): ExperimentTask => {
       ...(result.invoke.traceId !== undefined
         ? { traceId: result.invoke.traceId }
         : {}),
+      ...(result.invoke.spend !== undefined
+        ? { spend: result.invoke.spend }
+        : {}),
       assertionResults: result.assertions,
       toolNames: result.invoke.toolCalls.map((t) => t.name),
       ...(result.invoke.finishReason !== undefined

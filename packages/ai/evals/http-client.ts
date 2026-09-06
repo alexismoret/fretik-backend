@@ -134,6 +134,7 @@ interface StreamState {
   toolCalls: ToolCallTrace[];
   finishReason: string | undefined;
   usage: InvokeResult["usage"];
+  spend: InvokeResult["spend"];
   traceId: string | undefined;
   stepsUsed: number;
   servedBy: string | undefined;
@@ -153,6 +154,7 @@ export const createStreamState = (): StreamState => ({
   toolCalls: [],
   finishReason: undefined,
   usage: undefined,
+  spend: undefined,
   traceId: undefined,
   stepsUsed: 0,
   servedBy: undefined,
@@ -279,6 +281,31 @@ const absorbMessageMetadata = (mm: unknown, state: StreamState): void => {
     const profileKey = readString(telemetry, "modelProfileKey");
     if (profileKey !== undefined) state.modelProfileKey = profileKey;
   }
+  // What the whole turn cost, delegates included, as the server counted it.
+  // Read before `usage` so a malformed usage block cannot swallow it.
+  const spend = isRecord(telemetry) ? telemetry["spend"] : undefined;
+  if (isRecord(spend)) {
+    const total = spend["total"];
+    if (isRecord(total)) {
+      const byAgent: Record<string, { steps: number; costUsd: number }> = {};
+      const buckets = spend["byAgent"];
+      if (isRecord(buckets)) {
+        for (const [agentId, bucket] of Object.entries(buckets)) {
+          if (!isRecord(bucket)) continue;
+          byAgent[agentId] = {
+            steps: readNumber(bucket, "steps") ?? 0,
+            costUsd: readNumber(bucket, "costUsd") ?? 0,
+          };
+        }
+      }
+      state.spend = {
+        steps: readNumber(total, "steps") ?? 0,
+        costedSteps: readNumber(total, "costedSteps") ?? 0,
+        costUsd: readNumber(total, "costUsd") ?? 0,
+        ...(Object.keys(byAgent).length > 0 ? { byAgent } : {}),
+      };
+    }
+  }
   const usage = isRecord(telemetry) ? telemetry["usage"] : undefined;
   if (!isRecord(usage)) return;
   state.usage = {
@@ -354,6 +381,7 @@ const readStream = async (
     stepsUsed: state.stepsUsed,
     usage: state.usage,
     httpStatus: res.status,
+    ...(state.spend !== undefined ? { spend: state.spend } : {}),
     ...(state.traceId !== undefined ? { traceId: state.traceId } : {}),
     ...(state.servedBy !== undefined ? { servedBy: state.servedBy } : {}),
     ...(state.modelProfileKey !== undefined

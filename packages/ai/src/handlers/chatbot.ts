@@ -134,6 +134,7 @@ import {
   withSoftTimeout,
 } from "../lib/stream-errors";
 import { withNamedTrace } from "../lib/trace-tool";
+import { forgetTurnUsage, readTurnUsage } from "../lib/turn-usage";
 import { uuidv7TimestampMs } from "../lib/uuidv7-time";
 import { chatbotRateLimitMiddleware } from "../middlewares/chatbot-rate-limit";
 import { internalMiddleware } from "../middlewares/internal";
@@ -1359,6 +1360,11 @@ export const runChatbotTurn = async (
       // Ship this turn's spans to Langfuse promptly (don't wait for the
       // batch interval). Soft-fails internally; never blocks the response.
       await flushLangfuse();
+      // The usage ledger is in-process and has no reader past here: the
+      // durable copies (the version row, the turn observation, the message
+      // metadata) are all written by now. Dropping it keeps a long-lived
+      // process from carrying every turn it ever served.
+      forgetTurnUsage(turnTrace.traceId);
     },
     execute: async ({ writer }) => {
       // Trace I/O for the `chatbot-turn` parent span (set inside the
@@ -1447,6 +1453,7 @@ export const runChatbotTurn = async (
                     "fallback",
                     modelProfile.key,
                     getActiveTraceId(),
+                    readTurnUsage(getActiveTraceId()),
                   );
                 },
               }),
@@ -1552,6 +1559,7 @@ export const runChatbotTurn = async (
                     servedBy,
                     modelProfile.key,
                     getActiveTraceId(),
+                    readTurnUsage(getActiveTraceId()),
                   );
                 },
               }),
@@ -1713,6 +1721,7 @@ export const runChatbotTurn = async (
                   servedBy,
                   modelProfile.key,
                   getActiveTraceId(),
+                  readTurnUsage(getActiveTraceId()),
                 );
               },
             }),
@@ -1888,6 +1897,24 @@ export const runChatbotTurn = async (
               const turnMetadata: Record<string, string> = {
                 servedBy: servedByTurn,
               };
+              // What the turn cost, by our own count, on the turn's own
+              // observation — so a trace can be compared against the pipeline
+              // that reports it. When the two disagree, the pipeline is wrong:
+              // a 22x observation fan-out went unnoticed for two days because
+              // there was nothing to disagree with. Metadata only, never
+              // `costDetails`, which Langfuse would add to its children.
+              const spend = readTurnUsage(turnObservation.traceId);
+              if (spend !== undefined) {
+                turnMetadata.costUsd = spend.total.costUsd.toFixed(4);
+                turnMetadata.modelSteps = spend.total.steps.toString();
+                turnMetadata.costedSteps = spend.total.costedSteps.toString();
+                turnMetadata.inputTokens = spend.total.inputTokens.toString();
+                turnMetadata.cacheReadTokens =
+                  spend.total.cacheReadTokens.toString();
+                turnMetadata.outputTokens = spend.total.outputTokens.toString();
+                turnMetadata.reasoningTokens =
+                  spend.total.reasoningTokens.toString();
+              }
               // This turn was served on the fallback because a PRIOR turn on
               // this conversation died mid-stream (cross-turn escalation).
               if (escalatedAfterMidstreamError) {

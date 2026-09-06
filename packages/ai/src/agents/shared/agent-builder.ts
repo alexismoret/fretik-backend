@@ -11,11 +11,13 @@ import {
   type ToolSet,
 } from "ai";
 import { telemetryFor } from "../../lib/langfuse";
+import { extractUpstreamProvider } from "../../lib/langfuse-cost";
 import {
   reasoningParamForProfile,
   type ResolvedModel,
 } from "../../lib/model-registry/resolve";
 import type { ReasoningLevel } from "../../lib/model-registry/types";
+import { recordStepUsage, summarizeStep } from "../../lib/turn-usage";
 import { stopOnRepeatedToolErrors, trailingToolErrorRun } from "./agent-set";
 import {
   DynamicToolManager,
@@ -248,6 +250,22 @@ const defaultOnStepEnd = <TTools extends ToolSet>(
       const ratio = Math.round((cacheRead / inputTokens) * 100);
       usageParts.push(`cacheRatio=${ratio}%`);
     }
+    // Reasoning is invisible in every other count — it is billed as output and
+    // shows up nowhere as its own number — and on the page builder it is a
+    // configured budget (`PAGE_BUILD_REASONING_MAX_TOKENS`) nobody had measured
+    // against what the steps actually spend.
+    const reasoningTokens = usage?.outputTokenDetails?.reasoningTokens;
+    if (reasoningTokens !== undefined) {
+      usageParts.push(`reasoning=${reasoningTokens}`);
+    }
+    // The serving upstream, on the same line as `cacheRatio`, because an
+    // implicit prefix cache belongs to ONE upstream project: a mid-run flip
+    // between two hosts of the same model is a full-rate replay of the whole
+    // history, and the two numbers side by side are what make that visible.
+    const upstream = extractUpstreamProvider(event.providerMetadata);
+    if (upstream !== undefined) {
+      usageParts.push(`provider=${upstream}`);
+    }
     console.info(
       `[agent:${agentId}]${tracePrefix} step=${event.stepNumber} model=${event.model.modelId} tools=[${toolNames}] finish=${event.finishReason} ${usageParts.join(" ")}`,
     );
@@ -288,6 +306,33 @@ const defaultOnStepEnd = <TTools extends ToolSet>(
         `[agent:${agentId}]${tracePrefix} step finished mid-tool-call — finish=${event.finishReason} tools=[${toolNames}]. Arguments may be truncated; suspect an upstream cut.`,
       );
     }
+  };
+};
+
+/**
+ * Fold every step's spend into its turn's ledger, whatever else the agent does
+ * with the step.
+ *
+ * Wrapped AROUND the agent's own callback rather than offered as an
+ * alternative to it: an agent that supplies an `onStepEnd` would otherwise opt
+ * itself out of being counted, which is exactly how the page builder — the one
+ * agent whose cost anybody asks about — came to have no first-party cost at
+ * all. Recording is synchronous and in-memory, so it adds nothing to a step.
+ */
+const withUsageLedger = <TTools extends ToolSet>(
+  agentId: string,
+  inner: GenerateTextOnStepEndCallback<TTools>,
+): GenerateTextOnStepEndCallback<TTools> => {
+  return (event) => {
+    try {
+      const traceId = tryGetRuntimeContext({
+        runtimeContext: event.runtimeContext,
+      })?.traceId;
+      recordStepUsage(traceId, agentId, summarizeStep(event));
+    } catch {
+      // Accounting never costs a turn. A lost step makes `costedSteps` say so.
+    }
+    return inner(event);
   };
 };
 
@@ -462,7 +507,10 @@ const buildToolLoopAgent = <CALL_OPTIONS, TTools extends ToolSet>(
     ...(Array.isArray(configuredStop) ? configuredStop : [configuredStop]),
     stopOnRepeatedToolErrors<TTools>(LOOP_GUARD_ABORT_AT),
   ];
-  const onStepEnd = config.onStepEnd ?? defaultOnStepEnd<TTools>(config.id);
+  const onStepEnd = withUsageLedger<TTools>(
+    config.id,
+    config.onStepEnd ?? defaultOnStepEnd<TTools>(config.id),
+  );
   // Step-0 fallback tool menu for agents WITHOUT a Progressive-Disclosure
   // `prepareStep` (all tools active). Every Fretik agent DOES set a
   // `prepareStep` — which fires on step 0 too and supersedes this — so the

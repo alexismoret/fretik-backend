@@ -167,3 +167,9 @@ const main = async (): Promise<void> => {
 };
 
 await main();
+// Importing the project store opens a Redis client, and a live client keeps the
+// event loop alive forever. The report is small enough to sit unflushed in a
+// pipe's buffer, so a script that never exits is a script that prints nothing:
+// this one looked like a hung query for half an hour on 2026-09-06 while its
+// output waited behind an open socket. Read-only — there is nothing to drain.
+process.exit(0);

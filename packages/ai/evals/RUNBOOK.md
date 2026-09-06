@@ -84,10 +84,10 @@ a delegated build — `buildPage` runs its own loop inside one tool execution an
 nothing, so a page built the recommended way counts as one call however many steps it took.
 Every case that builds a page therefore carries `{ type: "latencyUnder", ms: 180_000 }`
 (240 000 for the giga case, which is a skeleton plus one edit per section by design). Cost
-stays a RUN-level score: `cost-agent-usd` / `cost-per-turn-usd`, summed from each turn's
-Langfuse observations. Per-case cost would mean a per-item fetch against an asynchronous
-ingestion, which buys a flaky assertion and answers a question the run-level score already
-answers.
+stays a RUN-level score: `cost-agent-usd` / `cost-per-turn-usd` / `cost-per-page-usd`, from the
+server's own per-step ledger (see `## Cost`). Per-case cost as an ASSERTION would still be a bad
+trade — a threshold on one build's price fails on a case that legitimately needed a sixth review
+round — but the number itself now rides on every turn, in `TaskOutput.spend`.
 
 **Model pinning.** Every `evals:langfuse` run pins the turn model via
 `X-Model-Profile-Key` — default = the CODE `chat` binding in
@@ -417,12 +417,24 @@ Every model call bills **OpenRouter**, on every surface. The difference is **bou
 once enabled, judges a sample of every prod turn forever).
 
 Each `evals:langfuse` run attaches **`cost-agent-usd`** (total) + **`cost-per-turn-usd`** to the
-dataset run — the exact agent cost per turn, summed over the observations of each turn's server
-`chatbot-turn` trace (`api.observations.getMany({ traceId, fields: "usage" })`, via the captured
-`langfuseTraceId`; the comment shows coverage `N/M turns costed`). Compare these across runs to
-weigh agent models for the Phase 8 decision.
-The in-process **judge** cost is not yet rolled in (constant across agent-model comparisons; a
-follow-up).
+dataset run, and **`cost-per-page-usd`** when the run built pages. The figure comes from the
+**server's own ledger** (`src/lib/turn-usage.ts`): every step's billed cost, counted in the process
+that spent it, delegates included, and sent on the finish frame. `cost-per-page-usd` is the page
+builder's bucket alone — the parent's steps are not part of what a page cost.
+The Langfuse sum is still fetched and compared: a gap over 5% prints a warning and scores
+**`cost-langfuse-drift`**. The in-process **judge** cost is not yet rolled in (constant across
+agent-model comparisons; a follow-up).
+
+**Check the telemetry before believing any cost.** The service prints
+`[langfuse] tracing enabled — … integrations=N` at boot. `N` must be **1**. Anything higher means
+the AI SDK telemetry integration was registered more than once and _every_ model call is exported
+that many times — so every count and every cost read out of Langfuse is that many times too high,
+with nothing downstream able to tell. This is not hypothetical: on 2026-09-05 a dev process that
+had hot-reloaded 21 times reported **$129.50 for $5.89** of real traffic, and two code changes were
+argued from the inflated numbers before anyone noticed. `src/lib/langfuse-registration.ts` now makes
+it idempotent; `cost-langfuse-drift` is the alarm if it ever comes back another way.
+For a run whose numbers you intend to act on, start the service with `bun run dev:clean`
+(`--watch`, whole-process restart) rather than `bun run dev`.
 
 ## Methodology guardrails (do not violate)
 

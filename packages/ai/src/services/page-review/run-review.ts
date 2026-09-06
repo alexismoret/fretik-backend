@@ -296,8 +296,7 @@ export const runPageReview = async (
   // A critic that failed (after its own retries) judged nothing, so nothing is
   // recorded — on 2026-08-23 one upstream rate limit silently ate a round. The
   // ATTEMPT is counted instead: a round that costs the caller nothing is a round
-  // the caller repeats, and during one upstream incident that ran to 114 critic
-  // calls and 483 builder calls over two builds (see `bumpCritiqueFailures`).
+  // the caller repeats (see `bumpCritiqueFailures` for the incident).
   if (!critique.ok) {
     const downCount = await bumpCritiqueFailures(
       request.conversationId,

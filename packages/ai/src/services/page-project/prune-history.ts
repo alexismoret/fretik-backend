@@ -16,19 +16,25 @@ import type { ModelMessage } from "ai";
  * one is a `pageRead` away. So the superseded body becomes one line saying so.
  *
  * That measurement was in TOKENS, and on a model that discounts a cached read
- * tokens are not the price. Measured 2026-09-04 over 14h and 1 844 calls on
- * Gemini 3.7 Flash: 95.8M input tokens for $23.82, an effective $0.249 per
- * million against a $0.75 list — so about three quarters of the input was
- * served from cache at $0.075/M, a tenth of the full rate. Against that,
- * pruning inverts:
+ * tokens are not the price. Measured 2026-09-04 on Gemini 3.7 Flash: input
+ * billed at an effective $0.249 per million against a $0.75 list — so about
+ * three quarters of it was served from cache at $0.075/M, a tenth of the full
+ * rate. Against that, pruning inverts:
  *
  *   - the superseded body it removes was billed at the CACHE rate. Dropping
  *     ~1 200 tokens saves about $0.00009 on each later step;
  *   - removing it REWRITES a message the provider has already cached, so
  *     everything after it reverts to the full rate on the next call. Thirty
  *     thousand tokens at $0.675 of difference is about $0.02, once;
- *   - and it fires on every rewrite of a path already written, which at the
- *     measured 142 writes per page over ~10 files is most of them.
+ *   - and it fires on every rewrite of a path already written, which is most
+ *     of them.
+ *
+ * The RATE above is what this argument rests on, and it is the part that
+ * survived: the call counts and dollar totals this docblock used to quote
+ * were inflated by a telemetry fan-out (`lib/langfuse-registration.ts`), which
+ * multiplied numerator and denominator alike and left the ratio intact. The
+ * per-page write count it also quoted was a separate artefact — see
+ * `scripts/measure-page-writes.ts`, which now counts calls.
  *
  * Ten to one against — but only where the discount exists. So the decision is
  * read from what the model's own row publishes rather than fixed here: with a

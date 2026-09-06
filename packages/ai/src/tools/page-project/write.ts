@@ -57,9 +57,14 @@ const WASTEFUL_RATIO = 6;
  * emitted and paid for, and it stays in the history either way — refusing would
  * add a tool call and a second emission on top of a cost already sunk. The only
  * rewrite this can still change is the NEXT one, so it reports rather than
- * blocks, and only when the numbers say an edit would have done: measured over
- * 14h, 855 of 1 136 writes replaced a whole file, at a p90 of 24.5 characters
- * emitted per character that changed.
+ * blocks, and only when the numbers say an edit would have done: whole-file
+ * replacements dominated the writes measured over 14h, at a p90 of 24.5
+ * characters emitted per character that changed.
+ *
+ * The RATIO is the measurement; the share of writes that were rewrites is not
+ * yet, because the counter behind it counted files rather than calls and
+ * double-counted across versions. `scripts/measure-page-writes.ts` counts
+ * calls now — re-measure before tuning the thresholds below.
  */
 const rewriteNote = (measured: {
   linesChanged: number;

@@ -82,10 +82,14 @@ export const readPageReviewIterations = async (
  * (2026-08-23). What that leaves, though, is a call with no cost to the caller:
  * the review answers "the critic was unavailable, review again if you have
  * budget", the agent does, the budget never moves, and the loop is bounded only
- * by the agent's patience. Measured 2026-09-04, during an upstream rate limit on
- * the critic's model: 114 critic calls and 483 builder calls across two builds,
- * $8.56 where the same two cases had cost $0.61 — every one of those rounds also
- * driving a browser and six screenshots.
+ * by the agent's patience. Seen 2026-09-04 during an upstream rate limit on the
+ * critic's model: two builds retrying the critic several times each, every
+ * round also driving a browser and six screenshots.
+ *
+ * (The counts and dollars this used to quote came from a trace whose
+ * observations were multiplied ~19x by a telemetry fan-out —
+ * `lib/langfuse-registration.ts`. The unbounded shape was real; the size of it
+ * was not, and the bound below is cheap either way.)
  *
  * So the round stays free and the ATTEMPT is counted. Reset on any critique that
  * comes back, so an incident costs a page two wasted rounds and never a loop.

@@ -102,11 +102,16 @@ const SHIP =
 /**
  * How many renders an elevation round needs left to be worth starting.
  *
- * Two: one to build the change, one to see it. Starting with fewer spends the
- * budget on a page nobody will look at again, which is how a review ends on a
- * version that is different from the one it scored.
+ * One: the round after it builds the change and looks at it, which is the whole
+ * requirement — a review must not end on a version different from the one it
+ * scored. It asked for two while the budget was six, where the difference cost
+ * nothing. At three (`MAX_PAGE_REVIEWS`, 2026-09-06) it costs everything: `left`
+ * is `3 - iteration`, so a threshold of two makes the elevation reachable only
+ * on the very first round, and a first round almost always has findings. The
+ * budget cut would have silently deleted the mechanism that exists because
+ * pages were shipping at 6.1 — a different change from the one being measured.
  */
-const ELEVATION_MIN_BUDGET = 2;
+const ELEVATION_MIN_BUDGET = 1;
 /** At most two per round: the first changes the screen, the third is polish. */
 const ELEVATIONS_PER_ROUND = 2;
 

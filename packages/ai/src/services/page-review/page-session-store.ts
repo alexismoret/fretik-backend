@@ -1,5 +1,6 @@
 import { redis } from "@fretik/shared/lib/redis";
 import { eachPageFile } from "@fretik/shared/schemas/pages";
+import { parseIntEnv } from "../../agents/shared/env";
 import type { PageElevation, PageFinding } from "./evaluate";
 
 /**
@@ -29,8 +30,26 @@ import type { PageElevation, PageFinding } from "./evaluate";
  * shipping at 6.1 with the improvement written down for somebody else. That
  * round has to come from somewhere, and the honest place is the budget rather
  * than out of the fixes.
+ *
+ * Three since 2026-09-06, from the curve rather than from an argument. Fifteen
+ * scored trajectories, every round a page ever recorded: the score gains +0.60
+ * in median across the whole six, the best round is the THIRD in median, and
+ * the last round was the best in only 5 of 16. What rounds four onwards add
+ * over the best of the first three is **+0.30** — six trajectories better,
+ * three unchanged, three WORSE — against a critic whose spread on identical
+ * bytes is 0.5 to 1.0. Half the rounds were buying a number inside their own
+ * measurement error, and they are the expensive half: a late round replays a
+ * history three times the size of an early one.
+ *
+ * `PAGE_MAX_REVIEWS` overrides it, because this is a quality-for-price trade
+ * and the price moved: the number that justified six was taken when a page
+ * cost $0.74, and it costs twice that now.
  */
-export const MAX_PAGE_REVIEWS = 6;
+export const MAX_PAGE_REVIEWS = parseIntEnv("PAGE_MAX_REVIEWS", {
+  fallback: 3,
+  min: 1,
+  max: 12,
+});
 
 /** Long enough to cover a build session, short enough to forget it after. */
 const TTL_SECONDS = 24 * 60 * 60;

@@ -273,6 +273,33 @@ export const buildRunEvaluator = (configIds: ConfigIds = {}): RunEvaluator => {
         dataType: "NUMERIC",
       },
     ];
+    // With `--repeats`, the share of cases that passed EVERY time.
+    //
+    // `pass-rate` above averages over items, so a case that passes two runs in
+    // three and one that flakes on every case can produce the same number, and
+    // they call for opposite responses. Only emitted when a case actually ran
+    // more than once — on a single pass it would be `pass-rate` under a second
+    // name.
+    const byCase = new Map<string, boolean[]>();
+    for (const output of outputs) {
+      const seen = byCase.get(output.caseId) ?? [];
+      seen.push(output.passed);
+      byCase.set(output.caseId, seen);
+    }
+    const repeated = [...byCase.values()].filter((runs) => runs.length > 1);
+    if (repeated.length > 0) {
+      evaluations.push({
+        name: "pass-stability",
+        value: Number(
+          (
+            repeated.filter((runs) => runs.every(Boolean)).length /
+            repeated.length
+          ).toFixed(4),
+        ),
+        dataType: "NUMERIC",
+        comment: `${repeated.length.toString()} case(s) run more than once`,
+      });
+    }
     // Aggregate tool-call validity over ALL calls in the run (not the
     // mean of per-case ratios — a 1-call case must not weigh as much
     // as a 9-call case).

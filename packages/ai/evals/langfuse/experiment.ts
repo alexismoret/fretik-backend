@@ -71,6 +71,21 @@ export interface ExperimentOptions {
    */
   pageBuildProfileKey?: string;
   runName?: string;
+  /**
+   * Run every selected case this many times in ONE run (default 1).
+   *
+   * The design critic's spread is ±0.5-1.0 on identical bytes, so a single
+   * sample cannot tell a real change from noise — the GLM 5.3 Flash decision
+   * on 2026-09-04 was taken at n=2 and reverted the same day. The run-level
+   * evaluators already average over `itemResults`, so repeats turn
+   * `cost-per-turn-usd`, `correctness` and the design score into means with
+   * no further change, and `pass-stability` reports how often a case passed
+   * EVERY time rather than on average.
+   *
+   * One run per arm rather than one per repeat: a paired comparison wants two
+   * rows in the Langfuse compare view, not 2N.
+   */
+  repeats?: number;
   /** Concurrent cases — keep low; each is a real chatbot turn. */
   maxConcurrency?: number;
   metadata?: Record<string, unknown>;
@@ -277,9 +292,12 @@ export const runChatbotExperiment = async (
   const explicitSelection = Boolean(
     opts.smoke || opts.capability || opts.suite || caseIds,
   );
+  const repeats = Math.max(1, Math.floor(opts.repeats ?? 1));
   // Default full run = CORE tier only; `includeModelGate` (gate / --all)
-  // restores the true unfiltered dataset run.
-  const filtered = explicitSelection || opts.includeModelGate !== true;
+  // restores the true unfiltered dataset run. Repeats force the explicit path
+  // too: duplicating items is only possible where we hand the list over.
+  const filtered =
+    explicitSelection || repeats > 1 || opts.includeModelGate !== true;
   const dataset = await langfuseClient.dataset.get(DATASET_NAME);
 
   const metadata = {
@@ -290,6 +308,7 @@ export const runChatbotExperiment = async (
     ...(opts.pageBuildProfileKey
       ? { pageBuildProfileKey: opts.pageBuildProfileKey }
       : {}),
+    ...(repeats > 1 ? { repeats } : {}),
   };
   const common = {
     name: EXPERIMENT_NAME,
@@ -331,7 +350,29 @@ export const runChatbotExperiment = async (
         );
       }
     }
-    result = await langfuseClient.experiment.run({ ...common, data });
+    // Repeats are the same items again, tagged with which pass they are. The
+    // run-level evaluators average over `itemResults` either way, so this is
+    // the whole mechanism: N passes, one run, one row per arm to compare.
+    const passes =
+      repeats === 1
+        ? data
+        : Array.from({ length: repeats }, (_, pass) =>
+            data.map((item) => ({
+              ...item,
+              metadata: {
+                ...(typeof item.metadata === "object" && item.metadata !== null
+                  ? item.metadata
+                  : {}),
+                repeat: pass + 1,
+              },
+            })),
+          ).flat();
+    if (repeats > 1) {
+      console.log(
+        `[evals] ${data.length.toString()} case(s) x ${repeats.toString()} repeats = ${passes.length.toString()} items`,
+      );
+    }
+    result = await langfuseClient.experiment.run({ ...common, data: passes });
   }
 
   // The SDK still links dataset-run items over the v3 endpoint, which a v4

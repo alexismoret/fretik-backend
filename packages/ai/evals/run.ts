@@ -45,6 +45,7 @@
  *   ...  -- --run-name <name>       # explicit dataset-run name
  *   ...  -- --candidate <profileKey> # pin turns to a registry profile (C3 gate)
  *   ...  -- --page-build-candidate <profileKey> # pin the PAGE BUILDER's model
+ *   ...  -- --case <id> --repeats 3 # N passes of each case, one run, means not samples
  * ==================================================================
  */
 
@@ -84,6 +85,15 @@ interface CliOptions {
   pageJudgeCandidate?: string;
   /** Run only these case ids — a subset of whatever the other filters select. */
   caseIds?: string[];
+  /**
+   * Run every selected case N times in one run (default 1).
+   *
+   * The design critic's spread is ±0.5-1.0 on identical bytes, so one sample
+   * cannot separate a real change from noise: the GLM 5.3 Flash decision was
+   * taken at n=2 on 2026-09-04 and reverted the same day. Pair it with
+   * `--case` — an arm pays for every repeat of every case.
+   */
+  repeats?: number;
   /** Include model-gate tier probes (the true full suite). */
   all: boolean;
 }
@@ -105,6 +115,12 @@ const parseArgs = (argv: string[]): CliOptions => {
     if (flag === "--concurrency" && next) {
       const n = parseInt(next, 10);
       if (!Number.isNaN(n) && n > 0) opts.concurrency = n;
+      i++;
+      continue;
+    }
+    if (flag === "--repeats" && next) {
+      const n = parseInt(next, 10);
+      if (!Number.isNaN(n) && n > 0) opts.repeats = n;
       i++;
       continue;
     }
@@ -213,6 +229,7 @@ const main = async (): Promise<void> => {
       ? { pageBuildProfileKey: opts.pageBuildCandidate }
       : {}),
     ...(opts.caseIds ? { caseIds: opts.caseIds } : {}),
+    ...(opts.repeats !== undefined ? { repeats: opts.repeats } : {}),
     metadata: {
       release: process.env.LANGFUSE_RELEASE ?? "(dev)",
       smoke: opts.smoke,

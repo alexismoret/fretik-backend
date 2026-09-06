@@ -2,10 +2,15 @@ import { tool } from "ai";
 import { z } from "zod";
 import { buildPageProject } from "../../services/page-project/build";
 import { componentsUsed } from "../../services/page-project/manifest";
+import type { PageProjectState } from "../../services/page-project/store";
 import { recordPageWrite } from "../../services/page-project/write-stats";
 import { listComponentsRead } from "../../services/page-review/page-session-store";
 import { MAX_COMPONENT_DOCS, listContractHeavy } from "../page-component-docs";
-import { loadPageProjectContext, manifestOf } from "./context";
+import {
+  loadPageProjectContext,
+  manifestOf,
+  type PageProjectContext,
+} from "./context";
 
 /**
  * Compile every file and, if it builds, save it as the page.
@@ -49,6 +54,99 @@ const unreadComponentWarnings = async (
   ];
 };
 
+/** A red build, in the shape the agent already knows how to act on. */
+export interface FailedBuild {
+  ok: false;
+  errors: string[];
+  manifest: string;
+  next: string;
+}
+
+/** A green build: saved, with the project it published. */
+export interface GreenBuild {
+  ok: true;
+  pageId: string;
+  url: string;
+  manifest: string;
+  warnings?: string[];
+  unchanged: boolean;
+  state: PageProjectState;
+}
+
+/**
+ * Compile and save the working copy, from an already-loaded project context.
+ *
+ * Shared with `pageReview`, which builds a dirty copy itself rather than
+ * refusing: the refusal cost a full model step to say "run the tool you were
+ * always going to run next", once per round of a loop that runs up to seven
+ * times. A step is a step whatever it produces — the whole conversation is
+ * replayed either way — so the cheapest round is the one with fewer of them.
+ *
+ * A red build returns the SAME shape from either door, so the fix that follows
+ * is the same fix.
+ */
+export const buildFromContext = async (
+  project: PageProjectContext,
+): Promise<FailedBuild | GreenBuild> => {
+  const result = await buildPageProject({
+    state: project.state,
+    teamId: project.teamId,
+    organizationId: project.organizationId,
+    userId: project.userId,
+    conversationId: project.conversationId,
+    requester: project.requester,
+    // The TURN, not the run: the builder's own scope is a child of it, and
+    // Langfuse prices the trace. See `PageVersionMeta.traceId`.
+    traceId: project.reviewScope,
+  });
+
+  if (!result.ok) {
+    // The files stay exactly as they are: a refused build costs the build,
+    // never the work.
+    return {
+      ok: false,
+      errors: result.errors,
+      manifest: manifestOf(project.state),
+      next: "Fix the named lines — pageEdit the file each one points at, or pageWrite it whole — then build again. Nothing was saved and nothing was lost.",
+    };
+  }
+
+  await project.save(result.state);
+  // One event per green build, so the writes above it can be counted per
+  // page rather than per run: `charsEmitted: 0` because a build emits
+  // nothing — what it records is the project it published.
+  const files = Object.values(result.state.files);
+  recordPageWrite({
+    mode: "build",
+    path: result.pageId,
+    linesChanged: 0,
+    linesTotal: files.reduce(
+      (total, file) => total + file.split("\n").length,
+      0,
+    ),
+    charsEmitted: 0,
+    ratio: 0,
+  });
+  const warnings = [
+    ...result.warnings,
+    ...(result.unchanged
+      ? []
+      : await unreadComponentWarnings(
+          result.state.files,
+          project.conversationId,
+        )),
+  ];
+  return {
+    ok: true,
+    pageId: result.pageId,
+    url: result.url,
+    manifest: manifestOf(result.state),
+    ...(warnings.length > 0 ? { warnings } : {}),
+    unchanged: result.unchanged,
+    state: result.state,
+  };
+};
+
 export const createPageBuildTool = () =>
   tool({
     description:
@@ -56,61 +154,15 @@ export const createPageBuildTool = () =>
     inputSchema: z.object({}),
     execute: async (_input, options) => {
       const project = await loadPageProjectContext(options);
-      const result = await buildPageProject({
-        state: project.state,
-        teamId: project.teamId,
-        organizationId: project.organizationId,
-        userId: project.userId,
-        conversationId: project.conversationId,
-        requester: project.requester,
-        // The TURN, not the run: the builder's own scope is a child of it, and
-        // Langfuse prices the trace. See `PageVersionMeta.traceId`.
-        traceId: project.reviewScope,
-      });
-
-      if (!result.ok) {
-        // The files stay exactly as they are: a refused build costs the build,
-        // never the work.
-        return {
-          ok: false,
-          errors: result.errors,
-          manifest: manifestOf(project.state),
-          next: "Fix the named lines — pageEdit the file each one points at, or pageWrite it whole — then build again. Nothing was saved and nothing was lost.",
-        };
-      }
-
-      await project.save(result.state);
-      // One event per green build, so the writes above it can be counted per
-      // page rather than per run: `charsEmitted: 0` because a build emits
-      // nothing — what it records is the project it published.
-      const files = Object.values(result.state.files);
-      recordPageWrite({
-        mode: "build",
-        path: result.pageId,
-        linesChanged: 0,
-        linesTotal: files.reduce(
-          (total, file) => total + file.split("\n").length,
-          0,
-        ),
-        charsEmitted: 0,
-        ratio: 0,
-      });
-      const warnings = [
-        ...result.warnings,
-        ...(result.unchanged
-          ? []
-          : await unreadComponentWarnings(
-              result.state.files,
-              project.conversationId,
-            )),
-      ];
+      const built = await buildFromContext(project);
+      if (!built.ok) return built;
       return {
         ok: true,
-        pageId: result.pageId,
-        url: result.url,
-        manifest: manifestOf(result.state),
-        ...(warnings.length > 0 ? { warnings } : {}),
-        next: result.unchanged
+        pageId: built.pageId,
+        url: built.url,
+        manifest: built.manifest,
+        ...(built.warnings !== undefined ? { warnings: built.warnings } : {}),
+        next: built.unchanged
           ? "Nothing changed since the last build. Review it, or change a file first."
           : "The page is saved and live at that url. Review it before handing it over.",
       };

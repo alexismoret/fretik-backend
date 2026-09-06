@@ -209,6 +209,15 @@ afterAll(() => {
 });
 
 const { createManagePageTool } = await import("../../../src/tools/manage-page");
+const { createPageReviewTool } =
+  await import("../../../src/tools/page-project/review");
+const {
+  emptyProjectState,
+  hashProjectFiles,
+  projectFiles,
+  readPageProject,
+  writePageProject,
+} = await import("../../../src/services/page-project/store");
 const { DynamicToolManager } =
   await import("../../../src/agents/shared/dynamic-tools");
 const { wrapRuntimeContext } =
@@ -555,6 +564,131 @@ describe("update — edits, per file", () => {
       definition: { code: { source: "<template><p>tiny</p></template>" } },
     });
     expect(result["code"]).toBe("PAGE_REQUIRES_BUILDER");
+    expect(updateCalls).toHaveLength(0);
+  });
+});
+
+/**
+ * The builder's own `pageReview`, which builds a dirty copy rather than
+ * refusing it.
+ *
+ * Every `next:` the loop hands back ends with "then review again", and a fix
+ * round used to be edit → build → review. The build carried no decision: the
+ * refusal spent a full model step — the whole conversation is replayed on each
+ * one — to say "run the tool you were always going to run next", once per
+ * round of a loop that runs up to seven times.
+ */
+describe("pageReview builds what it is about to judge", () => {
+  const PAGE_JSON = JSON.stringify({
+    brief: {
+      product: { job: "Watch lanes", audience: "Ops", features: [] },
+      design: {
+        archetype: "board",
+        layout: "lanes across, cards down",
+        hierarchy: "the blocked lane leads",
+        containers: "detail inline",
+        signature: "blocked cards carry the error hue",
+        defaultsRejected: ["four equal KPI cards"],
+        alternative: "a table — the point here is movement between lanes",
+      },
+    },
+  });
+
+  const execPageReview = async (): Promise<Record<string, unknown>> => {
+    const tool = createPageReviewTool();
+    if (typeof tool.execute !== "function") {
+      throw new Error("pageReview missing execute");
+    }
+    const ctx = {
+      organizationId: "org-1",
+      teamId: "team-1",
+      userId: crypto.randomUUID(),
+      conversationId: crypto.randomUUID(),
+      // The builder runs under the turn's trace plus its own suffix.
+      traceId: `${scope}.page`,
+      modelProfile: getProfileForRole("chat"),
+      dynamicToolManager: new DynamicToolManager(),
+    };
+    const result = await tool.execute(
+      {},
+      { toolCallId: "tc-1", messages: [], context: wrapRuntimeContext(ctx) },
+    );
+    if (typeof result !== "object" || result === null) {
+      throw new Error("pageReview returned non-object");
+    }
+    return result as Record<string, unknown>;
+  };
+
+  /** A working copy whose files do not match `builtHash` — a fix, unbuilt. */
+  const seedDirtyCopy = async (): Promise<void> => {
+    await writePageProject(`${scope}.page`, {
+      ...emptyProjectState(),
+      pageId,
+      files: { "page.json": PAGE_JSON, "Page.vue": SOURCE },
+      builtHash: "stale",
+    });
+  };
+
+  beforeEach(() => {
+    critiqueResult = {
+      ok: true,
+      critique: {
+        score: 8.2,
+        scores: { design: 8, functionality: 8, craft: 8, originality: 9 },
+        summary: "Reads well.",
+        findings: [],
+        elevations: [],
+      },
+    };
+  });
+
+  test("an unbuilt fix is built, then rendered — one call, not two", async () => {
+    await seedDirtyCopy();
+    const result = await execPageReview();
+
+    expect(updateCalls).toHaveLength(1);
+    expect(renderCalls).toHaveLength(1);
+    expect(result["verdict"]).toBeDefined();
+  });
+
+  test("a build that does not compile refuses like pageBuild, and renders nothing", async () => {
+    // Same shape from either door, so the fix that follows is the same fix —
+    // and a browser is never opened on a page that did not compile.
+    updateThrows = compileRefusal();
+    await seedDirtyCopy();
+    const result = await execPageReview();
+
+    expect(result["ok"]).toBe(false);
+    // The same `next:` a red pageBuild hands back, so the fix is the same fix.
+    expect(String(result["next"])).toContain("Fix the named lines");
+    expect(result["manifest"]).toBeDefined();
+    expect(renderCalls).toHaveLength(0);
+    // Nothing was promoted: the copy is still the unbuilt one.
+    const copy = await readPageProject(`${scope}.page`);
+    expect(copy?.builtHash).toBe("stale");
+  });
+
+  test("a copy already matching its build is reviewed without building again", async () => {
+    const files = { "page.json": PAGE_JSON, "Page.vue": SOURCE };
+    const state = { ...emptyProjectState(), pageId, files };
+    await writePageProject(`${scope}.page`, {
+      ...state,
+      builtHash: hashProjectFiles(projectFiles(state)),
+    });
+
+    const result = await execPageReview();
+
+    expect(updateCalls).toHaveLength(0);
+    expect(renderCalls).toHaveLength(1);
+    expect(result["verdict"]).toBeDefined();
+  });
+
+  test("a run that wrote nothing is told so, rather than building an empty page", async () => {
+    await writePageProject(`${scope}.page`, emptyProjectState());
+    const result = await execPageReview();
+
+    expect(result["code"]).toBe("INVALID_ARGS");
+    expect(renderCalls).toHaveLength(0);
     expect(updateCalls).toHaveLength(0);
   });
 });

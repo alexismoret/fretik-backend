@@ -1,5 +1,5 @@
 /**
- * What page writes actually cost, read back from `page_versions.meta.writes`.
+ * What page writes actually cost, read back from `page_versions.meta`.
  *
  * The claim this whole chantier rests on — "a fix touching 7% of a page
  * re-emitted 100% of it" — was measured once, by hand, from two conversations.
@@ -9,59 +9,49 @@
  *   bun run pages:measure-writes -- --hours 6
  *   bun run pages:measure-writes -- --hours 48 --team <teamId>
  *
- * The write ratios come from the DATABASE, not from Langfuse. The `page-write`
- * events are still emitted and still useful in a trace, but a v4 `events_only`
- * deployment strips `metadata` from the observations API: the nineteen events
- * of the 2026-09-04 build came back carrying their names and nothing else, and
- * the first version of this script measured `undefined` for every field it
- * asked for. A number kept in our own row cannot be dropped by someone else's
- * ingestion mode.
+ * Everything comes from the DATABASE. The `page-write` events are still
+ * emitted and still useful in a trace, but a v4 `events_only` deployment
+ * strips `metadata` from the observations API — the nineteen events of the
+ * 2026-09-04 build came back carrying their names and nothing else — and
+ * `GET /api/public/traces/:id`, which the cost half of this script used to
+ * call, is gone from v4 entirely. It failed silently, so the cost line simply
+ * never printed. The price now travels in `meta.usage`, counted by the process
+ * that spent it (`src/lib/turn-usage.ts`).
  *
- * The COST is the one thing that has to come from Langfuse, because that is
- * where tokens are priced. Each version carries the turn that wrote it, so the
- * lookup is a key rather than a search — and it is skipped in silence without
- * credentials, since the ratios above are what this script is for.
+ * The arithmetic lives in `src/services/page-project/write-report.ts`, where
+ * it is typechecked and tested: `scripts/*` is outside the tsconfig include,
+ * and the two counting mistakes this report used to make both read as
+ * measurements rather than as bugs.
  *
- * Read-only, and outside the tsconfig include like every other script here.
+ * Read-only.
  */
 
 import db from "@fretik/shared/db";
 import { sql } from "drizzle-orm";
+import type { PageWriteRecord } from "../src/services/page-project/store";
+import {
+  buildWriteReport,
+  type PageVersionSample,
+} from "../src/services/page-project/write-report";
 
 const arg = (name: string): string | undefined => {
   const index = process.argv.indexOf(`--${name}`);
   return index >= 0 ? process.argv[index + 1] : undefined;
 };
 
-interface WriteRow {
-  mode: string;
-  path: string;
-  linesChanged: number;
-  linesTotal: number;
-  charsEmitted: number;
-  ratio: number;
-}
-
-const percentile = (values: number[], p: number): number => {
-  if (values.length === 0) return 0;
-  const sorted = [...values].sort((a, b) => a - b);
-  const index = Math.min(
-    sorted.length - 1,
-    Math.floor((p / 100) * sorted.length),
-  );
-  return sorted[index] ?? 0;
-};
-
-const readWrites = (value: unknown): WriteRow[] => {
+const readWrites = (value: unknown): PageWriteRecord[] => {
   if (typeof value !== "object" || value === null) return [];
   const writes = Reflect.get(value, "writes");
   if (!Array.isArray(writes)) return [];
-  const rows: WriteRow[] = [];
+  const rows: PageWriteRecord[] = [];
   for (const entry of writes) {
     if (typeof entry !== "object" || entry === null) continue;
     const mode = Reflect.get(entry, "mode");
     const path = Reflect.get(entry, "path");
-    if (typeof mode !== "string" || typeof path !== "string") continue;
+    if ((mode !== "write" && mode !== "edit") || typeof path !== "string") {
+      continue;
+    }
+    const callId = Reflect.get(entry, "callId");
     rows.push({
       mode,
       path,
@@ -69,69 +59,26 @@ const readWrites = (value: unknown): WriteRow[] => {
       linesTotal: Number(Reflect.get(entry, "linesTotal") ?? 0),
       charsEmitted: Number(Reflect.get(entry, "charsEmitted") ?? 0),
       ratio: Number(Reflect.get(entry, "ratio") ?? 0),
+      ...(typeof callId === "string" ? { callId } : {}),
     });
   }
   return rows;
 };
 
-/**
- * What each of those pages cost to think about, from Langfuse.
- *
- * Characters emitted are half the bill and the cheaper half: the builder
- * replays a cached prefix once per step, so a page's cost is dominated by how
- * many times it went round, not by how much it wrote. That number lives with
- * whoever prices the tokens, and the version row carries the key to ask.
- *
- * Silent when the credentials are absent — the write ratios above are the
- * point of this script and they need no network. A trace Langfuse has not
- * finished ingesting simply does not answer yet.
- */
-const reportCost = async (
-  versions: { page_id: string; meta: unknown }[],
-): Promise<void> => {
-  const host = Bun.env.LANGFUSE_BASEURL ?? Bun.env.LANGFUSE_HOST ?? "";
-  const publicKey = Bun.env.LANGFUSE_PUBLIC_KEY ?? "";
-  const secretKey = Bun.env.LANGFUSE_SECRET_KEY ?? "";
-  if (host === "" || publicKey === "" || secretKey === "") return;
-
-  // One trace per PAGE, the most recent: a build coalesces into one version,
-  // and pricing every round would count the same turn several times.
-  const traceByPage = new Map<string, string>();
-  for (const row of versions) {
-    const meta =
-      typeof row.meta === "object" && row.meta !== null ? row.meta : {};
-    const traceId = Reflect.get(meta, "traceId");
-    if (typeof traceId === "string" && traceId.length > 0) {
-      traceByPage.set(row.page_id, traceId);
-    }
-  }
-  if (traceByPage.size === 0) return;
-
-  const auth = `Basic ${Buffer.from(`${publicKey}:${secretKey}`).toString("base64")}`;
-  const costs: number[] = [];
-  for (const traceId of traceByPage.values()) {
-    const response = await fetch(
-      `${host.replace(/\/$/, "")}/api/public/traces/${traceId}`,
-      { headers: { authorization: auth } },
-    ).catch(() => null);
-    if (!response?.ok) continue;
-    const body: unknown = await response.json().catch(() => null);
-    const total =
-      typeof body === "object" && body !== null
-        ? Reflect.get(body, "totalCost")
-        : undefined;
-    if (typeof total === "number" && total > 0) costs.push(total);
-  }
-  if (costs.length === 0) {
-    console.log(
-      `\n  ${traceByPage.size.toString()} page(s) carry a trace, none priced yet — Langfuse ingests a turn a few minutes after it ends.`,
-    );
-    return;
-  }
-  const median = percentile(costs, 50);
-  console.log(
-    `\n  cost per page: median $${median.toFixed(2)}, p90 $${percentile(costs, 90).toFixed(2)}, over ${costs.length.toString()} priced turn(s)`,
-  );
+const readUsage = (value: unknown): PageVersionSample["usage"] => {
+  if (typeof value !== "object" || value === null) return undefined;
+  const usage = Reflect.get(value, "usage");
+  if (typeof usage !== "object" || usage === null) return undefined;
+  const costUsd = Reflect.get(usage, "costUsd");
+  const steps = Reflect.get(usage, "steps");
+  if (typeof costUsd !== "number" || typeof steps !== "number")
+    return undefined;
+  const costedSteps = Reflect.get(usage, "costedSteps");
+  return {
+    costUsd,
+    steps,
+    costedSteps: typeof costedSteps === "number" ? costedSteps : steps,
+  };
 };
 
 const main = async (): Promise<void> => {
@@ -140,23 +87,31 @@ const main = async (): Promise<void> => {
   const since = new Date(Date.now() - hours * 3_600_000);
 
   const result = await db.execute<{
-    id: string;
     page_id: string;
     created_at: Date;
     meta: unknown;
   }>(
     team === undefined
-      ? sql`select id, page_id, created_at, meta from page_versions
+      ? sql`select page_id, created_at, meta from page_versions
             where created_at >= ${since} and meta ? 'writes'
             order by created_at`
-      : sql`select id, page_id, created_at, meta from page_versions
+      : sql`select page_id, created_at, meta from page_versions
             where created_at >= ${since} and team_id = ${team} and meta ? 'writes'
             order by created_at`,
   );
 
-  const versions = result.rows;
-  const writes = versions.flatMap((row) => readWrites(row.meta));
-  if (writes.length === 0) {
+  const samples: PageVersionSample[] = result.rows.map((row) => {
+    const usage = readUsage(row.meta);
+    return {
+      pageId: row.page_id,
+      createdAt: new Date(row.created_at),
+      writes: readWrites(row.meta),
+      ...(usage !== undefined ? { usage } : {}),
+    };
+  });
+
+  const report = buildWriteReport(samples);
+  if (report.calls === 0) {
     console.log(
       `No measured page writes in the last ${hours.toString()}h. (Only builds since the 2026-09-04 change record them.)`,
     );
@@ -165,38 +120,44 @@ const main = async (): Promise<void> => {
 
   console.log(`\npage writes — last ${hours.toString()}h\n`);
   console.log(
-    "  mode    calls   median chars   median ratio   p90 ratio   median lines changed",
+    "  mode    calls   files   median chars/call   median ratio   p90 ratio   median lines changed",
   );
-  for (const mode of ["write", "edit"] as const) {
-    const group = writes.filter((write) => write.mode === mode);
-    if (group.length === 0) continue;
-    const chars = group.map((write) => write.charsEmitted);
-    const ratios = group
-      .map((write) => write.ratio)
-      .filter((ratio) => ratio > 0);
-    const changed = group.map((write) => write.linesChanged);
+  for (const mode of report.byMode) {
     console.log(
-      `  ${mode.padEnd(8)}${group.length.toString().padEnd(8)}${percentile(chars, 50).toString().padEnd(15)}${percentile(ratios, 50).toFixed(2).padEnd(15)}${percentile(ratios, 90).toFixed(2).padEnd(12)}${percentile(changed, 50).toString()}`,
+      `  ${mode.mode.padEnd(8)}${mode.calls.toString().padEnd(8)}${mode.files.toString().padEnd(8)}${mode.medianCharsPerCall.toString().padEnd(20)}${mode.medianRatio.toFixed(2).padEnd(15)}${mode.p90Ratio.toFixed(2).padEnd(12)}${mode.medianLinesChanged.toString()}`,
     );
   }
 
-  await reportCost(versions);
+  if (report.cost !== undefined) {
+    console.log(
+      `\n  cost per page: median $${report.cost.medianUsd.toFixed(2)}, p90 $${report.cost.p90Usd.toFixed(2)}, median ${report.cost.medianSteps.toString()} model steps, over ${report.cost.pages.toString()} priced page(s)`,
+    );
+  } else {
+    console.log(
+      "\n  no page carries a usage figure yet — only builds after the 2026-09-06 change record one.",
+    );
+  }
 
-  const pages = new Set(versions.map((row) => row.page_id));
-  const edits = writes.filter((write) => write.mode === "edit").length;
   console.log(
-    `\n  ${writes.length.toString()} writes over ${pages.size.toString()} page(s) in ${versions.length.toString()} version(s) — ${(writes.length / Math.max(pages.size, 1)).toFixed(1)} per page, ${((edits / writes.length) * 100).toFixed(0)}% of them edits.`,
+    `\n  ${report.calls.toString()} calls (${report.files.toString()} files) over ${report.pages.toString()} page(s) — ${report.callsPerPage.toFixed(1)} calls per page, ${(report.editShare * 100).toFixed(0)}% of them edits.`,
   );
+  if (report.recordsWithoutCallId > 0) {
+    console.log(
+      `  ${report.recordsWithoutCallId.toString()} record(s) predate call ids and are counted as one call each — a batched write among them reads as several.`,
+    );
+  }
+  if (report.truncatedPages > 0) {
+    console.log(
+      `  ${report.truncatedPages.toString()} page(s) hit the 80-record cap: their oldest writes were dropped, so these counts are a floor.`,
+    );
+  }
 
   // The one number the redesign is answerable to. The measured whole-file
   // rewrites ran 6-14; a fix that stays surgical sits near 1.
-  const fixRatios = writes
-    .filter((write) => write.mode === "edit")
-    .map((write) => write.ratio)
-    .filter((ratio) => ratio > 0);
-  if (fixRatios.length > 0) {
+  const edits = report.byMode.find((mode) => mode.mode === "edit");
+  if (edits !== undefined) {
     console.log(
-      `  median rewrite ratio on fixes: ${percentile(fixRatios, 50).toFixed(2)} (target < 3; whole-file rewrites measured 6-14)\n`,
+      `  median rewrite ratio on fixes: ${edits.medianRatio.toFixed(2)} (target < 3; whole-file rewrites measured 6-14)\n`,
     );
   } else {
     console.log(

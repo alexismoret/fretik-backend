@@ -55,6 +55,12 @@ export interface PageVersionMeta {
     linesTotal: number;
     charsEmitted: number;
     ratio: number;
+    /**
+     * The tool call the file belonged to. One `pageWrite` carries a whole
+     * project and is measured per file, so records are not calls — grouping by
+     * this is what turns them back into calls. Absent before 2026-09-06.
+     */
+    callId?: string;
   }[];
   /**
    * The TURN this version was written in, so its cost can be looked up.

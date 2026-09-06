@@ -80,6 +80,20 @@ export interface PageWriteRecord {
   linesTotal: number;
   charsEmitted: number;
   ratio: number;
+  /**
+   * The tool CALL this file belonged to.
+   *
+   * One `pageWrite` carries a whole project, and it is measured per file — so
+   * a twelve-file layout leaves twelve records where one `pageEdit` leaves
+   * one. Counting records made writes look twelve times more common than they
+   * are, which is how "3% of writes are edits" was reported in September 2026
+   * for a build whose edit share was never measured at all. Grouping by this
+   * turns records back into calls.
+   *
+   * Absent on rows written before 2026-09-06; a reader treats those as one
+   * call each and says so.
+   */
+  callId?: string;
 }
 
 /** Past this the record stops being a measurement and becomes a payload. */

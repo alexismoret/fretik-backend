@@ -56,6 +56,13 @@ export const measurePageWrite = (params: {
   /** What the model actually sent — a whole file, or just the new text. */
   charsEmitted: number;
   lintDelta?: string[];
+  /**
+   * The tool call this file was part of. One `pageWrite` writes many files and
+   * is measured once per file, so without this a batch and a burst of separate
+   * calls are indistinguishable afterwards — and they cost very different
+   * things.
+   */
+  callId?: string;
 }): PageWriteRecord => {
   const diff = diffLines(params.before ?? "", params.after);
   const linesTotal = params.after === "" ? 0 : params.after.split("\n").length;
@@ -83,6 +90,7 @@ export const measurePageWrite = (params: {
     linesTotal,
     charsEmitted: params.charsEmitted,
     ratio,
+    ...(params.callId !== undefined ? { callId: params.callId } : {}),
   };
 };
 

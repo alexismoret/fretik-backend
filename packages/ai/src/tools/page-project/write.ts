@@ -175,6 +175,9 @@ export const createPageWriteTool = () =>
           before: state.files[path],
           after: entry.content,
           charsEmitted: entry.content.length,
+          // Every file of this batch carries the same call id, so a reader can
+          // tell one project layout from a dozen separate writes.
+          callId: options.toolCallId,
           ...(lint.lintDelta !== undefined
             ? { lintDelta: lint.lintDelta }
             : {}),

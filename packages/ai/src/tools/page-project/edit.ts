@@ -174,6 +174,7 @@ export const createPageEditTool = () =>
         before: content,
         after: next,
         charsEmitted: input.oldString.length + input.newString.length,
+        callId: options.toolCallId,
         ...(lint.lintDelta !== undefined ? { lintDelta: lint.lintDelta } : {}),
       });
 

@@ -273,12 +273,30 @@ const SKILLS_TARBALL_SANDBOX_PATH = "/tmp/fretik-skills.tar.gz";
  * Cached promise (not bytes) so concurrent calls during boot share
  * the same Bun.Archive build instead of racing.
  */
-let cachedSkillsTarball: Promise<Uint8Array | null> | null = null;
+let cachedSkillsTarball: Promise<SkillsBundle | null> | null = null;
+
+/**
+ * The tarball plus the archive-relative paths that must come out of it
+ * executable.
+ *
+ * `Bun.Archive` takes a `Record<string, Blob>`, and a `Blob` carries no mode —
+ * every entry is emitted with `0644` headers regardless of what it is on disk.
+ * Twelve bundled scripts are `0755` in the repo (`recalc.py`, `thumbnail.py`,
+ * `add_slide.py`, …) and every one of them landed in the sandbox unexecutable.
+ * `ArchiveInput` has no per-entry metadata to fix that with, so the mode is
+ * restored by a `chmod +x` right after `tar -xzf`.
+ */
+interface SkillsBundle {
+  bytes: Uint8Array;
+  /** Archive-relative paths, i.e. `xlsx/scripts/recalc.py`. */
+  executables: string[];
+}
 
 const collectSkillFilesForArchive = async (
   diskDir: string,
   archivePrefix: string,
   out: Record<string, Blob>,
+  executables: string[],
 ): Promise<void> => {
   // Bun.Archive expects POSIX path separators inside the archive.
   // We build them by hand rather than `path.join` so a Windows host
@@ -295,7 +313,12 @@ const collectSkillFilesForArchive = async (
       ? `${archivePrefix}/${entry.name}`
       : entry.name;
     if (entry.isDirectory()) {
-      await collectSkillFilesForArchive(childDisk, childArchivePath, out);
+      await collectSkillFilesForArchive(
+        childDisk,
+        childArchivePath,
+        out,
+        executables,
+      );
     } else if (entry.isFile()) {
       // Bun.Archive does NOT await async Blob reads when serializing —
       // passing a raw `Bun.file(...)` reference produces an archive
@@ -304,13 +327,20 @@ const collectSkillFilesForArchive = async (
       // archive ships actual content. Validated 2026-05-18 — without
       // the eager read the tarball was ~3 KB instead of the expected
       // ~700 KB and every extracted file was 0 bytes.
-      const bytes = await Bun.file(childDisk).bytes();
+      const file = Bun.file(childDisk);
+      const bytes = await file.bytes();
       out[childArchivePath] = new Blob([bytes]);
+      // The Blob above drops the mode; remember which entries have to get
+      // their exec bit back after extraction. See `SkillsBundle`.
+      const info = await file.stat().catch(() => null);
+      if (info !== null && (info.mode & 0o111) !== 0) {
+        executables.push(childArchivePath);
+      }
     }
   }
 };
 
-const buildSkillsTarballBytes = async (): Promise<Uint8Array | null> => {
+const buildSkillsTarballBytes = async (): Promise<SkillsBundle | null> => {
   const startedAt = Date.now();
   const info = await stat(BUNDLED_SKILLS_DIR).catch(() => null);
   if (!info?.isDirectory()) {
@@ -321,7 +351,8 @@ const buildSkillsTarballBytes = async (): Promise<Uint8Array | null> => {
   }
 
   const files: Record<string, Blob> = {};
-  await collectSkillFilesForArchive(BUNDLED_SKILLS_DIR, "", files);
+  const executables: string[] = [];
+  await collectSkillFilesForArchive(BUNDLED_SKILLS_DIR, "", files, executables);
 
   if (Object.keys(files).length === 0) {
     console.warn(
@@ -334,9 +365,9 @@ const buildSkillsTarballBytes = async (): Promise<Uint8Array | null> => {
   const bytes = await archive.bytes();
   const duration = Date.now() - startedAt;
   console.log(
-    `[conversation-storage] built skills tarball: ${Object.keys(files).length.toString()} files, ${(bytes.byteLength / 1024).toFixed(1)} KB gzipped, ${duration.toString()}ms`,
+    `[conversation-storage] built skills tarball: ${Object.keys(files).length.toString()} files (${executables.length.toString()} executable), ${(bytes.byteLength / 1024).toFixed(1)} KB gzipped, ${duration.toString()}ms`,
   );
-  return bytes;
+  return { bytes, executables };
 };
 
 /**
@@ -344,7 +375,7 @@ const buildSkillsTarballBytes = async (): Promise<Uint8Array | null> => {
  * the bundled directory is missing / empty). Idempotent and
  * concurrent-safe via the cached promise.
  */
-export const getSkillsTarballBytes = (): Promise<Uint8Array | null> => {
+export const getSkillsBundle = (): Promise<SkillsBundle | null> => {
   cachedSkillsTarball ??= buildSkillsTarballBytes();
   return cachedSkillsTarball;
 };
@@ -588,13 +619,14 @@ const createWorkspaceDirs = async (conversationId: string): Promise<void> => {
  * turn, which is recoverable on the next conversation bootstrap.
  */
 const pushBundledSkills = async (conversationId: string): Promise<void> => {
-  const bytes = await getSkillsTarballBytes();
-  if (!bytes) {
+  const bundle = await getSkillsBundle();
+  if (!bundle) {
     console.warn(
       "[conversation-storage] no skills tarball available — skipping skills push",
     );
     return;
   }
+  const { bytes, executables } = bundle;
 
   const startedAt = Date.now();
   try {
@@ -610,10 +642,24 @@ const pushBundledSkills = async (conversationId: string): Promise<void> => {
   const skillsDir = `${WORKSPACE_ROOT}/${WORKSPACE_DIRS.skills}`;
   // `set -e` makes the line abort on the first failing step so we surface
   // a meaningful stderr in the catch below instead of a silent skip.
+  // `Bun.Archive` emits every entry `0644` (see `SkillsBundle`), so the scripts
+  // the skills prescribe come out unexecutable — `0644` denies exec to root
+  // too. Restore the bit on exactly the entries that carried it in the repo,
+  // never a blanket `chmod -R +x` that would also mark every `.md` executable.
+  // The paths come from our own tree; the filter is what keeps that safe the
+  // day someone adds a filename with a space in it.
+  const safeExecutables = executables.filter((p) =>
+    /^[A-Za-z0-9._/-]+$/.test(p),
+  );
   const extractCommand = [
     "set -e",
     `mkdir -p ${skillsDir}`,
     `tar -xzf ${SKILLS_TARBALL_SANDBOX_PATH} -C ${skillsDir}`,
+    ...(safeExecutables.length > 0
+      ? [
+          `chmod +x -- ${safeExecutables.map((p) => `${skillsDir}/${p}`).join(" ")}`,
+        ]
+      : []),
     `rm -f ${SKILLS_TARBALL_SANDBOX_PATH}`,
   ].join(" && ");
 
@@ -770,7 +816,9 @@ const buildExternalAppsSdkTarballBytes =
     }
 
     const files: Record<string, Blob> = {};
-    await collectSkillFilesForArchive(EXTERNAL_APPS_SDK_SRC_DIR, "", files);
+    // The exec-bit list is discarded: the SDK tree is imported, never run as a
+    // command, and carries no executable file today.
+    await collectSkillFilesForArchive(EXTERNAL_APPS_SDK_SRC_DIR, "", files, []);
     if (Object.keys(files).length === 0) {
       console.warn(
         "[conversation-storage] no fretik_apps SDK files found, tarball skipped",
@@ -822,7 +870,9 @@ const buildExternalAppSkillTarballBytes = async (
   }
 
   const files: Record<string, Blob> = {};
-  await collectSkillFilesForArchive(srcDir, "", files);
+  // Same as the SDK tarball above: provider skill folders are prose plus data,
+  // with no executable of their own.
+  await collectSkillFilesForArchive(srcDir, "", files, []);
   if (Object.keys(files).length === 0) {
     console.warn(
       `[conversation-storage] no files in provider "${providerKey}" skill folder, tarball skipped`,

@@ -35,7 +35,12 @@ interface Scenario {
 }
 
 let scenario: Scenario;
-let lastRunOpts: FakeCommandOpts & { timeoutMs?: number; cwd?: string };
+let lastRunOpts: FakeCommandOpts & {
+  timeoutMs?: number;
+  cwd?: string;
+  user?: string;
+};
+let lastListOpts: { depth?: number; user?: string } | undefined;
 
 // The SDK itself is never mocked: `runInSandbox` reaches the sandbox only
 // through `lease.sandbox`, so overriding `acquireSandbox` — a first-party
@@ -43,13 +48,20 @@ let lastRunOpts: FakeCommandOpts & { timeoutMs?: number; cwd?: string };
 // leaks into the other suites sharing this test process.
 const fakeSandbox = {
   files: {
-    list: async () => [],
+    list: async (_path: string, opts?: { depth?: number; user?: string }) => {
+      lastListOpts = opts;
+      return [];
+    },
     write: async () => undefined,
   },
   commands: {
     run: async (
       _cmd: string,
-      opts: FakeCommandOpts & { timeoutMs?: number; cwd?: string },
+      opts: FakeCommandOpts & {
+        timeoutMs?: number;
+        cwd?: string;
+        user?: string;
+      },
     ) => {
       lastRunOpts = opts;
       if (scenario.streamed?.stdout) opts.onStdout?.(scenario.streamed.stdout);
@@ -170,6 +182,39 @@ describe("runInSandbox — bash non-zero exit", () => {
     await runBash();
     expect(lastRunOpts.timeoutMs).toBe(5 * 60 * 1000);
     expect(lastRunOpts.cwd).toBe("/workspace");
+  });
+});
+
+/**
+ * The `python` tool runs in E2B's Jupyter kernel, which the base image starts
+ * as root and which the SDK gives us no `user` knob for. While `bash` ran on
+ * the template's `user` (uid 1000), the two code tools held DIFFERENT
+ * identities over ONE `/workspace`: python wrote `root:root 0644` files that
+ * bash could not rewrite, chmod, or hand to `recalc.py` — 79 permission
+ * failures across 42 conversations in the three months to 2026-09-07.
+ *
+ * The fix is that every platform-initiated sandbox operation names the same
+ * user. These tests pin that: drop the option and `user` is `undefined`, so
+ * they fail.
+ */
+describe("runInSandbox — one identity over /workspace", () => {
+  beforeEach(() => {
+    scenario = {
+      outcome: { kind: "resolve", exitCode: 0, stdout: "", stderr: "" },
+    };
+    lastListOpts = undefined;
+  });
+
+  test("the bash exec runs as the same user as the python kernel", async () => {
+    await runBash();
+    expect(lastRunOpts.user).toBe("root");
+  });
+
+  test("the workspace snapshot is listed as that user too", async () => {
+    await runBash();
+    // A listing that fails takes the artifact diff — and the S3 mirror — down
+    // with it for the whole turn.
+    expect(lastListOpts?.user).toBe("root");
   });
 });
 

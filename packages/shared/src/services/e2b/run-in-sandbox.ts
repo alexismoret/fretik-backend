@@ -3,7 +3,7 @@ import type { CommandResult } from "e2b";
 import { CommandExitError, FileType } from "e2b";
 import { mimeFromFilename } from "../../file-types";
 import { acquireSandbox } from "./acquire-sandbox";
-import { SANDBOX_TIMEOUT_MS } from "./client";
+import { SANDBOX_TIMEOUT_MS, SANDBOX_USER } from "./client";
 import { killSandbox } from "./kill-sandbox";
 import {
   clearPythonContextFromRegistry,
@@ -139,6 +139,11 @@ const snapshotWorkspace = async (sbx: Sandbox): Promise<WorkspaceSnapshot> => {
   try {
     const entries = await sbx.files.list(WORKSPACE_ROOT, {
       depth: WORKSPACE_LIST_DEPTH,
+      // One identity for everything that touches the workspace, with no
+      // exception to reason about — the stake is high enough to be worth the
+      // uniformity: a listing that fails takes the artifact diff, and with it
+      // the S3 mirror, down for the whole turn. See `SANDBOX_USER`.
+      user: SANDBOX_USER,
     });
     for (const entry of entries) {
       if (entry.type !== FileType.FILE) continue;
@@ -593,6 +598,7 @@ export const runInSandbox = async (
             // no-unsafe-type-assertion rule would otherwise force us to break.
             data: new Blob([c.artifactWrite?.bytes ?? new Uint8Array()]),
           })),
+          { user: SANDBOX_USER },
         );
       } catch (err) {
         console.warn(
@@ -617,6 +623,10 @@ export const runInSandbox = async (
         options.abortSignal,
         sbx.commands.run(options.code, {
           cwd: WORKSPACE_ROOT,
+          // THE fix for the two-identity bug: without this, bash ran as
+          // uid 1000 while the Jupyter kernel behind the `python` tool ran as
+          // root, over the same /workspace. See `SANDBOX_USER`.
+          user: SANDBOX_USER,
           // Same reason as the `runCode` call above: the SDK default is 60 s.
           timeoutMs: SANDBOX_TIMEOUT_MS,
           // `commands.run` DOES take an AbortSignal (unlike `runCode`), so a

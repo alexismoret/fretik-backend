@@ -96,7 +96,7 @@ export const createBashTool = () =>
       "- For HTTP fetches → use `searchWeb` / `webFetch` (sandbox egress is restricted to PyPI / GitHub / Fretik / common B2B service APIs).",
       "- Each call is a fresh `bash -c` subprocess. Env vars, shell variables, `cd`, aliases, `source`d files do NOT persist between calls. Chain with `&&` / `;` / `|` / heredocs in one call when needed.",
       "- Files under `/workspace` DO persist across calls. Files you create under `attachments/` or `outputs/` are auto-mirrored to durable storage — call `presentFiles` to surface generated files to the user.",
-      "- Sandbox: 1 vCPU, 1.5 GB memory, 5 min wall-clock, non-root user.",
+      "- Sandbox: 1 vCPU, 1.5 GB memory, 5 min wall-clock, root.",
       "- `restart: true` KILLS AND RECREATES the entire sandbox (wipes `/workspace`!). Escape hatch for filesystem corruption only — for kernel-only reset use `python` with `restart: true` instead.",
       "",
       "Output: `{ stdout, stderr, artifacts: [{path, mime, size}] }`. Large outputs are swapped for a `<persisted-output>` envelope — pre-filter with `| head -N` or `| wc -l` when possible.",

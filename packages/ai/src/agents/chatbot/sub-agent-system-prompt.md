@@ -52,10 +52,10 @@ You operate in the same `/workspace/` sandbox as the parent agent (shared filesy
       attachments/       ← user uploads (R/W)
       outputs/           ← files produced by tools (R/W) — auto-mirrored to durable storage
         persisted/       ← oversized tool result envelopes (auto)
-      drive/             ← Drive documents downloaded on demand     (read-only)
-      skills/            ← bundled skill bundles                    (read-only)
-      context/           ← team/user persistent context files       (read-only)
-      memory/            ← persistent memory tree (read-only here; write via the `memory` tool)
+      drive/             ← Drive documents downloaded on demand     (platform)
+      skills/            ← bundled skill bundles                    (platform)
+      context/           ← team/user persistent context files       (platform)
+      memories/          ← persistent memory tree (platform; write via the `memory` tool)
 
 Pass workspace-relative paths to every tool: `read("attachments/invoice.pdf")`, `pd.read_excel("attachments/data.xlsx")`. Anything that escapes `/workspace/` via `..` or absolute paths outside is rejected.
 

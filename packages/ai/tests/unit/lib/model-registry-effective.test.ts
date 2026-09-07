@@ -64,6 +64,11 @@ const row = (over: Partial<LiveModelState> = {}): LiveModelState => ({
   boundRoles: [],
   source: "sync",
   syncedAt: null,
+  maxInputPricePerMTok: null,
+  maxOutputPricePerMTok: null,
+  minMaxOutput: null,
+  minContextLength: null,
+  requireCache: null,
   ...over,
 });
 

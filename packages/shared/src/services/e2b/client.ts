@@ -37,6 +37,43 @@ export const E2B_ENVIRONMENT =
 
 export const E2B_TEMPLATE = process.env.E2B_TEMPLATE ?? "fretik-sandbox";
 
+/**
+ * The UNIX user EVERY platform-initiated sandbox operation runs as — shell
+ * commands and filesystem calls alike. Passed explicitly at each call site so
+ * the choice is greppable and revertible in one line.
+ *
+ * WHY root. The Jupyter kernel behind `runCode` runs as root and the SDK
+ * exposes no `user` on `createCodeContext`/`runCode`, so the `python` tool is
+ * root whatever we put here — E2B's `code-interpreter` base does that on
+ * purpose (`jupyter.service` carries no `User=`; its config sets
+ * `allow_root = True`). Leaving `commands.run` on the template's `user`
+ * (uid 1000) gave the two code tools DIFFERENT identities over ONE
+ * `/workspace`: `python` wrote `root:root 0644` files that `bash` could not
+ * rewrite, chmod, or feed to `skills/xlsx/scripts/recalc.py`, whose own
+ * writability guard then refused to verify the workbook. Measured over
+ * 2026-06-01→09-07: 79 permission failures across 42 conversations (3.9% of
+ * every conversation that used the sandbox), 3-8 wasted turns each, and 15 of
+ * those 42 shipped a spreadsheet whose formulas were never recalculated.
+ *
+ * Aligning UP grants the agent nothing it lacked. It already had root through
+ * `python`, and the unprivileged account has PASSWORDLESS SUDO in the E2B
+ * image anyway (`sudo -n true` succeeds — measured against the live template,
+ * `user` is in group 27(sudo)). There is no privilege boundary here to
+ * preserve; there was only a broken filesystem. Containment is the
+ * per-conversation Firecracker microVM, never shared between conversations or
+ * tenants, plus the egress allowlist — which is enforced OUTSIDE the guest
+ * (`network-policy.ts`, passed to `Sandbox.create`), so no in-guest privilege
+ * reaches it.
+ *
+ * REVERT: flip to `"user"` and redeploy — no template rebuild, because envd
+ * resolves this per request. That is also the switch to throw the day E2B
+ * accepts a `user` on `createCodeContext`: it would put the whole sandbox on
+ * uid 1000, the only arrangement in which the platform-owned workspace dirs
+ * could be enforced with mode bits instead of prose — and that only pays off
+ * once the image's passwordless sudo goes too.
+ */
+export const SANDBOX_USER = "root";
+
 /** Sandbox-wide hard cap. Reset on every reconnect. */
 export const SANDBOX_TIMEOUT_MS = 5 * 60 * 1000;
 

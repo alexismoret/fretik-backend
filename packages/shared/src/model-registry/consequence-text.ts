@@ -52,5 +52,28 @@ export const describeConsequence = (consequence: Consequence): string => {
       return "That was the last vetted member. Routing widens to whatever else the catalogue lists for this model, which is a set nobody vetted — put a host back or expect the breaker to be the only thing between a turn and an unknown upstream.";
     case "returns-on-next-sync":
       return "The host is eligible again. It re-enters the pool on the next sync pass, once the endpoints are re-read — not immediately.";
+    case "providers-dropped-by-limits":
+      return `${consequence.dropped.length.toString()} host(s) left the pool immediately: ${consequence.dropped
+        .map((entry) => `${entry.provider} (${entry.reason})`)
+        .join(
+          ", ",
+        )}. Unlike an exclusion this is a standing RULE, so a host the catalogue adds next week is judged by it too, without anyone doing anything.`;
+    case "wire-max-price-active":
+      return `The cap now also rides on every request as OpenRouter's \`max_price\` (${[
+        consequence.inputPerMTok === null
+          ? undefined
+          : `$${consequence.inputPerMTok.toString()} in`,
+        consequence.outputPerMTok === null
+          ? undefined
+          : `$${consequence.outputPerMTok.toString()} out`,
+      ]
+        .filter((part) => part !== undefined)
+        .join(
+          " / ",
+        )} per MTok). That is what covers the hours BETWEEN syncs, when a host reprices and the stored pool still lists it — and it is a HARD ceiling: a request no host can serve under it fails rather than quietly falling back to an expensive one.`;
+    case "limits-cleared":
+      return "The limits are gone. Hosts they were holding out are not back yet — they return on the next sync pass, when the pool is recomputed without them.";
+    case "cache-unproven-kept":
+      return `${consequence.providers.length.toString()} host(s) stay in the pool with NO cache evidence either way: ${consequence.providers.join(", ")}. That is deliberate — an unobserved host has failed nothing, and dropping it would be self-fulfilling, since a host outside the pool never gets the traffic that would measure it. They are judged once our own telemetry or a bench probe has seen them.`;
   }
 };

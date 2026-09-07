@@ -1,7 +1,7 @@
 import type { CommandResult } from "e2b";
 import { CommandExitError, FileType } from "e2b";
 import { acquireSandbox } from "./acquire-sandbox";
-import { SANDBOX_TIMEOUT_MS } from "./client";
+import { SANDBOX_TIMEOUT_MS, SANDBOX_USER } from "./client";
 import type { SandboxFileEntry } from "./types";
 
 /**
@@ -28,6 +28,19 @@ const WORKSPACE_PREFIX = `${SANDBOX_WORKSPACE}/`;
  */
 const SANDBOX_LIST_DEPTH = 32;
 
+/**
+ * Every operation below pins `user: SANDBOX_USER`, for one reason: the
+ * platform must never be locked out of the workspace it manages. The Jupyter
+ * kernel runs as root and its files land root-owned, so a helper left on the
+ * SDK's default would be the uid-1000 half of the very split this constant
+ * exists to end — `createWorkspaceDirs` goes through `execSandboxCommand`, so
+ * `/workspace/outputs` is root-owned, and a `removeSandboxFile` on uid 1000
+ * could no longer unlink from it. Reads are pinned for the same reason: a
+ * kernel-written file with a restrictive mode would otherwise be unreadable to
+ * us. Passing it explicitly also sidesteps the SDK's version-dependent default
+ * (`if (user == undefined && envdVersion < 0.4.0) user = "user"`).
+ */
+
 const toAbsolutePath = (path: string): string => {
   if (path.startsWith("/")) return path;
   return `${SANDBOX_WORKSPACE}/${path}`;
@@ -52,7 +65,9 @@ export const writeSandboxFile = async (
   // SDK accepts `string | ArrayBuffer | Blob | ReadableStream`. Wrap
   // the view in a Blob so we hand the SDK a stable byte container
   // regardless of the underlying buffer layout.
-  await sbx.files.write(toAbsolutePath(path), new Blob([bytes]));
+  await sbx.files.write(toAbsolutePath(path), new Blob([bytes]), {
+    user: SANDBOX_USER,
+  });
 };
 
 /**
@@ -76,6 +91,7 @@ export const writeSandboxFiles = async (
       // Same reason as `writeSandboxFile`: a Blob is a no-cast byte container.
       data: new Blob([f.bytes]),
     })),
+    { user: SANDBOX_USER },
   );
 };
 
@@ -86,6 +102,7 @@ export const readSandboxFile = async (
   const { sandbox: sbx } = await acquireSandbox(conversationId);
   const content = await sbx.files.read(toAbsolutePath(path), {
     format: "bytes",
+    user: SANDBOX_USER,
   });
   return content;
 };
@@ -98,6 +115,7 @@ export const listSandboxFiles = async (
   const root = prefix ? toAbsolutePath(prefix) : SANDBOX_WORKSPACE;
   const entries = await sbx.files.list(root, {
     depth: SANDBOX_LIST_DEPTH,
+    user: SANDBOX_USER,
   });
   return entries
     .filter((e) => e.type === FileType.FILE)
@@ -113,7 +131,7 @@ export const removeSandboxFile = async (
   path: string,
 ): Promise<void> => {
   const { sandbox: sbx } = await acquireSandbox(conversationId);
-  await sbx.files.remove(toAbsolutePath(path));
+  await sbx.files.remove(toAbsolutePath(path), { user: SANDBOX_USER });
 };
 
 /**
@@ -128,7 +146,7 @@ export const makeSandboxDir = async (
 ): Promise<void> => {
   const { sandbox: sbx } = await acquireSandbox(conversationId);
   try {
-    await sbx.files.makeDir(toAbsolutePath(path));
+    await sbx.files.makeDir(toAbsolutePath(path), { user: SANDBOX_USER });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     if (!/exists/i.test(message)) {
@@ -153,7 +171,9 @@ export const sandboxFileExists = async (
 ): Promise<boolean> => {
   const { sandbox: sbx } = await acquireSandbox(conversationId);
   try {
-    return await sbx.files.exists(toAbsolutePath(path));
+    return await sbx.files.exists(toAbsolutePath(path), {
+      user: SANDBOX_USER,
+    });
   } catch {
     return false;
   }
@@ -194,6 +214,7 @@ export const execSandboxCommand = async (
   try {
     result = await sbx.commands.run(command, {
       cwd: options.cwd ?? SANDBOX_WORKSPACE,
+      user: SANDBOX_USER,
       // The SDK default is 60 s. Callers here extract multi-MB tarballs
       // (bundled skills, the memory tree), which can outrun it.
       timeoutMs: SANDBOX_TIMEOUT_MS,

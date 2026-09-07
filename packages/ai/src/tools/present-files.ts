@@ -88,7 +88,7 @@ export const createPresentFilesTool = () =>
       "Call this AFTER you have generated a file in the conversation sandbox — typically under `outputs/` via `python` following a bundled skill's playbook. Writing a file to the sandbox is not enough: it does not show anything to the user. `presentFiles` is what surfaces the deliverable.",
       "",
       "Inputs:",
-      '- paths (required): list of workspace-relative or absolute paths under `/workspace/` (e.g. ["outputs/monthly-report.xlsx", "outputs/chart.png"]). Max 10. Paths under `skills/`, `drive/`, `context/`, `memory/` are REJECTED — those trees are read-only.',
+      '- paths (required): list of workspace-relative or absolute paths under `/workspace/` (e.g. ["outputs/monthly-report.xlsx", "outputs/chart.png"]). Max 10. Paths under `skills/`, `drive/`, `context/`, `memories/` are REJECTED.',
       "- message (optional): short one-line caption shown above document cards. Do NOT pass a message when the list contains only images — the image renders inline and speaks for itself; a redundant caption reads as noise.",
       "",
       "Output shape: { files: [{ path, filename, mimeType, size }], message?, errors? }. The frontend builds the download URL from `${AI_URI}/chatbot-files/conversation/{conversationId}/files/{path}/download` and picks the rendering mode from `mimeType`: image/* → inline preview, everything else → document card.",
@@ -101,7 +101,7 @@ export const createPresentFilesTool = () =>
         .min(1)
         .max(10)
         .describe(
-          "Workspace-relative or absolute paths under `/workspace/`. Max 10. Paths under skills/, drive/, context/, or memory/ are rejected.",
+          "Workspace-relative or absolute paths under `/workspace/`. Max 10. Paths under skills/, drive/, context/, or memories/ are rejected.",
         ),
       message: z
         .string()
@@ -165,7 +165,7 @@ export const createPresentFilesTool = () =>
             error: {
               path: requested,
               code: TOOL_ERROR_CODES.READ_ONLY_PATH,
-              message: `${head}/ is a read-only tree — only files you generated yourself in attachments/ or outputs/ can be presented.`,
+              message: `${head}/ is platform-owned — only files you generated yourself in attachments/ or outputs/ can be presented.`,
             },
           };
         }

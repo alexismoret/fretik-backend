@@ -70,6 +70,11 @@ const toLiveState = (row: ModelLiveStateRow): LiveModelState => ({
   boundRoles: row.boundRoles,
   source: row.source,
   syncedAt: row.syncedAt,
+  maxInputPricePerMTok: row.maxInputPricePerMTok,
+  maxOutputPricePerMTok: row.maxOutputPricePerMTok,
+  minMaxOutput: row.minMaxOutput,
+  minContextLength: row.minContextLength,
+  requireCache: row.requireCache,
 });
 
 /**

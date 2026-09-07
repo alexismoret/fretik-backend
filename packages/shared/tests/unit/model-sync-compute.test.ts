@@ -321,6 +321,220 @@ describe("buildAllowedPool", () => {
     ]);
   });
 
+  /**
+   * The operator's own ceilings. Nothing could remove a single expensive HOST
+   * before these: `PROMOTION_PRICE_CAPS` judges the pool median and gates the
+   * whole model, so a host priced six times its siblings stayed in and merely
+   * dragged the average.
+   */
+  describe("operator limits", () => {
+    const priced = [
+      endpoint({
+        provider: "cheap",
+        pricing: { inputPerMTok: 0.05, outputPerMTok: 0.2 },
+      }),
+      endpoint({
+        provider: "dear",
+        pricing: { inputPerMTok: 0.6, outputPerMTok: 0.3 },
+      }),
+      endpoint({
+        provider: "verbose",
+        pricing: { inputPerMTok: 0.05, outputPerMTok: 2 },
+      }),
+    ];
+
+    test("the input cap removes hosts above it and says so as a cap", () => {
+      const pool = buildAllowedPool({
+        poolWidened: false,
+        quarantined: [],
+        endpoints: priced,
+        requireTools: true,
+        maxInputPricePerMTok: 0.1,
+      });
+      expect(pool.endpoints.map((e) => e.provider)).toEqual([
+        "cheap",
+        "verbose",
+      ]);
+      expect(pool.excluded).toContainEqual({
+        provider: "dear",
+        reason: "operator cap: input $0.6/MTok above $0.1",
+      });
+    });
+
+    test("the two ceilings are independent", () => {
+      const pool = buildAllowedPool({
+        poolWidened: false,
+        quarantined: [],
+        endpoints: priced,
+        requireTools: true,
+        maxOutputPricePerMTok: 1,
+      });
+      expect(pool.endpoints.map((e) => e.provider)).toEqual(["cheap", "dear"]);
+    });
+
+    test("a cap exactly on the price keeps the host", () => {
+      const pool = buildAllowedPool({
+        poolWidened: false,
+        quarantined: [],
+        endpoints: priced,
+        requireTools: true,
+        maxInputPricePerMTok: 0.6,
+      });
+      expect(pool.endpoints).toHaveLength(3);
+    });
+
+    test("a quarantine still outranks a cap — the reason has to be the actionable one", () => {
+      const pool = buildAllowedPool({
+        poolWidened: false,
+        quarantined: ["dear"],
+        endpoints: priced,
+        requireTools: true,
+        maxInputPricePerMTok: 0.1,
+      });
+      expect(pool.excluded).toContainEqual({
+        provider: "dear",
+        reason: "quarantined by the breaker",
+      });
+    });
+
+    test("`requireCache` drops a proven absence and KEEPS an unobserved host", () => {
+      const pool = buildAllowedPool({
+        poolWidened: false,
+        quarantined: [],
+        endpoints: [
+          endpoint({
+            provider: "caches",
+            measuredCacheReadRatio: 0.7,
+            measuredCacheSamples: 100,
+          }),
+          endpoint({
+            provider: "uncached",
+            measuredCacheReadRatio: 0.01,
+            measuredCacheSamples: 100,
+          }),
+          // Nobody has looked at this one. Dropping it would be
+          // self-fulfilling: a host outside the pool never gets the traffic
+          // that would measure it.
+          endpoint({ provider: "unobserved" }),
+        ],
+        requireTools: true,
+        requirements: { requireCache: true },
+      });
+      expect(pool.endpoints.map((e) => e.provider)).toEqual([
+        "caches",
+        "unobserved",
+      ]);
+      expect(pool.excluded).toContainEqual({
+        provider: "uncached",
+        reason: "job floor: no cache (measured 0.01)",
+      });
+    });
+
+    test("`requireCache` off changes nothing, whatever the evidence says", () => {
+      const pool = buildAllowedPool({
+        poolWidened: false,
+        quarantined: [],
+        endpoints: [
+          endpoint({
+            provider: "uncached",
+            measuredCacheReadRatio: 0,
+            measuredCacheSamples: 100,
+          }),
+        ],
+        requireTools: true,
+      });
+      expect(pool.endpoints).toHaveLength(1);
+    });
+
+    // The shape this filter was built for, taken from the live registry on
+    // 2026-09-07: sixteen of `deepseek-v4-flash`'s seventeen in-pool hosts
+    // advertised at least 384 000 output tokens and one advertised 32 768, so
+    // `computeEffectiveContext` reported the model capable of 32 768 — a
+    // twelvefold understatement decided by one host. The role floor is what
+    // removes it; the declared figure then rises on its own.
+    test("a job floor removes the ONE host that was capping the model", () => {
+      const pool = buildAllowedPool({
+        poolWidened: false,
+        quarantined: [],
+        endpoints: [
+          endpoint({ provider: "venice", maxCompletionTokens: 32_768 }),
+          endpoint({ provider: "fireworks", maxCompletionTokens: 943_718 }),
+          endpoint({ provider: "parasail", maxCompletionTokens: 384_000 }),
+        ],
+        requireTools: true,
+        requirements: { minMaxOutput: 48_000 },
+      });
+      expect(pool.endpoints.map((e) => e.provider)).toEqual([
+        "fireworks",
+        "parasail",
+      ]);
+      expect(pool.excluded).toContainEqual({
+        provider: "venice",
+        reason: "job floor: output cap 32768 below 48000",
+      });
+      expect(computeEffectiveContext(pool.endpoints).maxOutput).toBe(384_000);
+    });
+
+    // A host that reports nothing has not declared itself unable. The gateway
+    // reports `null` for this on every endpoint we have looked at, so reading
+    // silence as failure would empty the pool of every gateway-served model.
+    test("a host that reports no output cap is never dropped by the floor", () => {
+      const pool = buildAllowedPool({
+        poolWidened: false,
+        quarantined: [],
+        endpoints: [endpoint({ provider: "vertex" })],
+        requireTools: true,
+        requirements: { minMaxOutput: 48_000 },
+      });
+      expect(pool.endpoints.map((e) => e.provider)).toEqual(["vertex"]);
+    });
+
+    // The one rule here allowed to find nothing acceptable. Every other filter
+    // removes a host for being unfit or unwanted, and an empty pool under those
+    // is a model that genuinely has nowhere to run. A capability floor is a
+    // standing rule about hosts that do not exist yet, so a catalogue that
+    // re-caps overnight must not be able to take a role's model down at 00:30.
+    test("a floor no host clears STANDS DOWN rather than emptying the pool", () => {
+      const pool = buildAllowedPool({
+        poolWidened: false,
+        quarantined: [],
+        endpoints: [
+          endpoint({ provider: "venice", maxCompletionTokens: 32_768 }),
+          endpoint({ provider: "novita", maxCompletionTokens: 16_384 }),
+        ],
+        requireTools: true,
+        requirements: { minMaxOutput: 64_000 },
+      });
+      expect(pool.endpoints.map((e) => e.provider)).toEqual([
+        "venice",
+        "novita",
+      ]);
+      expect(pool.requirementsYielded).toBe(true);
+      expect(pool.excluded).not.toContainEqual(
+        expect.objectContaining({ provider: "venice" }),
+      );
+    });
+
+    // Yielding is for floors and nothing else. A pool emptied by a quarantine
+    // stays empty and reports the quarantine, or the breaker would be undone by
+    // a rule that had no part in it.
+    test("standing down does not resurrect a host another rule removed", () => {
+      const pool = buildAllowedPool({
+        poolWidened: false,
+        quarantined: ["venice"],
+        endpoints: [endpoint({ provider: "venice", maxCompletionTokens: 100 })],
+        requireTools: true,
+        requirements: { minMaxOutput: 64_000 },
+      });
+      expect(pool.endpoints).toHaveLength(0);
+      expect(pool.requirementsYielded).toBeUndefined();
+      expect(pool.excluded).toContainEqual({
+        provider: "venice",
+        reason: "quarantined by the breaker",
+      });
+    });
+  });
+
   test("`ignore` excludes, and `only` is checked first", () => {
     const pool = buildAllowedPool({
       declaredPool: { ignore: ["vertex"] },

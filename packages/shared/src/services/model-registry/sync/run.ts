@@ -16,9 +16,7 @@ import {
 import { modelKeyForId } from "../../../model-registry/keys";
 import {
   DEFAULT_CANDIDATE_POLICY,
-  type ModelPolicy,
   PROMOTION_PRICE_CAPS,
-  PUBLISHED_POLICY,
   computeHealthScore,
   evaluatePolicy,
   healthFromScore,
@@ -30,7 +28,6 @@ import type {
   EndpointStat,
   LiveModelState,
   PolicyReport,
-  ProviderPool,
   QuarantineEntry,
   TransportId,
 } from "../../../model-registry/types";
@@ -56,9 +53,9 @@ import {
   deriveDynamicProfile,
   detectPriceJump,
   mergeEndpointStats,
-  poolJudgments,
   unionEndpointStats,
 } from "./compute";
+import { recomputeRowPool } from "./recompute";
 import { createCatalogueSources, sourceForTransport } from "./sources";
 import {
   fetchArtificialAnalysis,
@@ -90,6 +87,31 @@ import { type ProbeVerdict, probeZeroDataRetention } from "./sources/zdr-probe";
  *    day-zero endpoints are measurably unstable, so discovery is automatic and
  *    publication is a person's decision.
  */
+
+/**
+ * The columns this pass may write — everything on the row EXCEPT the operator
+ * limits.
+ *
+ * A type rather than a convention, because the failure it prevents is silent
+ * and slow: the sync rewrites nearly every column every night, so a limit that
+ * found its way into this object would erase a person's setting once a day and
+ * nothing would report it. Excluding them here means adding one is a compile
+ * error at the exact line that would have caused it.
+ *
+ * The general form of the rule is on `LiveModelState`: operator settings are
+ * columns precisely so that they can be exempted like this, where a field in
+ * one of the wholesale-rewritten jsonb columns could not be.
+ */
+type SyncWritableColumns = Partial<
+  Omit<
+    NewModelLiveStateRow,
+    | "maxInputPricePerMTok"
+    | "maxOutputPricePerMTok"
+    | "minMaxOutput"
+    | "minContextLength"
+    | "requireCache"
+  >
+>;
 
 /** The invariants of a published row, enforced at the write rather than in a test. */
 const MIN_EFFECTIVE_CONTEXT_TOKENS = 32_000;
@@ -232,6 +254,15 @@ export interface ModelSyncStats {
   endpointsCarriedForward: number;
   /** Policy rules that could not be evaluated for want of data. */
   rulesSkippedNotMeasured: number;
+  /**
+   * Rows whose capability floors removed every host and therefore stood down.
+   *
+   * Counted rather than merely allowed, because a floor that yields is the one
+   * case where the pool does NOT mean what the roles bound to it require: those
+   * models are running on hosts that cannot do the whole job. Zero is the
+   * expected reading; a number here is a list of models to look at.
+   */
+  poolRequirementsYielded: number;
 }
 
 export interface ModelSyncResult {
@@ -289,6 +320,7 @@ const emptyStats = (): ModelSyncStats => ({
   endpointsWithThroughput: 0,
   endpointsCarriedForward: 0,
   rulesSkippedNotMeasured: 0,
+  poolRequirementsYielded: 0,
 });
 
 const message = (err: unknown): string =>
@@ -612,39 +644,27 @@ const syncOneModel = async (
     .filter((entry) => entry.transport === transport)
     .map((entry) => entry.provider);
 
-  const policy: ModelPolicy =
-    row.status === "published" ? PUBLISHED_POLICY : DEFAULT_CANDIDATE_POLICY;
   const declaredPool = row.providerPool[transport];
   /**
-   * The JUDGMENTS the pool carries, and nothing else.
+   * Pool, vetted list, usable context and price — all five outputs from one
+   * pure function, shared with the operator write path.
    *
-   * `only` is deliberately withheld. Feeding yesterday's `only` back into the
-   * filter that recomputes it made the pool a RATCHET: a host absent from the
-   * list was excluded as "not in the declared pool", so the recomputed list
-   * could only ever shrink. Three consequences, all measured 2026-09-02:
+   * `recomputeRowPool` also owns the reason `only` is withheld from its own
+   * recomputation (it made the pool a ratchet, and a quarantine permanent with
+   * it) and the reason the vetted list carries `sort` but never `order`. It is
+   * shared rather than merely tidy: an operator setting a price ceiling
+   * recomputes the same five things, and two copies of this arithmetic is how
+   * the pool someone is shown stops matching the pool the next pass writes.
    *
-   * - A hand-curated list from the deleted profiles froze four pools. The worst,
-   *   `deepseek-v4-flash`, routed to 4 hosts while 22 passed the policy.
-   * - A host a catalogue adds later could never be reached, whatever it offered.
-   * - **A quarantine became permanent.** Excluded for its seven days, the host
-   *   dropped out of `only`, and the ratchet kept it out for ever — a review
-   *   trigger turned into a life sentence, silently.
-   *
-   * `ignore` still comes through, because that one IS a judgment: a measured
-   * defect on a serving stack, carried across passes on purpose. What replaces
-   * the ratchet as a guard is measurement — the nightly integrity sweep probes
-   * any upstream in a pool that has never been probed, so a host entering a
-   * pool is measured rather than merely admitted.
+   * `quarantinedNames` is passed explicitly because this pass knows more than
+   * the row does — `reprobeExpiredQuarantines` above may have just released a
+   * host, and recomputing off the stored array would keep it out one more day.
    */
-  const judgments = poolJudgments(row.profileKey, declaredPool);
-  const pool = buildAllowedPool({
-    declaredPool: judgments,
-    poolWidened: row.poolWidened,
-    quarantined: quarantinedNames,
+  const { policy, pool, vettedPool, context, pricing } = recomputeRowPool({
+    row,
     endpoints: merged,
-    requireTools: policy.toolCallingRequired,
-    requireZdr: policy.zdrRequired,
-    quantizationFloor: policy.quantizationFloor,
+    transport,
+    quarantined: quarantinedNames,
   });
 
   // A pool member no endpoint answers to is how a pool quietly changes meaning:
@@ -716,6 +736,9 @@ const syncOneModel = async (
   ctx.stats.rulesSkippedNotMeasured += report.rules.filter(
     (rule) => rule.skipped === "not-measured",
   ).length;
+  if (pool.requirementsYielded === true) {
+    ctx.stats.poolRequirementsYielded += 1;
+  }
   ctx.stats.endpointsWritten += pool.endpoints.length;
   if (sourcePublishes.percentiles) {
     ctx.stats.endpointsExpectingPercentiles += pool.endpoints.length;
@@ -732,9 +755,6 @@ const syncOneModel = async (
       `${row.profileKey}: incident count failed: ${message(err)}`,
     );
   }
-
-  const context = computeEffectiveContext(pool.endpoints);
-  const pricing = computePoolPricing(pool.endpoints);
 
   // ---- Write guards. Each keeps the PREVIOUS value for its own field. ----
   const rejected = async (field: string, value: string): Promise<void> => {
@@ -814,53 +834,6 @@ const syncOneModel = async (
   const streak =
     report.hardFailures > 0 ? (ctx.streaks.get(row.profileKey) ?? 0) + 1 : 0;
 
-  // The vetted pool, written back so it reaches the WIRE rather than only the
-  // statistics.
-  //
-  // It was computed every night and used for context, pricing and health while
-  // routing kept whatever the profile declared by hand — which for 20 of 22
-  // published models was nothing at all. An open pool with no ordering means
-  // any host may serve any turn, which is how `gpt-oss-20b` was answered by
-  // CoreWeave on 2026-08-29, three weeks after CoreWeave was found injecting
-  // zero-width characters into another model's output. Nothing had excluded
-  // it, and nothing had preferred anyone else.
-  //
-  // Two properties make an explicit list safe to write unattended. It is
-  // DERIVED, so a host that appears tomorrow joins on the next pass instead of
-  // waiting for a release — a hand-written list would need a PR per provider.
-  // And it is ORDERED by throughput, which is what lets a slow host stay in as
-  // a genuine last resort: routing only reaches it once everything faster is
-  // unavailable, and serving slowly then beats refusing.
-  //
-  // `order` is deliberately not set alongside it: OpenRouter treats an explicit
-  // order as the whole preference and silently ignores `sort`.
-  //
-  // `ignore` is CARRIED FORWARD rather than recomputed, because it is a
-  // judgment and `only` is a measurement. Dropping it each pass — which this
-  // did until 2026-08-30 — left the exclusion standing only as an accident of
-  // the computed list: the host was absent from `only` because the `ignore`
-  // had been applied on the pass that then erased it. Self-perpetuating while
-  // nothing moves, and gone the moment `poolWidened` fires, since a widened
-  // pool skips `only` and there would be no `ignore` left to catch the host
-  // the exclusion existed for.
-  //
-  // `only` is now genuinely recomputed — see `judgments` above for why feeding
-  // it back to its own filter made this list shrink-only — so the union with
-  // `measured-exclusions` matters: two DeepSeek hosts were being held out by
-  // that very bug and by nothing else.
-  const vettedPool: ProviderPool | undefined =
-    pool.endpoints.length > 0
-      ? {
-          only: [
-            ...new Set(pool.endpoints.map((endpoint) => endpoint.provider)),
-          ],
-          sort: "throughput",
-          ...(judgments.ignore === undefined
-            ? {}
-            : { ignore: judgments.ignore }),
-        }
-      : undefined;
-
   // Ids for transports this model is now known to be served by.
   //
   // PURELY ADDITIVE, and that is the whole design: an id already on the row is
@@ -885,7 +858,7 @@ const syncOneModel = async (
     gainedIds[transportId] = id;
   }
 
-  const update: Partial<NewModelLiveStateRow> = {
+  const update: SyncWritableColumns = {
     // Written only when it MOVED — see `alignedTransport`. Everything else in
     // this update was already computed against the new transport, so the row
     // lands coherent: its endpoints, pool and pricing all describe where it now
@@ -1371,6 +1344,7 @@ export const runModelSync = async (
             endpointsWithThroughput: stats.endpointsWithThroughput,
             endpointsCarriedForward: stats.endpointsCarriedForward,
             rulesSkippedNotMeasured: stats.rulesSkippedNotMeasured,
+            poolRequirementsYielded: stats.poolRequirementsYielded,
           },
         })
         .where(eq(modelSyncRuns.id, run.id));
@@ -1504,6 +1478,7 @@ export const runModelSync = async (
         endpointsWithThroughput: stats.endpointsWithThroughput,
         endpointsExpectingPercentiles: stats.endpointsExpectingPercentiles,
         rulesSkippedNotMeasured: stats.rulesSkippedNotMeasured,
+        poolRequirementsYielded: stats.poolRequirementsYielded,
       },
     });
   }

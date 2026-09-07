@@ -146,6 +146,34 @@ export const applyLiveState = (
     ]),
   ];
 
+  // The operator's price ceilings, sent as OpenRouter's own `max_price` (USD
+  // per MTok, the same unit the row stores).
+  //
+  // This is the half of a cap that covers the hours BETWEEN syncs. The pool
+  // filter can only judge hosts a catalogue reported last night; a host that
+  // reprices at noon, or one that appears mid-afternoon, would otherwise serve
+  // at whatever it likes until the small hours. Sending the ceiling makes the
+  // rule hold on every request without waiting for a pass.
+  //
+  // It is a HARD ceiling upstream: a request no endpoint can serve under it
+  // fails rather than falling back to an expensive one. That is the intent —
+  // "do not spend more than this" is not a preference — and it is safe to send
+  // unattended because `setModelLimits` refuses to store a cap that empties the
+  // pool it can see, so the only way to hit the wall is a repricing, which is
+  // exactly the event worth failing on.
+  const maxPrice = {
+    ...(request.live?.maxInputPricePerMTok === null ||
+    request.live?.maxInputPricePerMTok === undefined
+      ? {}
+      : { prompt: request.live.maxInputPricePerMTok }),
+    ...(request.live?.maxOutputPricePerMTok === null ||
+    request.live?.maxOutputPricePerMTok === undefined
+      ? {}
+      : { completion: request.live.maxOutputPricePerMTok }),
+  };
+  const priceCeiling =
+    Object.keys(maxPrice).length > 0 ? { max_price: maxPrice } : {};
+
   // A bare role sends no provider block at all. It still has to honour a
   // quarantine and still benefits from the vetted pool, so one is built for it
   // — but only when there is something to say.
@@ -154,6 +182,7 @@ export const applyLiveState = (
       ...(ignore.length > 0 ? { ignore } : {}),
       ...(allowed && allowed.length > 0 ? { only: allowed } : {}),
       ...(sort === undefined ? {} : { sort }),
+      ...priceCeiling,
     };
     return Object.keys(bare).length > 0 ? { provider: bare } : undefined;
   }
@@ -164,6 +193,7 @@ export const applyLiveState = (
       ...provider,
       ...(ignore.length > 0 ? { ignore } : {}),
       ...(sort === undefined ? {} : { sort }),
+      ...priceCeiling,
       // An empty result is sent as `undefined`, never as `[]`: an empty
       // allow-list means "nothing may serve this", which is an outage.
       only: allowed && allowed.length > 0 ? allowed : undefined,

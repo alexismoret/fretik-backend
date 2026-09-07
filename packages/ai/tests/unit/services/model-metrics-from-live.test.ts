@@ -64,6 +64,11 @@ const row = (over: Partial<LiveModelState> = {}): LiveModelState => ({
   source: "sync",
   releasedAt: null,
   syncedAt: new Date(),
+  maxInputPricePerMTok: null,
+  maxOutputPricePerMTok: null,
+  minMaxOutput: null,
+  minContextLength: null,
+  requireCache: null,
   ...over,
 });
 

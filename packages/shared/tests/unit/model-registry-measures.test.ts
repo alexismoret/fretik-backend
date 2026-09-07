@@ -1,7 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import {
+  CACHE_EVIDENCE_MIN_SAMPLES,
+  PROVIDER_STATS_MIN_VOLUME_TOKENS,
   blendedPricePerMTok,
+  cacheEvidenceFor,
   cacheShape,
+  poolCacheVerdict,
 } from "../../src/model-registry/measures";
 
 /**
@@ -119,5 +123,125 @@ describe("blendedPricePerMTok reads the same shape", () => {
     });
     const without = blendedPricePerMTok({ inputPerMTok: 2, outputPerMTok: 8 });
     expect(withRead).toBeCloseTo(without, 10);
+  });
+});
+
+/**
+ * Whether a host CACHES, as opposed to publishing a price for caching.
+ *
+ * The rule this replaced read `supports_implicit_caching` and treated a missing
+ * flag as a `false`. Measured 2026-09-07, that flag is `false` on all 15
+ * endpoints of `deepseek-v4-flash` and all 22 of `gpt-oss-120b`, while
+ * OpenRouter's own per-endpoint statistics put StreamLake at 82 % and DeepInfra
+ * at 55 % on the first of those — so the fleet-wide verdict "no endpoint
+ * reports implicit caching" was wrong about nearly every model at once.
+ *
+ * The figures below are that measurement, kept as data.
+ */
+describe("cacheEvidenceFor", () => {
+  const SAMPLES = CACHE_EVIDENCE_MIN_SAMPLES;
+  const VOLUME = PROVIDER_STATS_MIN_VOLUME_TOKENS;
+
+  test("nothing observed is `unknown`, never `no-cache`", () => {
+    expect(cacheEvidenceFor({})).toEqual({
+      verdict: "unknown",
+      source: "none",
+    });
+  });
+
+  test("a price list is not evidence — neither rate nor flag decides", () => {
+    // Both halves of what the old rule read, at once. StreamLake quotes a
+    // cache-read discount AND reports `supports_implicit_caching: false`; if
+    // either could settle this, the two would contradict each other.
+    expect(
+      cacheEvidenceFor({
+        // `pricing` and `supportsImplicitCaching` are not inputs at all —
+        // passing an endpoint-shaped object still yields `unknown`.
+        volumeTokens: VOLUME,
+      }).verdict,
+    ).toBe("unknown");
+  });
+
+  test("our own traffic outranks everything, and needs enough of it", () => {
+    expect(
+      cacheEvidenceFor({
+        measuredCacheReadRatio: 0.62,
+        measuredCacheSamples: SAMPLES,
+        probeWarmCostRatio: 0.95,
+        cacheHitRate: 0.02,
+        volumeTokens: VOLUME,
+      }),
+    ).toEqual({ verdict: "caches", source: "measured", value: 0.62 });
+
+    // Under the sample floor it is an anecdote, so the next source answers.
+    expect(
+      cacheEvidenceFor({
+        measuredCacheReadRatio: 0.62,
+        measuredCacheSamples: SAMPLES - 1,
+        cacheHitRate: 0.82,
+        volumeTokens: VOLUME,
+      }).source,
+    ).toBe("openrouter");
+  });
+
+  test("a measured absence is a verdict, not a shrug", () => {
+    expect(
+      cacheEvidenceFor({
+        measuredCacheReadRatio: 0.01,
+        measuredCacheSamples: SAMPLES,
+      }),
+    ).toEqual({ verdict: "no-cache", source: "measured", value: 0.01 });
+  });
+
+  test("a bench probe answers for a host our traffic has never reached", () => {
+    expect(
+      cacheEvidenceFor({ probeWarmCostRatio: 0.18, cacheHitRate: 0 }),
+    ).toEqual({ verdict: "caches", source: "probe", value: 0.18 });
+    expect(cacheEvidenceFor({ probeWarmCostRatio: 1 }).verdict).toBe(
+      "no-cache",
+    );
+  });
+
+  test("OpenRouter's rate is read only above the volume floor", () => {
+    // StreamLake and Mancer on deepseek-v4-flash, 2026-09-07.
+    expect(
+      cacheEvidenceFor({ cacheHitRate: 0.826, volumeTokens: 197_832_675_986 })
+        .verdict,
+    ).toBe("caches");
+    expect(
+      cacheEvidenceFor({ cacheHitRate: 0, volumeTokens: 1_700_000_000 })
+        .verdict,
+    ).toBe("no-cache");
+    // Azure serves the same model at 1 GTok — above the floor. A host at a
+    // hundredth of that is a figure about a handful of other people's calls.
+    expect(
+      cacheEvidenceFor({ cacheHitRate: 0.05, volumeTokens: VOLUME / 100 })
+        .verdict,
+    ).toBe("unknown");
+  });
+});
+
+describe("poolCacheVerdict", () => {
+  test("one caching member settles it for the pool", () => {
+    expect(
+      poolCacheVerdict([
+        { cacheHitRate: 0, volumeTokens: 5e8 },
+        { measuredCacheReadRatio: 0.7, measuredCacheSamples: 100 },
+      ]),
+    ).toBe("caches");
+  });
+
+  test("a pool nobody has observed is unknown, not uncached", () => {
+    expect(poolCacheVerdict([{}, {}])).toBe("unknown");
+  });
+
+  test("evidence that is all negative is a negative verdict", () => {
+    expect(
+      poolCacheVerdict([
+        { cacheHitRate: 0, volumeTokens: 5e8 },
+        { probeWarmCostRatio: 0.99 },
+        {},
+      ]),
+    ).toBe("no-cache");
   });
 });

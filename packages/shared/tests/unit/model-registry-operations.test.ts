@@ -45,6 +45,11 @@ const fakeState = (
   boundRoles: [],
   source: "sync",
   syncedAt: new Date("2026-08-01"),
+  maxInputPricePerMTok: null,
+  maxOutputPricePerMTok: null,
+  minMaxOutput: null,
+  minContextLength: null,
+  requireCache: null,
   ...overrides,
 });
 
@@ -132,6 +137,28 @@ await mockModule("../../src/services/model-registry/breaker", {
   releaseProvider: () => Promise.resolve(releaseVerdict),
 });
 
+let limitsResult: unknown = {
+  outcome: {
+    kind: "updated",
+    limits: {
+      maxInputPricePerMTok: 1,
+      maxOutputPricePerMTok: null,
+      requireCache: false,
+    },
+    dropped: [
+      { provider: "dear", reason: "operator cap: input $9/MTok above $1" },
+    ],
+    remaining: 2,
+    pricing: { inputPerMTok: 0.3, outputPerMTok: 1.2 },
+  },
+  unprovenCache: [],
+  awaitsSync: false,
+};
+
+await mockModule("../../src/services/model-registry/set-model-limits", {
+  setModelLimits: () => Promise.resolve(limitsResult),
+});
+
 const {
   acknowledgeModelAlert,
   acknowledgeModelAlerts,
@@ -144,6 +171,7 @@ const {
   releaseUpstream,
   retireModelOperation,
   setModelEnabled,
+  setModelLimitsOperation,
   setModelsEnabled,
   switchModelTransport,
 } = await import("../../src/services/model-registry/operations");
@@ -653,6 +681,113 @@ describe("adding from the catalogue", () => {
       action: "add",
       profileKey: null,
       outcome: "not-in-catalogue",
+    });
+  });
+});
+
+describe("setModelLimitsOperation", () => {
+  test("names the hosts it dropped AND the ceiling now riding on the wire", async () => {
+    const result = await setModelLimitsOperation({
+      profileKey: "acme-m1",
+      limits: {
+        maxInputPricePerMTok: 1,
+        maxOutputPricePerMTok: null,
+        minMaxOutput: null,
+        minContextLength: null,
+        requireCache: false,
+      },
+      actor: { kind: "operator", userId: "u1" },
+      now: NOW,
+    });
+
+    // The second one is the half an operator cannot read off the row: a price
+    // cap is also a HARD ceiling on every request, so it can make a call fail
+    // rather than serve expensively.
+    expect(codes(result.consequences)).toEqual([
+      "providers-dropped-by-limits",
+      "wire-max-price-active",
+    ]);
+    expect(actions[0]).toMatchObject({
+      userId: "u1",
+      action: "set-limits",
+      profileKey: "acme-m1",
+      outcome: "updated",
+    });
+  });
+
+  test("a switch that drops nobody says WHY it dropped nobody", async () => {
+    limitsResult = {
+      outcome: {
+        kind: "updated",
+        limits: {
+          maxInputPricePerMTok: null,
+          maxOutputPricePerMTok: null,
+          requireCache: true,
+        },
+        dropped: [],
+        remaining: 3,
+        pricing: { inputPerMTok: 0.5, outputPerMTok: 2 },
+      },
+      unprovenCache: ["cheap", "middling", "dear"],
+      awaitsSync: false,
+    };
+
+    const result = await setModelLimitsOperation({
+      profileKey: "acme-m1",
+      limits: {
+        maxInputPricePerMTok: null,
+        maxOutputPricePerMTok: null,
+        minMaxOutput: null,
+        minContextLength: null,
+        requireCache: true,
+      },
+      actor: { kind: "operator", userId: "u1" },
+      now: NOW,
+    });
+
+    // Without this the operator reads "nothing changed" and concludes the
+    // switch is broken, when it is doing exactly what it promises: an
+    // unobserved host has failed nothing.
+    expect(codes(result.consequences)).toEqual(["cache-unproven-kept"]);
+  });
+
+  test("a refusal is journalled and writes nothing", async () => {
+    limitsResult = {
+      outcome: {
+        kind: "cap-empties-pool",
+        limits: {
+          maxInputPricePerMTok: 0.01,
+          maxOutputPricePerMTok: null,
+          requireCache: false,
+        },
+        cheapestInputPerMTok: 0.1,
+        cheapestOutputPerMTok: 0.4,
+        wouldDrop: [],
+      },
+      unprovenCache: [],
+      awaitsSync: false,
+    };
+
+    const result = await setModelLimitsOperation({
+      profileKey: "acme-m1",
+      limits: {
+        maxInputPricePerMTok: 0.01,
+        maxOutputPricePerMTok: null,
+        minMaxOutput: null,
+        minContextLength: null,
+        requireCache: false,
+      },
+      actor: { kind: "operator", userId: "u1" },
+      now: NOW,
+    });
+
+    expect(result.outcome.kind).toBe("cap-empties-pool");
+    expect(result.consequences).toEqual([]);
+    // Nothing was written, so there is no `after` to report.
+    expect(result.after).toBeUndefined();
+    expect(actions[0]).toMatchObject({
+      action: "set-limits",
+      outcome: "cap-empties-pool",
     });
   });
 });

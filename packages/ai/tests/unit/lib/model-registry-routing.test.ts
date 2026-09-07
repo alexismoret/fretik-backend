@@ -277,3 +277,71 @@ describe("an exclusion stored on the row", () => {
     expect(result?.provider?.ignore).toEqual(["together"]);
   });
 });
+
+/**
+ * The operator's price ceilings, on the request itself.
+ *
+ * The stored pool can only judge hosts a catalogue reported last night. This is
+ * the half that covers the hours in between — a host that reprices at noon, or
+ * one that appears mid-afternoon, is refused without waiting for 00:30.
+ */
+describe("operator price ceilings on the wire", () => {
+  test("no cap sends no `max_price` at all", () => {
+    // An absent ceiling and a ceiling of zero are opposite instructions.
+    const result = applyLiveState(
+      { provider: { require_parameters: true } },
+      request(live()),
+      NOW,
+    );
+    expect(result?.provider?.max_price).toBeUndefined();
+  });
+
+  test("each cap travels on its own key, in USD per MTok", () => {
+    const result = applyLiveState(
+      { provider: { require_parameters: true } },
+      request(live({ maxInputPricePerMTok: 2, maxOutputPricePerMTok: 8 })),
+      NOW,
+    );
+    expect(result?.provider?.max_price).toEqual({ prompt: 2, completion: 8 });
+  });
+
+  test("one cap set and one cleared sends only the one that is set", () => {
+    const result = applyLiveState(
+      { provider: { require_parameters: true } },
+      request(live({ maxInputPricePerMTok: 2, maxOutputPricePerMTok: null })),
+      NOW,
+    );
+    expect(result?.provider?.max_price).toEqual({ prompt: 2 });
+  });
+
+  test("a bare role carries the ceiling too", () => {
+    // The bare path builds its own provider block. A cap that only rode on
+    // roles with an envelope would be off for exactly the calls nobody looks
+    // at — the same shape of gap that left the vetted pool off the wire.
+    const result = applyLiveState(
+      undefined,
+      request(live({ maxInputPricePerMTok: 2, maxOutputPricePerMTok: null })),
+      NOW,
+    );
+    expect(result?.provider?.max_price).toEqual({ prompt: 2 });
+  });
+
+  test("the ceiling rides ALONGSIDE the pool and the sort, not instead of them", () => {
+    const result = applyLiveState(
+      undefined,
+      request(
+        live({
+          providerPool: {
+            openrouter: { only: ["fireworks"], sort: "throughput" },
+          },
+          maxInputPricePerMTok: 2,
+          maxOutputPricePerMTok: null,
+        }),
+      ),
+      NOW,
+    );
+    expect(result?.provider?.only).toEqual(["fireworks"]);
+    expect(result?.provider?.sort).toBe("throughput");
+    expect(result?.provider?.max_price).toEqual({ prompt: 2 });
+  });
+});

@@ -304,6 +304,11 @@ const namedRow = (
   syncedAt: new Date("2026-08-30T03:00:00.000Z"),
   boundRoles: [],
   source: "sync",
+  maxInputPricePerMTok: null,
+  maxOutputPricePerMTok: null,
+  minMaxOutput: null,
+  minContextLength: null,
+  requireCache: null,
 });
 
 describe("display names", () => {

@@ -47,6 +47,11 @@ const state = (overrides: Partial<LiveModelState> = {}): LiveModelState => ({
   boundRoles: [],
   source: "sync",
   syncedAt: new Date("2026-08-01"),
+  maxInputPricePerMTok: null,
+  maxOutputPricePerMTok: null,
+  minMaxOutput: null,
+  minContextLength: null,
+  requireCache: null,
   ...overrides,
 });
 

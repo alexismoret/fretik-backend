@@ -101,6 +101,168 @@ export const cacheShape = (pricing: PricingSnapshot): CacheShape => {
 };
 
 /**
+ * Whether an upstream ACTUALLY serves prompt cache reads — as opposed to
+ * publishing a price for them.
+ *
+ * `cacheShape` above reads the PRICE LIST, which is a promise. This reads
+ * OBSERVATIONS, and the two disagree often enough to matter: measured
+ * 2026-09-07, `supports_implicit_caching` is `false` on all 15 endpoints of
+ * `deepseek-v4-flash` and all 22 of `gpt-oss-120b`, while OpenRouter's own
+ * per-endpoint statistics put StreamLake at 82 % and DeepInfra at 55 % on the
+ * first of those. A flag a vendor forgot to set is not a measurement, and the
+ * policy rule that read it as one reported "no endpoint reports implicit
+ * caching" across a fleet that caches perfectly well.
+ *
+ * Three sources, strictly ranked, because they are not equally trustworthy:
+ *
+ *  1. **`measured`** — our own traffic, from `model_telemetry_rollups`. It
+ *     describes the service WE get on the route WE take, and no other source
+ *     can. Requires enough calls to mean something.
+ *  2. **`probe`** — a bench run: one cold call then two warm ones over a
+ *     byte-identical prefix, judged on the BILLED cost. Independent of anyone
+ *     else's traffic, which is what makes it the answer for a host we have
+ *     never routed to.
+ *  3. **`openrouter`** — the platform-wide hit rate for that endpoint. It mixes
+ *     the host's capability with the shape of everybody else's traffic (agent
+ *     sessions with stable prefixes score high; one-shots score low) and with
+ *     OpenRouter's own routing, so it is admitted only above a volume floor and
+ *     only when nothing better exists.
+ *
+ * Absent everywhere is `unknown`, NEVER `no-cache`: "we have not looked" and
+ * "we looked and there is none" may not share a value, and only the second one
+ * is allowed to remove a host from a pool.
+ */
+export type CacheVerdict = "caches" | "no-cache" | "unknown";
+
+/** Which observation decided a `CacheVerdict`. Rendered to the operator. */
+export type CacheEvidenceSource = "measured" | "probe" | "openrouter" | "none";
+
+export interface CacheEvidence {
+  verdict: CacheVerdict;
+  source: CacheEvidenceSource;
+  /** The deciding figure, on the scale its source uses. */
+  value?: number;
+}
+
+/** The observation fields `cacheEvidenceFor` reads off an endpoint. */
+export interface CacheEvidenceInput {
+  measuredCacheReadRatio?: number;
+  measuredCacheSamples?: number;
+  probeWarmCostRatio?: number;
+  cacheHitRate?: number;
+  volumeTokens?: number;
+}
+
+/**
+ * Share of prompt tokens read from cache below which an upstream is not
+ * caching for us in any useful way.
+ *
+ * Deliberately low. The question is "does this host hold a prefix at all",
+ * not "how good is it": a genuine cache under our own traffic sits far above
+ * this (75 % fleet-wide, `CACHE_HIT_RATE` above), and everything in the 0-20 %
+ * band is a host that either never holds a prefix or drops it between turns,
+ * which costs the same.
+ */
+export const CACHE_EVIDENCE_MIN_RATE = 0.2;
+
+/** Calls needed before our own ratio is a measurement rather than an anecdote. */
+export const CACHE_EVIDENCE_MIN_SAMPLES = 50;
+
+/**
+ * Warm-to-cold cost ratio below which a bench probe proves a cache.
+ *
+ * A real cache read costs a tenth to a quarter of an uncached token, so a
+ * warm call over a byte-identical prefix lands far under this. 0.8 leaves room
+ * for the completion side of the bill, which is not cached and does not shrink.
+ */
+export const CACHE_EVIDENCE_MAX_WARM_COST_RATIO = 0.8;
+
+/**
+ * Tokens an endpoint must have served, platform-wide, before OpenRouter's hit
+ * rate is worth reading.
+ *
+ * Measured 2026-09-07 on `deepseek-v4-flash`: the fifteen endpoints span 1 GTok
+ * (Azure, 29 %) to 198 GTok (StreamLake, 83 %), and the low-volume tail is
+ * where the figure is dominated by whichever handful of callers happened to use
+ * it. 1e8 keeps the hosts with a week of real traffic behind them and answers
+ * `unknown` for the rest — which is the honest answer for a model nobody else
+ * uses much.
+ */
+export const PROVIDER_STATS_MIN_VOLUME_TOKENS = 1e8;
+
+export const cacheEvidenceFor = (
+  endpoint: CacheEvidenceInput,
+): CacheEvidence => {
+  const {
+    measuredCacheReadRatio,
+    measuredCacheSamples,
+    probeWarmCostRatio,
+    cacheHitRate,
+    volumeTokens,
+  } = endpoint;
+
+  if (
+    isFiniteNumber(measuredCacheReadRatio) &&
+    isFiniteNumber(measuredCacheSamples) &&
+    measuredCacheSamples >= CACHE_EVIDENCE_MIN_SAMPLES
+  ) {
+    return {
+      verdict:
+        measuredCacheReadRatio >= CACHE_EVIDENCE_MIN_RATE
+          ? "caches"
+          : "no-cache",
+      source: "measured",
+      value: measuredCacheReadRatio,
+    };
+  }
+
+  if (isFiniteNumber(probeWarmCostRatio)) {
+    return {
+      verdict:
+        probeWarmCostRatio <= CACHE_EVIDENCE_MAX_WARM_COST_RATIO
+          ? "caches"
+          : "no-cache",
+      source: "probe",
+      value: probeWarmCostRatio,
+    };
+  }
+
+  if (
+    isFiniteNumber(cacheHitRate) &&
+    isFiniteNumber(volumeTokens) &&
+    volumeTokens >= PROVIDER_STATS_MIN_VOLUME_TOKENS
+  ) {
+    return {
+      verdict: cacheHitRate >= CACHE_EVIDENCE_MIN_RATE ? "caches" : "no-cache",
+      source: "openrouter",
+      value: cacheHitRate,
+    };
+  }
+
+  return { verdict: "unknown", source: "none" };
+};
+
+/**
+ * What a POOL can be said to do about caching.
+ *
+ * `caches` as soon as one member does, because routing lands on one host per
+ * request and a single caching member is a cache the model can get. `unknown`
+ * only when no member carries any evidence at all — one measured host settles
+ * the question for the rule that reads this, whatever the others are.
+ */
+export const poolCacheVerdict = (
+  endpoints: readonly CacheEvidenceInput[],
+): CacheVerdict => {
+  let sawEvidence = false;
+  for (const endpoint of endpoints) {
+    const { verdict } = cacheEvidenceFor(endpoint);
+    if (verdict === "caches") return "caches";
+    if (verdict === "no-cache") sawEvidence = true;
+  }
+  return sawEvidence ? "no-cache" : "unknown";
+};
+
+/**
  * What one million tokens of an average turn costs, cache included.
  *
  * Every prompt token is one of two things: a HIT, billed at the cache-read rate,

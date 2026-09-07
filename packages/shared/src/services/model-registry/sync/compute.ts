@@ -2,6 +2,7 @@ import type { MergedCatalogueEntry } from "../../../model-registry/catalogue";
 import { withMeasuredExclusions } from "../../../model-registry/measured-exclusions";
 import {
   blendedPricePerMTok,
+  cacheEvidenceFor,
   isFiniteNumber,
   MARKET_BLENDED_QUARTILES,
   median,
@@ -10,6 +11,7 @@ import {
   normalizeProviderList,
   normalizeProviderName,
 } from "../../../model-registry/provider-names";
+import type { PoolRequirements } from "../../../model-registry/requirements";
 import type {
   DynamicProfile,
   EndpointStat,
@@ -319,11 +321,40 @@ export interface AllowedPoolInput {
   /** Drop endpoints that DECLARE no zero-retention agreement. */
   requireZdr?: boolean;
   quantizationFloor?: readonly string[];
+  /**
+   * Operator ceilings, USD per MTok, per ENDPOINT — see `LiveModelState`.
+   * Absent means no ceiling. Unlike every other filter here these are set by a
+   * person and never derived, which is why they are named for the operator in
+   * the exclusion reason: "your cap did this" is a different instruction from
+   * "the engine measured this".
+   */
+  maxInputPricePerMTok?: number;
+  maxOutputPricePerMTok?: number;
+  /**
+   * What a host must be able to DO to serve this model — output cap, context,
+   * a proven cache. Derived from the row's `bound_roles` by `requirementsFor`,
+   * not typed per model: a capability floor is a property of the work.
+   *
+   * These YIELD rather than empty a pool. Every other rule here removes a host
+   * for something that makes it unfit or unwanted, and a pool emptied by one of
+   * those is a model that genuinely has nowhere to run. A capability floor is
+   * different: it is a standing rule about future hosts as much as present
+   * ones, and a catalogue that reprices or re-caps overnight could otherwise
+   * take a role's model down at 00:30 with nobody watching. So when the floors
+   * leave nothing standing, they stand down and the caller is told.
+   */
+  requirements?: PoolRequirements;
 }
 
 export interface AllowedPool {
   endpoints: EndpointStat[];
   excluded: { provider: string; reason: string }[];
+  /**
+   * The capability floors removed every host, so they were not applied. The
+   * pool is whatever the other rules left; the model runs on hosts that cannot
+   * do the whole job rather than on none at all, and the sync reports it.
+   */
+  requirementsYielded?: boolean;
 }
 
 /**
@@ -334,6 +365,9 @@ export interface AllowedPool {
  * operator to look at an incident, "not in the declared pool" tells them to
  * edit a pool. Quarantine therefore comes before `only`, which the breaker
  * itself relies on — a widened pool skips `only` but never skips a quarantine.
+ * The operator's own ceilings sit next, above every measured rule, so a host
+ * the operator priced out is reported as priced out rather than as failing
+ * something they did not set.
  *
  * The quantization floor is applied ONLY to endpoints that report a
  * quantization. Missing data never excludes anybody: the gateway reports
@@ -342,8 +376,43 @@ export interface AllowedPool {
  *
  * The context floor is the one RELATIVE rule, so it runs last, over whatever
  * the absolute ones leave — see `POOL_CONTEXT_SPREAD_RATIO`.
+ *
+ * The whole chain runs at most TWICE. The capability floors
+ * (`input.requirements`) are the only rule allowed to leave a model with no
+ * host, and leaving a model with no host is worse than running it on a weak
+ * one, so when they do the chain is replayed without them. See
+ * `AllowedPoolInput.requirements`.
  */
 export const buildAllowedPool = (input: AllowedPoolInput): AllowedPool => {
+  const first = filterPool(input, true);
+  if (first.endpoints.length > 0 || !first.yieldable) {
+    return { endpoints: first.endpoints, excluded: first.excluded };
+  }
+  const relaxed = filterPool(input, false);
+  // If dropping the floors still leaves nothing, the pool was empty for reasons
+  // the floors had no part in — report THAT, with its own reasons, rather than
+  // blaming a rule that changed nothing.
+  if (relaxed.endpoints.length === 0) {
+    return { endpoints: relaxed.endpoints, excluded: relaxed.excluded };
+  }
+  return {
+    endpoints: relaxed.endpoints,
+    excluded: relaxed.excluded,
+    requirementsYielded: true,
+  };
+};
+
+interface FilterPoolResult extends AllowedPool {
+  /** At least one host was removed by a capability floor. */
+  yieldable: boolean;
+}
+
+const filterPool = (
+  input: AllowedPoolInput,
+  applyRequirements: boolean,
+): FilterPoolResult => {
+  const requirements = input.requirements;
+  let yieldable = false;
   const quarantined = new Set(normalizeProviderList(input.quarantined));
   const declaredOnly = input.poolWidened
     ? []
@@ -375,6 +444,83 @@ export const buildAllowedPool = (input: AllowedPoolInput): AllowedPool => {
     if (ignore.has(provider)) {
       excluded.push({ provider, reason: "listed in the declared `ignore`" });
       continue;
+    }
+    // The operator's own ceilings, before any measured rule: a host priced out
+    // was priced out whatever else is true of it, and reporting it under a
+    // quantization floor would send someone to look at the wrong thing. The
+    // `operator cap:` prefix is load-bearing — it is what the admin table reads
+    // to render this as a setting the reader can change rather than a fact.
+    if (
+      input.maxInputPricePerMTok !== undefined &&
+      endpoint.pricing.inputPerMTok > input.maxInputPricePerMTok
+    ) {
+      excluded.push({
+        provider,
+        reason: `operator cap: input $${endpoint.pricing.inputPerMTok.toString()}/MTok above $${input.maxInputPricePerMTok.toString()}`,
+      });
+      continue;
+    }
+    if (
+      input.maxOutputPricePerMTok !== undefined &&
+      endpoint.pricing.outputPerMTok > input.maxOutputPricePerMTok
+    ) {
+      excluded.push({
+        provider,
+        reason: `operator cap: output $${endpoint.pricing.outputPerMTok.toString()}/MTok above $${input.maxOutputPricePerMTok.toString()}`,
+      });
+      continue;
+    }
+    // The capability floors the bound roles imply. The `job floor:` prefix is
+    // load-bearing the same way `operator cap:` is — it is how the admin table
+    // tells "this host cannot do the work" apart from "somebody excluded it".
+    if (applyRequirements && requirements !== undefined) {
+      // A host that reports no cap has not declared itself unable; treating
+      // silence as failure would empty the pool of every gateway-served model,
+      // which reports `null` for this on every endpoint we have looked at.
+      if (
+        requirements.minMaxOutput !== undefined &&
+        endpoint.maxCompletionTokens !== undefined &&
+        endpoint.maxCompletionTokens < requirements.minMaxOutput
+      ) {
+        excluded.push({
+          provider,
+          reason: `job floor: output cap ${endpoint.maxCompletionTokens.toString()} below ${requirements.minMaxOutput.toString()}`,
+        });
+        yieldable = true;
+        continue;
+      }
+      if (
+        requirements.minContextLength !== undefined &&
+        endpoint.contextLength < requirements.minContextLength
+      ) {
+        excluded.push({
+          provider,
+          reason: `job floor: context ${endpoint.contextLength.toString()} below ${requirements.minContextLength.toString()}`,
+        });
+        yieldable = true;
+        continue;
+      }
+      // Only a PROVEN absence of caching excludes. `unknown` passes, for the
+      // same reason `hasZdr === undefined` does below: a host nobody has
+      // observed has not failed anything, and dropping it would shrink the pool
+      // on the strength of missing data — here it would also be
+      // self-fulfilling, since a host removed from the pool never gets the
+      // traffic that would measure it.
+      if (requirements.requireCache === true) {
+        const evidence = cacheEvidenceFor(endpoint);
+        if (evidence.verdict === "no-cache") {
+          excluded.push({
+            provider,
+            reason: `job floor: no cache (${evidence.source} ${
+              evidence.value === undefined
+                ? "verdict"
+                : evidence.value.toFixed(2)
+            })`,
+          });
+          yieldable = true;
+          continue;
+        }
+      }
     }
     if (input.requireTools && !endpoint.supportedParameters.includes("tools")) {
       excluded.push({ provider, reason: "does not advertise `tools`" });
@@ -416,7 +562,7 @@ export const buildAllowedPool = (input: AllowedPoolInput): AllowedPool => {
     return false;
   });
 
-  return { endpoints: kept, excluded };
+  return { endpoints: kept, excluded, yieldable };
 };
 
 /**

@@ -202,6 +202,41 @@ export interface EndpointStat {
   latencyP95Ms?: number;
   /** Source-reported status; `0` is healthy on the Gateway. */
   status?: number;
+
+  // --- Cache OBSERVATIONS. `supportsImplicitCaching` above is a vendor's flag
+  // --- and the `pricing.cacheRead*` fields are a price list; these are what
+  // --- somebody actually measured. See `cacheEvidenceFor` in `measures.ts` for
+  // --- how they are ranked and why the flag is not admitted as evidence.
+
+  /**
+   * Share of prompt tokens served from cache on this endpoint, PLATFORM-WIDE,
+   * as OpenRouter reports it (0-1). Everybody's traffic, not ours, so it mixes
+   * the host's capability with the shape of other people's requests — read it
+   * only above `PROVIDER_STATS_MIN_VOLUME_TOKENS`.
+   */
+  cacheHitRate?: number;
+  /** Cache-weighted price OpenRouter's own callers actually paid, USD per MTok. */
+  effectiveInputPerMTok?: number;
+  effectiveOutputPerMTok?: number;
+  /** Tokens this endpoint served platform-wide in the stats window. The volume `cacheHitRate` is worth reading against. */
+  volumeTokens?: number;
+  /** Requests served in the last 30 minutes, per OpenRouter's per-workload breakdown. */
+  requestCount30m?: number;
+  /**
+   * Share of prompt tokens WE read from cache here over the telemetry window,
+   * from `model_telemetry_rollups`. The best signal there is: it describes the
+   * route we take, and no credential can switch it off.
+   */
+  measuredCacheReadRatio?: number;
+  /** Calls behind `measuredCacheReadRatio` — a ratio over three calls is an anecdote. */
+  measuredCacheSamples?: number;
+  /** Warm-call cost over cold-call cost from the last bench probe. Below 1 means a cache. */
+  probeWarmCostRatio?: number;
+  /** `cached_tokens` share the same probe saw. A hint beside the cost, never the verdict: an upstream may simply omit the field. */
+  probeCacheHitRatio?: number;
+  /** When that probe ran, ISO. Absent = this host has never been probed. */
+  probedAt?: string;
+
   /**
    * When the MEASUREMENT fields above (uptime*, throughput*, latency*) were
    * observed, ISO. Absent = never measured. Same contract as
@@ -405,6 +440,63 @@ export type IncludeProviderOutcome =
   | { kind: "not-excluded"; provider: string; transport: TransportId }
   | { kind: "included"; provider: string; transport: TransportId };
 
+/**
+ * The operator limits on one model, as a settable set.
+ *
+ * All of them travel together because they are recomputed together: each one
+ * filters the same pool, and applying one without re-reading the others would
+ * write a pool that only half the settings agree with.
+ *
+ * The two prices are CEILINGS the operator owns outright — nothing derives
+ * them, because what a model may cost is a business decision about that model.
+ * The last three are OVERRIDES of what the bound roles imply: `null` means
+ * "inherit", which is the normal state, and a value replaces the derived floor
+ * in either direction. See `model-registry/requirements.ts`.
+ */
+export interface ModelLimits {
+  maxInputPricePerMTok: number | null;
+  maxOutputPricePerMTok: number | null;
+  minMaxOutput: number | null;
+  minContextLength: number | null;
+  requireCache: boolean | null;
+}
+
+/** One endpoint a limit would remove, with the rule that removed it. */
+export interface DroppedEndpoint {
+  provider: string;
+  reason: string;
+}
+
+export type SetModelLimitsOutcome =
+  | { kind: "unknown-model" }
+  | { kind: "unchanged"; limits: ModelLimits }
+  /**
+   * Every endpoint fails the proposed limits, so nothing is written.
+   *
+   * A PRE-CONDITION failure rather than a surprise: the operator asked for
+   * something impossible and the row is untouched. The cheapest endpoint's
+   * prices ride along because "no host is under your cap" is unactionable
+   * without the number that would be — and the same refusal has to answer for a
+   * cache switch, where the actionable fact is how many hosts are merely
+   * unobserved rather than proven cacheless.
+   */
+  | {
+      kind: "cap-empties-pool";
+      limits: ModelLimits;
+      cheapestInputPerMTok: number | null;
+      cheapestOutputPerMTok: number | null;
+      wouldDrop: DroppedEndpoint[];
+    }
+  | {
+      kind: "updated";
+      limits: ModelLimits;
+      /** Endpoints the new limits removed from the pool, with their reason. */
+      dropped: DroppedEndpoint[];
+      /** Pool members left. */
+      remaining: number;
+      pricing: PricingSnapshot;
+    };
+
 export type SetEnabledOutcome =
   | { kind: "unknown-model" }
   | {
@@ -573,7 +665,32 @@ export type Consequence =
   | { code: "exclusion-is-durable" }
   /** The last member was excluded: routing widens to whatever is left. */
   | { code: "pool-emptied" }
-  | { code: "returns-on-next-sync" };
+  | { code: "returns-on-next-sync" }
+  /** Hosts a newly-set operator limit removed from the pool, right now. */
+  | { code: "providers-dropped-by-limits"; dropped: DroppedEndpoint[] }
+  /**
+   * A price cap also rides on the request itself, as OpenRouter's `max_price`.
+   *
+   * Worth saying because it is the half that acts BETWEEN syncs: the pool
+   * filter can only judge hosts a catalogue has already reported, and a host
+   * that reprices at noon would otherwise serve at its new price until the
+   * small hours. It is a hard ceiling on the wire — a request no host can serve
+   * under the cap fails rather than falling back to an expensive one.
+   */
+  | {
+      code: "wire-max-price-active";
+      inputPerMTok: number | null;
+      outputPerMTok: number | null;
+    }
+  /** Limits removed: hosts they held out return on the next sync pass. */
+  | { code: "limits-cleared" }
+  /**
+   * `requireCache` is on, and some hosts have no cache evidence either way.
+   * They keep serving on purpose — an unobserved host has failed nothing, and
+   * dropping it would be self-fulfilling, since a host out of the pool never
+   * gets the traffic that would measure it.
+   */
+  | { code: "cache-unproven-kept"; providers: readonly string[] };
 
 /**
  * A model row at the size an operator surface needs it.
@@ -801,4 +918,48 @@ export interface LiveModelState {
    */
   source: ModelStateSource;
   syncedAt: Date | null;
+
+  // --- Operator limits. The ONLY fields on this row a person sets and the sync
+  // --- never touches. They are columns rather than a jsonb corner for exactly
+  // --- that reason: every jsonb column here except `provider_pool` and
+  // --- `quarantined_providers` is rewritten wholesale every night, so a setting
+  // --- smuggled into one would be erased within a day, silently.
+
+  /**
+   * Refuse endpoints charging more than this for input, USD per MTok.
+   *
+   * Distinct from `PROMOTION_PRICE_CAPS`, which judges the pool MEDIAN and
+   * gates `enabled` on the whole model. This one removes individual HOSTS,
+   * which nothing could do before: a host priced six times its siblings stayed
+   * in the pool and merely dragged the median, so the only way to be rid of it
+   * was a hand-written `ignore` that a person had to repeat for every new host
+   * a catalogue added. A cap is a standing rule instead — it applies to hosts
+   * that do not exist yet.
+   *
+   * `null` means no ceiling, which is the default and the common case.
+   */
+  maxInputPricePerMTok: number | null;
+  maxOutputPricePerMTok: number | null;
+  /**
+   * OVERRIDES of the capability floors `requirementsFor` derives from
+   * `boundRoles`. `null` means "inherit", which is the normal state.
+   *
+   * They are overrides rather than settings because a capability floor belongs
+   * to the WORK, not to the model: the chat loop needs room for a long answer
+   * under `max` reasoning whoever serves it. Storing the answer per model would
+   * ask an operator to re-derive by hand what `role-bindings.ts` has always
+   * declared per role — and on a fleet this size, that means never setting it.
+   *
+   * `requireCache` keeps only hosts PROVEN to serve prompt cache reads. A
+   * switch, not a threshold, and that distinction is the whole design: the
+   * per-endpoint hit rate OpenRouter publishes measures other people's traffic,
+   * so a number compared against it would exclude hosts for being unpopular
+   * rather than for being uncached — on a model nobody else uses, every host
+   * would look bad. `cacheEvidenceFor` answers `caches | no-cache | unknown`
+   * instead, and only `no-cache` removes anything: a host we have never
+   * observed keeps serving until it has served enough to be judged.
+   */
+  minMaxOutput: number | null;
+  minContextLength: number | null;
+  requireCache: boolean | null;
 }

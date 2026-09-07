@@ -393,6 +393,11 @@ describe("signalsFromLive", () => {
     boundRoles: [],
     source: "sync",
     syncedAt: null,
+    maxInputPricePerMTok: null,
+    maxOutputPricePerMTok: null,
+    minMaxOutput: null,
+    minContextLength: null,
+    requireCache: null,
     ...over,
   });
 

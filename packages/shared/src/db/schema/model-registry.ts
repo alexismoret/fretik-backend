@@ -205,6 +205,51 @@ export const modelLiveState = pgTable("model_live_state", {
     .notNull(),
   syncedAt: timestamp("synced_at", { withTimezone: true }),
 
+  /**
+   * Per-endpoint price ceilings, USD per 1,000,000 tokens. `null` = no ceiling.
+   *
+   * The ONLY fields on this table an operator owns and the sync never writes,
+   * which is why they are columns: every jsonb column here except
+   * `provider_pool` and `quarantined_providers` is rewritten wholesale each
+   * night, so a setting kept in one would be erased within a day and nothing
+   * would say so.
+   *
+   * They remove HOSTS, where `PROMOTION_PRICE_CAPS` judges the pool median and
+   * gates the whole model. Before them, a host priced six times its siblings
+   * stayed in the pool and merely dragged the median: the only remedy was a
+   * hand-written `ignore`, repeated for every new host a catalogue added. A cap
+   * is a standing rule and applies to hosts that do not exist yet.
+   */
+  maxInputPricePerMTok: real("max_input_price_per_mtok"),
+  maxOutputPricePerMTok: real("max_output_price_per_mtok"),
+
+  /**
+   * OVERRIDES of what `requirementsFor` derives from `bound_roles`. `null` is
+   * the normal state and means "inherit"; a value is a decision that REPLACES
+   * the derived one, in either direction.
+   *
+   * They are overrides rather than the setting itself because a capability
+   * floor is a property of the WORK, not of the model: the chat loop needs room
+   * for a long answer under `max` reasoning whatever model serves it, and a
+   * memory write needs twelve thousand tokens whatever model serves it. Storing
+   * the answer per model would ask an operator to re-derive, row by row,
+   * something `role-bindings.ts` has always declared per role. See
+   * `model-registry/requirements.ts` for the floors and the budgets they come
+   * from.
+   *
+   * `requireCache` keeps only hosts PROVEN to serve prompt-cache reads — a
+   * switch rather than a threshold, deliberately. The per-endpoint hit rate
+   * OpenRouter publishes is measured over everybody else's traffic, so a number
+   * compared against it would exclude hosts for being unpopular rather than for
+   * being uncached: on a model nobody else uses much, every host reads low.
+   * `cacheEvidenceFor` answers `caches | no-cache | unknown` from our own
+   * telemetry first, a bench probe second, that platform figure third and only
+   * above a volume floor; only `no-cache` removes anything.
+   */
+  minMaxOutput: integer("min_max_output"),
+  minContextLength: integer("min_context_length"),
+  requireCache: boolean("require_cache"),
+
   createdAt: timestamp("created_at", { withTimezone: true })
     .defaultNow()
     .notNull(),

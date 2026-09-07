@@ -11,6 +11,10 @@ import { mergeCatalogues } from "@fretik/shared/model-registry/catalogue";
 import { modelKeyForId } from "@fretik/shared/model-registry/keys";
 import { PROMOTION_PRICE_CAPS } from "@fretik/shared/model-registry/policy";
 import {
+  requirementsFor,
+  requirementSources,
+} from "@fretik/shared/model-registry/requirements";
+import {
   DEFAULT_QUARANTINE_KIND,
   DISABLED_REASONS,
   IMPLEMENTED_TRANSPORTS,
@@ -61,6 +65,7 @@ import {
   quarantineUpstream,
   releaseUpstream,
   retireModelOperation,
+  setModelLimitsOperation,
   setModelsEnabled,
   summarise,
   switchModelTransport,
@@ -70,6 +75,7 @@ import {
   scorecardEndpoints,
   scorecardPool,
 } from "@fretik/shared/services/model-registry/scorecard";
+import { forecastModelLimits } from "@fretik/shared/services/model-registry/set-model-limits";
 import { createCatalogueSources } from "@fretik/shared/services/model-registry/sync/sources/index";
 import { createRoute, OpenAPIHono } from "@hono/zod-openapi";
 import { desc, eq } from "drizzle-orm";
@@ -151,6 +157,53 @@ const pricingSchema = z.object({
   outputPerMTok: z.number(),
   cacheReadPerMTok: z.number().optional(),
   cacheWritePerMTok: z.number().optional(),
+});
+
+/**
+ * The operator limits, as a settable set.
+ *
+ * `null` is the cleared state and has to travel as `null` rather than as an
+ * absent key: a form that clears a ceiling sends the same shape as one that
+ * sets it, and an omitted field would be indistinguishable from "leave this
+ * alone" — which is a different operation.
+ */
+const modelLimitsSchema = z.object({
+  maxInputPricePerMTok: z.number().min(0).nullable(),
+  maxOutputPricePerMTok: z.number().min(0).nullable(),
+  // `null` is the CLEARED state on all three and is a real value, not an
+  // absence: it means "inherit what the bound roles require", which is the
+  // normal state of a row. A number or a boolean REPLACES the derived floor.
+  minMaxOutput: z.number().int().min(0).nullable(),
+  minContextLength: z.number().int().min(0).nullable(),
+  requireCache: z.boolean().nullable(),
+});
+
+/**
+ * What the row's pool is actually held to, and which role put it there.
+ *
+ * Read-only, and separate from `limits` on purpose: `limits` is what a person
+ * typed, this is what the engine concluded. Without it the form cannot say
+ * "48 000, because this model serves `chat`" and the operator is left to guess
+ * whether an empty field means "no floor" or "a floor you cannot see".
+ */
+const poolRequirementsSchema = z.object({
+  minMaxOutput: z.number().optional(),
+  minContextLength: z.number().optional(),
+  requireCache: z.boolean().optional(),
+});
+
+const effectiveRequirementsSchema = z.object({
+  effective: poolRequirementsSchema,
+  /** The roles contributing a floor, so the UI can name them. */
+  sources: z.array(
+    z.object({ role: z.string(), requirements: poolRequirementsSchema }),
+  ),
+});
+
+/** One endpoint a limit removed, carrying the rule that removed it. */
+const droppedEndpointSchema = z.object({
+  provider: z.string(),
+  reason: z.string(),
 });
 
 const providerPoolSchema = z.object({
@@ -538,6 +591,16 @@ const showModelRoute = createRoute({
             dynamicProfile: dynamicProfileSchema.nullable(),
             incidents: incidentSummarySchema,
             incidentWindowHours: z.number(),
+            /** Operator-owned ceilings. The only settings on the row a person writes. */
+            limits: modelLimitsSchema,
+            requirements: effectiveRequirementsSchema,
+            /**
+             * Why each endpoint outside the pool is outside it, as the last
+             * recompute put it. Already stored on the policy report; surfaced
+             * here because the endpoint table has to say "your cap did this"
+             * next to the host, and it cannot derive that from the pool alone.
+             */
+            excluded: z.array(droppedEndpointSchema),
           }),
         },
       },
@@ -575,6 +638,22 @@ modelAdminRoutes.openapi(showModelRoute, async (c) => {
         now,
       }),
       incidentWindowHours: DETAIL_INCIDENT_WINDOW_HOURS,
+      limits: {
+        maxInputPricePerMTok: state.maxInputPricePerMTok,
+        maxOutputPricePerMTok: state.maxOutputPricePerMTok,
+        minMaxOutput: state.minMaxOutput,
+        minContextLength: state.minContextLength,
+        requireCache: state.requireCache,
+      },
+      requirements: {
+        effective: requirementsFor(state.boundRoles, {
+          minMaxOutput: state.minMaxOutput,
+          minContextLength: state.minContextLength,
+          requireCache: state.requireCache,
+        }),
+        sources: requirementSources(state.boundRoles),
+      },
+      excluded: state.policyReport?.excludedProviders ?? [],
     },
     200,
   );
@@ -1174,9 +1253,23 @@ const consequenceSchema = z.discriminatedUnion("code", [
   z.object({ code: z.literal("exclusion-is-durable") }),
   z.object({ code: z.literal("pool-emptied") }),
   z.object({ code: z.literal("returns-on-next-sync") }),
+  z.object({
+    code: z.literal("providers-dropped-by-limits"),
+    dropped: z.array(droppedEndpointSchema),
+  }),
+  z.object({
+    code: z.literal("wire-max-price-active"),
+    inputPerMTok: z.number().nullable(),
+    outputPerMTok: z.number().nullable(),
+  }),
+  z.object({ code: z.literal("limits-cleared") }),
+  z.object({
+    code: z.literal("cache-unproven-kept"),
+    providers: z.array(z.string()),
+  }),
 ]);
 
-/** The two consequences whose payload the wire shape does not take verbatim. */
+/** The consequences whose payload the wire shape does not take verbatim. */
 const toWireConsequence = (
   consequence: Consequence,
 ): z.infer<typeof consequenceSchema> => {
@@ -1188,6 +1281,9 @@ const toWireConsequence = (
   }
   if (consequence.code === "roles-bypass-enabled") {
     return { code: consequence.code, roles: [...consequence.roles] };
+  }
+  if (consequence.code === "cache-unproven-kept") {
+    return { code: consequence.code, providers: [...consequence.providers] };
   }
   return consequence;
 };
@@ -2029,6 +2125,129 @@ modelAdminRoutes.openapi(includeRoute, async (c) => {
   };
   if (result.outcome.kind === "included") return c.json(wire, 200);
   return c.json(wire, 409);
+});
+
+// ---------------------------------------------------------------------------
+// Operator limits
+// ---------------------------------------------------------------------------
+
+const setLimitsOutcomeSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("unknown-model") }),
+  z.object({ kind: z.literal("unchanged"), limits: modelLimitsSchema }),
+  z.object({
+    kind: z.literal("cap-empties-pool"),
+    limits: modelLimitsSchema,
+    cheapestInputPerMTok: z.number().nullable(),
+    cheapestOutputPerMTok: z.number().nullable(),
+    wouldDrop: z.array(droppedEndpointSchema),
+  }),
+  z.object({
+    kind: z.literal("updated"),
+    limits: modelLimitsSchema,
+    dropped: z.array(droppedEndpointSchema),
+    remaining: z.number(),
+    pricing: pricingSchema,
+  }),
+]);
+
+const limitsPreflightRoute = createRoute({
+  method: "post",
+  path: "/models/{profileKey}/limits/preflight",
+  summary: "What these limits would drop, without setting them (super-admin)",
+  tags: ["Model admin"],
+  request: {
+    params: profileKeyParam,
+    body: {
+      content: { "application/json": { schema: modelLimitsSchema } },
+      required: true,
+    },
+  },
+  responses: {
+    200: {
+      content: {
+        "application/json": {
+          schema: z.object({
+            outcome: setLimitsOutcomeSchema,
+            /** Pool members kept only for want of evidence — see below. */
+            unprovenCache: z.array(z.string()),
+            current: modelLimitsSchema,
+          }),
+        },
+      },
+      description:
+        "A forecast. It runs the same recompute the write does and stores nothing, so what it lists is exactly what saving would do.",
+    },
+    ...responseForbiddenSchema,
+    ...responseNotFoundSchema,
+    ...responseInternalErrorSchema,
+  },
+});
+
+modelAdminRoutes.openapi(limitsPreflightRoute, async (c) => {
+  const { profileKey } = c.req.valid("param");
+  const state = await readLiveStateRow(profileKey);
+  if (state === undefined) {
+    return throwHttpError(404, notFound(`No model row for "${profileKey}".`));
+  }
+  const { outcome, unprovenCache } = await forecastModelLimits(
+    profileKey,
+    c.req.valid("json"),
+  );
+  return c.json(
+    {
+      outcome,
+      unprovenCache,
+      current: {
+        maxInputPricePerMTok: state.maxInputPricePerMTok,
+        maxOutputPricePerMTok: state.maxOutputPricePerMTok,
+        minMaxOutput: state.minMaxOutput,
+        minContextLength: state.minContextLength,
+        requireCache: state.requireCache,
+      },
+    },
+    200,
+  );
+});
+
+const setLimitsRoute = createRoute({
+  method: "post",
+  path: "/models/{profileKey}/limits",
+  summary:
+    "Cap what a model's hosts may charge, or demand a proven cache (super-admin)",
+  tags: ["Model admin"],
+  request: {
+    params: profileKeyParam,
+    body: {
+      content: { "application/json": { schema: modelLimitsSchema } },
+      required: true,
+    },
+  },
+  responses: writeResponses(
+    setLimitsOutcomeSchema,
+    "Set, and the pool re-derived on the spot rather than at the next sync — a ceiling is set because a host is costing money now. A cap that would leave no host at all is refused with the cheapest price on offer, so the answer says which number would work.",
+  ),
+});
+
+modelAdminRoutes.openapi(setLimitsRoute, async (c) => {
+  const { profileKey } = c.req.valid("param");
+  const state = await readLiveStateRow(profileKey);
+  if (state === undefined) {
+    return throwHttpError(404, notFound(`No model row for "${profileKey}".`));
+  }
+  const result = await setModelLimitsOperation({
+    profileKey,
+    limits: c.req.valid("json"),
+    actor: { kind: "operator", userId: c.get("user").id },
+  });
+  const wire = {
+    ...result,
+    consequences: result.consequences.map(toWireConsequence),
+  };
+  // `unchanged` is a 200: nothing was written, but nothing was refused either
+  // — the operator asked for the state that already holds, and telling them
+  // that failed would send them looking for a fault that is not there.
+  if (result.outcome.kind === "cap-empties-pool") return c.json(wire, 409);
+  return c.json(wire, 200);
 });
 
 // ---------------------------------------------------------------------------

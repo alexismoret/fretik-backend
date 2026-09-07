@@ -387,6 +387,7 @@ describe("syncVerdict", () => {
     endpointsWithThroughput: 145,
     endpointsCarriedForward: 0,
     rulesSkippedNotMeasured: 0,
+    poolRequirementsYielded: 0,
     ...over,
   });
 

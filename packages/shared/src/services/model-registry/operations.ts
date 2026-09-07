@@ -14,6 +14,7 @@ import type {
   IncidentKind,
   IncludeProviderOutcome,
   LiveModelState,
+  ModelLimits,
   ModelStateSummary,
   ModelWriteActor,
   PromoteOutcome,
@@ -21,6 +22,7 @@ import type {
   ReleaseOutcome,
   RetireOutcome,
   SetEnabledOutcome,
+  SetModelLimitsOutcome,
   SetTransportOutcome,
   TransportId,
 } from "../../model-registry/types";
@@ -43,6 +45,7 @@ import {
   releaseProvider,
 } from "./breaker";
 import { readLiveStateRow } from "./live";
+import { setModelLimits } from "./set-model-limits";
 
 /**
  * One operator action, from decision to record.
@@ -497,6 +500,72 @@ export const releaseUpstream = async (
       if (outcome.lastResortLifted) {
         consequences.push({ code: "last-resort-lifted" });
       }
+      return { outcome, consequences, wrote: true };
+    },
+  });
+
+/**
+ * Set the operator limits on a model, and re-derive its pool immediately.
+ *
+ * The consequences here are all things the operator cannot read off the row
+ * afterwards. Which hosts left is the obvious one; the other two are the ones
+ * that get people: a price cap ALSO becomes a hard ceiling on the wire, so it
+ * can make a request fail rather than serve expensively, and `requireCache`
+ * keeps every host it has no evidence about, so a switch that drops nothing is
+ * doing its job rather than being broken.
+ */
+export const setModelLimitsOperation = async (
+  input: OperationInput & { profileKey: string; limits: ModelLimits },
+): Promise<OperationResult<SetModelLimitsOutcome>> =>
+  perform<SetModelLimitsOutcome>({
+    actor: input.actor,
+    now: input.now ?? new Date(),
+    action: "set-limits",
+    profileKey: input.profileKey,
+    extraPayload: { limits: input.limits },
+    run: async () => {
+      const { outcome, unprovenCache, awaitsSync } = await setModelLimits(
+        input.profileKey,
+        input.limits,
+        input.now ?? new Date(),
+      );
+      if (outcome.kind !== "updated") {
+        return { outcome, consequences: [], wrote: false };
+      }
+      const consequences: Consequence[] = [];
+      if (outcome.dropped.length > 0) {
+        consequences.push({
+          code: "providers-dropped-by-limits",
+          dropped: outcome.dropped,
+        });
+      }
+      if (
+        outcome.limits.maxInputPricePerMTok !== null ||
+        outcome.limits.maxOutputPricePerMTok !== null
+      ) {
+        consequences.push({
+          code: "wire-max-price-active",
+          inputPerMTok: outcome.limits.maxInputPricePerMTok,
+          outputPerMTok: outcome.limits.maxOutputPricePerMTok,
+        });
+      }
+      if (
+        outcome.limits.maxInputPricePerMTok === null &&
+        outcome.limits.maxOutputPricePerMTok === null &&
+        !outcome.limits.requireCache
+      ) {
+        consequences.push({ code: "limits-cleared" });
+      }
+      if (unprovenCache.length > 0) {
+        consequences.push({
+          code: "cache-unproven-kept",
+          providers: unprovenCache,
+        });
+      }
+      // Loosening freed nobody: whatever the old limit was holding out is no
+      // longer in the stored measurements — the last sync narrowed them to the
+      // pool — so it comes back when the catalogue is next re-read, not now.
+      if (awaitsSync) consequences.push({ code: "returns-on-next-sync" });
       return { outcome, consequences, wrote: true };
     },
   });

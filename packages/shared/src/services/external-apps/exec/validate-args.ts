@@ -42,6 +42,12 @@ const buildBase = (spec: ParamSpec): z.ZodTypeAny => {
       return z.boolean();
     case "email":
       return z.email();
+    case "date":
+      // Calendar day, no time and no zone — `2026-05-06`. Distinct from
+      // `datetime` because APIs that want a day reject an instant and
+      // vice-versa: declaring the wrong one makes the param impossible
+      // to satisfy (Shiptify's `created_date_from` was exactly that).
+      return z.iso.date();
     case "datetime":
       return z.iso.datetime({ offset: true });
     case "enum": {
@@ -66,7 +72,13 @@ const buildBase = (spec: ParamSpec): z.ZodTypeAny => {
       for (const [key, fieldSpec] of Object.entries(spec.fields)) {
         shape[key] = buildParamZod(fieldSpec);
       }
-      return z.object(shape);
+      // Loose, unlike the top-level object below. A nested `fields` map is
+      // documentation of a shape the provider itself validates — our
+      // manifests cannot express `oneOf`, so a declared subset is normal
+      // and stripping the rest deletes payload the agent meant to send.
+      // `attachments: [{fileName, documentType, base64Data}]` reached
+      // Shiptify as `[{}]` under the previous strip-by-default.
+      return z.object(shape).loose();
     }
     default: {
       // Exhaustiveness guard — every `ParamSpec.type` is handled above.

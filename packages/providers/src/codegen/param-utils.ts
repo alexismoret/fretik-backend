@@ -28,6 +28,7 @@ export const pyType = (spec: ParamSpec): string => {
   switch (spec.type) {
     case "string":
     case "email":
+    case "date":
     case "datetime":
       return "str";
     case "integer":

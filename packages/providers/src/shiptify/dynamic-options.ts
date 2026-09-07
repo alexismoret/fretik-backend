@@ -157,7 +157,12 @@ export const shiptifyDynamicOptions: ProviderDynamicOptions = {
 
     // The "every account" entry is always first and always valid — a token
     // that accepts no narrowing at all still connects through it.
-    const role = commonRole(accounts);
+    //
+    // The role is read off the USABLE accounts, not everything the token
+    // can see: a carrier token that merely *sees* its shippers reports a
+    // mixed set, `commonRole` gives up, the connection falls back to the
+    // `shipper` default and the agent then 403s on every carrier action.
+    const role = commonRole(usable);
     const options: DynamicOptionsResult["options"] = [
       {
         value: "",

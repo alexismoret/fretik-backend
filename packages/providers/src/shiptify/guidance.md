@@ -18,6 +18,8 @@ On a carrier connection, `galaxy_list_shipments` spans every account the key rea
 
 **`galaxy_list_shipments` returns OLDEST first — always pass `created_date_from`.** Unfiltered it answers with the account's first-ever shipments, which can be years old, and paging never reaches today. `list_shipments` is the opposite (newest first), so this is a carrier-only trap.
 
+Every date filter on both actions is a calendar day, `YYYY-MM-DD` — `date.isoformat()`, never a datetime.
+
 ```python
 from datetime import date, timedelta
 recent = shiptify.galaxy_list_shipments(
@@ -47,7 +49,11 @@ Resolve the lookups first, then submit one plan. Four things Shiptify rejects, o
 - **A `contents[i]` line without a valid `type_id`** — resolve it from `list_content_types()`. `quantity` is required too.
 - **Per-line volume** — there is no `m3` / `volume_m3` on a cargo line, and unknown fields are dropped silently. Aggregate to the top-level `total_volume`.
 
+The `*_draft` variants take the same `shipment_mode_id` (required) but no `reply_before` — a draft is allowed to leave the stops and the deadline open, not the mode.
+
 Inline addresses (`address_1, city, country, zipcode, date_from`) work, but validation is strict — prefer `create_location` + `address_id`.
+
+ADR/IMO/IATA cargo goes in `dangerous_goods_description`, an object (`{"un_code": "UN1263", "class_of_danger": "3", "packing_group": "III"}`), alongside `is_dangerous: true` on the same line.
 
 ```python
 modes = shiptify.list_shipment_modes()

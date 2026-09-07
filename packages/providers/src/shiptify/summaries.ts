@@ -395,13 +395,13 @@ const galaxyCancelTrackingPoint: SummaryMapper = (args) => ({
   fields: compact(optionalField("comment", args.comment)),
 });
 
-const galaxyUpdateTrackingPointLocation: SummaryMapper = () => ({
-  // The address_id and tracking_point_id are raw ids — drop them from
-  // the card per the no-id rule. The verb-only title is enough for the
-  // user to spot the intent and approve / reject.
+const galaxyUpdateTrackingPointLocation: SummaryMapper = (args) => ({
+  // `address_id` is a raw id and stays off the card per the no-id rule,
+  // but the tracking point `code` is the label Shiptify itself shows on
+  // the stop — it is what lets the user tell WHICH stop is being moved.
   titleKey: "default",
   titleParams: {},
-  fields: [],
+  fields: compact(optionalField("code", args.code)),
 });
 
 export const shiptifySummaries: ProviderSummaries = {

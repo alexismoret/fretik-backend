@@ -85,6 +85,8 @@ export default {
         dest_count: "Delivery stops",
         internal_ref: "Internal reference",
         internal_name: "Internal name",
+        other_reference: "Other reference",
+        code: "Stop code",
         attachment_count: "Attachments",
         message: "Message",
         date: "Date",

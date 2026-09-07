@@ -31,6 +31,17 @@ const sanitiseCreateShipmentRequest: RequestMapper = (args) => {
   return { body: out };
 };
 
+/**
+ * `PATCH /galaxy/shipments/{id}/tracking-points/location` takes a JSON
+ * ARRAY of `{ code, location }` — not the flat object every other write on
+ * this provider takes. The manifest exposes the flat `{ code, address_id }`
+ * the agent can actually reason about and this mapper folds it into the
+ * array shape, keeping `id` out of the body (it is a path param).
+ */
+const trackingPointLocation: RequestMapper = (args) => ({
+  body: [{ code: args.code, location: { address_id: args.address_id } }],
+});
+
 // ── Response mappers ─────────────────────────────────────────────────
 
 /**
@@ -61,16 +72,17 @@ const attachmentDownload = (raw: unknown): { url: string } => {
  * BOTH roles: `/shipments/*` and `/galaxy*` return the same 46 fields for
  * the same shipment, so they share one mapper as they share one type.
  *
- * Two normalisations:
+ * Three normalisations:
  *  - `shipment_mode` arrives as `{id, name}` (the lookup row) but the
  *    manifest declares a `string`; we expose the `name` so the agent
  *    reads `s.shipment_mode == "Air"` without a sub-object dereference.
- *  - `shipper` is nested as `{id, name}`; we project `shipper.name` into
- *    a top-level `shipper_name` and backfill `shipper_id` when the row
- *    only carried the nested one.
+ *  - `carrier` is nested as `{id, name, code, scac}`; we project
+ *    `carrier.name` into a top-level `carrier_name` and backfill
+ *    `carrier_id`.
+ *  - `shipper` gets the same treatment on the routes that send one.
  *
  * Everything else passes through — Pydantic drops the keys the type does
- * not declare (carrier, address_from, address_dest, booker, contents, …).
+ * not declare (address_from, address_dest, booker, contents, …).
  */
 const flattenShipment = (raw: unknown): Record<string, unknown> => {
   if (!isRecord(raw)) {
@@ -87,6 +99,17 @@ const flattenShipment = (raw: unknown): Record<string, unknown> => {
     if (typeof shipper.name === "string") out.shipper_name = shipper.name;
     if (typeof shipper.id === "number" && out.shipper_id === undefined) {
       out.shipper_id = shipper.id;
+    }
+  }
+  // `carrier` is the counterparty row Shiptify actually sends on both
+  // `/shipments/*` and `/galaxy*` (`shipper` is absent there — projecting
+  // only `shipper_name` left every row with a null name and no way to
+  // label the other party).
+  const carrier = row.carrier;
+  if (isRecord(carrier)) {
+    if (typeof carrier.name === "string") out.carrier_name = carrier.name;
+    if (typeof carrier.id === "number" && out.carrier_id === undefined) {
+      out.carrier_id = carrier.id;
     }
   }
   return out;
@@ -155,6 +178,7 @@ const contentTypeList = (raw: unknown): unknown =>
 export const shiptifyMappers: ProviderMappers = {
   request: {
     sanitiseCreateShipmentRequest,
+    trackingPointLocation,
   },
   response: {
     attachmentDownload,

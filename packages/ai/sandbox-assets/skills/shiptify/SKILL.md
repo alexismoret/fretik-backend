@@ -1,7 +1,7 @@
 ---
 name: shiptify
 description: Shiptify — manage transport shipments, addresses, and related records on the connected Shiptify TMS account (shipper or carrier).
-version: 3825c82153e1
+version: 52bd00e8e7b3
 ---
 
 # Shiptify — 50 actions
@@ -24,7 +24,7 @@ You can interact with the user's Shiptify account via the `fretik_apps.shiptify`
 - `shiptify.list_shipment_modes()` — List shipment modes (road / sea / air / …) — call before create_shipment_request
 - `shiptify.list_content_types()` — List cargo content types — call before any create_shipment_request* to resolve `type_id` on each cargo line
 - `shiptify.list_quote_requests(limit=25, offset=0)` — List the quote requests received as a carrier (the RFQ inbox)
-- `shiptify.galaxy_list_shipments(limit=25, offset=0, created_date_from=None, created_date_to=None, departure_date_min=None, departure_date_max=None, arrival_date_min=None, arrival_date_max=None)` — List shipments from the carrier's perspective — main tracking hub, ALWAYS date-filtered
+- `shiptify.galaxy_list_shipments(limit=25, offset=0, created_date_from=None, created_date_to=None, departure_date_min=None, departure_date_max=None, arrival_date_min=None, arrival_date_max=None)` — List shipments from the carrier's perspective — oldest first, so always date-filter
 - `shiptify.galaxy_get_shipment(id)` — Fetch one carrier-side shipment by id
 - `shiptify.galaxy_list_tracking_points(id)` — List the tracking points (stops / events) of a carrier-side shipment
 - `shiptify.galaxy_list_shipment_attachments(id)` — List attachments on a carrier-side shipment
@@ -34,8 +34,8 @@ You can interact with the user's Shiptify account via the `fretik_apps.shiptify`
 ## Write actions (require user approval — build with `.op()`)
 
 - `shiptify.create_shipment_request.op(name, shipment_mode_id, reply_before, from_addresses, dest_addresses, accounting_entity_id=None, carrier_id=None, carrier_ids=None, comment=None, internal_note=None, internal_ref=None, internal_name=None, total_volume=None, total_weight=None, total_linear_meters=None, measurement_system=None, contents=None)` — Create a new shipment request (booking)
-- `shiptify.create_shipment_request_draft.op(name, shipment_mode_id=None, reply_before=None, from_addresses=None, dest_addresses=None, comment=None, internal_ref=None, internal_name=None, total_volume=None, total_weight=None, contents=None)` — Create a draft shipment request (status: draft)
-- `shiptify.update_shipment_request.op(id, name=None, accounting_entity_id=None, comment=None, internal_note=None, internal_ref=None, internal_name=None, total_volume=None, total_weight=None, total_linear_meters=None, measurement_system=None)` — Update fields of a shipment request
+- `shiptify.create_shipment_request_draft.op(name, shipment_mode_id, from_addresses=None, dest_addresses=None, comment=None, internal_ref=None, internal_name=None, total_volume=None, total_weight=None, contents=None)` — Create a draft shipment request (status: draft)
+- `shiptify.update_shipment_request.op(id, name=None, accounting_entity_id=None, comment=None, internal_ref=None, internal_name=None, total_volume=None, total_weight=None, total_linear_meters=None, measurement_system=None)` — Update fields of a shipment request
 - `shiptify.cancel_shipment_request.op(id)` — Cancel a shipment request
 - `shiptify.upload_shipment_request_attachment.op(id, attachments, carrier_id=None)` — Upload one or several files onto a shipment request
 - `shiptify.send_shipment_request_message.op(id, message, carrier_id=None, sender_name=None, sender_email=None)` — Post a message in the booking chat of a shipment request
@@ -47,7 +47,7 @@ You can interact with the user's Shiptify account via the `fretik_apps.shiptify`
 - `shiptify.send_shipment_message.op(id, message, sender_name=None, sender_email=None)` — Post a message in the tracking chat of a shipment
 - `shiptify.create_location.op(name, address_1, city, zipcode, country, type=None, address_2=None, state=None, recipient_name=None, company_name=None, email=None, phone_number=None, instructions=None, internal_ref=None, locode=None, contact=None)` — Create a new address-book location — use ONLY when list_locations returned no match
 - `shiptify.galaxy_create_carrier_shipment_request.op(name, shipment_mode_id, reply_before, from_addresses, dest_addresses, shipper_id=None, shipper_internal_ref=None, other_reference=None, accounting_entity_id=None, comment=None, internal_ref=None, carrier_ids=None, pre_awarded=None, total_weight=None, total_volume=None, total_linear_meters=None, measurement_system=None, contents=None)` — Create a carrier-initiated shipment request (spot booking)
-- `shiptify.galaxy_create_carrier_shipment_request_draft.op(name, shipment_mode_id=None, reply_before=None, shipper_id=None, from_addresses=None, dest_addresses=None, comment=None, internal_ref=None, other_reference=None, total_weight=None, total_volume=None, contents=None)` — Create a draft carrier-side shipment request
+- `shiptify.galaxy_create_carrier_shipment_request_draft.op(name, shipment_mode_id, shipper_id=None, from_addresses=None, dest_addresses=None, comment=None, internal_ref=None, other_reference=None, total_weight=None, total_volume=None, contents=None)` — Create a draft carrier-side shipment request
 - `shiptify.galaxy_upload_shipment_request_attachment.op(id, attachments)` — Upload one or several files onto a carrier-side shipment request
 - `shiptify.galaxy_send_shipment_request_message.op(id, message, sender_name=None, sender_email=None)` — Post a message in the booking chat of a carrier-side shipment request
 - `shiptify.galaxy_cancel_quote_request.op(id)` — Cancel a quote request the carrier received
@@ -62,14 +62,14 @@ You can interact with the user's Shiptify account via the `fretik_apps.shiptify`
 - `shiptify.galaxy_confirm_tracking_point.op(id, date=None, time=None, comment=None, incident=None)` — Confirm a single tracking point (transit stop, customs, …) of a carrier-side shipment
 - `shiptify.galaxy_replan_tracking_point.op(id, date=None, time=None, comment=None, reason=None)` — Replan a single tracking point of a carrier-side shipment
 - `shiptify.galaxy_cancel_tracking_point.op(id, comment=None)` — Cancel a single tracking point of a carrier-side shipment
-- `shiptify.galaxy_update_tracking_point_location.op(id, address_id, tracking_point_id=None)` — Move a tracking point of a carrier-side shipment to a different address
+- `shiptify.galaxy_update_tracking_point_location.op(id, code, address_id)` — Move a tracking point of a carrier-side shipment to a different address
 
 ## Data models
 
 Read actions return Pydantic models — field names below are EXACT. Use the names as-is (`m.from_address`, NOT `m.sender` or `m.from_`). A trailing `?` marks an optional field.
 
 - `ShipmentRequest` — `id: int`, `internal_ref?: str`, `name: str`, `status: str`, `shipment_mode_id?: int`, `reply_before?: str`, `total_weight?: float`, `total_volume?: float`, `total_linear_meters?: float`, `comment?: str`, `created_at?: str`
-- `Shipment` — `id: int`, `code?: str`, `status?: str`, `tracking_code?: str`, `name?: str`, `internal_ref?: str`, `other_reference?: str`, `shipper_id?: int`, `carrier_id?: int`, `shipper_name?: str`, `sh_request_id?: int`, `quote_request_id?: int`, `total_weight?: float`, `total_volume?: float`, `total_linear_meters?: float`, `weight?: str`, `cost?: str`, `goods_value?: str`, `co2_amount?: float`, `date?: str`, `estimated_departure_time?: str`, `real_departure_time?: str`, `estimated_arrival_time?: str`, `real_arrival_time?: str`, `created_at?: str`, `archived_carrier?: bool`, `archived_shipper?: bool`, `shipment_mode?: str`, `shiptify_private_link?: str`, `shiptify_public_link?: str`
+- `Shipment` — `id: int`, `code?: str`, `status?: str`, `tracking_code?: str`, `name?: str`, `internal_ref?: str`, `other_reference?: str`, `shipper_id?: int`, `carrier_id?: int`, `carrier_name?: str`, `shipper_name?: str`, `sh_request_id?: int`, `quote_request_id?: int`, `total_weight?: float`, `total_volume?: float`, `total_linear_meters?: float`, `weight?: str`, `cost?: str`, `goods_value?: str`, `co2_amount?: float`, `date?: str`, `estimated_departure_time?: str`, `real_departure_time?: str`, `estimated_arrival_time?: str`, `real_arrival_time?: str`, `created_at?: str`, `archived_carrier?: bool`, `archived_shipper?: bool`, `shipment_mode?: str`, `shiptify_private_link?: str`, `shiptify_public_link?: str`
 - `TrackingPoint` — `id: int`, `shipment_id?: int`, `type?: str`, `code?: str`, `position?: int`, `address_id?: int`, `planned_date?: str`, `planned_time?: str`, `real_date?: str`, `real_time?: str`, `incident?: str`, `comment?: str`
 - `Attachment` — `id: int`, `name: str`, `type?: str`, `status?: str`
 - `Location` — `id: int`, `name: str`, `internal_ref?: str`, `recipient_name?: str`, `address_1?: str`, `address_2?: str`, `city?: str`, `state?: str`, `zipcode?: str`, `country?: str`, `type?: str`
@@ -80,6 +80,7 @@ Read actions return Pydantic models — field names below are EXACT. Use the nam
 - `AttachmentDownload` — `url: str`
 - `QuoteRequest` — `id: int`, `sh_request_id?: int`, `carrier_id?: int`, `status?: str`, `is_read?: bool`, `reply_before?: str`, `shipment_mode_id?: int`, `cost?: str`, `currency_code?: str`, `date_departure?: str`, `date_arrival?: str`, `shipment_request?: dict`, `price_details?: list[dict]`
 - `GalaxyShipper` — `id: int`, `name: str`, `account_id?: int`
+
 
 ## Route by the connection's account role
 
@@ -100,6 +101,8 @@ Every Shiptify connection carries an `account_type` (`shipper` or `carrier`) in 
 On a carrier connection, `galaxy_list_shipments` spans every account the key reaches; `list_shipments` answers too but only for the one account the key was issued on. Prefer the `galaxy_` one, or a shipment from a sister agency will look like it does not exist.
 
 **`galaxy_list_shipments` returns OLDEST first — always pass `created_date_from`.** Unfiltered it answers with the account's first-ever shipments, which can be years old, and paging never reaches today. `list_shipments` is the opposite (newest first), so this is a carrier-only trap.
+
+Every date filter on both actions is a calendar day, `YYYY-MM-DD` — `date.isoformat()`, never a datetime.
 
 ```python
 from datetime import date, timedelta
@@ -130,7 +133,11 @@ Resolve the lookups first, then submit one plan. Four things Shiptify rejects, o
 - **A `contents[i]` line without a valid `type_id`** — resolve it from `list_content_types()`. `quantity` is required too.
 - **Per-line volume** — there is no `m3` / `volume_m3` on a cargo line, and unknown fields are dropped silently. Aggregate to the top-level `total_volume`.
 
+The `*_draft` variants take the same `shipment_mode_id` (required) but no `reply_before` — a draft is allowed to leave the stops and the deadline open, not the mode.
+
 Inline addresses (`address_1, city, country, zipcode, date_from`) work, but validation is strict — prefer `create_location` + `address_id`.
+
+ADR/IMO/IATA cargo goes in `dangerous_goods_description`, an object (`{"un_code": "UN1263", "class_of_danger": "3", "packing_group": "III"}`), alongside `is_dangerous: true` on the same line.
 
 ```python
 modes = shiptify.list_shipment_modes()
@@ -225,7 +232,7 @@ Write actions NEVER execute on their own: `.op(...)` builds an operation,
 `run_plan([...])` submits them, and calling a write action directly raises.
 The user approves the whole plan at once.
 
-- One write: `run_plan([ shiptify.create_shipment_request.op(name="…", shipment_mode_id=1, reply_before="…", …) ])`
+- One write:   `run_plan([ shiptify.create_shipment_request.op(name="…", shipment_mode_id=1, reply_before="…", …) ])`
 - Many writes: `run_plan([ shiptify.<action>.op(...), ... ])`
 
 `run_plan` raises `fretik_apps.ApprovalPending`. This is EXPECTED — not an
@@ -239,7 +246,6 @@ re-run the identical cell — approved plans replay from cache and never execute
 twice. On rejection you get their feedback — adapt and write new code.
 
 ### STRONG RULE — read→write flows
-
 When a plan depends on data you just read, you MUST inline the read
 results as EXPLICIT LITERALS in the `.op()` calls. Do NOT compute
 `.op()` arguments from a read performed in the same script as
@@ -252,7 +258,6 @@ Why: on re-run after approval, a volatile read (inbox changed) would
 change the plan's lookupHash and force a needless re-approval.
 
 ### Plan rules
-
 - Every write of the turn goes in ONE `run_plan`. A second call in the
   same cell is lost: the first raises and the rest of the cell never runs.
 - Operations in one plan must be INDEPENDENT (no op uses another op's

@@ -21,6 +21,8 @@ const examplePlaceholder = (spec: ParamSpec): string => {
       return `"…"`;
     case "email":
       return `"name@example.com"`;
+    case "date":
+      return `"2026-01-01"`;
     case "datetime":
       return `"2026-01-01T09:00:00"`;
     case "integer":
@@ -231,6 +233,7 @@ const renderTypeShort = (spec: ParamSpec): string => {
   switch (spec.type) {
     case "string":
     case "email":
+    case "date":
     case "datetime":
       return "str";
     case "integer":

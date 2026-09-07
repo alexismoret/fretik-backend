@@ -35,6 +35,7 @@ export interface ParamSpec {
     | "number"
     | "boolean"
     | "email"
+    | "date"
     | "datetime"
     | "enum"
     | "array"
@@ -72,6 +73,7 @@ export const paramSpecSchema: z.ZodType<ParamSpec> = z.lazy(() =>
         "number",
         "boolean",
         "email",
+        "date",
         "datetime",
         "enum",
         "array",

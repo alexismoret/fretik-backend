@@ -39,6 +39,7 @@ class Shipment(BaseModel):
     other_reference: str | None = None
     shipper_id: int | None = None
     carrier_id: int | None = None
+    carrier_name: str | None = None
     shipper_name: str | None = None
     sh_request_id: int | None = None
     quote_request_id: int | None = None
@@ -207,8 +208,7 @@ class CreateShipmentRequestArgs(BaseModel):
 
 class CreateShipmentRequestDraftArgs(BaseModel):
     name: str
-    shipment_mode_id: int | None = None
-    reply_before: str | None = None
+    shipment_mode_id: int
     from_addresses: list[dict[str, Any]] | None = None
     dest_addresses: list[dict[str, Any]] | None = None
     comment: str | None = None
@@ -224,7 +224,6 @@ class UpdateShipmentRequestArgs(BaseModel):
     name: str | None = None
     accounting_entity_id: int | None = None
     comment: str | None = None
-    internal_note: str | None = None
     internal_ref: str | None = None
     internal_name: str | None = None
     total_volume: float | None = None
@@ -397,8 +396,7 @@ class GalaxyCreateCarrierShipmentRequestArgs(BaseModel):
 
 class GalaxyCreateCarrierShipmentRequestDraftArgs(BaseModel):
     name: str
-    shipment_mode_id: int | None = None
-    reply_before: str | None = None
+    shipment_mode_id: int
     shipper_id: int | None = None
     from_addresses: list[dict[str, Any]] | None = None
     dest_addresses: list[dict[str, Any]] | None = None
@@ -527,8 +525,8 @@ class GalaxyCancelTrackingPointArgs(BaseModel):
 
 class GalaxyUpdateTrackingPointLocationArgs(BaseModel):
     id: int
+    code: str
     address_id: int
-    tracking_point_id: int | None = None
 
 
 class GalaxyListShippersArgs(BaseModel):
@@ -626,7 +624,7 @@ def list_shipments(
 ) -> list[Shipment]:
     """List shipments — the shipper's main tracking hub, with strong filters
 
-    created_date_from: Filter by creation date (YYYY-MM-DD)
+    created_date_from: Calendar day, `YYYY-MM-DD` — an instant is rejected
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
@@ -799,9 +797,9 @@ def galaxy_list_shipments(
     arrival_date_max: str | None = None,
     connection_id: str | None = None,
 ) -> list[Shipment]:
-    """List shipments from the carrier's perspective — main tracking hub, ALWAYS date-filtered
+    """List shipments from the carrier's perspective — oldest first, so always date-filter
 
-    created_date_from: YYYY-MM-DD. PASS IT ON EVERY CALL: unlike list_shipments, this endpoint returns OLDEST-first, so an unfiltered call answers with the oldest shipments on the account — years old — and never reaches current ones.
+    created_date_from: Calendar day, `YYYY-MM-DD`. Pass it on every call: unlike list_shipments this endpoint returns OLDEST-first, so an unfiltered call answers with shipments years old and paging never reaches current ones.
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
@@ -962,8 +960,7 @@ create_shipment_request.op = _create_shipment_request_op
 
 def _create_shipment_request_draft_op(
     name: str,
-    shipment_mode_id: int | None = None,
-    reply_before: str | None = None,
+    shipment_mode_id: int,
     from_addresses: list[dict[str, Any]] | None = None,
     dest_addresses: list[dict[str, Any]] | None = None,
     comment: str | None = None,
@@ -976,15 +973,14 @@ def _create_shipment_request_draft_op(
 ) -> Operation:
     """Build a create_shipment_request_draft Operation (does NOT execute).
     Use inside run_plan([...])."""
-    _args = CreateShipmentRequestDraftArgs(name=name, shipment_mode_id=shipment_mode_id, reply_before=reply_before, from_addresses=from_addresses, dest_addresses=dest_addresses, comment=comment, internal_ref=internal_ref, internal_name=internal_name, total_volume=total_volume, total_weight=total_weight, contents=contents).model_dump(exclude_none=True)
+    _args = CreateShipmentRequestDraftArgs(name=name, shipment_mode_id=shipment_mode_id, from_addresses=from_addresses, dest_addresses=dest_addresses, comment=comment, internal_ref=internal_ref, internal_name=internal_name, total_volume=total_volume, total_weight=total_weight, contents=contents).model_dump(exclude_none=True)
     if connection_id is not None:
         _args["connection_id"] = connection_id
     return Operation(action="shiptify.create_shipment_request_draft", args=_args)
 
 def create_shipment_request_draft(
     name: str,
-    shipment_mode_id: int | None = None,
-    reply_before: str | None = None,
+    shipment_mode_id: int,
     from_addresses: list[dict[str, Any]] | None = None,
     dest_addresses: list[dict[str, Any]] | None = None,
     comment: str | None = None,
@@ -1000,7 +996,7 @@ def create_shipment_request_draft(
     (WRITE — build it with `create_shipment_request_draft.op(...)` and submit
     it with `run_plan([...])`. Calling this directly raises.)
 
-    reply_before: Format YYYY-MM-DDTHH:MM:SS (NO timezone suffix). Example: '2026-06-10T18:00:00'.
+    from_addresses: Same item shape as create_shipment_request. On drafts, `date_from` is OPTIONAL (omit when not yet known).
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
@@ -1019,7 +1015,6 @@ def _update_shipment_request_op(
     name: str | None = None,
     accounting_entity_id: int | None = None,
     comment: str | None = None,
-    internal_note: str | None = None,
     internal_ref: str | None = None,
     internal_name: str | None = None,
     total_volume: float | None = None,
@@ -1030,7 +1025,7 @@ def _update_shipment_request_op(
 ) -> Operation:
     """Build a update_shipment_request Operation (does NOT execute).
     Use inside run_plan([...])."""
-    _args = UpdateShipmentRequestArgs(id=id, name=name, accounting_entity_id=accounting_entity_id, comment=comment, internal_note=internal_note, internal_ref=internal_ref, internal_name=internal_name, total_volume=total_volume, total_weight=total_weight, total_linear_meters=total_linear_meters, measurement_system=measurement_system).model_dump(exclude_none=True)
+    _args = UpdateShipmentRequestArgs(id=id, name=name, accounting_entity_id=accounting_entity_id, comment=comment, internal_ref=internal_ref, internal_name=internal_name, total_volume=total_volume, total_weight=total_weight, total_linear_meters=total_linear_meters, measurement_system=measurement_system).model_dump(exclude_none=True)
     if connection_id is not None:
         _args["connection_id"] = connection_id
     return Operation(action="shiptify.update_shipment_request", args=_args)
@@ -1040,7 +1035,6 @@ def update_shipment_request(
     name: str | None = None,
     accounting_entity_id: int | None = None,
     comment: str | None = None,
-    internal_note: str | None = None,
     internal_ref: str | None = None,
     internal_name: str | None = None,
     total_volume: float | None = None,
@@ -1122,7 +1116,7 @@ def upload_shipment_request_attachment(
     (WRITE — build it with `upload_shipment_request_attachment.op(...)` and submit
     it with `run_plan([...])`. Calling this directly raises.)
 
-    attachments: Files to upload — each item `{ fileName, documentType, base64Data | url, accessType?, save? }`. `documentType` is one of: invoice, order, customs, packing_list, bill_of_lading, cmr, cmr_at_departure, signed_cmr_at_arrival, proof_of_delivery, awb, msds, claim, other (full list in Shiptify docs).
+    attachments: Files — each `{ fileName, documentType, base64Data | url, accessType?, save? }`. `documentType` is a strict enum: proof_of_delivery, cmr, signed_cmr_at_arrival, bill_of_lading, awb, invoice, customs, packing_list, msds, claim, other, … — a slug off the list is rejected before the call.
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
@@ -1372,7 +1366,7 @@ def upload_shipment_attachment(
     (WRITE — build it with `upload_shipment_attachment.op(...)` and submit
     it with `run_plan([...])`. Calling this directly raises.)
 
-    attachments: Files — each `{ fileName, documentType, base64Data | url, accessType?, save? }`. `documentType` examples: proof_of_delivery, cmr, signed_cmr_at_arrival, invoice, awb, customs, claim, other.
+    attachments: Files — each `{ fileName, documentType, base64Data | url, accessType?, save? }`. `documentType` is a strict enum: proof_of_delivery, cmr, signed_cmr_at_arrival, bill_of_lading, awb, invoice, customs, packing_list, msds, claim, other, … — a slug off the list is rejected before the call.
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
@@ -1560,8 +1554,7 @@ galaxy_create_carrier_shipment_request.op = _galaxy_create_carrier_shipment_requ
 
 def _galaxy_create_carrier_shipment_request_draft_op(
     name: str,
-    shipment_mode_id: int | None = None,
-    reply_before: str | None = None,
+    shipment_mode_id: int,
     shipper_id: int | None = None,
     from_addresses: list[dict[str, Any]] | None = None,
     dest_addresses: list[dict[str, Any]] | None = None,
@@ -1575,15 +1568,14 @@ def _galaxy_create_carrier_shipment_request_draft_op(
 ) -> Operation:
     """Build a galaxy_create_carrier_shipment_request_draft Operation (does NOT execute).
     Use inside run_plan([...])."""
-    _args = GalaxyCreateCarrierShipmentRequestDraftArgs(name=name, shipment_mode_id=shipment_mode_id, reply_before=reply_before, shipper_id=shipper_id, from_addresses=from_addresses, dest_addresses=dest_addresses, comment=comment, internal_ref=internal_ref, other_reference=other_reference, total_weight=total_weight, total_volume=total_volume, contents=contents).model_dump(exclude_none=True)
+    _args = GalaxyCreateCarrierShipmentRequestDraftArgs(name=name, shipment_mode_id=shipment_mode_id, shipper_id=shipper_id, from_addresses=from_addresses, dest_addresses=dest_addresses, comment=comment, internal_ref=internal_ref, other_reference=other_reference, total_weight=total_weight, total_volume=total_volume, contents=contents).model_dump(exclude_none=True)
     if connection_id is not None:
         _args["connection_id"] = connection_id
     return Operation(action="shiptify.galaxy_create_carrier_shipment_request_draft", args=_args)
 
 def galaxy_create_carrier_shipment_request_draft(
     name: str,
-    shipment_mode_id: int | None = None,
-    reply_before: str | None = None,
+    shipment_mode_id: int,
     shipper_id: int | None = None,
     from_addresses: list[dict[str, Any]] | None = None,
     dest_addresses: list[dict[str, Any]] | None = None,
@@ -1600,7 +1592,7 @@ def galaxy_create_carrier_shipment_request_draft(
     (WRITE — build it with `galaxy_create_carrier_shipment_request_draft.op(...)` and submit
     it with `run_plan([...])`. Calling this directly raises.)
 
-    reply_before: Format YYYY-MM-DDTHH:MM:SS (NO timezone suffix). Example: '2026-06-10T18:00:00'.
+    from_addresses: Same item shape as galaxy_create_carrier_shipment_request. On drafts, `date_from` is OPTIONAL.
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
@@ -1636,7 +1628,7 @@ def galaxy_upload_shipment_request_attachment(
     (WRITE — build it with `galaxy_upload_shipment_request_attachment.op(...)` and submit
     it with `run_plan([...])`. Calling this directly raises.)
 
-    attachments: Files — each `{ fileName, documentType, base64Data | url, accessType?, save? }`. Same documentType enum as the shipper version.
+    attachments: Files — each `{ fileName, documentType, base64Data | url, accessType?, save? }`. `documentType` is a strict enum: proof_of_delivery, cmr, signed_cmr_at_arrival, bill_of_lading, awb, invoice, customs, packing_list, msds, claim, other, … — a slug off the list is rejected before the call.
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
@@ -1982,7 +1974,7 @@ def galaxy_upload_shipment_attachment(
     (WRITE — build it with `galaxy_upload_shipment_attachment.op(...)` and submit
     it with `run_plan([...])`. Calling this directly raises.)
 
-    attachments: Files — each `{ fileName, documentType, base64Data | url, accessType?, save? }`
+    attachments: Files — each `{ fileName, documentType, base64Data | url, accessType?, save? }`. `documentType` is a strict enum: proof_of_delivery, cmr, signed_cmr_at_arrival, bill_of_lading, awb, invoice, customs, packing_list, msds, claim, other, … — a slug off the list is rejected before the call.
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.
@@ -2156,21 +2148,21 @@ galaxy_cancel_tracking_point.op = _galaxy_cancel_tracking_point_op
 
 def _galaxy_update_tracking_point_location_op(
     id: int,
+    code: str,
     address_id: int,
-    tracking_point_id: int | None = None,
     connection_id: str | None = None,
 ) -> Operation:
     """Build a galaxy_update_tracking_point_location Operation (does NOT execute).
     Use inside run_plan([...])."""
-    _args = GalaxyUpdateTrackingPointLocationArgs(id=id, address_id=address_id, tracking_point_id=tracking_point_id).model_dump(exclude_none=True)
+    _args = GalaxyUpdateTrackingPointLocationArgs(id=id, code=code, address_id=address_id).model_dump(exclude_none=True)
     if connection_id is not None:
         _args["connection_id"] = connection_id
     return Operation(action="shiptify.galaxy_update_tracking_point_location", args=_args)
 
 def galaxy_update_tracking_point_location(
     id: int,
+    code: str,
     address_id: int,
-    tracking_point_id: int | None = None,
     connection_id: str | None = None,
 ) -> dict[str, Any]:
     """Move a tracking point of a carrier-side shipment to a different address
@@ -2178,7 +2170,7 @@ def galaxy_update_tracking_point_location(
     (WRITE — build it with `galaxy_update_tracking_point_location.op(...)` and submit
     it with `run_plan([...])`. Calling this directly raises.)
 
-    address_id: Target address id from list_locations()
+    code: Tracking point code from galaxy_list_tracking_points(), e.g. `STY0358`
 
     connection_id: pick a specific connection when several exist for this
     provider. Pass the ID surfaced in the agent context.

@@ -43,6 +43,7 @@ Read actions return Pydantic models — field names below are EXACT. Use the nam
 - `Attachment` — `id: str`, `name: str`, `content_type: str`, `size_bytes: int`, `sandbox_path?: str`, `content_base64?: str`
 - `WriteResult` — `id?: str`
 
+
 ## Patterns
 
 ### Read an email, then act on it
@@ -235,6 +236,7 @@ applies: structured if helpful, clear, professional.
 `persona` changes the voice, not the gate. Every write still goes through
 `run_plan([...])` and the user reviews the draft before it leaves.
 
+
 ---
 
 ## Write actions & approval
@@ -243,7 +245,7 @@ Write actions NEVER execute on their own: `.op(...)` builds an operation,
 `run_plan([...])` submits them, and calling a write action directly raises.
 The user approves the whole plan at once.
 
-- One write: `run_plan([ imap_smtp.send_email.op(to=["name@example.com"], subject="…", body_html="…") ])`
+- One write:   `run_plan([ imap_smtp.send_email.op(to=["name@example.com"], subject="…", body_html="…") ])`
 - Many writes: `run_plan([ imap_smtp.<action>.op(...), ... ])`
 
 `run_plan` raises `fretik_apps.ApprovalPending`. This is EXPECTED — not an
@@ -257,7 +259,6 @@ re-run the identical cell — approved plans replay from cache and never execute
 twice. On rejection you get their feedback — adapt and write new code.
 
 ### STRONG RULE — read→write flows
-
 When a plan depends on data you just read, you MUST inline the read
 results as EXPLICIT LITERALS in the `.op()` calls. Do NOT compute
 `.op()` arguments from a read performed in the same script as
@@ -270,7 +271,6 @@ Why: on re-run after approval, a volatile read (inbox changed) would
 change the plan's lookupHash and force a needless re-approval.
 
 ### Plan rules
-
 - Every write of the turn goes in ONE `run_plan`. A second call in the
   same cell is lost: the first raises and the rest of the cell never runs.
 - Operations in one plan must be INDEPENDENT (no op uses another op's

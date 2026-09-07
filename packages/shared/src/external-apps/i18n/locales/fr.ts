@@ -85,6 +85,8 @@ export default {
         dest_count: "Points de livraison",
         internal_ref: "Référence interne",
         internal_name: "Nom interne",
+        other_reference: "Autre référence",
+        code: "Code du jalon",
         attachment_count: "Pièces jointes",
         message: "Message",
         date: "Date",

@@ -125,7 +125,7 @@ const cargoLine: ParamSpec = {
   description:
     "One cargo line. Required: `type_id` (from list_content_types() — choose by name + mode flags) and `quantity`. " +
     "Common optional fields: `weight` (per unit, account's weight_unit), `height`/`length`/`width` (per unit, account's dimension_unit), `comment`, `internal_ref`. " +
-    "Use `is_dangerous: true` + `dangerous_goods_description` for ADR/IMO/IATA cargo. " +
+    "Use `is_dangerous: true` + the `dangerous_goods_description` object for ADR/IMO/IATA cargo. " +
     "Unknown fields (e.g. `m3`, `volume_m3`) are silently dropped — aggregate volume to top-level `total_volume` instead.",
   fields: {
     type_id: {
@@ -162,14 +162,124 @@ const cargoLine: ParamSpec = {
     },
     is_stacked: { type: "boolean", optional: true },
     is_dangerous: { type: "boolean", optional: true },
+    dangerous_goods_description: {
+      type: "object",
+      optional: true,
+      description:
+        "ADR/IMO/IATA declaration — `{ un_code, class_of_danger, packing_group, … }`, not a free-text line.",
+      fields: {
+        un_code: { type: "string", optional: true, description: "e.g. UN1263" },
+        class_of_danger: { type: "string", optional: true },
+        classification_code: { type: "string", optional: true },
+        packing_group: { type: "string", optional: true },
+        special_provision: { type: "string", optional: true },
+        net_weight: { type: "string", optional: true },
+        gross_weight: { type: "string", optional: true },
+        liter: { type: "string", optional: true },
+        dry_ice_weight: { type: "string", optional: true },
+        accessibility: { type: "string", optional: true },
+        aircraft_compatibility: { type: "string", optional: true },
+        is_LQ: { type: "boolean", optional: true },
+        is_EQ: { type: "boolean", optional: true },
+        comment: { type: "string", optional: true, excludeFromHash: true },
+      },
+    },
+    // Spelled with a singular "good" by Shiptify, unlike the object above.
+    dangerous_good_description_id: { type: "integer", optional: true },
     freight_unit_key: { type: "string", optional: true },
-    onu_code: {
+  },
+};
+
+/**
+ * One file to upload. Shared by the four `*_upload_*_attachment` actions —
+ * Shiptify declares the same item shape on all of them.
+ *
+ * `documentType` is enumerated rather than free text so a wrong slug fails
+ * here instead of costing a round-trip; `fileName` and `documentType` are
+ * the two Shiptify requires, and the file itself arrives as EITHER
+ * `base64Data` or a `url` Shiptify can fetch.
+ */
+const attachmentFile: ParamSpec = {
+  type: "object",
+  description:
+    "One file. Required: `fileName` + `documentType`, plus exactly one of `base64Data` or `url`.",
+  fields: {
+    fileName: {
+      type: "string",
+      description: "File name shown in Shiptify, without the extension",
+    },
+    documentType: {
+      type: "enum",
+      values: [
+        "invoice",
+        "order",
+        "customs",
+        "packing_list",
+        "pickup_details",
+        "delivery_details",
+        "expected_departure",
+        "departure_notice",
+        "bill_of_lading",
+        "quality_check",
+        "origin_certificate",
+        "temperature_data",
+        "other",
+        "arrival_notice",
+        "packing_note",
+        "delivery_note",
+        "return_note",
+        "cmr_at_departure",
+        "label",
+        "hazardous_material_declaration",
+        "quote",
+        "tds",
+        "business_invoice",
+        "claim",
+        "weighing_ticket",
+        "Avoir",
+        "container_placement",
+        "awb",
+        "msds",
+        "asn",
+        "vgm",
+        "customs_code_declaration",
+        "quality_certificate",
+        "cmr",
+        "signed_cmr_at_arrival",
+        "house_bill_of_lading",
+        "house_air_way_bill",
+        "other_customs",
+        "proof_of_delivery",
+        "destruction_certificate",
+        "draft",
+        "easa",
+        "letter_of_credit",
+        "security_protocol",
+        "freight_forwarder_invoice",
+      ],
+    },
+    base64Data: {
       type: "string",
       optional: true,
-      description: "Dangerous goods ONU code (when is_dangerous)",
+      excludeFromHash: true,
+      description: "Base64 file content — use this or `url`, not both",
     },
-    unit: { type: "string", optional: true },
-    is_controlled_temperature: { type: "boolean", optional: true },
+    url: {
+      type: "string",
+      optional: true,
+      description: "Public URL Shiptify fetches the file from",
+    },
+    accessType: {
+      type: "enum",
+      values: ["public", "limited", "private"],
+      optional: true,
+    },
+    save: {
+      type: "boolean",
+      optional: true,
+      description: "Keep the file in Shiptify's document library",
+    },
+    authRequired: { type: "boolean", optional: true },
   },
 };
 
@@ -385,10 +495,16 @@ export const shiptifyManifest: ProviderManifest = {
       },
       shipper_id: { type: "integer", optional: true },
       carrier_id: { type: "integer", optional: true },
+      carrier_name: {
+        type: "string",
+        optional: true,
+        description: "Flattened from the nested `carrier` row",
+      },
       shipper_name: {
         type: "string",
         optional: true,
-        description: "Flattened from the nested shipper row",
+        description:
+          "Flattened from a nested `shipper` row — Shiptify only sends one on some routes, so expect None and fall back to shipper_id",
       },
       sh_request_id: {
         type: "integer",
@@ -788,16 +904,11 @@ export const shiptifyManifest: ProviderManifest = {
       kind: "write",
       summary: "Create a draft shipment request (status: draft)",
       endpoint: { method: "POST", path: "/shipment-requests/draft" },
-      request: "sanitiseCreateShipmentRequest",
       params: {
         name: { type: "string" },
-        shipment_mode_id: { type: "integer", optional: true },
-        reply_before: {
-          type: "string",
-          optional: true,
-          description:
-            "Format YYYY-MM-DDTHH:MM:SS (NO timezone suffix). Example: '2026-06-10T18:00:00'.",
-        },
+        // Required by the draft endpoint too — only the stops and the
+        // reply deadline are what a draft is allowed to leave open.
+        shipment_mode_id: { type: "integer" },
         from_addresses: {
           type: "array",
           optional: true,
@@ -835,11 +946,9 @@ export const shiptifyManifest: ProviderManifest = {
         name: { type: "string", optional: true },
         accounting_entity_id: { type: "integer", optional: true },
         comment: { type: "string", optional: true, excludeFromHash: true },
-        internal_note: {
-          type: "string",
-          optional: true,
-          excludeFromHash: true,
-        },
+        // No `internal_note` here: PATCH /shipment-requests/{id} does not
+        // accept it (create does) and Shiptify drops unknown body keys, so
+        // declaring it made the agent believe it had written a note.
         internal_ref: { type: "string", optional: true },
         internal_name: { type: "string", optional: true },
         total_volume: { type: "number", optional: true },
@@ -877,8 +986,8 @@ export const shiptifyManifest: ProviderManifest = {
           type: "array",
           excludeFromHash: true,
           description:
-            "Files to upload — each item `{ fileName, documentType, base64Data | url, accessType?, save? }`. `documentType` is one of: invoice, order, customs, packing_list, bill_of_lading, cmr, cmr_at_departure, signed_cmr_at_arrival, proof_of_delivery, awb, msds, claim, other (full list in Shiptify docs).",
-          items: { type: "object", fields: {} },
+            "Files — each `{ fileName, documentType, base64Data | url, accessType?, save? }`. `documentType` is a strict enum: proof_of_delivery, cmr, signed_cmr_at_arrival, bill_of_lading, awb, invoice, customs, packing_list, msds, claim, other, … — a slug off the list is rejected before the call.",
+          items: attachmentFile,
         },
       },
       returns: { ref: "WriteResult" },
@@ -921,15 +1030,15 @@ export const shiptifyManifest: ProviderManifest = {
         limit: { type: "integer", min: 1, max: 100, default: 25 },
         offset: { type: "integer", min: 0, max: 100000, default: 0 },
         created_date_from: {
-          type: "datetime",
+          type: "date",
           optional: true,
-          description: "Filter by creation date (YYYY-MM-DD)",
+          description: "Calendar day, `YYYY-MM-DD` — an instant is rejected",
         },
-        created_date_to: { type: "datetime", optional: true },
-        departure_date_min: { type: "datetime", optional: true },
-        departure_date_max: { type: "datetime", optional: true },
-        arrival_date_min: { type: "datetime", optional: true },
-        arrival_date_max: { type: "datetime", optional: true },
+        created_date_to: { type: "date", optional: true },
+        departure_date_min: { type: "date", optional: true },
+        departure_date_max: { type: "date", optional: true },
+        arrival_date_min: { type: "date", optional: true },
+        arrival_date_max: { type: "date", optional: true },
         sh_request_id: {
           type: "integer",
           optional: true,
@@ -1081,8 +1190,8 @@ export const shiptifyManifest: ProviderManifest = {
           type: "array",
           excludeFromHash: true,
           description:
-            "Files — each `{ fileName, documentType, base64Data | url, accessType?, save? }`. `documentType` examples: proof_of_delivery, cmr, signed_cmr_at_arrival, invoice, awb, customs, claim, other.",
-          items: { type: "object", fields: {} },
+            "Files — each `{ fileName, documentType, base64Data | url, accessType?, save? }`. `documentType` is a strict enum: proof_of_delivery, cmr, signed_cmr_at_arrival, bill_of_lading, awb, invoice, customs, packing_list, msds, claim, other, … — a slug off the list is rejected before the call.",
+          items: attachmentFile,
         },
       },
       returns: { ref: "WriteResult" },
@@ -1348,16 +1457,10 @@ export const shiptifyManifest: ProviderManifest = {
         method: "POST",
         path: "/galaxy/carrier/shipment-requests/draft",
       },
-      request: "sanitiseCreateShipmentRequest",
       params: {
         name: { type: "string" },
-        shipment_mode_id: { type: "integer", optional: true },
-        reply_before: {
-          type: "string",
-          optional: true,
-          description:
-            "Format YYYY-MM-DDTHH:MM:SS (NO timezone suffix). Example: '2026-06-10T18:00:00'.",
-        },
+        // Required by the draft endpoint too — see the shipper twin.
+        shipment_mode_id: { type: "integer" },
         shipper_id: { type: "integer", optional: true },
         from_addresses: {
           type: "array",
@@ -1401,8 +1504,8 @@ export const shiptifyManifest: ProviderManifest = {
           type: "array",
           excludeFromHash: true,
           description:
-            "Files — each `{ fileName, documentType, base64Data | url, accessType?, save? }`. Same documentType enum as the shipper version.",
-          items: { type: "object", fields: {} },
+            "Files — each `{ fileName, documentType, base64Data | url, accessType?, save? }`. `documentType` is a strict enum: proof_of_delivery, cmr, signed_cmr_at_arrival, bill_of_lading, awb, invoice, customs, packing_list, msds, claim, other, … — a slug off the list is rejected before the call.",
+          items: attachmentFile,
         },
       },
       returns: { ref: "WriteResult" },
@@ -1453,7 +1556,7 @@ export const shiptifyManifest: ProviderManifest = {
       name: "galaxy_list_shipments",
       kind: "read",
       summary:
-        "List shipments from the carrier's perspective — main tracking hub, ALWAYS date-filtered",
+        "List shipments from the carrier's perspective — oldest first, so always date-filter",
       // `/galaxy-data/shipments`, not `/galaxy/carrier/shipments` (a POST
       // that CREATES a shipment; the GET this used to declare 404'd).
       // This is also the read that spans a carrier GROUP: `list_shipments`
@@ -1465,16 +1568,16 @@ export const shiptifyManifest: ProviderManifest = {
         limit: { type: "integer", min: 1, max: 100, default: 25 },
         offset: { type: "integer", min: 0, max: 100000, default: 0 },
         created_date_from: {
-          type: "datetime",
+          type: "date",
           optional: true,
           description:
-            "YYYY-MM-DD. PASS IT ON EVERY CALL: unlike list_shipments, this endpoint returns OLDEST-first, so an unfiltered call answers with the oldest shipments on the account — years old — and never reaches current ones.",
+            "Calendar day, `YYYY-MM-DD`. Pass it on every call: unlike list_shipments this endpoint returns OLDEST-first, so an unfiltered call answers with shipments years old and paging never reaches current ones.",
         },
-        created_date_to: { type: "datetime", optional: true },
-        departure_date_min: { type: "datetime", optional: true },
-        departure_date_max: { type: "datetime", optional: true },
-        arrival_date_min: { type: "datetime", optional: true },
-        arrival_date_max: { type: "datetime", optional: true },
+        created_date_to: { type: "date", optional: true },
+        departure_date_min: { type: "date", optional: true },
+        departure_date_max: { type: "date", optional: true },
+        arrival_date_min: { type: "date", optional: true },
+        arrival_date_max: { type: "date", optional: true },
       },
       returns: { list: "Shipment" },
       response: "shipmentList",
@@ -1623,8 +1726,8 @@ export const shiptifyManifest: ProviderManifest = {
           type: "array",
           excludeFromHash: true,
           description:
-            "Files — each `{ fileName, documentType, base64Data | url, accessType?, save? }`",
-          items: { type: "object", fields: {} },
+            "Files — each `{ fileName, documentType, base64Data | url, accessType?, save? }`. `documentType` is a strict enum: proof_of_delivery, cmr, signed_cmr_at_arrival, bill_of_lading, awb, invoice, customs, packing_list, msds, claim, other, … — a slug off the list is rejected before the call.",
+          items: attachmentFile,
         },
       },
       returns: { ref: "WriteResult" },
@@ -1699,17 +1802,21 @@ export const shiptifyManifest: ProviderManifest = {
         method: "PATCH",
         path: "/galaxy/shipments/{id}/tracking-points/location",
       },
+      // The body is a JSON ARRAY of `{ code, location }`, not an object,
+      // and the stop is addressed by its `code` — there is no
+      // `tracking_point_id` anywhere in this route. The mapper builds
+      // that array from the flat args the agent finds easier to write.
+      request: "trackingPointLocation",
       params: {
         id: { type: "integer", in: "path" },
+        code: {
+          type: "string",
+          description:
+            "Tracking point code from galaxy_list_tracking_points(), e.g. `STY0358`",
+        },
         address_id: {
           type: "integer",
           description: "Target address id from list_locations()",
-        },
-        tracking_point_id: {
-          type: "integer",
-          optional: true,
-          description:
-            "Specific tracking point to move — omit to move the default one",
         },
       },
       returns: { ref: "WriteResult" },

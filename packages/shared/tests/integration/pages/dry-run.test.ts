@@ -82,11 +82,29 @@ describe("datasets that name a collection", () => {
       ]),
     );
 
-    expect(result.samples.records).toEqual({
+    expect(result.samples.records).toMatchObject({
       status: "forbidden",
       rowCount: 0,
     });
-    expect(result.warnings).toContain(
+    // The `fix` is load-bearing, not decoration, so it is asserted rather than
+    // merely tolerated: `dry-run.ts` carries one because an agent that read a
+    // bare refusal status once concluded the data was unreachable and wrote 78
+    // invented rows. A refusal without an instruction is that state.
+    //
+    // Matched loosely on purpose. This test owns "a refusal says what to do
+    // about it"; it does not own the wording, and an exact match here is what
+    // broke when the field was added — a assertion that fails on a sentence
+    // nobody asked it to guard is noise, not coverage.
+    expect(result.samples.records?.fix).toMatch(/grant|access/i);
+    // A REFUSAL, not a warning, and the distinction is the point: `warnings` is
+    // advice about what to tidy, `refusals` is the class of finding that must
+    // change what gets BUILT — a page nobody on the team can ever load should
+    // not be built over that dataset at all. Asserting the wrong list would let
+    // this fall back to advice without the test noticing.
+    expect(result.refusals).toContain(
+      'dataset "records": this team cannot read that collection.',
+    );
+    expect(result.warnings).not.toContain(
       'dataset "records": this team cannot read that collection.',
     );
   });

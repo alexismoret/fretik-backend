@@ -137,12 +137,24 @@ await mockModule("../../src/services/model-registry/breaker", {
   releaseProvider: () => Promise.resolve(releaseVerdict),
 });
 
-let limitsResult: unknown = {
+/**
+ * A FACTORY, restored by `beforeEach` like every other double in this file.
+ *
+ * It was a bare `let` seeded once at module load, and two tests below reassign
+ * it. Nothing put it back, so whether the first test in this block saw its own
+ * fixture or a later test's depended entirely on the order `bun test` chose —
+ * green under one seed, red under another. It ran red for the first time on
+ * bun 1.4.2, which orders tests differently from 1.4.0; the defect was there
+ * from the start and the seed had simply been kind.
+ */
+const defaultLimitsResult = (): unknown => ({
   outcome: {
     kind: "updated",
     limits: {
       maxInputPricePerMTok: 1,
       maxOutputPricePerMTok: null,
+      minMaxOutput: null,
+      minContextLength: null,
       requireCache: false,
     },
     dropped: [
@@ -153,7 +165,9 @@ let limitsResult: unknown = {
   },
   unprovenCache: [],
   awaitsSync: false,
-};
+});
+
+let limitsResult: unknown = defaultLimitsResult();
 
 await mockModule("../../src/services/model-registry/set-model-limits", {
   setModelLimits: () => Promise.resolve(limitsResult),
@@ -201,6 +215,7 @@ beforeEach(() => {
   releaseVerdict = { kind: "no-live-row" };
   failBatchKey = undefined;
   addVerdict = { kind: "not-a-language-model" };
+  limitsResult = defaultLimitsResult();
 });
 
 describe("consequences", () => {

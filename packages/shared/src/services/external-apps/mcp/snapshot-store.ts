@@ -12,12 +12,16 @@ import {
 
 /**
  * Persistence for MCP tool snapshots — the compiled tool surface (descriptor +
- * generated stub + SKILL) keyed by fingerprint. Curated vendors share one row
- * per `(providerKey, fingerprint)`; a team's `mcp-generic` server keys by
- * `(connectionId, fingerprint)` so its tool list never leaks across tenants.
+ * generated stub + SKILL) keyed by fingerprint. Every MCP connection is a
+ * team's own server, so rows key by `(connectionId, fingerprint)` and one
+ * team's tool list never leaks across tenants. (The `connectionId IS NULL`
+ * shape is the shared-row remnant of the removed curated catalog.)
  *
- * Snapshots are content-immutable (same fingerprint ⇒ same tools), so writes
- * are get-or-insert; only `polishedAt` (the LLM enrichment) mutates later.
+ * Snapshots are content-immutable (same fingerprint ⇒ same compiled surface),
+ * so writes are get-or-insert; only `polishedAt` (the LLM enrichment) mutates
+ * later. That immutability is why the fingerprint must cover our compiler
+ * version and not just the server's tools — see `COMPILER_VERSION` in
+ * `to-descriptor.ts`.
  */
 
 /** Look up a snapshot by its scope (curated shared vs custom per-connection). */

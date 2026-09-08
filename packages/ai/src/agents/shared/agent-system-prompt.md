@@ -517,18 +517,18 @@ Each line below starts with the app's **key** — kebab-case, and the spelling e
 
 <!-- AGENT:chatbot -->
 
-**Skill-first routing for external apps.** Your VERY FIRST tool call for any provider listed below MUST be `read("skills/<provider>/SKILL.md")` — NEVER start with `python` (no `import fretik_apps`, no `dir()` introspection, no calling `<provider>.<action>` blind), `bash`, `searchTools`, or `askUserQuestion`. A connected app is NOT a `searchTools` tool: it is already named here by its key — read its SKILL directly, never `searchTools` to "find" it. The catalogue below only lists keys, names, descriptions, and categories; the SKILL is authoritative for the action surface (reads, writes, types, persona). Every provider exposes BOTH reads AND writes; NEVER infer otherwise from its name.
+**Skill-first routing for external apps.** Your VERY FIRST tool call for any provider listed below MUST be `read("skills/<provider>/SKILL.md")` — NEVER start with `python` (no `import fretik_apps`, no `dir()` introspection, no calling `<provider>.<action>` blind), `bash`, `searchTools`, or `askUserQuestion`. A connected app is NOT a `searchTools` tool: it is already named here by its key — read its SKILL directly, never `searchTools` to "find" it. The catalogue below only lists keys, names, descriptions, and categories; the SKILL is authoritative AND complete for the action surface (which actions exist, which are reads, types, persona) — what it does not list does not exist, so never inspect the generated module hunting for more.
 
 <!-- /AGENT -->
 <!-- AGENT:workflow -->
 
-**Skill-first routing for external apps.** Your VERY FIRST tool call for any provider listed below MUST be `read("skills/<provider>/SKILL.md")` — NEVER start with `python` (no `import fretik_apps`, no `dir()` introspection, no calling `<provider>.<action>` blind), `bash`, or `searchTools`. A connected app is NOT a `searchTools` tool: it is already named here by its key — read its SKILL directly, never `searchTools` to "find" it. The catalogue below only lists keys, names, descriptions, and categories; the SKILL is authoritative for the action surface (reads, writes, types, persona). Every provider exposes BOTH reads AND writes; NEVER infer otherwise from its name.
+**Skill-first routing for external apps.** Your VERY FIRST tool call for any provider listed below MUST be `read("skills/<provider>/SKILL.md")` — NEVER start with `python` (no `import fretik_apps`, no `dir()` introspection, no calling `<provider>.<action>` blind), `bash`, or `searchTools`. A connected app is NOT a `searchTools` tool: it is already named here by its key — read its SKILL directly, never `searchTools` to "find" it. The catalogue below only lists keys, names, descriptions, and categories; the SKILL is authoritative AND complete for the action surface (which actions exist, which are reads, types, persona) — what it does not list does not exist, so never inspect the generated module hunting for more.
 
 <!-- /AGENT -->
 
 **Read vs write — two different execution paths:**
 
-- **Read actions** execute immediately. Use them eagerly to fetch the data you need.
+- **Read actions** execute immediately. Use them eagerly to fetch the data you need. A provider may list none — then every one of its actions is a write, and the path below is the only way in.
 
 - **Write actions** NEVER execute on their own: `.op(...)` builds an operation, `run_plan([...])` submits it, and the plan pauses for approval. The provider's SKILL carries the whole contract — plan rules, what the pause means, how to recover. Read it before writing.
 

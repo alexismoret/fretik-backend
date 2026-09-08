@@ -9,6 +9,7 @@ import { throwHttpError } from "../../../lib/errors";
 import { extractNangoErrorDetails } from "../../../lib/external-apps/extract-nango-error";
 import { getNangoClient } from "../../../lib/external-apps/nango-client";
 import { ERROR_CODES } from "../../../schemas/errors";
+import { isMcpConnection } from "../mcp/connection-kind";
 import { invalidateConnectionCaches } from "./epoch";
 import { getConnectionForCaller } from "./get-by-id";
 import { requireNangoRef } from "./nango-ref";
@@ -44,6 +45,15 @@ export const confirmReconnect = async (params: {
     params.teamId,
     params.userId,
   );
+
+  // Nothing to confirm: an MCP connection never opened a Connect session.
+  // Say so, rather than reporting its minted key as an unknown provider.
+  if (isMcpConnection(current)) {
+    return throwHttpError(400, {
+      code: ERROR_CODES.EXTERNAL_APP_MCP_UNSUPPORTED,
+      message: "An MCP connection has no Connect UI reconnect flow.",
+    });
+  }
 
   const provider = getProvider(current.providerKey);
   if (provider === undefined) {

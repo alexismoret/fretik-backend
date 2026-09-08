@@ -80,6 +80,16 @@ export const ERROR_CODES = {
   EXTERNAL_APP_PLAN_EXECUTING: "EXTERNAL_APP_PLAN_EXECUTING",
   EXTERNAL_APP_PLAN_REJECTED: "EXTERNAL_APP_PLAN_REJECTED",
   EXTERNAL_APP_NOT_CUSTOM_HANDLER: "EXTERNAL_APP_NOT_CUSTOM_HANDLER",
+  /** An MCP connection was asked for something only a manifest provider has
+   * (a Nango credentials form, the Connect UI reconnect flow, connection
+   * options). Distinct from `PROVIDER_NOT_FOUND`, which used to be returned
+   * here and read as "your app doesn't exist" — an MCP connection has no
+   * registry entry BY DESIGN; its tools live in its snapshot. */
+  EXTERNAL_APP_MCP_UNSUPPORTED: "EXTERNAL_APP_MCP_UNSUPPORTED",
+  /** The MCP connection exists but its `tools/list` hasn't been introspected
+   * yet (`tool_fingerprint` NULL), so there is no action surface to validate
+   * against. Retryable — unlike every other code here. */
+  EXTERNAL_APP_MCP_NOT_READY: "EXTERNAL_APP_MCP_NOT_READY",
   TOOL_APPROVAL_NOT_FOUND: "TOOL_APPROVAL_NOT_FOUND",
   TOOL_APPROVAL_WRONG_STATUS: "TOOL_APPROVAL_WRONG_STATUS",
   /** Approved, then the write itself failed. The row is `failed`; re-issuing

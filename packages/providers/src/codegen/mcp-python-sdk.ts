@@ -726,6 +726,18 @@ export const compileMcpModule = (
     ref.push("");
     for (const a of reads) ref.push(actionBlock(a));
     ref.push("");
+  } else {
+    // A missing Read section is INFORMATION, not an omission — an MCP server
+    // that annotates nothing `readOnlyHint` gets every tool classified write,
+    // and the prompt promises reads exist. Measured cost of leaving that
+    // unsaid: six steps of grepping `_runtime.py` and the generated module for
+    // an eager read path, then trusting the SKILL anyway. One line closes it.
+    ref.push("## Read actions");
+    ref.push("");
+    ref.push(
+      "None — this server declares no read-only tool, so every action below goes through `.op()` + `run_plan([...])`, including the ones that only fetch data. There is no eager read path in this module; do not go looking for one.",
+    );
+    ref.push("");
   }
   if (writes.length > 0) {
     ref.push("## Write actions (require user approval — build with `.op()`)");

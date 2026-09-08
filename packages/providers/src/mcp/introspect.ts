@@ -15,11 +15,11 @@ import { compileMcpModule, emitMcpSkill } from "../codegen";
  * that can import BOTH the codegen (here) and the shared MCP building blocks
  * — the api confirm handler calls it as a one-liner (handlers stay thin).
  *
- * Trust comes from the persisted discovery metadata: an official (`verified`)
- * server's reads auto-run (`trust: "curated"`), everything else gates
- * (`"custom"`); writes always gate. Every snapshot is connection-scoped. The
- * direct transport (`mcpListTools`) reaches the server via the connection's
- * stored URL + per-kind auth — introspection knows nothing about the transport.
+ * Read/write and the approval default come from the tools' own MCP annotations
+ * (see `mcpToolsToDescriptor`), not from a vendor trust list. Every snapshot is
+ * connection-scoped. The direct transport (`mcpListTools`) reaches the server
+ * via the connection's stored URL + per-kind auth — introspection knows nothing
+ * about the transport.
  */
 
 /**
@@ -39,9 +39,6 @@ export interface McpIntrospectionResult {
 export const introspectMcpConnection = async (
   ref: McpConnectionRef,
 ): Promise<McpIntrospectionResult> => {
-  // An official (verified) server's reads auto-run; everything else gates.
-  const verified = ref.catalogMeta?.verified === true;
-
   const tools = await mcpListTools(ref);
 
   const descriptor = mcpToolsToDescriptor({
@@ -50,7 +47,6 @@ export const introspectMcpConnection = async (
     description: ref.description ?? undefined,
     categories: ref.catalogMeta?.categories ?? ["productivity"],
     tools,
-    trust: verified ? "curated" : "custom",
   });
 
   // High-fidelity path: the stub + SKILL reference compile straight from the

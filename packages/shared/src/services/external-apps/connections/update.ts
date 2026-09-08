@@ -15,8 +15,42 @@ import {
   type ToolPolicyLevel,
   toolPolicyLevelSchema,
 } from "../../../schemas/tool-policies";
+import { isMcpConnection } from "../mcp/connection-kind";
+import { getSnapshotForConnection } from "../mcp/snapshot-store";
 import { invalidateConnectionCaches } from "./epoch";
 import { getConnectionForCaller } from "./get-by-id";
+
+/**
+ * The names a connection's `actionPolicies` may key on. An MCP connection has
+ * NO registry entry — its provider key is a minted slug and its action surface
+ * lives in the introspected snapshot — so validating it against the manifest
+ * registry returned `404 Unknown provider` for every MCP connection, while the
+ * settings UI happily rendered the very rows the PATCH then refused. Same
+ * source as the read path (`toConnectionDto`) and the dispatch path
+ * (`exec/mcp-read.ts`): the snapshot descriptor.
+ */
+const resolveActionNames = async (
+  connection: ExternalAppConnection,
+): Promise<Set<string>> => {
+  if (isMcpConnection(connection)) {
+    const snapshot = await getSnapshotForConnection(connection);
+    if (snapshot === undefined) {
+      return throwHttpError(409, {
+        code: ERROR_CODES.EXTERNAL_APP_MCP_NOT_READY,
+        message: `Connection "${connection.displayName}" has no tool list yet — its server hasn't been introspected. Retry once it is ready.`,
+      });
+    }
+    return new Set(snapshot.descriptor.actions.map((a) => a.name));
+  }
+  const provider = getProvider(connection.providerKey);
+  if (provider === undefined) {
+    return throwHttpError(404, {
+      code: ERROR_CODES.EXTERNAL_APP_PROVIDER_NOT_FOUND,
+      message: `Unknown provider: ${connection.providerKey}`,
+    });
+  }
+  return new Set(provider.manifest.actions.map((a) => a.name));
+};
 
 /**
  * Rename a connection, flip its status (`active` ↔ `disabled`) or update
@@ -84,14 +118,7 @@ export const updateConnection = async (params: {
         message: "Only an admin can change a team connection's permissions.",
       });
     }
-    const provider = getProvider(current.providerKey);
-    if (provider === undefined) {
-      return throwHttpError(404, {
-        code: ERROR_CODES.EXTERNAL_APP_PROVIDER_NOT_FOUND,
-        message: `Unknown provider: ${current.providerKey}`,
-      });
-    }
-    const actionNames = new Set(provider.manifest.actions.map((a) => a.name));
+    const actionNames = await resolveActionNames(current);
     const merged: Record<string, ToolPolicyLevel> = {
       ...(current.actionPolicies ?? {}),
     };
@@ -119,6 +146,15 @@ export const updateConnection = async (params: {
   }
 
   if (params.options !== undefined) {
+    // `connectionOptions` is a manifest descriptor; an MCP connection has no
+    // manifest, so there is nothing to validate against — say that, rather than
+    // letting `getProvider` below report its key as unknown.
+    if (isMcpConnection(current)) {
+      return throwHttpError(400, {
+        code: ERROR_CODES.EXTERNAL_APP_MCP_UNSUPPORTED,
+        message: "An MCP connection accepts no connection options.",
+      });
+    }
     const provider = getProvider(current.providerKey);
     if (provider === undefined) {
       return throwHttpError(404, {

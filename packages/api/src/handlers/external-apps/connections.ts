@@ -9,6 +9,7 @@ import { searchMcpServers } from "@fretik/shared/lib/mcp-registry/client";
 import { paramsIdSchema } from "@fretik/shared/schemas/common/params";
 import {
   responseBadRequestSchema,
+  responseConflictSchema,
   responseForbiddenSchema,
   responseInternalErrorSchema,
   responseNotFoundSchema,
@@ -278,7 +279,7 @@ const updateRoute = createRoute({
   path: "/connections/{id}",
   summary: "Rename a connection or flip its status",
   description:
-    "Partial update — send any combination of `displayName` and `status`. Flipping `status` to `active` clears `lastErrorMessage` (typical recovery after a manual reconnect).",
+    "Partial update — send any combination of `displayName` and `status`. Flipping `status` to `active` clears `lastErrorMessage` (typical recovery after a manual reconnect). `actionPolicies` are validated against the connection's own action surface: the provider manifest for a catalogue app, the introspected tool snapshot for an MCP server — which answers `409 EXTERNAL_APP_MCP_NOT_READY` while that snapshot is still being built.",
   tags: ["ExternalApps"],
   request: {
     params: paramsIdSchema,
@@ -299,6 +300,7 @@ const updateRoute = createRoute({
     ...responseBadRequestSchema,
     ...responseForbiddenSchema,
     ...responseNotFoundSchema,
+    ...responseConflictSchema,
     ...responseInternalErrorSchema,
   },
 });

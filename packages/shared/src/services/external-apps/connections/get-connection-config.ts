@@ -5,6 +5,7 @@ import { throwHttpError } from "../../../lib/errors";
 import { extractNangoErrorDetails } from "../../../lib/external-apps/extract-nango-error";
 import { getNangoClient } from "../../../lib/external-apps/nango-client";
 import { ERROR_CODES } from "../../../schemas/errors";
+import { isMcpConnection } from "../mcp/connection-kind";
 import { getConnectionForCaller } from "./get-by-id";
 import { requireNangoRef } from "./nango-ref";
 
@@ -34,6 +35,15 @@ export const getConnectionConfigForReconnect = async (params: {
     params.teamId,
     params.userId,
   );
+
+  // An MCP connection has no `credentialsForm` descriptor to filter against —
+  // its auth is `mcpAuthKind` + the stored server URL. Nothing to pre-fill.
+  if (isMcpConnection(row)) {
+    return throwHttpError(400, {
+      code: ERROR_CODES.EXTERNAL_APP_MCP_UNSUPPORTED,
+      message: "An MCP connection has no credentials form to pre-fill.",
+    });
+  }
 
   const provider = getProvider(row.providerKey);
   if (provider === undefined) {

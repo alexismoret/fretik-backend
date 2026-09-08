@@ -20,7 +20,8 @@ import { extractFrameworkArgs } from "./framework-args";
  * loaded, and the matched descriptor action is dispatched to the MCP server
  * via `mcpCallTool` (with the real hyphenated `mcpToolName`), its result
  * normalized. Same policy/approval gate as the manifest path, keyed off the
- * descriptor's `approvalDefault` (curated reads auto-run; custom gate).
+ * descriptor's `approvalDefault` — `auto` for a tool its server declared
+ * read-only, overridable per connection via `actionPolicies`.
  */
 export const dispatchMcpRead = async (
   ctx: ExecContext,

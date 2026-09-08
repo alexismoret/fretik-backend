@@ -4,6 +4,7 @@ import { buildIntegrationsConfigDefaults } from "../../../lib/external-apps/buil
 import { extractNangoErrorDetails } from "../../../lib/external-apps/extract-nango-error";
 import { getNangoClient } from "../../../lib/external-apps/nango-client";
 import { ERROR_CODES } from "../../../schemas/errors";
+import { isMcpConnection } from "../mcp/connection-kind";
 import { getConnectionForCaller } from "./get-by-id";
 import { requireNangoRef } from "./nango-ref";
 
@@ -37,6 +38,18 @@ export const createReconnectSession = async (params: {
     params.teamId,
     params.userId,
   );
+
+  // MCP connections don't go through Connect UI at all — they authenticate
+  // against their own server URL per `mcpAuthKind`. Reaching the registry with
+  // their minted key would report the connection's provider as unknown, which
+  // is not what is wrong.
+  if (isMcpConnection(row)) {
+    return throwHttpError(400, {
+      code: ERROR_CODES.EXTERNAL_APP_MCP_UNSUPPORTED,
+      message:
+        "An MCP connection has no Connect UI reconnect flow — delete and re-add the server instead.",
+    });
+  }
 
   const provider = getProvider(row.providerKey);
   if (provider === undefined) {

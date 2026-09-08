@@ -86,9 +86,15 @@ const UUID_RE =
  * side stalls). Persistence failures are logged and skipped — the
  * recorder is a crash-recovery net, never a turn blocker.
  *
- * No trailing flush on clean completion: the turn's `onFinish` writes the
- * authoritative final rows; flushing here as well would just race it (and
- * the partial-gated upsert would no-op anyway once the final row landed).
+ * The trailing flush in `finally` runs on EVERY outcome, clean completion
+ * included — see the comment on it. It reads like a redundant race with
+ * `onFinish`, which writes the authoritative rows moments later, and the
+ * partial-gated upsert does make the two converge in either order. It is not
+ * redundant: between 2026-08-28 and 2026-09-07 `onFinish`'s transaction threw
+ * on every turn (a malformed `uuid[]` cast in `deleteStalePartialMessages`),
+ * and this flush is the only reason 138 finished answers are still in the
+ * table rather than truncated at the second-to-last flush. Do not remove it
+ * because it looks like a no-op on the happy path.
  */
 export const recordTurnIncrementally = async (params: {
   conversationId: string;

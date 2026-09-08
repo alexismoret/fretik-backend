@@ -100,6 +100,7 @@ import {
   streamWithRetryThenFallback,
   withSoftTimeout,
 } from "../lib/stream-errors";
+import { dropNonTerminalErrorFrames } from "../lib/wire-errors";
 import { triggerCallbackMiddleware } from "../middlewares/trigger-callback";
 import { microcompactMessages } from "../services/compaction/microcompact";
 import {
@@ -629,7 +630,8 @@ const executeTurn = async (params: {
       streamId,
       uiStream
         .pipeThrough(taskUpdateTap)
-        .pipeThrough(buildSensitiveInputScrubber()),
+        .pipeThrough(buildSensitiveInputScrubber())
+        .pipeThrough(dropNonTerminalErrorFrames()),
     );
     turnLogEnded = true;
     // v7: `result.usage` is the all-steps turn total (v6's `totalUsage`).

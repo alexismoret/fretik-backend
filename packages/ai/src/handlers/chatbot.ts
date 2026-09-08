@@ -125,19 +125,24 @@ import type { ModelProfile, ReasoningLevel } from "../lib/model-registry/types";
 import { buildSensitiveInputScrubber } from "../lib/scrub-stream";
 import { createSseEventQueue } from "../lib/sse-event-queue";
 import { withHeartbeat } from "../lib/sse-heartbeat";
+import type { StreamErrorClassification } from "../lib/stream-errors";
 import {
   classifyStreamError,
   describeStreamError,
   FAILOVER_SENTINEL,
   isRecoverableToolCallError,
   isTransparentlyRecoverable,
+  NON_TERMINAL_STEP_ERROR,
   streamWithRetryThenFallback,
+  TOOL_INPUT_RETRY_NOTICE,
   toStructuredError,
+  USER_STOP_NOTICE,
   withSoftTimeout,
 } from "../lib/stream-errors";
 import { withNamedTrace } from "../lib/trace-tool";
 import { forgetTurnUsage, readTurnUsage } from "../lib/turn-usage";
 import { uuidv7TimestampMs } from "../lib/uuidv7-time";
+import { dropNonTerminalErrorFrames } from "../lib/wire-errors";
 import { chatbotRateLimitMiddleware } from "../middlewares/chatbot-rate-limit";
 import { internalMiddleware } from "../middlewares/internal";
 import { sendChatbotFinishedEmailIfEnabled } from "../services/chatbot-finished-email";
@@ -1136,6 +1141,14 @@ export const runChatbotTurn = async (
   // GET reconnect only replays the Redis buffer, it does not re-run the
   // turn), so there is nothing to synchronise cross-replica here.
   const emittedWireErrors = new Set<string>();
+  // Whether a terminal (structured) frame is already on the wire. The two
+  // sites that can put one there — `recordStreamError` for a fatal error,
+  // the post-merge branch for a transient one that turned out to be fatal
+  // after all — must not both fire for the same failure. A flag, not string
+  // equality on the frame: `resume` is read from live turn state and could
+  // differ between the two reads, which would slip a duplicate past
+  // `emittedWireErrors`.
+  let terminalFrameOnWire = false;
   const onTurnStep: GenerateTextOnStepEndCallback<ChatbotTools> = (step) => {
     const calledTool = step.toolCalls.length > 0 || step.toolResults.length > 0;
     if (calledTool) turnFlags.toolExecuted = true;
@@ -1153,12 +1166,49 @@ export const runChatbotTurn = async (
     !turnFlags.visibleText &&
     !turnFlags.failoverAttempted &&
     isTransparentlyRecoverable(classifyStreamError(err));
-  // Map a stream error onto the wire. Transparent failures return the
-  // sentinel (the recovery seam re-streams the fallback; the eval harness
-  // and the chat client treat it as a no-op). Everything else returns a
-  // structured retryable error the client renders with a one-click retry;
-  // `resume` tells it to CONTINUE the turn (a tool already ran — replaying
-  // would repeat the side effect) rather than regenerate from scratch.
+  /**
+   * The wire frame for a turn we are calling dead, plus the two side effects
+   * that go with that verdict: the trace's ERROR status, and the marker that
+   * escalates the NEXT turn to the fallback model (skipped for pinned
+   * callers — no conversationId, or a caller-supplied agentSet: eval gate /
+   * workers). Shared by `recordStreamError` (fatal, decided inline) and the
+   * post-merge branch (transient, decided once the stream has rejected), so
+   * both spellings of "the turn died" have exactly one implementation.
+   *
+   * `resume` tells the client to CONTINUE the turn (a tool already ran —
+   * replaying would repeat the side effect) rather than regenerate.
+   */
+  const terminalErrorFrame = (
+    classification: StreamErrorClassification,
+  ): string => {
+    // The side effects belong to the FIRST verdict only — both callers can
+    // reach this for the same failure (fatal: `onError` decides, then the
+    // post-merge branch confirms), and `errorStatus` is the once-flag for
+    // both, so the escalation marker is not re-armed on the second pass.
+    if (turnTrace.errorStatus === undefined) {
+      turnTrace.errorStatus = `${classification.kind}/${classification.reason}`;
+      if (
+        params.conversationId !== undefined &&
+        params.agentSet === undefined
+      ) {
+        markMidstreamError(params.conversationId, classification.reason);
+      }
+    }
+    return JSON.stringify(
+      toStructuredError(classification, {
+        resume: turnFlags.toolExecuted,
+        ...(turnTrace.traceId !== undefined
+          ? { traceId: turnTrace.traceId }
+          : {}),
+      }),
+    );
+  };
+  // Map a stream error onto the wire. Three outcomes, and only the last one
+  // reaches the user: the transparent-failover sentinel (the recovery seam
+  // re-streams the fallback), the non-terminal marker (the agent loop may
+  // still recover — both are stripped before the wire by
+  // `dropNonTerminalErrorFrames`), or a structured fatal frame the client
+  // renders with a one-click retry.
   const recordStreamError = (err: unknown): string => {
     // Second-pass short-circuit (see `emittedWireErrors`): the outer stream
     // re-enters this handler with `new Error(<string we already returned>)`.
@@ -1172,7 +1222,7 @@ export const runChatbotTurn = async (
     };
     if (abortController.signal.aborted) {
       console.info(`${params.logPrefix} stream ended after user abort`);
-      return emit("Stopped.");
+      return emit(USER_STOP_NOTICE);
     }
     // A bad tool input / unknown tool is NOT a turn death: the SDK already fed
     // it back to the model as a recoverable tool-error part (multi-step). Label
@@ -1181,7 +1231,7 @@ export const runChatbotTurn = async (
       console.info(
         `${params.logPrefix} recoverable tool-call error (${err instanceof Error ? err.name : "unknown"}) — model self-corrects`,
       );
-      return emit("Invalid tool input — adjust the arguments and retry.");
+      return emit(TOOL_INPUT_RETRY_NOTICE);
     }
     const classification = classifyStreamError(err);
     // Log the full error OBJECT (stack + cause chain) — a name/message
@@ -1191,46 +1241,40 @@ export const runChatbotTurn = async (
       err,
     );
     const transparent = isTransparentFailure(err);
-    // Land the raw error on the Langfuse trace: a WARNING event when the
-    // failover absorbs it transparently, an ERROR event when a structured
-    // frame reaches the wire. Without this, an errored turn has zero
+    // A transient failure is NOT a verdict on the turn. The AI SDK's agent
+    // loop turns a mid-stream provider error into a failed STEP and keeps
+    // looping — measured on a NextBit 502 (prod 2026-09-08): errored at
+    // step 2, answered at step 8 three minutes later, `result.text`
+    // resolving normally. `onError` runs while that is still open, so it
+    // declares nothing terminal here; the post-merge branch, which knows
+    // whether the stream actually died, writes the terminal frame.
+    const terminal = !transparent && classification.kind === "fatal";
+    // Land the raw error on the Langfuse trace: ERROR only when the turn is
+    // being called dead, WARNING when it is absorbed (transparent failover,
+    // or a step the loop can retry). Without this, an errored turn has zero
     // ERROR observation and every debug session restarts from the dev
     // console. Point-in-time event, parented explicitly (see turnTrace).
     if (turnTrace.spanContext !== undefined) {
       startObservation(
         "turn-error",
         {
-          level: transparent ? "WARNING" : "ERROR",
+          level: terminal ? "ERROR" : "WARNING",
           statusMessage: `${classification.kind}/${classification.reason}`,
           input: describeStreamError(err),
           metadata: {
             reason: classification.reason,
             kind: classification.kind,
             transparentFailover: String(transparent),
+            terminal: String(terminal),
           },
         },
         { asType: "event", parentSpanContext: turnTrace.spanContext },
       );
     }
     if (transparent) return emit(FAILOVER_SENTINEL);
-    turnTrace.errorStatus ??= `${classification.kind}/${classification.reason}`;
-    // Mark the conversation so the NEXT turn (the user's retry — possibly on
-    // another replica) escalates to the fallback model instead of dying the
-    // same way on the same primary. Skipped for pinned callers (no
-    // conversationId, or a caller-supplied agentSet — eval gate / workers).
-    if (params.conversationId !== undefined && params.agentSet === undefined) {
-      markMidstreamError(params.conversationId, classification.reason);
-    }
-    return emit(
-      JSON.stringify(
-        toStructuredError(classification, {
-          resume: turnFlags.toolExecuted,
-          ...(turnTrace.traceId !== undefined
-            ? { traceId: turnTrace.traceId }
-            : {}),
-        }),
-      ),
-    );
+    if (!terminal) return emit(NON_TERMINAL_STEP_ERROR);
+    terminalFrameOnWire = true;
+    return emit(terminalErrorFrame(classification));
   };
 
   // Build the response stream via `createUIMessageStream({ execute })`.
@@ -1843,9 +1887,20 @@ export const runChatbotTurn = async (
           } else {
             // Fatal, or a mid-stream socket drop (recovered by the
             // resumable-stream reconnect, not a model swap), or the
-            // failover was already spent. The structured error is on the
-            // wire; partial messages persist via `onFinish`. Log only.
+            // failover was already spent. THIS is where a turn is known to
+            // be dead: the stream rejected instead of resolving. A fatal
+            // error already put its frame on the wire from `onError`
+            // (`emittedWireErrors` makes `terminalErrorFrame` idempotent
+            // for it); a transient one was deliberately left non-terminal
+            // there, so its frame is written here — the only place with
+            // the evidence to justify it. Partials persist via `onFinish`.
             recoveryKind = "structured-error";
+            if (!terminalFrameOnWire) {
+              terminalFrameOnWire = true;
+              const frame = terminalErrorFrame(classification);
+              emittedWireErrors.add(frame);
+              writer.write({ type: "error", errorText: frame });
+            }
             console.error(
               `${params.logPrefix} pre-output ${classification.kind}/${classification.reason} — structured retryable error on the wire:`,
               streamRejection,
@@ -2059,17 +2114,19 @@ export const runChatbotTurn = async (
     // tool-call gaps alive on the raw pipe.
     return wrapResponseWithSseHeartbeat(
       createUIMessageStreamResponse({
-        stream:
-          params.scrubSensitiveInputs === false
-            ? rawStream
-            : rawStream.pipeThrough(buildSensitiveInputScrubber()),
+        stream: (params.scrubSensitiveInputs === false
+          ? rawStream
+          : rawStream.pipeThrough(buildSensitiveInputScrubber())
+        ).pipeThrough(dropNonTerminalErrorFrames()),
       }),
     );
   }
 
   // Incremental persistence rides a PRE-scrub tee: persisted parts carry
   // the real tool inputs (matching the final `onFinish` write), while the
-  // wire — turn log included — only ever sees scrubbed frames.
+  // wire — turn log included — only ever sees scrubbed frames. The recorder
+  // needs no error filtering of its own: it already reads with
+  // `terminateOnError: false` (services/ai/turn-recorder).
   const [recorderBranch, wireBranch] = rawStream.tee();
   if (params.conversationId) {
     void recordTurnIncrementally({
@@ -2080,10 +2137,15 @@ export const runChatbotTurn = async (
   } else {
     void recorderBranch.cancel();
   }
-  const outboundStream =
+  // The non-terminal error drop is NOT conditional on `scrubSensitiveInputs`
+  // — it is not about secrets. It runs on every wire, so the turn log (which
+  // every viewer and every resume replays) never carries a frame that would
+  // make the client SDK stop reading a turn that is still alive.
+  const outboundStream = (
     params.scrubSensitiveInputs === false
       ? wireBranch
-      : wireBranch.pipeThrough(buildSensitiveInputScrubber());
+      : wireBranch.pipeThrough(buildSensitiveInputScrubber())
+  ).pipeThrough(dropNonTerminalErrorFrames());
 
   // Turn-log transport. The pump is the ONLY wire consumer of the SDK
   // stream: it drives generation to completion (so `onFinish` —

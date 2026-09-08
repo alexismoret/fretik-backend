@@ -1,4 +1,9 @@
-import { APICallError, InvalidToolInputError, NoSuchToolError } from "ai";
+import {
+  APICallError,
+  InvalidToolInputError,
+  NoSuchToolError,
+  StreamProviderError,
+} from "ai";
 
 /**
  * Turn-robustness primitives (chantier C4). A turn must never die in
@@ -43,6 +48,47 @@ export interface StructuredStreamError {
  * error) — the fallback's answer follows on the same stream.
  */
 export const FAILOVER_SENTINEL = "__fretik_transparent_failover__";
+
+/**
+ * Sentinel `errorText` for a step-level provider failure the agent loop
+ * can survive. The AI SDK's `ToolLoopAgent` turns a mid-stream provider
+ * error into a failed STEP and keeps looping — measured 2026-09-08 on a
+ * NextBit 502 (`isRetryable: true`): the turn errored at step 2 and
+ * answered normally at step 8, three minutes later. `onError` fires while
+ * that is still undecided, so a transient error is marked non-terminal
+ * here and the wire frame is written later, from the post-merge branch
+ * that actually knows whether the turn died.
+ *
+ * Never reaches the client: `dropNonTerminalErrorFrames` (lib/wire-errors)
+ * strips it — see that module for why an `error` frame is not free.
+ */
+export const NON_TERMINAL_STEP_ERROR = "__fretik_non_terminal_step_error__";
+
+/**
+ * `errorText` for a tool-call shaping failure. The SDK already fed it back
+ * to the model as a recoverable `tool-error` part, so the turn continues —
+ * non-terminal, and stripped from the wire like the two sentinels above.
+ */
+export const TOOL_INPUT_RETRY_NOTICE =
+  "Invalid tool input — adjust the arguments and retry.";
+
+/** `errorText` for a stream that ended because the user (or a teammate) hit Stop. */
+export const USER_STOP_NOTICE = "Stopped.";
+
+/**
+ * Every `errorText` that means "keep going" rather than "this turn is
+ * dead". Under ai@7.0.85 the client SDK THROWS on any `error` chunk
+ * (`processUIMessageStream` is wired `onError: (e) => { throw e }`), which
+ * kills its consumption of the rest of the turn — so a frame that only
+ * meant "a step hiccuped" silently froze the UI. These never reach the
+ * wire; see `dropNonTerminalErrorFrames` in lib/wire-errors.
+ */
+export const NON_TERMINAL_WIRE_ERRORS: ReadonlySet<string> = new Set([
+  FAILOVER_SENTINEL,
+  NON_TERMINAL_STEP_ERROR,
+  TOOL_INPUT_RETRY_NOTICE,
+  USER_STOP_NOTICE,
+]);
 
 /** Pre-stream backoff before retrying the SAME model once (ms). */
 export const PRIMARY_RETRY_BACKOFF_MS = 400;
@@ -181,7 +227,8 @@ const objectErrorString = (obj: object): string => {
 /**
  * Flatten an unknown error to a searchable string, unwrapping one level
  * of `.cause` (wrapped `fetch` failures nest the original underneath)
- * and folding in a Node-style `.code` when present. A non-Error object is
+ * and folding in a `.code` when present — string (Node-style `ECONNRESET`)
+ * OR number (`StreamProviderError` carries an HTTP-shaped 502). A non-Error object is
  * serialised via `objectErrorString` (never `""` — an empty string
  * classifies as fatal/unknown and drops the root cause). Uses `in`
  * guards — no `as` cast.
@@ -190,8 +237,11 @@ const errorString = (err: unknown): string => {
   if (typeof err === "string") return err;
   if (err instanceof Error) {
     let text = `${err.name}: ${err.message}`;
-    if ("code" in err && typeof err.code === "string") {
-      text += ` | code: ${err.code}`;
+    if (
+      "code" in err &&
+      (typeof err.code === "string" || typeof err.code === "number")
+    ) {
+      text += ` | code: ${String(err.code)}`;
     }
     if ("cause" in err && err.cause !== undefined && err.cause !== null) {
       const cause = err.cause;
@@ -269,6 +319,30 @@ const make = (
   statusCode === undefined ? { kind, reason } : { kind, reason, statusCode };
 
 /**
+ * Map an HTTP-shaped status onto a classification. Shared by every branch
+ * that has one — `APICallError` (request layer) and `StreamProviderError`
+ * (mid-stream, ai@7.0.85+) — so the two can never disagree about what a
+ * 502 means. `undefined` = no usable status; the caller falls through to
+ * the provider's own retry flag, then to the regexes.
+ */
+const fromHttpStatus = (
+  status: number | undefined,
+  isRetryable: boolean,
+): StreamErrorClassification | undefined => {
+  if (status === undefined) return undefined;
+  if (status === 429) return make("transient", "rate_limited", 429);
+  if (status === 408) return make("transient", "request_timeout", 408);
+  if (status >= 500) return make("transient", "server_error", status);
+  if (status === 401 || status === 403) return make("fatal", "auth", status);
+  if (status >= 400) {
+    return isRetryable
+      ? make("transient", "provider_retryable", status)
+      : make("fatal", "client_error", status);
+  }
+  return undefined;
+};
+
+/**
  * Classify a streaming error. Transient = retry / failover is safe:
  * 429, 408, 5xx, an empty provider pool / ZDR-no-endpoints, network
  * resets, or any error the provider flagged `isRetryable`. Fatal =
@@ -296,17 +370,23 @@ export const classifyStreamError = (
     return make("transient", "gateway_error", status);
 
   if (APICallError.isInstance(err)) {
-    if (status === 429) return make("transient", "rate_limited", 429);
-    if (status === 408) return make("transient", "request_timeout", 408);
-    if (status !== undefined && status >= 500)
-      return make("transient", "server_error", status);
-    if (status === 401 || status === 403) return make("fatal", "auth", status);
-    if (status !== undefined && status >= 400) {
-      return err.isRetryable
-        ? make("transient", "provider_retryable", status)
-        : make("fatal", "client_error", status);
-    }
+    const byStatus = fromHttpStatus(status, err.isRetryable);
+    if (byStatus !== undefined) return byStatus;
     // Status-less APICallError (network layer): trust the provider flag.
+    if (err.isRetryable) return make("transient", "provider_retryable");
+  }
+
+  // A provider failure raised AFTER the response stream started (ai@7.0.85+).
+  // It is NOT an `APICallError` — it carries its own `statusCode` / `code` /
+  // `isRetryable`, and it reaches us as an `Error`, which the plain-object
+  // branch below deliberately skips. Without this branch a NextBit 502
+  // flagged `isRetryable: true` classified as fatal/unknown (measured in
+  // prod 2026-09-08), which put a terminal error frame on the wire for a
+  // turn that went on to answer normally.
+  if (StreamProviderError.isInstance(err)) {
+    const code = typeof err.code === "number" ? err.code : undefined;
+    const byStatus = fromHttpStatus(err.statusCode ?? code, err.isRetryable);
+    if (byStatus !== undefined) return byStatus;
     if (err.isRetryable) return make("transient", "provider_retryable");
   }
 

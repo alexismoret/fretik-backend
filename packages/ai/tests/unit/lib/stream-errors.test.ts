@@ -5,12 +5,13 @@
  * burns the fallback on a fatal error or hides a transient one.
  */
 
-import { APICallError } from "ai";
+import { APICallError, StreamProviderError } from "ai";
 import { describe, expect, test } from "bun:test";
 import {
   classifyStreamError,
   delay,
   describeStreamError,
+  isRecoverableToolCallError,
   isTransparentlyRecoverable,
   retryAfterMs,
   toStructuredError,
@@ -261,6 +262,139 @@ describe("classifyStreamError", () => {
       expect(
         classifyStreamError({ code: 404, message: "No endpoints found" }),
       ).toMatchObject({ kind: "transient", reason: "empty_provider_pool" });
+    });
+  });
+
+  /**
+   * `StreamProviderError` is the class the SDK raises for a provider failure
+   * reported AFTER the response stream started (new in ai@7.0.85). It is an
+   * `Error`, so the plain-object branch above skips it by construction, and
+   * it is NOT an `APICallError`, so the status branch skipped it too — a
+   * NextBit 502 flagged `isRetryable: true` classified fatal/unknown in prod
+   * (2026-09-08) and put a terminal frame on the wire for a turn that went
+   * on to answer. Each case below fails without the dedicated branch.
+   */
+  describe("StreamProviderError (mid-stream provider failure)", () => {
+    const streamError = (opts: {
+      message?: string;
+      code?: string | number;
+      statusCode?: number;
+      isRetryable?: boolean;
+    }): StreamProviderError =>
+      new StreamProviderError({
+        message: opts.message ?? "Upstream error from SomeHost: it broke",
+        ...(opts.code !== undefined ? { code: opts.code } : {}),
+        ...(opts.statusCode !== undefined
+          ? { statusCode: opts.statusCode }
+          : {}),
+        ...(opts.isRetryable !== undefined
+          ? { isRetryable: opts.isRetryable }
+          : {}),
+      });
+
+    test("the prod NextBit 502 → transient/server_error", () => {
+      expect(
+        classifyStreamError(
+          streamError({
+            message:
+              "Upstream error from NextBit: upstream model did not return a valid tool call",
+            code: 502,
+            statusCode: 502,
+            isRetryable: true,
+          }),
+        ),
+      ).toEqual({ kind: "transient", reason: "server_error", statusCode: 502 });
+    });
+
+    test("429 → transient/rate_limited", () => {
+      expect(classifyStreamError(streamError({ statusCode: 429 }))).toEqual({
+        kind: "transient",
+        reason: "rate_limited",
+        statusCode: 429,
+      });
+    });
+
+    test("408 → transient/request_timeout", () => {
+      expect(classifyStreamError(streamError({ statusCode: 408 }))).toEqual({
+        kind: "transient",
+        reason: "request_timeout",
+        statusCode: 408,
+      });
+    });
+
+    test("401 → fatal/auth even when the provider claims retryable", () => {
+      expect(
+        classifyStreamError(
+          streamError({ statusCode: 401, isRetryable: true }),
+        ),
+      ).toEqual({ kind: "fatal", reason: "auth", statusCode: 401 });
+    });
+
+    test("a 4xx the provider flags retryable → transient/provider_retryable", () => {
+      expect(
+        classifyStreamError(
+          streamError({ statusCode: 425, isRetryable: true }),
+        ),
+      ).toEqual({
+        kind: "transient",
+        reason: "provider_retryable",
+        statusCode: 425,
+      });
+    });
+
+    test("a 4xx the provider does NOT flag retryable → fatal/client_error", () => {
+      expect(
+        classifyStreamError(
+          streamError({ statusCode: 422, isRetryable: false }),
+        ),
+      ).toEqual({ kind: "fatal", reason: "client_error", statusCode: 422 });
+    });
+
+    test("numeric `code` stands in for a missing `statusCode`", () => {
+      expect(classifyStreamError(streamError({ code: 503 }))).toEqual({
+        kind: "transient",
+        reason: "server_error",
+        statusCode: 503,
+      });
+    });
+
+    test("no status at all, but flagged retryable → transient/provider_retryable", () => {
+      expect(
+        classifyStreamError(
+          streamError({ message: "it broke", isRetryable: true }),
+        ),
+      ).toEqual({ kind: "transient", reason: "provider_retryable" });
+    });
+
+    test("no status, not retryable → fatal/unknown", () => {
+      expect(
+        classifyStreamError(
+          streamError({ message: "it broke", isRetryable: false }),
+        ),
+      ).toEqual({ kind: "fatal", reason: "unknown" });
+    });
+
+    test("an empty pool reported mid-stream still wins over the status branch", () => {
+      expect(
+        classifyStreamError(
+          streamError({
+            message: "No endpoints found matching your data policy",
+            statusCode: 404,
+          }),
+        ),
+      ).toMatchObject({ kind: "transient", reason: "empty_provider_pool" });
+    });
+
+    test("a tool-shaping failure is still recognised as recoverable, not a stream death", () => {
+      // The agent self-corrects on the next step; misreading this as a turn
+      // death is what put a red alert on a healthy turn.
+      expect(
+        isRecoverableToolCallError(
+          streamError({
+            message: "AI_InvalidToolInputError: Invalid input for tool read",
+          }),
+        ),
+      ).toBe(true);
     });
   });
 });

@@ -18,7 +18,7 @@
  * produces a partial result rather than throwing.
  */
 
-import { FAILOVER_SENTINEL } from "../src/lib/stream-errors";
+import { NON_TERMINAL_WIRE_ERRORS } from "../src/lib/stream-errors";
 import type { InvokeResult, ToolCallTrace } from "./types";
 
 type UnknownRecord = Record<string, unknown>;
@@ -184,11 +184,13 @@ export const absorbChunk = (chunk: UnknownRecord, state: StreamState): void => {
       // 2026-06-12 M3 gate failure mode. Keep the FIRST error: it is
       // the root cause; later frames are downstream noise.
       const text = readString(chunk, "errorText");
-      // C4: a transparent failover emits a sentinel error frame before
-      // re-streaming on the fallback. It is NOT a turn error — the
-      // fallback's answer follows — so ignore it (else a recovered turn
-      // would score as failed and `servedBy:"fallback"` already flags it).
-      if (text === FAILOVER_SENTINEL) return;
+      // Not every error frame is a turn error. A transparent failover, a
+      // provider step the agent loop absorbs, a tool input the model
+      // self-corrects — the answer still follows, so scoring these as
+      // failures marked recovered turns as failed (and `servedBy` already
+      // flags a failover). The service strips them before the wire now;
+      // this stays as the guard for a run against an older service.
+      if (text !== undefined && NON_TERMINAL_WIRE_ERRORS.has(text)) return;
       // A structured error frame carries the turn's `traceId` — the only
       // chance to capture it on an errored turn (no finish metadata ever
       // arrives), so the failing trace stays reachable from TaskOutput.

@@ -186,9 +186,93 @@ interface BatchMiss {
   query: string;
 }
 
+/**
+ * Embeddings currently being resolved, by cache key.
+ *
+ * The Redis cache only helps once a vector is WRITTEN; it does nothing for
+ * requests that are in the air at the same instant. Pre-turn recall fans out
+ * three `searchRAG` arms built from ONE query string
+ * (`buildRecallQuery`) inside a single `Promise.all`, so all three reach
+ * `mgetBuffer` before any of them has written back — three cache misses, three
+ * identical OpenRouter round-trips against an 8B embedding model, on the hot
+ * path of every turn.
+ *
+ * This map collapses them: the first caller for a key registers its promise,
+ * every concurrent caller for the same key awaits that promise instead of
+ * issuing its own request. Entries are deleted as soon as the underlying work
+ * settles, so this is strictly a concurrency window — the Redis cache remains
+ * the cross-request, cross-replica layer, and nothing here changes what a
+ * later turn sees.
+ *
+ * Process-local by design: it deduplicates work happening inside ONE replica
+ * at ONE moment, which is exactly the shape of the problem. Two replicas
+ * embedding the same query simultaneously is a rounding error next to three
+ * arms of the same turn doing it.
+ */
+const inFlightEmbeddings = new Map<string, Promise<number[]>>();
+
 export const getCachedOrEmbedBatch = async (
   queries: string[],
 ): Promise<number[][]> => {
+  if (queries.length === 0) return [];
+
+  // Per-query promises for THIS call, keyed by the raw query text. Duplicate
+  // strings within one batch (and across concurrent batches, via
+  // `inFlightEmbeddings`) resolve to the same promise.
+  const promiseByQuery = new Map<string, Promise<number[]>>();
+  const owned: {
+    key: string;
+    query: string;
+    resolve: (value: number[]) => void;
+    reject: (reason: unknown) => void;
+  }[] = [];
+
+  for (const query of queries) {
+    if (promiseByQuery.has(query)) continue;
+    const key = hashKey(query);
+    const existing = inFlightEmbeddings.get(key);
+    if (existing) {
+      promiseByQuery.set(query, existing);
+      continue;
+    }
+    let resolve!: (value: number[]) => void;
+    let reject!: (reason: unknown) => void;
+    const promise = new Promise<number[]>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    inFlightEmbeddings.set(key, promise);
+    promiseByQuery.set(query, promise);
+    owned.push({ key, query, resolve, reject });
+  }
+
+  if (owned.length > 0) {
+    try {
+      const resolved = await resolveThroughCache(owned.map((o) => o.query));
+      owned.forEach((o, i) => {
+        o.resolve(resolved[i] ?? []);
+      });
+    } catch (error) {
+      // Reject every waiter with the original error — callers already treat a
+      // failed embed as "semantic side unavailable" (`hybridSearch` falls back
+      // to BM25, `searchRAG` callers soft-fail to empty).
+      for (const o of owned) o.reject(error);
+    } finally {
+      for (const o of owned) inFlightEmbeddings.delete(o.key);
+    }
+  }
+
+  return Promise.all(
+    queries.map((query) => promiseByQuery.get(query) ?? Promise.resolve([])),
+  );
+};
+
+/**
+ * The cache-read → batch-embed → cache-write path, over an already
+ * de-duplicated list of queries. Split out of `getCachedOrEmbedBatch` so the
+ * in-flight collapsing above wraps it rather than being interleaved with it.
+ */
+const resolveThroughCache = async (queries: string[]): Promise<number[][]> => {
   if (queries.length === 0) return [];
 
   const keys = queries.map(hashKey);

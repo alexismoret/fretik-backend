@@ -7,6 +7,11 @@ import { getActiveSpanId, startObservation } from "@langfuse/tracing";
 import { generateText } from "ai";
 import { langfuseEnabled, telemetryFor } from "../../lib/langfuse";
 import { resolveMemoryModel } from "../../lib/model-registry/team-model";
+import {
+  formatTimings,
+  type StageTimings,
+  timeStage,
+} from "../../lib/turn-timings";
 import { searchRAG } from "../search";
 import { gatherGraphNeighborhood, type GraphNeighborhood } from "./graph";
 import { RECALL_JUDGE_SYSTEM_PROMPT } from "./prompt";
@@ -73,6 +78,15 @@ const CACHE_MAX_ENTRIES = 500;
 
 /** Deterministic anchors seeding the graph arm. */
 const MAX_ANCHORS = 3;
+/**
+ * Span budget for the anchor funnel on THIS path, well under the resolver's
+ * 150. Each span is one more row in the `unnest` join driving the funnel's
+ * lexical stages, and a chat message long enough to generate 150 of them is
+ * prose — its entity-bearing n-grams sit in the first tokens, not the
+ * hundredth window. The resolver keeps the wide budget: it runs in the
+ * background, where coverage outranks milliseconds.
+ */
+const RECALL_MAX_ANCHOR_SPANS = 60;
 /**
  * Graph-arm precision gate. The funnel's FTS stage matches spans against
  * the records' FIELD text, so a common phrase from the message ("de
@@ -327,67 +341,113 @@ export const gatherRecallCandidates = async (
   params: UnifiedRecallParams,
 ): Promise<RecallGathered> => {
   const query = buildRecallQuery(params);
-  const [anchors, knowledge, documents, capabilities] = await Promise.all([
-    withArmBudget<RecordAnchor[]>(
+  const timings: StageTimings = {};
+
+  // The anchor → graph chain is started HERE, before the `Promise.all`, and
+  // joined as one of its members. It used to run as an arm and then have the
+  // graph hop awaited AFTER the batch settled, which serialised two bounded
+  // stages that depend on nothing the RAG arms produce: worst case the
+  // deterministic side alone could spend `ARM_TIMEOUT_MS` twice (5 s) before
+  // the judge was even asked. Chained, it overlaps the three searches and the
+  // gather costs `max(arms)` instead of `max(arms) + graph`.
+  const anchorsPromise = withArmBudget<RecordAnchor[]>(
+    timeStage(
+      timings,
+      "anchor",
       anchorTextToRecords({
         teamId: params.teamId,
         text: params.userMessage,
         maxAnchors: MAX_ANCHORS,
+        maxSpans: RECALL_MAX_ANCHOR_SPANS,
       }),
-      [],
-      "anchor",
     ),
-    searchRAG({
-      query,
-      teamId: params.teamId,
-      organizationId: params.organizationId,
-      userId: params.userId,
-      filters: { sourceTypes: ["memories", "episodes", "records"] },
-      topK: KNOWLEDGE_TOP_K,
-      // The judge is the precision filter; skip the multi-query
-      // reformulation latency (~1-3s) on this pre-turn hot path.
-      skipMultiQuery: true,
-    }).catch(() => ({ results: [] })),
-    searchRAG({
-      query,
-      teamId: params.teamId,
-      organizationId: params.organizationId,
-      userId: params.userId,
-      filters: { sourceTypes: ["documents"] },
-      topK: DOCUMENTS_TOP_K,
-      skipMultiQuery: true,
-    }).catch(() => ({ results: [] })),
-    // Capability arm. Free in wall-clock terms — the arms already race in
-    // parallel and the reranker has no concurrency cap — and deliberately
-    // kept out of the judge's pool. Workflows and pages share one pool and one
-    // gate: they answer the same question in two shapes — something that
-    // already produces this exists, either by running or by being opened.
-    searchRAG({
-      query,
-      teamId: params.teamId,
-      organizationId: params.organizationId,
-      userId: params.userId,
-      filters: { sourceTypes: ["workflows", "pages"] },
-      topK: CAPABILITY_TOP_K,
-      skipMultiQuery: true,
-    }).catch(() => ({ results: [] })),
-  ]);
-
-  // Graph neighborhood needs the anchors — second (still bounded) hop.
-  const graph = await withArmBudget(
-    gatherGraphNeighborhood({
-      anchors: anchors.filter(anchorIsPrecise),
-      userId: params.userId,
-    }),
-    null,
-    "graph",
+    [],
+    "anchor",
   );
+  const graphPromise = anchorsPromise.then((anchors) =>
+    withArmBudget(
+      timeStage(
+        timings,
+        "graph",
+        gatherGraphNeighborhood({
+          anchors: anchors.filter(anchorIsPrecise),
+          userId: params.userId,
+        }),
+      ),
+      null,
+      "graph",
+    ),
+  );
+
+  const [anchors, graph, knowledge, documents, capabilities] =
+    await Promise.all([
+      anchorsPromise,
+      graphPromise,
+      timeStage(
+        timings,
+        "knowledge",
+        searchRAG({
+          query,
+          teamId: params.teamId,
+          organizationId: params.organizationId,
+          userId: params.userId,
+          filters: { sourceTypes: ["memories", "episodes", "records"] },
+          topK: KNOWLEDGE_TOP_K,
+          // The judge is the precision filter; skip the multi-query
+          // reformulation latency (~1-3s) on this pre-turn hot path.
+          skipMultiQuery: true,
+        }).catch(() => ({ results: [] })),
+      ),
+      timeStage(
+        timings,
+        "documents",
+        searchRAG({
+          query,
+          teamId: params.teamId,
+          organizationId: params.organizationId,
+          userId: params.userId,
+          filters: { sourceTypes: ["documents"] },
+          topK: DOCUMENTS_TOP_K,
+          skipMultiQuery: true,
+        }).catch(() => ({ results: [] })),
+      ),
+      // Capability arm. Free in wall-clock terms — the arms already race in
+      // parallel and the reranker has no concurrency cap — and deliberately
+      // kept out of the judge's pool. Workflows and pages share one pool and
+      // one gate: they answer the same question in two shapes — something
+      // that already produces this exists, either by running or by being
+      // opened.
+      //
+      // The three searches keep their own `rerank` calls rather than being
+      // fused into one over the union. Their `sourceTypes` are DISJOINT, so
+      // the calls are not redundant work — a cross-encoder scores each
+      // (query, document) pair independently, and merging them would trade
+      // three parallel calls of ≤50 documents for one serial call of ≤150,
+      // i.e. roughly triple the rerank compute on the critical path to save
+      // two round-trips that overlap anyway. What WAS redundant is the
+      // embedding: all three arms embed the same `query` string, and
+      // `getCachedOrEmbedBatch` now collapses those into one request.
+      timeStage(
+        timings,
+        "capabilities",
+        searchRAG({
+          query,
+          teamId: params.teamId,
+          organizationId: params.organizationId,
+          userId: params.userId,
+          filters: { sourceTypes: ["workflows", "pages"] },
+          topK: CAPABILITY_TOP_K,
+          skipMultiQuery: true,
+        }).catch(() => ({ results: [] })),
+      ),
+    ]);
 
   recordCandidateScores(
     knowledge.results,
     documents.results,
     capabilities.results,
   );
+  console.info(`[recall] gather ${formatTimings(timings)}`);
 
   return {
     anchors,
@@ -710,8 +770,13 @@ export const runUnifiedRecall = async (
   if (cached && cached.expires > now) return cached.result;
 
   let result: UnifiedRecallResult | null = null;
+  const turnTimings: StageTimings = {};
   try {
-    const gathered = await gatherRecallCandidates(params);
+    const gathered = await timeStage(
+      turnTimings,
+      "gather",
+      gatherRecallCandidates(params),
+    );
     const judgeInput = buildJudgeInput(params, gathered);
     // Judge-free channel: computed before the judge runs and kept whatever it
     // decides, so a verdict of NONE still surfaces an existing workflow.
@@ -735,15 +800,19 @@ export const runUnifiedRecall = async (
           params.judgeProfileKey,
         )
       ).model;
-      const judged = await generateText({
-        model: judgeModel,
-        instructions: RECALL_JUDGE_SYSTEM_PROMPT,
-        prompt: judgeInput.prompt,
-        temperature: JUDGE_TEMPERATURE,
-        maxOutputTokens: JUDGE_MAX_OUTPUT_TOKENS,
-        abortSignal: judgeAbort,
-        telemetry: telemetryFor("active-memory"),
-      });
+      const judged = await timeStage(
+        turnTimings,
+        "judge",
+        generateText({
+          model: judgeModel,
+          instructions: RECALL_JUDGE_SYSTEM_PROMPT,
+          prompt: judgeInput.prompt,
+          temperature: JUDGE_TEMPERATURE,
+          maxOutputTokens: JUDGE_MAX_OUTPUT_TOKENS,
+          abortSignal: judgeAbort,
+          telemetry: telemetryFor("active-memory"),
+        }),
+      );
 
       if (judged.finishReason === "length") {
         // Reasoning ate the whole output budget — the gate below turns
@@ -797,6 +866,14 @@ export const runUnifiedRecall = async (
     );
     result = null;
   }
+
+  // One line per recall, on the success AND failure paths. `gather` is the
+  // whole parallel batch (its own per-arm breakdown is logged by
+  // `gatherRecallCandidates`); `judge` is the LLM call, absent when the
+  // candidates were empty or the message was skipped.
+  console.info(
+    `[recall] agent=${params.agentType} ${formatTimings(turnTimings)} block=${result?.block ? "yes" : "no"}`,
+  );
 
   if (cache.size >= CACHE_MAX_ENTRIES) purgeExpired(now);
   cache.set(key, { result, expires: now + CACHE_TTL_MS });

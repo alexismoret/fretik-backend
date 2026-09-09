@@ -7,13 +7,11 @@ import {
   isImageMime,
 } from "@fretik/shared/file-types";
 import { renderSnapshot } from "@fretik/shared/lib/chat-file-snapshot";
-import { signSandboxJwt } from "@fretik/shared/lib/external-apps/sandbox-jwt";
 import { describeTeamSchema } from "@fretik/shared/services/collections/describe-team-schema";
 import { listConnections } from "@fretik/shared/services/external-apps/connections/list";
 import { isMcpConnection } from "@fretik/shared/services/external-apps/mcp/connection-kind";
 import { listEnabledSkillsForTeam } from "@fretik/shared/services/skills/list-enabled-for-team";
 import { and, eq, inArray, ne } from "drizzle-orm";
-import { writeSandboxAuthFile } from "../../lib/conversation-storage";
 import { withSoftTimeout } from "../../lib/stream-errors";
 import { buildChatbotContextManifest } from "../../services/chatbot-context/build-manifest";
 import { formatTeamCollectionsBlock } from "../chatbot/team-collections-block";
@@ -129,14 +127,25 @@ export const assembleContextFragments = async (
 };
 
 /**
- * Per-turn external-app setup — moved verbatim from `handlers/chatbot.ts`.
- * Two things happen, both soft-failing so a failure never blocks the turn:
+ * Per-turn external-app setup — the active external-app connections the
+ * caller can see, surfaced via the `{{externalAppsBlock}}` prompt line +
+ * runtime ctx. Soft-fails so a failure never blocks the turn.
  *
- *  (1) Load the active external-app connections the caller can see —
- *      surfaced via the `{{externalAppsBlock}}` prompt line + runtime ctx.
- *  (2) Mint a fresh sandbox JWT (HS256, 1 h TTL) and write it to
- *      `/workspace/.fretik/auth.json` so `fretik_apps` calls authenticate
- *      this turn. Skipped when `SANDBOX_JWT_SECRET` is unset.
+ * The per-turn sandbox JWT (`/workspace/.fretik/auth.json`, which
+ * `fretik_apps` reads to authenticate) is NOT minted here. It used to be,
+ * and that made this function acquire the conversation's E2B sandbox —
+ * `writeSandboxFile` → `acquireSandbox` → `Sandbox.connect`, an HTTP
+ * round-trip that RESUMES a paused sandbox — on EVERY turn, including the
+ * ones that never execute code, in series ahead of recall. It also
+ * contradicted `runChatbotTurn`'s own contract ("a turn that never runs
+ * code skips sandbox acquisition entirely"), which was true of context
+ * hydration and quietly false because of this write.
+ *
+ * The JWT now rides `ensureSandboxAuthFile`, called from
+ * `prepareSandboxForCode` — the single funnel `python` / `bash` go through,
+ * and the only way `fretik_apps` is reachable at all. It is written there
+ * against a sandbox the tool has just acquired anyway, so the cost is one
+ * extra file write on turns that run code and ZERO on turns that don't.
  *
  * No-op (returns empty) without a conversationId / userId.
  */
@@ -145,7 +154,6 @@ export const loadExternalApps = async (params: {
   organizationId: string;
   teamId: string;
   userId: string | undefined;
-  turnId: string | undefined;
   logPrefix: string;
 }): Promise<{
   externalAppConnections: ExternalAppConnectionLite[] | undefined;
@@ -246,39 +254,6 @@ export const loadExternalApps = async (params: {
       console.warn(
         `${params.logPrefix} listConnections failed, proceeding without external apps:`,
         error instanceof Error ? error.message : error,
-      );
-    }
-
-    const sandboxJwtSecret = Bun.env.SANDBOX_JWT_SECRET;
-    const backendUrl = Bun.env.FRETIK_BACKEND_INTERNAL_URL;
-    if (
-      sandboxJwtSecret !== undefined &&
-      sandboxJwtSecret !== "" &&
-      backendUrl !== undefined &&
-      backendUrl !== ""
-    ) {
-      try {
-        const jwt = await signSandboxJwt({
-          conversationId: params.conversationId,
-          teamId: params.teamId,
-          userId: params.userId,
-          organizationId: params.organizationId,
-          turnId: params.turnId ?? params.conversationId,
-        });
-        await writeSandboxAuthFile(params.conversationId, {
-          jwt,
-          backendUrl,
-          turnId: params.turnId ?? params.conversationId,
-        });
-      } catch (error) {
-        console.warn(
-          `${params.logPrefix} writeSandboxAuthFile failed — fretik_apps calls will fail until next turn:`,
-          error instanceof Error ? error.message : error,
-        );
-      }
-    } else if (externalAppConnections && externalAppConnections.length > 0) {
-      console.warn(
-        `${params.logPrefix} external-app connections exist but SANDBOX_JWT_SECRET/FRETIK_BACKEND_INTERNAL_URL is missing — fretik_apps calls will fail`,
       );
     }
   }

@@ -140,6 +140,11 @@ import {
   withSoftTimeout,
 } from "../lib/stream-errors";
 import { withNamedTrace } from "../lib/trace-tool";
+import {
+  formatTimings,
+  timeStage,
+  type StageTimings,
+} from "../lib/turn-timings";
 import { forgetTurnUsage, readTurnUsage } from "../lib/turn-usage";
 import { uuidv7TimestampMs } from "../lib/uuidv7-time";
 import { dropNonTerminalErrorFrames } from "../lib/wire-errors";
@@ -773,7 +778,6 @@ const loadChatbotExternalApps = (
     organizationId: params.callOptions.organizationId,
     teamId: params.callOptions.teamId,
     userId: params.callOptions.userId,
-    turnId: params.callOptions.traceId,
     logPrefix: params.logPrefix,
   });
 
@@ -788,10 +792,6 @@ const loadChatbotExternalApps = (
 const buildTurnCallOptions = async (
   params: RunChatbotTurnParams,
   filenames: string[],
-  externalApps: {
-    externalAppConnections: ChatbotCallOptions["externalAppConnections"];
-    externalAppsBlock: string | undefined;
-  },
 ): Promise<ChatbotCallOptions> => {
   // Captured in a const so the truthiness narrowing survives into the
   // `propagateAttributes` callback closure below (a const can't change, so
@@ -806,37 +806,55 @@ const buildTurnCallOptions = async (
   // HANG backstops, not latency caps). The two history-dependent fragments
   // (attached files, active-memory recall) stay here and run in the same
   // parallel batch.
-  const [attachedFilesBlock, activeMemoryRecall, fragments, toolPolicies] =
-    await Promise.all([
-      // Conversation-scoped, NOT last-message-scoped: a file part that the
-      // active profile can't ingest natively is dropped from the history by
-      // `prepareModelMessages` (and native ones past the recency cap with
-      // it), so this block is the ONLY thing that keeps an earlier turn's
-      // attachment knowable. Scoping it to the last user message made every
-      // such file vanish on turn 2 — the agent then reports it has no files
-      // while they sit readable in `attachments/`. Same builder the workflow
-      // handler uses.
+  // Every stage below is timed into one record and logged as a single
+  // key=value line (see `lib/turn-timings.ts`). These run in parallel, so the
+  // labels do NOT sum to `preTurnTotal` — the slowest one is what TTFT pays.
+  const timings: StageTimings = {};
+  const startedAt = Date.now();
+
+  const [
+    attachedFilesBlock,
+    activeMemoryRecall,
+    fragments,
+    toolPolicies,
+    externalApps,
+  ] = await Promise.all([
+    // Conversation-scoped, NOT last-message-scoped: a file part that the
+    // active profile can't ingest natively is dropped from the history by
+    // `prepareModelMessages` (and native ones past the recency cap with
+    // it), so this block is the ONLY thing that keeps an earlier turn's
+    // attachment knowable. Scoping it to the last user message made every
+    // such file vanish on turn 2 — the agent then reports it has no files
+    // while they sit readable in `attachments/`. Same builder the workflow
+    // handler uses.
+    timeStage(
+      timings,
+      "attachedFiles",
       withSoftTimeout(
         buildConversationAttachedFilesBlock(params.conversationId),
         4000,
         ATTACHED_FILES_UNAVAILABLE,
         "attached-files",
       ),
-      activeMemoryInputs && activeMemoryUserId
-        ? // Sibling trace linked to the conversation's session: the pre-turn
-          // recall judge runs before `execute`, so it can't nest under
-          // `chatbot-turn` — `propagateAttributes` keeps it navigable per
-          // session instead of producing an orphan trace.
-          propagateAttributes(
-            {
-              traceName: "active-memory-recall",
-              ...(params.conversationId !== undefined
-                ? { sessionId: params.conversationId }
-                : {}),
-              userId: activeMemoryUserId,
-              tags: [`team:${params.callOptions.teamId}`],
-            },
-            () =>
+    ),
+    activeMemoryInputs && activeMemoryUserId
+      ? // Sibling trace linked to the conversation's session: the pre-turn
+        // recall judge runs before `execute`, so it can't nest under
+        // `chatbot-turn` — `propagateAttributes` keeps it navigable per
+        // session instead of producing an orphan trace.
+        propagateAttributes(
+          {
+            traceName: "active-memory-recall",
+            ...(params.conversationId !== undefined
+              ? { sessionId: params.conversationId }
+              : {}),
+            userId: activeMemoryUserId,
+            tags: [`team:${params.callOptions.teamId}`],
+          },
+          () =>
+            timeStage(
+              timings,
+              "recall",
               withSoftTimeout(
                 runUnifiedRecall({
                   userMessage: activeMemoryInputs.userMessage,
@@ -848,27 +866,45 @@ const buildTurnCallOptions = async (
                   conversationId: params.conversationId,
                   agentType: "chatbot",
                 }),
-                // ABOVE the recall's own 15s judge budget (RECALL_TIMEOUT_MS)
-                // + RAG headroom — only fires on a true RAG hang, never on a
-                // normal (multi-second) judge generation.
+                // ABOVE the recall's own 15s judge budget
+                // (RECALL_TIMEOUT_MS) + RAG headroom — only fires on a true
+                // RAG hang, never on a normal (multi-second) judge
+                // generation.
                 18000,
                 null,
                 "active-memory",
               ),
-          )
-        : Promise.resolve(null),
+            ),
+        )
+      : Promise.resolve(null),
+    timeStage(
+      timings,
+      "contextFragments",
       assembleContextFragments({
         organizationId: params.callOptions.organizationId,
         teamId: params.callOptions.teamId,
         userId: params.callOptions.userId,
         logPrefix: params.logPrefix,
       }),
+    ),
+    timeStage(
+      timings,
+      "toolPolicies",
       getTeamToolPolicies(params.callOptions.teamId),
-    ]);
+    ),
+    // External apps joined this batch rather than running ahead of it. It
+    // used to be awaited BEFORE `buildTurnCallOptions`, in series, because
+    // it also minted the sandbox JWT — that write is now lazy (see
+    // `loadExternalApps`), leaving a plain `listConnections` with no reason
+    // to block anything.
+    timeStage(timings, "externalApps", loadChatbotExternalApps(params)),
+  ]);
 
+  timings["preTurnTotal"] = Date.now() - startedAt;
   console.info(
     `${params.logPrefix} contextManifestChars=${(fragments.chatbotContextManifest ?? "").length.toString()} activeMemory=${activeMemoryRecall ? "hit" : "miss"} teamCollectionsChars=${(fragments.teamCollectionsBlock ?? "").length.toString()} enabledSkillsChars=${(fragments.enabledSkillsBlock ?? "").length.toString()}`,
   );
+  console.info(`${params.logPrefix} [pre-turn] ${formatTimings(timings)}`);
 
   return {
     ...params.callOptions,
@@ -1035,19 +1071,14 @@ export const runChatbotTurn = async (
   // `prepareSandboxForCode` — so a turn that never runs code skips
   // sandbox acquisition entirely. Chat attachments + outputs come back
   // automatically when the storage façade restores from S3 on first
-  // sandbox access.
-
-  // External apps: active connections (surfaced to the agent) + a fresh
-  // per-turn sandbox JWT for `fretik_apps`. See loadExternalApps.
-  const externalApps = await loadChatbotExternalApps(params);
+  // sandbox access. That claim used to be false: the external-app setup
+  // minted the sandbox JWT eagerly and acquired the sandbox to write it,
+  // in series, ahead of everything. The JWT now rides
+  // `prepareSandboxForCode` too, so the sentence holds again.
 
   // Assemble the per-turn system-prompt fragments + external apps into
   // the final call options handed to the agent. See buildTurnCallOptions.
-  const callOptionsWithFiles = await buildTurnCallOptions(
-    params,
-    filenames,
-    externalApps,
-  );
+  const callOptionsWithFiles = await buildTurnCallOptions(params, filenames);
 
   // User-initiated Stop plumbing (Phase 12). See setupAbortChannel.
   const { abortController, releaseAbortSubscriber } =

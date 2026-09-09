@@ -349,7 +349,6 @@ const executeTurn = async (params: {
         organizationId: run.organizationId,
         teamId: run.teamId,
         userId: actingUserId,
-        turnId: traceId,
         logPrefix,
       }),
       // Memory recall on the FIRST turn only. It rides in turn 1's steering

@@ -141,6 +141,13 @@ export const ChatbotCallOptionsSchema = z.object({
    */
   activeMemoryBlock: z.string().optional(),
   /**
+   * Memory INDEX — the tree of `/memories/{user,team}/` paths and sizes, no
+   * content. Always present (one indexed SELECT in the fragment batch), where
+   * `activeMemoryBlock` only appears when the message matched something.
+   * Substituted into `{{memoryIndex}}`.
+   */
+  memoryIndexBlock: z.string().optional(),
+  /**
    * One workflow card when an existing workflow already produces what this
    * turn asks for — the capability channel of the same recall pass, kept out
    * of the judge's budget. Substituted into `{{availableCapabilities}}`.
@@ -318,6 +325,7 @@ export const buildChatbotRuntimeContextBase = (
   nativeIngestion: options.nativeIngestion,
   chatbotContextManifest: options.chatbotContextManifest,
   activeMemoryBlock: options.activeMemoryBlock,
+  memoryIndexBlock: options.memoryIndexBlock,
   availableCapabilitiesBlock: options.availableCapabilitiesBlock,
   teamCollectionsBlock: options.teamCollectionsBlock,
   enabledSkillsBlock: options.enabledSkillsBlock,

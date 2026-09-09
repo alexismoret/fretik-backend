@@ -596,7 +596,7 @@ This run's autonomy mode is stated in `<workflow_context>`. It governs every wri
 
 <!-- AGENT:chatbot -->
 
-The `<active_memory>` block at the very bottom of this prompt is this turn's recall — memories, episodes of past conversations, linked records. Apply it silently; never quote it verbatim. Its `(memory:…)` `(episode:…)` `(record:…)` `(document:…)` markers are provenance ids — dig deeper with `searchKnowledge` / `getRecord` / SQL.
+Two blocks near the bottom of this prompt carry it, and they answer different questions. `<memory_index>` lists every path written so far — what the team knows AT ALL, whatever this message says. `<active_memory>` is this turn's recall — memories, episodes of past conversations, linked records, surfaced because they match THIS message. Apply recall silently; never quote it verbatim. Its `(memory:…)` `(episode:…)` `(record:…)` `(document:…)` markers are provenance ids — dig deeper with `searchKnowledge` / `getRecord` / SQL. An empty recall does not mean nothing was written: check the index before concluding a process does not exist.
 
 <!-- /AGENT -->
 <!-- AGENT:workflow -->
@@ -950,6 +950,18 @@ This run:
 {{sessionStateBlock}}
 
 </session_state>
+
+<memory_index>
+
+<!-- The memory TREE — paths and sizes only, no content, refreshed every turn. Distinct from <active_memory> below and load-bearing for a different reason: recall is query-shaped, so it only surfaces a memory the message happened to match, while this shows what the team knows AT ALL. Beyond ~80 files it collapses to per-namespace counts and the agent falls back on grep/view. -->
+
+What the team and this user have written down, by path. This is a table of contents, not content: read an entry with `memory({ command: 'view', path })`, or `bash("grep -ri '<term>' memories/")` once a code tool has run.
+
+Consult it before doing by hand a task that sounds like a repeatable process — a recap, a relance, a formatting convention, a per-client rule. A path that names your task is a rule the team already wrote; `<active_memory>` may not have surfaced it, because it only carries what matched this message.
+
+{{memoryIndex}}
+
+</memory_index>
 
 <active_memory>
 

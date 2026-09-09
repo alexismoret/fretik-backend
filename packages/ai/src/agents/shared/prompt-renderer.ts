@@ -375,6 +375,10 @@ export const buildChatbotSystemPrompt = async (
       ctx.activeMemoryBlock && ctx.activeMemoryBlock.length > 0
         ? ctx.activeMemoryBlock
         : "_No relevant memory recalled for this turn._",
+    memoryIndex:
+      ctx.memoryIndexBlock && ctx.memoryIndexBlock.length > 0
+        ? ctx.memoryIndexBlock
+        : "_No memories yet — feel free to start writing with the `memory` tool._",
     availableCapabilities:
       ctx.availableCapabilitiesBlock &&
       ctx.availableCapabilitiesBlock.length > 0

@@ -160,6 +160,16 @@ export type AgentRuntimeContext = {
    */
   activeMemoryBlock?: string;
   /**
+   * Rendered `{{memoryIndex}}` fragment — the paths and sizes of everything
+   * under `/memories/{user,team}/`, no content. Built by
+   * `assembleContextFragments` from one indexed SELECT, so it is present on
+   * every turn regardless of what the message asks, which is the point:
+   * `activeMemoryBlock` is query-shaped and only surfaces a memory the
+   * message happens to match, while this says what the team knows AT ALL.
+   * Undefined when the scope has no acting user or the lookup soft-failed.
+   */
+  memoryIndexBlock?: string;
+  /**
    * Rendered `{{availableCapabilities}}` fragment — one workflow card when an
    * existing workflow already produces what this turn asks for. Built by the
    * same `runUnifiedRecall` call as `activeMemoryBlock`, but on a separate,

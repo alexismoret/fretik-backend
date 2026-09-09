@@ -911,6 +911,7 @@ const buildTurnCallOptions = async (
     attachedFilesBlock:
       attachedFilesBlock.length > 0 ? attachedFilesBlock : undefined,
     chatbotContextManifest: fragments.chatbotContextManifest,
+    memoryIndexBlock: fragments.memoryIndexBlock,
     activeMemoryBlock: activeMemoryRecall?.block,
     availableCapabilitiesBlock: activeMemoryRecall?.capabilityBlock,
     teamCollectionsBlock: fragments.teamCollectionsBlock,

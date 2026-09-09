@@ -7,6 +7,7 @@ import {
   isImageMime,
 } from "@fretik/shared/file-types";
 import { renderSnapshot } from "@fretik/shared/lib/chat-file-snapshot";
+import { buildMemoryIndexManifest } from "@fretik/shared/services/ai-memory/list-index";
 import { describeTeamSchema } from "@fretik/shared/services/collections/describe-team-schema";
 import { listConnections } from "@fretik/shared/services/external-apps/connections/list";
 import { isMcpConnection } from "@fretik/shared/services/external-apps/mcp/connection-kind";
@@ -38,81 +39,114 @@ export interface ContextFragments {
   chatbotContextManifest?: string;
   teamCollectionsBlock?: string;
   enabledSkillsBlock?: string;
+  memoryIndexBlock?: string;
 }
 
 /**
- * The three purely scope-based fragments (persistent-context manifest, team
- * objects catalogue, enabled skills), built in parallel behind the same
- * soft-timeouts as the historical chatbot inline version. `undefined`
- * fields render as their prompt placeholders.
+ * The purely scope-based fragments (persistent-context manifest, team
+ * objects catalogue, enabled skills, memory index), built in parallel behind
+ * the same soft-timeouts as the historical chatbot inline version.
+ * `undefined` fields render as their prompt placeholders.
  */
 export const assembleContextFragments = async (
   scope: FragmentScope,
 ): Promise<ContextFragments> => {
-  const [chatbotContextManifest, teamCollectionsBlock, enabledSkillsBlock] =
-    await Promise.all([
-      withSoftTimeout(
-        buildChatbotContextManifest({
-          userId: scope.userId,
-          teamId: scope.teamId,
-          organizationId: scope.organizationId,
-        }).catch((error: unknown) => {
-          // Never let a missing/corrupt manifest block a turn.
+  const [
+    chatbotContextManifest,
+    teamCollectionsBlock,
+    enabledSkillsBlock,
+    memoryIndexBlock,
+  ] = await Promise.all([
+    withSoftTimeout(
+      buildChatbotContextManifest({
+        userId: scope.userId,
+        teamId: scope.teamId,
+        organizationId: scope.organizationId,
+      }).catch((error: unknown) => {
+        // Never let a missing/corrupt manifest block a turn.
+        console.warn(
+          `${scope.logPrefix} buildChatbotContextManifest failed, continuing without persistent context:`,
+          error,
+        );
+        return {
+          manifest: "",
+          totalChars: 0,
+          fileCount: 0,
+          inlinedFileCount: 0,
+        };
+      }),
+      4000,
+      { manifest: "", totalChars: 0, fileCount: 0, inlinedFileCount: 0 },
+      "context-manifest",
+    ),
+    // Compact `- key (type)` catalogue for the dynamic suffix.
+    // Redis-cached (30 min TTL) so the per-turn cost is one HGET.
+    withSoftTimeout(
+      describeTeamSchema({
+        organizationId: scope.organizationId,
+        teamId: scope.teamId,
+      })
+        .then((types) => formatTeamCollectionsBlock(types))
+        .catch((error: unknown) => {
           console.warn(
-            `${scope.logPrefix} buildChatbotContextManifest failed, continuing without persistent context:`,
-            error,
+            `${scope.logPrefix} describeTeamSchema failed, continuing without team objects:`,
+            error instanceof Error ? error.message : error,
           );
-          return {
-            manifest: "",
-            totalChars: 0,
-            fileCount: 0,
-            inlinedFileCount: 0,
-          };
+          return "";
         }),
-        4000,
-        { manifest: "", totalChars: 0, fileCount: 0, inlinedFileCount: 0 },
-        "context-manifest",
-      ),
-      // Compact `- key (type)` catalogue for the dynamic suffix.
-      // Redis-cached (30 min TTL) so the per-turn cost is one HGET.
-      withSoftTimeout(
-        describeTeamSchema({
-          organizationId: scope.organizationId,
-          teamId: scope.teamId,
-        })
-          .then((types) => formatTeamCollectionsBlock(types))
-          .catch((error: unknown) => {
+      3000,
+      "",
+      "team-objects",
+    ),
+    // Team-filtered L1 skills listing — disabled skills never reach the
+    // prompt (the agent has no path to invoke them).
+    withSoftTimeout(
+      listEnabledSkillsForTeam(scope.teamId)
+        .then((skills) =>
+          skills
+            .map((skill) => `- **${skill.name}** — ${skill.description}`)
+            .join("\n"),
+        )
+        .catch((error: unknown) => {
+          console.warn(
+            `${scope.logPrefix} listEnabledSkillsForTeam failed, continuing without skills catalogue:`,
+            error instanceof Error ? error.message : error,
+          );
+          return "";
+        }),
+      3000,
+      "",
+      "enabled-skills",
+    ),
+    // The memory INDEX — paths and sizes of everything under
+    // `/memories/{user,team}/`, no content. It answers the one question
+    // per-turn recall cannot: what does this team know AT ALL. Recall is
+    // query-shaped, so a memory only surfaces when the message happens to
+    // match it; the agent had no way to learn that a process file exists
+    // for a task it was about to do by hand, and `<memory_protocol>`'s
+    // "search before writing" advice pointed at a tool the agent had no
+    // reason to reach for. One indexed SELECT, self-capping at 80 files
+    // (see `buildMemoryIndexManifest`), and it runs in this batch — so it
+    // costs nothing on the critical path.
+    scope.userId === undefined
+      ? Promise.resolve("")
+      : withSoftTimeout(
+          buildMemoryIndexManifest({
+            organizationId: scope.organizationId,
+            teamId: scope.teamId,
+            userId: scope.userId,
+          }).catch((error: unknown) => {
             console.warn(
-              `${scope.logPrefix} describeTeamSchema failed, continuing without team objects:`,
+              `${scope.logPrefix} buildMemoryIndexManifest failed, continuing without the memory index:`,
               error instanceof Error ? error.message : error,
             );
             return "";
           }),
-        3000,
-        "",
-        "team-objects",
-      ),
-      // Team-filtered L1 skills listing — disabled skills never reach the
-      // prompt (the agent has no path to invoke them).
-      withSoftTimeout(
-        listEnabledSkillsForTeam(scope.teamId)
-          .then((skills) =>
-            skills
-              .map((skill) => `- **${skill.name}** — ${skill.description}`)
-              .join("\n"),
-          )
-          .catch((error: unknown) => {
-            console.warn(
-              `${scope.logPrefix} listEnabledSkillsForTeam failed, continuing without skills catalogue:`,
-              error instanceof Error ? error.message : error,
-            );
-            return "";
-          }),
-        3000,
-        "",
-        "enabled-skills",
-      ),
-    ]);
+          3000,
+          "",
+          "memory-index",
+        ),
+  ]);
 
   return {
     chatbotContextManifest:
@@ -123,6 +157,8 @@ export const assembleContextFragments = async (
       teamCollectionsBlock.length > 0 ? teamCollectionsBlock : undefined,
     enabledSkillsBlock:
       enabledSkillsBlock.length > 0 ? enabledSkillsBlock : undefined,
+    memoryIndexBlock:
+      memoryIndexBlock.length > 0 ? memoryIndexBlock : undefined,
   };
 };
 

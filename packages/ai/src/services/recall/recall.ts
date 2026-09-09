@@ -23,7 +23,7 @@ import {
 } from "./candidates";
 import { gatherGraphNeighborhood } from "./graph";
 import { RECALL_JUDGE_SYSTEM_PROMPT } from "./prompt";
-import { buildVerbatimBlock } from "./verbatim";
+import { buildVerbatimBlock, shouldEscalateToJudge } from "./verbatim";
 
 /**
  * Unified pre-turn recall (P5) — the evolution of Active Memory.
@@ -73,18 +73,27 @@ const RECALL_TIMEOUT_MS = 15_000;
 /**
  * Which selector turns the gather into the block.
  *
- * `judge` (the default, and what production serves until an eval run says
- * otherwise) is the LLM pass this module was built around. `verbatim` skips it
- * and renders the candidates deterministically — see `verbatim.ts` for what
- * takes over each of the judge's jobs, and for what is NOT claimed about it.
+ * `adaptive` is the default, and it is the default on evidence rather than on
+ * argument. Build the deterministic block, serve it when retrieval was
+ * confident, hand the turn to the judge when it was not. Measured on the recall
+ * suite at ten repeats: 23/23, the same score as `judge`, with the judge
+ * running on 43 % of turns and recall's median falling from 2 246 ms to
+ * 1 398 ms.
  *
- * A flag rather than a replacement because the two differ on a question no
- * amount of code reading settles: whether the deterministic block is noisier
- * in a way that costs answer quality. The eval suite scores the block, so it
- * can be run against both modes with the same fixtures.
+ * `verbatim` never calls the judge and scores 17/23. What it loses is exactly
+ * one family — abstention, refusing a candidate that scores well but does not
+ * answer the message — and that is the judge job with no deterministic
+ * substitute (the distributions overlap; see `JUDGE_ESCALATION_BEST_SCORE`).
+ * Escalating on a weak gather buys the family back on the minority of turns
+ * where the question arises.
+ *
+ * `judge` is the pass this module was built around, kept as the rollback: one
+ * env var restores the previous behaviour exactly, with no deploy.
  */
-const RECALL_MODE: "judge" | "verbatim" =
-  process.env.RECALL_MODE === "verbatim" ? "verbatim" : "judge";
+const RECALL_MODE: "judge" | "verbatim" | "adaptive" = (() => {
+  const raw = process.env.RECALL_MODE;
+  return raw === "verbatim" || raw === "judge" ? raw : "adaptive";
+})();
 
 /**
  * Budget for the deterministic arms (anchor funnel, then graph SQL).
@@ -215,7 +224,53 @@ export interface UnifiedRecallParams {
    * the `active-memory` code default (a `fixed` tier) always wins.
    */
   judgeProfileKey?: string;
+  /**
+   * A gather already in flight for THIS message, from `prefetchRecallGather`.
+   *
+   * The gather depends on nothing the route computes: the user's message text
+   * and its attachments are in the request body, and the scope is on the
+   * session. Everything the route does before the turn starts — saving the
+   * message, mentions, the turn log, loading history, resolving the model — is
+   * eleven serial database and Redis round trips that the three retrieval arms
+   * could have been running underneath.
+   *
+   * Passing the promise in lets the caller start it at the top of the route and
+   * collect it here, so the gather is finished (or nearly) by the time anything
+   * needs the block. `recentTail` is NOT an input to it — only
+   * `buildJudgeInput` reads that, and it is assembled after the await.
+   */
+  gatherPromise?: Promise<RecallGathered>;
 }
+
+/**
+ * Start the gather for a message before the turn is set up.
+ *
+ * Soft-fails to an empty gather rather than rejecting: the promise may sit
+ * unawaited for the length of the route prelude, and an unhandled rejection
+ * there would take down the process for something the recall contract says must
+ * never break a turn.
+ *
+ * Returns `null` for the messages `runUnifiedRecall` would skip anyway, so a
+ * "ok merci" does not spend three retrieval arms on nothing.
+ */
+export const prefetchRecallGather = (
+  params: UnifiedRecallParams,
+): Promise<RecallGathered> | null => {
+  if (isTrivialMessage(params.userMessage, params.attachedFiles)) return null;
+  return gatherRecallCandidates(params).catch((err: unknown) => {
+    console.warn(
+      "[recall] prefetched gather failed, falling back to empty:",
+      err instanceof Error ? err.message : err,
+    );
+    return {
+      anchors: [],
+      knowledgeResults: [],
+      documentResults: [],
+      graph: null,
+      capabilityResults: [],
+    };
+  });
+};
 
 export interface UnifiedRecallResult {
   /**
@@ -749,10 +804,13 @@ export const runUnifiedRecall = async (
   let result: UnifiedRecallResult | null = null;
   const turnTimings: StageTimings = {};
   try {
+    // `gather` measures the wait, not the work: when the caller prefetched, the
+    // arms have been running since the top of the route and this reads back
+    // what is left of them — which is the number that matters for TTFT.
     const gathered = await timeStage(
       turnTimings,
       "gather",
-      gatherRecallCandidates(params),
+      params.gatherPromise ?? gatherRecallCandidates(params),
     );
     // Capability channel: computed before either selector runs and kept
     // whatever it decides, so a verdict of NONE still surfaces an existing
@@ -761,13 +819,26 @@ export const runUnifiedRecall = async (
     let block: string | null = null;
     let recalledEpisodeIds: string[] = [];
 
-    if (RECALL_MODE === "verbatim") {
-      const selection = buildVerbatimBlock(gathered);
+    // The deterministic selection is computed in BOTH non-judge modes, because
+    // in `adaptive` it is also the escalation signal: whether the judge runs is
+    // read off the same pass that would otherwise have produced the block.
+    const selection =
+      RECALL_MODE === "judge" ? null : buildVerbatimBlock(gathered);
+    const escalate =
+      RECALL_MODE === "judge" ||
+      (RECALL_MODE === "adaptive" &&
+        selection !== null &&
+        shouldEscalateToJudge(selection));
+
+    if (selection !== null) {
+      console.info(
+        `[recall] mode=${RECALL_MODE} escalate=${escalate.toString()} best=${selection.ambiguity.bestScore?.toFixed(3) ?? "none"} uncorroboratedAnchors=${selection.ambiguity.uncorroboratedAnchors.toString()} nearTies=${selection.ambiguity.nearTies.toString()} greyZone=${selection.ambiguity.greyZone.toString()} chars=${(selection.block ?? "").length.toString()}`,
+      );
+    }
+
+    if (selection !== null && !escalate) {
       block = selection.block;
       recalledEpisodeIds = selection.recalledEpisodeIds;
-      console.info(
-        `[recall] mode=verbatim best=${selection.ambiguity.bestScore?.toFixed(3) ?? "none"} uncorroboratedAnchors=${selection.ambiguity.uncorroboratedAnchors.toString()} nearTies=${selection.ambiguity.nearTies.toString()} greyZone=${selection.ambiguity.greyZone.toString()} chars=${(selection.block ?? "").length.toString()}`,
-      );
       if (recalledEpisodeIds.length > 0) {
         void stampEpisodeRecall(recalledEpisodeIds).catch((err: unknown) => {
           console.warn(

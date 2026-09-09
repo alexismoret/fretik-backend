@@ -170,44 +170,63 @@ fixtures of one decide cases in another — clean up before switching.
   numbers decide anything (the 2026-08-04 "15/16 vs 13/16" was pure draw
   noise — the bimodal set permuted between runs while the code barely moved).
 
-### `RECALL_MODE` — the judge / verbatim A-B
+### `RECALL_MODE` — measured 2026-09-09, `adaptive` is the default
 
-`runUnifiedRecall` has two selectors turning one gather into the
-`<active_memory>` block, chosen by the `RECALL_MODE` env var:
+| mode       | score (10 repeats) | judge runs on | recall p50   |
+| ---------- | ------------------ | ------------- | ------------ |
+| `adaptive` | **23/23**          | 43 % of turns | **1 398 ms** |
+| `judge`    | 23/23              | 100 %         | 2 246 ms     |
+| `verbatim` | 17/23              | never         | 1 417 ms     |
 
-- **`judge`** (default, what production serves): the gpt-oss-120b pass this
-  module was built around.
-- **`verbatim`**: `buildVerbatimBlock` — score floors, per-source caps, and an
-  anchor corroboration rule instead of a model. No LLM on the critical path to
-  the first token. See the header of `src/services/recall/verbatim.ts` for what
-  replaces each of the judge's five jobs.
+Parity with the judge at 62 % of its latency. What the six `verbatim` failures
+were, and how they went away:
 
-`evals:recall` scores the block, so it decides this. Run BOTH, ten repeats,
-same fixtures, and compare **per case** — never two totals against each other
-(the closure rule above applies unchanged):
+- **Four were abstention** — refusing a candidate that scores well but does not
+  answer the message. No score threshold decides this: over 230 repeats the
+  must-abstain cases span 0.200-0.844 and the must-cite cases 0.364-0.995, and
+  `rec-abstention-insufficient` must abstain at exactly 0.364 while must-cite
+  cases sit there too. A threshold cannot decide it, but it can SORT — that is
+  `JUDGE_ESCALATION_BEST_SCORE`, and routing the weak-gather turns to the judge
+  recovers all four.
+- **One was a scoring bug.** `bestScore` counted documents, which are not
+  rendered, so a lexically dominant invoice made `rec-noise-general` oscillate
+  0.33 ↔ 0.90 across identical repeats and abstention became a coin flip.
+  Knowledge-only made it a stable 0.252.
+- **One was the document axis, and it was measured rather than assumed.**
+  Documents admitted freely: 21/23 (they buy `rec-document-content` and cost
+  `rec-multi-domain`, whose record is pushed out of the shared 2 000-char
+  budget, plus `rec-graph-link` flapping at 9/10). Excluded entirely: 22/23.
+  Admitted only when a document TOPS the ranking (`DOCUMENT_TOP_MARGIN`, the
+  same positional shape as the capability channel): **23/23**.
+
+`judge` is the rollback — one env var, no deploy, previous behaviour exactly.
+
+### Running the A-B
+
+Re-run all three whenever the selector, the floors, or the escalation
+threshold move. Ten repeats, same fixtures, and compare **per case** — never
+two totals against each other (the closure rule above applies unchanged):
 
 ```bash
 bun run evals:memory -- --cleanup && bun run evals:chain -- --cleanup
-bun run evals:recall                              # judge  (baseline)
-RECALL_MODE=verbatim bun run evals:recall         # verbatim
+bun run evals:recall                              # adaptive (default)
+RECALL_MODE=judge    bun run evals:recall         # the rollback path
+RECALL_MODE=verbatim bun run evals:recall         # the no-LLM floor
 ```
 
-Two things to expect rather than debug:
+Every turn logs the routing decision, so a threshold is recalibrated from a
+distribution rather than argued about:
 
-- **`rec-document-content` fails under `verbatim` by design.** Documents are
-  excluded from the pre-turn block (`INCLUDE_DOCUMENTS = false`) and left to
-  `searchKnowledge` mid-turn, where the prompt's tool-routing table already
-  sends "what does this document say". The case encodes the current design, not
-  a user need. Flip the constant to score it head-to-head.
-- **`rec-noise-general` is the case to watch.** It is the open residual against
-  the judge (14/30 targeted) AND the case the verbatim path is most likely to
-  differ on, since refusing a lexically dominant, non-responsive candidate is
-  the judge job with the weakest deterministic substitute. A verbatim result at
-  or above 14/30 settles the question in favour of dropping the judge; well
-  below it is the argument for the adaptive third option — verbatim on the fast
-  path, judge only when `measureAmbiguity` flags the turn. Those signals are
-  already logged per turn (`[recall] mode=verbatim uncorroboratedAnchors=… nearTies=… greyZone=…`),
-  so the gate can be calibrated from a real distribution instead of guessed.
+```
+[recall] mode=adaptive escalate=true best=0.252 uncorroboratedAnchors=0 nearTies=1 greyZone=false chars=0
+```
+
+To recalibrate `JUDGE_ESCALATION_BEST_SCORE`, group `best` by whether the case
+must cite or must abstain and look for a threshold that routes every
+must-abstain repeat. There is none that also spares the must-cite ones — the
+distributions overlap — so the number is chosen where the routed fraction is
+flat (0.50 → 0.65 route identically) rather than at a cliff, and 0.70 is the
+first value that catches every abstention case.
 
 **Frozen baselines — 2026-08-05** (`freeze-*` / `n30-*` runs, code bindings:
 extract/distill/promote = deepseek-v4-flash, consolidate + recall judge =

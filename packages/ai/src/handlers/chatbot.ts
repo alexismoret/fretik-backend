@@ -162,7 +162,9 @@ import {
 } from "../services/native-input";
 import {
   buildRecallRecentTail,
+  prefetchRecallGather,
   runUnifiedRecall,
+  type RecallGathered,
 } from "../services/recall/recall";
 import type { HonoInternalAppType } from "../types/hono";
 import {
@@ -711,6 +713,13 @@ interface RunChatbotTurnParams {
   agentSet?: AgentSet<ChatbotCallOptions, ChatbotTools>;
   modelProfile?: ModelProfile;
   /**
+   * A recall gather the caller started before the turn was set up, so the
+   * retrieval arms ran underneath the route's serial prelude instead of after
+   * it. See `prefetchRecallGather`. Absent on the internal `/invoke` path,
+   * which has no prelude to hide behind.
+   */
+  prefetchedGather?: Promise<RecallGathered> | null;
+  /**
    * Thinking depth for this turn, already resolved and validated by the
    * caller (`effectiveReasoningLevel`): the user's pick in the prompt
    * bar, else the team's stored default for this model. Absent → the
@@ -865,6 +874,12 @@ const buildTurnCallOptions = async (
                   userId: activeMemoryUserId,
                   conversationId: params.conversationId,
                   agentType: "chatbot",
+                  // Started at the top of the route when there was one — the
+                  // arms have been running through the whole prelude and this
+                  // collects what is left of them.
+                  ...(params.prefetchedGather
+                    ? { gatherPromise: params.prefetchedGather }
+                    : {}),
                 }),
                 // ABOVE the recall's own 15s judge budget
                 // (RECALL_TIMEOUT_MS) + RAG headroom — only fires on a true
@@ -2343,6 +2358,50 @@ chatbotRoutes.post("/stream", async (c) => {
   // attributed to its human author. This happens BEFORE the activation
   // gate so a human-to-human aside is still stored and seen by the others.
   const lastUser = [...messages].reverse().find((m) => m.role === "user");
+
+  // Retrieval starts HERE, ahead of everything the turn still has to set up.
+  //
+  // The gather depends on the message text, its attachments and the session's
+  // scope — all three are already in hand — and on nothing produced below.
+  // Everything between this line and `runChatbotTurn` is serial I/O: saving the
+  // message, binding its files, two conversation events, the read marker,
+  // mentions, the stream claim, the turn log, thirty messages of history, the
+  // model resolution. Ten round trips the three retrieval arms can run
+  // underneath instead of after.
+  //
+  // Fire-and-collect, never awaited here: `prefetchRecallGather` swallows its
+  // own failures, and `runUnifiedRecall` reads the promise back through
+  // `gatherPromise`. A turn that never reaches recall (the activation gate
+  // below, a 409 on the stream claim) simply drops it.
+  //
+  // One deliberate difference from the text the turn later sees: in a
+  // conversation with two or more participants `buildSpeakerContext` prefixes
+  // user messages with `[Name]: `, and that happens far below this line. The
+  // arms therefore retrieve against the message WITHOUT the speaker label,
+  // which is the more faithful query anyway — a colleague's name is noise to
+  // an embedding of "what is the Nordwind delivery cadence". Solo
+  // conversations, the overwhelming majority, are byte-identical either way.
+  const prefetchedGather =
+    lastUser && organization
+      ? prefetchRecallGather({
+          userMessage: uiMessageText(lastUser),
+          attachedFiles: extractLastUserFileFilenames([lastUser]).map(
+            (filename) => ({
+              filename,
+              mimeType: inferMimeTypeFromFilename(filename),
+            }),
+          ),
+          // Judge-only, and assembled after the await in `runUnifiedRecall`
+          // from the history this has not waited for.
+          recentTail: "",
+          teamId: team.id,
+          organizationId: organization.id,
+          userId: user.id,
+          conversationId,
+          agentType: "chatbot",
+        })
+      : null;
+
   if (lastUser) {
     const savedUserMessage = await saveMessage({
       conversationId,
@@ -2496,6 +2555,7 @@ chatbotRoutes.post("/stream", async (c) => {
     conversationId,
     history: speakerHistory,
     callOptions,
+    prefetchedGather,
     resumableStreamId: streamId,
     logPrefix: "[chatbot]",
     agentSet: getChatbotAgentSet(flagshipKey),

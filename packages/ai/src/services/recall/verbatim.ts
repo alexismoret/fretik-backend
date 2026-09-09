@@ -132,7 +132,27 @@ const MAX_RECORDS = 2;
  * its place pre-turn is exactly the sort of question the eval suite can answer,
  * and flipping this is the whole experiment.
  */
-const INCLUDE_DOCUMENTS = false;
+const INCLUDE_DOCUMENTS = true;
+
+/**
+ * …but only when a document TOPS the ranking, and then only one.
+ *
+ * Both extremes are measured. Admitting documents freely scored 21/23 against
+ * 22/23 without them: they bought the document-content case and cost
+ * `rec-multi-domain`, whose Horizon record was pushed out of the shared
+ * 2 000-char budget by document chunks, and left `rec-graph-link` flapping at
+ * 9/10. Excluding them entirely leaves the one case where a document is the
+ * only thing that answers.
+ *
+ * The gate is positional, exactly like the capability channel's: the document
+ * must essentially beat everything memory found, which is the difference
+ * between "what does the Sirius lease say about the deposit" (the lease tops
+ * the ranking) and a supplier question where a lease merely shares vocabulary.
+ * It is also what the prompt's own tool-routing table implies — "what a
+ * document SAYS" is `searchKnowledge`'s job, mid-turn — so a document is worth
+ * a pre-turn slot only when it is unmistakably the answer.
+ */
+const DOCUMENT_TOP_MARGIN = 0.9;
 const MAX_DOCUMENTS = 2;
 
 /**
@@ -235,23 +255,63 @@ export interface VerbatimSelection {
   ambiguity: AmbiguitySignals;
 }
 
+/**
+ * Below this best-score, the deterministic path hands the turn to the judge
+ * (`RECALL_MODE=adaptive`).
+ *
+ * This is NOT the abstention floor: it is the admission that abstention is the
+ * one job here with no deterministic substitute, measured rather than assumed.
+ * Over 230 eval repeats the cases that must abstain and the cases that must
+ * cite overlap on score — `rec-abstention-insufficient` must abstain at 0.364
+ * while must-cite cases sit at the same value — so no threshold DECIDES the
+ * question. What a threshold can do is SORT: it sends the weak-gather turns,
+ * where the question actually arises, to the model that can read the message,
+ * and keeps the confident ones on the fast path.
+ *
+ * Deliberately set where the routed fraction is stable rather than at the edge
+ * of a cliff: from 0.50 to 0.65 the same turns route, so the number is not
+ * balanced on one fixture's variance.
+ */
+export const JUDGE_ESCALATION_BEST_SCORE = 0.7;
+
+/**
+ * Whether this gather should be handed to the judge instead of served
+ * deterministically. A `null` best means rerank degraded, so there is no
+ * evidence to sort on and the candidates are unranked noise — exactly the turn
+ * a model should look at rather than a threshold.
+ */
+export const shouldEscalateToJudge = (selection: VerbatimSelection): boolean =>
+  selection.ambiguity.bestScore === null ||
+  selection.ambiguity.bestScore < JUDGE_ESCALATION_BEST_SCORE;
+
 const scoreOf = (hit: RecallSearchHit): number | null =>
   typeof hit.rerankScore === "number" ? hit.rerankScore : null;
 
 /**
- * The best rerank score anywhere in the gather — the denominator of the
- * relative floor. `null` when the rerank stage degraded to RRF-only (circuit
- * breaker open, provider down), in which case there are no scores to compare
- * and the floors are skipped entirely: serving the arms' own top-K unfiltered
- * is what the pipeline did before reranking existed, and a retrieval outage
- * must not silently empty the memory block.
+ * The best rerank score among the MEMORY candidates — the denominator of the
+ * relative floor, the input to the abstention gate, and the bar a document has
+ * to clear to be admitted at all.
+ *
+ * Knowledge only, deliberately, and the eval is what settled it. When documents
+ * counted here, a lexically dominant document raised `best` for a block it
+ * could not appear in: on `rec-noise-general` — a general-knowledge VAT
+ * question over a corpus holding an invoice whose numbers dominate the ranking
+ * — `best` oscillated 0.33 ↔ 0.90 between otherwise identical repeats, purely
+ * on whether the invoice won its arm that time, and abstention became a coin
+ * flip. Excluding them made the same case a stable 0.252.
+ *
+ * It also has to stay knowledge-only for `documentTopsRanking` to mean
+ * anything: a document compared against a ceiling that already includes
+ * documents is compared against itself.
+ *
+ * `null` when the rerank stage degraded to RRF-only (circuit breaker open,
+ * provider down): no scores to compare, so the floors are skipped and the arms'
+ * own top-K is served, which is what the pipeline did before reranking existed.
+ * A retrieval outage must not silently empty the memory block.
  */
 const bestScore = (gathered: RecallGathered): number | null => {
   let best: number | null = null;
-  for (const hit of [
-    ...gathered.knowledgeResults,
-    ...gathered.documentResults,
-  ]) {
+  for (const hit of gathered.knowledgeResults) {
     const score = scoreOf(hit);
     if (score !== null && (best === null || score > best)) best = score;
   }
@@ -415,7 +475,16 @@ export const buildVerbatimBlock = (
     }
   }
 
-  if (INCLUDE_DOCUMENTS) {
+  // A document rides only when it beats what memory found. `best` is the
+  // knowledge arms' ceiling (see `bestScore`), so this compares the top
+  // document against the best thing already destined for the block.
+  const topDocument = gathered.documentResults[0];
+  const topDocumentScore =
+    topDocument === undefined ? null : scoreOf(topDocument);
+  const documentTopsRanking =
+    topDocumentScore !== null &&
+    (best === null || topDocumentScore >= best * DOCUMENT_TOP_MARGIN);
+  if (INCLUDE_DOCUMENTS && documentTopsRanking) {
     for (const hit of gathered.documentResults) {
       if (documents.length >= MAX_DOCUMENTS) break;
       if (!clearsFloor(hit, best)) continue;

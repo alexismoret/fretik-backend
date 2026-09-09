@@ -150,14 +150,37 @@ describe("buildVerbatimBlock — selection", () => {
     expect((result.block ?? "").length).toBeLessThanOrEqual(2000);
   });
 
-  test("documents stay out of the pre-turn block — they are the JIT path", () => {
+  test("a document that merely shares vocabulary stays out — JIT handles it", () => {
     const result = buildVerbatimBlock(
       gathered({
-        knowledgeResults: [hit({ sourceType: "records", sourceId: "rec-1" })],
-        documentResults: [hit({ sourceType: "documents", sourceId: "doc-1" })],
+        knowledgeResults: [
+          hit({ sourceType: "records", sourceId: "rec-1", rerankScore: 0.9 }),
+        ],
+        documentResults: [
+          hit({ sourceType: "documents", sourceId: "doc-1", rerankScore: 0.4 }),
+        ],
       }),
     );
+    expect(result.block).toContain("(record:rec-1)");
     expect(result.block).not.toContain("(document:doc-1)");
+  });
+
+  test("a document that tops the ranking IS the answer, and rides", () => {
+    const result = buildVerbatimBlock(
+      gathered({
+        knowledgeResults: [
+          hit({ sourceType: "records", sourceId: "rec-1", rerankScore: 0.4 }),
+        ],
+        documentResults: [
+          hit({
+            sourceType: "documents",
+            sourceId: "doc-1",
+            rerankScore: 0.95,
+          }),
+        ],
+      }),
+    );
+    expect(result.block).toContain("(document:doc-1)");
   });
 });
 

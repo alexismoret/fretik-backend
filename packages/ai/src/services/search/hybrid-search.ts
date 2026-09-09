@@ -124,7 +124,12 @@ export interface HybridSearchFilters {
 
 export interface HybridSearchInput {
   query: string;
-  queryEmbedding: number[];
+  /**
+   * The query vector, or a promise for it. A promise lets the two lexical arms
+   * run through the embedding round trip instead of behind it — see the note in
+   * `hybridSearch`.
+   */
+  queryEmbedding: number[] | Promise<number[]>;
   teamId: string;
   /**
    * Org-level scope. Required: covers user-scope context files
@@ -283,31 +288,53 @@ export const hybridSearch = async (
   const { query, queryEmbedding, teamId, organizationId, userId, filters } =
     input;
 
-  // Guard against a missing / malformed embedding (upstream provider
-  // timeout, quota, dimension mismatch). Serialising `[]::halfvec`
-  // produces an invalid SQL literal that fails the whole transaction,
-  // so we skip the semantic side entirely and let BM25 carry the query.
-  // Logged as a warning because it indicates an upstream incident, not
-  // a normal empty-corpus scenario.
-  const hasValidEmbedding =
-    Array.isArray(queryEmbedding) &&
-    queryEmbedding.length === EMBEDDING_DIMENSIONS;
-  if (!hasValidEmbedding) {
-    console.warn(
-      `[hybrid-search] invalid query embedding (len=${queryEmbedding?.length ?? 0}, expected=${EMBEDDING_DIMENSIONS}) — falling back to BM25-only`,
-    );
-  }
-
-  const [semanticRows, bm25Rows, registryRows] = await Promise.all([
-    hasValidEmbedding
-      ? runSemanticSearch(
-          queryEmbedding,
+  // The two LEXICAL arms start now, without waiting for the embedding.
+  //
+  // Only the semantic arm needs a vector, and `queryEmbedding` may still be in
+  // flight — a round trip to an 8B embedding model, the single slowest hop in
+  // retrieval. Taking it as a promise and awaiting it inside the semantic
+  // branch means BM25 and the record registry run THROUGH that wait instead of
+  // after it, so a search costs `max(embed, lexical) + fuse` rather than
+  // `embed + max(semantic, lexical)`. Callers that already hold the vector pass
+  // it directly; `Promise.resolve` makes both shapes one code path.
+  //
+  // Guard against a missing / malformed embedding (upstream provider timeout,
+  // quota, dimension mismatch). Serialising `[]::halfvec` produces an invalid
+  // SQL literal that fails the whole transaction, so we skip the semantic side
+  // entirely and let BM25 carry the query. Logged as a warning because it
+  // indicates an upstream incident, not a normal empty-corpus scenario.
+  const semanticPromise = Promise.resolve(queryEmbedding)
+    .then((vector) => {
+      if (Array.isArray(vector) && vector.length === EMBEDDING_DIMENSIONS) {
+        return runSemanticSearch(
+          vector,
           teamId,
           organizationId,
           userId,
           filters,
-        )
-      : Promise.resolve<RawRow[]>([]),
+        );
+      }
+      console.warn(
+        `[hybrid-search] invalid query embedding (len=${vector?.length ?? 0}, expected=${EMBEDDING_DIMENSIONS}) — falling back to BM25-only`,
+      );
+      return [];
+    })
+    // An embedding provider that fails now costs the SEMANTIC arm, not the
+    // search. Before the lexical arms ran in parallel there was nothing to
+    // fall back to — the rejection surfaced from `searchRAG` and recall's own
+    // `.catch` turned it into an empty memory block — so a bad minute at the
+    // embeddings endpoint took memory offline entirely. The two lexical arms
+    // have already answered by the time this settles; serve them.
+    .catch((err: unknown) => {
+      console.warn(
+        "[hybrid-search] embedding unavailable — serving lexical arms only:",
+        err instanceof Error ? err.message : err,
+      );
+      return [];
+    });
+
+  const [semanticRows, bm25Rows, registryRows] = await Promise.all([
+    semanticPromise,
     runBm25Search(query, teamId, organizationId, userId, filters),
     wantsRecords(filters)
       ? runRecordRegistrySearch({

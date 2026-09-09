@@ -206,7 +206,12 @@ export const searchRAG = async (
   // typo retry, popular question across users) skips the OpenRouter
   // round-trip entirely and the multi-query expansion pays only for
   // the genuinely new reformulations.
-  const variantEmbeddings = await getCachedOrEmbedBatch(queryVariants);
+  // NOT awaited here. Each `hybridSearch` takes the promise and awaits it
+  // inside its semantic arm only, so the BM25 and record-registry queries are
+  // already running while the embedding round trip is still open. Awaiting it
+  // at this line is what used to put the slowest hop in retrieval in FRONT of
+  // two searches that never needed it.
+  const variantEmbeddings = getCachedOrEmbedBatch(queryVariants);
 
   // Stage 3 — parallel hybrid search per variant. Each call is
   // itself internally parallel (semantic + BM25).
@@ -214,7 +219,7 @@ export const searchRAG = async (
     queryVariants.map((variant, i) =>
       hybridSearch({
         query: variant,
-        queryEmbedding: variantEmbeddings[i] ?? [],
+        queryEmbedding: variantEmbeddings.then((all) => all[i] ?? []),
         teamId,
         organizationId,
         userId,

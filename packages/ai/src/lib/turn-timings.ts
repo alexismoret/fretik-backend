@@ -8,16 +8,20 @@
  * decision on that path was taken on code reading rather than measurement.
  *
  * The contract is deliberately minimal: a plain mutable record of
- * `label → milliseconds`, filled by `timeStage`, rendered by `formatTimings`
- * into ONE key=value line per turn. No sampling, no aggregation, no new
- * dependency — a structured log line is what a p50/p95 histogram is built
- * from, and it survives a replica restart, which an in-process counter does
- * not.
+ * `label → milliseconds`, filled by `timeStage`, and emitted on two surfaces
+ * that answer different questions. `formatTimings` writes ONE key=value line
+ * per turn — what you grep during an incident, and what survives a replica
+ * restart. `recordTimingsOnTrace` puts the same numbers on the Langfuse trace,
+ * where the turn's cost and model latency already live and where a p95 across a
+ * day of traffic can actually be computed.
  *
  * Langfuse already covers the LLM calls themselves (each generation is its own
- * costed observation); what it cannot see is the SQL / HTTP / cache work
+ * costed observation); what it could not see is the SQL / HTTP / cache work
  * around them, which is exactly what these labels name.
  */
+
+import { getActiveSpanId, startObservation } from "@langfuse/tracing";
+import { langfuseEnabled } from "./langfuse";
 
 export type StageTimings = Record<string, number>;
 
@@ -59,3 +63,30 @@ export const formatTimings = (timings: StageTimings): string =>
     .sort(([, a], [, b]) => b - a)
     .map(([label, ms]) => `${label}=${ms.toString()}`)
     .join(" ");
+
+/**
+ * Put the same numbers on the trace, as one observation carrying every stage
+ * as metadata.
+ *
+ * A log line survives a restart and is what you grep during an incident; it is
+ * also invisible from the Langfuse UI, where the rest of a turn's cost and
+ * latency already lives, and it cannot be aggregated into a p95 across a day of
+ * traffic. Both surfaces, one source.
+ *
+ * Zero-duration observation on purpose: the stages it describes have already
+ * run, and giving it a span would draw a bar that overlaps the real ones and
+ * means something different. Soft-fails and skips itself when nothing is being
+ * traced, exactly like `recordCandidateScores` — telemetry never delays or
+ * breaks a turn.
+ */
+export const recordTimingsOnTrace = (
+  name: string,
+  timings: StageTimings,
+): void => {
+  if (!langfuseEnabled || getActiveSpanId() === undefined) return;
+  try {
+    startObservation(name, { metadata: { ...timings } }).end();
+  } catch {
+    // Swallow — a turn must never fail on its own instrumentation.
+  }
+};

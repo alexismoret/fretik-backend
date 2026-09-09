@@ -9,6 +9,7 @@ import { langfuseEnabled, telemetryFor } from "../../lib/langfuse";
 import { resolveMemoryModel } from "../../lib/model-registry/team-model";
 import {
   formatTimings,
+  recordTimingsOnTrace,
   type StageTimings,
   timeStage,
 } from "../../lib/turn-timings";
@@ -952,6 +953,7 @@ export const runUnifiedRecall = async (
   console.info(
     `[recall] agent=${params.agentType} ${formatTimings(turnTimings)} block=${result?.block ? "yes" : "no"}`,
   );
+  recordTimingsOnTrace("recall-timings", turnTimings);
 
   if (cache.size >= CACHE_MAX_ENTRIES) purgeExpired(now);
   cache.set(key, { result, expires: now + CACHE_TTL_MS });

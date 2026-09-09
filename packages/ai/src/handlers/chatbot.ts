@@ -142,6 +142,7 @@ import {
 import { withNamedTrace } from "../lib/trace-tool";
 import {
   formatTimings,
+  recordTimingsOnTrace,
   timeStage,
   type StageTimings,
 } from "../lib/turn-timings";
@@ -920,6 +921,7 @@ const buildTurnCallOptions = async (
     `${params.logPrefix} contextManifestChars=${(fragments.chatbotContextManifest ?? "").length.toString()} activeMemory=${activeMemoryRecall ? "hit" : "miss"} teamCollectionsChars=${(fragments.teamCollectionsBlock ?? "").length.toString()} enabledSkillsChars=${(fragments.enabledSkillsBlock ?? "").length.toString()}`,
   );
   console.info(`${params.logPrefix} [pre-turn] ${formatTimings(timings)}`);
+  recordTimingsOnTrace("pre-turn", timings);
 
   return {
     ...params.callOptions,
@@ -1792,51 +1794,69 @@ export const runChatbotTurn = async (
       // active span — every model + tool call then nests under ONE trace
       // per turn. Run directly when Langfuse is unconfigured.
       const turnBody = async (): Promise<void> => {
-        const historyForModel = await compactConversation(params.history, {
-          // Threshold follows the SERVING model's context window — the
-          // profile resolved above (header override or `chat` binding).
-          profile: modelProfile,
-          // Summariser honours the team's workhorse pick (C8b).
-          teamId: params.callOptions.teamId,
-          onProgress: (event) => {
-            // The shared `id` makes consecutive writes UPDATE the
-            // single existing data part on the client (started → done
-            // / failed) instead of stacking three separate cards.
-            // The frontend renders this part as a UChatTool with a
-            // loader while phase==='running' and transitions to a
-            // success / failure state on the final write.
-            if (event.phase === "started") {
+        // The last two stretches before a token can be produced, and the two
+        // the pre-turn instrumentation could not see: `buildTurnCallOptions`
+        // has already returned by here, so `preTurnTotal` stops short of both.
+        // Compaction is usually a token count and a fast path, but summarises
+        // with an LLM above the threshold; `prepareModelMessages` can reach S3
+        // for natively-ingested attachments. Neither had a number.
+        const bodyTimings: StageTimings = {};
+        const historyForModel = await timeStage(
+          bodyTimings,
+          "compaction",
+          compactConversation(params.history, {
+            // Threshold follows the SERVING model's context window — the
+            // profile resolved above (header override or `chat` binding).
+            profile: modelProfile,
+            // Summariser honours the team's workhorse pick (C8b).
+            teamId: params.callOptions.teamId,
+            onProgress: (event) => {
+              // The shared `id` makes consecutive writes UPDATE the
+              // single existing data part on the client (started → done
+              // / failed) instead of stacking three separate cards.
+              // The frontend renders this part as a UChatTool with a
+              // loader while phase==='running' and transitions to a
+              // success / failure state on the final write.
+              if (event.phase === "started") {
+                writer.write({
+                  type: "data-compaction",
+                  id: COMPACTION_PART_ID,
+                  data: { phase: "running", tokensBefore: event.tokensBefore },
+                });
+                return;
+              }
+              if (event.phase === "succeeded") {
+                writer.write({
+                  type: "data-compaction",
+                  id: COMPACTION_PART_ID,
+                  data: {
+                    phase: "done",
+                    tokensBefore: event.tokensBefore,
+                    tokensAfter: event.tokensAfter,
+                    reductionPct: event.reductionPct,
+                  },
+                });
+                return;
+              }
+              // failed
               writer.write({
                 type: "data-compaction",
                 id: COMPACTION_PART_ID,
-                data: { phase: "running", tokensBefore: event.tokensBefore },
+                data: { phase: "failed", tokensBefore: event.tokensBefore },
               });
-              return;
-            }
-            if (event.phase === "succeeded") {
-              writer.write({
-                type: "data-compaction",
-                id: COMPACTION_PART_ID,
-                data: {
-                  phase: "done",
-                  tokensBefore: event.tokensBefore,
-                  tokensAfter: event.tokensAfter,
-                  reductionPct: event.reductionPct,
-                },
-              });
-              return;
-            }
-            // failed
-            writer.write({
-              type: "data-compaction",
-              id: COMPACTION_PART_ID,
-              data: { phase: "failed", tokensBefore: event.tokensBefore },
-            });
-          },
-        });
+            },
+          }),
+        );
 
-        const { result, servedBy, retried, modelMessages } =
-          await streamChatbotWithFallback({
+        // `streamText` returns as soon as the stream is open, so this measures
+        // preparing the messages (native-input policy, S3 for attachments the
+        // profile ingests natively) plus opening the provider call — the last
+        // thing standing between the user and a first token, not the
+        // generation itself.
+        const { result, servedBy, retried, modelMessages } = await timeStage(
+          bodyTimings,
+          "streamSetup",
+          streamChatbotWithFallback({
             history: historyForModel,
             callOptions: callOptionsWithFiles,
             agentSet,
@@ -1844,7 +1864,12 @@ export const runChatbotTurn = async (
             abortSignal: abortController.signal,
             onStepFinish: onTurnStep,
             reasoningOverride,
-          });
+          }),
+        );
+        console.info(
+          `${params.logPrefix} [turn-body] ${formatTimings(bodyTimings)}`,
+        );
+        recordTimingsOnTrace("turn-body", bodyTimings);
         // Pre-stream recovery telemetry (the mid-stream paths set their own
         // `recoveryKind` via runFallbackModel / the structured-error branch).
         servedByTurn = servedBy;

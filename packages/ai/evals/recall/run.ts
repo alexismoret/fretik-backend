@@ -33,6 +33,7 @@ import {
   type UnifiedRecallResult,
 } from "../../src/services/recall/recall";
 import { raceDeadline } from "../deadline";
+import { exitAfterFlush } from "../exit";
 import { RECALL_CASES, type RecallEvalCase } from "./cases";
 import {
   cleanupRecallFixtures,
@@ -461,4 +462,4 @@ if (bimodal.length > 0) {
       .join(", ")}`,
   );
 }
-process.exit(passed === results.length ? 0 : 1);
+await exitAfterFlush(passed === results.length ? 0 : 1);

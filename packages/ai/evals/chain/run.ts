@@ -24,6 +24,7 @@ import type {
 import { flushLangfuse, langfuseClient } from "../../src/lib/langfuse";
 import { ensureModelRegistryWarm } from "../../src/lib/model-registry/resolve";
 import { raceDeadline } from "../deadline";
+import { exitAfterFlush } from "../exit";
 import { CHAIN_CASES, type ChainEvalCase } from "./cases";
 import {
   type ChainFixtures,
@@ -378,4 +379,4 @@ if (stageTotals.size > 0) {
       .join(", ")}`,
   );
 }
-process.exit(passed === results.length ? 0 : 1);
+await exitAfterFlush(passed === results.length ? 0 : 1);

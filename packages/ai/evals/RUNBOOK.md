@@ -169,6 +169,17 @@ fixtures of one decide cases in another — clean up before switching.
   arbitrate two whole-suite totals against each other; only paired, per-case
   numbers decide anything (the 2026-08-04 "15/16 vs 13/16" was pure draw
   noise — the bimodal set permuted between runs while the code barely moved).
+- **A chain number before 2026-09-09 is not a number.** None of the three
+  runners warmed the model registry, so recall threw `No model profile for key
+"gpt-oss-120b"`, swallowed it by design, and returned NONE — every
+  recall-side assertion in every suite failed for a reason that had nothing to
+  do with the code under test. Fixed in `0d8a7f5`. Do not compare against a
+  chain score recorded before it.
+- **Chain, last measured 2026-09-10** (10 repeats, isolated): 3/4 fully
+  stable — `decision-survives`, `convention-promoted` and `oneoff-not-durable`
+  at 10/10, `contradiction-corrected` at 9/10 whose single failure is a
+  provider timeout rather than a recall miss. Zero recall misses across all
+  40 repeats.
 
 ### `RECALL_MODE` — measured 2026-09-09, `adaptive` is the default
 
@@ -200,6 +211,90 @@ were, and how they went away:
   same positional shape as the capability channel): **23/23**.
 
 `judge` is the rollback — one env var, no deploy, previous behaviour exactly.
+
+### The candidate budget is spent, not rationed (2026-09-10)
+
+The per-candidate ceiling used to be one number — the 2 000-char block divided
+in advance across a worst-case eight candidates — charged on every turn
+including the ones that selected two. Measured over 230 recall repeats, **220
+(96 %) clipped at least one candidate**, most of them while well under the cap.
+
+A clip is not a neutral loss: it keeps the opening and drops the conclusion,
+and a summary that RESOLVES something puts the resolution last. That is a
+wrong answer, not a lossy one — see `chain-contradiction-corrected` below.
+
+It is now a descending ladder (`700 → 200`), and the block takes the largest
+rung that fits. `HARD_BLOCK_CHAR_CAP` is unchanged, so this spends room already
+reserved rather than asking for more: recall stayed **23/23**, escalation
+stayed at **43.5 %** (100/230 — no latency cost), and turns keeping every
+candidate whole went **10/230 → 81/230**.
+
+Escalating clipped turns to the judge was the other candidate, and the
+measurement killed it: at a 96 % clip rate that rule routes nearly every turn,
+which is worse than `judge` mode with the latency win gone. **Read the
+`clipped=` field on the per-turn line before proposing a rule keyed on it.**
+
+### Retrieval-arm attribution (2026-09-10)
+
+`searchRAG` emits one `[search]` line per call and `hybridSearch` one
+`[hybrid]` line, so a slow arm names a suspect rather than a stage. First
+measurement, 690 calls over a 23 × 10 recall run:
+
+| stage    | p50    | p90    | max    |
+| -------- | ------ | ------ | ------ |
+| `embed`  | 2 ms   | 4 ms   | 17 ms  |
+| `hybrid` | 324 ms | 499 ms | 810 ms |
+| `rerank` | 304 ms | 422 ms | 982 ms |
+
+Postgres and the cross-encoder are the arm, in that order, and they are
+sequential. **The embedding figure is the Redis cache-hit path** — the eval
+runs each query ten times — so it is not what a genuinely novel query pays;
+do not quote it as "embedding is free" without a cold-cache measurement.
+
+`hybridSearch` splits its own line further. The three arms run on separate
+connections, so the stage costs `max(arm)`, and it is always the same arm:
+
+    [hybrid] semantic=673 bm25=189 registry=186
+
+### OPEN: the HNSW index is never used (found 2026-09-10, NOT fixed)
+
+**Every broad semantic search is an exact brute-force scan.** Measured against
+dev (20 504 vectors, pgvector 0.8.2, PG 17.10), on the real query shape with
+the real scope predicate:
+
+| plan                          | rows returned | exec time  |
+| ----------------------------- | ------------- | ---------- |
+| what runs today (Seq Scan)    | 150           | 260-385 ms |
+| forced index, `ef_search=400` | 150           | 6 ms       |
+
+The index is present, valid, 167 MB, `halfvec_cosine_ops` — and the planner
+prices it at **97 730 against the Seq Scan's 3 310**, a ~30× overestimate, so
+it never picks it. Nothing is broken in the sense of wrong answers: brute force
+is EXACT KNN, which is part of why recall scores 23/23. It is the latency that
+is wrong, and it grows linearly with the corpus — this table is 20 k rows.
+
+**Do not "fix" this with a planner hint.** Three attempts, all measured, all
+worse than they look:
+
+- `SET LOCAL enable_seqscan = off` alone: on the knowledge arm
+  (`source_type IN ('memories','episodes','records')`) the HNSW scan returned
+  **8 rows instead of 150**. Filtered HNSW stops after `ef_search` candidates,
+  so a hint that looks like a 40× win silently guts the candidate pool.
+- `hnsw.iterative_scan = relaxed_order` on top: the planner abandoned HNSW
+  altogether for a bitmap scan on `idx_ai_vectors_organization_id`, 219 ms.
+- Raising `ef_search` (150 / 400 / 800) changes how many rows come back
+  (73 / 150 / 150) but never changes the plan CHOICE — the cost model is the
+  blocker, not the tuning.
+
+The selective arms are already fine and must stay that way: `documents`
+(118 rows) uses `idx_ai_vectors_source`, exact, 2.4 ms, and is unaffected by
+any of the above.
+
+Whatever the fix turns out to be — partial HNSW indexes per `source_type`,
+statistics work on `ai_vectors` (`last_analyze` is empty; only autoanalyze has
+ever run), or restructuring the OR-shaped scope predicate — it changes
+retrieval, so it is settled by `evals:recall` at 10 repeats holding **23/23**
+and not by the EXPLAIN alone.
 
 ### Running the A-B
 

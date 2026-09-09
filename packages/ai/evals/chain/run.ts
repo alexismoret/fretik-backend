@@ -22,6 +22,7 @@ import type {
   RunEvaluator,
 } from "@langfuse/client";
 import { flushLangfuse, langfuseClient } from "../../src/lib/langfuse";
+import { ensureModelRegistryWarm } from "../../src/lib/model-registry/resolve";
 import { raceDeadline } from "../deadline";
 import { CHAIN_CASES, type ChainEvalCase } from "./cases";
 import {
@@ -69,6 +70,20 @@ if (cases.length === 0) {
   console.error(`No case matches --case ${onlyCase ?? ""}`);
   process.exit(1);
 }
+
+// The live model registry is a DB-backed snapshot built lazily, and the only
+// thing that builds it in the service is `registryWarmMiddleware` on the HTTP
+// routes. An in-process eval crosses no route, so every `resolveModel` call
+// here hits an EMPTY snapshot and throws "No model profile for key <k> — no
+// live row describes it". Recall swallows that by design ("recall must never
+// break the main turn"), so the suite reports NONE on every case rather than
+// an error — 4/23, with nothing in the output naming the cause.
+//
+// Invisible until the model engine's v3 change removed the curated TypeScript
+// profiles: before it, a profile existed in code and an unwarmed process
+// resolved one anyway. The frozen baselines in RUNBOOK.md predate that change,
+// which is why they were reproducible then and are not now.
+await ensureModelRegistryWarm();
 
 console.log("[chain-eval] ensuring fixtures (idempotent)…");
 const fixtures: ChainFixtures = await ensureChainFixtures(scope);

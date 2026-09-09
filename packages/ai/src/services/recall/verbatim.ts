@@ -1,7 +1,6 @@
 import {
   asOfLine,
   type Candidate,
-  CANDIDATE_MAX_CHARS,
   metadataString,
   type RecallGathered,
   type RecallSearchHit,
@@ -84,13 +83,39 @@ const RELATIVE_SCORE_FLOOR = 0.35;
 const ABSOLUTE_SCORE_FLOOR = 0.02;
 
 /**
+ * Abstention gate — the whole block is withheld when the BEST thing retrieval
+ * found scores under this.
+ *
+ * Distinct from the per-candidate floors above, and the eval is what forced the
+ * distinction. Those floors are RELATIVE, so they rank candidates against each
+ * other and are blind to the case where the whole gather is weak: on "Salut, tu
+ * vas bien aujourd'hui ?" the arms still return their top-K, the best of them
+ * still clears 35% of itself, and an unrelated episode about generating CSV
+ * files was injected as team memory. The judge refuses that turn by reading the
+ * message; without one, the only deterministic signal is that nothing scored
+ * well in absolute terms.
+ *
+ * Calibrated from the recall suite's own distribution rather than guessed — see
+ * the `best=` field on the `[recall] mode=verbatim` log line, which exists to
+ * keep that calibration reproducible.
+ */
+const ABSTENTION_BEST_SCORE_FLOOR = 0.25;
+
+/**
  * Per-source budgets. Deliberately tighter than the arms' top-K: the arms
  * retrieve for recall, this selects for precision, and an unbounded block is
  * the failure mode the judge's 4-bullets-per-section cap existed to prevent.
+ *
+ * Two per source rather than three, because the block has a 2 000-char ceiling
+ * it must fit by SELECTING rather than by truncating (see
+ * `HARD_BLOCK_CHAR_CAP`). Nine candidates in 2 000 chars is ~180 each, which is
+ * below the judge's own 200-char bullets — i.e. it would carry less
+ * information per candidate than the thing it replaces, while carrying more
+ * candidates. Six is what the budget actually affords.
  */
-const MAX_MEMORIES = 3;
-const MAX_EPISODES = 3;
-const MAX_RECORDS = 3;
+const MAX_MEMORIES = 2;
+const MAX_EPISODES = 2;
+const MAX_RECORDS = 2;
 
 /**
  * Documents do not enter the pre-turn block.
@@ -111,12 +136,51 @@ const INCLUDE_DOCUMENTS = false;
 const MAX_DOCUMENTS = 2;
 
 /**
- * Ceiling on the assembled block. Higher than the judge's 2 400 because this
- * one is not a distillation: it carries whole (already-distilled) candidates.
- * Roughly 1 000 tokens worst case, against a system prompt an order of
- * magnitude larger.
+ * Ceiling on the assembled block — the SAME budget the judge is held to (its
+ * prompt targets ≤2 000 chars; `recall.ts`'s 2 400 is a runaway guard above
+ * that target, not a licence).
+ *
+ * It was 4 000 on the first pass, reasoned from "this is not a distillation, so
+ * it needs more room". That reasoning is fine and the number was still wrong:
+ * it made the eval measure a judge under 2 000 against a verbatim block under
+ * 4 000, which is not a comparison. A budget is part of the contract, and the
+ * selector that cannot compress has to meet it by choosing fewer things.
+ *
+ * The honest cost of meeting it: a 1 500-char episode summary arrives clipped
+ * (`clipToBudget`), and a clip is a worse compression than the judge's
+ * rewrite — it keeps the opening and drops the conclusion, where a summary
+ * keeps the conclusion. That asymmetry is a real argument for the judge, and it
+ * is the one the size assertion surfaced.
  */
-const HARD_BLOCK_CHAR_CAP = 4_000;
+const HARD_BLOCK_CHAR_CAP = 2_000;
+
+/**
+ * Per-candidate ceiling, sized so `MAX_*` candidates plus their section headers
+ * and the framing line land inside `HARD_BLOCK_CHAR_CAP` without the whole
+ * block being truncated — a block-level cut can sever the last candidate's
+ * provenance marker, which turns a citable id into a fabricated one.
+ */
+const VERBATIM_CANDIDATE_MAX_CHARS = 260;
+
+/**
+ * Clip to `max` at the last sentence or line boundary before it, so a candidate
+ * ends on a complete thought rather than mid-word. Falls back to a hard cut
+ * when there is no boundary in the last third — better a blunt cut than a
+ * 40-char fragment.
+ */
+const clipToBudget = (text: string, max: number): string => {
+  const trimmed = text.trim();
+  if (trimmed.length <= max) return trimmed;
+  const head = trimmed.slice(0, max);
+  const boundary = Math.max(
+    head.lastIndexOf(". "),
+    head.lastIndexOf("\n"),
+    head.lastIndexOf(" ; "),
+  );
+  return boundary > max * 0.66
+    ? `${head.slice(0, boundary + 1).trim()} […]`
+    : `${head.trim()} […]`;
+};
 
 /** Two candidates of the same source closer than this are a coin flip. */
 const NEAR_TIE_DELTA = 0.05;
@@ -140,7 +204,7 @@ const GREY_ZONE_HI = 0.45;
  * it is the instruction that makes a false positive cost nothing.
  */
 const VERBATIM_HEADER =
-  "Retrieved for this message, most relevant first — team memory, past conversations, and records. Some entries may not be relevant: use what bears on the message and ignore the rest. Never quote these verbatim to the user; dig deeper with the provenance ids via `searchKnowledge` / `getRecord` / `memory`.";
+  "Retrieved for this message, most relevant first. Some entries may not bear on it — use what does, ignore the rest. Never quote them; dig deeper via the provenance ids.";
 
 export interface AmbiguitySignals {
   /**
@@ -153,6 +217,14 @@ export interface AmbiguitySignals {
   nearTies: number;
   /** True when the best score in the gather sits in the grey band. */
   greyZone: boolean;
+  /**
+   * The best rerank score anywhere in the gather, or `null` when rerank
+   * degraded. Logged per turn so `ABSTENTION_BEST_SCORE_FLOOR` is calibrated
+   * against a measured distribution — the reverted 2026-08 relevance gate is
+   * the standing reminder that a threshold picked without one is not an
+   * instrument.
+   */
+  bestScore: number | null;
 }
 
 export interface VerbatimSelection {
@@ -249,6 +321,7 @@ const measureAmbiguity = (
     uncorroboratedAnchors,
     nearTies,
     greyZone: best !== null && best >= GREY_ZONE_LO && best <= GREY_ZONE_HI,
+    bestScore: best,
   };
 };
 
@@ -256,7 +329,8 @@ const renderSection = (title: string, candidates: Candidate[]): string => {
   if (candidates.length === 0) return "";
   const body = candidates
     .map(
-      (c) => `${c.marker}\n${c.content.slice(0, CANDIDATE_MAX_CHARS).trim()}`,
+      (c) =>
+        `${c.marker}\n${clipToBudget(c.content, VERBATIM_CANDIDATE_MAX_CHARS)}`,
     )
     .join("\n\n");
   return `${title}\n\n${body}\n\n`;
@@ -280,6 +354,20 @@ export const buildVerbatimBlock = (
       .filter((hit) => hit.sourceType === "records")
       .map((hit) => hit.sourceId),
   );
+
+  // Abstain before selecting anything. A gather whose best hit is weak has
+  // found nothing to say, and the per-candidate floors below cannot see that:
+  // they are relative, so on a weak gather they happily rank noise against
+  // noise. A `null` best means rerank degraded to RRF and there are no scores
+  // to judge by — serve the arms' own top-K rather than go silent on a
+  // provider outage.
+  if (best !== null && best < ABSTENTION_BEST_SCORE_FLOOR) {
+    return {
+      block: null,
+      recalledEpisodeIds: [],
+      ambiguity: measureAmbiguity(gathered, semanticRecordIds, best),
+    };
+  }
 
   const memories: Candidate[] = [];
   const episodes: Candidate[] = [];
@@ -345,25 +433,43 @@ export const buildVerbatimBlock = (
     )
     .flatMap((anchor) => anchor.lines);
 
-  const sections =
-    renderSection("FACTS — team memory:", memories) +
-    renderSection("EPISODES — past conversations:", episodes) +
-    renderSection("RECORDS:", records) +
-    renderSection("DOCUMENTS:", documents) +
-    (graphLines.length > 0
+  // Sections in DROP ORDER — least load-bearing last. The budget is enforced
+  // by removing whole sections from the tail rather than by slicing the
+  // assembled string: a slice lands mid-token, and the token it lands in the
+  // middle of is a provenance marker, which turns a citable id into one the
+  // agent will call its tools with and get nothing back. Graph goes first
+  // because its lines are leads, not facts; memories go last because a
+  // matching process file is the single most actionable thing here.
+  const sections: string[] = [
+    renderSection("FACTS — team memory:", memories),
+    renderSection("EPISODES — past conversations:", episodes),
+    renderSection("RECORDS:", records),
+    renderSection("DOCUMENTS:", documents),
+    graphLines.length > 0
       ? `GRAPH — records named in the message, and what they link to:\n\n${graphLines.join("\n")}\n`
-      : "");
+      : "",
+  ].filter((s) => s.length > 0);
 
   const ambiguity = measureAmbiguity(gathered, semanticRecordIds, best);
 
-  if (sections.trim().length === 0) {
+  if (sections.length === 0) {
     return { block: null, recalledEpisodeIds: [], ambiguity };
   }
 
-  const assembled = `${VERBATIM_HEADER}\n\n${sections}`.trim();
+  const assemble = (parts: string[]): string =>
+    `${VERBATIM_HEADER}\n\n${parts.join("")}`.trim();
+
+  const kept = [...sections];
+  while (kept.length > 1 && assemble(kept).length > HARD_BLOCK_CHAR_CAP) {
+    kept.pop();
+  }
+  const assembled = assemble(kept);
+  // One section left and still over: the candidate clip already ran, so this is
+  // a pathological single entry. Cut it, but cut it BEFORE the last marker so
+  // nothing half-written survives as a citation.
   const block =
     assembled.length > HARD_BLOCK_CHAR_CAP
-      ? `${assembled.slice(0, HARD_BLOCK_CHAR_CAP)}\n…`
+      ? `${assembled.slice(0, assembled.lastIndexOf("\n(", HARD_BLOCK_CHAR_CAP)).trim()}\n[…]`
       : assembled;
 
   return {

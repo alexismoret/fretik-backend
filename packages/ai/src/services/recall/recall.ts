@@ -766,7 +766,7 @@ export const runUnifiedRecall = async (
       block = selection.block;
       recalledEpisodeIds = selection.recalledEpisodeIds;
       console.info(
-        `[recall] mode=verbatim uncorroboratedAnchors=${selection.ambiguity.uncorroboratedAnchors.toString()} nearTies=${selection.ambiguity.nearTies.toString()} greyZone=${selection.ambiguity.greyZone.toString()}`,
+        `[recall] mode=verbatim best=${selection.ambiguity.bestScore?.toFixed(3) ?? "none"} uncorroboratedAnchors=${selection.ambiguity.uncorroboratedAnchors.toString()} nearTies=${selection.ambiguity.nearTies.toString()} greyZone=${selection.ambiguity.greyZone.toString()} chars=${(selection.block ?? "").length.toString()}`,
       );
       if (recalledEpisodeIds.length > 0) {
         void stampEpisodeRecall(recalledEpisodeIds).catch((err: unknown) => {

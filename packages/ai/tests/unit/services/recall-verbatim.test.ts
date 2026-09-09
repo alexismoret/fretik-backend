@@ -111,7 +111,43 @@ describe("buildVerbatimBlock — selection", () => {
     );
     const rendered = result.block ?? "";
     const count = [...rendered.matchAll(/\(record:/g)].length;
-    expect(count).toBe(3);
+    // Two per source, not three: the block shares one 2 000-char ceiling with
+    // the judge, and nine candidates inside it would carry less per candidate
+    // than the judge's own 200-char bullets.
+    expect(count).toBe(2);
+  });
+
+  test("withholds the whole block when the best hit is weak", () => {
+    // The abstention gate, distinct from the per-candidate floors: those are
+    // relative, so on a gather where nothing is relevant they rank noise
+    // against noise and inject the winner.
+    const result = buildVerbatimBlock(
+      gathered({
+        knowledgeResults: [
+          hit({ sourceType: "episodes", sourceId: "ep-a", rerankScore: 0.08 }),
+          hit({ sourceType: "records", sourceId: "rec-a", rerankScore: 0.05 }),
+        ],
+      }),
+    );
+    expect(result.block).toBeNull();
+    expect(result.ambiguity.bestScore).toBeCloseTo(0.08);
+  });
+
+  test("a block never exceeds the budget it shares with the judge", () => {
+    const long = "Lorem ipsum dolor sit amet. ".repeat(200);
+    const result = buildVerbatimBlock(
+      gathered({
+        knowledgeResults: [
+          hit({ sourceType: "memories", sourceId: "m-1", content: long }),
+          hit({ sourceType: "memories", sourceId: "m-2", content: long }),
+          hit({ sourceType: "episodes", sourceId: "e-1", content: long }),
+          hit({ sourceType: "episodes", sourceId: "e-2", content: long }),
+          hit({ sourceType: "records", sourceId: "r-1", content: long }),
+          hit({ sourceType: "records", sourceId: "r-2", content: long }),
+        ],
+      }),
+    );
+    expect((result.block ?? "").length).toBeLessThanOrEqual(2000);
   });
 
   test("documents stay out of the pre-turn block — they are the JIT path", () => {

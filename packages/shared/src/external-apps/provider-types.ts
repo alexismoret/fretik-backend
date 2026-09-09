@@ -9,6 +9,30 @@ import type { ToolApprovalSummaryField } from "../db/schema/approvals";
 
 // ── Nango-proxy transport: request/response mappers ───────────────────
 
+/**
+ * A request that carries a binary, sent as `multipart/form-data` instead
+ * of JSON. `http-direct` only — `buildRequest` refuses it on any other
+ * transport rather than dropping it silently.
+ *
+ * It exists because some upload endpoints accept nothing else: Directus'
+ * `POST /files` stores bytes from a multipart part and from no other
+ * shape, so a provider that cannot speak multipart cannot put a document
+ * into its customer's file store at all.
+ */
+export interface MultipartBody {
+  /** Text parts sent alongside the file — columns on the created row. */
+  fields?: Record<string, string>;
+  /** The binary part. */
+  file: {
+    /** Form field name the API expects (Directus: `file`). */
+    field: string;
+    filename: string;
+    contentType: string;
+    /** The file's bytes, base64-encoded. */
+    base64: string;
+  };
+}
+
 /** Dynamic parts of a Nango Proxy request produced by a request mapper. */
 export interface ProxyRequestParts {
   /** Overrides the (already path-substituted) manifest path when set. */
@@ -17,6 +41,11 @@ export interface ProxyRequestParts {
   query?: Record<string, string>;
   /** JSON request body. */
   body?: unknown;
+  /**
+   * Binary request body. Mutually exclusive with `body` — the executor
+   * builds a `FormData` and lets `fetch` set the boundary.
+   */
+  multipart?: MultipartBody;
   /**
    * Request headers. Most providers never need these — Nango injects auth.
    * Use for per-call headers the API mandates: Microsoft Planner requires
@@ -33,8 +62,23 @@ export type RequestMapper = (
   args: Record<string, unknown>,
 ) => ProxyRequestParts;
 
-/** Normalizes a raw provider response into the manifest's return shape. */
-export type ResponseMapper = (raw: unknown) => unknown;
+/**
+ * Normalizes a raw provider response into the manifest's return shape.
+ *
+ * `args` are the SAME validated arguments the request mapper saw, handed
+ * back so a response mapper can shape its output around what was asked —
+ * filtering a catch-all endpoint down to the rows requested, for instance,
+ * when the upstream API has no parameter for it.
+ *
+ * It exists so no provider has to stash that context in module state
+ * between the two calls: a module-level slot is per-PROCESS, while the
+ * concurrency slot that would make it safe is per-CONNECTION, so two
+ * connections of the same provider in one process silently swap answers.
+ */
+export type ResponseMapper = (
+  raw: unknown,
+  args?: Record<string, unknown>,
+) => unknown;
 
 /** HTTP transformers a provider registers, keyed by mapper name. */
 export interface ProviderMappers {
@@ -78,6 +122,30 @@ export type ProviderTestCredentials = (input: {
   credentials: Record<string, unknown>;
   connection_config: Record<string, unknown>;
 }) => Promise<{ ok: true } | { ok: false; scope?: string; message: string }>;
+
+/**
+ * One-shot side effect run on the provider's side once a connection is
+ * stored and its credentials verified — never on every call.
+ *
+ * It exists for an API where the credential alone does not fully determine
+ * what the connection sees, and the missing part is SERVER-SIDE STATE the
+ * user picked in our form. Pbyp is the case: a Directus account can hold
+ * several profiles, and the effective scope
+ * (`directus_users.current_entities`) is written only by
+ * `POST /auth-endpoints/profile/:id`. Without this hook the connection
+ * would silently keep whatever profile the account last used in the Pbyp
+ * UI, and the selector in our modal would be decoration.
+ *
+ * Runs after `testCredentials` and only when that passed. A throw marks the
+ * connection `status: "error"` with the message — the row is still created,
+ * so the user can see and fix it, exactly like a failed credentials test.
+ */
+export type ProviderOnConnected = (input: {
+  credentials: Record<string, unknown>;
+  connection_config: Record<string, unknown>;
+  /** Validated `connectionOptions`, when the manifest declares them. */
+  options: Record<string, unknown> | null;
+}) => Promise<void>;
 
 /**
  * Resolver for a `dynamic-select` credential field. Receives the values

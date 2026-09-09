@@ -253,9 +253,28 @@ Appended verbatim to the generated SKILL.md. Read
 ### Length budget
 
 Aim for ≤ 150 lines. If you blow past that, you are padding. Move
-overflow into one of: action-specific patterns the agent will read on
-demand (separate `.md` files under a future `references/` dir if we need
-one), the `summary` of the action itself, or just delete.
+overflow into one of: `references/` (below), the `summary` of the action
+itself, or just delete.
+
+### `references/` — the deep material, read on demand
+
+`src/<key>/references/*.md` is copied verbatim to
+`sandbox-assets/skills/<key>/references/` by `gen:sdk`, next to SKILL.md.
+Optional; most providers need none.
+
+A file belongs there when it is an ENUMERATION the agent consults for one
+task and ignores the rest of the time — a collection dictionary, a status
+machine, an EDI recipe, a query cookbook. `guidance.md` then carries one
+line per reference saying when to read it.
+
+The rule from `.agent/agent-context-framework.md` §8 decides the split:
+**a reference the agent must ALWAYS read is not a reference — it is the
+prompt, arriving one step late and at full price.** If every task needs
+it, it belongs in `guidance.md`, however long that makes it.
+
+The target folder is WIPED before each copy, so deleting a reference
+stops shipping it. Pbyp is the current example (7 files, ~1 000 lines
+that never enter a conversation that does not need them).
 
 ## 7. Mappers / handlers
 
@@ -382,6 +401,28 @@ If `credentialsForm.testConnection.supported = true`, export
 `{ ok: true }` or `{ ok: false, scope?, message }` — `scope` lets the UI
 pin the error to a sub-system (`imap` vs `smtp`).
 
+## 9b. `onConnected` — one-shot setup on the provider's side
+
+Optional. Export `onConnected` from `index.ts` when the credential alone
+does not determine what the connection sees, and the missing piece is
+SERVER-SIDE STATE the user picked in our form.
+
+Pbyp is the case: an account holds several profiles, and the effective
+scope (`directus_users.current_entities`) is written only by
+`POST /auth-endpoints/profile/:id`. Storing the chosen profile proves
+nothing — without this call the connection keeps whatever profile the
+account last used in the vendor's own UI, and the selector in our modal is
+decoration.
+
+It runs after `testCredentials` and only when that passed, in both
+`confirmConnection` and `confirmReconnect` (a reconnect re-collects the
+whole form, so the selection may have changed). A throw marks the
+connection `status: "error"` with the message — the row is still created,
+exactly like a failed credentials test.
+
+Do NOT reach for it for anything that belongs on every call: it fires
+once, and a per-call need belongs in the transport or a mapper.
+
 ## 10. Wire the provider in `src/index.ts`
 
 ```ts
@@ -390,6 +431,8 @@ setProviders({
     manifest: fooManifest,
     handlers, // OR mappers
     testCredentials, // if applicable
+    dynamicOptions, // if the form has a dynamic-select
+    onConnected, // if the vendor needs one-shot setup (§9b)
     summaries,
   },
 });
@@ -463,6 +506,8 @@ Single PR, in order:
 - `backend/packages/providers/src/index.ts` — `setProviders({...})` update
 - `backend/packages/ai/sandbox-assets/fretik_apps/<key>.py` — regenerated
 - `backend/packages/ai/sandbox-assets/skills/<key>/SKILL.md` — regenerated
+- `backend/packages/ai/sandbox-assets/skills/<key>/references/*.md` —
+  regenerated, when the provider has any
 - `backend/packages/shared/src/external-apps/i18n/locales/en.ts` — approval
   summary keys
 - `app/i18n/locales/en.ts` — credentials form keys (if any)

@@ -4,6 +4,7 @@ import { exchangeEntry } from "./exchange";
 import { frontEntry } from "./front";
 import { imapSmtpEntry } from "./imap-smtp";
 import { outlookEntry } from "./outlook";
+import { pbypEntry } from "./pbyp";
 import { plannerEntry } from "./planner";
 import { shiptifyEntry } from "./shiptify";
 import { teamsEntry } from "./teams";
@@ -29,6 +30,7 @@ setProviders({
   shiptify: shiptifyEntry,
   planner: plannerEntry,
   "akanea-wms": akaneaWmsEntry,
+  pbyp: pbypEntry,
 });
 
 export {
@@ -37,6 +39,7 @@ export {
   frontEntry,
   imapSmtpEntry,
   outlookEntry,
+  pbypEntry,
   plannerEntry,
   shiptifyEntry,
   teamsEntry,

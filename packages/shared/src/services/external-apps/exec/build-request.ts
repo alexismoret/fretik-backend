@@ -2,6 +2,7 @@ import type {
   ManifestAction,
   ParamSpec,
 } from "../../../external-apps/manifest-schema";
+import type { MultipartBody } from "../../../external-apps/provider-types";
 import type { ResolvedAction } from "../../../external-apps/registry";
 import type { NangoProxyCall } from "./nango-proxy";
 
@@ -26,6 +27,7 @@ export interface BuiltRequest {
   endpoint: string;
   query?: Record<string, string>;
   body?: unknown;
+  multipart?: MultipartBody;
   headers?: Record<string, string>;
   paginate?: boolean;
 }
@@ -109,11 +111,22 @@ export const buildRequest = (
 
   if (resolved.requestMapper !== undefined) {
     const parts = resolved.requestMapper(args);
+    if (
+      parts.multipart !== undefined &&
+      resolved.transport.kind !== "http-direct"
+    ) {
+      // Nango Proxy takes a JSON body; handing it a multipart part would
+      // drop the file and still return 2xx. Fail where the mistake is.
+      throw new Error(
+        `Action ${action.name}: multipart requests are supported on http-direct only (transport is ${resolved.transport.kind})`,
+      );
+    }
     return {
       method: action.endpoint.method,
       endpoint: parts.endpoint ?? endpoint,
       query: parts.query,
       body: parts.body,
+      multipart: parts.multipart,
       headers: parts.headers,
       paginate: action.paginate,
     };

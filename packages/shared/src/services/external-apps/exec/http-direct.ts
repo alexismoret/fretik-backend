@@ -5,6 +5,7 @@ import type {
   ProviderManifest,
 } from "../../../external-apps/manifest-schema";
 import { normalizeNangoCredentials } from "../../../external-apps/normalize-nango-credentials";
+import type { MultipartBody } from "../../../external-apps/provider-types";
 import {
   isAuthFailure,
   isHttpDirectCredentialFailure,
@@ -37,7 +38,35 @@ export interface HttpDirectCall {
   endpoint: string;
   query?: Record<string, string>;
   body?: unknown;
+  /** Binary body. Mutually exclusive with `body`. */
+  multipart?: MultipartBody;
 }
+
+/**
+ * Turn a mapper's `MultipartBody` into a `FormData`.
+ *
+ * The file part goes LAST: Directus (and most busboy-based servers) apply
+ * the text parts to the row being created, and only those already parsed
+ * when the stream reaches the binary. A field sent after the file is
+ * parsed too late to affect it.
+ *
+ * Exported for the same reason as `projectHttpDirectAuth`: the way the
+ * bytes are framed is the part that can be wrong while the request still
+ * answers 2xx, so it has to be assertable without a Nango double.
+ */
+export const buildFormData = (multipart: MultipartBody): FormData => {
+  const form = new FormData();
+  for (const [key, value] of Object.entries(multipart.fields ?? {})) {
+    form.append(key, value);
+  }
+  const bytes = Buffer.from(multipart.file.base64, "base64");
+  form.append(
+    multipart.file.field,
+    new Blob([bytes], { type: multipart.file.contentType }),
+    multipart.file.filename,
+  );
+  return form;
+};
 
 /**
  * Read one `credentials.<key>` / `connection_config.<key>` dot path off the
@@ -208,7 +237,12 @@ export const callHttpDirect = async (
   );
 
   const init: RequestInit = { method: call.method, headers };
-  if (call.body !== undefined) {
+  if (call.multipart !== undefined) {
+    // No Content-Type of our own: `fetch` derives it from the FormData and
+    // appends the boundary. Setting it here produces a header with no
+    // boundary and the server fails to parse a body it can see.
+    init.body = buildFormData(call.multipart);
+  } else if (call.body !== undefined) {
     headers["Content-Type"] = "application/json";
     init.body = JSON.stringify(call.body);
   }

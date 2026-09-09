@@ -182,12 +182,38 @@ const MAX_DOCUMENTS = 2;
 const HARD_BLOCK_CHAR_CAP = 2_000;
 
 /**
- * Per-candidate ceiling, sized so `MAX_*` candidates plus their section headers
- * and the framing line land inside `HARD_BLOCK_CHAR_CAP` without the whole
- * block being truncated — a block-level cut can sever the last candidate's
- * provenance marker, which turns a citable id into a fabricated one.
+ * Per-candidate ceilings, tried in order until the assembled block fits
+ * `HARD_BLOCK_CHAR_CAP`.
+ *
+ * This used to be one number, 260 — `MAX_*` candidates' worth of room divided
+ * up in advance, so that a worst-case selection could not overflow the block.
+ * It was charged on EVERY turn, including the ones that selected two
+ * candidates and left two thirds of the block empty, and that is a defect
+ * rather than a conservative default: measured over 230 recall repeats, 220 of
+ * them (96 %) clipped at least one candidate, most while well under the cap.
+ *
+ * What a clip costs is not evenly distributed. It keeps the opening and drops
+ * the conclusion, and a summary that RESOLVES something puts the resolution at
+ * the end. `chain-contradiction-corrected` is the case that made it visible:
+ * when the consolidator merges a conflict chronologically — "in May the lead
+ * time was 8 weeks … in September it dropped to 3 … this supersedes the
+ * previous" — a head-clip keeps the superseded value and drops the correction,
+ * and the block then reports 8 weeks as the current lead time. The block that
+ * did it was ~700 chars inside a 2 000-char cap: there was room for the whole
+ * summary and we cut it anyway.
+ *
+ * So the budget is chosen to FIT rather than fixed in advance. The ladder
+ * starts at the same 700 the judge path allows a candidate, so on the turns
+ * where nothing is contended the two paths clip identically — which is to say
+ * not at all — and tightens only against a block that actually overflows.
+ * `HARD_BLOCK_CHAR_CAP` is unchanged: this spends the room already reserved,
+ * it does not ask for more.
  */
-const VERBATIM_CANDIDATE_MAX_CHARS = 260;
+const VERBATIM_CANDIDATE_BUDGETS = [700, 520, 400, 320, 260, 200] as const;
+
+/** The floor of the ladder — what a candidate gets when everything is contended. */
+const VERBATIM_CANDIDATE_MIN_CHARS =
+  VERBATIM_CANDIDATE_BUDGETS[VERBATIM_CANDIDATE_BUDGETS.length - 1] ?? 200;
 
 /**
  * Clip to `max` at the last sentence or line boundary before it, so a candidate
@@ -252,6 +278,24 @@ export interface AmbiguitySignals {
    * instrument.
    */
   bestScore: number | null;
+  /**
+   * Rendered candidates that did not fit `VERBATIM_CANDIDATE_MAX_CHARS` and
+   * were clipped.
+   *
+   * This is the one place the deterministic path is known to be WRONG rather
+   * than merely lossy, and `chain-contradiction-corrected` is the proof. When
+   * the consolidator resolves a conflict by MERGE it writes chronologically —
+   * "in May the lead time was 8 weeks … in September it dropped to 3 … this
+   * supersedes the previous" — and a head-clip keeps the superseded value and
+   * drops the correction. The block then states 8 weeks as what retrieval knows
+   * about the current lead time. A REVISE, which leads with the current value,
+   * fits and is correct: the same case passed 7/10 and failed 3/10 purely on
+   * which shape the consolidator chose.
+   *
+   * Counted before it is acted on, so the escalation rate it would cost is read
+   * off a measured distribution rather than guessed.
+   */
+  clippedCandidates: number;
 }
 
 export interface VerbatimSelection {
@@ -389,16 +433,28 @@ const measureAmbiguity = (
     nearTies,
     greyZone: best !== null && best >= GREY_ZONE_LO && best <= GREY_ZONE_HI,
     bestScore: best,
+    // Filled by the caller: clipping is a property of what got SELECTED, which
+    // this pass has not decided yet.
+    clippedCandidates: 0,
   };
 };
 
-const renderSection = (title: string, candidates: Candidate[]): string => {
+/**
+ * How many of the selected candidates will not survive rendering intact.
+ * Exact rather than approximate: `clipToBudget` clips precisely when the
+ * trimmed content exceeds the ceiling.
+ */
+const countClipped = (candidates: Candidate[], budget: number): number =>
+  candidates.filter((c) => c.content.trim().length > budget).length;
+
+const renderSection = (
+  title: string,
+  candidates: Candidate[],
+  budget: number,
+): string => {
   if (candidates.length === 0) return "";
   const body = candidates
-    .map(
-      (c) =>
-        `${c.marker}\n${clipToBudget(c.content, VERBATIM_CANDIDATE_MAX_CHARS)}`,
-    )
+    .map((c) => `${c.marker}\n${clipToBudget(c.content, budget)}`)
     .join("\n\n");
   return `${title}\n\n${body}\n\n`;
 };
@@ -567,24 +623,42 @@ export const buildVerbatimBlock = (
   // agent will call its tools with and get nothing back. Graph goes first
   // because its lines are leads, not facts; memories go last because a
   // matching process file is the single most actionable thing here.
-  const sections: string[] = [
-    renderSection("FACTS — team memory:", memories),
-    renderSection("EPISODES — past conversations:", episodes),
-    renderSection("RECORDS:", records),
-    renderSection("DOCUMENTS:", documents),
-    graphLines.length > 0
-      ? `GRAPH — records named in the message, and what they link to:\n\n${graphLines.join("\n")}\n`
-      : "",
-  ].filter((s) => s.length > 0);
+  const sectionsAt = (budget: number): string[] =>
+    [
+      renderSection("FACTS — team memory:", memories, budget),
+      renderSection("EPISODES — past conversations:", episodes, budget),
+      renderSection("RECORDS:", records, budget),
+      renderSection("DOCUMENTS:", documents, budget),
+      graphLines.length > 0
+        ? `GRAPH — records named in the message, and what they link to:\n\n${graphLines.join("\n")}\n`
+        : "",
+    ].filter((s) => s.length > 0);
 
-  const ambiguity = measureAmbiguity(gathered, semanticRecordIds, best);
+  const assemble = (parts: string[]): string =>
+    `${VERBATIM_HEADER}\n\n${parts.join("")}`.trim();
+
+  // Spend the block's room before rationing it. The ladder descends only as
+  // far as this selection actually needs: a two-candidate turn keeps both
+  // candidates whole, and only a genuinely crowded one pays a clip.
+  let candidateBudget = VERBATIM_CANDIDATE_MIN_CHARS;
+  let sections: string[] = [];
+  for (const budget of VERBATIM_CANDIDATE_BUDGETS) {
+    candidateBudget = budget;
+    sections = sectionsAt(budget);
+    if (assemble(sections).length <= HARD_BLOCK_CHAR_CAP) break;
+  }
+
+  const ambiguity: AmbiguitySignals = {
+    ...measureAmbiguity(gathered, semanticRecordIds, best),
+    clippedCandidates: countClipped(
+      [...memories, ...episodes, ...records, ...documents],
+      candidateBudget,
+    ),
+  };
 
   if (sections.length === 0) {
     return { block: null, recalledEpisodeIds: [], ambiguity };
   }
-
-  const assemble = (parts: string[]): string =>
-    `${VERBATIM_HEADER}\n\n${parts.join("")}`.trim();
 
   const kept = [...sections];
   while (kept.length > 1 && assemble(kept).length > HARD_BLOCK_CHAR_CAP) {

@@ -833,7 +833,7 @@ export const runUnifiedRecall = async (
 
     if (selection !== null) {
       console.info(
-        `[recall] mode=${RECALL_MODE} escalate=${escalate.toString()} best=${selection.ambiguity.bestScore?.toFixed(3) ?? "none"} uncorroboratedAnchors=${selection.ambiguity.uncorroboratedAnchors.toString()} nearTies=${selection.ambiguity.nearTies.toString()} greyZone=${selection.ambiguity.greyZone.toString()} chars=${(selection.block ?? "").length.toString()}`,
+        `[recall] mode=${RECALL_MODE} escalate=${escalate.toString()} best=${selection.ambiguity.bestScore?.toFixed(3) ?? "none"} uncorroboratedAnchors=${selection.ambiguity.uncorroboratedAnchors.toString()} nearTies=${selection.ambiguity.nearTies.toString()} greyZone=${selection.ambiguity.greyZone.toString()} clipped=${selection.ambiguity.clippedCandidates.toString()} chars=${(selection.block ?? "").length.toString()}`,
       );
     }
 

@@ -3,6 +3,11 @@ import type { AiVectorSourceType } from "@fretik/shared/db/schema";
 import { aiVectors } from "@fretik/shared/db/schema";
 import { and, eq, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 import { EMBEDDING_DIMENSIONS } from "../../lib/embeddings";
+import {
+  formatTimings,
+  type StageTimings,
+  timeStage,
+} from "../../lib/turn-timings";
 import { fuseArms, type HybridCandidate, type RawRow } from "./fuse-arms";
 import {
   type RegistryRow,
@@ -333,25 +338,40 @@ export const hybridSearch = async (
       return [];
     });
 
+  // Per-arm attribution. The three run on separate connections, so this stage
+  // costs `max(arm)` — and which arm that is decides whether a slow search is
+  // an HNSW tuning question, a full-text index question, or neither. Without
+  // it the `[search] hybrid=` figure names a stage but not a suspect.
+  const armTimings: StageTimings = {};
   const [semanticRows, bm25Rows, registryRows] = await Promise.all([
-    semanticPromise,
-    runBm25Search(query, teamId, organizationId, userId, filters),
+    timeStage(armTimings, "semantic", semanticPromise),
+    timeStage(
+      armTimings,
+      "bm25",
+      runBm25Search(query, teamId, organizationId, userId, filters),
+    ),
     wantsRecords(filters)
-      ? runRecordRegistrySearch({
-          queryText: query,
-          teamId,
-          organizationId,
-          recordIds: filters?.sourceIds,
-          // Deliberately shallower than the two vector arms. They fetch 150
-          // because a candidate buried in one can be shallow in the other, and
-          // cross-arm accumulation lifts it into the output. Nothing can lift a
-          // registry-only candidate — this arm is its only source — so a hit at
-          // registry rank r is outscored by the r-1 hits above it, and rank 51
-          // can never reach a top-50 output. Fetching deeper is provably wasted.
-          limit: HYBRID_OUTPUT_SIZE,
-        })
+      ? timeStage(
+          armTimings,
+          "registry",
+          runRecordRegistrySearch({
+            queryText: query,
+            teamId,
+            organizationId,
+            recordIds: filters?.sourceIds,
+            // Deliberately shallower than the two vector arms. They fetch 150
+            // because a candidate buried in one can be shallow in the other, and
+            // cross-arm accumulation lifts it into the output. Nothing can lift a
+            // registry-only candidate — this arm is its only source — so a hit at
+            // registry rank r is outscored by the r-1 hits above it, and rank 51
+            // can never reach a top-50 output. Fetching deeper is provably
+            // wasted.
+            limit: HYBRID_OUTPUT_SIZE,
+          }),
+        )
       : Promise.resolve<RegistryRow[]>([]),
   ]);
+  console.info(`[hybrid] ${formatTimings(armTimings)}`);
 
   return fuseArms({
     semanticRows,

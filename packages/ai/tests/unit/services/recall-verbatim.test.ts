@@ -375,3 +375,59 @@ describe("buildVerbatimBlock — graph episodes yield a slot", () => {
     expect(result.block).toContain("(episode:old-b)");
   });
 });
+
+describe("buildVerbatimBlock — the candidate budget is spent, not rationed", () => {
+  /**
+   * A conflict-resolving summary, written the way the consolidator writes one
+   * when it MERGEs: chronological, superseded value first, correction last.
+   * 258 chars — under the old fixed 260-char ceiling on its own, but over it
+   * once the marker, `Linked records` and `As of` lines are counted, so it used
+   * to render as "…8 semaines… […]" with the correction cut off.
+   */
+  const chronological =
+    "En mai 2026, Calliope Verre a annoncé un délai de production de 8 semaines pour les séries spéciales. " +
+    "En septembre 2026, l'entreprise a ouvert une seconde ligne de production, réduisant ce délai à 3 semaines. " +
+    "Cette mise à jour remplace l'information précédente.";
+
+  test("a lone candidate that fits the block keeps its conclusion", () => {
+    const result = buildVerbatimBlock(
+      gathered({
+        knowledgeResults: [
+          hit({
+            sourceType: "episodes",
+            sourceId: "merged",
+            content: chronological,
+          }),
+        ],
+      }),
+    );
+    // The whole point: the block had ~1 300 chars of unused room, so nothing
+    // is clipped and the CURRENT value survives alongside the superseded one.
+    expect(result.block).toContain("3 semaines");
+    expect(result.block).not.toContain("[…]");
+    expect(result.ambiguity.clippedCandidates).toBe(0);
+  });
+
+  test("a crowded selection still meets the block cap", () => {
+    const long = "x".repeat(1_500);
+    const result = buildVerbatimBlock(
+      gathered({
+        knowledgeResults: [
+          hit({ sourceType: "memories", sourceId: "m-1", content: long }),
+          hit({ sourceType: "memories", sourceId: "m-2", content: long }),
+          hit({ sourceType: "episodes", sourceId: "e-1", content: long }),
+          hit({ sourceType: "episodes", sourceId: "e-2", content: long }),
+          hit({ sourceType: "records", sourceId: "r-1", content: long }),
+          hit({ sourceType: "records", sourceId: "r-2", content: long }),
+        ],
+      }),
+    );
+    expect(result.block).not.toBeNull();
+    expect((result.block ?? "").length).toBeLessThanOrEqual(2_000);
+    // Whatever the ladder settled on, every marker it kept is intact — a
+    // half-written id is a citation the agent's tools cannot resolve.
+    for (const marker of (result.block ?? "").split("\n")) {
+      if (marker.startsWith("(")) expect(marker).toContain(")");
+    }
+  });
+});

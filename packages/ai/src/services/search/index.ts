@@ -1,4 +1,9 @@
 import {
+  type StageTimings,
+  formatTimings,
+  timeStage,
+} from "../../lib/turn-timings";
+import {
   HYBRID_CONSTANTS,
   type HybridCandidate,
   type HybridSearchFilters,
@@ -174,6 +179,14 @@ export const searchRAG = async (
     skipMultiQuery = false,
   } = input;
 
+  // Stage attribution for the arm itself. `[recall] gather` already says the
+  // arm took ~770 ms; it could not say whether that was the embedding round
+  // trip, Postgres, or the cross-encoder — three very different fixes. Same
+  // contract as the pre-turn timings: one key=value line, slowest first, and
+  // the stages overlap so they do not sum.
+  const timings: StageTimings = {};
+  const startedAt = Date.now();
+
   const trimmed = query.trim();
   if (trimmed.length === 0) {
     return {
@@ -190,7 +203,11 @@ export const searchRAG = async (
   // search against the original query alone.
   const queryVariants = skipMultiQuery
     ? [trimmed]
-    : await generateQueryVariants(trimmed, teamId);
+    : await timeStage(
+        timings,
+        "variants",
+        generateQueryVariants(trimmed, teamId),
+      );
   if (queryVariants.length === 0) {
     return {
       results: [],
@@ -211,20 +228,28 @@ export const searchRAG = async (
   // already running while the embedding round trip is still open. Awaiting it
   // at this line is what used to put the slowest hop in retrieval in FRONT of
   // two searches that never needed it.
-  const variantEmbeddings = getCachedOrEmbedBatch(queryVariants);
+  const variantEmbeddings = timeStage(
+    timings,
+    "embed",
+    getCachedOrEmbedBatch(queryVariants),
+  );
 
   // Stage 3 — parallel hybrid search per variant. Each call is
   // itself internally parallel (semantic + BM25).
-  const perVariant = await Promise.all(
-    queryVariants.map((variant, i) =>
-      hybridSearch({
-        query: variant,
-        queryEmbedding: variantEmbeddings.then((all) => all[i] ?? []),
-        teamId,
-        organizationId,
-        userId,
-        filters,
-      }),
+  const perVariant = await timeStage(
+    timings,
+    "hybrid",
+    Promise.all(
+      queryVariants.map((variant, i) =>
+        hybridSearch({
+          query: variant,
+          queryEmbedding: variantEmbeddings.then((all) => all[i] ?? []),
+          teamId,
+          organizationId,
+          userId,
+          filters,
+        }),
+      ),
     ),
   );
 
@@ -245,7 +270,19 @@ export const searchRAG = async (
   // Stage 5 — rerank the top 50 with Cohere → top K.
   // Rerank key = the ORIGINAL query (not any reformulation) so the
   // final ordering reflects the user's actual intent.
-  const reranked = await rerankCandidates(trimmed, merged, topK);
+  const reranked = await timeStage(
+    timings,
+    "rerank",
+    rerankCandidates(trimmed, merged, topK),
+  );
+
+  // `hybrid` contains `embed` — the semantic arm awaits the embedding inside
+  // itself so the lexical arms are not held behind it — so the two overlap by
+  // construction and `hybrid - embed` is what Postgres actually cost.
+  timings["total"] = Date.now() - startedAt;
+  console.info(
+    `[search] ${(filters?.sourceTypes ?? ["all"]).join("+")} ${formatTimings(timings)} candidates=${merged.length.toString()}`,
+  );
 
   const result: SearchRagResult = {
     results: reranked,

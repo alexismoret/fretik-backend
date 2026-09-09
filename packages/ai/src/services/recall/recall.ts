@@ -13,8 +13,17 @@ import {
   timeStage,
 } from "../../lib/turn-timings";
 import { searchRAG } from "../search";
-import { gatherGraphNeighborhood, type GraphNeighborhood } from "./graph";
+import {
+  asOfLine,
+  type Candidate,
+  metadataString,
+  type RecallGathered,
+  type RecallSearchHit,
+  renderCandidates,
+} from "./candidates";
+import { gatherGraphNeighborhood } from "./graph";
 import { RECALL_JUDGE_SYSTEM_PROMPT } from "./prompt";
+import { buildVerbatimBlock } from "./verbatim";
 
 /**
  * Unified pre-turn recall (P5) — the evolution of Active Memory.
@@ -62,6 +71,22 @@ const RECENT_ASSISTANT_TURN_MAX_CHARS = 180;
 const RECALL_TIMEOUT_MS = 15_000;
 
 /**
+ * Which selector turns the gather into the block.
+ *
+ * `judge` (the default, and what production serves until an eval run says
+ * otherwise) is the LLM pass this module was built around. `verbatim` skips it
+ * and renders the candidates deterministically — see `verbatim.ts` for what
+ * takes over each of the judge's jobs, and for what is NOT claimed about it.
+ *
+ * A flag rather than a replacement because the two differ on a question no
+ * amount of code reading settles: whether the deterministic block is noisier
+ * in a way that costs answer quality. The eval suite scores the block, so it
+ * can be run against both modes with the same fixtures.
+ */
+const RECALL_MODE: "judge" | "verbatim" =
+  process.env.RECALL_MODE === "verbatim" ? "verbatim" : "judge";
+
+/**
  * Budget for the deterministic arms (anchor funnel, then graph SQL).
  * These are indexed set-based queries that normally run in tens of ms; the
  * race only fires on a genuinely degraded DB, where dropping the graph arm
@@ -103,8 +128,6 @@ const anchorIsPrecise = (a: RecordAnchor): boolean =>
 const KNOWLEDGE_TOP_K = 10;
 /** Top-K for the documents sweep. */
 const DOCUMENTS_TOP_K = 5;
-/** Per-candidate clip — keeps the judge prompt ≤ ~12k chars worst case. */
-const CANDIDATE_MAX_CHARS = 700;
 /**
  * TRIED AND REVERTED (2026-08): a relevance gate dropping candidates below a
  * query-relative rerank floor before the judge. It removed 48% of candidates
@@ -284,59 +307,13 @@ const buildRecallQuery = (params: UnifiedRecallParams): string => {
   return parts.join(" — ");
 };
 
-interface Candidate {
-  /** Provenance marker the judge copies verbatim, e.g. `(episode:<id>)`. */
-  marker: string;
-  content: string;
-}
-
-/** `metadata` is `unknown` on candidates — read one string field safely. */
-const metadataString = (metadata: unknown, key: string): string | null => {
-  if (typeof metadata !== "object" || metadata === null) return null;
-  const value: unknown = Reflect.get(metadata, key);
-  return typeof value === "string" ? value : null;
-};
-
-/**
- * `As of YYYY-MM-DD` prefix for a dated candidate — the judge carries it into
- * the bullet so the agent can date the fact and pick the freshest of two
- * conflicting candidates. Empty when the candidate has no date.
- */
-const asOfLine = (isoDate: string | null): string =>
-  isoDate ? `As of ${isoDate.slice(0, 10)}\n` : "";
-
-const renderCandidates = (title: string, candidates: Candidate[]): string => {
-  if (candidates.length === 0) return "";
-  const body = candidates
-    .map((c) => `${c.marker}\n${c.content.slice(0, CANDIDATE_MAX_CHARS)}`)
-    .join("\n\n");
-  return `## ${title}\n\n${body}\n\n`;
-};
-
-/** Minimal structural view of a search hit — what the assembly reads. */
-export interface RecallSearchHit {
-  sourceType: string;
-  sourceId: string;
-  content: string;
-  metadata: unknown;
-  /** Cohere relevance ∈ [0,1]; null when the rerank stage was skipped. */
-  rerankScore?: number | null;
-}
-
-export interface RecallGathered {
-  anchors: RecordAnchor[];
-  knowledgeResults: RecallSearchHit[];
-  documentResults: RecallSearchHit[];
-  graph: GraphNeighborhood | null;
-  /** Capability channel — NEVER passed to the judge (see `CAPABILITY_TOP_K`). */
-  capabilityResults: RecallSearchHit[];
-}
-
 /**
  * The parallel gather — every provenance arm, each soft-failing to empty.
  * Exported (with `buildJudgeInput`) so the recall bench/evals exercise the
  * exact production pipeline around a controlled judge call.
  */
+export type { RecallGathered, RecallSearchHit } from "./candidates";
+
 export const gatherRecallCandidates = async (
   params: UnifiedRecallParams,
 ): Promise<RecallGathered> => {
@@ -777,12 +754,42 @@ export const runUnifiedRecall = async (
       "gather",
       gatherRecallCandidates(params),
     );
-    const judgeInput = buildJudgeInput(params, gathered);
-    // Judge-free channel: computed before the judge runs and kept whatever it
-    // decides, so a verdict of NONE still surfaces an existing workflow.
+    // Capability channel: computed before either selector runs and kept
+    // whatever it decides, so a verdict of NONE still surfaces an existing
+    // workflow.
     const capabilityBlock = buildCapabilityBlock(gathered) ?? undefined;
     let block: string | null = null;
     let recalledEpisodeIds: string[] = [];
+
+    if (RECALL_MODE === "verbatim") {
+      const selection = buildVerbatimBlock(gathered);
+      block = selection.block;
+      recalledEpisodeIds = selection.recalledEpisodeIds;
+      console.info(
+        `[recall] mode=verbatim uncorroboratedAnchors=${selection.ambiguity.uncorroboratedAnchors.toString()} nearTies=${selection.ambiguity.nearTies.toString()} greyZone=${selection.ambiguity.greyZone.toString()}`,
+      );
+      if (recalledEpisodeIds.length > 0) {
+        void stampEpisodeRecall(recalledEpisodeIds).catch((err: unknown) => {
+          console.warn(
+            "[recall] episode stamp failed:",
+            err instanceof Error ? err.message : err,
+          );
+        });
+      }
+      result =
+        block === null && capabilityBlock === undefined
+          ? null
+          : {
+              block: block ?? "",
+              recalledEpisodeIds,
+              ...(capabilityBlock !== undefined ? { capabilityBlock } : {}),
+            };
+      if (cache.size >= CACHE_MAX_ENTRIES) purgeExpired(now);
+      cache.set(key, { result, expires: now + CACHE_TTL_MS });
+      return result;
+    }
+
+    const judgeInput = buildJudgeInput(params, gathered);
 
     if (!judgeInput.empty) {
       const signals: AbortSignal[] = [AbortSignal.timeout(RECALL_TIMEOUT_MS)];

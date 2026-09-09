@@ -170,6 +170,45 @@ fixtures of one decide cases in another — clean up before switching.
   numbers decide anything (the 2026-08-04 "15/16 vs 13/16" was pure draw
   noise — the bimodal set permuted between runs while the code barely moved).
 
+### `RECALL_MODE` — the judge / verbatim A-B
+
+`runUnifiedRecall` has two selectors turning one gather into the
+`<active_memory>` block, chosen by the `RECALL_MODE` env var:
+
+- **`judge`** (default, what production serves): the gpt-oss-120b pass this
+  module was built around.
+- **`verbatim`**: `buildVerbatimBlock` — score floors, per-source caps, and an
+  anchor corroboration rule instead of a model. No LLM on the critical path to
+  the first token. See the header of `src/services/recall/verbatim.ts` for what
+  replaces each of the judge's five jobs.
+
+`evals:recall` scores the block, so it decides this. Run BOTH, ten repeats,
+same fixtures, and compare **per case** — never two totals against each other
+(the closure rule above applies unchanged):
+
+```bash
+bun run evals:memory -- --cleanup && bun run evals:chain -- --cleanup
+bun run evals:recall                              # judge  (baseline)
+RECALL_MODE=verbatim bun run evals:recall         # verbatim
+```
+
+Two things to expect rather than debug:
+
+- **`rec-document-content` fails under `verbatim` by design.** Documents are
+  excluded from the pre-turn block (`INCLUDE_DOCUMENTS = false`) and left to
+  `searchKnowledge` mid-turn, where the prompt's tool-routing table already
+  sends "what does this document say". The case encodes the current design, not
+  a user need. Flip the constant to score it head-to-head.
+- **`rec-noise-general` is the case to watch.** It is the open residual against
+  the judge (14/30 targeted) AND the case the verbatim path is most likely to
+  differ on, since refusing a lexically dominant, non-responsive candidate is
+  the judge job with the weakest deterministic substitute. A verbatim result at
+  or above 14/30 settles the question in favour of dropping the judge; well
+  below it is the argument for the adaptive third option — verbatim on the fast
+  path, judge only when `measureAmbiguity` flags the turn. Those signals are
+  already logged per turn (`[recall] mode=verbatim uncorroboratedAnchors=… nearTies=… greyZone=…`),
+  so the gate can be calibrated from a real distribution instead of guessed.
+
 **Frozen baselines — 2026-08-05** (`freeze-*` / `n30-*` runs, code bindings:
 extract/distill/promote = deepseek-v4-flash, consolidate + recall judge =
 gpt-oss-120b):

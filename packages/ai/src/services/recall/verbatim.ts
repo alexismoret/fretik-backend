@@ -442,11 +442,62 @@ export const buildVerbatimBlock = (
   const documents: Candidate[] = [];
   const renderedEpisodeIds = new Set<string>();
 
-  // Graph-anchored episodes first and unconditionally: they reached us because
-  // a record NAMED in the message links to them, which is stronger evidence
-  // than any similarity score, and they carry their own anchor labels.
-  for (const episode of gathered.graph?.episodes ?? []) {
-    if (episodes.length >= MAX_EPISODES) break;
+  // Graph-anchored episodes go first — they reached us because a record NAMED
+  // in the message links to them, which is stronger evidence than a similarity
+  // score — but NOT unconditionally, and the chain suite is why.
+  //
+  // The two arms rank on different things. The graph ranks by
+  // `episodeRankScore`: recency plus how often an episode has been recalled,
+  // which knows nothing about the current message. The semantic arm ranks by
+  // relevance TO the message. Letting the graph fill every slot means a record
+  // with a long history buries the one episode that answers the question —
+  // measured on `chain-decision-survives`, where a freshly distilled decision
+  // about payment terms lost all its slots to older episodes about the same
+  // supplier, and recall cited a three-week lead time instead.
+  //
+  // So the graph keeps its priority but yields a slot whenever the semantic arm
+  // has something of its own to say. One "what is linked to what you named",
+  // one "what is relevant to what you asked".
+  const graphEpisodeIds = new Set(
+    (gathered.graph?.episodes ?? []).map((episode) => episode.id),
+  );
+  const hasSemanticEpisode = gathered.knowledgeResults.some(
+    (hit) =>
+      hit.sourceType === "episodes" &&
+      !graphEpisodeIds.has(hit.sourceId) &&
+      clearsFloor(hit, best),
+  );
+  const graphEpisodeBudget = hasSemanticEpisode
+    ? MAX_EPISODES - 1
+    : MAX_EPISODES;
+
+  // …and within the graph's own set, prefer the episode the SEMANTIC arm also
+  // found, ordered by how relevant it judged it.
+  //
+  // The graph hands back its three by `episodeRankScore` — recency plus recall
+  // count — which is the right order for "what has been going on with this
+  // record" and the wrong one for "what is this message about". On
+  // `chain-decision-survives` the two disagree by construction: the fixture
+  // seeds a supplier with a run of routine lead-time episodes, and the decision
+  // the question asks about is one of many, not the most recent. Reordering by
+  // the reranker's score where it exists costs nothing (the scores are already
+  // computed, on the same candidates) and makes the graph's slots go to what
+  // was asked rather than to what happened last. Episodes the semantic arm did
+  // not return keep their graph order, behind the scored ones.
+  const semanticEpisodeScore = new Map<string, number>();
+  for (const hit of gathered.knowledgeResults) {
+    if (hit.sourceType !== "episodes") continue;
+    const score = scoreOf(hit);
+    if (score !== null) semanticEpisodeScore.set(hit.sourceId, score);
+  }
+  const rankedGraphEpisodes = [...(gathered.graph?.episodes ?? [])].sort(
+    (a, b) =>
+      (semanticEpisodeScore.get(b.id) ?? -1) -
+      (semanticEpisodeScore.get(a.id) ?? -1),
+  );
+
+  for (const episode of rankedGraphEpisodes) {
+    if (episodes.length >= graphEpisodeBudget) break;
     renderedEpisodeIds.add(episode.id);
     const linked =
       episode.anchorLabels.length > 0

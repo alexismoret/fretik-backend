@@ -327,3 +327,51 @@ describe("buildVerbatimBlock — ambiguity signals", () => {
     expect(result.ambiguity.greyZone).toBe(true);
   });
 });
+
+describe("buildVerbatimBlock — graph episodes yield a slot", () => {
+  const graphEpisode = (id: string) => ({
+    id,
+    title: `graph ${id}`,
+    summary: "older activity on the same record",
+    occurredTo: null,
+    anchorLabels: ["Calliope Verre"],
+  });
+
+  test("the semantic arm keeps a slot when the graph could fill them all", () => {
+    // `chain-decision-survives`: a record with a long history buries the one
+    // episode that answers the question. The graph ranks on recency + recall
+    // count, which knows nothing about the message.
+    const result = buildVerbatimBlock(
+      gathered({
+        knowledgeResults: [
+          hit({ sourceType: "episodes", sourceId: "the-decision" }),
+        ],
+        // Enough graph episodes to fill every slot on their own.
+        graph: graph({
+          episodes: [
+            graphEpisode("old-a"),
+            graphEpisode("old-b"),
+            graphEpisode("old-c"),
+          ],
+        }),
+      }),
+    );
+    // The invariant is the reserved slot, not the count: however long a
+    // record's history is, what the message is actually about still lands.
+    expect(result.block).toContain("(episode:the-decision)");
+    expect(result.block).toContain("(episode:old-a)");
+    expect(result.block).not.toContain("(episode:old-c)");
+  });
+
+  test("with nothing semantic to say, the graph still takes every slot", () => {
+    const result = buildVerbatimBlock(
+      gathered({
+        graph: graph({
+          episodes: [graphEpisode("old-a"), graphEpisode("old-b")],
+        }),
+      }),
+    );
+    expect(result.block).toContain("(episode:old-a)");
+    expect(result.block).toContain("(episode:old-b)");
+  });
+});

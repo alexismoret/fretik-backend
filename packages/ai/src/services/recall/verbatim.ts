@@ -96,8 +96,15 @@ const ABSOLUTE_SCORE_FLOOR = 0.02;
  * well in absolute terms.
  *
  * Calibrated from the recall suite's own distribution rather than guessed — see
- * the `best=` field on the `[recall] mode=verbatim` log line, which exists to
- * keep that calibration reproducible.
+ * the `best=` field on the `[recall] mode=…` log line, which exists to keep
+ * that calibration reproducible.
+ *
+ * Load-bearing only under `RECALL_MODE=verbatim`. In `adaptive` — the default —
+ * `JUDGE_ESCALATION_BEST_SCORE` (0.7) is higher, so every gather weak enough to
+ * reach this floor has already been routed to the judge, and the abstention
+ * computed here is discarded. The two are not redundant: this one is the answer
+ * when there is no judge to ask, and the day the escalation threshold drops
+ * below it, it starts deciding turns again.
  */
 const ABSTENTION_BEST_SCORE_FLOOR = 0.25;
 

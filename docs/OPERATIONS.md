@@ -149,13 +149,29 @@ Scaleway S3/email variables. `FRETIK_RUNTIME=container` comes from the image.
 
 ### `@fretik/ai`
 
-| Var                                                                      | Notes                                                                                                                                                                                                                      |
-| ------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `AI_DB_READONLY_URL`                                                     | **Hard boot failure if unset.** The least-privilege `fretik_sql_tool` role — never `DATABASE_URL`, whose owner bypasses RLS. See the one-off step below.                                                                   |
-| `AI_DB_READONLY_POOL_MAX`                                                | Default `10`.                                                                                                                                                                                                              |
-| `OPENROUTER_API_KEY`, `MISTRAL_API_KEY`, `TAVILY_API_KEY`, `E2B_API_KEY` | Model routing, OCR, web search, sandboxes.                                                                                                                                                                                 |
-| `AI_WEB_*`                                                               | Opt-in egress tightening (`AI_WEB_BLOCKED_DOMAINS`, `AI_WEB_ALLOWED_DOMAINS`, `AI_WEB_FETCH_MAX_URL_LEN`, `AI_WEB_TOOLS_ENABLED`). Always-on hygiene — scheme, private-IP/metadata, length, punycode — applies regardless. |
-| `LANGFUSE_*`                                                             | Optional; tracing is a no-op without them.                                                                                                                                                                                 |
+| Var                                                                      | Notes                                                                                                                                                                                                                                                                                      |
+| ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `AI_DB_READONLY_URL`                                                     | **Hard boot failure if unset.** The least-privilege `fretik_sql_tool` role — never `DATABASE_URL`, whose owner bypasses RLS. See the one-off step below.                                                                                                                                   |
+| `AI_DB_READONLY_POOL_MAX`                                                | Default `10`.                                                                                                                                                                                                                                                                              |
+| `OPENROUTER_API_KEY`, `MISTRAL_API_KEY`, `TAVILY_API_KEY`, `E2B_API_KEY` | Model routing, OCR, web search, sandboxes.                                                                                                                                                                                                                                                 |
+| `AI_WEB_*`                                                               | Opt-in egress tightening (`AI_WEB_BLOCKED_DOMAINS`, `AI_WEB_ALLOWED_DOMAINS`, `AI_WEB_FETCH_MAX_URL_LEN`, `AI_WEB_TOOLS_ENABLED`). Always-on hygiene — scheme, private-IP/metadata, length, punycode — applies regardless.                                                                 |
+| `LANGFUSE_*`                                                             | Optional; tracing is a no-op without them.                                                                                                                                                                                                                                                 |
+| `RECALL_MODE`                                                            | `adaptive` (default, unset = this) · `judge` · `verbatim`. How pre-turn recall turns retrieved candidates into the `<active_memory>` block. **`judge` is the rollback** — it restores the pre-2026-09-09 behaviour exactly, takes effect on the next turn, and needs no deploy. See below. |
+
+#### `RECALL_MODE` — what it changes, and when to touch it
+
+`adaptive` builds the block deterministically and calls the recall judge
+(gpt-oss-120b) only when retrieval came back weak — measured on the recall
+suite at ten repeats: **23/23, the same score as `judge`**, with the judge
+running on 43 % of turns and recall's median falling from 2 246 ms to
+1 398 ms. `verbatim` never calls the judge and scores 17/23; it exists to
+measure the floor, not to serve traffic.
+
+Set `RECALL_MODE=judge` if memory recall starts surfacing irrelevant context
+after a deploy. It costs latency on every turn and nothing else — the block is
+rebuilt from the same gather by the same judge as before. Then say so, because
+the deterministic path has an eval suite and a bug found in production belongs
+in it: `bun run evals:recall` (see `packages/ai/evals/RUNBOOK.md`).
 
 ### `@fretik/jobs` — three keys people forget
 

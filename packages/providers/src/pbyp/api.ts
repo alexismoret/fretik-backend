@@ -10,7 +10,7 @@ import { isRecord } from "@fretik/shared/external-apps/json-access";
  * instead, and none of this is used.
  */
 
-export const PBYP_BASE_URL = "https://directus.preprod.pbyp.fr";
+export const PBYP_BASE_URL = "https://directus.app.pbyp.fr";
 
 const previewBody = (raw: string): string =>
   raw.length > 200 ? `${raw.slice(0, 200)}…` : raw;

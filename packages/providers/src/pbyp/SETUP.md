@@ -25,23 +25,25 @@ Two people must not share one key. A key carries its account's rights, and the p
 
 ## 3. Environment
 
-`baseUrl` is hard-coded to the preprod host, `https://directus.preprod.pbyp.fr`, in `manifest.ts`. Moving to production is that one constant plus `bun run gen:sdk` — the manifest hash is the SKILL version, so the sandbox picks the change up. If both environments ever have to coexist, the `http-direct` schema needs a `connection_config.base_url` source; do not fake it with a second provider key.
+`baseUrl` is hard-coded to the production host, `https://directus.app.pbyp.fr`, in `manifest.ts` (and in `api.ts`, which the three connection-time modules use before anything is stored in Nango — keep the two in step). Changing environment is those constants plus `bun run gen:sdk` — the manifest hash is the SKILL version, so the sandbox picks the change up. If both environments ever have to coexist, the `http-direct` schema needs a `connection_config.base_url` source; do not fake it with a second provider key.
 
 ## 4. Refreshing the schema snapshot
 
 `src/pbyp/directus-schema.ts` is generated and committed. After any Pbyp schema change:
 
 ```bash
-PBYP_DIRECTUS_URL=https://directus.preprod.pbyp.fr \
+PBYP_DIRECTUS_URL=https://directus.app.pbyp.fr \
 PBYP_ADMIN_TOKEN=<admin token> \
 bun run pbyp:schema
 ```
 
 Then `bun run test`: `pbyp-schema-contract.test.ts` reports every whitelist entry, computed column, required parameter and enum the change invalidated. An **admin** token is required — `/fields` is permission-scoped, and a persona token would produce a snapshot missing whatever that persona cannot see.
 
-## 5. Preprod caveat
+## 5. Tenancy caveat (preprod only)
 
-The legacy `User` policy (382 open rules) is still attached to the Pbyp role on preprod, and Directus unions row filters. **Tenancy is therefore not enforced there**: a test account reads other entities' rows, gateways included. Scope behaviour cannot be verified until `scripts/directus-security/apply-policies.mjs --detach-legacy` has run. Everything else — payload shapes, hooks, statuses, EDI — behaves normally.
+On **preprod** the legacy `User` policy (382 open rules) is still attached to the Pbyp role, and Directus unions row filters, so **tenancy is not enforced there**: a test account reads other entities' rows, gateways included. Scope behaviour could not be verified until `scripts/directus-security/apply-policies.mjs --detach-legacy` had run. Everything else — payload shapes, hooks, statuses, EDI — behaves normally.
+
+The connection now points at production, where the policies are applied. If you ever re-point `baseUrl` at preprod to reproduce something, remember that anything you observe about scope there is not evidence about production.
 
 ## 6. Deliberately out of scope
 

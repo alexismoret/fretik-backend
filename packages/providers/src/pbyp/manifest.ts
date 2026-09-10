@@ -1375,7 +1375,7 @@ export const pbypManifest: ProviderManifest = {
   categories: ["industry", "tms"],
   transport: {
     kind: "http-direct",
-    baseUrl: "https://directus.preprod.pbyp.fr",
+    baseUrl: "https://directus.app.pbyp.fr",
     auth: {
       kind: "header",
       name: "Authorization",

@@ -3,7 +3,7 @@
  * Regenerates `src/pbyp/directus-schema.ts` — the trimmed snapshot of the
  * Pbyp Directus schema the provider validates writes against.
  *
- *   PBYP_DIRECTUS_URL=https://directus.preprod.pbyp.fr \
+ *   PBYP_DIRECTUS_URL=https://directus.app.pbyp.fr \
  *   PBYP_ADMIN_TOKEN=… \
  *   bun run scripts/pbyp-refresh-schema.ts
  *
@@ -11,7 +11,7 @@
  * ARGUMENT-BUILDING time, in a sandbox with no Directus reachable, and the
  * checks that catch them (`invariants.ts`) run in our process before the
  * request leaves. A live read would also make the wire tests depend on a
- * running preprod — they would then be testing Pbyp's uptime, not our code.
+ * running Directus — they would then be testing Pbyp's uptime, not our code.
  *
  * The snapshot is committed. `pbyp-schema-contract.test.ts` pins every
  * collection, field and enum value the manifest names against it, so a Pbyp

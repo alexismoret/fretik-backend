@@ -1,7 +1,7 @@
 ---
 name: pbyp
 description: Pbyp — freight-forwarding TMS (sea & air): orders, transport folders, voyages and flights with their carrier, containers, cargo lines, tracking events, quotations, address book, and EDI transfers to partner gateways such as PTD.
-version: 2b31a36c3b6a
+version: 16d7e9ff2c18
 ---
 
 # Pbyp — 37 actions

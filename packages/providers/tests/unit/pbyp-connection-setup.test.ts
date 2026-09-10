@@ -215,7 +215,7 @@ describe("activating the profile", () => {
     });
     expect(calls).toEqual([
       {
-        url: "https://directus.preprod.pbyp.fr/auth-endpoints/profile/11",
+        url: "https://directus.app.pbyp.fr/auth-endpoints/profile/11",
         method: "POST",
       },
     ]);

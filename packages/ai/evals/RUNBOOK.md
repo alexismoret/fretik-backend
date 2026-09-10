@@ -290,6 +290,43 @@ Two things to take from it, neither visible in a mean:
   the reliability the work is for — `AbortSignal.timeout` on the query embed is
   the fix, and this is its before-number.
 
+#### Phase 1 gate — 2026-09-10, after `ef_search=400` + `strict_order`
+
+Same 23 cases × 10 repeats, same fixtures, same corpus (20 108 knowledge rows).
+
+| metric                             | adaptive         | judge            |
+| ---------------------------------- | ---------------- | ---------------- |
+| score                              | **23/23** stable | **23/23** stable |
+| knowledge arm, `semantic` p50      | **233 ms**       | 257 ms           |
+| knowledge arm, `semantic` p90      | 322 ms           | 320 ms           |
+| knowledge arm, rows                | **150/150**      | **150/150**      |
+| `documents` arm (118 rows), p50    | 297 ms           | 338 ms           |
+| `workflows+pages` (6 rows), p50    | 149 ms           | 149 ms           |
+| famine warnings (690 searches ea.) | **0**            | **0**            |
+
+Against the Phase 0 figure for the same arm in isolation, **476 ms → 233 ms,
+−51 %**. Read the three rows together rather than the first one alone:
+
+- **The arm that scans 20 108 rows is now faster than the arm that scans 118.**
+  That inversion is the index working, and it is a better proof than the
+  absolute number — `documents` is an exact scan over its own partition and did
+  not change, so it is a control.
+- **149 ms of every one of those numbers is fixed cost, not search.** A six-row
+  arm cannot be scanning for 149 ms; that is what the transaction the `SET
+LOCAL` requires costs at ~32 ms of RTT to a remote database (BEGIN, tune,
+  SELECT, COMMIT). Backing it out, the knowledge arm's actual scan went from
+  ~327 ms to ~84 ms — about 4×. In production, where the database is local,
+  the fixed part is roughly zero and the reported number should approach the
+  scan itself.
+- **The plan's `≤ 20 ms` gate is not measurable from here** and was withdrawn
+  before this run: 20 ms is the figure an `EXPLAIN` reports server-side, and no
+  client-side timing on this topology can go below its own round trips.
+
+**The Phase 0 line `[hybrid] semantic=673` above is a POOLED number** — it
+predates the arm label and mixes a 20 000-row query with a 118-row one and a
+6-row one. It is kept for the record, but it is not the "before" of anything;
+the isolated 476 ms is.
+
 #### What `--scale` actually measured, and what it corrected (2026-09-10)
 
 **Put the distractors in the partition under test, or the instrument lies.**
@@ -337,45 +374,94 @@ Escalation reproducing at exactly 43.5 % against the earlier independent
 measurement is the useful cross-check here: the routing rule is stable, so a
 change in it later will be a change, not noise.
 
-### OPEN: the HNSW index is never used (found 2026-09-10, NOT fixed)
+### CLOSED: the HNSW index is used (2026-09-10)
 
-**Every broad semantic search is an exact brute-force scan.** Measured against
-dev (20 504 vectors, pgvector 0.8.2, PG 17.10), on the real query shape with
-the real scope predicate:
+Kept in full because the diagnosis that stood here for a day was **wrong**, and
+the way it was wrong is the reusable part.
 
-| plan                          | rows returned | exec time  |
-| ----------------------------- | ------------- | ---------- |
-| what runs today (Seq Scan)    | 150           | 260-385 ms |
-| forced index, `ef_search=400` | 150           | 6 ms       |
+**What it said.** `cosine_distance(halfvec, halfvec)` ships at `procost = 1`, so
+Postgres prices 20 000 distance computations over 2 560 dimensions like 20 000
+integer additions, values the index at 97 730 against the Seq Scan's 3 310, and
+never picks it. Fix: a migration raising the operator cost.
 
-The index is present, valid, 167 MB, `halfvec_cosine_ops` — and the planner
-prices it at **97 730 against the Seq Scan's 3 310**, a ~30× overestimate, so
-it never picks it. Nothing is broken in the sense of wrong answers: brute force
-is EXACT KNN, which is part of why recall scores 23/23. It is the latency that
-is wrong, and it grows linearly with the corpus — this table is 20 k rows.
+**What is true.** The lever is `hnsw.ef_search`, not the operator cost. Measured
+at 20 108 rows with the plan asserted from `EXPLAIN` at every point:
 
-**Do not "fix" this with a planner hint.** Three attempts, all measured, all
-worse than they look:
+| `ef_search` | procost = 1 | procost = 100                      |
+| ----------- | ----------- | ---------------------------------- |
+| 100         | Seq Scan    | parallel Seq Scan (`Gather Merge`) |
+| 160         | Seq Scan    | —                                  |
+| 200         | **HNSW**    | **HNSW**                           |
+| 400         | **HNSW**    | **HNSW**                           |
 
-- `SET LOCAL enable_seqscan = off` alone: on the knowledge arm
-  (`source_type IN ('memories','episodes','records')`) the HNSW scan returned
-  **8 rows instead of 150**. Filtered HNSW stops after `ef_search` candidates,
-  so a hint that looks like a 40× win silently guts the candidate pool.
-- `hnsw.iterative_scan = relaxed_order` on top: the planner abandoned HNSW
-  altogether for a bitmap scan on `idx_ai_vectors_organization_id`, 219 ms.
-- Raising `ef_search` (150 / 400 / 800) changes how many rows come back
-  (73 / 150 / 150) but never changes the plan CHOICE — the cost model is the
-  blocker, not the tuning.
+The index was unused because `HNSW_EF_SEARCH` was **100 while the arm asks for
+`PER_SEARCH_LIMIT = 150` rows**. The planner will not choose a scan that cannot
+fill the limit, whatever the operator costs — and at ef=100 the migration's only
+measured effect was to buy a parallel worker for the same exhaustive scan. The
+migration was deleted, not deferred.
 
-The selective arms are already fine and must stay that way: `documents`
-(118 rows) uses `idx_ai_vectors_source`, exact, 2.4 ms, and is unaffected by
-any of the above.
+Two caveats that keep this honest. The earlier reading that procost flipped the
+plan was taken on a corpus carrying 10 000 `--scale` distractors, and at 30 108
+rows it did flip it — both knobs push the same thin margin. And deleting those
+distractors triggered the table's first `autoanalyze` in a long while, so fresh
+statistics are part of why the plan looks the way it does now. **Re-check the
+plan after any bulk change to `ai_vectors`**, and treat a margin this thin as
+something to observe rather than to rely on. That is what the runtime famine
+guard is for.
 
-Whatever the fix turns out to be — partial HNSW indexes per `source_type`,
-statistics work on `ai_vectors` (`last_analyze` is empty; only autoanalyze has
-ever run), or restructuring the OR-shaped scope predicate — it changes
-retrieval, so it is settled by `evals:recall` at 10 repeats holding **23/23**
-and not by the EXPLAIN alone.
+#### Does the index cost precision? Measured, not argued
+
+HNSW is approximate where the Seq Scan was exact, so this is a real question and
+an `EXPLAIN` cannot answer it. Ten real eval questions, 20 108 rows, each HNSW
+result diffed against the exact answer, each plan asserted:
+
+| `iterative_scan` | ef  | rows/150   | recall@20 | recall@150 | RRF mass | ms  |
+| ---------------- | --- | ---------- | --------- | ---------- | -------- | --- |
+| off              | 40  | **32/150** | 97.5 %    | 21.5 %     | 66.2 %   | 39  |
+| off              | 100 | **87/150** | 98.0 %    | 58.2 %     | 86.8 %   | 54  |
+| off              | 400 | **67/150** | —         | —          | —        | 50  |
+| `strict_order`   | 100 | 150/150    | 98.0 %    | 87.7 %     | 94.7 %   | 46  |
+| `strict_order`   | 200 | 150/150    | 100 %     | 95.1 %     | 98.3 %   | 52  |
+| `strict_order`   | 400 | 150/150    | 100 %     | 98.1 %     | 99.4 %   | 62  |
+| `strict_order`   | 800 | 150/150    | 100 %     | 99.7 %     | 99.9 %   | 70  |
+
+against 225 ms for the exact answer. "RRF mass" is the share of the semantic
+arm's fusion weight `SEMANTIC_WEIGHT/(rank+1)` recovered — the metric that
+matters, because a row missed at rank 150 is worth a fiftieth of one missed at
+rank 1. Shipped: **ef=400, `strict_order`**.
+
+Read it as two independent knobs. `ef_search` decides WHICH rows come back;
+`iterative_scan` decides HOW MANY, and only the second keeps its guarantee as
+the corpus grows. The `off` rows are the reason they ship together: ef=400
+alone would have cut the arm to 67 of 150 candidates, silently.
+
+The top of the ranking — all that survives fusion and rerank — is exact from
+ef=200 up, which is why this is not a precision-for-speed trade.
+
+#### Three ways this measurement lied first
+
+All three produced clean-looking tables. Anyone re-measuring should expect them:
+
+- **`SET LOCAL enable_seqscan = off` does not force the index.** The planner
+  answers with a Bitmap Heap Scan plus a Sort, which is EXACT — so the
+  "approximate" arm was the exact arm and every recall figure was 100 %.
+  Forcing HNSW takes three switches: no seq scan, no bitmap scan, **and no
+  sort**.
+- **A probe that does not assert its own plan is not a measurement.** The
+  earlier claim that raising `ef_search` "never changes the plan CHOICE" came
+  from a probe where the choice had already been forced.
+- **`--scale` distractors are 10 000 perturbations of 16 base vectors.** That
+  is a corpus of 16 dense clusters, not production geometry. Numbers taken on
+  it happened to match the clean corpus here — check, do not assume.
+
+The selective arms are unaffected and must stay that way: `documents`
+(118 rows) and `workflows+pages` keep `idx_ai_vectors_source`, exact, at every
+`ef_search` and every operator cost tested.
+
+Two operational facts worth carrying: the HNSW index is **238 MB against a
+128 MB `shared_buffers`**, and it did **not** shrink from 167 MB when the
+10 000 distractors were deleted — HNSW reclaims that only under `REINDEX`. Any
+latency figure taken between a bulk delete and a reindex is pessimistic.
 
 ### Running the A-B
 

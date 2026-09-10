@@ -25,6 +25,7 @@
     "./exchange": "./src/exchange/index.ts",
     "./front": "./src/front/index.ts",
     "./pbyp": "./src/pbyp/index.ts",
+    "./sharepoint": "./src/sharepoint/index.ts",
     "./shiptify": "./src/shiptify/index.ts",
     "./teams": "./src/teams/index.ts"
   },

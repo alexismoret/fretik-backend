@@ -60,6 +60,13 @@ export const SANDBOX_ALLOWED_DOMAINS = {
     "graph.microsoft.com",
     "*.microsoft.com",
     "*.office.com",
+    // SharePoint / OneDrive for Business. Graph never serves file BYTES
+    // itself: `@microsoft.graph.downloadUrl` and an upload session's
+    // `uploadUrl` both point at `<tenant>.sharepoint.com`, so without this
+    // entry every SharePoint download and upload dies on a TLS timeout the
+    // sandbox reports as a bare read failure. Also covers the OneDrive /
+    // SharePoint links Teams message attachments carry.
+    "*.sharepoint.com",
     // Collaboration
     "slack.com",
     "*.slack.com",

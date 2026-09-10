@@ -177,6 +177,16 @@ export default {
         agency_id: "Agency",
         admin_email: "Administrator email",
         address: "Address",
+        // SharePoint-specific field labels.
+        file_name: "File",
+        new_name: "New name",
+        version: "Version",
+        link_type: "Link permission",
+        link_scope: "Who can use the link",
+        expires_at: "Expires on",
+        role: "Access level",
+        values: "Values",
+        new_values: "New values",
       },
 
       values: {
@@ -321,6 +331,60 @@ export default {
         },
         create_plan: {
           title: { default: 'Create plan "{{title}}"' },
+        },
+      },
+
+      sharepoint: {
+        create_folder: {
+          title: { default: 'Create SharePoint folder "{{name}}"' },
+        },
+        create_upload_session: {
+          title: {
+            default: 'Upload "{{name}}" to SharePoint',
+            replace:
+              'Upload "{{name}}" to SharePoint, replacing the existing file',
+          },
+        },
+        update_item: {
+          title: {
+            default: "Rename or move a SharePoint file",
+            rename: 'Rename a SharePoint file to "{{name}}"',
+            move: "Move a SharePoint file to another folder",
+            rename_move: 'Move a SharePoint file and rename it "{{name}}"',
+          },
+        },
+        delete_item: {
+          title: { default: "Delete a SharePoint file (to the recycle bin)" },
+        },
+        copy_item: {
+          title: { default: "Copy a SharePoint file to another folder" },
+        },
+        restore_version: {
+          title: {
+            default: "Restore version {{version}} of a SharePoint file",
+          },
+        },
+        create_share_link: {
+          title: {
+            default: "Create a SharePoint sharing link",
+            anonymous:
+              "Create a PUBLIC SharePoint link — anyone holding the URL can open it",
+          },
+        },
+        grant_item_access: {
+          title: { default: "Give {{recipients}} access to a SharePoint file" },
+        },
+        revoke_item_access: {
+          title: { default: "Revoke access to a SharePoint file" },
+        },
+        create_list_item: {
+          title: { default: "Add a row to a SharePoint list" },
+        },
+        update_list_item: {
+          title: { default: "Update a SharePoint list row" },
+        },
+        delete_list_item: {
+          title: { default: "Delete a SharePoint list row" },
         },
       },
 

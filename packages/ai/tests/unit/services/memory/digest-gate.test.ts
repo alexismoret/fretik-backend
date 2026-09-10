@@ -1,5 +1,9 @@
+import type { DigestInputs } from "@fretik/shared/services/memory-digest/collect-inputs";
 import { describe, expect, test } from "bun:test";
-import { gateDigest } from "../../../../src/services/memory/build-team-digest";
+import {
+  gateDigest,
+  missingSections,
+} from "../../../../src/services/memory/build-team-digest";
 
 /**
  * The gate between a model's output and text served on every turn.
@@ -123,6 +127,83 @@ describe("budget trim", () => {
     const wellFormed = (content.match(/\(memory:[^)\s]+\)/g) ?? []).length;
     expect(openParens).toBe(wellFormed);
     expect(content.endsWith(")")).toBe(true);
+  });
+
+  test("a section the inputs called for and the output skipped is named", () => {
+    // Measured at 1 in 10 on a real team: a 318-token digest holding
+    // conventions and nothing else, well formed, in budget, every marker
+    // resolving — on inputs that carried entities AND a current decision.
+    // `finishReason` was not "length", so nothing upstream caught it.
+    //
+    // A section that never appears is indistinguishable from a team that has
+    // nothing to say there, and it would be served that way for a day. The
+    // caller keeps the previous digest instead.
+    const inputs: DigestInputs = {
+      conventions: [{ path: "team/x.md", content: "…", updatedAt: new Date() }],
+      entities: [
+        {
+          id: "r1",
+          label: "Acme",
+          collectionKey: "orgs",
+          links: [],
+          updatedAt: new Date(),
+        },
+      ],
+      decisions: [
+        {
+          id: "e1",
+          title: "t",
+          summary: "s",
+          occurredTo: null,
+          updatedAt: new Date(),
+        },
+      ],
+      threads: [],
+      fingerprint: "f",
+    };
+
+    expect(
+      missingSections(
+        inputs,
+        "## Conventions — how this team works\n- a (memory:x)",
+      ),
+    ).toEqual(["## Key entities", "## Current decisions"]);
+
+    // The shortened heading the model routinely writes still counts as written.
+    expect(
+      missingSections(
+        inputs,
+        "## Conventions\n- a\n\n## Key entities\n- b\n\n## Current decisions\n- c",
+      ),
+    ).toEqual([]);
+
+    // A section with no input is not owed, so its absence is not a defect.
+    expect(missingSections(inputs, "").includes("## Open threads")).toBe(false);
+  });
+
+  test("a long section pays for the budget, not the last section", () => {
+    // The failure this exists for, measured at 2/10 on a real team: the entity
+    // list is long, "Current decisions" comes last, and a trim that cuts from
+    // the end deleted the decisions outright. Silent, because a section that
+    // never appears looks exactly like a team that has none.
+    const entities = Array.from(
+      { length: 400 },
+      (_, i) => `Entity ${i.toString()} works with the team (record:R1)`,
+    );
+    const { content } = gateDigest(
+      [
+        "## Key entities",
+        ...entities,
+        "## Current decisions",
+        "As of 2026-09-08, the free-shipping threshold is 800 € (episode:E1)",
+      ].join("\n"),
+      handles,
+    );
+    expect(content).toContain("## Current decisions");
+    expect(content).toContain("800 €");
+    // And the section that paid is the one that could afford to.
+    expect(content).toContain("## Key entities");
+    expect(content).toContain("Entity 0 ");
   });
 
   test("keeps the head of the digest, not the tail", () => {

@@ -64,13 +64,17 @@ export interface DigestEntity {
   label: string;
   collectionKey: string;
   /**
-   * At most `LINKS_PER_ENTITY`, each `<predicate> → <other>` when this record
-   * is the SUBJECT and `<predicate> ← <other>` when it is the object.
+   * At most `LINKS_PER_ENTITY`, each a complete `<subject> — <predicate> →
+   * <object>` triple in the edge's TRUE direction, whichever end this record
+   * sits on.
    *
-   * The arrow is load-bearing, not decoration. Rendering both directions the
-   * same way put "Horizon supplies Nordwind" in a real digest off Nordwind's
-   * own `supplies` edge — a false statement, served on every turn, with a
-   * provenance marker that resolves and so survives every gate downstream.
+   * Two measured failures produced that shape. Rendering both directions
+   * identically put "Horizon supplies Nordwind" in a real digest, off
+   * Nordwind's own `supplies` edge — a false statement, served on every turn,
+   * with a provenance marker that resolves and so survives every gate
+   * downstream. Encoding the direction in an arrow's polarity instead fixed
+   * the common case but still lost one generation in fourteen, which for
+   * standing team knowledge is not a rate worth carrying.
    */
   links: string[];
   updatedAt: Date;
@@ -231,16 +235,16 @@ const collectEntities = async (scope: DigestScope): Promise<DigestEntity[]> => {
           -- Grouped, not just limited: two edges of the same type to the same
           -- neighbour render identically, and one line repeated spends a third
           -- of the entity's budget saying one thing.
+          -- ALWAYS "subject — predicate → object", whichever end of the edge
+          -- this entity sits on. Naming the subject costs a few tokens a line
+          -- and removes the only thing the model has to decode: with an arrow
+          -- whose polarity carried the direction, one generation in fourteen
+          -- read an inbound edge backwards and stated the inverse as fact.
           SELECT
             CASE
               WHEN l.from_record_id = ranked.id
-                THEN lt.label || ' → ' || other.label
-              -- Reverse edge. An inverse_label already reads in that direction
-              -- ("supplied by"), so it keeps the forward arrow; without one the
-              -- arrow itself carries the direction.
-              WHEN lt.inverse_label IS NOT NULL
-                THEN lt.inverse_label || ' → ' || other.label
-              ELSE lt.label || ' ← ' || other.label
+                THEN ranked.label || ' — ' || lt.label || ' → ' || other.label
+              ELSE other.label || ' — ' || lt.label || ' → ' || ranked.label
             END AS line,
             max(l.created_at) AS last_seen
           FROM links l

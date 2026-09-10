@@ -29,8 +29,16 @@ import { expandHandles, makeHandleAllocator } from "../recall/recall";
 
 /** Reasoning eats this budget too — see `memory-consolidate` for the measured trap. */
 const DIGEST_MAX_OUTPUT_TOKENS = 12_000;
-/** Nightly and debounced, so a slow model costs nothing a user can feel. */
-const DIGEST_TIMEOUT_MS = 120_000;
+/**
+ * Nightly and debounced, so a slow model costs nothing a user can feel — and
+ * an abort costs a whole day of freshness, which is the expensive half.
+ *
+ * 120 s was a guess and measured badly: on a team with fifteen linked entities,
+ * **4 builds in 10 hit it** and kept the previous digest. Successful builds on
+ * the same inputs land around 60–70 s, so the tail is what this has to cover,
+ * not the median.
+ */
+const DIGEST_TIMEOUT_MS = 300_000;
 const DIGEST_TEMPERATURE = 0;
 
 /**
@@ -67,7 +75,7 @@ Each input block below maps to exactly one section. Output them in this order, w
 Rules:
 - One line per item. End every line with the marker of EACH input it draws on, copied verbatim, e.g. \`(memory:M3)\` or \`(memory:M3) (memory:M7)\`.
 - When several inputs say the same thing, write ONE line and carry all their markers. Four wordings of one rule cost the team four lines of a budget that holds a few dozen.
-- Under Key entities, write ONE line per entity, naming it, in prose. The arrows in the input are notation to read, never to copy: \`predicate → X\` means the entity does that to X, \`predicate ← X\` means X does it to the entity. Stating one as the other inverts the fact.
+- Under Key entities, write ONE line per entity, naming it, in prose. Its relations are given as \`subject — predicate → object\` triples: keep the subject the subject. Swapping the two ends inverts the fact.
 - Under Current decisions, open each line with \`As of <date>\`. When two inputs disagree, state the most recent and add \`(previously …)\`.
 - Write in the language of the inputs.
 - Facts only. No advice, no opinions, no next steps, no preamble, no closing line.
@@ -124,24 +132,108 @@ const renderInputs = (
 };
 
 /**
- * Drop headings left with nothing under them.
+ * Which input block owes which section, and the heading prefix that proves it
+ * was written.
+ *
+ * A PREFIX, not the whole heading: the prompt gives each heading in full and
+ * the model routinely shortens it to `## Conventions`. What has to be checked
+ * is that the section exists at all — its exact wording is cosmetic.
+ */
+const SECTION_CONTRACT: readonly {
+  present: (inputs: DigestInputs) => boolean;
+  headingPrefix: string;
+}[] = [
+  { present: (i) => i.conventions.length > 0, headingPrefix: "## Conventions" },
+  { present: (i) => i.entities.length > 0, headingPrefix: "## Key entities" },
+  {
+    present: (i) => i.decisions.length > 0,
+    headingPrefix: "## Current decisions",
+  },
+  { present: (i) => i.threads.length > 0, headingPrefix: "## Open threads" },
+];
+
+/** Sections the inputs called for that the gated digest does not have. */
+export const missingSections = (
+  inputs: DigestInputs,
+  content: string,
+): string[] =>
+  SECTION_CONTRACT.filter(
+    (s) => s.present(inputs) && !content.includes(s.headingPrefix),
+  ).map((s) => s.headingPrefix);
+
+interface DigestSection {
+  /** `null` for anything the model wrote before its first heading. */
+  heading: string | null;
+  lines: string[];
+}
+
+const splitSections = (lines: readonly string[]): DigestSection[] => {
+  const sections: DigestSection[] = [];
+  let current: DigestSection = { heading: null, lines: [] };
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("#")) {
+      sections.push(current);
+      current = { heading: line, lines: [] };
+    } else if (trimmed.length > 0) {
+      current.lines.push(line);
+    }
+  }
+  sections.push(current);
+  return sections;
+};
+
+/**
+ * Render back, dropping every section left with nothing under it.
  *
  * Three ways a section empties: the prompt asks for sections with no input to
  * be omitted and the model emits them anyway (observed: an empty "## Open
- * threads" on a team with none), the marker gate drops a section's only line,
- * or the budget trim cuts its lines from the end. A heading carrying no claim
- * spends prompt budget on every turn of every member to say nothing.
+ * threads" on a team with none), the marker gate drops its only line, or the
+ * budget trim takes its last one. A heading carrying no claim spends prompt
+ * budget on every turn of every member to say nothing.
  */
-const dropEmptySections = (lines: readonly string[]): string[] =>
-  lines.filter((line, i) => {
-    if (!line.trim().startsWith("#")) return true;
-    for (let j = i + 1; j < lines.length; j++) {
-      const next = lines[j]?.trim() ?? "";
-      if (next === "") continue;
-      return !next.startsWith("#");
+const renderSections = (sections: readonly DigestSection[]): string =>
+  sections
+    .filter((s) => s.lines.length > 0)
+    .map((s) =>
+      s.heading === null
+        ? s.lines.join("\n")
+        : [s.heading, ...s.lines].join("\n"),
+    )
+    .join("\n\n");
+
+/**
+ * Trim to budget by dropping the last line of the LARGEST section — never the
+ * last line of the digest.
+ *
+ * Cutting from the tail spends the whole cut on whatever comes last, and the
+ * section order that rightly puts conventions first also puts "current
+ * decisions" and "open threads" last. Measured on a team with fifteen linked
+ * entities: the entity list ate the budget and the digest lost its current
+ * decisions outright in 2 generations out of 10 — silently, since a section
+ * that never appears looks exactly like a team that has none. Every section
+ * keeps a presence; the long tail of one is what pays.
+ *
+ * Still line-granular, and that is not cosmetic: cutting mid-marker hands the
+ * agent a truncated id it will spend a tool call on for nothing — exactly the
+ * trap the verbatim block's size cap already documents.
+ */
+const trimToBudget = (sections: readonly DigestSection[]): DigestSection[] => {
+  const out = sections.map((s) => ({
+    heading: s.heading,
+    lines: [...s.lines],
+  }));
+  while (countTokens(renderSections(out)) > DIGEST_MAX_TOKENS) {
+    let largest: DigestSection | undefined;
+    for (const section of out) {
+      if (section.lines.length > (largest?.lines.length ?? 0))
+        largest = section;
     }
-    return false;
-  });
+    if (!largest) break;
+    largest.lines.pop();
+  }
+  return out;
+};
 
 /**
  * Drop every line whose marker the model invented, then trim to budget.
@@ -150,10 +242,6 @@ const dropEmptySections = (lines: readonly string[]): string[] =>
  * but a LINE that lost its marker is a claim with no provenance left — the one
  * shape the agent cannot check and the reader cannot trace. The prompt asks for
  * one marker per line precisely so this gate can work at that granularity.
- *
- * The trim is also line-granular, and that is not cosmetic: cutting mid-marker
- * hands the agent a truncated id it will spend a tool call on for nothing —
- * exactly the trap the verbatim block's size cap already documents.
  */
 export const gateDigest = (
   raw: string,
@@ -180,21 +268,12 @@ export const gateDigest = (
         : expandHandles(line, handles, LOG_SOURCE),
     );
 
-  const lines = dropEmptySections(kept);
-
-  // Trim to budget on a line boundary, from the end.
-  while (
-    lines.length > 0 &&
-    countTokens(lines.join("\n")) > DIGEST_MAX_TOKENS
-  ) {
-    lines.pop();
-  }
-
-  // Run the section drop AGAIN: the trim pops from the end, so it strands the
-  // heading of the section it just emptied. Measured on the first real digest —
-  // a naked "## Open threads" survived because its lines were exactly what the
-  // budget cut.
-  return { content: dropEmptySections(lines).join("\n").trim(), dropped };
+  // Sections rather than lines from here on: rendering drops whatever is left
+  // empty, so a stranded heading cannot outlive the trim by construction.
+  return {
+    content: renderSections(trimToBudget(splitSections(kept))).trim(),
+    dropped,
+  };
 };
 
 export interface BuildTeamDigestParams extends DigestScope {
@@ -207,7 +286,10 @@ export interface BuildTeamDigestParams extends DigestScope {
 export type BuildTeamDigestResult =
   | { status: "skipped"; reason: "unchanged" | "no-inputs" }
   | { status: "written"; tokenCount: number; dropped: number }
-  | { status: "kept-previous"; reason: "empty" | "truncated" | "no-previous" };
+  | {
+      status: "kept-previous";
+      reason: "empty" | "truncated" | "incomplete" | "no-previous";
+    };
 
 export const buildTeamDigest = async (
   params: BuildTeamDigestParams,
@@ -288,6 +370,26 @@ export const buildTeamDigest = async (
     console.warn(
       `[memory-digest] team ${teamId}: dropped ${dropped.toString()} line(s) with unresolvable provenance`,
     );
+  }
+
+  // Same rule as truncation, for the case `finishReason` does not catch: the
+  // model stopped after one section and returned a well-formed, in-budget,
+  // fully-attributed digest that happens to be missing two thirds of what it
+  // was given. Measured at 1 in 10 — a 318-token digest holding conventions
+  // and nothing else, on inputs carrying entities and a current decision.
+  //
+  // A section the digest never writes is indistinguishable, to every reader
+  // downstream, from a team that has nothing to say there. That is a false
+  // statement by omission, and it would be served on every turn until the next
+  // successful run.
+  const missing = missingSections(inputs, content);
+  if (missing.length > 0) {
+    console.warn(
+      `[memory-digest] team ${teamId}: sections missing from the output (${missing.join(", ")}) — keeping the previous digest`,
+    );
+    if (!existing) return { status: "kept-previous", reason: "no-previous" };
+    await markTeamDigestStale(teamId);
+    return { status: "kept-previous", reason: "incomplete" };
   }
 
   const tokenCount = countTokens(content);

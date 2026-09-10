@@ -184,6 +184,30 @@ export const promoteEpisodes = async (input: {
         );
       }
       const parsed = promoteOutputSchema.safeParse(parseLlmJsonObject(raw));
+      if (!parsed.success) {
+        // The OTHER way this pass silently does nothing, and the one the
+        // truncation warning above does not cover: the model answered, in
+        // time, with something this schema rejects. Indistinguishable from
+        // "nothing worth promoting" at the call site — it returns the same
+        // all-zero result — so it has to say so here. Found 2026-09-10 by a
+        // chain case that went 10/10 → 0/10 with `added=0 updated=0 noop=0`
+        // and not one line of log to explain it.
+        console.warn(
+          `[memory-promote] team ${teamId}: output rejected by the schema — ${parsed.error.issues
+            .map((i) => `${i.path.join(".")}: ${i.message}`)
+            .slice(0, 3)
+            .join("; ")} | raw: ${raw.slice(0, 300)}`,
+        );
+      }
+      if (parsed.success && parsed.data.promotions.length === 0) {
+        // `promotions` carries `.default([])`, so ANY JSON object parses to
+        // "decided nothing" — including one that answered under a different
+        // key. Deciding nothing is a legitimate outcome for this role and must
+        // stay one, but it cannot be indistinguishable from a shape mismatch.
+        console.warn(
+          `[memory-promote] team ${teamId}: no promotion returned | raw: ${raw.slice(0, 300)}`,
+        );
+      }
       return parsed.success ? parsed.data : null;
     },
   );
@@ -200,7 +224,16 @@ export const promoteEpisodes = async (input: {
       continue;
     }
     // Force the machine namespace — a promotion NEVER writes outside learned/.
-    if (!p.path.startsWith(LEARNED_PREFIX) || !p.content.trim()) continue;
+    if (!p.path.startsWith(LEARNED_PREFIX) || !p.content.trim()) {
+      // Third silent-noop path, and the one that hides best: the model DID
+      // decide to promote, the JSON parsed, and every promotion is dropped
+      // here for a path the prompt asked for and the model did not give. The
+      // caller sees the same all-zero result as "nothing worth promoting".
+      console.warn(
+        `[memory-promote] team ${teamId}: dropped a ${p.action} outside ${LEARNED_PREFIX} — path "${p.path}"`,
+      );
+      continue;
+    }
     const prior = existingByPath.get(p.path);
     // Never clobber a human-edited memory (edge: a user wrote under learned/).
     if (prior && !prior.agentOwned) continue;

@@ -177,6 +177,16 @@ export default {
         agency_id: "Agence",
         admin_email: "E-mail de l'administrateur",
         address: "Adresse",
+        // Libellés spécifiques à SharePoint.
+        file_name: "Fichier",
+        new_name: "Nouveau nom",
+        version: "Version",
+        link_type: "Droit accordé par le lien",
+        link_scope: "Qui peut utiliser le lien",
+        expires_at: "Expire le",
+        role: "Niveau d'accès",
+        values: "Valeurs",
+        new_values: "Nouvelles valeurs",
       },
 
       values: {
@@ -325,6 +335,67 @@ export default {
         },
         create_plan: {
           title: { default: 'Créer le plan "{{title}}"' },
+        },
+      },
+
+      sharepoint: {
+        create_folder: {
+          title: { default: 'Créer le dossier SharePoint "{{name}}"' },
+        },
+        create_upload_session: {
+          title: {
+            default: 'Déposer "{{name}}" sur SharePoint',
+            replace:
+              'Déposer "{{name}}" sur SharePoint, en remplaçant le fichier existant',
+          },
+        },
+        update_item: {
+          title: {
+            default: "Renommer ou déplacer un fichier SharePoint",
+            rename: 'Renommer un fichier SharePoint en "{{name}}"',
+            move: "Déplacer un fichier SharePoint vers un autre dossier",
+            rename_move:
+              'Déplacer un fichier SharePoint et le renommer "{{name}}"',
+          },
+        },
+        delete_item: {
+          title: {
+            default: "Supprimer un fichier SharePoint (vers la corbeille)",
+          },
+        },
+        copy_item: {
+          title: {
+            default: "Copier un fichier SharePoint dans un autre dossier",
+          },
+        },
+        restore_version: {
+          title: {
+            default: "Restaurer la version {{version}} d'un fichier SharePoint",
+          },
+        },
+        create_share_link: {
+          title: {
+            default: "Créer un lien de partage SharePoint",
+            anonymous:
+              "Créer un lien SharePoint PUBLIC — toute personne disposant de l'URL pourra l'ouvrir",
+          },
+        },
+        grant_item_access: {
+          title: {
+            default: "Donner accès à un fichier SharePoint à {{recipients}}",
+          },
+        },
+        revoke_item_access: {
+          title: { default: "Retirer un accès à un fichier SharePoint" },
+        },
+        create_list_item: {
+          title: { default: "Ajouter une ligne à une liste SharePoint" },
+        },
+        update_list_item: {
+          title: { default: "Modifier une ligne d'une liste SharePoint" },
+        },
+        delete_list_item: {
+          title: { default: "Supprimer une ligne d'une liste SharePoint" },
         },
       },
 

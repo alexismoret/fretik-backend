@@ -32,6 +32,7 @@ import {
 } from "@fretik/shared/db/migrations";
 import { errorHandler } from "@fretik/shared/lib/error-handler";
 import { globalRateLimiter } from "@fretik/shared/lib/rate-limit";
+import { warnIfVectorPlannerMiscosted } from "@fretik/shared/services/ai-vectors/planner-cost";
 import { reclaimOrphanSandboxes } from "@fretik/shared/services/e2b/reclaim-orphans";
 import { installExternalPageQueryExecutor } from "@fretik/shared/services/external-apps/exec/page-query";
 import {
@@ -80,6 +81,15 @@ if (process.env.RUN_MIGRATIONS === "true") {
 } else {
   await assertMigrationsCurrent("ai");
 }
+
+// The one thing a migration cannot guarantee: `ALTER EXTENSION vector UPDATE`
+// resets `procost` on the pgvector operators, and nothing fails when it does —
+// answers stay correct, the index just stops being used and retrieval gets
+// quietly slower as the corpus grows. Checked here rather than trusted. Never
+// fatal: a plan choice is not worth refusing to serve over.
+void warnIfVectorPlannerMiscosted().catch((err: unknown) => {
+  console.warn("[vector-planner] check failed:", err);
+});
 
 // pageProbe and every build execute page datasets, external ones included — the
 // seam refuses in any process that skips this install.

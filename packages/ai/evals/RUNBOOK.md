@@ -304,10 +304,40 @@ two totals against each other (the closure rule above applies unchanged):
 
 ```bash
 bun run evals:memory -- --cleanup && bun run evals:chain -- --cleanup
-bun run evals:recall                              # adaptive (default)
-RECALL_MODE=judge    bun run evals:recall         # the rollback path
-RECALL_MODE=verbatim bun run evals:recall         # the no-LLM floor
+bun run evals:recall -- --repeats 10 --mode adaptive   # the default
+bun run evals:recall -- --repeats 10 --mode judge      # the rollback path
+bun run evals:recall -- --repeats 10 --mode verbatim   # the no-LLM floor
 ```
+
+`--mode` replaced `RECALL_MODE=` on this suite, because the env var is read
+**once at module load** — a run that set it could not say so in its own
+results, and two runs in different modes were compared in the Langfuse UI as
+though they were comparable. The mode now travels with the call and lands in
+the run metadata. `RECALL_MODE` still works as the process default (a service
+restart, not "the next turn").
+
+Two other flags change what a run is a measurement OF, and both land in the
+metadata for the same reason:
+
+- `--prefetch` — start the gather, let it run under a simulated 300 ms prelude,
+  then collect it. That is the topology `/stream` actually has, so `gatherMs`
+  becomes the WAIT a turn pays rather than the un-overlapped cost. Without it
+  the suite overstates the turn's latency and cannot see whether a change moved
+  the wait at all.
+- `--scale N` — top the EVAL team's `ai_vectors` up to N synthetic distractors
+  before running, so "fast enough" is a claim about a SIZE. ~250 MB at 50 000.
+  `--cleanup-scale` drops the volume and keeps the universe runnable;
+  `--cleanup` drops both.
+
+  The distractors are REAL vectors perturbed by gaussian noise (σ=0.02) and
+  renormalised, and that σ is load-bearing in both directions: the corpus's own
+  spread is cosine 0.42-0.88 between real documents, σ=0.02 lands a distractor
+  at 0.70 — inside it. Larger (≥0.05, cos<0.4) makes them near-orthogonal noise
+  that any index separates trivially, so a scale run reports a healthy semantic
+  arm however broken it is; smaller (≤0.005, cos>0.97) makes them
+  near-duplicates that outrank the fixtures, so the run fails its ASSERTIONS
+  and reads as a recall regression instead of a corpus seeded wrong.
+  `tests/unit/evals/scale-vectors.test.ts` pins both edges.
 
 Every turn logs the routing decision, so a threshold is recalibrated from a
 distribution rather than argued about:
@@ -322,6 +352,40 @@ must-abstain repeat. There is none that also spares the must-cite ones — the
 distributions overlap — so the number is chosen where the routed fraction is
 flat (0.50 → 0.65 route identically) rather than at a cliff, and 0.70 is the
 first value that catches every abstention case.
+
+### `memory-recall` — the same question, asked of the ANSWER (added 2026-09-10)
+
+`evals:recall` grades the memory BLOCK: which ids the selector rendered. That
+is the right instrument for TUNING the selector and the wrong one for deciding
+whether to KEEP it — a block that cites the right ids and an answer that uses
+them are two different claims, and only the second is what a user experiences.
+Taking the judge off the critical path is a bet about what the MAIN model does
+with the same candidates unfiltered, so no block score can settle it.
+
+12 cases (`evals/cases/memory-recall.ts`), through the real turn, over the SAME
+fixture universe as the block suite so the two read against each other:
+
+```bash
+bun run evals:memory -- --cleanup && bun run evals:chain -- --cleanup
+AI_SERVICE_URL=http://localhost:8083 bun run evals:langfuse -- \
+  --suite memory-recall --repeats 10 --recall-mode judge --run-name mr-judge
+# …same with --recall-mode adaptive, then verbatim. Compare PER CASE.
+```
+
+Four cases are must-NOT checks and they are the ones the Phase 5 judge-removal
+gate turns on: `mr-abstain-general`, `mr-greeting`, `mr-private-leak`,
+`mr-homonym`. `mr-private-leak` runs `asUser: false` — the turn arrives with no
+`X-Context-User-Id`, which is the only way to probe that another person's
+private episode stays invisible, since with the eval user present that user
+OWNS it and seeing it is correct.
+
+**`ttft-p50-ms` is not readable at the default concurrency.** Measured
+2026-09-10: `mr-private-leak` and `mr-memory-convention` reported 22 s TTFT at
+`--concurrency 3` and **0.9-2.2 s** at `--concurrency 1` — same cases, same
+service, same commit. The queue, not the pre-turn. `correctness` does not care;
+anything time-shaped does. Every dataset run now records `maxConcurrency` in
+its metadata, so the number cannot be read without it — take the TTFT baseline
+at `--concurrency 1` and the correctness baseline wherever you like.
 
 **Frozen baselines — 2026-08-05** (`freeze-*` / `n30-*` runs, code bindings:
 extract/distill/promote = deepseek-v4-flash, consolidate + recall judge =

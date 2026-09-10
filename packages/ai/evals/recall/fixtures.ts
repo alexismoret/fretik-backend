@@ -663,7 +663,7 @@ const SCALE_BASES = 16;
 export const seedScaleDistractors = async (
   scope: Scope,
   count: number,
-): Promise<{ existing: number; inserted: number }> => {
+): Promise<{ total: number }> => {
   const [countRow] = await db
     .select({ n: sql<number>`count(*)::int` })
     .from(aiVectors)
@@ -676,15 +676,29 @@ export const seedScaleDistractors = async (
     );
   const existing = countRow?.n ?? 0;
   if (existing >= count) {
-    console.log(
-      `[recall-fixtures] scale: ${existing.toString()} distractors already present (target ${count.toString()}) — nothing to do`,
-    );
-    return { existing, inserted: 0 };
+    // Louder than it looks: asking for 5 000 when 10 000 are already there is a
+    // run whose corpus is twice its label. It returns the ACTUAL total so the
+    // metadata records what was measured rather than what was requested, and
+    // says so, because `--cleanup-scale` is the only way down.
+    if (existing > count) {
+      console.warn(
+        `[recall-fixtures] scale: ${existing.toString()} distractors present but ${count.toString()} requested — this run measures ${existing.toString()}. Use --cleanup-scale to go back down.`,
+      );
+    }
+    return { total: existing };
   }
 
   // Perturb REAL vectors, and several of them: one base would build a single
   // tight cluster, which an ANN index navigates quite differently from a corpus
   // spread over the manifold the way a team's documents are.
+  //
+  // The NOT LIKE is what keeps that true on the top-up path. This function is
+  // resumable, so on a second call the distractors already outnumber the real
+  // rows — without the exclusion the "real" bases would mostly be previous
+  // distractors, and each round would perturb a perturbation. Two rounds of
+  // sigma=0.02 compose to roughly sigma=0.028, three to 0.035, and the corpus
+  // walks off the manifold `tests/unit/evals/scale-vectors.test.ts` exists to
+  // pin — silently, because that test checks `perturb`, not what is fed to it.
   const bases = await db
     .select({ embedding: aiVectors.embedding })
     .from(aiVectors)
@@ -692,6 +706,7 @@ export const seedScaleDistractors = async (
       and(
         eq(aiVectors.teamId, scope.teamId),
         sql`${aiVectors.embedding} IS NOT NULL`,
+        sql`coalesce(${aiVectors.metadata}->>'file_name', '') NOT LIKE ${`${SCALE_PREFIX}%`}`,
       ),
     )
     .limit(SCALE_BASES);
@@ -736,13 +751,18 @@ export const seedScaleDistractors = async (
         organizationId: scope.organizationId,
       };
     });
+    // Serial on purpose: each row inserts into an HNSW index, which is a graph
+    // traversal per row. Firing the batches concurrently would multiply the
+    // index's write contention rather than the throughput, and 500 rows of
+    // 2560 fp32 dims is already ~10 MB on the wire per statement.
+    // eslint-disable-next-line no-await-in-loop
     await db.insert(aiVectors).values(rows);
     inserted += size;
     console.log(
       `[recall-fixtures] scale: ${(existing + inserted).toString()}/${count.toString()}`,
     );
   }
-  return { existing, inserted };
+  return { total: existing + inserted };
 };
 
 /**

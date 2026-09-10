@@ -94,8 +94,8 @@ export const runCase = async (
       pageBuildProfileKey: opts?.pageBuildProfileKey,
       recallMode: opts?.recallMode,
       // Case-level, not run-level: the privacy probe is the only turn that
-      // must arrive without a caller identity.
-      asUser: c.asUser,
+      // must arrive as somebody other than the eval user.
+      asOtherUser: c.runAsOtherUser,
     });
     const assertions = await runAssertions(
       selectAssertions(c.assertions, opts),

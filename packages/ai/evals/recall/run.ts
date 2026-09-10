@@ -163,8 +163,14 @@ const fixtures: RecallFixtures = await ensureRecallFixtures(scope);
 console.log("[recall-eval] fixtures ready");
 
 // AFTER the universe exists: the distractors are perturbations of real vectors
-// from this team, so there has to be something to perturb.
-if (scale !== undefined) await seedScaleDistractors(scope, scale);
+// from this team, so there has to be something to perturb. The ACTUAL total is
+// what lands in the metadata — asking for fewer than are already seeded does
+// not remove any, and a run labelled with what it requested rather than what it
+// measured is worse than an unlabelled one.
+const scaleTotal =
+  scale === undefined
+    ? undefined
+    : (await seedScaleDistractors(scope, scale)).total;
 
 /** Failure strings for ONE repeat ([] = pass). */
 const evaluateRepeat = (
@@ -476,7 +482,7 @@ const runAllLangfuse = async (): Promise<void> => {
       recallMode: modeOverride ?? process.env.RECALL_MODE ?? "adaptive",
       prefetch,
       ...(judgeProfileKey ? { judgeProfileKey } : {}),
-      ...(scale !== undefined ? { scale } : {}),
+      ...(scaleTotal !== undefined ? { scale: scaleTotal } : {}),
     },
     runEvaluators,
     evaluators: [

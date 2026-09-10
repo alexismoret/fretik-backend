@@ -36,7 +36,7 @@ describe("scale distractor geometry", () => {
     expect(l2(out)).toBeCloseTo(1, 6);
   });
 
-  test("output keeps the base's length even when the base is not unit-norm", () => {
+  test("output keeps the base's DIMENSION and is renormalised even from a non-unit base", () => {
     const base = unitVector(DIMS).map((v) => v * 7);
     const out = perturb(base, SCALE_SIGMA);
     expect(out).toHaveLength(DIMS);

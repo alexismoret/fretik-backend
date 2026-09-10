@@ -40,6 +40,12 @@ AI_SERVICE_URL=http://localhost:8083 bun run evals:langfuse -- --deterministic-o
 AI_SERVICE_URL=http://localhost:8083 bun run evals:langfuse -- --run-name <name>      # explicit dataset-run name
 ```
 
+`.env` needs the usual `EVAL_TEAM_ID` / `EVAL_ORGANIZATION_ID` / `EVAL_USER_ID`,
+plus **`EVAL_OTHER_USER_ID`** — a SECOND real member of the same organization,
+used only by `mr-private-leak`. Without it that one case throws
+`Missing eval env var: EVAL_OTHER_USER_ID`, deliberately: the alternative is a
+privacy case that silently tests nothing (see the `memory-recall` section).
+
 **Keep the output in a file — the per-item report is long and the earliest cases scroll away
 first.** Three runs in a row were read with items 1-6 already gone, which is precisely where a
 case that never ran leaves its only trace:
@@ -374,10 +380,40 @@ AI_SERVICE_URL=http://localhost:8083 bun run evals:langfuse -- \
 
 Four cases are must-NOT checks and they are the ones the Phase 5 judge-removal
 gate turns on: `mr-abstain-general`, `mr-greeting`, `mr-private-leak`,
-`mr-homonym`. `mr-private-leak` runs `asUser: false` — the turn arrives with no
-`X-Context-User-Id`, which is the only way to probe that another person's
-private episode stays invisible, since with the eval user present that user
-OWNS it and seeing it is correct.
+`mr-homonym`.
+
+**`mr-private-leak` needs `EVAL_OTHER_USER_ID`** — a second real member of the
+eval organization — and it is worth knowing why, because the case was written
+wrong first and could not fail. Running it in system scope (no
+`X-Context-User-Id`, the way the block-level `rec-privacy-hidden` does) does not
+put the turn in "no owner" mode: `buildTurnCallOptions` gates the entire recall
+branch on a caller id, so a userless turn gets **no memory block at all** and
+every must-NOT assertion passes for the wrong reason, identically in all three
+arms. The privacy axis needs another PERSON, not no person.
+
+Two lessons from fixing it, both general:
+
+- **A must-NOT case needs a positive control.** "The private figure is absent"
+  is trivially true of an answer that retrieved nothing. The case now also
+  requires the team-visible `4 200 €` rent, so the negative only counts when
+  retrieval demonstrably ran.
+- **A marker the answer can produce on its own is not evidence.** The private
+  note's tactics were checked too; `taux de vacance` fired 3 times in 20 repeats
+  and every one came from `searchWeb` quoting a commercial-property report.
+  Vacancy rates are ordinary lease vocabulary. That check was a random-failure
+  generator on a guardrail case and was removed; the internal ceiling
+  (`4 500 €/mois`, which appears nowhere else) is the only marker kept.
+
+Measured after the fix: the ceiling leaks **0/10 in both arms**, so the scoping
+holds through the pre-turn block AND through `searchKnowledge`, which applies
+the same `user_id IS NULL OR user_id = :caller` clause.
+
+The case's prompt is also a QUESTION rather than the task the block-level twin
+uses, and that too is a measurement: "Prépare la renégociation…" ran **116-1130 s
+per turn on ~30 tool calls** — the agent building a full negotiation package with
+bash, python, vision and presentFiles. Defensible behaviour, complete noise
+around a privacy assertion, and ten repeats of it cost more than the other
+eleven cases combined.
 
 **`ttft-p50-ms` is not readable at the default concurrency.** Measured
 2026-09-10: `mr-private-leak` and `mr-memory-convention` reported 22 s TTFT at
@@ -386,6 +422,42 @@ service, same commit. The queue, not the pre-turn. `correctness` does not care;
 anything time-shaped does. Every dataset run now records `maxConcurrency` in
 its metadata, so the number cannot be read without it — take the TTFT baseline
 at `--concurrency 1` and the correctness baseline wherever you like.
+
+#### Baseline — 2026-09-10, 12 cases × 10 repeats, paired (`mr-baseline-*`)
+
+`--concurrency 3`, `chat` = deepseek-v4-flash, recall judge = gpt-oss-120b.
+Compared per case, which is the only comparison this table supports:
+
+| case                       |    judge |  adaptive |      Δ | judge pass | adaptive pass |
+| -------------------------- | -------: | --------: | -----: | ---------: | ------------: |
+| `mr-episode-decision`      |    1.000 |     1.000 |      — |      10/10 |         10/10 |
+| `mr-right-episode`         |    1.000 |     1.000 |      — |      10/10 |         10/10 |
+| `mr-graph-link`            |    1.000 |     1.000 |      — |      10/10 |         10/10 |
+| `mr-contradiction-current` |    1.000 |     1.000 |      — |      10/10 |         10/10 |
+| `mr-document-top`          |    1.000 |     1.000 |      — |      10/10 |         10/10 |
+| `mr-badly-written`         |    1.000 |     1.000 |      — |      10/10 |         10/10 |
+| `mr-greeting`              |    1.000 |     1.000 |      — |      10/10 |         10/10 |
+| `mr-homonym`               |    1.000 |     1.000 |      — |      10/10 |         10/10 |
+| `mr-memory-convention`     |    0.950 |     1.000 | +0.050 |       9/10 |         10/10 |
+| `mr-abstain-general`       |    0.975 |     0.950 | −0.025 |       9/10 |          8/10 |
+| **`mr-broad`**             |    0.975 | **0.900** | −0.075 |       9/10 |      **6/10** |
+| overall                    |    0.986 |     0.985 | −0.001 |      0.958 |         0.942 |
+| TTFT p50                   | 3 069 ms |  2 205 ms |  −28 % |            |               |
+| turn latency p50           |   36.4 s |    22.7 s |  −38 % |            |               |
+
+Cost was the same either way — $0.006/turn, $0.68 per 120-turn arm.
+
+**Read the two failing cases, not the totals.** Every retrieval-shaped case is
+10/10 in both arms: the right episode among four on one record, the graph-only
+link, the superseded value, the document-only figure, the misspelled query. The
+judge is not buying retrieval quality. What it buys is a little robustness on
+**synthesis** (`mr-broad`, 9/10 → 6/10) and **abstention** (`mr-abstain-general`,
+9/10 → 8/10) — the two open-ended shapes — for +864 ms of TTFT and +14 s of turn.
+`mr-broad` is the case Phase 4's confidence bands have to move; it is now a
+target with a number on it rather than a hypothesis.
+
+`mr-private-leak` is excluded from this table — it was rewritten after the run
+(see below) and its baseline was taken separately.
 
 **Two things keep N repeats from collapsing into one measurement, and both are
 easy to break by accident.** `runUnifiedRecall` memoises a gather for 15 s per

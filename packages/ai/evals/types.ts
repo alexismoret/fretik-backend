@@ -265,15 +265,22 @@ export interface EvalCase {
   /** Optional per-case tags, surfaced as metadata on the Langfuse dataset item. */
   tags?: string[];
   /**
-   * `false` → run the turn in SYSTEM scope: `X-Context-User-Id` is omitted, so
-   * the agent has no caller identity. Same axis as `RecallEvalCase.asUser`
-   * (`evals/recall/cases.ts`) — the only way to probe that another person's
-   * private episode stays invisible, since with the header present the eval
-   * user IS the owner and seeing it is correct.
+   * `true` → send `X-Context-User-Id: EVAL_OTHER_USER_ID` instead of
+   * `EVAL_USER_ID`: a DIFFERENT real member of the eval organization.
    *
-   * Default (omitted) = the eval user, which is what every other case wants.
+   * This is the privacy axis, and it has to be another person rather than no
+   * person. `RecallEvalCase.asUser: false` (`evals/recall/cases.ts`) runs the
+   * block-level probe in system scope, which works there because that harness
+   * calls `runUnifiedRecall` directly. Through the real turn it does not:
+   * `buildTurnCallOptions` gates the whole recall branch on a caller id
+   * (`handlers/chatbot.ts`), so a userless turn gets NO memory block at all and
+   * every must-NOT assertion passes for the wrong reason. Measured 2026-09-10 —
+   * `mr-private-leak` was written that way first and could not fail.
+   *
+   * Refuses loudly when `EVAL_OTHER_USER_ID` is unset, rather than falling back
+   * to the eval user, because that fallback is the vacuous case again.
    */
-  asUser?: boolean;
+  runAsOtherUser?: boolean;
   /**
    * Optional tool-calling efficiency envelope (informational scores only).
    * See `CaseBudget` + `evals/tool-efficiency.ts`.

@@ -68,13 +68,14 @@ export interface InvokeOptions {
    */
   recallMode?: string;
   /**
-   * `false` → omit `X-Context-User-Id`, so the turn runs in SYSTEM scope
-   * (`internalMiddleware` treats the header as optional; workflow nodes already
-   * call this way). The privacy axis needs it: recall filters private episodes
-   * on the CALLER's id, so with the eval user present its own private rows are
-   * legitimately visible and nothing is being tested.
+   * `true` → send `EVAL_OTHER_USER_ID` as `X-Context-User-Id` instead of
+   * `EVAL_USER_ID`. The privacy axis: recall and `searchKnowledge` both scope
+   * private rows to the CALLER (`user_id IS NULL OR user_id = :userId`), so
+   * proving another person's private episode stays invisible needs another
+   * person. Omitting the header instead would disable recall entirely — see
+   * `EvalCase.runAsOtherUser`.
    */
-  asUser?: boolean;
+  asOtherUser?: boolean;
 }
 
 const buildHeaders = (opts?: InvokeOptions): Record<string, string> => {
@@ -85,8 +86,13 @@ const buildHeaders = (opts?: InvokeOptions): Record<string, string> => {
     "X-Context-Team-Id": requireEnv("EVAL_TEAM_ID"),
     "X-Context-Organization-Id": requireEnv("EVAL_ORGANIZATION_ID"),
   };
-  if (process.env.EVAL_USER_ID && opts?.asUser !== false)
+  // `requireEnv` and not a fallback: silently serving the eval user here would
+  // make the privacy case pass by testing nothing.
+  if (opts?.asOtherUser) {
+    headers["X-Context-User-Id"] = requireEnv("EVAL_OTHER_USER_ID");
+  } else if (process.env.EVAL_USER_ID) {
     headers["X-Context-User-Id"] = process.env.EVAL_USER_ID;
+  }
   if (process.env.EVAL_USER_NAME)
     headers["X-Context-User-Name"] = process.env.EVAL_USER_NAME;
   if (process.env.EVAL_TIMEZONE)

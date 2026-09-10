@@ -35,6 +35,7 @@ import { createLinkType } from "@fretik/shared/services/link-types/create";
 import { createLink } from "@fretik/shared/services/links/create";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { vectorizeSource } from "../../src/services/vectorize";
+import { perturb, SCALE_SIGMA } from "./scale-vectors";
 
 const SUPPLIER_COLLECTION_KEY = "recall_eval_supplier";
 const PROJECT_COLLECTION_KEY = "recall_eval_project";
@@ -634,6 +635,136 @@ export const ensureRecallFixtures = async (
   };
 };
 
+/** `metadata.file_name` prefix every scale distractor carries. */
+const SCALE_PREFIX = "scale-distractor-";
+
+/** How many rows go in one INSERT. 2560 fp32 dims per row is the constraint. */
+const SCALE_BATCH = 500;
+
+/** How many real vectors the distractors are perturbed from. */
+const SCALE_BASES = 16;
+
+/**
+ * Grow the EVAL team's vector table to `count` synthetic distractors, so the
+ * suite can be run against a corpus the size of a real team's.
+ *
+ * Why it exists: the semantic arm was a Seq Scan whose cost is LINEAR in the
+ * corpus, and at the eval team's ~20 k rows that was survivable. Nothing in the
+ * suite could see the cliff, because the suite never changed the corpus size.
+ * `--scale` is the instrument that makes "it is fast enough" a claim about a
+ * size rather than about this laptop.
+ *
+ * The rows are deliberately BM25-inert: neutral filler text with no eval
+ * vocabulary in it, so a scale run moves the semantic arm and leaves the
+ * lexical arms where they were. One variable at a time.
+ *
+ * Idempotent and resumable — counts what is already there and tops up.
+ */
+export const seedScaleDistractors = async (
+  scope: Scope,
+  count: number,
+): Promise<{ existing: number; inserted: number }> => {
+  const [countRow] = await db
+    .select({ n: sql<number>`count(*)::int` })
+    .from(aiVectors)
+    .where(
+      and(
+        eq(aiVectors.sourceType, "documents"),
+        eq(aiVectors.teamId, scope.teamId),
+        sql`${aiVectors.metadata}->>'file_name' LIKE ${`${SCALE_PREFIX}%`}`,
+      ),
+    );
+  const existing = countRow?.n ?? 0;
+  if (existing >= count) {
+    console.log(
+      `[recall-fixtures] scale: ${existing.toString()} distractors already present (target ${count.toString()}) — nothing to do`,
+    );
+    return { existing, inserted: 0 };
+  }
+
+  // Perturb REAL vectors, and several of them: one base would build a single
+  // tight cluster, which an ANN index navigates quite differently from a corpus
+  // spread over the manifold the way a team's documents are.
+  const bases = await db
+    .select({ embedding: aiVectors.embedding })
+    .from(aiVectors)
+    .where(
+      and(
+        eq(aiVectors.teamId, scope.teamId),
+        sql`${aiVectors.embedding} IS NOT NULL`,
+      ),
+    )
+    .limit(SCALE_BASES);
+  const vectors = bases
+    .map((b) => b.embedding)
+    .filter((e): e is number[] => Array.isArray(e) && e.length > 0);
+  if (vectors.length === 0) {
+    throw new Error(
+      "[recall-fixtures] scale: no real embedding to perturb — run the suite once without --scale first",
+    );
+  }
+
+  const missing = count - existing;
+  console.log(
+    `[recall-fixtures] scale: ${existing.toString()} present, inserting ${missing.toString()} more from ${vectors.length.toString()} base vectors`,
+  );
+  let inserted = 0;
+  while (inserted < missing) {
+    const size = Math.min(SCALE_BATCH, missing - inserted);
+    const rows = Array.from({ length: size }, (_, k) => {
+      const index = existing + inserted + k;
+      const base = vectors[index % vectors.length] ?? vectors[0] ?? [];
+      const metadata: DocumentVectorMetadata = {
+        file_name: `${SCALE_PREFIX}${index.toString()}`,
+        file_type: "application/pdf",
+        page_count: 1,
+        document_language: "fr",
+        document_summary: "Volume filler for the recall scale test.",
+        entities: [],
+        custom_fields: {},
+      };
+      return {
+        content: `Filler ${index.toString()} — volume row for the recall scale test.`,
+        contextualPrefix: `Filler ${index.toString()}.`,
+        chunkIndex: 0,
+        totalChunks: 1,
+        embedding: perturb(base, SCALE_SIGMA),
+        metadata,
+        sourceType: "documents" as const,
+        sourceId: crypto.randomUUID(),
+        teamId: scope.teamId,
+        organizationId: scope.organizationId,
+      };
+    });
+    await db.insert(aiVectors).values(rows);
+    inserted += size;
+    console.log(
+      `[recall-fixtures] scale: ${(existing + inserted).toString()}/${count.toString()}`,
+    );
+  }
+  return { existing, inserted };
+};
+
+/**
+ * Drop the scale distractors and nothing else (`--cleanup-scale`), leaving the
+ * fixture universe intact so the suite still runs.
+ */
+export const cleanupScaleDistractors = async (scope: Scope): Promise<void> => {
+  const deleted = await db
+    .delete(aiVectors)
+    .where(
+      and(
+        eq(aiVectors.sourceType, "documents"),
+        eq(aiVectors.teamId, scope.teamId),
+        sql`${aiVectors.metadata}->>'file_name' LIKE ${`${SCALE_PREFIX}%`}`,
+      ),
+    )
+    .returning({ id: aiVectors.id });
+  console.log(
+    `[recall-fixtures] scale: ${deleted.length.toString()} distractor(s) removed`,
+  );
+};
+
 /** Tear the whole fixture universe down (`--cleanup`). */
 export const cleanupRecallFixtures = async (scope: Scope): Promise<void> => {
   // Episodes (+ vectors) — matched by our fixture titles.
@@ -686,6 +817,12 @@ export const cleanupRecallFixtures = async (scope: Scope): Promise<void> => {
         sql`${aiVectors.metadata}->>'file_name' IN ('bail-sirius-lyon.pdf', 'charte-achats-responsables.pdf')`,
       ),
     );
+
+  // …and the scale distractors, which the line above does NOT match (it lists
+  // file names exactly). "Tear the whole universe down" has to include the
+  // 50 000 rows a scale run left behind, or `--cleanup` quietly leaves the next
+  // measurement standing on a corpus nobody remembers seeding.
+  await cleanupScaleDistractors(scope);
 
   // Synthetic workflow cards — vectors only (no workflow rows exist).
   await db

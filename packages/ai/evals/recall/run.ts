@@ -17,7 +17,9 @@
  *   bun run evals:recall -- --run-name after-prompt-v4
  *   bun run evals:recall -- --mode judge    # judge | verbatim | adaptive
  *   bun run evals:recall -- --prefetch      # the topology a real turn has
- *   bun run evals:recall -- --cleanup       # tear the fixtures down
+ *   bun run evals:recall -- --scale 50000   # grow the corpus, then run
+ *   bun run evals:recall -- --cleanup-scale # drop the volume, keep the universe
+ *   bun run evals:recall -- --cleanup       # tear the fixtures down (scale too)
  *
  * Env (from `.env`): DATABASE_URL, OPENROUTER_API_KEY, LANGFUSE_*,
  * EVAL_TEAM_ID, EVAL_ORGANIZATION_ID, EVAL_USER_ID.
@@ -43,8 +45,10 @@ import { exitAfterFlush } from "../exit";
 import { RECALL_CASES, type RecallEvalCase } from "./cases";
 import {
   cleanupRecallFixtures,
+  cleanupScaleDistractors,
   ensureRecallFixtures,
   type RecallFixtures,
+  seedScaleDistractors,
 } from "./fixtures";
 
 const DATASET_NAME = "recall-eval";
@@ -76,6 +80,22 @@ if (flag("--cleanup")) {
   await cleanupRecallFixtures(scope);
   process.exit(0);
 }
+
+if (flag("--cleanup-scale")) {
+  await cleanupScaleDistractors(scope);
+  process.exit(0);
+}
+
+/**
+ * Corpus size to run against (`--scale N`). Tops the EVAL team's vector table
+ * up to N synthetic distractors before the suite runs, so "fast enough" becomes
+ * a claim about a SIZE. Recorded in the run metadata — a latency read without
+ * the corpus size behind it is not a measurement.
+ *
+ * ~250 MB of `ai_vectors` at 50 000. `--cleanup-scale` drops them.
+ */
+const scaleRaw = Number.parseInt(opt("--scale") ?? "", 10);
+const scale = Number.isFinite(scaleRaw) && scaleRaw > 0 ? scaleRaw : undefined;
 
 const repeatsRaw = Number.parseInt(opt("--repeats") ?? "", 10);
 const repeats =
@@ -141,6 +161,10 @@ await ensureModelRegistryWarm();
 console.log("[recall-eval] ensuring fixtures (idempotent)…");
 const fixtures: RecallFixtures = await ensureRecallFixtures(scope);
 console.log("[recall-eval] fixtures ready");
+
+// AFTER the universe exists: the distractors are perturbations of real vectors
+// from this team, so there has to be something to perturb.
+if (scale !== undefined) await seedScaleDistractors(scope, scale);
 
 /** Failure strings for ONE repeat ([] = pass). */
 const evaluateRepeat = (
@@ -452,6 +476,7 @@ const runAllLangfuse = async (): Promise<void> => {
       recallMode: modeOverride ?? process.env.RECALL_MODE ?? "adaptive",
       prefetch,
       ...(judgeProfileKey ? { judgeProfileKey } : {}),
+      ...(scale !== undefined ? { scale } : {}),
     },
     runEvaluators,
     evaluators: [

@@ -67,6 +67,14 @@ export interface InvokeOptions {
    * way the comparison is paired.
    */
   recallMode?: string;
+  /**
+   * `false` → omit `X-Context-User-Id`, so the turn runs in SYSTEM scope
+   * (`internalMiddleware` treats the header as optional; workflow nodes already
+   * call this way). The privacy axis needs it: recall filters private episodes
+   * on the CALLER's id, so with the eval user present its own private rows are
+   * legitimately visible and nothing is being tested.
+   */
+  asUser?: boolean;
 }
 
 const buildHeaders = (opts?: InvokeOptions): Record<string, string> => {
@@ -77,7 +85,7 @@ const buildHeaders = (opts?: InvokeOptions): Record<string, string> => {
     "X-Context-Team-Id": requireEnv("EVAL_TEAM_ID"),
     "X-Context-Organization-Id": requireEnv("EVAL_ORGANIZATION_ID"),
   };
-  if (process.env.EVAL_USER_ID)
+  if (process.env.EVAL_USER_ID && opts?.asUser !== false)
     headers["X-Context-User-Id"] = process.env.EVAL_USER_ID;
   if (process.env.EVAL_USER_NAME)
     headers["X-Context-User-Name"] = process.env.EVAL_USER_NAME;

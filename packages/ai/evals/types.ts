@@ -220,6 +220,15 @@ export const CAPABILITIES = [
   // a Langfuse score-config category, and score configs cannot be deleted.
   // Renaming it strands the old one and resets the capability's score trend.
   "objects",
+  // Pre-turn memory recall, graded on the ANSWER (`cases/memory-recall.ts`).
+  //
+  // Distinct from `evals:recall`, which grades the memory BLOCK: a block that
+  // cites the right ids and an answer that uses them are two different claims,
+  // and only the second is what a user experiences. It exists because the
+  // judge-vs-deterministic selector decision cannot be taken on block scores —
+  // dropping the LLM out of the selector is a bet about what the MAIN model
+  // does with the same candidates, so the arm that has to hold is this one.
+  "memory",
 ] as const;
 
 export type Capability = (typeof CAPABILITIES)[number];
@@ -255,6 +264,16 @@ export interface EvalCase {
   prompt: string;
   /** Optional per-case tags, surfaced as metadata on the Langfuse dataset item. */
   tags?: string[];
+  /**
+   * `false` → run the turn in SYSTEM scope: `X-Context-User-Id` is omitted, so
+   * the agent has no caller identity. Same axis as `RecallEvalCase.asUser`
+   * (`evals/recall/cases.ts`) — the only way to probe that another person's
+   * private episode stays invisible, since with the header present the eval
+   * user IS the owner and seeing it is correct.
+   *
+   * Default (omitted) = the eval user, which is what every other case wants.
+   */
+  asUser?: boolean;
   /**
    * Optional tool-calling efficiency envelope (informational scores only).
    * See `CaseBudget` + `evals/tool-efficiency.ts`.

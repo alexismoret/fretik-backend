@@ -294,4 +294,26 @@ export const CURATED: Record<string, CuratedCase> = {
   // generation (2)
   "page-mini-app-list-detail": { capability: "generation" },
   "page-workbench-split": { capability: "generation" },
+  // ── Pre-turn memory recall, graded on the ANSWER (2026-09-10). `evals:recall`
+  // grades the memory BLOCK, which is the right instrument for tuning the
+  // selector and the wrong one for deciding whether to keep it: taking the LLM
+  // judge off the critical path is a bet about what the MAIN model does with
+  // the same candidates, and no block score can settle that. Run as a paired
+  // A/B (`--recall-mode judge` vs `adaptive`/`verbatim`) and compared per case.
+  //
+  // The three smoke picks are the three failure MODES, not the three easiest:
+  // a plain episode lookup, a freshness conflict, and the abstention floor.
+  // memory (12)
+  "mr-episode-decision": { capability: "memory", smoke: true },
+  "mr-right-episode": { capability: "memory" },
+  "mr-graph-link": { capability: "memory" },
+  "mr-memory-convention": { capability: "memory" },
+  "mr-private-leak": { capability: "memory" },
+  "mr-homonym": { capability: "memory" },
+  "mr-abstain-general": { capability: "memory" },
+  "mr-greeting": { capability: "memory", smoke: true },
+  "mr-contradiction-current": { capability: "memory", smoke: true },
+  "mr-document-top": { capability: "memory" },
+  "mr-badly-written": { capability: "memory" },
+  "mr-broad": { capability: "memory" },
 };

@@ -317,6 +317,13 @@ export const runChatbotExperiment = async (
       : {}),
     ...(opts.recallMode ? { recallMode: opts.recallMode } : {}),
     ...(repeats > 1 ? { repeats } : {}),
+    // Recorded on EVERY run because `ttft-p50-ms` is unreadable without it.
+    // Measured 2026-09-10: two memory-recall cases reported 22 s TTFT at
+    // concurrency 3 and 0.9-2.2 s at concurrency 1 — same cases, same service,
+    // same commit. Correctness does not care; anything time-shaped does, and a
+    // TTFT baseline taken at concurrency 3 is a queueing measurement wearing a
+    // latency label.
+    maxConcurrency,
   };
   const common = {
     name: EXPERIMENT_NAME,

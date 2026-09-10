@@ -53,6 +53,89 @@ export const timeStage = async <T>(
 };
 
 /**
+ * Stamp "how long since `startedAt`" under `label`.
+ *
+ * `timeStage` covers work that is a promise; this covers the rest — a phase
+ * whose boundary is a point in time rather than a settle, which is every
+ * cumulative TTFT figure (route entry → here) and every stage assembled from
+ * several awaits.
+ */
+export const markSince = (
+  timings: StageTimings,
+  label: string,
+  startedAt: number,
+): void => {
+  timings[label] = Date.now() - startedAt;
+};
+
+/**
+ * The chunk types that count as the turn's FIRST BYTE.
+ *
+ * Not every frame the model stream emits is output: `start`, `start-step` and
+ * the metadata frames are bookkeeping the SDK sends as soon as the provider
+ * call opens, so tapping "the first chunk" would measure the HTTP handshake
+ * and report a TTFT the user never experienced. These three are the first
+ * frames that carry something a reader could see — visible text, a reasoning
+ * trace, or the tool call that explains the pause before either.
+ */
+const FIRST_BYTE_CHUNK_TYPES = new Set([
+  "text-delta",
+  "reasoning-delta",
+  "tool-input-start",
+]);
+
+/**
+ * Fire `onFirst` once, when the first output frame reaches the wire.
+ *
+ * A pass-through transform in the shape of `dropChunksAfterAbort`: the chunk
+ * is enqueued BEFORE the callback runs, so instrumentation can never delay the
+ * byte it is measuring, and a throwing callback is swallowed — a turn must
+ * never die of its own telemetry. Fires at most once per stream; a turn that
+ * merges several streams (fallback model, dead-step continuation) passes the
+ * same once-guarded callback to each.
+ */
+const chunkType = (chunk: unknown): string =>
+  typeof chunk === "object" &&
+  chunk !== null &&
+  "type" in chunk &&
+  typeof chunk.type === "string"
+    ? chunk.type
+    : "";
+
+export const tapFirstChunk = <C>(
+  stream: ReadableStream<C>,
+  onFirst: () => void,
+): ReadableStream<C> => {
+  let fired = false;
+  const reader = stream.getReader();
+  // Pull-based rather than a `TransformStream`: backpressure is preserved
+  // (one `read` per downstream `pull`) and the ambient `pipeThrough` typing —
+  // which disagrees with itself across this package's modules — stays out of
+  // it. A source error rejects `pull`, which errors the stream, so failures
+  // propagate exactly as they did without the tap.
+  return new ReadableStream<C>({
+    async pull(controller) {
+      const { done, value } = await reader.read();
+      if (done) {
+        controller.close();
+        return;
+      }
+      controller.enqueue(value);
+      if (fired || !FIRST_BYTE_CHUNK_TYPES.has(chunkType(value))) return;
+      fired = true;
+      try {
+        onFirst();
+      } catch {
+        // Swallow — see `recordTimingsOnTrace`.
+      }
+    },
+    cancel(reason) {
+      void reader.cancel(reason);
+    },
+  });
+};
+
+/**
  * Render `timings` as `label=<ms>` pairs, slowest first — so the head of the
  * line is the stage worth looking at, whatever the turn's shape. Stages run
  * in parallel, so these do NOT sum to the total; `preTurnTotal` is measured

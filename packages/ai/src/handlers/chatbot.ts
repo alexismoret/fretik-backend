@@ -142,7 +142,9 @@ import {
 import { withNamedTrace } from "../lib/trace-tool";
 import {
   formatTimings,
+  markSince,
   recordTimingsOnTrace,
+  tapFirstChunk,
   timeStage,
   type StageTimings,
 } from "../lib/turn-timings";
@@ -721,6 +723,21 @@ interface RunChatbotTurnParams {
    */
   prefetchedGather?: Promise<RecallGathered> | null;
   /**
+   * When the HTTP request arrived, and what its serial prelude cost.
+   *
+   * TTFT is measured from the ROUTE, not from here: everything the prelude
+   * does — persisting the message, binding files, two conversation events, the
+   * read marker, the stream claim, the turn log, the history read, the model
+   * resolution — happens before this function is called and is invisible to
+   * `preTurnTotal`. A turn optimised against `preTurnTotal` alone can get
+   * slower for the user while the number it reports improves.
+   *
+   * Absent on `/invoke`, which has no prelude — its `[ttft]` line omits the
+   * label rather than reporting a zero it did not measure.
+   */
+  routeStartedAt?: number;
+  preludeTimings?: StageTimings;
+  /**
    * Thinking depth for this turn, already resolved and validated by the
    * caller (`effectiveReasoningLevel`): the user's pick in the prompt
    * bar, else the team's stored default for this model. Absent → the
@@ -1096,11 +1113,24 @@ export const runChatbotTurn = async (
 
   // Assemble the per-turn system-prompt fragments + external apps into
   // the final call options handed to the agent. See buildTurnCallOptions.
-  const callOptionsWithFiles = await buildTurnCallOptions(params, filenames);
+  // The turn's setup, end to end: the parallel batch plus the two Redis round
+  // trips after it. `preTurnTotal` covers only the batch and closes before the
+  // rest, so this stretch of the path had no number of its own.
+  const setupTimings: StageTimings = {};
+  const setupStartedAt = Date.now();
+
+  const callOptionsWithFiles = await timeStage(
+    setupTimings,
+    "preTurn",
+    buildTurnCallOptions(params, filenames),
+  );
 
   // User-initiated Stop plumbing (Phase 12). See setupAbortChannel.
-  const { abortController, releaseAbortSubscriber } =
-    await setupAbortChannel(params);
+  const { abortController, releaseAbortSubscriber } = await timeStage(
+    setupTimings,
+    "abortChannel",
+    setupAbortChannel(params),
+  );
 
   // Serving set + profile for this turn (see RunChatbotTurnParams).
   // Resolved ONCE here so every consumer below — compaction threshold,
@@ -1118,7 +1148,11 @@ export const runChatbotTurn = async (
   const escalatedAfterMidstreamError =
     params.agentSet === undefined &&
     params.conversationId !== undefined &&
-    (await consumeMidstreamErrorMarker(params.conversationId));
+    (await timeStage(
+      setupTimings,
+      "midstreamMarker",
+      consumeMidstreamErrorMarker(params.conversationId),
+    ));
   if (escalatedAfterMidstreamError) {
     console.warn(
       `${params.logPrefix} prior turn died mid-stream — escalating to fallback model`,
@@ -1146,6 +1180,37 @@ export const runChatbotTurn = async (
     params.reasoningLevel === undefined
       ? undefined
       : reasoningParamForProfile(modelProfile, params.reasoningLevel);
+
+  markSince(setupTimings, "setupTotal", setupStartedAt);
+  console.info(`${params.logPrefix} [setup] ${formatTimings(setupTimings)}`);
+
+  /**
+   * The turn's headline latency number, emitted when the first frame a reader
+   * could see reaches the wire.
+   *
+   * Once per turn, whichever stream produces that frame — the primary, the
+   * fallback model, or the dead-step continuation all pass this same callback
+   * to `tapFirstChunk`, and the flag here is what makes "first" mean the turn
+   * rather than the stream. `firstByte` is measured from ROUTE ENTRY on
+   * `/stream`; `/invoke` has no prelude and reports from its own start, with
+   * the `prelude` label absent rather than zeroed.
+   */
+  let ttftEmitted = false;
+  const emitTtft = (): void => {
+    if (ttftEmitted) return;
+    ttftEmitted = true;
+    const startedAt = params.routeStartedAt ?? setupStartedAt;
+    const ttft: StageTimings = {
+      ...(params.preludeTimings
+        ? { prelude: params.preludeTimings["preludeTotal"] ?? 0 }
+        : {}),
+      preTurn: setupTimings["preTurn"] ?? 0,
+      setup: setupTimings["setupTotal"] ?? 0,
+    };
+    markSince(ttft, "firstByte", startedAt);
+    console.info(`${params.logPrefix} [ttft] ${formatTimings(ttft)}`);
+    recordTimingsOnTrace("ttft", ttft);
+  };
 
   // C4 turn-robustness state. `onError` (sync, fires on the wire when the
   // stream errors) and the recovery seam inside `execute` below reach the
@@ -1611,25 +1676,28 @@ export const runChatbotTurn = async (
           });
           writer.merge(
             dropChunksAfterAbort(
-              toUIMessageStream<ChatbotTools>({
-                stream: fallbackResult.stream,
-                // uuid v7 wire ids — persisted verbatim by `saveMessages`
-                // so DB ids ≡ stream ids (stable Vue keys across reloads).
-                generateMessageId: randomUUIDv7,
-                onError: recordStreamError,
-                messageMetadata: ({ part }) => {
-                  if (part.type !== "finish") return undefined;
-                  // Failover (zombie or transparent) always serves the fallback
-                  // agent — flagged for the eval harness.
-                  return buildTurnMessageMetadata(
-                    part,
-                    "fallback",
-                    modelProfile.key,
-                    getActiveTraceId(),
-                    readTurnUsage(usageKey),
-                  );
-                },
-              }),
+              tapFirstChunk(
+                toUIMessageStream<ChatbotTools>({
+                  stream: fallbackResult.stream,
+                  // uuid v7 wire ids — persisted verbatim by `saveMessages`
+                  // so DB ids ≡ stream ids (stable Vue keys across reloads).
+                  generateMessageId: randomUUIDv7,
+                  onError: recordStreamError,
+                  messageMetadata: ({ part }) => {
+                    if (part.type !== "finish") return undefined;
+                    // Failover (zombie or transparent) always serves the fallback
+                    // agent — flagged for the eval harness.
+                    return buildTurnMessageMetadata(
+                      part,
+                      "fallback",
+                      modelProfile.key,
+                      getActiveTraceId(),
+                      readTurnUsage(usageKey),
+                    );
+                  },
+                }),
+                emitTtft,
+              ),
               abortController.signal,
             ),
           );
@@ -1721,21 +1789,24 @@ export const runChatbotTurn = async (
           });
           writer.merge(
             dropChunksAfterAbort(
-              toUIMessageStream<ChatbotTools>({
-                stream: contResult.stream,
-                generateMessageId: randomUUIDv7,
-                onError: recordStreamError,
-                messageMetadata: ({ part }) => {
-                  if (part.type !== "finish") return undefined;
-                  return buildTurnMessageMetadata(
-                    part,
-                    servedBy,
-                    modelProfile.key,
-                    getActiveTraceId(),
-                    readTurnUsage(usageKey),
-                  );
-                },
-              }),
+              tapFirstChunk(
+                toUIMessageStream<ChatbotTools>({
+                  stream: contResult.stream,
+                  generateMessageId: randomUUIDv7,
+                  onError: recordStreamError,
+                  messageMetadata: ({ part }) => {
+                    if (part.type !== "finish") return undefined;
+                    return buildTurnMessageMetadata(
+                      part,
+                      servedBy,
+                      modelProfile.key,
+                      getActiveTraceId(),
+                      readTurnUsage(usageKey),
+                    );
+                  },
+                }),
+                emitTtft,
+              ),
               abortController.signal,
             ),
           );
@@ -1898,29 +1969,32 @@ export const runChatbotTurn = async (
         // tool calls, RAG hits, latency, cost — lives in Langfuse.
         writer.merge(
           dropChunksAfterAbort(
-            toUIMessageStream<ChatbotTools>({
-              stream: result.stream,
-              generateMessageId: randomUUIDv7,
-              // A provider `error` part (e.g. empty pool) surfaces through
-              // the INNER stream's onError, not the outer one — route it to
-              // the same mapper so both surfaces agree on the wire frame.
-              onError: recordStreamError,
-              messageMetadata: ({ part }) => {
-                if (part.type !== "finish") return undefined;
-                // `servedBy` reports which agent answered under which profile;
-                // the eval harness reads it over SSE so a silent failover to
-                // the fallback model is flagged, not scored as the candidate.
-                // `getActiveTraceId()` is this turn's active span, sent live AND
-                // persisted so the feedback control scores the right trace.
-                return buildTurnMessageMetadata(
-                  part,
-                  servedBy,
-                  modelProfile.key,
-                  getActiveTraceId(),
-                  readTurnUsage(usageKey),
-                );
-              },
-            }),
+            tapFirstChunk(
+              toUIMessageStream<ChatbotTools>({
+                stream: result.stream,
+                generateMessageId: randomUUIDv7,
+                // A provider `error` part (e.g. empty pool) surfaces through
+                // the INNER stream's onError, not the outer one — route it to
+                // the same mapper so both surfaces agree on the wire frame.
+                onError: recordStreamError,
+                messageMetadata: ({ part }) => {
+                  if (part.type !== "finish") return undefined;
+                  // `servedBy` reports which agent answered under which profile;
+                  // the eval harness reads it over SSE so a silent failover to
+                  // the fallback model is flagged, not scored as the candidate.
+                  // `getActiveTraceId()` is this turn's active span, sent live AND
+                  // persisted so the feedback control scores the right trace.
+                  return buildTurnMessageMetadata(
+                    part,
+                    servedBy,
+                    modelProfile.key,
+                    getActiveTraceId(),
+                    readTurnUsage(usageKey),
+                  );
+                },
+              }),
+              emitTtft,
+            ),
             abortController.signal,
           ),
         );
@@ -2344,6 +2418,12 @@ chatbotRoutes.use("/stream", chatbotRateLimitMiddleware);
  * possible because nothing outside that closure holds a reference.
  */
 chatbotRoutes.post("/stream", async (c) => {
+  // TTFT starts HERE. Everything below this line and above `runChatbotTurn` is
+  // serial I/O the user waits through, and until now none of it was measured:
+  // `[pre-turn]` opens at `buildTurnCallOptions`, several round trips later.
+  const routeStartedAt = Date.now();
+  const preludeTimings: StageTimings = {};
+
   const user = c.get("user");
   const team = c.get("team");
   const organization = c.get("organization");
@@ -2370,11 +2450,15 @@ chatbotRoutes.post("/stream", async (c) => {
     reasoningLevel,
   } = parsed.data;
 
-  const conversation = await getConversation({
-    id: conversationId,
-    teamId: team.id,
-    userId: user.id,
-  });
+  const conversation = await timeStage(
+    preludeTimings,
+    "getConversation",
+    getConversation({
+      id: conversationId,
+      teamId: team.id,
+      userId: user.id,
+    }),
+  );
   if (!conversation) {
     return throwHttpError(404, notFound("Conversation not found"));
   }
@@ -2428,52 +2512,72 @@ chatbotRoutes.post("/stream", async (c) => {
       : null;
 
   if (lastUser) {
-    const savedUserMessage = await saveMessage({
-      conversationId,
-      role: "user",
-      parts: lastUser.parts,
-      metadata: lastUser.metadata,
-      authorId: user.id,
-      // Keep the client's wire id (uuid via the frontend's `generateId`)
-      // so the bubble the sender already rendered survives rehydration
-      // with the same Vue key. A duplicate POST converges by upsert.
-      id: isUuid(lastUser.id) ? lastUser.id : undefined,
-    });
+    const savedUserMessage = await timeStage(
+      preludeTimings,
+      "saveMessage",
+      saveMessage({
+        conversationId,
+        role: "user",
+        parts: lastUser.parts,
+        metadata: lastUser.metadata,
+        authorId: user.id,
+        // Keep the client's wire id (uuid via the frontend's `generateId`)
+        // so the bubble the sender already rendered survives rehydration
+        // with the same Vue key. A duplicate POST converges by upsert.
+        id: isUuid(lastUser.id) ? lastUser.id : undefined,
+      }),
+    );
     // Bind every `ai_chat_files` row that was created in the draft
     // (messageId = NULL) to the message we just persisted. The orphan
     // reaper keys off `messageId IS NULL` to reap abandoned drafts —
     // flipping this field here removes those rows from its scan.
     if (savedUserMessage) {
       const attachedFilenames = extractLastUserFileFilenames([lastUser]);
-      await linkChatFilesToMessage(
-        conversationId,
-        attachedFilenames,
-        savedUserMessage.id,
+      await timeStage(
+        preludeTimings,
+        "linkFiles",
+        linkChatFilesToMessage(
+          conversationId,
+          attachedFilenames,
+          savedUserMessage.id,
+        ),
       );
       // Surface the new user message to other connected viewers right away
       // — covers human-to-human asides that never start an assistant turn,
       // and lets viewers paint the sender's bubble before the answer streams.
-      await publishConversationEvent(conversationId, {
-        type: "message-added",
-        messageId: savedUserMessage.id,
-        role: "user",
-        authorId: user.id,
-      });
+      await timeStage(
+        preludeTimings,
+        "publishAdded",
+        publishConversationEvent(conversationId, {
+          type: "message-added",
+          messageId: savedUserMessage.id,
+          role: "user",
+          authorId: user.id,
+        }),
+      );
     }
   }
 
   // The sender has, by definition, just read the conversation — clear their
   // own unread / action-required state.
-  await markConversationRead({ conversationId, userId: user.id });
+  await timeStage(
+    preludeTimings,
+    "markRead",
+    markConversationRead({ conversationId, userId: user.id }),
+  );
 
   // Pull @mentioned teammates into the conversation and notify them.
   if (mentionedUserIds && mentionedUserIds.length > 0) {
-    const mentioned = await applyMentions({
-      conversationId,
-      teamId: team.id,
-      byUserId: user.id,
-      mentionedUserIds,
-    });
+    const mentioned = await timeStage(
+      preludeTimings,
+      "mentions",
+      applyMentions({
+        conversationId,
+        teamId: team.id,
+        byUserId: user.id,
+        mentionedUserIds,
+      }),
+    );
     void notifyMentionedMembers({
       mentioned,
       conversationId,
@@ -2505,7 +2609,11 @@ chatbotRoutes.post("/stream", async (c) => {
   // the GET /:id/stream reconnection path instead of running two
   // turns in parallel.
   const streamId = randomUUIDv7();
-  const claimed = await setConversationActiveStream(conversationId, streamId);
+  const claimed = await timeStage(
+    preludeTimings,
+    "claimStream",
+    setConversationActiveStream(conversationId, streamId),
+  );
   if (!claimed) {
     return c.json(
       {
@@ -2521,22 +2629,30 @@ chatbotRoutes.post("/stream", async (c) => {
   // instant, so any viewer invited by `turn-started` attaches successfully
   // — there is no setup window where an attach finds nothing (the old
   // buffer registered seconds into the turn and early attachers 204'd).
-  await openTurnLog(streamId);
+  await timeStage(preludeTimings, "openTurnLog", openTurnLog(streamId));
 
   // Announce the turn to every connected viewer so non-senders fan-in to
   // the same turn log (live multi-user streaming) and their send button
   // gates while it runs. `byUserId` lets the sender's own client skip the
   // fan-in (it is already streaming via this POST).
-  await publishConversationEvent(conversationId, {
-    type: "turn-started",
-    streamId,
-    byUserId: user.id,
-  });
+  await timeStage(
+    preludeTimings,
+    "publishStarted",
+    publishConversationEvent(conversationId, {
+      type: "turn-started",
+      streamId,
+      byUserId: user.id,
+    }),
+  );
 
   // Load last N messages from DB for the agent's memory window. 30 is
   // the Phase 8 default — compaction collapses the older portion when
   // the total exceeds 12K tokens.
-  const history = await loadConversationForAgent(conversationId, 30);
+  const history = await timeStage(
+    preludeTimings,
+    "loadHistory",
+    loadConversationForAgent(conversationId, 30),
+  );
 
   // Attribute speakers when the conversation is collaborative (≥2 members).
   // Solo conversations are left untouched — see buildSpeakerContext.
@@ -2568,7 +2684,11 @@ chatbotRoutes.post("/stream", async (c) => {
     profileKey: flagshipKey,
     fellBack,
     storedReasoningLevel,
-  } = await resolveTeamFlagship(team.id, conversation.modelProfileKey);
+  } = await timeStage(
+    preludeTimings,
+    "resolveFlagship",
+    resolveTeamFlagship(team.id, conversation.modelProfileKey),
+  );
   if (fellBack && conversation.modelProfileKey) {
     console.warn(
       `[chatbot] conversation ${conversationId} pinned model "${conversation.modelProfileKey}" is not a selectable flagship — using default`,
@@ -2576,11 +2696,16 @@ chatbotRoutes.post("/stream", async (c) => {
   }
   const profile = resolveChatModelForProfile(flagshipKey).profile;
 
+  markSince(preludeTimings, "preludeTotal", routeStartedAt);
+  console.info(`[chatbot] [prelude] ${formatTimings(preludeTimings)}`);
+
   return runChatbotTurn({
     conversationId,
     history: speakerHistory,
     callOptions,
     prefetchedGather,
+    routeStartedAt,
+    preludeTimings,
     resumableStreamId: streamId,
     logPrefix: "[chatbot]",
     agentSet: getChatbotAgentSet(flagshipKey),

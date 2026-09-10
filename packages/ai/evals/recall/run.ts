@@ -15,6 +15,8 @@
  *   bun run evals:recall -- --case rec-typo-record
  *   bun run evals:recall -- --repeats 5
  *   bun run evals:recall -- --run-name after-prompt-v4
+ *   bun run evals:recall -- --mode judge    # judge | verbatim | adaptive
+ *   bun run evals:recall -- --prefetch      # the topology a real turn has
  *   bun run evals:recall -- --cleanup       # tear the fixtures down
  *
  * Env (from `.env`): DATABASE_URL, OPENROUTER_API_KEY, LANGFUSE_*,
@@ -28,7 +30,11 @@ import type {
 } from "@langfuse/client";
 import { flushLangfuse, langfuseClient } from "../../src/lib/langfuse";
 import { ensureModelRegistryWarm } from "../../src/lib/model-registry/resolve";
+import type { StageTimings } from "../../src/lib/turn-timings";
 import {
+  isRecallMode,
+  prefetchRecallGather,
+  type RecallMode,
   runUnifiedRecall,
   type UnifiedRecallResult,
 } from "../../src/services/recall/recall";
@@ -76,6 +82,39 @@ const repeats =
   Number.isFinite(repeatsRaw) && repeatsRaw > 0 ? repeatsRaw : DEFAULT_REPEATS;
 /** Force the judge onto a registry profile — the model bake-off (20b vs 120b). */
 const judgeProfileKey = opt("--judge-profile");
+
+/**
+ * Which selector to score, per call rather than per process.
+ *
+ * `RECALL_MODE` in the environment still works, but it is read once at module
+ * load, so a run that set it could not say so in its own results: two runs in
+ * different modes were compared in the Langfuse UI as though they were
+ * comparable. The mode now travels with the call AND lands in the run metadata.
+ */
+const modeRaw = opt("--mode");
+if (modeRaw !== undefined && !isRecallMode(modeRaw)) {
+  console.error(
+    `--mode must be judge | verbatim | adaptive (got "${modeRaw}")`,
+  );
+  await exitAfterFlush(1);
+}
+const modeOverride: RecallMode | undefined =
+  modeRaw !== undefined && isRecallMode(modeRaw) ? modeRaw : undefined;
+
+/**
+ * Run each repeat the way a real turn does: start the gather first, let it run
+ * under a simulated prelude, then collect it.
+ *
+ * Without this the suite measures a topology production does not have. On
+ * `/stream` the arms are fired at the top of the route and have been running
+ * through a dozen serial round trips by the time anything needs the block, so
+ * what the turn pays is the WAIT, not the work. Measuring the un-prefetched
+ * cost overstates the turn's latency and — worse — hides whether a change moved
+ * the wait at all.
+ */
+const prefetch = flag("--prefetch");
+/** What the route's serial prelude costs, from the `[prelude]` line. */
+const PRELUDE_SIM_MS = 300;
 const onlyCase = opt("--case");
 const cases = onlyCase
   ? RECALL_CASES.filter((c) => c.id === onlyCase)
@@ -164,6 +203,14 @@ interface RepeatOutcome {
   capability: string | null;
   failures: string[];
   latencyMs: number;
+  /**
+   * Recall's own split, straight from the service rather than scraped from its
+   * log line. Under `--prefetch`, `gatherMs` is the WAIT a turn pays, not the
+   * arms' cost — the number TTFT is made of. Absent when the pass was skipped
+   * (trivial message) or hung.
+   */
+  gatherMs?: number;
+  judgeMs?: number;
 }
 
 interface CaseOutcome {
@@ -172,6 +219,9 @@ interface CaseOutcome {
   passFraction: number;
   repeats: RepeatOutcome[];
   avgLatencyMs: number;
+  /** Median of the per-repeat gather waits; `judgeRate` = share that escalated. */
+  medianGatherMs: number;
+  judgeRate: number;
 }
 
 /**
@@ -195,19 +245,34 @@ const runCase = async (c: RecallEvalCase): Promise<CaseOutcome> => {
     // the watchdog's — recorded as a failure instead of crashing the suite.
     let result: UnifiedRecallResult | null = null;
     let hung: string | null = null;
+    let timings: StageTimings = {};
+    const params = {
+      organizationId: scope.organizationId,
+      teamId: scope.teamId,
+      userId: c.asUser === false ? undefined : scope.userId,
+      agentType: "chatbot",
+      userMessage: c.message,
+      attachedFiles: [],
+      recentTail: c.recentTail ?? "",
+      bypassCache: true,
+      judgeProfileKey,
+      ...(modeOverride ? { modeOverride } : {}),
+    };
+    // Under `--prefetch` the arms are started first and left to run for the
+    // length of a route prelude before anything collects them — the shape a
+    // real turn has. `gather` in the timings is then the WAIT, which is what
+    // TTFT actually pays, rather than the un-overlapped cost.
+    const gatherPromise = prefetch ? prefetchRecallGather(params) : null;
+    if (gatherPromise) await Bun.sleep(PRELUDE_SIM_MS);
     try {
       result = await raceDeadline(
         () =>
           runUnifiedRecall({
-            organizationId: scope.organizationId,
-            teamId: scope.teamId,
-            userId: c.asUser === false ? undefined : scope.userId,
-            agentType: "chatbot",
-            userMessage: c.message,
-            attachedFiles: [],
-            recentTail: c.recentTail ?? "",
-            bypassCache: true,
-            judgeProfileKey,
+            ...params,
+            ...(gatherPromise ? { gatherPromise } : {}),
+            onTimings: (t) => {
+              timings = t;
+            },
           }),
         REPEAT_DEADLINE_MS,
         `${c.id} repeat ${(i + 1).toString()}`,
@@ -220,9 +285,16 @@ const runCase = async (c: RecallEvalCase): Promise<CaseOutcome> => {
       capability: result?.capabilityBlock ?? null,
       failures: hung !== null ? [hung] : evaluateRepeat(c, fixtures, result),
       latencyMs: Date.now() - t0,
+      gatherMs: timings["gather"],
+      judgeMs: timings["judge"],
     });
   }
   const passCount = outcomes.filter((o) => o.failures.length === 0).length;
+  const gathers = outcomes
+    .map((o) => o.gatherMs)
+    .filter((ms): ms is number => ms !== undefined)
+    .sort((a, b) => a - b);
+  const judged = outcomes.filter((o) => o.judgeMs !== undefined).length;
   return {
     caseId: c.id,
     passed: passCount === outcomes.length,
@@ -231,6 +303,11 @@ const runCase = async (c: RecallEvalCase): Promise<CaseOutcome> => {
     avgLatencyMs: Math.round(
       outcomes.reduce((a, o) => a + o.latencyMs, 0) / outcomes.length,
     ),
+    // Median, not mean: one 5 s outlier in ten repeats moves a mean by 500 ms
+    // and says nothing about the turn a user gets.
+    medianGatherMs:
+      gathers.length > 0 ? (gathers[gathers.length >> 1] ?? 0) : 0,
+    judgeRate: outcomes.length > 0 ? judged / outcomes.length : 0,
   };
 };
 
@@ -308,6 +385,8 @@ const runAllLangfuse = async (): Promise<void> => {
           },
         ],
         avgLatencyMs: 0,
+        medianGatherMs: 0,
+        judgeRate: 0,
       };
       return empty;
     }
@@ -366,7 +445,14 @@ const runAllLangfuse = async (): Promise<void> => {
     data,
     task,
     maxConcurrency: 2,
-    metadata: { repeats },
+    // A run that cannot say which selector produced it is not comparable to
+    // another one, and the Langfuse UI will happily put them side by side.
+    metadata: {
+      repeats,
+      recallMode: modeOverride ?? process.env.RECALL_MODE ?? "adaptive",
+      prefetch,
+      ...(judgeProfileKey ? { judgeProfileKey } : {}),
+    },
     runEvaluators,
     evaluators: [
       // eslint-disable-next-line @typescript-eslint/require-await
@@ -386,6 +472,17 @@ const runAllLangfuse = async (): Promise<void> => {
           {
             name: "recall-latency-ms",
             value: out.avgLatencyMs,
+            dataType: "NUMERIC",
+          },
+          {
+            name: "recall-gather-ms",
+            value: out.medianGatherMs,
+            dataType: "NUMERIC",
+            comment: prefetch ? "wait, prefetched" : "unoverlapped cost",
+          },
+          {
+            name: "recall-judge-rate",
+            value: out.judgeRate,
             dataType: "NUMERIC",
           },
         ];

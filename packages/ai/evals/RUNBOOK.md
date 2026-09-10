@@ -327,6 +327,48 @@ predates the arm label and mixes a 20 000-row query with a 118-row one and a
 6-row one. It is kept for the record, but it is not the "before" of anything;
 the isolated 476 ms is.
 
+#### TRIED AND REVERTED: the tuning on the connection, and a bigger pool
+
+The `SET LOCAL` above needs a transaction, and that transaction is four round
+trips for a query worth one. libpq startup options (`-c hnsw.ef_search=400 …`)
+put the same settings on the CONNECTION instead, which removes it. The mechanism
+works — all of this was verified, and none of it is why it was reverted:
+
+- applied on the FIRST statement of a cold pool, and on every one of four
+  concurrent backends (unlike node-postgres's `connect` event, which the pool
+  does not await, so a query can race ahead of its `SET`);
+- verified through drizzle: `current_setting('hnsw.ef_search')` → `400`;
+- safe where pgvector is absent — Postgres accepts an unknown PREFIXED setting
+  as a placeholder and refuses the connection only for an unknown bare one.
+
+It was reverted because it is slower here. Same 23 cases × 10 repeats:
+
+| configuration                           | knowledge `semantic` p50 | gather p50 | score     |
+| --------------------------------------- | -----------------------: | ---------: | --------- |
+| **transaction + `SET LOCAL`** (shipped) |               **233 ms** | **705 ms** | **23/23** |
+| connection tuning, pool `max = 10`      |                   381 ms |   1 020 ms | 23/23     |
+| connection tuning, pool `max = 24`      |                   617 ms |   1 293 ms | **18/23** |
+
+**The isolated probe said the opposite** — one search at a time went 279 ms →
+87 ms — and that is the lesson worth keeping. Three arms run concurrently here,
+each with three statements; a probe that issues one query at a time does not
+describe that system, and a 3× improvement measured that way inverted under the
+real workload.
+
+Two further readings from the failed run, both useful:
+
+- **The pool at 24 is worse than at 10 against a REMOTE database.** Every
+  additional connection is a handshake over the internet, and the eval process
+  is short-lived enough to pay them inside its own measurement. A long-lived
+  production service with a local database is a different topology; if this is
+  revisited, `pool.waitingCount` is the number to look at, not a query timing.
+- **The 18/23 was not a retrieval failure.** 12 of 230 turns lost their semantic
+  arm to the 2.5 s embedding timeout — the whole process was slower, the
+  embedding call went over the ceiling, and the lexical fallback answered
+  instead. The score followed. Worth remembering that a timeout defends the tail
+  and also converts general slowness into a quality regression, so a run with
+  `embedding unavailable` in it is telling you about latency first.
+
 #### What `--scale` actually measured, and what it corrected (2026-09-10)
 
 **Put the distractors in the partition under test, or the instrument lies.**

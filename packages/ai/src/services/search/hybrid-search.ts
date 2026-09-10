@@ -289,6 +289,14 @@ export const armLabel = (filters: HybridSearchFilters | undefined): string =>
  * `set_config(…, is_local => true)` is `SET LOCAL` in function form, which is
  * the whole reason to use it: two settings fit in one statement, where two
  * `SET LOCAL`s would cost two round trips to a database that is not local.
+ *
+ * The transaction it needs is not free — four round trips for a query worth one
+ * — and moving these onto the CONNECTION instead (libpq startup options) does
+ * work and does remove it. It was tried and reverted: isolated, a single search
+ * went 279 ms → 87 ms, but under the real workload of three concurrent arms the
+ * semantic arm went 233 ms → 381 ms and the gather 705 ms → 1 020 ms. The
+ * isolated probe measured one query at a time and did not describe this system.
+ * See `evals/RUNBOOK.md` before trying it again.
  */
 const semanticTuning = (mode: "hnsw" | "exact" = SEMANTIC_SCAN_MODE): SQL =>
   mode === "exact"
@@ -312,12 +320,20 @@ export const shouldProbeForFamine = (
  * two could not matter more differently: the second is silent, gets worse with
  * volume, and is the single failure mode this phase exists to prevent. So the
  * arm's row count alone is not the signal — "there is a 151st matching row and
- * we did not get it" is. That costs one cheap existence probe, and it runs ONLY
- * when the arm came back short.
+ * we did not get it" is. That costs one cheap existence probe.
  *
- * Deliberately not awaited by the caller: it is a diagnostic, and the arm it
- * describes has already answered. Awaiting it would add a round trip to every
- * documents-arm search of every team whose corpus is honestly under 150 rows.
+ * **It runs on most searches, not on rare ones.** Two of the three arms recall
+ * fires are honestly smaller than `PER_SEARCH_LIMIT` (118 documents, 6 workflows
+ * and pages on the EVAL team), so they come back "short" every time and get
+ * probed every time — about two extra statements per turn. That is deliberate
+ * and it is why the probe is a bounded existence check over an indexed
+ * predicate rather than a count: on a small partition it stops after scanning
+ * what is there. It is also why it is NOT awaited — the arm it describes has
+ * already answered, and awaiting it would put a round trip on the critical path
+ * of every search of every team whose corpus is under 150 rows.
+ *
+ * The 23/23 gate at ten repeats was measured with these probes running, so
+ * their cost is inside that number and not on top of it.
  */
 const warnIfFamished = async (
   clauses: SQL[],

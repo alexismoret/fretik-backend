@@ -99,9 +99,17 @@ describe("memories reaching the digest", () => {
     });
     const paths = inputs.conventions.map((c) => c.path);
 
-    // The pair is the assertion: both rows are in the same team, same
-    // organization, written the same second. Only `scope`/`user_id` separates
-    // them, so dropping that predicate makes this test red and nothing else.
+    // Both rows are in the same team and organization, written the same
+    // second; only the scope separates them.
+    //
+    // Verified by mutation, and the result is worth recording: deleting
+    // `user_id IS NULL` from this query does NOT turn this test red, because
+    // `scope = 'team'` already excludes user memories — `ai_memories` carries a
+    // CHECK making `user_id` non-null exactly when `scope = 'user'`. So on THIS
+    // table the user predicate is redundant defence, and `scope` is what does
+    // the work. The predicate that is genuinely load-bearing lives on episodes,
+    // which have no scope column; the episode test below goes red when it is
+    // removed.
     expect(paths).toContain("team-rule.md");
     expect(paths).not.toContain("private-rule.md");
   });
@@ -141,6 +149,10 @@ describe("episodes reaching the digest", () => {
       organizationId: ws.organizationId,
       teamId: ws.teamId,
     });
+    // This is the assertion the privacy boundary actually rests on. Episodes
+    // have no `scope` column, so `user_id IS NULL` is the only thing keeping a
+    // member's private conversation out of every teammate's prompt — verified
+    // by deleting it, which turns exactly this test red.
     const titles = inputs.decisions.map((d) => d.title);
     expect(titles).toContain("team decision");
     expect(titles).not.toContain("private decision");
@@ -250,21 +262,32 @@ describe("entities reaching the digest", () => {
     expect(labels).not.toContain("contract.pdf");
   });
 
-  test("repeated edges to the same neighbour render one line", async () => {
+  test("two link types sharing a label render one line", async () => {
+    // How the duplicate actually arises, which is NOT two identical edges —
+    // `links_active_uniq` already forbids those. A link type's KEY is unique,
+    // its LABEL is not, so two types can render the same words. Observed on
+    // real data as "Clients → FLECHARD SAS" twice on one entity, which spends
+    // a third of its three-line budget saying one thing.
     const orgs = await ws.createCollection({ key: `orgs_${Date.now()}` });
     const a = await ws.createRecord({ collectionId: orgs.id, label: "Alpha" });
     const b = await ws.createRecord({ collectionId: orgs.id, label: "Beta" });
-    const linkType = await ws.createLinkType({
+    const first = await ws.createLinkType({
       key: "clients",
       fromCollectionId: orgs.id,
+      label: "Clients",
+    });
+    const second = await ws.createLinkType({
+      key: "clients_legacy",
+      fromCollectionId: orgs.id,
+      label: "Clients",
     });
     await ws.createLink({
-      linkTypeId: linkType.id,
+      linkTypeId: first.id,
       fromRecordId: a.id,
       toRecordId: b.id,
     });
     await ws.createLink({
-      linkTypeId: linkType.id,
+      linkTypeId: second.id,
       fromRecordId: a.id,
       toRecordId: b.id,
     });
@@ -291,14 +314,25 @@ describe("the fingerprint", () => {
 
   test("changes when an input's content changes", async () => {
     const scope = { organizationId: ws.organizationId, teamId: ws.teamId };
+    // Seeds its own row rather than reusing another test's: bun randomises
+    // order within a file, so a test that depends on an earlier one fails for
+    // a reason unrelated to what it claims.
+    const path = `fingerprint-${Date.now()}.md`;
+    await seedMemory({ path, content: "first wording", scope: "team" });
     const before = await collectDigestInputs(scope);
 
     // `updated_at` is what the fingerprint reads, and `$onUpdateFn` stamps it
-    // on any `.set()` — so an edit that does not change the row COUNT still has
-    // to change the hash, or the generator skips a team that did change.
-    await db.update(aiMemories).set({ content: "the team rule, revised" })
-      .where(sql`${aiMemories.teamId} = ${ws.teamId}
-                 AND ${aiMemories.path} = 'team-rule.md'`);
+    // on any `.set()` — so an edit that changes no row COUNT still has to
+    // change the hash, or the generator skips a team that did change.
+    const updated = await db
+      .update(aiMemories)
+      .set({ content: "second wording" })
+      .where(
+        sql`${aiMemories.teamId} = ${ws.teamId}
+                 AND ${aiMemories.path} = ${path}`,
+      )
+      .returning({ id: aiMemories.id });
+    expect(updated).toHaveLength(1);
 
     const after = await collectDigestInputs(scope);
     expect(after.fingerprint).not.toBe(before.fingerprint);

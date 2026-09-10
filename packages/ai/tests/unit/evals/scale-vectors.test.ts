@@ -13,6 +13,7 @@ import { describe, expect, test } from "bun:test";
 import {
   gaussian,
   perturb,
+  round,
   SCALE_SIGMA,
 } from "../../../evals/recall/scale-vectors";
 
@@ -82,5 +83,27 @@ describe("scale distractor geometry", () => {
   test("a zero base is returned unchanged rather than dividing by zero", () => {
     const zero = new Array<number>(8).fill(0);
     expect(perturb(zero, 0)).toEqual(zero);
+  });
+
+  test("rounding to SCALE_DECIMALS stays finer than the fp16 column itself", () => {
+    // The claim that makes the wire saving free. `halfvec` is fp16, whose own
+    // narrowing costs ~2e-5 of absolute error on unit-norm components; rounding
+    // to 5 dp costs at most 5e-6. If someone lowers the constant to 3 dp to save
+    // more bytes, this goes red — at 5e-4 the rounding would be coarser than the
+    // storage and the distractors would stop being the vectors we computed.
+    const FP16_ERROR = 2e-5;
+    const base = unitVector(DIMS);
+    const trimmed = round(base, 5);
+    const maxErr = Math.max(
+      ...base.map((v, i) => Math.abs(v - (trimmed[i] ?? 0))),
+    );
+    expect(maxErr).toBeLessThan(FP16_ERROR);
+  });
+
+  test("rounding does not move a vector off its own direction", () => {
+    const base = unitVector(DIMS);
+    expect(dot(base, round(base, 5)) / l2(round(base, 5))).toBeGreaterThan(
+      0.9999,
+    );
   });
 });

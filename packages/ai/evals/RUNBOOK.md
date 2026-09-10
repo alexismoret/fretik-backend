@@ -290,6 +290,49 @@ Two things to take from it, neither visible in a mean:
   the reliability the work is for — `AbortSignal.timeout` on the query embed is
   the fix, and this is its before-number.
 
+#### What `--scale` actually measured, and what it corrected (2026-09-10)
+
+**Put the distractors in the partition under test, or the instrument lies.**
+The first implementation wrote them as `source_type='documents'`, which reads
+plausibly and tests nothing here: this team is 20 072 records, 118 documents,
+27 episodes, 9 memories, and the semantic arm filters
+`source_type IN ('memories','episodes','records')`. Ten thousand document
+distractors left the knowledge partition at 20 108 rows — the arm moved 747 ms
+to 769 ms, 3 % for a 49 % bigger TABLE — so a `--scale 50000` run would have
+reported a healthy arm while the arm never grew. They are `records` now.
+
+Re-measured with the distractors in the right place, 10 repeats either side:
+
+| stage (p50)                              | 20 108 knowledge rows | 30 108 |      Δ |
+| ---------------------------------------- | --------------------: | -----: | -----: |
+| knowledge-arm `semantic`                 |                476 ms | 566 ms | +18.9% |
+| other arms `semantic` (118 rows, 6 rows) |                259 ms | 256 ms |   flat |
+| `rerank`                                 |                271 ms | 273 ms |   flat |
+| whole suite                              |                 23/23 |  23/23 |      — |
+
+**A +50 % partition costs +19 %, not +50 %, and the second row says why.** An
+arm scanning 118 rows still takes 259 ms, so the measured `semantic` stage is
+roughly **255 ms of fixed cost plus the scan**. Back out the fixed part and the
+scan alone goes 221 ms → 311 ms for 1.50x the rows: linear, as expected. The
+fixed part is the transaction `runSemanticSearch` needs for `SET LOCAL` —
+BEGIN / set_config / SELECT / COMMIT is four round trips, and this dev database
+sits behind ~32 ms of RTT (~128 ms), plus planning and 150 rows of transfer.
+
+**Consequence for the Phase 1 gate, and it is not a small one: `[hybrid]
+semantic p50 <= 20 ms` is not reachable on this topology and never was.** 20 ms
+is the SERVER execution time an `EXPLAIN` reports; the client-observed stage
+cannot go below its own round trips. After HNSW the realistic dev figure is
+~265 ms (fixed cost + a single-digit scan), and the two converge only in prod,
+where the database is not behind a tunnel. State the gate as a server-side
+`EXPLAIN` number OR as a dev-topology target, and never compare one to the
+other — that mistake reads as "HNSW did not work" on a change that worked.
+
+**Instrumentation gap, still open:** `[hybrid]` does not name its arm, and
+`searchRAG` fires three per turn (n=690 for 230 turns), so pooling them puts a
+20 000-row query and a 118-row query in one distribution and the p50 describes
+neither. The knowledge arm is currently identifiable only because it is the one
+that also runs the registry arm — grep `\[hybrid\].*registry=`. Label the line.
+
 Escalation reproducing at exactly 43.5 % against the earlier independent
 measurement is the useful cross-check here: the routing rule is stable, so a
 change in it later will be a change, not noise.

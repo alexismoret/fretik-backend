@@ -20,6 +20,7 @@ import type {
   DocumentVectorMetadata,
   EpisodeVectorMetadata,
   MemoryVectorMetadata,
+  RecordVectorMetadata,
 } from "@fretik/shared/db/schema";
 import { aiEpisodes, aiMemories, aiVectors } from "@fretik/shared/db/schema";
 import { deleteMemoryVectors } from "@fretik/shared/services/ai-memory/vector-refresh";
@@ -35,7 +36,7 @@ import { createLinkType } from "@fretik/shared/services/link-types/create";
 import { createLink } from "@fretik/shared/services/links/create";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { vectorizeSource } from "../../src/services/vectorize";
-import { perturb, SCALE_SIGMA } from "./scale-vectors";
+import { perturb, round, SCALE_SIGMA } from "./scale-vectors";
 
 const SUPPLIER_COLLECTION_KEY = "recall_eval_supplier";
 const PROJECT_COLLECTION_KEY = "recall_eval_project";
@@ -635,7 +636,7 @@ export const ensureRecallFixtures = async (
   };
 };
 
-/** `metadata.file_name` prefix every scale distractor carries. */
+/** `metadata.label` prefix every scale distractor carries. */
 const SCALE_PREFIX = "scale-distractor-";
 
 /** How many rows go in one INSERT. 2560 fp32 dims per row is the constraint. */
@@ -645,14 +646,55 @@ const SCALE_BATCH = 500;
 const SCALE_BASES = 16;
 
 /**
- * Grow the EVAL team's vector table to `count` synthetic distractors, so the
- * suite can be run against a corpus the size of a real team's.
+ * Decimal places kept in the halfvec literal.
  *
- * Why it exists: the semantic arm was a Seq Scan whose cost is LINEAR in the
- * corpus, and at the eval team's ~20 k rows that was survivable. Nothing in the
- * suite could see the cliff, because the suite never changed the corpus size.
- * `--scale` is the instrument that makes "it is fast enough" a claim about a
- * size rather than about this laptop.
+ * Free, and measured: the column is fp16, whose own narrowing already costs
+ * 2.0e-5 of absolute error, so rounding to 5 dp (5.0e-6) is strictly finer than
+ * what gets stored. It halves the wire — a full-precision row serialises to
+ * 54.7 KB, and 50 000 of them are 2.7 GB of INSERT text over a remote
+ * connection.
+ */
+const SCALE_DECIMALS = 5;
+
+/**
+ * `source_type` the distractors are written as.
+ *
+ * **`records`, and getting this wrong made the whole instrument lie.** The
+ * first version wrote `documents`, which reads plausibly and tests nothing: the
+ * eval team's rows are 20 072 records, 27 episodes, 9 memories and 118
+ * documents, and the semantic arm under test filters
+ * `source_type IN ('memories','episodes','records')`. Ten thousand document
+ * distractors therefore left the knowledge partition at 20 108 rows — measured
+ * 747 ms before and 769 ms after, a 3 % move for a 49 % bigger TABLE — so the
+ * suite would have reported a healthy arm at 50 000 while the arm never grew.
+ *
+ * `records` is also the honest growth model: it is what a real team accumulates
+ * most of, and it already dominates this corpus. The registry arm is unaffected
+ * — it reads `collection_records`, not `ai_vectors`, and these rows have no
+ * record behind them.
+ */
+const SCALE_SOURCE_TYPE = "records" as const;
+
+/**
+ * Collection the distractors claim to belong to.
+ *
+ * The fixture supplier collection, on purpose: a distractor that claims a
+ * collection nothing else uses would be trivially separable by any future
+ * filter, and the point of these rows is to be indistinguishable from the
+ * team's own. They carry no `collection_records` row — nothing joins one — so
+ * the registry arm never sees them and only the vector arms compete.
+ */
+const SCALE_COLLECTION_KEY = SUPPLIER_COLLECTION_KEY;
+
+/**
+ * Grow the EVAL team's KNOWLEDGE partition to `count` synthetic distractors, so
+ * the suite can be run against a corpus the size of a real team's.
+ *
+ * Why it exists: the semantic arm is a Seq Scan, and the cost that matters is
+ * per candidate row AFTER the source-type filter, not per table row. At the
+ * eval team's ~20 k that was survivable and nothing in the suite could see the
+ * cliff, because the suite never changed the corpus size. `--scale` makes "it
+ * is fast enough" a claim about a SIZE rather than about this laptop.
  *
  * The rows are deliberately BM25-inert: neutral filler text with no eval
  * vocabulary in it, so a scale run moves the semantic arm and leaves the
@@ -669,9 +711,9 @@ export const seedScaleDistractors = async (
     .from(aiVectors)
     .where(
       and(
-        eq(aiVectors.sourceType, "documents"),
+        eq(aiVectors.sourceType, SCALE_SOURCE_TYPE),
         eq(aiVectors.teamId, scope.teamId),
-        sql`${aiVectors.metadata}->>'file_name' LIKE ${`${SCALE_PREFIX}%`}`,
+        sql`${aiVectors.metadata}->>'label' LIKE ${`${SCALE_PREFIX}%`}`,
       ),
     );
   const existing = countRow?.n ?? 0;
@@ -706,7 +748,7 @@ export const seedScaleDistractors = async (
       and(
         eq(aiVectors.teamId, scope.teamId),
         sql`${aiVectors.embedding} IS NOT NULL`,
-        sql`coalesce(${aiVectors.metadata}->>'file_name', '') NOT LIKE ${`${SCALE_PREFIX}%`}`,
+        sql`coalesce(${aiVectors.metadata}->>'label', '') NOT LIKE ${`${SCALE_PREFIX}%`}`,
       ),
     )
     .limit(SCALE_BASES);
@@ -716,6 +758,13 @@ export const seedScaleDistractors = async (
   if (vectors.length === 0) {
     throw new Error(
       "[recall-fixtures] scale: no real embedding to perturb — run the suite once without --scale first",
+    );
+  }
+
+  const scaleCollectionId = await findTypeId(scope, SCALE_COLLECTION_KEY);
+  if (!scaleCollectionId) {
+    throw new Error(
+      "[recall-fixtures] scale: fixture collection missing — ensureRecallFixtures runs first",
     );
   }
 
@@ -729,23 +778,19 @@ export const seedScaleDistractors = async (
     const rows = Array.from({ length: size }, (_, k) => {
       const index = existing + inserted + k;
       const base = vectors[index % vectors.length] ?? vectors[0] ?? [];
-      const metadata: DocumentVectorMetadata = {
-        file_name: `${SCALE_PREFIX}${index.toString()}`,
-        file_type: "application/pdf",
-        page_count: 1,
-        document_language: "fr",
-        document_summary: "Volume filler for the recall scale test.",
-        entities: [],
-        custom_fields: {},
+      const metadata: RecordVectorMetadata = {
+        collection_id: scaleCollectionId,
+        collection_key: SCALE_COLLECTION_KEY,
+        label: `${SCALE_PREFIX}${index.toString()}`,
       };
       return {
         content: `Filler ${index.toString()} — volume row for the recall scale test.`,
         contextualPrefix: `Filler ${index.toString()}.`,
         chunkIndex: 0,
         totalChunks: 1,
-        embedding: perturb(base, SCALE_SIGMA),
+        embedding: round(perturb(base, SCALE_SIGMA), SCALE_DECIMALS),
         metadata,
-        sourceType: "documents" as const,
+        sourceType: SCALE_SOURCE_TYPE,
         sourceId: crypto.randomUUID(),
         teamId: scope.teamId,
         organizationId: scope.organizationId,
@@ -753,8 +798,8 @@ export const seedScaleDistractors = async (
     });
     // Serial on purpose: each row inserts into an HNSW index, which is a graph
     // traversal per row. Firing the batches concurrently would multiply the
-    // index's write contention rather than the throughput, and 500 rows of
-    // 2560 fp32 dims is already ~10 MB on the wire per statement.
+    // index's write contention rather than the throughput, and 500 rows is
+    // ~12 MB on the wire per statement even rounded.
     // eslint-disable-next-line no-await-in-loop
     await db.insert(aiVectors).values(rows);
     inserted += size;
@@ -774,9 +819,9 @@ export const cleanupScaleDistractors = async (scope: Scope): Promise<void> => {
     .delete(aiVectors)
     .where(
       and(
-        eq(aiVectors.sourceType, "documents"),
+        eq(aiVectors.sourceType, SCALE_SOURCE_TYPE),
         eq(aiVectors.teamId, scope.teamId),
-        sql`${aiVectors.metadata}->>'file_name' LIKE ${`${SCALE_PREFIX}%`}`,
+        sql`${aiVectors.metadata}->>'label' LIKE ${`${SCALE_PREFIX}%`}`,
       ),
     )
     .returning({ id: aiVectors.id });

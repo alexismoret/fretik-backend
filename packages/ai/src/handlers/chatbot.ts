@@ -165,9 +165,11 @@ import {
 } from "../services/native-input";
 import {
   buildRecallRecentTail,
+  isRecallMode,
   prefetchRecallGather,
   runUnifiedRecall,
   type RecallGathered,
+  type RecallMode,
 } from "../services/recall/recall";
 import type { HonoInternalAppType } from "../types/hono";
 import {
@@ -738,6 +740,17 @@ interface RunChatbotTurnParams {
   routeStartedAt?: number;
   preludeTimings?: StageTimings;
   /**
+   * Serve this turn's recall under a specific selector — set by `/invoke` from
+   * `X-Recall-Mode`, never reachable from `/stream`.
+   *
+   * The judge-vs-deterministic question is answered by scoring ANSWERS, which
+   * means running the same cases through the real turn twice. `RECALL_MODE` is
+   * a process default read at module load, so without this the two arms need a
+   * service restart between them — and two runs taken minutes apart against a
+   * live corpus are not a paired comparison.
+   */
+  recallMode?: RecallMode;
+  /**
    * Thinking depth for this turn, already resolved and validated by the
    * caller (`effectiveReasoningLevel`): the user's pick in the prompt
    * bar, else the team's stored default for this model. Absent → the
@@ -897,6 +910,12 @@ const buildTurnCallOptions = async (
                   // collects what is left of them.
                   ...(params.prefetchedGather
                     ? { gatherPromise: params.prefetchedGather }
+                    : {}),
+                  // Eval seam. `bypassCache` rides with it: two arms asking
+                  // the same question seconds apart must each pay their own
+                  // pass, or the second one scores the first one's block.
+                  ...(params.recallMode
+                    ? { modeOverride: params.recallMode, bypassCache: true }
                     : {}),
                 }),
                 // ABOVE the recall's own 15s judge budget
@@ -3275,6 +3294,24 @@ chatbotInternalRoutes.post("/invoke", async (c) => {
     }
   }
 
+  // Third eval seam, same rules again: which SELECTOR turns retrieval into the
+  // memory block. `RECALL_MODE` is a process default read at module load, so
+  // comparing the judge against the deterministic path otherwise means
+  // restarting the service between arms — and two runs taken minutes apart
+  // against a live corpus are not a paired comparison. Read here so it can
+  // never reach /stream; unknown values refused rather than silently served.
+  const recallModeHeader = c.req.header("X-Recall-Mode");
+  if (recallModeHeader !== undefined && !isRecallMode(recallModeHeader)) {
+    return c.json(
+      {
+        code: "UNKNOWN_RECALL_MODE",
+        message: `Unknown recall mode: "${recallModeHeader}" (expected judge | verbatim | adaptive)`,
+      },
+      400,
+    );
+  }
+  const recallMode: RecallMode | undefined = recallModeHeader;
+
   // D.3 warning: `messages` is silently ignored when `conversationId`
   // is set (the history is loaded from DB instead). Alert the caller
   // via log so this isn't a silent footgun. Not rejected to preserve
@@ -3319,6 +3356,7 @@ chatbotInternalRoutes.post("/invoke", async (c) => {
     callOptions,
     agentSet,
     modelProfile,
+    recallMode,
     // Server-to-server channel: deliver real tool inputs (see
     // RunChatbotTurnParams.scrubSensitiveInputs).
     scrubSensitiveInputs: false,

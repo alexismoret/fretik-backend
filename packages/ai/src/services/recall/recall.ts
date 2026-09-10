@@ -91,9 +91,20 @@ const RECALL_TIMEOUT_MS = 15_000;
  * `judge` is the pass this module was built around, kept as the rollback: one
  * env var restores the previous behaviour exactly, with no deploy.
  */
-const RECALL_MODE: "judge" | "verbatim" | "adaptive" = (() => {
+export type RecallMode = "judge" | "verbatim" | "adaptive";
+
+export const isRecallMode = (raw: string): raw is RecallMode =>
+  raw === "judge" || raw === "verbatim" || raw === "adaptive";
+
+/**
+ * The PROCESS default, read once at module load — which is why switching modes
+ * needs a restart, not a turn. `OPERATIONS.md` claimed "takes effect on the
+ * next turn" until 2026-09-10; it never did. A caller that needs to compare two
+ * modes against one live service passes `modeOverride` instead.
+ */
+const RECALL_MODE: RecallMode = (() => {
   const raw = process.env.RECALL_MODE;
-  return raw === "verbatim" || raw === "judge" ? raw : "adaptive";
+  return raw !== undefined && isRecallMode(raw) ? raw : "adaptive";
 })();
 
 /**
@@ -226,6 +237,28 @@ export interface UnifiedRecallParams {
    */
   judgeProfileKey?: string;
   /**
+   * Serve this turn under a specific selector — EVAL/BENCH ONLY.
+   *
+   * `RECALL_MODE` is a process-wide default read at module load, so an A/B
+   * between the judge and the deterministic path used to mean restarting the
+   * service between arms — which makes a paired, same-session comparison
+   * impossible and invites comparing two runs taken minutes apart against a
+   * moving corpus. This lets one live service answer both arms.
+   *
+   * Part of the cache key: two arms asking the same question within the 15 s
+   * TTL must not serve each other's block.
+   */
+  modeOverride?: RecallMode;
+  /**
+   * Report the stage timings this pass measured — EVAL/BENCH ONLY.
+   *
+   * The gather already times its arms and the turn already times gather vs
+   * judge; both only reach a log line. A harness that wants those numbers as
+   * DATA (per-arm p50s, the gather WAIT under a prefetch) would otherwise have
+   * to scrape stdout.
+   */
+  onTimings?: (timings: StageTimings) => void;
+  /**
    * A gather already in flight for THIS message, from `prefetchRecallGather`.
    *
    * The gather depends on nothing the route computes: the user's message text
@@ -302,7 +335,7 @@ const cacheKey = (params: UnifiedRecallParams): string => {
   const filesPart = params.attachedFiles
     .map((f) => `${f.filename}|${f.mimeType}`)
     .join(",");
-  return `${params.teamId}:${params.userId ?? "system"}:${params.userMessage.slice(0, 200)}:${filesPart}`;
+  return `${params.teamId}:${params.userId ?? "system"}:${params.modeOverride ?? RECALL_MODE}:${params.userMessage.slice(0, 200)}:${filesPart}`;
 };
 
 const purgeExpired = (now: number): void => {
@@ -823,17 +856,17 @@ export const runUnifiedRecall = async (
     // The deterministic selection is computed in BOTH non-judge modes, because
     // in `adaptive` it is also the escalation signal: whether the judge runs is
     // read off the same pass that would otherwise have produced the block.
-    const selection =
-      RECALL_MODE === "judge" ? null : buildVerbatimBlock(gathered);
+    const mode = params.modeOverride ?? RECALL_MODE;
+    const selection = mode === "judge" ? null : buildVerbatimBlock(gathered);
     const escalate =
-      RECALL_MODE === "judge" ||
-      (RECALL_MODE === "adaptive" &&
+      mode === "judge" ||
+      (mode === "adaptive" &&
         selection !== null &&
         shouldEscalateToJudge(selection));
 
     if (selection !== null) {
       console.info(
-        `[recall] mode=${RECALL_MODE} escalate=${escalate.toString()} best=${selection.ambiguity.bestScore?.toFixed(3) ?? "none"} uncorroboratedAnchors=${selection.ambiguity.uncorroboratedAnchors.toString()} nearTies=${selection.ambiguity.nearTies.toString()} greyZone=${selection.ambiguity.greyZone.toString()} clipped=${selection.ambiguity.clippedCandidates.toString()} chars=${(selection.block ?? "").length.toString()}`,
+        `[recall] mode=${mode} escalate=${escalate.toString()} best=${selection.ambiguity.bestScore?.toFixed(3) ?? "none"} uncorroboratedAnchors=${selection.ambiguity.uncorroboratedAnchors.toString()} nearTies=${selection.ambiguity.nearTies.toString()} greyZone=${selection.ambiguity.greyZone.toString()} clipped=${selection.ambiguity.clippedCandidates.toString()} chars=${(selection.block ?? "").length.toString()}`,
       );
     }
 
@@ -954,6 +987,15 @@ export const runUnifiedRecall = async (
     `[recall] agent=${params.agentType} ${formatTimings(turnTimings)} block=${result?.block ? "yes" : "no"}`,
   );
   recordTimingsOnTrace("recall-timings", turnTimings);
+  // Same numbers as data, for a harness that scores them instead of reading
+  // them. Never allowed to affect the turn.
+  if (params.onTimings) {
+    try {
+      params.onTimings({ ...turnTimings });
+    } catch {
+      // Swallow — telemetry never breaks a turn.
+    }
+  }
 
   if (cache.size >= CACHE_MAX_ENTRIES) purgeExpired(now);
   cache.set(key, { result, expires: now + CACHE_TTL_MS });

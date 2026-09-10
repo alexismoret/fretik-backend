@@ -50,6 +50,19 @@ export interface InvokeResult {
   toolLatencyMs: number;
   modelLatencyMs: number;
   /**
+   * Time to first token, client-side: from the request leaving the harness to
+   * the first frame a reader could see (`text-delta`, `reasoning-delta` or
+   * `tool-input-start`).
+   *
+   * The one latency number a user actually experiences, and the only one no
+   * harness measured before 2026-09-10 — `latencyMs` is the whole turn, which
+   * a longer answer inflates without anything having got slower. Deliberately
+   * NOT counted from the SDK's opening `start` / `start-step` frames: those are
+   * emitted the instant the provider call opens and would report the HTTP
+   * handshake. Absent when the turn produced no visible frame at all.
+   */
+  ttftMs?: number;
+  /**
    * Number of agent-loop steps in the turn, counted from `start-step`
    * SSE frames. One step = one model generation (possibly with tool
    * calls). Feeds the `steps-used` mechanical score.

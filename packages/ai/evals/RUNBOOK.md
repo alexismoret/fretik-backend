@@ -387,6 +387,19 @@ anything time-shaped does. Every dataset run now records `maxConcurrency` in
 its metadata, so the number cannot be read without it — take the TTFT baseline
 at `--concurrency 1` and the correctness baseline wherever you like.
 
+**Two things keep N repeats from collapsing into one measurement, and both are
+easy to break by accident.** `runUnifiedRecall` memoises a gather for 15 s per
+`(team, user, mode, message)`, so:
+
+- `--recall-mode <mode>` also sets `bypassCache` on the call, which is why an
+  A/B arm re-gathers every repeat. A `memory-recall` run WITHOUT the flag does
+  not, and is worth less than it looks.
+- repeats are ordered **pass-major** (`[all cases pass 1, all cases pass 2, …]`,
+  `evals/langfuse/experiment.ts`), so two repeats of one case are a dozen turns
+  apart. Reordering that to case-major — which looks tidier — would put them
+  inside the 15 s window and silently turn ten samples into one plus nine cache
+  hits.
+
 **Frozen baselines — 2026-08-05** (`freeze-*` / `n30-*` runs, code bindings:
 extract/distill/promote = deepseek-v4-flash, consolidate + recall judge =
 gpt-oss-120b):

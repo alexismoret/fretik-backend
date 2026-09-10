@@ -262,6 +262,38 @@ connections, so the stage costs `max(arm)`, and it is always the same arm:
 
     [hybrid] semantic=673 bm25=189 registry=186
 
+#### Phase 0 frozen baseline — 2026-09-10, 23 cases × 10 repeats, both modes
+
+Taken immediately before the HNSW work, so it is the "before" every Phase 1
+number is read against. `p0-recall-adaptive` / `p0-recall-judge`.
+
+| metric                   |             adaptive |            judge |
+| ------------------------ | -------------------: | ---------------: |
+| score                    |     **23/23** stable | **23/23** stable |
+| gather p50               |               767 ms |           776 ms |
+| gather p90               |             1 042 ms |         1 044 ms |
+| knowledge arm p50        |               747 ms |           747 ms |
+| judge p50 (when it runs) |               956 ms |           973 ms |
+| escalation               | 100/230 = **43.5 %** |            100 % |
+
+Two things to take from it, neither visible in a mean:
+
+- **The knowledge arm IS the gather.** 747 ms of a 767 ms p50, and the
+  `[hybrid]` split says 673 ms of that is the semantic arm — the Seq Scan. The
+  headroom Phase 1 is going after is essentially all of it, and what remains
+  underneath is the reranker's ~300 ms.
+- **~1 % of turns pay a 6-12 second pre-turn, and nothing bounds it.** Two
+  gathers in 230 came back at **6 288 ms and 12 380 ms** while p90 sat at
+  1 044 ms. That is the cold query-embedding path, which has no timeout at all
+  (the `embed p50 2 ms` figure above is the Redis cache-hit path and says
+  nothing about it). A p50 that improves while that tail stays unbounded is not
+  the reliability the work is for — `AbortSignal.timeout` on the query embed is
+  the fix, and this is its before-number.
+
+Escalation reproducing at exactly 43.5 % against the earlier independent
+measurement is the useful cross-check here: the routing rule is stable, so a
+change in it later will be a change, not noise.
+
 ### OPEN: the HNSW index is never used (found 2026-09-10, NOT fixed)
 
 **Every broad semantic search is an exact brute-force scan.** Measured against

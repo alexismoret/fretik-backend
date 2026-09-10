@@ -109,10 +109,57 @@ const updateTask: RequestMapper = (args) => {
   };
 };
 
+/**
+ * A Planner reference is keyed BY THE URL ITSELF, and OData forbids `.`
+ * `:` `%` `@` `#` in an open-type property name — so every one of them is
+ * percent-encoded in the key. `%` goes first or it would re-encode the
+ * escapes the others just produced.
+ *
+ * Getting this wrong is silent: Graph accepts the PATCH and the reference
+ * simply never appears on the task.
+ */
+const encodeReferenceKey = (url: string): string =>
+  url
+    .replace(/%/g, "%25")
+    .replace(/\./g, "%2E")
+    .replace(/:/g, "%3A")
+    .replace(/@/g, "%40")
+    .replace(/#/g, "%23");
+
+/**
+ * Planner shows a richer preview when it knows the kind of document, and it
+ * reads that from `type` rather than sniffing the URL itself.
+ */
+const referenceTypeOf = (url: string): string => {
+  const withoutQuery = url.split("?")[0] ?? "";
+  const ext = withoutQuery
+    .slice(withoutQuery.lastIndexOf(".") + 1)
+    .toLowerCase();
+  if (ext === "doc" || ext === "docx") return "Word";
+  if (ext === "xls" || ext === "xlsx" || ext === "csv") return "Excel";
+  if (ext === "ppt" || ext === "pptx") return "PowerPoint";
+  return "Other";
+};
+
 const updateTaskDetails: RequestMapper = (args) => {
   const body: Record<string, unknown> = {};
   const description = asString(args.description);
   if (description !== undefined) body.description = description;
+  const references = args.references;
+  if (references !== undefined) {
+    const refs: Record<string, unknown> = {};
+    for (const item of arr(references)) {
+      const url = str(prop(item, "url"));
+      if (url === "") continue;
+      const alias = asString(prop(item, "alias"));
+      refs[encodeReferenceKey(url)] = {
+        "@odata.type": "#microsoft.graph.plannerExternalReference",
+        alias: alias !== undefined && alias !== "" ? alias : url,
+        type: referenceTypeOf(url),
+      };
+    }
+    body.references = refs;
+  }
   // Graph `checklist` is an open-type map keyed by a client-chosen GUID-ish
   // id; each value is a `plannerChecklistItem`. Replacing the whole list
   // means sending every desired item with a fresh key. Deterministic keys

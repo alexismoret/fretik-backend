@@ -62,12 +62,20 @@ const htmlBody = (content: string): Record<string, unknown> => ({
 });
 
 /**
- * Build the chatMessage / channelMessage request body. Inline images go
- * through Microsoft Graph's `hostedContents[]` shape — each image gets a
- * temporary ID, the `<img>` tag is appended to the HTML body referencing
- * that ID, and the bytes ride inline as `contentBytes`. Single Graph
- * call, no OneDrive ceremony. Max ~4 MB per image (Graph limit). Files
- * other than images cannot be sent — see guidance.md.
+ * Build the chatMessage / channelMessage request body. Two ways to carry a
+ * file, and Graph keeps them strictly apart:
+ *
+ *  - **Inline images** ride IN the request as `hostedContents[]` — each gets
+ *    a temporary id, the `<img>` tag references it, the bytes go as
+ *    `contentBytes`. One call, no OneDrive ceremony, ~4 MB per image.
+ *  - **Attachments** are pure REFERENCES: `contentType: "reference"` plus the
+ *    `contentUrl` of a file that already lives in SharePoint / OneDrive.
+ *    Nothing is uploaded, which is why no file scope is needed.
+ *
+ * Both require their own tag in the HTML body or Teams renders the message
+ * without them: `<img>` for a hosted image, `<attachment id="…">` for a
+ * reference. Graph accepts the payload either way and silently drops the
+ * untagged item — the failure is invisible, hence the two appends below.
  */
 const buildMessageBody = (
   args: Record<string, unknown>,
@@ -88,11 +96,29 @@ const buildMessageBody = (
     });
     html += `<p><img src="../hostedContents/${tempId}/$value"></p>`;
   });
+
+  // Graph wants a GUID per attachment; it only has to be unique within the
+  // message, and it is what ties the body's tag to the entry below.
+  const attachments: unknown[] = [];
+  for (const att of arr(args.attachments)) {
+    const contentUrl = str(prop(att, "content_url"));
+    if (contentUrl === "") continue;
+    const id = crypto.randomUUID();
+    attachments.push({
+      id,
+      contentType: "reference",
+      contentUrl,
+      name: str(prop(att, "name")),
+    });
+    html += `<attachment id="${id}"></attachment>`;
+  }
+
   const out: Record<string, unknown> = {
     body: htmlBody(html),
     ...extra,
   };
   if (hostedContents.length > 0) out.hostedContents = hostedContents;
+  if (attachments.length > 0) out.attachments = attachments;
   return out;
 };
 
@@ -266,6 +292,19 @@ const normalizeChannel = (raw: unknown): Record<string, unknown> => ({
   web_url: asString(path(raw, "webUrl")),
 });
 
+/**
+ * A channel's Files tab is a driveItem in the team's SharePoint library.
+ * Flatten it into the two ids the `sharepoint` app takes so the agent can
+ * hand them straight over — the driveId lives on `parentReference`, not on
+ * the item, which is the one part that is easy to get wrong.
+ */
+const channelFilesFolder: ResponseMapper = (raw) => ({
+  drive_id: str(path(raw, "parentReference", "driveId")),
+  folder_id: str(path(raw, "id")),
+  name: str(path(raw, "name")),
+  web_url: str(path(raw, "webUrl")),
+});
+
 const normalizeTeamMember = (raw: unknown): Record<string, unknown> => ({
   id: str(path(raw, "id")),
   display_name: str(path(raw, "displayName")),
@@ -403,6 +442,7 @@ export const teamsMappers: ProviderMappers = {
     teamList,
     teamMemberList,
     channelList,
+    channelFilesFolder,
     presence: normalizePresence,
     userList,
     searchHits,

@@ -58,3 +58,19 @@ Skip the `microsoft-teams-bot` Nango provider. Fretik uses delegated user
 permissions exclusively — a bot identity is not required and brings
 extra setup (Azure Bot resource, tenant ID per connection, Bot Framework
 loop) we explicitly chose against.
+
+## 4. Sending documents — requires the SharePoint connection
+
+Teams messages carry files by REFERENCE only: the message links a document
+that already lives in SharePoint or OneDrive, which is why no file-write
+scope appears above. `Files.Read.All` is enough to read a channel's folder
+and to resolve an attachment someone else posted.
+
+Putting a NEW document into a channel therefore needs the **Microsoft
+SharePoint** connection alongside this one — the upload runs on that
+connection's token.
+
+Both accounts must reach the same place. If Teams is connected per-user and
+SharePoint as a team service account, add that service account as a Member
+of the teams' SharePoint sites, or uploads answer `itemNotFound`. See
+`src/sharepoint/SETUP.md` §6.

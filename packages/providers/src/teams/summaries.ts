@@ -65,6 +65,21 @@ const inlineImagesField = (value: unknown): ToolApprovalSummaryField | null => {
   return { labelKey: "inline_images", value: summary };
 };
 
+/**
+ * Attached file names. This is the one row on a message card the reviewer
+ * can genuinely act on: the body says what is claimed, the file name says
+ * WHICH document actually leaves the tenant's control. The `content_url` is
+ * deliberately absent — a SharePoint URL is not read at approval time.
+ */
+const attachmentsField = (value: unknown): ToolApprovalSummaryField | null => {
+  const names = arr(value)
+    .map((item) => str(prop(item, "name")))
+    .filter((n) => n !== "");
+  return names.length > 0
+    ? { labelKey: "attachments", value: names.join(", ") }
+    : null;
+};
+
 // ── Write summaries ────────────────────────────────────────────────────
 
 const sendChatMessage: SummaryMapper = (args): OperationSummaryPart => ({
@@ -72,6 +87,7 @@ const sendChatMessage: SummaryMapper = (args): OperationSummaryPart => ({
   fields: compact(
     field("body", str(args.body_html), "html"),
     inlineImagesField(args.inline_images),
+    attachmentsField(args.attachments),
   ),
 });
 
@@ -94,6 +110,7 @@ const sendChannelMessage: SummaryMapper = (args) => ({
     optionalField("subject", asString(args.subject)),
     field("body", str(args.body_html), "html"),
     inlineImagesField(args.inline_images),
+    attachmentsField(args.attachments),
   ),
 });
 
@@ -102,6 +119,7 @@ const replyToChannelMessage: SummaryMapper = (args) => ({
   fields: compact(
     field("body", str(args.body_html), "html"),
     inlineImagesField(args.inline_images),
+    attachmentsField(args.attachments),
   ),
 });
 

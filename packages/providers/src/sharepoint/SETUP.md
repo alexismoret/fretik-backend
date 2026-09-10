@@ -133,3 +133,21 @@ Downloads and uploads move bytes between the agent's E2B sandbox and
 host, not on `graph.microsoft.com`). `*.sharepoint.com` is on the sandbox
 allowlist in `@fretik/shared/services/e2b/network-policy.ts` for that reason
 — removing it silently breaks `download_file` and every upload.
+
+## 6. Cross-app flows and the account-overlap trap
+
+Teams, Outlook and Planner reach SharePoint through their own connections,
+each with its own account. Nothing is shared between them: a `teams` action
+uses the Teams token, a `sharepoint` action uses the SharePoint token.
+
+So a cross-app flow only works where the two ACCOUNTS overlap. The case that
+bites: Teams connected as each user's own account, SharePoint connected as a
+team service account that was never added to the Teams team's site. The
+agent reads the channel's folder id happily (that call runs on the Teams
+connection) and then the upload answers `itemNotFound` — the service account
+simply cannot see that library.
+
+Fix: add the SharePoint service account as a Member of every Teams team's
+site the assistant should write into. In SharePoint, a Teams team's site is
+the one named after the team; its group id and the Teams `team_id` are the
+same value.

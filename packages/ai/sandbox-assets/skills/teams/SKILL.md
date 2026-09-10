@@ -1,10 +1,10 @@
 ---
 name: teams
 description: Microsoft Teams — read and send chat messages, and manage meetings and calls on the user's connected Teams account.
-version: 968ed00ba1e1
+version: 66a3823c695a
 ---
 
-# Microsoft Teams — 20 actions
+# Microsoft Teams — 21 actions
 
 You can interact with the user's Microsoft Teams account via the `fretik_apps.teams` Python module.
 
@@ -19,6 +19,7 @@ You can interact with the user's Microsoft Teams account via the `fretik_apps.te
 - `teams.get_team(team_id)` — Fetch one team by ID
 - `teams.list_team_members(team_id)` — List the members of a team
 - `teams.list_channels(team_id)` — List the channels inside a team
+- `teams.get_channel_files_folder(team_id, channel_id)` — Get a channel's Files folder — the handle for reading or uploading its documents
 - `teams.list_channel_messages(team_id, channel_id, limit=20)` — List recent top-level messages in a channel (newest first)
 - `teams.get_channel_message(team_id, channel_id, message_id)` — Fetch one channel message by ID
 - `teams.list_channel_message_replies(team_id, channel_id, message_id, limit=20)` — List the replies of a channel thread (oldest first)
@@ -29,10 +30,10 @@ You can interact with the user's Microsoft Teams account via the `fretik_apps.te
 
 ## Write actions (require user approval — build with `.op()`)
 
-- `teams.send_chat_message.op(chat_id, body_html, inline_images=None)` — Post a message to a 1:1, group, or meeting chat
+- `teams.send_chat_message.op(chat_id, body_html, inline_images=None, attachments=None)` — Post a message to a 1:1, group, or meeting chat
 - `teams.create_chat.op(member_user_ids, topic=None)` — Create a 1:1 or group chat with one or more users
-- `teams.send_channel_message.op(team_id, channel_id, body_html, subject=None, inline_images=None)` — Post a new top-level message in a channel
-- `teams.reply_to_channel_message.op(team_id, channel_id, message_id, body_html, inline_images=None)` — Reply inside an existing channel thread (preserves the thread)
+- `teams.send_channel_message.op(team_id, channel_id, body_html, subject=None, inline_images=None, attachments=None)` — Post a new top-level message in a channel
+- `teams.reply_to_channel_message.op(team_id, channel_id, message_id, body_html, inline_images=None, attachments=None)` — Reply inside an existing channel thread (preserves the thread)
 
 ## Data models
 
@@ -43,6 +44,7 @@ Read actions return Pydantic models — field names below are EXACT. Use the nam
 - `ChatMessage` — `id: str`, `body_html: str`, `from_user: str`, `from_user_id?: str`, `created_at: str`, `importance?: str`, `attachments?: list[dict]`
 - `Team` — `id: str`, `display_name: str`, `description?: str`, `visibility: Literal["private", "public", "hiddenMembership", "unknownFutureValue"]`, `web_url?: str`
 - `Channel` — `id: str`, `display_name: str`, `description?: str`, `membership_type: Literal["standard", "private", "shared", "unknownFutureValue"]`, `web_url?: str`
+- `ChannelFilesFolder` — `drive_id: str`, `folder_id: str`, `name: str`, `web_url: str`
 - `ChannelMessage` — `id: str`, `subject?: str`, `body_html: str`, `from_user: str`, `from_user_id?: str`, `created_at: str`, `web_url?: str`, `attachments?: list[dict]`
 - `TeamMember` — `id: str`, `display_name: str`, `email?: str`, `user_id?: str`, `roles: list[str]`
 - `Presence` — `id: str`, `availability: str`, `activity: str`
@@ -136,11 +138,45 @@ run_plan([
 ])
 ```
 
-### Sending non-image files
+### Sending a document
 
-Not supported — Microsoft Graph requires uploading the file to OneDrive
-first, which is not part of v1. If the user really needs to share a PDF /
-Excel, embed a clickable URL in `body_html` (any URL they already have).
+A Teams message never carries file bytes — it carries a LINK to a file that
+already lives in SharePoint. That is what `attachments=[{name, content_url}]`
+does, and why it needs no file permission.
+
+**The file is already in SharePoint** — one approval:
+
+```python
+doc = sharepoint.search(query='filetype:pdf "Q1 report"', limit=1)[0]
+run_plan([teams.send_channel_message.op(
+    team_id="…", channel_id="19:…",
+    body_html="<p>Le rapport Q1.</p>",
+    attachments=[{"name": doc.name, "content_url": doc.web_url}],
+)])
+```
+
+**The file is not there yet** — put it in the channel's own folder first.
+`get_channel_files_folder` hands you the exact `drive_id` + `folder_id` the
+sharepoint app takes, so the document lands in the Files tab of that channel
+rather than in some unrelated library:
+
+```python
+f = teams.get_channel_files_folder(team_id="…", channel_id="19:…")
+# → f.drive_id, f.folder_id  → sharepoint.create_upload_session(...)
+```
+
+Upload per `sharepoint`'s reference, then attach the resulting `web_url` in a
+second turn — the upload and the message are two writes, and operations in
+one plan must be independent.
+
+**Access is not granted for you.** Teams links the file; it does not share
+it. Anyone in the channel already has access to that channel's folder, so a
+channel post is safe. For a chat, or a file from another site, pair it with
+`sharepoint.create_share_link(scope="organization")` or
+`grant_item_access` — otherwise the recipient gets a link that 403s.
+
+If there is genuinely no SharePoint connection, fall back to putting a
+clickable URL in `body_html`.
 
 ### Multiple connected Teams tenants
 

@@ -1,7 +1,43 @@
-import type { ProviderManifest } from "@fretik/shared/external-apps/manifest-schema";
+import type {
+  ParamSpec,
+  ProviderManifest,
+} from "@fretik/shared/external-apps/manifest-schema";
 
 /**
- * Microsoft Teams provider manifest — 20 actions covering chats, channels,
+ * Files attached to a message BY REFERENCE — the only way Teams carries a
+ * document, and the reason no file scope is involved: Graph stores nothing
+ * here, it links to a file that already lives in SharePoint or OneDrive.
+ * `ChannelMessage.Send` / `Chat.ReadWrite` cover it on their own.
+ *
+ * The corollary is the part that bites: Teams does NOT grant anybody access
+ * to the linked file. A recipient who cannot open it in SharePoint sees a
+ * broken link — see guidance.md.
+ *
+ * Declared once and shared by the three send actions, which already differ
+ * only in their target.
+ */
+const MESSAGE_ATTACHMENTS: ParamSpec = {
+  type: "array",
+  optional: true,
+  description:
+    "Files ALREADY stored in SharePoint/OneDrive, linked into the message. `content_url` is a DriveItem's `web_url` (from `sharepoint.get_item`, `list_folder`, `search`, or `get_channel_files_folder` + an upload). No bytes are sent here — to attach something new, put it in SharePoint first.",
+  items: {
+    type: "object",
+    fields: {
+      name: {
+        type: "string",
+        description: "File name shown in the message, e.g. `Q1-report.pdf`",
+      },
+      content_url: {
+        type: "string",
+        description: "The file's `web_url` in SharePoint / OneDrive",
+      },
+    },
+  },
+};
+
+/**
+ * Microsoft Teams provider manifest — 21 actions covering chats, channels,
  * messages, search, presence, and file attachments via Microsoft Graph v1.0.
  *
  * Decisions documented in `je-veux-ajouter-un-kind-kurzweil.md`:
@@ -168,6 +204,28 @@ export const teamsManifest: ProviderManifest = {
         values: ["standard", "private", "shared", "unknownFutureValue"],
       },
       web_url: { type: "string", optional: true },
+    },
+    /**
+     * A channel's Files tab, expressed in the vocabulary the `sharepoint`
+     * app speaks — that is the whole point of the type. Both ids are pass-
+     * through: no translation, no second lookup.
+     */
+    ChannelFilesFolder: {
+      drive_id: {
+        type: "string",
+        description:
+          "The team's document library. Pass verbatim as `drive_id` to any sharepoint action.",
+      },
+      folder_id: {
+        type: "string",
+        description:
+          "The channel's folder inside it. Pass as `folder_id` (sharepoint.list_folder) or `parent_folder_id` (sharepoint.create_upload_session).",
+      },
+      name: {
+        type: "string",
+        description: "Folder name — usually the channel's",
+      },
+      web_url: { type: "string" },
     },
     ChannelMessage: {
       id: { type: "string" },
@@ -346,6 +404,7 @@ export const teamsManifest: ProviderManifest = {
             },
           },
         },
+        attachments: MESSAGE_ATTACHMENTS,
       },
       returns: { ref: "WriteResult" },
       request: "sendChatMessage",
@@ -411,6 +470,28 @@ export const teamsManifest: ProviderManifest = {
       params: { team_id: { type: "string", in: "path" } },
       returns: { list: "Channel" },
       response: "channelList",
+    },
+    {
+      // The bridge to the `sharepoint` app. A channel's Files tab IS a
+      // folder in the team's SharePoint library, and this is the only
+      // endpoint that names it: it answers the driveItem, whose
+      // `parentReference.driveId` + `id` are exactly the `drive_id` +
+      // `folder_id` every sharepoint action takes. Least-privilege
+      // permission is `Files.Read.All`, already in this manifest's scopes.
+      name: "get_channel_files_folder",
+      kind: "read",
+      summary:
+        "Get a channel's Files folder — the handle for reading or uploading its documents",
+      endpoint: {
+        method: "GET",
+        path: "/v1.0/teams/{team_id}/channels/{channel_id}/filesFolder",
+      },
+      params: {
+        team_id: { type: "string", in: "path" },
+        channel_id: { type: "string", in: "path" },
+      },
+      returns: { ref: "ChannelFilesFolder" },
+      response: "channelFilesFolder",
     },
 
     // ───────────────────────── Channel messages ────────────────────
@@ -498,6 +579,7 @@ export const teamsManifest: ProviderManifest = {
             },
           },
         },
+        attachments: MESSAGE_ATTACHMENTS,
       },
       returns: { ref: "WriteResult" },
       request: "sendChannelMessage",
@@ -531,6 +613,7 @@ export const teamsManifest: ProviderManifest = {
             },
           },
         },
+        attachments: MESSAGE_ATTACHMENTS,
       },
       returns: { ref: "WriteResult" },
       request: "sendChannelMessage",

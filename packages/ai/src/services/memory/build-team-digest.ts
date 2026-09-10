@@ -57,15 +57,17 @@ const DIGEST_SYSTEM_PROMPT = `You write a team's standing memory: a short brief 
 
 The input below is the ONLY source of truth. NEVER state a fact, number, date or name that is not in it — an invented line is served to the whole team on every turn.
 
-Output exactly these sections, in this order, omitting any with no input:
+Each input block below maps to exactly one section. Output them in this order, writing each heading EXACTLY as it appears to the right. A block that is absent means its section is omitted entirely — never refill a section from another block.
 
-## Conventions — how this team works
-## Key entities — who and what they work with
-## Current decisions — most recent wins
-## Open threads — what is still moving
+<conventions>   ->  ## Conventions — how this team works
+<entities>      ->  ## Key entities — who and what they work with
+<decisions>     ->  ## Current decisions — most recent wins
+<open_threads>  ->  ## Open threads — what is still moving
 
 Rules:
-- One line per item. End every line with exactly one marker copied verbatim from the input, e.g. \`(memory:M3)\`.
+- One line per item. End every line with the marker of EACH input it draws on, copied verbatim, e.g. \`(memory:M3)\` or \`(memory:M3) (memory:M7)\`.
+- When several inputs say the same thing, write ONE line and carry all their markers. Four wordings of one rule cost the team four lines of a budget that holds a few dozen.
+- Under Key entities, write ONE line per entity, naming it, in prose. The arrows in the input are notation to read, never to copy: \`predicate → X\` means the entity does that to X, \`predicate ← X\` means X does it to the entity. Stating one as the other inverts the fact.
 - Under Current decisions, open each line with \`As of <date>\`. When two inputs disagree, state the most recent and add \`(previously …)\`.
 - Write in the language of the inputs.
 - Facts only. No advice, no opinions, no next steps, no preamble, no closing line.
@@ -122,6 +124,26 @@ const renderInputs = (
 };
 
 /**
+ * Drop headings left with nothing under them.
+ *
+ * Three ways a section empties: the prompt asks for sections with no input to
+ * be omitted and the model emits them anyway (observed: an empty "## Open
+ * threads" on a team with none), the marker gate drops a section's only line,
+ * or the budget trim cuts its lines from the end. A heading carrying no claim
+ * spends prompt budget on every turn of every member to say nothing.
+ */
+const dropEmptySections = (lines: readonly string[]): string[] =>
+  lines.filter((line, i) => {
+    if (!line.trim().startsWith("#")) return true;
+    for (let j = i + 1; j < lines.length; j++) {
+      const next = lines[j]?.trim() ?? "";
+      if (next === "") continue;
+      return !next.startsWith("#");
+    }
+    return false;
+  });
+
+/**
  * Drop every line whose marker the model invented, then trim to budget.
  *
  * Line-granular on purpose. `expandHandles` already blanks an unknown marker,
@@ -158,30 +180,21 @@ export const gateDigest = (
         : expandHandles(line, handles, LOG_SOURCE),
     );
 
-  // Drop headings left with nothing under them. The prompt asks for sections
-  // with no input to be omitted and the model emits them anyway (observed: an
-  // empty "## Open threads" on a team with none), and the gate above can empty
-  // a section on its own by dropping its only line. A heading carrying no claim
-  // spends prompt budget on every turn of every member to say nothing.
-  const withoutEmptySections = kept.filter((line, i) => {
-    if (!line.trim().startsWith("#")) return true;
-    for (let j = i + 1; j < kept.length; j++) {
-      const next = kept[j]?.trim() ?? "";
-      if (next === "") continue;
-      return !next.startsWith("#");
-    }
-    return false;
-  });
+  const lines = dropEmptySections(kept);
 
   // Trim to budget on a line boundary, from the end.
   while (
-    withoutEmptySections.length > 0 &&
-    countTokens(withoutEmptySections.join("\n")) > DIGEST_MAX_TOKENS
+    lines.length > 0 &&
+    countTokens(lines.join("\n")) > DIGEST_MAX_TOKENS
   ) {
-    withoutEmptySections.pop();
+    lines.pop();
   }
 
-  return { content: withoutEmptySections.join("\n").trim(), dropped };
+  // Run the section drop AGAIN: the trim pops from the end, so it strands the
+  // heading of the section it just emptied. Measured on the first real digest —
+  // a naked "## Open threads" survived because its lines were exactly what the
+  // budget cut.
+  return { content: dropEmptySections(lines).join("\n").trim(), dropped };
 };
 
 export interface BuildTeamDigestParams extends DigestScope {

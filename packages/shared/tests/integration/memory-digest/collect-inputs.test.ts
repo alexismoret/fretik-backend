@@ -302,6 +302,74 @@ describe("entities reaching the digest", () => {
     // three-line budget saying the same thing twice.
     expect(new Set(alpha?.links ?? []).size).toBe((alpha?.links ?? []).length);
   });
+
+  test("an inbound edge renders as inbound, not as its own inverse", async () => {
+    // The defect this exists for, caught on the first real digest: one edge
+    // "Nordwind supplies Horizon" was rendered identically on BOTH endpoints,
+    // so Horizon's line read "supplies → Nordwind" and the model wrote "Horizon
+    // supplies Nordwind" — a false statement, in a section served on every
+    // turn, carrying a marker that resolves and so passes every gate after it.
+    const orgs = await ws.createCollection({ key: `dir_${Date.now()}` });
+    const supplier = await ws.createRecord({
+      collectionId: orgs.id,
+      label: "Vendor A",
+    });
+    const project = await ws.createRecord({
+      collectionId: orgs.id,
+      label: "Project B",
+    });
+    const supplies = await ws.createLinkType({
+      key: `supplies_${Date.now()}`,
+      fromCollectionId: orgs.id,
+      label: "supplies",
+    });
+    await ws.createLink({
+      linkTypeId: supplies.id,
+      fromRecordId: supplier.id,
+      toRecordId: project.id,
+    });
+
+    const inputs = await collectDigestInputs({
+      organizationId: ws.organizationId,
+      teamId: ws.teamId,
+    });
+    const subject = inputs.entities.find((e) => e.label === "Vendor A");
+    const object = inputs.entities.find((e) => e.label === "Project B");
+    expect(subject?.links).toEqual(["supplies → Project B"]);
+    expect(object?.links).toEqual(["supplies ← Vendor A"]);
+  });
+
+  test("an inbound edge uses the inverse label when the type has one", async () => {
+    // With an inverse label the relation already reads in the right direction,
+    // so it keeps the forward arrow rather than stacking two negations.
+    const orgs = await ws.createCollection({ key: `inv_${Date.now()}` });
+    const supplier = await ws.createRecord({
+      collectionId: orgs.id,
+      label: "Vendor C",
+    });
+    const project = await ws.createRecord({
+      collectionId: orgs.id,
+      label: "Project D",
+    });
+    const supplies = await ws.createLinkType({
+      key: `supplies_inv_${Date.now()}`,
+      fromCollectionId: orgs.id,
+      label: "supplies",
+      inverseLabel: "supplied by",
+    });
+    await ws.createLink({
+      linkTypeId: supplies.id,
+      fromRecordId: supplier.id,
+      toRecordId: project.id,
+    });
+
+    const inputs = await collectDigestInputs({
+      organizationId: ws.organizationId,
+      teamId: ws.teamId,
+    });
+    const object = inputs.entities.find((e) => e.label === "Project D");
+    expect(object?.links).toEqual(["supplied by → Vendor C"]);
+  });
 });
 
 describe("the fingerprint", () => {

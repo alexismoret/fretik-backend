@@ -63,7 +63,15 @@ export interface DigestEntity {
   id: string;
   label: string;
   collectionKey: string;
-  /** Rendered as `<link type> <other record label>`, at most `LINKS_PER_ENTITY`. */
+  /**
+   * At most `LINKS_PER_ENTITY`, each `<predicate> → <other>` when this record
+   * is the SUBJECT and `<predicate> ← <other>` when it is the object.
+   *
+   * The arrow is load-bearing, not decoration. Rendering both directions the
+   * same way put "Horizon supplies Nordwind" in a real digest off Nordwind's
+   * own `supplies` edge — a false statement, served on every turn, with a
+   * provenance marker that resolves and so survives every gate downstream.
+   */
   links: string[];
   updatedAt: Date;
 }
@@ -224,7 +232,16 @@ const collectEntities = async (scope: DigestScope): Promise<DigestEntity[]> => {
           -- neighbour render identically, and one line repeated spends a third
           -- of the entity's budget saying one thing.
           SELECT
-            lt.label || ' → ' || other.label AS line,
+            CASE
+              WHEN l.from_record_id = ranked.id
+                THEN lt.label || ' → ' || other.label
+              -- Reverse edge. An inverse_label already reads in that direction
+              -- ("supplied by"), so it keeps the forward arrow; without one the
+              -- arrow itself carries the direction.
+              WHEN lt.inverse_label IS NOT NULL
+                THEN lt.inverse_label || ' → ' || other.label
+              ELSE lt.label || ' ← ' || other.label
+            END AS line,
             max(l.created_at) AS last_seen
           FROM links l
           JOIN link_types lt ON lt.id = l.link_type_id

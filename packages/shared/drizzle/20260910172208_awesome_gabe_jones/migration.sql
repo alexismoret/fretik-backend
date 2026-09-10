@@ -1,0 +1,1 @@
+ALTER TABLE "workflows" ADD COLUMN "external_app_connection_ids" jsonb DEFAULT '[]' NOT NULL;

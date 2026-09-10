@@ -166,23 +166,58 @@ export const WorkflowCronConfigSchema = z.object({
   timezone: z.string().max(64).optional(),
 });
 
+const workflowEventTypeSchema = z
+  .string()
+  .min(1)
+  .max(120)
+  .refine(isTriggerableEventType, {
+    message: `event type must be a triggerable workspace event (${WORKFLOW_TRIGGERABLE_EVENT_TYPES.join(", ")}) or a connector.<app>.<kind> event`,
+  });
+
+const workflowEventFilterSchema = z.record(
+  z.string(),
+  z.union([z.string(), z.number(), z.boolean()]),
+);
+
+/**
+ * One thing a workflow listens for: a journal event type plus an optional
+ * equality filter on its payload (every entry must match for the workflow to
+ * fire). Several subscriptions of the SAME type are legitimate and useful —
+ * "a document lands in Invoices" and "a document lands in Contracts" are two
+ * subscriptions on `document.uploaded` with different folder filters.
+ */
+export const WorkflowEventSubscriptionSchema = z.object({
+  type: workflowEventTypeSchema,
+  filter: workflowEventFilterSchema.optional(),
+});
+export type WorkflowEventSubscription = z.infer<
+  typeof WorkflowEventSubscriptionSchema
+>;
+
+/** Ceiling on one workflow's subscriptions — a guard, not a design limit. */
+export const WORKFLOW_MAX_EVENT_SUBSCRIPTIONS = 20;
+
+/**
+ * The event trigger's config. `events` is the shape everything WRITES; `type` /
+ * `filter` are the original single-event shape, still on every row created
+ * before multi-event landed and still accepted from any client that has not
+ * caught up. Never read either field directly — `eventSubscriptions()` below
+ * is the one reader, so the two shapes are collapsed in exactly one place.
+ *
+ * A config with neither is valid on purpose: the editor autosaves while the
+ * user is still building the list, and an event trigger with nothing to listen
+ * for is caught at ACTIVATION (`workflowEventActivationError`), the same way a
+ * form with no fields is.
+ */
 export const WorkflowEventConfigSchema = z.object({
-  /** Journal event type to match, e.g. "document.uploaded". Restricted to the
-   * triggerable workspace events (or a `connector.*` provider kind) so a typo
-   * can't create a workflow that silently never fires. */
-  type: z
-    .string()
-    .min(1)
-    .max(120)
-    .refine(isTriggerableEventType, {
-      message: `event.type must be a triggerable workspace event (${WORKFLOW_TRIGGERABLE_EVENT_TYPES.join(", ")}) or a connector.<app>.<kind> event`,
-    }),
-  /**
-   * Optional equality filter on the event payload — every entry must
-   * match (`payload[key] === value`) for the workflow to fire.
-   */
-  filter: z
-    .record(z.string(), z.union([z.string(), z.number(), z.boolean()]))
+  /** Legacy single-event shape. Read through `eventSubscriptions()`. */
+  type: workflowEventTypeSchema.optional(),
+  /** Legacy single-event filter. Read through `eventSubscriptions()`. */
+  filter: workflowEventFilterSchema.optional(),
+  /** The events this workflow listens for. */
+  events: z
+    .array(WorkflowEventSubscriptionSchema)
+    .max(WORKFLOW_MAX_EVENT_SUBSCRIPTIONS)
     .optional(),
 });
 
@@ -192,6 +227,45 @@ export const WorkflowTriggerConfigSchema = z.object({
   form: WorkflowFormConfigSchema.optional(),
 });
 export type WorkflowTriggerConfig = z.infer<typeof WorkflowTriggerConfigSchema>;
+
+/**
+ * What an event-triggered workflow listens for, as ONE list — the only way any
+ * consumer should read `triggerConfig.event`. Collapses the two stored shapes
+ * (`events[]`, and the legacy `type` + `filter`) so the matcher, the editor's
+ * summary, the card text and the agent catalog cannot drift apart on which
+ * events a workflow actually subscribes to.
+ *
+ * Returns `[]` for a workflow that is not event-triggered, and for an event
+ * draft nobody has filled in yet.
+ */
+export const eventSubscriptions = (
+  config: WorkflowTriggerConfig | undefined,
+): WorkflowEventSubscription[] => {
+  const event = config?.event;
+  if (!event) return [];
+  if (event.events !== undefined && event.events.length > 0) {
+    return event.events;
+  }
+  if (event.type !== undefined) {
+    return [
+      { type: event.type, ...(event.filter ? { filter: event.filter } : {}) },
+    ];
+  }
+  return [];
+};
+
+/**
+ * Why an event trigger cannot go live, or null when it can. An event workflow
+ * with no subscription would activate into permanent silence — the same class
+ * of quiet failure as a form with no fields, so it is caught at the same
+ * moment: activation, not autosave.
+ */
+export const workflowEventActivationError = (
+  config: WorkflowTriggerConfig,
+): string | null =>
+  eventSubscriptions(config).length === 0
+    ? "An event trigger needs at least one event to listen for."
+    : null;
 
 /**
  * A trigger config sub-object must match the trigger type: a `cron` config under
@@ -440,6 +514,18 @@ export const WorkflowFinalizeRequestSchema = z.object({
 // API (user-facing)    //
 // ==================== //
 
+/**
+ * Ceiling on the external apps one workflow may declare. A guard on the write
+ * path, not a design limit — a playbook that genuinely reaches into twenty
+ * apps has a bigger problem than this number.
+ */
+export const WORKFLOW_MAX_EXTERNAL_APPS = 20;
+
+/** The connections a workflow declares it is built on (ids, order preserved). */
+export const WorkflowExternalAppIdsSchema = z
+  .array(z.uuid())
+  .max(WORKFLOW_MAX_EXTERNAL_APPS);
+
 export const CreateWorkflowSchema = z
   .object({
     name: z.string().min(1).max(120),
@@ -453,6 +539,9 @@ export const CreateWorkflowSchema = z
     modelProfileKey: z.string().max(64).optional(),
     reasoningLevel: reasoningLevelSchema.optional(),
     limits: WorkflowLimitsSchema.default({}),
+    /** The external-app connections this workflow is built on. Validated
+     *  against the caller's visible connections AND the workflow's scope. */
+    externalAppConnectionIds: WorkflowExternalAppIdsSchema.optional(),
     /** NULL/omitted = team-shared; set = private to that user. */
     userId: z.uuid().optional(),
   })
@@ -478,6 +567,9 @@ export const UpdateWorkflowSchema = z
     reasoningLevel: reasoningLevelSchema.nullable().optional(),
     limits: WorkflowLimitsSchema.optional(),
     notifications: WorkflowNotificationsSchema.optional(),
+    /** Replaces the declared list wholesale (not a merge) — the editor sends
+     *  what the user sees. */
+    externalAppConnectionIds: WorkflowExternalAppIdsSchema.optional(),
     /** Re-scope: NULL = team-shared, set = private to that user. The service
      * layer enforces it can only be `null` or the requester's own id — never
      * an arbitrary teammate (that would be impersonation). */
@@ -520,6 +612,10 @@ export const WorkflowResponseSchema = z.object({
   reasoningLevel: reasoningLevelSchema.nullable(),
   limits: WorkflowLimitsSchema,
   notifications: WorkflowNotificationsSchema,
+  /** The external-app connections this workflow declares it is built on.
+   *  A stale id (the connection was deleted) is simply not resolvable by the
+   *  reader — the list is a declaration, never a foreign key. */
+  externalAppConnectionIds: z.array(z.uuid()),
   /** Platform ceilings used whenever `limits` doesn't set an explicit value
    * — the frontend shows run progress against these when the workflow has
    * no override, since that's what's actually enforced server-side. */

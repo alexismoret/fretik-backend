@@ -4,7 +4,10 @@ import { workflows } from "../../db/schema";
 import { badRequest, throwHttpError } from "../../lib/errors";
 import { createWorkflowCronSchedule } from "../../lib/trigger-client";
 import { workflowFormActivationError } from "../../schemas/workflow-forms";
-import type { WorkflowResponse } from "../../schemas/workflows";
+import {
+  workflowEventActivationError,
+  type WorkflowResponse,
+} from "../../schemas/workflows";
 import { getWorkflowRow } from "./get";
 import { serializeWorkflow } from "./serialize";
 import { refreshWorkflowVectors } from "./vector-refresh";
@@ -40,6 +43,14 @@ export const activateWorkflow = async (params: {
       ...(cron.timezone !== undefined ? { timezone: cron.timezone } : {}),
     });
     triggerScheduleId = created.scheduleId;
+  }
+
+  // An event trigger autosaves an empty subscription list while the user is
+  // building it. Activating one would be activating into silence, so the
+  // completeness gate runs here, next to the cron and form ones.
+  if (row.triggerType === "event") {
+    const eventError = workflowEventActivationError(row.triggerConfig);
+    if (eventError) return throwHttpError(400, badRequest(eventError));
   }
 
   // A form trigger autosaves incomplete drafts; the completeness gate (title +

@@ -7,6 +7,7 @@ import {
   type WorkflowResponse,
 } from "../../schemas/workflows";
 import { serializeWorkflow } from "./serialize";
+import { validateWorkflowExternalApps } from "./validate-external-apps";
 import { refreshWorkflowVectors } from "./vector-refresh";
 import { workflowOwnerWriteError } from "./visibility";
 
@@ -31,6 +32,15 @@ export const createWorkflow = async (params: {
   );
   if (ownerError) return throwHttpError(400, badRequest(ownerError));
 
+  const externalAppConnectionIds =
+    input.externalAppConnectionIds === undefined
+      ? []
+      : await validateWorkflowExternalApps({
+          connectionIds: input.externalAppConnectionIds,
+          teamId: params.teamId,
+          ownerUserId: input.userId ?? null,
+        });
+
   const [row] = await db
     .insert(workflows)
     .values({
@@ -54,6 +64,7 @@ export const createWorkflow = async (params: {
       modelProfileKey: input.modelProfileKey ?? null,
       reasoningLevel: input.reasoningLevel ?? null,
       limits: input.limits,
+      externalAppConnectionIds,
       createdByUserId: params.createdByUserId,
     })
     .returning();

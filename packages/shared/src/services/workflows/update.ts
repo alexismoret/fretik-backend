@@ -11,6 +11,7 @@ import { resyncVectorUserScope } from "../ai-vectors/resync-user-scope";
 import { filterTeamMemberIds } from "../team/members";
 import { getWorkflowRow } from "./get";
 import { serializeWorkflow } from "./serialize";
+import { validateWorkflowExternalApps } from "./validate-external-apps";
 import { refreshWorkflowVectors } from "./vector-refresh";
 import { workflowOwnerWriteError, type WorkflowRequester } from "./visibility";
 
@@ -49,6 +50,38 @@ export const updateWorkflow = async (params: {
       requester: params.requester,
     });
     if (!existingRow) return undefined;
+  }
+
+  // Scope and declared apps constrain each other, so a patch touching EITHER
+  // is re-checked against the other side as stored. Re-scoping to team-shared
+  // while a personal connection is declared is the case that matters: the
+  // workflow would start running as the team bot, which cannot resolve it.
+  let externalAppConnectionIds: string[] | undefined;
+  if (
+    input.externalAppConnectionIds !== undefined ||
+    input.userId !== undefined
+  ) {
+    const current =
+      existingRow ??
+      (await db.query.workflows.findFirst({
+        where: { id: params.id, teamId: params.teamId },
+        columns: { userId: true, externalAppConnectionIds: true },
+      }));
+    if (!current) return undefined;
+    const ownerUserId =
+      input.userId !== undefined ? input.userId : current.userId;
+    const ids =
+      input.externalAppConnectionIds ?? current.externalAppConnectionIds;
+    const validated = await validateWorkflowExternalApps({
+      connectionIds: ids,
+      teamId: params.teamId,
+      ownerUserId,
+    });
+    // Only WRITE the list when the patch actually carried one — a re-scope
+    // validates the stored list, it does not rewrite it.
+    if (input.externalAppConnectionIds !== undefined) {
+      externalAppConnectionIds = validated;
+    }
   }
 
   // A workflow that becomes a form (or already is one) needs a public token.
@@ -107,6 +140,9 @@ export const updateWorkflow = async (params: {
           : {}),
         ...(input.limits !== undefined ? { limits: input.limits } : {}),
         ...(notifications !== undefined ? { notifications } : {}),
+        ...(externalAppConnectionIds !== undefined
+          ? { externalAppConnectionIds }
+          : {}),
         ...(input.userId !== undefined ? { userId: input.userId } : {}),
         ...(formToken !== undefined ? { formToken } : {}),
       })

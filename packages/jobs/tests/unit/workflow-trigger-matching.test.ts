@@ -67,6 +67,7 @@ const workflow = (over: Partial<Workflow>): Workflow => ({
     notifyTriggeredBy: false,
     recipientUserIds: [],
   },
+  externalAppConnectionIds: [],
   triggerScheduleId: null,
   formToken: null,
   pausedReason: null,
@@ -161,6 +162,112 @@ describe("matchesEvent", () => {
     expect(
       matchesEvent(w, event({ payload: { collection: "invoices" } })),
     ).toBe(false);
+  });
+});
+
+/**
+ * A workflow listens for a LIST of events, and the old single-event shape is
+ * still on every row written before that landed. Both have to keep matching
+ * through the same call, or an existing workflow stops firing on deploy.
+ */
+describe("matchesEvent — several subscriptions", () => {
+  const listener = (config: Workflow["triggerConfig"]["event"]): Workflow =>
+    workflow({ triggerConfig: { event: config } });
+
+  test("any one of them is enough", () => {
+    const w = listener({
+      events: [{ type: "document.uploaded" }, { type: "document.revised" }],
+    });
+    expect(matchesEvent(w, event({ type: "document.uploaded" }))).toBe(true);
+    expect(matchesEvent(w, event({ type: "document.revised" }))).toBe(true);
+    expect(matchesEvent(w, event({ type: "document.deleted" }))).toBe(false);
+  });
+
+  test("each carries its OWN filter", () => {
+    // Two watched folders on the same event type — the shape that makes a
+    // per-subscription filter mean something a shared one could not express.
+    const w = listener({
+      events: [
+        { type: "document.uploaded", filter: { folderId: "f-invoices" } },
+        { type: "document.uploaded", filter: { folderId: "f-contracts" } },
+      ],
+    });
+    expect(
+      matchesEvent(
+        w,
+        event({
+          type: "document.uploaded",
+          payload: { folderId: "f-invoices" },
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      matchesEvent(
+        w,
+        event({
+          type: "document.uploaded",
+          payload: { folderId: "f-contracts" },
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      matchesEvent(
+        w,
+        event({
+          type: "document.uploaded",
+          payload: { folderId: "f-archive" },
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  test("a filter on one subscription does not constrain another", () => {
+    const w = listener({
+      events: [
+        { type: "document.uploaded", filter: { folderId: "f-invoices" } },
+        { type: "document.revised" },
+      ],
+    });
+    expect(
+      matchesEvent(
+        w,
+        event({
+          type: "document.revised",
+          payload: { folderId: "f-anything" },
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  test("an empty list matches nothing", () => {
+    expect(matchesEvent(listener({ events: [] }), event({}))).toBe(false);
+  });
+
+  test("a stored legacy config still matches", () => {
+    const w = listener({ type: "record.created", filter: { status: "new" } });
+    expect(
+      matchesEvent(
+        w,
+        event({ type: "record.created", payload: { status: "new" } }),
+      ),
+    ).toBe(true);
+    expect(
+      matchesEvent(
+        w,
+        event({ type: "record.created", payload: { status: "old" } }),
+      ),
+    ).toBe(false);
+  });
+
+  test("the list wins over a legacy field left beside it", () => {
+    // Belt and braces for a client that writes `events` without clearing the
+    // old keys: what the user last edited is the list, so that is what fires.
+    const w = listener({
+      type: "record.created",
+      events: [{ type: "record.updated" }],
+    });
+    expect(matchesEvent(w, event({ type: "record.updated" }))).toBe(true);
+    expect(matchesEvent(w, event({ type: "record.created" }))).toBe(false);
   });
 });
 

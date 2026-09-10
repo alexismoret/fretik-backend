@@ -149,14 +149,15 @@ Scaleway S3/email variables. `FRETIK_RUNTIME=container` comes from the image.
 
 ### `@fretik/ai`
 
-| Var                                                                      | Notes                                                                                                                                                                                                                                                                                      |
-| ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `AI_DB_READONLY_URL`                                                     | **Hard boot failure if unset.** The least-privilege `fretik_sql_tool` role — never `DATABASE_URL`, whose owner bypasses RLS. See the one-off step below.                                                                                                                                   |
-| `AI_DB_READONLY_POOL_MAX`                                                | Default `10`.                                                                                                                                                                                                                                                                              |
-| `OPENROUTER_API_KEY`, `MISTRAL_API_KEY`, `TAVILY_API_KEY`, `E2B_API_KEY` | Model routing, OCR, web search, sandboxes.                                                                                                                                                                                                                                                 |
-| `AI_WEB_*`                                                               | Opt-in egress tightening (`AI_WEB_BLOCKED_DOMAINS`, `AI_WEB_ALLOWED_DOMAINS`, `AI_WEB_FETCH_MAX_URL_LEN`, `AI_WEB_TOOLS_ENABLED`). Always-on hygiene — scheme, private-IP/metadata, length, punycode — applies regardless.                                                                 |
-| `LANGFUSE_*`                                                             | Optional; tracing is a no-op without them.                                                                                                                                                                                                                                                 |
-| `RECALL_MODE`                                                            | `adaptive` (default, unset = this) · `judge` · `verbatim`. How pre-turn recall turns retrieved candidates into the `<active_memory>` block. **`judge` is the rollback** — it restores the pre-2026-09-09 behaviour exactly, takes effect on the next turn, and needs no deploy. See below. |
+| Var                                                                      | Notes                                                                                                                                                                                                                                                                                                                                                                 |
+| ------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `AI_DB_READONLY_URL`                                                     | **Hard boot failure if unset.** The least-privilege `fretik_sql_tool` role — never `DATABASE_URL`, whose owner bypasses RLS. See the one-off step below.                                                                                                                                                                                                              |
+| `AI_DB_READONLY_POOL_MAX`                                                | Default `10`.                                                                                                                                                                                                                                                                                                                                                         |
+| `OPENROUTER_API_KEY`, `MISTRAL_API_KEY`, `TAVILY_API_KEY`, `E2B_API_KEY` | Model routing, OCR, web search, sandboxes.                                                                                                                                                                                                                                                                                                                            |
+| `AI_WEB_*`                                                               | Opt-in egress tightening (`AI_WEB_BLOCKED_DOMAINS`, `AI_WEB_ALLOWED_DOMAINS`, `AI_WEB_FETCH_MAX_URL_LEN`, `AI_WEB_TOOLS_ENABLED`). Always-on hygiene — scheme, private-IP/metadata, length, punycode — applies regardless.                                                                                                                                            |
+| `LANGFUSE_*`                                                             | Optional; tracing is a no-op without them.                                                                                                                                                                                                                                                                                                                            |
+| `RECALL_MODE`                                                            | `adaptive` (default, unset = this) · `judge` · `verbatim`. How pre-turn recall turns retrieved candidates into the `<active_memory>` block. **`judge` is the rollback** — it restores the pre-2026-09-09 behaviour exactly and needs no deploy, but it is read once at module load, so it takes effect on the **next service restart**, not the next turn. See below. |
+| `SEMANTIC_SCAN_MODE`                                                     | `hnsw` (default, unset = this) · `seqscan`. Which plan the semantic retrieval arm asks for. `seqscan` sets `enable_indexscan = off` for that statement, restoring the exact pre-2026-09-10 plan — the **rollback for the HNSW work**, no deploy, no migration revert. See §9.                                                                                         |
 
 #### `RECALL_MODE` — what it changes, and when to touch it
 
@@ -168,10 +169,17 @@ running on 43 % of turns and recall's median falling from 2 246 ms to
 measure the floor, not to serve traffic.
 
 Set `RECALL_MODE=judge` if memory recall starts surfacing irrelevant context
-after a deploy. It costs latency on every turn and nothing else — the block is
-rebuilt from the same gather by the same judge as before. Then say so, because
-the deterministic path has an eval suite and a bug found in production belongs
-in it: `bun run evals:recall` (see `packages/ai/evals/RUNBOOK.md`).
+after a deploy, **and restart the service** — the value is read at module load,
+so setting it on a running container changes nothing. It costs latency on every
+turn and nothing else: the block is rebuilt from the same gather by the same
+judge as before. Then say so, because the deterministic path has an eval suite
+and a bug found in production belongs in it: `bun run evals:recall` (see
+`packages/ai/evals/RUNBOOK.md`).
+
+Per-call override exists for evals only: `/internal/agents/chatbot/invoke`
+accepts `X-Recall-Mode`, which is how the two arms of a comparison run against
+one live service instead of one restart apart. It is read in the route handler,
+never in the middleware, so it cannot reach the user-facing `/stream` path.
 
 ### `@fretik/jobs` — three keys people forget
 
@@ -430,3 +438,65 @@ from release_tasks order by started_at desc limit 20;
 
 Rows are never deleted: "which deploy published that prompt, and did it work"
 is the question this table exists to answer months later.
+
+## 9. Vector search operations
+
+Everything here is about ONE table, `ai_vectors`, and one index,
+`idx_ai_vectors_embedding_hnsw`. It gets its own section because its failure
+mode is silent: when this goes wrong, answers stay CORRECT and retrieval just
+gets slower as the corpus grows. There is no error to alert on.
+
+### The planner cost, and why it is checked at boot
+
+`cosine_distance(halfvec, halfvec)` ships from pgvector with `procost = 1`.
+At 1, Postgres prices 20 000 distance computations over 2 560 dimensions the
+way it prices 20 000 integer additions, decides a Seq Scan is cheaper than the
+index, and is never wrong enough to notice — brute force IS exact KNN. Measured
+on dev at 20 504 rows: 260-385 ms per broad semantic search, **linear in the
+corpus**. The `hnsw_planner_cost` migration raises it to 100; after it,
+150/150 rows in 8-9 ms warm.
+
+**`ALTER EXTENSION vector UPDATE` resets it.** That is why the AI service reads
+`pg_proc.procost` at boot and logs an error when it is below 100
+(`warnIfVectorPlannerMiscosted`). Never fatal — a plan choice is not worth
+refusing to serve over. If you see that line:
+
+```sql
+ALTER FUNCTION cosine_distance(halfvec, halfvec) COST 100;
+ANALYZE ai_vectors;
+```
+
+Re-check it after **every** pgvector upgrade, before believing any latency
+number taken afterwards.
+
+### Rollback
+
+`SEMANTIC_SCAN_MODE=seqscan` + restart. The semantic arm then asks for the
+exact plan it had before this work, without reverting the migration and without
+a deploy. Use it if retrieval quality regresses (HNSW is APPROXIMATE where the
+Seq Scan was exact) — and then say so, because `bun run evals:recall` at ten
+repeats is what is supposed to catch that, and a miss belongs in the suite.
+
+### Reading the state
+
+```sql
+-- Is the cost still right?
+SELECT p.procost FROM pg_proc p JOIN pg_type a ON a.oid = p.proargtypes[0]
+WHERE p.proname = 'cosine_distance' AND a.typname = 'halfvec';
+
+-- How big is the index, and does it fit in cache?
+SELECT pg_size_pretty(pg_relation_size('idx_ai_vectors_embedding_hnsw'));
+SHOW shared_buffers;
+```
+
+**Target: `shared_buffers` ≥ 2× the index size.** Dev measured 167 MB of index
+against the 128 MB default, which is the whole difference between the 8-9 ms
+warm figure and the 75-80 ms cold one. Check this on the Dokploy Postgres
+service before quoting a production latency.
+
+`pg_prewarm` is created by the migration inside an exception block, because the
+privilege to create an extension is not guaranteed and a migration that cannot
+be applied is a crash loop behind the healthcheck for a nice-to-have. Where it
+exists, the jobs service pulls the index into shared buffers after a restart.
+Where it does not, that is a warning in the migration output and a slower first
+query, nothing else.

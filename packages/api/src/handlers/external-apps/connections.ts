@@ -277,9 +277,9 @@ const getOneRoute = createRoute({
 const updateRoute = createRoute({
   method: "patch",
   path: "/connections/{id}",
-  summary: "Rename a connection or flip its status",
+  summary: "Rename, re-scope or flip the status of a connection",
   description:
-    "Partial update — send any combination of `displayName` and `status`. Flipping `status` to `active` clears `lastErrorMessage` (typical recovery after a manual reconnect). `actionPolicies` are validated against the connection's own action surface: the provider manifest for a catalogue app, the introspected tool snapshot for an MCP server — which answers `409 EXTERNAL_APP_MCP_NOT_READY` while that snapshot is still being built.",
+    "Partial update — send any combination of `displayName`, `scope` and `status`. Flipping `status` to `active` clears `lastErrorMessage` (typical recovery after a manual reconnect). `scope` moves the connection between team-shared and personal; taking a shared one private requires being the member who connected it, or an org admin. `actionPolicies` are validated against the connection's own action surface: the provider manifest for a catalogue app, the introspected tool snapshot for an MCP server — which answers `409 EXTERNAL_APP_MCP_NOT_READY` while that snapshot is still being built.",
   tags: ["ExternalApps"],
   request: {
     params: paramsIdSchema,
@@ -563,10 +563,14 @@ connectionsRoutes.openapi(updateRoute, async (c) => {
 
   const { id } = c.req.valid("param");
   const patch = c.req.valid("json");
-  // Editing a team connection's per-action policies requires admin; the service
-  // enforces it (personal connections stay owner-only via caller visibility).
+  // Editing a team connection's per-action policies requires admin; so does
+  // taking a shared connection private when you are not the member who
+  // connected it. The service enforces both (personal connections stay
+  // owner-only via caller visibility).
   const admin =
-    patch.actionPolicies !== undefined || patch.concurrencyMode !== undefined
+    patch.actionPolicies !== undefined ||
+    patch.concurrencyMode !== undefined ||
+    patch.scope !== undefined
       ? await isOrgAdmin(team.organizationId, user.id)
       : undefined;
   const row = await updateConnection({
@@ -575,6 +579,7 @@ connectionsRoutes.openapi(updateRoute, async (c) => {
     userId: user.id,
     displayName: patch.displayName,
     status: patch.status,
+    scope: patch.scope,
     options: patch.options,
     actionPolicies: patch.actionPolicies,
     concurrencyMode: patch.concurrencyMode,

@@ -33,6 +33,15 @@ export interface RunCaseOptions {
    * from `modelProfileKey`, which only ever reached the parent turn.
    */
   pageBuildProfileKey?: string;
+  /**
+   * Serve every turn's recall under this selector (`X-Recall-Mode`).
+   *
+   * The judge-vs-deterministic question is answered by scoring ANSWERS, which
+   * means the same cases through the real turn twice. The service reads
+   * `RECALL_MODE` once at module load, so without this the two arms need a
+   * restart between them and stop being a paired comparison.
+   */
+  recallMode?: string;
 }
 
 const selectAssertions = (
@@ -83,6 +92,7 @@ export const runCase = async (
     const invoke = await invokeChatbot(c.prompt, conversationId, {
       modelProfileKey: opts?.modelProfileKey,
       pageBuildProfileKey: opts?.pageBuildProfileKey,
+      recallMode: opts?.recallMode,
     });
     const assertions = await runAssertions(
       selectAssertions(c.assertions, opts),

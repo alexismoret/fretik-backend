@@ -45,12 +45,14 @@
  *   ...  -- --run-name <name>       # explicit dataset-run name
  *   ...  -- --candidate <profileKey> # pin turns to a registry profile (C3 gate)
  *   ...  -- --page-build-candidate <profileKey> # pin the PAGE BUILDER's model
+ *   ...  -- --recall-mode judge|verbatim|adaptive # which memory selector serves the turns
  *   ...  -- --case <id> --repeats 3 # N passes of each case, one run, means not samples
  * ==================================================================
  */
 
 import { warmModelRegistry } from "../src/lib/model-registry/resolve";
 import { ROLE_BINDINGS } from "../src/lib/model-registry/role-bindings";
+import { isRecallMode } from "../src/services/recall/recall";
 import { runChatbotExperiment } from "./langfuse/experiment";
 import type { Capability } from "./types";
 import { CAPABILITIES } from "./types";
@@ -69,6 +71,12 @@ interface CliOptions {
   runName?: string;
   /** Pin every turn to this registry profile (C3 gate candidate). */
   candidate?: string;
+  /**
+   * Serve every turn's recall under this selector (`judge` | `verbatim` |
+   * `adaptive`). The whole point is a PAIRED comparison: same cases, same
+   * models, one live service, two arms.
+   */
+  recallMode?: string;
   /**
    * Pin the PAGE BUILDER to this registry profile. Separate from `--candidate`
    * because they are separate models: the candidate pins the turn that decides
@@ -171,6 +179,16 @@ const parseArgs = (argv: string[]): CliOptions => {
       i++;
       continue;
     }
+    if (flag === "--recall-mode" && next) {
+      if (!isRecallMode(next)) {
+        unknown.push(`--recall-mode ${next}`);
+        i++;
+        continue;
+      }
+      opts.recallMode = next;
+      i++;
+      continue;
+    }
     // Anything left is a typo, a flag that lost its value, or — the one that
     // cost a full core run — several flags arriving as ONE argv entry because
     // zsh does not word-split an unquoted `$VAR`. Silently ignoring it meant a
@@ -228,6 +246,7 @@ const main = async (): Promise<void> => {
     ...(opts.pageBuildCandidate
       ? { pageBuildProfileKey: opts.pageBuildCandidate }
       : {}),
+    ...(opts.recallMode ? { recallMode: opts.recallMode } : {}),
     ...(opts.caseIds ? { caseIds: opts.caseIds } : {}),
     ...(opts.repeats !== undefined ? { repeats: opts.repeats } : {}),
     metadata: {

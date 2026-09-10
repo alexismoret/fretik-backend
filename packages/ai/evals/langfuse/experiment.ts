@@ -70,6 +70,12 @@ export interface ExperimentOptions {
    * pages, not just which one decided to.
    */
   pageBuildProfileKey?: string;
+  /**
+   * Serve every turn's recall under this selector. Recorded in the run
+   * metadata: a run that cannot say which selector produced it is not
+   * comparable to another, and the UI will happily line them up anyway.
+   */
+  recallMode?: string;
   runName?: string;
   /**
    * Run every selected case this many times in ONE run (default 1).
@@ -283,6 +289,7 @@ export const runChatbotExperiment = async (
     deterministicOnly: opts.deterministicOnly,
     modelProfileKey: opts.candidateProfileKey,
     pageBuildProfileKey: opts.pageBuildProfileKey,
+    recallMode: opts.recallMode,
   });
   const evaluators = [buildItemEvaluator(configIds)];
   const runEvaluators = [buildRunEvaluator(configIds), buildCostRunEvaluator()];
@@ -308,6 +315,7 @@ export const runChatbotExperiment = async (
     ...(opts.pageBuildProfileKey
       ? { pageBuildProfileKey: opts.pageBuildProfileKey }
       : {}),
+    ...(opts.recallMode ? { recallMode: opts.recallMode } : {}),
     ...(repeats > 1 ? { repeats } : {}),
   };
   const common = {

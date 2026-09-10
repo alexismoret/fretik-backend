@@ -1,7 +1,7 @@
 ---
 name: sharepoint
 description: Microsoft SharePoint — browse and search sites, read and write files in document libraries, query and update SharePoint list rows, and read site pages.
-version: fd7723466c7f
+version: 2731514b2c95
 ---
 
 # Microsoft SharePoint — 32 actions

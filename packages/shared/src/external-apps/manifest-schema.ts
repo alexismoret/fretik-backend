@@ -618,6 +618,32 @@ export const providerManifestSchema = z
       .regex(/^#[0-9A-Fa-f]{6}$/, "iconColor must be a hex color like #0078D4")
       .optional(),
     /**
+     * Optional brand RAMP (2–4 hex stops) painted across a monochrome
+     * Iconify glyph instead of the flat `iconColor`. Ignored when `icon` is
+     * an asset path — an SVG already carries its own colours.
+     *
+     * It exists for the marks whose identity IS the ramp: SharePoint's
+     * `#036C70 → #1A9BA1 → #37C6D0` is what Microsoft publishes as the
+     * logo, and a single flat teal reads as a different product. Most
+     * brands are one colour and should keep `iconColor` alone.
+     *
+     * `iconColor` stays REQUIRED alongside it: it is the flat fallback and
+     * the value the soft container tint is derived from, so a renderer that
+     * ignores gradients still shows a correctly-branded icon.
+     */
+    iconGradient: z
+      .array(
+        z
+          .string()
+          .regex(
+            /^#[0-9A-Fa-f]{6}$/,
+            "iconGradient stops must be hex colors like #036C70",
+          ),
+      )
+      .min(2)
+      .max(4)
+      .optional(),
+    /**
      * OAuth scopes the Nango integration must request. Empty array
      * acceptable for `custom-handler` providers using Basic Auth on a
      * private integration (no OAuth flow).
@@ -700,6 +726,21 @@ export const providerManifestSchema = z
     actions: z.array(actionSchema).min(1),
   })
   .superRefine((manifest, ctx) => {
+    // A gradient never stands alone: `iconColor` is the flat fallback and
+    // the source of the soft container tint. Without it a renderer that
+    // does not paint gradients falls back to `primary` and the provider
+    // shows up unbranded.
+    if (
+      manifest.iconGradient !== undefined &&
+      manifest.iconColor === undefined
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        message:
+          "iconGradient requires iconColor — it is the flat fallback and the container tint",
+      });
+    }
+
     const names = new Set<string>();
     for (const action of manifest.actions) {
       if (names.has(action.name)) {

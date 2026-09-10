@@ -71,6 +71,16 @@ export const providerCatalogEntrySchema = z.object({
       description:
         "Optional hex color tint applied to monochrome Iconify icons. Ignored for asset paths.",
     }),
+  iconGradient: z
+    .array(z.string().regex(/^#[0-9A-Fa-f]{6}$/))
+    .min(2)
+    .max(4)
+    .optional()
+    .openapi({
+      example: ["#036C70", "#1A9BA1", "#37C6D0"],
+      description:
+        "Optional brand ramp (2–4 stops) painted across a monochrome Iconify glyph instead of the flat `iconColor`. Ignored for asset paths; `iconColor` remains the fallback.",
+    }),
   scopes: z.array(z.string()).openapi({
     description: "OAuth scopes the Nango integration must request.",
   }),

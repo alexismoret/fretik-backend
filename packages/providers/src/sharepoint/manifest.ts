@@ -90,8 +90,14 @@ export const sharepointManifest: ProviderManifest = {
   description:
     "Microsoft SharePoint — browse and search sites, read and write files in document libraries, query and update SharePoint list rows, and read site pages.",
   nangoProviderConfigKey: "sharepoint-online",
-  icon: "/app-icons/microsoft-sharepoint.svg",
+  // Monochrome Iconify glyph, like Outlook and Exchange. SharePoint's
+  // identity is a RAMP rather than one colour — Microsoft's Fluent palette
+  // publishes the logo as #036C70 → #1A9BA1 → #37C6D0 — so the glyph is
+  // painted with `iconGradient` and `iconColor` carries the flat fallback
+  // (and the soft container tint) for anything that does not paint one.
+  icon: "i-simple-icons-microsoftsharepoint",
   iconColor: "#036C70",
+  iconGradient: ["#036C70", "#1A9BA1", "#37C6D0"],
   transport: { kind: "nango-proxy" },
   // Root "storage" drives the settings filter. "file-storage" tells the
   // agent SharePoint substitutes for any document-storage request;

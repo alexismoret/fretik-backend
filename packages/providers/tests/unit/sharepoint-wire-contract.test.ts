@@ -1,3 +1,4 @@
+import { providerManifestSchema } from "@fretik/shared/external-apps/manifest-schema";
 import type { ResolvedAction } from "@fretik/shared/external-apps/registry";
 import { buildRequest } from "@fretik/shared/services/external-apps/exec/build-request";
 import { validateActionArgs } from "@fretik/shared/services/external-apps/exec/validate-args";
@@ -443,6 +444,30 @@ describe("response shapes", () => {
     expect(mapped[0]?.granted_to).toEqual(["Marie Dupont"]);
     expect(mapped[1]?.inherited).toBe(false);
     expect(mapped[1]?.link_scope).toBe("organization");
+  });
+});
+
+describe("brand mark", () => {
+  test("the glyph is the Iconify name, with the Fluent ramp and a flat fallback", () => {
+    expect(sharepointManifest.icon).toBe("i-simple-icons-microsoftsharepoint");
+    // Microsoft publishes the SharePoint logo as this ramp; the flat colour
+    // is its first stop, so a renderer that ignores gradients still shows a
+    // correctly-branded mark rather than falling back to `primary`.
+    expect(sharepointManifest.iconGradient).toEqual([
+      "#036C70",
+      "#1A9BA1",
+      "#37C6D0",
+    ]);
+    expect(sharepointManifest.iconColor).toBe("#036C70");
+  });
+
+  test("a ramp without a flat fallback is refused at registry load", () => {
+    const { iconColor: _dropped, ...withoutFlat } = sharepointManifest;
+    expect(() => providerManifestSchema.parse(withoutFlat)).toThrow();
+    // …and the manifest as shipped still parses.
+    expect(() =>
+      providerManifestSchema.parse(sharepointManifest),
+    ).not.toThrow();
   });
 });
 

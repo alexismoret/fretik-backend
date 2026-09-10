@@ -53,6 +53,7 @@ providersRoutes.openapi(listRoute, (c) => {
     displayName: m.displayName,
     icon: m.icon,
     iconColor: m.iconColor,
+    iconGradient: m.iconGradient,
     scopes: m.scopes,
     transport: m.transport,
     // `credentialsForm` is only present on `custom-handler` providers —

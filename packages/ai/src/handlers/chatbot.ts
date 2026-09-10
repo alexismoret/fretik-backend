@@ -58,7 +58,6 @@ import { updateConversation } from "@fretik/shared/services/ai/update";
 import { hasResumableConversationTasks } from "@fretik/shared/services/conversation-tasks/list";
 import { emitDomainEvent } from "@fretik/shared/services/domain-events/emit";
 import { releaseSandbox } from "@fretik/shared/services/e2b/release-sandbox";
-import { readTeamDigest } from "@fretik/shared/services/memory-digest/read";
 import { getTeamToolPolicies } from "@fretik/shared/services/tool-policies/get-for-team";
 import { MAX_FILES_PER_MESSAGE } from "@fretik/shared/utils/chatbot-limits";
 import { OpenAPIHono } from "@hono/zod-openapi";
@@ -110,6 +109,7 @@ import {
   ATTACHED_FILES_UNAVAILABLE,
   buildConversationAttachedFilesBlock,
   loadExternalApps,
+  startTeamDigestRead,
 } from "../agents/shared/fragments";
 import { subscribeAbort } from "../lib/abort-subscriber";
 import { flushLangfuse, langfuseEnabled } from "../lib/langfuse";
@@ -852,14 +852,13 @@ const buildTurnCallOptions = async (
   // other's result: the fragments render it into `<team_digest>`, and recall
   // uses its source ids to leave out of `<active_memory>` what the digest
   // already says. Reading it in both would be two round trips for one row.
-  const teamDigestPromise = readTeamDigest(params.callOptions.teamId).catch(
-    (error: unknown) => {
-      console.warn(
-        `${params.logPrefix} readTeamDigest failed:`,
-        error instanceof Error ? error.message : error,
-      );
-      return null;
-    },
+  // `TEAM_DIGEST_ENABLED=false` resolves this to null, which is what makes it
+  // a rollback rather than a mutilation: recall suppresses what the digest
+  // already says, so a flag that only silenced `<team_digest>` would leave
+  // those memories out of BOTH blocks.
+  const teamDigestPromise = startTeamDigestRead(
+    params.callOptions.teamId,
+    params.logPrefix,
   );
 
   // Every stage below is timed into one record and logged as a single

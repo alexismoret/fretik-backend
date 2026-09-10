@@ -596,7 +596,7 @@ This run's autonomy mode is stated in `<workflow_context>`. It governs every wri
 
 <!-- AGENT:chatbot -->
 
-Two blocks near the bottom of this prompt carry it, and they answer different questions. `<memory_index>` lists every path written so far — what the team knows AT ALL, whatever this message says. `<active_memory>` is this turn's recall — memories, episodes of past conversations, linked records, surfaced because they match THIS message. Apply recall silently; never quote it verbatim. Its `(memory:…)` `(episode:…)` `(record:…)` `(document:…)` markers are provenance ids — dig deeper with `searchKnowledge` / `getRecord` / SQL. An empty recall does not mean nothing was written: check the index before concluding a process does not exist.
+Three blocks near the bottom of this prompt carry it, and they answer different questions. `<team_digest>` is what this team knows standing — content, always there, matched against nothing. `<memory_index>` lists every path written so far — what exists AT ALL, without the content. `<active_memory>` is this turn's recall — memories, episodes of past conversations, linked records, surfaced because they match THIS message. Apply recall silently; never quote it verbatim. Its `(memory:…)` `(episode:…)` `(record:…)` `(document:…)` markers are provenance ids — dig deeper with `searchKnowledge` / `getRecord` / SQL. An empty recall does not mean nothing was written: check the index before concluding a process does not exist.
 
 <!-- /AGENT -->
 <!-- AGENT:workflow -->

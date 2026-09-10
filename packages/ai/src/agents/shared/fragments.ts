@@ -66,6 +66,48 @@ export const MEMORY_INDEX_UNAVAILABLE =
   "_The memory index could not be loaded for this turn. Memories may still exist — search with `searchKnowledge` before telling the user there are none._";
 
 /**
+ * Phase-3 rollback: stop SERVING the team digest without stopping its writers.
+ *
+ * The jobs keep rewriting it, so turning this back on serves a current digest
+ * rather than one frozen at the moment of the incident — and the row, with its
+ * `previous_content`, stays readable while the flag is off. Read at module
+ * load, like `RECALL_MODE`: it takes effect on the next restart, not the next
+ * turn.
+ */
+const TEAM_DIGEST_ENABLED = process.env.TEAM_DIGEST_ENABLED !== "false";
+
+/**
+ * The turn's ONE read of the team digest, honouring the flag.
+ *
+ * The caller hoists it because two stages need the same row and neither can
+ * see the other's result: the fragments render it into `<team_digest>`, and
+ * recall uses its source ids to leave out of `<active_memory>` what the digest
+ * already says.
+ *
+ * Never throws: a digest that cannot be read is a turn without a digest, not a
+ * failed turn — same contract as every other fragment in the batch.
+ */
+export const startTeamDigestRead = (
+  teamId: string,
+  logPrefix: string,
+): Promise<TeamMemoryDigest | null> => {
+  if (!TEAM_DIGEST_ENABLED) return Promise.resolve(null);
+  return readTeamDigest(teamId).catch((error: unknown) => {
+    console.warn(
+      `${logPrefix} readTeamDigest failed, continuing without the team digest:`,
+      error instanceof Error ? error.message : error,
+    );
+    return null;
+  });
+};
+
+const readDigestForTurn = (
+  scope: FragmentScope,
+  startedDigest?: Promise<TeamMemoryDigest | null>,
+): Promise<TeamMemoryDigest | null> =>
+  startedDigest ?? startTeamDigestRead(scope.teamId, scope.logPrefix);
+
+/**
  * The purely scope-based fragments (persistent-context manifest, team
  * objects catalogue, enabled skills, memory index), built in parallel behind
  * the same soft-timeouts as the historical chatbot inline version.
@@ -189,15 +231,7 @@ export const assembleContextFragments = async (
     // failed, and a summary a few days old beats no summary — the marker is for
     // the operator, not for the turn.
     withSoftTimeout(
-      (startedDigest ?? readTeamDigest(scope.teamId)).catch(
-        (error: unknown) => {
-          console.warn(
-            `${scope.logPrefix} readTeamDigest failed, continuing without the team digest:`,
-            error instanceof Error ? error.message : error,
-          );
-          return null;
-        },
-      ),
+      readDigestForTurn(scope, startedDigest),
       3000,
       null,
       "team-digest",

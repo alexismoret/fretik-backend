@@ -99,11 +99,67 @@ const BM25_WEIGHT = 0.2;
 const REGISTRY_WEIGHT = 0.2;
 
 /**
- * HNSW query-time parameter. The pgvector default is 40, too low for
- * high-recall RAG — 100 is the Anthropic / Crunchy Data recommended
- * value for 768-2560 dim embeddings with `m=16, ef_construction=200`.
+ * HNSW query-time candidate list size — how many neighbours the graph search
+ * keeps in flight, and therefore WHICH rows come back.
+ *
+ * 400, and it is a measurement (2026-09-10, ten real eval questions against the
+ * EVAL team's 20 108-row knowledge partition; every result compared against the
+ * exact scan's answer, and every plan asserted to be the HNSW index scan —
+ * three earlier attempts at this table were artefacts of a planner that had
+ * quietly answered exactly):
+ *
+ *   ef    rows/150   recall@20   recall@150   RRF mass   ms
+ *   40    150        97.5 %      84.5 %       92.7 %     59
+ *   100   150        98.0 %      87.7 %       94.7 %     46
+ *   200   150        100 %       95.1 %       98.3 %     52
+ *   400   150        100 %       98.1 %       99.4 %     62
+ *   800   150        100 %       99.7 %       99.9 %     70
+ *
+ * against 225 ms for the exact answer. "RRF mass" is the share of this arm's
+ * fusion weight `SEMANTIC_WEIGHT/(rank+1)` that survives, which is the honest
+ * metric: a row missed at rank 150 is worth a fiftieth of one missed at rank 1.
+ *
+ * The top of the ranking is EXACT from ef=200 up, and the top is all that
+ * survives fusion and rerank — so this constant does not trade precision for
+ * speed, it trades the depth of a tail nothing reads. 400 is where another
+ * 10 ms stops buying a measurable tail.
+ *
+ * It is not self-correcting: a fixed ef returns a worse tail as the corpus
+ * grows. `HNSW_ITERATIVE_SCAN` and the famine probe below are what hold as
+ * volume changes; re-run the table if the corpus changes by an order of
+ * magnitude.
  */
-const HNSW_EF_SEARCH = 100;
+const HNSW_EF_SEARCH = 400;
+
+/**
+ * What pgvector does when the scope filter leaves fewer than `LIMIT` rows in
+ * the candidate list: `off` returns SHORT, `strict_order` re-scans with a
+ * growing list until it has them, still in exact distance order.
+ *
+ * This — not `ef_search` — is the load-bearing setting. In the same
+ * measurement, `off` at the pgvector default ef=40 returned **32 of the 150
+ * rows asked for**, and at this file's previous ef=100 it returned **87 of
+ * 150**: no error, no log, just a third of the arm missing. Under
+ * `strict_order` every ef returned 150/150. So `ef_search` decides which rows
+ * come back and this decides how many, and only this one keeps its guarantee
+ * as the corpus grows.
+ */
+const HNSW_ITERATIVE_SCAN = "strict_order";
+
+/**
+ * Kill switch for the index, without a deploy.
+ *
+ * `hnsw` (default) tunes the index and leaves the choice to the planner.
+ * `exact` forbids the index scan, so the planner falls back to a full scan plus
+ * a sort — the exact, slower plan this service ran before the planner-cost
+ * migration, and the rollback if the index ever misbehaves in production.
+ *
+ * Called `exact` rather than `seqscan` because that is what it actually
+ * guarantees: the planner may answer with a bitmap heap scan instead of a
+ * sequential one (measured — it does), and both are exact.
+ */
+const SEMANTIC_SCAN_MODE: "hnsw" | "exact" =
+  process.env.SEMANTIC_SCAN_MODE === "exact" ? "exact" : "hnsw";
 
 export interface HybridSearchFilters {
   /**
@@ -207,6 +263,73 @@ const wantsRecords = (filters: HybridSearchFilters | undefined): boolean =>
   filters.sourceTypes.length === 0 ||
   filters.sourceTypes.includes("records");
 
+/**
+ * Which slice of the corpus a call is searching, for the log line.
+ *
+ * `searchRAG` fires three of these per turn against wildly different
+ * populations — tens of thousands of rows for the knowledge arm, a hundred for
+ * documents, a handful for workflows and pages. Without this the `[hybrid]`
+ * timings pool all three into one distribution and a regression in the only arm
+ * that scans anything is invisible.
+ */
+export const armLabel = (filters: HybridSearchFilters | undefined): string =>
+  filters?.sourceTypes && filters.sourceTypes.length > 0
+    ? filters.sourceTypes.join("+")
+    : "all";
+
+/**
+ * The per-transaction tuning, as ONE statement.
+ *
+ * `set_config(…, is_local => true)` is `SET LOCAL` in function form, which is
+ * the whole reason to use it: two settings fit in one statement, where two
+ * `SET LOCAL`s would cost two round trips to a database that is not local.
+ */
+const semanticTuning = (mode: "hnsw" | "exact" = SEMANTIC_SCAN_MODE): SQL =>
+  mode === "exact"
+    ? sql`SELECT set_config('enable_indexscan', 'off', true)`
+    : sql`SELECT set_config('hnsw.ef_search', ${String(HNSW_EF_SEARCH)}, true), set_config('hnsw.iterative_scan', ${HNSW_ITERATIVE_SCAN}, true)`;
+
+/**
+ * Whether a short arm is worth investigating at all.
+ *
+ * Exported because it is the only decision here worth a test: it is what stands
+ * between a warning that means something and one that fires on every small
+ * tenant until everyone filters it out.
+ */
+export const shouldProbeForFamine = (
+  rowsReturned: number,
+  mode: "hnsw" | "exact" = SEMANTIC_SCAN_MODE,
+): boolean => mode === "hnsw" && rowsReturned < PER_SEARCH_LIMIT;
+
+/**
+ * A short semantic arm is either a small corpus or a famished index, and the
+ * two could not matter more differently: the second is silent, gets worse with
+ * volume, and is the single failure mode this phase exists to prevent. So the
+ * arm's row count alone is not the signal — "there is a 151st matching row and
+ * we did not get it" is. That costs one cheap existence probe, and it runs ONLY
+ * when the arm came back short.
+ *
+ * Deliberately not awaited by the caller: it is a diagnostic, and the arm it
+ * describes has already answered. Awaiting it would add a round trip to every
+ * documents-arm search of every team whose corpus is honestly under 150 rows.
+ */
+const warnIfFamished = async (
+  clauses: SQL[],
+  rowsReturned: number,
+  arm: string,
+): Promise<void> => {
+  const more = await db
+    .select({ present: sql<number>`1` })
+    .from(aiVectors)
+    .where(and(...clauses))
+    .offset(PER_SEARCH_LIMIT)
+    .limit(1);
+  if (more.length === 0) return;
+  console.warn(
+    `[hybrid-search] arm=${arm} semantic returned ${String(rowsReturned)}/${String(PER_SEARCH_LIMIT)} rows while more match — HNSW famine. Check hnsw.iterative_scan (set to ${HNSW_ITERATIVE_SCAN}), hnsw.ef_search (${String(HNSW_EF_SEARCH)}) and hnsw.max_scan_tuples, which caps an iterative scan at 20 000 tuples by default.`,
+  );
+};
+
 const runSemanticSearch = async (
   queryEmbedding: number[],
   teamId: string,
@@ -218,12 +341,10 @@ const runSemanticSearch = async (
   const clauses = buildFilterClauses(teamId, organizationId, userId, filters);
   const distance = sql<number>`${aiVectors.embedding} <=> ${vectorLiteral}::halfvec`;
 
-  return db.transaction(async (tx) => {
-    // SET LOCAL only scopes to the current transaction — the wrapping
-    // `db.transaction` is mandatory for the tuning to take effect.
-    await tx.execute(
-      sql`SET LOCAL hnsw.ef_search = ${sql.raw(String(HNSW_EF_SEARCH))}`,
-    );
+  const rows = await db.transaction(async (tx) => {
+    // `SET LOCAL` scopes to the current transaction only — the wrapping
+    // `db.transaction` is mandatory for the tuning to take effect at all.
+    await tx.execute(semanticTuning());
     return tx
       .select({
         id: aiVectors.id,
@@ -241,6 +362,18 @@ const runSemanticSearch = async (
       .orderBy(distance)
       .limit(PER_SEARCH_LIMIT);
   });
+
+  if (shouldProbeForFamine(rows.length)) {
+    void warnIfFamished(clauses, rows.length, armLabel(filters)).catch(
+      (err: unknown) => {
+        console.warn(
+          "[hybrid-search] famine probe failed:",
+          err instanceof Error ? err.message : err,
+        );
+      },
+    );
+  }
+  return rows;
 };
 
 const runBm25Search = async (
@@ -371,7 +504,9 @@ export const hybridSearch = async (
         )
       : Promise.resolve<RegistryRow[]>([]),
   ]);
-  console.info(`[hybrid] ${formatTimings(armTimings)}`);
+  console.info(
+    `[hybrid] arm=${armLabel(filters)} scan=${SEMANTIC_SCAN_MODE} ${formatTimings(armTimings)} rows=${String(semanticRows.length)}/${String(bm25Rows.length)}/${String(registryRows.length)}`,
+  );
 
   return fuseArms({
     semanticRows,
@@ -393,4 +528,9 @@ export const HYBRID_CONSTANTS = {
   BM25_WEIGHT,
   REGISTRY_WEIGHT,
   HNSW_EF_SEARCH,
+  HNSW_ITERATIVE_SCAN,
+  SEMANTIC_SCAN_MODE,
 } as const;
+
+/** The tuning statement, for the test that pins what each mode actually sends. */
+export const semanticTuningSql = semanticTuning;

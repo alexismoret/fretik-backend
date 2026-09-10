@@ -132,11 +132,7 @@ export const confirmConnection = async (params: {
   // (OAuth) the grant itself is the test, and there's no testCredentials.
   let initialStatus: ExternalAppConnection["status"] = "active";
   let initialError: string | null = null;
-  if (
-    provider.manifest.transport.kind !== "nango-proxy" &&
-    provider.manifest.credentialsForm?.testConnection.supported === true &&
-    provider.testCredentials !== undefined
-  ) {
+  if (provider.manifest.transport.kind !== "nango-proxy") {
     const rawCredentials = isRecord(nangoConnection.credentials)
       ? (nangoConnection.credentials as Record<string, unknown>)
       : {};
@@ -152,21 +148,45 @@ export const confirmConnection = async (params: {
         rawCredentials,
         rawConnectionConfig,
       );
-    try {
-      const result = await provider.testCredentials({
-        credentials,
-        connection_config: connectionConfig,
-      });
-      if (!result.ok) {
+
+    if (
+      provider.manifest.credentialsForm?.testConnection.supported === true &&
+      provider.testCredentials !== undefined
+    ) {
+      try {
+        const result = await provider.testCredentials({
+          credentials,
+          connection_config: connectionConfig,
+        });
+        if (!result.ok) {
+          initialStatus = "error";
+          initialError =
+            result.scope !== undefined
+              ? `${result.scope}: ${result.message}`
+              : result.message;
+        }
+      } catch (error) {
         initialStatus = "error";
-        initialError =
-          result.scope !== undefined
-            ? `${result.scope}: ${result.message}`
-            : result.message;
+        initialError = error instanceof Error ? error.message : String(error);
       }
-    } catch (error) {
-      initialStatus = "error";
-      initialError = error instanceof Error ? error.message : String(error);
+    }
+
+    // The provider's one-shot setup — only once the credentials are known
+    // good, so a failure here means what it says (the setup call failed)
+    // rather than restating a bad key. It gates the SAME status field: a
+    // connection whose server-side selection never landed would answer with
+    // a scope the user did not choose, which is worse than a visible error.
+    if (initialStatus === "active" && provider.onConnected !== undefined) {
+      try {
+        await provider.onConnected({
+          credentials,
+          connection_config: connectionConfig,
+          options: validatedOptions,
+        });
+      } catch (error) {
+        initialStatus = "error";
+        initialError = error instanceof Error ? error.message : String(error);
+      }
     }
   }
 

@@ -81,7 +81,7 @@ const runRead = async (
       paginate: req.paginate,
     });
     return resolved.responseMapper !== undefined
-      ? resolved.responseMapper(raw)
+      ? resolved.responseMapper(raw, validated)
       : raw;
   }
 
@@ -96,9 +96,10 @@ const runRead = async (
       endpoint: req.endpoint,
       query: req.query,
       body: req.body,
+      multipart: req.multipart,
     });
     return resolved.responseMapper !== undefined
-      ? resolved.responseMapper(raw)
+      ? resolved.responseMapper(raw, validated)
       : raw;
   }
 

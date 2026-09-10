@@ -120,6 +120,63 @@ export default {
         new_batch: "Nouveau lot",
         new_quantity: "Nouvelle quantité (UVC)",
         new_expiry: "Nouvelle date limite",
+        // Libellés spécifiques Pbyp.
+        collection: "Table",
+        row_count: "Lignes",
+        reference: "Référence",
+        ids: "Identifiants",
+        number: "Numéro",
+        module: "Module",
+        incoterm: "Incoterm",
+        shipper: "Expéditeur",
+        consignee: "Destinataire",
+        client_reference: "Référence client",
+        parcels: "Lignes de marchandise",
+        shared_with: "Partagé avec",
+        comments: "Commentaires",
+        folder_type: "Type de dossier",
+        master_id: "Dossier master",
+        order_ids: "Commandes",
+        booking_number: "Numéro de booking",
+        ship_name: "Navire",
+        voyage_number: "Numéro de voyage",
+        BL_number: "Numéro de BL",
+        LTA: "LTA",
+        ETD: "ETD",
+        ETA: "ETA",
+        containers: "Conteneurs",
+        container_count: "Conteneurs",
+        flights: "Vols",
+        validity_end_date: "Valable jusqu'au",
+        quotes: "Lignes de prix",
+        target: "Objet visé",
+        event_type_id: "Type d'événement",
+        actual: "Réalisé",
+        total_quantity: "Quantité totale",
+        order_id: "Commande",
+        folder_id: "Dossier",
+        object: "Objet",
+        object_id: "Identifiant de l'objet",
+        entity_id: "Entité",
+        access: "Accès",
+        quotation_id: "Cotation",
+        quotation_status: "Statut",
+        gateway_id: "Passerelle",
+        external_reference: "Référence partenaire",
+        external_code: "Code partenaire",
+        gateway_type: "Partenaire",
+        scope: "Portée",
+        target_id: "Identifiant visé",
+        parcel_id: "Ligne de marchandise",
+        profile_id: "Profil",
+        booking_id: "Booking",
+        first_awb: "Première LTA",
+        last_awb: "Dernière LTA",
+        airline_company: "Compagnie aérienne",
+        role_id: "Rôle",
+        agency_id: "Agence",
+        admin_email: "E-mail de l'administrateur",
+        address: "Adresse",
       },
 
       values: {
@@ -397,6 +454,93 @@ export default {
         },
         create_contact: {
           title: { default: 'Créer le contact "{{name}}"' },
+        },
+      },
+
+      pbyp: {
+        create_items: {
+          title: { default: "Créer {{count}} ligne(s) dans {{collection}}" },
+        },
+        update_items: {
+          title: { default: "Modifier {{count}} ligne(s) dans {{collection}}" },
+        },
+        delete_items: {
+          title: { default: "Supprimer {{count}} ligne(s) de {{collection}}" },
+        },
+        create_order: {
+          title: { default: "Créer la commande « {{number}} »" },
+        },
+        create_folder: {
+          title: { default: "Créer un dossier {{module}} {{type}}" },
+        },
+        create_sea_booking: {
+          title: { default: "Créer le booking maritime « {{number}} »" },
+        },
+        create_air_booking: {
+          title: { default: "Créer le booking aérien « {{number}} »" },
+        },
+        create_quotation: {
+          title: { default: "Créer la cotation « {{number}} »" },
+        },
+        add_event: {
+          title: { default: "Ajouter un événement sur le {{target}}" },
+        },
+        set_parcels: {
+          title: {
+            default: "Remplacer les marchandises du {{target}}",
+          },
+        },
+        attach_order_to_folder: {
+          title: { default: "Rattacher la commande au dossier" },
+        },
+        detach_order_from_folder: {
+          title: { default: "Détacher la commande du dossier" },
+        },
+        share_with_entity: {
+          title: { default: "Donner l'accès à l'entité {{entity_id}}" },
+        },
+        revoke_share: {
+          title: { default: "Retirer l'accès de l'entité {{entity_id}}" },
+        },
+        archive: {
+          title: { default: "Annuler le {{object}}" },
+        },
+        set_quotation_status: {
+          title: { default: "Passer la cotation en {{status}}" },
+        },
+        transfer_to_gateway: {
+          title: {
+            default: "Transférer le {{object}} vers une passerelle partenaire",
+          },
+        },
+        assign_containers: {
+          title: {
+            default: "Empoter la marchandise ({{count}} ligne(s))",
+          },
+        },
+        unassign_parcel_container: {
+          title: { default: "Sortir une ligne de marchandise du conteneur" },
+        },
+        activate_profile: {
+          title: { default: "Basculer sur le profil {{profile_id}}" },
+        },
+        create_gateway: {
+          title: { default: "Créer la passerelle EDI « {{code}} »" },
+        },
+        update_gateway: {
+          title: { default: "Modifier la passerelle EDI « {{code}} »" },
+        },
+        declare_tracking: {
+          title: { default: "Déclarer le booking au suivi transporteur" },
+        },
+        create_lta_stock: {
+          title: { default: "Réserver une plage de numéros de LTA" },
+        },
+        invite_user: {
+          title: { default: "Inviter {{email}}" },
+        },
+        create_client: {
+          title: { default: "Créer la société cliente « {{name}} »" },
         },
       },
 

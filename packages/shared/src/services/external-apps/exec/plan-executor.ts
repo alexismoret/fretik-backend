@@ -108,7 +108,7 @@ export const executePlan = async (params: {
         );
         data =
           resolved.responseMapper !== undefined
-            ? resolved.responseMapper(raw)
+            ? resolved.responseMapper(raw, cleanArgs)
             : raw;
       } else if (transport.kind === "http-direct") {
         const req = buildRequest(resolved, cleanArgs);
@@ -122,11 +122,12 @@ export const executePlan = async (params: {
             endpoint: req.endpoint,
             query: req.query,
             body: req.body,
+            multipart: req.multipart,
           }),
         );
         data =
           resolved.responseMapper !== undefined
-            ? resolved.responseMapper(raw)
+            ? resolved.responseMapper(raw, cleanArgs)
             : raw;
       } else {
         const handler = resolved.handler;

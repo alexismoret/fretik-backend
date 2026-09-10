@@ -73,3 +73,57 @@ describe("buildRequest header threading", () => {
     ).toBeUndefined();
   });
 });
+
+/**
+ * Multipart exists for upload endpoints that accept nothing else — Directus'
+ * `POST /files` is the case that forced it. Nango Proxy serialises a JSON
+ * body, so handing it a file part would drop the bytes and still answer 2xx:
+ * the mistake has to fail where it is made.
+ */
+describe("buildRequest multipart", () => {
+  const multipart = {
+    fields: { title: "BL.pdf" },
+    file: {
+      field: "file",
+      filename: "BL.pdf",
+      contentType: "application/pdf",
+      base64: "JVBERi0=",
+    },
+  };
+
+  it("carries a mapper's multipart body through on http-direct", () => {
+    const built = buildRequest(
+      resolved({
+        transport: {
+          kind: "http-direct",
+          baseUrl: "https://example.test",
+          auth: {
+            kind: "header",
+            name: "Authorization",
+            source: "credentials.api_key",
+          },
+        },
+        requestMapper: () => ({ multipart }),
+      }),
+      { thing_id: "T1" },
+    );
+    expect(built.multipart).toEqual(multipart);
+    expect(built.body).toBeUndefined();
+  });
+
+  it("refuses it on any other transport rather than dropping the file", () => {
+    expect(() =>
+      buildRequest(resolved({ requestMapper: () => ({ multipart }) }), {
+        thing_id: "T1",
+      }),
+    ).toThrow(/http-direct only/);
+  });
+
+  it("is undefined on every request that does not ask for it", () => {
+    expect(
+      buildRequest(resolved({ requestMapper: () => ({ body: {} }) }), {
+        thing_id: "T1",
+      }).multipart,
+    ).toBeUndefined();
+  });
+});

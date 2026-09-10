@@ -41,11 +41,19 @@ import "../src/index";
 interface ProviderInput {
   manifest: ProviderManifest;
   guidancePath: string;
+  /**
+   * Optional `src/<key>/references/` — deep material the SKILL body points
+   * at by name and the agent reads only when it needs it (a collection
+   * dictionary, a status machine, an EDI recipe). Copied verbatim next to
+   * SKILL.md. Absent for providers whose whole knowledge fits in guidance.
+   */
+  referencesDir: string;
 }
 
 const PROVIDERS: ProviderInput[] = listProviderManifests().map((manifest) => ({
   manifest,
   guidancePath: `${import.meta.dir}/../src/${manifest.key}/guidance.md`,
+  referencesDir: `${import.meta.dir}/../src/${manifest.key}/references`,
 }));
 
 /** Same transform the codegen lib uses — kebab manifest key → snake module. */
@@ -68,6 +76,33 @@ const manifestVersion = (manifest: ProviderManifest): string => {
   const hasher = new Bun.CryptoHasher("sha256");
   hasher.update(JSON.stringify(manifest));
   return hasher.digest("hex").slice(0, 12);
+};
+
+/**
+ * Mirror `src/<key>/references/*.md` into `skills/<key>/references/`.
+ *
+ * The target is wiped first: a reference the provider deleted must stop
+ * being shipped, and a stale one is worse than a missing one — the agent
+ * trusts these files as current. Returns how many files landed.
+ */
+const copyReferences = async (input: ProviderInput): Promise<number> => {
+  const target = `${SKILLS_DIR}/${input.manifest.key}/references`;
+  await Bun.$`rm -rf ${target}`.quiet();
+
+  const glob = new Bun.Glob("*.md");
+  const names = await Array.fromAsync(
+    glob.scan({ cwd: input.referencesDir, onlyFiles: true }),
+  ).catch(() => [] as string[]);
+
+  await Promise.all(
+    names.map(async (name) =>
+      Bun.write(
+        `${target}/${name}`,
+        await Bun.file(`${input.referencesDir}/${name}`).text(),
+      ),
+    ),
+  );
+  return names.length;
 };
 
 // ── Main ──────────────────────────────────────────────────────────────
@@ -117,8 +152,13 @@ const main = async (): Promise<void> => {
     ]),
   ]);
 
+  // After the SKILL.md writes — `copyReferences` wipes the folder it fills,
+  // so it must not race a writer in the same batch.
+  const referenceCounts = await Promise.all(PROVIDERS.map(copyReferences));
+  const referenceTotal = referenceCounts.reduce((a, b) => a + b, 0);
+
   console.log(
-    `✓ Generated SDK + SKILL.md for ${PROVIDERS.length.toString()} provider(s) into ${OUT_DIR}`,
+    `✓ Generated SDK + SKILL.md for ${PROVIDERS.length.toString()} provider(s) (${referenceTotal.toString()} reference file(s)) into ${OUT_DIR}`,
   );
 };
 

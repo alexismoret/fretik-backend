@@ -11,6 +11,7 @@ import {
   RECORD_CARD_QUEUE,
   VECTOR_RECONCILE_QUEUE,
   WORKFLOW_TRIGGER_QUEUE,
+  type DigestRefreshJobData,
   type DreamingTeamJobData,
   type EagerConsolidateJobData,
   type MemoryDistillJobData,
@@ -19,8 +20,13 @@ import {
   type WorkflowRunCreateJobData,
 } from "./names";
 
-/** Both job shapes ride the dreaming queue (see EAGER_CONSOLIDATE_JOB). */
-export type DreamingJobData = DreamingTeamJobData | EagerConsolidateJobData;
+/**
+ * Three job shapes ride the dreaming queue. They are dispatched by job NAME,
+ * not by shape: `DigestRefreshJobData` and `DreamingTeamJobData` are
+ * structurally identical, so a `"field" in data` check cannot tell them apart.
+ */
+export type DreamingJobData =
+  DreamingTeamJobData | EagerConsolidateJobData | DigestRefreshJobData;
 
 /**
  * Lazily-created Queue singletons (producer side — the sweep fans out through

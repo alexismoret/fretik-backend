@@ -8,6 +8,7 @@ import {
   type MemoryDistillJobData,
 } from "../queues/names";
 import { getMemoryDreamingQueue } from "../queues/queues";
+import { enqueueDigestRefresh } from "./dreaming";
 
 /**
  * Distill one quiet conversation into its episode via the AI service
@@ -67,6 +68,17 @@ const distill = async (data: MemoryDistillJobData): Promise<void> => {
           err instanceof Error ? err.message : err,
         );
       });
+
+    // A new episode is a new "current decision" IF the conversation was
+    // team-visible. This does not check which: the digest collector filters by
+    // scope on its own, and the fingerprint then skips a rewrite that would
+    // change nothing — so signalling every distill costs one debounced enqueue
+    // and never a wasted model call. Deciding here would duplicate that rule in
+    // a second place, where it could drift.
+    enqueueDigestRefresh({
+      teamId: data.teamId,
+      organizationId: data.organizationId,
+    });
   }
 };
 

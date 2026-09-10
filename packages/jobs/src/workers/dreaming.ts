@@ -11,9 +11,12 @@ import {
 import { type Job, Worker } from "bullmq";
 import { z } from "zod";
 import {
+  DIGEST_REFRESH_JOB,
+  type DigestRefreshJobData,
   DREAMING_TEAM_JOB,
   type DreamingTeamJobData,
   type EagerConsolidateJobData,
+  MEMORY_DIGEST_DEBOUNCE_MS,
   MEMORY_DREAMING_QUEUE,
 } from "../queues/names";
 import {
@@ -83,6 +86,12 @@ const promoteResponseSchema = z.object({
   added: z.number(),
   updated: z.number(),
   noop: z.number(),
+});
+const digestResponseSchema = z.object({
+  status: z.enum(["skipped", "written", "kept-previous"]),
+  reason: z.string().optional(),
+  tokenCount: z.number().optional(),
+  dropped: z.number().optional(),
 });
 
 /** Fan out one idempotent per-team job per active team. Called by the cron. */
@@ -250,6 +259,12 @@ export const runDreamingTeam = async (
     }
   }
 
+  // 5. The team digest, LAST — it summarises what the four steps above just
+  // produced, so running it first would summarise last night. Inline rather
+  // than enqueued: the debounced job exists to collapse bursts of memory
+  // writes, and there is no burst here.
+  await runDigestRefresh(scope);
+
   console.info(
     `[dreaming] team ${data.teamId}: ${stale.length.toString()} distills enqueued, ` +
       `digests ${digestsOk.toString()} ok / ${digestsFailed.toString()} failed, ` +
@@ -287,6 +302,10 @@ export const runEagerConsolidation = async (
     console.info(
       `[dreaming] eager consolidate episode ${data.episodeId}: ${result.action}`,
     );
+    // A MERGE or a REVISE changes which episodes are `active`, which is exactly
+    // what the digest's "current decisions" reads. A NOOP changed nothing, so
+    // it asks for nothing.
+    if (result.action !== "NOOP") enqueueDigestRefresh(scope);
   } catch (err) {
     console.error(
       `[dreaming] eager consolidation failed for episode ${data.episodeId}:`,
@@ -295,13 +314,84 @@ export const runEagerConsolidation = async (
   }
 };
 
+/**
+ * Rewrite one team's standing digest.
+ *
+ * Best-effort like every other step here: a failure logs and the next trigger
+ * — a memory write, or tonight's sweep — re-derives the same inputs. The
+ * service keeps serving the previous digest meanwhile, which is why a failed
+ * refresh is a delay rather than an outage.
+ */
+export const runDigestRefresh = async (
+  data: DigestRefreshJobData,
+): Promise<void> => {
+  const scope = { teamId: data.teamId, organizationId: data.organizationId };
+  try {
+    const result = await callAiService(
+      "/internal/memory/build-team-digest",
+      { ...scope, ...(data.force === true ? { force: true } : {}) },
+      digestResponseSchema,
+      scope,
+    );
+    // `skipped` is the expected outcome most of the time and says so plainly:
+    // the fingerprint matched, so the team changed nothing worth rewriting.
+    console.info(
+      `[dreaming] digest team ${data.teamId}: ${result.status}` +
+        (result.tokenCount !== undefined
+          ? ` (${result.tokenCount.toString()} tokens)`
+          : "") +
+        (result.reason !== undefined ? ` — ${result.reason}` : ""),
+    );
+  } catch (err) {
+    console.error(
+      `[dreaming] digest refresh failed for team ${data.teamId}:`,
+      err instanceof Error ? err.message : err,
+    );
+  }
+};
+
+/**
+ * Ask for a refresh, at most once per debounce window per team.
+ *
+ * The fixed `jobId` IS the debounce: BullMQ refuses a duplicate id while the
+ * job is still delayed, so a burst of memory writes collapses into one
+ * rewrite. Callers therefore do not need to decide whether a write is "worth"
+ * a refresh — they signal every time, cheaply, and this decides.
+ *
+ * Fire-and-forget by contract: no caller should fail its own work because a
+ * digest refresh could not be queued.
+ */
+export const enqueueDigestRefresh = (data: DigestRefreshJobData): void => {
+  void getMemoryDreamingQueue()
+    .add(DIGEST_REFRESH_JOB, data, {
+      jobId: `digest-${data.teamId}`,
+      delay: MEMORY_DIGEST_DEBOUNCE_MS,
+      attempts: 2,
+      backoff: { type: "exponential", delay: 60_000 },
+      removeOnComplete: true,
+      removeOnFail: 100,
+    })
+    .catch((err: unknown) => {
+      console.error(
+        `[dreaming] could not enqueue digest refresh for team ${data.teamId}:`,
+        err instanceof Error ? err.message : err,
+      );
+    });
+};
+
 export const startDreamingWorker = (): Worker<DreamingJobData> => {
   const worker = new Worker<DreamingJobData>(
     MEMORY_DREAMING_QUEUE,
-    (job: Job<DreamingJobData>) =>
-      "episodeId" in job.data
-        ? runEagerConsolidation(job.data)
-        : runDreamingTeam(job.data),
+    // `episodeId` still narrows eager consolidation, because it is the only
+    // shape carrying one. The other two are structurally IDENTICAL, so the
+    // name is the only thing that can tell them apart — a shape test would
+    // have silently routed every digest refresh into a full nightly sweep.
+    (job: Job<DreamingJobData>) => {
+      const data = job.data;
+      if ("episodeId" in data) return runEagerConsolidation(data);
+      if (job.name === DIGEST_REFRESH_JOB) return runDigestRefresh(data);
+      return runDreamingTeam(data);
+    },
     { connection: createWorkerConnection(), concurrency: TEAM_CONCURRENCY },
   );
   worker.on("failed", (job, err) => {

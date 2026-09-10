@@ -10,6 +10,7 @@ import {
   getMemoryResolveQueue,
   getRecordCardQueue,
 } from "../queues/queues";
+import { enqueueDigestRefresh } from "./dreaming";
 
 /**
  * The journal→memory bridge. Every sweep advances the `memory-resolver`
@@ -330,6 +331,30 @@ const runSweepPass = async (): Promise<number> => {
         },
       })),
     );
+  }
+
+  // A TEAM memory write changes what the standing digest should say, so the
+  // digest is asked to refresh — debounced, so an afternoon of writes costs one
+  // rewrite. User-scope writes are skipped: they never enter the digest (it is
+  // read by every member), so refreshing on one would spend a model call to
+  // produce the same text.
+  //
+  // One enqueue per team per batch, not per event: the sweep routinely carries
+  // dozens of memory events from a single dreaming night.
+  const digestTeams = new Map<string, { organizationId: string }>();
+  for (const e of events) {
+    if (
+      e.type !== "memory.created" &&
+      e.type !== "memory.updated" &&
+      e.type !== "memory.deleted" &&
+      e.type !== "memory.renamed"
+    )
+      continue;
+    if (e.payload["scope"] !== "team") continue;
+    digestTeams.set(e.teamId, { organizationId: e.organizationId });
+  }
+  for (const [teamId, { organizationId }] of digestTeams) {
+    enqueueDigestRefresh({ teamId, organizationId });
   }
 
   const last = events[events.length - 1];

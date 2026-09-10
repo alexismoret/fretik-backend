@@ -327,6 +327,77 @@ predates the arm label and mixes a 20 000-row query with a 118-row one and a
 6-row one. It is kept for the record, but it is not the "before" of anything;
 the isolated 476 ms is.
 
+#### Answer-level after Phase 1 — 12 × 10, `adaptive`, `p1-mr-adaptive`
+
+Same suite, same `--concurrency 3`, same model (`deepseek-v4-flash` on every
+case — checked, because the harness logged `[model-live] database read timed
+out — serving stale` at boot and an empty registry would have changed the model
+and silently invalidated the comparison).
+
+| case                      | Phase 0 `adaptive` | after Phase 1 |
+| ------------------------- | -----------------: | ------------: |
+| the nine retrieval-shaped |              10/10 |     **10/10** |
+| `mr-abstain-general`      |               8/10 |      **9/10** |
+| **`mr-broad`**            |           **6/10** |      **9/10** |
+| `mr-private-leak`         |    (not baselined) |          9/10 |
+| overall correctness       |              0.985 |     **0.995** |
+| overall pass-rate         |              0.942 |     **0.983** |
+
+**No case regressed, and the two that were weak improved.** `mr-broad` is the
+one the plan named as the entire measured cost of dropping the judge; it is
+worth re-reading Phase 4 in that light, since part of what it was meant to
+recover has already come back.
+
+The `mr-private-leak` failure is worth naming precisely, because its shape is
+the opposite of what the case is for: the privacy check (`no-private-budget-
+ceiling`) PASSED, and what failed was the POSITIVE control — that repeat did not
+find the lease document at all and concluded "only 7 documents in total". Tool
+choice variance (it counted with `querySql` instead of searching), not a leak
+and not a scope bug; the other nine repeats found it.
+
+**What this run does NOT establish.** TTFT p50 went 2 205 → 7 218 ms, average
+latency to 50 s and cost to $0.013/turn, with more tool calls per turn
+(`tool-budget-overage` 9.167). That is not attributable from here: the run was
+taken with the frontend and API also running on the same laptop, and this file
+already warns that `ttft-p50-ms` is unreadable at concurrency 3. The pre-turn
+number that IS clean is the recall suite's, which runs in-process and does not
+include the agent's tool loop: gather p50 705 ms, max 1 760 ms, zero gathers
+over 3 s.
+
+To settle it, one controlled A/B: restart the AI service with
+`SEMANTIC_SCAN_MODE=exact` and re-run this suite back to back. That is the only
+way to separate the HNSW change from machine load, and it needs a service
+restart, so it is an operator action rather than something the harness can do.
+
+#### Where the gather's time goes now (2026-09-10, after Phase 1)
+
+The knowledge arm is no longer the constraint. From the `[search]` lines of the
+23/23 run, 230 turns, means per arm:
+
+| arm                         |  total | hybrid | **rerank** | candidates |
+| --------------------------- | -----: | -----: | ---------: | ---------: |
+| `documents`                 | 713 ms | 313 ms | **400 ms** |         50 |
+| `memories+episodes+records` | 561 ms | 259 ms |     301 ms |         50 |
+| `workflows+pages`           | 449 ms | 174 ms |     274 ms |      **6** |
+
+The gather costs `max(arm)`, so **`documents` is the critical path and the
+reranker is 56 % of it**.
+
+**Reranking SIX candidates costs 274 ms.** That number is the useful one: it is
+almost entirely the HTTP round trip, not cross-encoder compute. It also corrects
+the reasoning written into `services/recall/recall.ts`, which defends three
+separate rerank calls on the grounds that merging them "would trade three
+parallel calls of ≤50 documents for one serial call of ≤150, i.e. roughly triple
+the rerank compute … to save two round-trips that overlap anyway". The compute
+is not the cost. The conclusion survives — one merged call would pay the fixed
+cost once but the marginal cost three times, and the three parallel calls
+already overlap — but not for the stated reason, and anyone optimising here
+should start from the measurement rather than the comment.
+
+What this redirects: the remaining lever on the gather is the reranker (Phase 6),
+not more round-trip collapsing (Phase 1.5, measured irrelevant: `anchor` 219 ms
+and `graph` 72 ms against `documents` 695 ms, under a `max`).
+
 #### TRIED AND REVERTED: the tuning on the connection, and a bigger pool
 
 The `SET LOCAL` above needs a transaction, and that transaction is four round

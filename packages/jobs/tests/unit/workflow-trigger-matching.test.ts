@@ -379,14 +379,33 @@ describe("buildTriggerJobs", () => {
     ).toEqual([]);
   });
 
-  test("the job carries the event payload as the trigger payload", () => {
+  test("the job carries the event payload, and which event it was", () => {
+    // A workflow can listen for several events whose payloads look alike, so
+    // the payload alone does not say what the run is answering.
     const [job] = buildTriggerJobs([pair], new Set());
     expect(job?.data).toEqual({
       workflowId: "w1",
       teamId: "team-1",
       sourceEventId: "e1",
-      triggerPayload: { collection: "invoices" },
+      triggerPayload: { collection: "invoices", event_type: "record.created" },
     });
+  });
+
+  test("the real event type wins over one carried in the payload", () => {
+    const [job] = buildTriggerJobs(
+      [
+        {
+          workflow: workflow({ id: "w1" }),
+          event: event({
+            id: "e1",
+            type: "record.updated",
+            payload: { event_type: "something-else" },
+          }),
+        },
+      ],
+      new Set(),
+    );
+    expect(job?.data.triggerPayload).toEqual({ event_type: "record.updated" });
   });
 
   test("retries are bounded and both retention caps are set", () => {

@@ -135,7 +135,12 @@ export const buildTriggerJobs = (
         workflowId: workflow.id,
         teamId: workflow.teamId,
         sourceEventId: event.id,
-        triggerPayload: event.payload,
+        // WHICH event fired, alongside what it carried. A workflow can listen
+        // for several, and the payloads of `document.uploaded` and
+        // `document.revised` look alike — without this neither the executor
+        // nor the run's own trigger card could say which one it is answering.
+        // Written last on purpose: ours is the authoritative value.
+        triggerPayload: { ...event.payload, event_type: event.type },
       },
       opts: {
         jobId: `wfrun-${workflow.id}-${event.id}`,

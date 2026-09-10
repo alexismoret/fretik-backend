@@ -469,6 +469,7 @@ export type ModelRole =
   | "memory-distill"
   | "memory-consolidate"
   | "memory-promote"
+  | "memory-digest"
   | "compaction-summarizer"
   | "cheap-tasks"
   | "tool-repair"

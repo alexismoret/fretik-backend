@@ -216,6 +216,24 @@ export const ROLE_BINDINGS: Record<ModelRole, RoleBinding> = {
     settingsKind: "active-memory",
     wrapCache: false,
   },
+  "memory-digest": {
+    role: "memory-digest",
+    // Starts on the consolidation model, and this is a HYPOTHESIS rather than a
+    // measurement — no head-to-head has been run for this role yet, and the
+    // comparison belongs in `evals:chain` once the digest cases exist.
+    //
+    // The reasoning it rests on: the failure this role can suffer is the same
+    // one `memory-consolidate` documents above. Both take many inputs and emit
+    // one long structured output, which is where deepseek-v4-flash was measured
+    // running away on reasoning tokens, hitting the output cap and returning
+    // truncated text. A truncated digest is not a NOOP — it is served on EVERY
+    // turn of every member until the next successful run, so this role wants
+    // the model that does not gamble far more than it wants the faster one.
+    // Nightly and debounced, so latency is nearly free here.
+    profileKey: "gpt-oss-120b",
+    settingsKind: "active-memory",
+    wrapCache: false,
+  },
   "compaction-summarizer": {
     role: "compaction-summarizer",
     profileKey: "deepseek-v4-flash",

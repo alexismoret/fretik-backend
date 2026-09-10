@@ -1,6 +1,7 @@
 import { OpenAPIHono } from "@hono/zod-openapi";
 import { z } from "zod";
 import { internalMiddleware } from "../middlewares/internal";
+import { buildTeamDigest } from "../services/memory/build-team-digest";
 import { consolidateEpisodes } from "../services/memory/consolidate-episodes";
 import { distillConversation } from "../services/memory/distill-conversation";
 import { distillRecordActivity } from "../services/memory/distill-record-activity";
@@ -41,6 +42,11 @@ import type { HonoInternalAppType } from "../types/hono";
  * POST /internal/memory/unsupersede-episodes — the reverse of
  * consolidate-episodes: restore a survivor's superseded members and swap the
  * recall index back. Operator recourse for a wrong MERGE.
+ *
+ * POST /internal/memory/build-team-digest — rewrites the team's standing
+ * digest, the one block injected into every turn without retrieval. Skips a
+ * team whose inputs hash unchanged, which is what makes a nightly pass over
+ * every team affordable.
  */
 
 const ExtractMentionsRequestSchema = z.object({
@@ -324,6 +330,49 @@ memoryRoutes.post("/promote-episodes", async (c) => {
       {
         code: "PROMOTE_ERROR",
         message: err instanceof Error ? err.message : "Promotion failed",
+      },
+      500,
+    );
+  }
+});
+
+const BuildTeamDigestRequestSchema = z.object({
+  teamId: z.uuid(),
+  organizationId: z.uuid(),
+  /**
+   * Rebuild even when the inputs hash the same. The default path skips an
+   * unchanged team for free, which is what makes a nightly pass affordable;
+   * this is the operator's door for "the digest looks wrong, rewrite it".
+   */
+  force: z.boolean().optional(),
+});
+
+memoryRoutes.post("/build-team-digest", async (c) => {
+  const raw: unknown = await c.req.json();
+  const parsed = BuildTeamDigestRequestSchema.safeParse(raw);
+  if (!parsed.success) {
+    return c.json(
+      {
+        code: "VALIDATION_ERROR",
+        message: "Invalid request body",
+        details: parsed.error.issues.map((i) => i.message),
+      },
+      400,
+    );
+  }
+
+  try {
+    const result = await buildTeamDigest(parsed.data);
+    return c.json(result, 200);
+  } catch (err) {
+    console.error(
+      `[memory] build-team-digest failed for team ${parsed.data.teamId}:`,
+      err instanceof Error ? err.message : err,
+    );
+    return c.json(
+      {
+        code: "DIGEST_ERROR",
+        message: err instanceof Error ? err.message : "Digest build failed",
       },
       500,
     );

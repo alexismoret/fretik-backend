@@ -643,8 +643,15 @@ const HANDLE_PREFIX: Record<string, string> = {
   document: "D",
 };
 
-/** Allocates one stable handle per real provenance, and remembers the mapping. */
-const makeHandleAllocator = (): {
+/**
+ * Allocates one stable handle per real provenance, and remembers the mapping.
+ *
+ * Exported for the team-digest generator, which faces the same problem for the
+ * same reason and must not solve it a second way: two handle schemes would
+ * drift, and the failure they both prevent is silent (an agent calling its
+ * tools with an id a model invented).
+ */
+export const makeHandleAllocator = (): {
   handleFor: (kind: string, id: string) => string;
   handles: Map<string, string>;
 } => {
@@ -673,6 +680,9 @@ const makeHandleAllocator = (): {
 export const expandHandles = (
   text: string,
   handles: Map<string, string>,
+  // Two callers now, and the log line is read by whoever is debugging one of
+  // them — "[recall] judge cited" sent a digest problem looking at recall.
+  source = "[recall] judge",
 ): string =>
   text.replace(
     /\((memory|episode|record|document):([^)]*)\)/g,
@@ -680,7 +690,7 @@ export const expandHandles = (
       const real = handles.get(`${kind}:${raw.trim()}`);
       if (real !== undefined) return `(${real})`;
       console.warn(
-        `[recall] judge cited an unknown handle ${kind}:${raw.slice(0, 24)} — dropped`,
+        `${source} cited an unknown handle ${kind}:${raw.slice(0, 24)} — dropped`,
       );
       return "";
     },

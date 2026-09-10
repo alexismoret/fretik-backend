@@ -347,6 +347,14 @@ describe("role bindings — default model ids pinned (chat: gated M3 flip)", () 
     // Split out of `memory-consolidate` — the two tasks that shared that role
     // want opposite models (10/10 vs 6/10 on the over-generalization guard).
     "memory-promote": "deepseek/deepseek-v4-flash-0731",
+    // UNMEASURED, unlike every line above it: no head-to-head has been run for
+    // this role. It starts on gpt-oss by analogy with `memory-consolidate` —
+    // many inputs, one long structured output, the shape where deepseek was
+    // measured running away on reasoning and returning truncated text. The
+    // difference is that a truncated digest is then served on every turn until
+    // the next successful run. Re-pin it from `evals:chain` at ten repeats once
+    // the digest cases exist, not from this comment.
+    "memory-digest": "openai/gpt-oss-120b",
   };
 
   for (const [role, id] of Object.entries(expectedIds)) {

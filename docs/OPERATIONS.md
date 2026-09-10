@@ -489,10 +489,18 @@ SELECT pg_size_pretty(pg_relation_size('idx_ai_vectors_embedding_hnsw'));
 SHOW shared_buffers;
 ```
 
-**Target: `shared_buffers` ≥ 2× the index size.** Dev measured 167 MB of index
-against the 128 MB default, which is the whole difference between the 8-9 ms
-warm figure and the 75-80 ms cold one. Check this on the Dokploy Postgres
-service before quoting a production latency.
+**Target: `shared_buffers` ≥ 2× the index size.** Dev, measured 2026-09-10:
+20 473 rows, `ai_vectors` 338 MB total, the HNSW index alone **167 MB against a
+128 MB `shared_buffers`** — the index cannot be fully cached even on its own,
+which is the whole difference between the 8-9 ms warm figure and the 75-80 ms
+cold one. Check this on the Dokploy Postgres service before quoting any
+production latency, and re-check it after a corpus grows: at `--scale 50000`
+the index passes 400 MB.
+
+Same measurement, for the record: every pgvector operator (`cosine_distance`,
+`l2_distance`, `inner_product`, across `vector`/`halfvec`/`sparsevec`) sits at
+`procost = 1` before the migration, and `pg_prewarm` is **not** installed on
+dev — only `vector` is.
 
 `pg_prewarm` is created by the migration inside an exception block, because the
 privilege to create an extension is not guaranteed and a migration that cannot

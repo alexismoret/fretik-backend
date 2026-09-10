@@ -105,6 +105,7 @@ export default {
         percent_complete: "Progress",
         assignees: "Assignees",
         checklist: "Checklist items",
+        references: "Linked documents",
         // Akanea WMS-specific field labels.
         warehouse_customer: "Warehouse customer",
         suppliers: "Suppliers",

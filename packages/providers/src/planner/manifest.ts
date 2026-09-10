@@ -342,7 +342,8 @@ export const plannerManifest: ProviderManifest = {
     {
       name: "update_task_details",
       kind: "write",
-      summary: "Set a task's description and/or replace its checklist",
+      summary:
+        "Set a task's description, checklist, or the documents linked to it",
       endpoint: {
         method: "PATCH",
         path: "/v1.0/planner/tasks/{task_id}/details",
@@ -364,6 +365,24 @@ export const plannerManifest: ProviderManifest = {
           items: {
             type: "object",
             fields: { title: { type: "string" } },
+          },
+        },
+        references: {
+          type: "array",
+          optional: true,
+          excludeFromHash: true,
+          description:
+            "Attaches links to the task — typically a document's `web_url` from `sharepoint.get_item` / `search`. Replaces the reference set. Each item: { url, alias? }. Omit to leave references unchanged.",
+          items: {
+            type: "object",
+            fields: {
+              url: { type: "string", description: "http(s) URL" },
+              alias: {
+                type: "string",
+                optional: true,
+                description: "Label shown on the task — defaults to the URL",
+              },
+            },
           },
         },
       },

@@ -237,6 +237,25 @@ Well-known mail folders use lowercase identifiers in the path: `inbox`,
 folder, fetch its ID with `list_folders()` first and then call
 `list_messages_in_folder(folder_id=...)`.
 
+### Files too big to attach, and files worth keeping
+
+Graph caps an inline attachment at ~3 MB, and a mailbox is a poor archive.
+When a `sharepoint` connection exists, two flows beat both limits — neither
+needs anything new, just the two apps in sequence:
+
+- **Send a large document**: `sharepoint.create_share_link(...)` then put
+  `link_url` in `body_html`. No size limit, the recipient always gets the
+  current version, and access stays revocable (`revoke_item_access`).
+- **File an incoming attachment**: `download_message_attachment` spills the
+  bytes to `sandbox_path`; upload that path with
+  `sharepoint.create_upload_session` (see its `references/uploading-files.md`).
+  Use `conflict_behavior="replace"` when a newer version of a document the
+  team already tracks comes in by mail.
+
+A task from an email is the same idea: read the message, then
+`planner.create_task`, attaching the mail's document with
+`planner.update_task_details(references=[...])`.
+
 ## Voice & persona — write according to the connection's persona
 
 Each connection of category `communication` carries a `persona` option

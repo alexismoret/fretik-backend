@@ -253,6 +253,23 @@ upstream rule.
   indexed column (`Created`, `Modified`, `ID`, `Title`) or page through
   unfiltered.
 
+### Reaching SharePoint from the other Microsoft apps
+
+The ids come from the neighbouring app; nothing here needs a different call.
+
+- **A Teams channel's documents** — `teams.get_channel_files_folder` answers
+  a `drive_id` + `folder_id` that every action here takes. That is how you
+  read, or upload into, the Files tab of a channel.
+- **A file someone posted in Teams** — pass the attachment's `content_url` to
+  `resolve_share_link` to get the `DriveItem`, then move it, set its
+  metadata, or read its versions.
+- **An email attachment** — `outlook.download_message_attachment` spills to
+  `sandbox_path`; upload that path here.
+- **Sharing a document by email or in Teams** — `create_share_link` for a
+  URL, or hand `web_url` to `teams.send_channel_message(attachments=[...])`.
+  Teams links the file without granting access to it, so pair it with
+  `create_share_link(scope="organization")` outside the file's own site.
+
 ---
 
 ## Write actions & approval

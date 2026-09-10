@@ -133,3 +133,21 @@ run_plan([planner.create_task.op(
 Calling a write without `connection_id` while several Planner accounts are
 connected raises `EXTERNAL_APP_AMBIGUOUS_CONNECTION` — recover per the upstream
 rule.
+
+### Attaching a document to a task
+
+`update_task_details(references=[{url, alias}])` binds links to a task —
+typically a `web_url` from `sharepoint.get_item` / `search`, so the task
+carries the contract or the spec instead of describing it. It REPLACES the
+reference set: include the ones you want to keep.
+
+```python
+doc = sharepoint.search(query='"MSA ACME" filetype:pdf', limit=1)[0]
+run_plan([planner.update_task_details.op(
+    task_id="…", etag="…",
+    references=[{"url": doc.web_url, "alias": doc.name}],
+)])
+```
+
+Planner stores the link, not the file, so the assignee needs their own access
+to it — a document in the team's own site already satisfies that.

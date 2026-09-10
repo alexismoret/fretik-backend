@@ -1,6 +1,6 @@
 # AUTO-GENERATED from manifest.ts — do not edit by hand. Regenerate: bun run gen:sdk
 
-"""Microsoft Teams provider — 20 actions.
+"""Microsoft Teams provider — 21 actions.
 
 All calls go through fretik-backend, which dispatches them to the
 provider (Nango Proxy or a custom handler). Write actions return an
@@ -55,6 +55,13 @@ class Channel(BaseModel):
     membership_type: Literal["standard", "private", "shared", "unknownFutureValue"]
     description: str | None = None
     web_url: str | None = None
+
+
+class ChannelFilesFolder(BaseModel):
+    drive_id: str
+    folder_id: str
+    name: str
+    web_url: str
 
 
 class ChannelMessage(BaseModel):
@@ -144,6 +151,7 @@ class SendChatMessageArgs(BaseModel):
     chat_id: str
     body_html: str
     inline_images: list[dict[str, Any]] | None = None
+    attachments: list[dict[str, Any]] | None = None
 
 
 class CreateChatArgs(BaseModel):
@@ -165,6 +173,11 @@ class ListTeamMembersArgs(BaseModel):
 
 class ListChannelsArgs(BaseModel):
     team_id: str
+
+
+class GetChannelFilesFolderArgs(BaseModel):
+    team_id: str
+    channel_id: str
 
 
 class ListChannelMessagesArgs(BaseModel):
@@ -192,6 +205,7 @@ class SendChannelMessageArgs(BaseModel):
     body_html: str
     subject: str | None = None
     inline_images: list[dict[str, Any]] | None = None
+    attachments: list[dict[str, Any]] | None = None
 
 
 class ReplyToChannelMessageArgs(BaseModel):
@@ -200,6 +214,7 @@ class ReplyToChannelMessageArgs(BaseModel):
     message_id: str
     body_html: str
     inline_images: list[dict[str, Any]] | None = None
+    attachments: list[dict[str, Any]] | None = None
 
 
 class SearchMessagesArgs(BaseModel):
@@ -367,6 +382,23 @@ def list_channels(
     return [Channel(**item) for item in data]
 
 
+def get_channel_files_folder(
+    team_id: str,
+    channel_id: str,
+    connection_id: str | None = None,
+) -> ChannelFilesFolder:
+    """Get a channel's Files folder — the handle for reading or uploading its documents
+
+    connection_id: pick a specific connection when several exist for this
+    provider. Pass the ID surfaced in the agent context.
+    """
+    _args = GetChannelFilesFolderArgs(team_id=team_id, channel_id=channel_id).model_dump(exclude_none=True)
+    if connection_id is not None:
+        _args["connection_id"] = connection_id
+    data = _call_read("teams.get_channel_files_folder", _args)
+    return ChannelFilesFolder(**data)
+
+
 def list_channel_messages(
     team_id: str,
     channel_id: str,
@@ -502,11 +534,12 @@ def _send_chat_message_op(
     chat_id: str,
     body_html: str,
     inline_images: list[dict[str, Any]] | None = None,
+    attachments: list[dict[str, Any]] | None = None,
     connection_id: str | None = None,
 ) -> Operation:
     """Build a send_chat_message Operation (does NOT execute).
     Use inside run_plan([...])."""
-    _args = SendChatMessageArgs(chat_id=chat_id, body_html=body_html, inline_images=inline_images).model_dump(exclude_none=True)
+    _args = SendChatMessageArgs(chat_id=chat_id, body_html=body_html, inline_images=inline_images, attachments=attachments).model_dump(exclude_none=True)
     if connection_id is not None:
         _args["connection_id"] = connection_id
     return Operation(action="teams.send_chat_message", args=_args)
@@ -515,6 +548,7 @@ def send_chat_message(
     chat_id: str,
     body_html: str,
     inline_images: list[dict[str, Any]] | None = None,
+    attachments: list[dict[str, Any]] | None = None,
     connection_id: str | None = None,
 ) -> dict[str, Any]:
     """Post a message to a 1:1, group, or meeting chat
@@ -578,11 +612,12 @@ def _send_channel_message_op(
     body_html: str,
     subject: str | None = None,
     inline_images: list[dict[str, Any]] | None = None,
+    attachments: list[dict[str, Any]] | None = None,
     connection_id: str | None = None,
 ) -> Operation:
     """Build a send_channel_message Operation (does NOT execute).
     Use inside run_plan([...])."""
-    _args = SendChannelMessageArgs(team_id=team_id, channel_id=channel_id, body_html=body_html, subject=subject, inline_images=inline_images).model_dump(exclude_none=True)
+    _args = SendChannelMessageArgs(team_id=team_id, channel_id=channel_id, body_html=body_html, subject=subject, inline_images=inline_images, attachments=attachments).model_dump(exclude_none=True)
     if connection_id is not None:
         _args["connection_id"] = connection_id
     return Operation(action="teams.send_channel_message", args=_args)
@@ -593,6 +628,7 @@ def send_channel_message(
     body_html: str,
     subject: str | None = None,
     inline_images: list[dict[str, Any]] | None = None,
+    attachments: list[dict[str, Any]] | None = None,
     connection_id: str | None = None,
 ) -> dict[str, Any]:
     """Post a new top-level message in a channel
@@ -620,11 +656,12 @@ def _reply_to_channel_message_op(
     message_id: str,
     body_html: str,
     inline_images: list[dict[str, Any]] | None = None,
+    attachments: list[dict[str, Any]] | None = None,
     connection_id: str | None = None,
 ) -> Operation:
     """Build a reply_to_channel_message Operation (does NOT execute).
     Use inside run_plan([...])."""
-    _args = ReplyToChannelMessageArgs(team_id=team_id, channel_id=channel_id, message_id=message_id, body_html=body_html, inline_images=inline_images).model_dump(exclude_none=True)
+    _args = ReplyToChannelMessageArgs(team_id=team_id, channel_id=channel_id, message_id=message_id, body_html=body_html, inline_images=inline_images, attachments=attachments).model_dump(exclude_none=True)
     if connection_id is not None:
         _args["connection_id"] = connection_id
     return Operation(action="teams.reply_to_channel_message", args=_args)
@@ -635,6 +672,7 @@ def reply_to_channel_message(
     message_id: str,
     body_html: str,
     inline_images: list[dict[str, Any]] | None = None,
+    attachments: list[dict[str, Any]] | None = None,
     connection_id: str | None = None,
 ) -> dict[str, Any]:
     """Reply inside an existing channel thread (preserves the thread)

@@ -1,7 +1,7 @@
 ---
 name: planner
 description: Microsoft Planner — read tasks and plans; create, update, and delete tasks; manage buckets and plans
-version: a08519bffbd4
+version: db81e9e961a5
 ---
 
 # Microsoft Planner — 14 actions
@@ -23,7 +23,7 @@ You can interact with the user's Microsoft Planner account via the `fretik_apps.
 
 - `planner.create_task.op(plan_id, title, bucket_id=None, assignee_ids=None, due_date=None, start_date=None, percent_complete=None, priority=None)` — Create a task in a plan (optionally in a bucket, with assignees)
 - `planner.update_task.op(task_id, etag, title=None, bucket_id=None, due_date=None, start_date=None, percent_complete=None, priority=None, assignee_ids=None)` — Update a task — title, bucket, dates, %complete, assignees
-- `planner.update_task_details.op(task_id, etag, description=None, checklist=None)` — Set a task's description and/or replace its checklist
+- `planner.update_task_details.op(task_id, etag, description=None, checklist=None, references=None)` — Set a task's description, checklist, or the documents linked to it
 - `planner.delete_task.op(task_id, etag)` — Delete a task
 - `planner.create_bucket.op(plan_id, name)` — Create a bucket (column) in a plan
 - `planner.create_plan.op(group_id, title)` — Create a plan owned by a Microsoft 365 group
@@ -175,6 +175,24 @@ run_plan([planner.create_task.op(
 Calling a write without `connection_id` while several Planner accounts are
 connected raises `EXTERNAL_APP_AMBIGUOUS_CONNECTION` — recover per the upstream
 rule.
+
+### Attaching a document to a task
+
+`update_task_details(references=[{url, alias}])` binds links to a task —
+typically a `web_url` from `sharepoint.get_item` / `search`, so the task
+carries the contract or the spec instead of describing it. It REPLACES the
+reference set: include the ones you want to keep.
+
+```python
+doc = sharepoint.search(query='"MSA ACME" filetype:pdf', limit=1)[0]
+run_plan([planner.update_task_details.op(
+    task_id="…", etag="…",
+    references=[{"url": doc.web_url, "alias": doc.name}],
+)])
+```
+
+Planner stores the link, not the file, so the assignee needs their own access
+to it — a document in the team's own site already satisfies that.
 
 ---
 

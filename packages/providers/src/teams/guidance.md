@@ -82,11 +82,45 @@ run_plan([
 ])
 ```
 
-### Sending non-image files
+### Sending a document
 
-Not supported — Microsoft Graph requires uploading the file to OneDrive
-first, which is not part of v1. If the user really needs to share a PDF /
-Excel, embed a clickable URL in `body_html` (any URL they already have).
+A Teams message never carries file bytes — it carries a LINK to a file that
+already lives in SharePoint. That is what `attachments=[{name, content_url}]`
+does, and why it needs no file permission.
+
+**The file is already in SharePoint** — one approval:
+
+```python
+doc = sharepoint.search(query='filetype:pdf "Q1 report"', limit=1)[0]
+run_plan([teams.send_channel_message.op(
+    team_id="…", channel_id="19:…",
+    body_html="<p>Le rapport Q1.</p>",
+    attachments=[{"name": doc.name, "content_url": doc.web_url}],
+)])
+```
+
+**The file is not there yet** — put it in the channel's own folder first.
+`get_channel_files_folder` hands you the exact `drive_id` + `folder_id` the
+sharepoint app takes, so the document lands in the Files tab of that channel
+rather than in some unrelated library:
+
+```python
+f = teams.get_channel_files_folder(team_id="…", channel_id="19:…")
+# → f.drive_id, f.folder_id  → sharepoint.create_upload_session(...)
+```
+
+Upload per `sharepoint`'s reference, then attach the resulting `web_url` in a
+second turn — the upload and the message are two writes, and operations in
+one plan must be independent.
+
+**Access is not granted for you.** Teams links the file; it does not share
+it. Anyone in the channel already has access to that channel's folder, so a
+channel post is safe. For a chat, or a file from another site, pair it with
+`sharepoint.create_share_link(scope="organization")` or
+`grant_item_access` — otherwise the recipient gets a link that 403s.
+
+If there is genuinely no SharePoint connection, fall back to putting a
+clickable URL in `body_html`.
 
 ### Multiple connected Teams tenants
 

@@ -3,6 +3,7 @@ import {
   arr,
   asNumber,
   asString,
+  prop,
   str,
   strArray,
 } from "@fretik/shared/external-apps/json-access";
@@ -77,6 +78,14 @@ const updateTask: SummaryMapper = (args) => ({
 
 const updateTaskDetails: SummaryMapper = (args) => {
   const checklist = arr(args.checklist);
+  // Links are named, not counted: "3 references" tells the reviewer nothing,
+  // while the aliases say which documents get bound to the task.
+  const references = arr(args.references)
+    .map((r) => {
+      const alias = asString(prop(r, "alias"));
+      return alias !== undefined && alias !== "" ? alias : str(prop(r, "url"));
+    })
+    .filter((label) => label !== "");
   return {
     titleKey: "default",
     fields: compact(
@@ -84,6 +93,7 @@ const updateTaskDetails: SummaryMapper = (args) => {
       checklist.length > 0
         ? field("checklist", checklist.length.toString())
         : null,
+      references.length > 0 ? field("references", references.join(", ")) : null,
     ),
   };
 };

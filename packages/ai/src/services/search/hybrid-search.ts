@@ -151,12 +151,18 @@ const HNSW_ITERATIVE_SCAN = "strict_order";
  *
  * `hnsw` (default) tunes the index and leaves the choice to the planner.
  * `exact` forbids the index scan, so the planner falls back to a full scan plus
- * a sort — the exact, slower plan this service ran before the planner-cost
- * migration, and the rollback if the index ever misbehaves in production.
+ * a sort — the plan this arm ran until `HNSW_EF_SEARCH` reached 400, and the
+ * rollback if the index ever misbehaves in production.
  *
  * Called `exact` rather than `seqscan` because that is what it actually
  * guarantees: the planner may answer with a bitmap heap scan instead of a
  * sequential one (measured — it does), and both are exact.
+ *
+ * Worth knowing before reaching for it: falling back here is a LATENCY
+ * decision, not a correctness one. The exact plan costs 225 ms against the
+ * index's ~50 ms on 20 108 rows and grows linearly, but it cannot return a
+ * wrong row. The dangerous direction is the other one — an index scan without
+ * `HNSW_ITERATIVE_SCAN` — and that pairing is not reachable from here.
  */
 const SEMANTIC_SCAN_MODE: "hnsw" | "exact" =
   process.env.SEMANTIC_SCAN_MODE === "exact" ? "exact" : "hnsw";

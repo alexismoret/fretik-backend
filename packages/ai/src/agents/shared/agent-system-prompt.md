@@ -907,6 +907,24 @@ The team's collections and how to query them — one line per collection: its ty
 
 </team_collections>
 
+<!-- AGENT:chatbot -->
+
+<team_digest>
+
+<!-- The team's standing memory, rewritten in the background and present on EVERY turn — the one memory block that is not retrieved and not matched against this message. Distinct from <active_memory>, which carries only what this message matched, and from <memory_index>, which lists paths without content. "_No team digest yet._" means it has not been built. -->
+
+Standing knowledge for this team — its conventions, the entities it works with, its current decisions, its open threads. Lean on it for broad or vague questions, where nothing in particular matches.
+
+Every line ends with a provenance id: open the source with `memory({ command: 'view' })`, `getRecord` or `searchKnowledge` before quoting a figure or committing to a date.
+
+When it disagrees with `<active_memory>`, the retrieved block wins — that was built for this message, this was built last night.
+
+{{teamDigest}}
+
+</team_digest>
+
+<!-- /AGENT -->
+
 <runtime_context>
 
 <!-- AGENT:chatbot -->

@@ -1,4 +1,8 @@
 import db from "@fretik/shared/db";
+import type {
+  TeamMemoryDigest,
+  TeamMemoryDigestSources,
+} from "@fretik/shared/db/schema";
 import { aiChatFiles } from "@fretik/shared/db/schema";
 import { getProvider } from "@fretik/shared/external-apps/registry";
 import {
@@ -11,6 +15,7 @@ import { buildMemoryIndexManifest } from "@fretik/shared/services/ai-memory/list
 import { describeTeamSchema } from "@fretik/shared/services/collections/describe-team-schema";
 import { listConnections } from "@fretik/shared/services/external-apps/connections/list";
 import { isMcpConnection } from "@fretik/shared/services/external-apps/mcp/connection-kind";
+import { readTeamDigest } from "@fretik/shared/services/memory-digest/read";
 import { listEnabledSkillsForTeam } from "@fretik/shared/services/skills/list-enabled-for-team";
 import { and, eq, inArray, ne } from "drizzle-orm";
 import { withSoftTimeout } from "../../lib/stream-errors";
@@ -40,7 +45,25 @@ export interface ContextFragments {
   teamCollectionsBlock?: string;
   enabledSkillsBlock?: string;
   memoryIndexBlock?: string;
+  teamDigestBlock?: string;
+  /**
+   * The rows the digest was built from, so the retrieved block can suppress
+   * them. Present even when the digest itself is empty — an empty digest has no
+   * sources, and the caller should not have to distinguish the two.
+   */
+  teamDigestSources?: TeamMemoryDigestSources;
 }
+
+/**
+ * Fallback when the memory index times out.
+ *
+ * The empty case renders as "No memories yet — feel free to start writing",
+ * which is a claim, not a blank: the agent reads it as fact and tells the user
+ * the team has no memories. A slow query must say "unknown", never "none" —
+ * the same rule `ATTACHED_FILES_UNAVAILABLE` exists for.
+ */
+export const MEMORY_INDEX_UNAVAILABLE =
+  "_The memory index could not be loaded for this turn. Memories may still exist — search with `searchKnowledge` before telling the user there are none._";
 
 /**
  * The purely scope-based fragments (persistent-context manifest, team
@@ -50,12 +73,22 @@ export interface ContextFragments {
  */
 export const assembleContextFragments = async (
   scope: FragmentScope,
+  /**
+   * A `readTeamDigest` already in flight.
+   *
+   * The caller hoists it because recall needs the SAME row, to suppress from
+   * `<active_memory>` what the digest already says — and recall runs in the
+   * same `Promise.all` as this function, so it cannot read the result from
+   * here. Passing the promise keeps it at one lookup per turn instead of two.
+   */
+  startedDigest?: Promise<TeamMemoryDigest | null>,
 ): Promise<ContextFragments> => {
   const [
     chatbotContextManifest,
     teamCollectionsBlock,
     enabledSkillsBlock,
     memoryIndexBlock,
+    teamDigest,
   ] = await Promise.all([
     withSoftTimeout(
       buildChatbotContextManifest({
@@ -140,12 +173,35 @@ export const assembleContextFragments = async (
               `${scope.logPrefix} buildMemoryIndexManifest failed, continuing without the memory index:`,
               error instanceof Error ? error.message : error,
             );
-            return "";
+            return MEMORY_INDEX_UNAVAILABLE;
           }),
           3000,
-          "",
+          MEMORY_INDEX_UNAVAILABLE,
           "memory-index",
         ),
+    // The team digest — the one memory block that is not retrieved. It answers
+    // what no query-shaped arm can: what this team already knows, when the
+    // question is too broad or too vague to match anything in particular. One
+    // primary-key lookup, in this batch, so it costs nothing on the critical
+    // path.
+    //
+    // A stale digest is still served. It is stamped `stale_at` when a rewrite
+    // failed, and a summary a few days old beats no summary — the marker is for
+    // the operator, not for the turn.
+    withSoftTimeout(
+      (startedDigest ?? readTeamDigest(scope.teamId)).catch(
+        (error: unknown) => {
+          console.warn(
+            `${scope.logPrefix} readTeamDigest failed, continuing without the team digest:`,
+            error instanceof Error ? error.message : error,
+          );
+          return null;
+        },
+      ),
+      3000,
+      null,
+      "team-digest",
+    ),
   ]);
 
   return {
@@ -159,6 +215,11 @@ export const assembleContextFragments = async (
       enabledSkillsBlock.length > 0 ? enabledSkillsBlock : undefined,
     memoryIndexBlock:
       memoryIndexBlock.length > 0 ? memoryIndexBlock : undefined,
+    teamDigestBlock:
+      teamDigest && teamDigest.content.length > 0
+        ? teamDigest.content
+        : undefined,
+    teamDigestSources: teamDigest?.sources,
   };
 };
 

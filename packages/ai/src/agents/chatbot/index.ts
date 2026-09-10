@@ -148,6 +148,13 @@ export const ChatbotCallOptionsSchema = z.object({
    */
   memoryIndexBlock: z.string().optional(),
   /**
+   * The team's standing memory — content, not paths, and not retrieved. Where
+   * `activeMemoryBlock` only appears when the message matched something, this
+   * is present on every turn, which is what a broad question stands on.
+   * Substituted into `{{teamDigest}}`.
+   */
+  teamDigestBlock: z.string().optional(),
+  /**
    * One workflow card when an existing workflow already produces what this
    * turn asks for — the capability channel of the same recall pass, kept out
    * of the judge's budget. Substituted into `{{availableCapabilities}}`.
@@ -326,6 +333,7 @@ export const buildChatbotRuntimeContextBase = (
   chatbotContextManifest: options.chatbotContextManifest,
   activeMemoryBlock: options.activeMemoryBlock,
   memoryIndexBlock: options.memoryIndexBlock,
+  teamDigestBlock: options.teamDigestBlock,
   availableCapabilitiesBlock: options.availableCapabilitiesBlock,
   teamCollectionsBlock: options.teamCollectionsBlock,
   enabledSkillsBlock: options.enabledSkillsBlock,

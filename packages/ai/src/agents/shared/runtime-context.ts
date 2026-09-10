@@ -170,6 +170,20 @@ export type AgentRuntimeContext = {
    */
   memoryIndexBlock?: string;
   /**
+   * Rendered `{{teamDigest}}` fragment — the team's standing memory, the one
+   * memory block that is NOT retrieved.
+   *
+   * `activeMemoryBlock` is query-shaped and `memoryIndexBlock` lists paths
+   * without content; this carries content the team already established, present
+   * whether or not the message matches anything. It is what a broad or vaguely
+   * worded question has to stand on.
+   *
+   * Rewritten by a background job and read here with one primary-key lookup, so
+   * it costs nothing per turn. Undefined when no digest has been built yet or
+   * the lookup soft-failed.
+   */
+  teamDigestBlock?: string;
+  /**
    * Rendered `{{availableCapabilities}}` fragment — one workflow card when an
    * existing workflow already produces what this turn asks for. Built by the
    * same `runUnifiedRecall` call as `activeMemoryBlock`, but on a separate,

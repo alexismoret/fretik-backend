@@ -58,6 +58,7 @@ import { updateConversation } from "@fretik/shared/services/ai/update";
 import { hasResumableConversationTasks } from "@fretik/shared/services/conversation-tasks/list";
 import { emitDomainEvent } from "@fretik/shared/services/domain-events/emit";
 import { releaseSandbox } from "@fretik/shared/services/e2b/release-sandbox";
+import { readTeamDigest } from "@fretik/shared/services/memory-digest/read";
 import { getTeamToolPolicies } from "@fretik/shared/services/tool-policies/get-for-team";
 import { MAX_FILES_PER_MESSAGE } from "@fretik/shared/utils/chatbot-limits";
 import { OpenAPIHono } from "@hono/zod-openapi";
@@ -846,6 +847,21 @@ const buildTurnCallOptions = async (
   // HANG backstops, not latency caps). The two history-dependent fragments
   // (attached files, active-memory recall) stay here and run in the same
   // parallel batch.
+  // One read of the team digest for the whole turn, started here because two
+  // stages in the batch below need the SAME row and neither can see the
+  // other's result: the fragments render it into `<team_digest>`, and recall
+  // uses its source ids to leave out of `<active_memory>` what the digest
+  // already says. Reading it in both would be two round trips for one row.
+  const teamDigestPromise = readTeamDigest(params.callOptions.teamId).catch(
+    (error: unknown) => {
+      console.warn(
+        `${params.logPrefix} readTeamDigest failed:`,
+        error instanceof Error ? error.message : error,
+      );
+      return null;
+    },
+  );
+
   // Every stage below is timed into one record and logged as a single
   // key=value line (see `lib/turn-timings.ts`). These run in parallel, so the
   // labels do NOT sum to `preTurnTotal` — the slowest one is what TTFT pays.
@@ -917,6 +933,7 @@ const buildTurnCallOptions = async (
                   ...(params.recallMode
                     ? { modeOverride: params.recallMode, bypassCache: true }
                     : {}),
+                  digestPromise: teamDigestPromise,
                 }),
                 // ABOVE the recall's own 15s judge budget
                 // (RECALL_TIMEOUT_MS) + RAG headroom — only fires on a true
@@ -932,12 +949,15 @@ const buildTurnCallOptions = async (
     timeStage(
       timings,
       "contextFragments",
-      assembleContextFragments({
-        organizationId: params.callOptions.organizationId,
-        teamId: params.callOptions.teamId,
-        userId: params.callOptions.userId,
-        logPrefix: params.logPrefix,
-      }),
+      assembleContextFragments(
+        {
+          organizationId: params.callOptions.organizationId,
+          teamId: params.callOptions.teamId,
+          userId: params.callOptions.userId,
+          logPrefix: params.logPrefix,
+        },
+        teamDigestPromise,
+      ),
     ),
     timeStage(
       timings,
@@ -965,6 +985,7 @@ const buildTurnCallOptions = async (
       attachedFilesBlock.length > 0 ? attachedFilesBlock : undefined,
     chatbotContextManifest: fragments.chatbotContextManifest,
     memoryIndexBlock: fragments.memoryIndexBlock,
+    teamDigestBlock: fragments.teamDigestBlock,
     activeMemoryBlock: activeMemoryRecall?.block,
     availableCapabilitiesBlock: activeMemoryRecall?.capabilityBlock,
     teamCollectionsBlock: fragments.teamCollectionsBlock,

@@ -125,13 +125,11 @@ export const startTeamDigestRead = (
 const readStandingBlock = async (
   scope: FragmentScope,
   opts: StandingOptions,
+  /** The ONE digest read for this turn — see `assembleContextFragments`. */
+  digest: Promise<TeamMemoryDigest | null>,
 ): Promise<string> => {
   if (opts.mode === "none") return "";
-  if (opts.mode === "digest") {
-    const digest = await (opts.startedDigest ??
-      startTeamDigestRead(scope.teamId, scope.logPrefix, opts.mode));
-    return digest?.content ?? "";
-  }
+  if (opts.mode === "digest") return (await digest)?.content ?? "";
   // `episodes`. Needs a reader: the block carries the caller's own private
   // episodes, so there is no such thing as a system-scope rendering of it.
   if (scope.userId === undefined) return "";
@@ -172,6 +170,19 @@ export const assembleContextFragments = async (
   standing: StandingOptions = { mode: STANDING_MODE },
 ): Promise<ContextFragments> => {
   const wantsMemory = standing.memory ?? true;
+  // ONE read, shared by the two things that need it — the block, and the source
+  // ids recall suppresses on. They used to resolve it separately: the block
+  // fell back to its own `startTeamDigestRead`, the sources fell back to
+  // `null`. A caller that did not hand in `startedDigest` therefore got a
+  // digest BLOCK with no suppression sources — the two disagreeing about the
+  // same row, decided by a parameter neither of them documents. Resolving it
+  // here makes "served from a digest" and "suppressing that digest's rows" one
+  // fact instead of two.
+  const digestPromise: Promise<TeamMemoryDigest | null> =
+    standing.mode === "digest" && wantsMemory
+      ? (standing.startedDigest ??
+        startTeamDigestRead(scope.teamId, scope.logPrefix, standing.mode))
+      : Promise.resolve(null);
   const [
     chatbotContextManifest,
     teamCollectionsBlock,
@@ -278,7 +289,7 @@ export const assembleContextFragments = async (
     // summary — the marker is for the operator, not for the turn.
     wantsMemory
       ? withSoftTimeout(
-          readStandingBlock(scope, standing),
+          readStandingBlock(scope, standing, digestPromise),
           3000,
           "",
           "standing-memory",
@@ -292,12 +303,7 @@ export const assembleContextFragments = async (
   // `mr-memory-convention` a point, because the verbatim carried the literal
   // columns the compression dropped. `<memory_index>` lists every memory path
   // and suppresses nothing — same rule.
-  const digestSources =
-    standing.mode === "digest"
-      ? await (standing.startedDigest ?? Promise.resolve(null)).then(
-          (d) => d?.sources,
-        )
-      : undefined;
+  const digestSources = (await digestPromise)?.sources;
 
   return {
     chatbotContextManifest:

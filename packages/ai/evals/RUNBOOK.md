@@ -357,6 +357,77 @@ What decides it beyond the score, all of it measured rather than argued:
 | defects observed in its first week | none reachable by a renderer | **5** (inverted link asserted as fact with a resolving marker, a third of the sections dropped in 1 of 10, 16 lines lost to a wrong marker prefix, a block outliving its rows, timeout at 4/10) |
 | episodes a reader can see          | **18 of 18**                 | 7 of 18 — misses 61 %                                                                                                                                                                           |
 
+#### Closure and verdict — 2026-09-11, `p4fix-*` / `p4close-episodes`
+
+The `episodes` arm lost 6 points on `mr-greeting` and the cause was one
+sentence of prompt, not the renderer (see the previous section). After the fix,
+**both** arms re-run on the four affected cases:
+
+|                         |    `episodes` |     `digest` |
+| ----------------------- | ------------: | -----------: |
+| `mr-greeting`           | 4 → **10/10** |        10/10 |
+| `mr-contextless-status` | 9 → **10/10** |        10/10 |
+| `mr-contextless-brief`  |         10/10 |        10/10 |
+| `mr-abstain-general`    |          8/10 | 6 → **9/10** |
+
+**78/80 each. A tie**, and the totals splice four cases measured under the old
+prompt onto four under the new one — the clean comparison is 38/40 vs 39/40.
+
+Closure at n = 30 on `episodes`:
+
+| case                    |      n=30 |                  |
+| ----------------------- | --------: | ---------------- |
+| `mr-contextless-status` | **30/30** | CLOSED           |
+| `mr-contextless-brief`  | **30/30** | CLOSED           |
+| `mr-contextless-week`   | **30/30** | CLOSED           |
+| `mr-greeting`           | **30/30** | CLOSED           |
+| `mr-abstain-general`    |     21/30 | open — see below |
+
+`mr-abstain-general` is NOT a regression of this layer: targeted n = 30 runs the
+same day gave **21/30 under `digest`** and 23/30 under `none`. The case lives at
+~70 % whatever serves the block; it is the previous chantier's open case.
+
+Decided by the pre-registered rule, not the totals: `digest` was retained only
+if it BEAT `episodes` on the contextless cases, which it cannot now that those
+are 30/30; `episodes` was retained if nothing regressed against `none`, and
+after the fix nothing does. The rule named the tie in advance and gave it to
+`episodes`.
+
+### TRIED AND DELETED: the LLM team digest (2026-09-11)
+
+A background job wrote one prose summary per team into `team_memory_digests`,
+served on every turn without retrieval. Built, gated hard, measured, deleted.
+**Do not propose it again without reading this section.**
+
+It did not lose on quality — it tied. It lost on:
+
+- **cost shape**: one LLM call per team per refresh, against one indexed query;
+- **defects only a generation step can have**, five in its first week: an
+  inverted link rendered as fact carrying a marker that RESOLVED (so every gate
+  passed it), a third of the sections dropped in 1 generation of 10, 16 lines
+  lost to a wrong marker prefix, a block outliving the rows it cited by a day,
+  the timeout hit 4 times in 10;
+- **scope**, which no gating fixes: `distillConversation` writes a PRIVATE
+  episode when a conversation has one participant. Measured on the real dev
+  team, a reader sees 18 episodes in the window and 11 are private — a
+  team-scoped artefact misses 61 % of them, and on a one-person team (every
+  team's first weeks) its "current decisions" section is empty by construction.
+
+Three lessons worth more than the verdict:
+
+1. **A second model pass over model output is a summary of summaries.** The
+   distiller already wrote those episode summaries and has its own eval. The
+   value was in the writing, not the re-writing.
+2. **An index never suppresses retrieval.** The digest's one-line compression
+   of a convention replaced the VERBATIM memory in `<active_memory>` and cost
+   `mr-memory-convention` a point — the verbatim carried literal columns the
+   compression dropped. The duplicate costs one line; the suppression cost a
+   case.
+3. **Form changes what the model does with the same facts.** Sectioned prose
+   read as reference material; a dated feed of recent lines read as news to
+   pass on, which is why only the episode arm volunteered the week's deliveries
+   to someone who said "Bonjour". Same content, different behaviour.
+
 ### The candidate budget is spent, not rationed (2026-09-10)
 
 The per-candidate ceiling used to be one number — the 2 000-char block divided

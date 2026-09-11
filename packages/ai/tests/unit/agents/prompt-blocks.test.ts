@@ -65,7 +65,12 @@ describe("resolveAgentBlocks", () => {
     // The standing block is chatbot-only IN THE PROMPT: a workflow's prompt
     // must stay byte-stable for a whole run, and this block changes under it.
     // A workflow gets the same content in its turn-1 steering message instead.
-    expect(workflow).not.toContain("<standing_memory>");
+    //
+    // Pinned on the CLOSING tag, because `<memory_protocol>`'s workflow
+    // variant names the block in prose — it has to, the steering message emits
+    // exactly these tags and the run needs to know what they mean. Only the
+    // element itself carries a `</…>`.
+    expect(workflow).not.toContain("</standing_memory>");
     expect(workflow).not.toContain("{{standingMemory}}");
     expect(workflow).toContain("{{workflowRunId}}");
     // The blocking askUserQuestion is now a headless tool (it parks the run
@@ -78,7 +83,7 @@ describe("resolveAgentBlocks", () => {
     expect(workflow).not.toContain("{{sessionStateBlock}}");
     expect(workflow).not.toContain("{{activeMemoryBlock}}");
     expect(workflow).not.toContain("<session_state>");
-    expect(workflow).not.toContain("<active_memory>");
+    expect(workflow).not.toContain("</active_memory>");
   });
 
   test("shared operational sections are present in BOTH variants", () => {

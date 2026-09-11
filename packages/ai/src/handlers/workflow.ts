@@ -77,6 +77,7 @@ import {
   loadExternalApps,
 } from "../agents/shared/fragments";
 import { formatCurrentDate } from "../agents/shared/prompt-renderer";
+import { STANDING_MODE } from "../agents/shared/standing-memory";
 import {
   getWorkflowAgentSet,
   type WorkflowCallOptions,
@@ -230,6 +231,8 @@ const ensureSteeringMessage = async (params: {
   turnIndex: number;
   currentDate: string;
   activeMemoryBlock?: string;
+  memoryIndexBlock?: string;
+  standingMemoryBlock?: string;
   nudge: boolean;
   wrapUp: boolean;
 }): Promise<UIMessage[]> => {
@@ -248,6 +251,8 @@ const ensureSteeringMessage = async (params: {
     turnIndex: params.turnIndex,
     currentDate: params.currentDate,
     activeMemoryBlock: params.activeMemoryBlock,
+    memoryIndexBlock: params.memoryIndexBlock,
+    standingMemoryBlock: params.standingMemoryBlock,
     nudge: params.nudge,
     wrapUp: params.wrapUp,
   });
@@ -338,12 +343,18 @@ const executeTurn = async (params: {
 
   const [fragments, externalApps, recall, attachedFilesBlock, toolPolicies] =
     await Promise.all([
-      assembleContextFragments({
-        organizationId: run.organizationId,
-        teamId: run.teamId,
-        userId: actingUserId,
-        logPrefix,
-      }),
+      assembleContextFragments(
+        {
+          organizationId: run.organizationId,
+          teamId: run.teamId,
+          userId: actingUserId,
+          logPrefix,
+        },
+        // The memory surfaces ride turn 1's steering message and then replay
+        // from history. On turns >= 2 they were read anyway and discarded —
+        // two queries per turn of every run, for output nothing consumed.
+        { mode: STANDING_MODE, memory: isFirstTurn },
+      ),
       loadExternalApps({
         conversationId,
         organizationId: run.organizationId,
@@ -396,6 +407,13 @@ const executeTurn = async (params: {
     turnIndex,
     currentDate: formatCurrentDate(new Date(), undefined),
     activeMemoryBlock: recall?.block ?? undefined,
+    // Both are already `undefined` on turns >= 2 — `memory: isFirstTurn`
+    // above skips the reads entirely — but say so here too: this is the line
+    // a reader checks to know what a later turn's steering message carries.
+    memoryIndexBlock: isFirstTurn ? fragments.memoryIndexBlock : undefined,
+    standingMemoryBlock: isFirstTurn
+      ? fragments.standingMemoryBlock
+      : undefined,
     nudge,
     wrapUp: params.wrapUp,
   });

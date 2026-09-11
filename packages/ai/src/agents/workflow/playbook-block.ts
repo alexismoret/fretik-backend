@@ -101,14 +101,30 @@ const buildStatusTable = (tasks: WorkflowTaskState[]): string =>
  * the trigger; later turns re-pin. The current task is pinned by key + title
  * + expected output ONLY — the full instructions live once in the system
  * playbook, so nothing is duplicated. `nudge` fires when the previous turn
- * ended without any task transition; `wrapUp` when the run nears its deadline;
- * `activeMemoryBlock` carries turn-1 recall (it persists via history after).
+ * ended without any task transition; `wrapUp` when the run nears its deadline.
+ *
+ * The three memory blocks ride turn 1 and persist via the replayed history —
+ * the same reason recall does, and the only place they CAN ride: the workflow
+ * system prompt is byte-stable for a whole run, so anything per-run in it would
+ * break the prefix cache on every turn of every other run.
+ *
+ * They answer three different questions, which is why the run gets all three
+ * rather than the one it had. `activeMemoryBlock` is what matched the goal;
+ * `memoryIndexBlock` is what the team has written down AT ALL — the one a run
+ * most needs, because a workflow executes a repeatable process and a process
+ * the team already wrote down is exactly what recall, being query-shaped,
+ * fails to surface when the goal happens not to name it; `standingMemoryBlock`
+ * is what the team has been doing lately, matched against nothing.
  */
 export const buildSteeringMessage = (params: {
   run: WorkflowRun;
   turnIndex: number;
   currentDate: string;
   activeMemoryBlock?: string;
+  /** Already carries its own `<memory_index>` tags. */
+  memoryIndexBlock?: string;
+  /** Bare lines — tagged here. */
+  standingMemoryBlock?: string;
   nudge: boolean;
   wrapUp: boolean;
 }): string => {
@@ -163,6 +179,23 @@ export const buildSteeringMessage = (params: {
       "<active_memory>",
       params.activeMemoryBlock,
       "</active_memory>",
+    );
+  }
+  if (
+    params.memoryIndexBlock !== undefined &&
+    params.memoryIndexBlock.length > 0
+  ) {
+    lines.push("", params.memoryIndexBlock);
+  }
+  if (
+    params.standingMemoryBlock !== undefined &&
+    params.standingMemoryBlock.length > 0
+  ) {
+    lines.push(
+      "",
+      "<standing_memory>",
+      params.standingMemoryBlock,
+      "</standing_memory>",
     );
   }
   return lines.join("\n");

@@ -601,7 +601,7 @@ Three blocks near the bottom of this prompt carry it, and they answer different 
 <!-- /AGENT -->
 <!-- AGENT:workflow -->
 
-The steering message carries this run's recall on turn 1 — memories, episodes of past runs, linked records. Apply it silently; never quote it verbatim. Its `(memory:…)` `(episode:…)` `(record:…)` `(document:…)` markers are provenance ids — dig deeper with `searchKnowledge` / `getRecord` / SQL.
+The steering message carries this run's memory on turn 1, in three blocks that answer different questions. `<active_memory>` is recall — memories, episodes of past runs, linked records, surfaced because they match this run's goal. `<memory_index>` lists every path the team has written, without the content: consult it before doing by hand a step that sounds like a repeatable process, because recall only surfaces what the goal happened to name. `<standing_memory>` is what the team has been doing lately, matched against nothing. Apply all three silently; never quote them verbatim. Their `(memory:…)` `(episode:…)` `(record:…)` `(document:…)` markers are provenance ids — dig deeper with `searchKnowledge` / `getRecord` / SQL. They appear once, on turn 1, and stay in your history for the rest of the run.
 
 <!-- /AGENT -->
 

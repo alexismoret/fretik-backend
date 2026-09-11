@@ -843,24 +843,45 @@ easy to break by accident.** `runUnifiedRecall` memoises a gather for 15 s per
 extract/distill/promote = deepseek-v4-flash, consolidate + recall judge =
 gpt-oss-120b):
 
-| Suite                     | Frozen                                    | Detail                                                                                                                                                                                                                                                                         |
-| ------------------------- | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `evals:memory` (17 cases) | 16/17 stable at N=10                      | flagged `mem-relation-noise` 9/10 re-ran **30/30** → closed. The four once-contested cases, targeted: reanchor 30/30 · merge 30/30 · revise 29/30 · distill-record-activity 30/30                                                                                              |
-| `evals:chain` (4 cases)   | ~~**4/4** at N=10~~ **STALE — see below** | `chain-contradiction-corrected` closed by the consolidation-judge id handles                                                                                                                                                                                                   |
-| `evals:recall` (23 cases) | 22/23 stable at N=10                      | **open residual**: `rec-noise-general` — 8/10 in the freeze, **14/30** targeted (historic ~88 %). Judge-side selectivity against a lexically dominant, non-responsive candidate; the hot-path judge model is deliberately out of scope here. The one case of 44 below the bar. |
+| Suite                     | Frozen                                                                                       | Detail                                                                                                                                                                                                                                                                         |
+| ------------------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `evals:memory` (17 cases) | 16/17 stable at N=10                                                                         | flagged `mem-relation-noise` 9/10 re-ran **30/30** → closed. The four once-contested cases, targeted: reanchor 30/30 · merge 30/30 · revise 29/30 · distill-record-activity 30/30                                                                                              |
+| `evals:chain` (5 cases)   | ~~4/4~~ → **5 cases; `convention-promoted` closed 10/10 on 2026-09-11 after team isolation** | `chain-contradiction-corrected` closed by the consolidation-judge id handles                                                                                                                                                                                                   |
+| `evals:recall` (23 cases) | 22/23 stable at N=10                                                                         | **open residual**: `rec-noise-general` — 8/10 in the freeze, **14/30** targeted (historic ~88 %). Judge-side selectivity against a lexically dominant, non-responsive candidate; the hot-path judge model is deliberately out of scope here. The one case of 44 below the bar. |
 
 **The `evals:chain` row above is out of date as of 2026-09-11**, in both
 directions, and the row is left struck through rather than quietly edited
 because the stale version was used as a gate:
 
 - the suite is **5 cases**, not 4 — `chain-digest` was added in `1017fa7`;
-- **`chain-convention-promoted` is 0/10**, not 10/10. The promoter returns
-  `{"promotions":[]}` on both models with correct inputs. Most coherent
-  explanation: cross-suite residue in `<existing_learned>` (see "Two eval
-  teams"), unconfirmed because the rows were cleaned before it could be
-  verified. The definitive test is a re-run after `evals:memory -- --cleanup`,
-  and the `console.warn` added in `187d098` (`promote-episodes.ts`) now prints
-  the raw model output for it.
+- `chain-convention-promoted` went 10/10 → **0/10** → **10/10**. See below.
+
+#### CLOSED: `chain-convention-promoted` was cross-suite contamination (2026-09-11)
+
+The promoter has no defect. Run after `evals:memory -- --cleanup` on the
+isolated `eval-write` team: **10/10, `added=1 updated=0 noop=0` on every one of
+the ten repeats**, ~20 s per repeat.
+
+What made it 0/10: `evals:memory` left `learned/meridian-bon-de-commande.md`
+on the shared team, and `loadExistingLearned` pulls EVERY `learned/%` row into
+`<existing_learned>`, whose prompt says "NOOP … or already covered". A residue
+about a signed purchase order suppressed a promotion about a signed purchase
+order in duplicate. The model was right; it was answering about the wrong
+team's leftovers.
+
+Three lessons, all general:
+
+- **A shared fixture team is a silent coupling between suites.** The failure
+  appeared in `chain`, the cause was in `memory`, and nothing linked them. That
+  is what `EVAL_WRITE_TEAM_ID` and end-of-suite cleanup remove.
+- **"Correct inputs, empty output" was not enough to localise it.** The inputs
+  WERE correct; the corpus the prompt also carried was not. Log the prompt's
+  other half before blaming the model.
+- **Isolation is not the fix, only the diagnosis.** A real team will accumulate
+  `learned/` files about unrelated subjects, so the promoter's "already
+  covered" gate still reads a corpus that grows without bound. P5.1's topic
+  filter is what makes it robust, and its acceptance test is this case at
+  **10/10 with the residue deliberately present**.
 
 Three previously-SILENT noop paths in `promoteEpisodes` were made loud while
 chasing this — schema rejection, a path outside `learned/`, an empty list.

@@ -15,6 +15,9 @@
  */
 
 import db from "@fretik/shared/db";
+import { assembleContextFragments } from "../../src/agents/shared/fragments";
+import { STANDING_MODE } from "../../src/agents/shared/standing-memory";
+import { recallForWorkflowTurnOne } from "../../src/agents/workflow/turn-one-memory";
 import { consolidateEpisodes } from "../../src/services/memory/consolidate-episodes";
 import { distillConversation } from "../../src/services/memory/distill-conversation";
 import { promoteEpisodes } from "../../src/services/memory/promote-episodes";
@@ -22,10 +25,15 @@ import { runUnifiedRecall } from "../../src/services/recall/recall";
 import { textIncludes } from "../text-match";
 import {
   type ChainFixtures,
+  ensureWorkflowConventionMemory,
   makeContradictionPair,
   makeConventionCluster,
   makeOneOffCluster,
   waitForMemoryVectors,
+  WORKFLOW_GOAL,
+  WORKFLOW_MEMORY_LEAF,
+  WORKFLOW_MEMORY_MARK,
+  WORKFLOW_NAME,
 } from "./fixtures";
 
 export interface ChainCaseResult {
@@ -243,6 +251,82 @@ export const CHAIN_CASES: ChainEvalCase[] = [
           "recall: une mémoire learned/ inventée remonte comme un fait",
         );
       }
+      return { text: lines.join("\n\n"), failures };
+    },
+  },
+  {
+    id: "chain-workflow-turn-one",
+    description:
+      "A workflow run starts knowing the team's conventions. Nobody is typing, so nothing in the run names the memory — retrieval matches on the workflow's own name and goal, and the index lists the path. The two surfaces P2 put in turn 1's steering message, measured where they are produced rather than where they are formatted.",
+    run: async (fx) => {
+      const failures: string[] = [];
+      const lines: string[] = [];
+
+      await ensureWorkflowConventionMemory(fx);
+
+      // Surface 1 — the index. Names every memory, so the run can open one by
+      // path even when retrieval brought nothing back.
+      const fragments = await assembleContextFragments(
+        {
+          organizationId: fx.organizationId,
+          teamId: fx.teamId,
+          userId: fx.userId,
+          logPrefix: "[chain-eval]",
+        },
+        { mode: STANDING_MODE, memory: true },
+      );
+      const index = fragments.memoryIndexBlock ?? "";
+      lines.push(`[index]\n${index || "NONE"}`);
+      // The index renders a TREE, so the full path never appears contiguously
+      // — `team/` is a heading and the leaf sits under it. Assert the leaf.
+      if (!has(index, WORKFLOW_MEMORY_LEAF)) {
+        failures.push(`index: ${WORKFLOW_MEMORY_LEAF} n'est pas listé`);
+      }
+
+      // Surface 2 — recall, matched on the goal and nothing else. The marker
+      // is absent from the goal on purpose: passing on lexical overlap would
+      // prove nothing about the substitution.
+      const block =
+        (await recallForWorkflowTurnOne({
+          organizationId: fx.organizationId,
+          teamId: fx.teamId,
+          conversationId: fx.decisionConversationId,
+          actingUserId: fx.userId,
+          workflowName: WORKFLOW_NAME,
+          playbookGoal: WORKFLOW_GOAL,
+          triggerPayload: { source: "chain-eval" },
+          // N repeats of one case are N identical cache keys; without this the
+          // suite scores one recall call N times. See the option's own note.
+          bypassCache: true,
+        })) ?? "";
+      lines.push(`[recall/workflow]\n${block || "NONE"}`);
+      if (block.length === 0) {
+        failures.push("recall: aucun bloc pour le tour 1 du run");
+      } else if (!has(block, WORKFLOW_MEMORY_MARK)) {
+        failures.push(
+          `recall: la convention (${WORKFLOW_MEMORY_MARK}) n'est pas remontée sur le goal du workflow`,
+        );
+      }
+
+      // A run with no acting user gets NO block — recall scopes private rows
+      // to the caller, and a team-wide block would be the leak. Paired with
+      // the assertion above, which a function returning nothing would satisfy.
+      const anonymous = await recallForWorkflowTurnOne({
+        organizationId: fx.organizationId,
+        teamId: fx.teamId,
+        conversationId: fx.decisionConversationId,
+        actingUserId: undefined,
+        workflowName: WORKFLOW_NAME,
+        playbookGoal: WORKFLOW_GOAL,
+        triggerPayload: { source: "chain-eval" },
+        bypassCache: true,
+      });
+      if (anonymous !== undefined) {
+        failures.push(
+          "recall: un run sans utilisateur a reçu un bloc — le scope privé n'est plus tenu",
+        );
+      }
+
       return { text: lines.join("\n\n"), failures };
     },
   },

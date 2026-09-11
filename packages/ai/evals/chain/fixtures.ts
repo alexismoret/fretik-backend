@@ -20,6 +20,7 @@ import {
   aiMemories,
   aiMessages,
 } from "@fretik/shared/db/schema";
+import { createMemory } from "@fretik/shared/services/ai-memory/create";
 import { deleteMemoryVectorsBulk } from "@fretik/shared/services/ai-memory/vector-refresh";
 import { bulkDeleteCollectionRecords } from "@fretik/shared/services/collection-records/bulk-delete";
 import { deleteRecordCardVectors } from "@fretik/shared/services/collection-records/card-vectors";
@@ -346,6 +347,71 @@ export const waitForMemoryVectors = async (
   return false;
 };
 
+/**
+ * The convention a workflow run has to start knowing.
+ *
+ * A run has nobody typing, so nothing in it names this memory: what retrieval
+ * matches on is the workflow's own name and goal. The marker is therefore a
+ * phrase the GOAL does not contain — "contrôle qualité photo" against a goal
+ * about handling a supplier delivery. A marker echoing the goal would make the
+ * case pass on lexical overlap and prove nothing about the substitution.
+ */
+export const WORKFLOW_MEMORY_PATH = "team/processes/chain-eval-reception.md";
+/** What the index actually prints: it renders a tree, so `team/` is a heading. */
+export const WORKFLOW_MEMORY_LEAF = "processes/chain-eval-reception.md";
+export const WORKFLOW_MEMORY_MARK = "contrôle qualité photo";
+export const WORKFLOW_NAME = "Réception fournisseur";
+export const WORKFLOW_GOAL =
+  "Traiter une réception de marchandise fournisseur de bout en bout : contrôle à l'arrivée, écarts éventuels, mise à jour de la fiche du fournisseur.";
+const WORKFLOW_MEMORY_CONTENT = `Toute réception de marchandise se clôture par un ${WORKFLOW_MEMORY_MARK} des colis, archivé avec le bon de livraison.\n\n**When to apply:** à chaque réception, sans exception.\n**What to do:** photographier les colis à l'arrivée et joindre les clichés au bon de livraison avant de clore la réception.`;
+
+/**
+ * Write it if absent, then block until it is RETRIEVABLE — same race, same
+ * reason as `waitForMemoryVectors`: the row exists before its vector does, and
+ * a case that skips the wait measures the embedding queue.
+ */
+export const ensureWorkflowConventionMemory = async (
+  fx: ChainFixtures,
+): Promise<void> => {
+  const scopeKey = {
+    organizationId: fx.organizationId,
+    teamId: fx.teamId,
+    userId: fx.userId,
+  };
+  const existing = await db.query.aiMemories.findFirst({
+    where: { teamId: fx.teamId, scope: "team", path: WORKFLOW_MEMORY_PATH },
+    columns: { id: true },
+  });
+  if (!existing) {
+    await createMemory({
+      rawPath: `/memories/team/${WORKFLOW_MEMORY_PATH}`,
+      content: WORKFLOW_MEMORY_CONTENT,
+      scopeKey,
+      actor: { userId: fx.userId, actor: "human" },
+    });
+  }
+
+  const deadline = Date.now() + 20_000;
+  while (Date.now() < deadline) {
+    const row = await db.query.aiMemories.findFirst({
+      where: { teamId: fx.teamId, scope: "team", path: WORKFLOW_MEMORY_PATH },
+      columns: { id: true },
+    });
+    if (row) {
+      const vectors = await db.query.aiVectors.findMany({
+        where: { sourceType: "memories", sourceId: row.id },
+        columns: { id: true },
+        limit: 1,
+      });
+      if (vectors.length > 0) return;
+    }
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  throw new Error(
+    `${WORKFLOW_MEMORY_PATH} never became retrievable — the embedding never landed`,
+  );
+};
+
 /** Two unrelated one-offs about the same entity — no rule hides in them. */
 export const makeOneOffCluster = async (
   fx: ChainFixtures,
@@ -429,7 +495,9 @@ export const cleanupChainFixtures = async (
       .where(inArray(aiConversations.id, convIds));
   }
 
-  // Promotions this suite's episodes may have produced.
+  // Promotions this suite's episodes may have produced, plus the convention
+  // the workflow case seeds by PATH (it is human-authored, not promoted, so
+  // the `learned/` sweep above would never reach it).
   const learned = await db.query.aiMemories.findMany({
     where: { teamId: scope.teamId, path: { like: "learned/%" } },
     columns: { id: true, content: true },
@@ -437,6 +505,11 @@ export const cleanupChainFixtures = async (
   const stale = learned
     .filter((m) => m.content.includes(RECORD_LABEL.split(" ")[0] ?? ""))
     .map((m) => m.id);
+  const convention = await db.query.aiMemories.findFirst({
+    where: { teamId: scope.teamId, scope: "team", path: WORKFLOW_MEMORY_PATH },
+    columns: { id: true },
+  });
+  if (convention) stale.push(convention.id);
   if (stale.length > 0) {
     await deleteMemoryVectorsBulk(stale);
     await db.delete(aiMemories).where(inArray(aiMemories.id, stale));

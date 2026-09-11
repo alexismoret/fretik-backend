@@ -23,6 +23,7 @@ import type {
 } from "@langfuse/client";
 import { flushLangfuse, langfuseClient } from "../../src/lib/langfuse";
 import { ensureModelRegistryWarm } from "../../src/lib/model-registry/resolve";
+import { runUnifiedRecall } from "../../src/services/recall/recall";
 import { raceDeadline } from "../deadline";
 import { exitAfterFlush } from "../exit";
 import { CHAIN_CASES, type ChainEvalCase } from "./cases";
@@ -100,6 +101,21 @@ await ensureModelRegistryWarm();
 console.log("[chain-eval] ensuring fixtures (idempotent)…");
 const fixtures: ChainFixtures = await ensureChainFixtures(scope);
 console.log("[chain-eval] fixtures ready");
+
+// The FIRST embedding call of a process times out against a remote provider
+// and `hybrid-search` falls back to its lexical arms — "embedding unavailable
+// — serving lexical arms only", no error, no candidates from the semantic arm.
+// Measured 2026-09-11: that is one guaranteed failed repeat per run, and a case
+// that repeats the same query then caches it (15 s, in-process) can carry the
+// bad result to every other repeat. Burn it here, on a query no case scores.
+await runUnifiedRecall({
+  ...scope,
+  agentType: "chatbot",
+  userMessage: "réchauffement du chemin d'embedding, ignoré",
+  attachedFiles: [],
+  recentTail: "",
+  bypassCache: true,
+}).catch(() => null);
 
 interface RepeatOutcome {
   text: string;

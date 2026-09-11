@@ -29,6 +29,7 @@ import {
   makeContradictionPair,
   makeConventionCluster,
   makeOneOffCluster,
+  makeWorkflowRun,
   waitForMemoryVectors,
   WORKFLOW_GOAL,
   WORKFLOW_MEMORY_LEAF,
@@ -46,6 +47,12 @@ export interface ChainCaseResult {
 export interface ChainEvalCase {
   id: string;
   description: string;
+  /**
+   * Needs a LIVE `@fretik/ai` service and `TRIGGER_CALLBACK_KEY` — opt-in with
+   * `--e2e`, because every other case in this suite runs in-process and a
+   * missing service would otherwise read as a pipeline failure.
+   */
+  e2e?: boolean;
   run: (fx: ChainFixtures) => Promise<ChainCaseResult>;
 }
 
@@ -77,6 +84,68 @@ const writtenFrom = (
   episodeIds: string[],
 ): { path: string; content: string }[] =>
   memories.filter((m) => episodeIds.some((id) => m.content.includes(id)));
+
+/**
+ * Drive ONE workflow turn over the route the Trigger.dev orchestrator calls.
+ *
+ * Not a mock of it — the whole point of the e2e case is that nothing between
+ * the run row and the model is stubbed. The response is SSE; the turn's
+ * verdict arrives as the `result` event, and heartbeats stream until it does.
+ */
+const runWorkflowTurn = async (
+  runId: string,
+): Promise<{ status: string; detail: string }> => {
+  const base = process.env.AI_SERVICE_URL ?? "";
+  const key = process.env.TRIGGER_CALLBACK_KEY ?? "";
+  if (!base || !key) {
+    return {
+      status: "failed",
+      detail: "AI_SERVICE_URL / TRIGGER_CALLBACK_KEY manquants pour --e2e",
+    };
+  }
+  const res = await fetch(`${base}/internal/trigger/runs/${runId}/turn`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Trigger-Key": key },
+    body: JSON.stringify({ turnIndex: 1, wrapUp: false }),
+  });
+  if (!res.ok || !res.body) {
+    return { status: "failed", detail: `HTTP ${res.status.toString()}` };
+  }
+  const text = await res.text();
+  // Last `result` frame wins; the stream also carries heartbeats and deltas.
+  const frames = text.split("\n\n").filter((f) => f.includes("event: result"));
+  const last = frames.at(-1);
+  if (!last) return { status: "failed", detail: "aucun événement result" };
+  const dataLine = last
+    .split("\n")
+    .find((l) => l.startsWith("data: "))
+    ?.slice(6);
+  if (!dataLine) return { status: "failed", detail: "result sans data" };
+  const parsed: unknown = JSON.parse(dataLine);
+  const status =
+    typeof parsed === "object" &&
+    parsed !== null &&
+    "status" in parsed &&
+    typeof parsed.status === "string"
+      ? parsed.status
+      : "unknown";
+  return { status, detail: dataLine.slice(0, 300) };
+};
+
+/** What the run actually wrote — assistant text only, tool parts dropped. */
+const assistantTextFor = async (conversationId: string): Promise<string> => {
+  const messages = await db.query.aiMessages.findMany({
+    where: { conversationId, role: "assistant" },
+    columns: { parts: true },
+  });
+  return messages
+    .flatMap((m) =>
+      m.parts.flatMap((p) =>
+        p.type === "text" && typeof p.text === "string" ? [p.text] : [],
+      ),
+    )
+    .join("\n");
+};
 
 /** The recall stage, run exactly as a turn would. */
 const recallFor = async (
@@ -371,6 +440,37 @@ export const CHAIN_CASES: ChainEvalCase[] = [
         );
       }
 
+      return { text: lines.join("\n\n"), failures };
+    },
+  },
+  {
+    id: "chain-workflow-convention-applied",
+    e2e: true,
+    description:
+      "The run APPLIES the convention, not merely receives it. `chain-workflow-turn-one` proves the block is assembled; this drives a real turn through `/internal/trigger/runs/:runId/turn` — the same route the orchestrator calls — and reads what the run actually wrote. The distinction the package already draws between `evals:recall` (the block) and `memory-recall` (the answer).",
+    run: async (fx) => {
+      const failures: string[] = [];
+      const lines: string[] = [];
+
+      const { runId, conversationId } = await makeWorkflowRun(fx);
+      const result = await runWorkflowTurn(runId);
+      lines.push(`[turn] status=${result.status}`);
+      if (result.status === "failed") {
+        failures.push(`turn: le tour a échoué — ${result.detail}`);
+      }
+
+      const output = await assistantTextFor(conversationId);
+      lines.push(`[output]\n${output || "NONE"}`);
+      if (output.length === 0) {
+        failures.push("turn: le run n'a produit aucun texte");
+      } else if (!has(output, "photo")) {
+        // The convention is in the team's memory and nowhere in the playbook.
+        // A run that never read it writes a perfectly good reception procedure
+        // without a photo in it.
+        failures.push(
+          "output: la procédure rédigée n'applique pas la convention (contrôle qualité photo)",
+        );
+      }
       return { text: lines.join("\n\n"), failures };
     },
   },

@@ -19,6 +19,8 @@ import {
   aiEpisodes,
   aiMemories,
   aiMessages,
+  workflowRuns,
+  workflows,
 } from "@fretik/shared/db/schema";
 import { createMemory } from "@fretik/shared/services/ai-memory/create";
 import { deleteMemoryVectorsBulk } from "@fretik/shared/services/ai-memory/vector-refresh";
@@ -392,6 +394,7 @@ export const WORKFLOW_MEMORY_PATH = "team/processes/chain-eval-reception.md";
 export const WORKFLOW_MEMORY_LEAF = "processes/chain-eval-reception.md";
 export const WORKFLOW_MEMORY_MARK = "contrôle qualité photo";
 export const WORKFLOW_NAME = "Réception fournisseur";
+const WORKFLOW_CONVERSATION_TITLE = "[chain-eval] run réception fournisseur";
 export const WORKFLOW_GOAL =
   "Traiter une réception de marchandise fournisseur de bout en bout : contrôle à l'arrivée, écarts éventuels, mise à jour de la fiche du fournisseur.";
 const WORKFLOW_MEMORY_CONTENT = `Toute réception de marchandise se clôture par un ${WORKFLOW_MEMORY_MARK} des colis, archivé avec le bon de livraison.\n\n**When to apply:** à chaque réception, sans exception.\n**What to do:** photographier les colis à l'arrivée et joindre les clichés au bon de livraison avant de clore la réception.`;
@@ -443,6 +446,97 @@ export const ensureWorkflowConventionMemory = async (
   );
 };
 
+/**
+ * A real workflow + run + conversation, ready for one turn.
+ *
+ * Mirrors `createWorkflowRun` minus the Trigger.dev dispatch: the e2e case
+ * drives the turn itself over `/internal/trigger/runs/:runId/turn`, which is
+ * the same route the orchestrator calls. Everything else has to be genuine —
+ * the run row is the turn handler's only source of scope.
+ *
+ * The playbook has ONE task and asks for the procedure in writing. A run that
+ * never read the team's memory can complete that task perfectly and never
+ * mention a photo; a run that read it cannot omit it.
+ */
+export interface WorkflowRunFixture {
+  runId: string;
+  workflowId: string;
+  conversationId: string;
+}
+
+export const makeWorkflowRun = async (
+  fx: ChainFixtures,
+): Promise<WorkflowRunFixture> => {
+  await ensureWorkflowConventionMemory(fx);
+
+  const [conv] = await db
+    .insert(aiConversations)
+    .values({
+      organizationId: fx.organizationId,
+      teamId: fx.teamId,
+      userId: fx.userId,
+      agentType: "workflow",
+      title: WORKFLOW_CONVERSATION_TITLE,
+    })
+    .returning({ id: aiConversations.id });
+  if (!conv) throw new Error("fixture: failed to insert workflow conversation");
+
+  const [wf] = await db
+    .insert(workflows)
+    .values({
+      organizationId: fx.organizationId,
+      teamId: fx.teamId,
+      userId: fx.userId,
+      name: WORKFLOW_NAME,
+      description: "Fixture du chain-eval — ne pas utiliser.",
+      status: "active",
+      triggerType: "manual",
+      playbook: {
+        goal: WORKFLOW_GOAL,
+        tasks: [
+          {
+            key: "redige-procedure",
+            title: "Rédiger la procédure de réception",
+            description: "",
+            instructions:
+              "Rédige, en quelques lignes, la procédure de réception de marchandise que l'équipe doit suivre, en respectant les conventions déjà enregistrées par l'équipe. N'utilise aucun outil : réponds directement, puis clôture la tâche.",
+          },
+        ],
+      },
+    })
+    .returning({ id: workflows.id });
+  if (!wf) throw new Error("fixture: failed to insert workflow");
+
+  const [run] = await db
+    .insert(workflowRuns)
+    .values({
+      workflowId: wf.id,
+      organizationId: fx.organizationId,
+      teamId: fx.teamId,
+      actingUserId: fx.userId,
+      triggeredByUserId: fx.userId,
+      status: "queued",
+      triggerType: "manual",
+      triggerPayload: { source: "chain-eval" },
+      conversationId: conv.id,
+      taskStates: [
+        {
+          key: "redige-procedure",
+          title: "Rédiger la procédure de réception",
+          description: "",
+          instructions:
+            "Rédige, en quelques lignes, la procédure de réception de marchandise que l'équipe doit suivre, en respectant les conventions déjà enregistrées par l'équipe. N'utilise aucun outil : réponds directement, puis clôture la tâche.",
+          status: "pending",
+        },
+      ],
+      isTest: true,
+    })
+    .returning({ id: workflowRuns.id });
+  if (!run) throw new Error("fixture: failed to insert workflow run");
+
+  return { runId: run.id, workflowId: wf.id, conversationId: conv.id };
+};
+
 /** Two unrelated one-offs about the same entity — no rule hides in them. */
 export const makeOneOffCluster = async (
   fx: ChainFixtures,
@@ -472,10 +566,28 @@ export const cleanupChainFixtures = async (
 ): Promise<void> => {
   const convIds = (
     await db.query.aiConversations.findMany({
-      where: { teamId: scope.teamId, title: CONVERSATION_TITLE },
+      where: {
+        teamId: scope.teamId,
+        title: { in: [CONVERSATION_TITLE, WORKFLOW_CONVERSATION_TITLE] },
+      },
       columns: { id: true },
     })
   ).map((c) => c.id);
+
+  // The e2e case's workflow + its runs. Runs first: a run row outliving its
+  // workflow is what the stall sweeper would pick up.
+  const wfIds = (
+    await db.query.workflows.findMany({
+      where: { teamId: scope.teamId, name: WORKFLOW_NAME },
+      columns: { id: true },
+    })
+  ).map((w) => w.id);
+  if (wfIds.length > 0) {
+    await db
+      .delete(workflowRuns)
+      .where(inArray(workflowRuns.workflowId, wfIds));
+    await db.delete(workflows).where(inArray(workflows.id, wfIds));
+  }
 
   const type = await db.query.collections.findFirst({
     where: { teamId: scope.teamId, key: TYPE_KEY },

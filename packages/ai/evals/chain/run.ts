@@ -47,9 +47,9 @@ const opt = (name: string): string | undefined => {
 
 // Own team, like `evals:memory` — see the note there. This suite is the more
 // destructive of the two: `clearAnchoredEpisodes` wipes every episode anchored
-// on its supplier record per repeat, and it used to rewrite the shared team's
-// one `team_memory_digests` row, which is injected into every turn of every
-// other e2e suite and of every human working in that team.
+// on its supplier record per repeat, `promoteEpisodes` writes into the team's
+// `learned/` namespace, and the e2e case creates a real workflow run. On a
+// shared team every one of those reaches somebody else's turn.
 const scope = {
   teamId: process.env.EVAL_WRITE_TEAM_ID ?? "",
   organizationId: process.env.EVAL_ORGANIZATION_ID ?? "",
@@ -76,12 +76,31 @@ const repeatsRaw = Number.parseInt(opt("--repeats") ?? "", 10);
 const repeats =
   Number.isFinite(repeatsRaw) && repeatsRaw > 0 ? repeatsRaw : DEFAULT_REPEATS;
 const onlyCase = opt("--case");
+// e2e cases need a LIVE service and `TRIGGER_CALLBACK_KEY`; without the flag
+// they are skipped rather than failed, so a normal in-process run on a laptop
+// with no service reports the pipeline and not the absence of one. `--case`
+// names a case explicitly, which is consent enough.
+const withE2e = flag("--e2e");
+const selectable = CHAIN_CASES.filter(
+  (c) => c.e2e !== true || withE2e || c.id === onlyCase,
+);
 const cases = onlyCase
-  ? CHAIN_CASES.filter((c) => c.id === onlyCase)
-  : CHAIN_CASES;
+  ? selectable.filter((c) => c.id === onlyCase)
+  : selectable;
 if (cases.length === 0) {
   console.error(`No case matches --case ${onlyCase ?? ""}`);
   process.exit(1);
+}
+const e2eSelected = cases.some((c) => c.e2e === true);
+if (e2eSelected && !process.env.AI_SERVICE_URL) {
+  console.error(
+    "An e2e case was selected but AI_SERVICE_URL is unset — it drives a real turn over /internal/trigger. Start the ai service and pass AI_SERVICE_URL=…",
+  );
+  process.exit(1);
+}
+const skipped = CHAIN_CASES.length - selectable.length;
+if (skipped > 0) {
+  console.log(`[chain-eval] ${skipped.toString()} e2e case(s) skipped — --e2e`);
 }
 
 // The live model registry is a DB-backed snapshot built lazily, and the only

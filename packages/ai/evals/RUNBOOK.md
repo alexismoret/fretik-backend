@@ -393,6 +393,121 @@ are 30/30; `episodes` was retained if nothing regressed against `none`, and
 after the fix nothing does. The rule named the tie in advance and gave it to
 `episodes`.
 
+### The `mr-greeting` fix cost `mr-broad` 20 points (2026-09-12)
+
+The fix in the previous section closed `mr-greeting` at 30/30 and was signed off
+on the four cases it was measured against. It also broke a fifth, which was not
+in that set. Measured the next day, same service, same concurrency, n = 30 each,
+paired:
+
+| arm                  | `mr-broad` | pass-rate | failing assertion        |
+| -------------------- | ---------: | --------: | ------------------------ |
+| `none` (block cut)   |  **29/30** |     0.967 | —                        |
+| `episodes` (default) |   **9/30** |     0.300 | `contains "Horizon"` ×21 |
+
+**The standing block, as scaffolded, was worth −20/30 on this case.** The two
+other assertions (`500`, `8 %`) passed every single time; only the linked
+internal project went missing, and the judge said so unprompted — _"omits the
+linked internal project (Horizon)"_. Horizon is what the GRAPH arm returns, so
+the failure is not retrieval quality: the agent stopped retrieving.
+
+**The obvious explanation was tested and is WRONG.** The greeting fix had
+rewritten the condition to _"lean on it when the message asks for a state of
+play"_, and `mr-broad`'s prompt is **"Fais le point sur Nordwind GmbH"** — a
+request for a state of play, word for word, about a NAMED thing the scaffold
+never covered. That reads like the whole story: the agent settles for the block
+and never opens the graph. A sentence was added to close the gap —
+
+> A message that NAMES something — a company, a project, a document — is
+> retrieval's question even when it asks for a state of play. Work from
+> `<active_memory>` and dig from there; here this block is background, never the
+> answer.
+
+— the service was restarted, and the four cases re-run at n = 10, 2026-09-12:
+`mr-greeting` 10/10, `mr-contextless-status` 10/10, `mr-contextless-brief`
+10/10, **`mr-broad` 1/10**. No improvement (1/10 against a 0.30 base is
+P ≈ 0.15 — not even a signal). **Sentence reverted**: 51 tokens of agent-facing
+prose that buys nothing measured is a regression by this repo's own rule.
+
+**What the failure traces actually show, and it refutes "it stops retrieving".**
+Every failing repeat ran **5 to 13 tool calls** — 2-5 `searchKnowledge`, 2-5
+`querySql`, 1-2 `memory` — against a budget of 3. The agent retrieves _harder_
+with the block than without it. And `500` and `8 %` pass 10/10; the judge's
+complaint is always and only the omission of the linked project. So the block
+does not suppress retrieval. It supplies a Nordwind narrative that is already
+answer-shaped — contract, figures, open points — and the answer gets composed
+from it, with the graph link left on the floor no matter how much retrieval
+happens alongside.
+
+**Which means the next attempt must not be prose.** Two shapes worth measuring,
+neither tried: (a) drop from `<standing_memory>` the episodes whose subject the
+message already names, so the block stops competing with `<active_memory>` on
+its own ground — a renderer rule, checkable; (b) leave the block and raise the
+graph arm's standing inside `<active_memory>`. Until one of them is measured,
+`mr-broad` is an OPEN regression of the standing layer, and the honest summary
+is that the layer is worth +6/80 on contextless questions and −20/30 here.
+
+**The methodology lesson, which is the expensive part.** "Re-run BOTH arms after
+a shared-prompt fix" was already written in this file, and it was followed — both
+arms were re-run, on the four cases that motivated the fix. That is not enough.
+A sentence in a shared block reaches **every case the block is rendered into**.
+The rule is now: after editing the standing scaffold, re-run every `mr-*` case,
+not the subset that prompted the edit. At 10 repeats × 15 cases that is one
+sequential run; the alternative cost 20 points on a case nobody looked at for a
+day.
+
+**Do not read a scaffold edit against the running service without a restart.**
+`LANGFUSE_PROMPTS_LOCAL=true` makes the runtime read the `.md` directly, but
+`prompt-renderer.ts` loads it at module init (`const UNIFIED_TEMPLATE_RAW = await
+Bun.file(...).text()`), and `bun --hot` does not watch non-module files. An
+edited prompt measured without a restart measures the old prompt, silently.
+
+### Closures and the cleanup pass (P5.4, 2026-09-12)
+
+Closed at n = 30 on the `episodes` arm, in addition to the four already closed
+the previous day:
+
+| case                            |      n=30 | note                                             |
+| ------------------------------- | --------: | ------------------------------------------------ |
+| `mr-memory-convention`          | **30/30** | deterministic floors in place, judge agreeing    |
+| `mr-private-leak`               | **30/30** | the other member never sees the Sirius episode   |
+| `chain-workflow-turn-one`       | **30/30** | a run that starts knowing                        |
+| `chain-oneoff-not-durable`      | **30/30** | with the Meridian residue deliberately left      |
+| `chain-convention-promoted`     | **30/30** | with the residue present — P5.1 holds            |
+| `chain-decision-survives`       | **29/30** | closed                                           |
+| `chain-contradiction-corrected` |     28/30 | **open** — 1 real `consolidate: NOOP`, 1 timeout |
+
+`chain-contradiction-corrected` is the suite's only genuinely open case and it is
+product-side model variance, not a fixture defect.
+
+**One paid call removed.** `runUnifiedRecall` ran a capability arm — a hybrid
+search plus a rerank over `workflows` + `pages` — on every call, including every
+workflow run, and the only consumer of its output is `capabilityBlock`, read at
+`chatbot.ts` and nowhere else. Workflow turn 1 now passes
+`needsCapabilityBlock: false` and the arm is skipped. **It is a parameter, not a
+branch on `agentType`**: `recall.ts` states that `agentType` is telemetry
+metadata and logic must never be derived from it, and a second caller wanting
+the block would otherwise have to lie about what it is.
+
+**One time bomb defused.** `mem-consolidate-reanchor` hard-coded "30 juin 2026"
+as the date a memory should be re-anchored PAST. For the first half of 2026 the
+fixture measured the opposite claim, and the gap widened by a day per day. Now
+`now − 45 days`, rendered through `FRENCH_MONTHS`.
+
+**Logs kept, deliberately.** `[hybrid] arm=…`, `[search] …` and
+`[recall] mode=… best=… greyZone=…` are ~9 lines per turn and they look like
+debug residue. They paid for four diagnoses in one day: the cold-embedding
+discovery came from `[hybrid-search] embedding unavailable`, and the 15 s recall
+cache was found by counting `[recall]` lines against repeats. They stay until
+something replaces the information, not because nobody dared delete them.
+
+**`QUERY_EMBED_TIMEOUT_MS = 2500` NOT changed.** The first embedding call of a
+process does exceed it and hybrid search then serves lexical arms silently — real,
+and the eval runner now warms the embedding path for that reason. But the
+observation is a laptop against a remote provider; it does not establish the
+problem in production, and the honest fix would be a boot warm-up rather than a
+larger timeout that every request pays. Measure in prod first.
+
 ### `mr-written-memory-recalled` — the write end, finally measured (P5.2, 2026-09-11)
 
 **10/10, zero failed assertions, ~25 s per turn, $0.011 per turn** (concurrency

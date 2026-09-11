@@ -21,7 +21,9 @@ import { and, eq } from "drizzle-orm";
  *     convention. `chain-convention-promoted` went 10/10 -> 0/10.
  *   - `evals:chain` rewrote the shared team's single `team_memory_digests` row
  *     per repeat, putting its fixtures into the standing prompt of every other
- *     e2e suite — and of every human turn in that team.
+ *     e2e suite — and of every human turn in that team. (That table was
+ *     deleted on 2026-09-11 with the digest; the reason the teams are separate
+ *     was not, and `learned/` writes still carry it.)
  *
  * Isolation by cleanup was the old answer and it is the wrong shape: it makes
  * correctness depend on remembering a flag. Separate teams make the suites

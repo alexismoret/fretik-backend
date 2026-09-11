@@ -294,6 +294,69 @@ section is empty by construction. Eleven of the eighteen episodes a reader sees
 on the real dev team are private — a team-scoped artefact structurally misses
 61 % of them. **If the digest does not win here, it wins nowhere.**
 
+#### Result — 2026-09-11, three arms, `p3ab-*` / `p3ab8-*` / `p4fix-*`
+
+Control on all 15 cases (`p3ab-none`, 150 items, 43m45s): **137/150**. Only three
+cases were not 10/10 — `mr-contextless-status` 3/10, `mr-contextless-brief`
+6/10, `mr-abstain-general` 8/10. The two arms then ran the 8 cases that can
+decide: the three contextless, the four must-NOTs, and `mr-memory-convention`.
+
+| case                          | `none` | `episodes` | `digest` | calls n/e/d      |
+| ----------------------------- | -----: | ---------: | -------: | ---------------- |
+| `mr-contextless-status`       |   3/10 |       9/10 |    10/10 | 8.0 / 2.9 / 2.3  |
+| `mr-contextless-brief`        |   6/10 |      10/10 |    10/10 | 11.9 / 5.9 / 8.0 |
+| `mr-contextless-week`         |  10/10 |      10/10 |     9/10 | 3.8 / 4.5 / 4.8  |
+| `mr-greeting`                 |  10/10 |   **4/10** |    10/10 | 0.0 / 0.0 / 0.0  |
+| `mr-abstain-general`          |   8/10 |       8/10 |     6/10 | 1.0 / 0.8 / 1.1  |
+| `homonym`/`convention`/`leak` |  10/10 |      10/10 |    10/10 | —                |
+| **total**                     |  67/80 |      71/80 |    75/80 |                  |
+
+**A standing block is worth having.** Both arms turn the two discriminating
+cases from 3/10 and 6/10 into 9-10/10, and they do it while SPENDING LESS: on
+`mr-contextless-brief` the control burned 11.9 tool calls and 208 s per turn
+reconstructing by hand what the block states — 22 calls and 12 minutes on the
+worst repeat. That is the answer to "does this earn its place": yes, and the
+evidence is a case that cannot be answered by retrieval at all.
+
+**Then `episodes` broke a must-NOT, and the cause was one sentence of prompt.**
+`mr-greeting` 10/10 → 4/10. All six failures answered "Bonjour !" politely, under
+the length cap, while naming the week's Nordwind delivery and the Callisto
+follow-up. The scaffold said _lean on it when the message names nothing to
+search for_ — and a greeting names nothing either, so the rule covered a case it
+never meant to. Rewritten as a positive condition ("asks for a state of play")
+with small talk excluded by name.
+
+| after the fix (`p4fix-*`) | `episodes` | `digest` |
+| ------------------------- | ---------: | -------: |
+| `mr-greeting`             |  4 → 10/10 |    10/10 |
+| `mr-contextless-status`   |  9 → 10/10 |    10/10 |
+| `mr-contextless-brief`    |      10/10 |    10/10 |
+| `mr-abstain-general`      |       8/10 | 6 → 9/10 |
+| subtotal                  |      38/40 |    39/40 |
+
+**Re-run BOTH arms after a shared-prompt fix.** The fix lives in the block's
+shared intro, and it moved the digest too (`mr-abstain-general` 6 → 9). Comparing
+a fixed arm against the other arm's pre-fix score would have manufactured a win.
+
+**The verdict is a TIE, 78/80 each**, and the honest caveat is that this total
+splices four cases measured under the old prompt onto four measured under the
+new one. The only clean comparison is the four re-run cases: **38/40 vs 39/40**,
+one point at n=10, which is not a separation.
+
+Decided by the pre-registered rule, not by the totals: `digest` is retained only
+if it BEATS `episodes` on the contextless cases — it does not (equal on two,
+9/10 vs 10/10 on the third) — while `episodes` is retained if no case regresses
+against `none`, and after the fix none does. The rule also named the tie in
+advance and gave it to `episodes`.
+
+What decides it beyond the score, all of it measured rather than argued:
+
+|                                    | `episodes`                   | `digest`                                                                                                                                                                                        |
+| ---------------------------------- | ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| cost per refresh                   | one indexed query            | **one LLM call per team**                                                                                                                                                                       |
+| defects observed in its first week | none reachable by a renderer | **5** (inverted link asserted as fact with a resolving marker, a third of the sections dropped in 1 of 10, 16 lines lost to a wrong marker prefix, a block outliving its rows, timeout at 4/10) |
+| episodes a reader can see          | **18 of 18**                 | 7 of 18 — misses 61 %                                                                                                                                                                           |
+
 ### The candidate budget is spent, not rationed (2026-09-10)
 
 The per-candidate ceiling used to be one number — the 2 000-char block divided

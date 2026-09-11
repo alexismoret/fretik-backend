@@ -243,6 +243,57 @@ were, and how they went away:
 
 `judge` is the rollback — one env var, no deploy, previous behaviour exactly.
 
+### `STANDING_MODE` / `X-Standing-Mode` — how to run the standing-layer A/B
+
+Exactly the shape of `RECALL_MODE` above, for exactly the same reason: the
+service reads `STANDING_MODE` once at module load, so without a per-request
+override two arms are one restart apart and stop being paired.
+
+| arm        | what serves `<standing_memory>`                                                  |
+| ---------- | -------------------------------------------------------------------------------- |
+| `digest`   | the generated `team_memory_digests` row (`services/memory/build-team-digest.ts`) |
+| `episodes` | `services/episodes/list-standing.ts`, rendered deterministically, per reader     |
+| `none`     | nothing — **the control**, and the only thing that makes either number readable  |
+
+```bash
+for ARM in none episodes digest; do
+  AI_SERVICE_URL=http://localhost:8083 bun run evals:langfuse -- \
+    --suite memory-recall --repeats 10 --recall-mode adaptive \
+    --standing-mode $ARM --concurrency 3 --run-name p3ab-$ARM
+done   # sequential. Compare PER CASE.
+```
+
+`/invoke` answers **400 `UNKNOWN_STANDING_MODE`** on anything else, deliberately:
+an A/B that silently falls back to the default measures one arm twice.
+
+**Three things to set up first, each of which silently voids the comparison.**
+
+1. **Rebuild the digest, and check it cites episodes.**
+   `POST /internal/memory/build-team-digest` with `force: true`, then read
+   `sources.episodeIds`. Measured 2026-09-11: before the rebuild the eval
+   team's digest cited **0 episodes** — it had last been built while the recall
+   fixtures were still stamped June 2026, outside its 60-day decision window —
+   so its two sections were conventions and entity labels, and the arm behaved
+   indistinguishably from `none`. After the rebuild: 8 episodes and a
+   `## Current decisions` section. A `digest` arm reading a stale row is not a
+   measurement of the digest.
+2. **Check the jobs service is NOT running.** Seeding fixtures writes memories,
+   which enqueues a digest rewrite on a 5-minute debounce. A rewrite mid-run
+   changes the `digest` arm's block underneath the repeats.
+3. **`EVAL_OTHER_USER_ID` must be set**, or `mr-private-leak` throws rather than
+   passing for the wrong reason — and that case gates the standing block too:
+   the private Sirius episode must not appear in it. Verified against real data
+   on 2026-09-11: the owner's block carries it (18 rows visible), the other
+   member's does not (7 visible).
+
+**The fairness note, which belongs in any write-up of the result.** The recall
+fixtures seed at TEAM scope (`userId: null`), while `distillConversation` writes
+a PRIVATE episode whenever a conversation has one participant. So the eval team
+flatters the `digest` arm relative to a real one-person team, where its decision
+section is empty by construction. Eleven of the eighteen episodes a reader sees
+on the real dev team are private — a team-scoped artefact structurally misses
+61 % of them. **If the digest does not win here, it wins nowhere.**
+
 ### The candidate budget is spent, not rationed (2026-09-10)
 
 The per-candidate ceiling used to be one number — the 2 000-char block divided

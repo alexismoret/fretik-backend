@@ -13,8 +13,25 @@ import {
   createEphemeralConversation,
   destroyEphemeralConversation,
 } from "./conversation-lifecycle";
+import { raceDeadline } from "./deadline";
 import { invokeChatbot } from "./http-client";
 import type { Assertion, CaseResult, EvalCase, EvalSuite } from "./types";
+
+/**
+ * The bound this path did not have. `evals:memory`, `evals:chain` and
+ * `evals:recall` each race their repeat against a deadline; the Langfuse
+ * experiment — the suite that is actually used to decide things — went through
+ * `invokeChatbot`, which sets no signal and no timeout, so a wedged turn froze
+ * the whole run with no output and nothing to read. Seen 2026-09-11: a run sat
+ * for six minutes on one case with no way to tell a long turn from a hang.
+ *
+ * Above the slowest turn ever measured here (1 130 s, `mr-private-leak` under
+ * its original task wording, 2026-09-10 — the reason that case was rewritten as
+ * a question). A deadline that could fire on a legitimate turn would
+ * manufacture failures, which is worse than the hang; this one can only catch a
+ * genuine wedge.
+ */
+const CASE_DEADLINE_MS = 20 * 60_000;
 
 export interface RunCaseOptions {
   /**
@@ -91,15 +108,20 @@ export const runCase = async (
     if (c.seed && conversationId) {
       await c.seed(ctx);
     }
-    const invoke = await invokeChatbot(c.prompt, conversationId, {
-      modelProfileKey: opts?.modelProfileKey,
-      pageBuildProfileKey: opts?.pageBuildProfileKey,
-      recallMode: opts?.recallMode,
-      standingMode: opts?.standingMode,
-      // Case-level, not run-level: the privacy probe is the only turn that
-      // must arrive as somebody other than the eval user.
-      asOtherUser: c.runAsOtherUser,
-    });
+    const invoke = await raceDeadline(
+      () =>
+        invokeChatbot(c.prompt, conversationId, {
+          modelProfileKey: opts?.modelProfileKey,
+          pageBuildProfileKey: opts?.pageBuildProfileKey,
+          recallMode: opts?.recallMode,
+          standingMode: opts?.standingMode,
+          // Case-level, not run-level: the privacy probe is the only turn that
+          // must arrive as somebody other than the eval user.
+          asOtherUser: c.runAsOtherUser,
+        }),
+      CASE_DEADLINE_MS,
+      `${suite.name}/${c.id}`,
+    );
     const assertions = await runAssertions(
       selectAssertions(c.assertions, opts),
       invoke,

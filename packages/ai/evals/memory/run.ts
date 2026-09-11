@@ -47,13 +47,22 @@ const opt = (name: string): string | undefined => {
   return i !== -1 ? argv[i + 1] : undefined;
 };
 
+// The WRITE side runs in its own team. This suite does not read a corpus, it
+// creates one, and until 2026-09-11 it created it in the team the read-side
+// suites score against — which is how a leftover `learned/` memory of this
+// suite came to be the most coherent explanation for `chain-convention-promoted`
+// going 10/10 -> 0/10. No fallback to `EVAL_TEAM_ID`: a silent one rebuilds
+// exactly the contamination the split exists to remove.
 const scope = {
-  teamId: process.env.EVAL_TEAM_ID ?? "",
+  teamId: process.env.EVAL_WRITE_TEAM_ID ?? "",
   organizationId: process.env.EVAL_ORGANIZATION_ID ?? "",
   userId: process.env.EVAL_USER_ID ?? "",
 };
 if (!scope.teamId || !scope.organizationId || !scope.userId) {
-  console.error("Missing EVAL_TEAM_ID / EVAL_ORGANIZATION_ID / EVAL_USER_ID");
+  console.error(
+    "Missing EVAL_WRITE_TEAM_ID / EVAL_ORGANIZATION_ID / EVAL_USER_ID.\n" +
+      "The write-side suites (memory, chain) need their own team — run `bun run evals:ensure-write-team`.",
+  );
   process.exit(1);
 }
 
@@ -61,6 +70,12 @@ if (flag("--cleanup")) {
   await cleanupMemoryFixtures(scope);
   process.exit(0);
 }
+
+/**
+ * Tear the universe down when the run ends, not only when someone remembers
+ * `--cleanup`. `--keep` opts out to inspect the rows a failing case wrote.
+ */
+const keepFixtures = flag("--keep");
 
 const repeatsRaw = Number.parseInt(opt("--repeats") ?? "", 10);
 const repeats =
@@ -366,5 +381,11 @@ if (bimodal.length > 0) {
       )
       .join(", ")}`,
   );
+}
+if (keepFixtures) {
+  console.log("\n[memory-eval] --keep: fixtures left in place");
+} else {
+  await cleanupMemoryFixtures(scope);
+  console.log("\n[memory-eval] fixtures cleaned up");
 }
 await exitAfterFlush(passed === results.length ? 0 : 1);

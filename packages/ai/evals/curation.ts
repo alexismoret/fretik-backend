@@ -316,4 +316,9 @@ export const CURATED: Record<string, CuratedCase> = {
   "mr-document-top": { capability: "memory" },
   "mr-badly-written": { capability: "memory" },
   "mr-broad": { capability: "memory" },
+  // The three contextless cases — the only ones a standing-memory block can
+  // win, and the only ones it can lose. Paired against `--standing-mode none`.
+  "mr-contextless-status": { capability: "memory" },
+  "mr-contextless-brief": { capability: "memory" },
+  "mr-contextless-week": { capability: "memory" },
 };

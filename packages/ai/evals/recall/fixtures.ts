@@ -61,10 +61,19 @@ export interface RecallFixtures {
     vegaOld: string;
     vegaNew: string;
     callistoFresh: string;
+    planning: string;
   };
   memoryPaths: { recapHebdo: string; relanceStyle: string };
   documents: { bail: string; charte: string };
   workflows: { lateDeliveries: string };
+  /**
+   * The delivery date the `planning` episode states, as the two forms a French
+   * answer can take (`17/09` and `17 septembre`).
+   *
+   * Exported so the assertion is built from the SAME value the fixture wrote.
+   * A case that hard-codes a date is a case that starts failing on a Tuesday.
+   */
+  nextDelivery: { numeric: string; long: string };
 }
 
 interface Scope {
@@ -186,16 +195,77 @@ const ensureRecord = async (
   return record.id;
 };
 
-const findEpisodeId = async (
+const findEpisode = async (
   scope: Scope,
   title: string,
-): Promise<string | null> => {
+): Promise<{ id: string; summary: string } | null> => {
   const row = await db.query.aiEpisodes.findFirst({
     where: { teamId: scope.teamId, title, state: "active" },
-    columns: { id: true },
+    columns: { id: true, summary: true },
   });
-  return row?.id ?? null;
+  return row ?? null;
 };
+
+/**
+ * Fixture dates are RELATIVE, and re-applied on every ensure.
+ *
+ * They used to be hard-coded to June 2026 and, because `ensureEpisode` returns
+ * early on an existing title, they were written once and then aged silently.
+ * That is invisible to the block suite — `rec-freshness-conflict` only cares
+ * which of two episodes is newer — and fatal to anything with a rolling
+ * window: by 2026-09-11 the whole universe was 73-180 days old, i.e. outside
+ * every window a standing-memory layer can have. A suite that cannot populate
+ * the thing under test cannot measure it.
+ */
+const daysAgo = (days: number): Date =>
+  new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+
+/**
+ * The next Tuesday strictly after today — the date the `planning` episode
+ * names, and the one `mr-contextless-week` asserts.
+ *
+ * Strictly after, so the answer is never "today": a contextless question about
+ * the week ahead must be answerable without the model having to reason about
+ * whether "mardi" already happened.
+ */
+const nextTuesday = (): Date => {
+  const d = new Date();
+  d.setHours(9, 0, 0, 0);
+  d.setDate(d.getDate() + ((2 - d.getDay() + 7) % 7 || 7));
+  return d;
+};
+
+const FRENCH_MONTHS = [
+  "janvier",
+  "février",
+  "mars",
+  "avril",
+  "mai",
+  "juin",
+  "juillet",
+  "août",
+  "septembre",
+  "octobre",
+  "novembre",
+  "décembre",
+];
+
+const frenchDate = (d: Date): { numeric: string; long: string } => ({
+  numeric: `${d.getDate().toString().padStart(2, "0")}/${(d.getMonth() + 1).toString().padStart(2, "0")}`,
+  long: `${d.getDate().toString()} ${FRENCH_MONTHS[d.getMonth()] ?? ""}`,
+});
+
+/**
+ * The date the `planning` episode names, as a pure function.
+ *
+ * Exported so an assertion computes the SAME value the fixture wrote instead
+ * of hard-coding one — a hard-coded date is a case that starts failing on a
+ * Tuesday. It is recomputed at assert time rather than read back from the
+ * fixture because assertions are static; the two can only disagree for a run
+ * that crosses midnight into a Tuesday.
+ */
+export const nextDeliveryDate = (): { numeric: string; long: string } =>
+  frenchDate(nextTuesday());
 
 const ensureEpisode = async (
   scope: Scope,
@@ -208,8 +278,55 @@ const ensureEpisode = async (
     occurredTo?: Date;
   },
 ): Promise<string> => {
-  const existing = await findEpisodeId(scope, input.title);
-  if (existing) return existing;
+  const occurredFrom = input.occurredFrom ?? daysAgo(8);
+  const occurredTo = input.occurredTo ?? daysAgo(3);
+  const existing = await findEpisode(scope, input.title);
+  if (existing) {
+    // Re-date rather than re-insert: the row is keyed by title. `created_at`
+    // moves too, because every rolling-window query reads
+    // `coalesce(occurred_to, created_at)`.
+    await db.execute(sql`
+      UPDATE ai_episodes
+      SET occurred_from = ${occurredFrom}, occurred_to = ${occurredTo},
+          created_at = ${occurredFrom},
+          summary = ${input.summary}
+      WHERE id = ${existing.id}
+    `);
+    // The vector's metadata carries `occurred_to` and `asOfLine` renders it,
+    // so a re-dated row with a stale vector shows yesterday's date in
+    // `<active_memory>`.
+    await db.execute(sql`
+      UPDATE ai_vectors
+      SET metadata = jsonb_set(
+            jsonb_set(metadata, '{occurred_to}', to_jsonb(${occurredTo.toISOString()}::text)),
+            '{occurred_from}', to_jsonb(${occurredFrom.toISOString()}::text))
+      WHERE source_type = 'episodes' AND source_id = ${existing.id}
+    `);
+    // One fixture's text is not stable — the planning episode names a computed
+    // date — so its vector has to be rebuilt, or the block would retrieve last
+    // run's date. Only when the text actually moved: embeddings are cached by
+    // text, but the rerank and write are not free.
+    if (existing.summary !== input.summary) {
+      const metadata: EpisodeVectorMetadata = {
+        kind: "consolidated",
+        title: input.title,
+        conversation_id: null,
+        anchor_record_id: null,
+        occurred_from: occurredFrom.toISOString(),
+        occurred_to: occurredTo.toISOString(),
+      };
+      await vectorizeSource({
+        sourceType: "episodes",
+        sourceId: existing.id,
+        content: `${input.title}\n\n${input.summary}`,
+        metadata,
+        teamId: scope.teamId,
+        organizationId: scope.organizationId,
+        userId: input.userId ?? null,
+      });
+    }
+    return existing.id;
+  }
   const { episode } = await upsertEpisode({
     organizationId: scope.organizationId,
     teamId: scope.teamId,
@@ -218,8 +335,8 @@ const ensureEpisode = async (
     title: input.title,
     summary: input.summary,
     recordIds: input.recordIds,
-    occurredFrom: input.occurredFrom ?? new Date("2026-06-20T09:00:00Z"),
-    occurredTo: input.occurredTo ?? new Date("2026-06-28T17:00:00Z"),
+    occurredFrom,
+    occurredTo,
   });
   const metadata: EpisodeVectorMetadata = {
     kind: episode.kind,
@@ -502,6 +619,12 @@ export const ensureRecallFixtures = async (
     summary:
       "Comparatif de tarifs entre fournisseurs d'écrans réalisé en amont du choix : Nordwind GmbH (tarif de référence), Baltic Screens (−5 % mais délais doublés), Lumen Optique (qualité supérieure, +18 %). Conclusion de l'époque : Nordwind offrait le meilleur rapport qualité/prix/délai. Ce benchmark est antérieur à la négociation du contrat 2027.",
     recordIds: [nordwind, distractors[1] ?? nordwind],
+    // Deliberately older than a standing-memory window and younger than the
+    // corpus: it must stay RETRIEVABLE (`rec-episode-right-one` asks recall to
+    // prefer the contract over it) while never appearing in a "lately" block.
+    // A free negative control for anything that claims to show recent work.
+    occurredFrom: daysAgo(48),
+    occurredTo: daysAgo(45),
   });
   const privateBail = await ensureEpisode(scope, {
     title: "Notes personnelles — renégociation du bail Sirius",
@@ -517,16 +640,16 @@ export const ensureRecallFixtures = async (
     summary:
       "Point logistique avec Vega Logistics : le délai de livraison standard pour les expéditions Benelux est de 48 heures après enlèvement.",
     recordIds: [vega],
-    occurredFrom: new Date("2026-03-10T09:00:00Z"),
-    occurredTo: new Date("2026-03-15T17:00:00Z"),
+    occurredFrom: daysAgo(100),
+    occurredTo: daysAgo(95),
   });
   const vegaNew = await ensureEpisode(scope, {
     title: "Vega Logistics — nouveau délai de livraison",
     summary:
       "Vega Logistics a revu ses délais : le délai de livraison standard pour les expéditions Benelux passe désormais à 24 heures après enlèvement, contre 48 heures auparavant.",
     recordIds: [vega],
-    occurredFrom: new Date("2026-06-25T09:00:00Z"),
-    occurredTo: new Date("2026-06-30T17:00:00Z"),
+    occurredFrom: daysAgo(6),
+    occurredTo: daysAgo(2),
   });
 
   // Usage-vs-relevance cluster (rec-graph-usage-vs-relevance): three
@@ -572,6 +695,22 @@ export const ensureRecallFixtures = async (
     SET updated_at = now(), recall_count = 0
     WHERE id = ${callistoFresh}
   `);
+
+  // The one episode a CONTEXTLESS question stands on ("qu'est-ce qu'on a de
+  // prévu cette semaine ?"). Nothing in it matches such a message lexically or
+  // semantically — no entity is named in the question — so it is only ever
+  // reachable through a standing block. Its date is computed, so the case is
+  // never scored against a date that has passed.
+  const nextDelivery = frenchDate(nextTuesday());
+  const planning = await ensureEpisode(scope, {
+    title: "Planning — semaine en cours",
+    summary:
+      `Points à tenir cette semaine. Prochaine livraison Nordwind GmbH (rythme bimensuel) : mardi ${nextDelivery.numeric} (${nextDelivery.long}). ` +
+      "La clause de pénalité de retard du contrat 2027 est toujours en attente de revalidation par le juridique avant signature.",
+    recordIds: [nordwind],
+    occurredFrom: daysAgo(1),
+    occurredTo: daysAgo(1),
+  });
 
   const recapHebdoPath = "team/processes/recap-hebdo-fournisseurs.md";
   await ensureMemory(
@@ -629,7 +768,9 @@ export const ensureRecallFixtures = async (
       vegaOld,
       vegaNew,
       callistoFresh,
+      planning,
     },
+    nextDelivery,
     memoryPaths: { recapHebdo: recapHebdoPath, relanceStyle: relanceStylePath },
     documents: { bail, charte },
     workflows: { lateDeliveries },

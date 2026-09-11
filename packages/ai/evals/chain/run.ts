@@ -44,13 +44,21 @@ const opt = (name: string): string | undefined => {
   return i !== -1 ? argv[i + 1] : undefined;
 };
 
+// Own team, like `evals:memory` — see the note there. This suite is the more
+// destructive of the two: `clearAnchoredEpisodes` wipes every episode anchored
+// on its supplier record per repeat, and it used to rewrite the shared team's
+// one `team_memory_digests` row, which is injected into every turn of every
+// other e2e suite and of every human working in that team.
 const scope = {
-  teamId: process.env.EVAL_TEAM_ID ?? "",
+  teamId: process.env.EVAL_WRITE_TEAM_ID ?? "",
   organizationId: process.env.EVAL_ORGANIZATION_ID ?? "",
   userId: process.env.EVAL_USER_ID ?? "",
 };
 if (!scope.teamId || !scope.organizationId || !scope.userId) {
-  console.error("Missing EVAL_TEAM_ID / EVAL_ORGANIZATION_ID / EVAL_USER_ID");
+  console.error(
+    "Missing EVAL_WRITE_TEAM_ID / EVAL_ORGANIZATION_ID / EVAL_USER_ID.\n" +
+      "The write-side suites (memory, chain) need their own team — run `bun run evals:ensure-write-team`.",
+  );
   process.exit(1);
 }
 
@@ -59,6 +67,9 @@ if (flag("--cleanup")) {
   console.log("[chain-eval] fixtures cleaned up");
   process.exit(0);
 }
+
+/** Teardown at the END of the run, not only on an explicit `--cleanup`. */
+const keepFixtures = flag("--keep");
 
 const repeatsRaw = Number.parseInt(opt("--repeats") ?? "", 10);
 const repeats =
@@ -378,5 +389,11 @@ if (stageTotals.size > 0) {
       .map(([s, n]) => `${s}=${n.toString()}`)
       .join(", ")}`,
   );
+}
+if (keepFixtures) {
+  console.log("\n[chain-eval] --keep: fixtures left in place");
+} else {
+  await cleanupChainFixtures(scope);
+  console.log("\n[chain-eval] fixtures cleaned up");
 }
 await exitAfterFlush(passed === results.length ? 0 : 1);

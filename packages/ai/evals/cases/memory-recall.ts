@@ -49,7 +49,7 @@
  */
 
 import type { RecallFixtures } from "../recall/fixtures";
-import { ensureRecallFixtures } from "../recall/fixtures";
+import { ensureRecallFixtures, nextDeliveryDate } from "../recall/fixtures";
 import type {
   Assertion,
   EvalCaseContext,
@@ -100,6 +100,32 @@ const absent = (
       : `${why} — answer contains ${JSON.stringify(hit[0])}`;
   },
 });
+
+/**
+ * At least two of the universe's recent subjects, for the contextless cases.
+ *
+ * Deterministic floor under a judge that would otherwise be the only
+ * instrument on the three cases the standing layer exists for. TWO, not one:
+ * a single name is reachable by luck — "Nordwind" is the most frequent token
+ * in the corpus — while two at once is a claim about a block that carries
+ * several recent subjects at no prompting.
+ *
+ * `pricingOld` is deliberately not in the list: it is seeded 45 days back,
+ * outside any "lately" window, so it stays a free negative.
+ */
+const recentSubjectsFloor: Extract<Assertion, { type: "custom" }> = {
+  type: "custom",
+  name: "names-two-recent-subjects",
+  fn: (result: InvokeResult) => {
+    const hits = [/Nordwind/i, /Callisto/i, /Vega/i].filter((re) =>
+      re.test(result.text),
+    ).length;
+    return (
+      hits >= 2 ||
+      `answer names ${hits.toString()} of Nordwind / Callisto / Vega, needs 2`
+    );
+  },
+};
 
 export const memoryRecallSuite: EvalSuite = {
   name: "memory-recall",
@@ -167,6 +193,21 @@ export const memoryRecallSuite: EvalSuite = {
       budget: { maxToolCalls: 4 },
       assertions: [
         { type: "noError" },
+        // Deterministic floor under the judge. The convention prescribes three
+        // named columns, which is a fact about the output, not a matter of
+        // taste — and the rubric below grants "partial credit for a table with
+        // the right idea but wrong or missing columns", i.e. it can score 0.5
+        // on an answer that violates the convention outright. The judge stays
+        // for the ordering-by-urgency half, which no regex can see.
+        { type: "regex", value: "Fournisseur", flags: "i" },
+        { type: "regex", value: "Prochaine action", flags: "i" },
+        {
+          type: "custom",
+          name: "renders-a-markdown-table",
+          fn: (result: InvokeResult) =>
+            /^\s*\|.*\|\s*$/m.test(result.text) ||
+            "no markdown table row in the answer",
+        },
         {
           type: "judge",
           rubric:
@@ -357,10 +398,80 @@ export const memoryRecallSuite: EvalSuite = {
       budget: { maxToolCalls: 3 },
       assertions: [
         { type: "noError" },
+        // Deterministic floor under the judge. Measured bimodal at 63-77 %
+        // across four runs, and with a judge as its only instrument there was
+        // no way to tell a retrieval miss from a synthesis miss. These three
+        // values are exactly what the two halves of the rubric rest on, so a
+        // failure now names which half broke.
+        { type: "regex", value: "500" },
+        { type: "regex", value: "8\\s*(%|pour ?cent)", flags: "i" },
+        { type: "contains", value: "Horizon" },
         {
           type: "judge",
           rubric:
             "The answer covers BOTH the 2027 contract decisions with Nordwind GmbH (500-unit quarterly minimum, 8 % discount, delivery every two weeks, penalty clause still pending legal) AND the internal project it is linked to (Horizon). Partial credit for one of the two. FAIL if it states any fact the record does not support (invented contacts, dates, amounts) or if it answers that it knows nothing about Nordwind.",
+        },
+      ],
+    },
+    {
+      id: "mr-contextless-status",
+      description:
+        "A question that names nothing. Every other case in this suite hands retrieval an entity to match on; this one hands it a pronoun. Retrieval is query-shaped by construction, so whatever answers here came from a block that is present without having matched — which is the only claim a standing-memory layer makes. Paired against `--standing-mode none`: if the two arms score the same, the layer is decoration.",
+      prompt: "Où on en est ?",
+      tags: ["memory", "contextless", "standing"],
+      seed: seedUniverse,
+      assertions: [
+        { type: "noError" },
+        recentSubjectsFloor,
+        {
+          type: "judge",
+          rubric:
+            "The answer summarises what the team has been working on recently, drawing on at least two of: the Nordwind GmbH 2027 contract terms, the Callisto Systems support contact moving to Lena Voss, Vega Logistics' 24-hour lead time, or the week's planning (next Nordwind delivery, penalty clause pending legal). Partial credit for exactly one subject. FAIL if it states a fact none of those carry (invented clients, amounts, dates), or if it answers that it has nothing recent / asks what the user means without offering anything.",
+        },
+      ],
+    },
+    {
+      id: "mr-contextless-brief",
+      description:
+        "The same shape as `mr-contextless-status` in the imperative rather than the interrogative. Two wordings because the failure they guard against is a REFUSAL — an agent that answers 'sur quoi ?' is behaving reasonably given an empty context, and the whole point of a standing block is that the context is not empty.",
+      prompt: "Fais-moi un point.",
+      tags: ["memory", "contextless", "standing"],
+      seed: seedUniverse,
+      assertions: [
+        { type: "noError" },
+        recentSubjectsFloor,
+        {
+          type: "judge",
+          rubric:
+            "The answer offers a brief on the team's recent work, drawing on at least two of: the Nordwind GmbH 2027 contract, the Callisto Systems contact change, Vega Logistics' lead time, the week's planning. Asking a clarifying question is acceptable ONLY if the answer also proposes the recent subjects it could brief on. FAIL for a bare 'on what?', for 'I have no recent activity', or for any invented fact.",
+        },
+      ],
+    },
+    {
+      id: "mr-contextless-week",
+      description:
+        "The sharpest of the three: one fixture episode carries a COMPUTED date (the next Tuesday) that nothing else in the universe holds, so a right answer cannot be produced by general knowledge or by a lucky retrieval on the word 'semaine'. The date is recomputed at assert time from the same helper the fixture used.",
+      prompt: "Qu'est-ce qu'on a de prévu cette semaine ?",
+      tags: ["memory", "contextless", "standing"],
+      seed: seedUniverse,
+      assertions: [
+        { type: "noError" },
+        {
+          type: "custom",
+          name: "names-the-planned-delivery-date",
+          fn: (result: InvokeResult) => {
+            const { numeric, long } = nextDeliveryDate();
+            return (
+              result.text.includes(numeric) ||
+              result.text.toLowerCase().includes(long.toLowerCase()) ||
+              `answer names neither ${numeric} nor "${long}"`
+            );
+          },
+        },
+        {
+          type: "judge",
+          rubric:
+            "The answer states what is planned for the week from the team's own records: the next Nordwind GmbH delivery (Tuesday) and/or the 2027 contract penalty clause still awaiting legal revalidation. FAIL if it invents an event, if it answers that nothing is planned, or if it only restates the question.",
         },
       ],
     },

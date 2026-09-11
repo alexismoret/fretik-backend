@@ -162,6 +162,37 @@ describe("missing data is unknown, never false", () => {
   });
 });
 
+describe("the intelligence ladder", () => {
+  test("reads the same way in the rules as it does on screen", () => {
+    // Every surface that draws a job's capability bar reads `functionFloor`, so
+    // a hole in this ladder is not cosmetic: the picker's plot filled a missing
+    // floor with a guess of 20, which drew `quick-tasks` — the LOWEST bar in
+    // the set — as the strictest job on screen and put the model it runs on
+    // outside its own region.
+    const floors = ["assistant", "documents", "memory", "quick-tasks"].map(
+      (fn) => floorOf(fn as ModelFunctionKey, "intelligence"),
+    );
+    expect(floors).toEqual([...floors].sort((a, b) => b - a));
+    // `recall` and `memory` ask the same of a model's judgement; they differ on
+    // speed and latency, not on how clever the model has to be.
+    expect(floorOf("recall", "intelligence")).toBe(
+      floorOf("memory", "intelligence"),
+    );
+    // And memory genuinely asks MORE than the title generator does — a bad
+    // memory write persists, a bad title is one line.
+    expect(floorOf("memory", "intelligence")).toBeGreaterThan(
+      floorOf("quick-tasks", "intelligence"),
+    );
+  });
+
+  test("the quick-tasks floor sits under the model that job runs on", () => {
+    // `gpt-oss-20b` grades 6 on the v4.3 index and generates every conversation
+    // title in the product. A floor above it would be a rule contradicting a
+    // measurement we already have.
+    expect(floorOf("quick-tasks", "intelligence")).toBeLessThan(6);
+  });
+});
+
 describe("threshold edges", () => {
   test("`atLeast` includes the boundary and a point below it does not", () => {
     expect(
@@ -441,7 +472,12 @@ describe("capabilitySignals", () => {
     ...over,
   });
 
-  test("speed and latency are the pool MEDIAN, not its best member", () => {
+  test("speed and latency describe the host a turn LANDS on — the pool's best", () => {
+    // Every vetted pool carries `sort: "throughput"`, so a request goes to the
+    // fastest host that will take it. Reading the median here is what let the
+    // model page show 300 tok/s beside a rule refusing the model for being
+    // under 45 — and it took `deepseek-v4-flash` out of both of its own
+    // functions on 2026-09-11.
     const derived = capabilitySignals({
       aa: null,
       pricing: { inputPerMTok: 1, outputPerMTok: 4 },
@@ -452,8 +488,48 @@ describe("capabilitySignals", () => {
         endpoint({ provider: "c", throughputP50: 300, latencyP50Ms: 200 }),
       ],
     });
-    expect(derived.tokensPerSecond).toBe(60);
-    expect(derived.ttftP50Ms).toBe(900);
+    expect(derived.tokensPerSecond).toBe(300);
+    expect(derived.ttftP50Ms).toBe(200);
+  });
+
+  test("one slow host in a fast pool does not decide the model's speed", () => {
+    // The shape the median got wrong: two quick hosts and three slow ones is a
+    // fast model with a long tail, not a slow one.
+    const derived = capabilitySignals({
+      aa: null,
+      pricing: { inputPerMTok: 1, outputPerMTok: 4 },
+      contextTokens: 300_000,
+      endpoints: [
+        endpoint({ provider: "a", throughputP50: 110 }),
+        endpoint({ provider: "b", throughputP50: 105 }),
+        endpoint({ provider: "c", throughputP50: 20 }),
+        endpoint({ provider: "d", throughputP50: 15 }),
+        endpoint({ provider: "e", throughputP50: 10 }),
+      ],
+    });
+    expect(derived.tokensPerSecond).toBe(110);
+    expect(
+      functionEligibility("assistant", {
+        ...derived,
+        intelligence: 40,
+        tools: true,
+      }).verdict,
+    ).toBe("eligible");
+  });
+
+  test("the price stays the MEDIAN — nothing sorts a pool by price", () => {
+    // The asymmetry is the point: a request is as likely to land on a dear host
+    // as a cheap one, so the middle is the honest expectation. Only the speed
+    // figures follow the routing order.
+    const derived = capabilitySignals({
+      aa: null,
+      pricing: { inputPerMTok: 1, outputPerMTok: 4 },
+      contextTokens: 300_000,
+      endpoints: [endpoint({ provider: "a" }), endpoint({ provider: "b" })],
+    });
+    expect(derived.blendedPricePerMTok).toBe(
+      blendedPricePerMTok({ inputPerMTok: 1, outputPerMTok: 4 }),
+    );
   });
 
   test("the blended price carries the cache rate", () => {

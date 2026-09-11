@@ -322,10 +322,18 @@ export const runModelAudit = async (): Promise<ModelAuditReport> => {
   //
   // The invariant every floor is written to satisfy, checked against the LIVE
   // rows rather than against a fixture: a threshold that excludes the default it
-  // was calibrated around is a threshold that is wrong, and the symptom is not a
-  // crash but a picker that quietly stops offering the model the product is
-  // actually running. `unknown` is deliberately not a finding — an ungraded
-  // model is a gap, and the engine already refuses to grant on one.
+  // was calibrated around is a threshold that is wrong.
+  //
+  // It reports a MIS-CALIBRATION, not an outage. `selectableForFunction` gives
+  // a model the product itself runs for a job an unconditional pass, so nobody
+  // loses a pick over this and the finding costs an operator a look rather than
+  // a team its assistant. That carve-out is also why the check has to exist: it
+  // is now the only thing that can see the disagreement at all, and a floor
+  // that has quietly drifted away from the fleet stops being visible the moment
+  // it stops hurting.
+  //
+  // `unknown` is deliberately not a finding — an ungraded model is a gap, and
+  // the engine already refuses to grant on one.
   for (const binding of Object.values(ROLE_BINDINGS)) {
     const fn = ROLE_FUNCTION[binding.role];
     if (fn === "auto") continue;
@@ -345,7 +353,7 @@ export const runModelAudit = async (): Promise<ModelAuditReport> => {
       functionKey: fn,
       profileKey: binding.profileKey,
       failed: verdict.failed,
-      detail: `${binding.role} runs on "${binding.profileKey}", and the ${fn} rules refuse it: ${verdict.failed.join("; ")}. No team can pick the model the product itself uses for this job.`,
+      detail: `${binding.role} runs on "${binding.profileKey}", and the ${fn} rules refuse it: ${verdict.failed.join("; ")}. The pick still works — a model the product runs for a job is always offerable for it — so this is a floor that has drifted away from the fleet, not an outage. Re-read the number against the live row before moving it.`,
     });
   }
 

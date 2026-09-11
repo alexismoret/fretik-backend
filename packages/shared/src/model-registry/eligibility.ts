@@ -4,7 +4,6 @@ import {
   blendedPricePerMTok,
   isFiniteNumber,
   MARKET_BLENDED_QUARTILES,
-  median,
 } from "./measures";
 import type {
   AaMetrics,
@@ -54,10 +53,14 @@ export interface CapabilitySignals {
   intelligence?: number;
   /** The window a request can actually use — the effective one, not the headline. */
   contextTokens?: number;
-  /** Output tokens per second, median across the allowed pool. */
+  /**
+   * Output tokens per second on the endpoint a turn actually lands on — the
+   * FASTEST in the allowed pool, since every pool routes by throughput.
+   */
   tokensPerSecond?: number;
   /**
-   * p50 time to the first token, ms, median across the allowed pool.
+   * p50 time to the first token, ms, on the BEST endpoint in the allowed pool
+   * — it belongs to the host the turn lands on, so it follows throughput.
    *
    * p50 AND NOT p95, for a reason the data settled: measured 2026-08-30, the
    * p95 column is populated on 0 of the 22 published rows and the p50 column on
@@ -266,10 +269,20 @@ const floorAt = (share: number): number => Math.round(AA_INDEX.top * share);
  *   a market the v4.3 index pushed toward zero. Deliberately well below the
  *   first of those: this floor may not be the thing that takes a memory role's
  *   own model away from it.
+ * - **`volume`** (4, 8 %) — titles, reformulation, tool-call repair. There is
+ *   almost nothing a model has to be able to think to do this, and the floor
+ *   exists only so that the ladder has a bottom rung rather than a hole: a
+ *   function with NO intelligence rule cannot be drawn, and the picker's plot
+ *   filled the gap by inventing a bar of 20 — which made `quick-tasks` look
+ *   STRICTER than `memory` on screen while being laxer in the rules, and put
+ *   `gpt-oss-20b` (6, the model the job actually runs on) outside its own
+ *   region. Four is under that with room, and still excludes a market whose
+ *   floor the v4.3 index pushed to zero.
  */
 const INTELLIGENCE_ASSISTANT = floorAt(0.53);
 const INTELLIGENCE_DOCUMENTS = floorAt(0.38);
 const INTELLIGENCE_WORKING = floorAt(0.15);
+const INTELLIGENCE_VOLUME = floorAt(0.08);
 
 /**
  * Speed floors, all read off the published fleet on 2026-08-30 rather than
@@ -358,7 +371,13 @@ const atMost = (signal: NumericSignal, value: number): EligibilityRule => ({
  * | documents     | 20           | 45    | —           | —              |
  * | memory        | 8            | 30    | —           | ≤ 0.13 (p25)   |
  * | recall        | 8            | 70    | ≤ 2 s       | ≤ 0.13 (p25)   |
- * | quick-tasks   | —            | fast OR very cheap | — | ≤ 0.13 (p25) |
+ * | quick-tasks   | 4            | fast OR very cheap | — | ≤ 0.13 (p25) |
+ *
+ * Every speed figure is the pool's FASTEST host, not its median — see
+ * `capabilitySignals`. The numbers above were first calibrated against medians
+ * and are therefore conservative on the ceiling; they are floors against a
+ * genuinely slow model rather than a fine grading, and `models:admin -- audit`
+ * is what says whether one has drifted.
  *
  * - `assistant` is the model a team judges the product by: the top of the
  *   intelligence range, a window big enough to hold a working session, and a
@@ -428,6 +447,7 @@ export const FUNCTION_CRITERIA: Record<ModelFunctionKey, EligibilityCriteria> =
     },
     "quick-tasks": {
       all: [
+        atLeast("intelligence", INTELLIGENCE_VOLUME),
         atLeast("contextTokens", CTX_BULK),
         atMost("blendedPricePerMTok", PRICE_VOLUME),
       ],
@@ -506,18 +526,57 @@ export interface SignalSources {
 /**
  * Fold what the sync gathered into the neutral vocabulary.
  *
- * Speed comes from the pool MEDIAN rather than its best member, for the same
- * reason the price does: routing lands in the middle of the pool, so a floor
- * checked against the fastest host would pass on a model most turns experience
- * as slow. `tools` is read from the endpoints, and an empty pool yields
- * `undefined` — "we could not look", not "it cannot".
+ * Speed comes from the pool's BEST member; price from its median. The two
+ * differ because routing treats them differently, and getting that backwards is
+ * what made this file contradict every other surface that reports a speed.
+ *
+ * `recomputeRowPool` writes `sort: "throughput"` into every vetted pool, so a
+ * request goes to the FASTEST host that will take it and only walks down the
+ * list when that one is unavailable. The pool's ceiling is therefore what a
+ * turn gets, which is exactly what `evaluatePolicy`'s throughput rule reads
+ * (`Math.max`) and exactly what the picker card shows ("the fastest in the
+ * vetted pool, since every pool routes by throughput"). This function alone
+ * read the MEDIAN, and the comment that justified it — "routing lands in the
+ * middle of the pool" — was describing routing that does not exist.
+ *
+ * The cost was a fleet-wide contradiction rather than a rounding error. A pool
+ * with two hosts above 100 tok/s and three slow ones has a median in the
+ * twenties: the model page showed 100+, the rule refused the model for being
+ * under 45, and `unmetForFunction` carried a note explaining that the two
+ * legitimately disagree. They do not. Measured on the live fleet 2026-09-11,
+ * it took `deepseek-v4-flash` — the model `chat`, `workflow`, `pre-extract`,
+ * `transform` and `compaction-summarizer` actually run on — out of both of its
+ * own functions.
+ *
+ * PRICE stays the median, and that asymmetry is the point: nothing sorts the
+ * pool by price, so a request is as likely to land on a dear host as a cheap
+ * one, and the middle is the honest expectation. First-token latency follows
+ * throughput rather than price — it is a property of the host the turn lands
+ * on — so it takes the pool's best too.
+ *
+ * `tools` is read from the endpoints, and an empty pool yields `undefined` —
+ * "we could not look", not "it cannot".
  */
 export const capabilitySignals = (
   sources: SignalSources,
 ): CapabilitySignals => {
   const { endpoints } = sources;
-  const across = (pick: (endpoint: EndpointStat) => number | undefined) =>
-    median(endpoints.map(pick).filter(isFiniteNumber));
+  const bestOf = (
+    pick: (endpoint: EndpointStat) => number | undefined,
+    better: (a: number, b: number) => number,
+  ): number | undefined => {
+    const values = endpoints.map(pick).filter(isFiniteNumber);
+    // `reduce(Math.max)` would hand the callback (acc, value, index, ARRAY) and
+    // `Math.max` of an array is NaN — a silent one, since NaN fails every rule
+    // as `unknown` rather than erroring. Two arguments, explicitly.
+    return values.length === 0
+      ? undefined
+      : values.reduce((best, value) => better(best, value));
+  };
+  const fastest = (pick: (endpoint: EndpointStat) => number | undefined) =>
+    bestOf(pick, Math.max);
+  const promptest = (pick: (endpoint: EndpointStat) => number | undefined) =>
+    bestOf(pick, Math.min);
   const priced =
     sources.pricing.inputPerMTok > 0 || sources.pricing.outputPerMTok > 0
       ? blendedPricePerMTok(sources.pricing)
@@ -530,11 +589,11 @@ export const capabilitySignals = (
       ? { contextTokens: sources.contextTokens }
       : {}),
     ...(() => {
-      const tps = across((endpoint) => endpoint.throughputP50);
+      const tps = fastest((endpoint) => endpoint.throughputP50);
       return tps === undefined ? {} : { tokensPerSecond: tps };
     })(),
     ...(() => {
-      const ttft = across((endpoint) => endpoint.latencyP50Ms);
+      const ttft = promptest((endpoint) => endpoint.latencyP50Ms);
       return ttft === undefined ? {} : { ttftP50Ms: ttft };
     })(),
     ...(priced === undefined ? {} : { blendedPricePerMTok: priced }),

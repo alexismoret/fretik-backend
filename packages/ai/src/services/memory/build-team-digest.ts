@@ -250,8 +250,30 @@ export const gateDigest = (
   const MARKER = /\((memory|episode|record|document):[^)\s]+\)/;
   let dropped = 0;
 
+  // The handle's LETTER already carries its kind (M/E/R/D), so a token names
+  // exactly one row and the `kind:` prefix in front of it is redundant. The
+  // model still gets that prefix wrong — measured, one generation wrote
+  // `(memory:R1)` … `(memory:R16)` for sixteen record handles and lost its
+  // whole entity section to the gate, which then read as a digest with no
+  // entities at all. Repairing a redundant prefix cannot cross kinds; it just
+  // stops throwing away provenance the model got right.
+  const canonicalByToken = new Map<string, string>();
+  for (const handle of handles.keys()) {
+    const token = handle.split(":")[1];
+    if (token !== undefined) canonicalByToken.set(token, handle);
+  }
+  const repairKind = (line: string): string =>
+    line.replace(
+      /\((?:memory|episode|record|document):([A-Za-z]\d+)\)/g,
+      (whole, token: string) => {
+        const canonical = canonicalByToken.get(token);
+        return canonical === undefined ? whole : `(${canonical})`;
+      },
+    );
+
   const kept = raw
     .split("\n")
+    .map((line) => (line.trim().startsWith("#") ? line : repairKind(line)))
     .filter((line) => {
       const trimmed = line.trim();
       // Headings, blanks and section markers carry no claim, so they need no

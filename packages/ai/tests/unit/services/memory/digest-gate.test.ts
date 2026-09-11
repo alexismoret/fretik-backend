@@ -45,6 +45,21 @@ describe("provenance gate", () => {
     expect(dropped).toBe(1);
   });
 
+  test("a marker with the right handle and the WRONG kind is repaired", () => {
+    // Measured: one generation wrote `(memory:R1)` through `(memory:R16)` for
+    // sixteen RECORD handles and the gate dropped every one of them — the whole
+    // entity section, for a prefix that carries no information the letter does
+    // not already carry. What reached the write was a digest with no entities,
+    // which is a different claim about the team than the one the inputs made.
+    const { content, dropped } = gateDigest(
+      "## Key entities\nAcme supplies the team (memory:R1)",
+      handles,
+    );
+    expect(content).toContain("(record:019f0000-0000-7000-8000-000000000002)");
+    expect(content).toContain("Acme supplies");
+    expect(dropped).toBe(0);
+  });
+
   test("a line with NO marker is dropped", () => {
     const { content, dropped } = gateDigest(
       "## Key entities\nThe team works mostly with European suppliers",

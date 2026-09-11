@@ -363,22 +363,38 @@ export const CHAIN_CASES: ChainEvalCase[] = [
         fail("privacy", "un épisode PRIVÉ est servi à toute l'équipe");
       }
 
-      // 3. Of two episodes 38 days apart, the current value is the one stated.
-      //    The stale one is not banned — "800 (previously 1 200)" is BETTER
-      //    than dropping the history. Asserting it as if it still held is.
-      if (!has(digest.content, seed.freshValue)) {
+      // 3. Of two episodes 38 days apart, the CURRENT value is the one a
+      //    reader takes away.
+      //
+      //    The stale value is not banned, and the check is deliberately not
+      //    "it must say previously". The prompt asks for that phrasing, but the
+      //    model frequently writes two dated lines instead — "As of 2026-09-08,
+      //    … 800 €" above "As of 2026-08-01, … was 1 200 €" — which carries the
+      //    same history, traceably, and is not a false claim. Scoring the
+      //    phrasing rather than the claim cost a repeat for nothing. What must
+      //    hold is that the stale value never appears UNDATED and never appears
+      //    ahead of the current one.
+      const contentByLine = digest.content.split("\n");
+      const freshAt = contentByLine.findIndex((l) => has(l, seed.freshValue));
+      if (freshAt === -1) {
         fail(
           "currency",
           `la valeur courante (${seed.freshValue} €) n'est pas dans le digest`,
         );
       }
-      for (const line of digest.content
-        .split("\n")
-        .filter((l) => has(l, seed.staleValue))) {
-        if (!/previously|auparavant|précédemment|precedemment/i.test(line)) {
+      const dated = /previously|auparavant|précédemment|precedemment|as of/i;
+      for (const [i, line] of contentByLine.entries()) {
+        if (!has(line, seed.staleValue)) continue;
+        if (!dated.test(line)) {
           fail(
             "currency",
-            `la valeur périmée (${seed.staleValue} €) est affirmée sans « previously » — « ${line.trim()} »`,
+            `la valeur périmée (${seed.staleValue} €) est affirmée sans date ni « previously » — « ${line.trim()} »`,
+          );
+        }
+        if (freshAt !== -1 && i < freshAt) {
+          fail(
+            "currency",
+            `la valeur périmée (${seed.staleValue} €) est rendue AVANT la courante`,
           );
         }
       }
@@ -392,8 +408,17 @@ export const CHAIN_CASES: ChainEvalCase[] = [
           `${digest.tokenCount.toString()} tokens > ${DIGEST_TOKEN_BUDGET.toString()}`,
         );
       }
-      for (const marker of await unresolvedMarkers(fx, digest.content)) {
-        fail("budget", `le marqueur ${marker} ne résout sur rien`);
+      // Only on a digest this repeat WROTE. A kept-previous digest cites rows
+      // the repeat's own re-seed has just deleted, so checking it would score
+      // the fixture's churn rather than the generator. It does name a real
+      // product property, though, and one no code here can fix: a digest
+      // outlives its sources for up to a day, so an id it cites can be gone by
+      // the time the agent opens it. That is why the block's prose tells the
+      // agent to open the source before quoting a figure.
+      if (digest.status === "written") {
+        for (const marker of await unresolvedMarkers(fx, digest.content)) {
+          fail("budget", `le marqueur ${marker} ne résout sur rien`);
+        }
       }
       const contentLines = digest.content.split("\n");
       for (const [i, line] of contentLines.entries()) {

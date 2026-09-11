@@ -696,16 +696,27 @@ export const ensureRecallFixtures = async (
     WHERE id = ${callistoFresh}
   `);
 
-  // The one episode a CONTEXTLESS question stands on ("qu'est-ce qu'on a de
-  // prévu cette semaine ?"). Nothing in it matches such a message lexically or
-  // semantically — no entity is named in the question — so it is only ever
-  // reachable through a standing block. Its date is computed, so the case is
-  // never scored against a date that has passed.
+  // The episode `mr-contextless-week` is scored against. Its date is computed,
+  // so the case is never scored against a date that has passed.
+  //
+  // It used to be titled "Planning — semaine en cours" and to open with "Points
+  // à tenir cette semaine", above a comment claiming nothing in it matched the
+  // question "qu'est-ce qu'on a de prévu cette semaine ?" lexically. That was
+  // simply false, and the control arm proved it on 2026-09-11: with
+  // `--standing-mode none` the case PASSED in two `searchKnowledge` calls. The
+  // word "semaine" is gone from both fields for that reason.
+  //
+  // Removing the gimme does not make the case a clean discriminator, and the
+  // comment should not claim it does: an episode about an upcoming delivery is
+  // legitimately close, in embedding space, to a question about what is coming
+  // up. Whether retrieval reaches it without a standing block is an empirical
+  // question the `none` arm answers on every run — read that row before citing
+  // this case as evidence for the layer.
   const nextDelivery = frenchDate(nextTuesday());
   const planning = await ensureEpisode(scope, {
-    title: "Planning — semaine en cours",
+    title: "Livraison Nordwind et clause de pénalité 2027",
     summary:
-      `Points à tenir cette semaine. Prochaine livraison Nordwind GmbH (rythme bimensuel) : mardi ${nextDelivery.numeric} (${nextDelivery.long}). ` +
+      `Prochaine livraison Nordwind GmbH (rythme bimensuel) : mardi ${nextDelivery.numeric} (${nextDelivery.long}). ` +
       "La clause de pénalité de retard du contrat 2027 est toujours en attente de revalidation par le juridique avant signature.",
     recordIds: [nordwind],
     occurredFrom: daysAgo(1),

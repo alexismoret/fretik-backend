@@ -112,6 +112,19 @@ const absent = (
  *
  * `pricingOld` is deliberately not in the list: it is seeded 45 days back,
  * outside any "lately" window, so it stays a free negative.
+ *
+ * **WHAT A FAILURE HERE MEANS, and it is not "the model answered badly."**
+ * `EVAL_TEAM_ID` is the real dev team, ~20k records, and this fixture universe
+ * is a small island in it. A contextless question on such a team correctly
+ * surfaces the team's OWN recent work. Measured 2026-09-11 on
+ * `--standing-mode none`: `mr-contextless-brief` spent 22 tool calls and 12
+ * minutes building an accurate weekly recap out of the real corpus — AKANEA
+ * invoices, Hapag-Lloyd waybills, customs declarations, the prospect pipeline —
+ * and named none of the three. Good work, scored zero, and rightly so: the
+ * claim under test is that a standing block puts THIS week's subjects in front
+ * of the model without being asked. So read a failure as "the block did not
+ * surface them", never as a model result, and never quote this score as
+ * evidence about answer quality.
  */
 const recentSubjectsFloor: Extract<Assertion, { type: "custom" }> = {
   type: "custom",
@@ -450,7 +463,7 @@ export const memoryRecallSuite: EvalSuite = {
     {
       id: "mr-contextless-week",
       description:
-        "The sharpest of the three: one fixture episode carries a COMPUTED date (the next Tuesday) that nothing else in the universe holds, so a right answer cannot be produced by general knowledge or by a lucky retrieval on the word 'semaine'. The date is recomputed at assert time from the same helper the fixture used.",
+        "Scores a COMPUTED date (the next Tuesday) that nothing else in the universe holds and that no general knowledge can produce; the assertion recomputes it from the helper the fixture used. Measured 2026-09-11: this case is NOT a clean discriminator for the standing layer — it passed on `--standing-mode none` in two `searchKnowledge` calls, because the fixture's title then carried the word 'semaine'. The word is gone, but an episode about an upcoming delivery stays semantically close to a question about what is coming up. Read the `none` row before citing this case as evidence for the layer; its sisters `mr-contextless-status` and `mr-contextless-brief` are the ones that name nothing retrievable.",
       prompt: "Qu'est-ce qu'on a de prévu cette semaine ?",
       tags: ["memory", "contextless", "standing"],
       seed: seedUniverse,

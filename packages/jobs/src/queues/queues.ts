@@ -11,7 +11,6 @@ import {
   RECORD_CARD_QUEUE,
   VECTOR_RECONCILE_QUEUE,
   WORKFLOW_TRIGGER_QUEUE,
-  type DigestRefreshJobData,
   type DreamingTeamJobData,
   type EagerConsolidateJobData,
   type MemoryDistillJobData,
@@ -21,12 +20,10 @@ import {
 } from "./names";
 
 /**
- * Three job shapes ride the dreaming queue. They are dispatched by job NAME,
- * not by shape: `DigestRefreshJobData` and `DreamingTeamJobData` are
- * structurally identical, so a `"field" in data` check cannot tell them apart.
+ * Two job shapes ride the dreaming queue. `EagerConsolidateJobData` is the
+ * only one carrying an `episodeId`, so the dispatcher narrows on that.
  */
-export type DreamingJobData =
-  DreamingTeamJobData | EagerConsolidateJobData | DigestRefreshJobData;
+export type DreamingJobData = DreamingTeamJobData | EagerConsolidateJobData;
 
 /**
  * Lazily-created Queue singletons (producer side — the sweep fans out through

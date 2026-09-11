@@ -91,25 +91,6 @@ export interface EagerConsolidateJobData {
 }
 
 /**
- * Rewrite one team's standing digest — jobId `digest-{teamId}`, DEBOUNCED.
- *
- * On the dreaming queue and never on the 15-second maintenance queue: this
- * calls a model, and the maintenance queue exists for work that must not.
- *
- * The debounce is the whole design. Every team-scope memory write is a reason
- * to refresh, and a busy afternoon produces bursts of them; a fixed `jobId`
- * plus a delay collapses a burst into one rewrite. The generator then skips
- * anyway when the inputs hash unchanged, so the worst case of a redundant
- * enqueue is one hash and no tokens.
- */
-export interface DigestRefreshJobData {
-  teamId: string;
-  organizationId: string;
-  /** Rebuild even when the inputs are unchanged. Operator door only. */
-  force?: boolean;
-}
-
-/**
  * One event-triggered workflow run to create — jobId
  * `wfrun-{workflowId}-{eventId}` makes a re-swept event a BullMQ no-op. The
  * event is immutable (append-only journal), so carrying its payload here can
@@ -171,19 +152,6 @@ export const MODEL_CANDIDATE_BENCH_JOB = "model-candidate-bench";
 /** Job names on MEMORY_DREAMING_QUEUE. */
 export const DREAMING_TEAM_JOB = "dreaming-team";
 export const EAGER_CONSOLIDATE_JOB = "eager-consolidate";
-export const DIGEST_REFRESH_JOB = "digest-refresh";
-
-/**
- * How long a digest refresh waits before running, so a burst of memory writes
- * costs one rewrite instead of one each.
- *
- * Five minutes is short enough that a convention written mid-conversation is
- * in the digest before the next one starts, and long enough to swallow the
- * burst that a single dreaming night or a bulk import produces.
- */
-export const MEMORY_DIGEST_DEBOUNCE_MS = Number(
-  process.env.MEMORY_DIGEST_DEBOUNCE_MS ?? 5 * 60 * 1000,
-);
 
 /** Job name on WORKFLOW_TRIGGER_QUEUE. */
 export const WORKFLOW_RUN_CREATE_JOB = "workflow-run-create";

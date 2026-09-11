@@ -170,12 +170,14 @@ describe("budget", () => {
 });
 
 describe("mode parsing", () => {
-  test("accepts the three arms and nothing else", () => {
-    expect(isStandingMode("digest")).toBe(true);
+  test("accepts the two modes and nothing else", () => {
     expect(isStandingMode("episodes")).toBe(true);
     expect(isStandingMode("none")).toBe(true);
     // `/invoke` answers 400 on anything else rather than silently serving a
-    // default — an A/B that silently falls back measures one arm twice.
+    // default. `digest` was the third arm until 2026-09-11 and must now be
+    // REFUSED, not quietly treated as the default: an operator rolling back to
+    // a mode that no longer exists has to be told, not served something else.
+    expect(isStandingMode("digest")).toBe(false);
     expect(isStandingMode("true")).toBe(false);
     expect(isStandingMode("")).toBe(false);
   });

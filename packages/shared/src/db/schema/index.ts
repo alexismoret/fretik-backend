@@ -85,10 +85,6 @@ export * from "./ai-memory";
 // consolidation merges — vectorized into ai_vectors as source_type=episodes)
 export * from "./ai-episodes";
 
-// Team memory digest (the always-present summary injected without retrieval —
-// deliberately NOT a path in ai_memories, and never vectorized)
-export * from "./team-memory-digest";
-
 // Skills (chatbot SKILL.md catalogue + per-team enable/disable overrides)
 export * from "./skills";
 

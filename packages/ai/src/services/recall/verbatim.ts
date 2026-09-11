@@ -467,30 +467,22 @@ const renderSection = (
  * cross-source calibration the pipeline has.
  */
 /**
- * What the team digest already says, so this block does not say it again.
+ * AN INDEX NEVER SUPPRESSES RETRIEVAL.
  *
- * The same fact rendered twice — once summarised in `<team_digest>`, once
- * verbatim here — costs budget to make the model LESS sure which one is
- * current. Suppressing the duplicate is not tidiness: it removes an apparent
- * disagreement between two blocks that are actually the same row.
+ * This function used to take a `DigestSuppression` and leave out whatever
+ * `<standing_memory>` already covered. It was measured to cost more than it
+ * saved: the digest's one-line compression of a convention replaced the
+ * VERBATIM memory here, and `mr-memory-convention` lost a point because the
+ * verbatim carried literal columns the compression had dropped. The duplicate
+ * costs one line; the suppression cost a case.
  *
- * Records are deliberately not suppressible. A record card carries the fields
- * the digest had no room for, so the two are not the same content even when
- * they name the same row — and a question about an entity usually wants those
- * fields.
+ * `<memory_index>` lists every memory path and suppresses nothing — the
+ * standing block follows the same rule.
  */
-export interface DigestSuppression {
-  memoryPaths: readonly string[];
-  episodeIds: readonly string[];
-}
-
 export const buildVerbatimBlock = (
   gathered: RecallGathered,
-  digest?: DigestSuppression,
 ): VerbatimSelection => {
   const best = bestScore(gathered);
-  const digestedMemories = new Set(digest?.memoryPaths ?? []);
-  const digestedEpisodes = new Set(digest?.episodeIds ?? []);
 
   // Records the SEMANTIC arm found — the second signal `keepAnchor` needs.
   const semanticRecordIds = new Set(
@@ -575,7 +567,6 @@ export const buildVerbatimBlock = (
 
   for (const episode of rankedGraphEpisodes) {
     if (episodes.length >= graphEpisodeBudget) break;
-    if (digestedEpisodes.has(episode.id)) continue;
     renderedEpisodeIds.add(episode.id);
     const linked =
       episode.anchorLabels.length > 0
@@ -591,14 +582,12 @@ export const buildVerbatimBlock = (
     if (!clearsFloor(hit, best)) continue;
     if (hit.sourceType === "memories" && memories.length < MAX_MEMORIES) {
       const path = metadataString(hit.metadata, "path") ?? hit.sourceId;
-      if (digestedMemories.has(path)) continue;
       memories.push({ marker: `(memory:${path})`, content: hit.content });
     } else if (
       hit.sourceType === "episodes" &&
       episodes.length < MAX_EPISODES
     ) {
       if (renderedEpisodeIds.has(hit.sourceId)) continue;
-      if (digestedEpisodes.has(hit.sourceId)) continue;
       renderedEpisodeIds.add(hit.sourceId);
       const dated = asOfLine(metadataString(hit.metadata, "occurred_to"));
       episodes.push({

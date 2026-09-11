@@ -13,14 +13,12 @@
  */
 
 import db from "@fretik/shared/db";
-import type { MemoryVectorMetadata } from "@fretik/shared/db/schema";
 import {
   aiConversationMembers,
   aiConversations,
   aiEpisodes,
   aiMemories,
   aiMessages,
-  teamMemoryDigests,
 } from "@fretik/shared/db/schema";
 import { deleteMemoryVectorsBulk } from "@fretik/shared/services/ai-memory/vector-refresh";
 import { bulkDeleteCollectionRecords } from "@fretik/shared/services/collection-records/bulk-delete";
@@ -31,8 +29,7 @@ import { deleteCollection } from "@fretik/shared/services/collections/delete";
 import { emitDomainEventsBulk } from "@fretik/shared/services/domain-events/emit-bulk";
 import { upsertEpisode } from "@fretik/shared/services/episodes/upsert";
 import { deleteEpisodeVectors } from "@fretik/shared/services/episodes/vectors";
-import { eq, inArray } from "drizzle-orm";
-import { vectorizeSource } from "../../src/services/vectorize";
+import { inArray } from "drizzle-orm";
 
 export interface ChainScope {
   organizationId: string;
@@ -367,167 +364,6 @@ export const makeOneOffCluster = async (
 };
 
 /**
- * A memory row plus its vector. The vector is what makes the de-duplication
- * assertion mean anything: a convention recall cannot retrieve would be absent
- * from the block whether the digest suppressed it or not.
- */
-const seedMemory = async (
-  fx: ChainFixtures,
-  path: string,
-  content: string,
-  userId: string | null,
-): Promise<void> => {
-  const memoryScope = userId === null ? "team" : "user";
-  const [row] = await db
-    .insert(aiMemories)
-    .values({
-      organizationId: fx.organizationId,
-      teamId: fx.teamId,
-      userId,
-      scope: memoryScope,
-      path,
-      content,
-      sizeBytes: Buffer.byteLength(content, "utf8"),
-      createdByActor: "agent",
-      lastModifiedByActor: "agent",
-    })
-    .returning();
-  if (!row) throw new Error(`chain fixture: memory insert failed for ${path}`);
-  const metadata: MemoryVectorMetadata = {
-    scope: memoryScope,
-    path,
-    size_bytes: row.sizeBytes,
-    created_at: row.createdAt.toISOString(),
-    updated_at: row.updatedAt.toISOString(),
-  };
-  await vectorizeSource({
-    sourceType: "memories",
-    sourceId: row.id,
-    content,
-    metadata,
-    teamId: fx.teamId,
-    organizationId: fx.organizationId,
-    userId,
-  });
-};
-
-/** A user-scope episode — the row the digest's `user_id IS NULL` must exclude. */
-const seedPrivateEpisode = async (
-  fx: ChainFixtures,
-  title: string,
-  summary: string,
-  daysAgo: number,
-): Promise<string> => {
-  const occurred = new Date(Date.now() - daysAgo * 24 * 60 * 60 * 1000);
-  const { episode } = await upsertEpisode({
-    organizationId: fx.organizationId,
-    teamId: fx.teamId,
-    userId: fx.userId,
-    kind: "conversation",
-    title: `[chain-eval] ${title}`,
-    summary,
-    occurredFrom: occurred,
-    occurredTo: occurred,
-    recordIds: [fx.calliopeId],
-  });
-  return episode.id;
-};
-
-const clearDigestMemories = async (fx: ChainFixtures): Promise<void> => {
-  const rows = await db.query.aiMemories.findMany({
-    where: {
-      teamId: fx.teamId,
-      path: { in: [DIGEST_CONVENTION_PATH, DIGEST_PRIVATE_PATH] },
-    },
-    columns: { id: true },
-  });
-  if (rows.length === 0) return;
-  const ids = rows.map((m) => m.id);
-  await deleteMemoryVectorsBulk(ids);
-  await db.delete(aiMemories).where(inArray(aiMemories.id, ids));
-};
-
-/** Team convention — standing knowledge, so the digest must carry it. */
-export const DIGEST_CONVENTION_PATH = "team/processes/chain-eval-reception.md";
-/** The distinctive words of that convention, asserted in the digest. */
-export const DIGEST_CONVENTION_MARK = "contrôle qualité photo";
-/** A PRIVATE note. Nothing here may ever reach a text served to the team. */
-export const DIGEST_PRIVATE_PATH = "notes/chain-eval-prive.md";
-/** Unique on purpose — a substring search for it cannot match anything else. */
-export const DIGEST_PRIVATE_MARK = "PERSO-CHAIN-7788";
-/** Same, for the private EPISODE — the other half of the scope guarantee. */
-export const DIGEST_PRIVATE_EPISODE_MARK = "PERSO-EPISODE-4412";
-
-export interface DigestSeed {
-  conventionPath: string;
-  privatePath: string;
-  /** The superseded franco value, which may appear only as a "previously". */
-  staleValue: string;
-  /** The current one, which must appear. */
-  freshValue: string;
-}
-
-/**
- * Everything the digest is supposed to read, and two things it is supposed to
- * refuse — seeded together because the digest is written from ONE pass over the
- * team, so a case that seeded only its own half would be scored against a
- * digest built from the other cases' leftovers.
- *
- * The private rows are the load-bearing half. A convention the digest misses is
- * a quality miss; a private note the digest carries is served to every member
- * of the team on every turn, with no retrieval step that could have filtered it.
- */
-export const makeDigestInputs = async (
-  fx: ChainFixtures,
-): Promise<DigestSeed> => {
-  await clearAnchoredEpisodes(fx);
-  await clearDigestMemories(fx);
-
-  await seedMemory(
-    fx,
-    DIGEST_CONVENTION_PATH,
-    `Réception Calliope Verre : un ${DIGEST_CONVENTION_MARK} est joint à chaque livraison avant la mise en stock.`,
-    null,
-  );
-  await seedMemory(
-    fx,
-    DIGEST_PRIVATE_PATH,
-    `Note perso : appeler Calliope le mardi matin, code interne ${DIGEST_PRIVATE_MARK}.`,
-    fx.userId,
-  );
-
-  await seedPrivateEpisode(
-    fx,
-    "Note privée Calliope",
-    `Rappel personnel sur Calliope Verre, référence ${DIGEST_PRIVATE_EPISODE_MARK}.`,
-    4,
-  );
-
-  // Inside `DECISION_WINDOW_DAYS`, both of them — a stale value the digest
-  // silently dropped would pass a "the current one is there" check for the
-  // wrong reason.
-  await freshEpisode(
-    fx,
-    "Franco de port Calliope",
-    "Le franco de port chez Calliope Verre est fixé à 1 200 € de commande.",
-    40,
-  );
-  await freshEpisode(
-    fx,
-    "Franco de port Calliope revu",
-    "Calliope Verre abaisse son franco de port : il passe à 800 € de commande.",
-    2,
-  );
-
-  return {
-    conventionPath: DIGEST_CONVENTION_PATH,
-    privatePath: DIGEST_PRIVATE_PATH,
-    staleValue: "1 200",
-    freshValue: "800",
-  };
-};
-
-/**
  * Tear the universe down — including anything the PIPELINE wrote during a run
  * (distilled episodes, consolidation survivors, promoted `learned/` memories).
  * Those carry no fixture marker of their own, so they are caught by their
@@ -605,25 +441,6 @@ export const cleanupChainFixtures = async (
     await deleteMemoryVectorsBulk(stale);
     await db.delete(aiMemories).where(inArray(aiMemories.id, stale));
   }
-
-  // The digest cases' own rows, plus the digest itself. The digest is ONE row
-  // per team and it is injected into every turn, so a chain run that left it
-  // behind would put this suite's fixtures in the next suite's prompt.
-  const digestMemories = await db.query.aiMemories.findMany({
-    where: {
-      teamId: scope.teamId,
-      path: { in: [DIGEST_CONVENTION_PATH, DIGEST_PRIVATE_PATH] },
-    },
-    columns: { id: true },
-  });
-  if (digestMemories.length > 0) {
-    const ids = digestMemories.map((m) => m.id);
-    await deleteMemoryVectorsBulk(ids);
-    await db.delete(aiMemories).where(inArray(aiMemories.id, ids));
-  }
-  await db
-    .delete(teamMemoryDigests)
-    .where(eq(teamMemoryDigests.teamId, scope.teamId));
 
   if (recIds.length > 0) {
     for (const id of recIds) await deleteRecordCardVectors(id);

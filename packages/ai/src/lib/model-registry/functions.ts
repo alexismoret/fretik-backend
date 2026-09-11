@@ -40,7 +40,6 @@ export const ROLE_FUNCTION: Record<ModelRole, ModelFunctionKey | "auto"> = {
   // stronger writer is no longer told no by a constant.
   "memory-consolidate": "memory",
   "memory-promote": "memory",
-  "memory-digest": "memory",
 
   // Was `fixed` since P5-bis: gpt-oss-20b measured unstable as the recall judge
   // at every effort level, and a team's utility pick must not silently degrade

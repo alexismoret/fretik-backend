@@ -109,7 +109,6 @@ import {
   ATTACHED_FILES_UNAVAILABLE,
   buildConversationAttachedFilesBlock,
   loadExternalApps,
-  startTeamDigestRead,
 } from "../agents/shared/fragments";
 import type { StandingMode } from "../agents/shared/standing-memory";
 import {
@@ -862,25 +861,10 @@ const buildTurnCallOptions = async (
   // HANG backstops, not latency caps). The two history-dependent fragments
   // (attached files, active-memory recall) stay here and run in the same
   // parallel batch.
-  // Which arm serves `<standing_memory>` this turn. Per request so an A/B
-  // runs both against one live service instead of one restart apart — same
-  // contract as `recallMode`.
+  // Whether `<standing_memory>` is served this turn. Per request, so the
+  // rollback can be exercised without a restart — same contract as
+  // `recallMode`.
   const standingMode = params.standingMode ?? STANDING_MODE;
-
-  // One read of the team digest for the whole turn, started here because two
-  // stages in the batch below need the SAME row and neither can see the
-  // other's result: the fragments render it into `<standing_memory>`, and
-  // recall uses its source ids to leave out of `<active_memory>` what the
-  // digest already says. Reading it in both would be two round trips for one
-  // row. Outside `digest` mode it resolves to null, which is what makes the
-  // mode a rollback rather than a mutilation: a switch that only silenced the
-  // BLOCK would leave the rows it covers suppressed out of the retrieved block
-  // too, i.e. missing from both.
-  const teamDigestPromise = startTeamDigestRead(
-    params.callOptions.teamId,
-    params.logPrefix,
-    standingMode,
-  );
 
   // Every stage below is timed into one record and logged as a single
   // key=value line (see `lib/turn-timings.ts`). These run in parallel, so the
@@ -953,7 +937,6 @@ const buildTurnCallOptions = async (
                   ...(params.recallMode
                     ? { modeOverride: params.recallMode, bypassCache: true }
                     : {}),
-                  digestPromise: teamDigestPromise,
                 }),
                 // ABOVE the recall's own 15s judge budget
                 // (RECALL_TIMEOUT_MS) + RAG headroom — only fires on a true
@@ -976,7 +959,7 @@ const buildTurnCallOptions = async (
           userId: params.callOptions.userId,
           logPrefix: params.logPrefix,
         },
-        { mode: standingMode, startedDigest: teamDigestPromise },
+        { mode: standingMode },
       ),
     ),
     timeStage(
@@ -3361,7 +3344,7 @@ chatbotInternalRoutes.post("/invoke", async (c) => {
     return c.json(
       {
         code: "UNKNOWN_STANDING_MODE",
-        message: `Unknown standing mode: "${standingModeHeader}" (expected digest | episodes | none)`,
+        message: `Unknown standing mode: "${standingModeHeader}" (expected episodes | none)`,
       },
       400,
     );

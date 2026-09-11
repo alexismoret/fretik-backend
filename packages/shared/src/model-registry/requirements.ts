@@ -167,7 +167,6 @@ export const ROLE_REQUIREMENTS: Record<string, PoolRequirements> = {
   "memory-distill": { minMaxOutput: 12_256 },
   "memory-consolidate": { minMaxOutput: 12_256 },
   "memory-promote": { minMaxOutput: 12_256 },
-  "memory-digest": { minMaxOutput: 12_256 },
   "compaction-summarizer": { minMaxOutput: 12_256 },
   // `PREEXTRACT_MAX_OUTPUT_TOKENS` is 4 000; the floor is rounded up to leave
   // room for the minimal reasoning these profiles carry.

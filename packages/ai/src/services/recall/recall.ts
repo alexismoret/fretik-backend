@@ -1,4 +1,3 @@
-import type { TeamMemoryDigest } from "@fretik/shared/db/schema";
 import {
   anchorTextToRecords,
   type RecordAnchor,
@@ -275,17 +274,6 @@ export interface UnifiedRecallParams {
    * `buildJudgeInput` reads that, and it is assembled after the await.
    */
   gatherPromise?: Promise<RecallGathered>;
-  /**
-   * The team digest already in flight, so this block can leave out what the
-   * digest already says.
-   *
-   * Passed as a PROMISE, and by the caller rather than read here, because the
-   * digest is read once per turn and used twice: `assembleContextFragments`
-   * renders it into `<team_digest>`, and this suppresses its sources from
-   * `<active_memory>`. Both run in the same `Promise.all`, so neither can read
-   * the other's result — sharing the promise keeps it at one lookup.
-   */
-  digestPromise?: Promise<TeamMemoryDigest | null>;
 }
 
 /**
@@ -879,18 +867,7 @@ export const runUnifiedRecall = async (
     // in `adaptive` it is also the escalation signal: whether the judge runs is
     // read off the same pass that would otherwise have produced the block.
     const mode = params.modeOverride ?? RECALL_MODE;
-    // Never blocks the block: a digest that fails to load costs de-duplication,
-    // not recall.
-    const digest = await (params.digestPromise?.catch(() => null) ??
-      Promise.resolve(null));
-    const digestSuppression = digest
-      ? {
-          memoryPaths: digest.sources.memoryPaths,
-          episodeIds: digest.sources.episodeIds,
-        }
-      : undefined;
-    const selection =
-      mode === "judge" ? null : buildVerbatimBlock(gathered, digestSuppression);
+    const selection = mode === "judge" ? null : buildVerbatimBlock(gathered);
     const escalate =
       mode === "judge" ||
       (mode === "adaptive" &&

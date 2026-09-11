@@ -100,10 +100,6 @@ export const relations = defineRelations(schema, (r) => ({
       from: r.team.id,
       to: r.teamToolPolicies.teamId,
     }),
-    memoryDigest: r.one.teamMemoryDigests({
-      from: r.team.id,
-      to: r.teamMemoryDigests.teamId,
-    }),
     folders: r.many.folders(),
     documents: r.many.documents(),
     documentVersions: r.many.documentVersions(),
@@ -764,17 +760,6 @@ export const relations = defineRelations(schema, (r) => ({
   // ============================================================================
   // AI Memory Relations (agent-writable memory store + audit log)
   // ============================================================================
-
-  teamMemoryDigests: {
-    team: r.one.team({
-      from: r.teamMemoryDigests.teamId,
-      to: r.team.id,
-    }),
-    organization: r.one.organization({
-      from: r.teamMemoryDigests.organizationId,
-      to: r.organization.id,
-    }),
-  },
 
   aiMemories: {
     organization: r.one.organization({

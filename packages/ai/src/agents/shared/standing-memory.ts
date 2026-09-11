@@ -14,24 +14,30 @@ import { encode } from "gpt-tokenizer/encoding/o200k_base";
  */
 
 /**
- * Which implementation serves the standing slot. Read at module load, same
- * contract as `RECALL_MODE`: it takes effect on the next restart, not the next
- * turn. Per-request, `/invoke` accepts `X-Standing-Mode`, which is how an A/B
- * runs both arms against one live service instead of one restart apart.
+ * Whether the standing slot is served. Read at module load, same contract as
+ * `RECALL_MODE`: it takes effect on the next restart, not the next turn.
+ * Per-request, `/invoke` accepts `X-Standing-Mode`.
  *
- * `none` is the rollback — it replaces the former `TEAM_DIGEST_ENABLED=false`
- * and, like it, must cut the recall-side suppression too, or the rows the
- * block covers would be missing from every block at once.
+ * `none` is the rollback, and it is now a pure off switch — there is nothing
+ * left to keep in sync with it, because the block no longer suppresses
+ * anything from `<active_memory>`.
+ *
+ * The third arm, `digest`, was deleted on 2026-09-11 after the A/B. Measured
+ * over 8 cases x 10 repeats: the two questions no retrieval can answer went
+ * from 3/10 and 6/10 without a block to 30/30 each with this one, and the
+ * generated digest scored level rather than ahead — at the price of one LLM
+ * call per team per refresh, five generation defects in its first week, and a
+ * team-scoped artefact that could not see 11 of a reader's 18 recent episodes.
  */
-export type StandingMode = "digest" | "episodes" | "none";
+export type StandingMode = "episodes" | "none";
 
 export const isStandingMode = (raw: string): raw is StandingMode =>
-  raw === "digest" || raw === "episodes" || raw === "none";
+  raw === "episodes" || raw === "none";
 
 const envMode = process.env.STANDING_MODE ?? "";
 export const STANDING_MODE: StandingMode = isStandingMode(envMode)
   ? envMode
-  : "digest";
+  : "episodes";
 
 /**
  * The prompt budget. Paid on every turn of every member, so it is a ceiling on

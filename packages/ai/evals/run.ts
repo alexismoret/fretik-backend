@@ -46,6 +46,7 @@
  *   ...  -- --candidate <profileKey> # pin turns to a registry profile (C3 gate)
  *   ...  -- --page-build-candidate <profileKey> # pin the PAGE BUILDER's model
  *   ...  -- --recall-mode judge|verbatim|adaptive # which memory selector serves the turns
+ *   ...  -- --standing-mode episodes|none # whether <standing_memory> is served
  *   ...  -- --case <id> --repeats 3 # N passes of each case, one run, means not samples
  * ==================================================================
  */
@@ -79,9 +80,11 @@ interface CliOptions {
    */
   recallMode?: string;
   /**
-   * Serve `<standing_memory>` from this arm (`digest` | `episodes` | `none`).
-   * Same paired-comparison contract as `--recall-mode`; `none` is the control
-   * that says whether the block earns its place at all.
+   * Whether `<standing_memory>` is served (`episodes` | `none`).
+   *
+   * `none` is the control that says whether the block earns its place at all —
+   * and it did, measured 2026-09-11: the two questions no retrieval can answer
+   * went from 3/10 and 6/10 without it to 30/30 each with it.
    */
   standingMode?: string;
   /**

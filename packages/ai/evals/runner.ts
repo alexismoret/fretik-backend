@@ -59,7 +59,7 @@ export interface RunCaseOptions {
    * restart between them and stop being a paired comparison.
    */
   recallMode?: string;
-  /** Which arm serves `<standing_memory>` — `digest` | `episodes` | `none`. */
+  /** Whether `<standing_memory>` is served — `episodes` | `none`. */
   standingMode?: string;
 }
 

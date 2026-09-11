@@ -68,10 +68,10 @@ export interface InvokeOptions {
    */
   recallMode?: string;
   /**
-   * `X-Standing-Mode` — `digest` | `episodes` | `none`.
+   * `X-Standing-Mode` — `episodes` | `none`.
    *
-   * Same contract and same reason as `recallMode`. `none` is the arm that
-   * makes the other two readable: a standing block that scores like its own
+   * Same contract and same reason as `recallMode`. `none` is the control that
+   * makes the other readable: a standing block that scores like its own
    * absence is decoration, and only a paired control says so.
    */
   standingMode?: string;

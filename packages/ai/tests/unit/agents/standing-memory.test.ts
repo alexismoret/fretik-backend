@@ -1,9 +1,11 @@
 import type { StandingEpisodesResult } from "@fretik/shared/services/episodes/list-standing";
 import { describe, expect, test } from "bun:test";
+import { encode } from "gpt-tokenizer/encoding/o200k_base";
 import {
   isStandingMode,
   renderStandingEpisodes,
   STANDING_CLIP_CHARS,
+  STANDING_MAX_TOKENS,
 } from "../../../src/agents/shared/standing-memory";
 
 /**
@@ -115,10 +117,28 @@ describe("budget", () => {
     expect(lines.length).toBeLessThan(many.length);
     // The head survives — the newest is what "lately" means.
     expect(lines[0]).toContain("Episode 0");
-    // Every surviving line still carries a WHOLE marker. A marker cut in half
-    // is worse than a missing line: the agent spends a tool call on an id that
-    // resolves to nothing.
-    for (const line of lines) expect(line).toMatch(/\(episode:[0-9a-f-]+\)$/);
+    // Every surviving episode line still carries a WHOLE marker. A marker cut
+    // in half is worse than a missing line: the agent spends a tool call on an
+    // id that resolves to nothing. The last line is the footer, which is the
+    // subject of the next test.
+    for (const line of lines.slice(0, -1))
+      expect(line).toMatch(/\(episode:[0-9a-f-]+\)$/);
+  });
+
+  test("a line dropped for BUDGET is counted in the footer too", () => {
+    // The defect this pins: counting what the QUERY returned rather than what
+    // survived. On the EVAL team the query returned 10 rows and 7 lines fit,
+    // and `visibleInWindow - items.length` is 0 — so the block said nothing
+    // about three episodes it had silently dropped.
+    const text = renderStandingEpisodes(result(many));
+    const lines = text.split("\n");
+    const footer = lines.at(-1) ?? "";
+    const kept = lines.length - 1;
+    expect(footer).toBe(
+      `- +${(many.length - kept).toString()} more in the last 30 days — \`searchKnowledge({ filters: { sourceTypes: ['episodes'] } })\``,
+    );
+    // …and the footer is INSIDE the budget, not on top of it.
+    expect(encode(text).length).toBeLessThanOrEqual(STANDING_MAX_TOKENS);
   });
 
   test("says how much it left out, and only when it did", () => {

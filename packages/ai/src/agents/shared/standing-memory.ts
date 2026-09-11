@@ -84,22 +84,35 @@ export const renderStandingEpisodes = (
     return `- As of ${isoDay(item.at)} — ${prefix}${item.title} : ${clip(item.summary, STANDING_CLIP_CHARS)} (episode:${item.id})`;
   });
 
+  // Say what was left out rather than let the block read as the whole story —
+  // the same reason `<memory_index>` collapses to counts past 80 files.
+  //
+  // Counted against what SURVIVES, not against what the query returned: the
+  // budget trim below is the other way lines go missing, and measured on the
+  // EVAL team it is the one that actually fires (10 rows in, 7 lines out).
+  // Subtracting `items.length` there would have dropped three episodes in
+  // silence — the block would read as the whole of the last 30 days while
+  // being three short, which is the one thing a footer exists to prevent.
+  const withFooter = (kept: string[]): string[] => {
+    const hidden = result.visibleInWindow - kept.length;
+    return hidden > 0
+      ? [
+          ...kept,
+          `- +${hidden.toString()} more in the last 30 days — \`searchKnowledge({ filters: { sourceTypes: ['episodes'] } })\``,
+        ]
+      : kept;
+  };
+
   // Drop the OLDEST first, and never mid-line: a marker cut in half hands the
   // agent a truncated id it will spend a tool call on for nothing — the trap
-  // the verbatim block's size cap already documents.
+  // the verbatim block's size cap already documents. The footer is inside the
+  // budget, not on top of it, or the block overshoots by exactly the line that
+  // was supposed to account for the overshoot.
   while (
     lines.length > 1 &&
-    countTokens(lines.join("\n")) > STANDING_MAX_TOKENS
+    countTokens(withFooter(lines).join("\n")) > STANDING_MAX_TOKENS
   )
     lines.pop();
 
-  const hidden = result.visibleInWindow - result.items.length;
-  if (hidden > 0) {
-    // Say what was left out rather than let the block read as the whole story
-    // — the same reason `<memory_index>` collapses to counts past 80 files.
-    lines.push(
-      `- +${hidden.toString()} more in the last 30 days — \`searchKnowledge({ filters: { sourceTypes: ['episodes'] } })\``,
-    );
-  }
-  return lines.join("\n");
+  return withFooter(lines).join("\n");
 };

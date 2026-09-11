@@ -881,6 +881,39 @@ The run prints a per-capability summary + a **dataset-run URL** → open it in L
 compare against previous runs. The baseline = a frozen dataset-run; a change is good when
 its run beats the baseline with no per-capability regression.
 
+### A workflow run's memory rides turn 1 (2026-09-11)
+
+Until now a run got `<active_memory>` on turn 1 and nothing else — while
+`assembleContextFragments` built the memory index and the standing block on
+EVERY turn and discarded both. Two queries per turn of every run, for output
+nothing consumed.
+
+The run now gets all three in its turn-1 steering message, and
+`memory: isFirstTurn` skips the reads from turn 2 on. They persist by history
+replay, which is the same reason recall already rode there: the workflow system
+prompt must stay byte-stable for a whole run, so anything per-run in it breaks
+the provider cache on every turn of every other run.
+
+**The index is the one that matters here**, and it is worth being explicit
+about why, because "give the run more memory" is not the reason. A workflow
+executes a REPEATABLE PROCESS. Recall is query-shaped and matches against
+`${workflow.name}\n${playbook.goal}` — a short, generic string. A team's
+written-down process for that exact job is precisely what such a string fails
+to retrieve, and `<memory_index>` matches nothing by construction: it lists
+every path.
+
+Worst case on turn 1: the index self-caps at 80 files, the standing block at
+600 tokens, recall at 2 400 chars — about +1.5k tokens, once per run.
+
+What pins it: `tests/unit/agents/playbook-block.test.ts` (turn 1 carries both,
+turn 2 neither) and `tests/unit/agents/fragments-memory.test.ts`, which asserts
+on CALL COUNTS with a positive control — an assertion on the returned block
+would pass just as well against a version that does the work and throws the
+answer away, which is the bug that was there before.
+
+Still thrown away on the workflow path and out of scope here:
+`recall.capabilityBlock` — one rerank per run for nothing.
+
 ## When you continue an implementation
 
 1. Make your change.

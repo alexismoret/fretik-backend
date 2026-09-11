@@ -12,11 +12,22 @@ import { mock } from "bun:test";
  * found`, which takes the whole file down: its tests are not failed, they are
  * never registered.
  *
- * `--isolate` gives every test file its own module registry, so the damage can
- * no longer cross files — but inside one file it is unchanged, and it still
- * strikes when a source module GAINS an export (that is how `isCacheableValue`,
+ * `--isolate` gives every test file its own module registry for the modules it
+ * IMPORTS, which contains that particular failure — but it does NOT contain the
+ * registration: a `mock.module` still reaches other files in the same run.
+ * Measured 2026-09-11, under `--isolate`: `pages/run-operation.test.ts`'s
+ * `getSnapshotForConnection` double was served to
+ * `external-apps/update-action-policies.test.ts`, which failed three tests on a
+ * tool list it never wrote. It followed file order, so it appeared at some
+ * `--seed` values and vanished at others. The class also still strikes inside
+ * one file when a source module GAINS an export (that is how `isCacheableValue`,
  * added to `lib/redis` long after the fakes were written, and
  * `buildRegistryUpdateBatch` broke suites that never named them).
+ *
+ * So an override is a claim about EVERY caller in the process, not just yours.
+ * When the double stands for one tenant's app, one provider or one id, say so
+ * in the override and delegate the rest to the real implementation (or refuse
+ * loudly, where the real one would open a socket) — see `run-operation.test.ts`.
  *
  * Spreading the real module makes the whole class impossible: an export nobody
  * overrides keeps its real implementation, so adding one to a source file can

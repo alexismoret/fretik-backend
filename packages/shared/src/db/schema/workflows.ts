@@ -95,6 +95,19 @@ export const workflows = pgTable(
 
     playbook: jsonb("playbook").$type<WorkflowPlaybook>().notNull(),
 
+    // The external-app connections this workflow is BUILT ON — declared, not
+    // derived: which apps a playbook reaches for lives in its prose, and no
+    // amount of parsing turns that into a list anyone can trust. Empty means
+    // "not declared", never "no apps": a run still sees every connection its
+    // identity can resolve. What the declaration buys is a workflow whose
+    // dependencies are readable at a glance, and the scope rule that follows
+    // from them — a team workflow runs as the team bot and can never resolve a
+    // personal connection, so declaring one pins the workflow to private.
+    externalAppConnectionIds: jsonb("external_app_connection_ids")
+      .$type<string[]>()
+      .notNull()
+      .default([]),
+
     autonomy: workflowAutonomyEnum("autonomy")
       .notNull()
       .default("approval_required"),

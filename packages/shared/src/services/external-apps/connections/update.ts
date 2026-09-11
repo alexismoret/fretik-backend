@@ -11,6 +11,7 @@ import { buildConnectionOptionsZod } from "../../../external-apps/connection-opt
 import { getProvider } from "../../../external-apps/registry";
 import { throwHttpError } from "../../../lib/errors";
 import { ERROR_CODES } from "../../../schemas/errors";
+import type { ConnectionScope } from "../../../schemas/external-apps";
 import {
   type ToolPolicyLevel,
   toolPolicyLevelSchema,
@@ -53,15 +54,20 @@ const resolveActionNames = async (
 };
 
 /**
- * Rename a connection, flip its status (`active` ↔ `disabled`) or update
- * its `options`. Only the original creator or members with team-wide
- * access can update — `getConnectionForCaller` already enforces team +
- * user-scope visibility, so anyone who can see the connection can update
- * it.
+ * Rename a connection, flip its status (`active` ↔ `disabled`), re-scope it
+ * (`team` ↔ `user`) or update its `options`. Only the original creator or
+ * members with team-wide access can update — `getConnectionForCaller` already
+ * enforces team + user-scope visibility, so anyone who can see the connection
+ * can update it.
  *
  * Status `error` is set by the dispatcher itself on a Nango 401/403, not
  * by users — it's accepted here for completeness (admins flipping back
  * to `active` after a manual recovery).
+ *
+ * `scope` moves the row between shared (`user_id` NULL) and private. Taking a
+ * SHARED connection private takes it away from everyone else, so it is gated on
+ * being its creator or an org admin; sharing a PRIVATE one needs no gate — only
+ * its owner can see it in the first place, so only its owner can get here.
  *
  * `options` is treated as a partial patch: provided keys overwrite the
  * existing JSONB, omitted keys are preserved. The resulting merged object
@@ -75,6 +81,8 @@ export const updateConnection = async (params: {
   userId: string;
   displayName?: string;
   status?: ExternalAppConnectionStatus;
+  /** `team` = shared with the whole team, `user` = private to the caller. */
+  scope?: ConnectionScope;
   options?: Record<string, unknown>;
   /** Sparse per-action policy patch (level sets, `null` resets to default). */
   actionPolicies?: Record<string, ToolPolicyLevel | null>;
@@ -96,6 +104,27 @@ export const updateConnection = async (params: {
   if (params.status !== undefined) {
     patch.status = params.status;
     if (params.status !== "error") patch.lastErrorMessage = null;
+  }
+
+  if (params.scope !== undefined) {
+    const currentScope: ConnectionScope =
+      current.userId === null ? "team" : "user";
+    if (params.scope !== currentScope) {
+      // Un-sharing is the only direction that takes something away from other
+      // people, so it is the only one that needs a gate.
+      if (
+        params.scope === "user" &&
+        current.createdByUserId !== params.userId &&
+        params.isOrgAdmin !== true
+      ) {
+        return throwHttpError(403, {
+          code: ERROR_CODES.FORBIDDEN,
+          message:
+            "Only the member who connected this app, or an admin, can make it personal.",
+        });
+      }
+      patch.userId = params.scope === "team" ? null : params.userId;
+    }
   }
 
   if (params.concurrencyMode !== undefined) {

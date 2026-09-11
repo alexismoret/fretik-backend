@@ -1,4 +1,5 @@
 import type { DomainEvent, Workflow } from "@fretik/shared/db/schema";
+import { eventSubscriptions } from "@fretik/shared/schemas/workflows";
 import { isImportOriginated } from "@fretik/shared/services/bulk-operations/agent-key";
 
 import { WORKFLOW_RUN_CREATE_JOB } from "../queues/names";
@@ -29,18 +30,25 @@ export const isWorkflowOriginated = (event: DomainEvent): boolean =>
 export const isImportedRecord = (event: DomainEvent): boolean =>
   isImportOriginated(event.agentKey);
 
-/** Config match: event type equal + every filter entry equal on the payload. */
-export const matchesEvent = (
-  workflow: Workflow,
-  event: DomainEvent,
-): boolean => {
-  const config = workflow.triggerConfig.event;
-  if (!config || config.type !== event.type) return false;
-  if (!config.filter) return true;
-  return Object.entries(config.filter).every(
-    ([key, value]) => event.payload[key] === value,
-  );
-};
+/**
+ * Config match: ANY of the workflow's subscriptions matches — type equal and
+ * every filter entry equal on the payload.
+ *
+ * A workflow listens for a LIST because one intent rarely maps to one event:
+ * "act on a document that lands in this folder" is `document.uploaded` AND
+ * `document.revised`, since replacing an existing file emits the second and
+ * never the first. Matching is an OR across subscriptions and an AND within
+ * one, which is what makes two subscriptions of the same type with different
+ * filters (two watched folders) mean what a reader expects.
+ */
+export const matchesEvent = (workflow: Workflow, event: DomainEvent): boolean =>
+  eventSubscriptions(workflow.triggerConfig).some((subscription) => {
+    if (subscription.type !== event.type) return false;
+    if (!subscription.filter) return true;
+    return Object.entries(subscription.filter).every(
+      ([key, value]) => event.payload[key] === value,
+    );
+  });
 
 /**
  * The events a sweep may still act on: not a workflow's own, not an import's,
@@ -127,7 +135,12 @@ export const buildTriggerJobs = (
         workflowId: workflow.id,
         teamId: workflow.teamId,
         sourceEventId: event.id,
-        triggerPayload: event.payload,
+        // WHICH event fired, alongside what it carried. A workflow can listen
+        // for several, and the payloads of `document.uploaded` and
+        // `document.revised` look alike — without this neither the executor
+        // nor the run's own trigger card could say which one it is answering.
+        // Written last on purpose: ours is the authoritative value.
+        triggerPayload: { ...event.payload, event_type: event.type },
       },
       opts: {
         jobId: `wfrun-${workflow.id}-${event.id}`,

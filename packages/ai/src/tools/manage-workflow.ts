@@ -13,6 +13,7 @@ import {
 import {
   type CreateWorkflowInput,
   type UpdateWorkflowInput,
+  WORKFLOW_MAX_EXTERNAL_APPS,
   WorkflowPlaybookSchema,
   WorkflowTriggerConfigSchema,
   workflowAutonomySchema,
@@ -307,6 +308,8 @@ export const createManageWorkflowTool = () =>
       "Loop: create_draft → run_test → resumed on completion → analyze with get_run → adjust with update → activate. One conform test is enough: re-test only when an update fixed a real structural/logic defect; a spec detail (number format, label, sort order) goes in via update with no new test, and gaps inherent to the input data are findings to report, never a reason to re-run.",
       "Activation gate: activate needs ≥1 succeeded run. To skip testing, confirm with the user first (askUserQuestion), then pass confirm: true.",
       "",
+      "Event trigger (triggerType 'event'): triggerConfig.event = { events: [{ type, filter? }] } — a LIST, matched as an OR. Subscribe to every event that carries the input the playbook needs, not just the obvious one: replacing an existing document emits `document.revised`, never `document.uploaded`, so 'run when a document arrives' is both. Same type twice with different filters (two watched folders) is a normal shape. Activating with an empty list is refused.",
+      "",
       "Form trigger (triggerType 'form'): a person fills a form; each submission starts a run whose triggerPayload is the answers, with uploaded files attached to the run — write the playbook to consume triggerPayload. triggerConfig.form = { title, description?, fields[] (≥1 to activate), visibility ('public' = anyone with the link, 'private' = the workflow's team/owner), submitLabel?, successMessage? }. Each field = { key (snake_case, unique), type, label, required, +per-type constraints (minLength/maxLength, min/max/step, options[{value,label}], accept/maxFiles/maxFileSizeMb) }.",
       describeFormFieldsForAgent(),
       "After activate, `get` returns `formUrl` — the shareable link to hand the user.",
@@ -317,6 +320,7 @@ export const createManageWorkflowTool = () =>
       "- When the conversation shows what the output must look like (example file, exact columns, required format), capture it in `playbook.deliverable` = { format, description } — a run executes in a FRESH conversation and never sees this chat, so a contract left only here is invisible to the executor. Copy the example's structure line AND two of its data rows as read, never a description of them — the rows are the only place the way a value is written is visible. Details + the diff-vs-example check: workflows.md.",
       "- A run always produces its deliverable. A value it cannot establish leaves that cell empty and names the affected rows in the summary; a playbook that withholds the whole file until every value is confirmed spends the run and returns nothing to read or correct. Only refuse to produce when the user asked for that.",
       "- Autonomy governs writes: `read_only` = no writes; `approval_required` (default) = object writes go through the Python objects SDK in bulk (`records.bulk_*`) and PAUSE for a human to approve, and an open decision pauses via `askUserQuestion` — say WHAT to write / decide, the platform handles the pause + resume; `autonomous` = writes apply directly. Never merge 'present a list and then create it' into a plan that assumes the user is watching — describe the write, the run pauses for approval on its own.",
+      "- Name the apps the playbook depends on in `externalAppConnectionIds` (connection ids from a connections listing). It is what makes a workflow's dependencies readable to the team, and it is checked against scope: a personal connection in that list is only accepted on a `private` workflow.",
       "- Scope governs identity: `team` (default) runs as the team assistant — sees only team-shared external-app connections, everyone on the team sees and runs it. `private` runs as you — sees your personal connections too (plus team ones), and only you (and org admins) see or run it. A connections listing tags each row `scope: user` (personal) or `scope: team` (shared); if the playbook needs a `scope: user` connection, the workflow MUST be `private` — the team assistant can never see it. Prefer `team` when a team-shared connection covers the need. Unsure which the user wants, or whether the connection is personal? `askUserQuestion`. `run_test` failing `EXTERNAL_APP_NO_CONNECTION` on what looked like a personal connection means wrong scope — set `scope: private` and retest.",
       "- `toolHints` per task: the tool carrying its core operation, core or domain (validated against the registry). Domain tools pre-load so the run doesn't spend a turn searching; a core tool is the per-task cue the executor reads every turn — an extraction task that omits `extract` gets hand-parsed. Keep the list minimal: the operation's tool, not every tool it might touch. A task that turns on judgement (which records go together, which category applies) gets NO hint — hinting `python` there buys a hand-written scorer instead of a decision.",
       "- An extraction task never instructs 'read the documents completely': `extract` reads the document itself and returns the structured data. Instruct at most a bounded look (first page / ~50 lines) to identify each file's type and role before extracting — a full `read` on top of `extract` sends every document through the context twice.",
@@ -377,6 +381,13 @@ export const createManageWorkflowTool = () =>
         .max(64)
         .optional()
         .describe("Override the model profile; omit to use the team default."),
+      externalAppConnectionIds: z
+        .array(z.uuid())
+        .max(WORKFLOW_MAX_EXTERNAL_APPS)
+        .optional()
+        .describe(
+          "create_draft/update — connection ids of the external apps this workflow is built on, from a connections listing. Declarative: it does not restrict what the run may reach, it records what the workflow depends on so the team can see it, and it is what pins scope (a `scope: user` connection here forces `scope: private`). Replaces the whole list on update.",
+        ),
       payload: z
         .record(z.string(), z.unknown())
         .optional()
@@ -447,6 +458,9 @@ export const createManageWorkflowTool = () =>
               ...(input.modelProfileKey
                 ? { modelProfileKey: input.modelProfileKey }
                 : {}),
+              ...(input.externalAppConnectionIds
+                ? { externalAppConnectionIds: input.externalAppConnectionIds }
+                : {}),
               ...(input.scope === "private" ? { userId } : {}),
             };
             const workflow = await createWorkflow({
@@ -505,6 +519,9 @@ export const createManageWorkflowTool = () =>
                 : {}),
               ...(input.modelProfileKey !== undefined
                 ? { modelProfileKey: input.modelProfileKey }
+                : {}),
+              ...(input.externalAppConnectionIds !== undefined
+                ? { externalAppConnectionIds: input.externalAppConnectionIds }
                 : {}),
               ...(input.scope === "private"
                 ? { userId }
@@ -595,6 +612,9 @@ export const createManageWorkflowTool = () =>
                 modelProfileKey: workflow.modelProfileKey,
                 limits: workflow.limits,
                 playbook: workflow.playbook,
+                // `update` replaces the declared list wholesale, so the agent
+                // has to be able to read the current one before changing it.
+                externalAppConnectionIds: workflow.externalAppConnectionIds,
                 scope: scopeOf(workflow.userId),
                 mine: workflow.userId === userId,
                 ...(workflow.formUrl ? { formUrl: workflow.formUrl } : {}),

@@ -41,6 +41,7 @@ export const serializeWorkflow = (row: Workflow): WorkflowResponse => ({
   reasoningLevel: row.reasoningLevel,
   limits: row.limits,
   notifications: row.notifications,
+  externalAppConnectionIds: row.externalAppConnectionIds,
   defaultLimits: {
     maxTotalTokens: WORKFLOW_DEFAULT_MAX_TOTAL_TOKENS,
     maxDurationMinutes: WORKFLOW_MAX_DURATION_MINUTES,

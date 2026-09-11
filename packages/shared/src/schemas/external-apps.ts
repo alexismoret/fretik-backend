@@ -405,6 +405,14 @@ export const updateConnectionRequestSchema = z
     displayName: z.string().min(1).max(128).optional(),
     status: externalAppConnectionStatusSchema.optional(),
     /**
+     * Re-scope the connection. `team` shares it with every member (`user_id`
+     * NULL), `user` makes it private to the CALLER. Taking a shared connection
+     * private removes it from everyone else, so that direction is reserved to
+     * whoever connected it (or an org admin); sharing one's own is the owner's
+     * call alone — nobody else can even see it.
+     */
+    scope: connectionScopeSchema.optional(),
+    /**
      * Partial options patch — merged with the existing JSONB; the result is
      * re-validated against the provider's `connectionOptions` descriptor.
      */
@@ -428,12 +436,13 @@ export const updateConnectionRequestSchema = z
     (val) =>
       val.displayName !== undefined ||
       val.status !== undefined ||
+      val.scope !== undefined ||
       val.options !== undefined ||
       val.actionPolicies !== undefined ||
       val.concurrencyMode !== undefined,
     {
       message:
-        "At least one of displayName, status, options, actionPolicies or concurrencyMode must be provided",
+        "At least one of displayName, status, scope, options, actionPolicies or concurrencyMode must be provided",
     },
   );
 export type UpdateConnectionRequest = z.infer<

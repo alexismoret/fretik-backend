@@ -1028,17 +1028,19 @@ easy to break by accident.** `runUnifiedRecall` memoises a gather for 15 s per
 extract/distill/promote = deepseek-v4-flash, consolidate + recall judge =
 gpt-oss-120b):
 
-| Suite                     | Frozen                                                                                       | Detail                                                                                                                                                                                                                                                                         |
-| ------------------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `evals:memory` (17 cases) | 16/17 stable at N=10                                                                         | flagged `mem-relation-noise` 9/10 re-ran **30/30** → closed. The four once-contested cases, targeted: reanchor 30/30 · merge 30/30 · revise 29/30 · distill-record-activity 30/30                                                                                              |
-| `evals:chain` (5 cases)   | ~~4/4~~ → **5 cases; `convention-promoted` closed 10/10 on 2026-09-11 after team isolation** | `chain-contradiction-corrected` closed by the consolidation-judge id handles                                                                                                                                                                                                   |
-| `evals:recall` (23 cases) | 22/23 stable at N=10                                                                         | **open residual**: `rec-noise-general` — 8/10 in the freeze, **14/30** targeted (historic ~88 %). Judge-side selectivity against a lexically dominant, non-responsive candidate; the hot-path judge model is deliberately out of scope here. The one case of 44 below the bar. |
+| Suite                     | Frozen                                                                                                                                                                                                                                      | Detail                                                                                                                                                                                                                                                                         |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `evals:memory` (17 cases) | 16/17 stable at N=10                                                                                                                                                                                                                        | flagged `mem-relation-noise` 9/10 re-ran **30/30** → closed. The four once-contested cases, targeted: reanchor 30/30 · merge 30/30 · revise 29/30 · distill-record-activity 30/30                                                                                              |
+| `evals:chain` (4 cases)   | ~~4/4~~ → **4 cases again (`chain-digest` added in `1017fa7`, deleted with the digest in `9a1c201`); `convention-promoted` 10/10 on 2026-09-11 after team isolation, and 10/10 again WITH the residue present after P5.1's subject filter** | `chain-contradiction-corrected` closed by the consolidation-judge id handles                                                                                                                                                                                                   |
+| `evals:recall` (23 cases) | 22/23 stable at N=10                                                                                                                                                                                                                        | **open residual**: `rec-noise-general` — 8/10 in the freeze, **14/30** targeted (historic ~88 %). Judge-side selectivity against a lexically dominant, non-responsive candidate; the hot-path judge model is deliberately out of scope here. The one case of 44 below the bar. |
 
 **The `evals:chain` row above is out of date as of 2026-09-11**, in both
 directions, and the row is left struck through rather than quietly edited
 because the stale version was used as a gate:
 
-- the suite is **5 cases**, not 4 — `chain-digest` was added in `1017fa7`;
+- the suite went to **5 cases** (`chain-digest`, `1017fa7`) and back to **4**
+  when the digest was deleted (`9a1c201`) — the count was never the point, the
+  fact that a gate row can go stale between two reads of it is;
 - `chain-convention-promoted` went 10/10 → **0/10** → **10/10**. See below.
 
 #### CLOSED: `chain-convention-promoted` was cross-suite contamination (2026-09-11)
@@ -1066,13 +1068,53 @@ Three lessons, all general:
   `learned/` files about unrelated subjects, so the promoter's "already
   covered" gate still reads a corpus that grows without bound. P5.1's topic
   filter is what makes it robust, and its acceptance test is this case at
-  **10/10 with the residue deliberately present**.
+  **10/10 with the residue deliberately present** — run and passed, below.
 
 Three previously-SILENT noop paths in `promoteEpisodes` were made loud while
 chasing this — schema rejection, a path outside `learned/`, an empty list.
 Each one used to return "nothing to promote", which is indistinguishable from
 a correct decision not to promote. A pipeline stage that cannot tell you it
 failed will eventually be measured as if it succeeded.
+
+#### The dedup gate now reads only same-subject memories (P5.1, 2026-09-11)
+
+**Result: `chain-convention-promoted` 10/10, `added=1 updated=0 noop=0` on
+every one of the ten repeats, ~15 s each, with `learned/meridian-bon-de-commande.md`
+deliberately left in place** (seeded by `evals:memory -- --case mem-promote-dedup
+--repeats 1 --keep`, and verified still present in `ai_memories` after the run).
+That is the configuration that scored 0/10.
+
+`chain-oneoff-not-durable` was re-run for the same reason and is **10/10,
+`added=0` on every repeat**: the residue used to sit in ITS block too, so a
+case that passes by NOOPing had to be re-measured once the thing it might have
+been leaning on was taken away. It was not leaning on it.
+
+What changed, in `loadExistingLearned`: the gate reads the `learned/` memories
+about the RECORDS this cluster anchors on, not the namespace. A promotion
+stamps `Sources: episode:<uuid>` on what it writes, so a stored fact's subject
+is recoverable — resolve its cited episodes back through `ai_episode_records`
+and keep the ones that overlap. No prompt change: the model was never the
+problem, the corpus it was handed was.
+
+Three things worth keeping:
+
+- **The fallback is EMPTY, never "all."** A memory citing nothing resolvable
+  is dropped. "All" is the behaviour being fixed, so it cannot also be the
+  safe default — the cost of dropping one is a duplicate under a new path, the
+  cost of keeping all is the promotion that never happens.
+- **Cut topically, then by recency — never the other way.** The read window is
+  100 rows, the prompt budget 20. Ordered by recency and cut at 20 FIRST (as
+  the plan originally specified), a team with a hundred `learned/` files loses
+  the memory about this very subject and the gate re-adds a duplicate of
+  itself. An integration test pins exactly that case.
+- **A fixture that fakes a field is a lie the day that field becomes
+  load-bearing.** `mem-promote-dedup` seeded its "already stored" memory with
+  `Sources: episode:seed`. Harmless while nothing read it; the moment the gate
+  did, the fixture was seeding a memory the gate is RIGHT to ignore, and the
+  case would have failed for the correct reason. It now builds its episodes
+  first and cites their real ids — which also makes the acceptance test above
+  harder, since the residue carries three real, resolvable ids pointing at the
+  wrong subject rather than an unparseable string.
 
 **Run tiers.** Every curated case is either **core** (behavioral regression — the
 prompt/tool/harness signal, runs on every full baseline) or **`tier: "model-gate"`**

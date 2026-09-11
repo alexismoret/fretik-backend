@@ -20,23 +20,33 @@ import { withNamedTrace } from "../../lib/trace-tool";
  * Safety rails (autonomous writes to team-shared memory are high-stakes):
  *   - writes land ONLY under the machine namespace `learned/` — a
  *     human/agent-curated memory is never clobbered (guarded below too);
- *   - a Mem0-style gate: the model sees the team's existing `learned/`
- *     memories and returns ADD / UPDATE / NOOP, so it dedups AND corrects its
- *     OWN prior promotions instead of piling near-duplicates. Invalidating a
- *     CURATED memory is deliberately NOT here — that stays with the real-time
- *     agent/user correction path and the (deferred) governance layer;
+ *   - a Mem0-style gate: the model sees the existing `learned/` memories ABOUT
+ *     THE SAME RECORDS (see `loadExistingLearned` — an unrelated one is an
+ *     invitation to answer "already covered") and returns ADD / UPDATE / NOOP,
+ *     so it dedups AND corrects its OWN prior promotions instead of piling
+ *     near-duplicates. Invalidating a CURATED memory is deliberately NOT here
+ *     — that stays with the real-time agent/user correction path and the
+ *     (deferred) governance layer;
  *   - only truly generalizable, non-subjective facts (the `<memory_protocol>`
  *     bar), never one-off facts or opinions;
  *   - every write carries a `Sources: episode:<ids>` provenance line — the
  *     episodes stay immutable, the semantic fact is auditable (the defense
- *     against LLM-rewrite "memory rot").
+ *     against LLM-rewrite "memory rot"). Load-bearing, not decorative: the
+ *     gate above reads it back to tell what a stored fact is ABOUT.
  *
  * Judgment-heavy + low-volume (nightly, capped) → the `memory-consolidate`
  * role (gpt-oss-120b), like the consolidation judge.
  */
 
 const MAX_SUMMARY_CHARS = 1_500;
+/** How many same-subject `learned/` memories reach the dedup gate's prompt. */
 const MAX_EXISTING_LEARNED = 20;
+/**
+ * How many are READ before the subject filter cuts. Deliberately far above the
+ * prompt budget: the cut that decides what the model sees is topical, so
+ * recency must never be what drops a memory about this very subject.
+ */
+const MAX_LEARNED_SCAN = 100;
 /** Off the hot path — sized for the slowest eligible model, see `extract-mentions.ts`. */
 const PROMOTE_TIMEOUT_MS = 120_000;
 const PROMOTE_TEMPERATURE = 0;
@@ -77,12 +87,52 @@ interface PromoteResult {
   noop: number;
 }
 
-/** Load the scope's existing `learned/` memories for the dedup gate. */
-const loadExistingLearned = async (input: {
+/** The provenance ids a promotion stamps — `Sources: episode:<uuid>, …`. */
+const EPISODE_SOURCE_RE =
+  /episode:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/gi;
+
+const citedEpisodeIds = (content: string): string[] => {
+  const ids = new Set<string>();
+  for (const match of content.matchAll(EPISODE_SOURCE_RE)) {
+    const id = match[1];
+    if (id) ids.add(id.toLowerCase());
+  }
+  return [...ids];
+};
+
+/**
+ * The scope's existing `learned/` memories ABOUT THE SAME SUBJECT — the dedup
+ * gate's input, and only that.
+ *
+ * Not the whole namespace. The gate's prompt says "NOOP: … or already
+ * covered", so every unrelated memory in the block is one more chance to
+ * answer "covered" about something it does not cover. Measured 2026-09-11:
+ * ONE leftover file about another company, written by another eval suite,
+ * took `chain-convention-promoted` from 10/10 to 0/10 — `{"promotions":[]}`
+ * every time, with no other symptom. Isolating the suites diagnosed that; it
+ * does not fix it, because a real team accumulates unrelated `learned/` files
+ * by living, and the corpus grows without bound.
+ *
+ * Subject = the records this cluster anchors on, the same edge
+ * `listPromotionCandidates` grouped the candidate by. A past promotion's
+ * subject is recoverable from what it wrote: resolve its cited episodes back
+ * to their anchored records, keep the memories sharing one with this cluster.
+ * A memory citing nothing resolvable is DROPPED — the fallback is empty,
+ * never "all", since "all" is the behaviour being fixed.
+ *
+ * Exported for its test: this is a `WHERE` clause and a join, and the block
+ * built from it is a `map().join()`.
+ */
+export const loadExistingLearned = async (input: {
   teamId: string;
   scope: "team" | "user";
   userId: string | null;
-}): Promise<{ path: string; content: string; agentOwned: boolean }[]> => {
+  anchorRecordIds: string[];
+}): Promise<{ path: string; content: string }[]> => {
+  // No subject, nothing to match against — and an empty `in` is not a query
+  // worth finding out the behaviour of.
+  if (input.anchorRecordIds.length === 0) return [];
+
   const rows = await db.query.aiMemories.findMany({
     where: {
       teamId: input.teamId,
@@ -92,14 +142,29 @@ const loadExistingLearned = async (input: {
         : {}),
       path: { like: `${LEARNED_PREFIX}%` },
     },
-    columns: { path: true, content: true, lastModifiedByActor: true },
-    limit: MAX_EXISTING_LEARNED,
+    columns: { path: true, content: true },
+    orderBy: { updatedAt: "desc" },
+    limit: MAX_LEARNED_SCAN,
   });
-  return rows.map((r) => ({
-    path: r.path,
-    content: r.content,
-    agentOwned: r.lastModifiedByActor === "agent",
-  }));
+  if (rows.length === 0) return [];
+
+  const cited = new Map(rows.map((r) => [r.path, citedEpisodeIds(r.content)]));
+  const allCited = [...new Set([...cited.values()].flat())];
+  if (allCited.length === 0) return [];
+
+  const onSubject = await db.query.aiEpisodeRecords.findMany({
+    where: {
+      episodeId: { in: allCited },
+      recordId: { in: input.anchorRecordIds },
+    },
+    columns: { episodeId: true },
+  });
+  const onSubjectIds = new Set(onSubject.map((e) => e.episodeId));
+
+  return rows
+    .filter((r) => cited.get(r.path)?.some((id) => onSubjectIds.has(id)))
+    .slice(0, MAX_EXISTING_LEARNED)
+    .map((r) => ({ path: r.path, content: r.content }));
 };
 
 export const promoteEpisodes = async (input: {
@@ -130,12 +195,18 @@ export const promoteEpisodes = async (input: {
     scope === "user" ? episodeUserId : await getTeamBotUserId(teamId);
   if (!attributionUserId) return noop;
 
+  // The cluster's subject, by the same edge `listPromotionCandidates` grouped
+  // it on: what these episodes are ABOUT.
+  const anchors = await db.query.aiEpisodeRecords.findMany({
+    where: { episodeId: { in: episodes.map((e) => e.id) } },
+    columns: { recordId: true },
+  });
   const existing = await loadExistingLearned({
     teamId,
     scope,
     userId: episodeUserId,
+    anchorRecordIds: [...new Set(anchors.map((a) => a.recordId))],
   });
-  const existingByPath = new Map(existing.map((m) => [m.path, m]));
 
   const episodeBlock = episodes
     .map(
@@ -234,23 +305,22 @@ export const promoteEpisodes = async (input: {
       );
       continue;
     }
-    const prior = existingByPath.get(p.path);
-    // Never clobber a human-edited memory (edge: a user wrote under learned/).
-    if (prior && !prior.agentOwned) continue;
-
     const content = `${p.content.trim()}\n\nSources: ${sources}`;
     const rawPath = `/memories/${scope}/${p.path}`;
     try {
-      // Re-check existence — the model may mislabel ADD vs UPDATE. overwrite
-      // is an upsert; create fails on an existing path.
-      const exists =
-        prior ??
-        (await findMemoryByPath({
-          scope,
-          relativePath: p.path,
-          scopeKey,
-        }));
+      // Always read the row — the model may mislabel ADD vs UPDATE, and the
+      // block it answered from carries only same-subject memories, so a path
+      // absent from it is not a path that is free. overwrite is an upsert;
+      // create fails on an existing path.
+      const exists = await findMemoryByPath({
+        scope,
+        relativePath: p.path,
+        scopeKey,
+      });
       if (exists) {
+        // Never clobber a human-edited memory (edge: a user wrote under
+        // learned/). On the row, not on the block.
+        if (exists.lastModifiedByActor !== "agent") continue;
         await overwriteMemory({ rawPath, content, scopeKey, actor });
         result.updated++;
       } else {

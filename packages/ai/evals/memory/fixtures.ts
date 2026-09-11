@@ -658,12 +658,19 @@ export const makePromotionCluster = async (
     };
   }
   // dedup — the durable fact is already stored; the gate must not duplicate it.
+  // The episodes are built FIRST because the seeded memory has to carry the
+  // provenance a real promotion carries. The gate reads `Sources: episode:<uuid>`
+  // back to decide a stored fact is about THIS subject, so a fixture stamping
+  // `episode:seed` would be seeding a memory the gate is right to ignore — the
+  // case would measure the filter instead of the dedup.
+  const episodeIds = await durableEpisodes();
   const botUserId = await getTeamBotUserId(fx.teamId);
   const path = `${LEARNED_PREFIX}meridian-bon-de-commande.md`;
   await createMemory({
     rawPath: `/memories/team/${path}`,
-    content:
-      "Meridian Textiles exige un bon de commande signé par un responsable avant toute expédition.\n\n**When to apply:** toute commande passée à Meridian Textiles.\n**What to do:** faire signer le bon de commande par un responsable avant de lancer la production ou l'expédition.\n\nSources: episode:seed",
+    content: `Meridian Textiles exige un bon de commande signé par un responsable avant toute expédition.\n\n**When to apply:** toute commande passée à Meridian Textiles.\n**What to do:** faire signer le bon de commande par un responsable avant de lancer la production ou l'expédition.\n\nSources: ${episodeIds
+      .map((id) => `episode:${id}`)
+      .join(", ")}`,
     scopeKey: {
       organizationId: fx.organizationId,
       teamId: fx.teamId,
@@ -671,7 +678,7 @@ export const makePromotionCluster = async (
     },
     actor: { userId: botUserId, actor: "agent" },
   });
-  return { episodeIds: await durableEpisodes(), seededMemoryPath: path };
+  return { episodeIds, seededMemoryPath: path };
 };
 
 export const ensureMemoryFixtures = async (

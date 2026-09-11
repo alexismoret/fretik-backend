@@ -646,12 +646,12 @@ const HANDLE_PREFIX: Record<string, string> = {
 /**
  * Allocates one stable handle per real provenance, and remembers the mapping.
  *
- * Exported for the team-digest generator, which faces the same problem for the
- * same reason and must not solve it a second way: two handle schemes would
- * drift, and the failure they both prevent is silent (an agent calling its
- * tools with an id a model invented).
+ * The failure it prevents is silent: an agent calling its tools with an id a
+ * model invented. A second consumer copying the scheme rather than calling
+ * this would drift from it, so it stays one function — it had exactly such a
+ * consumer (the team digest) until that was deleted on 2026-09-11.
  */
-export const makeHandleAllocator = (): {
+const makeHandleAllocator = (): {
   handleFor: (kind: string, id: string) => string;
   handles: Map<string, string>;
 } => {

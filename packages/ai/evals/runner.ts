@@ -42,6 +42,8 @@ export interface RunCaseOptions {
    * restart between them and stop being a paired comparison.
    */
   recallMode?: string;
+  /** Which arm serves `<standing_memory>` — `digest` | `episodes` | `none`. */
+  standingMode?: string;
 }
 
 const selectAssertions = (
@@ -93,6 +95,7 @@ export const runCase = async (
       modelProfileKey: opts?.modelProfileKey,
       pageBuildProfileKey: opts?.pageBuildProfileKey,
       recallMode: opts?.recallMode,
+      standingMode: opts?.standingMode,
       // Case-level, not run-level: the privacy probe is the only turn that
       // must arrive as somebody other than the eval user.
       asOtherUser: c.runAsOtherUser,

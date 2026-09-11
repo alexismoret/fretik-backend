@@ -13,6 +13,7 @@ import {
 import { renderSnapshot } from "@fretik/shared/lib/chat-file-snapshot";
 import { buildMemoryIndexManifest } from "@fretik/shared/services/ai-memory/list-index";
 import { describeTeamSchema } from "@fretik/shared/services/collections/describe-team-schema";
+import { listStandingEpisodes } from "@fretik/shared/services/episodes/list-standing";
 import { listConnections } from "@fretik/shared/services/external-apps/connections/list";
 import { isMcpConnection } from "@fretik/shared/services/external-apps/mcp/connection-kind";
 import { readTeamDigest } from "@fretik/shared/services/memory-digest/read";
@@ -22,6 +23,8 @@ import { withSoftTimeout } from "../../lib/stream-errors";
 import { buildChatbotContextManifest } from "../../services/chatbot-context/build-manifest";
 import { formatTeamCollectionsBlock } from "../chatbot/team-collections-block";
 import type { ExternalAppConnectionLite } from "./runtime-context";
+import type { StandingMode } from "./standing-memory";
+import { renderStandingEpisodes, STANDING_MODE } from "./standing-memory";
 
 /**
  * Per-turn system-prompt fragment assembly shared by BOTH agent handlers
@@ -45,13 +48,31 @@ export interface ContextFragments {
   teamCollectionsBlock?: string;
   enabledSkillsBlock?: string;
   memoryIndexBlock?: string;
-  teamDigestBlock?: string;
+  /**
+   * `<standing_memory>` — whichever arm served it. One slot for both
+   * implementations so an A/B between them is about CONTENT and nothing else.
+   */
+  standingMemoryBlock?: string;
   /**
    * The rows the digest was built from, so the retrieved block can suppress
-   * them. Present even when the digest itself is empty — an empty digest has no
-   * sources, and the caller should not have to distinguish the two.
+   * them. Only ever populated in `digest` mode: with an episode INDEX, a block
+   * that lists an episode must not remove the retrieved copy of it — see
+   * `DigestSuppression`.
    */
   teamDigestSources?: TeamMemoryDigestSources;
+}
+
+/** What serves `<standing_memory>` for one turn, and what it needs. */
+export interface StandingOptions {
+  mode: StandingMode;
+  /** A `readTeamDigest` already in flight — `digest` mode only. */
+  startedDigest?: Promise<TeamMemoryDigest | null>;
+  /**
+   * Read the memory surfaces at all. `false` on a workflow's later turns,
+   * which carry their memory in the turn-1 steering message and were, until
+   * now, reading the index and the digest on every turn only to discard them.
+   */
+  memory?: boolean;
 }
 
 /**
@@ -66,32 +87,25 @@ export const MEMORY_INDEX_UNAVAILABLE =
   "_The memory index could not be loaded for this turn. Memories may still exist — search with `searchKnowledge` before telling the user there are none._";
 
 /**
- * Phase-3 rollback: stop SERVING the team digest without stopping its writers.
- *
- * The jobs keep rewriting it, so turning this back on serves a current digest
- * rather than one frozen at the moment of the incident — and the row, with its
- * `previous_content`, stays readable while the flag is off. Read at module
- * load, like `RECALL_MODE`: it takes effect on the next restart, not the next
- * turn.
- */
-const TEAM_DIGEST_ENABLED = process.env.TEAM_DIGEST_ENABLED !== "false";
-
-/**
- * The turn's ONE read of the team digest, honouring the flag.
+ * The turn's ONE read of the team digest.
  *
  * The caller hoists it because two stages need the same row and neither can
- * see the other's result: the fragments render it into `<team_digest>`, and
- * recall uses its source ids to leave out of `<active_memory>` what the digest
- * already says.
+ * see the other's result: the fragments render it into `<standing_memory>`,
+ * and recall uses its source ids to leave out of `<active_memory>` what the
+ * digest already says.
  *
  * Never throws: a digest that cannot be read is a turn without a digest, not a
- * failed turn — same contract as every other fragment in the batch.
+ * failed turn — same contract as every other fragment in the batch. Returns
+ * `null` outside `digest` mode, which is what makes `STANDING_MODE` a real
+ * rollback: a flag that only silenced the BLOCK would leave the rows it covers
+ * suppressed out of the retrieved block too, i.e. missing from both.
  */
 export const startTeamDigestRead = (
   teamId: string,
   logPrefix: string,
+  mode: StandingMode = STANDING_MODE,
 ): Promise<TeamMemoryDigest | null> => {
-  if (!TEAM_DIGEST_ENABLED) return Promise.resolve(null);
+  if (mode !== "digest") return Promise.resolve(null);
   return readTeamDigest(teamId).catch((error: unknown) => {
     console.warn(
       `${logPrefix} readTeamDigest failed, continuing without the team digest:`,
@@ -101,11 +115,42 @@ export const startTeamDigestRead = (
   });
 };
 
-const readDigestForTurn = (
+/**
+ * `<standing_memory>` for one turn: the digest's prose, or the deterministic
+ * episode index, or nothing.
+ *
+ * Both arms soft-fail to `""`. The block is a convenience on a turn that may
+ * not need it at all; it must never be the reason a turn fails.
+ */
+const readStandingBlock = async (
   scope: FragmentScope,
-  startedDigest?: Promise<TeamMemoryDigest | null>,
-): Promise<TeamMemoryDigest | null> =>
-  startedDigest ?? startTeamDigestRead(scope.teamId, scope.logPrefix);
+  opts: StandingOptions,
+): Promise<string> => {
+  if (opts.mode === "none") return "";
+  if (opts.mode === "digest") {
+    const digest = await (opts.startedDigest ??
+      startTeamDigestRead(scope.teamId, scope.logPrefix, opts.mode));
+    return digest?.content ?? "";
+  }
+  // `episodes`. Needs a reader: the block carries the caller's own private
+  // episodes, so there is no such thing as a system-scope rendering of it.
+  if (scope.userId === undefined) return "";
+  try {
+    return renderStandingEpisodes(
+      await listStandingEpisodes({
+        organizationId: scope.organizationId,
+        teamId: scope.teamId,
+        userId: scope.userId,
+      }),
+    );
+  } catch (error: unknown) {
+    console.warn(
+      `${scope.logPrefix} listStandingEpisodes failed, continuing without the standing block:`,
+      error instanceof Error ? error.message : error,
+    );
+    return "";
+  }
+};
 
 /**
  * The purely scope-based fragments (persistent-context manifest, team
@@ -116,21 +161,23 @@ const readDigestForTurn = (
 export const assembleContextFragments = async (
   scope: FragmentScope,
   /**
-   * A `readTeamDigest` already in flight.
+   * Which arm serves `<standing_memory>`, plus the digest read the caller
+   * already has in flight.
    *
-   * The caller hoists it because recall needs the SAME row, to suppress from
-   * `<active_memory>` what the digest already says — and recall runs in the
-   * same `Promise.all` as this function, so it cannot read the result from
+   * The caller hoists that read because recall needs the SAME row, to suppress
+   * from `<active_memory>` what the digest already says — and recall runs in
+   * the same `Promise.all` as this function, so it cannot see the result from
    * here. Passing the promise keeps it at one lookup per turn instead of two.
    */
-  startedDigest?: Promise<TeamMemoryDigest | null>,
+  standing: StandingOptions = { mode: STANDING_MODE },
 ): Promise<ContextFragments> => {
+  const wantsMemory = standing.memory ?? true;
   const [
     chatbotContextManifest,
     teamCollectionsBlock,
     enabledSkillsBlock,
     memoryIndexBlock,
-    teamDigest,
+    standingMemoryBlock,
   ] = await Promise.all([
     withSoftTimeout(
       buildChatbotContextManifest({
@@ -203,7 +250,7 @@ export const assembleContextFragments = async (
     // reason to reach for. One indexed SELECT, self-capping at 80 files
     // (see `buildMemoryIndexManifest`), and it runs in this batch — so it
     // costs nothing on the critical path.
-    scope.userId === undefined
+    scope.userId === undefined || !wantsMemory
       ? Promise.resolve("")
       : withSoftTimeout(
           buildMemoryIndexManifest({
@@ -221,22 +268,36 @@ export const assembleContextFragments = async (
           MEMORY_INDEX_UNAVAILABLE,
           "memory-index",
         ),
-    // The team digest — the one memory block that is not retrieved. It answers
-    // what no query-shaped arm can: what this team already knows, when the
-    // question is too broad or too vague to match anything in particular. One
-    // primary-key lookup, in this batch, so it costs nothing on the critical
-    // path.
+    // `<standing_memory>` — the one memory block that is not retrieved. It
+    // answers what no query-shaped arm can: a question that names nothing.
+    // One indexed query (or one primary-key lookup in `digest` mode), in this
+    // batch, so it costs nothing on the critical path.
     //
-    // A stale digest is still served. It is stamped `stale_at` when a rewrite
-    // failed, and a summary a few days old beats no summary — the marker is for
-    // the operator, not for the turn.
-    withSoftTimeout(
-      readDigestForTurn(scope, startedDigest),
-      3000,
-      null,
-      "team-digest",
-    ),
+    // In `digest` mode a STALE digest is still served: it is stamped
+    // `stale_at` when a rewrite failed, and a summary a few days old beats no
+    // summary — the marker is for the operator, not for the turn.
+    wantsMemory
+      ? withSoftTimeout(
+          readStandingBlock(scope, standing),
+          3000,
+          "",
+          "standing-memory",
+        )
+      : Promise.resolve(""),
   ]);
+
+  // Only in `digest` mode. An episode INDEX must not suppress the retrieved
+  // copy of what it lists: measured, the digest's one-line compression of a
+  // convention replaced the verbatim memory in `<active_memory>` and cost
+  // `mr-memory-convention` a point, because the verbatim carried the literal
+  // columns the compression dropped. `<memory_index>` lists every memory path
+  // and suppresses nothing — same rule.
+  const digestSources =
+    standing.mode === "digest"
+      ? await (standing.startedDigest ?? Promise.resolve(null)).then(
+          (d) => d?.sources,
+        )
+      : undefined;
 
   return {
     chatbotContextManifest:
@@ -249,11 +310,9 @@ export const assembleContextFragments = async (
       enabledSkillsBlock.length > 0 ? enabledSkillsBlock : undefined,
     memoryIndexBlock:
       memoryIndexBlock.length > 0 ? memoryIndexBlock : undefined,
-    teamDigestBlock:
-      teamDigest && teamDigest.content.length > 0
-        ? teamDigest.content
-        : undefined,
-    teamDigestSources: teamDigest?.sources,
+    standingMemoryBlock:
+      standingMemoryBlock.length > 0 ? standingMemoryBlock : undefined,
+    teamDigestSources: digestSources,
   };
 };
 

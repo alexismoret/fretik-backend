@@ -76,6 +76,12 @@ export interface ExperimentOptions {
    * comparable to another, and the UI will happily line them up anyway.
    */
   recallMode?: string;
+  /**
+   * Which arm serves `<standing_memory>`. In the run metadata for the same
+   * reason as `recallMode`: three arms that cannot be told apart afterwards
+   * are three runs the UI will line up as if they were one experiment.
+   */
+  standingMode?: string;
   runName?: string;
   /**
    * Run every selected case this many times in ONE run (default 1).
@@ -290,6 +296,7 @@ export const runChatbotExperiment = async (
     modelProfileKey: opts.candidateProfileKey,
     pageBuildProfileKey: opts.pageBuildProfileKey,
     recallMode: opts.recallMode,
+    standingMode: opts.standingMode,
   });
   const evaluators = [buildItemEvaluator(configIds)];
   const runEvaluators = [buildRunEvaluator(configIds), buildCostRunEvaluator()];
@@ -316,6 +323,7 @@ export const runChatbotExperiment = async (
       ? { pageBuildProfileKey: opts.pageBuildProfileKey }
       : {}),
     ...(opts.recallMode ? { recallMode: opts.recallMode } : {}),
+    ...(opts.standingMode ? { standingMode: opts.standingMode } : {}),
     ...(repeats > 1 ? { repeats } : {}),
     // Recorded on EVERY run because `ttft-p50-ms` is unreadable without it.
     // Measured 2026-09-10: two memory-recall cases reported 22 s TTFT at

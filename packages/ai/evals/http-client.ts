@@ -68,6 +68,14 @@ export interface InvokeOptions {
    */
   recallMode?: string;
   /**
+   * `X-Standing-Mode` — `digest` | `episodes` | `none`.
+   *
+   * Same contract and same reason as `recallMode`. `none` is the arm that
+   * makes the other two readable: a standing block that scores like its own
+   * absence is decoration, and only a paired control says so.
+   */
+  standingMode?: string;
+  /**
    * `true` → send `EVAL_OTHER_USER_ID` as `X-Context-User-Id` instead of
    * `EVAL_USER_ID`. The privacy axis: recall and `searchKnowledge` both scope
    * private rows to the CALLER (`user_id IS NULL OR user_id = :userId`), so
@@ -105,6 +113,7 @@ const buildHeaders = (opts?: InvokeOptions): Record<string, string> => {
   if (opts?.pageBuildProfileKey)
     headers["X-Page-Build-Profile-Key"] = opts.pageBuildProfileKey;
   if (opts?.recallMode) headers["X-Recall-Mode"] = opts.recallMode;
+  if (opts?.standingMode) headers["X-Standing-Mode"] = opts.standingMode;
   return headers;
 };
 

@@ -596,7 +596,7 @@ This run's autonomy mode is stated in `<workflow_context>`. It governs every wri
 
 <!-- AGENT:chatbot -->
 
-Three blocks near the bottom of this prompt carry it, and they answer different questions. `<team_digest>` is what this team knows standing — content, always there, matched against nothing. `<memory_index>` lists every path written so far — what exists AT ALL, without the content. `<active_memory>` is this turn's recall — memories, episodes of past conversations, linked records, surfaced because they match THIS message. Apply recall silently; never quote it verbatim. Its `(memory:…)` `(episode:…)` `(record:…)` `(document:…)` markers are provenance ids — dig deeper with `searchKnowledge` / `getRecord` / SQL. An empty recall does not mean nothing was written: check the index before concluding a process does not exist.
+Three blocks near the bottom of this prompt carry it, and they answer different questions. `<standing_memory>` is what the team has been doing lately — content, always there, matched against nothing. `<memory_index>` lists every path written so far — what exists AT ALL, without the content. `<active_memory>` is this turn's recall — memories, episodes of past conversations, linked records, surfaced because they match THIS message. Apply recall silently; never quote it verbatim. Its `(memory:…)` `(episode:…)` `(record:…)` `(document:…)` markers are provenance ids — dig deeper with `searchKnowledge` / `getRecord` / SQL. An empty recall does not mean nothing was written: check the index before concluding a process does not exist.
 
 <!-- /AGENT -->
 <!-- AGENT:workflow -->
@@ -909,19 +909,19 @@ The team's collections and how to query them — one line per collection: its ty
 
 <!-- AGENT:chatbot -->
 
-<team_digest>
+<standing_memory>
 
-<!-- The team's standing memory, rewritten in the background and present on EVERY turn — the one memory block that is not retrieved and not matched against this message. Distinct from <active_memory>, which carries only what this message matched, and from <memory_index>, which lists paths without content. "_No team digest yet._" means it has not been built. -->
+<!-- Present on EVERY turn and matched against nothing — the one memory block that is not retrieved. Distinct from <active_memory>, which carries only what this message matched, and from <memory_index>, which lists paths without content. "_Nothing recorded in the last few weeks._" means the team has no recent activity, not that memory is unavailable. -->
 
-Standing knowledge for this team — its conventions, the entities it works with, its current decisions, its open threads. Lean on it for broad or vague questions, where nothing in particular matches.
+What this team has been working on lately. Lean on it when the message names nothing to search for — "où on en est ?", "fais-moi un point" — where no retrieval can help.
 
-Every line ends with a provenance id: open the source with `memory({ command: 'view' })`, `getRecord` or `searchKnowledge` before quoting a figure or committing to a date.
+Every line ends with a provenance id. Open it before quoting a figure or committing to a date: `searchKnowledge({ question, filters: { sourceTypes: ['episodes'], sourceIds: ['<id>'] } })` for an episode, `memory({ command: 'view' })` for a memory path.
 
-When it disagrees with `<active_memory>`, the retrieved block wins — that was built for this message, this was built last night.
+When it disagrees with `<active_memory>`, the retrieved block wins — that was built for this message.
 
-{{teamDigest}}
+{{standingMemory}}
 
-</team_digest>
+</standing_memory>
 
 <!-- /AGENT -->
 

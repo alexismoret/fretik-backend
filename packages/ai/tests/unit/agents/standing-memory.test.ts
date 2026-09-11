@@ -1,0 +1,152 @@
+import type { StandingEpisodesResult } from "@fretik/shared/services/episodes/list-standing";
+import { describe, expect, test } from "bun:test";
+import {
+  isStandingMode,
+  renderStandingEpisodes,
+  STANDING_CLIP_CHARS,
+} from "../../../src/agents/shared/standing-memory";
+
+/**
+ * The rendering of a block served on every turn.
+ *
+ * What these tests are really about is the failure modes the GENERATED digest
+ * had, none of which a deterministic renderer can reproduce — except one: a
+ * provenance marker cut in half by a size cap, which is a property of the
+ * trimming, not of the generation. That one is pinned below.
+ */
+
+const at = (iso: string): Date => new Date(iso);
+
+const result = (
+  items: StandingEpisodesResult["items"],
+  visibleInWindow = items.length,
+): StandingEpisodesResult => ({ items, visibleInWindow });
+
+const episode = (
+  id: string,
+  title: string,
+  summary: string,
+  kind: "conversation" | "consolidated" | "record_activity" = "conversation",
+  when = "2026-09-08T10:00:00Z",
+): StandingEpisodesResult["items"][number] => ({
+  id,
+  kind,
+  title,
+  summary,
+  at: at(when),
+});
+
+describe("rendering", () => {
+  test("one line per episode, dated, ending in a real id", () => {
+    const text = renderStandingEpisodes(
+      result([
+        episode(
+          "019f0000-0000-7000-8000-000000000001",
+          "Contrat Nordwind 2027",
+          "Remise de 8 % et minimum de 500 unités par trimestre.",
+        ),
+      ]),
+    );
+    expect(text).toBe(
+      "- As of 2026-09-08 — Contrat Nordwind 2027 : Remise de 8 % et minimum de 500 unités par trimestre. (episode:019f0000-0000-7000-8000-000000000001)",
+    );
+  });
+
+  test("nothing to say renders as empty, not as a heading", () => {
+    // The caller turns "" into the block's placeholder. A heading over nothing
+    // spends budget on every turn of every member to say nothing — which is
+    // exactly what the generated digest did before its empty sections were
+    // dropped.
+    expect(renderStandingEpisodes(result([]))).toBe("");
+  });
+
+  test("a rolling record digest is labelled, so it does not read as a decision", () => {
+    const text = renderStandingEpisodes(
+      result([
+        episode(
+          "019f0000-0000-7000-8000-000000000002",
+          "Acme Corp",
+          "12 événements cette semaine.",
+          "record_activity",
+        ),
+      ]),
+    );
+    expect(text).toContain("[activity] Acme Corp");
+  });
+
+  test("a long summary is clipped on a word boundary", () => {
+    // Distinct words, so a cut inside one is visible in the assertion below.
+    const long = Array.from(
+      { length: 60 },
+      (_, i) => `mot${i.toString()}`,
+    ).join(" ");
+    const text = renderStandingEpisodes(
+      result([episode("019f0000-0000-7000-8000-000000000003", "T", long)]),
+    );
+    const body = text.slice(
+      text.indexOf(" : ") + 3,
+      text.indexOf(" (episode:"),
+    );
+    expect(body.length).toBeLessThanOrEqual(STANDING_CLIP_CHARS + 1);
+    expect(body.endsWith("…")).toBe(true);
+    // The kept prefix ends at a real word end: what follows it in the original
+    // is a space, never the rest of a word. A half-word reads as a typo.
+    const kept = body.slice(0, -1);
+    expect(long.startsWith(kept)).toBe(true);
+    expect(long.charAt(kept.length)).toBe(" ");
+  });
+});
+
+describe("budget", () => {
+  const many = Array.from({ length: 200 }, (_, i) =>
+    episode(
+      `019f0000-0000-7000-8000-${i.toString().padStart(12, "0")}`,
+      `Episode ${i.toString()}`,
+      "Un résumé de taille ordinaire pour une décision d'équipe.",
+      "conversation",
+      // Newest first, as the query returns them.
+      new Date(Date.UTC(2026, 8, 10) - i * 3_600_000).toISOString(),
+    ),
+  );
+
+  test("drops the OLDEST lines, never cuts inside one", () => {
+    const text = renderStandingEpisodes(result(many));
+    const lines = text.split("\n");
+    expect(lines.length).toBeLessThan(many.length);
+    // The head survives — the newest is what "lately" means.
+    expect(lines[0]).toContain("Episode 0");
+    // Every surviving line still carries a WHOLE marker. A marker cut in half
+    // is worse than a missing line: the agent spends a tool call on an id that
+    // resolves to nothing.
+    for (const line of lines) expect(line).toMatch(/\(episode:[0-9a-f-]+\)$/);
+  });
+
+  test("says how much it left out, and only when it did", () => {
+    const withHidden = renderStandingEpisodes(
+      result(
+        [episode("019f0000-0000-7000-8000-000000000004", "T", "S")],
+        // The query saw more in the window than the caps returned.
+        9,
+      ),
+    );
+    expect(withHidden).toContain("+8 more in the last 30 days");
+    expect(withHidden).toContain("searchKnowledge");
+
+    const complete = renderStandingEpisodes(
+      result([episode("019f0000-0000-7000-8000-000000000005", "T", "S")]),
+    );
+    expect(complete).not.toContain("more in the last 30 days");
+  });
+});
+
+describe("mode parsing", () => {
+  test("accepts the three arms and nothing else", () => {
+    expect(isStandingMode("digest")).toBe(true);
+    expect(isStandingMode("episodes")).toBe(true);
+    expect(isStandingMode("none")).toBe(true);
+    // `/invoke` answers 400 on anything else rather than silently serving a
+    // default — an A/B that silently falls back measures one arm twice.
+    expect(isStandingMode("true")).toBe(false);
+    expect(isStandingMode("")).toBe(false);
+  });
+});

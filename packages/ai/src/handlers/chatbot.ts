@@ -111,6 +111,11 @@ import {
   loadExternalApps,
   startTeamDigestRead,
 } from "../agents/shared/fragments";
+import type { StandingMode } from "../agents/shared/standing-memory";
+import {
+  isStandingMode,
+  STANDING_MODE,
+} from "../agents/shared/standing-memory";
 import { subscribeAbort } from "../lib/abort-subscriber";
 import { flushLangfuse, langfuseEnabled } from "../lib/langfuse";
 import { deleteScore, recordScore } from "../lib/langfuse-scores";
@@ -752,6 +757,16 @@ interface RunChatbotTurnParams {
    */
   recallMode?: RecallMode;
   /**
+   * Serve `<standing_memory>` from a specific arm — set by `/invoke` from
+   * `X-Standing-Mode`, never reachable from `/stream`.
+   *
+   * Same reason as `recallMode`: whether a standing block earns its place is
+   * answered by scoring ANSWERS with it and without it, and `STANDING_MODE` is
+   * a process default read at module load. Without this the arms are a restart
+   * apart, which against a live corpus is not a paired comparison.
+   */
+  standingMode?: StandingMode;
+  /**
    * Thinking depth for this turn, already resolved and validated by the
    * caller (`effectiveReasoningLevel`): the user's pick in the prompt
    * bar, else the team's stored default for this model. Absent → the
@@ -847,18 +862,24 @@ const buildTurnCallOptions = async (
   // HANG backstops, not latency caps). The two history-dependent fragments
   // (attached files, active-memory recall) stay here and run in the same
   // parallel batch.
+  // Which arm serves `<standing_memory>` this turn. Per request so an A/B
+  // runs both against one live service instead of one restart apart — same
+  // contract as `recallMode`.
+  const standingMode = params.standingMode ?? STANDING_MODE;
+
   // One read of the team digest for the whole turn, started here because two
   // stages in the batch below need the SAME row and neither can see the
-  // other's result: the fragments render it into `<team_digest>`, and recall
-  // uses its source ids to leave out of `<active_memory>` what the digest
-  // already says. Reading it in both would be two round trips for one row.
-  // `TEAM_DIGEST_ENABLED=false` resolves this to null, which is what makes it
-  // a rollback rather than a mutilation: recall suppresses what the digest
-  // already says, so a flag that only silenced `<team_digest>` would leave
-  // those memories out of BOTH blocks.
+  // other's result: the fragments render it into `<standing_memory>`, and
+  // recall uses its source ids to leave out of `<active_memory>` what the
+  // digest already says. Reading it in both would be two round trips for one
+  // row. Outside `digest` mode it resolves to null, which is what makes the
+  // mode a rollback rather than a mutilation: a switch that only silenced the
+  // BLOCK would leave the rows it covers suppressed out of the retrieved block
+  // too, i.e. missing from both.
   const teamDigestPromise = startTeamDigestRead(
     params.callOptions.teamId,
     params.logPrefix,
+    standingMode,
   );
 
   // Every stage below is timed into one record and logged as a single
@@ -955,7 +976,7 @@ const buildTurnCallOptions = async (
           userId: params.callOptions.userId,
           logPrefix: params.logPrefix,
         },
-        teamDigestPromise,
+        { mode: standingMode, startedDigest: teamDigestPromise },
       ),
     ),
     timeStage(
@@ -984,7 +1005,7 @@ const buildTurnCallOptions = async (
       attachedFilesBlock.length > 0 ? attachedFilesBlock : undefined,
     chatbotContextManifest: fragments.chatbotContextManifest,
     memoryIndexBlock: fragments.memoryIndexBlock,
-    teamDigestBlock: fragments.teamDigestBlock,
+    standingMemoryBlock: fragments.standingMemoryBlock,
     activeMemoryBlock: activeMemoryRecall?.block,
     availableCapabilitiesBlock: activeMemoryRecall?.capabilityBlock,
     teamCollectionsBlock: fragments.teamCollectionsBlock,
@@ -3332,6 +3353,21 @@ chatbotInternalRoutes.post("/invoke", async (c) => {
   }
   const recallMode: RecallMode | undefined = recallModeHeader;
 
+  // Same contract, same reason, for the standing block: `digest` (the
+  // generated summary) vs `episodes` (the deterministic index) vs `none` (the
+  // control arm, which is what makes the other two measurable at all).
+  const standingModeHeader = c.req.header("X-Standing-Mode");
+  if (standingModeHeader !== undefined && !isStandingMode(standingModeHeader)) {
+    return c.json(
+      {
+        code: "UNKNOWN_STANDING_MODE",
+        message: `Unknown standing mode: "${standingModeHeader}" (expected digest | episodes | none)`,
+      },
+      400,
+    );
+  }
+  const standingMode: StandingMode | undefined = standingModeHeader;
+
   // D.3 warning: `messages` is silently ignored when `conversationId`
   // is set (the history is loaded from DB instead). Alert the caller
   // via log so this isn't a silent footgun. Not rejected to preserve
@@ -3377,6 +3413,7 @@ chatbotInternalRoutes.post("/invoke", async (c) => {
     agentSet,
     modelProfile,
     recallMode,
+    standingMode,
     // Server-to-server channel: deliver real tool inputs (see
     // RunChatbotTurnParams.scrubSensitiveInputs).
     scrubSensitiveInputs: false,

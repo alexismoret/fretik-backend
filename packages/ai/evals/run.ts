@@ -50,6 +50,7 @@
  * ==================================================================
  */
 
+import { isStandingMode } from "../src/agents/shared/standing-memory";
 import { warmModelRegistry } from "../src/lib/model-registry/resolve";
 import { ROLE_BINDINGS } from "../src/lib/model-registry/role-bindings";
 import { isRecallMode } from "../src/services/recall/recall";
@@ -77,6 +78,12 @@ interface CliOptions {
    * models, one live service, two arms.
    */
   recallMode?: string;
+  /**
+   * Serve `<standing_memory>` from this arm (`digest` | `episodes` | `none`).
+   * Same paired-comparison contract as `--recall-mode`; `none` is the control
+   * that says whether the block earns its place at all.
+   */
+  standingMode?: string;
   /**
    * Pin the PAGE BUILDER to this registry profile. Separate from `--candidate`
    * because they are separate models: the candidate pins the turn that decides
@@ -189,6 +196,16 @@ const parseArgs = (argv: string[]): CliOptions => {
       i++;
       continue;
     }
+    if (flag === "--standing-mode" && next) {
+      if (!isStandingMode(next)) {
+        unknown.push(`--standing-mode ${next}`);
+        i++;
+        continue;
+      }
+      opts.standingMode = next;
+      i++;
+      continue;
+    }
     // Anything left is a typo, a flag that lost its value, or — the one that
     // cost a full core run — several flags arriving as ONE argv entry because
     // zsh does not word-split an unquoted `$VAR`. Silently ignoring it meant a
@@ -247,6 +264,7 @@ const main = async (): Promise<void> => {
       ? { pageBuildProfileKey: opts.pageBuildCandidate }
       : {}),
     ...(opts.recallMode ? { recallMode: opts.recallMode } : {}),
+    ...(opts.standingMode ? { standingMode: opts.standingMode } : {}),
     ...(opts.caseIds ? { caseIds: opts.caseIds } : {}),
     ...(opts.repeats !== undefined ? { repeats: opts.repeats } : {}),
     metadata: {

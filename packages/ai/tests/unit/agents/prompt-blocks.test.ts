@@ -47,8 +47,8 @@ describe("resolveAgentBlocks", () => {
     expect(chatbot).toContain("askUserQuestion");
     expect(chatbot).toContain("<proactive_partnership>");
     expect(chatbot).toContain("{{collaborationBlock}}");
-    expect(chatbot).toContain("<team_digest>");
-    expect(chatbot).toContain("{{teamDigest}}");
+    expect(chatbot).toContain("<standing_memory>");
+    expect(chatbot).toContain("{{standingMemory}}");
   });
 
   test("workflow variant of the real template has no chatbot leakage", () => {
@@ -62,10 +62,11 @@ describe("resolveAgentBlocks", () => {
     expect(workflow).toContain("<execution_loop>");
     expect(workflow).toContain("<writes_and_approvals>");
     expect(workflow).toContain("{{playbookBlock}}");
-    // The digest is chatbot-only for now: a workflow's prompt must stay
-    // byte-stable for a whole run, and this block changes under it.
-    expect(workflow).not.toContain("<team_digest>");
-    expect(workflow).not.toContain("{{teamDigest}}");
+    // The standing block is chatbot-only IN THE PROMPT: a workflow's prompt
+    // must stay byte-stable for a whole run, and this block changes under it.
+    // A workflow gets the same content in its turn-1 steering message instead.
+    expect(workflow).not.toContain("<standing_memory>");
+    expect(workflow).not.toContain("{{standingMemory}}");
     expect(workflow).toContain("{{workflowRunId}}");
     // The blocking askUserQuestion is now a headless tool (it parks the run
     // on a `question` approval), so it legitimately appears in the workflow prompt.

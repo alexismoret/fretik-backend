@@ -170,19 +170,21 @@ export type AgentRuntimeContext = {
    */
   memoryIndexBlock?: string;
   /**
-   * Rendered `{{teamDigest}}` fragment — the team's standing memory, the one
-   * memory block that is NOT retrieved.
+   * Rendered `{{standingMemory}}` fragment — what the team has been doing
+   * lately, the one memory block that is NOT retrieved.
    *
    * `activeMemoryBlock` is query-shaped and `memoryIndexBlock` lists paths
    * without content; this carries content the team already established, present
-   * whether or not the message matches anything. It is what a broad or vaguely
-   * worded question has to stand on.
+   * whether or not the message matches anything. It is what a question that
+   * names NOTHING has to stand on — every retrieval arm is query-shaped, so
+   * "où on en est ?" reaches none of them.
    *
-   * Rewritten by a background job and read here with one primary-key lookup, so
-   * it costs nothing per turn. Undefined when no digest has been built yet or
-   * the lookup soft-failed.
+   * Served by one of two arms (`STANDING_MODE`, or `X-Standing-Mode` per
+   * request on `/invoke`): the deterministic episode index, or the generated
+   * team digest. Both cost one indexed query in the pre-turn batch. Undefined
+   * when there is nothing recent, or the read soft-failed.
    */
-  teamDigestBlock?: string;
+  standingMemoryBlock?: string;
   /**
    * Rendered `{{availableCapabilities}}` fragment — one workflow card when an
    * existing workflow already produces what this turn asks for. Built by the

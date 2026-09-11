@@ -74,7 +74,11 @@ const isoDay = (at: Date): string => at.toISOString().slice(0, 10);
 export const renderStandingEpisodes = (
   result: StandingEpisodesResult,
 ): string => {
-  if (result.items.length === 0) return "";
+  // Empty only when the window is genuinely empty. Episodes the caps exclude
+  // still exist, and the caller renders `""` as "nothing recorded in the last
+  // few weeks" — a claim the agent repeats to the user. When there is
+  // something and none of it fits, say so and point at the tool.
+  if (result.items.length === 0 && result.visibleInWindow === 0) return "";
 
   const lines = result.items.map((item) => {
     // Rolling per-record digests are a different KIND of statement from a

@@ -46,6 +46,31 @@ used only by `mr-private-leak`. Without it that one case throws
 `Missing eval env var: EVAL_OTHER_USER_ID`, deliberately: the alternative is a
 privacy case that silently tests nothing (see the `memory-recall` section).
 
+### Two eval teams — read and write (2026-09-11)
+
+| env                  | team         | suites                                                   |
+| -------------------- | ------------ | -------------------------------------------------------- |
+| `EVAL_TEAM_ID`       | the real one | `evals:langfuse` (incl. `memory-recall`), `evals:recall` |
+| `EVAL_WRITE_TEAM_ID` | `eval-write` | `evals:memory`, `evals:chain`                            |
+
+The write-side suites make the agent WRITE memories and episodes, and they ran
+on the same team everything else read from. One residue is enough to change a
+result elsewhere: `chain-convention-promoted` went 10/10 → 0/10, and the most
+coherent explanation is `learned/meridian-bon-de-commande.md` left behind by
+`evals:memory` — `promote-episodes.ts` loads every `learned/%` row into
+`<existing_learned>`, whose prompt says "NOOP if already covered".
+
+```bash
+bun run evals:ensure-write-team   # idempotent, by team name; prints the id
+# → put the id in .env as EVAL_WRITE_TEAM_ID
+```
+
+`evals:memory` and `evals:chain` **refuse to start** without it rather than
+falling back to `EVAL_TEAM_ID`: a silent fallback rebuilds exactly the
+contamination the split exists to remove, and it does so invisibly. Both now
+clean their fixtures at the END of the suite too — pass `--keep` to inspect
+rows, `--cleanup` to clean without running.
+
 **Keep the output in a file — the per-item report is long and the earliest cases scroll away
 first.** Three runs in a row were read with items 1-6 already gone, which is precisely where a
 case that never ran leaves its only trace:
@@ -348,6 +373,18 @@ one the plan named as the entire measured cost of dropping the judge; it is
 worth re-reading Phase 4 in that light, since part of what it was meant to
 recover has already come back.
 
+> **CORRECTION (2026-09-11): those two 9/10 are not a baseline.** Both cases
+> were re-run targeted at **N = 30** and came back `mr-abstain-general` 21/30
+> and `mr-broad` 19/30 — and a CONTROL arm with the standing block removed
+> entirely gave 23/30 and 22/30, so the block is not what moved them. They are
+> bimodal at roughly 65-75 %, at which rate a 9/10 draw happens about 15 % of
+> the time. A single N = 10 sample of a bimodal case is a draw, not a
+> measurement, and reading "8/10 → 9/10" as an improvement was reading noise.
+> **Nothing decides on a contested case below N = 30** (the closure bar is
+> ≥ 29/30 — see "Methodology guardrails"). Everything in this table's other
+> rows — the nine retrieval-shaped cases at 10/10 — is unaffected, because a
+> case that never fails is not the one this correction is about.
+
 The `mr-private-leak` failure is worth naming precisely, because its shape is
 the opposite of what the case is for: the privacy check (`no-private-budget-
 ceiling`) PASSED, and what failed was the POSITIVE control — that repeat did not
@@ -642,7 +679,7 @@ them are two different claims, and only the second is what a user experiences.
 Taking the judge off the critical path is a bet about what the MAIN model does
 with the same candidates unfiltered, so no block score can settle it.
 
-12 cases (`evals/cases/memory-recall.ts`), through the real turn, over the SAME
+15 cases (`evals/cases/memory-recall.ts`), through the real turn, over the SAME
 fixture universe as the block suite so the two read against each other:
 
 ```bash
@@ -655,6 +692,52 @@ AI_SERVICE_URL=http://localhost:8083 bun run evals:langfuse -- \
 Four cases are must-NOT checks and they are the ones the Phase 5 judge-removal
 gate turns on: `mr-abstain-general`, `mr-greeting`, `mr-private-leak`,
 `mr-homonym`.
+
+#### The contextless cases — the only shape a standing layer can answer (added 2026-09-11)
+
+`mr-contextless-status` ("Où on en est ?"), `mr-contextless-brief` ("Fais-moi
+un point."), `mr-contextless-week` ("Qu'est-ce qu'on a de prévu cette
+semaine ?").
+
+Every other case in the suite hands retrieval an entity to match on. These hand
+it a pronoun. **Retrieval is query-shaped by construction**, so whatever answers
+here came from a block that is present WITHOUT having matched — which is the
+only claim a standing-memory layer makes, and the suite had no case for it. The
+layer was built, shipped and argued about for a week with nothing that could
+tell it apart from its own absence; `--standing-mode none` is the control that
+now can.
+
+Two things make them measure that and not something else:
+
+- **The fixtures are dated relative to now.** They used to be frozen in June
+  2026 (`new Date("2026-06-…")`) and `ensureEpisode` returned early on an
+  existing title, so the dates never refreshed once seeded. Any window-bounded
+  layer — 30 days here — would have seen an empty universe and the three cases
+  would have been unfailable. `daysAgo(n)` throughout, and the ensure now
+  re-dates existing rows in place and re-vectorizes when the summary changed.
+  `pricingOld` sits at day −48/−45 **deliberately outside** the window: still
+  retrievable by the `rec-*` block cases, never in the standing block. A free
+  negative.
+- **`mr-contextless-week` turns on a COMPUTED date.** One fixture episode
+  (`Planning — semaine en cours`, day −1) names the next Tuesday, formatted at
+  seed time; the assertion recomputes it from the same `nextDeliveryDate()`
+  helper. Nothing else in the universe holds that date, so general knowledge
+  cannot produce it.
+
+`mr-private-leak` gates this layer too: the private Sirius episode must not
+appear in the standing block either. The block reads
+`user_id IS NULL OR user_id = :caller`, the same predicate as recall and
+`searchKnowledge` — and it is pinned by mutation in
+`shared/tests/integration/episodes/list-standing.test.ts`, where deleting the
+clause surfaces another user's row.
+
+**Do not read these three against a fixture team and conclude about a real
+one.** The recall fixtures seed at TEAM scope (`userId: null`), whereas
+`distillConversation` writes a PRIVATE episode whenever a conversation has one
+participant — so on a one-person team, which is every team's first weeks, the
+pipeline produces nothing team-scoped at all. The EVAL team therefore
+**favours** the `digest` arm, whose inputs are team-scoped only. If it does not
+win there it wins nowhere.
 
 **`mr-private-leak` needs `EVAL_OTHER_USER_ID`** — a second real member of the
 eval organization — and it is worth knowing why, because the case was written
@@ -760,11 +843,30 @@ easy to break by accident.** `runUnifiedRecall` memoises a gather for 15 s per
 extract/distill/promote = deepseek-v4-flash, consolidate + recall judge =
 gpt-oss-120b):
 
-| Suite                     | Frozen               | Detail                                                                                                                                                                                                                                                                         |
-| ------------------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `evals:memory` (17 cases) | 16/17 stable at N=10 | flagged `mem-relation-noise` 9/10 re-ran **30/30** → closed. The four once-contested cases, targeted: reanchor 30/30 · merge 30/30 · revise 29/30 · distill-record-activity 30/30                                                                                              |
-| `evals:chain` (4 cases)   | **4/4** at N=10      | `chain-contradiction-corrected` closed by the consolidation-judge id handles                                                                                                                                                                                                   |
-| `evals:recall` (23 cases) | 22/23 stable at N=10 | **open residual**: `rec-noise-general` — 8/10 in the freeze, **14/30** targeted (historic ~88 %). Judge-side selectivity against a lexically dominant, non-responsive candidate; the hot-path judge model is deliberately out of scope here. The one case of 44 below the bar. |
+| Suite                     | Frozen                                    | Detail                                                                                                                                                                                                                                                                         |
+| ------------------------- | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `evals:memory` (17 cases) | 16/17 stable at N=10                      | flagged `mem-relation-noise` 9/10 re-ran **30/30** → closed. The four once-contested cases, targeted: reanchor 30/30 · merge 30/30 · revise 29/30 · distill-record-activity 30/30                                                                                              |
+| `evals:chain` (4 cases)   | ~~**4/4** at N=10~~ **STALE — see below** | `chain-contradiction-corrected` closed by the consolidation-judge id handles                                                                                                                                                                                                   |
+| `evals:recall` (23 cases) | 22/23 stable at N=10                      | **open residual**: `rec-noise-general` — 8/10 in the freeze, **14/30** targeted (historic ~88 %). Judge-side selectivity against a lexically dominant, non-responsive candidate; the hot-path judge model is deliberately out of scope here. The one case of 44 below the bar. |
+
+**The `evals:chain` row above is out of date as of 2026-09-11**, in both
+directions, and the row is left struck through rather than quietly edited
+because the stale version was used as a gate:
+
+- the suite is **5 cases**, not 4 — `chain-digest` was added in `1017fa7`;
+- **`chain-convention-promoted` is 0/10**, not 10/10. The promoter returns
+  `{"promotions":[]}` on both models with correct inputs. Most coherent
+  explanation: cross-suite residue in `<existing_learned>` (see "Two eval
+  teams"), unconfirmed because the rows were cleaned before it could be
+  verified. The definitive test is a re-run after `evals:memory -- --cleanup`,
+  and the `console.warn` added in `187d098` (`promote-episodes.ts`) now prints
+  the raw model output for it.
+
+Three previously-SILENT noop paths in `promoteEpisodes` were made loud while
+chasing this — schema rejection, a path outside `learned/`, an empty list.
+Each one used to return "nothing to promote", which is indistinguishable from
+a correct decision not to promote. A pipeline stage that cannot tell you it
+failed will eventually be measured as if it succeeded.
 
 **Run tiers.** Every curated case is either **core** (behavioral regression — the
 prompt/tool/harness signal, runs on every full baseline) or **`tier: "model-gate"`**

@@ -73,12 +73,20 @@ export interface StandingEpisodesInput {
 /** `db.execute` hands back timestamptz as a string, never a Date. */
 type RawTimestamp = string | Date;
 
+/**
+ * Nullable because the count is joined ONTO the rows, not read off them: the
+ * statement always returns at least one row, and when nothing survives the caps
+ * that row carries the count and nulls for the rest. Reading the count off
+ * `rows[0]` instead would report 0 whenever the window holds only episodes the
+ * caps exclude — and the renderer turns a 0 into "nothing recorded", which
+ * would be a false statement about the team rather than a missing line.
+ */
 interface StandingRow extends Record<string, unknown> {
-  id: string;
-  kind: AiEpisodeKind;
-  title: string;
-  summary: string;
-  at: RawTimestamp;
+  id: string | null;
+  kind: AiEpisodeKind | null;
+  title: string | null;
+  summary: string | null;
+  at: RawTimestamp | null;
   visible_in_window: string | number;
 }
 
@@ -115,19 +123,33 @@ export const listStandingEpisodes = async (
       ORDER BY at DESC
       LIMIT ${MAX_ACTIVITY}
     )
-    SELECT u.*, (SELECT count(*) FROM visible) AS visible_in_window
-    FROM (SELECT * FROM decisions UNION ALL SELECT * FROM activity) u
-    ORDER BY at DESC
+    SELECT u.id, u.kind, u.title, u.summary, u.at,
+           c.n AS visible_in_window
+    FROM (SELECT count(*) AS n FROM visible) c
+    -- LEFT, from the count to the rows: the count survives an empty selection.
+    LEFT JOIN (SELECT * FROM decisions UNION ALL SELECT * FROM activity) u
+      ON true
+    ORDER BY u.at DESC
   `);
 
   return {
-    items: rows.rows.map((row) => ({
-      id: row.id,
-      kind: row.kind,
-      title: row.title,
-      summary: row.summary,
-      at: toDate(row.at),
-    })),
+    items: rows.rows.flatMap((row) =>
+      row.id === null ||
+      row.kind === null ||
+      row.title === null ||
+      row.summary === null ||
+      row.at === null
+        ? []
+        : [
+            {
+              id: row.id,
+              kind: row.kind,
+              title: row.title,
+              summary: row.summary,
+              at: toDate(row.at),
+            },
+          ],
+    ),
     visibleInWindow: Number(rows.rows[0]?.visible_in_window ?? 0),
   };
 };

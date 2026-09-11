@@ -1,5 +1,5 @@
 import "@hono/zod-openapi";
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import db from "../../../src/db";
 import { aiEpisodes } from "../../../src/db/schema";
 import { listStandingEpisodes } from "../../../src/services/episodes/list-standing";
@@ -57,11 +57,17 @@ const titlesFor = async (userId: string): Promise<string[]> => {
   return items.map((i) => i.title);
 };
 
-beforeAll(async () => {
+// A workspace PER TEST, not per file. The block's caps are global (10
+// decisions, 3 activity rows), so rows one test seeds evict another's — and
+// bun randomises test order by seed, so a shared fixture makes this file pass
+// or fail depending on the seed. It passed three runs before the seed that
+// ordered `caps` first, whose six fresh activity rows pushed the window test's
+// row past `MAX_ACTIVITY`.
+beforeEach(async () => {
   ws = await createWorkspaceFixture();
 });
 
-afterAll(async () => {
+afterEach(async () => {
   await ws.cleanup();
 });
 
@@ -177,5 +183,31 @@ describe("caps", () => {
     // points at `searchKnowledge` with it rather than pretending the block is
     // the whole story.
     expect(visibleInWindow).toBeGreaterThan(items.length);
+  });
+
+  test("the count survives a selection the caps emptied", async () => {
+    // The count is JOINED onto the rows, not read off the first one. Read off
+    // the rows it would be 0 exactly when every episode in the window falls
+    // outside the caps — and the renderer turns a 0 into "nothing recorded in
+    // the last few weeks", which the agent then tells the user. A block that
+    // says nothing is worse than a block that says "3 more, go look".
+    const [me] = ws.userIds;
+    if (me === undefined) throw new Error("fixture has no user");
+    for (let i = 0; i < 3; i++) {
+      // In the 30-day window, but older than the 7-day activity window — so
+      // visible, and selected by neither branch.
+      await seedEpisode({
+        kind: "record_activity",
+        title: `stale activity ${i.toString()}`,
+        occurredTo: daysAgo(12),
+      });
+    }
+    const { items, visibleInWindow } = await listStandingEpisodes({
+      organizationId: ws.organizationId,
+      teamId: ws.teamId,
+      userId: me,
+    });
+    expect(items).toHaveLength(0);
+    expect(visibleInWindow).toBe(3);
   });
 });

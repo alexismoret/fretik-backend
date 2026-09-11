@@ -62,6 +62,16 @@ describe("rendering", () => {
     expect(renderStandingEpisodes(result([]))).toBe("");
   });
 
+  test("something the caps excluded is still reported, not called nothing", () => {
+    // No item survived the query's kind/age caps, but five episodes are in the
+    // window. `""` here would be rendered as "nothing recorded in the last few
+    // weeks" — a claim the agent repeats to the user, and a false one.
+    const text = renderStandingEpisodes(result([], 5));
+    expect(text).toBe(
+      "- +5 more in the last 30 days — `searchKnowledge({ filters: { sourceTypes: ['episodes'] } })`",
+    );
+  });
+
   test("a rolling record digest is labelled, so it does not read as a decision", () => {
     const text = renderStandingEpisodes(
       result([

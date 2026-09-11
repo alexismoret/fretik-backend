@@ -10,7 +10,11 @@ import { createPendingApproval } from "../../approvals/create-pending";
 import { runApprovalGate } from "../../approvals/gate";
 import type { ExecContext, SandboxExecResponse } from "../../sandbox/types";
 import { resolveConnectionActionPolicy } from "../../tool-policies/resolve";
-import { getWorkflowAutonomyForConversation } from "../../workflows/get-run-autonomy";
+import {
+  recordWorkflowExternalApps,
+  type ObservedConnection,
+} from "../../workflows/record-external-apps";
+import { getWorkflowRunContext } from "../../workflows/run-context";
 import { resolveConnection } from "../connections/resolve";
 import { extractFrameworkArgs } from "./framework-args";
 import { resolveMcpWriteOp } from "./mcp-plan";
@@ -33,7 +37,8 @@ export const dispatchPlan = async (
   }
 
   // Workflow autonomy gate: a `read_only` run may never perform external writes.
-  const autonomy = await getWorkflowAutonomyForConversation(ctx.conversationId);
+  const run = await getWorkflowRunContext(ctx.conversationId);
+  const autonomy = run?.autonomy ?? null;
   if (autonomy === "read_only") {
     return {
       status: "error",
@@ -68,6 +73,12 @@ export const dispatchPlan = async (
   // pauses for a human (today's behaviour under chat / approval_required).
   const validatedOps: ToolApprovalOperation[] = [];
   const summaryOps: ToolApprovalSummary["operations"] = [];
+  // Every app this plan reaches for, manifest and MCP alike — folded into the
+  // workflow's declared list once the plan validates. Recorded at SUBMISSION,
+  // not at execution: the executor resolves the very same connections later,
+  // and a plan a human denies still tells the settings panel that this workflow
+  // depends on that app.
+  const observed: ObservedConnection[] = [];
   let allAuto = true;
   for (const op of operations) {
     const resolved = getAction(op.action);
@@ -95,6 +106,7 @@ export const dispatchPlan = async (
         };
       }
       if (mcp.level !== "auto") allAuto = false;
+      observed.push(mcp.connection);
       validatedOps.push({ action: op.action, args: mcp.storedArgs });
       summaryOps.push(mcp.summaryOp);
       continue;
@@ -146,6 +158,7 @@ export const dispatchPlan = async (
       };
     }
     if (level !== "auto") allAuto = false;
+    observed.push(connection);
 
     // Pin the RESOLVED connection on the op, exactly as a gated read does.
     // The executor re-resolves at grant time; with nothing pinned, an implicit
@@ -167,6 +180,8 @@ export const dispatchPlan = async (
       fields: part.fields,
     });
   }
+
+  if (run) await recordWorkflowExternalApps(run, observed);
 
   const lookupHash = computeLookupHash(validatedOps);
   const summary: ToolApprovalSummary = {

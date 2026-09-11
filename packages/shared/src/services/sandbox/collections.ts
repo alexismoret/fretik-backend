@@ -49,7 +49,7 @@ import { getFieldDefinitionsForTeam } from "../field-definitions/get-for-team";
 import { updateFieldDefinition } from "../field-definitions/update";
 import { getTeamToolPolicies } from "../tool-policies/get-for-team";
 import { resolveBuiltinToolPolicy } from "../tool-policies/resolve";
-import { getWorkflowAutonomyForConversation } from "../workflows/get-run-autonomy";
+import { getWorkflowRunContext } from "../workflows/run-context";
 import type { ExecContext, SandboxExecResponse } from "./types";
 
 /**
@@ -67,7 +67,7 @@ import type { ExecContext, SandboxExecResponse } from "./types";
  * sandbox JWT: type resolution is team-scoped and the bulk services drop any
  * record id not owned by the JWT's team.
  *
- * Workflow autonomy gates the writes (`getWorkflowAutonomyForConversation`):
+ * Workflow autonomy gates the writes (`getWorkflowRunContext`):
  * `read_only` rejects; `approval_required` routes record writes through the
  * generic approval gate (a pending `record_write` the user reviews); schema
  * changes are blocked for any run. Plain chat + `autonomous` write directly.
@@ -88,7 +88,8 @@ export const dispatchCollections = async (
   const actor = execActor(ctx);
   // Resolve the run's write-autonomy once: `null` = plain chat (direct writes),
   // else a workflow run whose mode gates record writes + schema changes.
-  const autonomy = await getWorkflowAutonomyForConversation(ctx.conversationId);
+  const autonomy =
+    (await getWorkflowRunContext(ctx.conversationId))?.autonomy ?? null;
   // The team's tool-permission map — the Python objects SDK bypasses the domain
   // tools, so it must consult the SAME policy (`manageRecord` for record writes,
   // `manageCollection`/`manageField` for schema) to stay coherent.

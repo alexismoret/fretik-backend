@@ -44,35 +44,76 @@ let destructive = false;
 /** Args the app was actually called with — null when it was never called. */
 let calledWith: Record<string, PageValue> | null = null;
 
+/** The provider these doubles speak for. Declared above them: what makes them
+ *  safe is that they answer for THIS app and nothing else. */
+const PROVIDER = "acme-orders";
+
+/**
+ * Both doubles below are scoped to `PROVIDER`, and that is load-bearing rather
+ * than tidy.
+ *
+ * `mock.module` registers process-wide. `--isolate` gives each test file its
+ * own module registry for its imports, but it does NOT contain these
+ * registrations: on 2026-09-11 a full integration run had
+ * `update-action-policies.test.ts` receive THIS file's snapshot double —
+ * `create_order` / `list_orders` in place of its own tool list — and fail its
+ * three MCP tests with `Unknown action "items"`. It depended on file order, so
+ * it reproduced only at some `--seed` values and passed when that file ran
+ * alone: a suite that goes red on an unrelated PR every few runs.
+ *
+ * A global double is a claim about every connection in the process. These make
+ * the narrower, true claim — "the server behind `acme-orders` advertises these
+ * two tools" — and hand anything else back to the real implementation.
+ */
+// The FUNCTION, captured before the swap — not the namespace object it came
+// from. A module namespace is a live view: read after `mock.module`, it hands
+// back the override, and delegating to it is a call into itself that never
+// returns. (The suite hung, it did not fail.) `mockModule`'s own `{...actual}`
+// works for the same reason — it copies values at registration time.
+const realGetSnapshotForConnection = (
+  await import("../../../src/services/external-apps/mcp/snapshot-store")
+).getSnapshotForConnection;
+type SnapshotSubject = Parameters<typeof realGetSnapshotForConnection>[0];
+
 await mockModule("../../src/services/external-apps/mcp/snapshot-store", {
-  getSnapshotForConnection: () =>
-    Promise.resolve({
-      descriptor: {
-        actions: [
-          {
-            name: "create_order",
-            kind: "write",
-            approvalDefault: "approval",
-            mcpToolName: "create-order",
-            annotations: { destructiveHint: destructive },
+  getSnapshotForConnection: (connection: SnapshotSubject) =>
+    connection.providerKey === PROVIDER
+      ? Promise.resolve({
+          descriptor: {
+            actions: [
+              {
+                name: "create_order",
+                kind: "write",
+                approvalDefault: "approval",
+                mcpToolName: "create-order",
+                annotations: { destructiveHint: destructive },
+              },
+              {
+                name: "list_orders",
+                kind: "read",
+                approvalDefault: "auto",
+                mcpToolName: "list-orders",
+              },
+            ],
           },
-          {
-            name: "list_orders",
-            kind: "read",
-            approvalDefault: "auto",
-            mcpToolName: "list-orders",
-          },
-        ],
-      },
-    }),
+        })
+      : realGetSnapshotForConnection(connection),
 });
 
 await mockModule("../../src/services/external-apps/mcp/transport", {
   mcpCallTool: (
-    _connection: unknown,
+    connection: { providerKey?: string },
     _name: string,
     args: Record<string, PageValue>,
   ) => {
+    // The real one opens a socket, so this never delegates — it refuses
+    // loudly instead. A leaked `{"id":"o-1"}` would be a foreign suite
+    // silently passing on an answer it never made.
+    if (connection.providerKey !== PROVIDER) {
+      throw new Error(
+        `mcpCallTool double belongs to run-operation.test.ts (${PROVIDER}); it was reached for "${connection.providerKey ?? "unknown"}". mock.module is process-wide — scope the double by provider.`,
+      );
+    }
     calledWith = args;
     return Promise.resolve({
       content: [{ type: "text", text: '{"id":"o-1"}' }],
@@ -86,7 +127,6 @@ const { runPageOperation } =
 let fx: WorkspaceFixture;
 let otherFx: WorkspaceFixture;
 let pageId: string;
-const PROVIDER = "acme-orders";
 
 const pageWith = (
   operations: PageDefinition["operations"],

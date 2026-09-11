@@ -76,6 +76,7 @@ export const updateWorkflow = async (params: {
       connectionIds: ids,
       teamId: params.teamId,
       ownerUserId,
+      ...(params.requester ? { actorUserId: params.requester.userId } : {}),
     });
     // Only WRITE the list when the patch actually carried one — a re-scope
     // validates the stored list, it does not rewrite it.

@@ -132,6 +132,37 @@ describe("declaring apps on a private workflow", () => {
       }),
     );
     expect(messageOf(err)).toContain("Unknown external-app connection");
+    // The name never leaks: an author who cannot use a connection does not get
+    // told what a teammate called it.
+    expect(messageOf(err)).not.toContain("Integration app");
+  });
+
+  test("an admin cannot lend their OWN app to a teammate's workflow", async () => {
+    // The one case where the writer and the workflow's identity differ. The
+    // admin can name this connection — it is theirs — but the run acts as the
+    // teammate, who could not resolve it. Refused on the workflow's identity,
+    // not on the author's, which is the distinction the two checks exist for.
+    const adminsOwn = await fx.createConnection({
+      userId: owner,
+      createdByUserId: owner,
+      displayName: "Admin's own mailbox",
+    });
+    const theirWorkflow = await createWorkflow({
+      organizationId: fx.organizationId,
+      teamId: fx.teamId,
+      createdByUserId: teammate,
+      input: draft({ userId: teammate }),
+    });
+    const err = await rejection(
+      updateWorkflow({
+        id: theirWorkflow.id,
+        teamId: fx.teamId,
+        input: { externalAppConnectionIds: [adminsOwn.id] },
+        requester: { userId: owner, isAdmin: true },
+      }),
+    );
+    expect(messageOf(err)).toContain("Admin's own mailbox");
+    expect(messageOf(err)).toContain("personal to someone else");
   });
 });
 

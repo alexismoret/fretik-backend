@@ -2,21 +2,29 @@ import db from "../../db";
 import { badRequest, throwHttpError } from "../../lib/errors";
 
 /**
- * Vet the external-app connections a workflow declares, against the workflow's
- * own scope.
+ * Vet the external-app connections a workflow declares.
  *
- * The rule is not a policy we invented — it is what the runtime already does.
- * A run acts as `workflow.userId ?? the team bot`, and a connection is
- * resolvable only when it is team-shared or scoped to that very identity. So a
- * TEAM workflow (no owner, runs as the bot) can never reach a personal
- * connection: declaring one would promise an app the run cannot open, and the
- * failure would surface much later as `EXTERNAL_APP_NO_CONNECTION` inside a
- * cron run nobody is watching. Refusing at write turns that into a sentence
- * the author reads while they still have the context to act on it.
+ * TWO different questions are asked here, of two different identities, and
+ * collapsing them is what makes the refusal useless:
  *
- * A PRIVATE workflow runs as its owner, so it may declare team connections AND
- * that owner's own personal ones — never a third party's, which the visibility
- * `where` below already makes unreachable.
+ *  1. **Can the AUTHOR name this connection at all?** Answered against the
+ *     actor, with the same predicate as `getConnectionForCaller`: team-shared,
+ *     or personal to them. A teammate's personal connection is not found, so
+ *     it is refused as unknown and its display name never leaks.
+ *
+ *  2. **Can the WORKFLOW use it?** Answered against `workflow.userId ?? the
+ *     team bot` — the identity a run acts as, and the only one
+ *     `resolveConnection` will resolve a connection for. A TEAM workflow can
+ *     therefore never reach a personal connection: declaring one promises an
+ *     app the run cannot open, and the failure would surface much later as
+ *     `EXTERNAL_APP_NO_CONNECTION` inside a cron run nobody is watching.
+ *
+ * Asking only the second question — which this did until CI caught it — makes
+ * the interesting branch unreachable: a personal connection is already outside
+ * a team workflow's visibility, so it falls out as "unknown id 01a08dfb-…"
+ * instead of "cannot use a personal connection (My mailbox); make the workflow
+ * private, or share the app". Same refusal, none of the information that makes
+ * it actionable.
  *
  * Returns the ids, de-duplicated and in the order given. An empty list means
  * "nothing declared" and is always valid.
@@ -26,6 +34,13 @@ export const validateWorkflowExternalApps = async (params: {
   teamId: string;
   /** The workflow's owner: null = team-shared (runs as the team bot). */
   ownerUserId: string | null;
+  /**
+   * Who is writing. Bounds which connections can be NAMED, so an author never
+   * learns the display name of a teammate's personal connection. Absent =
+   * system trust (internal callers), which sees the whole team — the same
+   * convention as `workflowVisibilityWhere`.
+   */
+  actorUserId?: string;
 }): Promise<string[]> => {
   const ids = [...new Set(params.connectionIds)];
   if (ids.length === 0) return ids;
@@ -35,15 +50,11 @@ export const validateWorkflowExternalApps = async (params: {
     where: {
       id: { in: ids },
       teamId: params.teamId,
-      // Same predicate as `getConnectionForCaller`, with the WORKFLOW's
-      // identity in place of the caller's: someone else's personal connection
-      // must not even be nameable here.
-      OR: [
-        { userId: { isNull: true } },
-        ...(params.ownerUserId !== null
-          ? [{ userId: params.ownerUserId }]
-          : []),
-      ],
+      ...(params.actorUserId !== undefined
+        ? {
+            OR: [{ userId: { isNull: true } }, { userId: params.actorUserId }],
+          }
+        : {}),
     },
   });
 
@@ -53,21 +64,26 @@ export const validateWorkflowExternalApps = async (params: {
     return throwHttpError(
       400,
       badRequest(
-        `Unknown external-app connection(s) for this workflow: ${missing.join(", ")}. A team workflow can only use connections shared with the team; a private one, those plus its owner's own.`,
+        `Unknown external-app connection(s) for this workflow: ${missing.join(", ")}. You can only use connections shared with the team, or your own personal ones.`,
       ),
     );
   }
 
-  if (params.ownerUserId === null) {
-    const personal = rows.filter((row) => row.userId !== null);
-    if (personal.length > 0) {
-      return throwHttpError(
-        400,
-        badRequest(
-          `A team workflow runs as the team assistant and cannot use a personal connection (${personal.map((row) => row.displayName).join(", ")}). Make the workflow private, or share the connection with the team.`,
-        ),
-      );
-    }
+  // Now the workflow's own identity: a connection it could not resolve at run
+  // time has no business being declared on it.
+  const unreachable = rows.filter(
+    (row) => row.userId !== null && row.userId !== params.ownerUserId,
+  );
+  if (unreachable.length > 0) {
+    const names = unreachable.map((row) => row.displayName).join(", ");
+    return throwHttpError(
+      400,
+      badRequest(
+        params.ownerUserId === null
+          ? `A team workflow runs as the team assistant and cannot use a personal connection (${names}). Make the workflow private, or share the connection with the team.`
+          : `This workflow runs as its owner, who cannot use ${names} — it is personal to someone else. Share that connection with the team to use it here.`,
+      ),
+    );
   }
 
   return ids;

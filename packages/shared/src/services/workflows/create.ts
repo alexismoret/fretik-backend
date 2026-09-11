@@ -39,6 +39,7 @@ export const createWorkflow = async (params: {
           connectionIds: input.externalAppConnectionIds,
           teamId: params.teamId,
           ownerUserId: input.userId ?? null,
+          actorUserId: params.createdByUserId,
         });
 
   const [row] = await db

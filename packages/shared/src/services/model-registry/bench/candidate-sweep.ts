@@ -4,7 +4,11 @@ import { raiseModelAlert } from "../alerts";
 import { readRecentBenchRuns, recordBenchRuns } from "../bench-runs";
 import { readAllLiveStateRows } from "../live";
 import { wireNameFor } from "../sync/sources/provider-probe";
-import { canProbeIntegrity, probeIntegrity } from "./integrity-probe";
+import {
+  canProbeIntegrity,
+  probeableTransports,
+  probeIntegrity,
+} from "./integrity-probe";
 
 /**
  * Measure what a promotion decision needs, before anybody asks for it.
@@ -70,6 +74,14 @@ export interface CandidateSweepStats {
   upstreamsProbed: number;
   /** Upstreams whose probe found a truncation — the finding worth waking for. */
   upstreamsFailing: number;
+  /**
+   * Rows skipped because their own transport is not one this process can call.
+   *
+   * Counted rather than ignored, because "the bench found nothing" and "the
+   * bench could not reach anything" are different reports and were, until
+   * 2026-09-11, indistinguishable.
+   */
+  rowsOnUnusableTransport: number;
   errors: string[];
 }
 
@@ -95,6 +107,7 @@ export const runCandidateBenchSweep = async (options?: {
     candidatesProbed: 0,
     upstreamsProbed: 0,
     upstreamsFailing: 0,
+    rowsOnUnusableTransport: 0,
     errors: [],
   };
 
@@ -107,7 +120,15 @@ export const runCandidateBenchSweep = async (options?: {
     if (stats.candidatesProbed >= BENCH_MAX_CANDIDATES_PER_NIGHT) break;
     if (stats.upstreamsProbed >= INTEGRITY_MAX_PROBES_PER_NIGHT) break;
     if (row.status === "retired") continue;
-    if (!canProbeIntegrity(row.transport)) continue;
+    // A model is benched ON THE TRANSPORT IT ROUTES THROUGH, or not at all.
+    // `row.transport` is where its traffic goes, so it is the only transport
+    // whose hosts a measurement describes — and when this process holds no
+    // credential for it, the honest outcome is a skip with a reason rather than
+    // a probe that spends a budget slot to return nothing.
+    if (!canProbeIntegrity(row.transport)) {
+      stats.rowsOnUnusableTransport += 1;
+      continue;
+    }
 
     const upstreams = distinctUpstreams(row);
     // One host is not a pool: there is no membership question to answer.
@@ -155,7 +176,6 @@ export const runCandidateBenchSweep = async (options?: {
       // describe the request rather than the host.
       if (wireName === undefined) continue;
 
-      stats.upstreamsProbed += 1;
       try {
         const result = await probeIntegrity({
           transport: row.transport,
@@ -163,7 +183,12 @@ export const runCandidateBenchSweep = async (options?: {
           provider,
           wireName,
         });
+        // Counted only once a probe ACTUALLY RAN. It used to be counted before
+        // the call, so a transport that refuses every request still consumed
+        // the whole nightly budget and stopped the sweep before it reached a
+        // row it could have measured.
         if (result === undefined) continue;
+        stats.upstreamsProbed += 1;
         if (result.passed < result.total - result.inconclusive) {
           stats.upstreamsFailing += 1;
         }
@@ -226,6 +251,24 @@ export const runCandidateBenchSweep = async (options?: {
             } ${clean.length.toString()} of ${measurements.length.toString()} newly measured upstream(s) came back intact.`
           : `${row.profileKey}: all ${measurements.length.toString()} newly measured upstream(s) kept an answer ending in a tool call intact.`,
       context: { transport: row.transport, measurements, status: row.status },
+    });
+  }
+
+  // A sweep that measured nothing because it could reach nothing is a WIRING
+  // problem, and it used to look exactly like a quiet night. Raised once per
+  // pass rather than per row, and only when the sweep is entirely idle: a fleet
+  // with a handful of gateway-only candidates alongside a working OpenRouter
+  // pool is normal and needs no message.
+  if (stats.rowsOnUnusableTransport > 0 && stats.upstreamsProbed === 0) {
+    const usable = probeableTransports();
+    await raiseModelAlert({
+      kind: "bench-verdict",
+      severity: "warning",
+      message: `The integrity bench measured nothing: ${stats.rowsOnUnusableTransport.toString()} row(s) route through a transport this deployment cannot call, and ${usable.length === 0 ? "no transport has a credential set" : `only ${usable.join(", ")} does`}. Set the missing API key, or switch those rows onto a transport in use (\`models:admin -- transport <key> <transport>\`).`,
+      context: {
+        rowsOnUnusableTransport: stats.rowsOnUnusableTransport,
+        probeableTransports: usable,
+      },
     });
   }
 

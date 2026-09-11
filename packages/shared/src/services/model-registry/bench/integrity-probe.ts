@@ -1,4 +1,5 @@
 import type { TransportId } from "../../../model-registry/types";
+import { TRANSPORT_IDS } from "../../../model-registry/types";
 import { fetchJson } from "../sync/sources/wire";
 
 /**
@@ -103,9 +104,31 @@ const PINNED_CHAT: Partial<Record<TransportId, PinnedChat>> = {
   // way a published model's is — on real traffic, by the detectors.
 };
 
-/** Whether a transport can be probed per upstream at all. */
-export const canProbeIntegrity = (transport: TransportId): boolean =>
-  PINNED_CHAT[transport] !== undefined;
+/**
+ * Whether this transport can be probed per upstream RIGHT NOW — it has a
+ * pinning dialect, and we hold a credential for it.
+ *
+ * The credential half is not a detail. A deployment runs the transports it has
+ * accounts for, and the rest exist only as catalogue entries: this fleet routes
+ * entirely through OpenRouter and has no Vercel AI Gateway account at all, yet
+ * discovery keeps finding models the gateway serves and filing them with
+ * `transport: "gateway"`. Every one of those was reaching the probe, spending a
+ * slot of the nightly budget, and coming back with nothing — so the sweep
+ * appeared to run against the gateway while the models a person actually cares
+ * about, on the transport they actually use, were never measured at all.
+ *
+ * Reading the environment makes this impure, which is why it lives HERE and not
+ * in `policy.ts`: a probe is an outbound call, and "can we make this call" is a
+ * question about the process, not about the model.
+ */
+export const canProbeIntegrity = (transport: TransportId): boolean => {
+  const dialect = PINNED_CHAT[transport];
+  return dialect !== undefined && Boolean(Bun.env[dialect.apiKeyEnv]);
+};
+
+/** Transports this process could probe, for an operator asking why it did not. */
+export const probeableTransports = (): TransportId[] =>
+  TRANSPORT_IDS.filter(canProbeIntegrity);
 
 export interface IntegrityResult {
   provider: string;

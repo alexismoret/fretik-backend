@@ -79,6 +79,14 @@ export const runCandidateBench = async (): Promise<void> => {
       `[model-candidate-bench] measured ${stats.candidatesProbed.toString()} candidate(s) over ${stats.upstreamsProbed.toString()} upstream(s); ${stats.upstreamsFailing.toString()} mutilate an answer ending in a tool call`,
     );
   }
+  // NOT silent, because it is not a quiet night: these rows route through a
+  // transport this deployment holds no credential for, so nothing about them
+  // can ever be measured here until they are moved or the key is set.
+  if (stats.rowsOnUnusableTransport > 0) {
+    console.warn(
+      `[model-candidate-bench] skipped ${stats.rowsOnUnusableTransport.toString()} row(s) whose own transport this deployment cannot call`,
+    );
+  }
   for (const error of stats.errors) {
     console.error(`[model-candidate-bench] ${error}`);
   }

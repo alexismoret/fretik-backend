@@ -38,9 +38,19 @@ describe("resolveFunctionProfileKey", () => {
   });
 
   test("valid selectable key is honoured", () => {
+    expect(resolveFunctionProfileKey("documents", "zai-glm-5-3-flash")).toEqual(
+      { profileKey: "zai-glm-5-3-flash", fellBack: false },
+    );
+  });
+
+  test("a key the function MEASURABLY refuses degrades to the default", () => {
+    // `gpt-oss-120b` grades 12 on the v4.3 intelligence index against a
+    // `documents` floor of 20. It is the recall judge and the consolidator, not
+    // a document reader, and role-bindings.ts has said so in prose since 2026-08
+    // — this is the rule finally saying it too.
     expect(resolveFunctionProfileKey("documents", "gpt-oss-120b")).toEqual({
-      profileKey: "gpt-oss-120b",
-      fellBack: false,
+      profileKey: "deepseek-v4-flash",
+      fellBack: true,
     });
   });
 
@@ -52,12 +62,12 @@ describe("resolveFunctionProfileKey", () => {
   });
 
   test("an UNMEASURED key is honoured — absent evidence never refuses", () => {
-    // With no live snapshot there is no intelligence figure for `gpt-oss-20b`,
-    // so `documents` returns `unknown` rather than `ineligible` and the team's
-    // choice stands. The tier rule it replaces refused on a missing band,
-    // which took a model away from a team on the strength of no measurement.
-    expect(resolveFunctionProfileKey("documents", "gpt-oss-20b")).toEqual({
-      profileKey: "gpt-oss-20b",
+    // `deepseek-v4-pro` is the fixture's one ungraded row, so `documents`
+    // returns `unknown` rather than `ineligible` and the team's choice stands.
+    // The tier rule it replaces refused on a missing band, which took a model
+    // away from a team on the strength of no measurement.
+    expect(resolveFunctionProfileKey("documents", "deepseek-v4-pro")).toEqual({
+      profileKey: "deepseek-v4-pro",
       fellBack: false,
     });
   });
@@ -134,11 +144,11 @@ describe("resolveModelForTeam", () => {
 
   test("a valid documents override → the override instance, not the default", async () => {
     setTeamAiSettingsDouble({
-      functionProfileKeys: { documents: "gpt-oss-120b" },
+      functionProfileKeys: { documents: "zai-glm-5-3-flash" },
     });
     const resolved = await resolveModelForTeam("pre-extract", "team-1");
     expect(resolved).toBe(
-      resolveModelForRoleProfile("pre-extract", "gpt-oss-120b"),
+      resolveModelForRoleProfile("pre-extract", "zai-glm-5-3-flash"),
     );
     expect(resolved).not.toBe(resolveModel("pre-extract"));
   });

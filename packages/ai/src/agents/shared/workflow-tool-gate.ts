@@ -6,7 +6,7 @@ import type { WorkflowAutonomy } from "@fretik/shared/schemas/workflows";
  * (`activeTools`), never by rejecting a call: the model never sees a withheld
  * tool, so no turn is wasted and no schema is paid for. Code surfaces that
  * can't be pruned (the Python objects SDK, `run_plan`) stay gated server-side
- * via `getWorkflowAutonomyForConversation`.
+ * via `getWorkflowRunContext`.
  *
  * Applied in two places against the SAME rules:
  *  - the main workflow agent (`agents/workflow/index.ts`), whose registry

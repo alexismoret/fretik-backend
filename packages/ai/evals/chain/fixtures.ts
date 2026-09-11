@@ -278,15 +278,44 @@ export const makeContradictionPair = async (
   };
 };
 
-/** Purge whatever a previous repeat promoted, so the dedup gate starts clean. */
-const clearLearned = async (fx: ChainFixtures): Promise<void> => {
+/**
+ * `learned/` memories this suite is responsible for, BY PROVENANCE.
+ *
+ * Not by the supplier's name. The promoter is told to generalize, so a correct
+ * promotion often reads "Pour chaque commande, l'équipe achats envoie le bon de
+ * commande en double exemplaire signé" — the rule, with no entity in it. A
+ * name filter leaves those behind, and the next case's recall then finds a
+ * `memory:learned/…` it never wrote: measured 2026-09-11,
+ * `chain-oneoff-not-durable` went to **0/30** that way, one case failing on the
+ * previous case's residue.
+ *
+ * `Sources: episode:<id>` cannot be reworded, so this catches every promotion
+ * made from an episode anchored on the fixture record — and leaves alone the
+ * `learned/` memory another suite deliberately parks here (the P5.1 acceptance
+ * residue), which cites episodes anchored elsewhere.
+ */
+const suiteLearnedMemoryIds = async (fx: ChainFixtures): Promise<string[]> => {
+  const edges = await db.query.aiEpisodeRecords.findMany({
+    where: { recordId: fx.calliopeId },
+    columns: { episodeId: true },
+  });
+  const ours = new Set(edges.map((e) => e.episodeId));
   const rows = await db.query.aiMemories.findMany({
     where: { teamId: fx.teamId, path: { like: "learned/%" } },
     columns: { id: true, content: true },
   });
-  const ids = rows
-    .filter((m) => m.content.includes("Calliope"))
+  return rows
+    .filter(
+      (m) =>
+        m.content.includes(RECORD_LABEL.split(" ")[0] ?? "") ||
+        [...ours].some((id) => m.content.includes(id)),
+    )
     .map((m) => m.id);
+};
+
+/** Purge whatever a previous repeat promoted, so the dedup gate starts clean. */
+const clearLearned = async (fx: ChainFixtures): Promise<void> => {
+  const ids = await suiteLearnedMemoryIds(fx);
   if (ids.length === 0) return;
   await deleteMemoryVectorsBulk(ids);
   await db.delete(aiMemories).where(inArray(aiMemories.id, ids));
@@ -296,8 +325,10 @@ const clearLearned = async (fx: ChainFixtures): Promise<void> => {
 export const makeConventionCluster = async (
   fx: ChainFixtures,
 ): Promise<string[]> => {
-  await clearAnchoredEpisodes(fx);
+  // `clearLearned` FIRST: it reads the provenance off the episodes, and
+  // `clearAnchoredEpisodes` cascades their `ai_episode_records` rows away.
   await clearLearned(fx);
+  await clearAnchoredEpisodes(fx);
   const texts = [
     "Commande passée à Calliope Verre : le bon de commande a été envoyé en double exemplaire signé, comme pour chaque commande.",
     "Nouvelle commande Calliope Verre : envoi du bon de commande en double exemplaire signé, procédure habituelle de l'équipe achats.",
@@ -416,8 +447,9 @@ export const ensureWorkflowConventionMemory = async (
 export const makeOneOffCluster = async (
   fx: ChainFixtures,
 ): Promise<string[]> => {
-  await clearAnchoredEpisodes(fx);
+  // Same order, same reason as `makeConventionCluster`.
   await clearLearned(fx);
+  await clearAnchoredEpisodes(fx);
   const texts = [
     "La facture CV-2291 de Calliope Verre a été payée le 12 du mois.",
     "Correction d'une faute de frappe dans l'adresse de livraison de Calliope Verre.",
@@ -497,13 +529,22 @@ export const cleanupChainFixtures = async (
 
   // Promotions this suite's episodes may have produced, plus the convention
   // the workflow case seeds by PATH (it is human-authored, not promoted, so
-  // the `learned/` sweep above would never reach it).
+  // the `learned/` sweep would never reach it).
+  //
+  // BY PROVENANCE as well as by name — see `suiteLearnedMemoryIds`. A
+  // correctly generalized promotion carries no entity name, and one left
+  // behind here is the next RUN's contamination rather than the next case's.
+  // `episodeIds` is read above, before those rows are deleted.
   const learned = await db.query.aiMemories.findMany({
     where: { teamId: scope.teamId, path: { like: "learned/%" } },
     columns: { id: true, content: true },
   });
   const stale = learned
-    .filter((m) => m.content.includes(RECORD_LABEL.split(" ")[0] ?? ""))
+    .filter(
+      (m) =>
+        m.content.includes(RECORD_LABEL.split(" ")[0] ?? "") ||
+        episodeIds.some((id) => m.content.includes(id)),
+    )
     .map((m) => m.id);
   const convention = await db.query.aiMemories.findFirst({
     where: { teamId: scope.teamId, scope: "team", path: WORKFLOW_MEMORY_PATH },

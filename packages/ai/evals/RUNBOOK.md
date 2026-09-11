@@ -472,6 +472,60 @@ the end of a run, so a diagnostic script run afterwards measures an empty
 team.** Two rounds of "the judge is rejecting my memory" were spent on a
 database that no longer held it. Seed before probing, or probe with `--keep`.
 
+### Closing the chain suite at 30 — four assertions were wrong (P5.4, 2026-09-11)
+
+| case                            | N=10             | N=30      | note                                             |
+| ------------------------------- | ---------------- | --------- | ------------------------------------------------ |
+| `chain-convention-promoted`     | 10/10            | **30/30** | CLOSED, residue present                          |
+| `chain-oneoff-not-durable`      | 10/10            | **30/30** | CLOSED                                           |
+| `chain-workflow-turn-one`       | 10/10            | **30/30** | CLOSED                                           |
+| `chain-decision-survives`       | 10/10, then 7/10 | **29/30** | CLOSED — 1 `distill: aucun épisode`              |
+| `chain-contradiction-corrected` | 10/10            | 28/30     | **open** — 1 real `consolidate: NOOP`, 1 timeout |
+
+`chain-decision-survives` is the cleanest illustration of why N=10 is not a
+baseline: 10/10, 10/10, then 7/10, and 29/30 when actually measured. Three
+draws from a ~97 % case, and the 7/10 would have read as a regression to
+anything that trusted the earlier two.
+
+`chain-contradiction-corrected` is the only one whose remaining failures are
+the PRODUCT: the consolidation judge returned NOOP on two episodes stating
+incompatible lead times (1/30), and one repeat threw a timeout. Model variance,
+not an assertion — it is the suite's open case.
+
+**Every case here was 10/10 at N=10 and three of the five were not 10/10 at
+N=30.** That is the rule earning its keep, and it is the second time this
+RUNBOOK records it.
+
+The failures were not the pipeline. **Four assertions keyed on the supplier's
+NAME**, and the promoter is told to generalize:
+
+1. `chain-convention-promoted` filtered promoted memories on `"Calliope"` →
+   **27/30**, with `added=1 updated=0 noop=0` on all thirty. The three
+   "failures" wrote the rule correctly generalized — "Pour chaque commande,
+   l'équipe achats envoie le bon de commande en double exemplaire signé" — with
+   the entity nowhere in it. **The case failed the promoter for doing its job
+   best.**
+2. `chain-oneoff-not-durable` used the same filter to assert NOTHING was
+   written. Over-generalizing is exactly what drops the entity's name, so the
+   guard against over-generalization could be defeated by over-generalization.
+   It was passing.
+3. `clearLearned` and `cleanupChainFixtures` used it too, so a generalized
+   promotion survived every purge. Three had accumulated on the write team, and
+   one case then failed on the previous case's residue — **`chain-oneoff-not-durable`
+   0/30**, the same failure mode that opened this whole chantier.
+4. The same case asserted no `memory:learned/` at all reaches the block. A fair
+   proxy while the team had no other promotions; false the day one was parked
+   there deliberately (P5.1's acceptance residue, about another supplier).
+
+All four now key on `Sources: episode:<id>`, which the writer stamps and the
+model cannot reword. **Key a marker on what the agent produces, never on what
+you expect it to say** — third and fourth instances in one day, after the
+`mr-written-memory-recalled` cleanup and the promoter's own subject filter.
+
+One ordering trap came with it: `clearLearned` must run BEFORE
+`clearAnchoredEpisodes`, since deleting the episodes cascades away the
+`ai_episode_records` rows the provenance filter reads.
+
 ### TRIED AND DELETED: the LLM team digest (2026-09-11)
 
 A background job wrote one prose summary per team into `team_memory_digests`,
@@ -1107,11 +1161,11 @@ easy to break by accident.** `runUnifiedRecall` memoises a gather for 15 s per
 extract/distill/promote = deepseek-v4-flash, consolidate + recall judge =
 gpt-oss-120b):
 
-| Suite                     | Frozen                                                                                                                                                                                                                                                                                                                                                                   | Detail                                                                                                                                                                                                                                                                         |
-| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `evals:memory` (17 cases) | 16/17 stable at N=10                                                                                                                                                                                                                                                                                                                                                     | flagged `mem-relation-noise` 9/10 re-ran **30/30** → closed. The four once-contested cases, targeted: reanchor 30/30 · merge 30/30 · revise 29/30 · distill-record-activity 30/30                                                                                              |
-| `evals:chain` (5 cases)   | ~~4/4~~ → **5/5 at N=10, whole suite, 2026-09-11** — `workflow-turn-one` 10/10 (30/30 targeted), `oneoff-not-durable` 10/10, `convention-promoted` 10/10 WITH the Meridian residue present, `contradiction-corrected` 10/10, `decision-survives` 10/10. (`chain-digest` came in `1017fa7` and went with the digest in `9a1c201`; `chain-workflow-turn-one` replaced it.) | `chain-contradiction-corrected` closed by the consolidation-judge id handles                                                                                                                                                                                                   |
-| `evals:recall` (23 cases) | 22/23 stable at N=10                                                                                                                                                                                                                                                                                                                                                     | **open residual**: `rec-noise-general` — 8/10 in the freeze, **14/30** targeted (historic ~88 %). Judge-side selectivity against a lexically dominant, non-responsive candidate; the hot-path judge model is deliberately out of scope here. The one case of 44 below the bar. |
+| Suite                     | Frozen                                                                                                                                                                                                                                                                                                                               | Detail                                                                                                                                                                                                                                                                         |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `evals:memory` (17 cases) | 16/17 stable at N=10                                                                                                                                                                                                                                                                                                                 | flagged `mem-relation-noise` 9/10 re-ran **30/30** → closed. The four once-contested cases, targeted: reanchor 30/30 · merge 30/30 · revise 29/30 · distill-record-activity 30/30                                                                                              |
+| `evals:chain` (5 cases)   | **4 of 5 CLOSED at N=30, 2026-09-11** — `convention-promoted` 30/30 (residue present), `oneoff-not-durable` 30/30, `workflow-turn-one` 30/30, `decision-survives` 29/30; `contradiction-corrected` **28/30, open**. (`chain-digest` came in `1017fa7` and went with the digest in `9a1c201`; `chain-workflow-turn-one` replaced it.) | `chain-contradiction-corrected` closed by the consolidation-judge id handles                                                                                                                                                                                                   |
+| `evals:recall` (23 cases) | 22/23 stable at N=10                                                                                                                                                                                                                                                                                                                 | **open residual**: `rec-noise-general` — 8/10 in the freeze, **14/30** targeted (historic ~88 %). Judge-side selectivity against a lexically dominant, non-responsive candidate; the hot-path judge model is deliberately out of scope here. The one case of 44 below the bar. |
 
 **The `evals:chain` row above is out of date as of 2026-09-11**, in both
 directions, and the row is left struck through rather than quietly edited

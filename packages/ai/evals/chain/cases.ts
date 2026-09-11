@@ -52,6 +52,32 @@ export interface ChainEvalCase {
 /** Typography-insensitive — see `evals/text-match.ts` for why that matters. */
 const has = textIncludes;
 
+/**
+ * The `learned/` memories THIS promotion wrote, by provenance.
+ *
+ * Not by entity name, which is what these cases used and what took
+ * `chain-convention-promoted` to 27/30 at N=30 while the promoter was working
+ * perfectly on all thirty. Its prompt says "Keep it generic — no
+ * episode-specific one-off details", so it sometimes writes "Pour chaque
+ * commande, l'équipe achats envoie le bon de commande en double exemplaire
+ * signé" — the rule, correctly generalized, with the supplier's name nowhere
+ * in it. A filter on the name then finds nothing and the case fails for the
+ * promoter doing its job BEST.
+ *
+ * Worse in the mirror case: `chain-oneoff-not-durable` asserts NO memory was
+ * written, so an over-generalized one-off that happens not to name the entity
+ * passed a guard that exists to catch exactly that.
+ *
+ * `Sources: episode:<id>` is stamped by the writer on every promotion and
+ * cannot be reworded, so it identifies the rows regardless of what the model
+ * decided to call them.
+ */
+const writtenFrom = (
+  memories: { path: string; content: string }[],
+  episodeIds: string[],
+): { path: string; content: string }[] =>
+  memories.filter((m) => episodeIds.some((id) => m.content.includes(id)));
+
 /** The recall stage, run exactly as a turn would. */
 const recallFor = async (
   fx: ChainFixtures,
@@ -184,16 +210,24 @@ export const CHAIN_CASES: ChainEvalCase[] = [
         where: { teamId: fx.teamId, path: { like: "learned/%" } },
         columns: { path: true, content: true },
       });
-      const mine = written.filter((m) => has(m.content, "Calliope"));
+      const mine = writtenFrom(written, episodeIds);
       for (const m of mine) lines.push(`${m.path}\n${m.content}`);
       if (result.added + result.updated === 0 || mine.length === 0) {
         failures.push(
           "promote: aucune mémoire learned/ écrite sur une convention récurrente",
         );
+      } else if (!mine.some((m) => has(m.content, "double exemplaire"))) {
+        // The rule itself, not the supplier's name — the promoter is told to
+        // generalize, so naming the entity is optional and the convention is
+        // not. Same marker the recall assertion below uses.
+        failures.push(
+          "promote: la mémoire écrite ne porte pas la convention (double exemplaire)",
+        );
       }
       // The write is fire-and-forget on the vector; wait for retrievability so
-      // this case measures the chain and not the embedding race.
-      if (!(await waitForMemoryVectors(fx.teamId, "Calliope"))) {
+      // this case measures the chain and not the embedding race. Keyed on a
+      // cited episode id for the same reason `writtenFrom` is.
+      if (!(await waitForMemoryVectors(fx.teamId, episodeIds[0] ?? "—"))) {
         failures.push("promote: la mémoire écrite n'a jamais été vectorisée");
       }
 
@@ -215,7 +249,7 @@ export const CHAIN_CASES: ChainEvalCase[] = [
   {
     id: "chain-oneoff-not-durable",
     description:
-      "Two unrelated one-off facts about the same entity must NOT become a durable team memory — and, above all, must not reach the assistant as a FACT. The over-generalization guard checked where it actually costs something.",
+      "Two unrelated one-off facts about the same entity must NOT become a durable team memory — and, if one ever is, must not reach the assistant as a FACT. The guard's teeth are at the promote stage; the recall check says the failure would have been felt, and both are scoped to what THIS cluster produced.",
     run: async (fx) => {
       const failures: string[] = [];
       const lines: string[] = [];
@@ -233,7 +267,10 @@ export const CHAIN_CASES: ChainEvalCase[] = [
         where: { teamId: fx.teamId, path: { like: "learned/%" } },
         columns: { path: true, content: true },
       });
-      const mine = written.filter((m) => has(m.content, "Calliope"));
+      // By provenance, not by entity name: the failure this guard exists to
+      // catch is an OVER-GENERALIZED one-off, and over-generalizing is exactly
+      // what drops the entity's name from the text. See `writtenFrom`.
+      const mine = writtenFrom(written, episodeIds);
       for (const m of mine) lines.push(`${m.path}\n${m.content}`);
       if (mine.length > 0) {
         failures.push(
@@ -246,9 +283,16 @@ export const CHAIN_CASES: ChainEvalCase[] = [
         "Je prépare une commande pour Calliope Verre, quelque chose à respecter ?",
       );
       lines.push(`[recall]\n${block || "NONE"}`);
-      if (block.includes("memory:learned/")) {
+      // The memories THIS cluster produced, not every `learned/` path in the
+      // block. `memory:learned/` as a whole was a proxy that held only while
+      // the team had no other promotions — and it stopped holding the day one
+      // was parked here deliberately (the P5.1 acceptance residue, about
+      // another supplier entirely), taking this case to 0/30 while the
+      // promoter was correctly writing nothing at all.
+      const leaked = mine.filter((m) => block.includes(`memory:${m.path}`));
+      if (leaked.length > 0) {
         failures.push(
-          "recall: une mémoire learned/ inventée remonte comme un fait",
+          `recall: ${leaked.map((m) => m.path).join(", ")} — une mémoire inventée sur des faits ponctuels remonte comme un fait`,
         );
       }
       return { text: lines.join("\n\n"), failures };

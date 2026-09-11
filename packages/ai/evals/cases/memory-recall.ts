@@ -48,6 +48,15 @@
  * metadata so the number can never be read without it.
  */
 
+import db from "@fretik/shared/db";
+import { aiMemories } from "@fretik/shared/db/schema";
+import { deleteMemoryVectorsBulk } from "@fretik/shared/services/ai-memory/vector-refresh";
+import { inArray } from "drizzle-orm";
+import {
+  createEphemeralConversation,
+  destroyEphemeralConversation,
+} from "../conversation-lifecycle";
+import { invokeChatbot } from "../http-client";
 import type { RecallFixtures } from "../recall/fixtures";
 import { ensureRecallFixtures, nextDeliveryDate } from "../recall/fixtures";
 import type {
@@ -79,6 +88,116 @@ const seedUniverse = async (ctx: EvalCaseContext): Promise<void> => {
     userId: ctx.userId,
   });
   await universe;
+};
+
+/**
+ * The written-memory case, end to end.
+ *
+ * Every other case in this suite reads a fixture somebody else seeded. This
+ * one closes the only loop the memory system actually promises a user — the
+ * assistant records something in one conversation and knows it in the next —
+ * and it is the one loop no suite covered.
+ *
+ * The value is 45 days on purpose. 30 is the commercial default a model will
+ * produce from general knowledge alone, so a case asserting 30 would pass on a
+ * turn that read nothing; 45 is a claim only this team's memory can support.
+ */
+const WRITTEN_VALIDITY = "45 jours";
+const WRITE_PROMPT = `Mémorise pour l'équipe : tous nos devis mentionnent une validité de ${WRITTEN_VALIDITY} et le délai de livraison.`;
+/** Row, then vector. The turn writes the first and fires the second. */
+const WRITE_TIMEOUT_MS = 40_000;
+
+/**
+ * The VALUE is the marker, and it has to be — measured 2026-09-11, the hard
+ * way. This first matched the instruction's own wording ("validité de 45
+ * jours"), which the agent does not keep: it wrote "Validité de l'offre : 45
+ * jours" and the cleanup matched nothing, so a memory stayed on the shared
+ * team and the next repeat's purge missed it too. Nine repeats then ran with
+ * the previous repeat's memory still there — the write stage was no longer
+ * load-bearing and the 10/10 measured nothing.
+ *
+ * The value survives any rewording because it IS the fact. Same constant as
+ * the assertion, and the same invariant behind both: nothing else in this
+ * universe may carry it, or the case is vacuous either way.
+ */
+const writtenMemoryIds = async (teamId: string): Promise<string[]> => {
+  const rows = await db.query.aiMemories.findMany({
+    where: { teamId, content: { ilike: `%${WRITTEN_VALIDITY}%` } },
+    columns: { id: true },
+  });
+  return rows.map((r) => r.id);
+};
+
+/** Drop what a previous repeat — or a crashed one — left behind. */
+const dropWrittenMemories = async (teamId: string): Promise<void> => {
+  const ids = await writtenMemoryIds(teamId);
+  if (ids.length === 0) return;
+  await deleteMemoryVectorsBulk(ids);
+  await db.delete(aiMemories).where(inArray(aiMemories.id, ids));
+};
+
+/**
+ * Play the WRITE turn, then block until what it wrote is retrievable.
+ *
+ * The purge comes first and is not optional: a leftover from a crashed repeat
+ * would let this case pass without the agent writing anything at all, which is
+ * the whole claim. A seed that throws aborts the case and names the stage —
+ * "the agent never wrote" and "recall never found it" are different failures
+ * and must not arrive as the same one.
+ *
+ * The wait mirrors `waitForMemoryVectors` in `chain/fixtures.ts`, for the
+ * reason recorded there: `createMemory` fires its embedding and returns, so
+ * the row exists before the vector does, and a case that skips this measures
+ * that race instead of the chain.
+ *
+ * It deletes by CONTENT, never by path: the agent names its own file, and it
+ * named three different ones in three repeats. A cleanup keyed on a path this
+ * case guessed would leave the others behind, on a team every other case in
+ * the suite reads — which is the one window where this case can contaminate a
+ * concurrent one, since a team memory shows up in every turn's
+ * `<memory_index>` until the cleanup runs.
+ */
+const seedWrittenMemory = async (ctx: EvalCaseContext): Promise<void> => {
+  if (!ctx.userId) {
+    throw new Error("mr-written-memory-recalled needs EVAL_USER_ID");
+  }
+  await dropWrittenMemories(ctx.teamId);
+
+  const writeConversationId = await createEphemeralConversation({
+    teamId: ctx.teamId,
+    organizationId: ctx.organizationId,
+    userId: ctx.userId,
+    label: "mr-written-memory-recalled/write",
+    prompt: WRITE_PROMPT,
+  });
+  try {
+    // No options: the client already sends `EVAL_USER_ID` as the caller, which
+    // is the same person the read turn runs as — a memory written by someone
+    // else would be testing a different claim.
+    const written = await invokeChatbot(WRITE_PROMPT, writeConversationId);
+    if (written.error) {
+      throw new Error(`write turn failed: ${written.error}`);
+    }
+  } finally {
+    await destroyEphemeralConversation(writeConversationId);
+  }
+
+  const deadline = Date.now() + WRITE_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    const ids = await writtenMemoryIds(ctx.teamId);
+    if (ids.length > 0) {
+      const vectors = await db.query.aiVectors.findMany({
+        where: { sourceType: "memories", sourceId: { in: ids } },
+        columns: { id: true },
+        limit: 1,
+      });
+      if (vectors.length > 0) return;
+    }
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  throw new Error(
+    `the write turn left no retrievable memory containing "${WRITTEN_VALIDITY}" within ${(WRITE_TIMEOUT_MS / 1000).toString()}s`,
+  );
 };
 
 /**
@@ -485,6 +604,27 @@ export const memoryRecallSuite: EvalSuite = {
           type: "judge",
           rubric:
             "The answer states what is planned for the week from the team's own records: the next Nordwind GmbH delivery (Tuesday) and/or the 2027 contract penalty clause still awaiting legal revalidation. FAIL if it invents an event, if it answers that nothing is planned, or if it only restates the question.",
+        },
+      ],
+    },
+    {
+      id: "mr-written-memory-recalled",
+      description:
+        "The one loop the memory system promises a user and nothing measured: the assistant is told to record a rule in ONE conversation and has to know it in the NEXT. The seed plays the write turn for real rather than inserting a fixture, so a failure attributes to a stage — the seed aborts when the agent never wrote, the assertions fail when it wrote and recall never surfaced it.",
+      prompt: "Je prépare un devis, quelque chose à respecter ?",
+      tags: ["memory", "write", "chain"],
+      seed: seedWrittenMemory,
+      cleanup: (ctx: EvalCaseContext) => dropWrittenMemories(ctx.teamId),
+      assertions: [
+        { type: "noError" },
+        // The discriminating value — see `WRITTEN_VALIDITY`. A model answering
+        // from general knowledge says 30 days, so this cannot pass on a turn
+        // that read nothing.
+        { type: "regex", value: WRITTEN_VALIDITY, flags: "i" },
+        {
+          type: "judge",
+          rubric:
+            "The answer states the team's own recorded rule for quotes: a validity of 45 days, and that the delivery lead time must appear on the quote. Partial credit for one of the two. FAIL for generic quoting advice carrying neither, for a different validity period, or for answering that no applicable rule is known.",
         },
       ],
     },

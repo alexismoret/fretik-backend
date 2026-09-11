@@ -321,4 +321,7 @@ export const CURATED: Record<string, CuratedCase> = {
   "mr-contextless-status": { capability: "memory" },
   "mr-contextless-brief": { capability: "memory" },
   "mr-contextless-week": { capability: "memory" },
+  // Two real turns, not one: its seed plays the WRITE turn. Costs roughly
+  // double a sibling and is the only case that exercises the write at all.
+  "mr-written-memory-recalled": { capability: "memory" },
 };

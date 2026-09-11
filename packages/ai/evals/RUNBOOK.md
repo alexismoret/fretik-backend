@@ -393,6 +393,45 @@ are 30/30; `episodes` was retained if nothing regressed against `none`, and
 after the fix nothing does. The rule named the tie in advance and gave it to
 `episodes`.
 
+### `mr-written-memory-recalled` — the write end, finally measured (P5.2, 2026-09-11)
+
+**10/10, zero failed assertions, ~25 s per turn, $0.011 per turn** (concurrency
+1). Every other case in the suite reads a fixture someone else seeded; this one
+is the only measurement of the loop the product actually promises — the
+assistant is told to record a rule in ONE conversation and has to know it in
+the NEXT. Its seed plays the write turn for real through `/invoke`, so a
+failure attributes to a stage: the seed aborts when the agent never wrote, the
+assertions fail when it wrote and recall never surfaced it.
+
+**The value is 45 days, not 30.** 30 is the commercial default a model produces
+from general knowledge, so a case asserting 30 passes on a turn that read
+nothing. Pick the fixture value a correct answer cannot reach by guessing.
+
+**The first 10/10 was void, and the reason generalises.** The cleanup matched
+`"validité de 45 jours"` — the phrasing of the INSTRUCTION. The agent does not
+keep it: it wrote "Validité de l'offre : 45 jours", the cleanup deleted
+nothing, and the next repeat's purge missed it for the same reason. Nine
+repeats then ran with the previous repeat's memory still on the team, so the
+write stage was not load-bearing and the run measured recall of a leftover.
+**Key a marker on what the AGENT produces, never on what you told it** — the
+value survives rewording because it IS the fact, and it is now the same
+constant the assertion uses, under one invariant: nothing else in the universe
+may carry it, or the case is vacuous either way.
+
+Two things to know before running the full suite with it:
+
+- it costs roughly **two turns**, being the only case that plays one in its seed;
+- it writes a TEAM memory to the shared read team, which shows up in every
+  concurrent turn's `<memory_index>` until its cleanup runs. The window is one
+  case; at `--concurrency 3` a handful of turns overlap it. The cleanup deletes
+  by content, not path, because the agent names its own file — three different
+  paths in three repeats.
+
+Observed, not caused by this case and not chased here: **3 of 10 turns were
+answered by the FALLBACK agent** rather than the bound model (`fallback-served`
+scores it), and the one inspected had visibly degraded output — the same reply
+concatenated three times.
+
 ### TRIED AND DELETED: the LLM team digest (2026-09-11)
 
 A background job wrote one prose summary per team into `team_memory_digests`,

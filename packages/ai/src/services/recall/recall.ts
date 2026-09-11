@@ -225,6 +225,17 @@ export interface UnifiedRecallParams {
   recentTail: string;
   abortSignal?: AbortSignal;
   /**
+   * Whether the caller will READ `capabilityBlock`. Default true.
+   *
+   * `false` skips the whole capability arm — a hybrid search plus a rerank
+   * call over `workflows` + `pages`, whose only consumer is that block. The
+   * workflow turn-one path has never read it, so until 2026-09-11 every
+   * workflow run paid for one and threw it away. Not derived from
+   * `agentType`: that is telemetry, and deriving logic from it is how a
+   * "metadata only" field stops being metadata.
+   */
+  needsCapabilityBlock?: boolean;
+  /**
    * Skip the in-memory result cache — EVAL/BENCH ONLY. The cache absorbs
    * same-turn retries in prod; eval repeats of one message need fresh
    * gather+judge passes to measure stability.
@@ -493,19 +504,21 @@ export const gatherRecallCandidates = async (
       // two round-trips that overlap anyway. What WAS redundant is the
       // embedding: all three arms embed the same `query` string, and
       // `getCachedOrEmbedBatch` now collapses those into one request.
-      timeStage(
-        timings,
-        "capabilities",
-        searchRAG({
-          query,
-          teamId: params.teamId,
-          organizationId: params.organizationId,
-          userId: params.userId,
-          filters: { sourceTypes: ["workflows", "pages"] },
-          topK: CAPABILITY_TOP_K,
-          skipMultiQuery: true,
-        }).catch(() => ({ results: [] })),
-      ),
+      params.needsCapabilityBlock === false
+        ? Promise.resolve({ results: [] })
+        : timeStage(
+            timings,
+            "capabilities",
+            searchRAG({
+              query,
+              teamId: params.teamId,
+              organizationId: params.organizationId,
+              userId: params.userId,
+              filters: { sourceTypes: ["workflows", "pages"] },
+              topK: CAPABILITY_TOP_K,
+              skipMultiQuery: true,
+            }).catch(() => ({ results: [] })),
+          ),
     ]);
 
   recordCandidateScores(

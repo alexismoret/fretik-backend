@@ -58,6 +58,10 @@ export const recallForWorkflowTurnOne = async (input: {
           userId: input.actingUserId,
           conversationId: input.conversationId,
           agentType: "workflow",
+          // This path takes the block and nothing else, and the steering
+          // message has no slot for a capability card. Asking for one would be
+          // a hybrid search and a rerank per run, thrown away.
+          needsCapabilityBlock: false,
           bypassCache: input.bypassCache,
         }),
         RECALL_TIMEOUT_MS,

@@ -11,6 +11,7 @@ import type { ModelFunctionKey } from "@fretik/shared/model-registry/functions";
 import { MODEL_FUNCTION_KEYS } from "@fretik/shared/model-registry/functions";
 import type { LiveModelState } from "@fretik/shared/model-registry/types";
 import { getLiveStateSync } from "@fretik/shared/services/model-registry/live";
+import { ROLE_BINDINGS } from "./role-bindings";
 import type { ModelProfile, ModelRole } from "./types";
 
 /**
@@ -81,6 +82,53 @@ export const ROLE_FUNCTION: Record<ModelRole, ModelFunctionKey | "auto"> = {
 };
 
 /**
+ * The models an internal role RUNS for each function, from the code bindings.
+ *
+ * It exists to make one state unreachable: a team being refused the very model
+ * the product is using for that job. That is not a threshold being strict, it
+ * is the engine contradicting itself — every turn of `chat` goes to
+ * `deepseek-v4-flash` while the picker tells a team `deepseek-v4-flash` is not
+ * a valid assistant, and a team that had already chosen it silently stops being
+ * served its own choice. It happened on 2026-09-11, to six bindings at once,
+ * because one throughput signal read the pool's median instead of its ceiling.
+ *
+ * A floor is a claim about models we have NOT tried. Against a model already
+ * serving the job in production it has nothing to add: the binding is the
+ * stronger evidence, it was made deliberately and it carries its own eval
+ * record. So the floor loses, and the audit reports the disagreement as a
+ * CALIBRATION problem instead of taking the model away from anyone.
+ *
+ * Built once from plain data — `ROLE_BINDINGS` and `ROLE_FUNCTION` are
+ * TypeScript constants with no database behind them, so this is safe at module
+ * level in a way `resolveModel(...)` is not.
+ */
+const INTERNALLY_RUN: ReadonlyMap<
+  ModelFunctionKey,
+  ReadonlySet<string>
+> = (() => {
+  const byFunction = new Map<ModelFunctionKey, Set<string>>();
+  for (const binding of Object.values(ROLE_BINDINGS)) {
+    const fn = ROLE_FUNCTION[binding.role];
+    if (fn === "auto") continue;
+    const keys = byFunction.get(fn) ?? new Set<string>();
+    keys.add(binding.profileKey);
+    byFunction.set(fn, keys);
+  }
+  return byFunction;
+})();
+
+/**
+ * Whether the product itself serves this function with this model today.
+ *
+ * `*-fallback` roles and the page critic are `auto` and contribute nothing —
+ * they are never offered to a team, so there is no refusal to contradict.
+ */
+export const runsFunctionInternally = (
+  profileKey: string,
+  fn: ModelFunctionKey,
+): boolean => INTERNALLY_RUN.get(fn)?.has(profileKey) === true;
+
+/**
  * The role whose CODE DEFAULT is a function's recommendation — the "recommended"
  * badge, and what an unset or unusable stored key degrades to.
  */
@@ -123,6 +171,15 @@ export const signalsForProfile = (
  * whole rule: a model nobody has graded must not be auto-recommended, and must
  * not be taken away from a team that chose it either. The same two vetoes as
  * before still apply first — curation's `enabled` and the live row's.
+ *
+ * And a model the product ITSELF runs for this function is never refused on a
+ * measurement. Those two vetoes still bind, because both are deliberate
+ * decisions a person can read and undo — `gemini-3.7-flash` is cost-disabled
+ * for teams and still serves `page-build`, on purpose. A floor is not a
+ * decision of that kind: it is a guess about models nobody has tried, and
+ * against one already serving the job it is simply wrong. Letting it win took
+ * `deepseek-v4-flash` away from two teams that had chosen it while every chat
+ * turn in production kept running on it.
  */
 export const selectableForFunction = (
   profile: ModelProfile,
@@ -132,6 +189,7 @@ export const selectableForFunction = (
   if (!profile.assessment.enabled) return false;
   if (live && (!live.enabled || live.status !== "published" || live.lastResort))
     return false;
+  if (runsFunctionInternally(profile.key, fn)) return true;
   return (
     functionEligibility(fn, signalsForProfile(profile, live)).verdict !==
     "ineligible"
@@ -142,11 +200,17 @@ export const selectableForFunction = (
  * What this function asked of the model and did not get — the actionable half
  * of a refusal, structured so the client can word it in its own language.
  *
- * `selectableForFunction` DECIDES; this only EXPLAINS. Nothing may re-derive
- * the decision from a card's own figures: the card reports the throughput of
- * the endpoint a turn is most likely to land on, while eligibility grades the
- * pool MEDIAN, so a client evaluating the same rule against the number it was
- * shown would contradict the verdict it was given.
+ * `selectableForFunction` DECIDES; this only EXPLAINS, and a client must never
+ * re-derive the decision from a card's own figures — the verdict can be a
+ * veto, or the internal-binding carve-out, neither of which a number on a card
+ * can express.
+ *
+ * The two DO now describe the same measurement, which they did not until
+ * 2026-09-11: the card reported the fastest endpoint in the pool (routing sorts
+ * by throughput) while eligibility graded the pool median, so the page could
+ * show 100 tok/s beside a refusal for being under 45. `capabilitySignals` reads
+ * the pool ceiling now, and the note that used to excuse the gap is gone with
+ * it.
  *
  * Empty is a legitimate answer, and means the refusal came from one of the two
  * vetoes (curation's `enabled`, or an unusable live row) rather than from a
@@ -164,11 +228,24 @@ export const unmetForFunction = (
  * which is a stricter question than `selectableForFunction`: this one grants
  * only on `eligible`, so an ungraded model is offerable without being
  * advertised.
+ *
+ * The one exception is the same carve-out: a function the product itself runs
+ * this model for is earned by DOING THE JOB, which outranks any grade. Leaving
+ * it off would print a card for the fleet's own assistant that does not claim
+ * to be an assistant.
  */
 export const functionsForProfile = (
   profile: ModelProfile,
   live?: LiveModelState,
-): ModelFunctionKey[] => eligibleFunctions(signalsForProfile(profile, live));
+): ModelFunctionKey[] => {
+  const measured = new Set(eligibleFunctions(signalsForProfile(profile, live)));
+  for (const fn of MODEL_FUNCTION_KEYS) {
+    if (runsFunctionInternally(profile.key, fn)) measured.add(fn);
+  }
+  // Key order, not insertion order: two cards listing the same functions must
+  // list them in the same sequence.
+  return MODEL_FUNCTION_KEYS.filter((fn) => measured.has(fn));
+};
 
 export { MODEL_FUNCTION_KEYS };
 export type { ModelFunctionKey };
